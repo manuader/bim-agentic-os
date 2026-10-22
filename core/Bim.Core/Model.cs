@@ -35,7 +35,7 @@ public static class Compiler
     public static ExecutionPlan Diff(Project before, Project after)
     {
         if(before.Id != after.Id || before.Revision != after.Revision) throw new InvalidOperationException("revision_conflict");
-        if(Validate(after).Length > 0) throw new InvalidOperationException("invalid_ir");
+        if(Validate(before).Length > 0 || Validate(after).Length > 0) throw new InvalidOperationException("invalid_ir");
         var old = before.Elements.ToDictionary(e=>e.Id); var next = after.Elements.ToDictionary(e=>e.Id);
         var ops = new List<Operation>();
         foreach(var e in after.Elements) if(!old.TryGetValue(e.Id,out var prior)) ops.Add(new("create",e)); else if(JsonSerializer.Serialize(e)!=JsonSerializer.Serialize(prior)) ops.Add(new("update",e));
@@ -51,20 +51,26 @@ public static class Compiler
 // One OS file lock protects compare-and-swap across processes; atomic rename publishes snapshots.
 public sealed class ProjectStore(string directory)
 {
-    public Project Read() => JsonSerializer.Deserialize<Project>(File.ReadAllText(Path.Combine(directory,"project.json")))!;
-    public void Initialize(Project p) { Directory.CreateDirectory(directory); using var guard = Lock(); if(File.Exists(Path.Combine(directory,"project.json"))) throw new IOException("already_initialized"); Write(p); }
+    public record State(Project Project, Dictionary<string,string> Receipts);
+    State ReadState() => JsonSerializer.Deserialize<State>(File.ReadAllText(Path.Combine(directory,"project.json")))!;
+    public Project Read() => ReadState().Project;
+    public void Initialize(Project p) { Directory.CreateDirectory(directory); using var guard = Lock(); if(Compiler.Validate(p).Length>0) throw new InvalidOperationException("invalid_ir"); if(File.Exists(Path.Combine(directory,"project.json"))) throw new IOException("already_initialized"); Write(new(p,new())); }
     FileStream Lock() => new(Path.Combine(directory,"lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
-    void Write(Project p) { var tmp=Path.Combine(directory,"project.tmp"); File.WriteAllText(tmp,JsonSerializer.Serialize(p)); File.Move(tmp,Path.Combine(directory,"project.json"),true); }
+    void Write(State state) { var tmp=Path.Combine(directory,"project.tmp"); using(var file=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None)) { JsonSerializer.Serialize(file,state); file.Flush(true); } File.Move(tmp,Path.Combine(directory,"project.json"),true); }
     public Project Commit(Project desired, ExecutionPlan plan, string key)
     {
         using var guard = Lock();
-        var receipt=Path.Combine(directory,Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))+".json");
-        if(File.Exists(receipt)) { var saved=JsonSerializer.Deserialize<ExecutionPlan>(File.ReadAllText(receipt))!; if(saved.AfterHash!=plan.AfterHash) throw new InvalidOperationException("idempotency_conflict"); return Read(); }
-        var current=Read(); if(Compiler.Hash(current)!=plan.BeforeHash || Compiler.Hash(desired)!=plan.AfterHash) throw new InvalidOperationException("revision_conflict");
+        if(string.IsNullOrWhiteSpace(key)) throw new ArgumentException("idempotency_key_required");
+        var state=ReadState();
+        if(state.Receipts.TryGetValue(key,out var hash)) { if(hash!=plan.AfterHash || Compiler.Hash(desired)!=hash) throw new InvalidOperationException("idempotency_conflict"); return state.Project; }
+        var current=state.Project; if(current.Id!=plan.ProjectId || current.Revision!=plan.ExpectedRevision || Compiler.Hash(current)!=plan.BeforeHash || Compiler.Hash(desired)!=plan.AfterHash) throw new InvalidOperationException("revision_conflict");
+        if(Compiler.Validate(desired).Length>0) throw new InvalidOperationException("invalid_ir");
         File.WriteAllText(Path.Combine(directory,$"checkpoint-{current.Revision}.json"),JsonSerializer.Serialize(current));
         var result=desired with { Revision=current.Revision+1 };
         // Journal is prepared before publish; recovery can reconcile by hashes.
         File.AppendAllText(Path.Combine(directory,"journal.jsonl"),JsonSerializer.Serialize(new { key, plan, state="prepared" })+Environment.NewLine);
-        Write(result); File.WriteAllText(receipt,JsonSerializer.Serialize(plan)); return result;
+        state.Receipts.Add(key,plan.AfterHash);
+        // Publish revision and receipt in the same atomic snapshot.
+        Write(new(result,state.Receipts)); return result;
     }
 }

@@ -13,8 +13,10 @@ Check(!diff.DirtyIds.Contains(other),"unrelated identity preserved");
 Check(Compiler.Diff(p,p).Operations.Length==0,"no-op");
 Check(Compiler.Validate(p with { Elements=[p.Elements[0],p.Elements[0]] }).Length>0,"duplicate rejected");
 Check(Compiler.Validate(p with { Elements=[p.Elements[1]] }).Length>0,"dangling dependency rejected");
-var dir=Path.Combine(Path.GetTempPath(),"bim-test-"+Guid.NewGuid()); var store=new ProjectStore(dir); store.Initialize(p);
+var dir=Path.Combine(Environment.GetEnvironmentVariable("BIM_TEST_ROOT") ?? Path.GetTempPath(),"bim-test-"+Guid.NewGuid()); var store=new ProjectStore(dir); store.Initialize(p);
 Check(store.Commit(next,diff,"rev1").Revision==1,"durable revision");
 Check(new ProjectStore(dir).Commit(next,diff,"rev1").Revision==1,"retry persisted idempotency");
 try {store.Commit(next,diff,"different");throw new Exception("not rejected");} catch(InvalidOperationException) {Check(true,"stale revision rejected");}
+try {store.Commit(p,Compiler.Diff(p,p),"rev1");throw new Exception("not rejected");} catch(InvalidOperationException) {Check(true,"idempotency payload conflict rejected");}
+Check(store.Read().Revision==1,"rejected writes leave snapshot unchanged");
 Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {passed=count, core_test_ms=timer.Elapsed.TotalMilliseconds, native_verified=false}));

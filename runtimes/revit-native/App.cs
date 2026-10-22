@@ -47,7 +47,10 @@ public sealed class App : IExternalApplication, IExternalEventHandler
         if(string.IsNullOrWhiteSpace(r.DocumentPath)||!String.Equals(d.PathName,r.DocumentPath,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("document_conflict");
         if(r.Metres.Any(x=>!double.IsFinite(x))) throw new ArgumentException("invalid_units");
         Element? e=r.UniqueId==null?null:d.GetElement(r.UniqueId);
-        if(r.Operation=="inspect") return JsonSerializer.Serialize(new {status="succeeded",uniqueId=e?.UniqueId,category=e?.Category?.Name,kind=e?.GetType().Name,verification="readback"});
+        if(r.Operation=="inspect") {
+            if(e==null) throw new ArgumentException("element_not_found");
+            return JsonSerializer.Serialize(new {status="succeeded",uniqueId=e.UniqueId,category=e.Category?.Name,kind=e.GetType().Name,verification="readback"});
+        }
         if(d.IsReadOnly || d.IsModifiable) throw new InvalidOperationException("document_not_writable");
         using var tx=new Transaction(d,"BIM Agentic OS "+r.Operation); tx.Start();
         try {

@@ -1,0 +1,1 @@
+PASS native source/API signatures against installed 25.2 DLL; host runtime references, net8 build and native execution UNVERIFIED

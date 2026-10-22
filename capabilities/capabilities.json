@@ -1,0 +1,83 @@
+{
+  "capabilities": [
+    {
+      "limitations": [
+        "No loaded add-in test yet",
+        "No independent native acceptance readback"
+      ],
+      "native_verified": false,
+      "coverage_status": "source-implemented",
+      "version_scope": [
+        "25.2.0.38"
+      ],
+      "id": "revit.level.create",
+      "verification_tests": [
+        "tests/integration/README.md"
+      ]
+    },
+    {
+      "limitations": [
+        "No loaded add-in test yet",
+        "No independent native acceptance readback"
+      ],
+      "native_verified": false,
+      "coverage_status": "source-implemented",
+      "version_scope": [
+        "25.2.0.38"
+      ],
+      "id": "revit.wall.create",
+      "verification_tests": [
+        "tests/integration/README.md"
+      ]
+    },
+    {
+      "limitations": [
+        "No loaded add-in test yet",
+        "No independent native acceptance readback"
+      ],
+      "native_verified": false,
+      "coverage_status": "source-implemented",
+      "version_scope": [
+        "25.2.0.38"
+      ],
+      "id": "revit.wall.axis.update",
+      "verification_tests": [
+        "tests/integration/README.md"
+      ]
+    },
+    {
+      "limitations": [
+        "No loaded add-in test yet",
+        "No independent native acceptance readback"
+      ],
+      "native_verified": false,
+      "coverage_status": "source-implemented",
+      "version_scope": [
+        "25.2.0.38"
+      ],
+      "id": "revit.element.inspect",
+      "verification_tests": [
+        "tests/integration/README.md"
+      ]
+    },
+    {
+      "limitations": [
+        "No loaded add-in test yet",
+        "No independent native acceptance readback"
+      ],
+      "native_verified": false,
+      "coverage_status": "source-implemented",
+      "version_scope": [
+        "25.2.0.38"
+      ],
+      "id": "revit.element.delete",
+      "verification_tests": [
+        "tests/integration/README.md"
+      ]
+    }
+  ],
+  "native_verified": 0,
+  "schema_version": 1,
+  "census_complete": false,
+  "discovered_in_initial_subset": 5
+}
