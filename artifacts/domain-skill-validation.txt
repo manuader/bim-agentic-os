@@ -1,0 +1,14 @@
+bim-blender
+Skill is valid!
+bim-dotnet
+Skill is valid!
+bim-ifcopenshell
+Skill is valid!
+bim-incremental-compiler
+Skill is valid!
+bim-ir
+Skill is valid!
+bim-revit-api
+Skill is valid!
+bim-validation
+Skill is valid!

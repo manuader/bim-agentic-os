@@ -1,0 +1,13 @@
+PASS metres to feet
+PASS minimal update
+PASS transitive documentation closure
+PASS unrelated identity preserved
+PASS no-op
+PASS duplicate rejected
+PASS dangling dependency rejected
+PASS durable revision
+PASS retry persisted idempotency
+PASS stale revision rejected
+PASS idempotency payload conflict rejected
+PASS rejected writes leave snapshot unchanged
+{"passed":12,"core_test_ms":160.8422,"native_verified":false}

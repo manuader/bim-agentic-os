@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "updated": "2026-10-22",
+  "features": [
+    {"id":"semantic-ir-and-diff","status":"partial","evidence":["core/Bim.Core/Model.cs","artifacts/core-tests-host.txt"],"blocker":"Host-tested prototype; full dimensional schema, cycle validation and canonical hashing remain pending."},
+    {"id":"intent-persistence","status":"partial","evidence":["core/Bim.Core/Model.cs","artifacts/core-tests-host.txt"],"blocker":"Intended state only; no complete live native mirror, migrations or power-loss recovery tests."},
+    {"id":"native-execution-primitives","status":"partial","evidence":["runtimes/revit-native/App.cs","artifacts/native-source-check.txt"],"blocker":"Source/API-signature checked only; add-in not loaded or integration-tested."},
+    {"id":"test-a-native-room-delivery","status":"blocked","evidence":["tests/integration/README.md","docs/evidence.md"],"blocker":"Complete fixture, licensed native integration, save/reopen/readback/documentation validation required."},
+    {"id":"test-b-incremental-native-correction","status":"blocked","evidence":["tests/integration/README.md"],"blocker":"Requires verified Test A and native identity/idempotency/rollback/documentation evidence."},
+    {"id":"superpowers-workflows","status":"implemented","evidence":[".agents/skills/using-superpowers/SKILL.md","docs/harness.md"],"blocker":null},
+    {"id":"reusable-domain-skills","status":"implemented","evidence":["scripts/install-domain-skills.py",".agents/skills/bim-revit-api/SKILL.md","artifacts/domain-skill-validation.txt"],"blocker":null},
+    {"id":"ci-and-harness","status":"partial","evidence":["docs/superpowers/plans/2026-10-22-harness-native-slice.md"],"blocker":"Implementation in isolated worktree; remote CI execution also blocked by GitHub write access."},
+    {"id":"core-diff-benchmark","status":"implemented","evidence":["benchmarks/CoreBenchmark.cs","artifacts/core-benchmark-host.jsonl"],"blocker":null},
+    {"id":"correction-to-validated-delivery-benchmark","status":"pending","evidence":["BIM_Agentic_OS_PROMPT_DEFINITIVO.md"],"blocker":"Core diff timing is not native validated delivery latency."},
+    {"id":"blender-adapter","status":"pending","evidence":[".agents/skills/bim-blender/SKILL.md"],"blocker":"Development skill only; no adapter implemented."},
+    {"id":"ifcopenshell-adapter","status":"pending","evidence":[".agents/skills/bim-ifcopenshell/SKILL.md"],"blocker":"Development skill only; no adapter implemented."},
+    {"id":"github-publication","status":"blocked","evidence":["docs/evidence.md"],"blocker":"GitHub HTTP 403: ezeader lacks write permission to manuader/bim-agentic-os."}
+  ]
+}
