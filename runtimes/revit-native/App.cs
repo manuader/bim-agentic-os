@@ -5,7 +5,7 @@ using System.IO.Pipes;
 using System.Text.Json;
 namespace Bim.Revit;
 
-public record Request(string DocumentPath,string Operation,string? UniqueId,double[] Metres);
+public record Request(string DocumentPath,string Operation,string? UniqueId,double[] Metres, Bim.Core.NativeBatchRequest? Batch = null);
 public sealed class App : IExternalApplication, IExternalEventHandler
 {
     readonly ConcurrentQueue<(Request,TaskCompletionSource<string>)> queue=new();
@@ -45,6 +45,7 @@ public sealed class App : IExternalApplication, IExternalEventHandler
     {
         var d=app.ActiveUIDocument?.Document ?? throw new InvalidOperationException("no_document");
         if(string.IsNullOrWhiteSpace(r.DocumentPath)||!String.Equals(d.PathName,r.DocumentPath,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("document_conflict");
+        if(r.Operation=="batch") return BatchExecutor.Run(d,r.Batch ?? throw new ArgumentException("batch_required"));
         if(r.Metres.Any(x=>!double.IsFinite(x))) throw new ArgumentException("invalid_units");
         Element? e=r.UniqueId==null?null:d.GetElement(r.UniqueId);
         if(r.Operation=="inspect") {

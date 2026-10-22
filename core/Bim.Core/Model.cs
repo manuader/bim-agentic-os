@@ -65,6 +65,7 @@ public sealed class ProjectStore(string directory)
         if(state.Receipts.TryGetValue(key,out var hash)) { if(hash!=plan.AfterHash || Compiler.Hash(desired)!=hash) throw new InvalidOperationException("idempotency_conflict"); return state.Project; }
         var current=state.Project; if(current.Id!=plan.ProjectId || current.Revision!=plan.ExpectedRevision || Compiler.Hash(current)!=plan.BeforeHash || Compiler.Hash(desired)!=plan.AfterHash) throw new InvalidOperationException("revision_conflict");
         if(Compiler.Validate(desired).Length>0) throw new InvalidOperationException("invalid_ir");
+        if(JsonSerializer.Serialize(Compiler.Diff(current,desired))!=JsonSerializer.Serialize(plan)) throw new InvalidOperationException("plan_mismatch");
         File.WriteAllText(Path.Combine(directory,$"checkpoint-{current.Revision}.json"),JsonSerializer.Serialize(current));
         var result=desired with { Revision=current.Revision+1 };
         // Journal is prepared before publish; recovery can reconcile by hashes.
