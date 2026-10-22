@@ -34,7 +34,7 @@ foreach ($required in 'ARCHITECTURE.md','docs/contracts/module-contracts.md') { 
 $tracked = & git -C $root ls-files
 if ($LASTEXITCODE -ne 0) { throw "Git inventory failed with exit code $LASTEXITCODE" }
 foreach ($relative in $tracked) {
-    if ($relative -match '(?i)(RevitAPI(UI)?\.dll|\.pfx$|(^|/)\.env$|id_rsa$)') { Fail "Prohibited tracked artifact: $relative" }
+    if ($relative -match '(?i)(\.dll$|\.rvt$|\.rfa$|(^|/)\.tools/|(^|/)dotnet-sdk[^/]*\.zip$|\.pfx$|(^|/)\.env$|id_rsa$)') { Fail "Prohibited tracked artifact: $relative" }
     if ($relative -match '\.(cs|ps1|json|yml|yaml|md)$' -and (Test-Path "$root/$relative")) {
         $content = Get-Content "$root/$relative" -Raw
         if ($content -match '(?i)-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|sk-proj-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}') { Fail "Possible committed credential: $relative" }

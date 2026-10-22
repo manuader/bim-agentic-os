@@ -39,6 +39,28 @@ Reject-Fixture skill-metadata "$fixture/.agents/skills/example/SKILL.md" 'no fro
 Reject-Fixture doc-links "$fixture/ARCHITECTURE.md" '[broken](missing.md)' 'Broken doc link'
 'PASS static gates reject vendor coupling, false status/evidence, malformed skills and broken links'
 
+function Reject-TrackedArtifact([string]$name,[string]$relativePath,[string]$expected) {
+    $path = Join-Path $fixture $relativePath
+    New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
+    'fixture artifact' | Set-Content $path
+    & git -C $fixture add -f -- $relativePath
+    if ($LASTEXITCODE -ne 0) { throw "Could not track artifact fixture $relativePath" }
+    try {
+        $rejected = $false
+        try { Invoke-EvidenceCommand $name $pwsh @('-NoProfile','-File',$checker,'-Root',$fixture) $root -Quiet } catch { $rejected = $true }
+        if (!$rejected -or (Get-Content "$root/$name.log" -Raw) -notmatch $expected) { throw "Gate failed to reject $name" }
+    } finally {
+        & git -C $fixture rm --cached --quiet -- $relativePath
+        Remove-Item -LiteralPath $path -Force
+    }
+}
+Reject-TrackedArtifact tracked-vendor-dll 'lib/AdWindows.dll' 'Prohibited tracked artifact'
+Reject-TrackedArtifact tracked-model 'fixtures/BIM-Agentic-Test.rvt' 'Prohibited tracked artifact'
+Reject-TrackedArtifact tracked-family 'fixtures/Generic.rfa' 'Prohibited tracked artifact'
+Reject-TrackedArtifact tracked-sdk-tools '.tools/dotnet/dotnet.exe' 'Prohibited tracked artifact'
+Reject-TrackedArtifact tracked-sdk-archive 'dotnet-sdk-9.0.100.zip' 'Prohibited tracked artifact'
+'PASS static gate rejects tracked vendor binaries, BIM files and SDK payloads'
+
 Move-Item -LiteralPath "$fixture/.git" -Destination "$fixture/.git-disabled"
 try {
     $rejected = $false
