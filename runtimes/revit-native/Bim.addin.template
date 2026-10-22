@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns><AddIn Type="Application"><Name>BIM Agentic OS</Name><Assembly>REPLACE_WITH_ABSOLUTE_PATH_TO_Bim.Revit.dll</Assembly><AddInId>7CB23333-1063-4E43-84E9-415EAA1E4BF2</AddInId><FullClassName>Bim.Revit.App</FullClassName><VendorId>ADER</VendorId></AddIn></RevitAddIns>

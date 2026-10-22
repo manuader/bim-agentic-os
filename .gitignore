@@ -1,0 +1,8 @@
+.tools/
+**/bin/
+**/obj/
+.bim/
+*.rvt
+*.rfa
+*.db
+*.db-*
