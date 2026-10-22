@@ -1,0 +1,11 @@
+{
+  "RoomId": "11111111-1111-1111-1111-111111111111",
+  "WidthMetres": 5,
+  "DepthMetres": 4,
+  "HeightMetres": 3,
+  "ThicknessMetres": 0.2,
+  "AnchorXMetres": 10,
+  "AnchorYMetres": 20,
+  "Units": "m",
+  "Provenance": {"Source":"synthetic Test A intent fixture","Approval":"specified"}
+}

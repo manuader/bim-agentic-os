@@ -1,5 +1,11 @@
 # Native acceptance harness protocol — NOT EXECUTED
 
+`native-batch-smoke.ps1` is an executable guarded integration probe for the level/wall subset. Requires a built CLI/add-in, loaded add-in in licensed Revit2025, a saved open `BIM-Agentic-Test*.rvt`, exact ProjectInformation.UniqueId and an existing Basic WallType of 200mm width. It tests native creation, persistent retry, +400mm correction, unchanged mappings and tampered-plan rejection. It does not test save/reopen, forced rollback or full documentation. Missing prerequisites exit2, not a passing skip.
+
+```powershell
+./tests/integration/native-batch-smoke.ps1 -DocumentPath C:/BimTests/BIM-Agentic-Test.rvt -DocumentIdentity <UniqueId> -Dotnet ./.tools/dotnet/dotnet.exe -CliDll ./interfaces/cli/bin/Release/net8.0/Bim.Cli.dll
+```
+
 1. Build add-in against local Revit 2025 DLLs; install manifest, restart authorized Revit. Create and save an isolated fixture RVT; never use the active production project.
 2. Connect CLI to same-user pipe. Create level, inspect returned UniqueId. Create walls; verify Wall class, category, level, axis and converted height independently in Revit.
 3. Modify one wall axis; compare UniqueIds of all unchanged objects. Force invalid/zero axis; assert typed failure and unchanged native state after rollback. Reject wrong document path.

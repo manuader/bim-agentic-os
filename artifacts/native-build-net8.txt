@@ -1,0 +1,11 @@
+  Determining projects to restore...
+  Restored C:\Users\ezead\OneDrive\Documentos\bim-agentic-os\runtimes\revit-native\Bim.Revit.csproj (in 209 ms).
+  1 of 2 projects are up-to-date for restore.
+  Bim.Core -> C:\Users\ezead\OneDrive\Documentos\bim-agentic-os\core\Bim.Core\bin\Release\net8.0\Bim.Core.dll
+  Bim.Revit -> C:\Users\ezead\OneDrive\Documentos\bim-agentic-os\runtimes\revit-native\bin\Release\net8.0-windows\Bim.Revit.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:03.08

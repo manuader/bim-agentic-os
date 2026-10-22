@@ -19,3 +19,15 @@ Known gaps: complete Test A, durable native idempotency, readback validation, na
 Git publication attempted: GitHub HTTP 403, authenticated account `ezeader` denied write access to `manuader/bim-agentic-os`. Local commit exists; publication requires an authorized account or repository collaborator permission.
 
 Official .NET SDK download attempted via installer and direct URL; direct download timed out and remained partial. Stopped incomplete download processes. No SDK installation claimed. Full target build remains pending.
+
+## Harness session: target verification supersedes initial build blocker
+
+The official archive download was resumed and completed. Local SDK8.0.415, MSBuild17.11.48, runtime8.0.21 are installed under ignored `.tools/dotnet`; Windows10.0.26200 x64. `scripts/verify.ps1 -Dotnet ./.tools/dotnet/dotnet.exe` passed target builds for core/CLI/tests/benchmark, 33 assertions, harness negative regressions and static gates. Logs are copied to `artifacts/` and summarized in `artifacts/verification-summary.json`. Host-only logs remain historical and separately labeled.
+
+First native build with warnings-as-errors failed MSB3277 WindowsDesktop assembly conflicts. Official Autodesk migration guidance identifies the missing WindowsDesktop framework reference. Added `Microsoft.WindowsDesktop.App` and cross-platform restore opt-in; native Release net8.0-windows build then passed with zero warnings/errors against installed Revit25.2. No warning suppression was used for the target build. See native build failure summary and green log artifacts.
+
+`scripts/audit-dependencies.ps1 -Dotnet ./.tools/dotnet/dotnet.exe` completed for all five maintained projects; JSON reports are in artifacts. There are no third-party NuGet packages at present. CodeQL/GitHub Actions are configured but have not run remotely.
+
+The actual target CLI compiled the 5x4 room intention, planned +400mm width correction, persisted revision1 and retried the same key at revision1. Four semantic updates and seven dirty nodes; no documentation was regenerated and no native execution occurred. Native batch is target-built and its guarded integration smoke exists, but remains unexecuted until a loaded add-in and isolated Revit fixture are available. Production Casa Ángel was not modified.
+
+Target benchmark with 10,000 synthetic walls: p50 76.1276ms, p95 217.1811ms across20 samples, one emitted operation. These are core diff measurements on runtime8.0.21/16 logical processors, not validated native delivery latency or a full-rebuild speedup.

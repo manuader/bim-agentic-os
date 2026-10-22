@@ -24,6 +24,6 @@ try {
         Invoke-EvidenceCommand core-tests $Dotnet @('run','--project',"$root/tests/Bim.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand benchmark $Dotnet @('run','--project',"$root/tests/harness/Benchmark",'--configuration','Release','--no-build') $evidence
     }
-    'BLOCKED native integration: executable licensed Revit acceptance harness not implemented; no native verification claimed.' | Tee-Object -FilePath "$evidence/native-status.log"
+    'BLOCKED native acceptance: full Test A/B incomplete; guarded primitive smoke requires a loaded add-in and isolated licensed Revit fixture. No native execution claimed.' | Tee-Object -FilePath "$evidence/native-status.log"
     "PASS available gates; evidence: $evidence"
 } catch { Write-Error $_; exit 1 }

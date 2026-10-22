@@ -1,0 +1,3 @@
+{"scope":"core_diff_only","elements":100,"samples":20,"first_sample_includes_cold_jit":true,"p50_ms":1.4233,"p95_ms":1.7121,"operations":1,"native_delivery_latency_ms":null,"runtime":"8.0.21","processors":16}
+{"scope":"core_diff_only","elements":1000,"samples":20,"first_sample_includes_cold_jit":true,"p50_ms":18.8344,"p95_ms":26.8178,"operations":1,"native_delivery_latency_ms":null,"runtime":"8.0.21","processors":16}
+{"scope":"core_diff_only","elements":10000,"samples":20,"first_sample_includes_cold_jit":true,"p50_ms":70.7466,"p95_ms":101.2827,"operations":1,"native_delivery_latency_ms":null,"runtime":"8.0.21","processors":16}

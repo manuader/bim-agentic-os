@@ -14,3 +14,9 @@ Baseline: 259b9e2; 12 host-Roslyn core tests passed in prior session, fresh base
 User already instructed immediate execution, worktrees, subagents and no renewed discovery; preserve that authorization over optional workflow approval pauses. Managed worktrees isolate Tasks 1 and 2. No native document edits assigned to parallel workers.
 
 Progress: Superpowers workflows installed project-locally from obra/superpowers commit 2ce8aa15d05bd57213e6f746f953aafb7ded7a8b (MIT). Native marketplace plugin is available but not installed; repository skills provide current workflow access and discovery on subsequent turns.
+
+Task 3: repository map, architecture, v0.1 contracts, ADR0002, pinned workflows and seven domain skills committed in 1bf08d1. Official skill metadata validation accepted all seven; artifacts/domain-skill-validation.txt. No behavioral effectiveness claim.
+
+Task 1 review: independent harness_review found Git enumeration fail-open (P1), missing enforced lint and audit coverage limited to one project. Implementer reproducing and fixing with regressions; no approval until scoped re-review.
+
+Task 2 review: independent slice_review found retained-state preflight discarded the revised element version (P1). Implementer added failing test and validates both snapshots separately. Scoped re-review confirmed fix, no remaining scoped finding. Native group behavior still unexecuted.

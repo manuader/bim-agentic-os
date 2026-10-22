@@ -10,6 +10,10 @@
 
 ## Runtime boundary
 
+`RoomCompiler.Compile(projectId, revision, RoomIntent) -> Project` uses clear interior dimensions and fixed west/south exterior anchors. Roles derive stable UUIDs from room ID. `NativeBatchContract.Preflight(before, after, plan)` validates both snapshots and requires the exact recomputed diff. `NativeBatchRequest(DocumentIdentity, IdempotencyKey, Before, After, Plan)` is carried by `Request` with `Operation="batch"`, exact saved `DocumentPath`, empty `Metres` and optional `Batch` payload.
+
+The batch currently supports levels/walls only and requires an isolated `BIM-Agentic-Test*` non-workshared document plus exact `ProjectInformation.UniqueId`. It persists mapping, intended revision and receipts inside native ExtensibleStorage transactions. It rejects native deletes (untracked cascades), spaces and document kinds. This is a guarded development slice, not production-project authoring or a validated Test A room.
+
 No Autodesk object crosses into core or a background worker. Requests target an exact saved document path and execute in `ExternalEvent` context, serialized. Every mutation needs explicit units, transaction status and readback. Unsupported commands fail visibly; unsupported documentation blocks complete-delivery status. A batch must preflight the entire operation set before mutation and roll back on native failure. Durability must live with native identity, not only a transient RPC response.
 
 ## Validation and delivery
