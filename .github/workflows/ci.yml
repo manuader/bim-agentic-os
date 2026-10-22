@@ -1,0 +1,46 @@
+name: engineering-gates
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build, tests, static gates and benchmark
+        shell: pwsh
+        run: ./scripts/verify.ps1
+      - name: Dependency vulnerability audit
+        shell: pwsh
+        run: ./scripts/audit-dependencies.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-evidence
+          path: |
+            .bim/verification/
+            .bim/dependency-audit/
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          build-mode: manual
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet build interfaces/cli/Bim.Cli.csproj --configuration Release
+      - uses: github/codeql-action/analyze@v3
+# Native CI BLOCKED: no executable acceptance harness exists yet.
+# Do not add a green placeholder or require Autodesk secrets on public runners.
