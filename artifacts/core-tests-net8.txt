@@ -31,4 +31,4 @@ PASS native deletes blocked to prevent untracked cascades
 PASS intended store rejects tampered operations
 PASS room coordinate overflow rejected
 PASS native preflight validates new state of retained identities
-{"passed":33,"core_test_ms":165.1252,"native_verified":false}
+{"passed":33,"core_test_ms":212.9782,"native_verified":false}

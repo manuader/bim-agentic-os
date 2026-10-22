@@ -30,4 +30,4 @@ First native build with warnings-as-errors failed MSB3277 WindowsDesktop assembl
 
 The actual target CLI compiled the 5x4 room intention, planned +400mm width correction, persisted revision1 and retried the same key at revision1. Four semantic updates and seven dirty nodes; no documentation was regenerated and no native execution occurred. Native batch is target-built and its guarded integration smoke exists, but remains unexecuted until a loaded add-in and isolated Revit fixture are available. Production Casa Ángel was not modified.
 
-Target benchmark with 10,000 synthetic walls: p50 76.1276ms, p95 217.1811ms across20 samples, one emitted operation. These are core diff measurements on runtime8.0.21/16 logical processors, not validated native delivery latency or a full-rebuild speedup.
+Final target benchmark with 10,000 synthetic walls: p50 74.0397ms, p95 216.393ms across20 samples, one emitted operation. These are core diff measurements on runtime8.0.21/16 logical processors, not validated native delivery latency or a full-rebuild speedup.

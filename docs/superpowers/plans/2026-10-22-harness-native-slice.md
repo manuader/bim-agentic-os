@@ -23,25 +23,25 @@ Malformed intent/units; stale or tampered plans; retry duplication; rollback/nat
 ### 1. Harness gates (independent worktree)
 Files: `scripts/verify.ps1`, `scripts/harness-check.ps1`, `scripts/test*.ps1`, `.github/workflows/ci.yml`, `.editorconfig`, `Directory.Build.props`, `tests/harness/`.
 Consumes existing csproj files and future `core/Bim.Core/*.cs`; emits reproducible verifier with explicit target/host modes and per-command evidence. Compile core+CLI, deterministic tests, architecture/doc/skill/status checks, security static checks/dependency audit; native target only on licensed self-hosted runner. Benchmarks automatic, publish logs; no misleading native passes.
-- [ ] Write failing harness checks, record red.
-- [ ] Implement gates and verify local available subset; distinguish configured CI from executed CI.
-- [ ] Commit code and report commands, evidence and gaps.
+- [x] Write failing harness checks, record red.
+- [x] Implement gates and verify local available subset; distinguish configured CI from executed CI.
+- [x] Commit code and report commands, evidence and gaps.
 
 ### 2. Typed room intent/native revision slice (independent worktree)
 Files: new `core/Bim.Core/RoomSlice.cs`, tests, CLI, Revit native runtime and contracts as needed; no harness/docs files shared with Task 1.
 Consumes existing Project/Element/Compiler; produces deterministic room create/resize intent with stable IDs, dependencies, minimal operations and validation. Wire native supported batch operations in a serialized transaction group; return explicit blocked/unsupported for missing native documentation instead of false success. Use native logical mapping and readback where safely implementable; native tests remain unverified until loaded.
-- [ ] Write behavioral failing tests for 5x4 room and +0.4m correction, fixed anchor, stable unaffected IDs, invalid intent and dependency invalidation.
-- [ ] Implement minimum deterministic code, test green, connect to CLI/native batch.
-- [ ] Exercise rollback/readback paths with appropriate tests; explicitly identify native integration gaps.
-- [ ] Commit code and report evidence.
+- [x] Write behavioral failing tests for 5x4 room and +0.4m correction, fixed anchor, stable unaffected IDs, invalid intent and dependency invalidation.
+- [x] Implement minimum deterministic code, test green, connect to CLI/native batch.
+- [x] Verify deterministic preflight guards and target build; prepare native readback/retry smoke. Native rollback/readback execution remains explicitly blocked.
+- [x] Commit code and report evidence.
 
 ### 3. Repository knowledge and reusable skills (controller)
 Files: `AGENTS.md`, `ARCHITECTURE.md`, `docs/contracts/`, ADR, persistent plan/ledger, `.agents/skills/`, `docs/features.json`.
-- [ ] Install pinned Superpowers workflows; record source/license/activation boundary.
-- [ ] Add seven specialized development skills and validate metadata.
-- [ ] Add brief repository map, contract/ownership rules, feature status evidence and review ledger.
+- [x] Install pinned Superpowers workflows; record source/license/activation boundary.
+- [x] Add seven specialized development skills and validate metadata.
+- [x] Add brief repository map, contract/ownership rules, feature status evidence and review ledger.
 
 ### 4. Review and verification
-- [ ] Independently review task implementations for specification and quality; fix material findings.
-- [ ] Integrate commits, execute available full verifier and benchmark; retain target/native blockers.
-- [ ] Commit verified evidence; attempt GitHub only if access changes (prior 403 is known).
+- [x] Independently review task implementations for specification and quality; fix material findings.
+- [x] Integrate commits, execute available full verifier and benchmark; retain native blockers.
+- [x] Commit verified evidence; GitHub credential inventory confirms only ezeader, with prior403 unchanged. Publication remains blocked; no repeated push without changed access.
