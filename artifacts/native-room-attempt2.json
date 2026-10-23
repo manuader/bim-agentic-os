@@ -1,0 +1,148 @@
+{
+  "product_acceptance": false,
+  "reason": "empty/zero instance DOOR_WIDTH masked actual type parameter",
+  "backend_checks": [
+    {
+      "id": "native_hosting",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_hosting",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_geometry",
+      "outcome": "fail",
+      "reason": "native readback failed native_geometry; inspect raw diagnostics",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_documentation",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_documentation",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_save_reopen",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_save_reopen",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_idempotency",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_idempotency",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_rollback",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_rollback",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_incremental",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_incremental",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_receipts",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_receipts",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    }
+  ],
+  "schema_version": 1,
+  "version": "25.2.0.38",
+  "counts": {
+    "passed": 47,
+    "failed": 4,
+    "blocked": 1,
+    "unsupported": 0
+  },
+  "backend": "revit",
+  "scope": "actual complete A/B execution, failed door width readback; correction timing is not accepted delivery",
+  "raw_models": "ignored native run eb4d5b32-6924-433d-ae4b-2e6e2ad4e169",
+  "metrics": {
+    "intent_parse_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "semantic_query_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "solver_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "diff_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "runtime_wait_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "revit_execute_ms": {
+      "value": 30102.4611,
+      "reason": "whole serialized fixture lifecycle including creation A, forced rollback, correction B, two save-close-reopen cycles and QA"
+    },
+    "revit_regeneration_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "native_readback_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "validation_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "documentation_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "total_ms": {
+      "value": 14059.4092,
+      "reason": "actual width correction through documentation regeneration, save-close-reopen, QA and persisted retry; excludes A creation and forced-failure probe"
+    },
+    "llm_calls": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "model_elements_read": {
+      "value": 56,
+      "reason": "count of mapped physical/documentation element observation records actually read; excludes prerequisite collector enumeration"
+    },
+    "model_elements_written": {
+      "value": 23,
+      "reason": "actual mapped output creates, wall curve updates and ExtensibleStorage writes, including rolled-back writes; excludes family resource preparation and sheet placement helpers"
+    },
+    "transaction_count": {
+      "value": 4,
+      "reason": "actual started Revit Transactions, including transaction later reverted by outer group; excludes TransactionGroups"
+    },
+    "unintended_element_changes": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    }
+  },
+  "attempt": 2
+}

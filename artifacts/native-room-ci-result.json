@@ -1,0 +1,31 @@
+{
+  "jobs": [
+    {
+      "name": "core",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "codeql",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "codeql-python",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "ifc",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ],
+  "status": "completed",
+  "url": "https://github.com/manuader/bim-agentic-os/actions/runs/39903644459",
+  "run_id": 39903644459,
+  "scope": "Ubuntu deterministic engineering, actual IFC integration and CodeQL; no native Revit runner",
+  "schema_version": 1,
+  "conclusion": "success",
+  "head_sha": "e01e2e748f50b45f2428c1edc5854921e2c68be0"
+}

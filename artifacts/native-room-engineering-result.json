@@ -11,7 +11,7 @@
   "native_sdk_build": {
     "warnings": 0,
     "errors": 0,
-    "elapsed_seconds": 2.54,
+    "elapsed_seconds": 3.1,
     "exit_code": 0
   },
   "native_acceptance": "not implied by these engineering results",
@@ -21,6 +21,7 @@
   "state": "unit-tested",
   "date": "2026-10-23",
   "native_room_parser_suite": "passed; no numeric count printed",
-  "native_room_guard_assertions": 15,
-  "followup_evidence": ".bim/verification/native-room-fixes"
+  "native_room_guard_assertions": 22,
+  "followup_evidence": ".bim/verification/native-room-fixes",
+  "final_width_fix": "22 guards and exact installed SDK build passed after native attempt2; full gate before width-only followup remains separately identified"
 }
