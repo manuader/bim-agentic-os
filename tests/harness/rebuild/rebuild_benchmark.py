@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import platform
+import random
 import re
 import shutil
 import subprocess
@@ -57,6 +58,49 @@ def qa(path, compiled):
     w.inspect(path)
 
 
+QA_FUNCTIONS = ('validate', 'verify_compiled', 'inspect')
+
+
+class QaTimer:
+    """Temporarily wraps the worker's QA functions with perf_counter accumulators; always restores them.
+
+    Only outermost calls are counted (inspect() calls validate() internally), so nothing is double-counted.
+    Read-only instrumentation of the worker module's globals; worker behaviour is unchanged.
+    """
+
+    def __enter__(self):
+        self.original = {name: getattr(w, name) for name in QA_FUNCTIONS}
+        self.ms = {name: 0.0 for name in QA_FUNCTIONS}
+        self.calls = {name: 0 for name in QA_FUNCTIONS}
+        self.depth = 0
+
+        def wrap(name, function):
+            def timed(*args, **kwargs):
+                outermost = self.depth == 0
+                self.depth += 1
+                start = time.perf_counter()
+                try:
+                    return function(*args, **kwargs)
+                finally:
+                    self.depth -= 1
+                    if outermost:
+                        self.ms[name] += (time.perf_counter() - start) * 1000
+                        self.calls[name] += 1
+            return timed
+        for name, function in self.original.items():
+            setattr(w, name, wrap(name, function))
+        return self
+
+    def __exit__(self, *exc):
+        for name, function in self.original.items():
+            setattr(w, name, function)
+        return False
+
+    @property
+    def total_ms(self):
+        return sum(self.ms.values())
+
+
 def run_incremental(directory, packet):
     directory = pathlib.Path(directory)
     directory.mkdir(parents=True)
@@ -64,13 +108,17 @@ def run_incremental(directory, packet):
     w.create(path, w.validate_request(packet))
     baseline = directory / 'before.ifc'
     baseline.write_bytes(path.read_bytes())
-    start = time.perf_counter()
-    changed = w.resize_compiled(path, packet)
-    ms = (time.perf_counter() - start) * 1000
+    with QaTimer() as timer:
+        start = time.perf_counter()
+        changed = w.resize_compiled(path, packet)
+        ms = (time.perf_counter() - start) * 1000
+    if any(getattr(w, name) is not timer.original[name] for name in QA_FUNCTIONS):
+        raise RuntimeError('worker QA functions were not restored')
     if changed is not True:
         raise RuntimeError('incremental path did not publish a correction')
     retained = directory / 'compiled-request.json'
-    return dict(path=path, baseline=baseline, ms=ms,
+    return dict(path=path, baseline=baseline, ms=ms, qa_inline_ms=timer.total_ms, non_qa_ms=ms - timer.total_ms,
+                qa_inline_breakdown_ms=dict(timer.ms), qa_inline_calls=dict(timer.calls),
                 bytes_written=path.stat().st_size + retained.stat().st_size,
                 ifc_bytes_written=path.stat().st_size, sidecar_bytes_written=retained.stat().st_size)
 
@@ -89,9 +137,11 @@ def run_rebuild(directory, packet):
     w.create(staging, corrected(compiled, packet))
     authored = time.perf_counter()
     qa(staging, compiled)
+    checked = time.perf_counter()
     os.replace(staging, path)
     done = time.perf_counter()
-    return dict(path=path, baseline=baseline, author_ms=(authored - start) * 1000, qa_publish_ms=(done - authored) * 1000,
+    author, qa_ms, publish = (authored - start) * 1000, (checked - authored) * 1000, (done - checked) * 1000
+    return dict(path=path, baseline=baseline, author_ms=author, qa_ms=qa_ms, publish_ms=publish, non_qa_ms=author + publish,
                 ms=(done - start) * 1000, bytes_written=path.stat().st_size, ifc_bytes_written=path.stat().st_size, sidecar_bytes_written=0)
 
 
@@ -243,6 +293,33 @@ def sample_pair(base, index, packet, compiled):
     return order, inc, reb, posthoc, proof
 
 
+def bootstrap_p50_difference(treatment, control, resamples=10000, seed=20261023):
+    """Percentile bootstrap 95% CI of p50(treatment) - p50(control); paths resampled independently, fixed seed."""
+    rng = random.Random(seed)
+    diffs = sorted(percentile([rng.choice(treatment) for _ in treatment], .5) - percentile([rng.choice(control) for _ in control], .5)
+                   for _ in range(resamples))
+    return dict(low=round(percentile(diffs, .025), 3), high=round(percentile(diffs, .975), 3), resamples=resamples, seed=seed,
+                method='percentile bootstrap, independent resampling with replacement of each path')
+
+
+def compare(name, treatment, control, treatment_label, control_label):
+    diff = percentile(treatment, .5) - percentile(control, .5)
+    ci = bootstrap_p50_difference(treatment, control)
+    spread = dict(treatment_max_minus_min=round(max(treatment) - min(treatment), 3), control_max_minus_min=round(max(control) - min(control), 3))
+    includes_zero = ci['low'] <= 0 <= ci['high']
+    smaller_than_spread = abs(diff) < min(spread.values())
+    if includes_zero:
+        verdict = 'no measurable difference: the 95% CI includes 0'
+    else:
+        verdict = '%s is %s than %s at p50 (95%% CI excludes 0)' % (treatment_label, 'slower' if diff > 0 else 'faster', control_label)
+    return dict(comparison=name, treatment=treatment_label, control=control_label, p50_difference_ms=round(diff, 3),
+                p50_ratio=round(percentile(treatment, .5) / percentile(control, .5), 4), bootstrap_95ci_ms=ci,
+                ci_includes_zero=includes_zero, within_path_spread_ms=spread, difference_smaller_than_within_path_spread=smaller_than_spread,
+                statement='%s; p50 difference %.3f ms [%.3f, %.3f], %s the within-path max-min spread (%.3f / %.3f ms).' % (
+                    verdict, diff, ci['low'], ci['high'], 'smaller than' if smaller_than_spread else 'not smaller than',
+                    spread['treatment_max_minus_min'], spread['control_max_minus_min']))
+
+
 def notice(report, limit=3000):
     """GitHub annotations are the only channel back from CI; split the one-line JSON into ordered parts."""
     raw = json.dumps(report, separators=(',', ':'), sort_keys=True)
@@ -269,7 +346,10 @@ def main(argv=None):
     compiled = w.validate_request(packet)
     if (compiled['a']['width'], compiled['b']['width']) != (5000, 5400):
         raise SystemExit('packet is not the +400 mm width correction 5000 -> 5400 mm')
-    inc_ms, reb_ms, reb_author, reb_qa, posthoc = [], [], [], [], []
+    series = {k: [] for k in ('incremental_ms', 'incremental_qa_inline_ms', 'incremental_non_qa_ms', 'rebuild_ms', 'rebuild_author_ms',
+                              'rebuild_qa_ms', 'rebuild_publish_ms', 'rebuild_non_qa_ms', 'incremental_qa_posthoc_crosscheck_ms')}
+    breakdown = {name: [] for name in QA_FUNCTIONS}
+    calls = None
     orders = []
     with tempfile.TemporaryDirectory(prefix='bim-rebuild-') as tmp:
         base = pathlib.Path(tmp)
@@ -277,11 +357,14 @@ def main(argv=None):
         for i in range(args.samples):
             order, inc, reb, qa_ms, proof = sample_pair(base, i, packet, compiled)
             orders.append(order[0])
-            inc_ms.append(inc['ms'])
-            reb_ms.append(reb['ms'])
-            reb_author.append(reb['author_ms'])
-            reb_qa.append(reb['qa_publish_ms'])
-            posthoc.append(qa_ms)
+            for key, value in (('incremental_ms', inc['ms']), ('incremental_qa_inline_ms', inc['qa_inline_ms']),
+                               ('incremental_non_qa_ms', inc['non_qa_ms']), ('rebuild_ms', reb['ms']), ('rebuild_author_ms', reb['author_ms']),
+                               ('rebuild_qa_ms', reb['qa_ms']), ('rebuild_publish_ms', reb['publish_ms']), ('rebuild_non_qa_ms', reb['non_qa_ms']),
+                               ('incremental_qa_posthoc_crosscheck_ms', qa_ms)):
+                series[key].append(value)
+            for name in QA_FUNCTIONS:
+                breakdown[name].append(inc['qa_inline_breakdown_ms'][name])
+            calls = inc['qa_inline_calls']
         # Structural evidence from the last pair (deterministic across samples apart from fresh rebuild GlobalIds).
         model = dict(
             baseline_ifc_bytes=inc['baseline'].stat().st_size,
@@ -298,7 +381,17 @@ def main(argv=None):
                          spf_instances=spf_diff(reb['baseline'], reb['path']), identity=identity_report(reb['baseline'], reb['path'])),
             equivalence=proof)
         warmup = dict(incremental_ms=[round(x[1]['ms'], 3) for x in warm], rebuild_ms=[round(x[2]['ms'], 3) for x in warm])
-    p50_inc, p50_reb, p50_auth = percentile(inc_ms, .5), percentile(reb_ms, .5), percentile(reb_author, .5)
+    total = compare('end-to-end, same QA in both', series['rebuild_ms'], series['incremental_ms'], 'full rebuild', 'incremental')
+    non_qa = compare('like-for-like excluding QA', series['rebuild_non_qa_ms'], series['incremental_non_qa_ms'],
+                     'rebuild author+publish', 'incremental minus inline QA')
+    share = dict(incremental=round(percentile([q / t for q, t in zip(series['incremental_qa_inline_ms'], series['incremental_ms'])], .5), 4),
+                 rebuild=round(percentile([q / t for q, t in zip(series['rebuild_qa_ms'], series['rebuild_ms'])], .5), 4))
+    interpretation = dict(
+        end_to_end=total, excluding_qa=non_qa, qa_share_of_path_p50=share,
+        qa_dominates_both_paths=min(share.values()) > .5,
+        statement='QA (schema validate + verify_compiled + inspect) is %.1f%% of incremental and %.1f%% of rebuild time at p50%s. %s %s' % (
+            share['incremental'] * 100, share['rebuild'] * 100, ', so it dominates both paths' if min(share.values()) > .5 else '',
+            'End-to-end: ' + total['statement'], 'Excluding QA: ' + non_qa['statement']))
     report = dict(
         schema='bim.ifc-rebuild-benchmark/1', task='P01',
         generated_utc=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -314,19 +407,23 @@ def main(argv=None):
             incremental_ms='worker.resize_compiled(path, packet) on a published baseline: open IFC, validate packet, verify before-state, '
                            'mutate 5 products + 1 opening in place, set state/receipt, retain packet sidecar, write staging IFC, '
                            'schema validate, verify_compiled, inspect (triangulate), atomic replace',
+            incremental_qa_inline_ms='time inside incremental_ms spent in outermost calls of worker validate/verify_compiled/inspect, '
+                                     'measured by temporarily wrapping those functions with perf_counter accumulators (restored after)',
+            incremental_non_qa_ms='incremental_ms - incremental_qa_inline_ms: open, packet validation, state checks, mutation, '
+                                  'packet sidecar, staging write, atomic replace',
             rebuild_ms='validate packet + worker.create(staging) from the corrected project + the same staged QA '
                        '(schema validate, verify_compiled, inspect) + atomic replace; no packet sidecar',
-            rebuild_author_ms='rebuild_ms up to the staged IFC written (validate packet + create), before QA',
-            rebuild_qa_publish_ms='rebuild_ms after authoring: QA + atomic replace',
-            incremental_qa_posthoc_ms='the same QA run separately on the incremental output after the sample; estimates the QA share '
-                                      'inside incremental_ms (not part of incremental_ms)',
+            rebuild_author_ms='validate packet + worker.create(staging): authoring and the single IFC write',
+            rebuild_qa_ms='validate + verify_compiled + inspect on the staged rebuild',
+            rebuild_publish_ms='atomic os.replace of the staged rebuild',
+            rebuild_non_qa_ms='rebuild_author_ms + rebuild_publish_ms (like-for-like with incremental_non_qa_ms)',
+            incremental_qa_posthoc_crosscheck_ms='cross-check only: the same QA re-run separately on the incremental output after the '
+                                                 'sample; not part of incremental_ms',
             excluded='C# Core RoomCompiler/Compiler.Diff/IfcCompiler.Export (run once before sampling, shared by both paths), '
                      'baseline creation, process start, Python import, interpreter warmup, Revit, documentation'),
-        timings=dict(incremental_ms=stats(inc_ms), rebuild_ms=stats(reb_ms), rebuild_author_ms=stats(reb_author),
-                     rebuild_qa_publish_ms=stats(reb_qa), incremental_qa_posthoc_ms=stats(posthoc), warmup=warmup),
-        delta=dict(rebuild_minus_incremental_p50_ms=round(p50_reb - p50_inc, 3), rebuild_over_incremental_p50=round(p50_reb / p50_inc, 4),
-                   rebuild_author_only_minus_incremental_p50_ms=round(p50_auth - p50_inc, 3),
-                   rebuild_author_only_over_incremental_p50=round(p50_auth / p50_inc, 4)),
+        timings=dict(**{k: stats(v) for k, v in series.items()}, incremental_qa_inline_breakdown_ms={k: stats(v) for k, v in breakdown.items()},
+                     incremental_qa_inline_outermost_calls=calls, warmup=warmup),
+        interpretation=interpretation,
         model=model,
         claim_scope='Single 9-logical-product IFC4 room fixture (12 IfcProducts), one +400 mm width correction, isolated IfcOpenShell worker '
                     'in one Python process on the recorded runner. Says nothing about larger models, Revit, documentation, or end-to-end '
@@ -336,7 +433,7 @@ def main(argv=None):
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     print(json.dumps(dict(incremental_p50=report['timings']['incremental_ms']['p50'], rebuild_p50=report['timings']['rebuild_ms']['p50'],
-                          delta=report['delta'], equivalent=proof['equivalent'])))
+                          statement=interpretation['statement'], equivalent=proof['equivalent'])))
     if args.notice:
         notice(report)
     return 0
