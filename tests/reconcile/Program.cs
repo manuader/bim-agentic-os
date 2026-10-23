@@ -52,7 +52,7 @@ foreach(var packet in new[]{packet1,packet2}) {
     Check(JsonSerializer.Serialize(JsonSerializer.Deserialize<Project>(packet.CommittedAfterJson))==packet.CommittedAfterJson,"CommittedAfterJson round-trip byte identity "+packet.OperationId);
     Check(JsonSerializer.Serialize(Plan(packet))==packet.PlanJson,"PlanJson round-trip byte identity "+packet.OperationId);
 }
-var awkward=new Project(projectId,3,[new(Guid.NewGuid(),"level",[0.1+0.2,1e-7,1.0/3,double.Epsilon,double.MaxValue,-1234567.891011,5.4,0.2],[],new("Ñandú «source»   \"q\" <&>","apprové"))]);
+var awkward=new Project(projectId,3,[new(Guid.NewGuid(),"level",[0.1+0.2,1e-7,1.0/3,double.Epsilon,double.MaxValue,-1234567.891011,5.4,0.2],[],new("Ñandú «source» \u2028 \"q\" <&>","apprové"))]);
 var awkwardJson=JsonSerializer.Serialize(awkward);
 Check(JsonSerializer.Serialize(JsonSerializer.Deserialize<Project>(awkwardJson))==awkwardJson,"awkward doubles and non-ASCII provenance round-trip byte identity");
 var awkwardDirectory=NewDirectory("awkward"); var awkwardStore=new ProjectStore(awkwardDirectory); awkwardStore.Initialize(awkward);
