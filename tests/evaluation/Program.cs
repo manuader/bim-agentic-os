@@ -67,10 +67,12 @@ Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good with { Elem
 Check((await EvaluationService.ExecuteAsync("ifc")).Source.Contains("no runtime probe"),"IFC capability declaration does not claim runtime inspection");
 Check((await EvaluationService.ExecuteAsync("revit")).Source.Contains("no process probe"),"Revit capability declaration does not claim process inspection");
 
+Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good,revision with { RevisionAfter=null!,RetryRevision=null! })).ExitCode==1,"missing after/retry revision tokens fail closed");
 if(failures.Count>0) throw new Exception(string.Join("; ",failures));
 Console.WriteLine($"PASS {checks} evaluator assertions (synthetic unit observations only)");
 
 } catch (Exception ex) { Console.Error.WriteLine(ex.Message); Environment.ExitCode=1; }
+
 
 
 

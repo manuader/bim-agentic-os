@@ -174,7 +174,7 @@ public static class EvaluationService
         Bool(c,"semantic_diff",valid&&SetEquals(r.SemanticChangedIds,actual),"semantic diff must match measured changed elements exactly");
         Bool(c,"idempotency_key",!string.IsNullOrWhiteSpace(r.OperationId)&&r.OperationId==r.RetryOperationId,"retry requires same nonempty operation id");
         Bool(c,"retry_no_duplicates",Same(r.After,r.Retry),"retry must preserve complete snapshot and identities");
-        Bool(c,"retry_revision",!string.IsNullOrWhiteSpace(r.RevisionBefore)&&r.RevisionBefore!=r.RevisionAfter&&r.RevisionAfter==r.RetryRevision,"revision advances once only");
+        Bool(c,"retry_revision",!string.IsNullOrWhiteSpace(r.RevisionBefore)&&!string.IsNullOrWhiteSpace(r.RevisionAfter)&&!string.IsNullOrWhiteSpace(r.RetryRevision)&&r.RevisionBefore!=r.RevisionAfter&&r.RevisionAfter==r.RetryRevision,"revision advances once only");
         Bool(c,"forced_failure",r.ForcedFailureObserved,"forced failure must be observed");
         Bool(c,"rollback_snapshot",Same(r.Before,r.Rollback),"forced-failure rollback restores full original snapshot");
         Bool(c,"rollback_revision",r.RollbackRevision==r.RevisionBefore,"rollback restores revision");
@@ -188,6 +188,7 @@ internal interface IBackendExecutor { Task<BackendExecution> ExecuteAsync(Cancel
 internal sealed class IfcExecutor : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.FromResult(new BackendExecution("adapter capability declaration; no runtime probe","unavailable",["IFC executor not implemented/configured; optional dependency approval pending (ADR0006)","IFC cannot satisfy mandatory native Revit annotations/views/sheets/RVT save-reopen"])); } }
 internal sealed class RevitExecutor : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.FromResult(new BackendExecution("adapter capability declaration; no process probe; no model writes","not observed",["Existing native executor supports level/wall primitives only","Missing door, windows, Room, dimensions, views, schedule and sheet authoring/readback","Full Test B dependent/document updates and rollback fixture unavailable; historical primitive evidence excluded"])); } }
 internal sealed class UnsupportedExecutor(string backend) : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token)=>Task.FromResult(new BackendExecution("unsupported backend: "+backend,"unavailable",["unsupported backend"])); }
+
 
 
 
