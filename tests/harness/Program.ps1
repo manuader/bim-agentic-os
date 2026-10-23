@@ -93,15 +93,18 @@ Reject-TrackedArtifact tracked-sdk-archive 'dotnet-sdk-9.0.100.zip' 'Prohibited 
 'PASS static gate rejects tracked vendor binaries, BIM files and SDK payloads'
 
 $originalGitCeiling = $env:GIT_CEILING_DIRECTORIES
-$env:GIT_CEILING_DIRECTORIES = $root
-Move-Item -LiteralPath "$fixture/.git" -Destination "$fixture/.git-disabled"
+$gitDirectoryMoved = $false
 try {
+    $env:GIT_CEILING_DIRECTORIES = $root
+    Move-Item -LiteralPath "$fixture/.git" -Destination "$fixture/.git-disabled"
+    $gitDirectoryMoved = $true
     $rejected = $false
     try { Invoke-EvidenceCommand no-git $pwsh @('-NoProfile','-File',$checker,'-Root',$fixture) $root -Quiet } catch { $rejected = $true }
     if (!$rejected -or (Get-Content "$root/no-git.log" -Raw) -notmatch 'Git inventory failed') { throw 'Static checks must fail closed when Git inventory fails' }
 } finally {
-    Move-Item -LiteralPath "$fixture/.git-disabled" -Destination "$fixture/.git"
-    $env:GIT_CEILING_DIRECTORIES = $originalGitCeiling
+    try {
+        if ($gitDirectoryMoved) { Move-Item -LiteralPath "$fixture/.git-disabled" -Destination "$fixture/.git" }
+    } finally { $env:GIT_CEILING_DIRECTORIES = $originalGitCeiling }
 }
 'PASS static checks fail closed without Git inventory'
 'valid' | Set-Content "$fixture/bad.ps1"
