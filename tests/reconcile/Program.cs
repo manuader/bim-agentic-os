@@ -191,12 +191,66 @@ foreach(var point in new[]{"after_checkpoint","after_journal","after_tmp"}) {
     }
 }
 
+// ADR0007 caveat: OneDrive conflict copies and cloud-only placeholders beside project.json fail closed before Core is read.
+foreach(var (name,primary) in new[]{("project-DESKTOP-ABC.json","project.json"),("project-LAPTOP-1.json","project.json"),("project (1).json","project.json"),("project - Copy.json","project.json"),("Project-DESKTOP-AB12.JSON","project.json"),("PROJECT.json","project.json"),("room-LAPTOP-1.ifc","room.ifc"),("room (2).ifc","room.ifc"),("compiled-request-DESKTOP-ABC.json","compiled-request.json")})
+    Check(IfcReconcile.IsConflictCopy(name,primary),"conflict copy name "+name+" next to "+primary);
+foreach(var (name,primary) in new[]{("project.json","project.json"),("project.tmp","project.json"),("checkpoint-7.json","project.json"),("journal.jsonl","project.json"),("lock","project.json"),("projects.json","project.json"),("project-DESKTOP-ABC.tmp","project.json"),("room.ifc","room.ifc"),("room.pending.ifc","room.ifc"),("before.ifc","room.ifc"),("compiled-request.json","room.ifc"),("compiled-request.pending.json","compiled-request.json")})
+    Check(!IfcReconcile.IsConflictCopy(name,primary),"ordinary store file "+name+" is not a conflict copy of "+primary);
+void ExpectCloudFailure(string directory,IfcBackendReceipt receipt,string code,string name,Func<string,FileAttributes>? attributes=null) {
+    var before=Snapshot(directory);
+    var result=IfcReconcile.Reconcile(directory,receipt,packet1,attributes);
+    Check(!result.Succeeded && result.Code==code,name+" returns "+code+" (got "+result.Code+")");
+    Check(result.CoreRevision is null && result.CoreHash is null,name+" never reads Core");
+    Check(Same(before,Snapshot(directory)),name+" leaves every Core file byte-identical");
+}
+foreach(var conflict in new[]{"project-DESKTOP-ABC.json","project (1).json","Project-LAPTOP-1.JSON"}) {
+    NewStore("conflict",out var directory);
+    File.WriteAllText(Path.Combine(directory,conflict),File.ReadAllText(Path.Combine(directory,"project.json")));
+    // The receipt is a valid C3 gap, so without the guard reconcile would write.
+    ExpectCloudFailure(directory,Applied(Initial(packet1),packet1),"cloud_conflict_present","Core conflict copy "+conflict);
+    Check(new ProjectStore(directory).Read().Revision==7,"Core conflict copy "+conflict+" keeps Core at r");
+}
+foreach(var (flag,label) in new[]{(FileAttributes.Offline,"Offline"),((FileAttributes)0x00040000,"RecallOnOpen"),((FileAttributes)0x00400000,"RecallOnDataAccess")}) {
+    foreach(var target in new[]{"project.json","journal.jsonl"}) {
+        NewStore("placeholder",out var directory);
+        if(target=="journal.jsonl") File.WriteAllText(Path.Combine(directory,target),"");
+        FileAttributes Fake(string path)=>string.Equals(Path.GetFileName(path),target,StringComparison.Ordinal)?FileAttributes.Archive|FileAttributes.ReparsePoint|flag:FileAttributes.Archive;
+        ExpectCloudFailure(directory,Applied(Initial(packet1),packet1),"cloud_placeholder_present",label+" placeholder "+target,Fake);
+    }
+}
+{
+    // HANDOFF section 7: OneDrive marks hydrated real files ReparsePoint without a link target; that alone is not a placeholder.
+    var store=NewStore("reparse-only",out var directory);
+    var result=IfcReconcile.Reconcile(directory,Applied(Initial(packet1),packet1),packet1,_=>FileAttributes.Archive|FileAttributes.ReparsePoint);
+    Check(result.Succeeded && result.Code=="replayed" && store.Read().Revision==8,"ReparsePoint without recall attributes still replays (got "+result.Code+")");
+    var clean=NewStore("clean-directory",out var cleanDirectory);
+    var plain=IfcReconcile.Reconcile(cleanDirectory,Applied(Initial(packet1),packet1),packet1);
+    Check(plain.Succeeded && plain.Code=="replayed" && clean.Read().Revision==8,"directory reconcile without cloud hazards replays (got "+plain.Code+")");
+    var missing=IfcReconcile.Reconcile(NewDirectory("missing"),Applied(Initial(packet1),packet1),packet1);
+    Check(!missing.Succeeded && missing.Code=="core_io_error","missing Core directory returns core_io_error (got "+missing.Code+")");
+}
+// The worker reports the same hazards next to room.ifc in its receipt; reconcile refuses them through either entry point.
+foreach(var code in new[]{"cloud_conflict_present","cloud_placeholder_present"}) {
+    var store=NewStore("receipt-"+code,out var directory);
+    var hazard=new IfcBackendReceipt(null!,false,null,code,["room-DESKTOP-ABC.ifc"]);
+    ExpectFailure(store,directory,hazard,packet1,code,"worker receipt "+code);
+    ExpectFailure(store,directory,Applied(Initial(packet1),packet1) with {CloudHazard=code,CloudHazardEntries=["room.ifc"]},packet1,code,"worker receipt "+code+" with state");
+    ExpectCloudFailure(directory,hazard,code,"directory reconcile of worker receipt "+code);
+}
+{
+    var store=NewStore("receipt-hazard-forged",out var directory);
+    ExpectFailure(store,directory,Applied(Initial(packet1),packet1) with {CloudHazard="cloud_something_else",CloudHazardEntries=["x"]},packet1,"invalid_backend_receipt","unknown cloud hazard code");
+    ExpectFailure(store,directory,Applied(Initial(packet1),packet1) with {CloudHazardEntries=["room-DESKTOP-ABC.ifc"]},packet1,"invalid_backend_receipt","cloud hazard entries without a code");
+}
+
 // Receipt parsing uses the worker's snake_case JSON and rejects unknown members.
-var raw="{\"state\":{\"compiled_hash\":\"H\",\"compiled_project\":\"66ef39da-f724-4328-b055-c33e78dbb2ed\",\"compiled_revision\":8,\"receipts\":{\"resize-400\":{\"compiled_fingerprint\":\"F\",\"plan_after_hash\":\"P\",\"revision\":\"r8\",\"width\":5400.0}},\"revision\":\"r8\"},\"staging_artifact_present\":false,\"staging_hash\":null}";
+var raw="{\"state\":{\"compiled_hash\":\"H\",\"compiled_project\":\"66ef39da-f724-4328-b055-c33e78dbb2ed\",\"compiled_revision\":8,\"receipts\":{\"resize-400\":{\"compiled_fingerprint\":\"F\",\"plan_after_hash\":\"P\",\"revision\":\"r8\",\"width\":5400.0}},\"revision\":\"r8\"},\"staging_artifact_present\":false,\"staging_hash\":null,\"cloud_hazard\":null,\"cloud_hazard_entries\":[]}";
 var parsed=IfcReconcile.ParseReceipt(raw);
-Check(parsed.State.CompiledRevision==8 && parsed.State.CompiledHash=="H" && parsed.State.CompiledProject==projectId && parsed.State.Revision=="r8" && !parsed.StagingArtifactPresent,"worker receipt JSON parses");
+Check(parsed.State.CompiledRevision==8 && parsed.State.CompiledHash=="H" && parsed.State.CompiledProject==projectId && parsed.State.Revision=="r8" && !parsed.StagingArtifactPresent && parsed.CloudHazard is null,"worker receipt JSON parses");
 Check(parsed.State.Receipts["resize-400"]==new IfcOperationReceipt(5400,"r8","F","P"),"worker operation receipt parses");
-foreach(var bad in new[]{raw.Replace("\"staging_hash\":null","\"staging_hash\":null,\"extra\":1",StringComparison.Ordinal),"not json","null"}) {
+var hazardous=IfcReconcile.ParseReceipt("{\"state\":null,\"staging_artifact_present\":false,\"staging_hash\":null,\"cloud_hazard\":\"cloud_placeholder_present\",\"cloud_hazard_entries\":[\"room.ifc\"]}");
+Check(hazardous.CloudHazard=="cloud_placeholder_present" && hazardous.CloudHazardEntries is ["room.ifc"],"worker cloud hazard receipt parses without state");
+foreach(var bad in new[]{raw.Replace("\"staging_hash\":null","\"staging_hash\":null,\"extra\":1",StringComparison.Ordinal),raw.Replace(",\"cloud_hazard\":null,\"cloud_hazard_entries\":[]","",StringComparison.Ordinal),raw.Replace(",\"cloud_hazard_entries\":[]","",StringComparison.Ordinal),"not json","null","[]"}) {
     try { IfcReconcile.ParseReceipt(bad); throw new InvalidOperationException("malformed receipt accepted"); } catch(ArgumentException) { Check(true,"malformed worker receipt rejected"); }
 }
 Console.WriteLine(JsonSerializer.Serialize(new {passed=count, native_verified=false}));
