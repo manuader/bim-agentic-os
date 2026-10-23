@@ -36,3 +36,15 @@ Each run reads the same durable instructions, honors live locks, executes ready 
 `pwsh -NoProfile -File scripts/baton.ps1 -Action Progress -BoardPath <absolute-tasks.md> -Json`
 
 Mutation commands require the current run, actual session ID and owner token; inspect script help/parameters rather than copying a secret token into tracked documentation. Never publish run-local IDs, account information or tokens. Keep run/handoffs ignored; commit the board, plan, contracts and verified summaries.
+
+## Publish and retire worktrees
+
+Owner rule (2026-10-23): the agent that finishes a feature publishes it to GitHub and then removes its own worktree, without asking the owner, once the work is backed up.
+
+1. Commit with explicit staging, as Ezequiel Ader, Conventional Commits, no AI attribution.
+2. `bash scripts/worktree-retire.sh --push <worktree>` pushes the worktree's branch to `origin`, never `main`, and removes the worktree and its local branch only when nothing would be lost. Without `--push` it only verifies and retires.
+3. At close, the controller runs `bash scripts/worktree-retire.sh --all`. It retires every backed-up worktree, prunes the metadata of directories that no longer exist, and leaves the rest. Exit code 2 means something was kept; record each `KEEP` line in the journal and do not force it.
+
+The script fetches with `--prune` and fails closed if the fetch fails. A worktree counts as backed up only when its HEAD is on a live `origin/*` branch, or when its commits are already in `origin/main` by patch content with no merge commits. A worktree is kept if it has uncommitted, untracked, skip-worktree or assume-unchanged files, or ignored files other than whole `bin/`, `obj/`, `node_modules/`, `__pycache__/` or `.pytest_cache/` directories and `*.pyc` files. The oracle is `bash tests/baton/worktree-retire.test.sh`, which also runs in CI.
+
+Platform notes. Codex on Windows uses its own git credentials for pushing; it runs the script with Git Bash. Claude relays work in a cloud clone and push from there, which needs `manuader/bim-agentic-os` among the scheduled task's repositories. Their device VM has no GitHub egress, so device-side `--all` fails closed until the owner allows `github.com` for it. From the VM, read status with `git -c core.autocrlf=true status`; plain status reports every CRLF file as modified. Git in the connected folder also needs the session's delete permission, for lock files and worktree removal.
