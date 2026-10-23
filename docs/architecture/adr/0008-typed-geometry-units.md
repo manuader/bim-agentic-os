@@ -1,5 +1,5 @@
 # ADR0008 — Typed geometry, units and capability contracts
-Status: proposed; awaiting owner (architect) decision. No schema or code change is authorized by this document.
+Status: accepted — option A; the owner approved option A in chat on 2026-10-23 (America/Buenos_Aires). Other options stay recorded as rejected for now.
 
 ## Context
 

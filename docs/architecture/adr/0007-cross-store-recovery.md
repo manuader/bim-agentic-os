@@ -1,6 +1,6 @@
 # ADR0007 — Cross-store receipt recovery (backend realized state vs Core ProjectStore)
 
-Status: proposed. The owner decides; nothing here is accepted or implemented.
+Status: accepted — option A; the owner approved option A in chat on 2026-10-23 (America/Buenos_Aires). Other options stay recorded as rejected for now.
 
 ## Context
 
