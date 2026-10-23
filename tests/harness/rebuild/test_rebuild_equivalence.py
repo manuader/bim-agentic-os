@@ -64,7 +64,9 @@ class RebuildEquivalence(unittest.TestCase):
             inc = rb.run_incremental(tmp / 'inc', self.packet)
             reb = rb.run_rebuild(tmp / 'reb', self.packet)
             f = rb.w.ifcopenshell.open(str(reb['path']))
-            rb.w.alter(rb.w.entities(f)['north'], (-200, 4000, 0, 5800, 200, 3000))
+            north = rb.w.entities(f)['north']
+            self.assertEqual([-200, 4000, 0, 5800, 200, 3000], rb.w.bounds(north))
+            rb.w.alter(north, (-200, 4000, 0, 6200, 200, 3000))  # +400 mm drift on one wall only
             drifted = tmp / 'drifted.ifc'
             f.write(str(drifted))
             self.assertFalse(rb.equivalence(inc['path'], drifted, self.packet)['equivalent'])
