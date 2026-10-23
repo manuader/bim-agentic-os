@@ -229,6 +229,44 @@ foreach(var (flag,label) in new[]{(FileAttributes.Offline,"Offline"),((FileAttri
     var missing=IfcReconcile.Reconcile(NewDirectory("missing"),Applied(Initial(packet1),packet1),packet1);
     Check(!missing.Succeeded && missing.Code=="core_io_error","missing Core directory returns core_io_error (got "+missing.Code+")");
 }
+// A case-only variant is a conflict only beside the exact-case primary; alone it is just the store file under another case.
+foreach(var variant in new[]{"Project.json","PROJECT.json"}) {
+    var directory=NewDirectory("case-only"); Directory.CreateDirectory(directory);
+    File.WriteAllText(Path.Combine(directory,variant),"{}"); File.WriteAllText(Path.Combine(directory,"lock"),"");
+    Check(IfcReconcile.CloudHazard(directory,["project.json"]) is null,"only "+variant+" present is no cloud hazard");
+    // Case-sensitive file systems only: both spellings side by side are a conflict.
+    if(!File.Exists(Path.Combine(directory,"project.json"))) {
+        File.WriteAllText(Path.Combine(directory,"project.json"),"{}");
+        Check(IfcReconcile.CloudHazard(directory,["project.json"]) is {Code:"cloud_conflict_present"} hazard && hazard.Entries.SequenceEqual([variant]),variant+" beside project.json is a conflict copy");
+    }
+}
+// TOCTOU: the Core-side scan runs again immediately before the replay Commit.
+{
+    NewStore("recheck",out var directory);
+    var scans=0;
+    FileAttributes Late(string path) { if(!string.Equals(Path.GetFileName(path),"project.json",StringComparison.Ordinal))return FileAttributes.Archive; scans++; return scans>1?FileAttributes.Archive|FileAttributes.Offline:FileAttributes.Archive; }
+    ExpectCloudFailure(directory,Applied(Initial(packet1),packet1),"cloud_placeholder_present","placeholder appearing before the replay commit",Late);
+    Check(scans==2,"Core directory scanned before reading and again before Commit (scans "+scans.ToString(CultureInfo.InvariantCulture)+")");
+    var conflictScans=0;
+    FileAttributes LateConflict(string path) { if(string.Equals(Path.GetFileName(path),"project.json",StringComparison.Ordinal)&&++conflictScans==1)File.WriteAllText(Path.Combine(directory,"project-DESKTOP-ABC.json"),"{}"); return FileAttributes.Archive; }
+    var result=IfcReconcile.Reconcile(directory,Applied(Initial(packet1),packet1),packet1,LateConflict);
+    Check(!result.Succeeded && result.Code=="cloud_conflict_present" && result.CoreRevision is null,"conflict copy appearing before the replay commit returns cloud_conflict_present (got "+result.Code+")");
+    Check(new ProjectStore(directory).Read().Revision==7,"late conflict copy keeps Core at r");
+}
+// Crash leftovers (C4-C6: project.tmp, torn checkpoint, prepared and torn journal lines) are not cloud hazards: the directory overload replays.
+{
+    NewStore("leftovers",out var directory);
+    var crashing=new ProjectStore(directory) {CrashAfter=step=>{ if(step=="after_tmp") throw new IOException("injected_crash:"+step); }};
+    try { CommitPacket(crashing,packet1); } catch(IOException error) when(error.Message=="injected_crash:after_tmp") { }
+    File.WriteAllText(Path.Combine(directory,"checkpoint-7.json"),"{\"Id\":\"torn");
+    File.AppendAllText(Path.Combine(directory,"journal.jsonl"),"{\"key\":\"resize-400\",\"pla");
+    Check(File.Exists(Path.Combine(directory,"project.tmp")),"leftover project.tmp present before reconcile");
+    var result=IfcReconcile.Reconcile(directory,Applied(Initial(packet1),packet1),packet1);
+    Check(result.Succeeded && result.Code=="replayed" && new ProjectStore(directory).Read().Revision==8,"crash leftovers through the directory overload replay (got "+result.Code+")");
+}
+// Callers cannot skip the guard: the ProjectStore overload is not public.
+Check(!typeof(IfcReconcile).GetMethods(System.Reflection.BindingFlags.Public|System.Reflection.BindingFlags.Static).Any(method=>method.Name=="Reconcile"&&method.GetParameters()[0].ParameterType==typeof(ProjectStore)),"Reconcile(ProjectStore, ...) is not public");
+
 // The worker reports the same hazards next to room.ifc in its receipt; reconcile refuses them through either entry point.
 foreach(var code in new[]{"cloud_conflict_present","cloud_placeholder_present"}) {
     var store=NewStore("receipt-"+code,out var directory);

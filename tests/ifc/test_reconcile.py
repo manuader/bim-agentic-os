@@ -247,6 +247,19 @@ class Reconcile(unittest.TestCase):
             self.assertEqual((1,'failed','cloud_placeholder_present'),(code,out['status'],out['code']),out)
             self.assertEqual(before,self.hashes(path,core),'both stores byte-identical')
 
+    def test_cli_replays_over_core_crash_leftovers(self):
+        # C4-C6 leftovers (project.tmp, torn checkpoint, prepared and torn journal lines) are not cloud hazards.
+        packet=self.packet('compiled-5.json')
+        with tempfile.TemporaryDirectory() as tmp:
+            base,path,core=self.fixture(tmp,packet)
+            with self.assertRaises(w.InjectedCrash):w.resize_compiled(path,packet,crash_after='after_replace')
+            (core/'project.tmp').write_bytes((core/'project.json').read_bytes())
+            (core/'checkpoint-7.json').write_text('{"Id":"torn',encoding='utf-8')
+            (core/'journal.jsonl').write_text(json.dumps(dict(key=packet['OperationId'],plan=json.loads(packet['PlanJson']),state='prepared'))+'\n{"key":"resize-400","pla',encoding='utf-8')
+            code,out=self.reconcile(base,path,core,path.with_name('compiled-request.json'))
+            self.assertEqual((0,'replayed'),(code,out['code']),out)
+            self.assertEqual(8,json.loads((core/'project.json').read_text(encoding='utf-8'))['Project']['Revision'])
+
     def test_crash_injection_point_must_be_known(self):
         packet=self.packet('compiled-5.json')
         with tempfile.TemporaryDirectory() as tmp:
@@ -298,6 +311,19 @@ class CloudHazard(unittest.TestCase):
             path,_=self.directory(tmp,'room.ifc','compiled-request.json')
             self.assertEqual((None,[]),w.cloud_hazard(path,stat_fn=fake_stat({'room.ifc':0x400|0x20})))
             self.assertEqual((None,[]),w.cloud_hazard(path),'real temporary files are neither conflict copies nor placeholders')
+
+    def test_case_only_variant_is_a_conflict_only_beside_the_exact_primary(self):
+        for variant,primary in (('ROOM.ifc','room.ifc'),('Room.ifc','room.ifc'),('Compiled-Request.json','compiled-request.json')):
+            with self.subTest(variant=variant),tempfile.TemporaryDirectory() as tmp:
+                base=pathlib.Path(tmp)
+                names=(variant,) if variant.lower().endswith('.ifc') else ('room.ifc',variant)
+                for name in names:(base/name).write_text(name,encoding='utf-8')
+                ifc=next(name for name in names if name.lower()=='room.ifc')
+                self.assertEqual((None,[]),w.cloud_hazard(base/'room.ifc'),'only '+variant+' on disk')
+                self.assertEqual((None,[]),w.cloud_hazard(base/ifc),'only '+variant+' on disk, addressed by its own name')
+                if not (base/primary).exists():# case-sensitive file system: both spellings side by side
+                    (base/primary).write_text(primary,encoding='utf-8')
+                    self.assertEqual(('cloud_conflict_present',[variant]),w.cloud_hazard(base/'room.ifc'))
 
     def test_receipt_and_clear_staging_never_open_a_hazardous_store(self):
         original=w.ifcopenshell.open
