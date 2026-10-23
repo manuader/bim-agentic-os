@@ -93,3 +93,8 @@ Exact-commit remote verification: e689aaa GitHub run39889181516 succeeded on its
 | Controller evaluation build /2 restricted failures | MSBuild reference-framework task failed with0errors/0warnings | same source/SDK/TEMP/args passed elevated; complete gate passed. Exact failing OS operation unknown; no source workaround |
 
 No individual case exhausted3failed attempts. Syntax-only unmatched brace and whitespace amendment were edits, not passing backend tests. Worker complete suite10tests93.744s preceded final revision guard; its affected final-source3tests30.107s passed. Controller supersedes this with fresh final-source11tests90.026s, complete engineering gate and actual CLI41pass/0fail/0blocked/9unsupported,8backend checks, exit2/backend=true/product=false. Raw ledgers/logs preserved in ignored .bim/baton/2026-10-23-core-ifc. Native Revit did not execute this relay.
+
+## Native Room A/B (relay2 Codex, recorded by relay3)
+- Attempt1: hypothesis fixed Instance field type is valid for Room schedules → AddField ArgumentsInconsistentException, whole Create group rolled back → select fields from GetSchedulableFields by native parameter id (6a9f0ef).
+- Attempt2: hypothesis instance DOOR_WIDTH carries the hosted door width → empty/zero instance value masked the type parameter, 47/52 → read populated instance-or-type width (287014c).
+- Attempt3: same oracle, fix 287014c → 52/52, 8/8 backend checks, product_acceptance true. Budget 3/3 used for this test; no further blind retry.
