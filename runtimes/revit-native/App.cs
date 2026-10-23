@@ -5,7 +5,7 @@ using System.IO.Pipes;
 using System.Text.Json;
 namespace Bim.Revit;
 
-public record Request(string DocumentPath,string Operation,string? UniqueId,double[] Metres, Bim.Core.NativeBatchRequest? Batch = null);
+public record Request(string DocumentPath,string Operation,string? UniqueId,double[] Metres, Bim.Core.NativeBatchRequest? Batch = null, FixtureCheckpointRequest? Checkpoint = null);
 public sealed class App : IExternalApplication, IExternalEventHandler
 {
     readonly ConcurrentQueue<(Request,TaskCompletionSource<string>)> queue=new();
@@ -43,6 +43,7 @@ public sealed class App : IExternalApplication, IExternalEventHandler
     }
     static string Run(UIApplication app,Request r)
     {
+        if(r.Operation=="fixture.checkpoint") return FixtureCheckpoint.Run(app,r);
         var d=app.ActiveUIDocument?.Document ?? throw new InvalidOperationException("no_document");
         if(string.IsNullOrWhiteSpace(r.DocumentPath)||!String.Equals(d.PathName,r.DocumentPath,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("document_conflict");
         if(r.Operation=="batch") return BatchExecutor.Run(d,r.Batch ?? throw new ArgumentException("batch_required"));
@@ -75,5 +76,6 @@ public sealed class App : IExternalApplication, IExternalEventHandler
         } catch {if(tx.GetStatus()==TransactionStatus.Started)tx.RollBack();throw;}
     }
 }
+
 
 

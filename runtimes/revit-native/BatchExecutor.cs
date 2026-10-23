@@ -33,6 +33,17 @@ public static class BatchExecutor
             } else throw new NotSupportedException("unsupported_native_kind");
         }
     }
+    public static State VerifyReceipt(Document d,NativeBatchRequest request,FixtureCheckpointRequest checkpoint)
+    {
+        if(request.DocumentIdentity!=d.ProjectInformation.UniqueId) throw new InvalidOperationException("document_identity_conflict");
+        var schema=Schema.Lookup(SchemaId) ?? throw new InvalidOperationException("checkpoint_native_state_missing");
+        var stores=new FilteredElementCollector(d).OfClass(typeof(DataStorage)).Cast<DataStorage>().Where(s=>s.GetEntity(schema).IsValid()).ToArray();
+        if(stores.Length!=1) throw new InvalidOperationException("checkpoint_native_state_missing_or_ambiguous");
+        var state=JsonSerializer.Deserialize<State>(stores[0].GetEntity(schema).Get<string>("Payload")) ?? throw new InvalidOperationException("invalid_native_state");
+        BatchReceiptGuard.Verify(request,state.Project,state.Map,state.Receipts,checkpoint.ExpectedRevision,checkpoint.ExpectedMapping);
+        Readback(d,state.Project,state.Map);
+        return state;
+    }
     public static string Run(Document d,NativeBatchRequest request)
     {
         if(d.IsFamilyDocument || d.IsReadOnly || d.IsModifiable || d.IsWorkshared || !d.Title.StartsWith("BIM-Agentic-Test",StringComparison.Ordinal))throw new InvalidOperationException("isolated_test_document_required");
@@ -95,3 +106,4 @@ public static class BatchExecutor
         } catch {if(group.GetStatus()==TransactionStatus.Started)group.RollBack();throw;}
     }
 }
+
