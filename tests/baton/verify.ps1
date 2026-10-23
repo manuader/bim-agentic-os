@@ -39,6 +39,8 @@ try {
  Reject { & $adapter -Action Progress -BoardPath $board -Update -Json }
  Assert ([IO.File]::ReadAllText($board) -ceq $beforeUpdate) 'Update without lease preserves board bytes'
  Set-Content "$run/LOCK" '{"state":"FREE"}'
+ Reject { & $adapter -Action Progress -BoardPath $board -Update -RunDirectory $run -OwnerToken one -SessionId test-session -Json }
+ Assert ([IO.File]::ReadAllText($board) -ceq $beforeUpdate) 'Update with free lease preserves board bytes'
  Call Acquire | Out-Null
  Reject { & $adapter -Action Progress -BoardPath $board -Update -RunDirectory $run -OwnerToken foreign -SessionId test-session -Json }
  Assert ([IO.File]::ReadAllText($board) -ceq $beforeUpdate) 'Update with foreign owner preserves board bytes'
