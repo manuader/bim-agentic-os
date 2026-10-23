@@ -77,4 +77,3 @@ public sealed class App : IExternalApplication, IExternalEventHandler
         } catch {if(tx.GetStatus()==TransactionStatus.Started)tx.RollBack();throw;}
     }
 }
-

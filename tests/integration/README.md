@@ -27,3 +27,15 @@ After the primitive smoke, native-rollback-probe.ps1 accepts the same exact Docu
 The saved checkpoint probe is `native-checkpoint-probe.ps1`. After smoke in a newly opted-in child, pass exact `DocumentPath`, `DocumentIdentity`, `ProcessId`, `PipeName`, `RunDirectory` and `PriorEvidenceDirectory` from that run. It saves/closes/reopens the fixture, checks identity/mapping/revision/receipt, then replays the original resize. It records one checkpoint roundtrip including parking/save/reopen/readback; this excludes initial planning/patch and all documentation. A dispatched timeout means unknown completion, not rollback; do not automatically retry. The command must not be run against a normal or production Revit session.
 
 Executed save/reopen result: artifacts/native-checkpoint-result.json records real Revit25.2 saved/closed/reopened fixture, preserved revision2/geometry/mappings/receipt and successful post-reopen retry. Full Test A room/documentation is still incomplete.
+
+## Full hosted Room/documentation executable probe
+
+Build the add-in and CLI, prepare a NEW run with `launch-native-fixture.ps1 -ConfirmIsolatedTestProcess`, explicitly install that run's staged manifest, then launch a NEW child Revit process with `BIM_AGENTIC_TEST_CONFIG` set to that run's fixture-config.json. Preserve any foreign manifest and never use the production session. The Revit security prompt requires human Load Once when it appears.
+
+Use the returned fixture-result.json for every argument:
+
+```powershell
+./tests/integration/native-room-ab.ps1 -RunDirectory <absolute-new-run> -DocumentPath <result.documentPath> -DocumentIdentity <result.documentUniqueId> -ProcessId <result.processId> -PipeName <result.pipeName> -Dotnet <absolute-dotnet.exe> -CliDll <absolute-Bim.Cli.dll> -TimeoutSeconds 300
+```
+
+The wrapper creates options exclusively and never retries a dispatched request. Room A, real hosted door/two windows, dimension, plan/3D, room schedule and sheet are created, saved/closed/reopened and read back. A forced real mutation is rolled back; a400mm correction is then saved/closed/reopened and its persisted retry checked. The independent strict C# A/B criteria are unchanged. Target compilation and synthetic guards do not establish native acceptance; consult the current evidence artifact for actual execution results. Revit2025.2 is the only locally targeted version; Spanish installed family paths are explicit prerequisites.

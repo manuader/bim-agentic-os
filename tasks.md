@@ -15,12 +15,14 @@ Single writer: current Baton controller. Lifecycle status is separate from capab
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| N01 | Full native hosted Room and documentation A/B | ⏳ | I02 | future native isolated worktree | real Revit full A/B and affected documentation checks | blocked |
+| N01 | Full native hosted Room and documentation A/B | 🔄 | I02 | controller integration and real execution | real Revit full A/B and affected documentation checks | described |
+| N11 | Native Room, hosted elements and document executor | 🔄 | I02 | runtimes/revit-native; NativeRoomGuard.Tests | SDK build, real isolated A/B readback and durable identity | described |
+| N12 | Typed native oracle and integration command | ✅ | I02 | evaluator; CLI; tests/native-room; native-room-ab.ps1 | deterministic guards and real-port-only provenance | unit-tested |
 
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 4/5 done (80 %)
+Progress: 5/7 done (71.4 %)
 - Harness and compiler IFC: 4/4
-- Next native slice: 0/1
-Next ready: N01
+- Next native slice: 1/3
+Next ready:

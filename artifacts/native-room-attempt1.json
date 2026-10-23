@@ -1,0 +1,14 @@
+{
+  "product_acceptance": false,
+  "attempt": 1,
+  "evidence": "ignored native run cf04a54c-61a3-4fd2-a572-fc0a66eb0bad; no RVT or vendor DLL published",
+  "fix": "Use actual GetSchedulableFields objects matched by native built-in parameter IDs; deterministic15guards/SDK pass, native rerun pending",
+  "rollback_scope": "Create TransactionGroup rollback called; full A/B rollback acceptance not established",
+  "status": "blocked",
+  "backend": "revit",
+  "version": "25.2.0.38",
+  "reason": "ArgumentsInconsistentException: field specified by fieldType and parameterId may not be included in ScheduleDefinition",
+  "stage": "author_A",
+  "schema_version": 1,
+  "native_dispatch_observed": true
+}

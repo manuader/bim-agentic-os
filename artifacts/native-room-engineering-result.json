@@ -1,0 +1,26 @@
+{
+  "runtime": "8.0.21",
+  "sdk": "8.0.415",
+  "baton_assertions": 28,
+  "evaluator_assertions": 68,
+  "ifc_contract_assertions": 10,
+  "schema_version": 1,
+  "local_evidence": ".bim/verification/20261023T045700343Z",
+  "evaluation_cli_assertions": 5,
+  "core_assertions": 50,
+  "native_sdk_build": {
+    "warnings": 0,
+    "errors": 0,
+    "elapsed_seconds": 2.54,
+    "exit_code": 0
+  },
+  "native_acceptance": "not implied by these engineering results",
+  "engineering_gate": "passed complete after controller --project invocation fix",
+  "os": "Windows11 build26200",
+  "checkpoint_assertions": 17,
+  "state": "unit-tested",
+  "date": "2026-10-23",
+  "native_room_parser_suite": "passed; no numeric count printed",
+  "native_room_guard_assertions": 15,
+  "followup_evidence": ".bim/verification/native-room-fixes"
+}
