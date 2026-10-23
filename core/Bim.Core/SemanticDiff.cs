@@ -9,16 +9,25 @@ public sealed record GeometryChange(string Field, Length? Before, Length? After)
 
     static string Metres(double value) => value.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture) + " m";
 
+    // A nonzero delta is never shown as zero: below display precision use the round-trip form.
+    static string Delta(double value)
+    {
+        var text = Metres(value);
+        return value != 0 && text == Metres(0) ? value.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + " m" : text;
+    }
+
     public string Describe()
     {
         if (Before is null && After is Length created) return "= " + Metres(created.Metres);
         if (After is null && Before is Length deleted) return "was " + Metres(deleted.Metres);
         var delta = DeltaMetres ?? 0;
-        return (delta < 0 ? "-" : "+") + Metres(Math.Abs(delta));
+        return (delta < 0 ? "-" : "+") + Delta(Math.Abs(delta));
     }
 }
 
-public sealed record ElementChange(Guid Id, string Kind, string Action, GeometryChange[] Changes);
+// GeometryProblem is the codec code when Validate-accepted geometry has no typed view
+// (unknown kind or non-canonical arity); such changes are reported without typed fields.
+public sealed record ElementChange(Guid Id, string Kind, string Action, GeometryChange[] Changes, string? GeometryProblem = null);
 
 public sealed record SemanticDiff(Guid ProjectId, int ExpectedRevision, string BeforeHash, string AfterHash, ElementChange[] Elements)
 {
@@ -31,6 +40,14 @@ public sealed record SemanticDiff(Guid ProjectId, int ExpectedRevision, string B
         foreach (var operation in plan.Operations)
         {
             var element = operation.Element;
+            var problem = operation.Action == "update" && prior.TryGetValue(element.Id, out var previous)
+                ? GeometryCodec.Problem(element) ?? GeometryCodec.Problem(previous)
+                : GeometryCodec.Problem(element);
+            if (problem is not null)
+            {
+                elements.Add(new ElementChange(element.Id, element.Kind, operation.Action, Array.Empty<GeometryChange>(), problem));
+                continue;
+            }
             var changes = operation.Action switch
             {
                 "create" => Fields(element).Select(field => new GeometryChange(field.Name, null, field.Value)).ToArray(),
