@@ -20,6 +20,6 @@ Use plan/ledger in `docs/superpowers/plans/` for persistent progress. Upstream B
 
 `scripts/verify.ps1` runs subprocess evidence capture, fail-closed architecture/docs/skill/feature/security checks, PowerShell parsing, target builds with .NET analyzers and warnings-as-errors, deterministic regressions and core benchmarks. `-HostOnly` explicitly limits claims. SDK8.0.415 is installed locally and pinned with patch roll-forward in global.json. `scripts/audit-dependencies.ps1` is a separate network-dependent CI gate covering every maintained csproj. CodeQL is configured in GitHub Actions; its results remain unverified until remote CI runs.
 
-Native source check, target build and guarded native smoke are separate operations. Tests A/B remain blocked pending actual loaded-add-in execution, native complete-room/documentation support and save/reopen evidence. No green placeholder native CI job exists.
+Native source check, target build and guarded native smoke are separate operations. Primitive create/retry/resize/readback and forced rollback now passed in real Revit; Tests A/B remain blocked pending native complete-room/documentation support and final save/reopen evidence. No green placeholder native CI job exists.
 
 GitHub publication is now available. First remote run39874914458 passed both core and CodeQL on commit635cc68; see artifacts/ci-first-run.json. Later changes require their own run evidence.

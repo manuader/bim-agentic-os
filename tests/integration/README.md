@@ -17,3 +17,9 @@ These instructions are an integration test plan, not an automated integration te
 
 Fixture bootstrap has executed in real Revit25.2; see artifacts/native-bootstrap-result.json. The first smoke was rejected before mutation by the document guard because the legacy global pipe belonged to another process. Process-specific routing replaces that endpoint. Full Test A/B and the protocol steps above remain unverified unless a corresponding evidence artifact explicitly says otherwise.
 
+
+Executed primitive smoke: artifacts/native-smoke-result.json records real level/wall create, idempotent retry, three-wall width correction, unchanged native mappings, geometry readback and tampered-plan rejection. This does not establish complete Test A/B, documentation or saved/reopened final geometry.
+
+
+After the primitive smoke, native-rollback-probe.ps1 accepts the same exact DocumentPath/DocumentIdentity/PipeName, absolute Dotnet/CliDll and PriorEvidenceDirectory. It derives a valid semantic level change followed by a wall below native short-curve tolerance, requires that native failure, then replays the successful resize receipt and compares geometry/revision/mappings. Actual local result: artifacts/native-rollback-result.json. Final save/reopen remains pending.
+

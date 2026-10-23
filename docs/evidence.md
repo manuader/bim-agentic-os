@@ -42,3 +42,12 @@ The opt-in add-in executed in real Revit25.2 a dedicated process, created/saved/
 
 Public evidence redaction: personal workspace paths, document identity and live process IDs are omitted from exported records. Original logs and fixture evidence remain under ignored local .bim directories. Versions, assertions, error codes, commit IDs and CI links are preserved.
 
+
+The corrected process-specific endpoint was verified with the Windows pipe-owner API before model writes. Real Revit25.2 primitive smoke then passed: five native elements created, same request retried at revision1 with unchanged mappings, width corrected400mm through exactly three wall updates at revision2, all native identities preserved and geometry read back, tampered plan rejected. One primitive resize Send roundtrip measured102.821ms; this is not full validated-delivery latency. Final geometry save/reopen and documentation remain unverified. See artifacts/native-smoke-result.json.
+
+
+A separate forced rollback probe also passed: the level was updated first, a following wall failed Revit ShortCurveTolerance, and replay of the original resize receipt returned native_geometry_readback at revision2 with all five mappings unchanged. This verifies transactional rollback and receipt retention in the current session; it does not prove disk persistence after save/reopen. See artifacts/native-rollback-result.json.
+
+
+Remote CI run39877865497 passed both core and CodeQL on exact commit4b4327a (native bootstrap, process routing and guard regressions). The later rollback probe is separately native-executed and statically checked; subsequent commits require their own CI result. artifacts/ci-native-bootstrap-run.json records the remote result.
+

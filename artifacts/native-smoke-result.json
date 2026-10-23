@@ -1,8 +1,21 @@
 {
-  "status": "failed_before_mutation",
-  "native_verified": false,
-  "code": "document_conflict",
-  "diagnosis": "Shared global endpoint belonged to a different Revit process; exact document guard rejected request",
-  "next_step": "Require explicit per-process endpoint from fixture evidence",
-  "redaction": "Process IDs omitted; original evidence retained locally"
+  "status": "succeeded",
+  "code_commit": "9e7765b",
+  "native_assembly_sha256": "34658A02623010D02AD62FDEE651174914D0CC34E4C5A29125A382C19760BDBC",
+  "scope": "level_and_walls_only",
+  "created_elements": 5,
+  "idempotent_retry_verified": true,
+  "resize_updates": 3,
+  "native_identities_preserved": true,
+  "native_geometry_readback": true,
+  "tampered_plan_rejected": true,
+  "primitive_patch_roundtrip_ms": 102.821,
+  "samples": 1,
+  "primitive_patch_timing_scope": "resize Send only; includes native queue, patch and readback; excludes planning, documentation and save/reopen",
+  "rollback_verified": true,
+  "save_reopen_verified": false,
+  "documentation_verified": false,
+  "full_test_a_verified": false,
+  "redaction": "Personal paths, native identities and process IDs omitted; originals retained locally",
+  "rollback_evidence": "artifacts/native-rollback-result.json"
 }

@@ -28,7 +28,7 @@
         "artifacts/native-bootstrap-build.txt",
         "artifacts/native-bootstrap-result.json"
       ],
-      "blocker": "Add-in loaded in real Revit25.2 and isolated initial fixture saved/opened. Primitive geometry smoke not yet passed; initial global routing failure rejected before mutation."
+      "blocker": "Real native level/wall batch executed and geometry readback passed. General primitive CRUD coverage and full delivery remain incomplete."
     },
     {
       "id": "typed-room-intent-revision",
@@ -47,9 +47,10 @@
         "runtimes/revit-native/BatchExecutor.cs",
         "artifacts/native-bootstrap-build.txt",
         "tests/integration/native-batch-smoke.ps1",
-        "artifacts/native-smoke-result.json"
+        "artifacts/native-smoke-result.json",
+        "artifacts/native-rollback-result.json"
       ],
-      "blocker": "Target-built; first smoke failed document_conflict before mutation. Per-process routing implemented and regression-tested; new isolated native run pending. Spaces, documentation and deletes blocked."
+      "blocker": "Real Revit25.2 create, retry, resize, identity/readback and forced transaction rollback passed. Final save/reopen, spaces, documentation and deletes remain unverified or unsupported."
     },
     {
       "id": "test-a-native-room-delivery",
@@ -94,9 +95,10 @@
         "scripts/verify.ps1",
         ".github/workflows/ci.yml",
         "artifacts/verification-summary.json",
-        "artifacts/ci-first-run.json"
+        "artifacts/ci-first-run.json",
+        "artifacts/ci-native-bootstrap-run.json"
       ],
-      "blocker": "Core and CodeQL jobs passed remotely on635cc68; licensed native acceptance is not yet part of CI."
+      "blocker": "Core and CodeQL passed remotely on4b4327a; licensed native acceptance is executed locally and is not yet part of CI."
     },
     {
       "id": "core-diff-benchmark",

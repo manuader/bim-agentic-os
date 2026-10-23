@@ -1,8 +1,11 @@
 {
   "status": "succeeded",
+  "code_commit": "9e7765b",
+  "native_assembly_sha256": "34658A02623010D02AD62FDEE651174914D0CC34E4C5A29125A382C19760BDBC",
   "fixture": "BIM-Agentic-Test.rvt",
   "revitVersion": "2025",
   "revitBuild": "25.2.0.38",
+  "process_endpoint_owner_verified": true,
   "scope": "initial template create/save/open only",
-  "redaction": "Personal paths, document identity and process ID omitted; original evidence retained locally"
+  "redaction": "Personal paths, document identity and process IDs omitted; originals retained locally"
 }

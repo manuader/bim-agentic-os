@@ -15,8 +15,10 @@
   "native_smoke_executed": true,
   "native_delivery_verified": false,
   "remote_ci_executed": true,
-  "remote_ci_run": "https://github.com/manuader/bim-agentic-os/actions/runs/39874914458",
-  "github_publication": "main635cc68 published; core and CodeQL jobs passed remotely",
-  "benchmark_scope": "core diff only; no native correction-to-delivery latency measured",
-  "native_fixture_bootstrap": "succeeded: initial isolated template saved/opened; geometry smoke failed document_conflict before mutation"
+  "remote_ci_run": "https://github.com/manuader/bim-agentic-os/actions/runs/39877865497",
+  "github_publication": "main4b4327a published; core and CodeQL jobs passed remotely",
+  "benchmark_scope": "core diff and one primitive native resize roundtrip; no complete validated delivery latency",
+  "native_fixture_bootstrap": "succeeded in isolated Revit25.2 process; initial template saved/opened",
+  "native_primitive_smoke": "passed: create5, retry, update3, identity preservation, geometry readback and tampered-plan rejection",
+  "native_rollback": "passed: level update then Revit short-curve failure, original revision2 receipt/readback/mapping preserved"
 }
