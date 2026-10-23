@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - name: Build, tests, static gates and benchmark
+      - name: Build, core/evaluator unit health, static gates and benchmark
         shell: pwsh
         run: ./scripts/verify.ps1
       - name: Dependency vulnerability audit
@@ -25,6 +25,7 @@ jobs:
           name: verification-evidence
           path: |
             .bim/verification/
+            .bim/evaluation/
             .bim/dependency-audit/
   codeql:
     runs-on: ubuntu-latest
@@ -44,3 +45,6 @@ jobs:
       - uses: github/codeql-action/analyze@v3
 # Native CI BLOCKED: no licensed Windows/Revit runner; guarded executable probes run locally.
 # Do not add a green placeholder or require Autodesk secrets on public runners.
+
+# Evaluator health uses synthetic unit observations and blocked adapters; it is not full Test A/B backend acceptance.
+
