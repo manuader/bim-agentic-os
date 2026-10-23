@@ -250,6 +250,20 @@
       ],
       "blocker": null,
       "scope": "Dependency-free stdio JSON-RPC MCP server exposing diff/validate/room/plan; contract test compares content text byte-for-byte against the real CLI binary. Verified on Ubuntu CI run 40015266756 only; Windows gate not yet re-run."
+    },
+    {
+      "id": "typed-units-geometry-boundary",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Units.cs",
+        "core/Bim.Core/Geometry.cs",
+        "core/Bim.Core/SemanticDiff.cs",
+        "core/Bim.Core/Capability.cs",
+        "tests/typed-geometry/Goldens.cs",
+        "tests/typed-geometry/TypedContracts.cs"
+      ],
+      "blocker": null,
+      "scope": "ADR0008 option A: typed Length/Area/Angle, per-kind geometry views via one codec, capability registry and a typed semantic diff at API boundaries; persisted JSON, hashes, receipts and IFC packet byte-identical (frozen goldens, independently recomputed). Ubuntu CI 40017923434. Revit U() dedup and native compile check deferred (no Revit runner)."
     }
   ]
 }
