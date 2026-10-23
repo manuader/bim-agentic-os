@@ -1,1 +1,1 @@
-<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup><ItemGroup><ProjectReference Include="../../../core/Bim.Core/Bim.Core.csproj" /></ItemGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup><ItemGroup><InternalsVisibleTo Include="Reconcile.Tests" /></ItemGroup><ItemGroup><ProjectReference Include="../../../core/Bim.Core/Bim.Core.csproj" /></ItemGroup></Project>

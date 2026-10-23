@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 import uuid
 
@@ -199,6 +200,66 @@ class Reconcile(unittest.TestCase):
             self.assertEqual(packet,json.loads((ifc/'compiled-request.json').read_text(encoding='utf-8')))
             self.assertFalse((ifc/'compiled-request.pending.json').exists())
 
+    def test_cloud_conflict_copy_next_to_ifc_fails_closed_without_writes(self):
+        packet=self.packet('compiled-5.json')
+        for conflict in ('room-DESKTOP-ABC.ifc','room (1).ifc','compiled-request-LAPTOP-1.json'):
+            with self.subTest(conflict=conflict),tempfile.TemporaryDirectory() as tmp:
+                base,path,core=self.fixture(tmp,packet)
+                with self.assertRaises(w.InjectedCrash):w.resize_compiled(path,packet,crash_after='after_replace')
+                (path.parent/conflict).write_bytes(path.read_bytes())
+                before=self.hashes(path,core)
+                target,state=self.receipt(base,path)
+                self.assertEqual(('cloud_conflict_present',[conflict],None),(state['cloud_hazard'],state['cloud_hazard_entries'],state['state']))
+                code,out=self.run_cli('reconcile',core,target,path.with_name('compiled-request.json'))
+                self.assertEqual((1,'failed','cloud_conflict_present'),(code,out['status'],out['code']),out)
+                self.assertEqual(before,self.hashes(path,core),'both stores byte-identical')
+                self.assertEqual(7,json.loads((core/'project.json').read_text(encoding='utf-8'))['Project']['Revision'])
+                (path.parent/conflict).unlink()
+                code,out=self.reconcile(base,path,core,path.with_name('compiled-request.json'))
+                self.assertEqual((0,'replayed'),(code,out['code']),out)
+
+    def test_cli_refuses_cloud_conflict_copy_next_to_core_project(self):
+        packet=self.packet('compiled-5.json')
+        for conflict in ('project-DESKTOP-ABC.json','project (1).json'):
+            with self.subTest(conflict=conflict),tempfile.TemporaryDirectory() as tmp:
+                base,path,core=self.fixture(tmp,packet)
+                with self.assertRaises(w.InjectedCrash):w.resize_compiled(path,packet,crash_after='after_replace')
+                (core/conflict).write_bytes((core/'project.json').read_bytes())
+                before=self.hashes(path,core)
+                code,out=self.reconcile(base,path,core,path.with_name('compiled-request.json'))
+                self.assertEqual((1,'failed','cloud_conflict_present'),(code,out['status'],out['code']),out)
+                self.assertEqual(before,self.hashes(path,core),'both stores byte-identical')
+                (core/conflict).unlink()
+                code,out=self.reconcile(base,path,core,path.with_name('compiled-request.json'))
+                self.assertEqual((0,'replayed'),(code,out['code']),out)
+
+    def test_cloud_placeholder_next_to_ifc_fails_closed_without_writes(self):
+        packet=self.packet('compiled-5.json')
+        with tempfile.TemporaryDirectory() as tmp:
+            base,path,core=self.fixture(tmp,packet)
+            with self.assertRaises(w.InjectedCrash):w.resize_compiled(path,packet,crash_after='after_replace')
+            before=self.hashes(path,core)
+            # Simulated Windows attributes: the receipt must report without opening the IFC.
+            raw=w.receipt(path,stat_fn=fake_stat({'room.ifc':w.FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS}))
+            self.assertEqual(('cloud_placeholder_present',['room.ifc'],None),(raw['cloud_hazard'],raw['cloud_hazard_entries'],raw['state']))
+            target=base/'receipt.json';target.write_text(json.dumps(raw),encoding='utf-8')
+            code,out=self.run_cli('reconcile',core,target,path.with_name('compiled-request.json'))
+            self.assertEqual((1,'failed','cloud_placeholder_present'),(code,out['status'],out['code']),out)
+            self.assertEqual(before,self.hashes(path,core),'both stores byte-identical')
+
+    def test_cli_replays_over_core_crash_leftovers(self):
+        # C4-C6 leftovers (project.tmp, torn checkpoint, prepared and torn journal lines) are not cloud hazards.
+        packet=self.packet('compiled-5.json')
+        with tempfile.TemporaryDirectory() as tmp:
+            base,path,core=self.fixture(tmp,packet)
+            with self.assertRaises(w.InjectedCrash):w.resize_compiled(path,packet,crash_after='after_replace')
+            (core/'project.tmp').write_bytes((core/'project.json').read_bytes())
+            (core/'checkpoint-7.json').write_text('{"Id":"torn',encoding='utf-8')
+            (core/'journal.jsonl').write_text(json.dumps(dict(key=packet['OperationId'],plan=json.loads(packet['PlanJson']),state='prepared'))+'\n{"key":"resize-400","pla',encoding='utf-8')
+            code,out=self.reconcile(base,path,core,path.with_name('compiled-request.json'))
+            self.assertEqual((0,'replayed'),(code,out['code']),out)
+            self.assertEqual(8,json.loads((core/'project.json').read_text(encoding='utf-8'))['Project']['Revision'])
+
     def test_crash_injection_point_must_be_known(self):
         packet=self.packet('compiled-5.json')
         with tempfile.TemporaryDirectory() as tmp:
@@ -206,6 +267,81 @@ class Reconcile(unittest.TestCase):
             with self.assertRaises(ValueError):w.resize_compiled(path,packet,crash_after='after_everything')
             self.assertEqual(original,path.read_bytes())
             self.assertEqual({'room.ifc'},{p.name for p in pathlib.Path(tmp).iterdir()})
+
+
+def fake_stat(flags):
+    """Injectable stat: real lstat plus simulated Windows st_file_attributes for the named entries."""
+    def stat_fn(entry_path):
+        real=os.lstat(entry_path)
+        return types.SimpleNamespace(st_mode=real.st_mode,st_file_attributes=flags.get(os.path.basename(entry_path),0x20))
+    return stat_fn
+
+
+class CloudHazard(unittest.TestCase):
+    """ADR0007 caveat: OneDrive conflict copies and cloud-only placeholders; runs on every OS, no dotnet."""
+
+    def test_conflict_copy_names(self):
+        for name,primary in (('room-DESKTOP-ABC.ifc','room.ifc'),('room-LAPTOP-1.ifc','room.ifc'),('room (1).ifc','room.ifc'),('Room-DESKTOP-AB12.IFC','room.ifc'),('ROOM.ifc','room.ifc'),('room - Copy.ifc','room.ifc'),('compiled-request-DESKTOP-ABC.json','compiled-request.json'),('project-DESKTOP-ABC.json','project.json'),('project (1).json','project.json')):
+            with self.subTest(name=name):self.assertTrue(w.is_conflict_copy(name,primary))
+        for name,primary in (('room.ifc','room.ifc'),('room.pending.ifc','room.ifc'),('before.ifc','room.ifc'),('rooms.ifc','room.ifc'),('room-DESKTOP-ABC.json','room.ifc'),('compiled-request.json','room.ifc'),('compiled-request.pending.json','compiled-request.json'),('hashes.json','compiled-request.json'),('project.tmp','project.json'),('checkpoint-7.json','project.json')):
+            with self.subTest(name=name):self.assertFalse(w.is_conflict_copy(name,primary))
+
+    def directory(self,tmp,*names):
+        base=pathlib.Path(tmp)
+        for name in names:(base/name).write_text(name,encoding='utf-8')
+        return base/'room.ifc',{name:digest(base/name) for name in names}
+
+    def test_conflict_copy_hazard_is_reported_first_and_reads_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path,before=self.directory(tmp,'room.ifc','room.pending.ifc','compiled-request.json','room-DESKTOP-ABC.ifc')
+            self.assertEqual(('cloud_conflict_present',['room-DESKTOP-ABC.ifc']),w.cloud_hazard(path,stat_fn=fake_stat({'room.ifc':w.FILE_ATTRIBUTE_OFFLINE})))
+            self.assertEqual(before,{name:digest(path.parent/name) for name in before})
+
+    def test_placeholder_attributes_are_hazards(self):
+        for flag in (w.FILE_ATTRIBUTE_OFFLINE,w.FILE_ATTRIBUTE_RECALL_ON_OPEN,w.FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS):
+            for target in ('room.ifc','compiled-request.json','room.pending.ifc'):
+                with self.subTest(flag=hex(flag),target=target),tempfile.TemporaryDirectory() as tmp:
+                    path,_=self.directory(tmp,'room.ifc','room.pending.ifc','compiled-request.json')
+                    self.assertEqual(('cloud_placeholder_present',[target]),w.cloud_hazard(path,stat_fn=fake_stat({target:flag|0x400})))
+        self.assertEqual((0x1000,0x40000,0x400000),(w.FILE_ATTRIBUTE_OFFLINE,w.FILE_ATTRIBUTE_RECALL_ON_OPEN,w.FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS))
+
+    def test_reparse_point_alone_and_real_files_are_not_hazards(self):
+        # HANDOFF section 7: OneDrive sets ReparsePoint (0x400) on hydrated real files with no link target.
+        with tempfile.TemporaryDirectory() as tmp:
+            path,_=self.directory(tmp,'room.ifc','compiled-request.json')
+            self.assertEqual((None,[]),w.cloud_hazard(path,stat_fn=fake_stat({'room.ifc':0x400|0x20})))
+            self.assertEqual((None,[]),w.cloud_hazard(path),'real temporary files are neither conflict copies nor placeholders')
+
+    def test_case_only_variant_is_a_conflict_only_beside_the_exact_primary(self):
+        for variant,primary in (('ROOM.ifc','room.ifc'),('Room.ifc','room.ifc'),('Compiled-Request.json','compiled-request.json')):
+            with self.subTest(variant=variant),tempfile.TemporaryDirectory() as tmp:
+                base=pathlib.Path(tmp)
+                names=(variant,) if variant.lower().endswith('.ifc') else ('room.ifc',variant)
+                for name in names:(base/name).write_text(name,encoding='utf-8')
+                ifc=next(name for name in names if name.lower()=='room.ifc')
+                self.assertEqual((None,[]),w.cloud_hazard(base/'room.ifc'),'only '+variant+' on disk')
+                self.assertEqual((None,[]),w.cloud_hazard(base/ifc),'only '+variant+' on disk, addressed by its own name')
+                if not (base/primary).exists():# case-sensitive file system: both spellings side by side
+                    (base/primary).write_text(primary,encoding='utf-8')
+                    self.assertEqual(('cloud_conflict_present',[variant]),w.cloud_hazard(base/'room.ifc'))
+
+    def test_receipt_and_clear_staging_never_open_a_hazardous_store(self):
+        original=w.ifcopenshell.open
+        def refuse(*_):raise AssertionError('hazardous IFC must not be opened or hydrated')
+        w.ifcopenshell.open=refuse
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path,before=self.directory(tmp,'room.ifc','room.pending.ifc','room (1).ifc')
+                raw=w.receipt(path)
+                self.assertEqual(dict(state=None,staging_artifact_present=True,staging_hash=None,cloud_hazard='cloud_conflict_present',cloud_hazard_entries=['room (1).ifc']),raw)
+                with self.assertRaisesRegex(ValueError,'cloud_conflict_present'):w.clear_staging(path,hashlib.sha256(b'room.pending.ifc').hexdigest().upper())
+                (path.parent/'room (1).ifc').unlink();del before['room (1).ifc']
+                stat_fn=fake_stat({'room.pending.ifc':w.FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS})
+                self.assertEqual('cloud_placeholder_present',w.receipt(path,stat_fn=stat_fn)['cloud_hazard'])
+                with self.assertRaisesRegex(ValueError,'cloud_placeholder_present'):w.clear_staging(path,hashlib.sha256(b'room.pending.ifc').hexdigest().upper(),stat_fn=stat_fn)
+                self.assertEqual(before,{name:digest(path.parent/name) for name in before},'zero writes')
+        finally:
+            w.ifcopenshell.open=original
 
 
 if __name__=='__main__':unittest.main()

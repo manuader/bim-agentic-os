@@ -8,17 +8,85 @@ namespace Bim.Ifc;
 // Core State, BIM-IR and the IFC receipt format stay unchanged.
 public sealed record IfcOperationReceipt(double Width,string Revision,string? CompiledFingerprint,string? PlanAfterHash);
 public sealed record IfcBackendState(string Revision,int? CompiledRevision,string? CompiledHash,Guid? CompiledProject,Dictionary<string,IfcOperationReceipt> Receipts);
-public sealed record IfcBackendReceipt(IfcBackendState State,bool StagingArtifactPresent,string? StagingHash);
-public sealed record IfcReconcileResult(bool Succeeded,string Code,int CoreRevision,int? BackendRevision,string CoreHash,string? BackendHash);
+// CloudHazard/CloudHazardEntries: the worker's OneDrive conflict-copy or placeholder finding next to room.ifc; State is then null (never read).
+public sealed record IfcBackendReceipt(IfcBackendState State,bool StagingArtifactPresent,string? StagingHash,string? CloudHazard=null,string[]? CloudHazardEntries=null);
+// CoreRevision/CoreHash are null when Core was deliberately not read (cloud hazard in either store, or Core directory unreadable).
+public sealed record IfcReconcileResult(bool Succeeded,string Code,int? CoreRevision,int? BackendRevision,string? CoreHash,string? BackendHash);
+public sealed record IfcCloudHazard(string Code,string[] Entries);
 
 public static class IfcReconcile
 {
     static readonly JsonSerializerOptions ReceiptOptions=new() { PropertyNamingPolicy=JsonNamingPolicy.SnakeCaseLower, UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow };
     static string Revision(int revision)=>"r"+revision.ToString(CultureInfo.InvariantCulture);
+    public const string CloudConflictPresent="cloud_conflict_present";
+    public const string CloudPlaceholderPresent="cloud_placeholder_present";
+    // Windows FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_OPEN and FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS (cloud-only placeholders).
+    // ReparsePoint alone is deliberately not a hazard: OneDrive sets it on hydrated real files with no LinkTarget (HANDOFF section 7).
+    const FileAttributes PlaceholderAttributes=FileAttributes.Offline|(FileAttributes)0x00040000|(FileAttributes)0x00400000;
     public static IfcBackendReceipt ParseReceipt(string json)
     {
-        try { return JsonSerializer.Deserialize<IfcBackendReceipt>(json,ReceiptOptions) ?? throw new ArgumentException("invalid_backend_receipt"); }
+        try {
+            // Fail closed on a receipt that does not state its cloud check (for example from an older worker).
+            using(var document=JsonDocument.Parse(json)) {
+                if(document.RootElement.ValueKind!=JsonValueKind.Object||!document.RootElement.TryGetProperty("cloud_hazard",out _)||!document.RootElement.TryGetProperty("cloud_hazard_entries",out _))throw new ArgumentException("invalid_backend_receipt");
+            }
+            return JsonSerializer.Deserialize<IfcBackendReceipt>(json,ReceiptOptions) ?? throw new ArgumentException("invalid_backend_receipt");
+        }
         catch(JsonException error) { throw new ArgumentException("invalid_backend_receipt",error); }
+    }
+    // OneDrive keeps both versions of a sync conflict by appending the device name, e.g. MyFile.txt -> MyFile-ComputerName.txt;
+    // older or third-party copies use "Name (1).ext" or "Name - Copy.ext". Matching is case-insensitive like NTFS:
+    // same extension, and the name continues the stem with '-' or ' '. Sources (retrieved 2026-10-23):
+    // https://support.microsoft.com/en-us/onedrive/duplicate-files-in-onedrive ("your computer name added to the filename")
+    // https://uwindsor.teamdynamix.com/TDClient/1975/Portal/KB/Article/29832/Known-Issue-OneDrive-duplicate-files ("MyFile-ComputerName.txt")
+    // https://melbits.com.au/kb/why-does-onedrive-keep-duplicating-files ("Filename-DESKTOP-AB12.docx", "Budget (1).xlsx", "Report-Copy.docx")
+    // https://sharepointmaven.com/how-onedrive-sync-resolves-sync-conflicts/ (keep both: "add the Computer/PC name to the end of the file name")
+    public static bool IsConflictCopy(string name,string primary)
+    {
+        ArgumentNullException.ThrowIfNull(name); ArgumentNullException.ThrowIfNull(primary);
+        if(string.Equals(name,primary,StringComparison.Ordinal))return false;
+        if(string.Equals(name,primary,StringComparison.OrdinalIgnoreCase))return true;
+        var extension=Path.GetExtension(primary); var stem=Path.GetFileNameWithoutExtension(primary);
+        if(extension.Length==0||!name.EndsWith(extension,StringComparison.OrdinalIgnoreCase))return false;
+        var rest=name[..^extension.Length];
+        return rest.Length>stem.Length&&rest.StartsWith(stem,StringComparison.OrdinalIgnoreCase)&&(rest[stem.Length]=='-'||rest[stem.Length]==' ');
+    }
+    // Metadata only: enumerates the directory and reads attributes, never opens file contents, so no placeholder is hydrated.
+    // Conflict copies of any primary are reported first; then any entry carrying placeholder attributes.
+    // The attribute reader is a test seam; by default attributes are read on Windows only (no such attributes elsewhere).
+    public static IfcCloudHazard? CloudHazard(string directory,IReadOnlyCollection<string> primaries,Func<string,FileAttributes>? readAttributes=null)
+    {
+        ArgumentNullException.ThrowIfNull(directory); ArgumentNullException.ThrowIfNull(primaries);
+        var entries=new DirectoryInfo(directory).EnumerateFileSystemInfos().OrderBy(entry=>entry.Name,StringComparer.Ordinal).ToArray();
+        var names=entries.Select(entry=>entry.Name).ToArray();
+        // A case-only variant is a conflict only beside the exact-case primary; alone it is the store file itself (NTFS is case-insensitive).
+        var conflicts=names.Where(name=>primaries.Any(primary=>IsConflictCopy(name,primary)&&(!string.Equals(name,primary,StringComparison.OrdinalIgnoreCase)||names.Contains(primary,StringComparer.Ordinal)))).ToArray();
+        if(conflicts.Length>0)return new(CloudConflictPresent,conflicts);
+        var placeholders=entries.Where(entry=>((readAttributes is null?(OperatingSystem.IsWindows()?entry.Attributes:default):readAttributes(entry.FullName))&PlaceholderAttributes)!=0).Select(entry=>entry.Name).ToArray();
+        return placeholders.Length>0?new(CloudPlaceholderPresent,placeholders):null;
+    }
+    // Directory-aware entry point: refuses before Core is read when project.json has a conflict copy or any Core file is cloud-only.
+    public static IfcReconcileResult Reconcile(string coreDirectory,IfcBackendReceipt receipt,IfcCompiledRequest packet,Func<string,FileAttributes>? readAttributes=null)
+    {
+        ArgumentNullException.ThrowIfNull(coreDirectory);
+        var hazard=ReceiptHazard(receipt);
+        if(hazard is not null)return hazard;
+        IfcReconcileResult? Scan() {
+            IfcCloudHazard? core;
+            try { core=CloudHazard(coreDirectory,["project.json"],readAttributes); }
+            catch(Exception error) when(error is IOException or UnauthorizedAccessException) { return Unread("core_io_error",receipt); }
+            return core is null?null:Unread(core.Code,receipt);
+        }
+        // Scanned before Core is read and again immediately before the replay Commit: this narrows the window, it does not close it.
+        return Scan() ?? Reconcile(new ProjectStore(coreDirectory),receipt,packet,Scan);
+    }
+    static IfcReconcileResult Unread(string code,IfcBackendReceipt? receipt)=>new(false,code,null,receipt?.State?.CompiledRevision,null,receipt?.State?.CompiledHash);
+    static IfcReconcileResult? ReceiptHazard(IfcBackendReceipt? receipt)
+    {
+        if(receipt is null)return null;
+        if(receipt.CloudHazard is null)return receipt.CloudHazardEntries is {Length:>0}?Unread("invalid_backend_receipt",receipt):null;
+        var known=string.Equals(receipt.CloudHazard,CloudConflictPresent,StringComparison.Ordinal)||string.Equals(receipt.CloudHazard,CloudPlaceholderPresent,StringComparison.Ordinal);
+        return Unread(known?receipt.CloudHazard:"invalid_backend_receipt",receipt);
     }
     public static IfcCompiledRequest ParsePacket(string json)
     {
@@ -33,9 +101,14 @@ public static class IfcReconcile
     }
     // Read-only comparison of Core with the IFC receipt. The only write is the replay of the latest
     // one-revision gap through the unchanged ProjectStore.Commit; every other state fails closed.
-    public static IfcReconcileResult Reconcile(ProjectStore store,IfcBackendReceipt receipt,IfcCompiledRequest packet)
+    // This overload honours the worker's room.ifc cloud finding; the Core directory scan comes from Reconcile(coreDirectory,...) via beforeCommit.
+    // Internal so callers cannot skip the Core directory guard; tests reach it through InternalsVisibleTo.
+    internal static IfcReconcileResult Reconcile(ProjectStore store,IfcBackendReceipt receipt,IfcCompiledRequest packet,Func<IfcReconcileResult?>? beforeCommit=null)
     {
         ArgumentNullException.ThrowIfNull(store);
+        // The worker found a conflict copy or placeholder next to room.ifc: refuse before reading Core.
+        var hazard=ReceiptHazard(receipt);
+        if(hazard is not null)return hazard;
         var core=store.Read(); var coreHash=Compiler.Hash(core);
         IfcReconcileResult Fail(string code)=>new(false,code,core.Revision,receipt?.State?.CompiledRevision,coreHash,receipt?.State?.CompiledHash);
         if(receipt is null||receipt.State is null)return Fail("invalid_backend_receipt");
@@ -66,6 +139,8 @@ public static class IfcReconcile
         if(plan.ExpectedRevision<coreRevision)return Fail("retry_superseded");
         if(plan.ExpectedRevision!=coreRevision||plan.BeforeHash!=coreHash||!latest||!receiptMatches)return Fail("receipt_packet_mismatch");
         if(JsonSerializer.Serialize(after)!=packet.AfterJson)return Fail("noncanonical_packet");
+        var late=beforeCommit?.Invoke();
+        if(late is not null)return late;
         try { store.Commit(after,plan,packet.OperationId); }
         catch(InvalidOperationException) { return Fail("core_commit_rejected"); }
         catch(Exception error) when(error is IOException or UnauthorizedAccessException) { return Fail("core_io_error"); }
