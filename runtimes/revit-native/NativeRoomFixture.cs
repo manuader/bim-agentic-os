@@ -81,7 +81,7 @@ internal static class NativeRoomFixture
         }
         return symbol??throw new NotSupportedException("room_loaded_family_not_wall_hosted_"+category);
     }
-    static State Create(Document d)
+    static State Create(Document d,List<object> raw)
     {
         // Preflight all resources before creating physical fixture elements. Group rollback also
         // removes any loaded symbols/types when a prerequisite cannot satisfy its native contract.
@@ -117,10 +117,17 @@ internal static class NativeRoomFixture
                 var refs=new ReferenceArray();refs.Append(InnerFace(d,Get<Wall>(d,state,"west"),new XYZ(U(2),U(2),0)));refs.Append(InnerFace(d,Get<Wall>(d,state,"east"),new XYZ(U(2),U(2),0)));
                 Put("dimension",d.Create.NewDimension(plan,Line.CreateBound(new XYZ(U(.2),U(2),0),new XYZ(U(5.2),U(2),0)),refs));
                 var schedule=ViewSchedule.CreateSchedule(d,new ElementId(BuiltInCategory.OST_Rooms));schedule.Name="BIM-Agentic-Test-Room-Schedule";
-                var number=schedule.Definition.AddField(ScheduleFieldType.Instance,new ElementId(BuiltInParameter.ROOM_NUMBER));number.IsHidden=true;
+                var available=schedule.Definition.GetSchedulableFields().ToArray();
+                raw.Add(new{kind="schedule_prerequisites",fields=available.Select(f=>new{parameter_id=f.ParameterId.Value,field_type=f.FieldType.ToString(),name=f.GetName(d)}).ToArray()});
+                SchedulableField Field(BuiltInParameter parameter)=>available[NativeRoomGuard.SelectParameterField(available.Select(f=>f.ParameterId.Value).ToArray(),(long)parameter)];
+                raw.Add(new{kind="author_stage",stage="schedule_number_field"});
+                var number=schedule.Definition.AddField(Field(BuiltInParameter.ROOM_NUMBER));number.IsHidden=true;
                 schedule.Definition.AddFilter(new ScheduleFilter(number.FieldId,ScheduleFilterType.Equal,"BIM-ROOM-AB"));
-                var area=schedule.Definition.AddField(ScheduleFieldType.Instance,new ElementId(BuiltInParameter.ROOM_AREA));
+                raw.Add(new{kind="author_stage",stage="schedule_area_field"});
+                var area=schedule.Definition.AddField(Field(BuiltInParameter.ROOM_AREA));
+                raw.Add(new{kind="author_stage",stage="schedule_area_format"});
                 var format=new FormatOptions(UnitTypeId.SquareMeters){UseDefault=false,Accuracy=.000000001};format.SetSymbolTypeId(new ForgeTypeId());area.SetFormatOptions(format);Put("schedule",schedule);
+                raw.Add(new{kind="author_stage",stage="sheet_placements"});
                 var sheet=ViewSheet.Create(d,ElementId.InvalidElementId);sheet.SheetNumber="BIM-AB-01";sheet.Name="BIM-Agentic-Test-Room-Sheet";Put("sheet",sheet);
                 Viewport.Create(d,sheet.Id,plan.Id,new XYZ(.5,.5,0));ScheduleSheetInstance.Create(d,sheet.Id,schedule.Id,new XYZ(1.5,.8,0));
                 state.Map.Remove("door-symbol");state.Map.Remove("window-symbol");state.Receipts.Add("create",Compiler.Hash(state.Project));Persist(d,state);
@@ -223,7 +230,7 @@ internal static class NativeRoomFixture
             authorized=true;artifacts.Add(Path.GetFileName(config.FixturePath));
             var d=app.ActiveUIDocument.Document;
             if(ReadState(d)!=null)throw new InvalidOperationException("room_ab_already_executed_inspect_existing_receipts_no_blind_replay");
-            stage="author_A";var state=Create(d);
+            stage="author_A";var state=Create(d,raw);
             stage="reopen_A";d=Checkpoint(app,request,config,configPath);state=ReadState(d)??throw new InvalidOperationException("room_reopened_state_missing");
             if(state.Project.Revision!=1||state.Receipts["create"]!=Compiler.Hash(state.Project))throw new InvalidOperationException("room_create_receipt_invalid");
             stage="read_A";a=Observe(d,state,raw);
@@ -254,7 +261,7 @@ internal static class NativeRoomFixture
                 ["native_receipts"]=Compiler.Hash(state.Project)==Compiler.Hash(Compile(2,5.4))&&state.Receipts[Operation]==Compiler.Hash(Compile(1,5.4))};
             checks=NativeRoomJson.CheckIds.Select(id=>new NativeRoomCheck(id,outcomes[id]?"pass":"fail",outcomes[id]?"actual reopened native readback and persisted state satisfy "+id:"native readback failed "+id+"; inspect raw diagnostics")).ToArray();
             b=b with{ValidationPassed=valid&&outcomes.Values.All(x=>x)};correctionMs=correctionTimer.Elapsed.TotalMilliseconds;
-        }catch(Exception e) {errors.Add(stage+": "+e.GetType().Name+": "+e.Message);}
+        }catch(Exception e) {errors.Add(stage+": "+e.GetType().Name+": "+e.Message);raw.Add(new{kind="exception",stage,type=e.GetType().FullName,message=e.Message,stack=e.StackTrace});}
         if(config!=null&&authorized) {
             var name="native-room-raw-"+Guid.NewGuid().ToString("N")+".json";
             try {File.WriteAllText(Path.Combine(config.RunDirectory,name),JsonSerializer.Serialize(new{stage,raw,errors},NativeRoomJson.Options));artifacts.Add(name);}catch(Exception e){errors.Add("raw_diagnostics: "+e.Message);}
@@ -267,4 +274,3 @@ internal static class NativeRoomFixture
         return JsonSerializer.Serialize(envelope,NativeRoomJson.Options);
     }
 }
-

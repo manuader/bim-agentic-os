@@ -13,6 +13,12 @@ public static class NativeRoomGuard
         if(!double.IsFinite(value))throw new InvalidOperationException("room_nonfinite_measurement");
         var integer=Math.Round(value); return Math.Abs(value-integer)<=1e-6?integer:value;
     }
+    public static int SelectParameterField(long[] actualParameterIds,long requiredParameterId)
+    {
+        var indices=Enumerable.Range(0,actualParameterIds.Length).Where(i=>actualParameterIds[i]==requiredParameterId).ToArray();
+        if(indices.Length!=1)throw new InvalidOperationException("room_schedulable_parameter_missing_or_ambiguous");
+        return indices[0];
+    }
     public static void ValidateCommittedSnapshot(string expected,string actual)
     {
         if(expected!=actual)throw new InvalidOperationException("room_committed_snapshot_conflict");
@@ -22,4 +28,3 @@ public static class NativeRoomGuard
         if(expected!=actual || expectedRevision!=actualRevision)throw new InvalidOperationException("room_receipt_conflict");
     }
 }
-
