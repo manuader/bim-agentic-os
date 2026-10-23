@@ -43,6 +43,7 @@ public sealed class App : IExternalApplication, IExternalEventHandler
     }
     static string Run(UIApplication app,Request r)
     {
+        if(r.Operation=="fixture.room.ab") return NativeRoomFixture.Run(app,r);
         if(r.Operation=="fixture.checkpoint") return FixtureCheckpoint.Run(app,r);
         var d=app.ActiveUIDocument?.Document ?? throw new InvalidOperationException("no_document");
         if(string.IsNullOrWhiteSpace(r.DocumentPath)||!String.Equals(d.PathName,r.DocumentPath,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("document_conflict");
@@ -76,3 +77,4 @@ public sealed class App : IExternalApplication, IExternalEventHandler
         } catch {if(tx.GetStatus()==TransactionStatus.Started)tx.RollBack();throw;}
     }
 }
+
