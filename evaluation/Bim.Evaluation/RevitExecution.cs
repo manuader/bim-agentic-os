@@ -17,10 +17,16 @@ public static partial class EvaluationService
         for(FileSystemInfo? entry=Directory.Exists(path)?new DirectoryInfo(path):new FileInfo(path);entry!=null;entry=entry is FileInfo f?f.Directory:(entry as DirectoryInfo)?.Parent)
             if(entry.LinkTarget!=null)throw new ArgumentException("reparse fixture path rejected");
     }
-    internal static RevitEnvelope? ParseNativeEnvelope(string raw,string build)
+    internal static RevitEnvelope? ParseNativeEnvelope(string raw,string build) => ParseNativeEnvelopeCore(raw,build,true);
+    internal static string? ParseNativeFailure(string raw,string build)
+    {
+        var envelope=ParseNativeEnvelopeCore(raw,build,false);
+        return envelope!=null&&envelope.Errors.Length>0&&envelope.Errors.All(x=>!string.IsNullOrWhiteSpace(x))?string.Join("; ",envelope.Errors):null;
+    }
+    private static RevitEnvelope? ParseNativeEnvelopeCore(string raw,string build,bool requireReadback)
     {
             RevitEnvelope? envelope;try {envelope=JsonSerializer.Deserialize<RevitEnvelope>(raw,JsonOptions);}catch(JsonException){return null;}
-            if(envelope==null||envelope.ProtocolVersion!=1||envelope.Backend!="revit"||envelope.BackendVersion!=build||envelope.Source!="actual isolated Revit authoring and reopened readback"||envelope.Observations==null||envelope.Observations.Backend!="revit"||envelope.Observations.Source!=envelope.Source||envelope.Observations.TestA==null||envelope.Observations.TestB==null||envelope.Checks==null||envelope.Errors==null||envelope.Artifacts==null||envelope.Metrics==null)return null;
+            if(envelope==null||envelope.ProtocolVersion!=1||envelope.Backend!="revit"||envelope.BackendVersion!=build||envelope.Source!="actual isolated Revit authoring and reopened readback"||envelope.Observations==null||envelope.Observations.Backend!="revit"||envelope.Observations.Source!=envelope.Source||requireReadback&&(envelope.Observations.TestA==null||envelope.Observations.TestB==null)||envelope.Checks==null||envelope.Errors==null||envelope.Artifacts==null||envelope.Metrics==null)return null;
             if(envelope.Checks.Length!=RequiredRevitChecks.Length||envelope.Checks.Any(x=>x==null||!RequiredRevitChecks.Contains(x.Id)||x.Outcome is not ("pass" or "fail" or "blocked" or "unsupported")||string.IsNullOrWhiteSpace(x.Reason))||envelope.Checks.Select(x=>x.Id).Distinct().Count()!=RequiredRevitChecks.Length)return null;
             if(envelope.Metrics.Any(x=>!MetricNames.Concat(new[]{"create_ms","update_ms","retry_ms","rollback_ms"}).Contains(x.Key)||x.Value==null||string.IsNullOrWhiteSpace(x.Value.Reason)||x.Value.Value is double v&&(!double.IsFinite(v)||v<0)))return null;
             return envelope;
@@ -59,6 +65,7 @@ public static partial class EvaluationService
                     return Block("native execution "+status.GetString()+": "+reason);
                 }
             }catch(JsonException) {return Block("invalid native response JSON; completion UNKNOWN; do not automatically retry");}
+            var nativeFailure=ParseNativeFailure(raw.ToString(),build);if(nativeFailure!=null)return Block("native execution errors: "+nativeFailure);
             var envelope=ParseNativeEnvelope(raw.ToString(),build);if(envelope==null)return Block("invalid native envelope protocol/metadata/checks/metrics");
             if(envelope.Errors.Length>0)return Block("native execution errors: "+string.Join("; ",envelope.Errors));
             if(envelope.Artifacts.Length==0||envelope.Artifacts.Distinct().Count()!=envelope.Artifacts.Length||!envelope.Artifacts.Contains(Path.GetFileName(options.DocumentPath)))return Block("native fixture artifact missing");

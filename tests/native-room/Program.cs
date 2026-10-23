@@ -41,6 +41,16 @@ try {
  foreach(var key in new[]{"protocol_version","backend","backend_version","source","observations","checks","metrics","artifacts","errors"}) {
   var clone=node.DeepClone();clone.AsObject().Remove(key);if(Accepted(clone))throw new Exception("missing envelope metadata accepted: "+key);
  }
+ var partialFailure=node.DeepClone();partialFailure["observations"]!["test_a"]=null;partialFailure["observations"]!["test_b"]=null;
+ partialFailure["errors"]=new System.Text.Json.Nodes.JsonArray("author_A: ArgumentsInconsistentException: fieldType invalid");
+ if(Accepted(partialFailure))throw new Exception("partial error accepted as successful readback");
+ var parseFailure=typeof(EvaluationService).GetMethod("ParseNativeFailure",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic);
+ if(parseFailure==null)throw new Exception("native partial error diagnostic reader missing");
+ string? Failure(System.Text.Json.Nodes.JsonNode value,string build="build")=>(string?)parseFailure.Invoke(null,new object[]{value.ToJsonString(),build});
+ if(Failure(partialFailure)!="author_A: ArgumentsInconsistentException: fieldType invalid")throw new Exception("partial fixture error diagnostic lost");
+ if(Failure(partialFailure,"foreign-build")!=null)throw new Exception("unbound error diagnostic accepted");
+ var noError=partialFailure.DeepClone();noError["errors"]=new System.Text.Json.Nodes.JsonArray();if(Failure(noError)!=null)throw new Exception("missing readback without explicit error accepted");
+ var forgedError=partialFailure.DeepClone();forgedError["source"]="offline mock";if(Failure(forgedError)!=null)throw new Exception("foreign source error accepted");
  var forgedSource=node.DeepClone();forgedSource["source"]="offline mock";forgedSource["observations"]!["source"]="offline mock";if(Accepted(forgedSource))throw new Exception("forged source accepted");
  var duplicate=node.DeepClone();duplicate["checks"]![1]=duplicate["checks"]![0]!.DeepClone();if(Accepted(duplicate))throw new Exception("duplicate native check accepted");
  var unknown=node.DeepClone();unknown["checks"]![0]!["outcome"]="maybe";if(Accepted(unknown))throw new Exception("unknown check outcome accepted");
