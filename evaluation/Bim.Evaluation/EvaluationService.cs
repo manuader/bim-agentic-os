@@ -185,9 +185,10 @@ public static class EvaluationService
 }
 internal sealed record BackendExecution(string Source,string Version,string[] Gaps);
 internal interface IBackendExecutor { Task<BackendExecution> ExecuteAsync(CancellationToken token); }
-internal sealed class IfcExecutor : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.FromResult(new BackendExecution("prerequisite inspection; no execution","unavailable",["IfcOpenShell absent; dependency approval pending (ADR0006)","IFC cannot satisfy mandatory native Revit annotations/views/sheets/RVT save-reopen"])); } }
-internal sealed class RevitExecutor : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.FromResult(new BackendExecution("capability inspection; no model writes","not observed",["Existing native executor supports level/wall primitives only","Missing door, windows, Room, dimensions, views, schedule and sheet authoring/readback","Full Test B dependent/document updates and rollback fixture unavailable; historical primitive evidence excluded"])); } }
+internal sealed class IfcExecutor : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.FromResult(new BackendExecution("adapter capability declaration; no runtime probe","unavailable",["IFC executor not implemented/configured; optional dependency approval pending (ADR0006)","IFC cannot satisfy mandatory native Revit annotations/views/sheets/RVT save-reopen"])); } }
+internal sealed class RevitExecutor : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.FromResult(new BackendExecution("adapter capability declaration; no process probe; no model writes","not observed",["Existing native executor supports level/wall primitives only","Missing door, windows, Room, dimensions, views, schedule and sheet authoring/readback","Full Test B dependent/document updates and rollback fixture unavailable; historical primitive evidence excluded"])); } }
 internal sealed class UnsupportedExecutor(string backend) : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token)=>Task.FromResult(new BackendExecution("unsupported backend: "+backend,"unavailable",["unsupported backend"])); }
+
 
 
 
