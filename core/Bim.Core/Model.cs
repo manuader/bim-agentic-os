@@ -30,6 +30,27 @@ public static class Compiler
             if(e.Dependencies.Any(d => !ids.Contains(d))) issues.Add(new("missing_dependency",e.Id,"Dangling dependency"));
             if(e.Kind == "wall" && (e.GeometryMetres.Length != 6 || e.GeometryMetres[4] <= 0 || e.GeometryMetres[5] <= 0 || (e.GeometryMetres[0] == e.GeometryMetres[2] && e.GeometryMetres[1] == e.GeometryMetres[3]))) issues.Add(new("wall_geometry",e.Id,"Invalid wall axis/height/thickness"));
         }
+        // Remove prerequisites before their dependents. Remaining nodes contain a cycle.
+        // Iterative traversal avoids stack growth for deep valid dependency chains.
+        var prerequisites = new Dictionary<Guid,int>();
+        var dependents = new Dictionary<Guid,List<Guid>>();
+        foreach(var id in ids) { prerequisites.Add(id,0); dependents.Add(id,new()); }
+        var visitedIds = new HashSet<Guid>();
+        foreach(var e in p.Elements) {
+            if(!visitedIds.Add(e.Id)) continue; // Duplicate identities already have an issue.
+            foreach(var dependency in e.Dependencies) {
+                if(!ids.Contains(dependency)) continue; // Dangling references already have an issue.
+                prerequisites[e.Id]++;
+                dependents[dependency].Add(e.Id);
+            }
+        }
+        var ready = new Queue<Guid>(prerequisites.Where(pair=>pair.Value==0).Select(pair=>pair.Key));
+        var processed = 0;
+        while(ready.TryDequeue(out var id)) {
+            processed++;
+            foreach(var dependent in dependents[id]) if(--prerequisites[dependent]==0) ready.Enqueue(dependent);
+        }
+        if(processed != ids.Count) issues.Add(new("dependency_cycle",null,"Cyclic logical dependencies"));
         return issues.ToArray();
     }
     public static ExecutionPlan Diff(Project before, Project after)

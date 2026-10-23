@@ -13,6 +13,32 @@ Check(!diff.DirtyIds.Contains(other),"unrelated identity preserved");
 Check(Compiler.Diff(p,p).Operations.Length==0,"no-op");
 Check(Compiler.Validate(p with { Elements=[p.Elements[0],p.Elements[0]] }).Length>0,"duplicate rejected");
 Check(Compiler.Validate(p with { Elements=[p.Elements[1]] }).Length>0,"dangling dependency rejected");
+var selfCycle=p with { Elements=[p.Elements[3] with {Dependencies=[other]}] };
+var pairCycle=p with { Elements=[p.Elements[1] with {Dependencies=[sheet]},p.Elements[2]] };
+Check(Compiler.Validate(selfCycle).Any(i=>i.Code=="dependency_cycle"),"self dependency rejected as cycle");
+Check(Compiler.Validate(pairCycle).Any(i=>i.Code=="dependency_cycle"),"two element dependency cycle rejected");
+var tripleCycle=p with {Elements=[p.Elements[0] with {Dependencies=[sheet]},p.Elements[1],p.Elements[2]]};
+Check(Compiler.Validate(tripleCycle).Any(i=>i.Code=="dependency_cycle"),"three element dependency cycle rejected");
+var sharedDag=p with {Elements=[p.Elements[0],p.Elements[1],p.Elements[2] with {Dependencies=[wall,plan]}]};
+Check(Compiler.Validate(sharedDag).Length==0,"shared prerequisite DAG accepted");
+var chainIds=Enumerable.Range(0,12000).Select(_=>Guid.NewGuid()).ToArray();
+var chain=p with {Elements=chainIds.Select((id,i)=>new Element(id,"level",[0],i+1<chainIds.Length?[chainIds[i+1]]:[],new("fixture","specified"))).ToArray()};
+Check(Compiler.Validate(chain).Length==0,"12000 element dependency chain accepted without recursion");
+Check(Compiler.Validate(pairCycle with {Elements=[pairCycle.Elements[0],pairCycle.Elements[0]]}).Any(i=>i.Code=="duplicate_id"),"duplicate cyclic identities report validation issue");
+Check(Compiler.Validate(selfCycle with {Elements=[selfCycle.Elements[0] with {Dependencies=[other,Guid.NewGuid()]}]}).Any(i=>i.Code=="missing_dependency"),"cycle with dangling dependency reports validation issue");
+foreach(var cyclic in new[]{selfCycle,pairCycle,tripleCycle}) {
+ try {Compiler.Diff(p,cyclic);throw new Exception("cyclic_diff_accepted");}catch(InvalidOperationException ex) when(ex.Message=="invalid_ir"){Check(true,"diff rejects cyclic desired state");}
+ try {Compiler.Diff(cyclic,p);throw new Exception("cyclic_before_accepted");}catch(InvalidOperationException ex) when(ex.Message=="invalid_ir"){Check(true,"diff rejects cyclic existing state");}
+}
+var cycleDir=Path.Combine(envRoot(),"bim-cycle-guard-"+Guid.NewGuid());
+var cycleStore=new ProjectStore(cycleDir); cycleStore.Initialize(p);
+var snapshotBefore=File.ReadAllBytes(Path.Combine(cycleDir,"project.json"));
+var forgedCyclePlan=new ExecutionPlan(p.Id,p.Revision,Compiler.Hash(p),Compiler.Hash(pairCycle),[],[]);
+try {cycleStore.Commit(pairCycle,forgedCyclePlan,"cycle");throw new Exception("cyclic_commit_accepted");}catch(InvalidOperationException ex) when(ex.Message=="invalid_ir"){Check(true,"intended store rejects cyclic snapshot");}
+Check(File.ReadAllBytes(Path.Combine(cycleDir,"project.json")).SequenceEqual(snapshotBefore) && !File.Exists(Path.Combine(cycleDir,"journal.jsonl")) && !File.Exists(Path.Combine(cycleDir,"checkpoint-0.json")),"cyclic commit leaves persisted state unchanged");
+var cycleInitDir=Path.Combine(envRoot(),"bim-cycle-init-"+Guid.NewGuid());
+try {new ProjectStore(cycleInitDir).Initialize(selfCycle);throw new Exception("cyclic_initialize_accepted");}catch(InvalidOperationException ex) when(ex.Message=="invalid_ir"){Check(true,"intended store rejects cyclic initialization");}
+Check(!File.Exists(Path.Combine(cycleInitDir,"project.json")),"cyclic initialization publishes no snapshot");
 var dir=Path.Combine(Environment.GetEnvironmentVariable("BIM_TEST_ROOT") ?? Path.GetTempPath(),"bim-test-"+Guid.NewGuid()); var store=new ProjectStore(dir); store.Initialize(p);
 Check(store.Commit(next,diff,"rev1").Revision==1,"durable revision");
 Check(new ProjectStore(dir).Commit(next,diff,"rev1").Revision==1,"retry persisted idempotency");
