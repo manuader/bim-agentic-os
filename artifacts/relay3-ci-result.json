@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "run_id": 40015266756,
+  "url": "https://github.com/manuader/bim-agentic-os/actions/runs/40015266756",
+  "head_sha": "5a1c3b6",
+  "branch": "relay3",
+  "status": "completed",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "core",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "ifc",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "codeql",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "codeql-python",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ],
+  "scope": "Ubuntu: verify.ps1 (includes first build of interfaces/mcp and tests/mcp with --warnaserror and mcp-contract against the real CLI binary), actual IFC integration, CodeQL C#/Python. No Windows or native Revit runner.",
+  "logs": "step logs not readable from relay5 (results host blocked); a failing evidence command would have failed the core job"
+}

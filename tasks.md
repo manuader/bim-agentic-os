@@ -25,7 +25,7 @@ Loaded by relay3 (Claude) after N01; owner answered "[No preference]", so the co
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| M01 | MCP stdio server over the same CLI services | 🟢 | N01 | interfaces/mcp; tests/mcp; scripts/verify.ps1 (wiring line only) | `dotnet run --project tests/mcp` passes: initialize, tools/list, tools/call for diff/validate/room/plan return byte-identical JSON to the CLI; no new package; wired into verify.ps1; CI green | target unit-tested |
+| M01 | MCP stdio server over the same CLI services | ✅ | N01 | interfaces/mcp; tests/mcp; scripts/verify.ps1 (wiring line only) | `dotnet run --project tests/mcp` passes: initialize, tools/list, tools/call for diff/validate/room/plan return byte-identical JSON to the CLI; no new package; wired into verify.ps1; CI green | target unit-tested |
 | R01 | ADR proposed: Core ProjectStore ↔ backend receipt cross-store recovery | ✅ | — | docs/architecture/adr/0007-cross-store-recovery.md | ADR in status proposed with options, tradeoffs, recommendation and test plan; owner decision item in OWNER-TODO | described |
 | G01 | ADR proposed: typed Geometry/Units/Capability contracts | ✅ | — | docs/architecture/adr/0008-typed-geometry-units.md | ADR in status proposed with migration impact on existing tests and records; owner decision item in OWNER-TODO | described |
 | R02 | Implement approved cross-store recovery | ⏳ | R01 | per ADR0007 option A (accepted) | approved option implemented with TDD and crash-point tests | target unit-tested |
@@ -35,9 +35,9 @@ Loaded by relay3 (Claude) after N01; owner answered "[No preference]", so the co
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 9/13 done (69.2 %)
+Progress: 10/13 done (76.9 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
-- Relay3 batch — MCP, recovery and typed contracts: 2/6
+- Relay3 batch — MCP, recovery and typed contracts: 3/6
 Next ready: R02, G02
 

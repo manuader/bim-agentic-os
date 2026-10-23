@@ -242,13 +242,14 @@
     },
     {
       "id": "mcp-stdio-server",
-      "status": "described",
+      "status": "unit-tested",
       "evidence": [
         "interfaces/mcp/McpServer.cs",
-        "tests/mcp/Program.cs"
+        "tests/mcp/Program.cs",
+        "artifacts/relay3-ci-result.json"
       ],
       "blocker": null,
-      "scope": "Dependency-free stdio JSON-RPC MCP server exposing diff/validate/room/plan with text byte-equal to the CLI; tests compare against the real CLI binary. Not compiled yet: relay3 had no .NET SDK; promote to unit-tested only after verify.ps1 passes (CI or Windows)."
+      "scope": "Dependency-free stdio JSON-RPC MCP server exposing diff/validate/room/plan; contract test compares content text byte-for-byte against the real CLI binary. Verified on Ubuntu CI run 40015266756 only; Windows gate not yet re-run."
     }
   ]
 }
