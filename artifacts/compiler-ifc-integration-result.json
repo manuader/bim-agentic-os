@@ -1,0 +1,41 @@
+{
+  "verification_state": "integration-tested (ifc)",
+  "product_code_commit": "230d2ba",
+  "backend_version": "0.9.0.post1",
+  "platform": "Windows",
+  "full_test_suite": {
+    "result": "pass",
+    "seconds": 90.026,
+    "tests": 11
+  },
+  "actual_cli": {
+    "evaluation_exit": 2,
+    "shell_elapsed_ms": 21761.738,
+    "backend_acceptance": true,
+    "product_acceptance": false,
+    "counts": {
+      "passed": 41,
+      "failed": 0,
+      "blocked": 0,
+      "unsupported": 9
+    },
+    "backend_checks_passed": 8,
+    "artifact_hashes_independently_checked": true
+  },
+  "saved_artifact_sha256": {
+    "before.ifc": "60ca35178a072ab485b2fb5c85a73ddcd08c8eefec8cb8fc04dd0a9550551e1d",
+    "room.ifc": "b9e5fc1c57bb7df058820069b9a5dfad3d83a99b1c9c0a1dbc4f50cba58fdf2a"
+  },
+  "command": "pwsh -NoProfile -File scripts/evaluate.ps1 -Backend ifc",
+  "scope": "Existing C# RoomCompiler and Compiler.Diff through typed adapter to real IFC and strict evaluator; canonical rectangle width-only",
+  "native_documentation_supported": false,
+  "full_native_delivery_latency_ms": null,
+  "limits": [
+    "door/windows are fixture extras, not Core-authored",
+    "plan/schedule/sheet unsupported",
+    "latest-only retries; older operation after later correction rejects without writes",
+    "no arbitrary BIM-IR or complete RVT/IFC roundtrip",
+    "no Revit execution this wave",
+    "macOS unexecuted"
+  ]
+}

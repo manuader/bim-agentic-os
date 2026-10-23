@@ -148,10 +148,12 @@
         "tests/ifc/test_worker.py",
         "artifacts/ifc-integration-result.json",
         "artifacts/evaluation-ifc-result.json",
-        "artifacts/ifc-ci-result.json"
+        "artifacts/ifc-ci-result.json",
+        "artifacts/compiler-ifc-integration-result.json",
+        "artifacts/compiler-ifc-tests-result.json"
       ],
-      "blocker": "Arbitrary BIM-IR execution and native Revit documentation remain unsupported; macOS not executed.",
-      "scope": "Fixed IFC4 fixture: actual authoring/save-reopen/resize/readback/GlobalIds/receipts/retry/rollback/schema/triangulated geometry; verified on Windows and Ubuntu CI."
+      "blocker": "Arbitrary BIM-IR, complete native Revit documentation and macOS remain unsupported/unexecuted.",
+      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice verified; current Ubuntu CI pending."
     },
     {
       "id": "github-publication",
@@ -186,7 +188,7 @@
         "artifacts/evaluation-engineering-result.json"
       ],
       "scope": "Typed offline acceptance oracle, JSON CLI/PowerShell launcher and strict mandatory criteria. Synthetic fixtures cannot confer backend acceptance.",
-      "blocker": "Actual IFC/Revit full A/B adapters remain blocked; reported backend runs fail closed."
+      "blocker": "Real IFC portable acceptance is verified separately; full native Revit A/B remains unsupported. Synthetic inputs cannot confer backend provenance."
     },
     {
       "id": "ifc-headless-evaluation",
@@ -196,10 +198,39 @@
         "tests/ifc/test_worker.py",
         "artifacts/ifc-integration-result.json",
         "artifacts/evaluation-ifc-result.json",
-        "artifacts/ifc-ci-result.json"
+        "artifacts/ifc-ci-result.json",
+        "artifacts/compiler-ifc-integration-result.json",
+        "artifacts/compiler-ifc-tests-result.json"
       ],
-      "scope": "Fixed IFC4 fixture: actual authoring/save-reopen/resize/readback/GlobalIds/receipts/retry/rollback/schema/triangulated geometry; verified on Windows and Ubuntu CI.",
-      "blocker": "Arbitrary BIM-IR execution and native Revit documentation remain unsupported; macOS not executed."
+      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice verified; current Ubuntu CI pending.",
+      "blocker": "Arbitrary BIM-IR, complete native Revit documentation and macOS remain unsupported/unexecuted."
+    },
+    {
+      "id": "baton-codex-coordination",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/baton.ps1",
+        "tests/baton/verify.ps1",
+        "artifacts/baton-harness-result.json",
+        "docs/harness/baton-codex.md"
+      ],
+      "blocker": "First future scheduled execution unobserved; Linux coordination awaits current CI. No automatic stale lock takeover.",
+      "scope": "Pinned five MIT Baton skills; Windows controller/heavy leases and guarded computed progress,28 assertions; owner-approved hourly same-chat native automation creation ACTIVE."
+    },
+    {
+      "id": "compiler-driven-ifc-canonical-slice",
+      "status": "integration-tested (ifc)",
+      "evidence": [
+        "adapters/ifc/Bim.Ifc.Compiler/IfcCompiler.cs",
+        "tests/ifc-compiler/Program.cs",
+        "runtimes/ifc/compiled_request.py",
+        "tests/ifc/test_compiled.py",
+        "artifacts/compiler-ifc-engineering-result.json",
+        "artifacts/compiler-ifc-tests-result.json",
+        "artifacts/compiler-ifc-integration-result.json"
+      ],
+      "blocker": "Width-only canonical room; fixture-only hosted extras, documentation unsupported, historical retries after later correction rejected; no native Revit run.",
+      "scope": "Existing frozen C# Core snapshots/diff, exact committed-revision hashes, persisted logical UUIDs, custom6-to6.4m and two successive corrections;11 real IFC tests90.026s; CLI backend=true/product=false."
     }
   ]
 }

@@ -1,0 +1,133 @@
+{
+  "source": "https://github.com/manuader/baton",
+  "source_commit": "d0723d8bfa6a99d8dca5900478848b1834089aa2",
+  "license": "MIT",
+  "verification_state": "unit-tested",
+  "scope": "Pinned skills installed; native Windows coordination adapter only. No future scheduled execution or Linux coordination claim.",
+  "oracle": "pwsh -NoProfile -File tests/baton/verify.ps1",
+  "assertions": 28,
+  "result": "pass",
+  "review": "Independent reviewer accepted ece1fe7 after three concrete findings were resolved",
+  "automation": {
+    "destination": "current chat",
+    "cadence": "hourly",
+    "creation_observed": true,
+    "scheduled_execution_observed": false,
+    "status": "ACTIVE",
+    "id": "bim-agentic-os-baton"
+  },
+  "files": [
+    {
+      "path": ".agents/skills/baton/SKILL.md",
+      "sha256": "B1EB122F554B1847D3D6B28AAD1870BDDC4376E0B09CE72502F432581C256D10"
+    },
+    {
+      "path": ".agents/skills/baton/assets/brief.md",
+      "sha256": "B34F6D508A608AF7638CF556B79A9999D0E5FEFFFB4150496CE1DB576B5CC57A"
+    },
+    {
+      "path": ".agents/skills/baton/assets/OWNER-TODO.md",
+      "sha256": "60F55B210B7010320701011D1A5878CD58FB039B36FCA0D070ADE68D5CD9672B"
+    },
+    {
+      "path": ".agents/skills/baton/assets/OWNER.md",
+      "sha256": "C695B084CD3EE1DCAE9AB0B44DF37BE9AAD5FE013087A7F1AE22C2B6095683BE"
+    },
+    {
+      "path": ".agents/skills/baton/assets/routine.md",
+      "sha256": "17FDFCB1989572C3D2D3B5C96E27C4989171DC9D17DCB9A7E93EDB8826404FE3"
+    },
+    {
+      "path": ".agents/skills/baton/assets/STATUS.md",
+      "sha256": "194DD39996E850CCF031E6928C5F2E72068B134FB2BCC9B42179642063B943C3"
+    },
+    {
+      "path": ".agents/skills/baton/assets/tasks.md",
+      "sha256": "EE9CE1342AB7865A7029B5C478F4C85FCB4B109AE5B37941064429A1B471D362"
+    },
+    {
+      "path": ".agents/skills/baton/assets/wave-common.md",
+      "sha256": "2724F9743E26B0C4B36CC4E8791FD4680569CD48F03072D440FB3B2FC348E0E7"
+    },
+    {
+      "path": ".agents/skills/baton/references/dispatch.md",
+      "sha256": "E52F1B493AE91FA5DCB43416950DFF415142B61D2831E32106306E7567322BEC"
+    },
+    {
+      "path": ".agents/skills/baton/references/owner.md",
+      "sha256": "EE9A0CB0ECF093E7B023514448028BA46778036FA9FE9486B83783841BBDAACC"
+    },
+    {
+      "path": ".agents/skills/baton/references/relay.md",
+      "sha256": "3CFA0773C288823E3AFD2A56767173A530BC56D0D5C0305E606185FAA862AE25"
+    },
+    {
+      "path": ".agents/skills/baton/references/setup.md",
+      "sha256": "A75387E63D8F464319025217C58A95382ABB04FB8215BA1EA9EFA2A52DDA4407"
+    },
+    {
+      "path": ".agents/skills/baton/references/traps.md",
+      "sha256": "95092BF32B23BFF6E73D9CEB9B408E3BBE2719C17D46CC906CE1BBCE6A19951E"
+    },
+    {
+      "path": ".agents/skills/baton/scripts/clean-worktrees.sh",
+      "sha256": "7A679153B91A5C3D53003693A5E569EC5CA1C3A8A37E8AD502B84264ABCAFCE7"
+    },
+    {
+      "path": ".agents/skills/baton/scripts/lock.sh",
+      "sha256": "A4205C5B6849D4E8934DA2EC359DA1C12B07CD92CB1AE8FE32A49ED9ADE822DC"
+    },
+    {
+      "path": ".agents/skills/baton/scripts/progress.sh",
+      "sha256": "D055EF60CE14AE12C376AC2DDA338D85E80F6D4623D9FCE7B690BB68B9AB9403"
+    },
+    {
+      "path": ".agents/skills/avo-harness/SKILL.md",
+      "sha256": "64358B4CDBAFF30DE0BEEE85C07070B2B4D50387E1157465F0B6E9ADBE381062"
+    },
+    {
+      "path": ".agents/skills/avo-harness/assets/journal.md",
+      "sha256": "34FD03D309F097ADDE3ADF70601D3BAB4B669E2C1923702D15B84DE9A3939F4B"
+    },
+    {
+      "path": ".agents/skills/avo-harness/references/loop.md",
+      "sha256": "27395000FCD84F3EC1AACF53F9149D2ECCDDFF26162D7E497987C73E4F15ED4F"
+    },
+    {
+      "path": ".agents/skills/avo-harness/references/memory.md",
+      "sha256": "3ACADEEF1939DD9ECA97820DFE761F9482CBC2B9EA1A3EE33EE349C67E10622F"
+    },
+    {
+      "path": ".agents/skills/avo-harness/references/supervisor.md",
+      "sha256": "760087E741AF868E7F717C1D7C08433683A9C950F076031AD082508D685B3BDA"
+    },
+    {
+      "path": ".agents/skills/handoff-system/SKILL.md",
+      "sha256": "9690F9FE02E69271CCCB5BBE1ED7C323499FC3B08F386850F055CAD12EF50A47"
+    },
+    {
+      "path": ".agents/skills/handoff-system/references/installing.md",
+      "sha256": "10180F4281B7E8553E396A8212454E85B013D5593492E8BC449EB66D03C4934F"
+    },
+    {
+      "path": ".agents/skills/writing-session-handoff/SKILL.md",
+      "sha256": "45E7C28F0022068352C97436E7507323B582B8EAFF82708AA511AA9F2FF88899"
+    },
+    {
+      "path": ".agents/skills/writing-session-handoff/references/templates.md",
+      "sha256": "101AC4F8A951B908C0835E86219761E0A1E6D2A3B92DC1C33F14DAB47C704F08"
+    },
+    {
+      "path": ".agents/skills/writing-general-handoff/SKILL.md",
+      "sha256": "B0034942A66D67DDEF15575D423CAC069C9D0CFCB81BFF14BF94DF039D8C472C"
+    },
+    {
+      "path": ".agents/skills/writing-general-handoff/references/template.md",
+      "sha256": "D127386B35CA58C42622E9A3FACFF111F3A1073FF146E7AB7B42E46CBEF7A050"
+    },
+    {
+      "path": ".agents/skills/BATON-LICENSE",
+      "sha256": "5A0D70B5FE4B10F512A61AB97FF7E5D7BF7F4FEF96E6F6DD808B370346E55160"
+    }
+  ]
+}

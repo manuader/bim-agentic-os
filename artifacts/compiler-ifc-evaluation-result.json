@@ -1,0 +1,587 @@
+{
+  "verification_state": "integration-tested (ifc)",
+  "outcome": "fail",
+  "scope": "full Test A/B",
+  "backend": "ifc",
+  "backend_version": "0.9.0.post1",
+  "source": "actual isolated IFC authoring and reopened readback",
+  "timing_scope": "IFC runtime execution and independent C# oracle; native Revit documentation unsupported",
+  "counts": {
+    "passed": 41,
+    "failed": 0,
+    "blocked": 0,
+    "unsupported": 9
+  },
+  "metrics": {
+    "intent_parse_ms": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "semantic_query_ms": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "solver_ms": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "diff_ms": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "runtime_wait_ms": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "revit_execute_ms": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "revit_regeneration_ms": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "native_readback_ms": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "validation_ms": {
+      "value": 8440.372500102967,
+      "reason": "measured elapsed worker time"
+    },
+    "documentation_ms": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "total_ms": {
+      "value": 17058.054300025105,
+      "reason": "measured elapsed worker time"
+    },
+    "llm_calls": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "model_elements_read": {
+      "value": 36,
+      "reason": "logical product observations/authored/updated; excludes auxiliary IFC entities and validation traversal"
+    },
+    "model_elements_written": {
+      "value": 14,
+      "reason": "logical product observations/authored/updated; excludes auxiliary IFC entities and validation traversal"
+    },
+    "transaction_count": {
+      "value": null,
+      "reason": "not instrumented or not applicable to isolated IFC fixture authoring"
+    },
+    "unintended_element_changes": {
+      "value": 0,
+      "reason": "logical product observations/authored/updated; excludes auxiliary IFC entities and validation traversal"
+    }
+  },
+  "cases": [
+    {
+      "id": "A",
+      "outcome": "fail",
+      "counts": {
+        "passed": 26,
+        "failed": 0,
+        "blocked": 0,
+        "unsupported": 7
+      },
+      "criteria": [
+        {
+          "id": "level",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 1,
+          "actual": 1,
+          "tolerance": 0
+        },
+        {
+          "id": "clear_width_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 5000,
+          "actual": 5000,
+          "tolerance": 0
+        },
+        {
+          "id": "clear_depth_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 4000,
+          "actual": 4000,
+          "tolerance": 0
+        },
+        {
+          "id": "wall_count",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 4,
+          "actual": 4,
+          "tolerance": 0
+        },
+        {
+          "id": "wall_thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall_height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "door_count",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 1,
+          "actual": 1,
+          "tolerance": 0
+        },
+        {
+          "id": "door_width_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 900,
+          "actual": 900,
+          "tolerance": 0
+        },
+        {
+          "id": "window_count",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 2,
+          "actual": 2,
+          "tolerance": 0
+        },
+        {
+          "id": "room_boundary",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "dimensions",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "plan",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "view_3d",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "schedule",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "sheet",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "categories",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "hosting",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "units",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "references",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "geometry_consistency",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "identities",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "native_save",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "native_reopen",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "wall:east:thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:east:height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:north:thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:north:height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:south:thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:south:height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:west:thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:west:height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "door:door:width_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 900,
+          "actual": 900,
+          "tolerance": 0
+        },
+        {
+          "id": "room:room:area_m2",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 20,
+          "actual": 20,
+          "tolerance": 1E-09
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "outcome": "fail",
+      "counts": {
+        "passed": 15,
+        "failed": 0,
+        "blocked": 0,
+        "unsupported": 2
+      },
+      "criteria": [
+        {
+          "id": "requires_A",
+          "outcome": "pass",
+          "reason": "Test A passed",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "baseline_matches_A",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "width_delta_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 400,
+          "actual": 400,
+          "tolerance": 0
+        },
+        {
+          "id": "exterior_anchor",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "unaffected_ids",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "post_revision_acceptance",
+          "outcome": "unsupported",
+          "reason": "full room acceptance must remain satisfied after width correction",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "dependent_hosts",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "documentation_updates",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "semantic_diff",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "idempotency_key",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "retry_no_duplicates",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "retry_revision",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "forced_failure",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "rollback_snapshot",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "rollback_revision",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "validation",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "unintended_changes",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        }
+      ]
+    }
+  ],
+  "gaps": [
+    "dimensions: IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+    "plan: IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+    "view_3d: IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+    "schedule: IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+    "sheet: IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+    "native_save: IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+    "native_reopen: IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+    "post_revision_acceptance: full room acceptance must remain satisfied after width correction",
+    "documentation_updates: IFC cannot prove native Revit annotation/view/sheet/RVT acceptance"
+  ],
+  "backend_checks": [
+    {
+      "id": "ifc_schema",
+      "outcome": "pass",
+      "reason": "actual reopened IFC schema/entities/triangulated geometry or persisted transaction evidence",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "ifc_geometry",
+      "outcome": "pass",
+      "reason": "actual reopened IFC schema/entities/triangulated geometry or persisted transaction evidence",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "ifc_hosting",
+      "outcome": "pass",
+      "reason": "actual reopened IFC schema/entities/triangulated geometry or persisted transaction evidence",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "ifc_save_reopen",
+      "outcome": "pass",
+      "reason": "actual reopened IFC schema/entities/triangulated geometry or persisted transaction evidence",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "ifc_idempotency",
+      "outcome": "pass",
+      "reason": "actual reopened IFC schema/entities/triangulated geometry or persisted transaction evidence",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "ifc_rollback",
+      "outcome": "pass",
+      "reason": "actual reopened IFC schema/entities/triangulated geometry or persisted transaction evidence",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "ifc_incremental",
+      "outcome": "pass",
+      "reason": "actual reopened IFC schema/entities/triangulated geometry or persisted transaction evidence",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "ifc_receipts",
+      "outcome": "pass",
+      "reason": "actual reopened IFC schema/entities/triangulated geometry or persisted transaction evidence",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    }
+  ],
+  "backend_acceptance": true,
+  "product_acceptance": false,
+  "evidence_origin": "runtime-execution"
+}

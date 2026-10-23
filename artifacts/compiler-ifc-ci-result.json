@@ -1,0 +1,9 @@
+{
+  "verification_state": "described",
+  "scope": "GitHub Actions on current compiler-driven IFC slice",
+  "execution_observed": false,
+  "run_id": null,
+  "head_sha": null,
+  "conclusion": null,
+  "note": "Local engineering and real IFC gates passed; current remote CI will be recorded after publication."
+}

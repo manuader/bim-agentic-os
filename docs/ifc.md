@@ -10,6 +10,7 @@ From the repository root, create an environment with an installed Python3.12 exe
 & $BimPython -m venv .tools/ifc
 ./.tools/ifc/Scripts/python.exe -m pip install -r requirements/ifc.txt
 ./.tools/ifc/Scripts/python.exe -m pip check
+if (Test-Path .tools/dotnet/dotnet.exe) { $env:BIM_DOTNET = (Resolve-Path .tools/dotnet/dotnet.exe).Path }
 ./.tools/ifc/Scripts/python.exe -m unittest discover -s tests/ifc -p 'test_*.py' -v
 pwsh -File scripts/evaluate.ps1 -Backend ifc -Python (Resolve-Path .tools/ifc/Scripts/python.exe).Path
 ```
@@ -20,7 +21,9 @@ The full A/B command returns exit2 when IFC portable checks pass and mandatory R
 
 ## Execution and evidence contract
 
-The worker authors an IFC4 level, four200mm walls/3000mm height, a900mm door, two windows and a5000x4000mm clear Space. Openings use real void/fill relationships and body geometry; Space boundaries refer to the walls. Stable logical IDs map to IFC GlobalIds. Its fixture revision changes width by400mm, preserves the west anchor and native identities, adjusts affected geometry and persists a revision/operation receipt. Retry reads the saved receipt; a conflicting operation key fails. A forced failure after staged mutation must preserve the original persisted file/revision. This is file publication rollback, not a claim of Autodesk transactions or crash/power-loss durability.
+The evaluator now uses the existing C# RoomCompiler and Compiler.Diff through `adapters/ifc/Bim.Ifc.Compiler`; the worker CLI requires that compiled request. Default evaluation remains a5000x4000mm room and+400mm width correction. Canonical custom rectangles are supported within the adapter's explicit limits; the regression oracle also uses6→6.4m and two successive revisions on one saved IFC. The saved Core schema is unchanged.
+
+The worker authors an IFC4 level, four200mm walls, a Space, plus an adapter-owned900mm door and two hosted windows. Door/windows are fixture extras, not Core-authored BIM-IR elements. Six Core UUIDs persist in BimCompiledIdentity mapped to IFC GlobalIds. Openings use real void/fill relationships and bodies; Space boundaries refer to the walls. Width changes preserve the west anchor and native identities, adjust affected geometry and persist revision/operation receipts. The exact C# committed snapshot hash includes its incremented revision, enabling another correction. Latest-operation retry reads and verifies the saved receipt/state; conflicting payloads and historical retries after a later correction fail closed without writes. A forced failure after staged mutation preserves the original persisted file/revision. This is file publication rollback, not Autodesk transactions or crash/power-loss durability.
 
 Observation geometry and parameters come from reopened entities/placements/profiles and independent triangulation/schema validation, with negative geometry/hosting cases. No native Dimension/Plan/View3D/Schedule/Sheet is fabricated. Their observation values are null and criteria remain unsupported. The mandatory IFC checks cover schema, geometry, hosting, save/reopen, idempotency, rollback, incrementality and receipts.
 
@@ -30,4 +33,6 @@ Metrics state their scope. IFC logical-product counters exclude auxiliary schema
 
 ## Limits
 
-This is a deterministic evaluation fixture executor, not a general IFC editor or arbitrary BIM-IR execution service. It does not implement complete RVT/IFC roundtrip, native Revit documentation, production model merging, human architectural approval, IDS/BCF execution or Blender. Expanded typed BIM-IR contracts still require a separately approved schema ADR. Generated models stay in ignored `.bim/`; published summaries must exclude personal paths and production identifiers.
+This is a bounded canonical RoomCompiler rectangle/width-correction adapter, not a general IFC editor or arbitrary BIM-IR execution service. The low-level API preserves bytes on no-op; the full A/B harness rejects no-op before creating an output directory because it must observe an actual correction/rollback. It does not implement complete RVT/IFC roundtrip, native Revit documentation, production model merging, human architectural approval, IDS/BCF execution or Blender. Expanded typed BIM-IR contracts still require a separately approved schema ADR. Generated models stay in ignored `.bim/`; published summaries must exclude personal paths and production identifiers.
+
+CLI `ifc-export before.json after.json plan.json room-guid operation-id` emits the adapter-only packet; `evaluate ifc python worker.py output-directory request.json` executes a supplied packet. Default `scripts/evaluate.ps1 -Backend ifc` constructs its packet through that same C# service. Before/after/plan use exact default C# serialized strings and raw UTF-8 hashes; Python never invents a replacement canonical hash. See [adapter scope](../adapters/ifc/Bim.Ifc.Compiler/README.md) and [module contract](contracts/module-contracts.md).

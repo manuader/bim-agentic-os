@@ -1,0 +1,26 @@
+{
+  "verification_state": "integration-tested (ifc)",
+  "outcome": "pass",
+  "product_code_commit": "230d2ba",
+  "command": "python -m unittest discover -s tests/ifc -p test_*.py -v",
+  "backend": "real IfcOpenShell IFC4",
+  "platform": "Windows",
+  "tests": 11,
+  "seconds": 90.026,
+  "test_ids": [
+    "test_compiled.CompiledIfc.test_actual_core_packets",
+    "test_compiled.CompiledIfc.test_consecutive_compiled_revisions",
+    "test_compiled.CompiledIfc.test_invalid_compiled_fields_rejected_before_writes",
+    "test_compiled.CompiledIfc.test_missing_and_tampered_request_rejected_before_writes",
+    "test_compiled.CompiledIfc.test_noop_does_not_write_and_ab_harness_rejects_before_creation",
+    "test_compiled.CompiledIfc.test_retry_rejects_corrupt_persisted_state",
+    "test_compiled.CompiledIfc.test_update_rejects_corrupt_before_revision",
+    "test_worker.IfcIntegration.test_actual_roundtrip_revision_receipts_and_geometry",
+    "test_worker.IfcIntegration.test_refuses_foreign_artifact_without_writes",
+    "test_worker.IfcIntegration.test_resize_preserves_foreign_pending_file",
+    "test_worker.IfcIntegration.test_shifted_opening_profile_is_rejected"
+  ],
+  "raw_log_sha256": "B7C5F6FD34C5A95B4C26F04A1D3B6905EBFB5C9424F8DA02DE47B1EE37B8D565",
+  "scope": "Core-generated5-to5.4m and6-to6.4m; consecutive5-to5.4-to5.8m; persisted identity/receipts/corruption/no-op/prewrite/schema/geometry/rollback and four legacy regressions",
+  "native_execution": false
+}

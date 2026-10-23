@@ -7,6 +7,7 @@ $pwsh = (Get-Process -Id $PID).Path
 try {
     Invoke-EvidenceCommand harness $pwsh @('-NoProfile','-File',"$root/tests/harness/Program.ps1") $evidence
     Invoke-EvidenceCommand static $pwsh @('-NoProfile','-File',"$PSScriptRoot/harness-check.ps1") $evidence
+    Invoke-EvidenceCommand baton-coordination $pwsh @('-NoProfile','-File',"$root/tests/baton/verify.ps1") $evidence
     Invoke-EvidenceCommand native-smoke-cli $pwsh @('-NoProfile','-File',"$root/tests/integration/test-native-smoke-cli.ps1") $evidence
     Invoke-EvidenceCommand fixture-launcher $pwsh @('-NoProfile','-File',"$root/tests/integration/test-fixture-launcher.ps1") $evidence
     if ($HostOnly) {
@@ -20,10 +21,11 @@ try {
         }
         if (!$Dotnet) { throw 'net8 SDK missing. Install .NET 8 SDK or explicitly use -HostOnly; target build remains unverified.' }
         Invoke-EvidenceCommand sdk $Dotnet @('--info') $evidence
-        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','interfaces/cli','tests/evaluation','tests/Bim.Tests','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests')) {
+        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/evaluation','tests/Bim.Tests','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests')) {
             Invoke-EvidenceCommand ('build-' + ($project -replace '/', '-')) $Dotnet @('build',"$root/$project",'--configuration','Release','--warnaserror') $evidence
         }
         Invoke-EvidenceCommand evaluator-unit-health $Dotnet @('run','--project',"$root/tests/evaluation",'--configuration','Release','--no-build') $evidence
+        Invoke-EvidenceCommand ifc-compiler-contract $Dotnet @('run','--project',"$root/tests/ifc-compiler",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand evaluator-cli-health $pwsh @('-NoProfile','-File',"$root/tests/evaluation/test-evaluate-cli.ps1",'-Dotnet',$Dotnet) $evidence
         Invoke-EvidenceCommand native-cli-endpoint $pwsh @('-NoProfile','-File',"$root/tests/integration/test-native-cli-endpoint.ps1",'-Dotnet',$Dotnet,'-CliDll',"$root/interfaces/cli/bin/Release/net8.0/Bim.Cli.dll") $evidence
         Invoke-EvidenceCommand checkpoint-guards $Dotnet @('run','--project',"$root/tests/integration/CheckpointGuard.Tests",'--configuration','Release','--no-build') $evidence

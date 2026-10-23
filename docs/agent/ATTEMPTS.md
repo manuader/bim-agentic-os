@@ -73,3 +73,23 @@ Controller actual IFC result:41 case checks pass,0 fail/blocked,9 unsupported; e
 
 Exact-commit remote verification: e689aaa GitHub run39889181516 succeeded on its first run, including actual Ubuntu IFC tests/enforced portable acceptance, core gate, C# CodeQL and Python CodeQL. No CI failure or retry is invented. Public evidence is artifacts/ifc-ci-result.json; raw generated IFCs remain local.
 
+
+## Baton / compiler-driven IFC relay —2026-10-23
+
+| Individual case / failures | Hypothesis and change | Evidence |
+|---|---|---|
+| Baton missing adapter /1 intended red | native coordination absent |28 assertions final and independent review |
+| Unauthorized progress update /1 intended red | update bypassed lease | guarded holder requirement; board bytes preserved |
+| Tab heading preservation /1 intended red | space-only section boundary | unified heading grammar; unrelated section retained |
+| Incomplete lease metadata /1 intended red | update used partial validator | shared full fail-closed validator; malformed timestamps rejected |
+| C# IFC packet missing /1 intended red | typed exporter absent |10 contract assertions; Core unchanged |
+| Worker request intake missing /1 intended red | execute overload absent | strict prewrite packet validation and actual packets |
+| Consecutive revision /1 intended red | after-plan hash omitted committed revision increment | exact C# CommittedAfterJson;7→8→9 and stable identities |
+| No-op A/B preflight /1 intended red | created directory before rejecting no-op | reject before mkdir; lowlevel bytes unchanged |
+| Corrupt retry metadata /1 intended red | receipt branch skipped persistent-state integrity | exact state/receipt checks; bytes unchanged |
+| Corrupt before revision /1 intended red | public revision token not checked | compare r+ExpectedRevision before mutation |
+| Actual CLI envelope /1 integration red | strict Disallow parser rejected new undeclared metadata | typed internal fields plus request/native mapping checks; strictness retained |
+| Binding validation port /1 intended red | helper absent and null nested payload unsafe |68 evaluator assertions including10 new cases |
+| Controller evaluation build /2 restricted failures | MSBuild reference-framework task failed with0errors/0warnings | same source/SDK/TEMP/args passed elevated; complete gate passed. Exact failing OS operation unknown; no source workaround |
+
+No individual case exhausted3failed attempts. Syntax-only unmatched brace and whitespace amendment were edits, not passing backend tests. Worker complete suite10tests93.744s preceded final revision guard; its affected final-source3tests30.107s passed. Controller supersedes this with fresh final-source11tests90.026s, complete engineering gate and actual CLI41pass/0fail/0blocked/9unsupported,8backend checks, exit2/backend=true/product=false. Raw ledgers/logs preserved in ignored .bim/baton/2026-10-23-core-ifc. Native Revit did not execute this relay.

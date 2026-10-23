@@ -2,6 +2,8 @@
 
 The master product specification supplies the product requirements; [CYCLE_SCOPE](agent/CYCLE_SCOPE.md) narrows the current work and takes precedence for this cycle. [OpenAI's Harness engineering article](https://openai.com/index/harness-engineering/) motivates a short repository map, versioned execution plans, machine-checkable boundaries and agent-readable evidence. These practices are adapted to BIM safety; native integration cannot be replaced with a mock passing result.
 
+[Baton on Codex/Windows](harness/baton-codex.md) adds an exclusive relay, computed [board](../tasks.md), owner inbox, handoffs and serialized heavy work. It complements these checks and Superpowers TDD/review; it does not confer native BIM acceptance or bypass approval gates.
+
 ## Superpowers
 
 Source: [obra/superpowers](https://github.com/obra/superpowers), pinned revision `2ce8aa15d05bd57213e6f746f953aafb7ded7a8b`, MIT. Selected workflow directories were installed using Codex's skill-installer helper into `.agents/skills`. The license is preserved in `.agents/skills/SUPERPOWERS-LICENSE`. No hooks, telemetry, global configuration changes or arbitrary upstream scripts were executed.

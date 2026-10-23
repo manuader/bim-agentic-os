@@ -4,6 +4,8 @@ Current cycle authority: [CYCLE_SCOPE](docs/agent/CYCLE_SCOPE.md). Long-term vis
 
 At session start read [STATE](docs/agent/STATE.md), [BLOCKERS](docs/agent/BLOCKERS.md), [ATTEMPTS](docs/agent/ATTEMPTS.md) and [ADRs](docs/architecture/adr/0001-kernel.md). [Environment](docs/agent/ENVIRONMENT.md), [evaluation design/plan](docs/plans/2026-10-23-evaluation-machine.md), [capability evidence](docs/features.json), [module contracts](docs/contracts/module-contracts.md).
 
+Baton coordination: [Codex/Windows mapping](docs/harness/baton-codex.md), [task board](tasks.md), [general handoff](docs/HANDOFF.md). Current run `.bim/baton/2026-10-23-core-ifc`; inspect its LOCK before writing, read OWNER.md first, never take over an uncertain owner. Controller alone writes the board; isolated agents own disjoint files; serialize heavy commands. `pwsh -NoProfile -File tests/baton/verify.ps1` checks coordination.
+
 Core: `core/Bim.Core`; JSON CLI: `interfaces/cli`; Revit: `runtimes/revit-native`; [IFC setup](docs/ifc.md): `runtimes/ifc`, `tests/ifc`; deterministic regressions: `tests/Bim.Tests`; native probes: `tests/integration`; human oracle templates: `tests/golden`; workflows: `.agents/skills`.
 
 ## Commands and evidence

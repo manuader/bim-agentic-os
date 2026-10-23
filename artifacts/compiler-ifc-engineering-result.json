@@ -1,0 +1,28 @@
+{
+  "verification_state": "unit-tested",
+  "outcome": "pass",
+  "product_code_commit": "230d2ba",
+  "harness_working_tree_included": true,
+  "command": "pwsh -NoProfile -File scripts/verify.ps1",
+  "sdk": "8.0.415",
+  "runtime": "8.0.21",
+  "platform": "Windows 10.0.26200 win-x64",
+  "counts": {
+    "ifc_compiler_contract": 10,
+    "core": 50,
+    "evaluator": 68,
+    "checkpoint_guards": 17,
+    "baton_coordination": 28,
+    "evaluator_cli_health": 5
+  },
+  "native_execution_this_cycle": false,
+  "native_acceptance": false,
+  "scope": "Full available deterministic engineering gate; actual IFC integration is separate",
+  "restricted_build_attempts": {
+    "exact_failing_os_operation": "not identified",
+    "source_changed_to_fix": false,
+    "successful_elevated_same_arguments": true,
+    "failed": 2
+  },
+  "evidence_directory": ".bim/verification/20261023T041040747Z"
+}
