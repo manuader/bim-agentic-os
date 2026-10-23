@@ -1,0 +1,17 @@
+PASS existing owned fixture accepted without bootstrap overwrite rule
+PASS checkpoint_test_opt_in_required
+PASS isolated_test_process_confirmation_required
+PASS checkpoint_paths_must_be_direct_children
+PASS checkpoint_parking_already_exists
+PASS checkpoint_process_ownership_conflict
+PASS checkpoint_document_identity_conflict
+PASS checkpoint_document_identity_conflict
+PASS checkpoint_parking_already_exists
+PASS persisted receipt, exact revision and mapping verified read-only
+PASS checkpoint_receipt_missing
+PASS checkpoint_receipt_conflict
+PASS checkpoint_revision_conflict
+PASS checkpoint_snapshot_conflict
+PASS checkpoint_mapping_conflict
+PASS checkpoint_mapping_conflict
+PASS checkpoint_invalid_batch

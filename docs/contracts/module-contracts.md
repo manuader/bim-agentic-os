@@ -26,3 +26,9 @@ Each task owns named files and public signatures; implementation and review use 
 
 Native transport routing: each Revit process listens on bim-agentic-os-2025-PID. The fixture result binds pipeName to processId; callers must supply that explicit endpoint. The CLI rejects missing/global endpoints before I/O. Routing does not replace exact saved document path and ProjectInformation.UniqueId checks.
 
+
+## Experimental fixture checkpoint
+
+`Request(Operation="fixture.checkpoint", Batch=existingResizeBatch, Checkpoint=FixtureCheckpointRequest(ParkingPath, ExpectedRevision, ExpectedMapping))` verifies an existing receipt without applying a batch. Authorization requires the child-process opt-in config, matching bootstrap result PID/pipe/path/document identity, exactly one owned fixture document and a new direct-child parking path. `BatchReceiptGuard` validates the batch/hash/revision/exact mapping; `BatchExecutor.VerifyReceipt` reads ExtensibleStorage and native geometry without mutation.
+
+The checkpoint saves the fixture, switches to newly owned parking, closes/reopens the fixture, closes parking and reloads native storage for comparison. A failure reports its stage and saved/closed/reopened flags; it does not promise rollback of file operations. A dispatched timeout has unknown completion and must not be automatically retried. Documentation remains unsupported. Target build and pure guard tests do not establish native save/reopen success; see the native evidence record for execution status.

@@ -140,6 +140,17 @@
         "artifacts/ci-first-run.json"
       ],
       "blocker": null
+    },
+    {
+      "id": "native-saved-checkpoint",
+      "status": "partial",
+      "evidence": [
+        "runtimes/revit-native/FixtureCheckpoint.cs",
+        "artifacts/checkpoint-guards-latest.txt",
+        "artifacts/native-checkpoint-build.txt",
+        "tests/integration/native-checkpoint-probe.ps1"
+      ],
+      "blocker": "Target-built and 17 pure guard checks passed. Real save/reopen probe awaits unsigned add-in load in new isolated Revit process; complete documentation remains unsupported."
     }
   ]
 }

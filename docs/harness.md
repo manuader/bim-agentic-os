@@ -23,3 +23,5 @@ Use plan/ledger in `docs/superpowers/plans/` for persistent progress. Upstream B
 Native source check, target build and guarded native smoke are separate operations. Primitive create/retry/resize/readback and forced rollback now passed in real Revit; Tests A/B remain blocked pending native complete-room/documentation support and final save/reopen evidence. No green placeholder native CI job exists.
 
 GitHub publication is now available. First remote run39874914458 passed both core and CodeQL on commit635cc68; see artifacts/ci-first-run.json. Later changes require their own run evidence.
+
+Security coverage scope: public CodeQL currently builds and analyzes the vendor-independent core/CLI graph. The native runtime is target-built locally against installed Autodesk references and exercised by guarded integration probes; this is not a claim that public CodeQL analyzed the Autodesk-dependent runtime.

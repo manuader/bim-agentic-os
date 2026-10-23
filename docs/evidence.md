@@ -51,3 +51,6 @@ A separate forced rollback probe also passed: the level was updated first, a fol
 
 Remote CI run39877865497 passed both core and CodeQL on exact commit4b4327a (native bootstrap, process routing and guard regressions). The later rollback probe is separately native-executed and statically checked; subsequent commits require their own CI result. artifacts/ci-native-bootstrap-run.json records the remote result.
 
+
+## Saved checkpoint slice
+Code a8dba83 built against installed Revit25.2 with zero warnings/errors. Full gate20261023T003907959Z passed33 core assertions,17 checkpoint guard checks and existing harness regressions. Read-only independent review found no blocking issue. All seven maintained projects passed dependency vulnerability audit. Mutation-red test deliberately omitted receipt verification, failed checkpoint_receipt_missing, then restored implementation passed; red/green logs are versioned with personal paths redacted. Real save/reopen is not yet verified: the new isolated Revit process is waiting for its unsigned add-in load decision.

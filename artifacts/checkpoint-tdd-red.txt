@@ -1,0 +1,13 @@
+PASS existing owned fixture accepted without bootstrap overwrite rule
+PASS checkpoint_test_opt_in_required
+PASS isolated_test_process_confirmation_required
+PASS checkpoint_paths_must_be_direct_children
+PASS checkpoint_parking_already_exists
+PASS checkpoint_process_ownership_conflict
+PASS checkpoint_document_identity_conflict
+PASS checkpoint_document_identity_conflict
+PASS checkpoint_parking_already_exists
+PASS persisted receipt, exact revision and mapping verified read-only
+Unhandled exception. System.Exception: Unsafe checkpoint accepted: checkpoint_receipt_missing
+   at Program.<<Main>$>g__Reject|0_0(Action action, String code) in <workspace>\tests\integration\CheckpointGuard.Tests\Program.cs:line 21
+   at Program.<Main>$(String[] args) in <workspace>\tests\integration\CheckpointGuard.Tests\Program.cs:line 46
