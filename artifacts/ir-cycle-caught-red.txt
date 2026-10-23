@@ -1,0 +1,11 @@
+<workspace>\core\Bim.Core\Model.cs(53,19): warning CS0162: Unreachable code detected [<workspace>\core\Bim.Core\Bim.Core.csproj]
+PASS metres to feet
+PASS minimal update
+PASS transitive documentation closure
+PASS unrelated identity preserved
+PASS no-op
+PASS duplicate rejected
+PASS dangling dependency rejected
+System.Exception: self dependency rejected as cycle
+   at Program.<>c__DisplayClass0_0.<<Main>$>g__Check|0(Boolean condition, String name) in <workspace>\tests\Bim.Tests\Program.cs:line 5
+   at Program.<Main>$(String[] args) in <workspace>\tests\Bim.Tests\Program.cs:line 19

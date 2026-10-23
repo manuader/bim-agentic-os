@@ -5,6 +5,23 @@ PASS unrelated identity preserved
 PASS no-op
 PASS duplicate rejected
 PASS dangling dependency rejected
+PASS self dependency rejected as cycle
+PASS two element dependency cycle rejected
+PASS three element dependency cycle rejected
+PASS shared prerequisite DAG accepted
+PASS 12000 element dependency chain accepted without recursion
+PASS duplicate cyclic identities report validation issue
+PASS cycle with dangling dependency reports validation issue
+PASS diff rejects cyclic desired state
+PASS diff rejects cyclic existing state
+PASS diff rejects cyclic desired state
+PASS diff rejects cyclic existing state
+PASS diff rejects cyclic desired state
+PASS diff rejects cyclic existing state
+PASS intended store rejects cyclic snapshot
+PASS cyclic commit leaves persisted state unchanged
+PASS intended store rejects cyclic initialization
+PASS cyclic initialization publishes no snapshot
 PASS durable revision
 PASS retry persisted idempotency
 PASS stale revision rejected
@@ -31,4 +48,4 @@ PASS native deletes blocked to prevent untracked cascades
 PASS intended store rejects tampered operations
 PASS room coordinate overflow rejected
 PASS native preflight validates new state of retained identities
-{"passed":33,"core_test_ms":181.516,"native_verified":false}
+{"passed":50,"core_test_ms":236.4214,"native_verified":false}

@@ -7,16 +7,18 @@
       "status": "partial",
       "evidence": [
         "core/Bim.Core/Model.cs",
-        "artifacts/core-tests-net8.txt"
+        "artifacts/core-tests-latest.txt",
+        "artifacts/ir-cycle-caught-red.txt",
+        "artifacts/ir-cycle-green.txt"
       ],
-      "blocker": "Target-tested prototype; full dimensional schema, cycle validation and canonical hashing remain pending."
+      "blocker": "Prototype validates dependency cycles and long DAGs; full dimensional schema and canonical hashing remain pending."
     },
     {
       "id": "intent-persistence",
       "status": "partial",
       "evidence": [
         "core/Bim.Core/Model.cs",
-        "artifacts/core-tests-host.txt"
+        "artifacts/core-tests-latest.txt"
       ],
       "blocker": "Intended state only; no complete live native mirror, migrations or power-loss recovery tests."
     },
@@ -96,9 +98,10 @@
         ".github/workflows/ci.yml",
         "artifacts/verification-summary.json",
         "artifacts/ci-first-run.json",
-        "artifacts/ci-native-bootstrap-run.json"
+        "artifacts/ci-native-bootstrap-run.json",
+        "artifacts/ci-checkpoint-run.json"
       ],
-      "blocker": "Core and CodeQL passed remotely on4b4327a; licensed native acceptance is executed locally and is not yet part of CI."
+      "blocker": "Core and CodeQL passed remotely on1f0c9f8; licensed native acceptance remains local and final checkpoint awaits add-in loading."
     },
     {
       "id": "core-diff-benchmark",

@@ -1,0 +1,51 @@
+PASS metres to feet
+PASS minimal update
+PASS transitive documentation closure
+PASS unrelated identity preserved
+PASS no-op
+PASS duplicate rejected
+PASS dangling dependency rejected
+PASS self dependency rejected as cycle
+PASS two element dependency cycle rejected
+PASS three element dependency cycle rejected
+PASS shared prerequisite DAG accepted
+PASS 12000 element dependency chain accepted without recursion
+PASS duplicate cyclic identities report validation issue
+PASS cycle with dangling dependency reports validation issue
+PASS diff rejects cyclic desired state
+PASS diff rejects cyclic existing state
+PASS diff rejects cyclic desired state
+PASS diff rejects cyclic existing state
+PASS diff rejects cyclic desired state
+PASS diff rejects cyclic existing state
+PASS intended store rejects cyclic snapshot
+PASS cyclic commit leaves persisted state unchanged
+PASS intended store rejects cyclic initialization
+PASS cyclic initialization publishes no snapshot
+PASS durable revision
+PASS retry persisted idempotency
+PASS stale revision rejected
+PASS idempotency payload conflict rejected
+PASS rejected writes leave snapshot unchanged
+PASS room has four walls
+PASS room clear dimensions and exterior anchor in metres
+PASS room provenance retained
+PASS room deterministic
+PASS resize minimal three walls and space
+PASS resize preserves all logical identities
+PASS resize never recreates
+PASS west exterior anchor fixed
+PASS room revision invalidates sheet
+PASS room revision retains level
+PASS invalid room intent rejected
+PASS invalid room intent rejected
+PASS invalid room intent rejected
+PASS invalid room intent rejected
+PASS invalid room intent rejected
+PASS documentation and space block native room batch
+PASS tampered operations rejected
+PASS native deletes blocked to prevent untracked cascades
+PASS intended store rejects tampered operations
+PASS room coordinate overflow rejected
+PASS native preflight validates new state of retained identities
+{"passed":50,"core_test_ms":251.1694,"native_verified":false}

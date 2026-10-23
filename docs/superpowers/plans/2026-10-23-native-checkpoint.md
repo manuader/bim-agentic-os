@@ -13,3 +13,7 @@ Architecture: an opt-in fixture-only checkpoint operation validates its existing
 Ownership: checkpoint implementer owns runtime, pure guard tests and new native checkpoint probe in its managed worktree. Controller owns plan/evidence/status and all actual native execution. Reviewer is read-only. No parallel document mutations.
 
 Ruling: use a test-only owned parking document to satisfy the Revit restriction on closing an active document; no production model is used as parking. The temporary manifest is removed after execution. Complete room/documentation Test A is still incomplete.
+
+Independent work while native loading awaits user action: reject self-dependencies and multi-element dependency cycles in Compiler.Validate, preserving the existing dependency direction and deterministic diff behavior. Implement iterative traversal to handle long valid chains without recursion overflow. TDD red-green for self-cycle, two-node cycle, valid DAG and long chain; rejected intended-store commit must leave state unchanged. No Autodesk dependency or native writes. Separate worktree/source ownership and independent review are required.
+
+Independent IR task complete: reviewed iterative cycle validation and console failure lifecycle integrated as d3b7707/2e30261. Controller full gate passed50 core+17 checkpoint checks and native target0warnings/errors. Native save/reopen remains blocked pending user resolution of the load prompt; no native success is inferred from these gates.

@@ -1,0 +1,10 @@
+PASS metres to feet
+PASS minimal update
+PASS transitive documentation closure
+PASS unrelated identity preserved
+PASS no-op
+PASS duplicate rejected
+PASS dangling dependency rejected
+System.Exception: two element dependency cycle rejected
+   at Program.<>c__DisplayClass0_0.<<Main>$>g__Check|0(Boolean condition, String name) in <workspace>\tests\Bim.Tests\Program.cs:line 5
+   at Program.<Main>$(String[] args) in <workspace>\tests\Bim.Tests\Program.cs:line 20
