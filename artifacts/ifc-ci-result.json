@@ -1,0 +1,50 @@
+{
+  "verification_state": "integration-tested (ifc)",
+  "scope": "Actual Ubuntu IFC integration job plus core engineering and C#/Python CodeQL; not native Revit acceptance",
+  "run": {
+    "id": 39889181516,
+    "head_sha": "e689aaafbdc6f87dc2b3de56116376174f397d2a",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/manuader/bim-agentic-os/actions/runs/39889181516",
+    "jobs": [
+      {
+        "name": "codeql",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": []
+      },
+      {
+        "name": "codeql-python",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": []
+      },
+      {
+        "name": "core",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": []
+      },
+      {
+        "name": "ifc",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": []
+      }
+    ]
+  },
+  "configuration": {
+    "python": "3.12 configured; patch version not independently extracted",
+    "ifc_requirements": "requirements/ifc.txt",
+    "runner": "ubuntu-latest",
+    "ifc_requirements_sha256": "343290c9f3cf2a4a4cc97875e8649356d3d881cba078bb835d3636e51d8fb815"
+  },
+  "product_acceptance": false,
+  "notes": [
+    "IFC job runs four Python integration tests then checks actual CLI backend acceptance=true, product acceptance=false, exit2 and no measured failures.",
+    "CI artifacts contain report, hashes and benchmarks only; generated IFCs and stderr are not uploaded.",
+    "CodeQL job success records analysis execution, not a guarantee of vulnerability absence.",
+    "macOS and native Revit were not executed by this CI."
+  ]
+}

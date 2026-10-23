@@ -4,7 +4,7 @@ Current cycle authority: [CYCLE_SCOPE](docs/agent/CYCLE_SCOPE.md). Long-term vis
 
 At session start read [STATE](docs/agent/STATE.md), [BLOCKERS](docs/agent/BLOCKERS.md), [ATTEMPTS](docs/agent/ATTEMPTS.md) and [ADRs](docs/architecture/adr/0001-kernel.md). [Environment](docs/agent/ENVIRONMENT.md), [evaluation design/plan](docs/plans/2026-10-23-evaluation-machine.md), [capability evidence](docs/features.json), [module contracts](docs/contracts/module-contracts.md).
 
-Core: `core/Bim.Core`; JSON CLI: `interfaces/cli`; Revit: `runtimes/revit-native`; deterministic regressions: `tests/Bim.Tests`; integration probes: `tests/integration`; human oracle templates: `tests/golden`; workflows: `.agents/skills`.
+Core: `core/Bim.Core`; JSON CLI: `interfaces/cli`; Revit: `runtimes/revit-native`; [IFC setup](docs/ifc.md): `runtimes/ifc`, `tests/ifc`; deterministic regressions: `tests/Bim.Tests`; native probes: `tests/integration`; human oracle templates: `tests/golden`; workflows: `.agents/skills`.
 
 ## Commands and evidence
 

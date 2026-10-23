@@ -147,10 +147,11 @@
         "runtimes/ifc/worker.py",
         "tests/ifc/test_worker.py",
         "artifacts/ifc-integration-result.json",
-        "artifacts/evaluation-ifc-result.json"
+        "artifacts/evaluation-ifc-result.json",
+        "artifacts/ifc-ci-result.json"
       ],
       "blocker": "Arbitrary BIM-IR execution and native Revit documentation remain unsupported; macOS not executed.",
-      "scope": "Fixed IFC4 fixture: actual authoring/save-reopen/resize/readback/GlobalIds/receipts/retry/rollback/schema and triangulated geometry; Windows controller executed."
+      "scope": "Fixed IFC4 fixture: actual authoring/save-reopen/resize/readback/GlobalIds/receipts/retry/rollback/schema/triangulated geometry; verified on Windows and Ubuntu CI."
     },
     {
       "id": "github-publication",
@@ -194,9 +195,10 @@
         "runtimes/ifc/worker.py",
         "tests/ifc/test_worker.py",
         "artifacts/ifc-integration-result.json",
-        "artifacts/evaluation-ifc-result.json"
+        "artifacts/evaluation-ifc-result.json",
+        "artifacts/ifc-ci-result.json"
       ],
-      "scope": "Fixed IFC4 fixture: actual authoring/save-reopen/resize/readback/GlobalIds/receipts/retry/rollback/schema and triangulated geometry; Windows controller executed.",
+      "scope": "Fixed IFC4 fixture: actual authoring/save-reopen/resize/readback/GlobalIds/receipts/retry/rollback/schema/triangulated geometry; verified on Windows and Ubuntu CI.",
       "blocker": "Arbitrary BIM-IR execution and native Revit documentation remain unsupported; macOS not executed."
     }
   ]

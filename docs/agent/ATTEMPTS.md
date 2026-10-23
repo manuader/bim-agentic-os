@@ -71,3 +71,5 @@ Official42,827,327-byte wheel was downloaded after initial pip transfer stalled 
 
 Controller actual IFC result:41 case checks pass,0 fail/blocked,9 unsupported; eight mandatory backend checks pass; backend acceptance true, product acceptance false, exit2. Full engineering gate03d2a97 passed50 core/58 evaluator/17 checkpoint assertions and five CLI checks. Four Python integration tests passed25.986s. Pip check found no broken requirements. Single-run benchmarks/hashes and precise limits are in artifacts/ifc-integration-result.json. No new Revit execution or arbitrary BIM-IR compilation is claimed.
 
+Exact-commit remote verification: e689aaa GitHub run39889181516 succeeded on its first run, including actual Ubuntu IFC tests/enforced portable acceptance, core gate, C# CodeQL and Python CodeQL. No CI failure or retry is invented. Public evidence is artifacts/ifc-ci-result.json; raw generated IFCs remain local.
+
