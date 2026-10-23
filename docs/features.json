@@ -60,22 +60,26 @@
     },
     {
       "id": "test-a-native-room-delivery",
-      "status": "blocked",
+      "status": "verified-in-revit",
       "evidence": [
-        "tests/integration/README.md",
-        "docs/evidence.md"
+        "artifacts/native-room-attempt3.json",
+        "artifacts/native-room-attempt3-report.json",
+        "tests/integration/native-room-ab.ps1",
+        "runtimes/revit-native/NativeRoomFixture.cs"
       ],
-      "blocker": "Saved/reopened level/wall fixture verified in real Revit. Complete Test A still requires hosted door/windows, native Room, dimensions, views, schedule, sheet and documentation QA.",
-      "scope": "Saved/reopened level/wall fixture verified in real Revit. Complete Test A still requires hosted door/windows, native Room, dimensions, views, schedule, sheet and documentation QA."
+      "blocker": null,
+      "scope": "Full Test A on one isolated Revit 2025 (25.2.0.38) fixture: 5x4 m room, 200 mm/3 m walls, hosted 900 mm door and two windows, native Room 20 m2, dimension, plan, 3D, schedule, sheet, save-close-reopen; 35/35 criteria. Single run; add-in bound to 287014c by timestamp only."
     },
     {
       "id": "test-b-incremental-native-correction",
-      "status": "blocked",
+      "status": "verified-in-revit",
       "evidence": [
-        "tests/integration/README.md"
+        "artifacts/native-room-attempt3.json",
+        "artifacts/native-room-attempt3-report.json",
+        "tests/integration/native-room-ab.ps1"
       ],
-      "blocker": "Primitive correction, identity, retry, rollback and save/reopen verified. Full Test B requires complete Test A, dependent hosted objects/documentation and full-rebuild comparison.",
-      "scope": "Primitive correction, identity, retry, rollback and save/reopen verified. Full Test B requires complete Test A, dependent hosted objects/documentation and full-rebuild comparison."
+      "blocker": null,
+      "scope": "Full Test B on the same isolated run: +400 mm width, unaffected IDs, hosts and documentation updated, idempotent persisted retry, forced failure rollback, reopen; 17/17 criteria. Not measured: full-rebuild comparison and unintended_element_changes metric (null)."
     },
     {
       "id": "superpowers-workflows",
@@ -126,10 +130,10 @@
       "id": "correction-to-validated-delivery-benchmark",
       "status": "blocked",
       "evidence": [
-        "BIM_Agentic_OS_PROMPT_DEFINITIVO.md"
+        "artifacts/native-room-attempt3.json"
       ],
-      "blocker": "Core diff timing is not native validated delivery latency.",
-      "scope": "Core diff timing is not native validated delivery latency."
+      "blocker": "Needs repeated isolated runs and a full-rebuild baseline on Revit.",
+      "scope": "One actual sample (attempt3): correction through documentation, save-close-reopen, QA and persisted retry total_ms=16038.6 on Windows 11/Revit 25.2. Not a benchmark: one sample, no full-rebuild baseline."
     },
     {
       "id": "blender-adapter",

@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "attempt": 3,
+  "product_acceptance": true,
+  "backend_acceptance": true,
+  "verification_state": "verified-in-revit",
+  "reason": "door width readback fix 287014c; all case criteria and eight backend checks passed on actual isolated Revit after save-close-reopen",
+  "backend": "revit",
+  "version": "25.2.0.38",
+  "scope": "full Test A/B — one isolated fixture run, Revit 2025 25.2.0.38, Windows 11",
+  "counts": {
+    "passed": 52,
+    "failed": 0,
+    "blocked": 0,
+    "unsupported": 0
+  },
+  "cases": [
+    {
+      "id": "A",
+      "outcome": "pass",
+      "counts": {
+        "passed": 35,
+        "failed": 0,
+        "blocked": 0,
+        "unsupported": 0
+      }
+    },
+    {
+      "id": "B",
+      "outcome": "pass",
+      "counts": {
+        "passed": 17,
+        "failed": 0,
+        "blocked": 0,
+        "unsupported": 0
+      }
+    }
+  ],
+  "backend_checks": [
+    {
+      "id": "native_hosting",
+      "outcome": "pass"
+    },
+    {
+      "id": "native_geometry",
+      "outcome": "pass"
+    },
+    {
+      "id": "native_documentation",
+      "outcome": "pass"
+    },
+    {
+      "id": "native_save_reopen",
+      "outcome": "pass"
+    },
+    {
+      "id": "native_idempotency",
+      "outcome": "pass"
+    },
+    {
+      "id": "native_rollback",
+      "outcome": "pass"
+    },
+    {
+      "id": "native_incremental",
+      "outcome": "pass"
+    },
+    {
+      "id": "native_receipts",
+      "outcome": "pass"
+    }
+  ],
+  "metrics": {
+    "intent_parse_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "semantic_query_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "solver_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "diff_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "runtime_wait_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "revit_execute_ms": {
+      "value": 32391.2933,
+      "reason": "whole serialized fixture lifecycle including creation A, forced rollback, correction B, two save-close-reopen cycles and QA"
+    },
+    "revit_regeneration_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "native_readback_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "validation_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "documentation_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "total_ms": {
+      "value": 16038.6012,
+      "reason": "actual width correction through documentation regeneration, save-close-reopen, QA and persisted retry; excludes A creation and forced-failure probe"
+    },
+    "llm_calls": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "model_elements_read": {
+      "value": 56,
+      "reason": "count of mapped physical/documentation element observation records actually read; excludes prerequisite collector enumeration"
+    },
+    "model_elements_written": {
+      "value": 23,
+      "reason": "actual mapped output creates, wall curve updates and ExtensibleStorage writes, including rolled-back writes; excludes family resource preparation and sheet placement helpers"
+    },
+    "transaction_count": {
+      "value": 4,
+      "reason": "actual started Revit Transactions, including transaction later reverted by outer group; excludes TransactionGroups"
+    },
+    "unintended_element_changes": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    }
+  },
+  "gaps": [],
+  "raw_models": "ignored native run e2ce96ec-17a1-4763-9359-0eb60dce5123",
+  "provenance": {
+    "source_commit_expected": "287014c0566e3c9334ed7ada0ce063a0751b2846",
+    "binding": "timestamp only: staged add-in written 2026-10-23T05:07:37Z, 28s after the 287014c commit; no rebuild-hash comparison was performed",
+    "addin_sha256": {
+      "Bim.Core.dll": "64b92b18ec3bb94e6c454336bb297991761b69e18328122d9ae5d910c3899d37",
+      "Bim.Revit.dll": "5bafb3ae9f4d0ce2933554fe9cf024b54ed48c06bb354207c560a194fdb9aeee"
+    },
+    "fixture_process": "isolated child Revit started 2026-10-23T05:07:51Z, user chose Load Once; production process untouched",
+    "report_written_utc": "2026-10-23T05:12:35Z",
+    "recorded_by": "relay3 from the preserved local run; relay2 executed it"
+  },
+  "not_measured": [
+    "full-rebuild comparison (Phase 3 exit delta)",
+    "unintended_element_changes metric (null), although the B unintended_changes criterion passed",
+    "per-stage timings except revit_execute_ms and total_ms",
+    "repeatability: a single run"
+  ]
+}

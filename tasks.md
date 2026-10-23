@@ -15,14 +15,28 @@ Single writer: current Baton controller. Lifecycle status is separate from capab
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| N01 | Full native hosted Room and documentation A/B | 🔄 | I02 | controller integration and real execution | real Revit full A/B and affected documentation checks | described |
-| N11 | Native Room, hosted elements and document executor | 🔄 | I02 | runtimes/revit-native; NativeRoomGuard.Tests | SDK build, real isolated A/B readback and durable identity | described |
+| N01 | Full native hosted Room and documentation A/B | ✅ | I02 | controller integration and real execution | real Revit full A/B and affected documentation checks | verified-in-revit (attempt3, one isolated run) |
+| N11 | Native Room, hosted elements and document executor | ✅ | I02 | runtimes/revit-native; NativeRoomGuard.Tests | SDK build, real isolated A/B readback and durable identity | verified-in-revit (287014c, attempt3) |
 | N12 | Typed native oracle and integration command | ✅ | I02 | evaluator; CLI; tests/native-room; native-room-ab.ps1 | deterministic guards and real-port-only provenance | unit-tested |
+
+### Relay3 batch — MCP, recovery and typed contracts
+
+Loaded by relay3 (Claude) after N01; owner answered "[No preference]", so the controller chose items from BLOCKERS and features.json. Plan: [relay3 batch](docs/plans/2026-10-23-relay3-batch.md).
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| M01 | MCP stdio server over the same CLI services | ⏳ | N01 | interfaces/mcp; tests/mcp; scripts/verify.ps1 (wiring line only) | `dotnet run --project tests/mcp` passes: initialize, tools/list, tools/call for diff/validate/room/plan return byte-identical JSON to the CLI; no new package; wired into verify.ps1; CI green | target unit-tested |
+| R01 | ADR proposed: Core ProjectStore ↔ backend receipt cross-store recovery | ⏳ | — | docs/architecture/adr/0007-cross-store-recovery.md | ADR in status proposed with options, tradeoffs, recommendation and test plan; owner decision item in OWNER-TODO | described |
+| G01 | ADR proposed: typed Geometry/Units/Capability contracts | ⏳ | — | docs/architecture/adr/0008-typed-geometry-units.md | ADR in status proposed with migration impact on existing tests and records; owner decision item in OWNER-TODO | described |
+| R02 | Implement approved cross-store recovery | ⛔ | R01 | per ADR0007 | approved option implemented with TDD and crash-point tests | target unit-tested |
+| N21 | Native repeatability and full-rebuild baseline | 🔒 | N01 | tests/integration; artifacts | ≥3 isolated A/B runs and one full-rebuild run on the same fixture with recorded timings; owner Load Once per Revit launch | target verified-in-revit |
 
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 5/7 done (71.4 %)
+Progress: 7/12 done (58.3 %)
 - Harness and compiler IFC: 4/4
-- Next native slice: 1/3
-Next ready:
+- Next native slice: 3/3
+- Relay3 batch — MCP, recovery and typed contracts: 0/5
+Next ready: M01, R01, G01
+

@@ -1,0 +1,593 @@
+{
+  "verification_state": "verified-in-revit",
+  "outcome": "pass",
+  "scope": "full Test A/B",
+  "backend": "revit",
+  "backend_version": "25.2.0.38",
+  "source": "actual isolated Revit authoring and reopened readback",
+  "timing_scope": "actual isolated native execution and reopened readback; independent C# oracle",
+  "counts": {
+    "passed": 52,
+    "failed": 0,
+    "blocked": 0,
+    "unsupported": 0
+  },
+  "metrics": {
+    "intent_parse_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "semantic_query_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "solver_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "diff_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "runtime_wait_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "revit_execute_ms": {
+      "value": 32391.2933,
+      "reason": "whole serialized fixture lifecycle including creation A, forced rollback, correction B, two save-close-reopen cycles and QA"
+    },
+    "revit_regeneration_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "native_readback_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "validation_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "documentation_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "total_ms": {
+      "value": 16038.6012,
+      "reason": "actual width correction through documentation regeneration, save-close-reopen, QA and persisted retry; excludes A creation and forced-failure probe"
+    },
+    "llm_calls": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "model_elements_read": {
+      "value": 56,
+      "reason": "count of mapped physical/documentation element observation records actually read; excludes prerequisite collector enumeration"
+    },
+    "model_elements_written": {
+      "value": 23,
+      "reason": "actual mapped output creates, wall curve updates and ExtensibleStorage writes, including rolled-back writes; excludes family resource preparation and sheet placement helpers"
+    },
+    "transaction_count": {
+      "value": 4,
+      "reason": "actual started Revit Transactions, including transaction later reverted by outer group; excludes TransactionGroups"
+    },
+    "unintended_element_changes": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    }
+  },
+  "cases": [
+    {
+      "id": "A",
+      "outcome": "pass",
+      "counts": {
+        "passed": 35,
+        "failed": 0,
+        "blocked": 0,
+        "unsupported": 0
+      },
+      "criteria": [
+        {
+          "id": "level",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 1,
+          "actual": 1,
+          "tolerance": 0
+        },
+        {
+          "id": "clear_width_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 5000,
+          "actual": 5000,
+          "tolerance": 0
+        },
+        {
+          "id": "clear_depth_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 4000,
+          "actual": 4000,
+          "tolerance": 0
+        },
+        {
+          "id": "wall_count",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 4,
+          "actual": 4,
+          "tolerance": 0
+        },
+        {
+          "id": "wall_thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall_height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "door_count",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 1,
+          "actual": 1,
+          "tolerance": 0
+        },
+        {
+          "id": "door_width_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 900,
+          "actual": 900,
+          "tolerance": 0
+        },
+        {
+          "id": "window_count",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 2,
+          "actual": 2,
+          "tolerance": 0
+        },
+        {
+          "id": "room_boundary",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "dimensions",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "plan",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "view_3d",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "schedule",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "sheet",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "categories",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "hosting",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "units",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "references",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "geometry_consistency",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "identities",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "native_save",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "native_reopen",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "wall:4608a32a-e8c5-bbf6-b0ca-79203d11a849:thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:4608a32a-e8c5-bbf6-b0ca-79203d11a849:height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:c57a18ae-2723-5f9e-f377-11580d630ace:thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:c57a18ae-2723-5f9e-f377-11580d630ace:height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:ddc5e059-a7bb-2da8-093b-797c025740ee:thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:ddc5e059-a7bb-2da8-093b-797c025740ee:height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:724e58fa-f77f-3aa4-235f-27226f1645cf:thickness_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 200,
+          "actual": 200,
+          "tolerance": 0
+        },
+        {
+          "id": "wall:724e58fa-f77f-3aa4-235f-27226f1645cf:height_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 3000,
+          "actual": 3000,
+          "tolerance": 0
+        },
+        {
+          "id": "door:fixture:door:width_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 900,
+          "actual": 900,
+          "tolerance": 0
+        },
+        {
+          "id": "room:1e555f1d-4103-8fa7-bed9-da06fec840e6:area_m2",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 20,
+          "actual": 20,
+          "tolerance": 1e-09
+        },
+        {
+          "id": "dimension:fixture:dimension:width_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 5000,
+          "actual": 5000,
+          "tolerance": 0
+        },
+        {
+          "id": "schedule:7eedab64-35a6-c3e7-c061-d4a7474930bc:area_m2",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 20,
+          "actual": 20,
+          "tolerance": 1e-09
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "outcome": "pass",
+      "counts": {
+        "passed": 17,
+        "failed": 0,
+        "blocked": 0,
+        "unsupported": 0
+      },
+      "criteria": [
+        {
+          "id": "requires_A",
+          "outcome": "pass",
+          "reason": "Test A passed",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "baseline_matches_A",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "width_delta_mm",
+          "outcome": "pass",
+          "reason": "measured numerical comparison",
+          "expected": 400,
+          "actual": 400,
+          "tolerance": 0
+        },
+        {
+          "id": "exterior_anchor",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "unaffected_ids",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "post_revision_acceptance",
+          "outcome": "pass",
+          "reason": "full room acceptance must remain satisfied after width correction",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "dependent_hosts",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "documentation_updates",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "semantic_diff",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "idempotency_key",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "retry_no_duplicates",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "retry_revision",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "forced_failure",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "rollback_snapshot",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "rollback_revision",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "validation",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "unintended_changes",
+          "outcome": "pass",
+          "reason": "measured observation satisfies criterion",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        }
+      ]
+    }
+  ],
+  "gaps": [],
+  "backend_checks": [
+    {
+      "id": "native_hosting",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_hosting",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_geometry",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_geometry",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_documentation",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_documentation",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_save_reopen",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_save_reopen",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_idempotency",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_idempotency",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_rollback",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_rollback",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_incremental",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_incremental",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    },
+    {
+      "id": "native_receipts",
+      "outcome": "pass",
+      "reason": "actual reopened native readback and persisted state satisfy native_receipts",
+      "expected": null,
+      "actual": null,
+      "tolerance": null
+    }
+  ],
+  "backend_acceptance": true,
+  "product_acceptance": true,
+  "evidence_origin": "runtime-execution"
+}
