@@ -1,0 +1,282 @@
+{
+  "ci_evidence": {
+    "commit": "66388c9728d1172bfe06d1446c324ab3292f161c",
+    "job": "ifc",
+    "retrieval": "reassembled verbatim from the 3 ordered ::notice rebuild-benchmark annotations of the ifc check run; measured fields unchanged, only this ci_evidence block added",
+    "run_id": 40032454412,
+    "run_url": "https://github.com/manuader/bim-agentic-os/actions/runs/40032454412"
+  },
+  "claim_scope": "Single 9-logical-product IFC4 room fixture (12 IfcProducts), one +400 mm width correction, isolated IfcOpenShell worker in one Python process on the recorded runner. Says nothing about larger models, Revit, documentation, or end-to-end agent latency. Both paths serialize the whole IFC-SPF file; \"incremental\" means in-place mutation of existing entities with stable GlobalIds, not a partial file write.",
+  "command": "pwsh -File scripts/benchmark-rebuild.ps1 -Samples 10 -Notice => /home/runner/work/bim-agentic-os/bim-agentic-os/.tools/ifc/bin/python /home/runner/work/bim-agentic-os/bim-agentic-os/tests/harness/rebuild/rebuild_benchmark.py --packet /home/runner/work/bim-agentic-os/bim-agentic-os/.bim/rebuild-benchmark/compiled-5.json --samples 10 --output /home/runner/work/bim-agentic-os/bim-agentic-os/.bim/rebuild-benchmark/ifc-rebuild-benchmark.json --dotnet-version 8.0.426",
+  "correction": {
+    "core_dirty_ids": 7,
+    "core_plan_operations": 4,
+    "operation_id": "resize-400",
+    "packet_sha256": "fb75c6cd083ed3b742dc845766492c01d97830d996ab803cdab59f4b650605df",
+    "width_after_mm": 5400.0,
+    "width_before_mm": 5000
+  },
+  "delta": {
+    "rebuild_author_only_minus_incremental_p50_ms": -5259.391,
+    "rebuild_author_only_over_incremental_p50": 0.0019,
+    "rebuild_minus_incremental_p50_ms": 42.078,
+    "rebuild_over_incremental_p50": 1.008
+  },
+  "environment": {
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "dotnet_sdk": "8.0.426",
+    "github": {
+      "job": "ifc",
+      "ref": "relay7-p01",
+      "run_attempt": "1",
+      "run_id": "40032454412",
+      "sha": "66388c9728d1172bfe06d1446c324ab3292f161c"
+    },
+    "ifcopenshell": "0.9.0.post1",
+    "logical_cpus": 4,
+    "machine": "x86_64",
+    "memory_total": "16373452 kB",
+    "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "python": "3.12.15",
+    "python_implementation": "CPython",
+    "release": "6.17.0-1022-azure",
+    "runner": {
+      "arch": "X64",
+      "image": "ubuntu24",
+      "image_version": "20261012.334.1",
+      "name": "GitHub Actions 1000000570",
+      "os": "Linux"
+    },
+    "system": "Linux"
+  },
+  "generated_utc": "2026-10-23T22:22:04Z",
+  "method": {
+    "clock": "time.perf_counter, in-process",
+    "equivalence_checked_every_sample": true,
+    "first_in_pair": [
+      "incremental",
+      "rebuild",
+      "incremental",
+      "rebuild",
+      "incremental",
+      "rebuild",
+      "incremental",
+      "rebuild",
+      "incremental",
+      "rebuild"
+    ],
+    "fresh_directory_per_sample": true,
+    "order": "paths alternate first position per sample",
+    "percentile": "linear interpolation between closest ranks",
+    "samples_per_path": 10,
+    "warmup_pairs_discarded": 1
+  },
+  "model": {
+    "baseline_ifc_bytes": 13868,
+    "equivalence": {
+      "clear_width_mm": 5400.0,
+      "equivalent": true,
+      "mismatches": [],
+      "products_compared": 12,
+      "state_difference": "incremental carries the operation receipt; rebuild has receipts={} (no operation history)",
+      "tolerance_mm": 1e-06,
+      "volume_tolerance_m3": 1e-07
+    },
+    "incremental": {
+      "bytes_written": 24262,
+      "final_ifc_bytes": 14096,
+      "identity": {
+        "products_changed_global_id": [],
+        "products_preserved": 12,
+        "products_total": 12,
+        "root_preserved": 62,
+        "root_total_after": 62,
+        "root_total_before": 62
+      },
+      "ifc_bytes_written": 14096,
+      "products_geometry_changed": [
+        "east",
+        "north",
+        "opening-window-east",
+        "room",
+        "south",
+        "window-east"
+      ],
+      "sha256": "2adcb7cced73b52469ef6f1ff321b4815a07d524c4f34c7dc0eccecd44338943",
+      "sidecar_bytes_written": 10166,
+      "spf_instances": {
+        "added": 0,
+        "changed": 10,
+        "instances_after": 244,
+        "instances_before": 244,
+        "removed": 0,
+        "unchanged": 234
+      }
+    },
+    "rebuild": {
+      "bytes_written": 13868,
+      "final_ifc_bytes": 13868,
+      "identity": {
+        "products_changed_global_id": [
+          "door",
+          "east",
+          "level",
+          "north",
+          "opening-door",
+          "opening-window-east",
+          "opening-window-north",
+          "room",
+          "south",
+          "west",
+          "window-east",
+          "window-north"
+        ],
+        "products_preserved": 0,
+        "products_total": 12,
+        "root_preserved": 0,
+        "root_total_after": 62,
+        "root_total_before": 62
+      },
+      "ifc_bytes_written": 13868,
+      "products_authored": 12,
+      "products_geometry_changed": [
+        "east",
+        "north",
+        "opening-window-east",
+        "room",
+        "south",
+        "window-east"
+      ],
+      "sha256": "513fe45a6f9452b9e0b16aaa819f5e501d74dde7869de3d4f7d583f9c3589412",
+      "sidecar_bytes_written": 0,
+      "spf_instances": {
+        "added": 0,
+        "changed": 72,
+        "instances_after": 244,
+        "instances_before": 244,
+        "removed": 0,
+        "unchanged": 172
+      }
+    }
+  },
+  "schema": "bim.ifc-rebuild-benchmark/1",
+  "scopes": {
+    "excluded": "C# Core RoomCompiler/Compiler.Diff/IfcCompiler.Export (run once before sampling, shared by both paths), baseline creation, process start, Python import, interpreter warmup, Revit, documentation",
+    "incremental_ms": "worker.resize_compiled(path, packet) on a published baseline: open IFC, validate packet, verify before-state, mutate 5 products + 1 opening in place, set state/receipt, retain packet sidecar, write staging IFC, schema validate, verify_compiled, inspect (triangulate), atomic replace",
+    "incremental_qa_posthoc_ms": "the same QA run separately on the incremental output after the sample; estimates the QA share inside incremental_ms (not part of incremental_ms)",
+    "rebuild_author_ms": "rebuild_ms up to the staged IFC written (validate packet + create), before QA",
+    "rebuild_ms": "validate packet + worker.create(staging) from the corrected project + the same staged QA (schema validate, verify_compiled, inspect) + atomic replace; no packet sidecar",
+    "rebuild_qa_publish_ms": "rebuild_ms after authoring: QA + atomic replace"
+  },
+  "task": "P01",
+  "timings": {
+    "incremental_ms": {
+      "max": 5511.635,
+      "mean": 5259.677,
+      "min": 5110.127,
+      "n": 10,
+      "p50": 5269.249,
+      "p95": 5469.85,
+      "samples": [
+        5110.127,
+        5111.67,
+        5121.36,
+        5117.976,
+        5343.969,
+        5322.752,
+        5247.921,
+        5290.577,
+        5511.635,
+        5418.779
+      ]
+    },
+    "incremental_qa_posthoc_ms": {
+      "max": 5406.769,
+      "mean": 5263.581,
+      "min": 5082.229,
+      "n": 10,
+      "p50": 5312.568,
+      "p95": 5373.419,
+      "samples": [
+        5082.229,
+        5325.605,
+        5118.205,
+        5316.522,
+        5332.657,
+        5317.139,
+        5267.091,
+        5406.769,
+        5308.614,
+        5160.977
+      ]
+    },
+    "rebuild_author_ms": {
+      "max": 10.058,
+      "mean": 9.849,
+      "min": 9.608,
+      "n": 10,
+      "p50": 9.859,
+      "p95": 9.997,
+      "samples": [
+        9.763,
+        9.882,
+        10.058,
+        9.862,
+        9.81,
+        9.855,
+        9.844,
+        9.887,
+        9.923,
+        9.608
+      ]
+    },
+    "rebuild_ms": {
+      "max": 5468.266,
+      "mean": 5311.527,
+      "min": 5143.142,
+      "n": 10,
+      "p50": 5311.327,
+      "p95": 5438.865,
+      "samples": [
+        5265.385,
+        5327.884,
+        5313.869,
+        5308.786,
+        5370.3,
+        5402.929,
+        5305.829,
+        5468.266,
+        5208.875,
+        5143.142
+      ]
+    },
+    "rebuild_qa_publish_ms": {
+      "max": 5458.379,
+      "mean": 5301.677,
+      "min": 5133.534,
+      "n": 10,
+      "p50": 5301.367,
+      "p95": 5428.992,
+      "samples": [
+        5255.622,
+        5318.002,
+        5303.81,
+        5298.924,
+        5360.491,
+        5393.074,
+        5295.985,
+        5458.379,
+        5198.952,
+        5133.534
+      ]
+    },
+    "warmup": {
+      "incremental_ms": [
+        5062.29
+      ],
+      "rebuild_ms": [
+        5232.646
+      ]
+    }
+  }
+}
