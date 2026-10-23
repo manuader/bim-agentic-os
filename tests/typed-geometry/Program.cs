@@ -6,6 +6,7 @@ try
 {
     var root = Repository.Root();
     Goldens.Run(suite, root);
+    TypedContracts.Run(suite, root);
 }
 catch (Exception exception)
 {
