@@ -63,6 +63,10 @@ Use named injection points like the existing `force_failure`, so each test can s
 6. Forged states: Core ahead of IFC, gap > 1, packet fingerprint ≠ receipt → each returns its typed code with no writes.
 7. Native (Revit-gated, isolated fixture only): C9 via `BatchExecutor.Run` + checkpoint Save, then reconcile → Core matches `Hash(nativeState.Project)`. For C8 (close without Save), reopen and confirm that reconcile does not commit Core. Not executable in CI. No native claim follows from IFC results.
 
+## Implementation notes
+
+- IFC reconcile is implemented (`IfcReconcile.cs`, CLI `reconcile`, worker `--receipt`). The refusal when a OneDrive conflict copy or placeholder sits next to `project.json`/`room.ifc` is deferred. `retain_packet` runs before staging validation, so a later operation that fails can overwrite the retained packet. Reconcile then fails closed (`receipt_packet_mismatch`) and recovery is manual.
+
 ## Unverified
 
 - Windows rename and fsync semantics, and OneDrive behaviour, for these exact calls. Revit's own crash recovery for C8.
