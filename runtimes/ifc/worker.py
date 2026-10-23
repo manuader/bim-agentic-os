@@ -249,16 +249,62 @@ def resize_compiled(path, packet, force_failure=False, crash_after=None):
     return True
 
 
-def receipt(path):
-    """Read-only backend receipt for the Core reconcile verb; never writes the IFC or the staging file."""
+# ADR0007 caveat: OneDrive conflict copies and cloud-only placeholders beside room.ifc fail closed, mirrored in IfcReconcile.cs.
+# OneDrive keeps both versions of a sync conflict by appending the device name (MyFile.txt -> MyFile-ComputerName.txt);
+# older or third-party copies use "Name (1).ext" or "Name - Copy.ext". Sources (retrieved 2026-10-23):
+# https://support.microsoft.com/en-us/onedrive/duplicate-files-in-onedrive ("your computer name added to the filename")
+# https://uwindsor.teamdynamix.com/TDClient/1975/Portal/KB/Article/29832/Known-Issue-OneDrive-duplicate-files ("MyFile-ComputerName.txt")
+# https://melbits.com.au/kb/why-does-onedrive-keep-duplicating-files ("Filename-DESKTOP-AB12.docx", "Budget (1).xlsx", "Report-Copy.docx")
+# https://sharepointmaven.com/how-onedrive-sync-resolves-sync-conflicts/ (keep both: "add the Computer/PC name to the end of the file name")
+CLOUD_CONFLICT='cloud_conflict_present'
+CLOUD_PLACEHOLDER='cloud_placeholder_present'
+FILE_ATTRIBUTE_OFFLINE=0x1000
+FILE_ATTRIBUTE_RECALL_ON_OPEN=0x40000
+FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS=0x400000
+# ReparsePoint (0x400) alone is not a hazard: OneDrive sets it on hydrated real files with no link target (HANDOFF section 7).
+PLACEHOLDER_ATTRIBUTES=FILE_ATTRIBUTE_OFFLINE|FILE_ATTRIBUTE_RECALL_ON_OPEN|FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+
+
+def is_conflict_copy(name, primary):
+    """Case-insensitive like NTFS: same extension, and the name continues the primary's stem with '-' or ' '."""
+    if name==primary:return False
+    if name.lower()==primary.lower():return True
+    stem,extension=os.path.splitext(primary)
+    if not extension or not name.lower().endswith(extension.lower()):return False
+    rest=name[:-len(extension)]
+    return len(rest)>len(stem) and rest.lower().startswith(stem.lower()) and rest[len(stem)] in '- '
+
+
+def cloud_hazard(path, stat_fn=None):
+    """Metadata only (never opens contents, so never hydrates): (code, entries) for a conflict copy of room.ifc or
+    compiled-request.json, else for any entry carrying placeholder attributes, else (None, []).
+    stat_fn(entry_path) is a test seam; by default the directory listing's lstat is used and st_file_attributes exists on Windows only."""
+    primaries=(path.name,'compiled-request.json')
+    with os.scandir(path.parent) as listing:entries=sorted(listing,key=lambda entry:entry.name)
+    conflicts=[entry.name for entry in entries if any(is_conflict_copy(entry.name,primary) for primary in primaries)]
+    if conflicts:return CLOUD_CONFLICT,conflicts
+    def attributes(entry):
+        return getattr(entry.stat(follow_symlinks=False) if stat_fn is None else stat_fn(entry.path),'st_file_attributes',0)
+    placeholders=[entry.name for entry in entries if attributes(entry)&PLACEHOLDER_ATTRIBUTES]
+    return (CLOUD_PLACEHOLDER,placeholders) if placeholders else (None,[])
+
+
+def receipt(path, stat_fn=None):
+    """Read-only backend receipt for the Core reconcile verb; never writes the IFC or the staging file.
+    With a cloud hazard next to the IFC, nothing is opened or read: state and staging_hash stay null."""
+    hazard,entries=cloud_hazard(path,stat_fn)
     staging=path.with_suffix('.pending.ifc')
     present=staging.exists() or staging.is_symlink()
+    if hazard:return dict(state=None,staging_artifact_present=present,staging_hash=None,cloud_hazard=hazard,cloud_hazard_entries=entries)
     observed=hashlib.sha256(staging.read_bytes()).hexdigest().upper() if present and staging.is_file() and not staging.is_symlink() else None
-    return dict(state=state(ifcopenshell.open(str(path))),staging_artifact_present=present,staging_hash=observed)
+    return dict(state=state(ifcopenshell.open(str(path))),staging_artifact_present=present,staging_hash=observed,cloud_hazard=None,cloud_hazard_entries=[])
 
 
-def clear_staging(path, expected_hash):
-    """Remove a crash-left staging file only when it is a regular file, not the published IFC, and holds exactly the bytes a receipt observed."""
+def clear_staging(path, expected_hash, stat_fn=None):
+    """Remove a crash-left staging file only when it is a regular file, not the published IFC, and holds exactly the bytes a receipt observed.
+    Refuses before reading anything when a conflict copy or placeholder sits next to the IFC."""
+    hazard,entries=cloud_hazard(path,stat_fn)
+    if hazard:raise ValueError(hazard+': '+', '.join(entries))
     staging=path.with_suffix('.pending.ifc')
     if staging.is_symlink() or not staging.is_file():raise ValueError('staging artifact absent or not a regular file')
     if os.path.samefile(staging,path):raise ValueError('staging artifact is the published IFC')
