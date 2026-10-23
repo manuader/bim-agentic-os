@@ -49,7 +49,7 @@ foreach ($relative in $tracked) {
         }
     }
 }
-foreach ($file in Get-ChildItem $root -Filter *.ps1 -Recurse -File | Where-Object { $_.FullName -notmatch '[\\/](\.agents|\.tools|\.bim|bin|obj)[\\/]' }) {
+foreach ($file in Get-ChildItem $root -Filter *.ps1 -Recurse -File | Where-Object { [IO.Path]::GetRelativePath($root, $_.FullName) -notmatch '(^|[\\/])(\.agents|\.tools|\.bim|bin|obj)[\\/]' }) {
     $tokens = $null; $parseErrors = $null
     [void][Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors)
     foreach ($parseError in $parseErrors) { Fail "PowerShell syntax: $($file.FullName): $($parseError.Message)" }

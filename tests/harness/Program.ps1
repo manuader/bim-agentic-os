@@ -10,6 +10,24 @@ try { Invoke-EvidenceCommand -Name 'failure' -Executable $pwsh -Arguments @('-No
 if (!$failed) { throw 'Nonzero exit did not propagate' }
 if (!(Test-Path "$root/failure.log")) { throw 'Failed command lost evidence' }
 'PASS harness captures native stdout and propagates nonzero exit'
+$parentTemp = @{}
+foreach ($name in 'TEMP','TMP','TMPDIR') { $parentTemp[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+$isolatedEvidence = Join-Path $root 'isolated-evidence'
+$expectedTemp = [IO.Path]::GetFullPath((Join-Path $isolatedEvidence 'tmp')).TrimEnd([IO.Path]::DirectorySeparatorChar)
+foreach ($exitCode in 0,7) {
+    $failed = $false
+    try { Invoke-EvidenceCommand -Name "temp-$exitCode" -Executable $pwsh -Arguments @('-NoProfile','-Command',"[Console]::WriteLine([IO.Path]::GetTempPath()); exit $exitCode") -EvidenceDirectory $isolatedEvidence -Quiet } catch {
+        if ($exitCode -ne 7 -or $_.Exception.Message -notmatch 'exit code 7') { throw }
+        $failed = $true
+    }
+    if (($exitCode -eq 7) -ne $failed) { throw 'Temporary directory test lost nonzero exit behavior' }
+    foreach ($name in 'TEMP','TMP','TMPDIR') {
+        if ([Environment]::GetEnvironmentVariable($name, 'Process') -cne $parentTemp[$name]) { throw "Parent $name was not restored after exit $exitCode" }
+    }
+    $actualTemp = (Get-Content "$isolatedEvidence/temp-$exitCode.log" -Raw).Trim().TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if ($actualTemp -ne $expectedTemp) { throw "Child temporary directory was not isolated: expected $expectedTemp; got $actualTemp" }
+}
+'PASS child temporary directories are isolated and parent environment survives success and failure'
 $fixture = Join-Path $root 'fixture'
 New-Item -ItemType Directory -Force "$fixture/core/Bim.Core", "$fixture/docs/contracts", "$fixture/.agents/skills/example" | Out-Null
 'architecture' | Set-Content "$fixture/ARCHITECTURE.md"
@@ -74,12 +92,17 @@ Reject-TrackedArtifact tracked-sdk-tools '.tools/dotnet/dotnet.exe' 'Prohibited 
 Reject-TrackedArtifact tracked-sdk-archive 'dotnet-sdk-9.0.100.zip' 'Prohibited tracked artifact'
 'PASS static gate rejects tracked vendor binaries, BIM files and SDK payloads'
 
+$originalGitCeiling = $env:GIT_CEILING_DIRECTORIES
+$env:GIT_CEILING_DIRECTORIES = $root
 Move-Item -LiteralPath "$fixture/.git" -Destination "$fixture/.git-disabled"
 try {
     $rejected = $false
     try { Invoke-EvidenceCommand no-git $pwsh @('-NoProfile','-File',$checker,'-Root',$fixture) $root -Quiet } catch { $rejected = $true }
     if (!$rejected -or (Get-Content "$root/no-git.log" -Raw) -notmatch 'Git inventory failed') { throw 'Static checks must fail closed when Git inventory fails' }
-} finally { Move-Item -LiteralPath "$fixture/.git-disabled" -Destination "$fixture/.git" }
+} finally {
+    Move-Item -LiteralPath "$fixture/.git-disabled" -Destination "$fixture/.git"
+    $env:GIT_CEILING_DIRECTORIES = $originalGitCeiling
+}
 'PASS static checks fail closed without Git inventory'
 'valid' | Set-Content "$fixture/bad.ps1"
 Reject-Fixture syntax "$fixture/bad.ps1" 'if (' 'PowerShell syntax'

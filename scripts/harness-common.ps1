@@ -3,8 +3,19 @@ function Invoke-EvidenceCommand {
     New-Item -ItemType Directory -Force $EvidenceDirectory | Out-Null
     $log = Join-Path $EvidenceDirectory "$Name.log"
     [IO.File]::WriteAllText($log, "")
-    if ($Quiet) { & $Executable @Arguments 2>&1 | Out-File -FilePath $log } else { & $Executable @Arguments 2>&1 | Tee-Object -FilePath $log | Out-Host }
-    $code = $LASTEXITCODE
+    $temporaryDirectory = [IO.Path]::GetFullPath((Join-Path $EvidenceDirectory 'tmp'))
+    New-Item -ItemType Directory -Force $temporaryDirectory | Out-Null
+    $originalEnvironment = @{}
+    foreach ($variable in 'TEMP','TMP','TMPDIR') {
+        $originalEnvironment[$variable] = [Environment]::GetEnvironmentVariable($variable, 'Process')
+    }
+    try {
+        foreach ($variable in 'TEMP','TMP','TMPDIR') { [Environment]::SetEnvironmentVariable($variable, $temporaryDirectory, 'Process') }
+        if ($Quiet) { & $Executable @Arguments 2>&1 | Out-File -FilePath $log } else { & $Executable @Arguments 2>&1 | Tee-Object -FilePath $log | Out-Host }
+        $code = $LASTEXITCODE
+    } finally {
+        foreach ($variable in 'TEMP','TMP','TMPDIR') { [Environment]::SetEnvironmentVariable($variable, $originalEnvironment[$variable], 'Process') }
+    }
     if ($code -ne 0) { throw "$Name failed with exit code $code (see $log)" }
 }
 function Get-HostCoreSource {
