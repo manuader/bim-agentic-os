@@ -11,6 +11,7 @@ internal sealed record IfcEnvelope(int ProtocolVersion,string Backend,string Bac
 
 public static partial class EvaluationService
 {
+    private static bool ProcessResultConsistent(int exitCode,bool failed) => (exitCode==0)!=failed;
     private static async Task WaitForOwnedProcessAsync(Process process,Task stdout,Task stderr,CancellationToken token)
     {
         try {await process.WaitForExitAsync(token);await Task.WhenAll(stdout,stderr);}
@@ -49,7 +50,7 @@ public static partial class EvaluationService
             var comparison=OperatingSystem.IsWindows()?StringComparison.OrdinalIgnoreCase:StringComparison.Ordinal;
             if(expected==null||!Path.GetFullPath(options.WorkerScript).Equals(expected,comparison))return Block("foreign IFC worker path rejected");
             for(var entry=new FileInfo(expected) as FileSystemInfo;entry!=null;entry=entry is FileInfo f?f.Directory:(entry as DirectoryInfo)?.Parent)
-                if((entry.Attributes&FileAttributes.ReparsePoint)!=0)return Block("IFC worker symlink or reparse path rejected");
+                if(entry.LinkTarget!=null)return Block("IFC worker symlink or reparse path rejected");
             if(!Path.IsPathFullyQualified(options.OutputDirectory)||options.Timeout<=TimeSpan.Zero||options.Timeout>TimeSpan.FromMinutes(10))return Block("absolute output directory and bounded timeout required");
             Directory.CreateDirectory(options.OutputDirectory);
             var start=new ProcessStartInfo(options.PythonExecutable){UseShellExecute=false,RedirectStandardOutput=true,RedirectStandardError=true,CreateNoWindow=true,WorkingDirectory=root!.FullName};
@@ -67,13 +68,12 @@ public static partial class EvaluationService
             var envelope=ParseIfcEnvelope(raw);
             if(envelope==null)return Block("invalid IFC worker protocol, checks or metrics");
             if(envelope.Artifacts.Length==0||envelope.Artifacts.Any(name=>string.IsNullOrWhiteSpace(name)||name!=Path.GetFileName(name)||name.Contains('/')||name.Contains('\\')||!File.Exists(Path.Combine(options.OutputDirectory,name))))return Block("invalid or missing IFC artifacts");
-            foreach(var name in envelope.Artifacts)if((File.GetAttributes(Path.Combine(options.OutputDirectory,name))&FileAttributes.ReparsePoint)!=0)return Block("IFC artifact reparse path rejected");
+            foreach(var name in envelope.Artifacts)if(new FileInfo(Path.Combine(options.OutputDirectory,name)).LinkTarget!=null)return Block("IFC artifact reparse path rejected");
             if(!envelope.Artifacts.Any(x=>Path.GetExtension(x)==".ifc"))return Block("saved IFC artifact missing");
             var report=EvaluateOffline(envelope.Observations);
             if(report.Backend!="ifc")return Block("malformed IFC observations");
             var checkFailure=envelope.Checks.Any(x=>x.Outcome=="fail")||envelope.Errors.Length>0;
-            if(process.ExitCode!=0&&!checkFailure)return Block("IFC process failed without measured backend failure");
-            if(process.ExitCode==0&&checkFailure)return Block("IFC process/check result disagreement");
+            if(!ProcessResultConsistent(process.ExitCode,checkFailure))return Block("IFC process/check result disagreement");
             var allChecks=envelope.Checks.All(x=>x.Outcome=="pass");
             var metrics=report.Metrics;foreach(var metric in envelope.Metrics)metrics[metric.Key]=metric.Value;
             var accepted=process.ExitCode==0&&allChecks&&report.Counts.Failed==0&&report.Counts.Blocked==0;

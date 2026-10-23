@@ -98,6 +98,10 @@ if(waitPort!=null) {
     try {await (Task)waitPort.Invoke(null,[child,Task.CompletedTask,Task.CompletedTask,deadline.Token])!;}catch(OperationCanceledException){cancelled=true;}
     Check(cancelled&&child.WaitForExit(3000),"timeout cancels and terminates only owned child");
 }
+var processAgreement=typeof(EvaluationService).GetMethod("ProcessResultConsistent",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static);
+bool? Agrees(int code,bool failed)=>(bool?)processAgreement?.Invoke(null,[code,failed]);
+Check(Agrees(0,false)==true && Agrees(1,true)==true,"successful and measured failed subprocess outcomes agree");
+Check(Agrees(1,false)==false && Agrees(0,true)==false,"nonzero exit and check disagreement rejected");
 if(failures.Count>0) throw new Exception(string.Join("; ",failures));
 Console.WriteLine($"PASS {checks} evaluator assertions (synthetic unit observations only)");
 
