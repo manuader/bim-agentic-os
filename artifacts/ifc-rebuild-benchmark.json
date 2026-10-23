@@ -1,13 +1,14 @@
 {
   "ci_evidence": {
-    "commit": "66388c9728d1172bfe06d1446c324ab3292f161c",
+    "check_run_id": 120689477282,
+    "commit": "3956e2eb6f5b45bca57b199ff89abf0a563cb3c1",
     "job": "ifc",
-    "retrieval": "reassembled verbatim from the 3 ordered ::notice rebuild-benchmark annotations of the ifc check run; measured fields unchanged, only this ci_evidence block added",
-    "run_id": 40032454412,
-    "run_url": "https://github.com/manuader/bim-agentic-os/actions/runs/40032454412"
+    "retrieval": "reassembled verbatim from the 4 ordered ::notice rebuild-benchmark annotations of the ifc check run; measured fields unchanged, only this ci_evidence block added",
+    "run_id": 40034178888,
+    "run_url": "https://github.com/manuader/bim-agentic-os/actions/runs/40034178888"
   },
   "claim_scope": "Single 9-logical-product IFC4 room fixture (12 IfcProducts), one +400 mm width correction, isolated IfcOpenShell worker in one Python process on the recorded runner. Says nothing about larger models, Revit, documentation, or end-to-end agent latency. Both paths serialize the whole IFC-SPF file; \"incremental\" means in-place mutation of existing entities with stable GlobalIds, not a partial file write.",
-  "command": "pwsh -File scripts/benchmark-rebuild.ps1 -Samples 10 -Notice => /home/runner/work/bim-agentic-os/bim-agentic-os/.tools/ifc/bin/python /home/runner/work/bim-agentic-os/bim-agentic-os/tests/harness/rebuild/rebuild_benchmark.py --packet /home/runner/work/bim-agentic-os/bim-agentic-os/.bim/rebuild-benchmark/compiled-5.json --samples 10 --output /home/runner/work/bim-agentic-os/bim-agentic-os/.bim/rebuild-benchmark/ifc-rebuild-benchmark.json --dotnet-version 8.0.426",
+  "command": "pwsh -File scripts/benchmark-rebuild.ps1 -Python /home/runner/work/bim-agentic-os/bim-agentic-os/.tools/ifc/bin/python -Samples 10 -OutputDirectory /home/runner/work/bim-agentic-os/bim-agentic-os/.bim/rebuild-benchmark -Notice => /home/runner/work/bim-agentic-os/bim-agentic-os/.tools/ifc/bin/python /home/runner/work/bim-agentic-os/bim-agentic-os/tests/harness/rebuild/rebuild_benchmark.py --packet /home/runner/work/bim-agentic-os/bim-agentic-os/.bim/rebuild-benchmark/compiled-5.json --samples 10 --output /home/runner/work/bim-agentic-os/bim-agentic-os/.bim/rebuild-benchmark/ifc-rebuild-benchmark.json --dotnet-version 8.0.426",
   "correction": {
     "core_dirty_ids": 7,
     "core_plan_operations": 4,
@@ -16,21 +17,15 @@
     "width_after_mm": 5400.0,
     "width_before_mm": 5000
   },
-  "delta": {
-    "rebuild_author_only_minus_incremental_p50_ms": -5259.391,
-    "rebuild_author_only_over_incremental_p50": 0.0019,
-    "rebuild_minus_incremental_p50_ms": 42.078,
-    "rebuild_over_incremental_p50": 1.008
-  },
   "environment": {
-    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "cpu_model": "AMD EPYC 9V45 96-Core Processor",
     "dotnet_sdk": "8.0.426",
     "github": {
       "job": "ifc",
       "ref": "relay7-p01",
       "run_attempt": "1",
-      "run_id": "40032454412",
-      "sha": "66388c9728d1172bfe06d1446c324ab3292f161c"
+      "run_id": "40034178888",
+      "sha": "3956e2eb6f5b45bca57b199ff89abf0a563cb3c1"
     },
     "ifcopenshell": "0.9.0.post1",
     "logical_cpus": 4,
@@ -43,13 +38,63 @@
     "runner": {
       "arch": "X64",
       "image": "ubuntu24",
-      "image_version": "20261012.334.1",
-      "name": "GitHub Actions 1000000570",
+      "image_version": "20261023.334.3",
+      "name": "GitHub Actions 1000000639",
       "os": "Linux"
     },
     "system": "Linux"
   },
-  "generated_utc": "2026-10-23T22:22:04Z",
+  "generated_utc": "2026-10-23T22:37:32Z",
+  "interpretation": {
+    "end_to_end": {
+      "bootstrap_95ci_ms": {
+        "high": 245.079,
+        "low": -286.964,
+        "method": "percentile bootstrap, independent resampling with replacement of each path",
+        "resamples": 10000,
+        "seed": 20261023
+      },
+      "ci_includes_zero": true,
+      "comparison": "end-to-end, same QA in both",
+      "control": "incremental",
+      "difference_smaller_than_within_path_spread": true,
+      "p50_difference_ms": 79.876,
+      "p50_ratio": 1.0186,
+      "statement": "no measurable difference: the 95% CI includes 0; p50 difference 79.876 ms [-286.964, 245.079], smaller than the within-path max-min spread (628.974 / 553.500 ms).",
+      "treatment": "full rebuild",
+      "within_path_spread_ms": {
+        "control_max_minus_min": 553.5,
+        "treatment_max_minus_min": 628.974
+      }
+    },
+    "excluding_qa": {
+      "bootstrap_95ci_ms": {
+        "high": 0.573,
+        "low": 0.155,
+        "method": "percentile bootstrap, independent resampling with replacement of each path",
+        "resamples": 10000,
+        "seed": 20261023
+      },
+      "ci_includes_zero": false,
+      "comparison": "like-for-like excluding QA",
+      "control": "incremental minus inline QA",
+      "difference_smaller_than_within_path_spread": true,
+      "p50_difference_ms": 0.387,
+      "p50_ratio": 1.0848,
+      "statement": "rebuild author+publish is slower than incremental minus inline QA at p50 (95% CI excludes 0); p50 difference 0.387 ms [0.155, 0.573], smaller than the within-path max-min spread (0.662 / 0.692 ms).",
+      "treatment": "rebuild author+publish",
+      "within_path_spread_ms": {
+        "control_max_minus_min": 0.692,
+        "treatment_max_minus_min": 0.662
+      }
+    },
+    "qa_dominates_both_paths": true,
+    "qa_share_of_path_p50": {
+      "incremental": 0.9989,
+      "rebuild": 0.9989
+    },
+    "statement": "QA (schema validate + verify_compiled + inspect) is 99.9% of incremental and 99.9% of rebuild time at p50, so it dominates both paths. End-to-end: no measurable difference: the 95% CI includes 0; p50 difference 79.876 ms [-286.964, 245.079], smaller than the within-path max-min spread (628.974 / 553.500 ms). Excluding QA: rebuild author+publish is slower than incremental minus inline QA at p50 (95% CI excludes 0); p50 difference 0.387 ms [0.155, 0.573], smaller than the within-path max-min spread (0.662 / 0.692 ms)."
+  },
   "method": {
     "clock": "time.perf_counter, in-process",
     "equivalence_checked_every_sample": true,
@@ -102,7 +147,7 @@
         "south",
         "window-east"
       ],
-      "sha256": "2adcb7cced73b52469ef6f1ff321b4815a07d524c4f34c7dc0eccecd44338943",
+      "sha256": "9b12a8745cd3fabc027b1fe6752dd8471eba1ab73459b574a28f33feba4488ab",
       "sidecar_bytes_written": 10166,
       "spf_instances": {
         "added": 0,
@@ -147,7 +192,7 @@
         "south",
         "window-east"
       ],
-      "sha256": "513fe45a6f9452b9e0b16aaa819f5e501d74dde7869de3d4f7d583f9c3589412",
+      "sha256": "bb495df2d7905128cdbe21bea27a574cd458052cf567a888d485dfe3f0eefd2a",
       "sidecar_bytes_written": 0,
       "spf_instances": {
         "added": 0,
@@ -163,119 +208,270 @@
   "scopes": {
     "excluded": "C# Core RoomCompiler/Compiler.Diff/IfcCompiler.Export (run once before sampling, shared by both paths), baseline creation, process start, Python import, interpreter warmup, Revit, documentation",
     "incremental_ms": "worker.resize_compiled(path, packet) on a published baseline: open IFC, validate packet, verify before-state, mutate 5 products + 1 opening in place, set state/receipt, retain packet sidecar, write staging IFC, schema validate, verify_compiled, inspect (triangulate), atomic replace",
-    "incremental_qa_posthoc_ms": "the same QA run separately on the incremental output after the sample; estimates the QA share inside incremental_ms (not part of incremental_ms)",
-    "rebuild_author_ms": "rebuild_ms up to the staged IFC written (validate packet + create), before QA",
+    "incremental_non_qa_ms": "incremental_ms - incremental_qa_inline_ms: open, packet validation, state checks, mutation, packet sidecar, staging write, atomic replace",
+    "incremental_qa_inline_ms": "time inside incremental_ms spent in outermost calls of worker validate/verify_compiled/inspect, measured by temporarily wrapping those functions with perf_counter accumulators (restored after)",
+    "incremental_qa_posthoc_crosscheck_ms": "cross-check only: the same QA re-run separately on the incremental output after the sample; not part of incremental_ms",
+    "rebuild_author_ms": "validate packet + worker.create(staging): authoring and the single IFC write",
     "rebuild_ms": "validate packet + worker.create(staging) from the corrected project + the same staged QA (schema validate, verify_compiled, inspect) + atomic replace; no packet sidecar",
-    "rebuild_qa_publish_ms": "rebuild_ms after authoring: QA + atomic replace"
+    "rebuild_non_qa_ms": "rebuild_author_ms + rebuild_publish_ms (like-for-like with incremental_non_qa_ms)",
+    "rebuild_publish_ms": "atomic os.replace of the staged rebuild",
+    "rebuild_qa_ms": "validate + verify_compiled + inspect on the staged rebuild"
   },
   "task": "P01",
   "timings": {
     "incremental_ms": {
-      "max": 5511.635,
-      "mean": 5259.677,
-      "min": 5110.127,
+      "max": 4436.862,
+      "mean": 4246.954,
+      "min": 3883.362,
       "n": 10,
-      "p50": 5269.249,
-      "p95": 5469.85,
+      "p50": 4287.582,
+      "p95": 4404.625,
       "samples": [
-        5110.127,
-        5111.67,
-        5121.36,
-        5117.976,
-        5343.969,
-        5322.752,
-        5247.921,
-        5290.577,
-        5511.635,
-        5418.779
+        4295.66,
+        4150.929,
+        4279.504,
+        4306.571,
+        4221.12,
+        4436.862,
+        4300.946,
+        4229.363,
+        3883.362,
+        4365.225
       ]
     },
-    "incremental_qa_posthoc_ms": {
-      "max": 5406.769,
-      "mean": 5263.581,
-      "min": 5082.229,
+    "incremental_non_qa_ms": {
+      "max": 4.938,
+      "mean": 4.569,
+      "min": 4.246,
       "n": 10,
-      "p50": 5312.568,
-      "p95": 5373.419,
+      "p50": 4.565,
+      "p95": 4.882,
       "samples": [
-        5082.229,
-        5325.605,
-        5118.205,
-        5316.522,
-        5332.657,
-        5317.139,
-        5267.091,
-        5406.769,
-        5308.614,
-        5160.977
+        4.938,
+        4.265,
+        4.446,
+        4.574,
+        4.69,
+        4.246,
+        4.556,
+        4.445,
+        4.813,
+        4.717
+      ]
+    },
+    "incremental_qa_inline_breakdown_ms": {
+      "inspect": {
+        "max": 2213.516,
+        "mean": 2095.686,
+        "min": 1813.702,
+        "n": 10,
+        "p50": 2126.096,
+        "p95": 2198.901,
+        "samples": [
+          2160.728,
+          2091.715,
+          2213.516,
+          2121.713,
+          2158.175,
+          2093.559,
+          2130.478,
+          1992.233,
+          1813.702,
+          2181.039
+        ]
+      },
+      "validate": {
+        "max": 2286.785,
+        "mean": 2095.809,
+        "min": 2006.087,
+        "n": 10,
+        "p50": 2097.534,
+        "p95": 2239.728,
+        "samples": [
+          2079.145,
+          2006.087,
+          2011.396,
+          2128.433,
+          2007.763,
+          2286.785,
+          2115.923,
+          2182.214,
+          2014.12,
+          2126.222
+        ]
+      },
+      "verify_compiled": {
+        "max": 53.247,
+        "mean": 50.891,
+        "min": 48.862,
+        "n": 10,
+        "p50": 50.61,
+        "p95": 52.808,
+        "samples": [
+          50.849,
+          48.862,
+          50.146,
+          51.85,
+          50.492,
+          52.271,
+          49.988,
+          50.472,
+          50.727,
+          53.247
+        ]
+      }
+    },
+    "incremental_qa_inline_ms": {
+      "max": 4432.616,
+      "mean": 4242.385,
+      "min": 3878.549,
+      "n": 10,
+      "p50": 4282.89,
+      "p95": 4400.167,
+      "samples": [
+        4290.722,
+        4146.664,
+        4275.057,
+        4301.996,
+        4216.431,
+        4432.616,
+        4296.39,
+        4224.918,
+        3878.549,
+        4360.508
+      ]
+    },
+    "incremental_qa_inline_outermost_calls": {
+      "inspect": 1,
+      "validate": 1,
+      "verify_compiled": 2
+    },
+    "incremental_qa_posthoc_crosscheck_ms": {
+      "max": 4424.416,
+      "mean": 4226.059,
+      "min": 3757.155,
+      "n": 10,
+      "p50": 4319.55,
+      "p95": 4422.549,
+      "samples": [
+        4221.289,
+        4373.195,
+        4102.78,
+        4420.267,
+        4424.416,
+        4370.141,
+        4304.578,
+        4334.521,
+        3757.155,
+        3952.244
       ]
     },
     "rebuild_author_ms": {
-      "max": 10.058,
-      "mean": 9.849,
-      "min": 9.608,
+      "max": 5.247,
+      "mean": 4.814,
+      "min": 4.585,
       "n": 10,
-      "p50": 9.859,
-      "p95": 9.997,
+      "p50": 4.814,
+      "p95": 5.094,
       "samples": [
-        9.763,
-        9.882,
-        10.058,
-        9.862,
-        9.81,
-        9.855,
-        9.844,
-        9.887,
-        9.923,
-        9.608
+        4.677,
+        4.882,
+        4.845,
+        4.795,
+        4.832,
+        4.908,
+        4.758,
+        4.585,
+        4.606,
+        5.247
       ]
     },
     "rebuild_ms": {
-      "max": 5468.266,
-      "mean": 5311.527,
-      "min": 5143.142,
+      "max": 4535.136,
+      "mean": 4280.789,
+      "min": 3906.162,
       "n": 10,
-      "p50": 5311.327,
-      "p95": 5438.865,
+      "p50": 4367.458,
+      "p95": 4521.967,
       "samples": [
-        5265.385,
-        5327.884,
-        5313.869,
-        5308.786,
-        5370.3,
-        5402.929,
-        5305.829,
-        5468.266,
-        5208.875,
-        5143.142
+        4505.871,
+        4008.696,
+        4389.223,
+        4480.527,
+        4535.136,
+        4470.321,
+        4345.693,
+        4232.175,
+        3906.162,
+        3934.088
       ]
     },
-    "rebuild_qa_publish_ms": {
-      "max": 5458.379,
-      "mean": 5301.677,
-      "min": 5133.534,
+    "rebuild_non_qa_ms": {
+      "max": 5.38,
+      "mean": 4.948,
+      "min": 4.718,
       "n": 10,
-      "p50": 5301.367,
-      "p95": 5428.992,
+      "p50": 4.952,
+      "p95": 5.23,
       "samples": [
-        5255.622,
-        5318.002,
-        5303.81,
-        5298.924,
-        5360.491,
-        5393.074,
-        5295.985,
-        5458.379,
-        5198.952,
-        5133.534
+        4.801,
+        5.018,
+        4.975,
+        4.93,
+        4.974,
+        5.045,
+        4.903,
+        4.718,
+        4.738,
+        5.38
+      ]
+    },
+    "rebuild_publish_ms": {
+      "max": 0.144,
+      "mean": 0.135,
+      "min": 0.124,
+      "n": 10,
+      "p50": 0.135,
+      "p95": 0.143,
+      "samples": [
+        0.124,
+        0.136,
+        0.13,
+        0.136,
+        0.142,
+        0.137,
+        0.144,
+        0.133,
+        0.132,
+        0.134
+      ]
+    },
+    "rebuild_qa_ms": {
+      "max": 4530.162,
+      "mean": 4275.841,
+      "min": 3901.424,
+      "n": 10,
+      "p50": 4362.519,
+      "p95": 4517.071,
+      "samples": [
+        4501.07,
+        4003.678,
+        4384.247,
+        4475.596,
+        4530.162,
+        4465.276,
+        4340.79,
+        4227.457,
+        3901.424,
+        3928.708
       ]
     },
     "warmup": {
       "incremental_ms": [
-        5062.29
+        4167.523
       ],
       "rebuild_ms": [
-        5232.646
+        4242.988
       ]
     }
   }
