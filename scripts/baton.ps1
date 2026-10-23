@@ -25,6 +25,15 @@ function AtomicWrite($path,$text) {
  try { [IO.File]::WriteAllText($temp,$text,[Text.UTF8Encoding]::new($false)); [IO.File]::Move($temp,$path,$true) }
  finally { if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp} }
 }
+function ReadLease([string]$path) {
+ $lease=([IO.File]::ReadAllText($path) | ConvertFrom-Json -AsHashtable)
+  if($lease -isnot [Collections.IDictionary] -or $lease.state -notin @('FREE','TAKEN')){throw 'Unknown or malformed lease; manual recovery required'}
+  if($lease.state -eq 'TAKEN'){
+   foreach($key in @('owner_token','session','taken_by','taken_at','last_heartbeat')){if(!$lease.Contains($key) -or !$lease[$key]){throw 'Incomplete held lease; manual recovery required'}}
+   foreach($key in @('taken_at','last_heartbeat')){ $parsed=[DateTimeOffset]::MinValue; if(![DateTimeOffset]::TryParse($lease[$key],[ref]$parsed)){throw 'Malformed lease timestamp'} }
+  }
+ return $lease
+}
 if($Action -eq 'Progress') {
  $board=SafePath $BoardPath $repo
  $updateGuard=$null
@@ -42,7 +51,7 @@ if($Action -eq 'Progress') {
  }
  try {
  if($Update){
-  $holder=[IO.File]::ReadAllText($updateLease) | ConvertFrom-Json -AsHashtable
+  $holder=ReadLease $updateLease
   if($holder.state -ne 'TAKEN' -or $holder.owner_token -cne $OwnerToken -or $holder.session -cne $SessionId){throw 'Progress update requires current lease ownership'}
  }
  $source=[IO.File]::ReadAllText($board)
@@ -102,12 +111,7 @@ while(!$guard){
 try {
  $lease=@{state='FREE'}
  if(Test-Path -LiteralPath $path){
-  $lease=([IO.File]::ReadAllText($path) | ConvertFrom-Json -AsHashtable)
-  if($lease -isnot [Collections.IDictionary] -or $lease.state -notin @('FREE','TAKEN')){throw 'Unknown or malformed lease; manual recovery required'}
-  if($lease.state -eq 'TAKEN'){
-   foreach($key in @('owner_token','session','taken_by','taken_at','last_heartbeat')){if(!$lease.Contains($key) -or !$lease[$key]){throw 'Incomplete held lease; manual recovery required'}}
-   foreach($key in @('taken_at','last_heartbeat')){ $parsed=[DateTimeOffset]::MinValue; if(![DateTimeOffset]::TryParse($lease[$key],[ref]$parsed)){throw 'Malformed lease timestamp'} }
-  }
+  $lease=ReadLease $path
  }
  if($Action -in @('Status','HeavyStatus')){Emit $lease; return}
  if(!$OwnerToken -or !$SessionId){throw 'OwnerToken and SessionId required'}

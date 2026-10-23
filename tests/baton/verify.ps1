@@ -44,6 +44,16 @@ try {
  Call Acquire | Out-Null
  Reject { & $adapter -Action Progress -BoardPath $board -Update -RunDirectory $run -OwnerToken foreign -SessionId test-session -Json }
  Assert ([IO.File]::ReadAllText($board) -ceq $beforeUpdate) 'Update with foreign owner preserves board bytes'
+ $validLease=[IO.File]::ReadAllText("$run/LOCK")
+ Set-Content "$run/LOCK" '{"state":"TAKEN","owner_token":"one","session":"test-session"}'
+ Reject { & $adapter -Action Progress -BoardPath $board -Update -RunDirectory $run -OwnerToken one -SessionId test-session -Json }
+ Assert ([IO.File]::ReadAllText($board) -ceq $beforeUpdate) 'Incomplete lease preserves board bytes'
+ $badTime=$validLease | ConvertFrom-Json
+ $badTime.last_heartbeat='invalid-time'
+ $badTime | ConvertTo-Json | Set-Content "$run/LOCK"
+ Reject { & $adapter -Action Progress -BoardPath $board -Update -RunDirectory $run -OwnerToken one -SessionId test-session -Json }
+ Assert ([IO.File]::ReadAllText($board) -ceq $beforeUpdate) 'Invalid lease timestamp preserves board bytes'
+ [IO.File]::WriteAllText("$run/LOCK",$validLease)
  & $adapter -Action Progress -BoardPath $board -Update -RunDirectory $run -OwnerToken one -SessionId test-session -Json | Out-Null
  $updated=[IO.File]::ReadAllText($board)
  Assert ($updated.StartsWith($text.Split('## Progress')[0]) -and $updated.EndsWith("## Other`npreserve`n")) 'Update preserves other sections'
