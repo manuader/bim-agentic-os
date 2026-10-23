@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Bim.Core;
@@ -6,9 +7,15 @@ using Bim.Core;
 namespace Bim.Mcp;
 
 // MCP (2024-11-05) over newline-delimited JSON-RPC 2.0. Tools call exactly the Core functions used by
-// interfaces/cli/Program.cs and serialize with the same JsonSerializer defaults, so content[0].text equals
-// the CLI stdout line without its newline. Side-effecting CLI commands (native, evaluate, init, commit-intent,
-// ifc-export) are deliberately not exposed.
+// interfaces/cli/Program.cs, in the same input order, and serialize with the same JsonSerializer defaults.
+// Byte equality of content[0].text with the CLI stdout line (without its newline) covers successful output and
+// failures raised by Core or by Guid.Parse/ProjectStore. Known differences from the CLI:
+// - JSON deserialization error messages: tool inputs arrive as JSON values inside the request, so the reported
+//   line/byte positions differ from those of a separate input file; malformed request JSON is -32700 instead.
+// - revision: the CLI applies int.Parse to a string argument (accepting e.g. " 0" or "+0" and failing with
+//   status failed); here revision must be a JSON integer in Int32 range, otherwise the call is rejected with -32602.
+// - missing or wrongly typed arguments are rejected with -32602 instead of the CLI usage/null failures.
+// Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
 public sealed class McpServer
 {
     public const int MaxLineChars = 8 * 1024 * 1024;
@@ -254,7 +261,8 @@ public sealed class McpServer
     static string Envelope(JsonElement? id, Action<Utf8JsonWriter> body)
     {
         using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
+        // Relaxed escaping applies only to the envelope; tool text is produced with JsonSerializer defaults.
+        using (var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
         {
             writer.WriteStartObject();
             writer.WriteString("jsonrpc", "2.0");
