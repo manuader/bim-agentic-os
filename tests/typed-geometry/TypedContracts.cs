@@ -79,6 +79,21 @@ public static class TypedContracts
             var validateRejects = Compiler.Validate(project).Any(issue => issue.Code == "wall_geometry");
             suite.Check(validateRejects == !GeometryCodec.IsValidWall(geometry) && validateRejects == (GeometryCodec.Problem(project.Elements[0]) == "wall_geometry"), "validate and codec agree on wall [" + string.Join(",", geometry) + "]");
         }
+        var explicitWalls = new (string Name, double[] Geometry, string[] ValidateCodes, string? CodecCode)[]
+        {
+            ("NaN end x", new double[] { 0, 0, double.NaN, 0, 3, .2 }, new[] { "units" }, "geometry_non_finite"),
+            ("NaN height", new double[] { 0, 0, 5, 0, double.NaN, .2 }, new[] { "units" }, "geometry_non_finite"),
+            ("-0.0 start equals 0 end", new double[] { -0.0, 0, 0, 0, 3, .2 }, new[] { "wall_geometry" }, "wall_geometry"),
+            ("-0.0 thickness", new double[] { 0, 0, 5, 0, 3, -0.0 }, new[] { "wall_geometry" }, "wall_geometry"),
+            ("-0.0 coordinate on a valid axis", new double[] { -0.0, 0, 5, 0, 3, .2 }, Array.Empty<string>(), null),
+        };
+        foreach (var (name, geometry, validateCodes, codecCode) in explicitWalls)
+        {
+            var wall = Make("wall", geometry);
+            var codes = Compiler.Validate(new Project(Guid.NewGuid(), 0, [wall])).Select(issue => issue.Code).Order(StringComparer.Ordinal).ToArray();
+            suite.Check(codes.SequenceEqual(validateCodes), "validate codes for wall " + name + ": " + string.Join(",", codes));
+            suite.Equal("codec code for wall " + name, codecCode ?? "none", GeometryCodec.Problem(wall) ?? "none");
+        }
 
         var intent = new RoomIntent(Guid.Parse("a71c442d-5181-4b11-9663-a4257ac1261f"), 5, 4, 3, .2, -.2, -.2, "m", new("IFC evaluation", "fixed evaluation fixture"));
         var projectId = Guid.Parse("66ef39da-f724-4328-b055-c33e78dbb2ed");
@@ -121,7 +136,7 @@ public static class TypedContracts
 
     static void PersistedBoundary(Suite suite)
     {
-        var typed = new[] { typeof(Length), typeof(Area), typeof(Angle), typeof(Point2), typeof(ElementGeometry), typeof(GeometryField), typeof(SemanticDiff), typeof(Capability) };
+        var typed = new[] { typeof(Length), typeof(Area), typeof(Angle), typeof(Point2), typeof(ElementGeometry), typeof(GeometryField), typeof(SemanticDiff), typeof(GeometryChange), typeof(ElementChange), typeof(Capability), typeof(CapabilityRegistry) };
         var persisted = new[] { typeof(Project), typeof(Element), typeof(Operation), typeof(ExecutionPlan), typeof(ProjectStore.State), typeof(Provenance), typeof(RoomIntent), typeof(NativeBatchRequest), typeof(IfcCompiledRequest), typeof(CommandResult), typeof(ValidationIssue) };
         foreach (var type in persisted)
         {
@@ -155,6 +170,12 @@ public static class TypedContracts
     {
         var parsed = CapabilityRegistry.Parse(File.ReadAllText(Path.Combine(root, "capabilities", "capabilities.json")));
         suite.Check(parsed.Ids.Order(StringComparer.Ordinal).SequenceEqual(CapabilityRegistry.NativeDefault.Ids.Order(StringComparer.Ordinal)), "built-in native registry mirrors capabilities.json ids");
+        foreach (var capability in parsed.Capabilities)
+        {
+            var mirror = CapabilityRegistry.NativeDefault.Capabilities.SingleOrDefault(candidate => candidate.Id == capability.Id);
+            suite.Check(mirror is not null && mirror.CoverageStatus == capability.CoverageStatus && mirror.NativeVerified == capability.NativeVerified && mirror.VersionScope.SequenceEqual(capability.VersionScope),
+                "built-in mirror matches coverage_status, version_scope and native_verified of " + capability.Id);
+        }
         suite.Check(parsed.NativeCreateKinds.Order(StringComparer.Ordinal).SequenceEqual(new[] { "level", "wall" }), "capabilities.json declares native create for level and wall only");
         suite.Check(parsed.Capabilities.All(capability => !capability.NativeVerified && capability.CoverageStatus == "source-implemented" && capability.VersionScope.Length > 0), "capability records carry coverage and unverified native state");
         suite.Check(parsed.SupportsNativeKind("wall") && !parsed.SupportsNativeKind("space") && !parsed.SupportsNativeKind("plan"), "registry answers native kind support");
@@ -203,6 +224,35 @@ public static class TypedContracts
         var createdSpace = created.Elements.Single(element => element.Id == Role("space"));
         suite.Check(createdSpace.Action == "create" && createdSpace.Changes.All(change => change.Before is null && change.After is not null) && createdSpace.Changes.Single(change => change.Field == "width").Describe() == "= 5.000 m", "creates report typed initial values");
         suite.Check(SemanticDiff.Compute(before, before, Compiler.Diff(before, before)).Elements.Length == 0, "no-op plan has empty semantic diff");
+        suite.Check(diff.Elements.All(element => element.GeometryProblem is null), "decodable changes carry no geometry problem");
+
+        var wallId = Guid.NewGuid();
+        var levelId = Guid.NewGuid();
+        var wall = new Element(wallId, "wall", [0, 0, 5, 0, 3, .2], [], Fixture);
+        var level = new Element(levelId, "level", [0], [], Fixture);
+        var start = new Project(projectId, 0, [wall, level]);
+        ElementChange Only(Project next)
+        {
+            var nextPlan = Compiler.Diff(start, next);
+            return SemanticDiff.Compute(start, next, nextPlan).Elements.Single();
+        }
+        var deleted = Only(start with { Elements = [level] });
+        suite.Check(deleted.Action == "delete" && deleted.Id == wallId && deleted.GeometryProblem is null && deleted.Changes.Length == 6
+            && deleted.Changes.All(change => change.After is null && change.Before is not null) && deleted.Changes.Single(change => change.Field == "end.x").Describe() == "was 5.000 m", "deletes report typed prior values");
+        var rekinded = Only(start with { Elements = [new Element(wallId, "space", [0, 0, 5, 4], [], Fixture), level] });
+        suite.Check(rekinded.Action == "update" && rekinded.Kind == "space" && rekinded.GeometryProblem is null && rekinded.Changes.Length == 10
+            && rekinded.Changes.Take(6).All(change => change.After is null) && rekinded.Changes.Skip(6).All(change => change.Before is null), "kind change reports removed wall fields then created space fields");
+        var unknown = Only(start with { Elements = [wall, level, new Element(Guid.NewGuid(), "roof", [1], [], Fixture)] });
+        suite.Check(unknown.Action == "create" && unknown.Kind == "roof" && unknown.Changes.Length == 0 && unknown.GeometryProblem == "geometry_kind_unsupported", "validate-accepted unknown kind is reported without typed fields");
+        var unknownUpdate = Only(start with { Elements = [new Element(wallId, "beam", [0, 0, 5, 0, 3, .2], [], Fixture), level] });
+        suite.Check(unknownUpdate.Action == "update" && unknownUpdate.Changes.Length == 0 && unknownUpdate.GeometryProblem == "geometry_kind_unsupported", "update into an unknown kind is reported without typed fields");
+        var twoValueLevel = Only(start with { Elements = [wall, level with { GeometryMetres = [0, 1] }] });
+        suite.Check(twoValueLevel.Action == "update" && twoValueLevel.Id == levelId && twoValueLevel.Changes.Length == 0 && twoValueLevel.GeometryProblem == "level_geometry", "level with two values is reported without typed fields");
+
+        var tinyDelta = 1 + 1e-9 - 1;
+        suite.Equal("sub-millimetre nonzero delta keeps round-trip precision", "+" + tinyDelta.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + " m", new GeometryChange("x", Length.FromMetres(1), Length.FromMetres(1 + 1e-9)).Describe());
+        suite.Equal("negative sub-millimetre delta keeps sign and precision", "-" + tinyDelta.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + " m", new GeometryChange("x", Length.FromMetres(1 + 1e-9), Length.FromMetres(1)).Describe());
+        suite.Equal("zero delta still formats as +0.000 m", "+0.000 m", new GeometryChange("x", Length.FromMetres(1), Length.FromMetres(1)).Describe());
     }
 
     static void IfcRectangle(Suite suite)
@@ -210,6 +260,8 @@ public static class TypedContracts
         var request = IfcCompiler.EvaluationRequest();
         var before = JsonSerializer.Deserialize<Project>(request.BeforeJson) ?? throw new InvalidOperationException("missing_before");
         var wide = before with { Elements = before.Elements.Select(element => element.Kind == "space" ? element with { GeometryMetres = [.. element.GeometryMetres, 1] } : element).ToArray() };
+        var beamed = before with { Elements = before.Elements.Select(element => element.Id == RoomCompiler.Id(request.RoomId, "west") ? element with { Kind = "beam" } : element).ToArray() };
+        suite.Throws<ArgumentException>("IFC rectangle requires the west element to be a wall", () => IfcCompiler.Export(before, beamed, Compiler.Diff(before, beamed), request.RoomId, "beam"), "unsupported_ifc_rectangle");
         suite.Throws<ArgumentException>("IFC rectangle decodes space through the codec", () => IfcCompiler.Export(before, wide, Compiler.Diff(before, wide), request.RoomId, "wide"), "unsupported_ifc_rectangle");
     }
 }

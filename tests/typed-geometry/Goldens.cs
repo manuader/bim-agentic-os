@@ -42,16 +42,8 @@ public static class Goldens
         suite.Sha("golden examples plan json", ExamplesPlanSha, JsonSerializer.Serialize(plan));
 
         var directory = Path.Combine(Path.GetTempPath(), "bim-golden-" + Guid.NewGuid());
-        var store = new ProjectStore(directory);
-        store.Initialize(before);
-        var snapshot = Path.Combine(directory, "project.json");
-        suite.Sha("golden project.json after initialize", StoreInitializedSha, File.ReadAllText(snapshot));
-        suite.Check(store.Commit(after, plan, "golden").Revision == 1, "golden commit publishes revision+1");
-        suite.Sha("golden project.json with retry receipt after commit", StoreCommittedSha, File.ReadAllText(snapshot));
-        suite.Sha("golden checkpoint-0.json", ExamplesBeforeHash, File.ReadAllText(Path.Combine(directory, "checkpoint-0.json")));
-        suite.Sha("golden journal.jsonl", StoreJournalSha, File.ReadAllText(Path.Combine(directory, "journal.jsonl")).Replace(Environment.NewLine, "\n"));
-        suite.Check(new ProjectStore(directory).Commit(after, plan, "golden").Revision == 1, "golden retry receipt replays");
-        suite.Sha("golden project.json unchanged by retry", StoreCommittedSha, File.ReadAllText(snapshot));
+        try { Store(suite, directory, before, after, plan); }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
 
         var room = RoomCompiler.Compile(Guid.Parse("00000000-0000-0000-0000-000000000001"), 0, RoomIntentExample(root));
         suite.Sha("golden examples/room-intent.json compiled snapshot", RoomIntentCompiledSha, JsonSerializer.Serialize(room));
@@ -63,5 +55,19 @@ public static class Goldens
         suite.Equal("golden IFC evaluation PlanSha256", IfcPlanSha, request.PlanSha256);
         suite.Sha("golden IFC evaluation CommittedAfterJson", IfcCommittedSha, request.CommittedAfterJson);
         suite.Sha("golden IFC evaluation packet", IfcRequestSha, JsonSerializer.Serialize(request));
+    }
+
+    static void Store(Suite suite, string directory, Project before, Project after, ExecutionPlan plan)
+    {
+        var store = new ProjectStore(directory);
+        store.Initialize(before);
+        var snapshot = Path.Combine(directory, "project.json");
+        suite.Sha("golden project.json after initialize", StoreInitializedSha, File.ReadAllText(snapshot));
+        suite.Check(store.Commit(after, plan, "golden").Revision == 1, "golden commit publishes revision+1");
+        suite.Sha("golden project.json with retry receipt after commit", StoreCommittedSha, File.ReadAllText(snapshot));
+        suite.Sha("golden checkpoint-0.json", ExamplesBeforeHash, File.ReadAllText(Path.Combine(directory, "checkpoint-0.json")));
+        suite.Sha("golden journal.jsonl", StoreJournalSha, File.ReadAllText(Path.Combine(directory, "journal.jsonl")).Replace(Environment.NewLine, "\n"));
+        suite.Check(new ProjectStore(directory).Commit(after, plan, "golden").Revision == 1, "golden retry receipt replays");
+        suite.Sha("golden project.json unchanged by retry", StoreCommittedSha, File.ReadAllText(snapshot));
     }
 }
