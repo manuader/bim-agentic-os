@@ -7,6 +7,7 @@ $pwsh = (Get-Process -Id $PID).Path
 try {
     Invoke-EvidenceCommand harness $pwsh @('-NoProfile','-File',"$root/tests/harness/Program.ps1") $evidence
     Invoke-EvidenceCommand static $pwsh @('-NoProfile','-File',"$PSScriptRoot/harness-check.ps1") $evidence
+    Invoke-EvidenceCommand native-smoke-cli $pwsh @('-NoProfile','-File',"$root/tests/integration/test-native-smoke-cli.ps1") $evidence
     Invoke-EvidenceCommand fixture-launcher $pwsh @('-NoProfile','-File',"$root/tests/integration/test-fixture-launcher.ps1") $evidence
     if ($HostOnly) {
         'MODE host-only: net8 target build and native execution UNVERIFIED'
@@ -29,4 +30,5 @@ try {
     'BLOCKED native acceptance: full Test A/B incomplete; guarded primitive smoke requires a loaded add-in and isolated licensed Revit fixture. No native execution claimed.' | Tee-Object -FilePath "$evidence/native-status.log"
     "PASS available gates; evidence: $evidence"
 } catch { Write-Error $_; exit 1 }
+
 

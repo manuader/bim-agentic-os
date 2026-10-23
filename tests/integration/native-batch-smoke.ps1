@@ -14,7 +14,7 @@ try {
     $caseRoot=Join-Path $PSScriptRoot ('../../.bim/native-smoke-'+[guid]::NewGuid())
     New-Item -ItemType Directory -Path $caseRoot | Out-Null
     function SaveJson($Value,$Name) { $path=Join-Path $caseRoot $Name; $Value | ConvertTo-Json -Depth 100 | Set-Content $path; return $path }
-    function Cli([string[]]$Arguments) { $output=& $Dotnet $CliDll @Arguments; if($LASTEXITCODE -ne 0){throw "CLI failed: $output"}; return ($output | ConvertFrom-Json) }
+    function Invoke-BimCli([string[]]$Arguments) { $output=& $Dotnet $CliDll @Arguments; if($LASTEXITCODE -ne 0){throw "CLI failed: $output"}; return ($output | ConvertFrom-Json) }
     function Send($Before,$After,$Plan,$Key) {
         $request=@{DocumentPath=$DocumentPath;Operation='batch';UniqueId=$null;Metres=@();Batch=@{DocumentIdentity=$DocumentIdentity;IdempotencyKey=$Key;Before=$Before;After=$After;Plan=$Plan}}
         $json=$request | ConvertTo-Json -Depth 100 -Compress
@@ -34,28 +34,32 @@ try {
     $projectId=[guid]::NewGuid().ToString();$roomId=[guid]::NewGuid().ToString()
     $intent=@{RoomId=$roomId;WidthMetres=5.0;DepthMetres=4.0;HeightMetres=3.0;ThicknessMetres=0.2;AnchorXMetres=0.0;AnchorYMetres=0.0;Units='m';Provenance=@{Source='native integration fixture';Approval='test only'}}
     $intentFile=SaveJson $intent 'intent.json'
-    $target=Cli -Arguments @('room',$projectId,'0',$intentFile)
+    $target=Invoke-BimCli -Arguments @('room',$projectId,'0',$intentFile)
     # Explicit primitive subset. Full room space and documentation remain unsupported.
     $target.Elements=@($target.Elements | Where-Object Kind -In @('level','wall'))
     $before=@{Id=$projectId;Revision=0;Elements=@()}
     $beforeFile=SaveJson $before 'before.json';$targetFile=SaveJson $target 'target.json'
-    $plan=Cli -Arguments @('diff',$beforeFile,$targetFile)
+    $plan=Invoke-BimCli -Arguments @('diff',$beforeFile,$targetFile)
     $first=Send $before $target $plan 'fixture-create'
     Assert ($first.status -eq 'succeeded' -and $first.verification -eq 'native_geometry_readback') 'native creation did not pass geometry readback; fixture requires an existing basic 200mm wall type'
     $retry=Send $before $target $plan 'fixture-create'
     Assert ($retry.status -eq 'succeeded' -and $retry.retry -eq $true -and $retry.project.Revision -eq 1) 'persistent retry failed'
     Assert (($first.mapping | ConvertTo-Json -Compress) -eq ($retry.mapping | ConvertTo-Json -Compress)) 'retry changed UniqueIds'
     $intent.WidthMetres=5.4;$intentFile=SaveJson $intent 'resize-intent.json'
-    $resized=Cli -Arguments @('room',$projectId,'1',$intentFile);$resized.Elements=@($resized.Elements | Where-Object Kind -In @('level','wall'))
+    $resized=Invoke-BimCli -Arguments @('room',$projectId,'1',$intentFile);$resized.Elements=@($resized.Elements | Where-Object Kind -In @('level','wall'))
     $currentFile=SaveJson $first.project 'current.json';$resizedFile=SaveJson $resized 'resized.json'
-    $resizePlan=Cli -Arguments @('diff',$currentFile,$resizedFile)
+    $resizePlan=Invoke-BimCli -Arguments @('diff',$currentFile,$resizedFile)
     Assert ($resizePlan.Operations.Count -eq 3) 'primitive width correction must update exactly three walls'
+    $patchTimer=[Diagnostics.Stopwatch]::StartNew()
     $revision=Send $first.project $resized $resizePlan 'fixture-resize'
+    $patchTimer.Stop()
     Assert ($revision.status -eq 'succeeded' -and $revision.project.Revision -eq 2) 'native revision failed'
     Assert (($first.mapping | ConvertTo-Json -Compress) -eq ($revision.mapping | ConvertTo-Json -Compress)) 'resize changed native identities'
     $resizePlan.Operations=@()
     $malformed=Send $first.project $resized $resizePlan 'fixture-tampered'
     Assert ($malformed.status -eq 'blocked' -and $malformed.issues.Code -contains 'plan_mismatch') 'tampered native plan was not rejected'
-    @{status='succeeded';scope='level_and_walls_only';native_geometry_readback=$true;rollback_verified=$false;save_reopen_verified=$false;documentation_verified=$false;evidence=$caseRoot} | ConvertTo-Json
+    @{status='succeeded';scope='level_and_walls_only';primitive_patch_roundtrip_ms=$patchTimer.Elapsed.TotalMilliseconds;primitive_patch_timing_scope='resize Send only; excludes planning, documentation, save/reopen';native_geometry_readback=$true;rollback_verified=$false;save_reopen_verified=$false;documentation_verified=$false;evidence=$caseRoot} | ConvertTo-Json
     exit 0
 } catch { @{status='blocked_or_failed';code=$_.Exception.Message;native_verified=$false} | ConvertTo-Json; exit 2 }
+
+
