@@ -35,10 +35,21 @@ try {
  $p=& $adapter -Action Progress -BoardPath $board -Json | ConvertFrom-Json
  Assert ($p.total -eq 7 -and $p.done -eq 1 -and $p.counts.dropped -eq 1) 'Count all states, exclude dropped'
  Assert ($p.next_ready[0] -eq 'T4' -and $p.phases[0].total -eq 7) 'Ready and phase derived'
- & $adapter -Action Progress -BoardPath $board -Update -Json | Out-Null
+ $beforeUpdate=[IO.File]::ReadAllText($board)
+ Reject { & $adapter -Action Progress -BoardPath $board -Update -Json }
+ Assert ([IO.File]::ReadAllText($board) -ceq $beforeUpdate) 'Update without lease preserves board bytes'
+ Set-Content "$run/LOCK" '{"state":"FREE"}'
+ Call Acquire | Out-Null
+ Reject { & $adapter -Action Progress -BoardPath $board -Update -RunDirectory $run -OwnerToken foreign -SessionId test-session -Json }
+ Assert ([IO.File]::ReadAllText($board) -ceq $beforeUpdate) 'Update with foreign owner preserves board bytes'
+ & $adapter -Action Progress -BoardPath $board -Update -RunDirectory $run -OwnerToken one -SessionId test-session -Json | Out-Null
  $updated=[IO.File]::ReadAllText($board)
  Assert ($updated.StartsWith($text.Split('## Progress')[0]) -and $updated.EndsWith("## Other`npreserve`n")) 'Update preserves other sections'
  Assert ($updated.Contains('<!-- computed by baton.ps1')) 'Computed marker'
+ $tabBoard=$text.Replace("## Other`npreserve", "##`tOther   `npreserve")
+ [IO.File]::WriteAllText($board,$tabBoard)
+ & $adapter -Action Progress -BoardPath $board -Update -RunDirectory $run -OwnerToken one -SessionId test-session -Json | Out-Null
+ Assert ([IO.File]::ReadAllText($board).EndsWith("##`tOther   `npreserve`n")) 'Update preserves tab heading and trailing spaces'
  [IO.File]::WriteAllText($board,$text.Replace('| T1 |','| T0 |'))
  Reject { & $adapter -Action Progress -BoardPath $board -Json }
  [IO.File]::WriteAllText($board,$text.Replace('| T1 | task | 🟢 |','| T1 | task | unknown |'))
