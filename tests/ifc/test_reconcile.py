@@ -218,6 +218,21 @@ class Reconcile(unittest.TestCase):
                 code,out=self.reconcile(base,path,core,path.with_name('compiled-request.json'))
                 self.assertEqual((0,'replayed'),(code,out['code']),out)
 
+    def test_cli_refuses_cloud_conflict_copy_next_to_core_project(self):
+        packet=self.packet('compiled-5.json')
+        for conflict in ('project-DESKTOP-ABC.json','project (1).json'):
+            with self.subTest(conflict=conflict),tempfile.TemporaryDirectory() as tmp:
+                base,path,core=self.fixture(tmp,packet)
+                with self.assertRaises(w.InjectedCrash):w.resize_compiled(path,packet,crash_after='after_replace')
+                (core/conflict).write_bytes((core/'project.json').read_bytes())
+                before=self.hashes(path,core)
+                code,out=self.reconcile(base,path,core,path.with_name('compiled-request.json'))
+                self.assertEqual((1,'failed','cloud_conflict_present'),(code,out['status'],out['code']),out)
+                self.assertEqual(before,self.hashes(path,core),'both stores byte-identical')
+                (core/conflict).unlink()
+                code,out=self.reconcile(base,path,core,path.with_name('compiled-request.json'))
+                self.assertEqual((0,'replayed'),(code,out['code']),out)
+
     def test_cloud_placeholder_next_to_ifc_fails_closed_without_writes(self):
         packet=self.packet('compiled-5.json')
         with tempfile.TemporaryDirectory() as tmp:
