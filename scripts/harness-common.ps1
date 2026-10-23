@@ -14,7 +14,10 @@ function Invoke-EvidenceCommand {
         if ($Quiet) { & $Executable @Arguments 2>&1 | Out-File -FilePath $log } else { & $Executable @Arguments 2>&1 | Tee-Object -FilePath $log | Out-Host }
         $code = $LASTEXITCODE
     } finally {
-        foreach ($variable in 'TEMP','TMP','TMPDIR') { [Environment]::SetEnvironmentVariable($variable, $originalEnvironment[$variable], 'Process') }
+        foreach ($variable in 'TEMP','TMP','TMPDIR') {
+            if ($null -eq $originalEnvironment[$variable]) { Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue }
+            else { [Environment]::SetEnvironmentVariable($variable, $originalEnvironment[$variable], 'Process') }
+        }
     }
     if ($code -ne 0) { throw "$Name failed with exit code $code (see $log)" }
 }
@@ -29,3 +32,4 @@ function Get-HostCoreSource {
     }
     return $prefix + ($sources -join "`n")
 }
+

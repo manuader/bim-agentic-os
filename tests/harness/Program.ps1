@@ -28,6 +28,26 @@ foreach ($exitCode in 0,7) {
     if ($actualTemp -ne $expectedTemp) { throw "Child temporary directory was not isolated: expected $expectedTemp; got $actualTemp" }
 }
 'PASS child temporary directories are isolated and parent environment survives success and failure'
+$absenceOriginal = @{}
+foreach($name in 'TEMP','TMP','TMPDIR'){$absenceOriginal[$name]=[Environment]::GetEnvironmentVariable($name,'Process')}
+try {
+    foreach($missingName in 'TEMP','TMP','TMPDIR') {
+        foreach($exitCode in 0,7) {
+            Remove-Item -LiteralPath "Env:$missingName" -ErrorAction SilentlyContinue
+            $failed=$false
+            try { Invoke-EvidenceCommand -Name "absent-$missingName-$exitCode" -Executable $pwsh -Arguments @('-NoProfile','-Command',"exit $exitCode") -EvidenceDirectory $isolatedEvidence -Quiet } catch {
+                if($exitCode -ne 7 -or $_.Exception.Message -notmatch 'exit code 7'){throw}
+                $failed=$true
+            }
+            if(($exitCode -eq 7) -ne $failed){throw 'Absent variable case lost exit behavior'}
+            if($null -ne [Environment]::GetEnvironmentVariable($missingName,'Process') -or (Test-Path -LiteralPath "Env:$missingName")){throw "Absent parent $missingName became defined after exit $exitCode"}
+        }
+        if($null -ne $absenceOriginal[$missingName]){[Environment]::SetEnvironmentVariable($missingName,$absenceOriginal[$missingName],'Process')}
+    }
+} finally {
+    foreach($name in $absenceOriginal.Keys){if($null -eq $absenceOriginal[$name]){Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue}else{[Environment]::SetEnvironmentVariable($name,$absenceOriginal[$name],'Process')}}
+}
+'PASS originally absent temporary variables remain absent after success and failure'
 $fixture = Join-Path $root 'fixture'
 New-Item -ItemType Directory -Force "$fixture/core/Bim.Core", "$fixture/docs/contracts", "$fixture/.agents/skills/example" | Out-Null
 'architecture' | Set-Content "$fixture/ARCHITECTURE.md"
@@ -111,3 +131,4 @@ try {
 Reject-Fixture syntax "$fixture/bad.ps1" 'if (' 'PowerShell syntax'
 Reject-Fixture missing-evidence "$fixture/docs/features.json" '[{"id":"fixture","status":"unit-tested","evidence":["missing.log"],"blocker":null}]' 'Missing feature evidence'
 Reject-Fixture escaping-evidence "$fixture/docs/features.json" '[{"id":"fixture","status":"unit-tested","evidence":["../outside.log"],"blocker":null}]' 'Evidence escapes repository'
+
