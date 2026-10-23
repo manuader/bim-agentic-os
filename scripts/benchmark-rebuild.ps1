@@ -38,7 +38,12 @@ $env:BIM_REBUILD_PACKET = $packet
 Invoke-Annotated 'rebuild-equivalence' $Python @('-m', 'unittest', 'discover', '-s', (Join-Path $root 'tests/harness/rebuild'), '-p', 'test_*.py', '-v')
 $report = Join-Path $OutputDirectory 'ifc-rebuild-benchmark.json'
 $arguments = @((Join-Path $root 'tests/harness/rebuild/rebuild_benchmark.py'), '--packet', $packet, '--samples', $Samples, '--output', $report, '--dotnet-version', $dotnetVersion)
-$command = 'pwsh -File scripts/benchmark-rebuild.ps1 -Samples ' + $Samples + $(if ($Notice) { ' -Notice' } else { '' }) + ' => ' + $Python + ' ' + (($arguments | ForEach-Object { [string]$_ }) -join ' ')
+$invoked = foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+    if ($entry.Value -is [System.Management.Automation.SwitchParameter]) { if ($entry.Value.IsPresent) { '-' + $entry.Key } }
+    else { '-' + $entry.Key + ' ' + [string]$entry.Value }
+}
+$command = (@('pwsh', '-File', 'scripts/benchmark-rebuild.ps1') + @($invoked)) -join ' '
+$command += ' => ' + $Python + ' ' + (($arguments | ForEach-Object { [string]$_ }) -join ' ')
 $arguments += @('--command', $command)
 if ($Notice) { $arguments += '--notice' }
 Invoke-Annotated 'rebuild-benchmark-run' $Python $arguments
