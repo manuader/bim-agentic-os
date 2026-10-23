@@ -1,5 +1,6 @@
 using Bim.Core;
 using System.Diagnostics;
+try {
 int count=0;
 void Check(bool condition,string name) { if(!condition) throw new Exception(name); Console.WriteLine("PASS "+name); count++; }
 var wall=Guid.NewGuid(); var plan=Guid.NewGuid(); var sheet=Guid.NewGuid(); var other=Guid.NewGuid();
@@ -78,3 +79,7 @@ var goodLevel=new Project(p.Id,0,[p.Elements[3]]);
 var badLevel=goodLevel with {Elements=[p.Elements[3] with {GeometryMetres=[0,1]}]};
 Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,badLevel)).Any(i=>i.Code=="invalid_level"),"native preflight validates new state of retained identities");
 Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {passed=count, core_test_ms=timer.Elapsed.TotalMilliseconds, native_verified=false}));
+} catch(Exception exception) {
+    Console.Error.WriteLine(exception);
+    Environment.ExitCode=1;
+}
