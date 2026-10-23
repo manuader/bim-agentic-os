@@ -16,6 +16,8 @@ public sealed record FixtureConfig(bool ConfirmIsolatedTestProcess, string RunDi
         Require(Path.GetFileName(FixturePath).StartsWith("BIM-Agentic-Test", StringComparison.Ordinal) && Path.GetExtension(FixturePath).Equals(".rvt", StringComparison.OrdinalIgnoreCase), "test_fixture_filename_required");
         Require(!File.Exists(FixturePath) && !Directory.Exists(FixturePath), "fixture_already_exists");
         Require(!File.Exists(ResultPath) && !Directory.Exists(ResultPath), "result_already_exists");
+        Require(!string.Equals(FixturePath, ResultPath, StringComparison.OrdinalIgnoreCase), "result_cannot_replace_fixture");
         Require(!string.Equals(configPath, ResultPath, StringComparison.OrdinalIgnoreCase), "result_cannot_replace_config");
     }
 }
+

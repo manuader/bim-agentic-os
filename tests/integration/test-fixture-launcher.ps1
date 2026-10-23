@@ -16,5 +16,11 @@ try {
  try { & "$PSScriptRoot/launch-native-fixture.ps1" @arguments -ConfirmIsolatedTestProcess } catch { $rejected=$true }
  if(!$rejected) { throw 'Existing run directory accepted' }
  Write-Output 'PASS launcher preparation and overwrite guards; no process launched'
-} finally { Remove-Item -LiteralPath $root -Recurse -Force }
+} finally {
+ $cleanup=[IO.Path]::GetFullPath($root)
+ $parent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)+[IO.Path]::DirectorySeparatorChar
+ if(!$cleanup.StartsWith($parent,[StringComparison]::OrdinalIgnoreCase) -or !([IO.Path]::GetFileName($cleanup)).StartsWith('fixture-launcher-',[StringComparison]::Ordinal)) { throw 'Unsafe temporary cleanup target' }
+ Remove-Item -LiteralPath $cleanup -Recurse -Force
+}
+
 

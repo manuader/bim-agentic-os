@@ -32,16 +32,12 @@ internal sealed class FixtureBootstrap
                 document.SaveAs(config.FixturePath, save);
             } finally { document.Close(false); } // Only the document created by this invocation.
             var opened = app.OpenAndActivateDocument(config.FixturePath).Document;
-            Write(config.ResultPath, new { status = "succeeded", documentPath = opened.PathName, documentUniqueId = opened.ProjectInformation.UniqueId, processId = Environment.ProcessId, revitVersion = app.Application.VersionNumber, revitBuild = app.Application.VersionBuild });
+            FixtureResultPublisher.Publish(config.ResultPath, new { status = "succeeded", documentPath = opened.PathName, documentUniqueId = opened.ProjectInformation.UniqueId, processId = Environment.ProcessId, revitVersion = app.Application.VersionNumber, revitBuild = app.Application.VersionBuild });
         } catch (Exception error) {
             // Invalid config cannot authorize an output path. Validated failures are durable and never masquerade as success.
-            if (validated && config != null) Write(config.ResultPath, new { status = "failed", code = error.Message, processId = Environment.ProcessId });
+            if (validated && config != null) FixtureResultPublisher.TryPublish(config.ResultPath, new { status = "failed", code = error.Message, processId = Environment.ProcessId });
             else Trace.TraceError("BIM fixture bootstrap rejected: {0}", error);
         }
     }
-    static void Write(string path, object value)
-    {
-        using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
-        JsonSerializer.Serialize(stream, value);
-    }
 }
+
