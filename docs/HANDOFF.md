@@ -19,6 +19,7 @@ Core C#/.NET8 compiles room intents into unchanged persisted records and compute
 ## 4. Sessions, newest first
 
 - Relay1: [compiler-driven IFC and Baton](SESSION-2026-10-23-baton-ifc.md). Product230d2ba and coordinatorb1e9377 integrated after independent review; fresh50core/68evaluator/10compiler/28Baton assertions,11 real IFC tests90.026s and actual CLI backend=true/product=false. [Remote CI](../artifacts/compiler-ifc-ci-result.json) records actual publication status separately. [Plan](plans/2026-10-23-baton-compiler-ifc.md), [board](../tasks.md).
+- Published8d2cc964c86b5aef03a0e01bdc09ac1a2adf3567 passed exact-head run39899813748: core, real IFC on Ubuntu, C# CodeQL and Python CodeQL all success. Later evidence-only changes do not alter product source. No native Revit or macOS execution is inferred.
 - Published baseline9b98617: CI run39889520735 succeeded all4jobs. Four real Python IFC regressions,50core/58evaluator/17checkpoint assertions in prior local evidence. Native primitive scope only, full native A/B incomplete.
 
 ## 5. Decisions not to reopen
@@ -38,6 +39,8 @@ Strict protocol parsing exposed a real CLI failure after direct worker tests pas
 ## 8. Remaining
 
 Current product slice and controller adapter are integrated and locally verified; publication status is in the current CI record. Next product task: native full hosted Room/documentation A/B. Human goldens remain unapproved; general arbitrary BIM-IR execution and full native delivery benchmark remain unverified. Worktree archival was requested through native tools after preserving ignored evidence; verify actual attachment state rather than assuming queued means completed.
+
+IFC receipt/hash persistence does not atomically update a separate Core ProjectStore file; cross-store coordination/recovery and a complete live mirror remain gaps.
 
 ## 9. Document map
 

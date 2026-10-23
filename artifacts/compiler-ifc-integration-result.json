@@ -36,6 +36,7 @@
     "latest-only retries; older operation after later correction rejects without writes",
     "no arbitrary BIM-IR or complete RVT/IFC roundtrip",
     "no Revit execution this wave",
-    "macOS unexecuted"
+    "macOS unexecuted",
+    "Separate Core ProjectStore file is not atomically committed with IFC; cross-store coordination/recovery remains a gap"
   ]
 }

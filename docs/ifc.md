@@ -17,6 +17,8 @@ pwsh -File scripts/evaluate.ps1 -Backend ifc -Python (Resolve-Path .tools/ifc/Sc
 
 On Linux/macOS use `python3.12 -m venv .tools/ifc`, `.tools/ifc/bin/python` for installation/tests and that executable with `-Python`. [Ubuntu CI run39889181516](https://github.com/manuader/bim-agentic-os/actions/runs/39889181516) executed this path successfully at e689aaa. macOS compatibility is not verified until it actually runs there. The wrapper also discovers the repository-local virtual environment when `-Python` is omitted.
 
+The current compiler-driven slice also passed all four jobs of [Ubuntu CI39899813748](https://github.com/manuader/bim-agentic-os/actions/runs/39899813748) at8d2cc96; [machine-readable evidence](../artifacts/compiler-ifc-ci-result.json) separates this run from historical fixture evidence.
+
 The full A/B command returns exit2 when IFC portable checks pass and mandatory Revit-only outputs remain unsupported. Inspect `backend_acceptance`, `backend_checks`, `verification_state`, criterion outcomes and `product_acceptance` together. Exit0 must never imply native Revit acceptance from IFC. Missing dependencies or invalid worker proof remain blocked; measured violations fail with exit1.
 
 ## Execution and evidence contract
@@ -34,5 +36,7 @@ Metrics state their scope. IFC logical-product counters exclude auxiliary schema
 ## Limits
 
 This is a bounded canonical RoomCompiler rectangle/width-correction adapter, not a general IFC editor or arbitrary BIM-IR execution service. The low-level API preserves bytes on no-op; the full A/B harness rejects no-op before creating an output directory because it must observe an actual correction/rollback. It does not implement complete RVT/IFC roundtrip, native Revit documentation, production model merging, human architectural approval, IDS/BCF execution or Blender. Expanded typed BIM-IR contracts still require a separately approved schema ADR. Generated models stay in ignored `.bim/`; published summaries must exclude personal paths and production identifiers.
+
+The IFC receipt binds the committed snapshot and its revision; it does not atomically publish a separate Core ProjectStore file. Coordination/recovery across those stores remains a gap. Current tests prove persisted IFC state and successive compiled corrections, not a distributed transaction or complete live mirror.
 
 CLI `ifc-export before.json after.json plan.json room-guid operation-id` emits the adapter-only packet; `evaluate ifc python worker.py output-directory request.json` executes a supplied packet. Default `scripts/evaluate.ps1 -Backend ifc` constructs its packet through that same C# service. Before/after/plan use exact default C# serialized strings and raw UTF-8 hashes; Python never invents a replacement canonical hash. See [adapter scope](../adapters/ifc/Bim.Ifc.Compiler/README.md) and [module contract](contracts/module-contracts.md).

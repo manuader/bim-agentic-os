@@ -3,7 +3,7 @@
   "source_commit": "d0723d8bfa6a99d8dca5900478848b1834089aa2",
   "license": "MIT",
   "verification_state": "unit-tested",
-  "scope": "Pinned skills installed; native Windows coordination adapter only. No future scheduled execution or Linux coordination claim.",
+  "scope": "Pinned skills and controller/heavy leases/computed-progress oracle verified on Windows and Ubuntu CI; no future scheduled execution or adversarial filesystem guarantee.",
   "oracle": "pwsh -NoProfile -File tests/baton/verify.ps1",
   "assertions": 28,
   "result": "pass",
@@ -129,5 +129,6 @@
       "path": ".agents/skills/BATON-LICENSE",
       "sha256": "5A0D70B5FE4B10F512A61AB97FF7E5D7BF7F4FEF96E6F6DD808B370346E55160"
     }
-  ]
+  ],
+  "ci_run_id": 39899813748
 }

@@ -1,9 +1,203 @@
 {
-  "verification_state": "described",
-  "scope": "GitHub Actions on current compiler-driven IFC slice",
-  "execution_observed": false,
-  "run_id": null,
-  "head_sha": null,
-  "conclusion": null,
-  "note": "Local engineering and real IFC gates passed; current remote CI will be recorded after publication."
+  "verification_state": "integration-tested (ifc)",
+  "provider": "GitHub Actions",
+  "run_id": 39899813748,
+  "head_sha": "8d2cc964c86b5aef03a0e01bdc09ac1a2adf3567",
+  "url": "https://github.com/manuader/bim-agentic-os/actions/runs/39899813748",
+  "conclusion": "success",
+  "execution_observed": true,
+  "recorded_at": "2026-10-23T04:24:44.0259237Z",
+  "jobs": [
+    {
+      "id": 120238548376,
+      "name": "ifc",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/setup-python@v5",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/setup-dotnet@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install approved isolated IFC dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Real IFC integration regressions",
+          "conclusion": "success"
+        },
+        {
+          "name": "Evaluate real IFC and enforce portable acceptance",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/upload-artifact@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/setup-dotnet@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/setup-python@v5",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "id": 120238548524,
+      "name": "core",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/setup-dotnet@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Build, core/evaluator unit health, static gates and benchmark",
+          "conclusion": "success"
+        },
+        {
+          "name": "Dependency vulnerability audit",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/upload-artifact@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/setup-dotnet@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "id": 120238548718,
+      "name": "codeql-python",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run github/codeql-action/init@v3",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run github/codeql-action/analyze@v3",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run github/codeql-action/analyze@v3",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run github/codeql-action/init@v3",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "id": 120238548845,
+      "name": "codeql",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run github/codeql-action/init@v3",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/setup-dotnet@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run dotnet build interfaces/cli/Bim.Cli.csproj --configuration Release",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run github/codeql-action/analyze@v3",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run github/codeql-action/analyze@v3",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/setup-dotnet@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run github/codeql-action/init@v3",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ],
+  "scope": "Ubuntu real IFC suite/enforced portable acceptance, .NET build/unit/static/coordination/benchmark/dependency audit, C# CodeQL and Python CodeQL",
+  "native_execution": false,
+  "macos_execution": false
 }

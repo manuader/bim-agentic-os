@@ -150,10 +150,11 @@
         "artifacts/evaluation-ifc-result.json",
         "artifacts/ifc-ci-result.json",
         "artifacts/compiler-ifc-integration-result.json",
-        "artifacts/compiler-ifc-tests-result.json"
+        "artifacts/compiler-ifc-tests-result.json",
+        "artifacts/compiler-ifc-ci-result.json"
       ],
       "blocker": "Arbitrary BIM-IR, complete native Revit documentation and macOS remain unsupported/unexecuted.",
-      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice verified; current Ubuntu CI pending."
+      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice and Ubuntu CI39899813748 verified."
     },
     {
       "id": "github-publication",
@@ -200,9 +201,10 @@
         "artifacts/evaluation-ifc-result.json",
         "artifacts/ifc-ci-result.json",
         "artifacts/compiler-ifc-integration-result.json",
-        "artifacts/compiler-ifc-tests-result.json"
+        "artifacts/compiler-ifc-tests-result.json",
+        "artifacts/compiler-ifc-ci-result.json"
       ],
-      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice verified; current Ubuntu CI pending.",
+      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice and Ubuntu CI39899813748 verified.",
       "blocker": "Arbitrary BIM-IR, complete native Revit documentation and macOS remain unsupported/unexecuted."
     },
     {
@@ -212,10 +214,11 @@
         "scripts/baton.ps1",
         "tests/baton/verify.ps1",
         "artifacts/baton-harness-result.json",
-        "docs/harness/baton-codex.md"
+        "docs/harness/baton-codex.md",
+        "artifacts/compiler-ifc-ci-result.json"
       ],
-      "blocker": "First future scheduled execution unobserved; Linux coordination awaits current CI. No automatic stale lock takeover.",
-      "scope": "Pinned five MIT Baton skills; Windows controller/heavy leases and guarded computed progress,28 assertions; owner-approved hourly same-chat native automation creation ACTIVE."
+      "blocker": "First future scheduled execution unobserved; no automatic stale lock takeover.",
+      "scope": "Pinned five MIT Baton skills; Windows controller/heavy leases and guarded computed progress,28 assertions; owner-approved hourly same-chat native automation creation ACTIVE. Same coordination oracle also passed Ubuntu CI39899813748."
     },
     {
       "id": "compiler-driven-ifc-canonical-slice",
@@ -227,10 +230,11 @@
         "tests/ifc/test_compiled.py",
         "artifacts/compiler-ifc-engineering-result.json",
         "artifacts/compiler-ifc-tests-result.json",
-        "artifacts/compiler-ifc-integration-result.json"
+        "artifacts/compiler-ifc-integration-result.json",
+        "artifacts/compiler-ifc-ci-result.json"
       ],
       "blocker": "Width-only canonical room; fixture-only hosted extras, documentation unsupported, historical retries after later correction rejected; no native Revit run.",
-      "scope": "Existing frozen C# Core snapshots/diff, exact committed-revision hashes, persisted logical UUIDs, custom6-to6.4m and two successive corrections;11 real IFC tests90.026s; CLI backend=true/product=false."
+      "scope": "Existing frozen C# Core snapshots/diff, exact committed-revision hashes, persisted logical UUIDs, custom6-to6.4m and two successive corrections;11 real IFC tests90.026s; CLI backend=true/product=false. Ubuntu exact-head CI39899813748 passed all4jobs."
     }
   ]
 }
