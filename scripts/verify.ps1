@@ -32,7 +32,3 @@ try {
     'BLOCKED native acceptance: full Test A/B incomplete; guarded primitive smoke requires a loaded add-in and isolated licensed Revit fixture. No native execution claimed.' | Tee-Object -FilePath "$evidence/native-status.log"
     "PASS available gates; evidence: $evidence"
 } catch { Write-Error $_; exit 1 }
-
-
-
-

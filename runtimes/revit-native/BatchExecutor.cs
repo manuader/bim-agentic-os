@@ -106,4 +106,3 @@ public static class BatchExecutor
         } catch {if(group.GetStatus()==TransactionStatus.Started)group.RollBack();throw;}
     }
 }
-
