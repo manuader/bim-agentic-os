@@ -15,11 +15,12 @@
   "native_smoke_executed": true,
   "native_delivery_verified": false,
   "remote_ci_executed": true,
-  "remote_ci_run": "https://github.com/manuader/bim-agentic-os/actions/runs/39879695888",
-  "github_publication": "main1f0c9f8 published; core and CodeQL jobs passed remotely; later cycle changes require own CI",
-  "benchmark_scope": "core diff and one primitive native resize roundtrip; no complete validated delivery latency",
+  "remote_ci_run": "https://github.com/manuader/bim-agentic-os/actions/runs/39880697336",
+  "github_publication": "main84c2274 published; core and CodeQL passed remotely; later evidence-only changes require own run",
+  "benchmark_scope": "core diff, one primitive native resize and one saved checkpoint; no complete documentation/delivery latency measured",
   "native_fixture_bootstrap": "succeeded in isolated Revit25.2 process; initial template saved/opened",
   "native_primitive_smoke": "passed: create5, retry, update3, identity preservation, geometry readback and tampered-plan rejection",
   "native_rollback": "passed: level update then Revit short-curve failure, original revision2 receipt/readback/mapping preserved",
-  "native_checkpoint": "target-built; pure guards passed; native execution awaits user-resolved unsigned add-in loading prompt"
+  "native_checkpoint": "passed: saved/closed/reopened fixture, revision2, geometry, exact mappings and receipt retained; original resize retry succeeded",
+  "native_save_reopen_verified": true
 }

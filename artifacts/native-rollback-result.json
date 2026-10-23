@@ -1,14 +1,13 @@
 {
   "status": "succeeded",
-  "probe_commit": "d6e1284",
-  "runtime_commit": "9e7765b",
-  "scope": "level update then short-wall native failure; replay original resize receipt",
-  "forced_failure_code": "Revit Application.ShortCurveTolerance",
+  "runtime_code_commit": "a8dba83",
+  "scope": "level update then native short-curve failure; original resize retry",
   "rollback_verified": true,
   "native_geometry_readback": true,
   "revision": 2,
   "native_identities_preserved": true,
   "save_reopen_verified": false,
+  "subsequent_checkpoint_evidence": "artifacts/native-checkpoint-result.json",
   "documentation_verified": false,
-  "redaction": "Personal paths, document identities and process IDs omitted; originals retained locally"
+  "redaction": "Personal paths, document identities and process IDs omitted; original evidence retained locally"
 }

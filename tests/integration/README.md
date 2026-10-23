@@ -25,3 +25,5 @@ After the primitive smoke, native-rollback-probe.ps1 accepts the same exact Docu
 
 
 The saved checkpoint probe is `native-checkpoint-probe.ps1`. After smoke in a newly opted-in child, pass exact `DocumentPath`, `DocumentIdentity`, `ProcessId`, `PipeName`, `RunDirectory` and `PriorEvidenceDirectory` from that run. It saves/closes/reopens the fixture, checks identity/mapping/revision/receipt, then replays the original resize. It records one checkpoint roundtrip including parking/save/reopen/readback; this excludes initial planning/patch and all documentation. A dispatched timeout means unknown completion, not rollback; do not automatically retry. The command must not be run against a normal or production Revit session.
+
+Executed save/reopen result: artifacts/native-checkpoint-result.json records real Revit25.2 saved/closed/reopened fixture, preserved revision2/geometry/mappings/receipt and successful post-reopen retry. Full Test A room/documentation is still incomplete.

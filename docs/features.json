@@ -52,7 +52,7 @@
         "artifacts/native-smoke-result.json",
         "artifacts/native-rollback-result.json"
       ],
-      "blocker": "Real Revit25.2 create, retry, resize, identity/readback and forced transaction rollback passed. Final save/reopen, spaces, documentation and deletes remain unverified or unsupported."
+      "blocker": "Real Revit25.2 create, retry, resize, identity/readback, forced rollback and final primitive save/reopen passed. Spaces, hosted families, documentation and deletes remain unsupported."
     },
     {
       "id": "test-a-native-room-delivery",
@@ -61,7 +61,7 @@
         "tests/integration/README.md",
         "docs/evidence.md"
       ],
-      "blocker": "Complete fixture, licensed native integration, save/reopen/readback/documentation validation required."
+      "blocker": "Saved/reopened level/wall fixture verified in real Revit. Complete Test A still requires hosted door/windows, native Room, dimensions, views, schedule, sheet and documentation QA."
     },
     {
       "id": "test-b-incremental-native-correction",
@@ -69,7 +69,7 @@
       "evidence": [
         "tests/integration/README.md"
       ],
-      "blocker": "Requires verified Test A and native identity/idempotency/rollback/documentation evidence."
+      "blocker": "Primitive correction, identity, retry, rollback and save/reopen verified. Full Test B requires complete Test A, dependent hosted objects/documentation and full-rebuild comparison."
     },
     {
       "id": "superpowers-workflows",
@@ -101,7 +101,7 @@
         "artifacts/ci-native-bootstrap-run.json",
         "artifacts/ci-checkpoint-run.json"
       ],
-      "blocker": "Core and CodeQL passed remotely on1f0c9f8; licensed native acceptance remains local and final checkpoint awaits add-in loading."
+      "blocker": "Core and CodeQL passed remotely; native probes executed locally against installed Revit25.2. Licensed native acceptance is not yet part of CI."
     },
     {
       "id": "core-diff-benchmark",
@@ -146,14 +146,15 @@
     },
     {
       "id": "native-saved-checkpoint",
-      "status": "partial",
+      "status": "implemented",
       "evidence": [
         "runtimes/revit-native/FixtureCheckpoint.cs",
         "artifacts/checkpoint-guards-latest.txt",
         "artifacts/native-checkpoint-build.txt",
-        "tests/integration/native-checkpoint-probe.ps1"
+        "tests/integration/native-checkpoint-probe.ps1",
+        "artifacts/native-checkpoint-result.json"
       ],
-      "blocker": "Target-built and 17 pure guard checks passed. Real save/reopen probe awaits unsigned add-in load in new isolated Revit process; complete documentation remains unsupported."
+      "blocker": null
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "status": "succeeded",
-  "code_commit": "9e7765b",
-  "native_assembly_sha256": "34658A02623010D02AD62FDEE651174914D0CC34E4C5A29125A382C19760BDBC",
+  "runtime_code_commit": "a8dba83",
+  "native_assembly_sha256": "E57CDC020E6D73A21FFF391F1900CC5DFE20E8F84CDC8940BAA4F5F48AA0A659",
   "scope": "level_and_walls_only",
   "created_elements": 5,
   "idempotent_retry_verified": true,
@@ -9,13 +9,14 @@
   "native_identities_preserved": true,
   "native_geometry_readback": true,
   "tampered_plan_rejected": true,
-  "primitive_patch_roundtrip_ms": 102.821,
+  "primitive_patch_roundtrip_ms": 75.9187,
   "samples": 1,
-  "primitive_patch_timing_scope": "resize Send only; includes native queue, patch and readback; excludes planning, documentation and save/reopen",
+  "primitive_patch_timing_scope": "resize Send only; excludes planning, documentation, save/reopen",
   "rollback_verified": true,
-  "save_reopen_verified": false,
+  "save_reopen_verified": true,
   "documentation_verified": false,
   "full_test_a_verified": false,
-  "redaction": "Personal paths, native identities and process IDs omitted; originals retained locally",
-  "rollback_evidence": "artifacts/native-rollback-result.json"
+  "checkpoint_evidence": "artifacts/native-checkpoint-result.json",
+  "rollback_evidence": "artifacts/native-rollback-result.json",
+  "redaction": "Personal paths, native identities and process IDs omitted; original evidence retained locally"
 }
