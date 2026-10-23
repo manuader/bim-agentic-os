@@ -18,6 +18,7 @@ Core C#/.NET8 compiles room intents into unchanged persisted records and compute
 
 ## 4. Sessions, newest first
 
+- Relay3 (Claude, owner-authorized takeover of relay2's stale LOCK): [native A/B recorded and relay3 batch](SESSION-2026-10-23-relay3-native-ab-mcp.md). Native attempt3 full Test A/B verified-in-revit (one isolated run); ADR0007/0008 proposed for owner decision; MCP server coded, not compiled. [Attempt3](../artifacts/native-room-attempt3.json), [plan](plans/2026-10-23-relay3-batch.md).
 - Relay1: [compiler-driven IFC and Baton](SESSION-2026-10-23-baton-ifc.md). Product230d2ba and coordinatorb1e9377 integrated after independent review; fresh50core/68evaluator/10compiler/28Baton assertions,11 real IFC tests90.026s and actual CLI backend=true/product=false. [Remote CI](../artifacts/compiler-ifc-ci-result.json) records actual publication status separately. [Plan](plans/2026-10-23-baton-compiler-ifc.md), [board](../tasks.md).
 - Published8d2cc964c86b5aef03a0e01bdc09ac1a2adf3567 passed exact-head run39899813748: core, real IFC on Ubuntu, C# CodeQL and Python CodeQL all success. Later evidence-only changes do not alter product source. No native Revit or macOS execution is inferred.
 - Published baseline9b98617: CI run39889520735 succeeded all4jobs. Four real Python IFC regressions,50core/58evaluator/17checkpoint assertions in prior local evidence. Native primitive scope only, full native A/B incomplete.
@@ -37,6 +38,8 @@ OneDrive sets ReparsePoint on real files with no LinkTarget; reject actual links
 Strict protocol parsing exposed a real CLI failure after direct worker tests passed; typed metadata and null guards fixed it. A first resize did not prove revision continuity: test two corrections on one saved file. Restricted MSBuild failed twice with0errors/0warnings while the same elevated build and full gate passed; exact underlying operation unknown, no source workaround. Do not promise unattended permissions based on manual escalation.
 
 ## 8. Remaining
+
+Relay3 update: native full A/B passed once (attempt3); open items are on the [board](../tasks.md): M01 needs its first compile/run through verify.ps1 (CI or Windows) before promotion; R02/G02 wait on the owner's ADR0007/ADR0008 decisions; N21 needs Revit launches with the owner's Load Once. Relay3 could not run .NET, PowerShell or Revit and could not publish from the cloud.
 
 Current product slice and controller adapter are integrated and locally verified; publication status is in the current CI record. Next product task: native full hosted Room/documentation A/B. Human goldens remain unapproved; general arbitrary BIM-IR execution and full native delivery benchmark remain unverified. Worktree archival was requested through native tools after preserving ignored evidence; verify actual attachment state rather than assuming queued means completed.
 

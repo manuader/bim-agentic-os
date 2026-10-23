@@ -239,6 +239,16 @@
       ],
       "blocker": "Width-only canonical room; fixture-only hosted extras, documentation unsupported, historical retries after later correction rejected; no native Revit run.",
       "scope": "Existing frozen C# Core snapshots/diff, exact committed-revision hashes, persisted logical UUIDs, custom6-to6.4m and two successive corrections;11 real IFC tests90.026s; CLI backend=true/product=false. Ubuntu exact-head CI39899813748 passed all4jobs."
+    },
+    {
+      "id": "mcp-stdio-server",
+      "status": "described",
+      "evidence": [
+        "interfaces/mcp/McpServer.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": null,
+      "scope": "Dependency-free stdio JSON-RPC MCP server exposing diff/validate/room/plan with text byte-equal to the CLI; tests compare against the real CLI binary. Not compiled yet: relay3 had no .NET SDK; promote to unit-tested only after verify.ps1 passes (CI or Windows)."
     }
   ]
 }
