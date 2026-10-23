@@ -279,9 +279,13 @@ def cloud_hazard(path, stat_fn=None):
     """Metadata only (never opens contents, so never hydrates): (code, entries) for a conflict copy of room.ifc or
     compiled-request.json, else for any entry carrying placeholder attributes, else (None, []).
     stat_fn(entry_path) is a test seam; by default the directory listing's lstat is used and st_file_attributes exists on Windows only."""
-    primaries=(path.name,'compiled-request.json')
     with os.scandir(path.parent) as listing:entries=sorted(listing,key=lambda entry:entry.name)
-    conflicts=[entry.name for entry in entries if any(is_conflict_copy(entry.name,primary) for primary in primaries)]
+    names=[entry.name for entry in entries]
+    # The IFC primary is its on-disk name: on a case-insensitive volume the caller's spelling may differ.
+    folded=[name for name in names if name.lower()==path.name.lower()]
+    primaries=(path.name if path.name in names or len(folded)!=1 else folded[0],'compiled-request.json')
+    # A case-only variant is a conflict only beside the exact-case primary; alone it is the store file itself.
+    conflicts=[name for name in names if any(is_conflict_copy(name,primary) and (name.lower()!=primary.lower() or primary in names) for primary in primaries)]
     if conflicts:return CLOUD_CONFLICT,conflicts
     def attributes(entry):
         return getattr(entry.stat(follow_symlinks=False) if stat_fn is None else stat_fn(entry.path),'st_file_attributes',0)

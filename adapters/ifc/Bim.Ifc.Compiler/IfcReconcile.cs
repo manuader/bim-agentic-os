@@ -58,7 +58,9 @@ public static class IfcReconcile
     {
         ArgumentNullException.ThrowIfNull(directory); ArgumentNullException.ThrowIfNull(primaries);
         var entries=new DirectoryInfo(directory).EnumerateFileSystemInfos().OrderBy(entry=>entry.Name,StringComparer.Ordinal).ToArray();
-        var conflicts=entries.Where(entry=>primaries.Any(primary=>IsConflictCopy(entry.Name,primary))).Select(entry=>entry.Name).ToArray();
+        var names=entries.Select(entry=>entry.Name).ToArray();
+        // A case-only variant is a conflict only beside the exact-case primary; alone it is the store file itself (NTFS is case-insensitive).
+        var conflicts=names.Where(name=>primaries.Any(primary=>IsConflictCopy(name,primary)&&(!string.Equals(name,primary,StringComparison.OrdinalIgnoreCase)||names.Contains(primary,StringComparer.Ordinal)))).ToArray();
         if(conflicts.Length>0)return new(CloudConflictPresent,conflicts);
         var placeholders=entries.Where(entry=>((readAttributes is null?(OperatingSystem.IsWindows()?entry.Attributes:default):readAttributes(entry.FullName))&PlaceholderAttributes)!=0).Select(entry=>entry.Name).ToArray();
         return placeholders.Length>0?new(CloudPlaceholderPresent,placeholders):null;
@@ -69,11 +71,14 @@ public static class IfcReconcile
         ArgumentNullException.ThrowIfNull(coreDirectory);
         var hazard=ReceiptHazard(receipt);
         if(hazard is not null)return hazard;
-        IfcCloudHazard? core;
-        try { core=CloudHazard(coreDirectory,["project.json"],readAttributes); }
-        catch(Exception error) when(error is IOException or UnauthorizedAccessException) { return Unread("core_io_error",receipt); }
-        if(core is not null)return Unread(core.Code,receipt);
-        return Reconcile(new ProjectStore(coreDirectory),receipt,packet);
+        IfcReconcileResult? Scan() {
+            IfcCloudHazard? core;
+            try { core=CloudHazard(coreDirectory,["project.json"],readAttributes); }
+            catch(Exception error) when(error is IOException or UnauthorizedAccessException) { return Unread("core_io_error",receipt); }
+            return core is null?null:Unread(core.Code,receipt);
+        }
+        // Scanned before Core is read and again immediately before the replay Commit: this narrows the window, it does not close it.
+        return Scan() ?? Reconcile(new ProjectStore(coreDirectory),receipt,packet,Scan);
     }
     static IfcReconcileResult Unread(string code,IfcBackendReceipt? receipt)=>new(false,code,null,receipt?.State?.CompiledRevision,null,receipt?.State?.CompiledHash);
     static IfcReconcileResult? ReceiptHazard(IfcBackendReceipt? receipt)
@@ -96,8 +101,9 @@ public static class IfcReconcile
     }
     // Read-only comparison of Core with the IFC receipt. The only write is the replay of the latest
     // one-revision gap through the unchanged ProjectStore.Commit; every other state fails closed.
-    // This overload honours the worker's room.ifc cloud finding but cannot scan the Core directory; prefer Reconcile(coreDirectory,...).
-    public static IfcReconcileResult Reconcile(ProjectStore store,IfcBackendReceipt receipt,IfcCompiledRequest packet)
+    // This overload honours the worker's room.ifc cloud finding; the Core directory scan comes from Reconcile(coreDirectory,...) via beforeCommit.
+    // Internal so callers cannot skip the Core directory guard; tests reach it through InternalsVisibleTo.
+    internal static IfcReconcileResult Reconcile(ProjectStore store,IfcBackendReceipt receipt,IfcCompiledRequest packet,Func<IfcReconcileResult?>? beforeCommit=null)
     {
         ArgumentNullException.ThrowIfNull(store);
         // The worker found a conflict copy or placeholder next to room.ifc: refuse before reading Core.
@@ -133,6 +139,8 @@ public static class IfcReconcile
         if(plan.ExpectedRevision<coreRevision)return Fail("retry_superseded");
         if(plan.ExpectedRevision!=coreRevision||plan.BeforeHash!=coreHash||!latest||!receiptMatches)return Fail("receipt_packet_mismatch");
         if(JsonSerializer.Serialize(after)!=packet.AfterJson)return Fail("noncanonical_packet");
+        var late=beforeCommit?.Invoke();
+        if(late is not null)return late;
         try { store.Commit(after,plan,packet.OperationId); }
         catch(InvalidOperationException) { return Fail("core_commit_rejected"); }
         catch(Exception error) when(error is IOException or UnauthorizedAccessException) { return Fail("core_io_error"); }
