@@ -34,4 +34,12 @@ foreach(var candidates in new[]{new long[]{100,300},new long[]{200,200}}) {
  try { select.Invoke(null,[candidates,200L]);throw new Exception("FAIL missing or ambiguous native field accepted"); }
  catch(TargetInvocationException e) when(e.InnerException?.Message=="room_schedulable_parameter_missing_or_ambiguous") { }
 }
-Console.WriteLine("PASS 15 native Room request/measurement/receipt/schedule guards");
+var widthSelector=guard.GetMethod("SelectMeasuredWidth");
+if(widthSelector==null)throw new Exception("FAIL native populated width selection missing");
+double Width(double? instance,double? symbol)=>(double)widthSelector.Invoke(null,[instance,symbol])!;
+if(Width(0,2.952755905511811)!=2.952755905511811 || Width(null,2.952755905511811)!=2.952755905511811 || Width(3.1,2.9)!=3.1)throw new Exception("FAIL native width selection ignored populated measurement");
+foreach(var pair in new(double?,double?)[]{(null,null),(0,0),(double.NaN,double.PositiveInfinity),(-1,null)}) {
+ try { Width(pair.Item1,pair.Item2);throw new Exception("FAIL missing native width accepted"); }
+ catch(TargetInvocationException e) when(e.InnerException?.Message=="room_door_width_readback_missing") { }
+}
+Console.WriteLine("PASS 22 native Room request/measurement/receipt/schedule/width guards");

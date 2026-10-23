@@ -185,7 +185,19 @@ internal static class NativeRoomFixture
             var p=((LocationPoint)instance.Location).Point;
             var edge=result.Single(x=>x.NativeId==host.UniqueId).Geometry;
             var x=edge[0]==edge[2]?edge[0]:Mm(p.X-minX);var y=edge[1]==edge[3]?edge[1]:Mm(p.Y-minY);
-            var doorWidth=role=="door"?Mm((instance.get_Parameter(BuiltInParameter.DOOR_WIDTH)??instance.Symbol.get_Parameter(BuiltInParameter.DOOR_WIDTH)??throw new InvalidOperationException("room_door_width_readback_missing")).AsDouble()):(double?)null;
+            double? doorWidth=null;
+            if(role=="door") {
+                var instanceParameter=instance.get_Parameter(BuiltInParameter.DOOR_WIDTH);
+                var symbolParameter=instance.Symbol.get_Parameter(BuiltInParameter.DOOR_WIDTH);
+                double? ReadWidth(Parameter? parameter)=>parameter is {HasValue:true,StorageType:StorageType.Double}?parameter.AsDouble():null;
+                var instanceValue=ReadWidth(instanceParameter);var symbolValue=ReadWidth(symbolParameter);
+                var selected=NativeRoomGuard.SelectMeasuredWidth(instanceValue,symbolValue);
+                raw.Add(new{kind="door_width_parameters",instance.UniqueId,symbol_unique_id=instance.Symbol.UniqueId,
+                    instance_parameter=new{exists=instanceParameter!=null,has_value=instanceParameter?.HasValue,storage_type=instanceParameter?.StorageType.ToString(),raw_internal=instanceValue},
+                    symbol_parameter=new{exists=symbolParameter!=null,has_value=symbolParameter?.HasValue,storage_type=symbolParameter?.StorageType.ToString(),raw_internal=symbolValue},
+                    selected_source=instanceValue is double v&&double.IsFinite(v)&&v>0?"instance":"symbol",selected_internal=selected});
+                doorWidth=Mm(selected);
+            }
             Add(role,role=="door"?"Door":"Window",Logical(host.Id),[],[x,y],span:doorWidth);
         }
         var boundaryIds=segments.Select(x=>Logical(x.ElementId)).Distinct().ToArray();

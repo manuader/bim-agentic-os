@@ -13,6 +13,12 @@ public static class NativeRoomGuard
         if(!double.IsFinite(value))throw new InvalidOperationException("room_nonfinite_measurement");
         var integer=Math.Round(value); return Math.Abs(value-integer)<=1e-6?integer:value;
     }
+    public static double SelectMeasuredWidth(double? instance,double? symbol)
+    {
+        if(instance is double value&&double.IsFinite(value)&&value>0)return value;
+        if(symbol is double typeValue&&double.IsFinite(typeValue)&&typeValue>0)return typeValue;
+        throw new InvalidOperationException("room_door_width_readback_missing");
+    }
     public static int SelectParameterField(long[] actualParameterIds,long requiredParameterId)
     {
         var indices=Enumerable.Range(0,actualParameterIds.Length).Where(i=>actualParameterIds[i]==requiredParameterId).ToArray();
