@@ -277,7 +277,7 @@
         "docs/architecture/adr/0007-cross-store-recovery.md"
       ],
       "blocker": null,
-      "scope": "ADR0007 option A: fail-closed IFC↔Core reconcile, replays only the latest one-revision gap; crash-injection tests at six points, zero-write hash snapshots, real IFC CLI tests on Ubuntu CI 40019034003. Not covered: native Revit path (C8/C9), Windows/OneDrive rename/fsync semantics, OneDrive conflict-copy refusal (deferred)."
+      "scope": "ADR0007 option A: fail-closed IFC↔Core reconcile, replays only the latest one-revision gap; crash-injection tests at six points, zero-write hash snapshots, real IFC CLI tests on Ubuntu CI 40019034003. Not covered: native Revit path (C8/C9), Windows/OneDrive rename/fsync semantics, OneDrive conflict-copy and placeholder refusal (R03) fails closed in Core and IFC folders, CLI included; verified on Ubuntu/Windows/macOS CI 40033588216 with injected attributes, not against a real OneDrive client."
     }
   ]
 }

@@ -40,15 +40,15 @@ Loaded by relay7 (Claude) after the owner said "continue" with only N21 left; co
 |---|---|---|---|---|---|---|
 | W01 | CI on windows-latest and macos-latest | ✅ | — | .github/workflows/ci.yml | windows job runs verify.ps1 and real IFC; macos job runs real IFC; all green on the exact head; evidence artifact recorded | target integration-tested (ifc) on 3 OS |
 | P01 | IFC incremental vs full-rebuild baseline | 🔄 | — | tests/harness/rebuild; scripts/benchmark-rebuild.ps1; artifacts | same correction applied incrementally and by full regeneration on the real IFC backend, N≥10 samples each, p50/p95 and elements written recorded with hardware/version; no speedup claim beyond the measured scope | target integration-tested (ifc) |
-| R03 | Reconcile refuses OneDrive conflict copies/placeholders | 🔄 | R02 | adapters/ifc/Bim.Ifc.Compiler/IfcReconcile.cs; runtimes/ifc/worker.py; tests/reconcile; tests/ifc/test_reconcile.py | sibling conflict-copy patterns and offline placeholders around project.json/room.ifc fail closed with a typed code and zero writes, tests red first | target unit-tested |
+| R03 | Reconcile refuses OneDrive conflict copies/placeholders | ✅ | R02 | adapters/ifc/Bim.Ifc.Compiler/IfcReconcile.cs; runtimes/ifc/worker.py; tests/reconcile; tests/ifc/test_reconcile.py | sibling conflict-copy patterns and offline placeholders around project.json/room.ifc fail closed with a typed code and zero writes, tests red first | target unit-tested |
 
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 13/16 done (81.2 %)
+Progress: 14/16 done (87.5 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
-- Relay7 batch — platform coverage, rebuild baseline, recovery guard: 1/3
+- Relay7 batch — platform coverage, rebuild baseline, recovery guard: 2/3
 Next ready: 
 
