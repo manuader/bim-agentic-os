@@ -141,6 +141,11 @@ def resize(path,width,operation,force_failure=False):
         raise ValueError('forced invalid negative wall thickness; transaction discarded')
     temporary=path.with_suffix('.pending.ifc')
     try:
+        with temporary.open('x', encoding='utf-8'):
+            pass
+    except FileExistsError as exc:
+        raise ValueError('existing staging artifact; mutation not published') from exc
+    try:
         f.write(str(temporary))
         validate(ifcopenshell.open(str(temporary)))
         os.replace(temporary,path)
@@ -224,7 +229,9 @@ def execute(directory):
     if not directory.is_absolute():raise ValueError('output-dir must be absolute')
     directory.mkdir(parents=True,exist_ok=True)
     path=directory/'room.ifc'
-    if path.exists():raise ValueError('output directory already contains room.ifc')
+    owned=('room.ifc','before.ifc','hashes.json','benchmarks.json','room.pending.ifc')
+    if any((directory/name).exists() for name in owned):
+        raise ValueError('output directory contains an existing worker artifact; use a fresh fixture directory')
     total_start=time.perf_counter();start=time.perf_counter();create(path);create_ms=(time.perf_counter()-start)*1000
     a=observe(path);before_hash=hashlib.sha256(path.read_bytes()).hexdigest()
     baseline=directory/'before.ifc';baseline.write_bytes(path.read_bytes())

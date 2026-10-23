@@ -6,6 +6,35 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 class IfcIntegration(unittest.TestCase):
+    def test_resize_preserves_foreign_pending_file(self):
+        spec = importlib.util.spec_from_file_location('ifc_worker', ROOT/'runtimes/ifc/worker.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        (ROOT / '.bim/ifc-tests').mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / '.bim/ifc-tests') as directory:
+            path = pathlib.Path(directory)/'room.ifc'
+            module.create(path)
+            original = path.read_bytes()
+            pending = path.with_suffix('.pending.ifc')
+            pending.write_bytes(b'foreign pending artifact')
+            with self.assertRaises(ValueError):
+                module.resize(path, 5400, 'resize')
+            self.assertEqual(original, path.read_bytes())
+            self.assertEqual(b'foreign pending artifact', pending.read_bytes())
+
+    def test_refuses_foreign_artifact_without_writes(self):
+        spec = importlib.util.spec_from_file_location('ifc_worker', ROOT/'runtimes/ifc/worker.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        (ROOT / '.bim/ifc-tests').mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / '.bim/ifc-tests') as directory:
+            path = pathlib.Path(directory)
+            (path/'before.ifc').write_bytes(b'foreign IFC must survive')
+            with self.assertRaises(ValueError):
+                module.execute(path)
+            self.assertEqual({'before.ifc'}, {p.name for p in path.iterdir()})
+            self.assertEqual(b'foreign IFC must survive', (path/'before.ifc').read_bytes())
+
     def test_shifted_opening_profile_is_rejected(self):
         spec = importlib.util.spec_from_file_location('ifc_worker', ROOT/'runtimes/ifc/worker.py')
         module = importlib.util.module_from_spec(spec)
