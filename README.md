@@ -1,6 +1,6 @@
 # BIM Agentic OS
 
-Implementation governed by [master specification](BIM_Agentic_OS_PROMPT_DEFINITIVO.md). Initial kernel, not a completed BIM authoring product.
+Implementation governed by [master specification](BIM_Agentic_OS_PROMPT_DEFINITIVO.md) and the narrower [current cycle](docs/agent/CYCLE_SCOPE.md). Start with [persistent state](docs/agent/STATE.md) and [environment evidence](docs/agent/ENVIRONMENT.md). Initial kernel, not a completed BIM authoring product.
 
 ## Executable modules
 
@@ -9,7 +9,7 @@ Implementation governed by [master specification](BIM_Agentic_OS_PROMPT_DEFINITI
 - CLI shares the core (`diff`, `validate`, `init`, `plan`, `commit-intent`) and sends explicit native requests (`native`). Intent commits persist semantic state only; they do not synchronize Revit. No natural-language parser or MCP endpoint yet.
 - Typed `RoomIntent` compiles a clear 5 x 4 m room and a +400 mm width revision, preserving identities and fixed exterior anchors. `room` emits semantic state with space/documentation dependencies; native execution explicitly blocks those unsupported output kinds. `scripts/demo-room.ps1` exercises CLI intent/diff/persistence/idempotency.
 - Revit 2025 add-in source: same-user Windows named pipe, ExternalEvent serialized execution, document path guard, level creation, wall creation/axis modification, inspection, deletion and transaction rollback. Native requests are NOT yet idempotent; never blindly retry mutations. Wall creation currently uses the document default wall type; 200 mm construction is not guaranteed.
-- Separate typed `batch` operation supports level/wall primitives with exact matching wall thickness, persistent ExtensibleStorage identity mapping/receipts and transaction-group readback. Primitive requests above remain non-idempotent; the batch is target-built but not native-tested. Native deletes and unsupported complete-room documents are blocked in the batch.
+- Separate typed `batch` operation supports level/wall primitives with exact matching wall thickness, persistent ExtensibleStorage identity mapping/receipts and transaction-group readback. Create/retry/resize/forced rollback and saved-checkpoint reopen were verified in Revit25.2 for an isolated fixture. Primitive requests above remain non-idempotent. Native deletes and unsupported complete-room documents are blocked in the batch.
 
 ## Reproduce
 
@@ -38,4 +38,6 @@ Native request JSON example (absolute path must match active saved document):
 
 ## Acceptance status
 
-Phase 0 partial. RevitAPI 25.2.0.38 discovered; SDK8.0.415 installed locally. Core/CLI/tests and native add-in target builds passed; 33 .NET8 core assertions passed. Live bridge transaction start/rollback probe succeeded for the existing bridge, not this add-in. Phase 1 / Test A not passed. No native RVT delivered. Phases 2–4 have early implementation only. See `docs/evidence.md`, `docs/features.json` and `tests/integration/README.md`.
+Core and CLI are `unit-tested` (50 core assertions); installed RevitAPI25.2.0.38 and SDK8.0.415 supported the recorded builds. Level/wall batches and saved-checkpoint reopen are `verified-in-revit`; the saved fixture contains only that primitive scope. Full Test A/B is `blocked`: hosted door/windows, Room and complete documentation are missing. IFC integration is `blocked` pending dependency approval and implementation. See [evidence](docs/evidence.md), [capabilities](docs/features.json) and [native procedure](docs/agent/NATIVE_VM.md).
+
+The evaluation oracle is separate from backend acceptance. `pwsh -File scripts/evaluate.ps1 -Backend revit` (or `ifc`) emits JSON with mandatory criterion outcomes and metrics. Current backend paths return exit2 with explicit blockers; they do not execute full A/B. Offline synthetic observations can test the oracle but cannot issue product acceptance. Unknown metrics remain null. See [evaluation contract](docs/contracts/evaluation.md).

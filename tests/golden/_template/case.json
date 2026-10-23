@@ -1,0 +1,13 @@
+{
+  "case_id": null,
+  "review_state": "draft-needs-review",
+  "verification_state": "manual-only",
+  "architect_approved": false,
+  "intent": null,
+  "inputs": [],
+  "expected_outcomes": [],
+  "invariants": [],
+  "tolerances": [],
+  "approved_by": null,
+  "approved_at": null
+}

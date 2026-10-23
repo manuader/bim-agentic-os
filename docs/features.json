@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-22",
+  "updated": "2026-10-23",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -170,6 +170,29 @@
       ],
       "blocker": null,
       "scope": "Isolated level/wall fixture save/reopen only; full Test A/B blocked."
+    },
+    {
+      "id": "strict-a-b-evaluation-oracle",
+      "status": "unit-tested",
+      "evidence": [
+        "evaluation/Bim.Evaluation/EvaluationService.cs",
+        "tests/evaluation/Program.cs",
+        "tests/evaluation/test-evaluate-cli.ps1",
+        "artifacts/evaluation-launcher-result.json",
+        "artifacts/evaluation-engineering-result.json"
+      ],
+      "scope": "Typed offline acceptance oracle, JSON CLI/PowerShell launcher and strict mandatory criteria. Synthetic fixtures cannot confer backend acceptance.",
+      "blocker": "Actual IFC/Revit full A/B adapters remain blocked; reported backend runs fail closed."
+    },
+    {
+      "id": "ifc-headless-evaluation",
+      "status": "blocked",
+      "evidence": [
+        "artifacts/evaluation-ifc-result.json",
+        "docs/architecture/adr/0006-ifc-evaluation-license.md"
+      ],
+      "scope": "Full A/B evaluation request; no IFC authoring/readback implemented or executed.",
+      "blocker": "IfcOpenShell approval pending; actual backend implementation absent; native Revit-only outputs unsupported by IFC."
     }
   ]
 }

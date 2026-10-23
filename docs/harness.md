@@ -1,6 +1,6 @@
 # Development harness and provenance
 
-The master product specification remains authoritative. [OpenAI's Harness engineering article](https://openai.com/index/harness-engineering/) motivates a short repository map, versioned execution plans, machine-checkable boundaries and agent-readable evidence. These practices are adapted to BIM safety; native integration cannot be replaced with a mock passing result.
+The master product specification supplies the product requirements; [CYCLE_SCOPE](agent/CYCLE_SCOPE.md) narrows the current work and takes precedence for this cycle. [OpenAI's Harness engineering article](https://openai.com/index/harness-engineering/) motivates a short repository map, versioned execution plans, machine-checkable boundaries and agent-readable evidence. These practices are adapted to BIM safety; native integration cannot be replaced with a mock passing result.
 
 ## Superpowers
 
@@ -12,9 +12,9 @@ Seven repository-owned skills cover Revit API, C#/.NET, BIM-IR, incremental comp
 
 The official Codex skill-creator `quick_validate.py` accepted all seven domain skills after installing its missing PyYAML 6.0.3 dependency into ignored `.tools/skill-validator-deps`. This verifies metadata/scaffold validity, not behavioral effectiveness. Reproduce with the bundled Python, `PYTHONPATH=.tools/skill-validator-deps`, and that validator on each `bim-*` directory.
 
-User instructions to continue immediately without renewed discovery govern this session: the existing master specification and requested execution method supply authorization to proceed through the plan. No redundant design-approval round is introduced. Multi-agent tools already exist; no machine configuration change is needed.
+The user approved the current C# evaluation design and retaining the existing C# core. RPC ratification, non-permissive IFC dependency approval and any future BIM-IR schema change remain separate decisions. Multi-agent tools already exist; no machine configuration change is needed.
 
-Use plan/ledger in `docs/superpowers/plans/` for persistent progress. Upstream Bash utility invocations may be adapted to native PowerShell in this Windows harness; preserve review artifacts and gates, rather than claiming an unexecuted upstream command ran.
+Current plans live in `docs/plans/`; older execution records remain in `docs/superpowers/plans/`. Persistent session memory, blockers and the per-test three-attempt ledger live in `docs/agent/`. Upstream Bash utility invocations may be adapted to native PowerShell in this Windows harness; preserve review artifacts and gates, rather than claiming an unexecuted upstream command ran.
 
 ## Gates
 

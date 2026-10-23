@@ -1,5 +1,7 @@
 # Module contracts — v0.1
 
+The evaluation-only DTO and evidence boundary is specified in [evaluation.md](evaluation.md). It leaves the existing BIM-IR and RPC schemas unchanged.
+
 ## Deterministic core
 
 `Project(Guid Id, int Revision, Element[] Elements)` is intended semantic state. `Element` carries stable logical UUID, kind, geometry in metres, prerequisite IDs and provenance. Current wall geometry is `[x1,y1,x2,y2,height,thickness]`; this compact representation is version-0 prototype data, not a full geometry schema.

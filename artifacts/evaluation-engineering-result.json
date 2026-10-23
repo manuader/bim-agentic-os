@@ -1,0 +1,80 @@
+{
+  "verification_state": "unit-tested",
+  "full_gate": {
+    "checkpoint_assertions": 17,
+    "core_assertions": 50,
+    "evaluator_cli_assertions": 5,
+    "exit_code": 0,
+    "command": "pwsh -NoProfile -File scripts/verify.ps1",
+    "evaluator_assertions": 42,
+    "source_commit": "f40b7c7",
+    "evidence_directory": ".bim/verification/20261023T014414208Z"
+  },
+  "final_scoped_verification": {
+    "reason": "Final revision token guard changed evaluator only",
+    "commands": [
+      "dotnet build tests/evaluation/Evaluation.Tests.csproj --configuration Release --warnaserror",
+      "dotnet build interfaces/cli/Bim.Cli.csproj --configuration Release --warnaserror",
+      "dotnet run --project tests/evaluation --configuration Release --no-build",
+      "pwsh -NoProfile -File tests/evaluation/test-evaluate-cli.ps1 -Dotnet <dotnet8>"
+    ],
+    "evaluator_cli_assertions": 5,
+    "build_errors": 0,
+    "exit_code": 0,
+    "build_warnings": 0,
+    "evaluator_assertions": 43,
+    "source_commit": "a4f26ba"
+  },
+  "dependency_audit": {
+    "maintained_projects": 9,
+    "exit_code": 0,
+    "scope": "NuGet vulnerability metadata for current project graph; not native API security proof",
+    "command": "pwsh -NoProfile -File scripts/audit-dependencies.ps1 -Dotnet <dotnet8>"
+  },
+  "benchmarks": [
+    {
+      "scope": "core_diff_only",
+      "elements": 100,
+      "samples": 20,
+      "first_sample_includes_cold_jit": true,
+      "p50_ms": 1.8772,
+      "p95_ms": 3.0139,
+      "operations": 1,
+      "native_delivery_latency_ms": null,
+      "runtime": "8.0.21",
+      "processors": 16
+    },
+    {
+      "scope": "core_diff_only",
+      "elements": 1000,
+      "samples": 20,
+      "first_sample_includes_cold_jit": true,
+      "p50_ms": 18.4133,
+      "p95_ms": 30.761,
+      "operations": 1,
+      "native_delivery_latency_ms": null,
+      "runtime": "8.0.21",
+      "processors": 16
+    },
+    {
+      "scope": "core_diff_only",
+      "elements": 10000,
+      "samples": 20,
+      "first_sample_includes_cold_jit": true,
+      "p50_ms": 92.7979,
+      "p95_ms": 178.7076,
+      "operations": 1,
+      "native_delivery_latency_ms": null,
+      "runtime": "8.0.21",
+      "processors": 16
+    }
+  ],
+  "hardware_evidence": "artifacts/environment-census.json",
+  "native_execution_this_cycle": false,
+  "full_architectural_delivery_ms": null,
+  "limitations": [
+    "Synthetic evaluator tests do not establish IFC or Revit acceptance.",
+    "No new dependencies were added.",
+    "The CLI scoped rerun initially used an invalid CliDll argument; corrected invocation passed without source changes."
+  ]
+}

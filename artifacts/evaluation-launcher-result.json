@@ -1,0 +1,40 @@
+{
+  "verification_state": "unit-tested",
+  "scope": "controller ran evaluation launcher; adapters declare blockers, no backend integration executed",
+  "source_commit": "62bde0a",
+  "commands": [
+    "pwsh -NoProfile -File scripts/evaluate.ps1 -Backend revit",
+    "pwsh -NoProfile -File scripts/evaluate.ps1 -Backend ifc"
+  ],
+  "runs": [
+    {
+      "report": "artifacts/evaluation-revit-result.json",
+      "exit_code": 2,
+      "counts": {
+        "passed": 0,
+        "failed": 0,
+        "blocked": 40,
+        "unsupported": 0
+      },
+      "backend": "revit",
+      "product_acceptance": false
+    },
+    {
+      "report": "artifacts/evaluation-ifc-result.json",
+      "exit_code": 2,
+      "counts": {
+        "passed": 0,
+        "failed": 0,
+        "blocked": 32,
+        "unsupported": 8
+      },
+      "backend": "ifc",
+      "product_acceptance": false
+    }
+  ],
+  "launch_environment": "repository-local temporary directories; elevated build permission after sandbox restore failure",
+  "notes": [
+    "Initial sandbox-limited builds returned BUILD_BLOCKED without diagnostic errors; rerunning same code with permitted build access succeeded.",
+    "No native or IFC model was authored by these evaluation runs."
+  ]
+}

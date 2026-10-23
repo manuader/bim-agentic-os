@@ -1,0 +1,15 @@
+{
+  "captured_utc": "2026-10-23T01:17:42.7066018Z",
+  "os_caption": "Microsoft Windows 11 Home",
+  "os_version": "10.0.26200",
+  "architecture": "64-bit",
+  "memory_total_mb": 32037.0,
+  "cpu_model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+  "logical_processors": 16,
+  "revit_api_exists": true,
+  "revit_api_file_version": "25.2.0.38",
+  "revit_api_xml_exists": true,
+  "rustc_on_path": false,
+  "cargo_on_path": false,
+  "license_entitlement": "not queried; prior native editable save/reopen recorded separately"
+}

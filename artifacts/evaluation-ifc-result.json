@@ -1,0 +1,433 @@
+{
+  "verification_state": "blocked",
+  "outcome": "fail",
+  "scope": "full Test A/B",
+  "backend": "ifc",
+  "backend_version": "unavailable",
+  "source": "adapter capability declaration; no runtime probe",
+  "timing_scope": "orchestration only; not architectural delivery",
+  "counts": {
+    "passed": 0,
+    "failed": 0,
+    "blocked": 32,
+    "unsupported": 8
+  },
+  "metrics": {
+    "intent_parse_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "semantic_query_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "solver_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "diff_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "runtime_wait_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "revit_execute_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "revit_regeneration_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "native_readback_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "validation_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "documentation_ms": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "total_ms": {
+      "value": 9.8223,
+      "reason": "observed evaluator orchestration only; excludes full architectural delivery"
+    },
+    "llm_calls": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "model_elements_read": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "model_elements_written": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "transaction_count": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    },
+    "unintended_element_changes": {
+      "value": null,
+      "reason": "not instrumented by a real backend execution"
+    }
+  },
+  "cases": [
+    {
+      "id": "A",
+      "outcome": "fail",
+      "counts": {
+        "passed": 0,
+        "failed": 0,
+        "blocked": 16,
+        "unsupported": 7
+      },
+      "criteria": [
+        {
+          "id": "level",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "clear_width_mm",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "clear_depth_mm",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "wall_count",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "wall_thickness_mm",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "wall_height_mm",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "door_count",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "door_width_mm",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "window_count",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "room_boundary",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "dimensions",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "plan",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "view_3d",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "schedule",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "sheet",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "categories",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "hosting",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "units",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "references",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "geometry_consistency",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "identities",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "native_save",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "native_reopen",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "outcome": "fail",
+      "counts": {
+        "passed": 0,
+        "failed": 0,
+        "blocked": 16,
+        "unsupported": 1
+      },
+      "criteria": [
+        {
+          "id": "requires_A",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "post_revision_acceptance",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "baseline_matches_A",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "width_delta_mm",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "exterior_anchor",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "unaffected_ids",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "dependent_hosts",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "documentation_updates",
+          "outcome": "unsupported",
+          "reason": "IFC cannot prove native Revit annotation/view/sheet/RVT acceptance",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "semantic_diff",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "idempotency_key",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "retry_no_duplicates",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "retry_revision",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "forced_failure",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "rollback_snapshot",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "rollback_revision",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "validation",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "id": "unintended_changes",
+          "outcome": "blocked",
+          "reason": "mandatory backend observation missing",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        }
+      ]
+    }
+  ],
+  "gaps": [
+    "IFC executor not implemented/configured; optional dependency approval pending (ADR0006)",
+    "IFC cannot satisfy mandatory native Revit annotations/views/sheets/RVT save-reopen"
+  ],
+  "product_acceptance": false,
+  "evidence_origin": "backend-prerequisite-inspection"
+}
