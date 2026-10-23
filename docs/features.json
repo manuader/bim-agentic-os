@@ -264,6 +264,18 @@
       ],
       "blocker": null,
       "scope": "ADR0008 option A: typed Length/Area/Angle, per-kind geometry views via one codec, capability registry and a typed semantic diff at API boundaries; persisted JSON, hashes, receipts and IFC packet byte-identical (frozen goldens, independently recomputed). Ubuntu CI 40017923434. Revit U() dedup and native compile check deferred (no Revit runner)."
+    },
+    {
+      "id": "cross-store-reconcile-ifc",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/ifc/Bim.Ifc.Compiler/IfcReconcile.cs",
+        "tests/reconcile/Program.cs",
+        "tests/ifc/test_reconcile.py",
+        "docs/architecture/adr/0007-cross-store-recovery.md"
+      ],
+      "blocker": null,
+      "scope": "ADR0007 option A: fail-closed IFC↔Core reconcile, replays only the latest one-revision gap; crash-injection tests at six points, zero-write hash snapshots, real IFC CLI tests on Ubuntu CI 40019034003. Not covered: native Revit path (C8/C9), Windows/OneDrive rename/fsync semantics, OneDrive conflict-copy refusal (deferred)."
     }
   ]
 }
