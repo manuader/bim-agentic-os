@@ -80,6 +80,53 @@ jobs:
             .bim/ci-ifc/report.json
             .bim/ci-ifc/hashes.json
             .bim/ci-ifc/benchmarks.json
+  core-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build, core/evaluator unit health, static gates and benchmark on Windows
+        shell: pwsh
+        run: ./scripts/verify.ps1
+  ifc-portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install approved isolated IFC dependencies
+        shell: pwsh
+        run: |
+          python -m venv .tools/ifc
+          $py = if ($IsWindows) { '.tools/ifc/Scripts/python.exe' } else { '.tools/ifc/bin/python' }
+          & $py -m pip install -r requirements/ifc.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $py -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "IFC_PY=$((Resolve-Path $py).Path)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Real IFC integration regressions
+        shell: pwsh
+        run: |
+          & $env:IFC_PY -m unittest discover -s tests/ifc -p 'test_*.py' -v
+          exit $LASTEXITCODE
+      - name: Evaluate real IFC and enforce portable acceptance
+        shell: pwsh
+        run: |
+          & ./scripts/evaluate.ps1 -Backend ifc -Python $env:IFC_PY -OutputDirectory (Join-Path $pwd '.bim/ci-ifc')
+          $evaluationExit = $LASTEXITCODE
+          $report = Get-Content .bim/ci-ifc/report.json -Raw | ConvertFrom-Json
+          if ($evaluationExit -ne 2 -or !$report.backend_acceptance -or $report.product_acceptance -or $report.verification_state -ne 'integration-tested (ifc)' -or $report.counts.failed -ne 0) { throw 'Real IFC portable acceptance failed or native acceptance was falsely promoted' }
+          exit 0
   codeql-python:
     runs-on: ubuntu-latest
     permissions:

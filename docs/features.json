@@ -155,10 +155,11 @@
         "artifacts/ifc-ci-result.json",
         "artifacts/compiler-ifc-integration-result.json",
         "artifacts/compiler-ifc-tests-result.json",
-        "artifacts/compiler-ifc-ci-result.json"
+        "artifacts/compiler-ifc-ci-result.json",
+        "artifacts/multi-os-ci-result.json"
       ],
       "blocker": "Arbitrary BIM-IR, complete native Revit documentation and macOS remain unsupported/unexecuted.",
-      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice and Ubuntu CI39899813748 verified."
+      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice and Ubuntu CI39899813748 verified. Executed on Ubuntu, Windows and macOS GitHub runners (run 40031105768)."
     },
     {
       "id": "github-publication",
@@ -206,9 +207,10 @@
         "artifacts/ifc-ci-result.json",
         "artifacts/compiler-ifc-integration-result.json",
         "artifacts/compiler-ifc-tests-result.json",
-        "artifacts/compiler-ifc-ci-result.json"
+        "artifacts/compiler-ifc-ci-result.json",
+        "artifacts/multi-os-ci-result.json"
       ],
-      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice and Ubuntu CI39899813748 verified.",
+      "scope": "Actual IFC4 authoring/save-reopen/width correction/receipts/rollback/schema/triangulated geometry. Existing Core-generated canonical rectangle requests now drive the worker; door/windows are fixture extras. Windows current slice and Ubuntu CI39899813748 verified. Executed on Ubuntu, Windows and macOS GitHub runners (run 40031105768).",
       "blocker": "Arbitrary BIM-IR, complete native Revit documentation and macOS remain unsupported/unexecuted."
     },
     {

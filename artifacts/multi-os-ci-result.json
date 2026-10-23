@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "run_id": 40031105768,
+  "url": "https://github.com/manuader/bim-agentic-os/actions/runs/40031105768",
+  "head_sha": "3d6c3e3",
+  "status": "completed",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "core",
+      "conclusion": "success"
+    },
+    {
+      "name": "core-windows",
+      "conclusion": "success"
+    },
+    {
+      "name": "ifc",
+      "conclusion": "success"
+    },
+    {
+      "name": "ifc-portable (windows-latest)",
+      "conclusion": "success"
+    },
+    {
+      "name": "ifc-portable (macos-latest)",
+      "conclusion": "success"
+    },
+    {
+      "name": "codeql",
+      "conclusion": "success"
+    },
+    {
+      "name": "codeql-python",
+      "conclusion": "success"
+    }
+  ],
+  "scope": "verify.ps1 on Ubuntu and windows-latest (includes MCP, typed-geometry and reconcile suites); real IfcOpenShell integration tests and the C# evaluator acceptance on Ubuntu, windows-latest and macos-latest. GitHub-hosted runners, not the owner's Windows 11 machine; no Revit runner, so the native add-in compile is still not checked."
+}
