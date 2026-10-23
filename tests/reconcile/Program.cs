@@ -159,6 +159,38 @@ foreach(var point in new[]{"after_checkpoint","after_journal","after_tmp"}) {
     Check(store.Read().Revision==7,"forged states leave Core at r");
 }
 
+// Equal revisions with a retained packet neither store has applied: nothing to replay.
+{
+    var store=NewStore("unapplied",out var directory);
+    var before=Snapshot(directory);
+    var result=IfcReconcile.Reconcile(store,Initial(packet1),packet1);
+    Check(result.Succeeded && result.Code=="in_sync" && Same(before,Snapshot(directory)),"equal revisions with an unapplied packet are in sync without writes");
+}
+// Commit refusal after every reconcile precondition passed: a conflicting Core receipt for the same key.
+{
+    var store=NewStore("commit-rejected",out var directory);
+    File.WriteAllText(Path.Combine(directory,"project.json"),JsonSerializer.Serialize(new ProjectStore.State(Before(packet1),new() {[packet1.OperationId]=new string('0',64)})));
+    ExpectFailure(store,directory,Applied(Initial(packet1),packet1),packet1,"core_commit_rejected","Core idempotency conflict during replay");
+}
+// I/O failure inside the replay Commit is typed and never publishes project.json.
+{
+    NewStore("core-io",out var directory);
+    var published=File.ReadAllBytes(Path.Combine(directory,"project.json"));
+    var failing=new ProjectStore(directory) {CrashAfter=step=>{ if(step=="after_checkpoint") throw new IOException("injected_io:"+step); }};
+    var result=IfcReconcile.Reconcile(failing,Applied(Initial(packet1),packet1),packet1);
+    Check(!result.Succeeded && result.Code=="core_io_error","Commit I/O failure returns core_io_error (got "+result.Code+")");
+    Check(File.ReadAllBytes(Path.Combine(directory,"project.json")).SequenceEqual(published),"Commit I/O failure leaves project.json at r");
+}
+// Missing or malformed compiled packets are typed.
+{
+    var store=NewStore("null-packet",out var directory);
+    ExpectFailure(store,directory,Applied(Initial(packet1),packet1),null!,"invalid_compiled_packet","null compiled packet");
+    Check(JsonSerializer.Serialize(IfcReconcile.ParsePacket(JsonSerializer.Serialize(packet1)))==JsonSerializer.Serialize(packet1),"compiled packet JSON parses");
+    foreach(var bad in new[]{"null","not json","{\"ProtocolVersion\":\"x\"}"}) {
+        try { IfcReconcile.ParsePacket(bad); throw new InvalidOperationException("malformed packet accepted"); } catch(ArgumentException error) when(error.Message=="invalid_compiled_packet") { Check(true,"malformed compiled packet JSON returns invalid_compiled_packet"); }
+    }
+}
+
 // Receipt parsing uses the worker's snake_case JSON and rejects unknown members.
 var raw="{\"state\":{\"compiled_hash\":\"H\",\"compiled_project\":\"66ef39da-f724-4328-b055-c33e78dbb2ed\",\"compiled_revision\":8,\"receipts\":{\"resize-400\":{\"compiled_fingerprint\":\"F\",\"plan_after_hash\":\"P\",\"revision\":\"r8\",\"width\":5400.0}},\"revision\":\"r8\"},\"staging_artifact_present\":false,\"staging_hash\":null}";
 var parsed=IfcReconcile.ParseReceipt(raw);

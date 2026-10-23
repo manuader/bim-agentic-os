@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 WORKER=ROOT/'runtimes/ifc/worker.py'
@@ -67,7 +68,8 @@ class Reconcile(unittest.TestCase):
         return self.run_cli('reconcile',core,target,packet_path)
 
     def hashes(self,path,core):
-        return {'room.ifc':digest(path),'staging':digest(path.with_suffix('.pending.ifc')),**{p.name:digest(p) for p in sorted(core.iterdir())}}
+        # Every file in both stores, including the retained packet and any staging artifact.
+        return {str(p.relative_to(root.parent)):digest(p) for root in (path.parent,core) for p in sorted(root.rglob('*')) if p.is_file() or p.is_symlink()}
 
     def test_c3_reconcile_replays_core_then_noop_then_latest_retry(self):
         packet=self.packet('compiled-5.json')
@@ -133,7 +135,8 @@ class Reconcile(unittest.TestCase):
             code,out=self.reconcile(base,path,core,PACKETS/'compiled-5.json')
             self.assertEqual((1,'retry_superseded'),(code,out['code']),out)
             with self.assertRaises(ValueError):w.resize_compiled(path,first)
-            self.commit(base,core,first)
+            code,out=self.commit(base,core,first)
+            self.assertEqual((0,9),(code,out['project']['Revision']),out)
             self.assertEqual(before,self.hashes(path,core),'historical reconcile/replay writes nothing')
 
     def test_forged_states_return_typed_codes_without_writes(self):
@@ -160,6 +163,41 @@ class Reconcile(unittest.TestCase):
             code,out=self.reconcile(base,path,core,PACKETS/'compiled-5.json')
             self.assertEqual((1,'receipt_packet_mismatch'),(code,out['code']),out)
             self.assertEqual(before,self.hashes(path,core))
+
+    def test_project_mismatch_without_writes(self):
+        packet=self.packet('compiled-5.json')
+        with tempfile.TemporaryDirectory() as tmp:
+            base,path,core=self.fixture(tmp,packet)
+            f=w.ifcopenshell.open(str(path));s=w.state(f);s['compiled_project']=str(uuid.uuid4());w.set_state(f,s);f.write(str(path))
+            before=self.hashes(path,core)
+            code,out=self.reconcile(base,path,core,PACKETS/'compiled-5.json')
+            self.assertEqual((1,'project_mismatch'),(code,out['code']),out)
+            self.assertEqual(before,self.hashes(path,core))
+
+    def test_packet_is_never_staged_through_a_link_or_non_regular_file(self):
+        packet=self.packet('compiled-5.json')
+        with tempfile.TemporaryDirectory() as tmp:
+            base=pathlib.Path(tmp);ifc=base/'ifc';ifc.mkdir();path=ifc/'room.ifc'
+            w.create(path,w.validate_request(packet))
+            outside=base/'outside.json';outside.write_text('outside must survive',encoding='utf-8')
+            for name in ('compiled-request.pending.json','compiled-request.json'):
+                for kind in ('symlink','directory'):
+                    with self.subTest(name=name,kind=kind):
+                        link=ifc/name
+                        if kind=='symlink':link.symlink_to(outside)
+                        else:link.mkdir()
+                        original=path.read_bytes()
+                        with self.assertRaises(ValueError):w.retain_packet(path,packet)
+                        with self.assertRaises(ValueError):w.resize_compiled(path,packet)
+                        self.assertEqual(original,path.read_bytes(),'IFC unpublished')
+                        self.assertFalse(path.with_suffix('.pending.ifc').exists(),'staging cleaned after refusal')
+                        self.assertEqual('outside must survive',outside.read_text(encoding='utf-8'))
+                        self.assertTrue(link.is_symlink() if kind=='symlink' else link.is_dir())
+                        if kind=='symlink':link.unlink()
+                        else:link.rmdir()
+            w.retain_packet(path,packet)
+            self.assertEqual(packet,json.loads((ifc/'compiled-request.json').read_text(encoding='utf-8')))
+            self.assertFalse((ifc/'compiled-request.pending.json').exists())
 
     def test_crash_injection_point_must_be_known(self):
         packet=self.packet('compiled-5.json')
