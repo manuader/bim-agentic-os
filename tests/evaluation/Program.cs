@@ -68,18 +68,13 @@ Check((await EvaluationService.ExecuteAsync("ifc")).Source.Contains("no runtime 
 Check((await EvaluationService.ExecuteAsync("revit")).Source.Contains("no process probe"),"Revit capability declaration does not claim process inspection");
 
 Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good,revision with { RevisionAfter=null!,RetryRevision=null! })).ExitCode==1,"missing after/retry revision tokens fail closed");
+var portable=good with { NativeFile="fixture.ifc", Elements=good.Elements.Where(x=>x.Category is not ("Dimension" or "Plan" or "View3D" or "Schedule" or "Sheet")).ToArray() };
+var portableResult=EvaluationService.EvaluateOffline(new("ifc","synthetic",portable,null));
+Check(portableResult.Cases[0].Counts.Failed==0,"absent IFC native outputs unsupported rather than failed");
+Check(!portableResult.ProductAcceptance,"IFC portable observations never full product acceptance");
+var missingWorker=await EvaluationService.ExecuteAsync("ifc",new IfcExecutionOptions("missing-python","missing-worker",Path.GetTempPath()));
+Check(missingWorker.ExitCode==2 && !missingWorker.BackendAcceptance && missingWorker.VerificationState=="blocked","missing IFC process inputs block without promotion");
 if(failures.Count>0) throw new Exception(string.Join("; ",failures));
 Console.WriteLine($"PASS {checks} evaluator assertions (synthetic unit observations only)");
 
 } catch (Exception ex) { Console.Error.WriteLine(ex.Message); Environment.ExitCode=1; }
-
-
-
-
-
-
-
-
-
-
-

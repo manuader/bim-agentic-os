@@ -1,4 +1,4 @@
-param([string]$Backend='ifc', [string]$Dotnet, [string]$OutputDirectory)
+param([string]$Backend='ifc', [string]$Dotnet, [string]$OutputDirectory, [string]$Python)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot
 # Build output is evidence, never mixed with the JSON protocol on stdout.
@@ -17,7 +17,12 @@ try {
     if(!$Dotnet){throw 'NET8_SDK_MISSING: install .NET8 or pass -Dotnet'}
     & $Dotnet build "$root/interfaces/cli/Bim.Cli.csproj" --configuration Release --warnaserror *> (Join-Path $OutputDirectory 'build.log')
     if($LASTEXITCODE -ne 0){throw 'BUILD_BLOCKED: inspect build.log'}
-    $raw=& $Dotnet "$root/interfaces/cli/bin/Release/net8.0/Bim.Cli.dll" evaluate $Backend 2> (Join-Path $OutputDirectory 'runtime.stderr.log')
+    $cliArguments=@('evaluate',$Backend)
+    if($Backend -eq 'ifc') {
+        if(!$Python){foreach($candidate in @((Join-Path $root '.tools/ifc/Scripts/python.exe'),(Join-Path $root '.tools/ifc/bin/python'))){if(Test-Path -LiteralPath $candidate){$Python=$candidate;break}}}
+        if($Python){$cliArguments=@('evaluate','ifc',$Python,(Join-Path $root 'runtimes/ifc/worker.py'),[IO.Path]::GetFullPath($OutputDirectory))}
+    }
+    $raw=& $Dotnet "$root/interfaces/cli/bin/Release/net8.0/Bim.Cli.dll" @cliArguments 2> (Join-Path $OutputDirectory 'runtime.stderr.log')
     $code=$LASTEXITCODE
     $json=$raw -join "`n"
     $null=$json | ConvertFrom-Json
@@ -35,4 +40,3 @@ try {
  finally {
     foreach($name in $previousTemp.Keys){if($null -eq $previousTemp[$name]){Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue}else{[Environment]::SetEnvironmentVariable($name,$previousTemp[$name],'Process')}}
 }
-

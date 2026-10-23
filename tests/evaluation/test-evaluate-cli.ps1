@@ -4,7 +4,7 @@ $root=Split-Path (Split-Path $PSScriptRoot)
 $pwsh=(Get-Process -Id $PID).Path
 $count=0
 foreach($backend in @('ifc','revit')) {
-    $raw= & $pwsh -NoProfile -File "$root/scripts/evaluate.ps1" -Backend $backend -Dotnet $Dotnet
+    $raw= & $pwsh -NoProfile -File "$root/scripts/evaluate.ps1" -Backend $backend -Dotnet $Dotnet -Python (Join-Path $root 'missing-python')
     $code=$LASTEXITCODE
     if($code -ne 2){throw "expected blocked exit2 for $backend, got $code"}
     $report=($raw -join "`n") | ConvertFrom-Json
@@ -23,9 +23,8 @@ if($LASTEXITCODE -ne 2){throw 'missing SDK must block'}
 foreach($name in $beforeTemp.Keys){if([Environment]::GetEnvironmentVariable($name,'Process') -cne $beforeTemp[$name]){throw "launcher leaked process $name on startup failure"}}
 if(!(Test-Path (Join-Path $failureOutput 'report.json'))){throw 'startup failure report was not persisted'}
 $count++
-$raw= & "$root/scripts/evaluate.ps1" -Backend ifc -Dotnet $Dotnet
+$raw= & "$root/scripts/evaluate.ps1" -Backend ifc -Dotnet $Dotnet -Python (Join-Path $root 'missing-python')
 if($LASTEXITCODE -ne 2){throw 'IFC must block'}
 foreach($name in $beforeTemp.Keys){if([Environment]::GetEnvironmentVariable($name,'Process') -cne $beforeTemp[$name]){throw "launcher leaked process $name after execution"}}
 $count++
 "PASS $count evaluation CLI assertions (blocked adapters; no model writes)"
-

@@ -9,6 +9,7 @@ try {
             try {
                 evaluation = args.Length switch {
                     2 => await EvaluationService.ExecuteAsync(args[1]),
+                    5 when args[1] == "ifc" => await EvaluationService.ExecuteAsync("ifc",new IfcExecutionOptions(args[2],args[3],args[4])),
                     3 when args[1] == "offline" => EvaluationService.ParseOffline(File.ReadAllText(args[2])),
                     _ => EvaluationService.Malformed("usage: evaluate ifc|revit | evaluate offline observations.json")
                 };
@@ -31,5 +32,3 @@ try {
         default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | native request.json process-pipe-name");
     }
 } catch(Exception e) {Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Message}));Environment.ExitCode=1;}
-
-

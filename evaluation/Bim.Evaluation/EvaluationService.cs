@@ -8,7 +8,7 @@ namespace Bim.Evaluation;
 // Observation contracts are isolated from BIM-IR and native RPC contracts. All lengths are millimetres.
 public sealed record ElementObservation(string LogicalId, string NativeId, string Category, string? HostId, string[] References, double[] Geometry, double? ThicknessMm=null, double? HeightMm=null, double? WidthMm=null, double? AreaM2=null);
 public sealed record RoomObservation(double ClearWidthMm, double ClearDepthMm, double WallThicknessMm, double WallHeightMm,
-    double DoorWidthMm, string Units, ElementObservation[] Elements, double DimensionWidthMm, double ScheduleAreaM2,
+    double DoorWidthMm, string Units, ElementObservation[] Elements, double? DimensionWidthMm, double? ScheduleAreaM2,
     bool Saved, bool Reopened, string NativeFile);
 public sealed record RevisionObservation(RoomObservation Before, RoomObservation After, RoomObservation Retry, RoomObservation Rollback,
     string AnchorLogicalId, string[] AllowedChangedIds, string[] SemanticChangedIds, string[] UpdatedDocumentIds,
@@ -21,9 +21,9 @@ public sealed record CriterionResult(string Id, string Outcome, string Reason, d
 public sealed record CaseResult(string Id, string Outcome, Counts Counts, CriterionResult[] Criteria);
 public sealed record EvaluationReport(string VerificationState, string Outcome, string Scope, string Backend, string BackendVersion, string Source,
     string TimingScope, Counts Counts, Dictionary<string,Metric> Metrics, CaseResult[] Cases, string[] Gaps,
-    [property: JsonIgnore] int ExitCode) { public bool ProductAcceptance => ExitCode==0 && VerificationState is "integration-tested (ifc)" or "verified-in-revit"; public string EvidenceOrigin => VerificationState=="unit-tested" ? "offline-observations" : "backend-prerequisite-inspection"; }
+    [property: JsonIgnore] int ExitCode) { public CriterionResult[] BackendChecks { get; init; } = []; public bool BackendAcceptance { get; init; } public bool ProductAcceptance => Backend!="ifc" && ExitCode==0 && VerificationState is "integration-tested (ifc)" or "verified-in-revit"; public string EvidenceOrigin => VerificationState=="integration-tested (ifc)" ? "runtime-execution" : VerificationState=="unit-tested" ? "offline-observations" : "backend-prerequisite-inspection"; }
 
-public static class EvaluationService
+public static partial class EvaluationService
 {
     public static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy=JsonNamingPolicy.SnakeCaseLower, UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow, WriteIndented=true };
     public static EvaluationReport ParseOffline(string json)
@@ -65,7 +65,7 @@ public static class EvaluationService
         if (o.Backend is not ("ifc" or "revit") || string.IsNullOrWhiteSpace(o.Source)) return Malformed("unsupported_backend_or_missing_source");
         var a = o.TestA == null ? Missing("A", ACatalog) : CheckA(o.TestA, o.Backend);
         if (o.Backend == "ifc") a = WithUnsupported(a);
-        var b = o.TestB == null ? Missing("B", BCatalog) : CheckB(o.TestB, o.TestA, a.Outcome == "pass", o.Backend);
+        var b = o.TestB == null ? Missing("B", BCatalog) : CheckB(o.TestB, o.TestA, a.Counts.Failed==0 && a.Counts.Blocked==0 && (o.Backend=="ifc" || a.Counts.Unsupported==0), o.Backend);
         if (o.Backend == "ifc") b = WithUnsupported(b);
         var counts = Count(a.Criteria.Concat(b.Criteria));
         var exit = counts.Failed > 0 ? 1 : counts.Blocked + counts.Unsupported > 0 ? 2 : 0;
@@ -138,7 +138,7 @@ public static class EvaluationService
         Bool(c,"dimensions",Cat("Dimension").Length>0&&r.DimensionWidthMm==r.ClearWidthMm&&Cat("Dimension").All(x=>WidthReferencesValid(x,r)),"native dimension value and wall references required");
         Bool(c,"plan",Cat("Plan").Length>0&&Cat("Plan").All(x=>x.References.Any(z=>byId.TryGetValue(z,out var d)&&d.Category=="Dimension")),"plan and associated dimensions required");
         Bool(c,"view_3d",Cat("View3D").Length>0&&Cat("View3D").All(x=>x.References.Length>0),"3D view references required");
-        Bool(c,"schedule",Cat("Schedule").Length>0&&Math.Abs(r.ScheduleAreaM2-r.ClearWidthMm*r.ClearDepthMm/1e6)<=1e-9&&Cat("Schedule").All(x=>x.References.Any(z=>byId.TryGetValue(z,out var room)&&room.Category=="Room")),"schedule area and Room reference required");
+        Bool(c,"schedule",Cat("Schedule").Length>0&&r.ScheduleAreaM2 is double area&&Math.Abs(area-r.ClearWidthMm*r.ClearDepthMm/1e6)<=1e-9&&Cat("Schedule").All(x=>x.References.Any(z=>byId.TryGetValue(z,out var room)&&room.Category=="Room")),"schedule area and Room reference required");
         Bool(c,"sheet",Cat("Sheet").Length>0&&Cat("Sheet").All(x=>new[]{"Plan","Schedule"}.All(cat=>x.References.Any(z=>byId.TryGetValue(z,out var doc)&&doc.Category==cat))),"sheet must place plan and schedule");
         Bool(c,"categories",e.All(x=>new[]{"Level","Wall","Door","Window","Room","Dimension","Plan","View3D","Schedule","Sheet"}.Contains(x.Category)),"unexpected/untyped category");
         Bool(c,"hosting",e.Where(x=>x.Category is "Door" or "Window").All(x=>x.HostId!=null&&byId.TryGetValue(x.HostId,out var h)&&h.Category=="Wall")&&e.Where(x=>x.Category is "Wall" or "Room" or "Plan").All(x=>x.HostId!=null&&byId.TryGetValue(x.HostId,out var h)&&h.Category=="Level"),"host categories must resolve");
@@ -153,6 +153,11 @@ public static class EvaluationService
         foreach(var room in Cat("Room")) Measurement(c,"room:"+room.LogicalId+":area_m2",expectedWidth*4000/1e6,room.AreaM2,1e-9);
         foreach(var dimension in Cat("Dimension")) Measurement(c,"dimension:"+dimension.LogicalId+":width_mm",expectedWidth,dimension.WidthMm);
         foreach(var schedule in Cat("Schedule")) Measurement(c,"schedule:"+schedule.LogicalId+":area_m2",expectedWidth*4000/1e6,schedule.AreaM2,1e-9);
+        if(backend=="ifc") foreach(var category in new[]{("Dimension","dimensions"),("Plan","plan"),("View3D","view_3d"),("Schedule","schedule"),("Sheet","sheet")}) {
+            if(Cat(category.Item1).Length==0 && (category.Item1!="Dimension" || r.DimensionWidthMm==null || r.DimensionWidthMm==r.ClearWidthMm) && (category.Item1!="Schedule" || r.ScheduleAreaM2==null || r.ScheduleAreaM2==r.ClearWidthMm*r.ClearDepthMm/1e6)) {
+                var index=c.FindIndex(x=>x.Id==category.Item2); c[index]=c[index] with { Outcome="unsupported",Reason="IFC native documentation absent" };
+            }
+        }
         return Result("A",c);
     }
     private static CaseResult CheckB(RevisionObservation r,RoomObservation? a,bool aPass,string backend)
@@ -167,10 +172,10 @@ public static class EvaluationService
         var anchor=before.SingleOrDefault(x=>x.LogicalId==r.AnchorLogicalId);
         Bool(c,"exterior_anchor",anchor!=null&&anchor.Category=="Wall"&&anchor.Geometry.Length==4&&after.Any(x=>SameElement(anchor,x))&&(anchor.Geometry[0]==0&&anchor.Geometry[2]==0),"chosen west exterior anchor must remain fixed");
         Bool(c,"unaffected_ids",valid&&before.Length==after.Length&&before.All(x=>after.Any(y=>x.LogicalId==y.LogicalId&&x.NativeId==y.NativeId&&x.Category==y.Category&&x.HostId==y.HostId)),"native/logical IDs must survive revision");
-        var afterA=CheckA(r.After,backend,5400);
-        c.Add(new("post_revision_acceptance",afterA.Counts.Failed>0?"fail":afterA.Counts.Blocked+afterA.Counts.Unsupported>0?"blocked":"pass","full room acceptance must remain satisfied after width correction"));
+        var afterA=CheckA(r.After,backend,5400); if(backend=="ifc") afterA=WithUnsupported(afterA);
+        c.Add(new("post_revision_acceptance",afterA.Counts.Failed>0?"fail":afterA.Counts.Blocked>0?"blocked":afterA.Counts.Unsupported>0?"unsupported":"pass","full room acceptance must remain satisfied after width correction"));
         Bool(c,"dependent_hosts",afterA.Criteria.Single(x=>x.Id=="hosting").Outcome=="pass"&&before.Where(x=>x.Category is "Door" or "Window").All(x=>after.Any(y=>y.LogicalId==x.LogicalId&&y.HostId==x.HostId))&&DependentPositionsValid(r.Before,r.After)&&r.After.ClearDepthMm==r.Before.ClearDepthMm&&r.After.WallThicknessMm==r.Before.WallThicknessMm&&r.After.WallHeightMm==r.Before.WallHeightMm,"dependent hosting and protected parameters required");
-        Bool(c,"documentation_updates",r.After.DimensionWidthMm==r.After.ClearWidthMm&&Math.Abs(r.After.ScheduleAreaM2-r.After.ClearWidthMm*r.After.ClearDepthMm/1e6)<=1e-9&&SetEquals(r.UpdatedDocumentIds,after.Where(x=>x.Category is "Dimension" or "Plan" or "Schedule" or "Sheet").Select(x=>x.LogicalId)),"all affected dimensions/plan/schedule/sheet must update");
+        Bool(c,"documentation_updates",r.After.DimensionWidthMm==r.After.ClearWidthMm&&r.After.ScheduleAreaM2 is double area&&Math.Abs(area-r.After.ClearWidthMm*r.After.ClearDepthMm/1e6)<=1e-9&&SetEquals(r.UpdatedDocumentIds,after.Where(x=>x.Category is "Dimension" or "Plan" or "Schedule" or "Sheet").Select(x=>x.LogicalId)),"all affected dimensions/plan/schedule/sheet must update");
         Bool(c,"semantic_diff",valid&&SetEquals(r.SemanticChangedIds,actual),"semantic diff must match measured changed elements exactly");
         Bool(c,"idempotency_key",!string.IsNullOrWhiteSpace(r.OperationId)&&r.OperationId==r.RetryOperationId,"retry requires same nonempty operation id");
         Bool(c,"retry_no_duplicates",Same(r.After,r.Retry),"retry must preserve complete snapshot and identities");
@@ -180,6 +185,9 @@ public static class EvaluationService
         Bool(c,"rollback_revision",r.RollbackRevision==r.RevisionBefore,"rollback restores revision");
         Bool(c,"validation",r.ValidationPassed,"post-revision validation required");
         Bool(c,"unintended_changes",valid&&SetEquals(r.AllowedChangedIds,actual)&&actual.All(id=>before.Any(x=>x.LogicalId==id&&x.Category is "Wall" or "Door" or "Window" or "Room" or "Dimension" or "Schedule"))&&ProtectedParametersValid(r.Before,r.After)&&r.After.NativeFile==r.Before.NativeFile&&r.After.Units==r.Before.Units,"changed set must equal permitted set; protected file/units unchanged");
+        if(backend=="ifc" && !after.Any(x=>x.Category is "Dimension" or "Plan" or "Schedule" or "Sheet") && r.After.DimensionWidthMm==null && r.After.ScheduleAreaM2==null && r.UpdatedDocumentIds.Length==0) {
+            var index=c.FindIndex(x=>x.Id=="documentation_updates"); c[index]=c[index] with { Outcome="unsupported",Reason="IFC native documentation absent" };
+        }
         return Result("B",c);
     }
 }
