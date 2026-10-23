@@ -21,7 +21,7 @@ try {
         }
         if (!$Dotnet) { throw 'net8 SDK missing. Install .NET 8 SDK or explicitly use -HostOnly; target build remains unverified.' }
         Invoke-EvidenceCommand sdk $Dotnet @('--info') $evidence
-        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/evaluation','tests/Bim.Tests','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp')) {
+        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/evaluation','tests/Bim.Tests','tests/reconcile','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp')) {
             Invoke-EvidenceCommand ('build-' + ($project -replace '/', '-')) $Dotnet @('build',"$root/$project",'--configuration','Release','--warnaserror') $evidence
         }
         Invoke-EvidenceCommand evaluator-unit-health $Dotnet @('run','--project',"$root/tests/evaluation",'--configuration','Release','--no-build') $evidence
@@ -34,6 +34,7 @@ try {
         Invoke-EvidenceCommand checkpoint-guards $Dotnet @('run','--project',"$root/tests/integration/CheckpointGuard.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand fixture-guards $Dotnet @('run','--project',"$root/tests/integration/FixtureGuard.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand core-tests $Dotnet @('run','--project',"$root/tests/Bim.Tests",'--configuration','Release','--no-build') $evidence
+        Invoke-EvidenceCommand reconcile-tests $Dotnet @('run','--project',"$root/tests/reconcile",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand benchmark $Dotnet @('run','--project',"$root/tests/harness/Benchmark",'--configuration','Release','--no-build') $evidence
     }
     'Native acceptance is not executed by this engineering gate. Run tests/integration/native-room-ab.ps1 against a newly opted-in isolated licensed Revit fixture; require its actual report for any native acceptance claim.' | Tee-Object -FilePath "$evidence/native-status.log"
