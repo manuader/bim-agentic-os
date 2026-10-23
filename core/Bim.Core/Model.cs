@@ -72,12 +72,14 @@ public static class Compiler
 // One OS file lock protects compare-and-swap across processes; atomic rename publishes snapshots.
 public sealed class ProjectStore(string directory)
 {
+    // Deterministic crash injection for ADR0007 recovery tests only; null outside tests.
+    internal Action<string>? CrashAfter { get; init; }
     public record State(Project Project, Dictionary<string,string> Receipts);
     State ReadState() => JsonSerializer.Deserialize<State>(File.ReadAllText(Path.Combine(directory,"project.json")))!;
     public Project Read() => ReadState().Project;
     public void Initialize(Project p) { Directory.CreateDirectory(directory); using var guard = Lock(); if(Compiler.Validate(p).Length>0) throw new InvalidOperationException("invalid_ir"); if(File.Exists(Path.Combine(directory,"project.json"))) throw new IOException("already_initialized"); Write(new(p,new())); }
     FileStream Lock() => new(Path.Combine(directory,"lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
-    void Write(State state) { var tmp=Path.Combine(directory,"project.tmp"); using(var file=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None)) { JsonSerializer.Serialize(file,state); file.Flush(true); } File.Move(tmp,Path.Combine(directory,"project.json"),true); }
+    void Write(State state) { var tmp=Path.Combine(directory,"project.tmp"); using(var file=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None)) { JsonSerializer.Serialize(file,state); file.Flush(true); } CrashAfter?.Invoke("after_tmp"); File.Move(tmp,Path.Combine(directory,"project.json"),true); }
     public Project Commit(Project desired, ExecutionPlan plan, string key)
     {
         using var guard = Lock();
@@ -88,9 +90,11 @@ public sealed class ProjectStore(string directory)
         if(Compiler.Validate(desired).Length>0) throw new InvalidOperationException("invalid_ir");
         if(JsonSerializer.Serialize(Compiler.Diff(current,desired))!=JsonSerializer.Serialize(plan)) throw new InvalidOperationException("plan_mismatch");
         File.WriteAllText(Path.Combine(directory,$"checkpoint-{current.Revision}.json"),JsonSerializer.Serialize(current));
+        CrashAfter?.Invoke("after_checkpoint");
         var result=desired with { Revision=current.Revision+1 };
         // Journal is prepared before publish; recovery can reconcile by hashes.
         File.AppendAllText(Path.Combine(directory,"journal.jsonl"),JsonSerializer.Serialize(new { key, plan, state="prepared" })+Environment.NewLine);
+        CrashAfter?.Invoke("after_journal");
         state.Receipts.Add(key,plan.AfterHash);
         // Publish revision and receipt in the same atomic snapshot.
         Write(new(result,state.Receipts)); return result;

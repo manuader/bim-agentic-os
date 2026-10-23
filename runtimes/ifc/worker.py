@@ -19,6 +19,11 @@ CHANGED = ['east', 'north', 'south', 'window-east', 'room']
 _spec=importlib.util.spec_from_file_location('bim_ifc_compiled_request',Path(__file__).with_name('compiled_request.py'))
 _compiled=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(_compiled)
 validate_request=_compiled.validate_request
+CRASH_POINTS=(None,'after_staging_create','after_staging_write','after_replace')
+
+
+class InjectedCrash(BaseException):
+    """Deterministic hard-kill stand-in for ADR0007 tests: no cleanup runs after the named step."""
 
 
 def root(f, kind, name, **kw):
@@ -183,7 +188,16 @@ def verify_compiled(path, compiled, desired):
     return {logical:dict(role=role,global_id=e[role].GlobalId,step_id=e[role].id()) for role,logical in compiled['packet']['LogicalRoles'].items()}
 
 
-def resize_compiled(path, packet, force_failure=False):
+def retain_packet(path, packet):
+    # ADR0007 option A: the adapter packet is durable beside the IFC before publication so Core can replay the receipt.
+    target=path.with_name('compiled-request.json');pending=path.with_name('compiled-request.pending.json')
+    with pending.open('w',encoding='utf-8') as handle:
+        handle.write(json.dumps(packet,indent=2));handle.flush();os.fsync(handle.fileno())
+    os.replace(pending,target)
+
+
+def resize_compiled(path, packet, force_failure=False, crash_after=None):
+    if crash_after not in CRASH_POINTS:raise ValueError('unknown crash injection point')
     compiled=validate_request(packet) # Always before any filesystem mutation.
     f=ifcopenshell.open(str(path));s=state(f);operation=packet['OperationId']
     if operation in s['receipts']:
@@ -214,13 +228,37 @@ def resize_compiled(path, packet, force_failure=False):
     try:
         with temporary.open('x',encoding='utf-8'):pass
     except FileExistsError as exc:raise ValueError('existing staging artifact') from exc
+    if crash_after=='after_staging_create':raise InjectedCrash(crash_after)
+    crashed=False
     try:
-        f.write(str(temporary));validate(ifcopenshell.open(str(temporary)))
+        retain_packet(path,packet)
+        f.write(str(temporary))
+        if crash_after=='after_staging_write':crashed=True;raise InjectedCrash(crash_after)
+        validate(ifcopenshell.open(str(temporary)))
         verify_compiled(temporary,compiled,True);inspect(temporary)
         os.replace(temporary,path)
     finally:
-        if temporary.exists():temporary.unlink()
+        if not crashed and temporary.exists():temporary.unlink()
+    if crash_after=='after_replace':raise InjectedCrash(crash_after)
     return True
+
+
+def receipt(path):
+    """Read-only backend receipt for the Core reconcile verb; never writes the IFC or the staging file."""
+    staging=path.with_suffix('.pending.ifc')
+    present=staging.exists() or staging.is_symlink()
+    observed=hashlib.sha256(staging.read_bytes()).hexdigest().upper() if present and staging.is_file() and not staging.is_symlink() else None
+    return dict(state=state(ifcopenshell.open(str(path))),staging_artifact_present=present,staging_hash=observed)
+
+
+def clear_staging(path, expected_hash):
+    """Remove a crash-left staging file only when it is a regular file, not the published IFC, and holds exactly the bytes a receipt observed."""
+    staging=path.with_suffix('.pending.ifc')
+    if staging.is_symlink() or not staging.is_file():raise ValueError('staging artifact absent or not a regular file')
+    if os.path.samefile(staging,path):raise ValueError('staging artifact is the published IFC')
+    if not isinstance(expected_hash,str) or hashlib.sha256(staging.read_bytes()).hexdigest().upper()!=expected_hash:raise ValueError('staging artifact differs from the observed receipt')
+    state(ifcopenshell.open(str(path)))
+    staging.unlink()
 
 
 def validate(f):
@@ -300,7 +338,7 @@ def execute(directory,packet=None):
     if not directory.is_absolute():raise ValueError('output-dir must be absolute')
     directory.mkdir(parents=True,exist_ok=True)
     path=directory/'room.ifc'
-    owned=('room.ifc','before.ifc','hashes.json','benchmarks.json','room.pending.ifc','compiled-request.json')
+    owned=('room.ifc','before.ifc','hashes.json','benchmarks.json','room.pending.ifc','compiled-request.json','compiled-request.pending.json')
     if any((directory/name).exists() for name in owned):
         raise ValueError('output directory contains an existing worker artifact; use a fresh fixture directory')
     total_start=time.perf_counter();start=time.perf_counter();create(path,compiled);create_ms=(time.perf_counter()-start)*1000
@@ -368,7 +406,12 @@ def execute(directory,packet=None):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--output-dir',required=True);parser.add_argument('--request',required=True);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--output-dir');parser.add_argument('--request');parser.add_argument('--receipt');args=parser.parse_args()
+    if args.receipt is not None:
+        if args.output_dir is not None or args.request is not None:parser.error('--receipt is read-only and takes no other arguments')
+        try:print(json.dumps(receipt(Path(args.receipt)),allow_nan=False));return 0
+        except Exception as exc:print(str(exc),file=sys.stderr);return 1
+    if args.output_dir is None or args.request is None:parser.error('the following arguments are required: --output-dir, --request')
     try:
         result=execute(Path(args.output_dir),json.loads(Path(args.request).read_text(encoding='utf-8-sig')));code=1 if result['errors'] else 0
     except Exception as exc:
