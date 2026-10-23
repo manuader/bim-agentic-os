@@ -80,6 +80,9 @@ jobs:
             .bim/ci-ifc/report.json
             .bim/ci-ifc/hashes.json
             .bim/ci-ifc/benchmarks.json
+      - name: IFC incremental vs full-rebuild benchmark (P01)
+        shell: pwsh
+        run: ./scripts/benchmark-rebuild.ps1 -Python (Join-Path $pwd '.tools/ifc/bin/python') -Samples 10 -OutputDirectory (Join-Path $pwd '.bim/rebuild-benchmark') -Notice
   core-windows:
     runs-on: windows-latest
     steps:
