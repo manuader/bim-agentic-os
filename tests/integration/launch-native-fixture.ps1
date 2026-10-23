@@ -45,6 +45,8 @@ if (!(Test-Path -LiteralPath $resultPath)) { throw "Timed out waiting for fixtur
 $result=Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
 if ($result.status -ne 'succeeded') { throw "Fixture bootstrap failed: $($result.code)" }
 if ($result.processId -ne $process.Id) { throw 'Fixture evidence PID mismatch' }
+if ($result.pipeName -ne ("bim-agentic-os-2025-"+$result.processId)) { throw 'Fixture evidence pipe/PID mismatch' }
 if (!(Test-Path -LiteralPath $result.documentPath -PathType Leaf)) { throw 'Fixture evidence references missing RVT' }
 $result | ConvertTo-Json
+
 

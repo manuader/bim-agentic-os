@@ -1,6 +1,8 @@
 using Bim.Revit;
 var root = Path.Combine(Path.GetTempPath(), "fixture-guards-" + Guid.NewGuid());
 Directory.CreateDirectory(root);
+if(NativeEndpoint.ForProcess(1234)!="bim-agentic-os-2025-1234") throw new Exception("Wrong process endpoint");
+try { NativeEndpoint.ForProcess(0); throw new Exception("Zero PID accepted"); } catch(ArgumentOutOfRangeException) {}
 try {
  var template = Path.Combine(root, "template.rte"); File.WriteAllText(template, "test");
  var valid = new FixtureConfig(true, root, template, Path.Combine(root,"BIM-Agentic-Test.rvt"), Path.Combine(root,"fixture-result.json"));
@@ -32,3 +34,4 @@ sealed class PausedResult(ManualResetEventSlim started, ManualResetEventSlim rel
 {
  public string payload { get { started.Set(); if(!release.Wait(TimeSpan.FromSeconds(10))) throw new Exception("Publication timed out"); return new string('x',100000); } }
 }
+

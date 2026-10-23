@@ -7,7 +7,7 @@ try {
  Set-Content -LiteralPath $fixture 'not a real RVT; no native operation permitted'
  Set-Content -LiteralPath $fake "Write-Output 'SMOKE_CLI_SENTINEL'; exit 17"
  $pwsh=(Get-Process -Id $PID).Path
- $output=& $pwsh -NoProfile -File "$PSScriptRoot/native-batch-smoke.ps1" -DocumentPath $fixture -DocumentIdentity 'fake-fixture-identity' -Dotnet $pwsh -CliDll $fake
+ $output=& $pwsh -NoProfile -File "$PSScriptRoot/native-batch-smoke.ps1" -DocumentPath $fixture -DocumentIdentity 'fake-fixture-identity' -Dotnet $pwsh -CliDll $fake -PipeName 'bim-agentic-os-2025-1234'
  $code=$LASTEXITCODE
  $result=($output -join "`n") | ConvertFrom-Json
  if($code -ne 2) { throw "Expected smoke exit 2; got $code" }
@@ -20,3 +20,4 @@ try {
  if(!$cleanup.StartsWith($parent,[StringComparison]::OrdinalIgnoreCase) -or !([IO.Path]::GetFileName($cleanup)).StartsWith('smoke-cli-regression-',[StringComparison]::Ordinal)) { throw 'Unsafe temporary cleanup target' }
  Remove-Item -LiteralPath $cleanup -Recurse -Force
 }
+

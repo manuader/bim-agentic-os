@@ -18,7 +18,7 @@ public sealed class App : IExternalApplication, IExternalEventHandler
         while(!stop.IsCancellationRequested) {
             try {
                 // ACL enforced by Windows: only same user. No network listener or arbitrary scripts.
-                using var pipe=new NamedPipeServerStream("bim-agentic-os-2025",PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
+                using var pipe=new NamedPipeServerStream(NativeEndpoint.ForProcess(Environment.ProcessId),PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
                 await pipe.WaitForConnectionAsync(stop.Token);
                 using var reader=new StreamReader(pipe); using var writer=new StreamWriter(pipe){AutoFlush=true};
                 while(pipe.IsConnected && !stop.IsCancellationRequested) {
@@ -75,4 +75,5 @@ public sealed class App : IExternalApplication, IExternalEventHandler
         } catch {if(tx.GetStatus()==TransactionStatus.Started)tx.RollBack();throw;}
     }
 }
+
 

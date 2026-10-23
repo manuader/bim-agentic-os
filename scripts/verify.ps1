@@ -23,6 +23,7 @@ try {
         foreach ($project in @('core/Bim.Core','interfaces/cli','tests/Bim.Tests','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests')) {
             Invoke-EvidenceCommand ('build-' + ($project -replace '/', '-')) $Dotnet @('build',"$root/$project",'--configuration','Release','--warnaserror') $evidence
         }
+        Invoke-EvidenceCommand native-cli-endpoint $pwsh @('-NoProfile','-File',"$root/tests/integration/test-native-cli-endpoint.ps1",'-Dotnet',$Dotnet,'-CliDll',"$root/interfaces/cli/bin/Release/net8.0/Bim.Cli.dll") $evidence
         Invoke-EvidenceCommand fixture-guards $Dotnet @('run','--project',"$root/tests/integration/FixtureGuard.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand core-tests $Dotnet @('run','--project',"$root/tests/Bim.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand benchmark $Dotnet @('run','--project',"$root/tests/harness/Benchmark",'--configuration','Release','--no-build') $evidence
@@ -30,5 +31,6 @@ try {
     'BLOCKED native acceptance: full Test A/B incomplete; guarded primitive smoke requires a loaded add-in and isolated licensed Revit fixture. No native execution claimed.' | Tee-Object -FilePath "$evidence/native-status.log"
     "PASS available gates; evidence: $evidence"
 } catch { Write-Error $_; exit 1 }
+
 
 

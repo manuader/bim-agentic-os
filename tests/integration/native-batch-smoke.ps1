@@ -4,10 +4,12 @@ param(
     [Parameter(Mandatory=$true)][string]$DocumentPath,
     [Parameter(Mandatory=$true)][string]$DocumentIdentity,
     [Parameter(Mandatory=$true)][string]$Dotnet,
-    [Parameter(Mandatory=$true)][string]$CliDll
+    [Parameter(Mandatory=$true)][string]$CliDll,
+    [Parameter(Mandatory=$true)][string]$PipeName
 )
 $ErrorActionPreference='Stop'
 try {
+    if($PipeName -notmatch '\Abim-agentic-os-2025-[1-9][0-9]*\z') { throw 'explicit_process_pipe_required' }
     if(!(Test-Path -LiteralPath $DocumentPath -PathType Leaf) -or [IO.Path]::GetFileNameWithoutExtension($DocumentPath) -notlike 'BIM-Agentic-Test*') { throw 'blocked: saved isolated BIM-Agentic-Test fixture required' }
     if(!(Test-Path -LiteralPath $Dotnet -PathType Leaf) -or !(Test-Path -LiteralPath $CliDll -PathType Leaf)) { throw 'blocked: built net8 CLI and dotnet runtime required' }
     if([string]::IsNullOrWhiteSpace($DocumentIdentity)) { throw 'blocked: ProjectInformation.UniqueId required' }
@@ -19,7 +21,7 @@ try {
         $request=@{DocumentPath=$DocumentPath;Operation='batch';UniqueId=$null;Metres=@();Batch=@{DocumentIdentity=$DocumentIdentity;IdempotencyKey=$Key;Before=$Before;After=$After;Plan=$Plan}}
         $json=$request | ConvertTo-Json -Depth 100 -Compress
         $json | Set-Content (Join-Path $caseRoot ('request-'+[guid]::NewGuid()+'.json'))
-        $pipe=[IO.Pipes.NamedPipeClientStream]::new('.','bim-agentic-os-2025',[IO.Pipes.PipeDirection]::InOut,[IO.Pipes.PipeOptions]::Asynchronous)
+        $pipe=[IO.Pipes.NamedPipeClientStream]::new('.',$PipeName,[IO.Pipes.PipeDirection]::InOut,[IO.Pipes.PipeOptions]::Asynchronous)
         try {
             $pipe.Connect(5000)
             $writer=[IO.StreamWriter]::new($pipe);$writer.AutoFlush=$true
@@ -41,7 +43,7 @@ try {
     $beforeFile=SaveJson $before 'before.json';$targetFile=SaveJson $target 'target.json'
     $plan=Invoke-BimCli -Arguments @('diff',$beforeFile,$targetFile)
     $first=Send $before $target $plan 'fixture-create'
-    Assert ($first.status -eq 'succeeded' -and $first.verification -eq 'native_geometry_readback') 'native creation did not pass geometry readback; fixture requires an existing basic 200mm wall type'
+    Assert ($first.status -eq 'succeeded' -and $first.verification -eq 'native_geometry_readback') "native creation did not pass geometry readback; response=$($first | ConvertTo-Json -Depth 100 -Compress); evidence=$caseRoot"
     $retry=Send $before $target $plan 'fixture-create'
     Assert ($retry.status -eq 'succeeded' -and $retry.retry -eq $true -and $retry.project.Revision -eq 1) 'persistent retry failed'
     Assert (($first.mapping | ConvertTo-Json -Compress) -eq ($retry.mapping | ConvertTo-Json -Compress)) 'retry changed UniqueIds'
@@ -60,6 +62,8 @@ try {
     Assert ($malformed.status -eq 'blocked' -and $malformed.issues.Code -contains 'plan_mismatch') 'tampered native plan was not rejected'
     @{status='succeeded';scope='level_and_walls_only';primitive_patch_roundtrip_ms=$patchTimer.Elapsed.TotalMilliseconds;primitive_patch_timing_scope='resize Send only; excludes planning, documentation, save/reopen';native_geometry_readback=$true;rollback_verified=$false;save_reopen_verified=$false;documentation_verified=$false;evidence=$caseRoot} | ConvertTo-Json
     exit 0
-} catch { @{status='blocked_or_failed';code=$_.Exception.Message;native_verified=$false} | ConvertTo-Json; exit 2 }
+} catch { @{status='blocked_or_failed';code=$_.Exception.Message;native_verified=$false;evidence=$caseRoot} | ConvertTo-Json; exit 2 }
+
+
 
 

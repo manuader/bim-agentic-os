@@ -32,7 +32,7 @@ internal sealed class FixtureBootstrap
                 document.SaveAs(config.FixturePath, save);
             } finally { document.Close(false); } // Only the document created by this invocation.
             var opened = app.OpenAndActivateDocument(config.FixturePath).Document;
-            FixtureResultPublisher.Publish(config.ResultPath, new { status = "succeeded", documentPath = opened.PathName, documentUniqueId = opened.ProjectInformation.UniqueId, processId = Environment.ProcessId, revitVersion = app.Application.VersionNumber, revitBuild = app.Application.VersionBuild });
+            FixtureResultPublisher.Publish(config.ResultPath, new { status = "succeeded", documentPath = opened.PathName, documentUniqueId = opened.ProjectInformation.UniqueId, processId = Environment.ProcessId, pipeName = NativeEndpoint.ForProcess(Environment.ProcessId), revitVersion = app.Application.VersionNumber, revitBuild = app.Application.VersionBuild });
         } catch (Exception error) {
             // Invalid config cannot authorize an output path. Validated failures are durable and never masquerade as success.
             if (validated && config != null) FixtureResultPublisher.TryPublish(config.ResultPath, new { status = "failed", code = error.Message, processId = Environment.ProcessId });
@@ -40,4 +40,5 @@ internal sealed class FixtureBootstrap
         }
     }
 }
+
 
