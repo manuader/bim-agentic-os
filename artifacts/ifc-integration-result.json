@@ -1,0 +1,60 @@
+{
+  "verification_state": "integration-tested (ifc)",
+  "scope": "fixed isolated IFC4 fixture; native Revit full A/B remains unsupported",
+  "source_commit": "03d2a97",
+  "backend_version": "0.9.0.post1",
+  "host": "Windows11/.NET8/Python3.12.14; hardware in environment-census.json",
+  "python_integration_tests": {
+    "elapsed_seconds": 25.986,
+    "command": "python -m unittest discover -s tests/ifc -p test_*.py -v",
+    "passed": 4
+  },
+  "pip_check": "No broken requirements found.",
+  "evaluation": {
+    "exit_code": 2,
+    "product_acceptance": false,
+    "backend_acceptance": true,
+    "counts": {
+      "passed": 41,
+      "failed": 0,
+      "blocked": 0,
+      "unsupported": 9
+    },
+    "report": "artifacts/evaluation-ifc-result.json",
+    "backend_checks_passed": 8
+  },
+  "artifacts": [
+    {
+      "file": "before.ifc",
+      "bytes": 11137,
+      "sha256": "fbd17c0d486003fd259d710e454dbf5c6292381dba221d3750ad97a4ff86acfd"
+    },
+    {
+      "file": "room.ifc",
+      "bytes": 11184,
+      "sha256": "1952ad73969f8937a8bf5bfa157935e441789d593fb28c2f400570bbfc3af4ea"
+    }
+  ],
+  "generated_models": "retained locally under ignored .bim; no raw IFC published",
+  "benchmarks": "artifacts/ifc-benchmarks.json",
+  "benchmark_scope": "single observed run; update includes staged serialization/schema validation/publication, excludes post-update readback and final QA; total covers entire A/B fixture lifecycle including retry/rollback/QA, not validated Revit documentation delivery",
+  "dependency_manifest": "runtimes/ifc/dependency-licenses.json",
+  "limitations": [
+    "Fixed fixture runtime does not compile arbitrary BIM-IR or invoke the C# incremental compiler.",
+    "macOS not executed locally.",
+    "No new native Revit execution."
+  ],
+  "engineering": {
+    "exit_code": 0,
+    "source_commit": "03d2a97",
+    "core_assertions": 50,
+    "evaluator_assertions": 58,
+    "checkpoint_assertions": 17,
+    "cli_assertions": 5,
+    "dependency_audit_projects": 9,
+    "dependency_audit_exit_code": 0,
+    "python_dependency_check_exit_code": 0,
+    "python_advisory_vulnerability_scan": "not executed; pip check verifies consistency, CodeQL analyzes project code",
+    "evidence_directory": ".bim/verification/20261023T021438379Z"
+  }
+}

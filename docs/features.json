@@ -142,12 +142,15 @@
     },
     {
       "id": "ifcopenshell-adapter",
-      "status": "unsupported",
+      "status": "integration-tested (ifc)",
       "evidence": [
-        ".agents/skills/bim-ifcopenshell/SKILL.md"
+        "runtimes/ifc/worker.py",
+        "tests/ifc/test_worker.py",
+        "artifacts/ifc-integration-result.json",
+        "artifacts/evaluation-ifc-result.json"
       ],
-      "blocker": "Development skill only; no adapter implemented.",
-      "scope": "Development skill only; no adapter implemented."
+      "blocker": "Arbitrary BIM-IR execution and native Revit documentation remain unsupported; macOS not executed.",
+      "scope": "Fixed IFC4 fixture: actual authoring/save-reopen/resize/readback/GlobalIds/receipts/retry/rollback/schema and triangulated geometry; Windows controller executed."
     },
     {
       "id": "github-publication",
@@ -186,13 +189,15 @@
     },
     {
       "id": "ifc-headless-evaluation",
-      "status": "blocked",
+      "status": "integration-tested (ifc)",
       "evidence": [
-        "artifacts/evaluation-ifc-result.json",
-        "docs/architecture/adr/0006-ifc-evaluation-license.md"
+        "runtimes/ifc/worker.py",
+        "tests/ifc/test_worker.py",
+        "artifacts/ifc-integration-result.json",
+        "artifacts/evaluation-ifc-result.json"
       ],
-      "scope": "Full A/B evaluation request; no IFC authoring/readback implemented or executed.",
-      "blocker": "IfcOpenShell approval pending; actual backend implementation absent; native Revit-only outputs unsupported by IFC."
+      "scope": "Fixed IFC4 fixture: actual authoring/save-reopen/resize/readback/GlobalIds/receipts/retry/rollback/schema and triangulated geometry; Windows controller executed.",
+      "blocker": "Arbitrary BIM-IR execution and native Revit documentation remain unsupported; macOS not executed."
     }
   ]
 }

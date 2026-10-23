@@ -13,8 +13,8 @@ Verification states describe evidence scope, not product completeness. Raw comma
 | Revit |2025; RevitAPI.dll FileVersion25.2.0.38; API XML references present | compiled; native build log; no2027 compatibility claim |
 | Native primitive backend |actual create/patch/retry/rollback/save-close-reopen/readback | verified-in-revit; artifacts/native-checkpoint-result.json; level/walls only |
 | Autodesk license entitlement |not queried | manual-only; prior editable authoring/save succeeded, not a current license/account census. No credentials accessed |
-| IfcOpenShell |importlib.util.find_spec returned false | blocked; absent and LGPL dependency approval pending |
-| Linux/macOS local execution |not available on this Windows host | blocked locally; Ubuntu GitHub CI executed existing.NET suite; no IFC/macOS integration inferred |
+| IfcOpenShell |preceding census found it absent; now isolated0.9.0.post1/Python3.12.14 with16 pinned packages | integration-tested (ifc); four actual tests and real C# launcher/readback, artifacts/ifc-integration-result.json |
+| Linux/macOS local execution |not available on this Windows host | blocked locally; new Ubuntu IFC CI must be observed separately, macOS unexecuted |
 
 Commands used (run at repository root, with `$BimPython` set to the usable Python3.12 executable):
 
@@ -29,4 +29,4 @@ Get-Command rustc,cargo -ErrorAction SilentlyContinue
 Test-Path 'C:/Program Files/Autodesk/Revit 2025/RevitAPI.xml'
 ```
 
-Observed scalar outputs: SDK8.0.415; Nodev24.15.0; Python3.12.14; IfcOpenShell false; rustc/cargo no entries; Revit25.2.0.38 and XML true. Detailed sanitized hardware capture has a UTC timestamp in the artifact. SDK/runtime target verification commands and actual integration procedures remain in `tests/integration/README.md`; native primitive success is not full Test A/B acceptance.
+Historical preceding-census scalar outputs: SDK8.0.415; Nodev24.15.0; Python3.12.14; IfcOpenShell false; rustc/cargo no entries; Revit25.2.0.38 and XML true. Detailed sanitized hardware capture has a UTC timestamp in the artifact. SDK/runtime target verification commands and actual integration procedures remain in `tests/integration/README.md`; native primitive success is not full Test A/B acceptance.

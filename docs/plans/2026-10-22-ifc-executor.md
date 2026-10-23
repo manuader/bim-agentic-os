@@ -6,9 +6,9 @@ Architecture: keep the C# oracle and CLI authoritative. An isolated pinned Pytho
 
 Tech stack: existing.NET8/PowerShell plus optional Python3.12 and IfcOpenShell0.9.0.post1 (verify available wheel before install). No core/native vendor dependency or schema change.
 
-- [ ] Python worker task: TDD real level/four200mm walls/900mm door/two windows/Space, explicit units/placements and hosting/void-fill relations; save/reopen and geometry/schema checks. Implement incremental+400mm, stable identities, retry receipt and forced-failure rollback. Record attempts per individual test.
-- [ ] C# bridge task: TDD typed process envelope, bounded timeout/cancellation, missing dependency/malformed/readback failure paths, CLI/wrapper configuration. Keep all existing43 regressions; IFC-specific missing native documentation is unsupported, measured violations remain failures. Add distinct portable backend checks without claiming native acceptance.
-- [ ] Integrate reviewed worktrees; execute real Python and one-command IFC tests on this host. Preserve generated IFCs privately and publish sanitized hashes, measurements and timings.
+- [x] Python worker task: TDD real level/four200mm walls/900mm door/two windows/Space, explicit units/placements and hosting/void-fill relations; save/reopen and geometry/schema checks. Implement incremental+400mm, stable identities, retry receipt and forced-failure rollback. Record attempts per individual test.
+- [x] C# bridge task: TDD typed process envelope, bounded timeout/cancellation, missing dependency/malformed/readback failure paths, CLI/wrapper configuration. Keep all existing43 regressions; IFC-specific missing native documentation is unsupported, measured violations remain failures. Add distinct portable backend checks without claiming native acceptance.
+- [x] Integrate reviewed worktrees; execute real Python and one-command IFC tests on this host. Preserve generated IFCs privately and publish sanitized hashes, measurements and timings.
 - [ ] CI: install pinned optional Python requirements on Ubuntu and run actual IFC integration plus existing core/security gates. Upload generated evidence. No green placeholder for Revit.
 - [ ] Independent source review, full engineering gate, dependency audit, state/blocker/contract updates, Conventional Commits and authorized GitHub push; verify exact-commit CI.
 

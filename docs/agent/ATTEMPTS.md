@@ -50,3 +50,24 @@ Two initial full evaluation gates were interrupted before completion while tempo
 
 Controller full gate atf40b7c7 passed50 core/42 evaluator/17 checkpoint assertions and five evaluator CLI checks. The final evaluator-only guard at a4f26ba passed fresh warning-free builds,43 evaluator assertions and five CLI checks. Nine-project dependency vulnerability audit passed. Evidence summary: artifacts/evaluation-engineering-result.json. No full A/B backend acceptance was issued.
 
+## Approved real IFC executor block
+
+User approved Named Pipes and isolated IfcOpenShell LGPL on2026-10-22 (America/Buenos_Aires). Separate worktrees owned the worker and C# bridge; a third agent independently reviewed source. Raw logs are copied to local .bim/ifc-worker-evidence and .bim/ifc-bridge-evidence before archival.
+
+| Individual test / failed attempts | Hypothesis and correction | Observed result |
+| --- | --- | --- |
+| Actual IFC roundtrip pipeline / 2 including intentional red | Worker absent; then upstream EXPRESS imports undeclared _pytest. Implement worker and pin permissive pytest runtime without disabling EXPRESS | Green21.264s; final four-case controller suite25.986s |
+| Shifted opening profile / 2 including intentional red | Volume and nominal bounds did not detect translated opening profile; first CRLF edit missed the source call, then independent opening triangulation applied | Negative rejected; final worker suite green |
+| Foreign before.ifc preservation / 1 intentional red | Preflight guarded only room.ifc; guard all named artifacts before authorship | Existing bytes/file set preserved; green |
+| Foreign staging preservation / 1 intentional red | Pending file overwrite/cleanup could remove foreign data; exclusive-create and clean only owned staging | Existing pending and model bytes preserved; green |
+| Portable missing native outputs / 1 intentional red | IFC-native distinction must leave absent documentation unsupported while preserving measured violations | Existing native regressions retained; portable tests green |
+| Process options compile / 2 including intentional missing-API red | Add bounded process port; correct extra parenthesis in root discovery | Release builds green, no oracle change |
+| Internal protocol validator / 1 intentional compile red | Extract private validator for malformed/version/check/metric rejection coverage, no public JSON provenance API | Parser rejection coverage green |
+| Owned process timeout / 1 intentional compile red | Bound process and stream lifetime, kill only owned process tree | Actual isolated timeout test green |
+| Process/check agreement / 1 intentional compile red | A successful process cannot report failed checks or vice versa without rejection | Truth-table and runtime wiring green;58 evaluator assertions |
+| Cloud path classification / filesystem diagnosis | OneDrive ancestors have ReparsePoint=true but LinkTarget=null; broad reparse rejection falsely blocks trusted files | Guard actual links/junctions; controller real IFC execution passed on OneDrive. No pre-fix CLI failure is invented |
+
+Official42,827,327-byte wheel was downloaded after initial pip transfer stalled and SHA256 matched PyPI. Metadata/download failures were dependency setup, not passing integration. Worker main pipeline had two failures total; opening regression had two; other named cases one. No individual test exhausted three failures. Reviewer accepted final worker e0ddd09/cb2597b and bridge5d92766/b2170f0/ad32f0d; controller equivalents b5ff122/b060474/551a4e8/cc557dd/03d2a97.
+
+Controller actual IFC result:41 case checks pass,0 fail/blocked,9 unsupported; eight mandatory backend checks pass; backend acceptance true, product acceptance false, exit2. Full engineering gate03d2a97 passed50 core/58 evaluator/17 checkpoint assertions and five CLI checks. Four Python integration tests passed25.986s. Pip check found no broken requirements. Single-run benchmarks/hashes and precise limits are in artifacts/ifc-integration-result.json. No new Revit execution or arbitrary BIM-IR compilation is claimed.
+
