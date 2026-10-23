@@ -69,7 +69,9 @@ class RebuildEquivalence(unittest.TestCase):
             rb.w.alter(north, (-200, 4000, 0, 6200, 200, 3000))  # +400 mm drift on one wall only
             drifted = tmp / 'drifted.ifc'
             f.write(str(drifted))
-            self.assertFalse(rb.equivalence(inc['path'], drifted, self.packet)['equivalent'])
+            proof = rb.equivalence(inc['path'], drifted, self.packet)
+            self.assertFalse(proof['equivalent'])
+            self.assertIn('north: bounds', proof['mismatches'])
 
 
 if __name__ == '__main__':
