@@ -74,6 +74,30 @@ Check(portableResult.Cases[0].Counts.Failed==0,"absent IFC native outputs unsupp
 Check(!portableResult.ProductAcceptance,"IFC portable observations never full product acceptance");
 var missingWorker=await EvaluationService.ExecuteAsync("ifc",new IfcExecutionOptions("missing-python","missing-worker",Path.GetTempPath()));
 Check(missingWorker.ExitCode==2 && !missingWorker.BackendAcceptance && missingWorker.VerificationState=="blocked","missing IFC process inputs block without promotion");
+object? ParseEnvelope(string json) => typeof(EvaluationService).GetMethod("ParseIfcEnvelope",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static)?.Invoke(null,[json]);
+var workerJson=System.Text.Json.JsonSerializer.Serialize(new {protocol_version=1,backend="ifc",backend_version="test-only",source="synthetic",observations=new BackendObservations("ifc","synthetic",good,revision),metrics=new Dictionary<string,Metric>(),checks=new[]{"ifc_schema","ifc_geometry","ifc_hosting","ifc_save_reopen","ifc_idempotency","ifc_rollback","ifc_incremental","ifc_receipts"}.Select(id=>new CriterionResult(id,"pass","test-only")).ToArray(),artifacts=new[]{"test.ifc"},errors=Array.Empty<string>()},EvaluationService.JsonOptions);
+Check(ParseEnvelope(workerJson)!=null,"typed worker protocol validator accepts complete shape without issuing provenance");
+Check(ParseEnvelope("{broken")==null,"malformed worker JSON rejected");
+Check(ParseEnvelope(workerJson.Replace("\"protocol_version\": 1","\"protocol_version\": 2"))==null,"unsupported protocol rejected");
+Check(ParseEnvelope(workerJson.Replace("ifc_receipts","ifc_geometry"))==null,"duplicate and missing worker checks rejected");
+Check(ParseEnvelope(workerJson.Replace("\"metrics\": {}","\"metrics\": {\"total_ms\":{\"value\":-1,\"reason\":\"measured\"}}"))==null,"negative metric rejected");
+Check(ParseEnvelope(workerJson.Replace("\"metrics\": {}","\"metrics\": {\"total_ms\":{\"value\":1e999,\"reason\":\"measured\"}}"))==null,"nonfinite metric rejected");
+Check(ParseEnvelope(workerJson.Replace("\"metrics\": {}","\"metrics\": {\"unknown_ms\":{\"value\":1,\"reason\":\"measured\"}}"))==null,"unknown metric rejected");
+Check(ParseEnvelope(workerJson.Replace("\"backend_version\": \"test-only\"","\"backend_version\": null"))==null,"missing runtime version rejected");
+var waitPort=typeof(EvaluationService).GetMethod("WaitForOwnedProcessAsync",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static);
+Check(waitPort!=null,"owned process timeout port exists");
+if(waitPort!=null) {
+    var start=new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false};
+    // The dotnet host waits for input when its executable is a shell only; use the platform shell explicitly.
+    start.FileName=OperatingSystem.IsWindows()?"C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe":"/bin/sh";
+    if(OperatingSystem.IsWindows()){start.ArgumentList.Add("-NoProfile");start.ArgumentList.Add("-Command");start.ArgumentList.Add("Start-Sleep -Seconds 30");}
+    else {start.ArgumentList.Add("-c");start.ArgumentList.Add("sleep 30");}
+    using var child=System.Diagnostics.Process.Start(start)!;
+    using var deadline=new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+    var cancelled=false;
+    try {await (Task)waitPort.Invoke(null,[child,Task.CompletedTask,Task.CompletedTask,deadline.Token])!;}catch(OperationCanceledException){cancelled=true;}
+    Check(cancelled&&child.WaitForExit(3000),"timeout cancels and terminates only owned child");
+}
 if(failures.Count>0) throw new Exception(string.Join("; ",failures));
 Console.WriteLine($"PASS {checks} evaluator assertions (synthetic unit observations only)");
 

@@ -11,6 +11,11 @@ internal sealed record IfcEnvelope(int ProtocolVersion,string Backend,string Bac
 
 public static partial class EvaluationService
 {
+    private static async Task WaitForOwnedProcessAsync(Process process,Task stdout,Task stderr,CancellationToken token)
+    {
+        try {await process.WaitForExitAsync(token);await Task.WhenAll(stdout,stderr);}
+        catch {if(!process.HasExited)process.Kill(entireProcessTree:true);throw;}
+    }
     private static async Task<string> ReadBoundedAsync(StreamReader reader,CancellationToken token)
     {
         var output=new System.Text.StringBuilder();var buffer=new char[4096];int count;
@@ -21,6 +26,16 @@ public static partial class EvaluationService
         return output.ToString();
     }
     private static readonly string[] RequiredIfcChecks=["ifc_schema","ifc_geometry","ifc_hosting","ifc_save_reopen","ifc_idempotency","ifc_rollback","ifc_incremental","ifc_receipts"];
+    private static IfcEnvelope? ParseIfcEnvelope(string json)
+    {
+            IfcEnvelope? envelope;
+            try { envelope=JsonSerializer.Deserialize<IfcEnvelope>(json,JsonOptions); }
+            catch(JsonException) {return null;}
+            if(envelope==null||envelope.ProtocolVersion!=1||envelope.Backend!="ifc"||string.IsNullOrWhiteSpace(envelope.BackendVersion)||string.IsNullOrWhiteSpace(envelope.Source)||envelope.Observations==null||envelope.Observations.Backend!="ifc"||envelope.Observations.Source!=envelope.Source||envelope.Observations.TestA==null||envelope.Observations.TestB==null||envelope.Checks==null||envelope.Errors==null||envelope.Metrics==null||envelope.Artifacts==null)return null;
+            if(envelope.Checks.Any(x=>x==null||string.IsNullOrWhiteSpace(x.Id)||x.Outcome is not ("pass" or "fail" or "blocked" or "unsupported")||string.IsNullOrWhiteSpace(x.Reason))||envelope.Checks.Select(x=>x.Id).Distinct().Count()!=envelope.Checks.Length||RequiredIfcChecks.Any(id=>!envelope.Checks.Any(x=>x.Id==id)))return null;
+            if(envelope.Metrics.Any(x=>!MetricNames.Concat(new[]{"create_ms","update_ms","retry_ms","rollback_ms"}).Contains(x.Key)||x.Value==null||string.IsNullOrWhiteSpace(x.Value.Reason)||x.Value.Value is double value&&(!double.IsFinite(value)||value<0)))return null;
+            return envelope;
+    }
     public static async Task<EvaluationReport> ExecuteAsync(string backend,IfcExecutionOptions options,CancellationToken cancellationToken=default)
     {
         if(backend!="ifc")return await ExecuteAsync(backend,cancellationToken);
@@ -44,17 +59,13 @@ public static partial class EvaluationService
             process.Start();
             var stdout=ReadBoundedAsync(process.StandardOutput,timeout.Token);var stderr=ReadBoundedAsync(process.StandardError,timeout.Token);
             string raw; string diagnostic;
-            try { await process.WaitForExitAsync(timeout.Token); raw=await stdout;diagnostic=await stderr; }
+            try { await WaitForOwnedProcessAsync(process,stdout,stderr,timeout.Token); raw=await stdout;diagnostic=await stderr; }
             catch(IOException ex) { if(!process.HasExited)process.Kill(entireProcessTree:true);return Block(ex.Message); }
             catch(OperationCanceledException) { if(!process.HasExited)process.Kill(entireProcessTree:true);return Block(cancellationToken.IsCancellationRequested?"IFC execution cancelled":"IFC execution timed out"); }
 
             await File.WriteAllTextAsync(Path.Combine(options.OutputDirectory,"worker.stderr.log"),diagnostic,CancellationToken.None);
-            IfcEnvelope? envelope;
-            try { envelope=JsonSerializer.Deserialize<IfcEnvelope>(raw,JsonOptions); }
-            catch(JsonException) {return Block("malformed IFC worker protocol");}
-            if(envelope==null||envelope.ProtocolVersion!=1||envelope.Backend!="ifc"||string.IsNullOrWhiteSpace(envelope.BackendVersion)||string.IsNullOrWhiteSpace(envelope.Source)||envelope.Observations==null||envelope.Observations.Backend!="ifc"||envelope.Observations.Source!=envelope.Source||envelope.Observations.TestA==null||envelope.Observations.TestB==null||envelope.Checks==null||envelope.Errors==null||envelope.Metrics==null||envelope.Artifacts==null)return Block("incomplete IFC worker protocol");
-            if(envelope.Checks.Any(x=>x==null||string.IsNullOrWhiteSpace(x.Id)||x.Outcome is not ("pass" or "fail" or "blocked" or "unsupported")||string.IsNullOrWhiteSpace(x.Reason))||envelope.Checks.Select(x=>x.Id).Distinct().Count()!=envelope.Checks.Length||RequiredIfcChecks.Any(id=>!envelope.Checks.Any(x=>x.Id==id)))return Block("missing or duplicate mandatory IFC backend checks");
-            if(envelope.Metrics.Any(x=>!MetricNames.Concat(new[]{"create_ms","update_ms","retry_ms","rollback_ms"}).Contains(x.Key)||x.Value==null||string.IsNullOrWhiteSpace(x.Value.Reason)||x.Value.Value is double value&&(!double.IsFinite(value)||value<0)))return Block("invalid IFC backend metrics");
+            var envelope=ParseIfcEnvelope(raw);
+            if(envelope==null)return Block("invalid IFC worker protocol, checks or metrics");
             if(envelope.Artifacts.Length==0||envelope.Artifacts.Any(name=>string.IsNullOrWhiteSpace(name)||name!=Path.GetFileName(name)||name.Contains('/')||name.Contains('\\')||!File.Exists(Path.Combine(options.OutputDirectory,name))))return Block("invalid or missing IFC artifacts");
             foreach(var name in envelope.Artifacts)if((File.GetAttributes(Path.Combine(options.OutputDirectory,name))&FileAttributes.ReparsePoint)!=0)return Block("IFC artifact reparse path rejected");
             if(!envelope.Artifacts.Any(x=>Path.GetExtension(x)==".ifc"))return Block("saved IFC artifact missing");
