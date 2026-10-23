@@ -17,9 +17,9 @@ if (!(Test-Path $featuresPath)) { Fail 'Missing docs/features.json' } else {
     $ids = @{}
     foreach ($feature in $features) {
         if (!$feature.id -or $ids.ContainsKey([string]$feature.id)) { Fail 'Missing or duplicate feature id' } else { $ids[[string]$feature.id] = $true }
-        if ($feature.status -notin 'implemented','partial','blocked','pending') { Fail "Invalid feature status: $($feature.id)" }
+        if ($feature.status -notin 'described','compiled','unit-tested','integration-tested (ifc)','verified-in-revit','blocked','unsupported','manual-only') { Fail "Invalid feature status: $($feature.id)" }
         if (!$feature.PSObject.Properties['evidence'] -or !$feature.PSObject.Properties['blocker']) { Fail "Missing evidence/blocker field: $($feature.id)" }
-        if ($feature.status -eq 'implemented' -and !$feature.evidence) { Fail "Implemented without evidence: $($feature.id)" }
+        if ($feature.status -ne 'blocked' -and !$feature.evidence) { Fail "Claimed state without evidence: $($feature.id)" }
         foreach ($evidence in $feature.evidence) {
             if ($evidence -isnot [string] -or [string]::IsNullOrWhiteSpace($evidence)) { Fail "Invalid feature evidence: $($feature.id)"; continue }
             $resolved = [IO.Path]::GetFullPath((Join-Path $root $evidence))

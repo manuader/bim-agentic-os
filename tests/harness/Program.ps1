@@ -32,9 +32,22 @@ function Reject-Fixture([string]$name,[string]$path,[string]$content,[string]$ex
         if (!$rejected -or (Get-Content "$root/$name.log" -Raw) -notmatch $expected) { throw "Gate failed to reject $name" }
     } finally { $original | Set-Content $path }
 }
+foreach ($legacy in 'implemented','partial','pending') {
+    Reject-Fixture "legacy-$legacy" "$fixture/docs/features.json" "[{`"id`":`"fixture`",`"status`":`"$legacy`",`"evidence`":[],`"blocker`":null}]" 'Invalid feature status'
+}
+foreach ($state in 'described','compiled','unit-tested','integration-tested (ifc)','verified-in-revit','unsupported','manual-only') {
+    $ledger = "$fixture/docs/features.json"
+    $original = Get-Content $ledger -Raw
+    try {
+        "[{`"id`":`"fixture`",`"status`":`"$state`",`"evidence`": [`"ARCHITECTURE.md`"],`"blocker`":null}]" | Set-Content $ledger
+        Invoke-EvidenceCommand "allowed-$($state.Replace(' ','-'))" $pwsh @('-NoProfile','-File',$checker,'-Root',$fixture) $root -Quiet
+    } finally { $original | Set-Content $ledger }
+    Reject-Fixture "no-evidence-$($state.Replace(' ','-'))" "$fixture/docs/features.json" "[{`"id`":`"fixture`",`"status`":`"$state`",`"evidence`":[],`"blocker`":null}]" 'Claimed state without evidence'
+}
+Reject-Fixture blocked-no-reason "$fixture/docs/features.json" '[{"id":"fixture","status":"blocked","evidence":[],"blocker":null}]' 'Blocked without reason'
 Reject-Fixture core-vendor "$fixture/core/Bim.Core/Fixture.cs" 'using Autodesk.Revit.DB;' 'Core dependency boundary'
 Reject-Fixture false-status "$fixture/docs/features.json" '[{"id":"fixture","status":"verified","evidence":[],"blocker":null}]' 'Invalid feature status'
-Reject-Fixture false-evidence "$fixture/docs/features.json" '[{"id":"fixture","status":"implemented","evidence":[],"blocker":null}]' 'Implemented without evidence'
+Reject-Fixture false-evidence "$fixture/docs/features.json" '[{"id":"fixture","status":"unit-tested","evidence":[],"blocker":null}]' 'Claimed state without evidence'
 Reject-Fixture skill-metadata "$fixture/.agents/skills/example/SKILL.md" 'no frontmatter' 'Invalid skill frontmatter'
 Reject-Fixture doc-links "$fixture/ARCHITECTURE.md" '[broken](missing.md)' 'Broken doc link'
 'PASS static gates reject vendor coupling, false status/evidence, malformed skills and broken links'
@@ -70,5 +83,5 @@ try {
 'PASS static checks fail closed without Git inventory'
 'valid' | Set-Content "$fixture/bad.ps1"
 Reject-Fixture syntax "$fixture/bad.ps1" 'if (' 'PowerShell syntax'
-Reject-Fixture missing-evidence "$fixture/docs/features.json" '[{"id":"fixture","status":"implemented","evidence":["missing.log"],"blocker":null}]' 'Missing feature evidence'
-Reject-Fixture escaping-evidence "$fixture/docs/features.json" '[{"id":"fixture","status":"implemented","evidence":["../outside.log"],"blocker":null}]' 'Evidence escapes repository'
+Reject-Fixture missing-evidence "$fixture/docs/features.json" '[{"id":"fixture","status":"unit-tested","evidence":["missing.log"],"blocker":null}]' 'Missing feature evidence'
+Reject-Fixture escaping-evidence "$fixture/docs/features.json" '[{"id":"fixture","status":"unit-tested","evidence":["../outside.log"],"blocker":null}]' 'Evidence escapes repository'

@@ -4,37 +4,40 @@
   "features": [
     {
       "id": "semantic-ir-and-diff",
-      "status": "partial",
+      "status": "unit-tested",
       "evidence": [
         "core/Bim.Core/Model.cs",
         "artifacts/core-tests-latest.txt",
         "artifacts/ir-cycle-caught-red.txt",
         "artifacts/ir-cycle-green.txt"
       ],
-      "blocker": "Prototype validates dependency cycles and long DAGs; full dimensional schema and canonical hashing remain pending."
+      "blocker": "Prototype validates dependency cycles and long DAGs; full dimensional schema and canonical hashing remain pending.",
+      "scope": "Prototype validates dependency cycles and long DAGs; full dimensional schema and canonical hashing remain pending."
     },
     {
       "id": "intent-persistence",
-      "status": "partial",
+      "status": "unit-tested",
       "evidence": [
         "core/Bim.Core/Model.cs",
         "artifacts/core-tests-latest.txt"
       ],
-      "blocker": "Intended state only; no complete live native mirror, migrations or power-loss recovery tests."
+      "blocker": "Intended state only; no complete live native mirror, migrations or power-loss recovery tests.",
+      "scope": "Intended state only; no complete live native mirror, migrations or power-loss recovery tests."
     },
     {
       "id": "native-execution-primitives",
-      "status": "partial",
+      "status": "verified-in-revit",
       "evidence": [
         "runtimes/revit-native/App.cs",
         "artifacts/native-bootstrap-build.txt",
         "artifacts/native-bootstrap-result.json"
       ],
-      "blocker": "Real native level/wall batch executed and geometry readback passed. General primitive CRUD coverage and full delivery remain incomplete."
+      "blocker": "Real native level/wall batch executed and geometry readback passed. General primitive CRUD coverage and full delivery remain incomplete.",
+      "scope": "Level/wall primitives only; excludes full room Test A/B and general CRUD."
     },
     {
       "id": "typed-room-intent-revision",
-      "status": "implemented",
+      "status": "unit-tested",
       "evidence": [
         "core/Bim.Core/RoomSlice.cs",
         "artifacts/core-tests-net8.txt",
@@ -44,7 +47,7 @@
     },
     {
       "id": "native-typed-batch",
-      "status": "partial",
+      "status": "verified-in-revit",
       "evidence": [
         "runtimes/revit-native/BatchExecutor.cs",
         "artifacts/native-bootstrap-build.txt",
@@ -52,7 +55,8 @@
         "artifacts/native-smoke-result.json",
         "artifacts/native-rollback-result.json"
       ],
-      "blocker": "Real Revit25.2 create, retry, resize, identity/readback, forced rollback and final primitive save/reopen passed. Spaces, hosted families, documentation and deletes remain unsupported."
+      "blocker": "Real Revit25.2 create, retry, resize, identity/readback, forced rollback and final primitive save/reopen passed. Spaces, hosted families, documentation and deletes remain unsupported.",
+      "scope": "Level/wall create, retry, resize, identity/readback and rollback only; full Test A/B blocked."
     },
     {
       "id": "test-a-native-room-delivery",
@@ -61,7 +65,8 @@
         "tests/integration/README.md",
         "docs/evidence.md"
       ],
-      "blocker": "Saved/reopened level/wall fixture verified in real Revit. Complete Test A still requires hosted door/windows, native Room, dimensions, views, schedule, sheet and documentation QA."
+      "blocker": "Saved/reopened level/wall fixture verified in real Revit. Complete Test A still requires hosted door/windows, native Room, dimensions, views, schedule, sheet and documentation QA.",
+      "scope": "Saved/reopened level/wall fixture verified in real Revit. Complete Test A still requires hosted door/windows, native Room, dimensions, views, schedule, sheet and documentation QA."
     },
     {
       "id": "test-b-incremental-native-correction",
@@ -69,30 +74,33 @@
       "evidence": [
         "tests/integration/README.md"
       ],
-      "blocker": "Primitive correction, identity, retry, rollback and save/reopen verified. Full Test B requires complete Test A, dependent hosted objects/documentation and full-rebuild comparison."
+      "blocker": "Primitive correction, identity, retry, rollback and save/reopen verified. Full Test B requires complete Test A, dependent hosted objects/documentation and full-rebuild comparison.",
+      "scope": "Primitive correction, identity, retry, rollback and save/reopen verified. Full Test B requires complete Test A, dependent hosted objects/documentation and full-rebuild comparison."
     },
     {
       "id": "superpowers-workflows",
-      "status": "implemented",
+      "status": "described",
       "evidence": [
         ".agents/skills/using-superpowers/SKILL.md",
         "docs/harness.md"
       ],
-      "blocker": null
+      "blocker": null,
+      "scope": "Workflow instruction metadata scaffold only; no behavioral workflow validation."
     },
     {
       "id": "reusable-domain-skills",
-      "status": "implemented",
+      "status": "described",
       "evidence": [
         "scripts/install-domain-skills.py",
         ".agents/skills/bim-revit-api/SKILL.md",
         "artifacts/domain-skill-validation.txt"
       ],
-      "blocker": null
+      "blocker": null,
+      "scope": "Skill metadata scaffold only; no behavioral workflow or adapter validation."
     },
     {
       "id": "ci-and-harness",
-      "status": "partial",
+      "status": "unit-tested",
       "evidence": [
         "scripts/verify.ps1",
         ".github/workflows/ci.yml",
@@ -101,52 +109,58 @@
         "artifacts/ci-native-bootstrap-run.json",
         "artifacts/ci-checkpoint-run.json"
       ],
-      "blocker": "Core and CodeQL passed remotely; native probes executed locally against installed Revit25.2. Licensed native acceptance is not yet part of CI."
+      "blocker": "Core and CodeQL passed remotely; native probes executed locally against installed Revit25.2. Licensed native acceptance is not yet part of CI.",
+      "scope": "Host harness and remote core/security jobs only; no native BIM CI acceptance."
     },
     {
       "id": "core-diff-benchmark",
-      "status": "implemented",
+      "status": "unit-tested",
       "evidence": [
         "benchmarks/CoreBenchmark.cs",
         "artifacts/core-benchmark-host.jsonl"
       ],
-      "blocker": null
+      "blocker": null,
+      "scope": "Core diff timings only; excludes native validated delivery latency."
     },
     {
       "id": "correction-to-validated-delivery-benchmark",
-      "status": "pending",
+      "status": "blocked",
       "evidence": [
         "BIM_Agentic_OS_PROMPT_DEFINITIVO.md"
       ],
-      "blocker": "Core diff timing is not native validated delivery latency."
+      "blocker": "Core diff timing is not native validated delivery latency.",
+      "scope": "Core diff timing is not native validated delivery latency."
     },
     {
       "id": "blender-adapter",
-      "status": "pending",
+      "status": "unsupported",
       "evidence": [
         ".agents/skills/bim-blender/SKILL.md"
       ],
-      "blocker": "Development skill only; no adapter implemented."
+      "blocker": "Development skill only; no adapter implemented.",
+      "scope": "Development skill only; no adapter implemented."
     },
     {
       "id": "ifcopenshell-adapter",
-      "status": "pending",
+      "status": "unsupported",
       "evidence": [
         ".agents/skills/bim-ifcopenshell/SKILL.md"
       ],
-      "blocker": "Development skill only; no adapter implemented."
+      "blocker": "Development skill only; no adapter implemented.",
+      "scope": "Development skill only; no adapter implemented."
     },
     {
       "id": "github-publication",
-      "status": "implemented",
+      "status": "described",
       "evidence": [
         "artifacts/ci-first-run.json"
       ],
-      "blocker": null
+      "blocker": null,
+      "scope": "Repository publication metadata only; no product acceptance claim."
     },
     {
       "id": "native-saved-checkpoint",
-      "status": "implemented",
+      "status": "verified-in-revit",
       "evidence": [
         "runtimes/revit-native/FixtureCheckpoint.cs",
         "artifacts/checkpoint-guards-latest.txt",
@@ -154,7 +168,8 @@
         "tests/integration/native-checkpoint-probe.ps1",
         "artifacts/native-checkpoint-result.json"
       ],
-      "blocker": null
+      "blocker": null,
+      "scope": "Isolated level/wall fixture save/reopen only; full Test A/B blocked."
     }
   ]
 }
