@@ -278,6 +278,18 @@
       ],
       "blocker": null,
       "scope": "ADR0007 option A: fail-closed IFC↔Core reconcile, replays only the latest one-revision gap; crash-injection tests at six points, zero-write hash snapshots, real IFC CLI tests on Ubuntu CI 40019034003. Not covered: native Revit path (C8/C9), Windows/OneDrive rename/fsync semantics, OneDrive conflict-copy and placeholder refusal (R03) fails closed in Core and IFC folders, CLI included; verified on Ubuntu/Windows/macOS CI 40033588216 with injected attributes, not against a real OneDrive client."
+    },
+    {
+      "id": "ifc-incremental-vs-rebuild-baseline",
+      "status": "integration-tested (ifc)",
+      "evidence": [
+        "artifacts/ifc-rebuild-benchmark.json",
+        "tests/harness/rebuild/rebuild_benchmark.py",
+        "tests/harness/rebuild/test_rebuild_equivalence.py",
+        "scripts/benchmark-rebuild.ps1"
+      ],
+      "blocker": null,
+      "scope": "Real IFC backend, one 9-element room fixture, one +400 mm correction, N=10 per path on a GitHub Ubuntu runner (run 40034178888). Paths are geometrically equivalent. End-to-end time: no measurable difference (bootstrap 95% CI of p50 difference includes 0); QA is ~99.9% of both. Measured delta is identity and change size: incremental keeps 62/62 GlobalIds and changes 10/244 entities; full rebuild keeps 0/62 and changes 72/244. No speedup claim; Revit not measured."
     }
   ]
 }
