@@ -1,0 +1,222 @@
+{
+  "source": "installed wheel METADATA and RECORD; no vendor binaries committed",
+  "packages": [
+    {
+      "name": "colorama",
+      "version": "0.4.6",
+      "license_expression": null,
+      "license_metadata": null,
+      "license_classifiers": [
+        "License :: OSI Approved :: BSD License"
+      ],
+      "installed_license_files": [
+        "colorama-0.4.6.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "ifcopenshell",
+      "version": "0.9.0.post1",
+      "license_expression": "LGPL-3.0-or-later",
+      "license_metadata": null,
+      "license_classifiers": [],
+      "installed_license_files": []
+    },
+    {
+      "name": "iniconfig",
+      "version": "2.3.1",
+      "license_expression": "MIT",
+      "license_metadata": null,
+      "license_classifiers": [],
+      "installed_license_files": [
+        "iniconfig-2.3.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "isodate",
+      "version": "0.7.2",
+      "license_expression": null,
+      "license_metadata": "Copyright (c) 2021, Hugo van Kemenade and contributors\nCopyright (c) 2009-2018, Gerhard Weis and contributors\nCopyright (c) 2009, Gerhard Weis\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n    * Redistributions of source code must retain the above copyright\n      notice, this list of conditions and the following disclaimer.\n    * Redistributions in binary form must reproduce the above copyright\n      notice, this list of conditions and the following disclaimer in the\n      documentation and/or other materials provided with the distribution.\n    * Neither the name of the <organization> nor the\n      names of its contributors may be used to endorse or promote products\n      derived from this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY\nDIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND\nON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n",
+      "license_classifiers": [
+        "License :: OSI Approved :: BSD License"
+      ],
+      "installed_license_files": [
+        "isodate-0.7.2.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "lark",
+      "version": "1.3.1",
+      "license_expression": null,
+      "license_metadata": "MIT",
+      "license_classifiers": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "installed_license_files": [
+        "lark-1.3.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "numpy",
+      "version": "2.5.4",
+      "license_expression": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "license_metadata": null,
+      "license_classifiers": [],
+      "installed_license_files": [
+        "numpy-2.5.4.dist-info/licenses/LICENSE.txt",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/include/numpy/libdivide/LICENSE.txt",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/common/pythoncapi-compat/COPYING",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/highway/LICENSE",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/multiarray/dragon4_LICENSE.txt",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/umath/svml/LICENSE",
+        "numpy-2.5.4.dist-info/licenses/numpy/fft/pocketfft/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/linalg/lapack_lite/LICENSE.txt",
+        "numpy-2.5.4.dist-info/licenses/numpy/ma/LICENSE",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/distributions/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/mt19937/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/pcg64/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/philox/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/sfc64/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/splitmix64/LICENSE.md",
+        "numpy/_core/include/numpy/random/LICENSE.txt",
+        "numpy/ma/LICENSE",
+        "numpy/random/LICENSE.md"
+      ]
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "license_expression": "Apache-2.0 OR BSD-2-Clause",
+      "license_metadata": null,
+      "license_classifiers": [],
+      "installed_license_files": [
+        "packaging-26.3.dist-info/licenses/LICENSE",
+        "packaging-26.3.dist-info/licenses/LICENSE.APACHE",
+        "packaging-26.3.dist-info/licenses/LICENSE.BSD",
+        "packaging/licenses/__init__.py",
+        "packaging/licenses/__pycache__/__init__.cpython-312.pyc",
+        "packaging/licenses/__pycache__/_spdx.cpython-312.pyc",
+        "packaging/licenses/_spdx.py"
+      ]
+    },
+    {
+      "name": "pluggy",
+      "version": "1.7.0",
+      "license_expression": null,
+      "license_metadata": "MIT",
+      "license_classifiers": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "installed_license_files": [
+        "pluggy-1.7.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "Pygments",
+      "version": "2.21.0",
+      "license_expression": "BSD-2-Clause",
+      "license_metadata": null,
+      "license_classifiers": [],
+      "installed_license_files": [
+        "pygments-2.21.0.dist-info/licenses/AUTHORS",
+        "pygments-2.21.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pyparsing",
+      "version": "3.3.3",
+      "license_expression": "MIT",
+      "license_metadata": null,
+      "license_classifiers": [],
+      "installed_license_files": [
+        "pyparsing-3.3.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pytest",
+      "version": "8.4.2",
+      "license_expression": null,
+      "license_metadata": "MIT",
+      "license_classifiers": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "installed_license_files": [
+        "pytest-8.4.2.dist-info/licenses/AUTHORS",
+        "pytest-8.4.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "python-dateutil",
+      "version": "3.0.0",
+      "license_expression": null,
+      "license_metadata": "Dual License",
+      "license_classifiers": [
+        "License :: OSI Approved :: BSD License",
+        "License :: OSI Approved :: Apache Software License"
+      ],
+      "installed_license_files": [
+        "python_dateutil-3.0.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "shapely",
+      "version": "2.2.0",
+      "license_expression": "BSD-3-Clause",
+      "license_metadata": null,
+      "license_classifiers": [],
+      "installed_license_files": [
+        "shapely-2.2.0.dist-info/licenses/LICENSE.txt",
+        "shapely-2.2.0.dist-info/licenses/LICENSE_GEOS",
+        "shapely-2.2.0.dist-info/licenses/LICENSE_win32"
+      ]
+    },
+    {
+      "name": "six",
+      "version": "1.17.0",
+      "license_expression": null,
+      "license_metadata": "MIT",
+      "license_classifiers": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "installed_license_files": [
+        "six-1.17.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "license_expression": "PSF-2.0",
+      "license_metadata": null,
+      "license_classifiers": [],
+      "installed_license_files": [
+        "typing_extensions-4.16.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "tzdata",
+      "version": "2026.5",
+      "license_expression": null,
+      "license_metadata": "Apache-2.0",
+      "license_classifiers": [],
+      "installed_license_files": [
+        "tzdata-2026.5.dist-info/licenses/LICENSE",
+        "tzdata-2026.5.dist-info/licenses/licenses/LICENSE_APACHE"
+      ]
+    }
+  ],
+  "bundled_components_observed": [
+    {
+      "parent": "shapely==2.2.0",
+      "name": "GEOS",
+      "license": "LGPLv2.1",
+      "evidence": "shapely-2.2.0.dist-info/licenses/LICENSE_GEOS header"
+    },
+    {
+      "parent": "ifcopenshell==0.9.0.post1",
+      "name": "native dependency closure",
+      "license": "not fully enumerated by installed wheel METADATA/RECORD",
+      "evidence": "wheel exposes LGPL-3.0-or-later expression but no bundled license files found in RECORD; optional isolated runtime is not redistributed"
+    }
+  ]
+}
