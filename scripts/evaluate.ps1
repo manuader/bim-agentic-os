@@ -1,4 +1,4 @@
-param([string]$Backend='ifc', [string]$Dotnet, [string]$OutputDirectory, [string]$Python)
+param([string]$Backend='ifc', [string]$Dotnet, [string]$OutputDirectory, [string]$Python, [string]$RevitOptions)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot
 # Build output is evidence, never mixed with the JSON protocol on stdout.
@@ -18,6 +18,7 @@ try {
     & $Dotnet build "$root/interfaces/cli/Bim.Cli.csproj" --configuration Release --warnaserror *> (Join-Path $OutputDirectory 'build.log')
     if($LASTEXITCODE -ne 0){throw 'BUILD_BLOCKED: inspect build.log'}
     $cliArguments=@('evaluate',$Backend)
+    if($Backend -eq 'revit' -and $RevitOptions){$cliArguments=@('evaluate','revit',[IO.Path]::GetFullPath($RevitOptions))}
     if($Backend -eq 'ifc') {
         if(!$Python){foreach($candidate in @((Join-Path $root '.tools/ifc/Scripts/python.exe'),(Join-Path $root '.tools/ifc/bin/python'))){if(Test-Path -LiteralPath $candidate){$Python=$candidate;break}}}
         if($Python){$cliArguments=@('evaluate','ifc',$Python,(Join-Path $root 'runtimes/ifc/worker.py'),[IO.Path]::GetFullPath($OutputDirectory))}

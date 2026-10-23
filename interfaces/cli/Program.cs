@@ -18,8 +18,9 @@ try {
                     2 => await EvaluationService.ExecuteAsync(args[1]),
                     5 when args[1] == "ifc" => await EvaluationService.ExecuteAsync("ifc",new IfcExecutionOptions(args[2],args[3],args[4])),
                     6 when args[1] == "ifc" => await EvaluationService.ExecuteAsync("ifc",new IfcExecutionOptions(args[2],args[3],args[4]) {Request=JsonSerializer.Deserialize<IfcCompiledRequest>(File.ReadAllText(args[5]))}),
+                    3 when args[1] == "revit" => await EvaluationService.ExecuteAsync("revit",JsonSerializer.Deserialize<RevitExecutionOptions>(File.ReadAllText(args[2]),EvaluationService.JsonOptions) ?? throw new ArgumentException("native options required")),
                     3 when args[1] == "offline" => EvaluationService.ParseOffline(File.ReadAllText(args[2])),
-                    _ => EvaluationService.Malformed("usage: evaluate ifc|revit | evaluate offline observations.json")
+                    _ => EvaluationService.Malformed("usage: evaluate ifc|revit | evaluate revit options.json | evaluate offline observations.json")
                 };
             } catch (Exception e) { evaluation=EvaluationService.Malformed("evaluation_input_error: "+e.Message); }
             Console.WriteLine(JsonSerializer.Serialize(evaluation,EvaluationService.JsonOptions)); Environment.ExitCode=evaluation.ExitCode; break;

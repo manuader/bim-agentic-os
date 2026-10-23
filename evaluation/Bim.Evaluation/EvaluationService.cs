@@ -21,7 +21,7 @@ public sealed record CriterionResult(string Id, string Outcome, string Reason, d
 public sealed record CaseResult(string Id, string Outcome, Counts Counts, CriterionResult[] Criteria);
 public sealed record EvaluationReport(string VerificationState, string Outcome, string Scope, string Backend, string BackendVersion, string Source,
     string TimingScope, Counts Counts, Dictionary<string,Metric> Metrics, CaseResult[] Cases, string[] Gaps,
-    [property: JsonIgnore] int ExitCode) { public CriterionResult[] BackendChecks { get; init; } = []; public bool BackendAcceptance { get; init; } public bool ProductAcceptance => Backend!="ifc" && ExitCode==0 && VerificationState is "integration-tested (ifc)" or "verified-in-revit"; public string EvidenceOrigin => VerificationState=="integration-tested (ifc)" ? "runtime-execution" : VerificationState=="unit-tested" ? "offline-observations" : "backend-prerequisite-inspection"; }
+    [property: JsonIgnore] int ExitCode) { public CriterionResult[] BackendChecks { get; init; } = []; public bool BackendAcceptance { get; init; } public bool ProductAcceptance => Backend!="ifc" && ExitCode==0 && VerificationState is "integration-tested (ifc)" or "verified-in-revit"; public string EvidenceOrigin => VerificationState is "integration-tested (ifc)" or "verified-in-revit" ? "runtime-execution" : VerificationState=="unit-tested" ? "offline-observations" : "backend-prerequisite-inspection"; }
 
 public static partial class EvaluationService
 {
