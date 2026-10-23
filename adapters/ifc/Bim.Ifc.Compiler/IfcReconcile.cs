@@ -1,6 +1,7 @@
 using Bim.Core;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 namespace Bim.Ifc;
 
 // ADR0007 option A. Adapter protocol only: the worker's BimExecution receipt as read by `worker.py --receipt`.
