@@ -21,11 +21,12 @@ try {
         }
         if (!$Dotnet) { throw 'net8 SDK missing. Install .NET 8 SDK or explicitly use -HostOnly; target build remains unverified.' }
         Invoke-EvidenceCommand sdk $Dotnet @('--info') $evidence
-        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/evaluation','tests/Bim.Tests','tests/reconcile','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp')) {
+        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/typed-geometry','tests/evaluation','tests/Bim.Tests','tests/reconcile','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp')) {
             Invoke-EvidenceCommand ('build-' + ($project -replace '/', '-')) $Dotnet @('build',"$root/$project",'--configuration','Release','--warnaserror') $evidence
         }
         Invoke-EvidenceCommand evaluator-unit-health $Dotnet @('run','--project',"$root/tests/evaluation",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand ifc-compiler-contract $Dotnet @('run','--project',"$root/tests/ifc-compiler",'--configuration','Release','--no-build') $evidence
+        Invoke-EvidenceCommand typed-geometry-contract $Dotnet @('run','--project',"$root/tests/typed-geometry",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand evaluator-cli-health $pwsh @('-NoProfile','-File',"$root/tests/evaluation/test-evaluate-cli.ps1",'-Dotnet',$Dotnet) $evidence
         Invoke-EvidenceCommand native-cli-endpoint $pwsh @('-NoProfile','-File',"$root/tests/integration/test-native-cli-endpoint.ps1",'-Dotnet',$Dotnet,'-CliDll',"$root/interfaces/cli/bin/Release/net8.0/Bim.Cli.dll") $evidence
         Invoke-EvidenceCommand native-room-contract $Dotnet @('run','--project',"$root/tests/native-room",'--configuration','Release','--no-build') $evidence

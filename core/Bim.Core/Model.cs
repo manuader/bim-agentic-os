@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 namespace Bim.Core;
 
-public readonly record struct Length
+public readonly partial record struct Length
 {
     public double Metres { get; }
     public Length(double metres) { if (!double.IsFinite(metres)) throw new ArgumentException("Non-finite length"); Metres = metres; }
@@ -28,7 +28,7 @@ public static class Compiler
         foreach(var e in p.Elements) {
             if(e.GeometryMetres.Any(x => !double.IsFinite(x))) issues.Add(new("units",e.Id,"Non-finite coordinate"));
             if(e.Dependencies.Any(d => !ids.Contains(d))) issues.Add(new("missing_dependency",e.Id,"Dangling dependency"));
-            if(e.Kind == "wall" && (e.GeometryMetres.Length != 6 || e.GeometryMetres[4] <= 0 || e.GeometryMetres[5] <= 0 || (e.GeometryMetres[0] == e.GeometryMetres[2] && e.GeometryMetres[1] == e.GeometryMetres[3]))) issues.Add(new("wall_geometry",e.Id,"Invalid wall axis/height/thickness"));
+            if(e.Kind == "wall" && !GeometryCodec.IsValidWall(e.GeometryMetres)) issues.Add(new("wall_geometry",e.Id,"Invalid wall axis/height/thickness"));
         }
         // Remove prerequisites before their dependents. Remaining nodes contain a cycle.
         // Iterative traversal avoids stack growth for deep valid dependency chains.

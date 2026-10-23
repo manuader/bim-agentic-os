@@ -32,7 +32,9 @@ public static class RoomCompiler
 
 public static class NativeBatchContract
 {
-    public static ValidationIssue[] Preflight(Project before, Project after, ExecutionPlan plan)
+    public static ValidationIssue[] Preflight(Project before, Project after, ExecutionPlan plan) => Preflight(before, after, plan, CapabilityRegistry.NativeDefault);
+    // Native kind support comes from the capability registry (capabilities.json or its built-in mirror).
+    public static ValidationIssue[] Preflight(Project before, Project after, ExecutionPlan plan, CapabilityRegistry capabilities)
     {
         var issues=new List<ValidationIssue>();
         if(plan.Operations.Any(o=>o.Action=="delete")) issues.Add(new("unsupported_native_delete",null,"Deletion may cascade to untracked native dependents"));
@@ -41,8 +43,8 @@ public static class NativeBatchContract
             if(JsonSerializer.Serialize(expected)!=JsonSerializer.Serialize(plan)) issues.Add(new("plan_mismatch",null,"Plan must equal deterministic diff including hashes, operations and dirty closure"));
         } catch(Exception e) when(e is ArgumentException or InvalidOperationException) { issues.Add(new("invalid_plan",null,e.Message)); }
         foreach(var project in new[]{before,after}) foreach(var e in project.Elements) {
-            if(e.Kind is not ("level" or "wall")) issues.Add(new("unsupported_native_kind",e.Id,"Native authoring/readback unavailable for "+e.Kind));
-            if(e.Kind=="level" && (e.GeometryMetres.Length!=1 || e.Dependencies.Length!=0)) issues.Add(new("invalid_level",e.Id,"Level requires elevation in metres and no dependencies"));
+            if(!capabilities.SupportsNativeKind(e.Kind)) issues.Add(new("unsupported_native_kind",e.Id,"Native authoring/readback unavailable for "+e.Kind));
+            if(e.Kind=="level" && (!GeometryCodec.HasExpectedArity(e) || e.Dependencies.Length!=0)) issues.Add(new("invalid_level",e.Id,"Level requires elevation in metres and no dependencies"));
             if(e.Kind=="wall" && (e.Dependencies.Length!=1 || !project.Elements.Any(l=>l.Id==e.Dependencies[0] && l.Kind=="level"))) issues.Add(new("invalid_wall_level",e.Id,"Wall requires exactly one level"));
         }
         return issues.ToArray();

@@ -55,9 +55,10 @@ public static class IfcCompiler
         if(project.Elements.Length!=9||Compiler.Validate(project).Length!=0)throw new ArgumentException("unsupported_ifc_ir");
         var space=project.Elements.Single(e=>e.Id==RoomCompiler.Id(roomId,"space"));
         var west=project.Elements.Single(e=>e.Id==RoomCompiler.Id(roomId,"west"));
-        if(space.Kind!="space"||space.GeometryMetres.Length!=4||west.GeometryMetres.Length!=6)throw new ArgumentException("unsupported_ifc_rectangle");
-        var s=space.GeometryMetres;var w=west.GeometryMetres;
-        var intent=new RoomIntent(roomId,s[2],s[3],w[4],w[5],s[0]-w[5],s[1]-w[5],"m",space.Provenance);
+        // Arity and layout come from the core geometry codec; the wire packet stays raw metres.
+        if(space.Kind!=GeometryCodec.Space||west.Kind!=GeometryCodec.Wall||GeometryCodec.Problem(space) is not null||GeometryCodec.Problem(west) is not null)throw new ArgumentException("unsupported_ifc_rectangle");
+        var s=(SpaceGeometry)GeometryCodec.Decode(space);var w=(WallGeometry)GeometryCodec.Decode(west);
+        var intent=new RoomIntent(roomId,s.Width.Metres,s.Depth.Metres,w.Height.Metres,w.Thickness.Metres,s.InteriorCorner.X.Metres-w.Thickness.Metres,s.InteriorCorner.Y.Metres-w.Thickness.Metres,LengthUnits.Metres,space.Provenance);
         if(intent.WidthMetres<3||intent.DepthMetres<3||intent.HeightMetres<2.1||intent.ThicknessMetres!=.2)throw new ArgumentException("fixture_extras_require_minimum_room_and_200mm_walls");
         if(Json(RoomCompiler.Compile(project.Id,project.Revision,intent))!=Json(project))throw new ArgumentException("unsupported_ifc_noncanonical_room");
         return intent;
