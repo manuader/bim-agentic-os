@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import stat
 import sys
 import time
 import uuid
@@ -191,7 +192,12 @@ def verify_compiled(path, compiled, desired):
 def retain_packet(path, packet):
     # ADR0007 option A: the adapter packet is durable beside the IFC before publication so Core can replay the receipt.
     target=path.with_name('compiled-request.json');pending=path.with_name('compiled-request.pending.json')
-    with pending.open('w',encoding='utf-8') as handle:
+    for candidate in (pending,target):
+        if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):raise ValueError('refusing to stage compiled packet through a link or non-regular file: '+candidate.name)
+    try:descriptor=os.open(pending,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_BINARY',0),0o666)
+    except OSError as exc:raise ValueError('refusing to stage compiled packet: '+str(exc)) from exc
+    with os.fdopen(descriptor,'w',encoding='utf-8') as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):raise ValueError('refusing to stage compiled packet into a non-regular file')
         handle.write(json.dumps(packet,indent=2));handle.flush();os.fsync(handle.fileno())
     os.replace(pending,target)
 
@@ -400,7 +406,7 @@ def execute(directory,packet=None):
     bindings={}
     if compiled:
         bindings=verify_compiled(path,compiled,True)
-        (directory/'compiled-request.json').write_text(json.dumps(packet,indent=2),encoding='utf-8')
+        retain_packet(path,packet)
         artifacts.append('compiled-request.json')
     return dict(protocol_version=1,backend='ifc',backend_version=ifcopenshell.version,source=SOURCE,observations=dict(backend='ifc',source=SOURCE,test_a=a,test_b=b),metrics=metrics,checks=checks,artifacts=artifacts,errors=[k for k,v in conditions.items() if not v],compiled_bindings=bindings,unsupported_core_outputs=packet['UnsupportedDocumentationIds'] if compiled else [],fixture_only_roles=['door','window-north','window-east'])
 

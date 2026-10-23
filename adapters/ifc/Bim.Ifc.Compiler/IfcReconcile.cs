@@ -20,6 +20,11 @@ public static class IfcReconcile
         try { return JsonSerializer.Deserialize<IfcBackendReceipt>(json,ReceiptOptions) ?? throw new ArgumentException("invalid_backend_receipt"); }
         catch(JsonException error) { throw new ArgumentException("invalid_backend_receipt",error); }
     }
+    public static IfcCompiledRequest ParsePacket(string json)
+    {
+        try { return JsonSerializer.Deserialize<IfcCompiledRequest>(json) ?? throw new ArgumentException("invalid_compiled_packet"); }
+        catch(JsonException error) { throw new ArgumentException("invalid_compiled_packet",error); }
+    }
     // Same digest as compiled_request.validate_request's fingerprint.
     public static string Fingerprint(IfcCompiledRequest packet)
     {
@@ -37,9 +42,9 @@ public static class IfcReconcile
         if(receipt.StagingArtifactPresent)return Fail("staging_artifact_present");
         var backend=receipt.State;
         if(backend.Revision is null||backend.Receipts is null||backend.CompiledRevision is not int backendRevision||backend.CompiledHash is not string backendHash||backend.CompiledProject is not Guid backendProject||backend.Revision!=Revision(backendRevision))return Fail("invalid_backend_receipt");
+        if(packet is null)return Fail("invalid_compiled_packet");
         ExecutionPlan plan; Project after;
         try {
-            if(packet is null)return Fail("invalid_compiled_packet");
             IfcCompiler.Validate(packet);
             plan=JsonSerializer.Deserialize<ExecutionPlan>(packet.PlanJson)!;
             after=JsonSerializer.Deserialize<Project>(packet.AfterJson)!;
@@ -63,8 +68,9 @@ public static class IfcReconcile
         if(JsonSerializer.Serialize(after)!=packet.AfterJson)return Fail("noncanonical_packet");
         try { store.Commit(after,plan,packet.OperationId); }
         catch(InvalidOperationException) { return Fail("core_commit_rejected"); }
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException) { return Fail("core_io_error"); }
         var published=store.Read(); var publishedHash=Compiler.Hash(published);
-        if(published.Revision!=backendRevision||publishedHash!=backendHash)return new(false,"core_commit_rejected",published.Revision,backendRevision,publishedHash,backendHash);
+        if(published.Revision!=backendRevision||publishedHash!=backendHash)return new(false,"core_commit_unverified",published.Revision,backendRevision,publishedHash,backendHash);
         return new(true,"replayed",published.Revision,backendRevision,publishedHash,backendHash);
     }
 }

@@ -32,7 +32,7 @@ try {
             Console.WriteLine(JsonSerializer.Serialize(new {status="succeeded",scope="intended_state_only",native_verification="unverified",project=store.Commit(target,patch,args[4])})); break;
         case "reconcile":
             if(args.Length!=4)throw new ArgumentException("usage: reconcile core-directory ifc-receipt.json compiled-request.json");
-            var reconciled=IfcReconcile.Reconcile(new ProjectStore(args[1]),IfcReconcile.ParseReceipt(File.ReadAllText(args[2])),JsonSerializer.Deserialize<IfcCompiledRequest>(File.ReadAllText(args[3]))!);
+            var reconciled=IfcReconcile.Reconcile(new ProjectStore(args[1]),IfcReconcile.ParseReceipt(File.ReadAllText(args[2])),IfcReconcile.ParsePacket(File.ReadAllText(args[3])));
             Console.WriteLine(JsonSerializer.Serialize(new {status=reconciled.Succeeded?"succeeded":"failed",code=reconciled.Code,scope="intended_state_reconcile",core_revision=reconciled.CoreRevision,backend_revision=reconciled.BackendRevision,core_hash=reconciled.CoreHash,backend_hash=reconciled.BackendHash}));
             if(!reconciled.Succeeded)Environment.ExitCode=1;
             break;
