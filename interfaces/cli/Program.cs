@@ -1,8 +1,19 @@
 using Bim.Core;
+using Bim.Evaluation;
 using System.Text.Json;
 using System.IO.Pipes;
 try {
     switch(args[0]) {
+        case "evaluate":
+            EvaluationReport evaluation;
+            try {
+                evaluation = args.Length switch {
+                    2 => await EvaluationService.ExecuteAsync(args[1]),
+                    3 when args[1] == "offline" => EvaluationService.ParseOffline(File.ReadAllText(args[2])),
+                    _ => EvaluationService.Malformed("usage: evaluate ifc|revit | evaluate offline observations.json")
+                };
+            } catch (Exception e) { evaluation=EvaluationService.Malformed("evaluation_input_error: "+e.Message); }
+            Console.WriteLine(JsonSerializer.Serialize(evaluation,EvaluationService.JsonOptions)); Environment.ExitCode=evaluation.ExitCode; break;
         case "room": var roomIntent=JsonSerializer.Deserialize<RoomIntent>(File.ReadAllText(args[3]))!; Console.WriteLine(JsonSerializer.Serialize(RoomCompiler.Compile(Guid.Parse(args[1]),int.Parse(args[2]),roomIntent))); break;
         case "init": new ProjectStore(args[1]).Initialize(JsonSerializer.Deserialize<Project>(File.ReadAllText(args[2]))!); Console.WriteLine("{\"status\":\"succeeded\",\"scope\":\"intended_state_only\"}"); break;
         case "plan": var current=new ProjectStore(args[1]).Read(); var desired=JsonSerializer.Deserialize<Project>(File.ReadAllText(args[2]))!; Console.WriteLine(JsonSerializer.Serialize(Compiler.Diff(current,desired))); break;
@@ -20,4 +31,5 @@ try {
         default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | native request.json process-pipe-name");
     }
 } catch(Exception e) {Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Message}));Environment.ExitCode=1;}
+
 
