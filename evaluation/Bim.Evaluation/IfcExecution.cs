@@ -1,13 +1,16 @@
 using System.Diagnostics;
+using Bim.Ifc;
 using System.Text.Json;
 
 namespace Bim.Evaluation;
 
 public sealed record IfcExecutionOptions(string PythonExecutable, string WorkerScript, string OutputDirectory)
 {
+    public IfcCompiledRequest? Request { get; init; }
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(2);
 }
-internal sealed record IfcEnvelope(int ProtocolVersion,string Backend,string BackendVersion,string Source,BackendObservations Observations,Dictionary<string,Metric> Metrics,CriterionResult[] Checks,string[] Artifacts,string[] Errors);
+internal sealed record IfcCompiledBinding(string Role,string GlobalId,int StepId);
+internal sealed record IfcEnvelope(int ProtocolVersion,string Backend,string BackendVersion,string Source,BackendObservations Observations,Dictionary<string,Metric> Metrics,CriterionResult[] Checks,string[] Artifacts,string[] Errors,Dictionary<Guid,IfcCompiledBinding>? CompiledBindings=null,Guid[]? UnsupportedCoreOutputs=null,string[]? FixtureOnlyRoles=null);
 
 public static partial class EvaluationService
 {
@@ -37,6 +40,12 @@ public static partial class EvaluationService
             if(envelope.Metrics.Any(x=>!MetricNames.Concat(new[]{"create_ms","update_ms","retry_ms","rollback_ms"}).Contains(x.Key)||x.Value==null||string.IsNullOrWhiteSpace(x.Value.Reason)||x.Value.Value is double value&&(!double.IsFinite(value)||value<0)))return null;
             return envelope;
     }
+    private static bool CompiledBindingsMatch(IfcEnvelope envelope,IfcCompiledRequest request)
+    {
+        if(envelope.Observations.TestB?.After?.Elements==null)return false;
+        if(envelope.CompiledBindings==null||envelope.CompiledBindings.Count!=request.LogicalRoles.Count||request.LogicalRoles.Any(pair=>!envelope.CompiledBindings.TryGetValue(pair.Value,out var binding)||binding==null||binding.Role!=pair.Key||string.IsNullOrWhiteSpace(binding.GlobalId)||binding.StepId<=0||!envelope.Observations.TestB!.After.Elements.Any(element=>element!=null&&element.LogicalId==pair.Key&&element.NativeId==binding.GlobalId))||envelope.CompiledBindings.Values.Select(binding=>binding.GlobalId).Distinct().Count()!=request.LogicalRoles.Count||envelope.UnsupportedCoreOutputs==null||!envelope.UnsupportedCoreOutputs.SequenceEqual(request.UnsupportedDocumentationIds)||envelope.FixtureOnlyRoles==null||!envelope.FixtureOnlyRoles.SequenceEqual(new[]{"door","window-north","window-east"}))return false;
+        return true;
+    }
     public static async Task<EvaluationReport> ExecuteAsync(string backend,IfcExecutionOptions options,CancellationToken cancellationToken=default)
     {
         if(backend!="ifc")return await ExecuteAsync(backend,cancellationToken);
@@ -52,9 +61,13 @@ public static partial class EvaluationService
             for(var entry=new FileInfo(expected) as FileSystemInfo;entry!=null;entry=entry is FileInfo f?f.Directory:(entry as DirectoryInfo)?.Parent)
                 if(entry.LinkTarget!=null)return Block("IFC worker symlink or reparse path rejected");
             if(!Path.IsPathFullyQualified(options.OutputDirectory)||options.Timeout<=TimeSpan.Zero||options.Timeout>TimeSpan.FromMinutes(10))return Block("absolute output directory and bounded timeout required");
+            var request=options.Request??IfcCompiler.EvaluationRequest();
+            IfcCompiler.Validate(request);
             Directory.CreateDirectory(options.OutputDirectory);
+            var requestPath=Path.Combine(options.OutputDirectory,"compiler-input.json");
+            using(var requestFile=new FileStream(requestPath,FileMode.CreateNew,FileAccess.Write,FileShare.None))JsonSerializer.Serialize(requestFile,request);
             var start=new ProcessStartInfo(options.PythonExecutable){UseShellExecute=false,RedirectStandardOutput=true,RedirectStandardError=true,CreateNoWindow=true,WorkingDirectory=root!.FullName};
-            start.ArgumentList.Add(expected);start.ArgumentList.Add("--output-dir");start.ArgumentList.Add(Path.GetFullPath(options.OutputDirectory));
+            start.ArgumentList.Add(expected);start.ArgumentList.Add("--output-dir");start.ArgumentList.Add(Path.GetFullPath(options.OutputDirectory));start.ArgumentList.Add("--request");start.ArgumentList.Add(requestPath);
             using var process=new Process{StartInfo=start};
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);timeout.CancelAfter(options.Timeout);
             process.Start();
@@ -67,6 +80,7 @@ public static partial class EvaluationService
             await File.WriteAllTextAsync(Path.Combine(options.OutputDirectory,"worker.stderr.log"),diagnostic,CancellationToken.None);
             var envelope=ParseIfcEnvelope(raw);
             if(envelope==null)return Block("invalid IFC worker protocol, checks or metrics");
+            if(!CompiledBindingsMatch(envelope,request))return Block("IFC compiled identity or unsupported-output contract mismatch");
             if(envelope.Artifacts.Length==0||envelope.Artifacts.Any(name=>string.IsNullOrWhiteSpace(name)||name!=Path.GetFileName(name)||name.Contains('/')||name.Contains('\\')||!File.Exists(Path.Combine(options.OutputDirectory,name))))return Block("invalid or missing IFC artifacts");
             foreach(var name in envelope.Artifacts)if(new FileInfo(Path.Combine(options.OutputDirectory,name)).LinkTarget!=null)return Block("IFC artifact reparse path rejected");
             if(!envelope.Artifacts.Any(x=>Path.GetExtension(x)==".ifc"))return Block("saved IFC artifact missing");

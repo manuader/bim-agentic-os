@@ -1,6 +1,7 @@
 """Isolated IFC4 room authoring and independently reopened geometric evidence."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -15,6 +16,9 @@ import ifcopenshell.validate
 
 SOURCE = 'actual isolated IFC authoring and reopened readback'
 CHANGED = ['east', 'north', 'south', 'window-east', 'room']
+_spec=importlib.util.spec_from_file_location('bim_ifc_compiled_request',Path(__file__).with_name('compiled_request.py'))
+_compiled=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(_compiled)
+validate_request=_compiled.validate_request
 
 
 def root(f, kind, name, **kw):
@@ -87,7 +91,7 @@ def entities(f):
     return {pset(e,'BimIdentity')['LogicalId']:e for e in f.by_type('IfcProduct') if 'LogicalId' in pset(e,'BimIdentity')}
 
 
-def create(path):
+def create(path, compiled=None):
     f=ifcopenshell.file(schema='IFC4')
     context=f.create_entity('IfcGeometricRepresentationContext',ContextIdentifier='Model',ContextType='Model',CoordinateSpaceDimension=3,Precision=1e-7,WorldCoordinateSystem=axis(f))
     units=f.create_entity('IfcUnitAssignment',Units=[f.create_entity('IfcSIUnit',UnitType='LENGTHUNIT',Prefix='MILLI',Name='METRE'),f.create_entity('IfcSIUnit',UnitType='AREAUNIT',Name='SQUARE_METRE'),f.create_entity('IfcSIUnit',UnitType='VOLUMEUNIT',Name='CUBIC_METRE')])
@@ -99,6 +103,12 @@ def create(path):
         root(f,'IfcRelAggregates','Spatial hierarchy',RelatingObject=parent,RelatedObjects=[child])
     e={'level':level}
     specs={'west':('IfcWall',(-200,0,0,200,4000,3000)), 'east':('IfcWall',(5000,0,0,200,4000,3000)), 'south':('IfcWall',(-200,-200,0,5400,200,3000)), 'north':('IfcWall',(-200,4000,0,5400,200,3000)), 'door':('IfcDoor',(1000,-200,0,900,200,2100)), 'window-north':('IfcWindow',(1500,4000,900,1200,200,1200)), 'window-east':('IfcWindow',(5000,1500,900,200,1200,1200)), 'room':('IfcSpace',(0,0,0,5000,4000,3000))}
+    if compiled:
+        g=compiled['a'];cx,cy=g['x'],g['y']
+        specs.update({r:(specs[r][0],box) for r,box in g['boxes'].items()})
+        specs['door']=('IfcDoor',(cx+1000,cy-200,0,900,200,2100))
+        specs['window-north']=('IfcWindow',(cx+1500,cy+g['depth'],900,1200,200,1200))
+        specs['window-east']=('IfcWindow',(cx+g['width'],cy+1500,900,200,1200,1200))
     for name,(kind,box) in specs.items():
         extra={'CompositionType':'ELEMENT','PredefinedType':'INTERNAL'} if kind=='IfcSpace' else {}
         e[name]=root(f,kind,name,**extra)
@@ -115,7 +125,12 @@ def create(path):
     for wall in ('west','east','south','north'):
         root(f,'IfcRelSpaceBoundary','Boundary',RelatingSpace=e['room'],RelatedBuildingElement=e[wall],PhysicalOrVirtualBoundary='PHYSICAL',InternalOrExternalBoundary='INTERNAL')
     for logical,entity in e.items():props(f,entity,'BimIdentity',{'LogicalId':logical})
-    props(f,project,'BimExecution',{'State':json.dumps({'revision':'r0','receipts':{}})})
+    initial={'revision':'r0','receipts':{}}
+    if compiled:
+        packet=compiled['packet'];revision=compiled['before']['Revision']
+        initial.update(revision='r'+str(revision),compiled_revision=revision,compiled_hash=compiled['plan']['BeforeHash'],compiled_project=compiled['before']['Id'])
+        for role,logical in packet['LogicalRoles'].items():props(f,e[role],'BimCompiledIdentity',{'LogicalId':logical,'Units':'m','Source':compiled['a']['provenance']['Source'],'Approval':compiled['a']['provenance']['Approval']})
+    props(f,project,'BimExecution',{'State':json.dumps(initial)})
     f.write(str(path))
 
 
@@ -154,6 +169,60 @@ def resize(path,width,operation,force_failure=False):
     return True
 
 
+def verify_compiled(path, compiled, desired):
+    f=ifcopenshell.open(str(path));e=entities(f)
+    geometry=compiled['b'] if desired else compiled['a']
+    for role,logical in compiled['packet']['LogicalRoles'].items():
+        if role not in e or pset(e[role],'BimCompiledIdentity').get('LogicalId')!=logical:raise ValueError('compiled UUID binding mismatch')
+        if role=='level':
+            if e[role].Elevation!=0 or tuple(e[role].ObjectPlacement.RelativePlacement.Location.Coordinates)!=(0.,0.,0.):raise ValueError('compiled level drift')
+        else:
+            actual=bounds(e[role]);expected=geometry['boxes'][role]
+            if any(abs(a-b)>1e-6 for a,b in zip(actual,expected)):raise ValueError('compiled geometry mismatch '+role)
+            triangulate(e[role])
+    return {logical:dict(role=role,global_id=e[role].GlobalId,step_id=e[role].id()) for role,logical in compiled['packet']['LogicalRoles'].items()}
+
+
+def resize_compiled(path, packet, force_failure=False):
+    compiled=validate_request(packet) # Always before any filesystem mutation.
+    f=ifcopenshell.open(str(path));s=state(f);operation=packet['OperationId']
+    if operation in s['receipts']:
+        expected_revision=compiled['plan']['ExpectedRevision']+1
+        if s.get('compiled_project')!=compiled['before']['Id'] or s.get('compiled_revision')!=expected_revision or s.get('revision')!='r'+str(expected_revision) or s.get('compiled_hash')!=compiled['committed_hash']:raise ValueError('corrupt compiled retry state')
+        expected_receipt={'width':compiled['b']['width'],'revision':'r'+str(expected_revision),'compiled_fingerprint':compiled['fingerprint'],'plan_after_hash':compiled['plan']['AfterHash']}
+        if s['receipts'][operation]!=expected_receipt:raise ValueError('corrupt compiled receipt')
+        if s['receipts'][operation].get('compiled_fingerprint')!=compiled['fingerprint']:raise ValueError('operation payload conflict')
+        verify_compiled(path,compiled,True)
+        return False
+    if s.get('compiled_project')!=compiled['before']['Id'] or s.get('compiled_revision')!=compiled['plan']['ExpectedRevision'] or s.get('revision')!='r'+str(compiled['plan']['ExpectedRevision']) or s.get('compiled_hash')!=compiled['plan']['BeforeHash']:raise ValueError('compiled revision conflict')
+    verify_compiled(path,compiled,False)
+    if not compiled['plan']['Operations']:return False
+    e=entities(f);byid={logical:role for role,logical in packet['LogicalRoles'].items()}
+    for op in compiled['plan']['Operations']:
+        role=byid.get(op['Element']['Id'])
+        if op['Action']!='update' or role not in compiled['b']['boxes']:raise ValueError('unsupported compiled operation')
+        alter(e[role],compiled['b']['boxes'][role])
+    # Hosted evaluation extras are adapter-owned fixture dependents, not Core elements.
+    for target in (e['window-east'],e['window-east'].FillsVoids[0].RelatingOpeningElement):
+        box=bounds(target);box[0]=compiled['b']['x']+compiled['b']['width'];alter(target,box)
+    revision=compiled['plan']['ExpectedRevision']+1
+    s.update(revision='r'+str(revision),compiled_revision=revision,compiled_hash=compiled['committed_hash'])
+    s['receipts'][operation]={'width':compiled['b']['width'],'revision':s['revision'],'compiled_fingerprint':compiled['fingerprint'],'plan_after_hash':compiled['plan']['AfterHash']}
+    set_state(f,s)
+    if force_failure:raise ValueError('forced compiled transaction discarded after in-memory mutations')
+    temporary=path.with_suffix('.pending.ifc')
+    try:
+        with temporary.open('x',encoding='utf-8'):pass
+    except FileExistsError as exc:raise ValueError('existing staging artifact') from exc
+    try:
+        f.write(str(temporary));validate(ifcopenshell.open(str(temporary)))
+        verify_compiled(temporary,compiled,True);inspect(temporary)
+        os.replace(temporary,path)
+    finally:
+        if temporary.exists():temporary.unlink()
+    return True
+
+
 def validate(f):
     logger=ifcopenshell.validate.json_logger()
     ifcopenshell.validate.validate(f,logger,express_rules=True)
@@ -180,7 +249,7 @@ def triangulate(e):
 
 def observe(path):
     f=ifcopenshell.open(str(path));e=entities(f)
-    width=bounds(e['east'])[0];depth=bounds(e['north'])[1]
+    width=bounds(e['room'])[3];depth=bounds(e['room'])[4]
     result=[]
     for logical,v in sorted(e.items()):
         category={'IfcBuildingStorey':'Level','IfcWall':'Wall','IfcDoor':'Door','IfcWindow':'Window','IfcSpace':'Room'}[v.is_a()]
@@ -225,41 +294,59 @@ def inspect(path):
     return triangles
 
 
-def execute(directory):
+def execute(directory,packet=None):
+    compiled=validate_request(packet) if packet is not None else None
+    if compiled and not compiled['plan']['Operations']:raise ValueError('A/B evaluation requires a width correction; use lowlevel resize_compiled for a no-op')
     if not directory.is_absolute():raise ValueError('output-dir must be absolute')
     directory.mkdir(parents=True,exist_ok=True)
     path=directory/'room.ifc'
-    owned=('room.ifc','before.ifc','hashes.json','benchmarks.json','room.pending.ifc')
+    owned=('room.ifc','before.ifc','hashes.json','benchmarks.json','room.pending.ifc','compiled-request.json')
     if any((directory/name).exists() for name in owned):
         raise ValueError('output directory contains an existing worker artifact; use a fresh fixture directory')
-    total_start=time.perf_counter();start=time.perf_counter();create(path);create_ms=(time.perf_counter()-start)*1000
+    total_start=time.perf_counter();start=time.perf_counter();create(path,compiled);create_ms=(time.perf_counter()-start)*1000
     a=observe(path);before_hash=hashlib.sha256(path.read_bytes()).hexdigest()
     baseline=directory/'before.ifc';baseline.write_bytes(path.read_bytes())
     revision_before=state(ifcopenshell.open(str(path)))['revision']
     forced=False
     start=time.perf_counter()
-    try:resize(path,5400,'forced-invalid',True)
+    try:
+        if compiled:resize_compiled(path,packet,True)
+        else:resize(path,5400,'forced-invalid',True)
     except ValueError:forced=True
     rollback_ms=(time.perf_counter()-start)*1000
     rollback=observe(path)
     rollback_revision=state(ifcopenshell.open(str(path)))['revision']
     rollback_hash=hashlib.sha256(path.read_bytes()).hexdigest()
     before_entity_ids={v.GlobalId:v.id() for v in ifcopenshell.open(str(path)).by_type('IfcRoot')}
-    start=time.perf_counter();resize(path,5400,'resize-400');update_ms=(time.perf_counter()-start)*1000
+    start=time.perf_counter()
+    if compiled:resize_compiled(path,packet)
+    else:resize(path,5400,'resize-400')
+    update_ms=(time.perf_counter()-start)*1000
     after=observe(path);after_hash=hashlib.sha256(path.read_bytes()).hexdigest()
     revision_after=state(ifcopenshell.open(str(path)))['revision']
-    start=time.perf_counter();resize(path,5400,'resize-400');retry_ms=(time.perf_counter()-start)*1000
+    start=time.perf_counter()
+    if compiled:resize_compiled(path,packet)
+    else:resize(path,5400,'resize-400')
+    retry_ms=(time.perf_counter()-start)*1000
     retry=observe(path);conflict=False
-    try:resize(path,5800,'resize-400')
+    try:
+        if compiled:
+            resize(path,compiled['b']['width']+400,packet['OperationId'])
+        else:resize(path,5800,'resize-400')
     except ValueError:conflict=True
     retry_hash=hashlib.sha256(path.read_bytes()).hexdigest()
     retry_state=state(ifcopenshell.open(str(path)))
     semantic=[x['logical_id'] for x,y in zip(a['elements'],after['elements']) if x!=y]
     start=time.perf_counter();triangles=inspect(baseline)+inspect(path);validation_ms=(time.perf_counter()-start)*1000
     current=ifcopenshell.open(str(path));after_entity_ids={v.GlobalId:v.id() for v in current.by_type('IfcRoot')}
-    conditions={'ifc_schema':True,'ifc_geometry':triangles>0,'ifc_hosting':True,'ifc_save_reopen':a['saved'] and after['reopened'],'ifc_idempotency':retry==after and retry_hash==after_hash,'ifc_rollback':forced and a==rollback and before_hash==rollback_hash and rollback_revision==revision_before,'ifc_incremental':before_entity_ids==after_entity_ids and set(semantic)==set(CHANGED),'ifc_receipts':conflict and retry_state=={'revision':'r1','receipts':{'resize-400':{'width':5400,'revision':'r1'}}}}
+    expected_receipts={'revision':'r1','receipts':{'resize-400':{'width':5400,'revision':'r1'}}}
+    if compiled:
+        committed_revision=compiled['before']['Revision']+1
+        expected_receipts={'revision':'r'+str(committed_revision),'compiled_revision':committed_revision,'compiled_project':compiled['before']['Id'],'compiled_hash':compiled['committed_hash'],'receipts':{packet['OperationId']:{'width':compiled['b']['width'],'revision':'r'+str(committed_revision),'compiled_fingerprint':compiled['fingerprint'],'plan_after_hash':compiled['plan']['AfterHash']}}}
+    changed=CHANGED if not compiled or compiled['plan']['Operations'] else []
+    conditions={'ifc_schema':True,'ifc_geometry':triangles>0,'ifc_hosting':True,'ifc_save_reopen':a['saved'] and after['reopened'],'ifc_idempotency':retry==after and retry_hash==after_hash,'ifc_rollback':forced and a==rollback and before_hash==rollback_hash and rollback_revision==revision_before,'ifc_incremental':before_entity_ids==after_entity_ids and set(semantic)==set(changed),'ifc_receipts':conflict and retry_state==expected_receipts}
     checks=[dict(id=k,outcome='pass' if v else 'fail',reason='actual reopened IFC schema/entities/triangulated geometry or persisted transaction evidence',expected=None,actual=None,tolerance=None) for k,v in conditions.items()]
-    b=dict(before=a,after=after,retry=retry,rollback=rollback,anchor_logical_id='west',allowed_changed_ids=CHANGED,semantic_changed_ids=semantic,updated_document_ids=[],operation_id='resize-400',retry_operation_id='resize-400',forced_failure_observed=forced,validation_passed=all(conditions.values()),revision_before=revision_before,revision_after=revision_after,retry_revision=retry_state['revision'],rollback_revision=rollback_revision)
+    b=dict(before=a,after=after,retry=retry,rollback=rollback,anchor_logical_id='west',allowed_changed_ids=changed,semantic_changed_ids=semantic,updated_document_ids=[],operation_id=packet['OperationId'] if compiled else 'resize-400',retry_operation_id=packet['OperationId'] if compiled else 'resize-400',forced_failure_observed=forced,validation_passed=all(conditions.values()),revision_before=revision_before,revision_after=revision_after,retry_revision=retry_state['revision'],rollback_revision=rollback_revision)
     timings={'create_ms':create_ms,'update_ms':update_ms,'retry_ms':retry_ms,'rollback_ms':rollback_ms,'validation_ms':validation_ms,'total_ms':(time.perf_counter()-total_start)*1000}
     names=['intent_parse_ms','semantic_query_ms','solver_ms','diff_ms','runtime_wait_ms','revit_execute_ms','revit_regeneration_ms','native_readback_ms','validation_ms','documentation_ms','total_ms','llm_calls','model_elements_read','model_elements_written','transaction_count','unintended_element_changes']
     metrics={name:{'value':None,'reason':'not instrumented or not applicable to isolated IFC fixture authoring'} for name in names}
@@ -271,13 +358,19 @@ def execute(directory):
     (directory/'benchmarks.json').write_text(json.dumps(timings,indent=2),encoding='utf-8')
     hashes={'before.ifc':before_hash,'room.ifc':after_hash}
     (directory/'hashes.json').write_text(json.dumps(hashes,indent=2),encoding='utf-8')
-    return dict(protocol_version=1,backend='ifc',backend_version=ifcopenshell.version,source=SOURCE,observations=dict(backend='ifc',source=SOURCE,test_a=a,test_b=b),metrics=metrics,checks=checks,artifacts=['before.ifc','room.ifc','hashes.json','benchmarks.json'],errors=[k for k,v in conditions.items() if not v])
+    artifacts=['before.ifc','room.ifc','hashes.json','benchmarks.json']
+    bindings={}
+    if compiled:
+        bindings=verify_compiled(path,compiled,True)
+        (directory/'compiled-request.json').write_text(json.dumps(packet,indent=2),encoding='utf-8')
+        artifacts.append('compiled-request.json')
+    return dict(protocol_version=1,backend='ifc',backend_version=ifcopenshell.version,source=SOURCE,observations=dict(backend='ifc',source=SOURCE,test_a=a,test_b=b),metrics=metrics,checks=checks,artifacts=artifacts,errors=[k for k,v in conditions.items() if not v],compiled_bindings=bindings,unsupported_core_outputs=packet['UnsupportedDocumentationIds'] if compiled else [],fixture_only_roles=['door','window-north','window-east'])
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--output-dir',required=True);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--output-dir',required=True);parser.add_argument('--request',required=True);args=parser.parse_args()
     try:
-        result=execute(Path(args.output_dir));code=1 if result['errors'] else 0
+        result=execute(Path(args.output_dir),json.loads(Path(args.request).read_text(encoding='utf-8-sig')));code=1 if result['errors'] else 0
     except Exception as exc:
         print(str(exc),file=sys.stderr)
         result=dict(protocol_version=1,backend='ifc',backend_version=ifcopenshell.version,source=SOURCE,observations=None,metrics={},checks=[],artifacts=[],errors=[str(exc)])
@@ -285,4 +378,3 @@ def main():
     print(json.dumps(result,allow_nan=False));return code
 
 if __name__=='__main__':sys.exit(main())
-

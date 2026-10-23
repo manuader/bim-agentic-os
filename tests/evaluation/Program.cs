@@ -1,4 +1,6 @@
 using Bim.Evaluation;
+using Bim.Ifc;
+using System.Text.Json.Nodes;
 try {
 var checks = 0; var failures=new List<string>();
 void Check(bool ok, string name) { if (!ok) failures.Add(name); checks++; }
@@ -102,6 +104,34 @@ var processAgreement=typeof(EvaluationService).GetMethod("ProcessResultConsisten
 bool? Agrees(int code,bool failed)=>(bool?)processAgreement?.Invoke(null,[code,failed]);
 Check(Agrees(0,false)==true && Agrees(1,true)==true,"successful and measured failed subprocess outcomes agree");
 Check(Agrees(1,false)==false && Agrees(0,true)==false,"nonzero exit and check disagreement rejected");
+var compiledRequest=IfcCompiler.EvaluationRequest();
+var compiledEnvelope=JsonNode.Parse(workerJson)!;
+var compiledBindings=new JsonObject();var bindingStep=1;
+foreach(var pair in compiledRequest.LogicalRoles)compiledBindings[pair.Value.ToString()]=new JsonObject { ["role"]=pair.Key,["global_id"]="n-"+pair.Key,["step_id"]=bindingStep++ };
+compiledEnvelope["compiled_bindings"]=compiledBindings;
+compiledEnvelope["unsupported_core_outputs"]=System.Text.Json.JsonSerializer.SerializeToNode(compiledRequest.UnsupportedDocumentationIds);
+compiledEnvelope["fixture_only_roles"]=System.Text.Json.JsonSerializer.SerializeToNode(new[]{"door","window-north","window-east"});
+var bindingPort=typeof(EvaluationService).GetMethod("CompiledBindingsMatch",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static);
+bool? MatchBindings(JsonNode node) {var envelope=ParseEnvelope(node.ToJsonString());return envelope==null?null:(bool?)bindingPort?.Invoke(null,[envelope,compiledRequest]);}
+Check(MatchBindings(compiledEnvelope)==true,"typed Core UUID metadata matches native role observations");
+var wrongBinding=compiledEnvelope.DeepClone();wrongBinding["compiled_bindings"]![compiledRequest.LogicalRoles["east"].ToString()]!["global_id"]="foreign-native";
+Check(MatchBindings(wrongBinding)==false,"compiled UUID mapping cannot name a different native observation");
+var wrongRole=compiledEnvelope.DeepClone();wrongRole["compiled_bindings"]![compiledRequest.LogicalRoles["east"].ToString()]!["role"]="west";
+Check(MatchBindings(wrongRole)==false,"compiled UUID role mismatch rejected");
+var wrongStep=compiledEnvelope.DeepClone();wrongStep["compiled_bindings"]![compiledRequest.LogicalRoles["east"].ToString()]!["step_id"]=0;
+Check(MatchBindings(wrongStep)==false,"missing native STEP binding rejected");
+var missingBindings=compiledEnvelope.DeepClone();missingBindings["compiled_bindings"]=null;
+Check(MatchBindings(missingBindings)==false,"missing compiled mappings fail closed");
+var missingAfter=compiledEnvelope.DeepClone();missingAfter["observations"]!["test_b"]!["after"]=null;
+Check(MatchBindings(missingAfter)==false,"missing compiled after observation fails closed without exception");
+var missingElements=compiledEnvelope.DeepClone();missingElements["observations"]!["test_b"]!["after"]!["elements"]=null;
+Check(MatchBindings(missingElements)==false,"missing compiled elements fail closed without exception");
+var wrongDocs=compiledEnvelope.DeepClone();wrongDocs["unsupported_core_outputs"]=new JsonArray();
+Check(MatchBindings(wrongDocs)==false,"unsupported Core documentation IDs remain explicit");
+var malformedBinding=compiledEnvelope.DeepClone();malformedBinding["compiled_bindings"]![compiledRequest.LogicalRoles["east"].ToString()]!["step_id"]="not-integer";
+Check(ParseEnvelope(malformedBinding.ToJsonString())==null,"malformed typed compiled metadata rejected");
+var unknownMetadata=compiledEnvelope.DeepClone();unknownMetadata["invented_provenance"]="verified";
+Check(ParseEnvelope(unknownMetadata.ToJsonString())==null,"compiled metadata does not relax strict unknown-field rejection");
 if(failures.Count>0) throw new Exception(string.Join("; ",failures));
 Console.WriteLine($"PASS {checks} evaluator assertions (synthetic unit observations only)");
 

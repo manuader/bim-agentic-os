@@ -1,15 +1,23 @@
 using Bim.Core;
+using Bim.Ifc;
 using Bim.Evaluation;
 using System.Text.Json;
 using System.IO.Pipes;
 try {
     switch(args[0]) {
+        case "ifc-export":
+            if(args.Length!=6)throw new ArgumentException("usage: ifc-export before.json after.json plan.json room-guid operation-id");
+            var ifcBefore=JsonSerializer.Deserialize<Project>(File.ReadAllText(args[1]))!;
+            var ifcAfter=JsonSerializer.Deserialize<Project>(File.ReadAllText(args[2]))!;
+            var ifcPlan=JsonSerializer.Deserialize<ExecutionPlan>(File.ReadAllText(args[3]))!;
+            Console.WriteLine(JsonSerializer.Serialize(IfcCompiler.Export(ifcBefore,ifcAfter,ifcPlan,Guid.Parse(args[4]),args[5])));break;
         case "evaluate":
             EvaluationReport evaluation;
             try {
                 evaluation = args.Length switch {
                     2 => await EvaluationService.ExecuteAsync(args[1]),
                     5 when args[1] == "ifc" => await EvaluationService.ExecuteAsync("ifc",new IfcExecutionOptions(args[2],args[3],args[4])),
+                    6 when args[1] == "ifc" => await EvaluationService.ExecuteAsync("ifc",new IfcExecutionOptions(args[2],args[3],args[4]) {Request=JsonSerializer.Deserialize<IfcCompiledRequest>(File.ReadAllText(args[5]))}),
                     3 when args[1] == "offline" => EvaluationService.ParseOffline(File.ReadAllText(args[2])),
                     _ => EvaluationService.Malformed("usage: evaluate ifc|revit | evaluate offline observations.json")
                 };
