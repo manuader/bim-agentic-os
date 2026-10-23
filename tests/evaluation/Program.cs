@@ -1,7 +1,7 @@
 using Bim.Evaluation;
 try {
-var checks = 0;
-void Check(bool ok, string name) { if (!ok) throw new Exception(name); checks++; }
+var checks = 0; var failures=new List<string>();
+void Check(bool ok, string name) { if (!ok) failures.Add(name); checks++; }
 var empty = EvaluationService.EvaluateOffline(new("revit", "synthetic", null, null));
 Check(empty.ExitCode == 2 && empty.VerificationState == "unit-tested" && empty.Counts.Blocked > 0, "missing observations fail closed");
 RoomObservation Complete() {
@@ -13,6 +13,9 @@ RoomObservation Complete() {
       new("dim", "n-dim", "Dimension", null, ["west","east"], []), new("plan", "n-plan", "Plan", "level", ["dim"], []),
       new("3d", "n-3d", "View3D", null, ["west","east","south","north"], []), new("schedule", "n-schedule", "Schedule", null, ["room"], []),
       new("sheet", "n-sheet", "Sheet", null, ["plan","schedule"], []) };
+        items=items.Select(x=>x.Category switch {
+        "Wall"=>x with { ThicknessMm=200,HeightMm=3000 }, "Door"=>x with { WidthMm=900 },
+        "Dimension"=>x with { WidthMm=5000 }, "Room" or "Schedule"=>x with { AreaM2=20 }, _=>x }).ToList();
     return new(5000,4000,200,3000,900,"mm",items.ToArray(),5000,20,true,true,"fixture.rvt");
 }
 var good = Complete();
@@ -27,7 +30,8 @@ Check(EvaluationService.EvaluateOffline(new("revit","historical primitive",null,
 Check(EvaluationService.EvaluateOffline(new("ifc","synthetic",good,null)).Counts.Unsupported>0,"IFC cannot prove native docs");
 Check(a.Metrics.Where(x=>x.Key!="total_ms").All(x=>x.Value.Value==null && x.Value.Reason.Length>0),"unknown metrics null with reason");
 var after=good with { ClearWidthMm=5400, DimensionWidthMm=5400, ScheduleAreaM2=21.6, Elements=good.Elements.Select(x=>x.LogicalId=="east" ? x with { Geometry=[5400,0,5400,4000] } : x.LogicalId=="w2" ? x with { Geometry=[5400,2000] } : x.LogicalId=="south" ? x with { Geometry=[0,0,5400,0] } : x.LogicalId=="north" ? x with { Geometry=[0,4000,5400,4000] } : x).ToArray() };
-var revision=new RevisionObservation(good,after,after,good,"west",["east","w2","south","north"],["east","w2","south","north"],["dim","plan","schedule","sheet"],"key-1","key-1",true,true,"r1","r2","r2","r1");
+after=after with { Elements=after.Elements.Select(x=>x.Category=="Dimension" ? x with { WidthMm=5400 } : x.Category is "Room" or "Schedule" ? x with { AreaM2=21.6 } : x).ToArray() };
+var revision=new RevisionObservation(good,after,after,good,"west",["east","w2","south","north","room","dim","schedule"],["east","w2","south","north","room","dim","schedule"],["dim","plan","schedule","sheet"],"key-1","key-1",true,true,"r1","r2","r2","r1");
 var full=EvaluationService.EvaluateOffline(new("revit","synthetic",good,revision));
 Check(full.ExitCode==0 && full.Cases[1].Outcome=="pass","complete synthetic B");
 Check(EvaluationService.EvaluateOffline(new("revit","synthetic",null,revision)).ExitCode!=0,"B requires A");
@@ -48,9 +52,26 @@ Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good with { Elem
 Check(EvaluationService.ParseOffline("{broken").ExitCode==1,"JSON syntax malformed fails closed");
 Check(EvaluationService.ParseOffline("{\"backend\":\"revit\",\"source\":\"x\",\"verification_state\":\"verified-in-revit\"}").ExitCode==1,"unknown provenance property rejected");
 Check((await EvaluationService.ExecuteAsync("unknown")).ExitCode==2,"unsupported backend blocked exit");
+Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good with { Elements=good.Elements.Select(x=>x.Category=="Dimension" ? x with { References=["west","west"] } : x).ToArray() },null)).Cases[0].Outcome=="fail","dimension must reference distinct opposite width boundaries");
+var displaced=after with { Elements=after.Elements.Select(x=>x.LogicalId=="door" ? x with { Geometry=[100,0] } : x).ToArray() };
+Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good,revision with { After=displaced,Retry=displaced,AllowedChangedIds=[..revision.AllowedChangedIds,"door"],SemanticChangedIds=[..revision.SemanticChangedIds,"door"] })).ExitCode==1,"caller cannot authorize unrelated door displacement");
+var swapped=after with { Elements=after.Elements.Select(x=>x.LogicalId=="door" ? x with { Category="Window" } : x.LogicalId=="w1" ? x with { Category="Door", HostId="south", Geometry=[1000,0] } : x).ToArray() };
+Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good,revision with { After=swapped,Retry=swapped,AllowedChangedIds=[..revision.AllowedChangedIds,"door","w1"],SemanticChangedIds=[..revision.SemanticChangedIds,"door","w1"] })).ExitCode==1,"per-ID semantic category retained");
+Check(EvaluationService.EvaluateOffline(new("ifc","synthetic",good with { DimensionWidthMm=0 },null)).ExitCode==1,"IFC unsupported does not erase measured violation");
+
+Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good with { Elements=good.Elements.Select(x=>x.Category=="Wall" ? x with { ThicknessMm=150 } : x).ToArray() },null)).ExitCode==1,"individual wall measured thickness cannot hide behind aggregate");
+Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good with { Elements=good.Elements.Select(x=>x.Category=="Door" ? x with { WidthMm=800 } : x).ToArray() },null)).ExitCode==1,"individual door measured width required");
+Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good with { Elements=good.Elements.Select(x=>x.Category=="Room" ? x with { AreaM2=null } : x).ToArray() },null)).Cases[0].Counts.Blocked>0,"missing Room area is unknown and blocked");
+Check(EvaluationService.EvaluateOffline(new("revit","synthetic",good with { Elements=good.Elements.Select(x=>x.Category=="Dimension" ? x with { WidthMm=0 } : x).ToArray() },null)).ExitCode==1,"actual dimension readback required");
+if(failures.Count>0) throw new Exception(string.Join("; ",failures));
 Console.WriteLine($"PASS {checks} evaluator assertions (synthetic unit observations only)");
 
 } catch (Exception ex) { Console.Error.WriteLine(ex.Message); Environment.ExitCode=1; }
+
+
+
+
+
 
 
 

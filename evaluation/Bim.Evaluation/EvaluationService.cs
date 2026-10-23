@@ -6,7 +6,7 @@ namespace Bim.Evaluation;
 
 // Wall geometry is the observed interior boundary segment [x1,y1,x2,y2]; openings use the host-face projection [x,y].
 // Observation contracts are isolated from BIM-IR and native RPC contracts. All lengths are millimetres.
-public sealed record ElementObservation(string LogicalId, string NativeId, string Category, string? HostId, string[] References, double[] Geometry);
+public sealed record ElementObservation(string LogicalId, string NativeId, string Category, string? HostId, string[] References, double[] Geometry, double? ThicknessMm=null, double? HeightMm=null, double? WidthMm=null, double? AreaM2=null);
 public sealed record RoomObservation(double ClearWidthMm, double ClearDepthMm, double WallThicknessMm, double WallHeightMm,
     double DoorWidthMm, string Units, ElementObservation[] Elements, double DimensionWidthMm, double ScheduleAreaM2,
     bool Saved, bool Reopened, string NativeFile);
@@ -17,7 +17,7 @@ public sealed record RevisionObservation(RoomObservation Before, RoomObservation
 public sealed record BackendObservations(string Backend, string Source, RoomObservation? TestA, RevisionObservation? TestB);
 public sealed record Metric(double? Value, string Reason);
 public sealed record Counts(int Passed, int Failed, int Blocked, int Unsupported);
-public sealed record CriterionResult(string Id, string Status, string Reason, double? Expected = null, double? Actual = null, double? Tolerance = null);
+public sealed record CriterionResult(string Id, string Outcome, string Reason, double? Expected = null, double? Actual = null, double? Tolerance = null);
 public sealed record CaseResult(string Id, string Outcome, Counts Counts, CriterionResult[] Criteria);
 public sealed record EvaluationReport(string VerificationState, string Outcome, string Scope, string Backend, string BackendVersion, string Source,
     string TimingScope, Counts Counts, Dictionary<string,Metric> Metrics, CaseResult[] Cases, string[] Gaps,
@@ -56,7 +56,7 @@ public static class EvaluationService
 
     public static EvaluationReport Malformed(string reason)
     {
-        var criterion = new CriterionResult("input", "failed", reason);
+        var criterion = new CriterionResult("input", "fail", reason);
         return new("unit-tested","fail","full Test A/B", "unknown","unknown","invalid input","orchestration only; not architectural delivery",new(0,1,0,0),UnknownMetrics(),[new("input","fail",new(0,1,0,0),[criterion])],[reason],1);
     }
 
@@ -71,19 +71,47 @@ public static class EvaluationService
         var exit = counts.Failed > 0 ? 1 : counts.Blocked + counts.Unsupported > 0 ? 2 : 0;
         var metrics = UnknownMetrics(); metrics["total_ms"] = new(timer.Elapsed.TotalMilliseconds,"observed evaluator orchestration only; excludes full architectural delivery");
         return new(state,exit==0?"pass":"fail","full Test A/B",o.Backend,"not observed",o.Source,
-            "orchestration only; not architectural delivery",counts,metrics,[a,b],a.Criteria.Concat(b.Criteria).Where(x=>x.Status!="passed").Select(x=>x.Id+": "+x.Reason).ToArray(),exit);
+            "orchestration only; not architectural delivery",counts,metrics,[a,b],a.Criteria.Concat(b.Criteria).Where(x=>x.Outcome!="pass").Select(x=>x.Id+": "+x.Reason).ToArray(),exit);
     }
     private static Dictionary<string,Metric> UnknownMetrics() => MetricNames.ToDictionary(x=>x,_=>new Metric(null,"not instrumented by a real backend execution"));
     private static CaseResult Missing(string id, string[] catalogue) => Result(id,catalogue.Select(x=>new CriterionResult(x,"blocked","mandatory backend observation missing")).ToList());
-    private static CaseResult WithUnsupported(CaseResult c) => Result(c.Id,c.Criteria.Select(x=>NativeOnly.Contains(x.Id)?x with {Status="unsupported",Reason="IFC cannot prove native Revit annotation/view/sheet/RVT acceptance"}:x).ToList());
-    private static Counts Count(IEnumerable<CriterionResult> c) { var a=c.ToArray(); return new(a.Count(x=>x.Status=="passed"),a.Count(x=>x.Status=="failed"),a.Count(x=>x.Status=="blocked"),a.Count(x=>x.Status=="unsupported")); }
+    private static CaseResult WithUnsupported(CaseResult c) => Result(c.Id,c.Criteria.Select(x=>NativeOnly.Contains(x.Id)&&x.Outcome!="fail"?x with {Outcome="unsupported",Reason="IFC cannot prove native Revit annotation/view/sheet/RVT acceptance"}:x).ToList());
+    private static Counts Count(IEnumerable<CriterionResult> c) { var a=c.ToArray(); return new(a.Count(x=>x.Outcome=="pass"),a.Count(x=>x.Outcome=="fail"),a.Count(x=>x.Outcome=="blocked"),a.Count(x=>x.Outcome=="unsupported")); }
     private static CaseResult Result(string id, List<CriterionResult> c) { var n=Count(c); return new(id,n.Failed+n.Blocked+n.Unsupported==0?"pass":"fail",n,c.ToArray()); }
-    private static void Bool(List<CriterionResult> c,string id,bool value,string reason) => c.Add(new(id,value?"passed":"failed",value?"measured observation satisfies criterion":reason));
-    private static void Number(List<CriterionResult> c,string id,double expected,double actual,double tolerance=0) => c.Add(new(id,double.IsFinite(actual)&&Math.Abs(expected-actual)<=tolerance?"passed":"failed","measured numerical comparison",expected,double.IsFinite(actual)?actual:null,tolerance));
+    private static void Bool(List<CriterionResult> c,string id,bool value,string reason) => c.Add(new(id,value?"pass":"fail",value?"measured observation satisfies criterion":reason));
+    private static void Number(List<CriterionResult> c,string id,double expected,double actual,double tolerance=0) => c.Add(new(id,double.IsFinite(actual)&&Math.Abs(expected-actual)<=tolerance?"pass":"fail","measured numerical comparison",expected,double.IsFinite(actual)?actual:null,tolerance));
+    private static void Measurement(List<CriterionResult> c,string id,double expected,double? actual,double tolerance=0)
+    {
+        if(actual==null)c.Add(new(id,"blocked","required per-element backend parameter readback missing",expected,null,tolerance));
+        else Number(c,id,expected,actual.Value,tolerance);
+    }
+    private static bool ProtectedParametersValid(RoomObservation before,RoomObservation after) => before.Elements.All(x=> {
+        var y=after.Elements.SingleOrDefault(z=>z.LogicalId==x.LogicalId); if(y==null)return false;
+        return x.Category==y.Category&&x.HostId==y.HostId&&x.References.SequenceEqual(y.References)&&x.ThicknessMm==y.ThicknessMm&&x.HeightMm==y.HeightMm&&
+            (x.Category=="Dimension"||x.WidthMm==y.WidthMm)&&(x.Category is "Room" or "Schedule"||x.AreaM2==y.AreaM2);
+    });
     private static bool IdsValid(ElementObservation[] e) => e.All(x=>!string.IsNullOrWhiteSpace(x.LogicalId)&&!string.IsNullOrWhiteSpace(x.NativeId)) && e.Select(x=>x.LogicalId).Distinct().Count()==e.Length && e.Select(x=>x.NativeId).Distinct().Count()==e.Length;
-    private static bool SameElement(ElementObservation x,ElementObservation y) => x.LogicalId==y.LogicalId&&x.NativeId==y.NativeId&&x.Category==y.Category&&x.HostId==y.HostId&&x.References.SequenceEqual(y.References)&&x.Geometry.SequenceEqual(y.Geometry);
+    private static bool SameElement(ElementObservation x,ElementObservation y) => x.LogicalId==y.LogicalId&&x.NativeId==y.NativeId&&x.Category==y.Category&&x.HostId==y.HostId&&x.References.SequenceEqual(y.References)&&x.Geometry.SequenceEqual(y.Geometry)&&x.ThicknessMm==y.ThicknessMm&&x.HeightMm==y.HeightMm&&x.WidthMm==y.WidthMm&&x.AreaM2==y.AreaM2;
     private static bool Same(RoomObservation x,RoomObservation y) => x.ClearWidthMm==y.ClearWidthMm&&x.ClearDepthMm==y.ClearDepthMm&&x.WallThicknessMm==y.WallThicknessMm&&x.WallHeightMm==y.WallHeightMm&&x.DoorWidthMm==y.DoorWidthMm&&x.Units==y.Units&&x.DimensionWidthMm==y.DimensionWidthMm&&x.ScheduleAreaM2==y.ScheduleAreaM2&&x.Saved==y.Saved&&x.Reopened==y.Reopened&&x.NativeFile==y.NativeFile&&IdsValid(x.Elements)&&IdsValid(y.Elements)&&x.Elements.Length==y.Elements.Length&&x.Elements.All(a=>y.Elements.Any(b=>SameElement(a,b)));
     private static bool SetEquals(string[] a,IEnumerable<string> b) => a.Length==a.Distinct().Count()&&a.Order().SequenceEqual(b.Order());
+    private static bool WidthReferencesValid(ElementObservation dimension,RoomObservation room)
+    {
+        if(dimension.References.Length!=2||dimension.References.Distinct().Count()!=2)return false;
+        var walls=dimension.References.Select(id=>room.Elements.SingleOrDefault(x=>x.LogicalId==id&&x.Category=="Wall")).ToArray();
+        if(walls.Any(x=>x==null||x.Geometry.Length!=4||x.Geometry[0]!=x.Geometry[2]))return false;
+        return Math.Abs(walls[0]!.Geometry[0]-walls[1]!.Geometry[0])==room.ClearWidthMm;
+    }
+    private static bool DependentPositionsValid(RoomObservation before,RoomObservation after)
+    {
+        return before.Elements.Where(x=>x.Category is "Door" or "Window").All(x=> {
+            var next=after.Elements.SingleOrDefault(y=>y.LogicalId==x.LogicalId);
+            var host=before.Elements.SingleOrDefault(y=>y.LogicalId==x.HostId);
+            var nextHost=after.Elements.SingleOrDefault(y=>y.LogicalId==x.HostId);
+            if(next==null||host==null||nextHost==null||x.Geometry.Length!=2||next.Geometry.Length!=2||host.Geometry.Length!=4||nextHost.Geometry.Length!=4)return false;
+            var dx=host.Geometry[0]==host.Geometry[2] ? nextHost.Geometry[0]-host.Geometry[0] : 0;
+            return next.Geometry[0]==x.Geometry[0]+dx && next.Geometry[1]==x.Geometry[1] && next.Category==x.Category && next.HostId==x.HostId;
+        });
+    }
     private static bool GeometryValid(RoomObservation room)
     {
         var walls=room.Elements.Where(x=>x.Category=="Wall").ToArray();
@@ -107,7 +135,7 @@ public static class EvaluationService
         Number(c,"wall_count",4,Cat("Wall").Length); Number(c,"wall_thickness_mm",200,r.WallThicknessMm); Number(c,"wall_height_mm",3000,r.WallHeightMm);
         Number(c,"door_count",1,Cat("Door").Length); Number(c,"door_width_mm",900,r.DoorWidthMm); Number(c,"window_count",2,Cat("Window").Length);
         Bool(c,"room_boundary",Cat("Room").Length==1 && SetEquals(Cat("Room")[0].References,Cat("Wall").Select(x=>x.LogicalId)),"Room must reference all four boundary walls");
-        Bool(c,"dimensions",Cat("Dimension").Length>0&&r.DimensionWidthMm==r.ClearWidthMm&&Cat("Dimension").All(x=>x.References.Length>=2&&x.References.All(z=>byId.TryGetValue(z,out var wall)&&wall.Category=="Wall")),"native dimension value and wall references required");
+        Bool(c,"dimensions",Cat("Dimension").Length>0&&r.DimensionWidthMm==r.ClearWidthMm&&Cat("Dimension").All(x=>WidthReferencesValid(x,r)),"native dimension value and wall references required");
         Bool(c,"plan",Cat("Plan").Length>0&&Cat("Plan").All(x=>x.References.Any(z=>byId.TryGetValue(z,out var d)&&d.Category=="Dimension")),"plan and associated dimensions required");
         Bool(c,"view_3d",Cat("View3D").Length>0&&Cat("View3D").All(x=>x.References.Length>0),"3D view references required");
         Bool(c,"schedule",Cat("Schedule").Length>0&&Math.Abs(r.ScheduleAreaM2-r.ClearWidthMm*r.ClearDepthMm/1e6)<=1e-9&&Cat("Schedule").All(x=>x.References.Any(z=>byId.TryGetValue(z,out var room)&&room.Category=="Room")),"schedule area and Room reference required");
@@ -120,12 +148,17 @@ public static class EvaluationService
         Bool(c,"identities",IdsValid(e),"logical/native IDs missing or duplicate");
         Bool(c,"native_save",r.Saved&&Path.GetExtension(r.NativeFile).Equals(backend=="ifc"?".ifc":".rvt",StringComparison.OrdinalIgnoreCase),"native save evidence required");
         Bool(c,"native_reopen",r.Reopened,"saved model must be reopened and inspected");
+        foreach(var wall in Cat("Wall")) { Measurement(c,"wall:"+wall.LogicalId+":thickness_mm",200,wall.ThicknessMm); Measurement(c,"wall:"+wall.LogicalId+":height_mm",3000,wall.HeightMm); }
+        foreach(var door in Cat("Door")) Measurement(c,"door:"+door.LogicalId+":width_mm",900,door.WidthMm);
+        foreach(var room in Cat("Room")) Measurement(c,"room:"+room.LogicalId+":area_m2",expectedWidth*4000/1e6,room.AreaM2,1e-9);
+        foreach(var dimension in Cat("Dimension")) Measurement(c,"dimension:"+dimension.LogicalId+":width_mm",expectedWidth,dimension.WidthMm);
+        foreach(var schedule in Cat("Schedule")) Measurement(c,"schedule:"+schedule.LogicalId+":area_m2",expectedWidth*4000/1e6,schedule.AreaM2,1e-9);
         return Result("A",c);
     }
     private static CaseResult CheckB(RevisionObservation r,RoomObservation? a,bool aPass,string backend)
     {
         var c=new List<CriterionResult>();
-        c.Add(new("requires_A",aPass?"passed":"blocked",aPass?"Test A passed":"Test B requires complete passing Test A"));
+        c.Add(new("requires_A",aPass?"pass":"blocked",aPass?"Test A passed":"Test B requires complete passing Test A"));
         Bool(c,"baseline_matches_A",a!=null&&Same(a,r.Before),"B must start from exact Test A observations");
         Number(c,"width_delta_mm",400,r.After.ClearWidthMm-r.Before.ClearWidthMm);
         var before=r.Before.Elements;var after=r.After.Elements;
@@ -133,10 +166,10 @@ public static class EvaluationService
         var actual=valid ? before.Where(x=>!after.Any(y=>SameElement(x,y))).Select(x=>x.LogicalId).Concat(after.Where(x=>!before.Any(y=>y.LogicalId==x.LogicalId)).Select(x=>x.LogicalId)).ToArray() : ["invalid-identities"];
         var anchor=before.SingleOrDefault(x=>x.LogicalId==r.AnchorLogicalId);
         Bool(c,"exterior_anchor",anchor!=null&&anchor.Category=="Wall"&&anchor.Geometry.Length==4&&after.Any(x=>SameElement(anchor,x))&&(anchor.Geometry[0]==0&&anchor.Geometry[2]==0),"chosen west exterior anchor must remain fixed");
-        Bool(c,"unaffected_ids",valid&&before.Length==after.Length&&before.All(x=>after.Any(y=>x.LogicalId==y.LogicalId&&x.NativeId==y.NativeId)),"native/logical IDs must survive revision");
+        Bool(c,"unaffected_ids",valid&&before.Length==after.Length&&before.All(x=>after.Any(y=>x.LogicalId==y.LogicalId&&x.NativeId==y.NativeId&&x.Category==y.Category&&x.HostId==y.HostId)),"native/logical IDs must survive revision");
         var afterA=CheckA(r.After,backend,5400);
-        Bool(c,"post_revision_acceptance",afterA.Outcome=="pass","full room acceptance must remain satisfied after width correction");
-        Bool(c,"dependent_hosts",afterA.Criteria.Single(x=>x.Id=="hosting").Status=="passed"&&before.Where(x=>x.Category is "Door" or "Window").All(x=>after.Any(y=>y.LogicalId==x.LogicalId&&y.HostId==x.HostId))&&r.After.ClearDepthMm==r.Before.ClearDepthMm&&r.After.WallThicknessMm==r.Before.WallThicknessMm&&r.After.WallHeightMm==r.Before.WallHeightMm,"dependent hosting and protected parameters required");
+        c.Add(new("post_revision_acceptance",afterA.Counts.Failed>0?"fail":afterA.Counts.Blocked+afterA.Counts.Unsupported>0?"blocked":"pass","full room acceptance must remain satisfied after width correction"));
+        Bool(c,"dependent_hosts",afterA.Criteria.Single(x=>x.Id=="hosting").Outcome=="pass"&&before.Where(x=>x.Category is "Door" or "Window").All(x=>after.Any(y=>y.LogicalId==x.LogicalId&&y.HostId==x.HostId))&&DependentPositionsValid(r.Before,r.After)&&r.After.ClearDepthMm==r.Before.ClearDepthMm&&r.After.WallThicknessMm==r.Before.WallThicknessMm&&r.After.WallHeightMm==r.Before.WallHeightMm,"dependent hosting and protected parameters required");
         Bool(c,"documentation_updates",r.After.DimensionWidthMm==r.After.ClearWidthMm&&Math.Abs(r.After.ScheduleAreaM2-r.After.ClearWidthMm*r.After.ClearDepthMm/1e6)<=1e-9&&SetEquals(r.UpdatedDocumentIds,after.Where(x=>x.Category is "Dimension" or "Plan" or "Schedule" or "Sheet").Select(x=>x.LogicalId)),"all affected dimensions/plan/schedule/sheet must update");
         Bool(c,"semantic_diff",valid&&SetEquals(r.SemanticChangedIds,actual),"semantic diff must match measured changed elements exactly");
         Bool(c,"idempotency_key",!string.IsNullOrWhiteSpace(r.OperationId)&&r.OperationId==r.RetryOperationId,"retry requires same nonempty operation id");
@@ -146,7 +179,7 @@ public static class EvaluationService
         Bool(c,"rollback_snapshot",Same(r.Before,r.Rollback),"forced-failure rollback restores full original snapshot");
         Bool(c,"rollback_revision",r.RollbackRevision==r.RevisionBefore,"rollback restores revision");
         Bool(c,"validation",r.ValidationPassed,"post-revision validation required");
-        Bool(c,"unintended_changes",valid&&SetEquals(r.AllowedChangedIds,actual)&&actual.All(id=>before.Any(x=>x.LogicalId==id&&x.Category is "Wall" or "Door" or "Window"))&&r.After.NativeFile==r.Before.NativeFile&&r.After.Units==r.Before.Units,"changed set must equal permitted set; protected file/units unchanged");
+        Bool(c,"unintended_changes",valid&&SetEquals(r.AllowedChangedIds,actual)&&actual.All(id=>before.Any(x=>x.LogicalId==id&&x.Category is "Wall" or "Door" or "Window" or "Room" or "Dimension" or "Schedule"))&&ProtectedParametersValid(r.Before,r.After)&&r.After.NativeFile==r.Before.NativeFile&&r.After.Units==r.Before.Units,"changed set must equal permitted set; protected file/units unchanged");
         return Result("B",c);
     }
 }
@@ -155,6 +188,10 @@ internal interface IBackendExecutor { Task<BackendExecution> ExecuteAsync(Cancel
 internal sealed class IfcExecutor : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.FromResult(new BackendExecution("prerequisite inspection; no execution","unavailable",["IfcOpenShell absent; dependency approval pending (ADR0006)","IFC cannot satisfy mandatory native Revit annotations/views/sheets/RVT save-reopen"])); } }
 internal sealed class RevitExecutor : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.FromResult(new BackendExecution("capability inspection; no model writes","not observed",["Existing native executor supports level/wall primitives only","Missing door, windows, Room, dimensions, views, schedule and sheet authoring/readback","Full Test B dependent/document updates and rollback fixture unavailable; historical primitive evidence excluded"])); } }
 internal sealed class UnsupportedExecutor(string backend) : IBackendExecutor { public Task<BackendExecution> ExecuteAsync(CancellationToken token)=>Task.FromResult(new BackendExecution("unsupported backend: "+backend,"unavailable",["unsupported backend"])); }
+
+
+
+
 
 
 
