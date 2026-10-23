@@ -10,7 +10,7 @@ public sealed class App : IExternalApplication, IExternalEventHandler
 {
     readonly ConcurrentQueue<(Request,TaskCompletionSource<string>)> queue=new();
     CancellationTokenSource stop=new(); ExternalEvent? signal; Task? server;
-    public Result OnStartup(UIControlledApplication app) { signal=ExternalEvent.Create(this); server=Task.Run(Listen); return Result.Succeeded; }
+    public Result OnStartup(UIControlledApplication app) { signal=ExternalEvent.Create(this); FixtureBootstrap.Attach(app); server=Task.Run(Listen); return Result.Succeeded; }
     public Result OnShutdown(UIControlledApplication app) { stop.Cancel(); signal?.Dispose(); return Result.Succeeded; }
     public string GetName()=>"BIM Agentic OS serialized native dispatcher";
     async Task Listen()
@@ -75,3 +75,4 @@ public sealed class App : IExternalApplication, IExternalEventHandler
         } catch {if(tx.GetStatus()==TransactionStatus.Started)tx.RollBack();throw;}
     }
 }
+
