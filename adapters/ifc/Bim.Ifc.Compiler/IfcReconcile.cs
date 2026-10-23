@@ -80,7 +80,8 @@ public static class IfcReconcile
     {
         if(receipt is null)return null;
         if(receipt.CloudHazard is null)return receipt.CloudHazardEntries is {Length:>0}?Unread("invalid_backend_receipt",receipt):null;
-        return receipt.CloudHazard is CloudConflictPresent or CloudPlaceholderPresent?Unread(receipt.CloudHazard,receipt):Unread("invalid_backend_receipt",receipt);
+        var known=string.Equals(receipt.CloudHazard,CloudConflictPresent,StringComparison.Ordinal)||string.Equals(receipt.CloudHazard,CloudPlaceholderPresent,StringComparison.Ordinal);
+        return Unread(known?receipt.CloudHazard:"invalid_backend_receipt",receipt);
     }
     public static IfcCompiledRequest ParsePacket(string json)
     {
