@@ -1,0 +1,2 @@
+Prepared only. Install the staged manifest explicitly before launch: <temporary-fixture-run>
+PASS launcher preparation and overwrite guards; no process launched

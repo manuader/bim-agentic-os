@@ -1,0 +1,1 @@
+PASS CLI requires explicit process pipe before file or network I/O

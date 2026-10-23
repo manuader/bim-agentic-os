@@ -1,0 +1,1 @@
+PASS smoke CLI dispatch reaches executable and stops before native pipe

@@ -1,0 +1,10 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  Bim.Core -> <workspace>\core\Bim.Core\bin\Release\net8.0\Bim.Core.dll
+  Bim.Revit -> <workspace>\runtimes\revit-native\bin\Release\net8.0-windows\Bim.Revit.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:02.85

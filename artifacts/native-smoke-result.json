@@ -1,0 +1,8 @@
+{
+  "status": "failed_before_mutation",
+  "native_verified": false,
+  "code": "document_conflict",
+  "diagnosis": "Shared global endpoint belonged to a different Revit process; exact document guard rejected request",
+  "next_step": "Require explicit per-process endpoint from fixture evidence",
+  "redaction": "Process IDs omitted; original evidence retained locally"
+}

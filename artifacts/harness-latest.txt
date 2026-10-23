@@ -1,0 +1,7 @@
+captured-native-stdout
+PASS harness captures native stdout and propagates nonzero exit
+PASS architecture, contracts, feature ledger, skill metadata, local doc links and static credential/artifact boundaries
+NOTE static security checks do not prove runtime pipe authorization or native transaction safety
+PASS static gates reject vendor coupling, false status/evidence, malformed skills and broken links
+PASS static gate rejects tracked vendor binaries, BIM files and SDK payloads
+PASS static checks fail closed without Git inventory

@@ -1,6 +1,6 @@
 # Environment and evidence — 2026-10-22
 
-Windows x64. Revit 2025 installed: RevitAPI.dll FileVersion 25.2.0.38, product 20240715_1515(x64). Live Revit PID 2544, Casa-Angel-piloto-documentacion open. Existing RevitMCP diagnostics returned `can_start_transaction=true`, `rollback_ok=true`. No fixture was authored and no native acceptance test passed.
+Windows x64. Revit 2025 installed: RevitAPI.dll FileVersion 25.2.0.38, product 20240715_1515(x64). A production Revit document was open. Existing RevitMCP diagnostics returned `can_start_transaction=true`, `rollback_ok=true`. No fixture was authored and no native acceptance test passed.
 
 Initial system dotnet: host 10.0.2; runtimes 6/8/9/10; no SDK. Python command resolves to unusable WindowsApps alias. Node 24.15.0. gh unavailable. Repository initially contained only the 60,009-byte master prompt, read in full. Git remote initially absent. `git ls-remote` succeeded with elevated network access and no refs printed (empty remote). Local default Git identity Ezequiel Ader.
 
@@ -16,7 +16,7 @@ Known gaps: complete Test A, durable native idempotency, readback validation, na
 
 `scripts/benchmark-roslyn.ps1`: synthetic 100/1,000/10,000 wall diffs, 20 samples each, exactly one emitted update. 10,000: p50 81.061 ms, p95 207.8414 ms. Includes first cold-JIT sample, no cache separation, no native execution or baseline speedup claim. Host 16 logical processors; runtime 10.0.11. See JSONL artifact.
 
-Git publication attempted: GitHub HTTP 403, authenticated account `ezeader` denied write access to `manuader/bim-agentic-os`. Local commit exists; publication requires an authorized account or repository collaborator permission.
+Git publication attempted: GitHub HTTP 403, authenticated account the configured Git account denied write access to `manuader/bim-agentic-os`. Local commit exists; publication requires an authorized account or repository collaborator permission.
 
 Official .NET SDK download attempted via installer and direct URL; direct download timed out and remained partial. Stopped incomplete download processes. No SDK installation claimed. Full target build remains pending.
 
@@ -28,6 +28,17 @@ First native build with warnings-as-errors failed MSB3277 WindowsDesktop assembl
 
 `scripts/audit-dependencies.ps1 -Dotnet ./.tools/dotnet/dotnet.exe` completed for all five maintained projects; JSON reports are in artifacts. There are no third-party NuGet packages at present. CodeQL/GitHub Actions are configured but have not run remotely.
 
-The actual target CLI compiled the 5x4 room intention, planned +400mm width correction, persisted revision1 and retried the same key at revision1. Four semantic updates and seven dirty nodes; no documentation was regenerated and no native execution occurred. Native batch is target-built and its guarded integration smoke exists, but remains unexecuted until a loaded add-in and isolated Revit fixture are available. Production Casa Ángel was not modified.
+The actual target CLI compiled the 5x4 room intention, planned +400mm width correction, persisted revision1 and retried the same key at revision1. Four semantic updates and seven dirty nodes; no documentation was regenerated and no native execution occurred. Native batch is target-built and its guarded integration smoke exists, but remains unexecuted until a loaded add-in and isolated Revit fixture are available. Production production model was not modified.
 
 Final target benchmark with 10,000 synthetic walls: p50 74.0397ms, p95 216.393ms across20 samples, one emitted operation. These are core diff measurements on runtime8.0.21/16 logical processors, not validated native delivery latency or a full-rebuild speedup.
+
+## GitHub access resolved and remote CI executed
+
+After the user confirmed access, push of main635cc68 to `https://github.com/manuader/bim-agentic-os.git` succeeded. GitHub Actions run39874914458 completed successfully with both core and CodeQL jobs passing. `artifacts/ci-first-run.json` binds this result to the exact head SHA. This supersedes the earlier403 publication blocker; it does not establish native Revit execution.
+
+## Native fixture and process routing integration
+The opt-in add-in executed in real Revit25.2 a dedicated process, created/saved/reopened an isolated template fixture and published its ProjectInformation.UniqueId. This establishes initial bootstrap only. The first batch request was rejected document_conflict before mutation: Windows pipe ownership inspection showed the legacy global endpoint belonged to the production process. Routing now requires a per-process endpoint bound to fixture PID; exact path and identity guards remain. Target build9e7765b passed0warnings/errors and full gate20261023T001921221Z passed33 core assertions, fixture/launcher/CLI regressions. Dependency audit passed all six maintained projects. Evidence logs are versioned under artifacts.
+
+
+Public evidence redaction: personal workspace paths, document identity and live process IDs are omitted from exported records. Original logs and fixture evidence remain under ignored local .bim directories. Versions, assertions, error codes, commit IDs and CI links are preserved.
+

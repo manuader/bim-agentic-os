@@ -23,3 +23,6 @@ Independent QA consumes native readback, intended invariants and deliverable con
 ## Agent work contracts
 
 Each task owns named files and public signatures; implementation and review use clean contexts. Workers commit only their worktree changes. Controller integrates reviewed commits and reruns the full available gate. Review findings, unresolved blockers and exact evidence are persisted in the plan ledger and feature tracker.
+
+Native transport routing: each Revit process listens on bim-agentic-os-2025-PID. The fixture result binds pipeName to processId; callers must supply that explicit endpoint. The CLI rejects missing/global endpoints before I/O. Routing does not replace exact saved document path and ProjectInformation.UniqueId checks.
+

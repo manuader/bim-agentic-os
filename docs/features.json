@@ -2,20 +2,142 @@
   "schema_version": 1,
   "updated": "2026-10-22",
   "features": [
-    {"id":"semantic-ir-and-diff","status":"partial","evidence":["core/Bim.Core/Model.cs","artifacts/core-tests-net8.txt"],"blocker":"Target-tested prototype; full dimensional schema, cycle validation and canonical hashing remain pending."},
-    {"id":"intent-persistence","status":"partial","evidence":["core/Bim.Core/Model.cs","artifacts/core-tests-host.txt"],"blocker":"Intended state only; no complete live native mirror, migrations or power-loss recovery tests."},
-    {"id":"native-execution-primitives","status":"partial","evidence":["runtimes/revit-native/App.cs","artifacts/native-build-net8.txt"],"blocker":"Built net8.0-windows against installed Revit25.2, zero warnings/errors; add-in not loaded or integration-tested."},
-    {"id":"typed-room-intent-revision","status":"implemented","evidence":["core/Bim.Core/RoomSlice.cs","artifacts/core-tests-net8.txt","artifacts/room-cli-demo.json"],"blocker":null},
-    {"id":"native-typed-batch","status":"partial","evidence":["runtimes/revit-native/BatchExecutor.cs","artifacts/native-build-net8.txt","tests/integration/native-batch-smoke.ps1"],"blocker":"Level/wall batch target-built only; native smoke/readback/retry/rollback not executed. Spaces, documentation and deletes explicitly blocked."},
-    {"id":"test-a-native-room-delivery","status":"blocked","evidence":["tests/integration/README.md","docs/evidence.md"],"blocker":"Complete fixture, licensed native integration, save/reopen/readback/documentation validation required."},
-    {"id":"test-b-incremental-native-correction","status":"blocked","evidence":["tests/integration/README.md"],"blocker":"Requires verified Test A and native identity/idempotency/rollback/documentation evidence."},
-    {"id":"superpowers-workflows","status":"implemented","evidence":[".agents/skills/using-superpowers/SKILL.md","docs/harness.md"],"blocker":null},
-    {"id":"reusable-domain-skills","status":"implemented","evidence":["scripts/install-domain-skills.py",".agents/skills/bim-revit-api/SKILL.md","artifacts/domain-skill-validation.txt"],"blocker":null},
-    {"id":"ci-and-harness","status":"partial","evidence":["scripts/verify.ps1",".github/workflows/ci.yml","artifacts/verification-summary.json"],"blocker":"Local target verification executed; remote GitHub Actions/CodeQL not executed because publication lacks write access."},
-    {"id":"core-diff-benchmark","status":"implemented","evidence":["benchmarks/CoreBenchmark.cs","artifacts/core-benchmark-host.jsonl"],"blocker":null},
-    {"id":"correction-to-validated-delivery-benchmark","status":"pending","evidence":["BIM_Agentic_OS_PROMPT_DEFINITIVO.md"],"blocker":"Core diff timing is not native validated delivery latency."},
-    {"id":"blender-adapter","status":"pending","evidence":[".agents/skills/bim-blender/SKILL.md"],"blocker":"Development skill only; no adapter implemented."},
-    {"id":"ifcopenshell-adapter","status":"pending","evidence":[".agents/skills/bim-ifcopenshell/SKILL.md"],"blocker":"Development skill only; no adapter implemented."},
-    {"id":"github-publication","status":"blocked","evidence":["docs/evidence.md"],"blocker":"GitHub HTTP 403: ezeader lacks write permission to manuader/bim-agentic-os."}
+    {
+      "id": "semantic-ir-and-diff",
+      "status": "partial",
+      "evidence": [
+        "core/Bim.Core/Model.cs",
+        "artifacts/core-tests-net8.txt"
+      ],
+      "blocker": "Target-tested prototype; full dimensional schema, cycle validation and canonical hashing remain pending."
+    },
+    {
+      "id": "intent-persistence",
+      "status": "partial",
+      "evidence": [
+        "core/Bim.Core/Model.cs",
+        "artifacts/core-tests-host.txt"
+      ],
+      "blocker": "Intended state only; no complete live native mirror, migrations or power-loss recovery tests."
+    },
+    {
+      "id": "native-execution-primitives",
+      "status": "partial",
+      "evidence": [
+        "runtimes/revit-native/App.cs",
+        "artifacts/native-bootstrap-build.txt",
+        "artifacts/native-bootstrap-result.json"
+      ],
+      "blocker": "Add-in loaded in real Revit25.2 and isolated initial fixture saved/opened. Primitive geometry smoke not yet passed; initial global routing failure rejected before mutation."
+    },
+    {
+      "id": "typed-room-intent-revision",
+      "status": "implemented",
+      "evidence": [
+        "core/Bim.Core/RoomSlice.cs",
+        "artifacts/core-tests-net8.txt",
+        "artifacts/room-cli-demo.json"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "native-typed-batch",
+      "status": "partial",
+      "evidence": [
+        "runtimes/revit-native/BatchExecutor.cs",
+        "artifacts/native-bootstrap-build.txt",
+        "tests/integration/native-batch-smoke.ps1",
+        "artifacts/native-smoke-result.json"
+      ],
+      "blocker": "Target-built; first smoke failed document_conflict before mutation. Per-process routing implemented and regression-tested; new isolated native run pending. Spaces, documentation and deletes blocked."
+    },
+    {
+      "id": "test-a-native-room-delivery",
+      "status": "blocked",
+      "evidence": [
+        "tests/integration/README.md",
+        "docs/evidence.md"
+      ],
+      "blocker": "Complete fixture, licensed native integration, save/reopen/readback/documentation validation required."
+    },
+    {
+      "id": "test-b-incremental-native-correction",
+      "status": "blocked",
+      "evidence": [
+        "tests/integration/README.md"
+      ],
+      "blocker": "Requires verified Test A and native identity/idempotency/rollback/documentation evidence."
+    },
+    {
+      "id": "superpowers-workflows",
+      "status": "implemented",
+      "evidence": [
+        ".agents/skills/using-superpowers/SKILL.md",
+        "docs/harness.md"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "reusable-domain-skills",
+      "status": "implemented",
+      "evidence": [
+        "scripts/install-domain-skills.py",
+        ".agents/skills/bim-revit-api/SKILL.md",
+        "artifacts/domain-skill-validation.txt"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "ci-and-harness",
+      "status": "partial",
+      "evidence": [
+        "scripts/verify.ps1",
+        ".github/workflows/ci.yml",
+        "artifacts/verification-summary.json",
+        "artifacts/ci-first-run.json"
+      ],
+      "blocker": "Core and CodeQL jobs passed remotely on635cc68; licensed native acceptance is not yet part of CI."
+    },
+    {
+      "id": "core-diff-benchmark",
+      "status": "implemented",
+      "evidence": [
+        "benchmarks/CoreBenchmark.cs",
+        "artifacts/core-benchmark-host.jsonl"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "correction-to-validated-delivery-benchmark",
+      "status": "pending",
+      "evidence": [
+        "BIM_Agentic_OS_PROMPT_DEFINITIVO.md"
+      ],
+      "blocker": "Core diff timing is not native validated delivery latency."
+    },
+    {
+      "id": "blender-adapter",
+      "status": "pending",
+      "evidence": [
+        ".agents/skills/bim-blender/SKILL.md"
+      ],
+      "blocker": "Development skill only; no adapter implemented."
+    },
+    {
+      "id": "ifcopenshell-adapter",
+      "status": "pending",
+      "evidence": [
+        ".agents/skills/bim-ifcopenshell/SKILL.md"
+      ],
+      "blocker": "Development skill only; no adapter implemented."
+    },
+    {
+      "id": "github-publication",
+      "status": "implemented",
+      "evidence": [
+        "artifacts/ci-first-run.json"
+      ],
+      "blocker": null
+    }
   ]
 }

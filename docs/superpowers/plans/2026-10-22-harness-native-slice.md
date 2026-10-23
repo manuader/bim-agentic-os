@@ -10,7 +10,7 @@
 ## Global constraints
 
 - Preserve native identity, explicit metre units, no fabricated passing native tests.
-- No parallel Revit document writes; no production Casa Ángel fixture edits.
+- No parallel Revit document writes; no production production model fixture edits.
 - .NET SDK absent initially; host Roslyn checks are distinct from net8 builds.
 - No broad architectural rewrite; no API keys or external AI services needed.
 
@@ -44,4 +44,4 @@ Files: `AGENTS.md`, `ARCHITECTURE.md`, `docs/contracts/`, ADR, persistent plan/l
 ### 4. Review and verification
 - [x] Independently review task implementations for specification and quality; fix material findings.
 - [x] Integrate commits, execute available full verifier and benchmark; retain native blockers.
-- [x] Commit verified evidence; GitHub credential inventory confirms only ezeader, with prior403 unchanged. Publication remains blocked; no repeated push without changed access.
+- [x] Commit verified evidence; GitHub credential inventory confirms only the configured account, with prior403 unchanged. Publication remains blocked; no repeated push without changed access.
