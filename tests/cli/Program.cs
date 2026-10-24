@@ -93,7 +93,10 @@ try {
         var invalidPath=Bytes("invalid-utf8-intent.json",invalid);
         var expectedInvalid=JsonSerializer.Serialize(RoomCompiler.Compile(Guid.Parse(projectGuid),0,JsonSerializer.Deserialize<RoomIntent>(File.ReadAllText(invalidPath))!));
         var invalidRoom=Cli("room",projectGuid,"0",invalidPath);
-        Check(invalidRoom.Exit==0 && invalidRoom.Out==expectedInvalid && expectedInvalid.Contains("\uFFFD",StringComparison.Ordinal),"invalid UTF-8 byte decodes like File.ReadAllText","exit "+invalidRoom.Exit+" stderr "+invalidRoom.Err);
+        var mismatch=Enumerable.Range(0,Math.Min(invalidRoom.Out.Length,expectedInvalid.Length)).FirstOrDefault(i=>invalidRoom.Out[i]!=expectedInvalid[i],-1);
+        // The decoded text holds U+FFFD; the serialized output carries it escaped, so the fixture is checked before serialization.
+        Check(File.ReadAllText(invalidPath).Contains('\uFFFD',StringComparison.Ordinal),"invalid UTF-8 fixture decodes to U+FFFD via File.ReadAllText");
+        Check(invalidRoom.Exit==0 && invalidRoom.Out==expectedInvalid,"invalid UTF-8 byte decodes like File.ReadAllText","exit "+invalidRoom.Exit+" lengths "+invalidRoom.Out.Length+"/"+expectedInvalid.Length+" first mismatch "+mismatch+" stderr "+invalidRoom.Err);
     }
     var cap=McpServer.MaxLineChars;
     var beforeBytes=Encoding.UTF8.GetBytes(beforeText);
