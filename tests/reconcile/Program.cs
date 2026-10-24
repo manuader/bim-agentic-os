@@ -2,6 +2,7 @@ using Bim.Core;
 using Bim.Ifc;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 // ADR0007 option A: deterministic cross-store crash injection without timing or process kills.
@@ -291,6 +292,78 @@ Check(hazardous.CloudHazard=="cloud_placeholder_present" && hazardous.CloudHazar
 foreach(var bad in new[]{raw.Replace("\"staging_hash\":null","\"staging_hash\":null,\"extra\":1",StringComparison.Ordinal),raw.Replace(",\"cloud_hazard\":null,\"cloud_hazard_entries\":[]","",StringComparison.Ordinal),raw.Replace(",\"cloud_hazard_entries\":[]","",StringComparison.Ordinal),"not json","null","[]"}) {
     try { IfcReconcile.ParseReceipt(bad); throw new InvalidOperationException("malformed receipt accepted"); } catch(ArgumentException) { Check(true,"malformed worker receipt rejected"); }
 }
+// D01: durable Core writes keep the exact persisted bytes. Flush(true) reaching the disk is not observable from a test;
+// these cases pin bytes, file presence and sizes at each crash point, and that leftovers never block the next Commit or reconcile.
+// Reference bytes come from the File.WriteAllText/File.AppendAllText calls ProjectStore used before D01.
+var legacyDirectory=NewDirectory("legacy"); Directory.CreateDirectory(legacyDirectory);
+var legacyCheckpointPath=Path.Combine(legacyDirectory,"checkpoint-7.json");
+File.WriteAllText(legacyCheckpointPath,JsonSerializer.Serialize(Before(packet1)));
+var legacyCheckpoint=File.ReadAllBytes(legacyCheckpointPath);
+var legacyJournalPath=Path.Combine(legacyDirectory,"journal.jsonl");
+File.AppendAllText(legacyJournalPath,JsonSerializer.Serialize(new { key=packet1.OperationId, plan=Plan(packet1), state="prepared" })+Environment.NewLine);
+var legacyJournalOne=File.ReadAllBytes(legacyJournalPath);
+File.AppendAllText(legacyJournalPath,JsonSerializer.Serialize(new { key=packet2.OperationId, plan=Plan(packet2), state="prepared" })+Environment.NewLine);
+var legacyJournalTwo=File.ReadAllBytes(legacyJournalPath);
+string Listing(string directory)=>string.Join(",",Directory.GetFiles(directory).Select(file=>Path.GetFileName(file)).OrderBy(name=>name,StringComparer.Ordinal));
+{
+    var store=NewStore("durable-bytes",out var directory);
+    CommitPacket(store,packet1);
+    Check(File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json")).SequenceEqual(legacyCheckpoint),"checkpoint-7.json bytes equal the File.WriteAllText bytes");
+    Check(File.ReadAllBytes(Path.Combine(directory,"journal.jsonl")).SequenceEqual(legacyJournalOne),"first journal line bytes equal the File.AppendAllText bytes");
+    CommitPacket(store,packet2);
+    Check(File.ReadAllBytes(Path.Combine(directory,"journal.jsonl")).SequenceEqual(legacyJournalTwo),"second appended journal line bytes equal the File.AppendAllText bytes");
+    Check(Listing(directory)=="checkpoint-7.json,checkpoint-8.json,journal.jsonl,lock,project.json","successful commits leave no temp file (got "+Listing(directory)+")");
+}
+var durablePoints=new[]{"after_checkpoint_tmp","after_checkpoint","after_journal","after_tmp"};
+foreach(var point in durablePoints) {
+    NewStore("durable-"+point,out var directory);
+    string At(string name)=>Path.Combine(directory,name);
+    var stage=Array.IndexOf(durablePoints,point);
+    var published=File.ReadAllBytes(At("project.json"));
+    var crashing=new ProjectStore(directory) {CrashAfter=step=>{ if(step==point) throw new IOException("injected_crash:"+step); }};
+    var crashed=false;
+    try { CommitPacket(crashing,packet1); } catch(IOException error) when(error.Message=="injected_crash:"+point) { crashed=true; }
+    Check(crashed,point+" durability injection point reached");
+    Check(File.ReadAllBytes(At("project.json")).SequenceEqual(published),point+" leaves project.json byte-identical at r");
+    Check(stage==0?File.Exists(At("checkpoint-7.json.tmp"))&&new FileInfo(At("checkpoint-7.json.tmp")).Length==legacyCheckpoint.Length&&File.ReadAllBytes(At("checkpoint-7.json.tmp")).SequenceEqual(legacyCheckpoint):!File.Exists(At("checkpoint-7.json.tmp")),point+" checkpoint temp is complete when present and gone after replace");
+    Check(stage==0?!File.Exists(At("checkpoint-7.json")):new FileInfo(At("checkpoint-7.json")).Length==legacyCheckpoint.Length&&File.ReadAllBytes(At("checkpoint-7.json")).SequenceEqual(legacyCheckpoint),point+" checkpoint-7.json is absent or complete, never torn");
+    Check(stage<2?!File.Exists(At("journal.jsonl")):new FileInfo(At("journal.jsonl")).Length==legacyJournalOne.Length&&File.ReadAllBytes(At("journal.jsonl")).SequenceEqual(legacyJournalOne),point+" journal.jsonl is absent or holds exactly one prepared line");
+    Check(stage<3?!File.Exists(At("project.tmp")):new FileInfo(At("project.tmp")).Length>0,point+" project.tmp exists only after the snapshot temp write");
+    var leftover=stage==3?File.ReadAllBytes(At("project.tmp")):null;
+    var store=new ProjectStore(directory);
+    var committed=store.Commit(After(packet1),Plan(packet1),packet1.OperationId);
+    Check(committed.Revision==8 && Compiler.Hash(store.Read())==IfcCompiler.Sha256(packet1.CommittedAfterJson),point+" retry after the durability crash succeeds");
+    Check(Listing(directory)=="checkpoint-7.json,journal.jsonl,lock,project.json",point+" retry leaves no temp file (got "+Listing(directory)+")");
+    Check(File.ReadAllBytes(At("checkpoint-7.json")).SequenceEqual(legacyCheckpoint),point+" retry leaves a complete checkpoint-7.json");
+    Check(File.ReadAllBytes(At("journal.jsonl")).SequenceEqual(stage<2?legacyJournalOne:legacyJournalOne.Concat(legacyJournalOne).ToArray()),point+" retry appends exactly one prepared line with unchanged bytes");
+    if(leftover is not null) Check(leftover.SequenceEqual(File.ReadAllBytes(At("project.json"))),point+" leftover project.tmp held the complete snapshot the retry publishes");
+}
+{
+    // An older checkpoint at the same path survives a crash between the temp write and the replace untouched.
+    NewStore("durable-old-checkpoint",out var directory);
+    var old=Encoding.UTF8.GetBytes("{\"old\":true}");
+    File.WriteAllBytes(Path.Combine(directory,"checkpoint-7.json"),old);
+    var crashing=new ProjectStore(directory) {CrashAfter=step=>{ if(step=="after_checkpoint_tmp") throw new IOException("injected_crash:"+step); }};
+    try { CommitPacket(crashing,packet1); } catch(IOException error) when(error.Message=="injected_crash:after_checkpoint_tmp") { }
+    Check(File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json")).SequenceEqual(old),"crash before the checkpoint replace leaves the old checkpoint byte-identical");
+    Check(File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json.tmp")).SequenceEqual(legacyCheckpoint),"crash before the checkpoint replace leaves a complete temp");
+    Check(IfcReconcile.CloudHazard(directory,["project.json"]) is null,"leftover checkpoint-7.json.tmp is not a cloud hazard beside project.json");
+    var result=IfcReconcile.Reconcile(directory,Applied(Initial(packet1),packet1),packet1);
+    Check(result.Succeeded && result.Code=="replayed" && new ProjectStore(directory).Read().Revision==8,"leftover checkpoint temp does not block directory reconcile (got "+result.Code+")");
+    Check(File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json")).SequenceEqual(legacyCheckpoint) && !File.Exists(Path.Combine(directory,"checkpoint-7.json.tmp")),"reconcile replay replaces the old checkpoint and consumes the temp");
+}
+{
+    // A torn temp (crash during the temp write itself) is overwritten by the next Commit.
+    var store=NewStore("durable-torn-temp",out var directory);
+    File.WriteAllText(Path.Combine(directory,"checkpoint-7.json.tmp"),"{\"Id\":\"torn");
+    Check(IfcReconcile.CloudHazard(directory,["project.json"]) is null,"torn checkpoint temp is not a cloud hazard");
+    CommitPacket(store,packet1);
+    Check(store.Read().Revision==8 && File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json")).SequenceEqual(legacyCheckpoint),"torn checkpoint temp does not break the next Commit");
+    Check(Listing(directory)=="checkpoint-7.json,journal.jsonl,lock,project.json","Commit consumes the torn checkpoint temp (got "+Listing(directory)+")");
+}
+foreach(var (name,primary) in new[]{("checkpoint-7.json.tmp","project.json"),("checkpoint-0.json.tmp","project.json"),("checkpoint-7.json.tmp","checkpoint-7.json"),("checkpoint-7.json","checkpoint-17.json")})
+    Check(!IfcReconcile.IsConflictCopy(name,primary),"checkpoint temp name "+name+" is not a conflict copy of "+primary);
+
 Console.WriteLine(JsonSerializer.Serialize(new {passed=count, native_verified=false}));
 } catch(Exception exception) {
     Console.Error.WriteLine(exception);
