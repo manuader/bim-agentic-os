@@ -344,13 +344,36 @@ foreach(var point in durablePoints) {
     var old=Encoding.UTF8.GetBytes("{\"old\":true}");
     File.WriteAllBytes(Path.Combine(directory,"checkpoint-7.json"),old);
     var crashing=new ProjectStore(directory) {CrashAfter=step=>{ if(step=="after_checkpoint_tmp") throw new IOException("injected_crash:"+step); }};
-    try { CommitPacket(crashing,packet1); } catch(IOException error) when(error.Message=="injected_crash:after_checkpoint_tmp") { }
+    var crashed=false;
+    try { CommitPacket(crashing,packet1); } catch(IOException error) when(error.Message=="injected_crash:after_checkpoint_tmp") { crashed=true; }
+    Check(crashed,"after_checkpoint_tmp injection point reached with an older checkpoint present");
     Check(File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json")).SequenceEqual(old),"crash before the checkpoint replace leaves the old checkpoint byte-identical");
     Check(File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json.tmp")).SequenceEqual(legacyCheckpoint),"crash before the checkpoint replace leaves a complete temp");
     Check(IfcReconcile.CloudHazard(directory,["project.json"]) is null,"leftover checkpoint-7.json.tmp is not a cloud hazard beside project.json");
     var result=IfcReconcile.Reconcile(directory,Applied(Initial(packet1),packet1),packet1);
     Check(result.Succeeded && result.Code=="replayed" && new ProjectStore(directory).Read().Revision==8,"leftover checkpoint temp does not block directory reconcile (got "+result.Code+")");
     Check(File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json")).SequenceEqual(legacyCheckpoint) && !File.Exists(Path.Combine(directory,"checkpoint-7.json.tmp")),"reconcile replay replaces the old checkpoint and consumes the temp");
+}
+if(OperatingSystem.IsWindows()) {
+    // Windows only: another process holding checkpoint-7.json (FileShare.Read, e.g. a sync client) makes the replace fail.
+    // Before D01 File.WriteAllText failed with IOException; File.Move may now raise UnauthorizedAccessException instead.
+    NewStore("durable-held-checkpoint",out var directory);
+    var published=File.ReadAllBytes(Path.Combine(directory,"project.json"));
+    var old=Encoding.UTF8.GetBytes("{\"old\":true}");
+    File.WriteAllBytes(Path.Combine(directory,"checkpoint-7.json"),old);
+    using(var held=new FileStream(Path.Combine(directory,"checkpoint-7.json"),FileMode.Open,FileAccess.Read,FileShare.Read)) {
+        Exception? thrown=null;
+        try { CommitPacket(new ProjectStore(directory),packet1); } catch(Exception error) when(error is IOException or UnauthorizedAccessException) { thrown=error; }
+        Check(thrown is not null,"Commit with checkpoint-7.json held open fails with IOException or UnauthorizedAccessException (got "+(thrown?.GetType().Name ?? "none")+")");
+        Check(File.ReadAllBytes(Path.Combine(directory,"project.json")).SequenceEqual(published),"held checkpoint leaves project.json byte-identical at r");
+        Check(File.Exists(Path.Combine(directory,"checkpoint-7.json.tmp")) && !File.Exists(Path.Combine(directory,"journal.jsonl")),"held checkpoint leaves the temp and no journal line");
+        var result=IfcReconcile.Reconcile(directory,Applied(Initial(packet1),packet1),packet1);
+        Check(!result.Succeeded && result.Code=="core_io_error","reconcile with checkpoint-7.json held open returns core_io_error (got "+result.Code+")");
+        Check(File.ReadAllBytes(Path.Combine(directory,"project.json")).SequenceEqual(published),"held checkpoint reconcile leaves project.json byte-identical at r");
+    }
+    Check(File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json")).SequenceEqual(old),"held checkpoint keeps the old checkpoint bytes");
+    var released=IfcReconcile.Reconcile(directory,Applied(Initial(packet1),packet1),packet1);
+    Check(released.Succeeded && released.Code=="replayed" && File.ReadAllBytes(Path.Combine(directory,"checkpoint-7.json")).SequenceEqual(legacyCheckpoint),"reconcile replays once the checkpoint is released (got "+released.Code+")");
 }
 {
     // A torn temp (crash during the temp write itself) is overwritten by the next Commit.
