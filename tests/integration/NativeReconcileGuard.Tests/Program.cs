@@ -34,8 +34,9 @@ try {
     var receipts1=new Dictionary<string,string>{{packet1.IdempotencyKey,packet1.Plan.AfterHash}};
     var receipts2=new Dictionary<string,string>(receipts1){{packet2.IdempotencyKey,packet2.Plan.AfterHash}};
 
-    ProjectStore Core(string name,params NativeBatchRequest[] applied) {
-        var store=new ProjectStore(Path.Combine(root,name)); store.Initialize(r1);
+    ProjectStore Core(string name,params NativeBatchRequest[] applied)=>CoreFrom(name,r1,applied);
+    ProjectStore CoreFrom(string name,Project initial,params NativeBatchRequest[] applied) {
+        var store=new ProjectStore(Path.Combine(root,name)); store.Initialize(initial);
         foreach(var packet in applied) store.Commit(packet.After,packet.Plan,packet.IdempotencyKey);
         return store;
     }
@@ -120,6 +121,55 @@ try {
     ExpectFailure("unparseable snapshot JSON",guardDirectory,guard,Saved(r2,receipts1) with {ProjectJson="{"},packet1,"invalid_native_state");
     var missingCore=NativeReconcileContract.Reconcile(new ProjectStore(Path.Combine(root,"no-core")),Saved(r2,receipts1),packet1);
     Check(!missingCore.Succeeded&&missingCore.Code=="core_io_error"&&!Directory.Exists(Path.Combine(root,"no-core")),"unreadable Core fails closed core_io_error without creating it");
+
+    // Review follow-up: payload revision type, Core state shape, mapping integrity and narrower hash cases.
+    foreach(var (value,label) in new (JsonNode?,string)[]{(JsonValue.Create("2"),"string"),(new JsonObject(),"object"),(null,"null"),(JsonValue.Create(true),"bool")}) {
+        var node=JsonNode.Parse(Payload(r2,receipts1))!; node["Project"]!["Revision"]=value;
+        try { NativeReconcileContract.ParsePayload(node.ToJsonString(),Identity,true); Check(false,"non-numeric Revision rejected: "+label); }
+        catch(ArgumentException error) { Check(error.Message=="invalid_native_state","non-numeric Revision rejected: "+label+" (got "+error.Message+")"); }
+    }
+    try { NativeReconcileContract.ParsePayload(JsonSerializer.Serialize(new {Project=r2,Receipts=receipts1}),Identity,true); Check(false,"payload without Map rejected"); }
+    catch(ArgumentException error) { Check(error.Message=="invalid_native_state","payload without Map rejected (got "+error.Message+")"); }
+    Check(Saved(r2,receipts1).Map.Count==2&&Saved(r2,receipts1).Map[wallId]=="native-wall","payload parses the logical/native map");
+    foreach(var (content,label) in new[]{("{","truncated"),("null","null state"),("{\"Project\":null,\"Receipts\":{}}","null project")}) {
+        var badDirectory=Path.Combine(root,"bad-core-"+label.Replace(' ','-'));
+        Directory.CreateDirectory(badDirectory); File.WriteAllText(Path.Combine(badDirectory,"project.json"),content);
+        ExpectFailure("Core project.json "+label,badDirectory,new ProjectStore(badDirectory),Saved(r2,receipts1),packet1,"invalid_core_state");
+    }
+    var bodyDirectory=Path.Combine(root,"other-r1"); var otherBody=CoreFrom("other-r1",Model(1,4.9));
+    ExpectFailure("one-behind with a different r1 body",bodyDirectory,otherBody,Saved(r2,receipts1),packet1,"receipt_packet_mismatch");
+    var missingReceiptDirectory=Path.Combine(root,"equal-no-receipt"); var equalNoReceipt=Core("equal-no-receipt",packet1);
+    ExpectFailure("equal revision, native receipt missing",missingReceiptDirectory,equalNoReceipt,Saved(r2,new()),packet1,"receipt_packet_mismatch");
+    var mapDirectory=Path.Combine(root,"map"); var mapStore=Core("map");
+    foreach(var (bad,label) in new[]{(new Dictionary<Guid,string>{{levelId,"native-level"}},"element missing"),(new Dictionary<Guid,string>{{levelId,"native-level"},{wallId," "}},"blank native id"),(new Dictionary<Guid,string>{{levelId,"same"},{wallId,"same"}},"duplicate native id"),(new Dictionary<Guid,string>{{levelId,"native-level"},{Guid.NewGuid(),"native-wall"}},"foreign logical id"),(new Dictionary<Guid,string>{{levelId,"native-level"},{wallId,"native-wall"},{Guid.NewGuid(),"extra"}},"extra entry")})
+        ExpectFailure("incomplete map: "+label,mapDirectory,mapStore,Saved(r2,receipts1) with {Map=bad},packet1,"native_mapping_conflict");
+
+    // Commit-time I/O failure: another holder of the Core lock file. project.json must stay unchanged.
+    var lockedDirectory=Path.Combine(root,"locked"); var locked=Core("locked");
+    var lockedBefore=Snapshot(lockedDirectory); NativeReconcileResult lockedResult;
+    using(new FileStream(Path.Combine(lockedDirectory,"lock"),FileMode.Open,FileAccess.ReadWrite,FileShare.None)) lockedResult=NativeReconcileContract.Reconcile(locked,Saved(r2,receipts1),packet1);
+    Check(!lockedResult.Succeeded&&lockedResult.Code=="core_io_error"&&lockedResult.CoreRevision==1,"held Core lock fails closed core_io_error at commit (got "+lockedResult.Code+")");
+    Check(lockedBefore.SequenceEqual(Snapshot(lockedDirectory)),"held Core lock leaves every Core file byte-identical");
+
+    // Directory-aware entry point: unsaved check, cloud scan, read, decide, scan again just before Commit.
+    var cloudDirectory=Path.Combine(root,"cloud"); Core("cloud");
+    var unsavedCloud=NativeReconcileContract.Reconcile(Path.Combine(root,"never-scanned"),Saved(r2,receipts1,savedAndReopened:false),packet1);
+    Check(unsavedCloud.Code=="native_not_saved_and_reopened"&&unsavedCloud.CoreRevision is null,"directory overload refuses unsaved evidence before scanning or reading Core");
+    File.WriteAllText(Path.Combine(cloudDirectory,"project-DESKTOP-AB12.json"),"conflict copy");
+    var cloudBefore=Snapshot(cloudDirectory);
+    var conflict=NativeReconcileContract.Reconcile(cloudDirectory,Saved(r2,receipts1),packet1);
+    Check(conflict.Code==CloudGuard.ConflictPresent&&conflict.CoreRevision is null&&conflict.CoreHash is null&&cloudBefore.SequenceEqual(Snapshot(cloudDirectory)),"conflict copy beside project.json fails closed before Core is read (got "+conflict.Code+")");
+    File.Delete(Path.Combine(cloudDirectory,"project-DESKTOP-AB12.json"));
+    cloudBefore=Snapshot(cloudDirectory);
+    var placeholder=NativeReconcileContract.Reconcile(cloudDirectory,Saved(r2,receipts1),packet1,_=>FileAttributes.Offline);
+    Check(placeholder.Code==CloudGuard.PlaceholderPresent&&placeholder.CoreRevision is null&&cloudBefore.SequenceEqual(Snapshot(cloudDirectory)),"cloud-only placeholder fails closed before Core is read (got "+placeholder.Code+")");
+    var entries=Directory.GetFileSystemEntries(cloudDirectory).Length; var calls=0;
+    var late=NativeReconcileContract.Reconcile(cloudDirectory,Saved(r2,receipts1),packet1,_=>++calls>entries?FileAttributes.Offline:FileAttributes.Normal);
+    Check(late.Code==CloudGuard.PlaceholderPresent&&calls>entries&&cloudBefore.SequenceEqual(Snapshot(cloudDirectory)),"placeholder appearing before the replay Commit fails closed with zero writes (got "+late.Code+")");
+    var viaDirectory=NativeReconcileContract.Reconcile(cloudDirectory,Saved(r2,receipts1),packet1,_=>FileAttributes.Normal);
+    Check(viaDirectory.Succeeded&&viaDirectory.Code=="replayed"&&Compiler.Hash(new ProjectStore(cloudDirectory).Read())==Compiler.Hash(r2),"directory overload replays a clean one-behind gap (got "+viaDirectory.Code+")");
+    var missingDirectory=NativeReconcileContract.Reconcile(Path.Combine(root,"no-core-directory"),Saved(r2,receipts1),packet1);
+    Check(missingDirectory.Code=="core_io_error"&&missingDirectory.CoreRevision is null,"missing Core directory fails closed core_io_error");
     Console.WriteLine($"PASS native reconcile guards: {count} checks");
 } finally {
     var target=Path.GetFullPath(root);
