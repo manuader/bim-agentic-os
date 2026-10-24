@@ -290,6 +290,17 @@
       ],
       "blocker": null,
       "scope": "Real IFC backend, one 9-element room fixture, one +400 mm correction, N=10 per path on a GitHub Ubuntu runner (run 40034178888). Paths are geometrically equivalent. End-to-end time: no measurable difference (bootstrap 95% CI of p50 difference includes 0); QA is ~99.9% of both. Measured delta is identity and change size: incremental keeps 62/62 GlobalIds and changes 10/244 entities; full rebuild keeps 0/62 and changes 72/244. No speedup claim; Revit not measured."
+    },
+    {
+      "id": "core-store-write-durability",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Model.cs",
+        "tests/reconcile/Program.cs",
+        "tests/typed-geometry/Goldens.cs"
+      ],
+      "blocker": null,
+      "scope": "ProjectStore checkpoint written via temp+Flush(true)+atomic replace and journal appends flushed, bytes unchanged (BOM/newline pinned). Crash-point tests on Ubuntu/Windows CI 40064864729, including a held-open checkpoint on Windows. Physical durability of Flush/rename is not observable in tests; OneDrive behaviour unverified."
     }
   ]
 }

@@ -80,6 +80,11 @@ public sealed class ProjectStore(string directory)
     public void Initialize(Project p) { Directory.CreateDirectory(directory); using var guard = Lock(); if(Compiler.Validate(p).Length>0) throw new InvalidOperationException("invalid_ir"); if(File.Exists(Path.Combine(directory,"project.json"))) throw new IOException("already_initialized"); Write(new(p,new())); }
     FileStream Lock() => new(Path.Combine(directory,"lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
     void Write(State state) { var tmp=Path.Combine(directory,"project.tmp"); using(var file=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None)) { JsonSerializer.Serialize(file,state); file.Flush(true); } CrashAfter?.Invoke("after_tmp"); File.Move(tmp,Path.Combine(directory,"project.json"),true); }
+    // Same encoding File.WriteAllText/AppendAllText use (UTF-8, no BOM, throw on invalid), so persisted bytes are unchanged.
+    static readonly UTF8Encoding Utf8=new(false,true);
+    // Encoded before any file is opened, so an encoding failure leaves no empty temp or journal. Temp + Flush(true) + replace, like Write. The ".json.tmp" suffix never matches IfcReconcile.IsConflictCopy (extension differs).
+    void WriteCheckpoint(string path,string json) { var bytes=Utf8.GetBytes(json); var tmp=path+".tmp"; using(var file=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None)) { file.Write(bytes); file.Flush(true); } CrashAfter?.Invoke("after_checkpoint_tmp"); File.Move(tmp,path,true); }
+    void AppendJournal(string line) { var bytes=Utf8.GetBytes(line); using var file=new FileStream(Path.Combine(directory,"journal.jsonl"),FileMode.Append,FileAccess.Write,FileShare.Read); file.Write(bytes); file.Flush(true); }
     public Project Commit(Project desired, ExecutionPlan plan, string key)
     {
         using var guard = Lock();
@@ -89,11 +94,11 @@ public sealed class ProjectStore(string directory)
         var current=state.Project; if(current.Id!=plan.ProjectId || current.Revision!=plan.ExpectedRevision || Compiler.Hash(current)!=plan.BeforeHash || Compiler.Hash(desired)!=plan.AfterHash) throw new InvalidOperationException("revision_conflict");
         if(Compiler.Validate(desired).Length>0) throw new InvalidOperationException("invalid_ir");
         if(JsonSerializer.Serialize(Compiler.Diff(current,desired))!=JsonSerializer.Serialize(plan)) throw new InvalidOperationException("plan_mismatch");
-        File.WriteAllText(Path.Combine(directory,$"checkpoint-{current.Revision}.json"),JsonSerializer.Serialize(current));
+        WriteCheckpoint(Path.Combine(directory,$"checkpoint-{current.Revision}.json"),JsonSerializer.Serialize(current));
         CrashAfter?.Invoke("after_checkpoint");
         var result=desired with { Revision=current.Revision+1 };
         // Journal is prepared before publish; recovery can reconcile by hashes.
-        File.AppendAllText(Path.Combine(directory,"journal.jsonl"),JsonSerializer.Serialize(new { key, plan, state="prepared" })+Environment.NewLine);
+        AppendJournal(JsonSerializer.Serialize(new { key, plan, state="prepared" })+Environment.NewLine);
         CrashAfter?.Invoke("after_journal");
         state.Receipts.Add(key,plan.AfterHash);
         // Publish revision and receipt in the same atomic snapshot.

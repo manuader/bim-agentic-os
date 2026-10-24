@@ -1,5 +1,6 @@
 using Bim.Core;
 using Bim.Ifc;
+using System.Text;
 using System.Text.Json;
 
 namespace Bim.TypedGeometry.Tests;
@@ -67,6 +68,16 @@ public static class Goldens
         suite.Sha("golden project.json with retry receipt after commit", StoreCommittedSha, File.ReadAllText(snapshot));
         suite.Sha("golden checkpoint-0.json", ExamplesBeforeHash, File.ReadAllText(Path.Combine(directory, "checkpoint-0.json")));
         suite.Sha("golden journal.jsonl", StoreJournalSha, File.ReadAllText(Path.Combine(directory, "journal.jsonl")).Replace(Environment.NewLine, "\n"));
+        // The text hashes above hide a BOM (ReadAllText strips it) and CR/LF changes (journal is normalized): pin those bytes too.
+        var newLine = Encoding.UTF8.GetBytes(Environment.NewLine);
+        foreach (var file in new[] { "project.json", "checkpoint-0.json", "journal.jsonl" })
+        {
+            var bytes = File.ReadAllBytes(Path.Combine(directory, file));
+            suite.Check(bytes.Length > 0 && bytes[0] != 0xEF, "golden " + file + " has no UTF-8 BOM");
+            var body = file == "journal.jsonl" && bytes.AsSpan().EndsWith(newLine) ? bytes.AsSpan(0, bytes.Length - newLine.Length) : bytes.AsSpan();
+            suite.Check(!body.Contains((byte)'\r') && !body.Contains((byte)'\n'), "golden " + file + " has no CR or LF in its body");
+        }
+        suite.Check(File.ReadAllBytes(Path.Combine(directory, "journal.jsonl")).AsSpan().EndsWith(newLine), "golden journal.jsonl ends with Environment.NewLine exactly once");
         suite.Check(new ProjectStore(directory).Commit(after, plan, "golden").Revision == 1, "golden retry receipt replays");
         suite.Sha("golden project.json unchanged by retry", StoreCommittedSha, File.ReadAllText(snapshot));
     }
