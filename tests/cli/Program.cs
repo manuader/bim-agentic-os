@@ -1,4 +1,5 @@
 using Bim.Core;
+using Bim.Cli;
 using Bim.Mcp;
 using System.Diagnostics;
 using System.Text;
@@ -28,7 +29,7 @@ try {
     string Example(string name)=>File.ReadAllText(Path.Combine(root,"examples",name));
     string Input(string name,string content) { var path=Path.Combine(work,name); File.WriteAllText(path,content); return path; }
     string Bytes(string name,byte[] content) { var path=Path.Combine(work,name); File.WriteAllBytes(path,content); return path; }
-    (int Exit,string Out) Cli(params string[] arguments) {
+    (int Exit,string Out,string Err) Cli(params string[] arguments) {
         var start=new ProcessStartInfo(dotnet){RedirectStandardOutput=true,RedirectStandardError=true,UseShellExecute=false,StandardOutputEncoding=new UTF8Encoding(false)};
         start.ArgumentList.Add(cliDll);
         foreach(var argument in arguments) start.ArgumentList.Add(argument);
@@ -36,18 +37,17 @@ try {
         var stdout=process.StandardOutput.ReadToEndAsync();
         var stderr=process.StandardError.ReadToEndAsync();
         // A FIFO opened for reading blocks until a writer appears; a bounded wait turns that hang into a failure.
-        if(!process.WaitForExit(60000)) { process.Kill(true); return (-1,"<timed out>"); }
+        if(!process.WaitForExit(60000)) { process.Kill(true); return (-1,"<timed out>",""); }
         process.WaitForExit();
         var text=stdout.Result;
         if(text.EndsWith('\n')) text=text[..^1];
         if(text.EndsWith('\r')) text=text[..^1];
-        _=stderr.Result;
-        return (process.ExitCode,text);
+        return (process.ExitCode,text,stderr.Result.ReplaceLineEndings(" ").Trim());
     }
     string FailedCode(string code)=>JsonSerializer.Serialize(new {status="failed",code});
     void ExpectFailure(string name,string code,params string[] arguments) {
-        var (exit,output)=Cli(arguments);
-        Check(exit==1 && output==FailedCode(code),name,"exit "+exit+" stdout "+output);
+        var (exit,output,error)=Cli(arguments);
+        Check(exit==1 && output==FailedCode(code),name,"exit "+exit+" stdout "+output+(error.Length>0?" stderr "+error:""));
     }
 
     var beforeText=Example("before.json"); var afterText=Example("after.json"); var intentText=Example("room-intent.json");
@@ -79,6 +79,22 @@ try {
 
     // Size cap: equal to the MCP line cap (8 MiB). Exactly at the cap is accepted; one byte more is rejected.
     Check(McpServer.MaxLineChars==8*1024*1024,"MCP MaxLineChars is 8 MiB");
+    Check(BoundedInput.MaxBytes==McpServer.MaxLineChars,"CLI BoundedInput.MaxBytes equals McpServer.MaxLineChars");
+    // Static: no CLI verb may bypass the bounded reader.
+    var cliSource=File.ReadAllText(Path.Combine(root,"interfaces","cli","Program.cs"));
+    Check(!cliSource.Contains("File.ReadAllText",StringComparison.Ordinal) && !cliSource.Contains("File.ReadAllBytes",StringComparison.Ordinal) && !cliSource.Contains("File.OpenRead",StringComparison.Ordinal),"interfaces/cli/Program.cs reads no file except through BoundedInput");
+    // Invalid UTF-8 (0xFF) decodes to U+FFFD exactly as File.ReadAllText does, so output is unchanged.
+    var marker=Encoding.UTF8.GetBytes("synthetic Test A intent fixture");
+    var intentBytes=Encoding.UTF8.GetBytes(intentText);
+    var at=intentBytes.AsSpan().IndexOf(marker);
+    Check(at>=0,"room intent provenance fixture present");
+    if(at>=0) {
+        var invalid=(byte[])intentBytes.Clone(); invalid[at]=0xFF;
+        var invalidPath=Bytes("invalid-utf8-intent.json",invalid);
+        var expectedInvalid=JsonSerializer.Serialize(RoomCompiler.Compile(Guid.Parse(projectGuid),0,JsonSerializer.Deserialize<RoomIntent>(File.ReadAllText(invalidPath))!));
+        var invalidRoom=Cli("room",projectGuid,"0",invalidPath);
+        Check(invalidRoom.Exit==0 && invalidRoom.Out==expectedInvalid && expectedInvalid.Contains("\uFFFD",StringComparison.Ordinal),"invalid UTF-8 byte decodes like File.ReadAllText","exit "+invalidRoom.Exit+" stderr "+invalidRoom.Err);
+    }
     var cap=McpServer.MaxLineChars;
     var beforeBytes=Encoding.UTF8.GetBytes(beforeText);
     var atCap=new byte[cap]; beforeBytes.CopyTo(atCap,0); Array.Fill(atCap,(byte)' ',beforeBytes.Length,cap-beforeBytes.Length);
@@ -104,8 +120,21 @@ try {
         } catch(System.ComponentModel.Win32Exception) { made=false; }
         if(made) ExpectFailure("FIFO rejected without blocking","input_not_regular_file","validate",fifo);
         else Skip("FIFO rejected without blocking","mkfifo unavailable");
+        // Permission denied is typed (skipped when the runner can still open a mode-000 file, e.g. as root).
+        var locked=Input("locked.json",beforeText);
+        File.SetUnixFileMode(locked,UnixFileMode.None);
+        bool readable;
+        try { using(File.OpenRead(locked)) { } readable=true; } catch(UnauthorizedAccessException) { readable=false; }
+        if(readable) Skip("chmod 000 input rejected as input_access_denied","mode-000 file still readable (privileged runner)");
+        else ExpectFailure("chmod 000 input rejected as input_access_denied","input_access_denied","validate",locked);
+        File.SetUnixFileMode(locked,UnixFileMode.UserRead|UnixFileMode.UserWrite);
     } else {
-        Skip("device and FIFO inputs","Unix-only fixtures; Windows non-disk handles are covered by the same GetFileType check");
+        Skip("FIFO and chmod inputs","Unix-only fixtures");
+        // Device and pipe namespaces are refused before open; NUL is the legacy device name.
+        ExpectFailure("validate NUL rejected as input_not_regular_file","input_not_regular_file","validate","NUL");
+        ExpectFailure(@"\\.\ device path rejected","input_not_regular_file","validate",@"\\.\NUL");
+        ExpectFailure(@"\\?\ path to a regular file rejected","input_not_regular_file","validate",@"\\?\"+Path.GetFullPath(before));
+        ExpectFailure("//./ device path rejected","input_not_regular_file","validate","//./NUL");
     }
 
     // Links are rejected (symlinks and junctions carry a LinkTarget); creation needs privilege on Windows.
