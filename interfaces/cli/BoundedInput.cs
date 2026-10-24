@@ -22,8 +22,9 @@ internal static class BoundedInput
         try { attributes = File.GetAttributes(path); }
         catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { throw new IOException(HasLinkTarget(new FileInfo(path)) ? LinkRejected : NotFound, e); }
         var isDirectory = (attributes & FileAttributes.Directory) != 0;
-        // Symlinks and junctions have a LinkTarget. A OneDrive placeholder is a ReparsePoint without one and is
-        // read like any file (HANDOFF section 7; mirrors IfcReconcile, which does not treat ReparsePoint alone as a hazard).
+        // Symlinks and junctions have a LinkTarget. A OneDrive file is a ReparsePoint without one and is read like any
+        // file: the same rule as Bim.Core.CloudGuard (HANDOFF section 7). Unlike CloudGuard, which refuses stores holding
+        // cloud-only placeholders (CloudGuard.PlaceholderAttributes), a single CLI input is read and so hydrated.
         if ((attributes & FileAttributes.ReparsePoint) != 0)
         {
             FileSystemInfo entry = isDirectory ? new DirectoryInfo(path) : new FileInfo(path);
