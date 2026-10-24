@@ -1,10 +1,10 @@
 {
+  "run_id": 39904073090,
+  "status": "completed",
+  "url": "https://github.com/manuader/bim-agentic-os/actions/runs/39904073090",
+  "schema_version": 1,
+  "scope": "Ubuntu engineering including22native guards, actual IFC and CodeQL; Revit native tests only local",
   "jobs": [
-    {
-      "name": "core",
-      "status": "completed",
-      "conclusion": "success"
-    },
     {
       "name": "codeql",
       "status": "completed",
@@ -19,13 +19,13 @@
       "name": "ifc",
       "status": "completed",
       "conclusion": "success"
+    },
+    {
+      "name": "core",
+      "status": "completed",
+      "conclusion": "success"
     }
   ],
-  "status": "completed",
-  "url": "https://github.com/manuader/bim-agentic-os/actions/runs/39903644459",
-  "run_id": 39903644459,
-  "scope": "Ubuntu deterministic engineering, actual IFC integration and CodeQL; no native Revit runner",
-  "schema_version": 1,
-  "conclusion": "success",
-  "head_sha": "e01e2e748f50b45f2428c1edc5854921e2c68be0"
+  "head_sha": "d159594b0680d1ac6949fa9fe28a1ad905365b78",
+  "conclusion": "success"
 }
