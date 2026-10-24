@@ -50,16 +50,16 @@ Loaded by relay14 (Claude) after the owner said "segui metiendole"; controller's
 |---|---|---|---|---|---|---|
 | D01 | Core write durability without format change | ✅ | R02 | core/Bim.Core/Model.cs (ProjectStore writes only); tests/reconcile or new tests/durability | checkpoint and journal writes are flushed to disk and checkpoint is atomically replaced; torn/partial files tested; byte goldens unchanged | target unit-tested |
 | N22 | Native reconcile contract (ADR0007 A, Revit path) | ✅ | R02 | runtimes/revit-native/NativeReconcile*.cs (Autodesk-free); tests/integration/NativeReconcileGuard.Tests | Revit-independent decision logic comparing the saved ExtensibleStorage project snapshot with Core, fail-closed codes, source-linked guard tests in CI; native execution stays owner-gated | target unit-tested (guards); native verification owner-gated |
-| S01 | Bounded CLI inputs | 🔄 | — | interfaces/cli/Program.cs; tests/evaluation/test-evaluate-cli.ps1 or new tests/cli | every CLI file input has a size cap and typed failure code; oversized and non-regular inputs rejected; MCP equality tests still green | target unit-tested |
+| S01 | Bounded CLI inputs | ✅ | — | interfaces/cli/Program.cs; tests/evaluation/test-evaluate-cli.ps1 or new tests/cli | every CLI file input has a size cap and typed failure code; oversized and non-regular inputs rejected; MCP equality tests still green | target unit-tested |
 
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 17/19 done (89.5 %)
+Progress: 18/19 done (94.7 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
 - Relay7 batch — platform coverage, rebuild baseline, recovery guard: 3/3
-- Relay14 batch — durability, native reconcile contract, bounded inputs: 2/3
+- Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
 Next ready: 
 

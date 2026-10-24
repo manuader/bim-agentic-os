@@ -6,7 +6,7 @@ Initial system dotnet: host 10.0.2; runtimes 6/8/9/10; no SDK. Python command re
 
 Build and test results belong in `artifacts/`; absence of a result is unverified. No performance multiplier or native delivery latency measured.
 
-Known gaps: complete Test A, durable native idempotency, readback validation, native mapping storage, live change listeners, cancellation/timeout queue semantics, bounded input streaming, MCP, SQLite migrations, journal recovery/power-loss tests, multi-document scheduler, full parity census, license audit of future dependencies. Current store uses files to keep the dependency-free core buildable; SQLite remains planned.
+Known gaps: complete Test A, durable native idempotency, readback validation, native mapping storage, live change listeners, cancellation/timeout queue semantics, MCP (now unit-tested), bounded inputs (now enforced, S01), SQLite migrations, journal recovery/power-loss tests, multi-document scheduler, full parity census, license audit of future dependencies. Current store uses files to keep the dependency-free core buildable; SQLite remains planned.
 
 ## Executed checks
 

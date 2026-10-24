@@ -18,6 +18,7 @@ Core C#/.NET8 compiles room intents into unchanged persisted records and compute
 
 ## 4. Sessions, newest first
 
+- Relay14 (Claude, owner chat "segui metiendole"): durable Core store writes (D01), Autodesk-free native reconcile contract with shared CloudGuard (N22), bounded typed CLI inputs (S01); every task independently reviewed and green on Ubuntu/Windows/macOS. [Session](SESSION-2026-10-24-relay14-durability-native-reconcile-inputs.md). Only N21 remains.
 - Relay7 (Claude, owner chat "continue"): CI now runs on Ubuntu, Windows and macOS (W01); IFC incremental vs full-rebuild baseline (P01: no measurable time difference, identity and change-size delta); reconcile refuses OneDrive conflict copies/placeholders (R03). [Session](SESSION-2026-10-23-relay7-platforms-rebuild-cloud.md). Only N21 remains.
 - Relay5 (Claude, owner chat, GitHub linked): published relay3/relay4 work; M01 MCP, G02 typed units/geometry (ADR0008 A) and R02 cross-store reconcile (ADR0007 A) all unit-tested on Ubuntu CI and merged to main. [Session](SESSION-2026-10-23-relay5-publish-r02-g02.md). Only N21 (native, owner Load Once) remains.
 - Relay3 (Claude, owner-authorized takeover of relay2's stale LOCK): [native A/B recorded and relay3 batch](SESSION-2026-10-23-relay3-native-ab-mcp.md). Native attempt3 full Test A/B verified-in-revit (one isolated run); ADR0007/0008 proposed for owner decision; MCP server coded, not compiled. [Attempt3](../artifacts/native-room-attempt3.json), [plan](plans/2026-10-23-relay3-batch.md).
