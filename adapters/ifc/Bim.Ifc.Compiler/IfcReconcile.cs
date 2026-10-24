@@ -18,11 +18,9 @@ public static class IfcReconcile
 {
     static readonly JsonSerializerOptions ReceiptOptions=new() { PropertyNamingPolicy=JsonNamingPolicy.SnakeCaseLower, UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow };
     static string Revision(int revision)=>"r"+revision.ToString(CultureInfo.InvariantCulture);
-    public const string CloudConflictPresent="cloud_conflict_present";
-    public const string CloudPlaceholderPresent="cloud_placeholder_present";
-    // Windows FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_OPEN and FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS (cloud-only placeholders).
-    // ReparsePoint alone is deliberately not a hazard: OneDrive sets it on hydrated real files with no LinkTarget (HANDOFF section 7).
-    const FileAttributes PlaceholderAttributes=FileAttributes.Offline|(FileAttributes)0x00040000|(FileAttributes)0x00400000;
+    // Forwarders to the shared Bim.Core CloudGuard; kept so existing callers and tests stay unchanged.
+    public const string CloudConflictPresent=CloudGuard.ConflictPresent;
+    public const string CloudPlaceholderPresent=CloudGuard.PlaceholderPresent;
     public static IfcBackendReceipt ParseReceipt(string json)
     {
         try {
@@ -34,37 +32,9 @@ public static class IfcReconcile
         }
         catch(JsonException error) { throw new ArgumentException("invalid_backend_receipt",error); }
     }
-    // OneDrive keeps both versions of a sync conflict by appending the device name, e.g. MyFile.txt -> MyFile-ComputerName.txt;
-    // older or third-party copies use "Name (1).ext" or "Name - Copy.ext". Matching is case-insensitive like NTFS:
-    // same extension, and the name continues the stem with '-' or ' '. Sources (retrieved 2026-10-23):
-    // https://support.microsoft.com/en-us/onedrive/duplicate-files-in-onedrive ("your computer name added to the filename")
-    // https://uwindsor.teamdynamix.com/TDClient/1975/Portal/KB/Article/29832/Known-Issue-OneDrive-duplicate-files ("MyFile-ComputerName.txt")
-    // https://melbits.com.au/kb/why-does-onedrive-keep-duplicating-files ("Filename-DESKTOP-AB12.docx", "Budget (1).xlsx", "Report-Copy.docx")
-    // https://sharepointmaven.com/how-onedrive-sync-resolves-sync-conflicts/ (keep both: "add the Computer/PC name to the end of the file name")
-    public static bool IsConflictCopy(string name,string primary)
-    {
-        ArgumentNullException.ThrowIfNull(name); ArgumentNullException.ThrowIfNull(primary);
-        if(string.Equals(name,primary,StringComparison.Ordinal))return false;
-        if(string.Equals(name,primary,StringComparison.OrdinalIgnoreCase))return true;
-        var extension=Path.GetExtension(primary); var stem=Path.GetFileNameWithoutExtension(primary);
-        if(extension.Length==0||!name.EndsWith(extension,StringComparison.OrdinalIgnoreCase))return false;
-        var rest=name[..^extension.Length];
-        return rest.Length>stem.Length&&rest.StartsWith(stem,StringComparison.OrdinalIgnoreCase)&&(rest[stem.Length]=='-'||rest[stem.Length]==' ');
-    }
-    // Metadata only: enumerates the directory and reads attributes, never opens file contents, so no placeholder is hydrated.
-    // Conflict copies of any primary are reported first; then any entry carrying placeholder attributes.
-    // The attribute reader is a test seam; by default attributes are read on Windows only (no such attributes elsewhere).
+    public static bool IsConflictCopy(string name,string primary)=>CloudGuard.IsConflictCopy(name,primary);
     public static IfcCloudHazard? CloudHazard(string directory,IReadOnlyCollection<string> primaries,Func<string,FileAttributes>? readAttributes=null)
-    {
-        ArgumentNullException.ThrowIfNull(directory); ArgumentNullException.ThrowIfNull(primaries);
-        var entries=new DirectoryInfo(directory).EnumerateFileSystemInfos().OrderBy(entry=>entry.Name,StringComparer.Ordinal).ToArray();
-        var names=entries.Select(entry=>entry.Name).ToArray();
-        // A case-only variant is a conflict only beside the exact-case primary; alone it is the store file itself (NTFS is case-insensitive).
-        var conflicts=names.Where(name=>primaries.Any(primary=>IsConflictCopy(name,primary)&&(!string.Equals(name,primary,StringComparison.OrdinalIgnoreCase)||names.Contains(primary,StringComparer.Ordinal)))).ToArray();
-        if(conflicts.Length>0)return new(CloudConflictPresent,conflicts);
-        var placeholders=entries.Where(entry=>((readAttributes is null?(OperatingSystem.IsWindows()?entry.Attributes:default):readAttributes(entry.FullName))&PlaceholderAttributes)!=0).Select(entry=>entry.Name).ToArray();
-        return placeholders.Length>0?new(CloudPlaceholderPresent,placeholders):null;
-    }
+        =>CloudGuard.Scan(directory,primaries,readAttributes) is {} finding?new(finding.Code,finding.Entries):null;
     // Directory-aware entry point: refuses before Core is read when project.json has a conflict copy or any Core file is cloud-only.
     public static IfcReconcileResult Reconcile(string coreDirectory,IfcBackendReceipt receipt,IfcCompiledRequest packet,Func<string,FileAttributes>? readAttributes=null)
     {
@@ -144,7 +114,12 @@ public static class IfcReconcile
         try { store.Commit(after,plan,packet.OperationId); }
         catch(InvalidOperationException) { return Fail("core_commit_rejected"); }
         catch(Exception error) when(error is IOException or UnauthorizedAccessException) { return Fail("core_io_error"); }
-        var published=store.Read(); var publishedHash=Compiler.Hash(published);
+        Project published;
+        // A failed read-back after Commit cannot prove what was published: fail closed as unverified.
+        try { published=store.Read(); }
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException or JsonException or NullReferenceException) { return Fail("core_commit_unverified"); }
+        if(published is null)return Fail("core_commit_unverified");
+        var publishedHash=Compiler.Hash(published);
         if(published.Revision!=backendRevision||publishedHash!=backendHash)return new(false,"core_commit_unverified",published.Revision,backendRevision,publishedHash,backendHash);
         return new(true,"replayed",published.Revision,backendRevision,publishedHash,backendHash);
     }
