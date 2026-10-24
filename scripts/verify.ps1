@@ -21,7 +21,7 @@ try {
         }
         if (!$Dotnet) { throw 'net8 SDK missing. Install .NET 8 SDK or explicitly use -HostOnly; target build remains unverified.' }
         Invoke-EvidenceCommand sdk $Dotnet @('--info') $evidence
-        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/typed-geometry','tests/evaluation','tests/Bim.Tests','tests/reconcile','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp','tests/cli')) {
+        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/typed-geometry','tests/evaluation','tests/Bim.Tests','tests/reconcile','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/integration/NativeReconcileGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp','tests/cli')) {
             Invoke-EvidenceCommand ('build-' + ($project -replace '/', '-')) $Dotnet @('build',"$root/$project",'--configuration','Release','--warnaserror') $evidence
         }
         Invoke-EvidenceCommand evaluator-unit-health $Dotnet @('run','--project',"$root/tests/evaluation",'--configuration','Release','--no-build') $evidence
@@ -32,6 +32,7 @@ try {
         Invoke-EvidenceCommand native-room-contract $Dotnet @('run','--project',"$root/tests/native-room",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand mcp-contract $Dotnet @('run','--project',"$root/tests/mcp",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand native-room-guards $Dotnet @('run','--project',"$root/tests/integration/NativeRoomGuard.Tests",'--configuration','Release','--no-build') $evidence
+        Invoke-EvidenceCommand native-reconcile-guards $Dotnet @('run','--project',"$root/tests/integration/NativeReconcileGuard.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand checkpoint-guards $Dotnet @('run','--project',"$root/tests/integration/CheckpointGuard.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand fixture-guards $Dotnet @('run','--project',"$root/tests/integration/FixtureGuard.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand core-tests $Dotnet @('run','--project',"$root/tests/Bim.Tests",'--configuration','Release','--no-build') $evidence
