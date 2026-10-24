@@ -301,6 +301,17 @@
       ],
       "blocker": null,
       "scope": "ProjectStore checkpoint written via temp+Flush(true)+atomic replace and journal appends flushed, bytes unchanged (BOM/newline pinned). Crash-point tests on Ubuntu/Windows CI 40064864729, including a held-open checkpoint on Windows. Physical durability of Flush/rename is not observable in tests; OneDrive behaviour unverified."
+    },
+    {
+      "id": "native-reconcile-contract",
+      "status": "unit-tested",
+      "evidence": [
+        "runtimes/revit-native/NativeReconcileContract.cs",
+        "core/Bim.Core/CloudGuard.cs",
+        "tests/integration/NativeReconcileGuard.Tests/Program.cs"
+      ],
+      "blocker": "Native execution (saved/reopened VerifyReceipt payload from a real fixture) is owner-gated; Bim.Revit add-in compile with the new file is not checked in CI.",
+      "scope": "Autodesk-free ADR0007 A decision core for the Revit path: replays only one-behind with matching snapshot/receipt/map, C8 unsaved evidence refused before Core is read, shared CloudGuard scan before read and before Commit; guard tests on 3-OS CI 40065451606. Not wired into App.cs."
     }
   ]
 }
