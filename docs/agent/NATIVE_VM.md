@@ -1,5 +1,7 @@
 # Native evaluation on a Windows VM
 
+Owner-attended shortcut (one command, from the repo root): `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Runs 3`. It runs the native source check, the Release builds, then N A/B runs, each in a new child Revit with its own staged manifest (installed and removed per run). Already running Revit processes are recorded and never touched. The owner chooses Load Once in each child; the script never answers the prompt. Evidence: `.bim/native-sessions/<utc>/summary.json`.
+
 State: blocked for full Test A/B. Existing native primitive probes are verified-in-revit; they do not implement hosted doors/windows, Room or complete documentation. Do not convert their success into full acceptance.
 
 Prerequisites: Windows VM with an authorized installed Revit2025/API25.2, .NET8 SDK, a metric .rte, working directory containing this repository and no production project used as a fixture. License activation and unsigned add-in security decisions are manual-only. No APS/cloud credentials are required or assumed.
