@@ -14,7 +14,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh) required: run this script with pwsh -File' }
+if ($PSVersionTable.PSVersion -lt [version]'7.2') { throw 'PowerShell 7.2+ (pwsh) required: run this script with pwsh -File' }
 if (!$IsWindows) { throw 'Windows with Revit 2025 required' }
 $root = Split-Path $PSScriptRoot
 Set-Location $root
@@ -38,7 +38,7 @@ try {
  else {
   Say 'Step 1: native source check against installed Revit DLLs'
   $checkLog = Join-Path $session 'native-source-check.log'
-  & pwsh -NoProfile -File (Join-Path $root 'scripts/check-native-source.ps1') *>&1 | Tee-Object -FilePath $checkLog | Out-Host
+  & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File (Join-Path $root 'scripts/check-native-source.ps1') *>&1 | Tee-Object -FilePath $checkLog | Out-Host
   if ($LASTEXITCODE -ne 0) { $summary.source_check = 'failed'; throw "Native source check failed; see $checkLog" }
   $summary.source_check = 'passed'
   Say 'Native source check PASSED'
@@ -83,7 +83,9 @@ try {
   if ($run.staged_addin_sha256 -ne $summary.builds['Bim.Revit.dll_sha256']) { throw 'Staged add-in differs from the build output' }
   if (Test-Path -LiteralPath $manifest) { throw "Manifest appeared at $manifest during the session; stopping" }
   New-Item -ItemType Directory -Force $addins | Out-Null
+  $child = $null
   Copy-Item -LiteralPath (Join-Path $runDir 'Bim.Agentic.Fixture.addin') -Destination $manifest
+  try {
   $config = Join-Path $runDir 'fixture-config.json'
   $result = Join-Path $runDir 'fixture-result.json'
   $start = [Diagnostics.ProcessStartInfo]::new($RevitExe)
@@ -94,21 +96,25 @@ try {
   @{ process_id = $child.Id; run_directory = $runDir; manifest = $manifest; manifest_sha256 = (Sha $manifest); started_utc = [DateTime]::UtcNow.ToString('o'); protected_pids = $summary.protected_revit_pids } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDir 'controller-launch.json')
   Save
   Say ">>> Run ${i}: Revit child PID $($child.Id) started. Choose 'Load Once' for 'BIM Agentic OS Fixture' in THAT window when the security prompt appears. Waiting up to $LoadWaitSeconds s."
+  Say '>>> Do NOT open any other Revit until this session ends: while the fixture manifest is installed, a new Revit would load the fixture add-in.'
   $deadline = [DateTime]::UtcNow.AddSeconds($LoadWaitSeconds)
   while ([DateTime]::UtcNow -lt $deadline -and !(Test-Path -LiteralPath $result)) {
    if ($child.HasExited) { break }
    Start-Sleep -Milliseconds 500
   }
-  try {
    if (!(Test-Path -LiteralPath $result)) { $run.bootstrap = $(if ($child.HasExited) { 'child_exited' } else { 'timed_out' }); throw "Run $i bootstrap $($run.bootstrap); no fixture evidence" }
    Start-Sleep -Milliseconds 500
    $boot = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
    if ($boot.status -ne 'succeeded') { $run.bootstrap = "failed:$($boot.code)"; throw "Run $i bootstrap failed: $($boot.code)" }
    if ($boot.processId -ne $child.Id -or $boot.pipeName -ne ('bim-agentic-os-2025-' + $child.Id)) { $run.bootstrap = 'provenance_mismatch'; throw "Run $i fixture evidence does not match child PID $($child.Id)" }
+   $expectedDocument = [IO.Path]::GetFullPath((Join-Path $runDir 'BIM-Agentic-Test.rvt'))
+   if (![IO.Path]::GetFullPath([string]$boot.documentPath).Equals($expectedDocument, [StringComparison]::OrdinalIgnoreCase)) { $run.bootstrap = 'document_mismatch'; throw "Run $i fixture document is not this run's own fixture" }
    $run.bootstrap = 'succeeded'
    Say "Run ${i}: fixture ready in PID $($child.Id); running the A/B evaluation (no automatic retry)"
-   & (Join-Path $root 'tests/integration/native-room-ab.ps1') -RunDirectory $runDir -DocumentPath $boot.documentPath -DocumentIdentity $boot.documentUniqueId -ProcessId $child.Id -PipeName $boot.pipeName -Dotnet $dotnet -CliDll $cli -TimeoutSeconds $EvaluationTimeoutSeconds | Out-Null
-   $run.evaluation_exit = $LASTEXITCODE
+   try {
+    & (Join-Path $root 'tests/integration/native-room-ab.ps1') -RunDirectory $runDir -DocumentPath $boot.documentPath -DocumentIdentity $boot.documentUniqueId -ProcessId $child.Id -PipeName $boot.pipeName -Dotnet $dotnet -CliDll $cli -TimeoutSeconds $EvaluationTimeoutSeconds | Out-Null
+    $run.evaluation_exit = $LASTEXITCODE
+   } catch { $run.evaluation_exit = 'wrapper_error: ' + $_.Exception.Message; throw }
    $reportPath = Join-Path $runDir 'native-room-report.json'
    if (Test-Path -LiteralPath $reportPath) {
     $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
@@ -123,7 +129,7 @@ try {
   }
   finally {
    if ((Test-Path -LiteralPath $manifest) -and (Sha $manifest) -eq (Sha (Join-Path $runDir 'Bim.Agentic.Fixture.addin'))) { Remove-Item -LiteralPath $manifest }
-   if (!$child.HasExited -and $CloseWaitSeconds -gt 0) {
+   if ($child -and !$child.HasExited -and $CloseWaitSeconds -gt 0) {
     $null = $child.CloseMainWindow()
     $run.closed = $child.WaitForExit($CloseWaitSeconds * 1000)
     if (!$run.closed) { Say "Run ${i}: child PID $($child.Id) did not close in $CloseWaitSeconds s; left running, close it yourself (not production)" }
