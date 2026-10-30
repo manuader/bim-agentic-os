@@ -16,6 +16,10 @@ namespace Bim.Mcp;
 //   status failed); here revision must be a JSON integer in Int32 range, otherwise the call is rejected with -32602.
 // - missing or wrongly typed arguments are rejected with -32602 instead of the CLI usage/null failures.
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
+// ADR0009: one revit_<command> tool per RevitCommandCatalogue.V1 entry is generated from the catalogue. Each builds the
+// command envelope from its arguments and runs RevitCommandService.Run, the same code as the CLI revit-command verb,
+// so its text equals that verb's stdout for the same envelope. Write commands pass the copies-only guard first; the
+// policy comes from the server's own launch (repository .bim/native-runs plus --revit-allowlist), never from a tool call.
 public sealed class McpServer
 {
     public const int MaxLineChars = 8 * 1024 * 1024;
@@ -30,9 +34,9 @@ public sealed class McpServer
     const int InternalError = -32603;
 
     sealed record ParameterSpec(string Name, string Type, string Description);
-    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute);
+    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null);
 
-    static readonly ToolSpec[] Tools =
+    static readonly ToolSpec[] CoreTools =
     [
         new ToolSpec("diff", "Deterministic execution plan between two Project IR objects (CLI: diff before.json after.json).",
             [new ParameterSpec("before", "object", "Project IR before the change"), new ParameterSpec("after", "object", "Project IR after the change")],
@@ -50,6 +54,80 @@ public sealed class McpServer
 
     static readonly JsonElement EmptyArguments = CreateEmptyArguments();
 
+    readonly ToolSpec[] tools;
+    readonly RevitCommandPolicy revitPolicy;
+    readonly Func<string, string, string?> revitTransport;
+
+    // Defaults: the repository's .bim/native-runs as the only enabled write root, and the real process pipe.
+    public McpServer(RevitCommandPolicy? revitPolicy = null, Func<string, string, string?>? revitTransport = null)
+    {
+        this.revitPolicy = revitPolicy ?? DefaultPolicy();
+        this.revitTransport = revitTransport ?? RevitCommandService.PipeTransport;
+        tools = [.. CoreTools, .. RevitCommandCatalogue.V1.Select(RevitTool)];
+    }
+
+    static RevitCommandPolicy DefaultPolicy()
+    {
+        try { return RevitCommandPolicy.ForRepository(AppContext.BaseDirectory, null); }
+        catch (RevitCommandException) { return RevitCommandPolicy.None; }
+    }
+
+    ToolSpec RevitTool(RevitCommandSpec spec) => new(spec.ToolName,
+        spec.Description + " Forwards to the Revit add-in on the explicit process pipe; " + (spec.Writes ? "write: refused unless the document is under an enabled test root." : "read-only: allowed on any document."),
+        [new ParameterSpec("pipe_name", "string", ""), new ParameterSpec("operation_id", "string", ""), new ParameterSpec("document", "object", ""), new ParameterSpec("args", "object", "")],
+        arguments => RevitCall(spec, arguments),
+        RevitInputSchema(spec));
+
+    static string RevitInputSchema(RevitCommandSpec spec)
+    {
+        var schema = new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["pipe_name"] = new JsonObject { ["type"] = "string", ["description"] = "Explicit Revit process pipe bim-agentic-os-2025-<pid>, from the fixture or session result", ["pattern"] = "^bim-agentic-os-2025-[1-9][0-9]*$" },
+                ["operation_id"] = new JsonObject { ["type"] = "string", ["description"] = "Idempotency key; retry with the same value and the same request to avoid duplicates", ["pattern"] = "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+                ["document"] = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["description"] = "The open Revit document",
+                    ["properties"] = new JsonObject
+                    {
+                        ["path"] = new JsonObject { ["type"] = "string", ["description"] = "Exact saved absolute path of the document" },
+                        ["unique_id"] = new JsonObject { ["type"] = "string", ["description"] = "ProjectInformation UniqueId of the document" },
+                    },
+                    ["required"] = new JsonArray("path", "unique_id"),
+                    ["additionalProperties"] = false,
+                },
+                ["args"] = JsonNode.Parse(spec.ArgsSchemaJson),
+            },
+            ["required"] = new JsonArray("pipe_name", "operation_id", "document", "args"),
+            ["additionalProperties"] = false,
+        };
+        return schema.ToJsonString();
+    }
+
+    // Raw argument values are copied into the envelope unchanged, so the CLI reading the same envelope agrees byte for byte.
+    (string Text, bool IsError) RevitCall(RevitCommandSpec spec, JsonElement arguments)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("protocol_version", RevitCommandProtocol.Version);
+            writer.WritePropertyName("operation_id");
+            arguments.GetProperty("operation_id").WriteTo(writer);
+            writer.WritePropertyName("document");
+            arguments.GetProperty("document").WriteTo(writer);
+            writer.WriteString("command", spec.Name);
+            writer.WritePropertyName("args");
+            arguments.GetProperty("args").WriteTo(writer);
+            writer.WriteEndObject();
+        }
+        var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", Encoding.UTF8.GetString(buffer.ToArray()), revitPolicy, revitTransport);
+        return (result.Line, result.IsError);
+    }
+
     public string? Handle(string line)
     {
         try
@@ -64,9 +142,10 @@ public sealed class McpServer
     }
 
     // Reads newline-delimited messages with a bounded buffer; writes only JSON-RPC responses.
-    public static void Run(TextReader input, TextWriter output)
+    public static void Run(TextReader input, TextWriter output) => Run(input, output, new McpServer());
+
+    public static void Run(TextReader input, TextWriter output, McpServer server)
     {
-        var server = new McpServer();
         var line = new StringBuilder();
         var oversized = false;
         while (true)
@@ -107,7 +186,7 @@ public sealed class McpServer
         output.Flush();
     }
 
-    static string? Dispatch(JsonElement root)
+    string? Dispatch(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Object) return Error(null, InvalidRequest, "invalid_request");
         JsonElement? id = null;
@@ -147,13 +226,13 @@ public sealed class McpServer
         ["serverInfo"] = new JsonObject { ["name"] = ServerName, ["version"] = ServerVersion },
     };
 
-    static JsonObject ListTools() => new()
+    JsonObject ListTools() => new()
     {
-        ["tools"] = new JsonArray(Tools.Select(tool => (JsonNode?)new JsonObject
+        ["tools"] = new JsonArray(tools.Select(tool => (JsonNode?)new JsonObject
         {
             ["name"] = tool.Name,
             ["description"] = tool.Description,
-            ["inputSchema"] = Schema(tool.Parameters),
+            ["inputSchema"] = tool.InputSchemaJson is { } inputSchema ? JsonNode.Parse(inputSchema) : Schema(tool.Parameters),
         }).ToArray()),
     };
 
@@ -171,7 +250,7 @@ public sealed class McpServer
         };
     }
 
-    static string CallTool(JsonElement? id, JsonElement? parameters)
+    string CallTool(JsonElement? id, JsonElement? parameters)
     {
         if (parameters == null || parameters.Value.ValueKind != JsonValueKind.Object) return Error(id, InvalidParams, "invalid_params: params object required");
         var call = parameters.Value;
@@ -183,7 +262,7 @@ public sealed class McpServer
             arguments = argumentsElement;
         }
         var name = nameElement.GetString();
-        var tool = Tools.FirstOrDefault(candidate => candidate.Name == name);
+        var tool = tools.FirstOrDefault(candidate => candidate.Name == name);
         if (tool == null) return Result(id, ToolResult(Failed("unknown_tool"), true));
         foreach (var property in arguments.EnumerateObject())
             if (!tool.Parameters.Any(parameter => parameter.Name == property.Name)) return Error(id, InvalidParams, "invalid_params: unexpected argument " + property.Name);
