@@ -6,8 +6,8 @@ public static class RevitCommandGeometry
 {
     // Revit's short-curve tolerance is 1/256 ft (about 1.19 mm); shorter curves or edges cannot be created.
     public const double MinSegmentMm = 1.2;
-    // Red step placeholder.
-    public const double MaxRevitLengthMm = 0;
+    // Revit's own limit of 30000 ft for arc radius (Arc.Create), wall height and base offset (Wall.Create).
+    public const double MaxRevitLengthMm = 9_144_000;
     // Three points whose turn has a sine below this are treated as collinear.
     public const double CollinearSine = 1e-9;
     const double AdjacentCollinearSine = 1e-12;
@@ -60,8 +60,8 @@ public static class RevitCommandGeometry
     // Centre arc, counter-clockwise from start to end angle.
     public static void CheckArcCenter(double centerX, double centerY, double radiusMm, double startDegrees, double endDegrees, string field)
     {
-        if (!double.IsFinite(radiusMm) || radiusMm <= 0 || radiusMm > RevitUnits.MaxAbsMillimetres)
-            throw new RevitCommandException(RevitCommandCodes.ArcRadiusInvalid, field + ".radius_mm", "radius must be > 0 and within 1e8 mm");
+        if (!double.IsFinite(radiusMm) || radiusMm <= 0 || radiusMm > MaxRevitLengthMm)
+            throw new RevitCommandException(RevitCommandCodes.ArcRadiusInvalid, field + ".radius_mm", "radius must be > 0 and at most 9144000 mm (Revit's 30000 ft limit)");
         RevitUnits.Degrees(startDegrees, field + ".start_angle_deg");
         RevitUnits.Degrees(endDegrees, field + ".end_angle_deg");
         var sweep = endDegrees - startDegrees;
@@ -74,11 +74,12 @@ public static class RevitCommandGeometry
         CheckExtent(centerX, centerY, radiusMm, field);
     }
 
-    // The whole circle (centre plus or minus radius) must stay within the coordinate range.
+    // The whole circle (centre plus or minus radius) must stay within the coordinate range, and the radius within Revit's limit.
     static void CheckExtent(double centerX, double centerY, double radius, string field)
     {
         if (!double.IsFinite(radius) || radius <= 0 || Math.Abs(centerX) + radius > RevitUnits.MaxAbsMillimetres || Math.Abs(centerY) + radius > RevitUnits.MaxAbsMillimetres)
             throw new RevitCommandException(RevitCommandCodes.ArcRadiusInvalid, field, "arc centre and radius must stay within 1e8 mm of the origin");
+        if (radius > MaxRevitLengthMm) throw new RevitCommandException(RevitCommandCodes.ArcRadiusInvalid, field, "arc radius above 9144000 mm (Revit's 30000 ft limit)");
     }
 
     // Closed simple polygon. A repeated closing vertex is dropped; the closing edge is implicit. Coordinates are

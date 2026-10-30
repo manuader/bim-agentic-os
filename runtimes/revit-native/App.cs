@@ -11,7 +11,21 @@ public sealed class App : IExternalApplication, IExternalEventHandler
 {
     readonly ConcurrentQueue<(Request,TaskCompletionSource<string>)> queue=new();
     CancellationTokenSource stop=new(); ExternalEvent? signal; Task? server;
-    public Result OnStartup(UIControlledApplication app) { signal=ExternalEvent.Create(this); FixtureBootstrap.Attach(app); server=Task.Run(Listen); return Result.Succeeded; }
+    // Production Revit (no BIM_AGENTIC_TEST_CONFIG) gets no ExternalEvent and no pipe. With the opt-in variable, both
+    // start only after FixtureBootstrap validated the config and opened the fixture (AddInGate.PipeAllowed).
+    public Result OnStartup(UIControlledApplication app)
+    {
+        if(!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AddInGate.ConfigVariable))) FixtureBootstrap.Attach(app,Expose,Withdraw);
+        return Result.Succeeded;
+    }
+    // Called from FixtureBootstrap's Idling handler (an API context) once the fixture is open, before its result is published.
+    void Expose()
+    {
+        if(!AddInGate.PipeAllowed(Environment.GetEnvironmentVariable(AddInGate.ConfigVariable),true) || server!=null) return;
+        signal=ExternalEvent.Create(this); server=Task.Run(Listen);
+    }
+    // A bootstrap that failed after Expose must not leave a pipe behind.
+    void Withdraw() { stop.Cancel(); signal?.Dispose(); signal=null; }
     public Result OnShutdown(UIControlledApplication app) { stop.Cancel(); signal?.Dispose(); return Result.Succeeded; }
     public string GetName()=>"BIM Agentic OS serialized native dispatcher";
     async Task Listen()
@@ -50,6 +64,8 @@ public sealed class App : IExternalApplication, IExternalEventHandler
         if(r.Operation=="fixture.checkpoint") return FixtureCheckpoint.Run(app,r);
         var d=app.ActiveUIDocument?.Document ?? throw new InvalidOperationException("no_document");
         if(string.IsNullOrWhiteSpace(r.DocumentPath)||!String.Equals(d.PathName,r.DocumentPath,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("document_conflict");
+        // Legacy primitives pass the same copies-only and link guard as revit.command writes; only inspect reads.
+        if(!AddInGate.IsLegacyRead(r.Operation)) AddInGate.CheckLegacyWrite(r.DocumentPath,CommandExecutor.Facts(d),CommandExecutor.Policy,Bim.Core.RevitFileSystemProbe.Real);
         if(r.Operation=="batch") return BatchExecutor.Run(d,r.Batch ?? throw new ArgumentException("batch_required"));
         if(r.Metres.Any(x=>!double.IsFinite(x))) throw new ArgumentException("invalid_units");
         Element? e=r.UniqueId==null?null:d.GetElement(r.UniqueId);

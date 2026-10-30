@@ -44,7 +44,12 @@ public static class CommandAdmission
             throw new RevitCommandException(RevitCommandCodes.DocumentConflict, "document.unique_id", "the active document's ProjectInformation UniqueId differs from the envelope");
         if (document.PathName is not { Length: > 0 } path || !SamePath(path, envelope.Document.Path))
             throw new RevitCommandException(RevitCommandCodes.DocumentConflict, "document.path", "the active document is not the saved document the envelope names");
-        if (!envelope.Spec.Writes) return;
+        if (envelope.Spec.Writes) CheckWrite(path, document, policy, probe);
+    }
+
+    // The write half, shared with the legacy primitive operations (AddInGate.CheckLegacyWrite).
+    public static void CheckWrite(string path, CommandDocumentFacts document, Func<RevitCommandPolicy> policy, RevitFileSystemProbe probe)
+    {
         var enabled = policy();
         if (RevitCopiesGuard.Check(true, path, enabled) is { } refused)
             throw new RevitCommandException(refused, "document.path", refused == RevitCommandCodes.DocumentNotEnabled ? "write commands need a document under an enabled test root" : null);
@@ -102,10 +107,26 @@ public static class CommandReceiptStore
     public const string SchemaName = "BimAgenticRevitCommandReceiptsV1";
     public const string PayloadField = "Payload";
     public const int PayloadVersion = 1;
-    public const int MaxReceipts = 0;
-    public const int MaxPayloadBytes = 0;
-    public static void EnsureRoom(IReadOnlyDictionary<string, StoredCommandReceipt> receipts) => throw new NotImplementedException();
-    public static string SerializeBounded(IReadOnlyDictionary<string, StoredCommandReceipt> receipts) => throw new NotImplementedException();
+    // Caps on the single ExtensibleStorage string: a full store refuses new writes (replays still work).
+    public const int MaxReceipts = 2000;
+    public const int MaxPayloadBytes = 4 * 1024 * 1024;
+
+    // Before a new write: refuse when the store already holds MaxReceipts.
+    public static void EnsureRoom(IReadOnlyDictionary<string, StoredCommandReceipt> receipts)
+    {
+        if (receipts.Count >= MaxReceipts) throw Full();
+    }
+
+    // The payload actually persisted: refused when over either cap, so the write's transaction group rolls back.
+    public static string SerializeBounded(IReadOnlyDictionary<string, StoredCommandReceipt> receipts)
+    {
+        if (receipts.Count > MaxReceipts) throw Full();
+        var payload = Serialize(receipts);
+        if (Encoding.UTF8.GetByteCount(payload) > MaxPayloadBytes) throw Full();
+        return payload;
+    }
+
+    static RevitCommandException Full() => new(RevitCommandCodes.TransactionFailed, null, "receipt store full");
     static readonly string[] ReceiptMembers = { "command", "document_unique_id", "request_sha256", "response" };
 
     public static CommandReceiptAction Decide(IReadOnlyDictionary<string, StoredCommandReceipt> receipts, string operationId, string requestSha256) =>

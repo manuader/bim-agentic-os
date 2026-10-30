@@ -39,15 +39,16 @@ internal static class CommandExecutor
         var request = CommandWire.Bind(r.DocumentPath, r.UniqueId, r.Metres, r.Batch is not null || r.Checkpoint is not null, r.Command?.GetRawText());
         var envelope = request.Envelope;
         var d = app.ActiveUIDocument?.Document ?? throw new RevitCommandException(RevitCommandCodes.DocumentConflict, "document.path", "no active document");
-        var facts = new CommandDocumentFacts(d.PathName, d.ProjectInformation?.UniqueId, d.IsReadOnly, d.IsFamilyDocument, d.IsWorkshared, d.IsModifiable);
-        CommandAdmission.Check(envelope, facts, Policy, RevitFileSystemProbe.Real);
+        CommandAdmission.Check(envelope, Facts(d), Policy, RevitFileSystemProbe.Real);
+        // Queries never read or write the receipt store.
+        if (!envelope.Spec.Writes) return CommandResponses.Success(request, Array.Empty<string>(), Array.Empty<string>(), Query(d, envelope), Array.Empty<string>()).ToJson();
         var store = ReadReceipts(d);
         switch (CommandReceiptStore.Decide(store.Receipts, envelope.OperationId, request.RequestSha256))
         {
             case CommandReceiptAction.Replay: return CommandReceiptStore.ReplayJson(store.Receipts[envelope.OperationId]);
             case CommandReceiptAction.Conflict: throw CommandReceiptStore.Conflict(envelope.OperationId);
         }
-        if (!envelope.Spec.Writes) return CommandResponses.Success(request, Array.Empty<string>(), Array.Empty<string>(), Query(d, envelope), Array.Empty<string>()).ToJson();
+        CommandReceiptStore.EnsureRoom(store.Receipts);
         var plan = envelope.Args switch
         {
             WallCreateArgs wall => WallPlan(d, wall),
@@ -60,7 +61,10 @@ internal static class CommandExecutor
     }
 
     // The repository allowlist found from the add-in's own location (staged under .bim/native-runs/<run>/addin).
-    static RevitCommandPolicy Policy()
+    internal static CommandDocumentFacts Facts(Document d) =>
+        new(d.PathName, d.ProjectInformation?.UniqueId, d.IsReadOnly, d.IsFamilyDocument, d.IsWorkshared, d.IsModifiable);
+
+    internal static RevitCommandPolicy Policy()
     {
         var directory = Path.GetDirectoryName(typeof(CommandExecutor).Assembly.Location);
         return string.IsNullOrEmpty(directory) ? RevitCommandPolicy.None : RevitCommandPolicy.ForRepository(directory);
@@ -79,7 +83,7 @@ internal static class CommandExecutor
     // ---- Collections and reference resolution (rules in CommandReferences) ----
     static Level[] Levels(Document d) => new FilteredElementCollector(d).OfClass(typeof(Level)).Cast<Level>().ToArray();
     static WallType[] WallTypes(Document d) => new FilteredElementCollector(d).OfClass(typeof(WallType)).Cast<WallType>().ToArray();
-    static FloorType[] FloorTypes(Document d) => new FilteredElementCollector(d).OfClass(typeof(FloorType)).Cast<FloorType>().ToArray();
+    static FloorType[] FloorTypes(Document d) => new FilteredElementCollector(d).OfClass(typeof(FloorType)).Cast<FloorType>().Where(type => CommandRules.OffersFloorType(type.IsFoundationSlab)).ToArray();
     static FamilySymbol[] Symbols(Document d, string category) => new FilteredElementCollector(d).OfClass(typeof(FamilySymbol))
         .OfCategory(category == "door" ? BuiltInCategory.OST_Doors : BuiltInCategory.OST_Windows).Cast<FamilySymbol>().ToArray();
     static bool WallHosted(FamilySymbol symbol) => symbol.Family.FamilyPlacementType == FamilyPlacementType.OneLevelBasedHosted;
@@ -102,8 +106,7 @@ internal static class CommandExecutor
         _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
     };
 
-    // Curtain walls have no meaningful layer width.
-    static double? WallTypeWidth(WallType type) => type.Kind == WallKind.Curtain ? null : Mm(type.Width);
+    static double? WallTypeWidth(WallType type) => CommandRules.ReportsWallTypeWidth(type.Kind.ToString()) ? Mm(type.Width) : null;
 
     // ---- Writes ----
     // Apply runs inside the one write Transaction; Check returns a readback mismatch (or null) and runs before the
@@ -151,7 +154,7 @@ internal static class CommandExecutor
                 {
                     var storage = store.Storage ?? DataStorage.Create(d);
                     var entity = new Entity(ReceiptSchema());
-                    entity.Set(CommandReceiptStore.PayloadField, CommandReceiptStore.Serialize(store.Receipts));
+                    entity.Set(CommandReceiptStore.PayloadField, CommandReceiptStore.SerializeBounded(store.Receipts));
                     storage.SetEntity(entity);
                     if (receiptTx.Commit() != TransactionStatus.Committed) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "receipt transaction did not commit");
                 }
@@ -177,6 +180,7 @@ internal static class CommandExecutor
     {
         var level = ResolveLevel(d, args.Level, "args.level");
         var type = Resolve(WallTypes(d), wallType => new CommandCandidate(wallType.UniqueId, wallType.Name), args.Type, "args.type", "wall type");
+        CommandRules.CheckWallTypeForCreate(type.Kind.ToString());
         var expected = CommandGeometry.Wall(args.Curve);
         Wall? wall = null;
         ObservedWall Observe(Wall created)
@@ -214,6 +218,9 @@ internal static class CommandExecutor
     {
         var host = d.GetElement(args.HostWallUid) as Wall ?? throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.host_wall_uid", "no wall with UniqueId " + args.HostWallUid);
         var hostCurve = (host.Location as LocationCurve)?.Curve ?? throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.host_wall_uid", "the host wall has no location curve");
+        // WALL_KEY_REF_PARAM holds the WallLocationLine; only Wall Centerline puts the location curve in the wall's middle.
+        var centerline = host.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM) is { HasValue: true, StorageType: StorageType.Integer } keyRef && keyRef.AsInteger() == (int)WallLocationLine.WallCenterline;
+        CommandRules.CheckOpeningHost(host.WallType.Kind.ToString(), centerline);
         var level = d.GetElement(host.LevelId) as Level ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "the host wall has no base level");
         var symbol = Resolve(Symbols(d, args.Category), candidate => new CommandCandidate(candidate.UniqueId, candidate.Name, CommandReferences.Qualified(candidate.Family.Name, candidate.Name)), args.Symbol, "args.symbol", args.Category + " family type");
         if (!WallHosted(symbol)) throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.symbol", "family type is not wall-hosted");
