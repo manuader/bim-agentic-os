@@ -98,3 +98,6 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - Attempt1: hypothesis fixed Instance field type is valid for Room schedules → AddField ArgumentsInconsistentException, whole Create group rolled back → select fields from GetSchedulableFields by native parameter id (6a9f0ef).
 - Attempt2: hypothesis instance DOOR_WIDTH carries the hosted door width → empty/zero instance value masked the type parameter, 47/52 → read populated instance-or-type width (287014c).
 - Attempt3: same oracle, fix 287014c → 52/52, 8/8 backend checks, product_acceptance true. Budget 3/3 used for this test; no further blind retry.
+
+## C04 catalogue owner session, headless gate (relay68)
+- Attempt1: hypothesis hashtable members read with dot syntax return $null under Set-StrictMode Latest → test-catalogue-session failed on core and core-windows ("property 'Replayed' cannot be found") → optional keys read by index (3c79048). Same oracle then passed on all 8 jobs. Job logs and artifacts are not reachable from the agent session (blob host 403); verify.ps1 now annotates the failing gate with its log tail.
