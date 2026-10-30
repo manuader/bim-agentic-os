@@ -15,9 +15,13 @@
     <Reference Include="RevitAPI"><HintPath>$(RevitPath)\RevitAPI.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="RevitAPIUI"><HintPath>$(RevitPath)\RevitAPIUI.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
-  <!-- No Revit installed (CI): build-only reference assemblies, see ADR 0009 point 5. Nothing is copied to output. -->
-  <ItemGroup Condition="!Exists('$(RevitPath)\RevitAPI.dll')">
+  <!-- No Revit installed, CI only: build-only reference assemblies, see ADR 0009 point 5. Nothing is copied to output.
+       Outside CI a missing Revit fails the build instead of silently compiling against the package. -->
+  <ItemGroup Condition="!Exists('$(RevitPath)\RevitAPI.dll') And '$(CI)'=='true'">
     <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="[2025.0.2]" ExcludeAssets="runtime" PrivateAssets="all" />
     <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="[2025.0.2]" ExcludeAssets="runtime" PrivateAssets="all" />
   </ItemGroup>
+  <Target Name="RequireInstalledRevit" BeforeTargets="ResolveAssemblyReferences" Condition="!Exists('$(RevitPath)\RevitAPI.dll') And '$(CI)'!='true'">
+    <Error Text="Revit 2025 API not found at $(RevitPath). Set RevitPath to the Revit install folder (CI builds use reference packages)." />
+  </Target>
 </Project>
