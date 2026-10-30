@@ -65,9 +65,10 @@ public static class RevitCommandGeometry
         var sweep = endDegrees - startDegrees;
         if (!(sweep > SweepEpsilonDegrees && sweep < 360 - SweepEpsilonDegrees))
             throw new RevitCommandException(RevitCommandCodes.ArcSweepInvalid, field, "end_angle_deg - start_angle_deg must be strictly between 0 and 360");
+        // A short arc is curve_too_short; a long arc whose ends nearly meet is a near-full circle.
+        if (!(radiusMm * sweep * Math.PI / 180 >= MinSegmentMm)) throw new RevitCommandException(RevitCommandCodes.CurveTooShort, field, "arc shorter than 1.2 mm");
         if (!(2 * radiusMm * Math.Sin(sweep * Math.PI / 360) >= MinSegmentMm))
             throw new RevitCommandException(RevitCommandCodes.ArcSweepInvalid, field, "start and end points closer than 1.2 mm");
-        if (!(radiusMm * sweep * Math.PI / 180 >= MinSegmentMm)) throw new RevitCommandException(RevitCommandCodes.CurveTooShort, field, "arc shorter than 1.2 mm");
         CheckExtent(centerX, centerY, radiusMm, field);
     }
 
