@@ -5,7 +5,8 @@ using System.IO.Pipes;
 using System.Text.Json;
 namespace Bim.Revit;
 
-public record Request(string DocumentPath,string Operation,string? UniqueId,double[] Metres, Bim.Core.NativeBatchRequest? Batch = null, FixtureCheckpointRequest? Checkpoint = null);
+// Command: the ADR0009 envelope for Operation "revit.command", kept as received so its raw text can be hashed.
+public record Request(string DocumentPath,string Operation,string? UniqueId,double[] Metres, Bim.Core.NativeBatchRequest? Batch = null, FixtureCheckpointRequest? Checkpoint = null, JsonElement? Command = null);
 public sealed class App : IExternalApplication, IExternalEventHandler
 {
     readonly ConcurrentQueue<(Request,TaskCompletionSource<string>)> queue=new();
@@ -43,6 +44,8 @@ public sealed class App : IExternalApplication, IExternalEventHandler
     }
     static string Run(UIApplication app,Request r)
     {
+        // Catalogue v1 commands answer in the response shape and open their own transactions.
+        if(r.Operation==Bim.Core.RevitCommandProtocol.WireOperation) return CommandExecutor.Run(app,r);
         if(r.Operation=="fixture.room.ab") return NativeRoomFixture.Run(app,r);
         if(r.Operation=="fixture.checkpoint") return FixtureCheckpoint.Run(app,r);
         var d=app.ActiveUIDocument?.Document ?? throw new InvalidOperationException("no_document");
