@@ -29,7 +29,7 @@ Install official .NET 8 SDK into `.tools/dotnet` or use system `dotnet`.
 ./.tools/dotnet/dotnet run --project interfaces/cli -- diff examples/before.json examples/after.json
 ```
 
-Revit API assemblies are referenced from the installed Autodesk product, not distributed. Replace Assembly in `runtimes/revit-native/Bim.addin.template` with the absolute built DLL path and install as `.addin` in the user's Revit 2025 Addins folder. Revit restart is required. Use a dedicated saved test document. The existing Casa Ángel project is not a test fixture.
+Revit API assemblies are referenced from the installed Autodesk product, not distributed. Without an installed Revit (CI `native-build`), the add-in compiles against build-only `Nice3point.Revit.Api` reference assemblies that are never copied to output (ADR 0009). Replace Assembly in `runtimes/revit-native/Bim.addin.template` with the absolute built DLL path and install as `.addin` in the user's Revit 2025 Addins folder. Revit restart is required. Use a dedicated saved test document. The existing Casa Ángel project is not a test fixture.
 
 Native request JSON example (absolute path must match active saved document):
 

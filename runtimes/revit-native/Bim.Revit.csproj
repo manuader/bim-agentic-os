@@ -1,1 +1,27 @@
-<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0-windows</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><EnableWindowsTargeting>true</EnableWindowsTargeting><RevitPath Condition="'$(RevitPath)'==''">C:\Program Files\Autodesk\Revit 2025</RevitPath></PropertyGroup><ItemGroup><FrameworkReference Include="Microsoft.WindowsDesktop.App" /><ProjectReference Include="../../core/Bim.Core/Bim.Core.csproj" /><Reference Include="RevitAPI"><HintPath>$(RevitPath)\RevitAPI.dll</HintPath><Private>false</Private></Reference><Reference Include="RevitAPIUI"><HintPath>$(RevitPath)\RevitAPIUI.dll</HintPath><Private>false</Private></Reference></ItemGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <RevitPath Condition="'$(RevitPath)'==''">C:\Program Files\Autodesk\Revit 2025</RevitPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+    <ProjectReference Include="../../core/Bim.Core/Bim.Core.csproj" />
+  </ItemGroup>
+  <!-- Installed Revit (owner machine): reference the real assemblies, never copied to output. -->
+  <ItemGroup Condition="Exists('$(RevitPath)\RevitAPI.dll')">
+    <Reference Include="RevitAPI"><HintPath>$(RevitPath)\RevitAPI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="RevitAPIUI"><HintPath>$(RevitPath)\RevitAPIUI.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <!-- No Revit installed, CI only: build-only reference assemblies, see ADR 0009 point 5. Nothing is copied to output.
+       Outside CI a missing Revit fails the build instead of silently compiling against the package. -->
+  <ItemGroup Condition="!Exists('$(RevitPath)\RevitAPI.dll') And '$(CI)'=='true'">
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="[2025.0.2]" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="[2025.0.2]" ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+  <Target Name="RequireInstalledRevit" BeforeTargets="ResolveAssemblyReferences" Condition="!Exists('$(RevitPath)\RevitAPI.dll') And '$(CI)'!='true'">
+    <Error Text="Revit 2025 API not found at $(RevitPath). Set RevitPath to the Revit install folder (CI builds use reference packages)." />
+  </Target>
+</Project>

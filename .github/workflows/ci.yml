@@ -145,6 +145,23 @@ jobs:
       - name: Bounded CLI input tests (macOS)
         if: runner.os == 'macOS'
         run: dotnet run --project tests/cli --configuration Release --no-build
+  native-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build Revit add-in against build-only reference assemblies
+        run: dotnet build runtimes/revit-native/Bim.Revit.csproj --configuration Release --warnaserror
+      - name: Assert no Revit assemblies in add-in output
+        shell: pwsh
+        run: |
+          $out = 'runtimes/revit-native/bin/Release/net8.0-windows'
+          if (!(Test-Path (Join-Path $out 'Bim.Revit.dll'))) { throw "Bim.Revit.dll missing from $out" }
+          $leaked = @(Get-ChildItem $out -Recurse -File -Filter 'Revit*.dll')
+          if ($leaked.Count -gt 0) { $leaked | ForEach-Object { "::error::Revit assembly copied to output: $($_.FullName)" }; exit 1 }
+          'PASS no Revit*.dll in add-in output'
   codeql-python:
     runs-on: ubuntu-latest
     permissions:
@@ -157,7 +174,8 @@ jobs:
           languages: python
           build-mode: none
       - uses: github/codeql-action/analyze@v3
-# Native CI BLOCKED: no licensed Windows/Revit runner; guarded executable probes run locally.
+# native-build only compiles the add-in against build-only reference assemblies (ADR 0009 point 5).
+# Native execution CI stays BLOCKED: no licensed Windows/Revit runner; guarded executable probes run locally.
 # Do not add a green placeholder or require Autodesk secrets on public runners.
 
 # Core evaluator health uses synthetic observations and explicit missing-prerequisite paths.
