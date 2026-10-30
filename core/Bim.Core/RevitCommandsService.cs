@@ -18,7 +18,20 @@ public static class RevitCommandService
 
     public static RevitCommandResult Run(string pipeName, string envelopeJson, RevitCommandPolicy policy, Func<string, string, string?> transport)
     {
-        throw new NotImplementedException("C02 red: not implemented yet");
+        if (RejectPipe(pipeName) is { } rejected) return rejected;
+        RevitCommandEnvelope envelope;
+        try { envelope = RevitCommandProtocol.Parse(envelopeJson); }
+        catch (RevitCommandException error) { return Failure(error.Code, error.Field, error.Detail); }
+        if (RevitCopiesGuard.Check(envelope.Spec.Writes, envelope.Document.Path, policy) is { } refused)
+            return Failure(refused, "document.path", refused == RevitCommandCodes.DocumentNotEnabled ? "write commands need a document under an enabled test root" : null);
+        var line = RevitCommandProtocol.WireLine(envelope);
+        if (line.Length > RevitCommandProtocol.MaxRequestChars) return Failure(RevitCommandCodes.RequestTooLarge, null, "wire line exceeds 65536 characters");
+        string? response;
+        try { response = transport(pipeName, line); }
+        catch (TimeoutException) { return Failure(RevitCommandCodes.PipeConnectTimeout, "pipe_name", "no add-in listening on this process pipe", forwarded: true); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return Failure(RevitCommandCodes.PipeIoError, "pipe_name", error.GetType().Name, forwarded: true); }
+        if (response is null) return Failure(RevitCommandCodes.NoResponse, "pipe_name", "pipe closed without a response line", forwarded: true);
+        return new RevitCommandResult(response, !Succeeded(response), true);
     }
 
     // The executor's line is passed through verbatim; it is an error unless it is a JSON object with status "succeeded".

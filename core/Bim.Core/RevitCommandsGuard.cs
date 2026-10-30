@@ -61,7 +61,9 @@ public static class RevitCopiesGuard
     // Null when allowed, otherwise a RevitCommandCodes value. Read-only commands are allowed on any document.
     public static string? Check(bool writes, string documentPath, RevitCommandPolicy policy)
     {
-        throw new NotImplementedException("C02 red: not implemented yet");
+        if (!IsAbsoluteNormalized(documentPath)) return RevitCommandCodes.DocumentPathInvalid;
+        if (!writes) return null;
+        return policy.EnabledRoots.Any(root => IsUnder(documentPath, root)) ? null : RevitCommandCodes.DocumentNotEnabled;
     }
 
     // True when path equals root or lies inside it (whole segments only: "native-runs-x" is not under "native-runs").

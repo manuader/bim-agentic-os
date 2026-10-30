@@ -279,7 +279,30 @@ public static class RevitCommandProtocol
 
     public static RevitCommandEnvelope Parse(JsonElement root)
     {
-        throw new NotImplementedException("C02 red: not implemented yet");
+        if (root.ValueKind != JsonValueKind.Object) throw new RevitCommandException(RevitCommandCodes.EnvelopeInvalid, null, "object required");
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in root.EnumerateObject())
+        {
+            if (!seen.Add(property.Name)) throw new RevitCommandException(RevitCommandCodes.EnvelopeInvalid, property.Name, "duplicate member");
+            if (!EnvelopeMembers.Contains(property.Name, StringComparer.Ordinal)) throw new RevitCommandException(RevitCommandCodes.EnvelopeInvalid, property.Name, "unexpected member");
+        }
+        if (!root.TryGetProperty("protocol_version", out var version) || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var protocolVersion) || protocolVersion != Version)
+            throw new RevitCommandException(RevitCommandCodes.ProtocolVersionUnsupported, "protocol_version", "1 required");
+        if (!root.TryGetProperty("operation_id", out var operation) || operation.ValueKind != JsonValueKind.String || !IsOperationId(operation.GetString()))
+            throw new RevitCommandException(RevitCommandCodes.OperationIdInvalid, "operation_id", "1-128 of [A-Za-z0-9._:-], starting alphanumeric");
+        var documentRef = ParseDocument(root);
+        if (!root.TryGetProperty("command", out var commandElement) || commandElement.ValueKind != JsonValueKind.String)
+            throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", "string required");
+        var command = commandElement.GetString()!;
+        var spec = RevitCommandCatalogue.Find(command) ?? throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", command);
+        if (!root.TryGetProperty("args", out var args)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args", "required");
+        using (var schema = JsonDocument.Parse(spec.ArgsSchemaJson))
+        {
+            if (RevitCommandSchema.Validate(args, schema.RootElement, "args") is { } failure) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, failure.Field, failure.Detail);
+        }
+        var typed = spec.Bind(args);
+        var canonical = CanonicalEnvelope(protocolVersion, operation.GetString()!, documentRef, command, args);
+        return new RevitCommandEnvelope(protocolVersion, operation.GetString()!, documentRef, command, spec, typed, canonical);
     }
 
     static RevitDocumentRef ParseDocument(JsonElement root)
