@@ -2,6 +2,9 @@
 # Each run uses a NEW child Revit process with its own run directory and staged manifest. Revit processes that
 # were already running (for example a production model) are recorded and never touched. The unsigned add-in
 # prompt needs the owner's Load Once in each child; this script only waits for it, it never answers it.
+# -Catalogue (C04) replaces the A/B evaluation with the scripted catalogue v1 smoke of scripts/owner-catalogue-steps.ps1
+# through the CLI revit-command verb, records .bim/native-sessions/<utc>/catalogue-run<N>.json and, unless
+# -CloseWaitSeconds is given, leaves the child Revit open so the owner can look at the (unsaved) result.
 [CmdletBinding()]
 param(
  [ValidateRange(1,10)][int]$Runs = 3,
@@ -10,7 +13,9 @@ param(
  [ValidateRange(60,1800)][int]$LoadWaitSeconds = 900,
  [ValidateRange(30,900)][int]$EvaluationTimeoutSeconds = 300,
  [ValidateRange(0,600)][int]$CloseWaitSeconds = 180,
- [switch]$SkipSourceCheck
+ [switch]$SkipSourceCheck,
+ [switch]$Catalogue,
+ [ValidateRange(10,1800)][int]$StepTimeoutSeconds = 300
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -18,13 +23,16 @@ if ($PSVersionTable.PSVersion -lt [version]'7.2') { throw 'PowerShell 7.2+ (pwsh
 if (!$IsWindows) { throw 'Windows with Revit 2025 required' }
 $root = Split-Path $PSScriptRoot
 Set-Location $root
+. (Join-Path $PSScriptRoot 'owner-catalogue-steps.ps1')
+if ($Catalogue -and !$PSBoundParameters.ContainsKey('Runs')) { $Runs = 1 }
+if ($Catalogue -and !$PSBoundParameters.ContainsKey('CloseWaitSeconds')) { $CloseWaitSeconds = 0 }
 $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
 $session = Join-Path $root ".bim/native-sessions/$stamp"
 New-Item -ItemType Directory -Force $session | Out-Null
 $log = Join-Path $session 'session.log'
 function Say([string]$text) { $line = '[' + [DateTime]::UtcNow.ToString('HH:mm:ssZ') + '] ' + $text; Write-Host $line; Add-Content -LiteralPath $log -Value $line }
 function Sha([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
-$summary = [ordered]@{ schema_version = 1; started_utc = [DateTime]::UtcNow.ToString('o'); session = $session; head = ''; protected_revit_pids = @(); source_check = 'not_run'; builds = [ordered]@{}; runs = @(); finished_utc = $null; outcome = 'incomplete' }
+$summary = [ordered]@{ schema_version = 1; mode = $(if ($Catalogue) { 'catalogue' } else { 'room_ab' }); started_utc = [DateTime]::UtcNow.ToString('o'); session = $session; head = ''; protected_revit_pids = @(); source_check = 'not_run'; builds = [ordered]@{}; runs = @(); finished_utc = $null; outcome = 'incomplete' }
 function Save { $summary.finished_utc = [DateTime]::UtcNow.ToString('o'); $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $session 'summary.json') }
 
 try {
@@ -72,7 +80,7 @@ try {
  }
 
  for ($i = 1; $i -le $Runs; $i++) {
-  $run = [ordered]@{ index = $i; run_directory = ''; child_pid = $null; bootstrap = 'not_started'; evaluation_exit = $null; outcome = $null; verification_state = $null; product_acceptance = $null; counts = $null; total_ms = $null; revit_execute_ms = $null; staged_addin_sha256 = $null; closed = $null }
+  $run = [ordered]@{ index = $i; run_directory = ''; child_pid = $null; bootstrap = 'not_started'; evaluation_exit = $null; outcome = $null; verification_state = $null; product_acceptance = $null; counts = $null; total_ms = $null; revit_execute_ms = $null; staged_addin_sha256 = $null; closed = $null; catalogue = $null }
   $summary.runs += $run
   $runDir = Join-Path $root ('.bim/native-runs/' + [guid]::NewGuid())
   $run.run_directory = $runDir
@@ -95,8 +103,8 @@ try {
   $run.child_pid = $child.Id
   @{ process_id = $child.Id; run_directory = $runDir; manifest = $manifest; manifest_sha256 = (Sha $manifest); started_utc = [DateTime]::UtcNow.ToString('o'); protected_pids = $summary.protected_revit_pids } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDir 'controller-launch.json')
   Save
-  Say ">>> Run ${i}: Revit child PID $($child.Id) started. Choose 'Load Once' for 'BIM Agentic OS Fixture' in THAT window when the security prompt appears. Waiting up to $LoadWaitSeconds s."
-  Say '>>> Do NOT open any other Revit until this session ends: while the fixture manifest is installed, a new Revit would load the fixture add-in.'
+  Say ">>> Ejecución ${i}: se abrió un Revit nuevo (PID $($child.Id)). Cuando aparezca el aviso de seguridad de 'BIM Agentic OS Fixture' en ESA ventana, haga clic en 'Load Once'. Espero hasta $LoadWaitSeconds s."
+  Say '>>> No abra otro Revit hasta que termine esta sesión: mientras el manifiesto de prueba está instalado, un Revit nuevo cargaría el complemento de prueba.'
   $deadline = [DateTime]::UtcNow.AddSeconds($LoadWaitSeconds)
   while ([DateTime]::UtcNow -lt $deadline -and !(Test-Path -LiteralPath $result)) {
    if ($child.HasExited) { break }
@@ -110,22 +118,43 @@ try {
    $expectedDocument = [IO.Path]::GetFullPath((Join-Path $runDir 'BIM-Agentic-Test.rvt'))
    if (![IO.Path]::GetFullPath([string]$boot.documentPath).Equals($expectedDocument, [StringComparison]::OrdinalIgnoreCase)) { $run.bootstrap = 'document_mismatch'; throw "Run $i fixture document is not this run's own fixture" }
    $run.bootstrap = 'succeeded'
-   Say "Run ${i}: fixture ready in PID $($child.Id); running the A/B evaluation (no automatic retry)"
-   try {
-    & (Join-Path $root 'tests/integration/native-room-ab.ps1') -RunDirectory $runDir -DocumentPath $boot.documentPath -DocumentIdentity $boot.documentUniqueId -ProcessId $child.Id -PipeName $boot.pipeName -Dotnet $dotnet -CliDll $cli -TimeoutSeconds $EvaluationTimeoutSeconds | Out-Null
-    $run.evaluation_exit = $LASTEXITCODE
-   } catch { $run.evaluation_exit = 'wrapper_error: ' + $_.Exception.Message; throw }
-   $reportPath = Join-Path $runDir 'native-room-report.json'
-   if (Test-Path -LiteralPath $reportPath) {
-    $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
-    $run.outcome = $report.outcome
-    $run.verification_state = $report.verification_state
-    $run.product_acceptance = $report.product_acceptance
-    $run.counts = $report.counts
-    $run.total_ms = $report.metrics.total_ms.value
-    $run.revit_execute_ms = $report.metrics.revit_execute_ms.value
+   if ($Catalogue) {
+    Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script crea muros, una puerta, una ventana, un suelo y una habitación en el modelo de prueba. No toque Revit hasta que termine."
+    $catalogueRequests = Join-Path $runDir 'catalogue-requests'
+    $catalogueInvoke = { param($index, $key, $json) Invoke-CatalogueCli -Dotnet $dotnet -CliDll $cli -PipeName $boot.pipeName -RequestDirectory $catalogueRequests -Index $index -Key $key -Json $json -TimeoutSeconds $StepTimeoutSeconds }
+    $sequence = Invoke-CatalogueSequence -Stamp $stamp -Run $i -DocumentPath $boot.documentPath -DocumentUid $boot.documentUniqueId -Invoke $catalogueInvoke -Progress { param($line) Say "  $line" } -Alive { !$child.HasExited }
+    $cataloguePath = Join-Path $session "catalogue-run$i.json"
+    [ordered]@{
+     schema_version = 1; session_stamp = $stamp; run = $i; head = $summary.head; child_pid = $child.Id; pipe_name = $boot.pipeName
+     document_path = $boot.documentPath; document_unique_id = $boot.documentUniqueId; revit_build = $boot.revitBuild
+     result_line = (Format-CatalogueResult $sequence.counts); counts = $sequence.counts; picked = $sequence.picked
+     document_saved = $false
+     document_note = 'Catalogue v1 has no save command and this session adds none: the changes live only in the open child Revit. Closing it without saving discards them.'
+     steps = $sequence.steps
+    } | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $cataloguePath
+    $run.catalogue = [ordered]@{ file = $cataloguePath; counts = $sequence.counts }
+    $run.outcome = Format-CatalogueResult $sequence.counts
+    foreach ($step in @($sequence.steps | Where-Object { !$_.passed })) { Say "  Falló el paso $($step.index) ($($step.description)): $($step.reason)" }
+    Say ">>> Ejecución ${i}: $($run.outcome). Detalle: $cataloguePath"
    }
-   Say "Run ${i}: outcome $($run.outcome), product_acceptance $($run.product_acceptance), total_ms $($run.total_ms)"
+   else {
+    Say "Run ${i}: fixture ready in PID $($child.Id); running the A/B evaluation (no automatic retry)"
+     try {
+      & (Join-Path $root 'tests/integration/native-room-ab.ps1') -RunDirectory $runDir -DocumentPath $boot.documentPath -DocumentIdentity $boot.documentUniqueId -ProcessId $child.Id -PipeName $boot.pipeName -Dotnet $dotnet -CliDll $cli -TimeoutSeconds $EvaluationTimeoutSeconds | Out-Null
+      $run.evaluation_exit = $LASTEXITCODE
+     } catch { $run.evaluation_exit = 'wrapper_error: ' + $_.Exception.Message; throw }
+     $reportPath = Join-Path $runDir 'native-room-report.json'
+     if (Test-Path -LiteralPath $reportPath) {
+      $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+      $run.outcome = $report.outcome
+      $run.verification_state = $report.verification_state
+      $run.product_acceptance = $report.product_acceptance
+      $run.counts = $report.counts
+      $run.total_ms = $report.metrics.total_ms.value
+      $run.revit_execute_ms = $report.metrics.revit_execute_ms.value
+     }
+     Say "Run ${i}: outcome $($run.outcome), product_acceptance $($run.product_acceptance), total_ms $($run.total_ms)"
+   }
   }
   finally {
    if ((Test-Path -LiteralPath $manifest) -and (Sha $manifest) -eq (Sha (Join-Path $runDir 'Bim.Agentic.Fixture.addin'))) { Remove-Item -LiteralPath $manifest }
@@ -134,12 +163,21 @@ try {
     $run.closed = $child.WaitForExit($CloseWaitSeconds * 1000)
     if (!$run.closed) { Say "Run ${i}: child PID $($child.Id) did not close in $CloseWaitSeconds s; left running, close it yourself (not production)" }
    }
+   elseif ($child -and !$child.HasExited) { Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. El modelo de prueba NO está guardado; al cerrarlo, Revit preguntará si guardar: puede elegir No." }
    Save
   }
  }
- $accepted = @($summary.runs | Where-Object { $_.product_acceptance -eq $true }).Count
- $summary.outcome = "$accepted/$Runs runs product_acceptance=true"
- Say "Session finished: $($summary.outcome)"
+ if ($Catalogue) {
+  $total = [ordered]@{ passed = 0; total = 0 }
+  foreach ($done in @($summary.runs | Where-Object { $_.catalogue })) { $total.passed += $done.catalogue.counts.passed; $total.total += $done.catalogue.counts.total }
+  $summary.outcome = Format-CatalogueResult $total
+  Say ">>> Sesión terminada. $($summary.outcome)"
+ }
+ else {
+  $accepted = @($summary.runs | Where-Object { $_.product_acceptance -eq $true }).Count
+  $summary.outcome = "$accepted/$Runs runs product_acceptance=true"
+  Say "Session finished: $($summary.outcome)"
+ }
 }
-catch { Say "STOPPED: $($_.Exception.Message)"; $summary.outcome = 'stopped: ' + $_.Exception.Message; throw }
+catch { Say "DETENIDO (STOPPED): $($_.Exception.Message)"; $summary.outcome = 'stopped: ' + $_.Exception.Message; throw }
 finally { Save; Say "Summary: $(Join-Path $session 'summary.json')" }
