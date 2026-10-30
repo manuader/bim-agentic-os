@@ -52,14 +52,27 @@ Loaded by relay14 (Claude) after the owner said "segui metiendole"; controller's
 | N22 | Native reconcile contract (ADR0007 A, Revit path) | ✅ | R02 | runtimes/revit-native/NativeReconcile*.cs (Autodesk-free); tests/integration/NativeReconcileGuard.Tests | Revit-independent decision logic comparing the saved ExtensibleStorage project snapshot with Core, fail-closed codes, source-linked guard tests in CI; native execution stays owner-gated | target unit-tested (guards); native verification owner-gated |
 | S01 | Bounded CLI inputs | ✅ | — | interfaces/cli/Program.cs; tests/evaluation/test-evaluate-cli.ps1 or new tests/cli | every CLI file input has a size cap and typed failure code; oversized and non-regular inputs rejected; MCP equality tests still green | target unit-tested |
 
+### Revit command surface — catalogue v1 (architecture)
+
+Owner scope change 2026-10-30, [ADR0009](docs/architecture/adr/0009-revit-command-surface.md), [plan](docs/plans/2026-10-30-revit-command-surface.md). N21 partial: owner session 20261030T192810Z passed runs 1–2 (52/52 each); run 3 pending.
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| C01 | CI compiles the Revit add-in | ⏳ | — | runtimes/revit-native/Bim.Revit.csproj; .github/workflows/ci.yml | windows CI job builds Bim.Revit with --warnaserror using build-only reference assemblies; local installed-Revit build unchanged | target compiled |
+| C02 | Command protocol, catalogue v1 contracts and MCP tools | ⏳ | — | core/Bim.Core/RevitCommands*.cs; interfaces/mcp; tests/revit-commands | envelope, validators, copies-only guard and generated MCP tools unit-tested in CI | target unit-tested |
+| C03 | Revit executor for catalogue v1 | ⛔ | C01, C02 | runtimes/revit-native/Commands*.cs; App.cs dispatch | queries, wall line/arc, door/window, floor, room compile in CI; Autodesk-free parts tested | target compiled |
+| C04 | Owner smoke of catalogue v1 in Revit | 🔒 | C03 | scripts/owner-native-session.ps1; artifacts | curved wall, door, floor, room created on a fixture with readback and no-duplicate retry | target verified-in-revit |
+| C05 | Guarded free path (ADR + implementation) | ⛔ | C03 | docs/architecture/adr; runtimes/revit-native | ADR accepted; free C# runs in a rolled-back transaction group with change report | target unit-tested |
+
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 18/19 done (94.7 %)
+Progress: 18/24 done (75.0 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
 - Relay7 batch — platform coverage, rebuild baseline, recovery guard: 3/3
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
-Next ready: 
+- Revit command surface — catalogue v1 (architecture): 0/5
+Next ready: C01, C02
 
