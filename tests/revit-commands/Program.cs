@@ -229,6 +229,19 @@ try
     Rejects("centre arc extending beyond 1e8 mm", Envelope("wall.create", Wall(ArcC(9.99e7, 0, 1e6, 0, 90))), RevitCommandCodes.ArcRadiusInvalid, "args.curve");
     Rejects("centre arc centre beyond 1e8 mm", Envelope("wall.create", Wall(ArcC(-2e8, 0, 1000, 0, 90))), RevitCommandCodes.LengthInvalid, "args.curve.center[0]");
 
+    // ---- Revit's own 30000 ft limit (9 144 000 mm) on arc radius, wall height and base offset ----
+    Check(RevitCommandGeometry.MaxRevitLengthMm == 9_144_000, "Revit length limit is 30000 ft = 9 144 000 mm");
+    Accepts("centre arc radius at the Revit limit accepted", Envelope("wall.create", Wall(ArcC(0, 0, 9_144_000, 0, 10))));
+    Rejects("centre arc radius just above the Revit limit", Envelope("wall.create", Wall(ArcC(0, 0, 9_144_001, 0, 10))), RevitCommandCodes.ArcRadiusInvalid, "args.curve.radius_mm");
+    Rejects("three-point arc with radius about 9.19e6 mm (above the Revit limit)", Envelope("wall.create", Wall(Arc3(0, 0, 10000, 0, 5000, 1.36))), RevitCommandCodes.ArcRadiusInvalid, "args.curve");
+    Accepts("three-point arc with radius about 8.33e6 mm accepted", Envelope("wall.create", Wall(Arc3(0, 0, 10000, 0, 5000, 1.5))));
+    var limitHeight = Wall(Line(0, 0, 5000, 0)); limitHeight["height_mm"] = 9_144_000;
+    Accepts("wall height at the Revit limit accepted", Envelope("wall.create", limitHeight));
+    var highWall = Wall(Line(0, 0, 5000, 0)); highWall["height_mm"] = 9_144_001;
+    Rejects("wall height above the Revit limit", Envelope("wall.create", highWall), RevitCommandCodes.LengthInvalid, "args.height_mm");
+    var deepOffset = Wall(Line(0, 0, 5000, 0)); deepOffset["base_offset_mm"] = -9_144_001;
+    Rejects("wall base offset beyond the Revit limit", Envelope("wall.create", deepOffset), RevitCommandCodes.LengthInvalid, "args.base_offset_mm");
+
     // ---- Floor boundaries ----
     var square = Accepts("rectangular floor accepted", Envelope("floor.create", Floor(P(0, 0), P(4000, 0), P(4000, 3000), P(0, 3000))));
     Check(square?.Args is FloorCreateArgs { Boundary.Count: 4 } squareFloor && Near(squareFloor.Boundary[2].X.Millimetres, 4000) && squareFloor.Type == "Generic 150mm", "rectangle binds four typed vertices");

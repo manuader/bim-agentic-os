@@ -6,6 +6,8 @@ public static class RevitCommandGeometry
 {
     // Revit's short-curve tolerance is 1/256 ft (about 1.19 mm); shorter curves or edges cannot be created.
     public const double MinSegmentMm = 1.2;
+    // Red step placeholder.
+    public const double MaxRevitLengthMm = 0;
     // Three points whose turn has a sine below this are treated as collinear.
     public const double CollinearSine = 1e-9;
     const double AdjacentCollinearSine = 1e-12;

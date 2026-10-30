@@ -245,6 +245,50 @@ try
     Check(JsonNode.Parse(CommandReadback.FloorJson(floor))!["floor"]!["area_mm2"]!.GetValue<double>() == 12e6, "floor readback JSON carries the area");
     Check((string?)JsonNode.Parse(CommandReadback.RoomJson(room))!["room"]!["number"] == "101", "room readback JSON carries name and number");
 
+    // ---- Add-in exposure: no pipe without a validated fixture bootstrap ----
+    Check(!AddInGate.PipeAllowed(null, false) && !AddInGate.PipeAllowed("", true) && !AddInGate.PipeAllowed("   ", true), "no BIM_AGENTIC_TEST_CONFIG: the add-in opens no pipe, whatever else happened");
+    Check(!AddInGate.PipeAllowed(@"C:\Repo\.bim\native-runs\run-1\config.json", false), "config set but bootstrap not validated and completed: no pipe");
+    Check(AddInGate.PipeAllowed(@"C:\Repo\.bim\native-runs\run-1\config.json", true), "config set and bootstrap completed: the pipe may open");
+    Check(AddInGate.ConfigVariable == "BIM_AGENTIC_TEST_CONFIG", "gate reads the same opt-in variable as FixtureBootstrap");
+
+    // ---- Legacy primitive operations pass the same copies/link guard as revit.command writes ----
+    foreach (var operation in new[] { "level.create", "wall.create", "wall.axis.update", "element.delete", "batch", "something.new" })
+        Check(!AddInGate.IsLegacyRead(operation), "legacy " + operation + " is guarded as a write");
+    Check(AddInGate.IsLegacyRead("inspect"), "legacy inspect is the only unguarded read");
+    RevitCommandException? Legacy(string requestPath, CommandDocumentFacts facts, RevitFileSystemProbe? probe = null) =>
+        ErrorOf(() => AddInGate.CheckLegacyWrite(requestPath, facts, () => policy, probe ?? noLinks));
+    Check(Legacy(FixturePath, Facts()) is null, "legacy write on the enabled fixture is admitted");
+    Check(Legacy(RealPath, Facts(RealPath)) is { Code: RevitCommandCodes.DocumentNotEnabled }, "legacy write on a production document is document_not_enabled");
+    Check(Legacy(FixturePath, Facts(), linkedRun) is { Code: RevitCommandCodes.DocumentLinkRefused }, "legacy write through a junction is document_link_refused");
+    Check(Legacy(FixturePath, Facts(), new RevitFileSystemProbe(_ => false, _ => 2)) is { Code: RevitCommandCodes.DocumentLinkRefused }, "legacy write on a hard-linked document is document_link_refused");
+    Check(Legacy(FixturePath, Facts(RealPath)) is { Code: RevitCommandCodes.DocumentConflict }, "legacy request naming another document than the active one is document_conflict");
+    Check(Legacy(FixturePath, Facts(path: "")) is { Code: RevitCommandCodes.DocumentConflict }, "legacy write on an unsaved document is document_conflict");
+    Check(Legacy(FixturePath, Facts(readOnly: true)) is { Code: RevitCommandCodes.DocumentNotEnabled }, "legacy write on a read-only document is document_not_enabled");
+    Check(Legacy(FixturePath, Facts(uid: null)) is null, "legacy writes do not carry the document UniqueId (their UniqueId is an element)");
+
+    // ---- Catalogue v1 element rules ----
+    Check(CommandRules.ReportsWallTypeWidth("Basic") && !CommandRules.ReportsWallTypeWidth("Stacked") && !CommandRules.ReportsWallTypeWidth("Curtain"), "wall type width is reported only for basic walls");
+    Check(ErrorOf(() => CommandRules.CheckWallTypeForCreate("Stacked")) is { Code: RevitCommandCodes.ReferenceNotFound, Field: "args.type" }, "stacked wall types are refused by wall.create (reference_not_found)");
+    Check(ErrorOf(() => CommandRules.CheckWallTypeForCreate("Basic")) is null && ErrorOf(() => CommandRules.CheckWallTypeForCreate("Curtain")) is null, "basic and curtain wall types can be created");
+    Check(ErrorOf(() => CommandRules.CheckOpeningHost("Curtain", true)) is { Code: RevitCommandCodes.ReferenceNotFound, Field: "args.host_wall_uid" }, "a curtain wall cannot host a door or window");
+    Check(ErrorOf(() => CommandRules.CheckOpeningHost("Basic", false)) is { Code: RevitCommandCodes.ReferenceNotFound, Field: "args.host_wall_uid" } offCenter && offCenter.Detail!.Contains("Wall Centerline", StringComparison.Ordinal), "a host whose location line is not the wall centerline is refused");
+    Check(ErrorOf(() => CommandRules.CheckOpeningHost("Basic", true)) is null && ErrorOf(() => CommandRules.CheckOpeningHost("Stacked", true)) is null, "basic and stacked hosts on their centerline are accepted");
+    Check(CommandRules.OffersFloorType(isFoundationSlab: false) && !CommandRules.OffersFloorType(isFoundationSlab: true), "foundation slab types are not floor types for query or floor.create");
+
+    // ---- Receipt store capacity ----
+    Check(CommandReceiptStore.MaxReceipts == 2000 && CommandReceiptStore.MaxPayloadBytes == 4 * 1024 * 1024, "receipt store caps: 2000 receipts, 4 MB payload");
+    var many = new Dictionary<string, StoredCommandReceipt>(StringComparer.Ordinal);
+    for (var i = 0; i < CommandReceiptStore.MaxReceipts - 1; i++) many["op-" + i] = stored;
+    Check(ErrorOf(() => CommandReceiptStore.EnsureRoom(many)) is null, "1999 receipts: room for one more");
+    many["op-last"] = stored;
+    Check(ErrorOf(() => CommandReceiptStore.EnsureRoom(many)) is { Code: RevitCommandCodes.TransactionFailed, Detail: "receipt store full" }, "2000 receipts: a new write is refused with 'receipt store full'");
+    Check(CommandReceiptStore.SerializeBounded(many).Length > 0, "2000 small receipts still serialize");
+    many["op-over"] = stored;
+    Check(ErrorOf(() => CommandReceiptStore.SerializeBounded(many)) is { Code: RevitCommandCodes.TransactionFailed, Detail: "receipt store full" }, "2001 receipts are never persisted");
+    var big = stored with { ResponseJson = stored.ResponseJson.Replace(wallReadback, "{\"wall\":{\"pad\":\"" + new string('x', 5 * 1024 * 1024) + "\"}}", StringComparison.Ordinal) };
+    Check(ErrorOf(() => CommandReceiptStore.SerializeBounded(new Dictionary<string, StoredCommandReceipt>(StringComparer.Ordinal) { ["op-1"] = big })) is { Code: RevitCommandCodes.TransactionFailed, Detail: "receipt store full" }, "a payload over 4 MB is never persisted");
+    Check(CommandReceiptStore.SerializeBounded(reread) == CommandReceiptStore.Serialize(reread), "bounded serialization equals the plain payload under the caps");
+
     // ---- End to end with the real client: CLI wire line in, executor response out ----
     string? FakeAddIn(string pipe, string sent, Func<CommandRequest, string> respond)
     {

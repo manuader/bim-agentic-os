@@ -102,6 +102,10 @@ public static class CommandReceiptStore
     public const string SchemaName = "BimAgenticRevitCommandReceiptsV1";
     public const string PayloadField = "Payload";
     public const int PayloadVersion = 1;
+    public const int MaxReceipts = 0;
+    public const int MaxPayloadBytes = 0;
+    public static void EnsureRoom(IReadOnlyDictionary<string, StoredCommandReceipt> receipts) => throw new NotImplementedException();
+    public static string SerializeBounded(IReadOnlyDictionary<string, StoredCommandReceipt> receipts) => throw new NotImplementedException();
     static readonly string[] ReceiptMembers = { "command", "document_unique_id", "request_sha256", "response" };
 
     public static CommandReceiptAction Decide(IReadOnlyDictionary<string, StoredCommandReceipt> receipts, string operationId, string requestSha256) =>
