@@ -332,6 +332,17 @@
       ],
       "blocker": null,
       "scope": "CI native-build job compiles runtimes/revit-native on windows-latest with --warnaserror against Nice3point.Revit.Api 2025.0.2 build-only reference assemblies (CI run 41127640415); no Revit DLL reaches output. Local builds use installed Revit and fail if it is missing. Compilation only, no native execution."
+    },
+    {
+      "id": "revit-command-protocol-v1",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/RevitCommands.cs",
+        "tests/revit-commands/Program.cs",
+        "interfaces/mcp/McpServer.cs"
+      ],
+      "blocker": "No Revit executor yet (C03); nothing has run in Revit.",
+      "scope": "ADR0009 catalogue v1 contracts: queries (levels, wall/floor types, door/window symbols), wall.create line/arc, opening.place, floor.create, room.create; mm/deg validators incl. arc and polygon tolerances; copies-only guard (test roots + owner file, links/junctions/hard links refused); receipt verification; generated MCP tools and CLI revit-command verb. CI 41134328128 on Ubuntu and Windows."
     }
   ]
 }
