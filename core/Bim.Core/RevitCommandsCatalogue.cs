@@ -35,7 +35,7 @@ public static class RevitCommandCatalogue
 
     const string EmptySchema = """{"type":"object","description":"No arguments; pass {}.","properties":{},"additionalProperties":false}""";
 
-    const string FamilySymbolsSchema = """{"type":"object","properties":{"category":{"type":"string","description":"Which loaded family types to list","enum":["doors","windows"]}},"required":["category"],"additionalProperties":false}""";
+    const string FamilySymbolsSchema = """{"type":"object","properties":{"category":{"type":"string","description":"Which loaded family types to list","enum":["door","window"]}},"required":["category"],"additionalProperties":false}""";
 
     static readonly string LineCurve = Fill("""{"type":"object","description":"Straight wall from start to end","properties":{"kind":{"type":"string","enum":["line"]},"start":@0@,"end":@1@},"required":["kind","start","end"],"additionalProperties":false}""", Point, Point);
     static readonly string ArcThroughCurve = Fill("""{"type":"object","description":"Curved wall from start to end passing through a third point (not collinear)","properties":{"kind":{"type":"string","enum":["arc"]},"start":@0@,"end":@1@,"through":@2@},"required":["kind","start","end","through"],"additionalProperties":false}""", Point, Point, Point);
@@ -43,7 +43,7 @@ public static class RevitCommandCatalogue
 
     static readonly string WallSchema = Fill("""{"type":"object","properties":{"level":@0@,"type":@1@,"base_offset_mm":{"type":"number","description":"Base offset from the level in millimetres; may be negative; default 0"},"height_mm":{"type":"number","description":"Unconnected height in millimetres, greater than 0"},"structural":{"type":"boolean","description":"Structural wall; default false"},"curve":{"description":"Wall location line in plan, in millimetres","oneOf":[@2@,@3@,@4@]}},"required":["level","type","height_mm","curve"],"additionalProperties":false}""", Reference("Base level: name or UniqueId from revit_query_levels"), Reference("Wall type: name or UniqueId from revit_query_wall_types"), LineCurve, ArcThroughCurve, ArcCenterCurve);
 
-    static readonly string OpeningSchema = Fill("""{"type":"object","properties":{"category":{"type":"string","description":"Door or window","enum":["door","window"]},"symbol":@0@,"host_wall_uid":@1@,"position_along_mm":{"type":"number","description":"Distance along the host wall from its start, in millimetres, 0 or more"},"sill_mm":{"type":"number","description":"Sill height above the level in millimetres, 0 or more; optional"}},"required":["category","symbol","host_wall_uid","position_along_mm"],"additionalProperties":false}""", Reference("Family type: name or UniqueId from revit_query_family_symbols"), UniqueIdSchema);
+    static readonly string OpeningSchema = Fill("""{"type":"object","properties":{"category":{"type":"string","description":"Door or window","enum":["door","window"]},"symbol":@0@,"host_wall_uid":@1@,"position_along_mm":{"type":"number","description":"Distance along the host wall from its start, in millimetres, 0 or more"},"sill_mm":{"type":"number","description":"Window sill height above the level in millimetres, 0 or more; optional; not allowed for doors"}},"required":["category","symbol","host_wall_uid","position_along_mm"],"additionalProperties":false}""", Reference("Family type: name or UniqueId from revit_query_family_symbols"), UniqueIdSchema);
 
     static readonly string FloorSchema = Fill("""{"type":"object","properties":{"level":@0@,"type":@1@,"boundary":{"type":"array","description":"Closed outline as [x, y] millimetre vertices; the closing edge is implicit; must not self-intersect","items":@2@,"minItems":3,"maxItems":@3@}},"required":["level","type","boundary"],"additionalProperties":false}""", Reference("Level: name or UniqueId from revit_query_levels"), Reference("Floor type: name or UniqueId from revit_query_floor_types"), Point, MaxBoundaryPoints.ToString(CultureInfo.InvariantCulture));
 
@@ -73,6 +73,7 @@ public static class RevitCommandCatalogue
             ? RevitUnits.Millimetres(Number(offset), "args.base_offset_mm", allowNegative: true, allowZero: true)
             : Length.FromMetres(0);
         var height = RevitUnits.Millimetres(Number(args.GetProperty("height_mm")), "args.height_mm", allowNegative: false, allowZero: false);
+        if (height.Millimetres < RevitCommandGeometry.MinSegmentMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, "args.height_mm", "height under 1.2 mm");
         var structural = args.TryGetProperty("structural", out var structuralElement) && structuralElement.GetBoolean();
         var curve = args.GetProperty("curve");
         WallCurve typed;
@@ -98,7 +99,7 @@ public static class RevitCommandCatalogue
             var radius = Number(curve.GetProperty("radius_mm"));
             var startAngle = Number(curve.GetProperty("start_angle_deg"));
             var endAngle = Number(curve.GetProperty("end_angle_deg"));
-            RevitCommandGeometry.CheckArcCenter(radius, startAngle, endAngle, "args.curve");
+            RevitCommandGeometry.CheckArcCenter(center.X, center.Y, radius, startAngle, endAngle, "args.curve");
             typed = new ArcCenterWallCurve(ToPoint(center), Length.FromMillimetres(radius), Angle.FromDegrees(startAngle), Angle.FromDegrees(endAngle));
         }
         return new WallCreateArgs(level, type, baseOffset, height, structural, typed);
@@ -106,11 +107,13 @@ public static class RevitCommandCatalogue
 
     static RevitCommandArgs BindOpening(JsonElement args)
     {
+        var category = args.GetProperty("category").GetString()!;
+        if (category == "door" && args.TryGetProperty("sill_mm", out _)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.sill_mm", "doors have no sill height");
         var position = RevitUnits.Millimetres(Number(args.GetProperty("position_along_mm")), "args.position_along_mm", allowNegative: false, allowZero: true);
         Length? sill = args.TryGetProperty("sill_mm", out var sillElement)
             ? RevitUnits.Millimetres(Number(sillElement), "args.sill_mm", allowNegative: false, allowZero: true)
             : null;
-        return new OpeningPlaceArgs(args.GetProperty("category").GetString()!, args.GetProperty("symbol").GetString()!, args.GetProperty("host_wall_uid").GetString()!, position, sill);
+        return new OpeningPlaceArgs(category, args.GetProperty("symbol").GetString()!, args.GetProperty("host_wall_uid").GetString()!, position, sill);
     }
 
     static RevitCommandArgs BindFloor(JsonElement args)

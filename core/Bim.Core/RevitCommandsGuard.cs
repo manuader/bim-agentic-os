@@ -1,24 +1,28 @@
 namespace Bim.Core;
 
-// Roots under which write commands are enabled (ADR0009 "copies first"). Built by the interface layer from the
-// repository default (.bim/native-runs, where owner sessions place fixture copies) plus an explicitly passed
-// allowlist file. This record is where the owner's recorded "enabled real project" list plugs in later: add its
-// entries to EnabledRoots; RevitCopiesGuard.Check stays the single decision.
+// Roots under which write commands are enabled (ADR0009 "copies first"): the repository default .bim/native-runs
+// (where owner sessions place fixture copies) plus the entries of the owner file .bim/revit-enabled-roots.txt, which
+// git ignores and only the owner edits. Neither the CLI nor an MCP tool call can add a root. This record is where the
+// owner's recorded "enabled real project" list plugs in: as lines of that file. RevitCopiesGuard.Check and
+// RevitLinkGuard.Check stay the single decision.
 public sealed record RevitCommandPolicy(IReadOnlyList<string> EnabledRoots)
 {
     public const string DefaultRelativeRoot = ".bim/native-runs";
+    public const string EnabledRootsFile = ".bim/revit-enabled-roots.txt";
     public const int MaxAllowlistEntries = 256;
+    public const int MaxEnabledRootsFileBytes = 65536;
 
     public static RevitCommandPolicy None { get; } = new(Array.Empty<string>());
 
     // Allowlist text: one absolute path per line (a directory root or an exact document); blank lines and lines
-    // starting with # are ignored. Any malformed entry rejects the whole list.
+    // starting with # are ignored. Any malformed or too-broad entry (a drive root, "/", or a UNC path without
+    // server, share and one directory) rejects the whole list.
     public static RevitCommandPolicy FromAllowlist(string? allowlistText, string? defaultRoot)
     {
         var roots = new List<string>();
         if (defaultRoot is not null)
         {
-            if (!RevitCopiesGuard.IsAbsoluteNormalized(defaultRoot)) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, "default_root", defaultRoot);
+            if (Problem(defaultRoot) is { } problem) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, "default_root", problem);
             roots.Add(defaultRoot);
         }
         if (allowlistText is not null)
@@ -29,7 +33,7 @@ public sealed record RevitCommandPolicy(IReadOnlyList<string> EnabledRoots)
                 lineNumber++;
                 var line = raw.TrimEnd('\r').Trim();
                 if (line.Length == 0 || line.StartsWith('#')) continue;
-                if (!RevitCopiesGuard.IsAbsoluteNormalized(line)) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, "line " + lineNumber, "absolute path without . or .. segments required");
+                if (Problem(line) is { } problem) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, "line " + lineNumber, problem);
                 roots.Add(line);
                 if (roots.Count > MaxAllowlistEntries) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, "line " + lineNumber, "too many entries");
             }
@@ -37,16 +41,35 @@ public sealed record RevitCommandPolicy(IReadOnlyList<string> EnabledRoots)
         return new RevitCommandPolicy(roots.AsReadOnly());
     }
 
-    // Repository default plus optional allowlist. Without a repository (no global.json above startDirectory)
-    // only allowlist entries enable writes.
-    public const string EnabledRootsFile = ".bim/revit-enabled-roots.txt";
+    static string? Problem(string entry) =>
+        !RevitCopiesGuard.IsAbsoluteNormalized(entry) ? "absolute path without . or .. segments required"
+        : RevitCopiesGuard.IsTooBroad(entry) ? "too broad: name at least one directory below a drive, / or \\\\server\\share"
+        : null;
 
-    public static RevitCommandPolicy ForRepository(string startDirectory) => ForRepository(startDirectory, null);
-
-    public static RevitCommandPolicy ForRepository(string startDirectory, string? allowlistText)
+    // The repository default plus the owner file, both found from startDirectory (the CLI or MCP binary location) by
+    // walking up to global.json. Without a repository no write is enabled.
+    public static RevitCommandPolicy ForRepository(string startDirectory)
     {
         var root = RepositoryRoot(startDirectory);
-        return FromAllowlist(allowlistText, root is null ? null : Path.Combine(root, ".bim", "native-runs"));
+        if (root is null) return None;
+        return FromAllowlist(ReadEnabledRootsFile(Path.Combine(root, ".bim", "revit-enabled-roots.txt")), Path.Combine(root, ".bim", "native-runs"));
+    }
+
+    // Missing file: no extra roots. A link, an oversized file or an unreadable file fails closed.
+    static string? ReadEnabledRootsFile(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.LinkTarget is not null) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, EnabledRootsFile, "must not be a link");
+            if (!info.Exists) return null;
+            if (info.Length > MaxEnabledRootsFileBytes) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, EnabledRootsFile, "larger than 65536 bytes");
+            return File.ReadAllText(path);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, EnabledRootsFile, error.GetType().Name);
+        }
     }
 
     public static string? RepositoryRoot(string startDirectory)
@@ -59,7 +82,8 @@ public sealed record RevitCommandPolicy(IReadOnlyList<string> EnabledRoots)
 
 // Pure decision: no file system access. Paths are compared as text after splitting on both separators.
 // Drive and UNC paths (Windows documents) compare case-insensitively; '/'-rooted paths compare exactly.
-// A link or junction inside an enabled root is not resolved here; the executor must check the opened document.
+// Links and junctions are not resolved here: RevitLinkGuard checks them on this machine before forwarding, and the
+// executor must check the document it actually opened again (any same-user process can write to the pipe).
 public static class RevitCopiesGuard
 {
     // Null when allowed, otherwise a RevitCommandCodes value. Read-only commands are allowed on any document.
@@ -82,6 +106,25 @@ public static class RevitCopiesGuard
     }
 
     public static bool IsAbsoluteNormalized(string? path) => path is not null && Split(path) is not null;
+
+    // A drive root, "/" or a UNC share root would enable everything below it.
+    public static bool IsTooBroad(string path) => Split(path) is not { } parts || parts.Segments.Length < (parts.Kind == "unc" ? 3 : 1);
+
+    // The enabled root a write is allowed under; the one with fewest segments, so the link guard checks the most.
+    public static string? MatchingRoot(string documentPath, RevitCommandPolicy policy) =>
+        policy.EnabledRoots.Where(root => IsUnder(documentPath, root)).OrderBy(root => Split(root)!.Segments.Length).FirstOrDefault();
+
+    // The root and each deeper component down to the document, spelled as in documentPath; null when not under root.
+    public static IReadOnlyList<string>? ComponentsFromRoot(string documentPath, string root)
+    {
+        if (!IsUnder(documentPath, root) || Split(documentPath) is not { } p || Split(root) is not { } r) return null;
+        var separator = p.Kind == "/" ? "/" : "\\";
+        var prefix = p.Kind switch { "/" => "/", "unc" => "\\\\", _ => documentPath[..2] + "\\" };
+        var components = new List<string>();
+        for (var count = r.Segments.Length; count <= p.Segments.Length; count++)
+            components.Add(prefix + string.Join(separator, p.Segments.Take(count)));
+        return components;
+    }
 
     sealed record Parts(string Kind, string[] Segments);
 

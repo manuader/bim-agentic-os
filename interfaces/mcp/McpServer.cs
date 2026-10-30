@@ -18,8 +18,8 @@ namespace Bim.Mcp;
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
 // ADR0009: one revit_<command> tool per RevitCommandCatalogue.V1 entry is generated from the catalogue. Each builds the
 // command envelope from its arguments and runs RevitCommandService.Run, the same code as the CLI revit-command verb,
-// so its text equals that verb's stdout for the same envelope. Write commands pass the copies-only guard first; the
-// policy comes from the server's own launch (repository .bim/native-runs plus --revit-allowlist), never from a tool call.
+// so its text equals that verb's stdout for the same envelope. Write commands pass the copies-only and link guards
+// first; the policy is the repository's .bim/native-runs plus the owner file .bim/revit-enabled-roots.txt, never a tool call.
 public sealed class McpServer
 {
     public const int MaxLineChars = 8 * 1024 * 1024;
@@ -57,18 +57,21 @@ public sealed class McpServer
     readonly ToolSpec[] tools;
     readonly RevitCommandPolicy revitPolicy;
     readonly Func<string, string, string?> revitTransport;
+    readonly RevitFileSystemProbe revitProbe;
 
-    // Defaults: the repository's .bim/native-runs as the only enabled write root, and the real process pipe.
+    // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), the real process pipe and file system.
+    // A malformed owner file enables no write at all.
     public McpServer(RevitCommandPolicy? revitPolicy = null, Func<string, string, string?>? revitTransport = null, RevitFileSystemProbe? revitProbe = null)
     {
         this.revitPolicy = revitPolicy ?? DefaultPolicy();
         this.revitTransport = revitTransport ?? RevitCommandService.PipeTransport;
+        this.revitProbe = revitProbe ?? RevitFileSystemProbe.Real;
         tools = [.. CoreTools, .. RevitCommandCatalogue.V1.Select(RevitTool)];
     }
 
     static RevitCommandPolicy DefaultPolicy()
     {
-        try { return RevitCommandPolicy.ForRepository(AppContext.BaseDirectory, null); }
+        try { return RevitCommandPolicy.ForRepository(AppContext.BaseDirectory); }
         catch (RevitCommandException) { return RevitCommandPolicy.None; }
     }
 
@@ -93,8 +96,8 @@ public sealed class McpServer
                     ["description"] = "The open Revit document",
                     ["properties"] = new JsonObject
                     {
-                        ["path"] = new JsonObject { ["type"] = "string", ["description"] = "Exact saved absolute path of the document" },
-                        ["unique_id"] = new JsonObject { ["type"] = "string", ["description"] = "ProjectInformation UniqueId of the document" },
+                        ["path"] = new JsonObject { ["type"] = "string", ["description"] = "Exact saved absolute path of the document", ["minLength"] = 1, ["maxLength"] = RevitCommandProtocol.MaxPathChars },
+                        ["unique_id"] = new JsonObject { ["type"] = "string", ["description"] = "ProjectInformation UniqueId of the document", ["minLength"] = 45, ["maxLength"] = 45, ["pattern"] = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-[0-9a-fA-F]{8}$" },
                     },
                     ["required"] = new JsonArray("path", "unique_id"),
                     ["additionalProperties"] = false,
@@ -110,6 +113,16 @@ public sealed class McpServer
     // Raw argument values are copied into the envelope unchanged, so the CLI reading the same envelope agrees byte for byte.
     (string Text, bool IsError) RevitCall(RevitCommandSpec spec, JsonElement arguments)
     {
+        try { return RevitCallChecked(spec, arguments); }
+        catch (Exception error) when (error is InvalidOperationException or ArgumentException)
+        {
+            // A lone surrogate in a tool argument cannot be read as a string.
+            return (RevitCommandResponse.Failure(RevitCommandCodes.EnvelopeInvalid, null, error.Message).ToJson(), true);
+        }
+    }
+
+    (string Text, bool IsError) RevitCallChecked(RevitCommandSpec spec, JsonElement arguments)
+    {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
         {
@@ -124,7 +137,7 @@ public sealed class McpServer
             arguments.GetProperty("args").WriteTo(writer);
             writer.WriteEndObject();
         }
-        var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", Encoding.UTF8.GetString(buffer.ToArray()), revitPolicy, revitTransport);
+        var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", Encoding.UTF8.GetString(buffer.ToArray()), revitPolicy, revitTransport, revitProbe);
         return (result.Line, result.IsError);
     }
 

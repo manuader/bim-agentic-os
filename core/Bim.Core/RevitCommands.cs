@@ -39,22 +39,23 @@ public static class RevitCommandCodes
     public const string PipeConnectTimeout = "pipe_connect_timeout";
     public const string PipeIoError = "pipe_io_error";
     public const string NoResponse = "no_response";
+    // A reply that is malformed or answers another request.
+    public const string ResponseInvalid = "response_invalid";
     // Reserved for the add-in executor; never produced by the client.
     public const string OperationIdConflict = "operation_id_conflict";
     public const string DocumentConflict = "document_conflict";
     public const string ReferenceNotFound = "reference_not_found";
     public const string TransactionFailed = "transaction_failed";
-    public const string ResponseInvalid = "response_invalid";
 
     public static IReadOnlyList<string> ClientSide { get; } = new[]
     {
         EnvelopeInvalid, ProtocolVersionUnsupported, OperationIdInvalid, DocumentPathInvalid, DocumentIdentityInvalid, CommandUnknown,
         ArgsInvalid, LengthInvalid, AngleInvalid, CurveTooShort, ArcCollinear, ArcRadiusInvalid, ArcSweepInvalid,
         BoundaryTooFewPoints, BoundaryEdgeTooShort, BoundaryZeroArea, BoundarySelfIntersecting,
-        DocumentNotEnabled, AllowlistInvalid, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, NoResponse,
+        DocumentNotEnabled, DocumentLinkRefused, AllowlistInvalid, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, NoResponse, ResponseInvalid,
     };
 
-    public static IReadOnlyList<string> ExecutorReserved { get; } = new[] { OperationIdConflict, DocumentConflict, ReferenceNotFound, TransactionFailed, ResponseInvalid };
+    public static IReadOnlyList<string> ExecutorReserved { get; } = new[] { OperationIdConflict, DocumentConflict, ReferenceNotFound, TransactionFailed };
 }
 
 // A typed refusal. Message equals Code; Field is the JSON path of the offending value (for example "args.curve.start[0]").
@@ -192,6 +193,7 @@ public sealed record RevitCommandResponse(string Status, string Code, string? Fi
                 readback.ValueKind == JsonValueKind.Null ? null : readback.GetRawText(), receipt, warningTexts);
         }
         catch (JsonException error) { throw new RevitCommandException(RevitCommandCodes.ResponseInvalid, null, error.Message); }
+        catch (InvalidOperationException error) { throw new RevitCommandException(RevitCommandCodes.ResponseInvalid, null, error.Message); }
     }
 
     static RevitCommandException Invalid(string field) => new(RevitCommandCodes.ResponseInvalid, field);
@@ -278,7 +280,16 @@ public static class RevitCommandProtocol
         using (document) return Parse(document.RootElement);
     }
 
+    // Strings that are not valid UTF-16 (a lone surrogate escape such as \ud800) cannot be read and make the whole
+    // envelope envelope_invalid, whichever member holds them.
     public static RevitCommandEnvelope Parse(JsonElement root)
+    {
+        try { return ParseChecked(root); }
+        catch (InvalidOperationException error) { throw new RevitCommandException(RevitCommandCodes.EnvelopeInvalid, null, error.Message); }
+        catch (ArgumentException error) when (error is not RevitCommandException) { throw new RevitCommandException(RevitCommandCodes.EnvelopeInvalid, null, error.Message); }
+    }
+
+    static RevitCommandEnvelope ParseChecked(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Object) throw new RevitCommandException(RevitCommandCodes.EnvelopeInvalid, null, "object required");
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -371,7 +382,8 @@ public static class RevitCommandProtocol
                 break;
             case JsonValueKind.Number:
                 if (!element.TryGetDouble(out var number)) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, null, "non-finite number");
-                writer.WriteNumberValue(number);
+                // -0 and 0 are the same length; write both as 0.
+                writer.WriteNumberValue(number == 0 ? 0.0 : number);
                 break;
             case JsonValueKind.String: writer.WriteStringValue(element.GetString()); break;
             case JsonValueKind.True: writer.WriteBooleanValue(true); break;

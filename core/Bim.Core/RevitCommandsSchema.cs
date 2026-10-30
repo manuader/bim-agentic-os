@@ -97,9 +97,14 @@ public static class RevitCommandSchema
     {
         if (schema.TryGetProperty("minLength", out var min) && value.Length < min.GetInt32()) return (field, "at least " + min.GetInt32() + " characters");
         if (schema.TryGetProperty("maxLength", out var max) && value.Length > max.GetInt32()) return (field, "at most " + max.GetInt32() + " characters");
-        if (schema.TryGetProperty("pattern", out var pattern) && !Regex.IsMatch(value, pattern.GetString()!, RegexOptions.CultureInvariant, RegexTimeout)) return (field, "does not match " + pattern.GetString());
+        if (schema.TryGetProperty("pattern", out var pattern) && !Regex.IsMatch(value, Anchored(pattern.GetString()!), RegexOptions.CultureInvariant, RegexTimeout)) return (field, "does not match " + pattern.GetString());
         return null;
     }
+
+    // JSON Schema patterns are ECMA-262, where a final $ is the end of input; .NET's $ also matches before a final
+    // newline, so it is enforced as \z.
+    static string Anchored(string pattern) =>
+        pattern.EndsWith('$') && !pattern.EndsWith("\\$", StringComparison.Ordinal) ? pattern[..^1] + "\\z" : pattern;
 
     // Exactly one branch must match. Without a match, the failure from the branch declaring most
     // of the value's members is reported, then the one that got deepest past the kind discriminator.

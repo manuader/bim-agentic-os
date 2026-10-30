@@ -47,14 +47,18 @@ try {
                 await writer.WriteLineAsync(nativeRequest); Console.WriteLine(await reader.ReadLineAsync());
             } break;
         case "revit-command":
-            // ADR0009 catalogue v1: same explicit-pipe rule as native, checked before any file or pipe I/O.
-            var revitPipe=args.Length is 3 or 4 ? args[2] : null;
+            // ADR0009 catalogue v1: same explicit-pipe rule as native, checked before any file or pipe I/O. Enabled write
+            // roots come only from the repository (.bim/native-runs and the owner file .bim/revit-enabled-roots.txt).
+            var revitPipe=args.Length==3 ? args[2] : null;
             if(RevitCommandService.RejectPipe(revitPipe) is {} revitRejected) { Console.WriteLine(revitRejected.Line); Environment.ExitCode=1; break; }
             RevitCommandPolicy revitPolicy;
-            try { revitPolicy=RevitCommandPolicy.ForRepository(AppContext.BaseDirectory,args.Length==4?BoundedInput.ReadText(args[3]):null); }
+            try { revitPolicy=RevitCommandPolicy.ForRepository(AppContext.BaseDirectory); }
             catch(RevitCommandException e) { Console.WriteLine(RevitCommandResponse.Failure(e.Code,e.Field,e.Detail).ToJson()); Environment.ExitCode=1; break; }
-            var revitResult=RevitCommandService.Run(revitPipe!,BoundedInput.ReadText(args[1]),revitPolicy,RevitCommandService.PipeTransport);
+            string revitEnvelope;
+            try { revitEnvelope=BoundedInput.ReadText(args[1]); }
+            catch(IOException e) { Console.WriteLine(RevitCommandResponse.Failure(RevitCommandCodes.EnvelopeInvalid,"envelope",e.Message).ToJson()); Environment.ExitCode=1; break; }
+            var revitResult=RevitCommandService.Run(revitPipe!,revitEnvelope,revitPolicy,RevitCommandService.PipeTransport);
             Console.WriteLine(revitResult.Line); if(revitResult.IsError)Environment.ExitCode=1; break;
-        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | native request.json process-pipe-name | revit-command envelope.json process-pipe-name [allowlist.txt]");
+        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | native request.json process-pipe-name | revit-command envelope.json process-pipe-name");
     }
 } catch(Exception e) {Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Message}));Environment.ExitCode=1;}
