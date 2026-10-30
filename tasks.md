@@ -58,8 +58,8 @@ Owner scope change 2026-10-30, [ADR0009](docs/architecture/adr/0009-revit-comman
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| C01 | CI compiles the Revit add-in | ⏳ | — | runtimes/revit-native/Bim.Revit.csproj; .github/workflows/ci.yml | windows CI job builds Bim.Revit with --warnaserror using build-only reference assemblies; local installed-Revit build unchanged | target compiled |
-| C02 | Command protocol, catalogue v1 contracts and MCP tools | ⏳ | — | core/Bim.Core/RevitCommands*.cs; interfaces/mcp; tests/revit-commands | envelope, validators, copies-only guard and generated MCP tools unit-tested in CI | target unit-tested |
+| C01 | CI compiles the Revit add-in | ✅ | — | runtimes/revit-native/Bim.Revit.csproj; .github/workflows/ci.yml | windows CI job builds Bim.Revit with --warnaserror using build-only reference assemblies; local installed-Revit build unchanged | target compiled |
+| C02 | Command protocol, catalogue v1 contracts and MCP tools | 🔄 | — | core/Bim.Core/RevitCommands*.cs; interfaces/mcp; tests/revit-commands | envelope, validators, copies-only guard and generated MCP tools unit-tested in CI | target unit-tested |
 | C03 | Revit executor for catalogue v1 | ⛔ | C01, C02 | runtimes/revit-native/Commands*.cs; App.cs dispatch | queries, wall line/arc, door/window, floor, room compile in CI; Autodesk-free parts tested | target compiled |
 | C04 | Owner smoke of catalogue v1 in Revit | 🔒 | C03 | scripts/owner-native-session.ps1; artifacts | curved wall, door, floor, room created on a fixture with readback and no-duplicate retry | target verified-in-revit |
 | C05 | Guarded free path (ADR + implementation) | ⛔ | C03 | docs/architecture/adr; runtimes/revit-native | ADR accepted; free C# runs in a rolled-back transaction group with change report | target unit-tested |
@@ -67,12 +67,12 @@ Owner scope change 2026-10-30, [ADR0009](docs/architecture/adr/0009-revit-comman
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 18/24 done (75.0 %)
+Progress: 19/24 done (79.2 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
 - Relay7 batch — platform coverage, rebuild baseline, recovery guard: 3/3
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
-- Revit command surface — catalogue v1 (architecture): 0/5
-Next ready: C01, C02
+- Revit command surface — catalogue v1 (architecture): 1/5
+Next ready: 
 

@@ -322,6 +322,16 @@
       ],
       "blocker": null,
       "scope": "Every CLI file input read through one bounded reader: 8 MiB cap (= MCP line cap), regular files only (Unix lstat+fstat via the runtime shim, Windows GetFileType, device namespaces refused), links refused, OneDrive placeholders allowed, typed codes; decoding identical to File.ReadAllText. CI 40067078561 on Ubuntu, Windows and macOS. Not covered: linux-arm64, missing-shim path, real OneDrive placeholders, Windows junctions."
+    },
+    {
+      "id": "revit-addin-ci-compile",
+      "status": "compiled",
+      "evidence": [
+        "runtimes/revit-native/Bim.Revit.csproj",
+        ".github/workflows/ci.yml"
+      ],
+      "blocker": null,
+      "scope": "CI native-build job compiles runtimes/revit-native on windows-latest with --warnaserror against Nice3point.Revit.Api 2025.0.2 build-only reference assemblies (CI run 41127640415); no Revit DLL reaches output. Local builds use installed Revit and fail if it is missing. Compilation only, no native execution."
     }
   ]
 }
