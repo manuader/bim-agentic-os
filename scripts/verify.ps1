@@ -46,5 +46,13 @@ try {
     }
     'Native acceptance is not executed by this engineering gate. Run tests/integration/native-room-ab.ps1 against a newly opted-in isolated licensed Revit fixture; require its actual report for any native acceptance claim.' | Tee-Object -FilePath "$evidence/native-status.log"
     "PASS available gates; evidence: $evidence"
-} catch { Write-Error $_; exit 1 }
+} catch {
+    # CI job logs are not always reachable; one annotation carries the tail of the failing gate's evidence log.
+    if ($env:GITHUB_ACTIONS -eq 'true' -and $_.Exception.Message -match '^(\S+) failed with exit code .*\(see (.+\.log)\)$' -and (Test-Path -LiteralPath $Matches[2])) {
+        $tail = (@(Get-Content -LiteralPath $Matches[2] -Tail 15) -join ' | ') -replace '[\r\n]+', ' '
+        if ($tail.Length -gt 3500) { $tail = $tail.Substring($tail.Length - 3500) }
+        Write-Host ("::error title=verify " + $Matches[1] + "::" + ($tail -replace '%', '%25'))
+    }
+    Write-Error $_; exit 1
+}
 

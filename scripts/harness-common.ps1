@@ -19,15 +19,7 @@ function Invoke-EvidenceCommand {
             else { [Environment]::SetEnvironmentVariable($variable, $originalEnvironment[$variable], 'Process') }
         }
     }
-    if ($code -ne 0) {
-        # CI job logs are not always reachable; an annotation carries the tail of the evidence log.
-        if ($env:GITHUB_ACTIONS -eq 'true') {
-            $tail = (@(Get-Content -LiteralPath $log -Tail 12 -ErrorAction SilentlyContinue) -join ' | ') -replace '[\r\n]+', ' '
-            if ($tail.Length -gt 3000) { $tail = $tail.Substring($tail.Length - 3000) }
-            Write-Host ("::error title=${Name}::" + ($tail -replace '%', '%25'))
-        }
-        throw "$Name failed with exit code $code (see $log)"
-    }
+    if ($code -ne 0) { throw "$Name failed with exit code $code (see $log)" }
 }
 function Get-HostCoreSource {
     param([string]$Root)
