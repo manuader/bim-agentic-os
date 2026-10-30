@@ -343,6 +343,17 @@
       ],
       "blocker": "No Revit executor yet (C03); nothing has run in Revit.",
       "scope": "ADR0009 catalogue v1 contracts: queries (levels, wall/floor types, door/window symbols), wall.create line/arc, opening.place, floor.create, room.create; mm/deg validators incl. arc and polygon tolerances; copies-only guard (test roots + owner file, links/junctions/hard links refused); receipt verification; generated MCP tools and CLI revit-command verb. CI 41134328128 on Ubuntu and Windows."
+    },
+    {
+      "id": "revit-command-executor-v1",
+      "status": "compiled",
+      "evidence": [
+        "runtimes/revit-native/CommandsExecutor.cs",
+        "runtimes/revit-native/CommandsContract.cs",
+        "tests/integration/RevitCommandGuard.Tests/Program.cs"
+      ],
+      "blocker": "Not run in Revit yet (C04, owner session).",
+      "scope": "Executor for catalogue v1 in the add-in: queries, wall line/arc, door/window on wall, floor, room, each in one TransactionGroup with readback, rollback and ExtensibleStorage receipts; pipe opens only in validated fixture processes; legacy writes share the copies/link guard. Compiled with --warnaserror in CI native-build (41138879266); Autodesk-free admission/receipt/readback logic unit-tested."
     }
   ]
 }
