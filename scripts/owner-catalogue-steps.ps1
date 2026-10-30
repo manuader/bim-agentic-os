@@ -56,14 +56,14 @@ function New-CatalogueArcWall([string]$Level, [string]$Type, [double]$RadiusMm) 
 # --- Picking references from query responses (never hard-coded names) ---
 function Select-CatalogueLevel($Response) {
     $levels = Get-CatalogueList (Get-CatalogueMember $Response 'readback') 'levels'
-    if (!$levels.Count) { throw 'the document has no levels' }
+    if (!$levels.Count) { throw 'el documento no tiene niveles' }
     return [string](Get-CatalogueMember $levels[0] 'unique_id')
 }
 
 function Select-CatalogueWallType($Response) {
     $all = Get-CatalogueList (Get-CatalogueMember $Response 'readback') 'wall_types'
     $basic = @($all | Where-Object { (Get-CatalogueMember $_ 'kind') -eq 'Basic' })
-    if (!$basic.Count) { throw 'no Basic wall type in the document' }
+    if (!$basic.Count) { throw 'no hay ningún tipo de muro básico (Basic) en el documento' }
     return [string](Get-CatalogueMember $basic[0] 'unique_id')
 }
 
@@ -71,16 +71,16 @@ function Select-CatalogueWallType($Response) {
 function Select-CatalogueFloorType($Response) {
     $all = Get-CatalogueList (Get-CatalogueMember $Response 'readback') 'floor_types'
     $types = @($all | Where-Object { [string](Get-CatalogueMember $_ 'name') -notmatch '(?i)foundation|cimentaci' })
-    if (!$types.Count) { throw 'no non-foundation floor type in the document' }
+    if (!$types.Count) { throw 'no hay ningún tipo de losa que no sea de fundación en el documento' }
     return [string](Get-CatalogueMember $types[0] 'unique_id')
 }
 
 function Select-CatalogueHostedSymbol($Response, [string]$Category) {
     $readback = Get-CatalogueMember $Response 'readback'
-    if ((Get-CatalogueMember $readback 'category') -ne $Category) { throw "family symbol query answered for another category" }
+    if ((Get-CatalogueMember $readback 'category') -ne $Category) { throw "la consulta de familias respondió para otra categoría" }
     $all = Get-CatalogueList $readback 'family_symbols'
     $hosted = @($all | Where-Object { (Get-CatalogueMember $_ 'wall_hosted') -eq $true })
-    if (!$hosted.Count) { throw "no wall-hosted $Category family type loaded" }
+    if (!$hosted.Count) { $nombre = if ($Category -eq 'door') { 'puerta' } else { 'ventana' }; throw "no hay cargado ningún tipo de $nombre alojado en muro" }
     return [string](Get-CatalogueMember $hosted[0] 'unique_id')
 }
 
@@ -223,7 +223,7 @@ function Invoke-CatalogueSequence {
         [scriptblock]$Alive
     )
     $picked = @{}
-    function Need([string[]]$Names) { foreach ($name in $Names) { if (!$picked.ContainsKey($name) -or !$picked[$name]) { throw "needs $name from an earlier step" } } }
+    function Need([string[]]$Names) { foreach ($name in $Names) { if (!$picked.ContainsKey($name) -or !$picked[$name]) { throw "falta $name de un paso anterior" } } }
     $specs = Get-CatalogueSteps
     $records = [Collections.Generic.List[object]]::new()
     $aborted = $null
@@ -234,18 +234,18 @@ function Invoke-CatalogueSequence {
         $record = [ordered]@{ index = $index; key = $spec.Key; description = $spec.Es; command = $spec.Command; operation_id = $operationId; expected = $spec.Expect; request = $null; response = $null; raw_response = $null; exit_code = $null; timed_out = $false; elapsed_ms = $null; passed = $false; reason = $null }
         $records.Add($record)
         if ($Progress) { & $Progress "Paso $index/$($specs.Count): $($spec.Es)" }
-        if ($aborted) { $record.reason = "not sent: $aborted"; continue }
-        if ($Alive -and !(& $Alive)) { $aborted = 'the child Revit exited'; $record.reason = "not sent: $aborted"; continue }
-        try { $stepArgs = & $spec.Build } catch { $record.reason = 'not sent: ' + $_.Exception.Message; continue }
+        if ($aborted) { $record.reason = "no enviado: $aborted"; continue }
+        if ($Alive -and !(& $Alive)) { $aborted = 'el Revit de prueba se cerró'; $record.reason = "no enviado: $aborted"; continue }
+        try { $stepArgs = & $spec.Build } catch { $record.reason = 'no enviado: ' + $_.Exception.Message; continue }
         $envelopeJson = New-CatalogueEnvelope $operationId $DocumentPath $DocumentUid $spec.Command $stepArgs
         $record.request = $envelopeJson | ConvertFrom-Json
         $watch = [Diagnostics.Stopwatch]::StartNew()
-        $result = & $Invoke $index $spec.Key $envelopeJson
+        try { $result = & $Invoke $index $spec.Key $envelopeJson } catch { $watch.Stop(); $aborted = 'error al ejecutar la CLI: ' + $_.Exception.Message; $record.reason = $aborted; continue }
         $watch.Stop()
         $record.elapsed_ms = [Math]::Round($watch.Elapsed.TotalMilliseconds, 1)
         $record.exit_code = $result.exit_code
         $record.timed_out = [bool]$result.timed_out
-        if ($record.timed_out) { $aborted = "step $index timed out (completion unknown)"; $record.reason = $aborted; continue }
+        if ($record.timed_out) { $aborted = "el paso $index superó el tiempo (no se sabe si terminó)"; $record.reason = $aborted; continue }
         $text = ([string]$result.output).Trim()
         $parsed = $null
         try { $parsed = $text | ConvertFrom-Json -ErrorAction Stop } catch { $parsed = $null }
