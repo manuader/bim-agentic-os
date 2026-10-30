@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 namespace Bim.Core;
 
@@ -17,11 +18,18 @@ public static class RevitCommandCatalogue
     const string Point = """{"type":"array","description":"[x, y] in millimetres","items":{"type":"number"},"minItems":2,"maxItems":2}""";
     const string NoControl = """^[^\\u0000-\\u001f\\u007f]+$""";
 
+    // Schema templates use @n@ placeholders instead of interpolation: the JSON is brace-heavy.
+    static string Fill(string template, params string[] parts)
+    {
+        for (var i = 0; i < parts.Length; i++) template = template.Replace("@" + i + "@", parts[i], StringComparison.Ordinal);
+        return template;
+    }
+
     static string Reference(string description) =>
-        $$"""{"type":"string","description":"{{description}}","minLength":1,"maxLength":256,"pattern":"{{NoControl}}"}""";
+        Fill("""{"type":"string","description":"@0@","minLength":1,"maxLength":256,"pattern":"@1@"}""", description, NoControl);
 
     static string Text(string description, int maxLength) =>
-        $$"""{"type":"string","description":"{{description}}","minLength":1,"maxLength":{{maxLength}},"pattern":"{{NoControl}}"}""";
+        Fill("""{"type":"string","description":"@0@","minLength":1,"maxLength":@1@,"pattern":"@2@"}""", description, maxLength.ToString(CultureInfo.InvariantCulture), NoControl);
 
     const string UniqueIdSchema = """{"type":"string","description":"Revit element UniqueId, as returned by a query","minLength":45,"maxLength":45,"pattern":"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-[0-9a-fA-F]{8}$"}""";
 
@@ -29,17 +37,17 @@ public static class RevitCommandCatalogue
 
     const string FamilySymbolsSchema = """{"type":"object","properties":{"category":{"type":"string","description":"Which loaded family types to list","enum":["doors","windows"]}},"required":["category"],"additionalProperties":false}""";
 
-    static readonly string LineCurve = $$"""{"type":"object","description":"Straight wall from start to end","properties":{"kind":{"type":"string","enum":["line"]},"start":{{Point}},"end":{{Point}}},"required":["kind","start","end"],"additionalProperties":false}""";
-    static readonly string ArcThroughCurve = $$"""{"type":"object","description":"Curved wall from start to end passing through a third point (not collinear)","properties":{"kind":{"type":"string","enum":["arc"]},"start":{{Point}},"end":{{Point}},"through":{{Point}}},"required":["kind","start","end","through"],"additionalProperties":false}""";
-    static readonly string ArcCenterCurve = $$"""{"type":"object","description":"Curved wall around a centre, counter-clockwise from start_angle_deg to end_angle_deg (0 degrees = +X); sweep strictly between 0 and 360","properties":{"kind":{"type":"string","enum":["arc"]},"center":{{Point}},"radius_mm":{"type":"number","description":"Radius in millimetres, greater than 0"},"start_angle_deg":{"type":"number","description":"Start angle in degrees"},"end_angle_deg":{"type":"number","description":"End angle in degrees, greater than start_angle_deg"}},"required":["kind","center","radius_mm","start_angle_deg","end_angle_deg"],"additionalProperties":false}""";
+    static readonly string LineCurve = Fill("""{"type":"object","description":"Straight wall from start to end","properties":{"kind":{"type":"string","enum":["line"]},"start":@0@,"end":@1@},"required":["kind","start","end"],"additionalProperties":false}""", Point, Point);
+    static readonly string ArcThroughCurve = Fill("""{"type":"object","description":"Curved wall from start to end passing through a third point (not collinear)","properties":{"kind":{"type":"string","enum":["arc"]},"start":@0@,"end":@1@,"through":@2@},"required":["kind","start","end","through"],"additionalProperties":false}""", Point, Point, Point);
+    static readonly string ArcCenterCurve = Fill("""{"type":"object","description":"Curved wall around a centre, counter-clockwise from start_angle_deg to end_angle_deg (0 degrees = +X); sweep strictly between 0 and 360","properties":{"kind":{"type":"string","enum":["arc"]},"center":@0@,"radius_mm":{"type":"number","description":"Radius in millimetres, greater than 0"},"start_angle_deg":{"type":"number","description":"Start angle in degrees"},"end_angle_deg":{"type":"number","description":"End angle in degrees, greater than start_angle_deg"}},"required":["kind","center","radius_mm","start_angle_deg","end_angle_deg"],"additionalProperties":false}""", Point);
 
-    static readonly string WallSchema = $$"""{"type":"object","properties":{"level":{{Reference("Base level: name or UniqueId from revit_query_levels")}},"type":{{Reference("Wall type: name or UniqueId from revit_query_wall_types")}},"base_offset_mm":{"type":"number","description":"Base offset from the level in millimetres; may be negative; default 0"},"height_mm":{"type":"number","description":"Unconnected height in millimetres, greater than 0"},"structural":{"type":"boolean","description":"Structural wall; default false"},"curve":{"description":"Wall location line in plan, in millimetres","oneOf":[{{LineCurve}},{{ArcThroughCurve}},{{ArcCenterCurve}}]}},"required":["level","type","height_mm","curve"],"additionalProperties":false}""";
+    static readonly string WallSchema = Fill("""{"type":"object","properties":{"level":@0@,"type":@1@,"base_offset_mm":{"type":"number","description":"Base offset from the level in millimetres; may be negative; default 0"},"height_mm":{"type":"number","description":"Unconnected height in millimetres, greater than 0"},"structural":{"type":"boolean","description":"Structural wall; default false"},"curve":{"description":"Wall location line in plan, in millimetres","oneOf":[@2@,@3@,@4@]}},"required":["level","type","height_mm","curve"],"additionalProperties":false}""", Reference("Base level: name or UniqueId from revit_query_levels"), Reference("Wall type: name or UniqueId from revit_query_wall_types"), LineCurve, ArcThroughCurve, ArcCenterCurve);
 
-    static readonly string OpeningSchema = $$"""{"type":"object","properties":{"category":{"type":"string","description":"Door or window","enum":["door","window"]},"symbol":{{Reference("Family type: name or UniqueId from revit_query_family_symbols")}},"host_wall_uid":{{UniqueIdSchema}},"position_along_mm":{"type":"number","description":"Distance along the host wall from its start, in millimetres, 0 or more"},"sill_mm":{"type":"number","description":"Sill height above the level in millimetres, 0 or more; optional"}},"required":["category","symbol","host_wall_uid","position_along_mm"],"additionalProperties":false}""";
+    static readonly string OpeningSchema = Fill("""{"type":"object","properties":{"category":{"type":"string","description":"Door or window","enum":["door","window"]},"symbol":@0@,"host_wall_uid":@1@,"position_along_mm":{"type":"number","description":"Distance along the host wall from its start, in millimetres, 0 or more"},"sill_mm":{"type":"number","description":"Sill height above the level in millimetres, 0 or more; optional"}},"required":["category","symbol","host_wall_uid","position_along_mm"],"additionalProperties":false}""", Reference("Family type: name or UniqueId from revit_query_family_symbols"), UniqueIdSchema);
 
-    static readonly string FloorSchema = $$"""{"type":"object","properties":{"level":{{Reference("Level: name or UniqueId from revit_query_levels")}},"type":{{Reference("Floor type: name or UniqueId from revit_query_floor_types")}},"boundary":{"type":"array","description":"Closed outline as [x, y] millimetre vertices; the closing edge is implicit; must not self-intersect","items":{{Point}},"minItems":3,"maxItems":{{MaxBoundaryPoints}}}},"required":["level","type","boundary"],"additionalProperties":false}""";
+    static readonly string FloorSchema = Fill("""{"type":"object","properties":{"level":@0@,"type":@1@,"boundary":{"type":"array","description":"Closed outline as [x, y] millimetre vertices; the closing edge is implicit; must not self-intersect","items":@2@,"minItems":3,"maxItems":@3@}},"required":["level","type","boundary"],"additionalProperties":false}""", Reference("Level: name or UniqueId from revit_query_levels"), Reference("Floor type: name or UniqueId from revit_query_floor_types"), Point, MaxBoundaryPoints.ToString(CultureInfo.InvariantCulture));
 
-    static readonly string RoomSchema = $$"""{"type":"object","properties":{"level":{{Reference("Level: name or UniqueId from revit_query_levels")}},"point":{{Point}},"name":{{Text("Room name; optional", 256)}},"number":{{Text("Room number; optional", 64)}}},"required":["level","point"],"additionalProperties":false}""";
+    static readonly string RoomSchema = Fill("""{"type":"object","properties":{"level":@0@,"point":@1@,"name":@2@,"number":@3@},"required":["level","point"],"additionalProperties":false}""", Reference("Level: name or UniqueId from revit_query_levels"), Point, Text("Room name; optional", 256), Text("Room number; optional", 64));
 
     public static IReadOnlyList<RevitCommandSpec> V1 { get; } = new[]
     {
