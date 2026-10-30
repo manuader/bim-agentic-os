@@ -108,7 +108,7 @@ function Test-CatalogueResponse($Response, $ExitCode, [string]$OperationId, [has
     if ($ExitCode -ne 0) { return "success reported with exit code $ExitCode" }
     if ($null -eq $receipt) { return 'success without receipt' }
     if ((Get-CatalogueMember $receipt 'operation_id') -ne $OperationId) { return 'receipt answers another operation_id' }
-    $replayed = [bool]$Expect.Replayed
+    $replayed = [bool]$Expect['Replayed']
     if ((Get-CatalogueMember $receipt 'replayed') -ne $replayed) { return "expected replayed=$replayed" }
     if ($Expect.ContainsKey('Created') -and $created.Count -ne $Expect.Created) { return "expected $($Expect.Created) created element(s), got $($created.Count)" }
     return $null
@@ -125,18 +125,18 @@ function Get-CatalogueSteps {
         @{ Key = 'wall-west'; Es = 'Muro recto 4 de 4 (oeste)'; From = $rect[3]; To = $rect[0] })
     $steps = [Collections.Generic.List[hashtable]]::new()
     $steps.Add(@{ Key = 'query-levels'; Es = 'Consultar niveles'; Command = 'query.levels'; Expect = @{ Status = 'succeeded' }
-        Build = { [ordered]@{} }; Check = { param($r) $picked.level = Select-CatalogueLevel $r; $null } })
+        Build = { [ordered]@{} }; Check = { param($r) $picked['level'] = Select-CatalogueLevel $r; $null } })
     $steps.Add(@{ Key = 'query-wall-types'; Es = 'Consultar tipos de muro'; Command = 'query.wall_types'; Expect = @{ Status = 'succeeded' }
-        Build = { [ordered]@{} }; Check = { param($r) $picked.wall_type = Select-CatalogueWallType $r; $null } })
+        Build = { [ordered]@{} }; Check = { param($r) $picked['wall_type'] = Select-CatalogueWallType $r; $null } })
     $steps.Add(@{ Key = 'query-floor-types'; Es = 'Consultar tipos de suelo'; Command = 'query.floor_types'; Expect = @{ Status = 'succeeded' }
-        Build = { [ordered]@{} }; Check = { param($r) $picked.floor_type = Select-CatalogueFloorType $r; $null } })
+        Build = { [ordered]@{} }; Check = { param($r) $picked['floor_type'] = Select-CatalogueFloorType $r; $null } })
     $steps.Add(@{ Key = 'query-doors'; Es = 'Consultar puertas cargadas'; Command = 'query.family_symbols'; Expect = @{ Status = 'succeeded' }
-        Build = { [ordered]@{ category = 'door' } }; Check = { param($r) $picked.door = Select-CatalogueHostedSymbol $r 'door'; $null } })
+        Build = { [ordered]@{ category = 'door' } }; Check = { param($r) $picked['door'] = Select-CatalogueHostedSymbol $r 'door'; $null } })
     $steps.Add(@{ Key = 'query-windows'; Es = 'Consultar ventanas cargadas'; Command = 'query.family_symbols'; Expect = @{ Status = 'succeeded' }
-        Build = { [ordered]@{ category = 'window' } }; Check = { param($r) $picked.window = Select-CatalogueHostedSymbol $r 'window'; $null } })
+        Build = { [ordered]@{ category = 'window' } }; Check = { param($r) $picked['window'] = Select-CatalogueHostedSymbol $r 'window'; $null } })
     foreach ($side in $sides) {
         $steps.Add(@{ Key = $side.Key; Es = $side.Es; Command = 'wall.create'; Expect = @{ Status = 'succeeded'; Created = 1 }; Side = $side
-            Build = { Need 'level', 'wall_type'; New-CatalogueLineWall $picked.level $picked.wall_type $spec.Side.From $spec.Side.To }
+            Build = { Need 'level', 'wall_type'; New-CatalogueLineWall $picked['level'] $picked['wall_type'] $spec.Side.From $spec.Side.To }
             Check = {
                 param($r)
                 $wall = Get-CatalogueMember (Get-CatalogueMember $r 'readback') 'wall'
@@ -147,7 +147,7 @@ function Get-CatalogueSteps {
             } })
     }
     $steps.Add(@{ Key = 'wall-arc'; Es = 'Muro curvo (radio 3000 mm, de 0 a 90 grados)'; Command = 'wall.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
-        Build = { Need 'level', 'wall_type'; New-CatalogueArcWall $picked.level $picked.wall_type 3000 }
+        Build = { Need 'level', 'wall_type'; New-CatalogueArcWall $picked['level'] $picked['wall_type'] 3000 }
         Check = {
             param($r)
             $curve = Get-CatalogueMember (Get-CatalogueMember (Get-CatalogueMember $r 'readback') 'wall') 'curve'
@@ -156,7 +156,7 @@ function Get-CatalogueSteps {
             $picked['wall-arc'] = (Get-CatalogueList $r 'created')[0]; $null
         } })
     $steps.Add(@{ Key = 'door'; Es = 'Puerta en el muro sur'; Command = 'opening.place'; Expect = @{ Status = 'succeeded'; Created = 1 }
-        Build = { Need 'door', 'wall-south'; [ordered]@{ category = 'door'; symbol = $picked.door; host_wall_uid = $picked['wall-south']; position_along_mm = 1500 } }
+        Build = { Need 'door', 'wall-south'; [ordered]@{ category = 'door'; symbol = $picked['door']; host_wall_uid = $picked['wall-south']; position_along_mm = 1500 } }
         Check = {
             param($r)
             $opening = Get-CatalogueMember (Get-CatalogueMember $r 'readback') 'opening'
@@ -164,7 +164,7 @@ function Get-CatalogueSteps {
             $null
         } })
     $steps.Add(@{ Key = 'window'; Es = 'Ventana (antepecho 900 mm) en el muro este'; Command = 'opening.place'; Expect = @{ Status = 'succeeded'; Created = 1 }
-        Build = { Need 'window', 'wall-east'; [ordered]@{ category = 'window'; symbol = $picked.window; host_wall_uid = $picked['wall-east']; position_along_mm = 2000; sill_mm = 900 } }
+        Build = { Need 'window', 'wall-east'; [ordered]@{ category = 'window'; symbol = $picked['window']; host_wall_uid = $picked['wall-east']; position_along_mm = 2000; sill_mm = 900 } }
         Check = {
             param($r)
             $opening = Get-CatalogueMember (Get-CatalogueMember $r 'readback') 'opening'
@@ -173,7 +173,7 @@ function Get-CatalogueSteps {
             $null
         } })
     $steps.Add(@{ Key = 'floor'; Es = 'Suelo del rectángulo de 6000 x 4000 mm'; Command = 'floor.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
-        Build = { Need 'level', 'floor_type'; [ordered]@{ level = $picked.level; type = $picked.floor_type; boundary = @($script:CatalogueRectangle | ForEach-Object { , @($_[0], $_[1]) }) } }
+        Build = { Need 'level', 'floor_type'; [ordered]@{ level = $picked['level']; type = $picked['floor_type']; boundary = @($script:CatalogueRectangle | ForEach-Object { , @($_[0], $_[1]) }) } }
         Check = {
             param($r)
             $floor = Get-CatalogueMember (Get-CatalogueMember $r 'readback') 'floor'
@@ -183,7 +183,7 @@ function Get-CatalogueSteps {
             $null
         } })
     $steps.Add(@{ Key = 'room'; Es = 'Habitación "Prueba" dentro del rectángulo'; Command = 'room.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
-        Build = { Need 'level'; [ordered]@{ level = $picked.level; point = @(3000, 2000); name = 'Prueba' } }
+        Build = { Need 'level'; [ordered]@{ level = $picked['level']; point = @(3000, 2000); name = 'Prueba' } }
         Check = {
             param($r)
             $room = Get-CatalogueMember (Get-CatalogueMember $r 'readback') 'room'
@@ -194,17 +194,17 @@ function Get-CatalogueSteps {
     # Same operation_id and same request: the stored answer comes back with replayed=true and the same element, so
     # no second wall exists. ReuseOf names the step whose operation_id is reused.
     $steps.Add(@{ Key = 'wall-arc-retry'; Es = 'Repetir el muro curvo con el mismo identificador (no debe duplicarse)'; Command = 'wall.create'; ReuseOf = 'wall-arc'; Expect = @{ Status = 'succeeded'; Replayed = $true; Created = 1 }
-        Build = { Need 'wall-arc'; New-CatalogueArcWall $picked.level $picked.wall_type 3000 }
+        Build = { Need 'wall-arc'; New-CatalogueArcWall $picked['level'] $picked['wall_type'] 3000 }
         Check = {
             param($r)
             if ((Get-CatalogueList $r 'created')[0] -ne $picked['wall-arc']) { return 'the retry reported a different element: a duplicate wall may exist' }
             $null
         } })
     $steps.Add(@{ Key = 'wall-arc-conflict'; Es = 'Mismo identificador con otro radio (debe rechazarse)'; Command = 'wall.create'; ReuseOf = 'wall-arc'; Expect = @{ Status = 'failed'; Code = 'operation_id_conflict' }
-        Build = { Need 'wall-arc'; New-CatalogueArcWall $picked.level $picked.wall_type 3500 }; Check = { param($r) $null } })
+        Build = { Need 'wall-arc'; New-CatalogueArcWall $picked['level'] $picked['wall_type'] 3500 }; Check = { param($r) $null } })
     # arc_collinear is a client-side code (RevitCommandCodes.ClientSide): the CLI refuses before opening the pipe.
     $steps.Add(@{ Key = 'invalid-arc'; Es = 'Pedido inválido: arco con puntos alineados (debe rechazarse sin tocar Revit)'; Command = 'wall.create'; Expect = @{ Status = 'failed'; Code = 'arc_collinear' }
-        Build = { Need 'level', 'wall_type'; [ordered]@{ level = $picked.level; type = $picked.wall_type; height_mm = $script:CatalogueWallHeightMm; curve = [ordered]@{ kind = 'arc'; start = @(0, -3000); end = @(2000, -3000); through = @(1000, -3000) } } }
+        Build = { Need 'level', 'wall_type'; [ordered]@{ level = $picked['level']; type = $picked['wall_type']; height_mm = $script:CatalogueWallHeightMm; curve = [ordered]@{ kind = 'arc'; start = @(0, -3000); end = @(2000, -3000); through = @(1000, -3000) } } }
         Check = { param($r) $null } })
     return , $steps.ToArray()
 }
