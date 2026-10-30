@@ -59,7 +59,7 @@ public sealed class McpServer
     readonly Func<string, string, string?> revitTransport;
 
     // Defaults: the repository's .bim/native-runs as the only enabled write root, and the real process pipe.
-    public McpServer(RevitCommandPolicy? revitPolicy = null, Func<string, string, string?>? revitTransport = null)
+    public McpServer(RevitCommandPolicy? revitPolicy = null, Func<string, string, string?>? revitTransport = null, RevitFileSystemProbe? revitProbe = null)
     {
         this.revitPolicy = revitPolicy ?? DefaultPolicy();
         this.revitTransport = revitTransport ?? RevitCommandService.PipeTransport;

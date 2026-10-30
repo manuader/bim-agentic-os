@@ -39,6 +39,10 @@ public sealed record RevitCommandPolicy(IReadOnlyList<string> EnabledRoots)
 
     // Repository default plus optional allowlist. Without a repository (no global.json above startDirectory)
     // only allowlist entries enable writes.
+    public const string EnabledRootsFile = ".bim/revit-enabled-roots.txt";
+
+    public static RevitCommandPolicy ForRepository(string startDirectory) => ForRepository(startDirectory, null);
+
     public static RevitCommandPolicy ForRepository(string startDirectory, string? allowlistText)
     {
         var root = RepositoryRoot(startDirectory);

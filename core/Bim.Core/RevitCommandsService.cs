@@ -16,7 +16,7 @@ public static class RevitCommandService
     public static RevitCommandResult? RejectPipe(string? pipeName) =>
         RevitCommandProtocol.IsProcessPipe(pipeName) ? null : Failure(RevitCommandCodes.ExplicitProcessPipeRequired, "pipe_name", "bim-agentic-os-2025-<pid> required");
 
-    public static RevitCommandResult Run(string pipeName, string envelopeJson, RevitCommandPolicy policy, Func<string, string, string?> transport)
+    public static RevitCommandResult Run(string pipeName, string envelopeJson, RevitCommandPolicy policy, Func<string, string, string?> transport, RevitFileSystemProbe? probe = null)
     {
         if (RejectPipe(pipeName) is { } rejected) return rejected;
         RevitCommandEnvelope envelope;

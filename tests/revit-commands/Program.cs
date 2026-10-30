@@ -44,6 +44,7 @@ RevitCommandException? Refusal(string json)
 {
     try { RevitCommandProtocol.Parse(json); return null; }
     catch (RevitCommandException error) { return error; }
+    catch (Exception error) { return new RevitCommandException("unexpected " + error.GetType().Name, null, error.Message); }
 }
 void RejectsText(string name, string json, string code, string? field = null)
 {
@@ -131,7 +132,7 @@ try
     Rejects("centre arc without end angle", Envelope("wall.create", Wall(incompleteCentre)), RevitCommandCodes.ArgsInvalid, "args.curve.end_angle_deg");
     Rejects("query.levels with an argument", Envelope("query.levels", new JsonObject { ["x"] = 1 }), RevitCommandCodes.ArgsInvalid, "args.x");
     Rejects("query args not an object", Envelope("query.levels", new JsonArray()), RevitCommandCodes.ArgsInvalid, "args");
-    Rejects("family symbol category singular", Envelope("query.family_symbols", new JsonObject { ["category"] = "door" }), RevitCommandCodes.ArgsInvalid, "args.category");
+    Rejects("family symbol category plural (vocabulary is door|window, as in opening.place)", Envelope("query.family_symbols", new JsonObject { ["category"] = "doors" }), RevitCommandCodes.ArgsInvalid, "args.category");
     Rejects("family symbol category missing", Envelope("query.family_symbols", new JsonObject()), RevitCommandCodes.ArgsInvalid, "args.category");
     Rejects("opening category wall", Envelope("opening.place", Opening("wall")), RevitCommandCodes.ArgsInvalid, "args.category");
     var badHost = Opening("door"); badHost["host_wall_uid"] = "not-a-uid";
@@ -148,7 +149,7 @@ try
     Rejects("empty room number", Envelope("room.create", emptyNumber), RevitCommandCodes.ArgsInvalid, "args.number");
     var noPoint = Room(); noPoint.Remove("point");
     Rejects("room without point", Envelope("room.create", noPoint), RevitCommandCodes.ArgsInvalid, "args.point");
-    RejectsText("duplicate argument member", Envelope("query.family_symbols", new JsonObject { ["category"] = "doors" }).ToJsonString().Replace("{\"category\":\"doors\"}", "{\"category\":\"doors\",\"category\":\"windows\"}"), RevitCommandCodes.ArgsInvalid, "args.category");
+    RejectsText("duplicate argument member", Envelope("query.family_symbols", new JsonObject { ["category"] = "door" }).ToJsonString().Replace("{\"category\":\"door\"}", "{\"category\":\"door\",\"category\":\"window\"}"), RevitCommandCodes.ArgsInvalid, "args.category");
 
     // ---- Units ----
     foreach (var (label, value) in new (string, double)[] { ("zero", 0), ("negative", -1) })
@@ -157,6 +158,8 @@ try
         Rejects("height_mm " + label, Envelope("wall.create", height), RevitCommandCodes.LengthInvalid, "args.height_mm");
     }
     RejectsText("height_mm overflowing to infinity", Envelope("wall.create", Wall(Line(0, 0, 5000, 0))).ToJsonString().Replace("\"height_mm\":3000", "\"height_mm\":1e400"), RevitCommandCodes.LengthInvalid, "args.height_mm");
+    var tinyHeight = Wall(Line(0, 0, 5000, 0)); tinyHeight["height_mm"] = 1;
+    Rejects("height_mm under 1.2 mm", Envelope("wall.create", tinyHeight), RevitCommandCodes.LengthInvalid, "args.height_mm");
     var negativeOffset = Wall(Line(0, 0, 5000, 0)); negativeOffset["base_offset_mm"] = -500;
     Check(Accepts("negative base offset accepted", Envelope("wall.create", negativeOffset))?.Args is WallCreateArgs { BaseOffset.Millimetres: -500 }, "negative base offset binds -500 mm");
     var structural = Wall(Line(0, 0, 5000, 0)); structural["structural"] = true;
@@ -171,6 +174,8 @@ try
     Rejects("negative sill", Envelope("opening.place", negativeSill), RevitCommandCodes.LengthInvalid, "args.sill_mm");
     var window = Opening("window"); window["sill_mm"] = 900;
     Check(Accepts("window with sill accepted", Envelope("opening.place", window))?.Args is OpeningPlaceArgs { Category: "window", Sill: { } sill } && Near(sill.Millimetres, 900), "window sill binds 900 mm");
+    var doorSill = Opening("door"); doorSill["sill_mm"] = 0;
+    Rejects("sill_mm on a door", Envelope("opening.place", doorSill), RevitCommandCodes.ArgsInvalid, "args.sill_mm");
     var zeroSill = Opening("window"); zeroSill["sill_mm"] = 0;
     Accepts("sill 0 accepted", Envelope("opening.place", zeroSill));
     RejectsText("room point overflowing to infinity", Envelope("room.create", Room()).ToJsonString().Replace("\"point\":[2000,1500]", "\"point\":[1e400,1500]"), RevitCommandCodes.LengthInvalid, "args.point[0]");
@@ -202,7 +207,12 @@ try
     Rejects("through point equal to end", Envelope("wall.create", Wall(Arc3(0, 0, 2000, 0, 2000, 0))), RevitCommandCodes.ArcCollinear, "args.curve");
     Rejects("nearly collinear three-point arc", Envelope("wall.create", Wall(Arc3(0, 0, 2000, 0, 1000, 1e-9))), RevitCommandCodes.ArcCollinear, "args.curve");
     Rejects("three-point arc with start equal to end (sweep 360)", Envelope("wall.create", Wall(Arc3(0, 0, 0, 0, 1000, 1000))), RevitCommandCodes.ArcSweepInvalid, "args.curve");
-    Rejects("three-point arc with radius beyond 1e8 mm", Envelope("wall.create", Wall(Arc3(0, 0, 2e7, 0, 1e7, 0.1))), RevitCommandCodes.ArcRadiusInvalid, "args.curve");
+    Rejects("three-point arc with radius beyond 1e8 mm", Envelope("wall.create", Wall(Arc3(-1e8, 0, 1e8, 0, 0, 2))), RevitCommandCodes.ArcRadiusInvalid, "args.curve");
+    Rejects("three-point arc with sagitta under 1.2 mm is collinear", Envelope("wall.create", Wall(Arc3(0, 0, 2000, 0, 1000, 1))), RevitCommandCodes.ArcCollinear, "args.curve");
+    Rejects("thin arc 0.1 mm off a 20 km chord is collinear", Envelope("wall.create", Wall(Arc3(0, 0, 2e7, 0, 1e7, 0.1))), RevitCommandCodes.ArcCollinear, "args.curve");
+    Accepts("three-point arc with sagitta 2 mm accepted", Envelope("wall.create", Wall(Arc3(0, 0, 2000, 0, 1000, 2))));
+    double Deg(double degrees) => degrees * Math.PI / 180;
+    Rejects("three-point arc whose centre lies beyond 1e8 mm", Envelope("wall.create", Wall(Arc3(9.7e7, 0, 1.02e8 + 5e6 * Math.Cos(Deg(181)), 5e6 * Math.Sin(Deg(181)), 1.02e8 + 5e6 * Math.Cos(Deg(179)), 5e6 * Math.Sin(Deg(179))))), RevitCommandCodes.ArcRadiusInvalid, "args.curve");
 
     // ---- Centre arcs ----
     var quarter = Accepts("centre quarter arc accepted", Envelope("wall.create", Wall(ArcC(0, 0, 1000, 0, 90))));
@@ -215,6 +225,8 @@ try
         Rejects("centre arc " + label, Envelope("wall.create", Wall(ArcC(0, 0, 1000, a0, a1))), RevitCommandCodes.ArcSweepInvalid, "args.curve");
     RejectsText("centre arc start angle overflowing to infinity", Envelope("wall.create", Wall(ArcC(0, 0, 1000, 0, 90))).ToJsonString().Replace("\"start_angle_deg\":0", "\"start_angle_deg\":1e400"), RevitCommandCodes.AngleInvalid, "args.curve.start_angle_deg");
     Rejects("centre arc shorter than tolerance", Envelope("wall.create", Wall(ArcC(0, 0, 1, 0, 10))), RevitCommandCodes.CurveTooShort, "args.curve");
+    Rejects("centre arc whose ends nearly meet (chord under 1.2 mm)", Envelope("wall.create", Wall(ArcC(0, 0, 1000, 0, 359.99))), RevitCommandCodes.ArcSweepInvalid, "args.curve");
+    Rejects("centre arc extending beyond 1e8 mm", Envelope("wall.create", Wall(ArcC(9.99e7, 0, 1e6, 0, 90))), RevitCommandCodes.ArcRadiusInvalid, "args.curve");
     Rejects("centre arc centre beyond 1e8 mm", Envelope("wall.create", Wall(ArcC(-2e8, 0, 1000, 0, 90))), RevitCommandCodes.LengthInvalid, "args.curve.center[0]");
 
     // ---- Floor boundaries ----
@@ -230,7 +242,12 @@ try
     Rejects("collinear outline overlaps itself", Envelope("floor.create", Floor(P(0, 0), P(1000, 0), P(2000, 0))), RevitCommandCodes.BoundarySelfIntersecting);
     Rejects("spike folding back on an edge", Envelope("floor.create", Floor(P(0, 0), P(2000, 0), P(2000, 1000), P(2000, 500))), RevitCommandCodes.BoundarySelfIntersecting);
     Rejects("outline touching itself at a vertex", Envelope("floor.create", Floor(P(0, 0), P(4000, 0), P(2000, 2000), P(4000, 4000), P(0, 4000), P(2000, 2000))), RevitCommandCodes.BoundarySelfIntersecting);
-    Rejects("sliver with near-zero area", Envelope("floor.create", Floor(P(0, 0), P(10000, 0), P(5000, 0.0001))), RevitCommandCodes.BoundaryZeroArea, "args.boundary");
+    Rejects("sliver whose apex is within 1.2 mm of the opposite edge", Envelope("floor.create", Floor(P(0, 0), P(10000, 0), P(5000, 0.0001))), RevitCommandCodes.BoundarySelfIntersecting);
+    Rejects("small triangle with area under 1.44 mm2", Envelope("floor.create", Floor(P(0, 0), P(1.4, 0), P(0.7, 1.2124))), RevitCommandCodes.BoundaryZeroArea, "args.boundary");
+    Rejects("non-adjacent edges 1 mm apart", Envelope("floor.create", Floor(P(0, 0), P(4000, 0), P(4000, 3000), P(2001, 3000), P(2001, 1), P(1999, 1), P(1999, 3000), P(0, 3000))), RevitCommandCodes.BoundarySelfIntersecting);
+    Rejects("vertex 1 mm from a neighbouring edge", Envelope("floor.create", Floor(P(0, 0), P(4000, 0), P(4000, 3000), P(3999, 1))), RevitCommandCodes.BoundarySelfIntersecting);
+    Accepts("narrow notch 2 mm wide accepted", Envelope("floor.create", Floor(P(0, 0), P(4000, 0), P(4000, 3000), P(2001, 3000), P(2001, 10), P(1999, 10), P(1999, 3000), P(0, 3000))));
+    Accepts("floor far from the origin accepted (orientation computed relative to the first vertex)", Envelope("floor.create", Floor(P(9.9e7, 9.9e7), P(9.9e7 + 4000, 9.9e7), P(9.9e7 + 4000, 9.9e7 + 3000), P(9.9e7, 9.9e7 + 3000))));
     RejectsText("floor vertex overflowing to infinity", Envelope("floor.create", Floor(P(0, 0), P(4000, 0), P(4000, 3000))).ToJsonString().Replace("[4000,0]", "[1e400,0]"), RevitCommandCodes.LengthInvalid, "args.boundary[1][0]");
 
     // ---- Rooms, openings, queries ----
@@ -240,7 +257,7 @@ try
     Check(Accepts("door accepted", Envelope("opening.place", Opening("door")))?.Args is OpeningPlaceArgs { Category: "door", HostWallUid: WallUid } door && Near(door.PositionAlong.Millimetres, 1500), "door binds host wall and position");
     foreach (var query in new[] { "query.levels", "query.wall_types", "query.floor_types" })
         Check(Accepts(query + " with {} accepted", Envelope(query, new JsonObject()))?.Args is EmptyQueryArgs, query + " binds empty arguments");
-    foreach (var category in new[] { "doors", "windows" })
+    foreach (var category in new[] { "door", "window" })
         Check(Accepts("family symbols " + category + " accepted", Envelope("query.family_symbols", new JsonObject { ["category"] = category }))?.Args is FamilySymbolQueryArgs symbols && symbols.Category == category, "family symbols binds " + category);
 
     // ---- Canonical form and wire line ----
@@ -252,6 +269,12 @@ try
     Check(a.CanonicalJson.StartsWith("{\"args\":{\"curve\":{\"end\":[5000,0]", StringComparison.Ordinal) && a.CanonicalJson.EndsWith("\"operation_id\":\"op-9\",\"protocol_version\":1}", StringComparison.Ordinal), "canonical request sorts members and writes shortest numbers", a.CanonicalJson);
     Check(a.RequestSha256.Length == 64 && a.RequestSha256 == a.RequestSha256.ToLowerInvariant(), "request hash is lowercase SHA-256 hex");
     var c = RevitCommandProtocol.Parse(orderedA.Replace("\"height_mm\":3000", "\"height_mm\":3100"));
+    var negativeZero = RevitCommandProtocol.Parse(orderedA.Replace("\"height_mm\":3000", "\"height_mm\":3000,\"base_offset_mm\":-0"));
+    var positiveZero = RevitCommandProtocol.Parse(orderedA.Replace("\"height_mm\":3000", "\"height_mm\":3000,\"base_offset_mm\":0"));
+    Check(negativeZero.CanonicalJson == positiveZero.CanonicalJson && negativeZero.CanonicalJson.Contains("\"base_offset_mm\":0,", StringComparison.Ordinal), "canonical form writes -0 as 0", negativeZero.CanonicalJson);
+    Check(positiveZero.RequestSha256 != a.RequestSha256, "an explicit default (base_offset_mm 0) changes the hash; the hash binds the text, not the meaning");
+    RejectsText("lone surrogate in a level name", orderedA.Replace("\"level\":\"L1\"", "\"level\":\"L\\ud800\""), RevitCommandCodes.EnvelopeInvalid);
+    RejectsText("lone surrogate in a document path", orderedA.Replace("a.rvt", "\\udc00.rvt"), RevitCommandCodes.EnvelopeInvalid);
     Check(c.RequestSha256 != a.RequestSha256, "a different height changes the request hash");
     var wire = JsonNode.Parse(RevitCommandProtocol.WireLine(a))!.AsObject();
     Check(string.Join(",", wire.Select(member => member.Key)) == "DocumentPath,Operation,UniqueId,Metres,Command", "wire line keeps the add-in Request shape and adds Command", wire.ToJsonString());
@@ -306,10 +329,14 @@ try
         Check(CodeOf(() => RevitCommandPolicy.FromAllowlist(text, null)) == RevitCommandCodes.AllowlistInvalid, "allowlist " + label + " is rejected");
     Check(CodeOf(() => RevitCommandPolicy.FromAllowlist(string.Join("\n", Enumerable.Range(0, 257).Select(i => @"C:\Copies\" + i)), null)) == RevitCommandCodes.AllowlistInvalid, "allowlist over 256 entries is rejected");
     Check(CodeOf(() => RevitCommandPolicy.FromAllowlist(null, "relative")) == RevitCommandCodes.AllowlistInvalid, "a relative default root is rejected");
+    foreach (var (label, text) in new[] { ("drive root", @"C:"), ("drive root with slash", "D:/"), ("filesystem root", "/"), ("UNC share root", @"\fileserver\share"), ("UNC share root with separator", @"\fileserver\share") })
+        Check(CodeOf(() => RevitCommandPolicy.FromAllowlist(text, null)) == RevitCommandCodes.AllowlistInvalid, "too-broad allowlist entry " + label + " is rejected");
+    Check(CodeOf(() => RevitCommandPolicy.FromAllowlist(null, "/")) == RevitCommandCodes.AllowlistInvalid, "a too-broad default root is rejected");
+    Check(RevitCommandPolicy.FromAllowlist("C:\\Copies\n/srv\n\\\\fileserver\\share\\tests\n", null).EnabledRoots.Count == 3, "one directory below a drive, '/' or UNC share is accepted");
     var repository = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory) ?? throw new InvalidOperationException("repository root with global.json not found");
-    var repoPolicy = RevitCommandPolicy.ForRepository(AppContext.BaseDirectory, null);
+    var repoPolicy = RevitCommandPolicy.ForRepository(AppContext.BaseDirectory);
     Check(repoPolicy.EnabledRoots.SequenceEqual(new[] { Path.Combine(repository, ".bim", "native-runs") }), "repository default root is .bim/native-runs", string.Join(";", repoPolicy.EnabledRoots));
-    Check(RevitCommandPolicy.ForRepository(Path.GetPathRoot(Path.GetTempPath())!, null).EnabledRoots.Count == 0 || RevitCommandPolicy.RepositoryRoot(Path.GetPathRoot(Path.GetTempPath())!) is not null, "outside a repository there is no default root");
+    Check(RevitCommandPolicy.ForRepository(Path.GetPathRoot(Path.GetTempPath())!).EnabledRoots.Count == 0 || RevitCommandPolicy.RepositoryRoot(Path.GetPathRoot(Path.GetTempPath())!) is not null, "outside a repository there is no default root");
 
     // ---- Catalogue ----
     var names = RevitCommandCatalogue.V1.Select(spec => spec.Name).ToArray();
@@ -327,27 +354,109 @@ try
     }
     Check(Throws<InvalidOperationException>(() => { using var bad = JsonDocument.Parse("""{"type":"object","properties":{},"additionalProperties":false,"minimum":0}"""); RevitCommandSchema.CheckSupported(bad.RootElement); }), "a schema keyword the validator does not enforce is refused");
     Check(Throws<InvalidOperationException>(() => { using var open = JsonDocument.Parse("""{"type":"object","properties":{}}"""); RevitCommandSchema.CheckSupported(open.RootElement); }), "object schemas must be closed");
+    using (var anchored = JsonDocument.Parse("""{"type":"string","pattern":"^a$"}"""))
+    using (var trailing = JsonDocument.Parse("\"a\\n\""))
+    using (var exact = JsonDocument.Parse("\"a\""))
+        Check(RevitCommandSchema.Validate(trailing.RootElement, anchored.RootElement, "x") is not null && RevitCommandSchema.Validate(exact.RootElement, anchored.RootElement, "x") is null, "schema pattern $ means end of string: a trailing newline is refused");
     Check(RevitCommandCodes.ClientSide.Concat(RevitCommandCodes.ExecutorReserved).Distinct().Count() == RevitCommandCodes.ClientSide.Count + RevitCommandCodes.ExecutorReserved.Count
         && RevitCommandCodes.ClientSide.Concat(RevitCommandCodes.ExecutorReserved).All(code => System.Text.RegularExpressions.Regex.IsMatch(code, @"\A[a-z]+(_[a-z0-9]+)*\z")), "error codes are distinct snake_case");
 
+    // ---- Link guard (injected probe) ----
+    var probed = new List<string>();
+    RevitFileSystemProbe Probe(Func<string, bool> isLink, Func<string, int?> links) => new(path => { probed.Add(path); return isLink(path); }, links);
+    Check(RevitLinkGuard.Check(@"C:\Repo\.bim\native-runs\run-1\a.rvt", @"c:/repo/.bim/native-runs", Probe(_ => false, _ => 1)) is null
+        && probed.SequenceEqual(new[] { @"C:\Repo\.bim\native-runs", @"C:\Repo\.bim\native-runs\run-1", @"C:\Repo\.bim\native-runs\run-1\a.rvt" }),
+        "link guard probes every component from the matched root down to the document, spelled as the document", string.Join(" | ", probed));
+    foreach (var linked in new[] { @"C:\Repo\.bim\native-runs", @"C:\Repo\.bim\native-runs\run-1", @"C:\Repo\.bim\native-runs\run-1\a.rvt" })
+        Check(RevitLinkGuard.Check(@"C:\Repo\.bim\native-runs\run-1\a.rvt", @"C:\Repo\.bim\native-runs", Probe(path => path == linked, _ => 1)) == RevitCommandCodes.DocumentLinkRefused, "a link at " + linked + " is document_link_refused");
+    Check(RevitLinkGuard.Check(@"C:\Repo\.bim\native-runs\run-1\a.rvt", @"C:\Repo\.bim\native-runs", Probe(_ => false, _ => 2)) == RevitCommandCodes.DocumentLinkRefused, "a document with two hard links is document_link_refused");
+    Check(RevitLinkGuard.Check(@"C:\Repo\.bim\native-runs\run-1\a.rvt", @"C:\Repo\.bim\native-runs", Probe(_ => false, _ => null)) is null, "unknown hard-link count (no file yet, or not Windows) is allowed");
+    Check(RevitLinkGuard.Check("/home/u/repo/.bim/native-runs/r/a.rvt", "/home/u/repo/.bim/native-runs", Probe(path => path == "/home/u/repo/.bim/native-runs/r", _ => null)) == RevitCommandCodes.DocumentLinkRefused, "'/'-rooted components are probed too");
+
+    // ---- Link guard (real file system) ----
+    Directory.CreateDirectory(work);
+    var linkRoot = Path.Combine(work, "copies");
+    var realRun = Directory.CreateDirectory(Path.Combine(linkRoot, "run-real")).FullName;
+    File.WriteAllText(Path.Combine(realRun, "a.rvt"), "fixture");
+    var outsideTarget = Directory.CreateDirectory(Path.Combine(work, "production")).FullName;
+    File.WriteAllText(Path.Combine(outsideTarget, "Tower.rvt"), "production");
+    var linkPolicy = new RevitCommandPolicy(new[] { linkRoot });
+    string WireOk(string line) => SuccessFor(line, Array.Empty<string>(), null);
+    var linkForwarded = 0;
+    string? LinkTransport(string pipe, string line) { linkForwarded++; return WireOk(line); }
+    string RunWall(string path, RevitFileSystemProbe? probe = null) => RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("wall.create", Wall(Line(0, 0, 5000, 0)), path).ToJsonString(), linkPolicy, LinkTransport, probe).Line;
+    Check(JsonNode.Parse(RunWall(Path.Combine(realRun, "a.rvt"), RevitFileSystemProbe.Real))!["status"]!.GetValue<string>() == "succeeded" && linkForwarded == 1, "a plain directory and file under the root pass the real link guard", RunWall(Path.Combine(realRun, "a.rvt"), RevitFileSystemProbe.Real));
+    linkForwarded = 0;
+    Check(RunWall(Path.Combine(realRun, "a.rvt"), new RevitFileSystemProbe(_ => false, _ => 2)).Contains("\"document_link_refused\"", StringComparison.Ordinal) && linkForwarded == 0, "an injected hard-link count of 2 refuses the write before the pipe");
+    Check(RunWall(Path.Combine(realRun, "a.rvt"), new RevitFileSystemProbe(path => path.EndsWith("run-real", StringComparison.Ordinal), _ => null)).Contains("\"document_link_refused\"", StringComparison.Ordinal) && linkForwarded == 0, "an injected directory link refuses the write before the pipe");
+    var readThroughLink = RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("query.levels", new JsonObject(), Path.Combine(realRun, "a.rvt")).ToJsonString(), linkPolicy, LinkTransport, new RevitFileSystemProbe(_ => true, _ => 9));
+    Check(!readThroughLink.IsError && linkForwarded == 1, "read-only queries are not link-checked", readThroughLink.Line);
+    linkForwarded = 0;
+    bool TryLink(Action create, string what)
+    {
+        try { create(); return true; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            if (OperatingSystem.IsWindows()) { Console.WriteLine("SKIP " + what + ": " + error.GetType().Name + " (symlink privilege)"); return false; }
+            Check(false, what + " could be created", error.Message);
+            return false;
+        }
+    }
+    var linkedDirectory = Path.Combine(linkRoot, "run-link");
+    if (TryLink(() => Directory.CreateSymbolicLink(linkedDirectory, outsideTarget), "directory symlink"))
+        Check(FailureCode(RunWall(Path.Combine(linkedDirectory, "Tower.rvt"), RevitFileSystemProbe.Real)) == RevitCommandCodes.DocumentLinkRefused && linkForwarded == 0, "a symlinked directory under the root pointing at production is refused (real file system)");
+    var linkedFile = Path.Combine(realRun, "tower-link.rvt");
+    if (TryLink(() => File.CreateSymbolicLink(linkedFile, Path.Combine(outsideTarget, "Tower.rvt")), "file symlink"))
+        Check(FailureCode(RunWall(linkedFile, RevitFileSystemProbe.Real)) == RevitCommandCodes.DocumentLinkRefused && linkForwarded == 0, "a symlinked document under the root is refused (real file system)");
+    var dangling = Path.Combine(realRun, "dangling.rvt");
+    if (TryLink(() => File.CreateSymbolicLink(dangling, Path.Combine(work, "nowhere.rvt")), "dangling symlink"))
+        Check(FailureCode(RunWall(dangling, RevitFileSystemProbe.Real)) == RevitCommandCodes.DocumentLinkRefused && linkForwarded == 0, "a dangling symlink is refused (real file system)");
+    if (OperatingSystem.IsWindows())
+    {
+        var hardLink = Path.Combine(realRun, "hard.rvt");
+        if (NativeTestLinks.CreateHardLink(hardLink, Path.Combine(outsideTarget, "Tower.rvt")))
+            Check(RevitFileSystemProbe.Real.HardLinkCount(hardLink) == 2 && FailureCode(RunWall(hardLink, RevitFileSystemProbe.Real)) == RevitCommandCodes.DocumentLinkRefused && linkForwarded == 0, "a hard-linked document is refused on Windows (GetFileInformationByHandle)");
+        else Check(false, "hard link could be created");
+        Check(RevitFileSystemProbe.Real.HardLinkCount(Path.Combine(realRun, "a.rvt")) == 1 && RevitFileSystemProbe.Real.HardLinkCount(Path.Combine(realRun, "missing.rvt")) is null, "Windows hard-link count is 1 for a plain file and unknown for a missing one");
+    }
+    else Check(RevitFileSystemProbe.Real.HardLinkCount(Path.Combine(realRun, "a.rvt")) is null, "hard-link counting is Windows-only");
+
+    // ---- Owner policy file ----
+    string FakeRepo(string name, string? enabledRoots)
+    {
+        var repo = Directory.CreateDirectory(Path.Combine(work, name)).FullName;
+        File.WriteAllText(Path.Combine(repo, "global.json"), "{}");
+        Directory.CreateDirectory(Path.Combine(repo, ".bim"));
+        if (enabledRoots is not null) File.WriteAllText(Path.Combine(repo, ".bim", "revit-enabled-roots.txt"), enabledRoots);
+        return repo;
+    }
+    var ownerRepo = FakeRepo("owner-repo", "# owner edits this file\n" + linkRoot + "\n");
+    Check(RevitCommandPolicy.ForRepository(ownerRepo).EnabledRoots.SequenceEqual(new[] { Path.Combine(ownerRepo, ".bim", "native-runs"), linkRoot }), "owner file .bim/revit-enabled-roots.txt adds enabled roots after the default", string.Join(";", RevitCommandPolicy.ForRepository(ownerRepo).EnabledRoots));
+    Check(RevitCommandPolicy.ForRepository(FakeRepo("plain-repo", null)).EnabledRoots.Count == 1, "without the owner file only .bim/native-runs is enabled");
+    Check(CodeOf(() => RevitCommandPolicy.ForRepository(FakeRepo("bad-repo", "relative/copies\n"))) == RevitCommandCodes.AllowlistInvalid, "a malformed owner file is allowlist_invalid");
+    Check(CodeOf(() => RevitCommandPolicy.ForRepository(FakeRepo("huge-repo", new string('#', 70000)))) == RevitCommandCodes.AllowlistInvalid, "an oversized owner file is allowlist_invalid");
+    var linkedPolicyRepo = FakeRepo("linked-repo", null);
+    var policyTarget = Path.Combine(work, "elsewhere-roots.txt"); File.WriteAllText(policyTarget, linkRoot + "\n");
+    if (TryLink(() => File.CreateSymbolicLink(Path.Combine(linkedPolicyRepo, ".bim", "revit-enabled-roots.txt"), policyTarget), "policy file symlink"))
+        Check(CodeOf(() => RevitCommandPolicy.ForRepository(linkedPolicyRepo)) == RevitCommandCodes.AllowlistInvalid, "a symlinked owner file is allowlist_invalid");
+
     // ---- Generated MCP tools (fake transport) ----
     var forwarded = new List<(string Pipe, string Line)>();
-    var fakeResponse = RevitCommandResponse.Success(new RevitCommandReceipt("op-1", "query.levels", Uid, "0", false), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), """{"levels":[]}""", Array.Empty<string>()).ToJson();
+    Func<string, string> respond = line => SuccessFor(line, Array.Empty<string>(), """{"levels":[]}""");
     Exception? transportFault = null;
     string? Fake(string pipe, string line)
     {
         forwarded.Add((pipe, line));
         if (transportFault is not null) throw transportFault;
-        return fakeResponse;
+        return respond(line);
     }
-    var server = new McpServer(windows, Fake);
+    var server = new McpServer(windows, Fake, new RevitFileSystemProbe(_ => false, _ => null));
     JsonObject Call(string line) => JsonNode.Parse(server.Handle(line) ?? throw new InvalidOperationException("no response"))!.AsObject();
     JsonObject ToolCall(string name, JsonObject arguments) => Call(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 7, ["method"] = "tools/call", ["params"] = new JsonObject { ["name"] = name, ["arguments"] = arguments } }.ToJsonString());
     JsonObject RevitArguments(JsonNode commandArgs, string path = FixturePath, string pipe = "bim-agentic-os-2025-4242") => new() { ["pipe_name"] = pipe, ["operation_id"] = "op-1", ["document"] = new JsonObject { ["path"] = path, ["unique_id"] = Uid }, ["args"] = commandArgs };
     string Text(JsonObject response) => response["result"]!["content"]![0]!["text"]!.GetValue<string>();
     bool IsError(JsonObject response) => response["result"]!["isError"]!.GetValue<bool>();
     int ErrorCode(JsonObject response) => response["error"]!["code"]!.GetValue<int>();
-    string FailureCode(string text) => JsonNode.Parse(text)!["code"]!.GetValue<string>();
 
     var listed = Call("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]!.AsArray();
     var listedNames = listed.Select(tool => tool!["name"]!.GetValue<string>()).ToArray();
@@ -356,20 +465,28 @@ try
     {
         var tool = listed.Single(t => t!["name"]!.GetValue<string>() == spec.ToolName)!;
         var schema = tool["inputSchema"]!;
+        var document = schema["properties"]!["document"]!["properties"]!;
         Check(schema["properties"]!["args"]!.ToJsonString() == JsonNode.Parse(spec.ArgsSchemaJson)!.ToJsonString()
             && string.Join(",", schema["required"]!.AsArray().Select(x => x!.GetValue<string>())) == "pipe_name,operation_id,document,args"
             && schema["additionalProperties"]!.GetValue<bool>() == false
             && tool["description"]!.GetValue<string>().StartsWith(spec.Description, StringComparison.Ordinal),
             spec.ToolName + " inputSchema embeds the catalogue args schema and requires pipe, operation, document and args");
+        Check(document["path"]!["maxLength"]!.GetValue<int>() == RevitCommandProtocol.MaxPathChars && document["path"]!["minLength"]!.GetValue<int>() == 1
+            && document["unique_id"]!["minLength"]!.GetValue<int>() == 45 && document["unique_id"]!["maxLength"]!.GetValue<int>() == 45
+            && System.Text.RegularExpressions.Regex.IsMatch(Uid, document["unique_id"]!["pattern"]!.GetValue<string>()) && !System.Text.RegularExpressions.Regex.IsMatch("abc", document["unique_id"]!["pattern"]!.GetValue<string>()),
+            spec.ToolName + " document schema bounds path length and states the UniqueId pattern");
     }
 
     var queryCall = ToolCall("revit_query_levels", RevitArguments(new JsonObject(), RealPath));
     var expectedQueryWire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(Envelope("query.levels", new JsonObject(), RealPath).ToJsonString()));
-    Check(!IsError(queryCall) && Text(queryCall) == fakeResponse && forwarded.Count == 1 && forwarded[0] == ("bim-agentic-os-2025-4242", expectedQueryWire), "read-only tool on a real project forwards the exact wire line and returns the add-in line verbatim", forwarded.Count > 0 ? forwarded[^1].Line : "nothing forwarded");
+    Check(!IsError(queryCall) && Text(queryCall) == respond(expectedQueryWire) && forwarded.Count == 1 && forwarded[0] == ("bim-agentic-os-2025-4242", expectedQueryWire), "read-only tool on a real project forwards the exact wire line and returns the add-in line verbatim", forwarded.Count > 0 ? forwarded[^1].Line : "nothing forwarded");
     var wallCall = ToolCall("revit_wall_create", RevitArguments(Wall(Arc3(0, 0, 2000, 0, 1000, 1000))));
-    Check(!IsError(wallCall) && forwarded.Count == 2 && forwarded[1].Line == RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(Envelope("wall.create", Wall(Arc3(0, 0, 2000, 0, 1000, 1000))).ToJsonString())), "curved wall tool on an enabled copy is forwarded");
+    Check(!IsError(wallCall) && forwarded.Count == 2 && forwarded[1].Line == RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(Envelope("wall.create", Wall(Arc3(0, 0, 2000, 0, 1000, 1000))).ToJsonString())), "curved wall tool on an enabled copy is forwarded", Text(wallCall));
     var refusedWrite = ToolCall("revit_wall_create", RevitArguments(Wall(Line(0, 0, 5000, 0)), RealPath));
     Check(IsError(refusedWrite) && FailureCode(Text(refusedWrite)) == RevitCommandCodes.DocumentNotEnabled && forwarded.Count == 2, "write tool on a real project is document_not_enabled and not forwarded", Text(refusedWrite));
+    var linkServer = new McpServer(windows, Fake, new RevitFileSystemProbe(path => path.EndsWith("run-1", StringComparison.Ordinal), _ => null));
+    var linkCall = JsonNode.Parse(linkServer.Handle(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 3, ["method"] = "tools/call", ["params"] = new JsonObject { ["name"] = "revit_wall_create", ["arguments"] = RevitArguments(Wall(Line(0, 0, 5000, 0))) } }.ToJsonString())!)!;
+    Check(FailureCode(linkCall["result"]!["content"]![0]!["text"]!.GetValue<string>()) == RevitCommandCodes.DocumentLinkRefused && forwarded.Count == 2, "MCP write through an injected link is document_link_refused and not forwarded");
     var badHeight = Wall(Line(0, 0, 5000, 0)); badHeight["height_mm"] = -3000;
     var invalidCall = ToolCall("revit_wall_create", RevitArguments(badHeight));
     Check(IsError(invalidCall) && Text(invalidCall) == RevitCommandResponse.Failure(RevitCommandCodes.LengthInvalid, "args.height_mm", "negative length").ToJson() && forwarded.Count == 2, "invalid tool arguments return the typed failure and are not forwarded", Text(invalidCall));
@@ -377,6 +494,8 @@ try
     Check(IsError(collinearCall) && FailureCode(Text(collinearCall)) == RevitCommandCodes.ArcCollinear && forwarded.Count == 2, "collinear arc tool call is refused before the pipe");
     var schemaCall = ToolCall("revit_floor_create", RevitArguments(new JsonObject { ["level"] = "Level 1" }));
     Check(IsError(schemaCall) && FailureCode(Text(schemaCall)) == RevitCommandCodes.ArgsInvalid && JsonNode.Parse(Text(schemaCall))!["field"]!.GetValue<string>() == "args.type", "schema failure names the missing field", Text(schemaCall));
+    var surrogateCall = Call("{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"revit_query_levels\",\"arguments\":{\"pipe_name\":\"bim-agentic-os-2025-4242\",\"operation_id\":\"op-1\",\"document\":{\"path\":\"C:\\\\Repo\\\\\\ud800.rvt\",\"unique_id\":\"" + Uid + "\"},\"args\":{}}}}");
+    Check(IsError(surrogateCall) && FailureCode(Text(surrogateCall)) == RevitCommandCodes.EnvelopeInvalid && forwarded.Count == 2, "a lone surrogate in a tool argument is envelope_invalid in the response shape", surrogateCall.ToJsonString());
     foreach (var badPipe in new[] { "bim-agentic-os-2025-0", "bim-agentic-os-2025", "arbitrary", "bim-agentic-os-2025-12\n" })
     {
         var pipeCall = ToolCall("revit_query_levels", RevitArguments(new JsonObject(), FixturePath, badPipe));
@@ -390,11 +509,28 @@ try
     Check(ErrorCode(ToolCall("revit_query_levels", arrayArgs)) == -32602, "args must be an object (-32602)");
     var textDocument = RevitArguments(new JsonObject()); textDocument["document"] = FixturePath;
     Check(ErrorCode(ToolCall("revit_query_levels", textDocument)) == -32602, "document must be an object (-32602)");
-    fakeResponse = RevitCommandResponse.Failure(RevitCommandCodes.ReferenceNotFound, "args.level", "no level named Level 9").ToJson();
+    var executorFailureLine = RevitCommandResponse.Failure(RevitCommandCodes.ReferenceNotFound, "args.level", "no level named Level 9").ToJson();
+    respond = _ => executorFailureLine;
     var executorFailure = ToolCall("revit_query_levels", RevitArguments(new JsonObject()));
-    Check(IsError(executorFailure) && Text(executorFailure) == fakeResponse, "an add-in failure line is returned verbatim with isError");
-    fakeResponse = "not json";
-    Check(IsError(ToolCall("revit_query_levels", RevitArguments(new JsonObject()))), "a non-JSON add-in line is an error");
+    Check(IsError(executorFailure) && Text(executorFailure) == executorFailureLine, "an add-in failure line is returned verbatim with isError");
+    foreach (var (label, tamper) in new (string, Func<RevitCommandReceipt, RevitCommandReceipt>)[]
+    {
+        ("operation_id", r => r with { OperationId = "op-2" }),
+        ("command", r => r with { Command = "query.floor_types" }),
+        ("document unique_id", r => r with { DocumentUniqueId = WallUid }),
+        ("request_sha256", r => r with { RequestSha256 = new string('0', 64) }),
+    })
+    {
+        respond = line => SuccessFor(line, Array.Empty<string>(), null, tamper);
+        var mismatch = ToolCall("revit_query_levels", RevitArguments(new JsonObject()));
+        Check(IsError(mismatch) && FailureCode(Text(mismatch)) == RevitCommandCodes.ResponseInvalid && JsonNode.Parse(Text(mismatch))!["field"]?.GetValue<string>() == "receipt", "a success whose receipt " + label + " does not match the request is response_invalid", Text(mismatch));
+    }
+    respond = line => SuccessFor(line, Array.Empty<string>(), null).Replace("\"replayed\":false", "\"replayed\":\"no\"", StringComparison.Ordinal);
+    Check(FailureCode(Text(ToolCall("revit_query_levels", RevitArguments(new JsonObject())))) == RevitCommandCodes.ResponseInvalid, "a malformed success response is response_invalid");
+    respond = _ => "not json";
+    var nonJson = ToolCall("revit_query_levels", RevitArguments(new JsonObject()));
+    Check(IsError(nonJson) && FailureCode(Text(nonJson)) == RevitCommandCodes.ResponseInvalid, "a non-JSON add-in line is response_invalid");
+    respond = line => SuccessFor(line, Array.Empty<string>(), null);
     transportFault = new TimeoutException();
     var timeout = ToolCall("revit_query_levels", RevitArguments(new JsonObject()));
     Check(IsError(timeout) && FailureCode(Text(timeout)) == RevitCommandCodes.PipeConnectTimeout, "connect timeout is pipe_connect_timeout");
@@ -404,16 +540,17 @@ try
     var silent = new McpServer(windows, (_, _) => null);
     var noResponse = JsonNode.Parse(silent.Handle(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 8, ["method"] = "tools/call", ["params"] = new JsonObject { ["name"] = "revit_query_levels", ["arguments"] = RevitArguments(new JsonObject()) } }.ToJsonString())!)!;
     Check(FailureCode(noResponse["result"]!["content"]![0]!["text"]!.GetValue<string>()) == RevitCommandCodes.NoResponse, "pipe closed without a line is no_response");
+    var surrogateRun = RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("query.levels", new JsonObject()).ToJsonString().Replace("\"op-1\"", "\"op\\udc00\"", StringComparison.Ordinal), windows, Fake);
+    Check(surrogateRun.IsError && FailureCode(surrogateRun.Line) == RevitCommandCodes.EnvelopeInvalid, "a lone surrogate in the envelope is envelope_invalid", surrogateRun.Line);
 
     // ---- CLI end to end against an in-process fake add-in pipe server ----
-    Directory.CreateDirectory(work);
     string dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
     var cliDll = Path.Combine(repository, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
     if (!File.Exists(cliDll)) throw new InvalidOperationException("CLI binary missing: " + cliDll + " (build interfaces/cli --configuration Release first, as scripts/verify.ps1 does)");
-    (int Exit, string Out) Cli(params string[] arguments)
+    (int Exit, string Out) CliAt(string dll, params string[] arguments)
     {
         var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
-        start.ArgumentList.Add(cliDll);
+        start.ArgumentList.Add(dll);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
         var stdout = process.StandardOutput.ReadToEndAsync();
@@ -426,6 +563,7 @@ try
         if (stderr.Result.Length > 0) Console.WriteLine("cli stderr: " + stderr.Result.ReplaceLineEndings(" "));
         return (process.ExitCode, text);
     }
+    (int Exit, string Out) Cli(params string[] arguments) => CliAt(cliDll, arguments);
     string Write(string name, string content) { var path = Path.Combine(work, name); File.WriteAllText(path, content); return path; }
     var pipeName = "bim-agentic-os-2025-" + Environment.ProcessId;
     // On Unix the pipe is a socket at $TMPDIR/CoreFxPipe_<name>; verify.ps1 points TMPDIR at a deep evidence folder
@@ -438,26 +576,45 @@ try
     var repoFixture = Path.Combine(repository, ".bim", "native-runs", "c02-contract", "BIM-Agentic-Test.rvt");
     var outside = Path.Combine(work, "Real-Project.rvt");
     using var addIn = new FakeAddIn(pipeName);
-    addIn.Response = RevitCommandResponse.Success(new RevitCommandReceipt("op-1", "wall.create", Uid, "0", false), new[] { WallUid }, Array.Empty<string>(), Array.Empty<string>(), """{"length_mm":5000}""", Array.Empty<string>()).ToJson();
+    addIn.Respond = line => SuccessFor(line, new[] { WallUid }, """{"length_mm":5000}""");
 
     var (badPipeExit, badPipeOut) = Cli("revit-command", Path.Combine(work, "missing.json"), "arbitrary");
     Check(badPipeExit == 1 && badPipeOut == RevitCommandService.RejectPipe("arbitrary")!.Line, "CLI refuses a non-process pipe before reading the envelope", badPipeExit + " " + badPipeOut);
     var (noPipeExit, noPipeOut) = Cli("revit-command", Path.Combine(work, "missing.json"));
     Check(noPipeExit == 1 && FailureCode(noPipeOut) == RevitCommandCodes.ExplicitProcessPipeRequired, "CLI without a pipe argument is explicit_process_pipe_required", noPipeOut);
+    var (missingExit, missingOut) = Cli("revit-command", Path.Combine(work, "missing.json"), pipeName);
+    Check(missingExit == 1 && FailureCode(missingOut) == RevitCommandCodes.EnvelopeInvalid && JsonNode.Parse(missingOut)!["detail"]?.GetValue<string>() == "input_not_found" && JsonNode.Parse(missingOut)!["created"] is JsonArray, "CLI with an unreadable envelope file is envelope_invalid in the response shape", missingOut);
     var readEnvelope = Write("query.json", Envelope("query.levels", new JsonObject(), outside).ToJsonString());
     var (queryExit, queryOut) = Cli("revit-command", readEnvelope, pipeName);
-    Check(queryExit == 0 && queryOut == addIn.Response && addIn.Received.Count == 1 && addIn.Received[0] == RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(File.ReadAllText(readEnvelope))), "CLI forwards a read-only query on any document over the real pipe and prints the add-in line", queryExit + " " + queryOut + " received " + addIn.Received.Count);
+    var queryWire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(File.ReadAllText(readEnvelope)));
+    Check(queryExit == 0 && queryOut == addIn.Respond(queryWire) && addIn.Received.Count == 1 && addIn.Received[0] == queryWire, "CLI forwards a read-only query on any document over the real pipe and prints the add-in line", queryExit + " " + queryOut + " received " + addIn.Received.Count);
+    var (fourthExit, fourthOut) = Cli("revit-command", readEnvelope, pipeName, Write("allow.txt", work + "\n"));
+    Check(fourthExit == 1 && FailureCode(fourthOut) == RevitCommandCodes.ExplicitProcessPipeRequired && addIn.Received.Count == 1, "CLI no longer accepts a caller-supplied allowlist argument", fourthOut);
     var outsideWall = Write("outside-wall.json", Envelope("wall.create", Wall(Line(0, 0, 5000, 0)), outside).ToJsonString());
     var (refusedExit, refusedOut) = Cli("revit-command", outsideWall, pipeName);
     Check(refusedExit == 1 && FailureCode(refusedOut) == RevitCommandCodes.DocumentNotEnabled && addIn.Received.Count == 1, "CLI write outside the test root is document_not_enabled and never reaches the pipe", refusedOut);
     var fixtureWall = Write("fixture-wall.json", Envelope("wall.create", Wall(ArcC(0, 0, 3000, 0, 120)), repoFixture).ToJsonString());
     var (wallExit, wallOut) = Cli("revit-command", fixtureWall, pipeName);
-    Check(wallExit == 0 && wallOut == addIn.Response && addIn.Received.Count == 2, "CLI write under the repository .bim/native-runs is forwarded", wallExit + " " + wallOut);
-    var allow = Write("allow.txt", "# copies enabled for this test\n" + work + "\n");
-    var (allowedExit, allowedOut) = Cli("revit-command", outsideWall, pipeName, allow);
-    Check(allowedExit == 0 && allowedOut == addIn.Response && addIn.Received.Count == 3, "CLI write enabled by an explicit allowlist file is forwarded", allowedOut);
-    var (badAllowExit, badAllowOut) = Cli("revit-command", outsideWall, pipeName, Write("bad-allow.txt", "relative/copies\n"));
-    Check(badAllowExit == 1 && FailureCode(badAllowOut) == RevitCommandCodes.AllowlistInvalid && JsonNode.Parse(badAllowOut)!["created"] is JsonArray && addIn.Received.Count == 3, "CLI with a malformed allowlist fails closed with the response shape", badAllowOut);
+    Check(wallExit == 0 && wallOut == addIn.Respond(addIn.Received[^1]) && addIn.Received.Count == 2, "CLI write under the repository .bim/native-runs is forwarded", wallExit + " " + wallOut);
+    // A copy of the CLI inside a fake repository reads that repository's owner file .bim/revit-enabled-roots.txt.
+    string CopyCli(string repo)
+    {
+        var target = Directory.CreateDirectory(Path.Combine(repo, "cli")).FullName;
+        var source = Path.GetDirectoryName(cliDll)!;
+        foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var copy = Path.Combine(target, Path.GetRelativePath(source, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(copy)!);
+            File.Copy(file, copy);
+        }
+        return Path.Combine(target, "Bim.Cli.dll");
+    }
+    var ownerCli = CopyCli(FakeRepo("cli-owner-repo", "# copies enabled for this test\n" + work + "\n"));
+    var (allowedExit, allowedOut) = CliAt(ownerCli, "revit-command", outsideWall, pipeName);
+    Check(allowedExit == 0 && addIn.Received.Count == 3 && allowedOut == addIn.Respond(addIn.Received[^1]), "CLI write enabled by the owner file is forwarded", allowedOut);
+    var badOwnerCli = CopyCli(FakeRepo("cli-bad-repo", "C:\\\n"));
+    var (badAllowExit, badAllowOut) = CliAt(badOwnerCli, "revit-command", outsideWall, pipeName);
+    Check(badAllowExit == 1 && FailureCode(badAllowOut) == RevitCommandCodes.AllowlistInvalid && JsonNode.Parse(badAllowOut)!["created"] is JsonArray && addIn.Received.Count == 3, "CLI with a too-broad owner file entry fails closed with the response shape", badAllowOut);
     var invalidEnvelope = Envelope("wall.create", Wall(Arc3(0, 0, 2000, 0, 1000, 0)), repoFixture);
     var (invalidExit, invalidOut) = Cli("revit-command", Write("invalid.json", invalidEnvelope.ToJsonString()), pipeName);
     Check(invalidExit == 1 && FailureCode(invalidOut) == RevitCommandCodes.ArcCollinear && addIn.Received.Count == 3, "CLI refuses a collinear arc before the pipe", invalidOut);
@@ -469,9 +626,13 @@ try
     Check(!IsError(mcpWall) && Text(mcpWall) == wallOut && addIn.Received.Count == 4 && addIn.Received[3] == addIn.Received[1], "MCP tool over the real pipe is byte-equal to the CLI and sends the identical wire line", Text(mcpWall));
     var mcpRefused = RepoCall("revit_wall_create", RevitArguments(Wall(Line(0, 0, 5000, 0)), outside, pipeName));
     Check(Text(mcpRefused) == refusedOut && addIn.Received.Count == 4, "MCP copies-only refusal is byte-equal to the CLI");
-    addIn.Response = RevitCommandResponse.Failure(RevitCommandCodes.OperationIdConflict, "operation_id", null).ToJson();
+    var conflictLine = RevitCommandResponse.Failure(RevitCommandCodes.OperationIdConflict, "operation_id", null).ToJson();
+    addIn.Respond = _ => conflictLine;
     var (conflictExit, conflictOut) = Cli("revit-command", fixtureWall, pipeName);
-    Check(conflictExit == 1 && conflictOut == addIn.Response, "CLI exits 1 and prints an add-in failure verbatim", conflictOut);
+    Check(conflictExit == 1 && conflictOut == conflictLine, "CLI exits 1 and prints an add-in failure verbatim", conflictOut);
+    addIn.Respond = line => SuccessFor(line, Array.Empty<string>(), null, r => r with { OperationId = "op-other" });
+    var (tamperExit, tamperOut) = Cli("revit-command", fixtureWall, pipeName);
+    Check(tamperExit == 1 && FailureCode(tamperOut) == RevitCommandCodes.ResponseInvalid, "CLI refuses a success whose receipt does not match the request", tamperOut);
     var (absentExit, absentOut) = Cli("revit-command", readEnvelope, "bim-agentic-os-2025-999999999");
     Check(absentExit == 1 && FailureCode(absentOut) == RevitCommandCodes.PipeConnectTimeout, "CLI with no add-in listening is pipe_connect_timeout", absentOut);
 }
@@ -493,7 +654,30 @@ static bool Throws<T>(Action action) where T : Exception
     catch (T) { return true; }
 }
 
-// One same-user pipe server standing in for the Revit add-in: it records each request line and answers Response,
+static string FailureCode(string text) => JsonNode.Parse(text)!["code"]!.GetValue<string>();
+
+// What the C03 executor will do: hash the received Command text exactly as sent and echo the request identity.
+static string SuccessFor(string wireLine, string[] created, string? readbackJson, Func<RevitCommandReceipt, RevitCommandReceipt>? tamper = null)
+{
+    using var wire = JsonDocument.Parse(wireLine);
+    var commandText = wire.RootElement.GetProperty("Command").GetRawText();
+    using var command = JsonDocument.Parse(commandText);
+    var receipt = new RevitCommandReceipt(command.RootElement.GetProperty("operation_id").GetString()!, command.RootElement.GetProperty("command").GetString()!,
+        command.RootElement.GetProperty("document").GetProperty("unique_id").GetString()!,
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(commandText))).ToLowerInvariant(), false);
+    if (tamper is not null) receipt = tamper(receipt);
+    return RevitCommandResponse.Success(receipt, created, Array.Empty<string>(), Array.Empty<string>(), readbackJson, Array.Empty<string>()).ToJson();
+}
+
+static class NativeTestLinks
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true, EntryPoint = "CreateHardLinkW")]
+    static extern bool CreateHardLinkNative(string fileName, string existingFileName, IntPtr securityAttributes);
+
+    public static bool CreateHardLink(string fileName, string existingFileName) => OperatingSystem.IsWindows() && CreateHardLinkNative(fileName, existingFileName, IntPtr.Zero);
+}
+
+// One same-user pipe server standing in for the Revit add-in: it records each request line and answers Respond(line),
 // keeping the connection open until the client closes it, like the add-in listener.
 sealed class FakeAddIn : IDisposable
 {
@@ -509,7 +693,7 @@ sealed class FakeAddIn : IDisposable
     }
 
     public string Name { get; }
-    public string Response { get; set; } = "";
+    public Func<string, string> Respond { get; set; } = _ => "";
     public IReadOnlyList<string> Received { get { lock (gate) return received.ToArray(); } }
 
     async Task Serve()
@@ -526,7 +710,7 @@ sealed class FakeAddIn : IDisposable
                 while (await reader.ReadLineAsync(stop.Token) is { } line)
                 {
                     lock (gate) received.Add(line);
-                    await writer.WriteLineAsync(Response);
+                    await writer.WriteLineAsync(Respond(line));
                 }
             }
             catch (OperationCanceledException) { break; }

@@ -31,6 +31,7 @@ public static class RevitCommandCodes
     public const string BoundarySelfIntersecting = "boundary_self_intersecting";
     // Copies-only guard.
     public const string DocumentNotEnabled = "document_not_enabled";
+    public const string DocumentLinkRefused = "document_link_refused";
     public const string AllowlistInvalid = "allowlist_invalid";
     // Transport.
     public const string ExplicitProcessPipeRequired = "explicit_process_pipe_required";
