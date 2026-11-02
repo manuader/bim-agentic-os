@@ -960,3 +960,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 20:34Z LOCK taken (was FREE since relay134 20:34:19Z).
 - 20:34Z [OBSERVED] access check: (a) clone + git push to manuader/bim-agentic-os OK (baton/state push succeeded, main push --dry-run up-to-date); (b) api.github.com OK (HTTP 200, repo + actions endpoints). main = ad6c242.
 - 20:34Z dispatch 3 workers: P7-01 space planner (Phase 7), P3-01 intent AST multi-room (Phase 3), P5-01 skill manifest/loader (Phase 5).
+- 21:08Z workers green: P7-01 091d68a (red 41522409225, green 41523996673; 1 attempt = test-oracle fix: preferred adjacency is soft per spec), P3-01 163a22e (red 41521810283, green 41523259500), P5-01 3f00c6b (red 41523441898, green 41524316589; 1 compile attempt CS8604). Next: independent review.
