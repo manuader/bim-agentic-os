@@ -32,7 +32,12 @@ public sealed record IntentRoomSide(string Room, IntentSide Side) : IntentHost;
 // The single wall shared by two adjacent rooms, measured from the shared stretch's lower end. Order is irrelevant.
 public sealed record IntentSharedWall(string RoomA, string RoomB) : IntentHost;
 
-// Sill is the height of the opening bottom above the level; Height is the opening height.
+// Sill is the height of the opening bottom above the level (a door's sill must be 0); Height is the opening height.
+// The opening must fit the host's clear span (axis span minus half the thickness of the perpendicular walls joined at
+// each end) and the host height.
+// Compiled BIM-IR element: Kind "door" or "window", GeometryMetres [ax,ay,bx,by,sill,height] in metres, where (ax,ay)
+// and (bx,by) are the opening's ends on the host wall axis, ordered in the host wall's own direction, then sill and
+// height. Dependencies [level, host wall]. GeometryCodec has no arity or typed view for these kinds yet (Geometry.cs).
 public sealed record IntentOpening(string Key, IntentOpeningKind Kind, IntentHost Host,
     double OffsetMetres, double WidthMetres, double HeightMetres, double SillMetres);
 

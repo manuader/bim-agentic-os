@@ -7,13 +7,16 @@ namespace Bim.Core;
 // Identity: every element id is RoomCompiler.Id(projectId, intentKey), i.e. the first 16 bytes of SHA-256 over
 // "<projectId:D>:<intentKey>". Intent keys are derived only from user keys, never from names or input order:
 //   level:<level>                 the level
-//   wall:<room>:<side>[:<n>]      an unshared stretch of one room side; n is the 0-based stretch index along the side
-//                                 in increasing coordinate, omitted for the first (usually only) stretch
+//   wall:<room>:<side>            the unshared stretch that starts at the side's first corner (lowest coordinate)
+//   wall:<room>:<side>><n>        the unshared stretch that starts where the stretch shared with neighbour n ends
+//                                 (walking the side in increasing coordinate). A stretch keeps its key while its
+//                                 bounding neighbour stays; when the bounds change the old key is deleted, never
+//                                 reused for a different stretch
 //   wall:<a>|<b>                  the one wall shared by rooms a and b (ordinal pair; two axis-aligned rectangles
 //                                 share at most one stretch)
 //   space:<room>                  the room's space
 //   opening:<opening>             a door or window
-// User keys match [a-z0-9][a-z0-9_-]{0,63}, so ':' and '|' never collide.
+// User keys match [a-z0-9][a-z0-9_-]{0,63}, so ':', '|' and '>' never collide.
 //
 // Geometry (metres): level [elevation]; wall [ax,ay,bx,by,height,thickness] on the axis line, unshared stretches
 // counter-clockwise around their room like RoomCompiler (south +x, east +y, north -x, west -y), shared walls toward +x
@@ -22,8 +25,13 @@ namespace Bim.Core;
 // Dependencies: wall -> [level]; space -> [level, bounding walls by key]; opening -> [level, host wall], so
 // SemanticGraph types them OnLevel, Bounds and HostedBy.
 //
-// Element order: levels, walls, spaces, openings, each by key (ordinal). Axis coordinates closer than Tolerance are
-// snapped to the smallest of them per level, so 0.1+0.2 abuts 0.3.
+// Element order: levels, walls, spaces, openings, each by key (ordinal).
+// Snapping is local: a room coordinate is unified only with coordinates of rooms on the same level whose rectangles
+// touch it within Tolerance, and then takes the smallest value of that join (so 0.1+0.2 abuts 0.3). A room that does
+// not touch another never moves another room's coordinates.
+// Walls are checked as thick bodies (axis extent x thickness): two bodies may overlap only at an exact join, where
+// perpendicular axes meet at an end of at least one of them (corner or T). Openings must fit the clear span: the axis
+// span minus half the thickness of the perpendicular walls joined at each end.
 public static class IntentCompiler
 {
     public const double Tolerance = 1e-6;
@@ -113,6 +121,17 @@ public static class IntentCompiler
         public IntentWallType Type { get; } = type;
         public string Level { get; } = level;
         public string Key { get; set; } = "";
+        // Half thickness of the thickest perpendicular wall joined at Start / End (0 when none).
+        public double StartInset { get; set; }
+        public double EndInset { get; set; }
+        public (double MinX, double MinY, double MaxX, double MaxY) Body
+        {
+            get
+            {
+                var half = Type.ThicknessMetres / 2;
+                return Vertical ? (Line - half, Start, Line + half, End) : (Start, Line - half, End, Line + half);
+            }
+        }
         public IntentSide Side => Vertical ? (High is null ? IntentSide.East : IntentSide.West) : (High is null ? IntentSide.North : IntentSide.South);
         public bool Shared => Low is not null && High is not null;
         // Unshared north and west stretches run toward decreasing coordinate (counter-clockwise around the room).
@@ -172,33 +191,35 @@ public static class IntentCompiler
         Limit(intent.Openings.Count, LayoutIntent.MaxOpenings, "openings");
         if (limited) return null;
 
-        // Keys are unique per collection; the ordinal-first occurrence is indexed.
-        Dictionary<string, T> Index<T>(IEnumerable<T> items, Func<T, string> keyOf, Func<T, string> nameOf)
+        // Keys are unique per collection. The dictionaries only answer "does this key exist"; every per-entry check below
+        // runs over all entries, duplicates included, so the issue list does not depend on input order.
+        Dictionary<string, T> Index<T>(string collection, IEnumerable<T> items, Func<T, string> keyOf, Func<T, string> nameOf)
         {
             var found = new Dictionary<string, T>(StringComparer.Ordinal);
+            var duplicated = new HashSet<string>(StringComparer.Ordinal);
             foreach (var item in items.OrderBy(keyOf, StringComparer.Ordinal))
             {
                 var itemKey = keyOf(item);
                 if (!IsKey(itemKey)) Issue(IntentCodes.KeyInvalid, itemKey, "1-64 of [a-z0-9_-], starting with a letter or digit");
-                else if (!found.TryAdd(itemKey, item) && !issues.Any(issue => issue.Code == IntentCodes.DuplicateKey && issue.Key == itemKey))
-                    Issue(IntentCodes.DuplicateKey, itemKey, "key used more than once");
+                else if (!found.TryAdd(itemKey, item) && duplicated.Add(itemKey))
+                    Issue(IntentCodes.DuplicateKey, itemKey, collection + " key used more than once");
                 if (!BriefParser.IsText(nameOf(item))) Issue(IntentCodes.TextInvalid, itemKey, "name must be non-blank text of at most 2048 UTF-16 code units");
             }
             return found;
         }
-        var levels = Index(intent.Levels, item => item.Key, item => item.Name);
-        var types = Index(intent.WallTypes, item => item.Key, item => item.Name);
-        var rooms = Index(intent.Rooms, item => item.Key, item => item.Name);
-        var openings = Index(intent.Openings, item => item.Key, item => item.Key);
+        var levels = Index("levels", intent.Levels, item => item.Key, item => item.Name);
+        var types = Index("wall_types", intent.WallTypes, item => item.Key, item => item.Name);
+        var rooms = Index("rooms", intent.Rooms, item => item.Key, item => item.Name);
+        var openings = Index("openings", intent.Openings, item => item.Key, item => item.Key);
 
-        foreach (var level in levels.Values)
+        foreach (var level in intent.Levels)
             if (!double.IsFinite(level.ElevationMetres)) Issue(IntentCodes.DimensionInvalid, level.Key, "elevation_m must be finite");
-        foreach (var type in types.Values)
+        foreach (var type in intent.WallTypes)
         {
             if (!Positive(type.ThicknessMetres)) Issue(IntentCodes.DimensionInvalid, type.Key, "thickness_m must be finite and positive");
             if (!Positive(type.HeightMetres)) Issue(IntentCodes.DimensionInvalid, type.Key, "height_m must be finite and positive");
         }
-        foreach (var room in rooms.Values)
+        foreach (var room in intent.Rooms)
         {
             if (!double.IsFinite(room.XMetres) || !double.IsFinite(room.YMetres)) Issue(IntentCodes.DimensionInvalid, room.Key, "x_m and y_m must be finite");
             else if (!Positive(room.WidthMetres) || !Positive(room.DepthMetres)) Issue(IntentCodes.DimensionInvalid, room.Key, "width_m and depth_m must be finite and positive");
@@ -206,8 +227,10 @@ public static class IntentCompiler
             if (room.Level is null || !levels.ContainsKey(room.Level)) Issue(IntentCodes.UnknownLevel, room.Key, "level " + room.Level);
             if (room.WallType is null || !types.ContainsKey(room.WallType)) Issue(IntentCodes.UnknownWallType, room.Key, "wall_type " + room.WallType);
         }
-        foreach (var opening in openings.Values)
+        foreach (var opening in intent.Openings)
         {
+            if (opening.Kind == IntentOpeningKind.Door && double.IsFinite(opening.SillMetres) && opening.SillMetres != 0)
+                Issue(IntentCodes.DoorSillInvalid, opening.Key, "a door sits on its level: sill_m must be 0");
             if (!Enum.IsDefined(opening.Kind)) Issue(IntentCodes.ValueInvalid, opening.Key, "kind must be door or window");
             if (!double.IsFinite(opening.OffsetMetres) || !double.IsFinite(opening.SillMetres)) Issue(IntentCodes.DimensionInvalid, opening.Key, "offset_m and sill_m must be finite");
             if (!Positive(opening.WidthMetres) || !Positive(opening.HeightMetres)) Issue(IntentCodes.DimensionInvalid, opening.Key, "width_m and height_m must be finite and positive");
@@ -236,10 +259,17 @@ public static class IntentCompiler
         {
             var before = issues.Count;
             var onLevel = rooms.Values.Where(item => item.Level == level.Key).OrderBy(item => item.Key, StringComparer.Ordinal).ToArray();
-            var xs = Snap(onLevel.SelectMany(item => new[] { item.XMetres, item.XMetres + item.WidthMetres }));
-            var ys = Snap(onLevel.SelectMany(item => new[] { item.YMetres, item.YMetres + item.DepthMetres }));
-            var rects = onLevel.Select(item => new Space(item, types[item.WallType], xs[item.XMetres], ys[item.YMetres],
-                xs[item.XMetres + item.WidthMetres], ys[item.YMetres + item.DepthMetres], Array.Empty<Wall>())).ToArray();
+            // Node 2i is room i's left/bottom coordinate, 2i+1 its right/top.
+            var xs = onLevel.SelectMany(item => new[] { item.XMetres, item.XMetres + item.WidthMetres }).ToArray();
+            var ys = onLevel.SelectMany(item => new[] { item.YMetres, item.YMetres + item.DepthMetres }).ToArray();
+            var touching = new List<(int A, int B)>();
+            for (var i = 0; i < onLevel.Length; i++)
+                for (var j = i + 1; j < onLevel.Length; j++)
+                    if (xs[2 * i] - Tolerance <= xs[2 * j + 1] && xs[2 * j] - Tolerance <= xs[2 * i + 1] && ys[2 * i] - Tolerance <= ys[2 * j + 1] && ys[2 * j] - Tolerance <= ys[2 * i + 1])
+                        touching.Add((i, j));
+            var sx = Snap(xs, touching);
+            var sy = Snap(ys, touching);
+            var rects = onLevel.Select((item, i) => new Space(item, types[item.WallType], sx[2 * i], sy[2 * i], sx[2 * i + 1], sy[2 * i + 1], Array.Empty<Wall>())).ToArray();
             foreach (var rect in rects)
                 if (rect.Right - rect.Left <= rect.Type.ThicknessMetres || rect.Top - rect.Bottom <= rect.Type.ThicknessMetres)
                     Issue(IntentCodes.RoomTooSmall, rect.Room.Key, "axis size must exceed wall thickness " + rect.Type.ThicknessMetres.ToString("R", CultureInfo.InvariantCulture));
@@ -291,29 +321,42 @@ public static class IntentCompiler
                     }
                 }
             foreach (var shared in levelWalls.Where(candidate => candidate.Shared)) shared.Key = SharedWallKey(shared.Low!, shared.High!);
-            foreach (var group in levelWalls.Where(candidate => !candidate.Shared).GroupBy(candidate => (Room: candidate.Low ?? candidate.High!, candidate.Side)))
+            var rectOf = rects.ToDictionary(rect => rect.Room.Key, StringComparer.Ordinal);
+            foreach (var stretch in levelWalls.Where(candidate => !candidate.Shared))
             {
-                var index = 0;
-                foreach (var stretch in group.OrderBy(candidate => candidate.Start)) stretch.Key = WallKey(group.Key.Room, group.Key.Side, index == 0 ? null : index.ToString(CultureInfo.InvariantCulture)); index++;
+                var room = (stretch.Low ?? stretch.High)!;
+                var rect = rectOf[room];
+                if (stretch.Start == (stretch.Vertical ? rect.Bottom : rect.Left)) { stretch.Key = WallKey(room, stretch.Side); continue; }
+                // Elementary intervals of one side merge while unshared, so a later unshared stretch always follows a shared one.
+                var preceding = levelWalls.FirstOrDefault(candidate => candidate.Shared && candidate.Vertical == stretch.Vertical && candidate.Line == stretch.Line
+                    && candidate.End == stretch.Start && candidate.Bounds(room)) ?? throw new InvalidOperationException("intent_stretch_unbounded");
+                stretch.Key = WallKey(room, stretch.Side, preceding.Low == room ? preceding.High : preceding.Low);
             }
 
-            // Parallel walls on distinct axes overlap in plan when closer than half their thicknesses combined.
-            foreach (var orientation in levelWalls.GroupBy(candidate => candidate.Vertical))
+            // Wall bodies may overlap only at exact joins (corner or T); anything else clashes.
+            var bodies = levelWalls.OrderBy(candidate => candidate.Body.MinX).ThenBy(candidate => candidate.Key, StringComparer.Ordinal).ToArray();
+            for (var i = 0; i < bodies.Length; i++)
             {
-                var sorted = orientation.OrderBy(candidate => candidate.Line).ThenBy(candidate => candidate.Key, StringComparer.Ordinal).ToArray();
-                var widest = sorted.Max(candidate => candidate.Type.ThicknessMetres);
-                for (var i = 0; i < sorted.Length; i++)
-                    for (var j = i + 1; j < sorted.Length && sorted[j].Line - sorted[i].Line < widest; j++)
-                    {
-                        var (p, q) = (sorted[i], sorted[j]);
-                        if (p.Line == q.Line || q.Line - p.Line >= (p.Type.ThicknessMetres + q.Type.ThicknessMetres) / 2) continue;
-                        if (Math.Min(p.End, q.End) - Math.Max(p.Start, q.Start) <= Tolerance) continue;
-                        var ordered = string.CompareOrdinal(p.Key, q.Key) <= 0;
-                        var owners = new[] { p.Low, p.High, q.Low, q.High }.OfType<string>().Order(StringComparer.Ordinal).ToArray();
-                        Issue(IntentCodes.WallClash, owners[0], (ordered ? p.Key : q.Key) + " clashes with " + (ordered ? q.Key : p.Key));
-                    }
+                var p = bodies[i];
+                var pb = p.Body;
+                for (var j = i + 1; j < bodies.Length; j++)
+                {
+                    var q = bodies[j];
+                    var qb = q.Body;
+                    if (qb.MinX >= pb.MaxX - Tolerance) break;
+                    if (Math.Min(pb.MaxY, qb.MaxY) - Math.Max(pb.MinY, qb.MinY) <= Tolerance || Joined(p, q)) continue;
+                    var ordered = string.CompareOrdinal(p.Key, q.Key) <= 0;
+                    var owners = new[] { p.Low, p.High, q.Low, q.High }.OfType<string>().Order(StringComparer.Ordinal).ToArray();
+                    Issue(IntentCodes.WallClash, owners[0], (ordered ? p.Key : q.Key) + " clashes with " + (ordered ? q.Key : p.Key));
+                }
             }
             if (issues.Count > before) continue;
+
+            var byLine = levelWalls.GroupBy(candidate => (candidate.Vertical, candidate.Line)).ToDictionary(group => group.Key, group => group.ToArray());
+            double Inset(Wall wall, double at) => byLine.TryGetValue((!wall.Vertical, at), out var across)
+                ? across.Where(other => other.Start <= wall.Line && wall.Line <= other.End).Select(other => other.Type.ThicknessMetres / 2).DefaultIfEmpty(0).Max()
+                : 0;
+            foreach (var wall in levelWalls) { wall.StartInset = Inset(wall, wall.Start); wall.EndInset = Inset(wall, wall.End); }
 
             foreach (var rect in rects)
                 spaces.Add(rect.Room.Key, rect with { Walls = levelWalls.Where(candidate => candidate.Bounds(rect.Room.Key)).OrderBy(candidate => candidate.Key, StringComparer.Ordinal).ToArray() });
@@ -336,8 +379,8 @@ public static class IntentCompiler
                 var start = (isVertical ? space.Bottom : space.Left) + opening.OffsetMetres;
                 var end = start + opening.WidthMetres;
                 host = space.Walls.FirstOrDefault(candidate => candidate.Vertical == isVertical && candidate.Line == line && (above ? candidate.High : candidate.Low) == side.Room
-                    && candidate.Start - Tolerance <= start && end <= candidate.End + Tolerance);
-                if (host is null) { Issue(IntentCodes.OpeningOutsideWall, opening.Key, "not inside one wall of " + side.Room + " " + IntentJson.Side(side.Side)); continue; }
+                    && candidate.Start + candidate.StartInset - Tolerance <= start && end <= candidate.End - candidate.EndInset + Tolerance);
+                if (host is null) { Issue(IntentCodes.OpeningOutsideWall, opening.Key, "not inside the clear span of one wall of " + side.Room + " " + IntentJson.Side(side.Side)); continue; }
                 (from, to) = (start, end);
             }
             else if (opening.Host is IntentSharedWall pair)
@@ -351,7 +394,7 @@ public static class IntentCompiler
                 if (host is null) { Issue(IntentCodes.NotAdjacent, opening.Key, pair.RoomA + " and " + pair.RoomB + " share no wall"); continue; }
                 from = host.Start + opening.OffsetMetres;
                 to = from + opening.WidthMetres;
-                if (from < host.Start - Tolerance || to > host.End + Tolerance) { Issue(IntentCodes.OpeningOutsideWall, opening.Key, "outside " + wallKey); continue; }
+                if (from < host.Start + host.StartInset - Tolerance || to > host.End - host.EndInset + Tolerance) { Issue(IntentCodes.OpeningOutsideWall, opening.Key, "outside " + wallKey); continue; }
             }
             else continue;
             if (opening.SillMetres < 0 || opening.SillMetres + opening.HeightMetres > host.Type.HeightMetres + Tolerance)
@@ -381,19 +424,41 @@ public static class IntentCompiler
             holes.OrderBy(item => item.Opening.Key, StringComparer.Ordinal).ToArray());
     }
 
-    // Maps each value to the smallest value of its cluster (consecutive sorted values at most Tolerance apart).
-    static Dictionary<double, double> Snap(IEnumerable<double> values)
+    // Exact joins: perpendicular axes that meet at an end of at least one of them (corner or T). Parallel bodies never join.
+    static bool Joined(Wall p, Wall q)
     {
-        var map = new Dictionary<double, double>();
-        double representative = 0, previous = 0;
-        var first = true;
-        foreach (var value in values.Distinct().Order())
+        if (p.Vertical == q.Vertical) return false;
+        var (v, h) = p.Vertical ? (p, q) : (q, p);
+        double x = v.Line, y = h.Line;
+        if (x < h.Start || x > h.End || y < v.Start || y > v.End) return false;
+        return x == h.Start || x == h.End || y == v.Start || y == v.End;
+    }
+
+    // Union-find over room coordinates (node 2i: low side of room i, 2i+1: high side), joining two coordinates only when
+    // their rooms touch and the values are within Tolerance. Each node maps to the smallest value of its component, so
+    // the result depends on values and touching pairs only, never on order, and a room touching nothing is unchanged.
+    static double[] Snap(double[] values, List<(int A, int B)> touching)
+    {
+        var parent = Enumerable.Range(0, values.Length).ToArray();
+        int Find(int node)
         {
-            if (first || value - previous > Tolerance) representative = value;
-            map[value] = representative;
-            previous = value;
-            first = false;
+            while (parent[node] != node) { parent[node] = parent[parent[node]]; node = parent[node]; }
+            return node;
         }
-        return map;
+        foreach (var (a, b) in touching)
+            for (var p = 2 * a; p < 2 * a + 2; p++)
+                for (var q = 2 * b; q < 2 * b + 2; q++)
+                {
+                    if (Math.Abs(values[p] - values[q]) > Tolerance) continue;
+                    var (rp, rq) = (Find(p), Find(q));
+                    if (rp != rq) parent[Math.Max(rp, rq)] = Math.Min(rp, rq);
+                }
+        var smallest = new Dictionary<int, double>();
+        for (var node = 0; node < values.Length; node++)
+        {
+            var root = Find(node);
+            smallest[root] = smallest.TryGetValue(root, out var current) ? Math.Min(current, values[node]) : values[node];
+        }
+        return Enumerable.Range(0, values.Length).Select(node => smallest[Find(node)]).ToArray();
     }
 }
