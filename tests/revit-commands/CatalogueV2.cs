@@ -25,7 +25,8 @@ static class CatalogueV2Checks
         ["operation_id"] = "op-v2",
         ["document"] = new JsonObject { ["path"] = path, ["unique_id"] = Uid },
         ["command"] = command,
-        ["args"] = args,
+        // A JsonNode has one parent: each envelope gets its own copy so one args object can build several envelopes.
+        ["args"] = args.DeepClone(),
     };
     static JsonArray Pair(double x, double y) => new(x, y);
     static JsonArray Outline(params (double X, double Y)[] points) => new(points.Select(p => (JsonNode?)Pair(p.X, p.Y)).ToArray());
