@@ -14,7 +14,7 @@
     "adjacencies": { "type": "array", "items": { "$ref": "#/$defs/adjacency" }, "default": [] }
   },
   "$defs": {
-    "text": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "\\S" },
+    "text": { "description": "Non-blank well-formed text. BriefParser counts maxLength in UTF-16 code units (a character outside the Basic Multilingual Plane counts 2), which is stricter than the code-point count of JSON Schema maxLength.", "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "\\S" },
     "provenance": {
       "description": "Where an extracted value came from and how certain the extraction is.",
       "type": "object",
@@ -24,7 +24,7 @@
         "source": { "enum": ["user", "document", "inferred"] },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "reference": { "$ref": "#/$defs/text", "description": "Free text locating the source, e.g. file name and quoted sentence." },
-        "page": { "type": "integer", "minimum": 1, "description": "1-based page of the source document." }
+        "page": { "type": "integer", "minimum": 1, "maximum": 2147483647, "description": "1-based page of the source document. Written as an integer token only (no fraction or exponent, so 1.0 and 1e0 are refused), 32-bit." }
       }
     },
     "sourcedText": {
@@ -40,14 +40,14 @@
         { "type": "object", "additionalProperties": false, "required": ["value", "provenance"], "properties": { "value": { "$ref": "#/$defs/positiveNumber" }, "provenance": { "$ref": "#/$defs/provenance" } } }
       ]
     },
-    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 2147483647, "description": "Written as an integer token only (no fraction or exponent, so 1.0 and 1e0 are refused), 32-bit." },
     "sourcedPositiveInteger": {
       "oneOf": [
         { "$ref": "#/$defs/positiveInteger" },
         { "type": "object", "additionalProperties": false, "required": ["value", "provenance"], "properties": { "value": { "$ref": "#/$defs/positiveInteger" }, "provenance": { "$ref": "#/$defs/provenance" } } }
       ]
     },
-    "levelIndex": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+    "levelIndex": { "type": "integer", "minimum": 0, "maximum": 2147483647, "description": "0-based level index. Written as an integer token only (no fraction or exponent, so 1.0 and 1e0 are refused), 32-bit." },
     "sourcedLevelIndex": {
       "oneOf": [
         { "$ref": "#/$defs/levelIndex" },

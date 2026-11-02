@@ -7,6 +7,7 @@ public static class BriefValidator
 {
     // Tolerance for comparing summed areas against the budget.
     const double AreaTolerance = 1e-9;
+    const string TextRule = "non-blank well-formed text of at most 2048 UTF-16 code units required";
 
     public static BriefIssue[] Validate(ProjectBrief brief)
     {
@@ -19,6 +20,7 @@ public static class BriefValidator
             if (provenance is null) return;
             if (!(provenance.Confidence >= 0 && provenance.Confidence <= 1)) Error(BriefCodes.ConfidenceOutOfRange, path + ".confidence", "confidence must be within 0..1");
             if (provenance.Page is < 1) Error(BriefCodes.PageInvalid, path + ".page", "page is 1-based");
+            if (provenance.Reference is not null && !BriefParser.IsText(provenance.Reference)) Error(BriefCodes.TextInvalid, path + ".reference", TextRule);
         }
         void CheckSourced<T>(BriefValue<T>? value, string path) where T : notnull => CheckProvenance(value?.Provenance, path + ".provenance");
         void CheckPositive(BriefValue<double>? value, string path, string code)
@@ -29,11 +31,11 @@ public static class BriefValidator
         }
 
         if (brief.Version != ProjectBrief.CurrentVersion) Error(BriefCodes.VersionUnsupported, "brief_version", "1 required");
-        if (string.IsNullOrWhiteSpace(brief.Name)) Error(BriefCodes.NameBlank, "name", "non-blank name required");
+        if (!BriefParser.IsText(brief.Name)) Error(BriefCodes.TextInvalid, "name", TextRule);
 
         var constraints = brief.Constraints;
         CheckSourced(constraints.Jurisdiction, "constraints.jurisdiction");
-        if (constraints.Jurisdiction is { } jurisdiction && string.IsNullOrWhiteSpace(jurisdiction.Value)) Error(BriefCodes.NameBlank, "constraints.jurisdiction", "non-blank jurisdiction required");
+        if (constraints.Jurisdiction is { } jurisdiction && !BriefParser.IsText(jurisdiction.Value)) Error(BriefCodes.JurisdictionBlank, "constraints.jurisdiction", TextRule);
         if (constraints.Site is { } site)
         {
             CheckPositive(site.WidthMetres, "constraints.site.width_m", BriefCodes.SiteDimensionNonPositive);
@@ -57,7 +59,7 @@ public static class BriefValidator
             var path = "rooms[" + index.ToString(CultureInfo.InvariantCulture) + "]";
             if (!BriefParser.IsRoomId(room.Id)) Error(BriefCodes.RoomIdInvalid, path + ".id", "1-64 of [a-z0-9_-], starting with a letter or digit");
             else if (!ids.Add(room.Id)) Error(BriefCodes.RoomIdDuplicate, path + ".id", "room id '" + room.Id + "' already used");
-            if (string.IsNullOrWhiteSpace(room.Name)) Error(BriefCodes.NameBlank, path + ".name", "non-blank room name required");
+            if (!BriefParser.IsText(room.Name)) Error(BriefCodes.TextInvalid, path + ".name", TextRule);
             CheckProvenance(room.Provenance, path + ".provenance");
             var countValid = true;
             if (room.Count is { } count)
@@ -86,7 +88,8 @@ public static class BriefValidator
             Error(BriefCodes.BudgetExceeded, "constraints.total_area_budget_m2",
                 "sum of minimum room areas " + minimumSum.ToString("R", CultureInfo.InvariantCulture) + " m2 exceeds budget " + budget.ToString("R", CultureInfo.InvariantCulture) + " m2");
 
-        // Unordered pair -> kinds already stated, so a later contradicting or repeated statement is reported once.
+        // Unordered pair -> kinds already stated. Each later statement that contradicts or repeats an earlier one on the
+        // same pair is reported at its own index; the first statement of a pair is never reported.
         var stated = new Dictionary<(string, string), HashSet<BriefAdjacencyKind>>();
         for (var index = 0; index < brief.Adjacencies.Count; index++)
         {

@@ -9,6 +9,7 @@ public static class BriefParser
 {
     public const int MaxInputChars = 262144;
     public const int MaxDepth = 16;
+    // Counted in UTF-16 code units: a character outside the Basic Multilingual Plane counts 2.
     public const int MaxStringChars = 2048;
 
     static readonly Regex RoomIdPattern = new(@"\A[a-z0-9][a-z0-9_-]{0,63}\z", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
@@ -23,6 +24,19 @@ public static class BriefParser
     // Room ids: 1-64 of [a-z0-9_-], starting with a letter or digit.
     public static bool IsRoomId(string? value) => value is not null && RoomIdPattern.IsMatch(value);
 
+    // The one text rule for names, jurisdiction and references: non-blank, at most MaxStringChars UTF-16 code units,
+    // well-formed UTF-16 (no lone surrogate), so any accepted text can be serialized and read back.
+    public static bool IsText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > MaxStringChars) return false;
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (char.IsHighSurrogate(value[index]) && index + 1 < value.Length && char.IsLowSurrogate(value[index + 1])) index++;
+            else if (char.IsSurrogate(value[index])) return false;
+        }
+        return true;
+    }
+
     public static ProjectBrief Parse(string json)
     {
         ArgumentNullException.ThrowIfNull(json);
@@ -30,6 +44,9 @@ public static class BriefParser
         JsonDocument document;
         try { document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = MaxDepth }); }
         catch (JsonException error) { throw new BriefException(BriefCodes.JsonInvalid, null, error.Message); }
+        // Input that is not valid UTF-16 (a raw lone surrogate) cannot be transcoded.
+        catch (ArgumentException error) { throw new BriefException(BriefCodes.JsonInvalid, null, error.Message); }
+        catch (InvalidOperationException error) { throw new BriefException(BriefCodes.JsonInvalid, null, error.Message); }
         using (document)
         {
             // Strings that are not valid UTF-16 (a lone surrogate escape) cannot be read.
@@ -160,7 +177,7 @@ public static class BriefParser
     {
         if (element.ValueKind != JsonValueKind.String) throw new BriefException(BriefCodes.TypeInvalid, path, "string required");
         var text = element.GetString()!;
-        if (string.IsNullOrWhiteSpace(text) || text.Length > MaxStringChars) throw new BriefException(BriefCodes.ValueInvalid, path, "non-blank string of at most 2048 characters");
+        if (!IsText(text)) throw new BriefException(BriefCodes.ValueInvalid, path, "non-blank string of at most 2048 UTF-16 code units");
         return text;
     }
 

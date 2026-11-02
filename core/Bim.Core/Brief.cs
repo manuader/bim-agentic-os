@@ -54,7 +54,7 @@ public static class BriefCodes
     public const string TypeInvalid = "type_invalid";
     public const string ValueInvalid = "value_invalid";
     // Validator issues (BriefIssue).
-    public const string NameBlank = "name_blank";
+    // Name, room name or provenance reference breaks the text rule (BriefParser.IsText).
     public const string TextInvalid = "text_invalid";
     public const string JurisdictionBlank = "jurisdiction_blank";
     public const string RoomsEmpty = "rooms_empty";
