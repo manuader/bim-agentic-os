@@ -947,3 +947,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay134 — 2026-11-02T18:52:53Z (Claude, cloud scheduled)
 - 18:Z LOCK taken (was FREE).
+- 18:54Z [OBSERVED] cloud push to baton/state WORKS now; api.github.com reachable (CI oracle available). No local .NET SDK (egress 403) → CI-only TDD. main=aa8fbd8 (CI in progress).
+- 18:54Z dispatch 3 workers (phases untouched since roadmap load): P2-02 graph relations, P6-03 brief schema, P10-03 audit+permissions; branches relay134-<ID>.
