@@ -52,3 +52,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] 🔒 P1-04/C04 catalogue re-run with the pipe fix (main includes ed5c759): `git pull` then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (click Load Once). Expect 17/17.
 - [ ] 🔒 N21 third run: `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Runs 1`.
 - Optional: allow dot.net / builds.dotnet.microsoft.com / api.nuget.org in network egress so cloud relays can build locally (faster than CI round-trips). Not required.
+
+## Relay135 (2026-11-02, cloud)
+- No new owner action. Still open: 🔒 P1-04/C04 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and 🔒 N21 `... -Runs 1`.
