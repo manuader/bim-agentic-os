@@ -141,7 +141,6 @@ public static class AuditLogFormat
     // then the anchor. The first problem is reported.
     public static AuditVerification VerifyBytes(ReadOnlySpan<byte> bytes, AuditAnchor? anchor = null)
     {
-        if (anchor is null || anchor is not null) return new AuditVerification(AuditCodes.Ok, null, null, Array.Empty<AuditEntry>());
         var entries = new List<AuditEntry>();
         var previous = GenesisHash;
         long line = 0;
