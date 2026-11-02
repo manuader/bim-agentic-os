@@ -3,9 +3,9 @@ using System.Text;
 using System.Text.Json;
 namespace Bim.Generative;
 
-// Canonical space plan v1 JSON: compact, fixed member order, rooms and constraints in plan order, numbers rounded to
-// 6 decimals and written as shortest round-trip invariant-culture doubles (-0 as 0, non-finite as null), default
-// escaping. The same plan always serializes to the same bytes, whatever the current culture.
+// Canonical space plan v1 JSON: compact, fixed member order, rooms and constraints in plan order, numbers written
+// exactly as shortest round-trip invariant-culture doubles (-0 as 0, non-finite as null), so reading the JSON back
+// gives the plan's values bit for bit; default escaping. The same plan always serializes to the same bytes, whatever the current culture.
 public static class SpacePlanSerializer
 {
     public static string Serialize(SpacePlan plan)
@@ -64,7 +64,7 @@ public static class SpacePlanSerializer
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    // Shortest round-trip text of the value rounded to 6 decimals; shared with constraint details.
+    // Constraint detail text: the value rounded to 6 decimals, shortest round-trip, invariant culture.
     internal static string Format(double value)
     {
         var rounded = Math.Round(value, 6, MidpointRounding.ToEven);
@@ -74,7 +74,7 @@ public static class SpacePlanSerializer
     static void Number(Utf8JsonWriter writer, string name, double value)
     {
         writer.WritePropertyName(name);
-        if (double.IsFinite(value)) writer.WriteRawValue(Format(value));
+        if (double.IsFinite(value)) writer.WriteRawValue(value == 0 ? "0" : value.ToString("R", CultureInfo.InvariantCulture));
         else writer.WriteNullValue();
     }
 }

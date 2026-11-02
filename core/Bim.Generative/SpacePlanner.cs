@@ -10,26 +10,34 @@ namespace Bim.Generative;
 //    minimum side squared), the brief maximum and a desired area (target, else range midpoint, else a bound, else the
 //    mean of the others) kept 0.01 m2 above the minimum; assign levels (preferred level, else a required partner's,
 //    else the least loaded); shrink desired areas toward the minimums to fit each level's footprint and the budget.
-// 3. Per level, place a building rectangle at the footprint origin with exactly the desired total area and tile it
+// 3. Per level, place a building rectangle at the footprint origin with at least the desired total area and tile it
 //    with a binary slicing tree: rooms in a permutation order, each node split near half its area (shifted by a gene),
-//    cut across its longer side (or flipped by a gene). Coordinates snap to a 0.1 mm grid after slicing, so
-//    neighbours share exact edges and rooms never overlap.
+//    cut across its longer side (or flipped by a gene). Coordinates snap to a binary grid of 1/8192 m (about 0.12 mm)
+//    after slicing. Grid values, their differences and sums are exact doubles, so a room's X + Width is bit-identical
+//    to its neighbour's X, and rooms never overlap.
 // 4. Search the genome (permutation, split shifts, cut flips, building width) with seeded threshold accepting from
 //    several restarts, minimising hard-constraint deficits first and the soft score second. The budget is fixed, so
 //    the same brief, options and seed always give the same plan.
-// 5. Assess the best layout against every constraint on the snapped geometry. Any hard violation gives an infeasible
-//    plan with no rooms; a feasible plan therefore never holds a room below its minimum area.
+// 5. Build the output rectangles and assess exactly those values against every constraint. Any hard violation gives
+//    an infeasible plan with no rooms (code search_exhausted plus the violated constraints); a feasible plan therefore
+//    never holds a room below its minimum area or above its maximum area.
+// Size caps (MaxLevels, MaxInstances, MaxFootprintMetres) refuse oversized input as plan_too_large before any
+// allocation that depends on it, so a valid brief can never make the planner throw, hang or exhaust memory.
 public static class SpacePlanner
 {
-    // Max-area and budget checks allow this much over; minimum areas are never relaxed.
-    public const double AreaToleranceSquareMetres = 0.02;
+    // Floating-point allowance of the maximum-area and budget checks; minimum areas and sides are checked strictly.
+    public const double AreaToleranceSquareMetres = 1e-9;
     public const int MaxLevels = 200;
     public const int MaxInstances = 500;
     public const double MaxFootprintMetres = 10000;
-    const double GridScale = 10000;
+    // Binary grid: 1/8192 m. Multiples of a power of two add and subtract exactly in double precision.
+    const double GridScale = 8192;
+    // Preferred allocation distance above the minimum (and below the maximum) that absorbs grid snapping; narrowed to
+    // half the range when the range is narrower.
     const double AreaMargin = 0.01;
     const double Epsilon = 1e-7;
-    const double SideTolerance = 1e-9;
+    // Fixed evaluation budget per restart for large levels.
+    const int EvaluationBudget = 120000;
     const int Restarts = 8;
     const int WidthSteps = 4;
     const double Threshold = 1.0;
@@ -46,8 +54,8 @@ public static class SpacePlanner
         foreach (var issue in BriefValidator.Validate(brief))
             if (issue.Severity == BriefSeverity.Error) refusals.Add(Violation(PlanCodes.BriefInvalid, issue.Field, issue.Code + ": " + issue.Detail));
         if (refusals.Count > 0) return Infeasible(brief, seed, levels, null, door, refusals);
-        // Red stub: oversized briefs are not handled yet.
-        if (levels > MaxLevels || brief.Rooms.Sum(room => (long)room.EffectiveCount) > MaxInstances) throw new NotSupportedException("oversized brief");
+        CheckSize(brief, refusals);
+        if (refusals.Count > 0) return Infeasible(brief, seed, Math.Min(levels, MaxLevels), null, door, refusals);
         // Without a level count the brief may still name preferred levels; plan as many levels as they need.
         if (brief.Constraints.Levels is null) levels = Math.Max(1, brief.Rooms.Max(room => (room.PreferredLevel?.Value ?? 0) + 1));
         if (!Positive(door)) refusals.Add(Violation(PlanCodes.OptionsInvalid, "door_width_m", "positive finite door width required"));
@@ -61,7 +69,9 @@ public static class SpacePlanner
         SetDesired(units, usableArea * levels);
         AssignLevels(brief, units, levels, usableArea);
         var budget = brief.Constraints.TotalAreaBudgetSquareMetres?.Value;
-        Fit(units, levels, usableArea, budget, refusals);
+        // A building rectangle may exceed its desired total by up to one grid row or column.
+        var slack = levels * (FloorGrid(footprint.WidthMetres) + FloorGrid(footprint.DepthMetres)) / GridScale;
+        Fit(units, levels, usableArea, budget, slack, refusals);
         if (refusals.Count > 0) return Infeasible(brief, seed, levels, footprint, door, refusals);
 
         var pairs = Pairs(brief, units);
@@ -75,14 +85,38 @@ public static class SpacePlanner
             for (var local = 0; local < members.Length; local++) boxes[members[local]] = layout[local];
         }
 
-        var (constraints, score) = Assess(units, boxes, pairs, footprint, levels, door, budget);
-        if (constraints.Any(constraint => constraint.Hard && !constraint.Satisfied)) return Infeasible(brief, seed, levels, footprint, door, constraints);
+        // Grid coordinates make X1 - X0 exact, so Rect.X + Rect.Width reproduces X1 bit for bit.
         var rooms = units.Select((unit, index) => new PlannedRoom(unit.InstanceId, unit.Room.Id, unit.Room.Name, unit.Instance, unit.Level,
-            new PlanRect(boxes[index].X0, boxes[index].Y0, Round(boxes[index].X1 - boxes[index].X0), Round(boxes[index].Y1 - boxes[index].Y0)))).ToArray();
+            new PlanRect(boxes[index].X0, boxes[index].Y0, boxes[index].X1 - boxes[index].X0, boxes[index].Y1 - boxes[index].Y0))).ToArray();
+        var (constraints, score) = Assess(units, rooms, pairs, footprint, levels, door, budget);
+        var hardViolations = constraints.Count(constraint => constraint.Hard && !constraint.Satisfied);
+        if (hardViolations > 0)
+        {
+            constraints.Insert(0, Violation(PlanCodes.SearchExhausted, "plan", "the seeded search found no layout meeting every hard constraint; its best layout violates "
+                + Text(hardViolations) + " (listed)"));
+            return Infeasible(brief, seed, levels, footprint, door, constraints);
+        }
         return new SpacePlan(SpacePlanStatus.Feasible, brief.Name, seed, levels, footprint, door, rooms, constraints, Round(score));
     }
 
     // ---- input ----
+
+    static void CheckSize(ProjectBrief brief, List<PlanConstraint> refusals)
+    {
+        if (brief.Constraints.Levels is { } levelCount && levelCount.Value > MaxLevels)
+            refusals.Add(Violation(PlanCodes.PlanTooLarge, "constraints.levels", Text(levelCount.Value) + " levels requested; at most " + Text(MaxLevels) + " are planned"));
+        long instances = 0;
+        for (var index = 0; index < brief.Rooms.Count; index++)
+        {
+            var room = brief.Rooms[index];
+            instances += room.EffectiveCount;
+            // Compared before any arithmetic, so int.MaxValue cannot overflow a level count.
+            if (room.PreferredLevel is { } preferred && preferred.Value >= MaxLevels)
+                refusals.Add(Violation(PlanCodes.PlanTooLarge, "rooms[" + Text(index) + "].preferred_level", "level index " + Text(preferred.Value) + " is beyond the " + Text(MaxLevels) + "-level cap"));
+        }
+        if (instances > MaxInstances)
+            refusals.Add(Violation(PlanCodes.PlanTooLarge, "rooms", instances.ToString(CultureInfo.InvariantCulture) + " room instances requested; at most " + Text(MaxInstances) + " are planned"));
+    }
 
     static void CheckRules(IReadOnlyList<PlannerRule> rules, List<PlanConstraint> refusals)
     {
@@ -121,7 +155,12 @@ public static class SpacePlanner
         }
         if (!(Positive(footprint.WidthMetres) && Positive(footprint.DepthMetres) && FloorGrid(footprint.WidthMetres) > 0 && FloorGrid(footprint.DepthMetres) > 0))
         {
-            refusals.Add(Violation(PlanCodes.FootprintInvalid, "footprint", "width and depth must be finite and at least 0.0001 m"));
+            refusals.Add(Violation(PlanCodes.FootprintInvalid, "footprint", "width and depth must be finite and at least one 1/8192 m grid step"));
+            return null;
+        }
+        if (footprint.WidthMetres > MaxFootprintMetres || footprint.DepthMetres > MaxFootprintMetres)
+        {
+            refusals.Add(Violation(PlanCodes.PlanTooLarge, "footprint", "footprint sides are capped at " + Text(MaxFootprintMetres) + " m"));
             return null;
         }
         return footprint;
@@ -189,33 +228,43 @@ public static class SpacePlanner
         foreach (var unit in units)
         {
             var desired = double.IsNaN(unit.Desired) ? fallback : unit.Desired;
-            unit.Desired = Math.Max(unit.Lower, Math.Min(unit.MaxArea ?? double.PositiveInfinity, desired));
+            unit.Desired = Math.Max(unit.Lower, Math.Min(unit.Upper, desired));
         }
     }
 
+    // Preferred levels first; then the remaining instances largest first (longest-processing-time bin packing), each to
+    // the level of its first placed required/preferred partner when it still fits there, else to the least loaded level.
     static void AssignLevels(ProjectBrief brief, List<Unit> units, int levels, double usableArea)
     {
         var load = new double[levels];
+        var placed = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var unit in units)
         {
             if (unit.Room.PreferredLevel is not { } preferred) continue;
             unit.Level = preferred.Value;
             load[unit.Level] += unit.Desired;
+            placed.TryAdd(unit.Room.Id, unit.Level);
         }
-        var ordered = brief.Adjacencies.Where(a => a.Kind == BriefAdjacencyKind.Required).Concat(brief.Adjacencies.Where(a => a.Kind == BriefAdjacencyKind.Preferred)).ToArray();
-        foreach (var unit in units)
+        var partners = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        void Link(string from, string to)
         {
-            if (unit.Level >= 0) continue;
+            if (!partners.TryGetValue(from, out var list)) partners[from] = list = new List<string>();
+            list.Add(to);
+        }
+        foreach (var kind in new[] { BriefAdjacencyKind.Required, BriefAdjacencyKind.Preferred })
+            foreach (var adjacency in brief.Adjacencies)
+                if (adjacency.Kind == kind) { Link(adjacency.A, adjacency.B); Link(adjacency.B, adjacency.A); }
+        var pending = Enumerable.Range(0, units.Count).Where(index => units[index].Level < 0).OrderByDescending(index => units[index].Desired).ThenBy(index => index).ToArray();
+        foreach (var index in pending)
+        {
+            var unit = units[index];
             var chosen = -1;
-            if (levels > 1)
+            if (levels > 1 && partners.TryGetValue(unit.Room.Id, out var list))
             {
-                foreach (var adjacency in ordered)
+                foreach (var partner in list)
                 {
-                    var partner = adjacency.A == unit.Room.Id ? adjacency.B : adjacency.B == unit.Room.Id ? adjacency.A : null;
-                    if (partner is null) continue;
-                    var placed = units.FirstOrDefault(other => other.Room.Id == partner && other.Level >= 0);
-                    if (placed is null) continue;
-                    if (load[placed.Level] + unit.Desired <= usableArea) chosen = placed.Level;
+                    if (!placed.TryGetValue(partner, out var level)) continue;
+                    if (load[level] + unit.Desired <= usableArea) chosen = level;
                     break;
                 }
             }
@@ -226,15 +275,18 @@ public static class SpacePlanner
             }
             unit.Level = chosen;
             load[chosen] += unit.Desired;
+            placed.TryAdd(unit.Room.Id, chosen);
         }
     }
 
-    // Shrinks desired areas toward their lower bounds so each level fits the footprint and all levels fit the budget.
-    static void Fit(List<Unit> units, int levels, double usableArea, double? budget, List<PlanConstraint> refusals)
+    // Shrinks desired areas so each level fits the footprint and all levels fit the budget (less the grid slack a
+    // building rectangle may add). Shrinking only ever lowers an area, so the budget pass never refills a level.
+    static void Fit(List<Unit> units, int levels, double usableArea, double? budget, double slack, List<PlanConstraint> refusals)
     {
         for (var level = 0; level < levels; level++)
         {
             var members = units.Where(unit => unit.Level == level).ToList();
+            if (members.Count == 0) continue;
             var minimum = members.Sum(unit => unit.MinArea);
             if (minimum > usableArea)
             {
@@ -246,24 +298,29 @@ public static class SpacePlanner
         if (budget is not { } limit) return;
         var total = units.Sum(unit => unit.MinArea);
         if (total > limit) refusals.Add(Violation(PlanCodes.BudgetInsufficient, "plan", "minimum areas " + Text(total) + " m2 exceed budget " + Text(limit) + " m2"));
-        else Shrink(units, limit);
+        else Shrink(units, limit - slack);
     }
 
+    // Scales every desired area toward its floor (the margin-raised lower bound, or the minimum when even the floors do
+    // not fit) by one common factor in [0, 1); no area ever grows.
     static void Shrink(List<Unit> units, double capacity)
     {
         var desired = units.Sum(unit => unit.Desired);
-        if (desired <= capacity || units.Count == 0) return;
-        var lower = units.Sum(unit => unit.Lower);
-        if (lower <= capacity)
+        if (units.Count == 0 || desired <= capacity) return;
+        var floors = units.Sum(unit => Math.Min(unit.Lower, unit.Desired));
+        if (floors <= capacity)
         {
-            var factor = (capacity - lower) / (desired - lower);
-            foreach (var unit in units) unit.Desired = unit.Lower + (unit.Desired - unit.Lower) * factor;
+            var factor = (capacity - floors) / (desired - floors);
+            foreach (var unit in units)
+            {
+                var floor = Math.Min(unit.Lower, unit.Desired);
+                unit.Desired = floor + (unit.Desired - floor) * factor;
+            }
+            return;
         }
-        else
-        {
-            var share = (capacity - units.Sum(unit => unit.MinArea)) / units.Count;
-            foreach (var unit in units) unit.Desired = unit.MinArea + share;
-        }
+        var minimum = units.Sum(unit => unit.MinArea);
+        var scale = desired - minimum > 0 ? Math.Max(0, (capacity - minimum) / (desired - minimum)) : 0;
+        foreach (var unit in units) unit.Desired = unit.MinArea + (unit.Desired - unit.MinArea) * scale;
     }
 
     // Adjacencies deduplicated by unordered pair and kind, in brief order, with their instance indices.
@@ -308,7 +365,7 @@ public static class SpacePlanner
     {
         var count = problem.Areas.Length;
         var random = new SplitMix(seed, level);
-        var iterations = 300 + 100 * count;
+        var iterations = Math.Min(300 + 100 * count, Math.Max(300, EvaluationBudget / count));
         var sorted = Enumerable.Range(0, count).OrderByDescending(index => problem.Areas[index]).ThenBy(index => index).ToArray();
         Genome? best = null;
         var bestCost = double.MaxValue;
@@ -472,7 +529,7 @@ public static class SpacePlanner
                         gap = Math.Min(gap, Gap(boxes[a], boxes[b]));
                     }
                     total++;
-                    if (best >= problem.Door - SideTolerance) met++;
+                    if (best >= problem.Door) met++;
                     else penalty += problem.Door - best + (best <= Epsilon ? 1 + gap : 0);
                 }
             if (pair.Kind == BriefAdjacencyKind.Required) hard += penalty;
@@ -484,15 +541,19 @@ public static class SpacePlanner
 
     // ---- assessment ----
 
-    static (List<PlanConstraint> Constraints, double Score) Assess(List<Unit> units, Box[] boxes, List<Pair> pairs, PlanFootprint footprint, int levels, double door, double? budget)
+    // Runs on the output rectangles themselves: areas, sides and edges are exactly what the plan reports.
+    static (List<PlanConstraint> Constraints, double Score) Assess(List<Unit> units, PlannedRoom[] rooms, List<Pair> pairs, PlanFootprint footprint, int levels, double door, double? budget)
     {
         var constraints = new List<PlanConstraint>();
+        var boxes = rooms.Select(room => new Box(room.Rect.X, room.Rect.Y, room.Rect.Right, room.Rect.Top)).ToArray();
         double aspect = 0, fit = 0, totalArea = 0;
         for (var index = 0; index < units.Count; index++)
         {
             var unit = units[index];
+            var rect = rooms[index].Rect;
             var box = boxes[index];
-            var area = box.Area;
+            var area = rect.Area;
+            var shortSide = Math.Min(rect.Width, rect.Depth);
             totalArea += area;
             aspect += AspectQuality(box);
             fit += TargetFit(area, unit.Target ?? double.NaN);
@@ -500,19 +561,21 @@ public static class SpacePlanner
             if (unit.MaxArea is { } max)
                 constraints.Add(Constraint(PlanCodes.AreaMax, unit.InstanceId, true, area <= max + AreaToleranceSquareMetres, "area " + Text(area) + " m2, maximum " + Text(max) + " m2"));
             if (unit.MinSide > 0)
-                constraints.Add(Constraint(PlanCodes.SideMin, unit.InstanceId, true, box.ShortSide >= unit.MinSide - SideTolerance,
-                    "short side " + Text(box.ShortSide) + " m, minimum " + Text(unit.MinSide) + " m (" + unit.SideSource + ")"));
-            var inside = box.X0 >= -Epsilon && box.Y0 >= -Epsilon && box.X1 <= footprint.WidthMetres + Epsilon && box.Y1 <= footprint.DepthMetres + Epsilon
-                && box.X1 - box.X0 > 0 && box.Y1 - box.Y0 > 0 && unit.Level >= 0 && unit.Level < levels;
+                constraints.Add(Constraint(PlanCodes.SideMin, unit.InstanceId, true, shortSide >= unit.MinSide,
+                    "short side " + Text(shortSide) + " m, minimum " + Text(unit.MinSide) + " m (" + unit.SideSource + ")"));
+            var inside = rect.X >= 0 && rect.Y >= 0 && rect.Right <= footprint.WidthMetres && rect.Top <= footprint.DepthMetres
+                && rect.Width > 0 && rect.Depth > 0 && unit.Level >= 0 && unit.Level < levels;
             constraints.Add(Constraint(PlanCodes.InSite, unit.InstanceId, true, inside, "rectangle " + Text(box.X0) + "," + Text(box.Y0) + " to " + Text(box.X1) + "," + Text(box.Y1)
                 + " on level " + Text(unit.Level) + " within footprint " + Text(footprint.WidthMetres) + " x " + Text(footprint.DepthMetres) + " m"));
         }
+        var byLevel = Enumerable.Range(0, levels).Select(level => Enumerable.Range(0, units.Count).Where(index => units[index].Level == level).ToArray()).ToArray();
         for (var level = 0; level < levels; level++)
         {
             var overlaps = 0;
-            for (var i = 0; i < units.Count; i++)
-                for (var j = i + 1; j < units.Count; j++)
-                    if (units[i].Level == level && units[j].Level == level && Overlap(boxes[i], boxes[j])) overlaps++;
+            var members = byLevel[level];
+            for (var i = 0; i < members.Length; i++)
+                for (var j = i + 1; j < members.Length; j++)
+                    if (Overlap(boxes[members[i]], boxes[members[j]])) overlaps++;
             constraints.Add(Constraint(PlanCodes.NoOverlap, "level " + Text(level), true, overlaps == 0, Text(overlaps) + " overlapping room pairs"));
         }
         if (budget is { } limit)
@@ -539,7 +602,7 @@ public static class SpacePlanner
                     foreach (var b in other)
                         if (units[a].Level == units[b].Level) best = Math.Max(best, Shared(boxes[a], boxes[b]));
                     total++;
-                    if (best >= door - SideTolerance) met++;
+                    if (best >= door) met++;
                     worst = Math.Min(worst, best);
                 }
             var detail = Text(met) + " of " + Text(total) + " instances share a wall of at least " + Text(door) + " m; shortest " + Text(total == 0 ? 0 : worst) + " m";
@@ -582,8 +645,9 @@ public static class SpacePlanner
     static bool Overlap(Box a, Box b) => Math.Min(a.X1, b.X1) - Math.Max(a.X0, b.X0) > Epsilon && Math.Min(a.Y1, b.Y1) - Math.Max(a.Y0, b.Y0) > Epsilon;
 
     static double Snap(double value) => Math.Round(value * GridScale, MidpointRounding.ToEven) / GridScale;
-    static double FloorGrid(double value) => Math.Floor(value * GridScale + 1e-6) / GridScale;
-    static double CeilGrid(double value) => Math.Ceiling(value * GridScale - 1e-6) / GridScale;
+    // Scaling by a power of two is exact, so these produce exact grid values.
+    static double FloorGrid(double value) => Math.Floor(value * GridScale) / GridScale;
+    static double CeilGrid(double value) => Math.Ceiling(value * GridScale) / GridScale;
     static double Round(double value) => Math.Round(value, 6, MidpointRounding.ToEven);
     static bool Positive(double value) => double.IsFinite(value) && value > 0;
     static string Text(double value) => SpacePlanSerializer.Format(value);
@@ -609,8 +673,10 @@ public static class SpacePlanner
         public double MinSide { get; } = minSide;
         public string SideSource { get; } = sideSource;
         public double? Target { get; } = target;
-        // Lowest area the planner allocates: a margin above the minimum absorbs grid snapping.
-        public double Lower => MinArea + AreaMargin;
+        // Allocation stays inside [Lower, Upper]: a margin inside the range absorbs grid snapping.
+        public double Margin => MaxArea is { } max ? Math.Min(AreaMargin, (max - MinArea) / 2) : AreaMargin;
+        public double Lower => MinArea + Margin;
+        public double Upper => MaxArea is { } max ? max - Margin : double.PositiveInfinity;
         public double Desired { get; set; }
         public int Level { get; set; } = -1;
     }
