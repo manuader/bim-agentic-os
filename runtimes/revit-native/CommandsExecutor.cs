@@ -24,7 +24,8 @@ namespace Bim.Revit;
 //   Document.Create.NewRoom(Level, UV): same calls as NativeRoomFixture.cs, which ran in Revit 2025.
 //   FailureHandlingOptions.SetFailuresPreprocessor / SetClearAfterRollback, FailuresAccessor.GetFailureMessages /
 //   DeleteWarning (FailuresAccessor dea68b06-a061-fc05-d814-db741f2e7f14).
-internal static class CommandExecutor
+// Partial: catalogue v2 (roofs, stairs, curtain walls, floor openings) is in CommandsExecutorV2.cs.
+internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
     {
@@ -55,8 +56,14 @@ internal static class CommandExecutor
             OpeningPlaceArgs opening => OpeningPlan(d, opening),
             FloorCreateArgs floor => FloorPlan(d, floor),
             RoomCreateArgs room => RoomPlan(d, room),
+            RoofFootprintCreateArgs roof => RoofPlan(d, roof),
+            CurtainWallCreateArgs curtain => CurtainWallPlan(d, curtain),
+            FloorOpeningCreateArgs opening => FloorOpeningPlan(d, opening),
+            // A stair is created through a StairsEditScope, which cannot start inside the plan's write transaction.
+            StairCreateArgs => null,
             _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
         };
+        if (plan is null) return WriteStair(d, request, store, (StairCreateArgs)envelope.Args);
         return Write(d, request, store, plan);
     }
 
@@ -103,7 +110,7 @@ internal static class CommandExecutor
             CommandReadback.FloorTypesJson(FloorTypes(d).Select(type => new FloorTypeRow(type.Name, type.UniqueId, type.GetCompoundStructure() is { } layers ? Mm(layers.GetWidth()) : null))),
         FamilySymbolQueryArgs symbols =>
             CommandReadback.SymbolsJson(symbols.Category, Symbols(d, symbols.Category).Select(symbol => new SymbolRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive, WallHosted(symbol)))),
-        _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
+        _ => QueryV2(d, envelope),
     };
 
     static double? WallTypeWidth(WallType type) => CommandRules.ReportsWallTypeWidth(type.Kind.ToString()) ? Mm(type.Width) : null;
@@ -146,32 +153,40 @@ internal static class CommandExecutor
             // Failure processing may delete or change elements: read back again before the receipt is persisted.
             if (plan.Check() is { } after) throw Mismatch(after);
             var response = CommandResponses.Success(request, plan.Created(), plan.Modified(), plan.Readback(), failures.Warnings.ToArray());
-            store.Receipts[envelope.OperationId] = CommandReceiptStore.Record(request, response);
-            using (var receiptTx = new Transaction(d, "BIM Agentic OS command receipt"))
-            {
-                if (receiptTx.Start() != TransactionStatus.Started) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "receipt transaction did not start");
-                try
-                {
-                    var storage = store.Storage ?? DataStorage.Create(d);
-                    var entity = new Entity(ReceiptSchema());
-                    entity.Set(CommandReceiptStore.PayloadField, CommandReceiptStore.SerializeBounded(store.Receipts));
-                    storage.SetEntity(entity);
-                    if (receiptTx.Commit() != TransactionStatus.Committed) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "receipt transaction did not commit");
-                }
-                catch
-                {
-                    if (receiptTx.GetStatus() == TransactionStatus.Started) receiptTx.RollBack();
-                    throw;
-                }
-            }
-            if (group.Assimilate() != TransactionStatus.Committed) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "transaction group did not commit");
-            return response.ToJson();
+            return Persist(d, request, store, group, response);
         }
         catch
         {
             if (group.GetStatus() == TransactionStatus.Started) group.RollBack();
             throw;
         }
+    }
+
+    // Records the receipt in its own transaction inside the started group, then assimilates the group. The caller
+    // rolls the group back if this throws.
+    static string Persist(Document d, CommandRequest request, ReceiptStore store, TransactionGroup group, RevitCommandResponse response)
+    {
+        var envelope = request.Envelope;
+        store.Receipts[envelope.OperationId] = CommandReceiptStore.Record(request, response);
+        using (var receiptTx = new Transaction(d, "BIM Agentic OS command receipt"))
+        {
+            if (receiptTx.Start() != TransactionStatus.Started) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "receipt transaction did not start");
+            try
+            {
+                var storage = store.Storage ?? DataStorage.Create(d);
+                var entity = new Entity(ReceiptSchema());
+                entity.Set(CommandReceiptStore.PayloadField, CommandReceiptStore.SerializeBounded(store.Receipts));
+                storage.SetEntity(entity);
+                if (receiptTx.Commit() != TransactionStatus.Committed) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "receipt transaction did not commit");
+            }
+            catch
+            {
+                if (receiptTx.GetStatus() == TransactionStatus.Started) receiptTx.RollBack();
+                throw;
+            }
+        }
+        if (group.Assimilate() != TransactionStatus.Committed) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "transaction group did not commit");
+        return response.ToJson();
     }
 
     static RevitCommandException Mismatch(string detail) => new(RevitCommandCodes.TransactionFailed, null, "readback mismatch, rolled back: " + detail);
@@ -183,28 +198,12 @@ internal static class CommandExecutor
         CommandRules.CheckWallTypeForCreate(type.Kind.ToString());
         var expected = CommandGeometry.Wall(args.Curve);
         Wall? wall = null;
-        ObservedWall Observe(Wall created)
-        {
-            var curve = (created.Location as LocationCurve)?.Curve ?? throw Mismatch("wall has no location curve");
-            var arc = curve as Arc;
-            return new ObservedWall(created.UniqueId, UniqueIdOf(d, created.LevelId), created.WallType.UniqueId, arc is not null,
-                Plan(curve.GetEndPoint(0)), Plan(curve.GetEndPoint(1)), Mm(curve.Length), arc is null ? null : Mm(arc.Radius), arc is null ? null : Plan(arc.Center),
-                LengthParameter(created, BuiltInParameter.WALL_USER_HEIGHT_PARAM), LengthParameter(created, BuiltInParameter.WALL_BASE_OFFSET),
-                created.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT) is { HasValue: true, StorageType: StorageType.Integer } flag ? flag.AsInteger() != 0 : null);
-        }
+        ObservedWall Observe(Wall created) => ObserveWall(d, created);
         return new WritePlan(
             () =>
             {
                 // The base line lies in the level's plane; Base Offset is the separate offset argument.
-                var z = level.ProjectElevation;
-                Curve curve = args.Curve switch
-                {
-                    LineWallCurve line => Line.CreateBound(At(line.Start, z), At(line.End, z)),
-                    ArcThroughWallCurve arc => Arc.Create(At(arc.Start, z), At(arc.End, z), At(arc.Through, z)),
-                    ArcCenterWallCurve arc => Arc.Create(At(arc.Center, z), U(arc.Radius.Millimetres), arc.StartAngle.Radians, arc.EndAngle.Radians, XYZ.BasisX, XYZ.BasisY),
-                    _ => throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.curve", "unsupported curve"),
-                };
-                wall = Wall.Create(d, curve, type.Id, level.Id, U(args.Height.Millimetres), U(args.BaseOffset.Millimetres), false, args.Structural);
+                wall = Wall.Create(d, WallCurveAt(args.Curve, level.ProjectElevation), type.Id, level.Id, U(args.Height.Millimetres), U(args.BaseOffset.Millimetres), false, args.Structural);
             },
             () => wall is { IsValidObject: true } created
                 ? CommandReadback.Wall(expected, level.UniqueId, type.UniqueId, args.Height.Millimetres, args.BaseOffset.Millimetres, args.Structural, Observe(created))
@@ -213,6 +212,26 @@ internal static class CommandExecutor
             () => new[] { wall!.UniqueId },
             Array.Empty<string>);
     }
+
+    // Shared with curtain_wall.create (CommandsExecutorV2.cs).
+    static ObservedWall ObserveWall(Document d, Wall created)
+    {
+        var curve = (created.Location as LocationCurve)?.Curve ?? throw Mismatch("wall has no location curve");
+        var arc = curve as Arc;
+        return new ObservedWall(created.UniqueId, UniqueIdOf(d, created.LevelId), created.WallType.UniqueId, arc is not null,
+            Plan(curve.GetEndPoint(0)), Plan(curve.GetEndPoint(1)), Mm(curve.Length), arc is null ? null : Mm(arc.Radius), arc is null ? null : Plan(arc.Center),
+            LengthParameter(created, BuiltInParameter.WALL_USER_HEIGHT_PARAM), LengthParameter(created, BuiltInParameter.WALL_BASE_OFFSET),
+            created.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT) is { HasValue: true, StorageType: StorageType.Integer } flag ? flag.AsInteger() != 0 : null);
+    }
+
+    // The wall location curve in the plane z (internal units).
+    static Curve WallCurveAt(WallCurve curve, double z) => curve switch
+    {
+        LineWallCurve line => Line.CreateBound(At(line.Start, z), At(line.End, z)),
+        ArcThroughWallCurve arc => Arc.Create(At(arc.Start, z), At(arc.End, z), At(arc.Through, z)),
+        ArcCenterWallCurve arc => Arc.Create(At(arc.Center, z), U(arc.Radius.Millimetres), arc.StartAngle.Radians, arc.EndAngle.Radians, XYZ.BasisX, XYZ.BasisY),
+        _ => throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.curve", "unsupported curve"),
+    };
 
     static WritePlan OpeningPlan(Document d, OpeningPlaceArgs args)
     {

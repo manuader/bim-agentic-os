@@ -29,6 +29,8 @@ public static class RevitCommandCodes
     public const string BoundaryEdgeTooShort = "boundary_edge_too_short";
     public const string BoundaryZeroArea = "boundary_zero_area";
     public const string BoundarySelfIntersecting = "boundary_self_intersecting";
+    // Catalogue v2: a stair's base and top level must differ (the executor also requires top above base).
+    public const string LevelsNotDistinct = "levels_not_distinct";
     // Copies-only guard.
     public const string DocumentNotEnabled = "document_not_enabled";
     public const string DocumentLinkRefused = "document_link_refused";
@@ -51,7 +53,7 @@ public static class RevitCommandCodes
     {
         EnvelopeInvalid, ProtocolVersionUnsupported, OperationIdInvalid, DocumentPathInvalid, DocumentIdentityInvalid, CommandUnknown,
         ArgsInvalid, LengthInvalid, AngleInvalid, CurveTooShort, ArcCollinear, ArcRadiusInvalid, ArcSweepInvalid,
-        BoundaryTooFewPoints, BoundaryEdgeTooShort, BoundaryZeroArea, BoundarySelfIntersecting,
+        BoundaryTooFewPoints, BoundaryEdgeTooShort, BoundaryZeroArea, BoundarySelfIntersecting, LevelsNotDistinct,
         DocumentNotEnabled, DocumentLinkRefused, AllowlistInvalid, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, NoResponse, ResponseInvalid,
     };
 
