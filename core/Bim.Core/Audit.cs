@@ -277,7 +277,7 @@ public sealed class AuditLog
         }
         if (!existing.Ok) throw new AuditLogException(existing.Code, existing.Line, existing.Detail);
         afterVerify?.Invoke();
-        return new AuditLog(full, clock, existing.Head, new FileInfo(full).Length);
+        return new AuditLog(full, clock, existing.Head, existing.VerifiedBytes);
     }
 
     public AuditEntry Append(string actor, string operationId, string command, string documentPath, PermissionDecision decision)

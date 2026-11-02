@@ -85,7 +85,7 @@ public sealed class PermissionPolicy
         var levels = new Dictionary<string, PermissionLevel>(StringComparer.Ordinal);
         foreach (var grant in grants)
         {
-            if (grant is null || !IsActor(grant.Actor)) throw new PermissionPolicyException(PermissionCodes.PolicyInvalid, "invalid actor id");
+            if (grant is null || !IsActor(grant.Actor) || grant.Actor == PermissionAuditGate.InvalidActor) throw new PermissionPolicyException(PermissionCodes.PolicyInvalid, "invalid actor id");
             if (!Enum.IsDefined(grant.Level)) throw new PermissionPolicyException(PermissionCodes.PolicyInvalid, "undefined level for " + grant.Actor);
             if (!levels.TryAdd(grant.Actor, grant.Level)) throw new PermissionPolicyException(PermissionCodes.PolicyInvalid, "duplicate grant for " + grant.Actor);
         }
