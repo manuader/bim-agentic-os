@@ -30,8 +30,8 @@ public static class SkillParser
     // Parameter names, property names and element kinds.
     public const string NamePatternBody = "[a-z][a-z0-9_]{0,63}";
     public const string RuleIdPatternBody = "[a-z0-9][a-z0-9_-]{0,63}";
-    // Room name glob: letters, digits, space, _ - and the * wildcard.
-    public const string RoomPatternBody = "[A-Za-z0-9 _*-]{1,128}";
+    // Room name glob: 1-128 of letters, digits, space, _ - and the * wildcard, not only spaces.
+    public const string RoomPatternBody = "(?=.*[^ ])[A-Za-z0-9 _*-]{1,128}";
 
     public static readonly IReadOnlyList<string> RootMembers = new[] { "manifest_version", "id", "version", "kind", "description", "priority", "requires", "conflicts_with", "parameters", "defaults", "rules" };
     public static readonly IReadOnlyList<string> RootRequired = new[] { "manifest_version", "id", "version", "kind", "description", "priority" };
@@ -49,6 +49,7 @@ public static class SkillParser
 
     static readonly Regex IdPattern = Anchored(IdPatternBody);
     static readonly Regex SemverPattern = Anchored(SemverPatternBody);
+    static readonly Regex RangePattern = Anchored(RangePatternBody);
     static readonly Regex KeyPattern = Anchored(KeyPatternBody);
     static readonly Regex NamePattern = Anchored(NamePatternBody);
     static readonly Regex RuleIdPattern = Anchored(RuleIdPatternBody);
@@ -94,6 +95,7 @@ public static class SkillParser
     {
         range = new SkillVersionRange("*", Array.Empty<SkillComparator>());
         if (text is null || text.Length == 0 || text.Length > MaxRangeChars) return false;
+        if (!RangePattern.IsMatch(text)) return false;
         if (text == "*") return true;
         var comparators = new List<SkillComparator>();
         foreach (var token in text.Split(' '))
@@ -111,7 +113,7 @@ public static class SkillParser
                 case "<=": comparators.Add(new(SkillComparatorOp.LessOrEqual, version)); break;
                 case "~":
                     comparators.Add(new(SkillComparatorOp.GreaterOrEqual, version));
-                    if (version.Minor == int.MaxValue) return false;
+                    // Components have at most 9 digits, so + 1 cannot overflow.
                     comparators.Add(new(SkillComparatorOp.Less, new SkillVersion(version.Major, version.Minor + 1, 0)));
                     break;
                 default:
@@ -131,6 +133,8 @@ public static class SkillParser
     {
         ArgumentNullException.ThrowIfNull(json);
         if (json.Length > MaxInputChars) throw new SkillException(SkillCodes.InputTooLarge, null, "at most 65536 characters");
+        // A string carries no encoding; a byte order mark is content, not JSON. SkillLoader strips one from files.
+        if (json.Length > 0 && json[0] == '\uFEFF') throw new SkillException(SkillCodes.JsonInvalid, null, "leading byte order mark");
         JsonDocument document;
         try { document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = MaxDepth }); }
         catch (JsonException error) { throw new SkillException(SkillCodes.JsonInvalid, null, error.Message); }

@@ -73,6 +73,16 @@ public static class SkillResolver
             }
         }
 
+        // Manifests built in code skip the parser's reference check; refuse a rule naming a missing parameter.
+        foreach (var (id, manifest) in found)
+        {
+            foreach (var rule in manifest.Rules)
+            {
+                if (rule.Check.Parameter is { } name && !manifest.Parameters.Any(parameter => parameter.Name == name))
+                    issues.Add(new SkillIssue(SkillCodes.ParameterUnknown, id + "/" + rule.Id, "rule names parameter " + name + ", which the skill does not declare"));
+            }
+        }
+
         var rank = new Dictionary<string, int>(StringComparer.Ordinal);
         if (precedence is not null)
         {
@@ -101,6 +111,7 @@ public static class SkillResolver
                 SkillTrace? thresholdSource = null;
                 if (rule.Check.Parameter is { } name)
                 {
+                    // Present: unknown parameters were refused above.
                     threshold = skill.Parameters.First(parameter => parameter.Name == name).Default;
                     thresholdSource = new SkillTrace(skill.Id, SkillTrace.ParameterOrigin, name);
                 }
@@ -119,42 +130,76 @@ public static class SkillResolver
     static SkillResolution Failure(List<SkillIssue> issues) =>
         new(Array.Empty<SkillManifest>(), Array.Empty<SkillSetting>(), Array.Empty<SkillEffectiveParameter>(), Array.Empty<SkillEffectiveRule>(), issues.ToArray());
 
-    // Every distinct elementary cycle reachable by depth-first search in ordinal order, each rotated to start at its
-    // smallest id and closed by repeating it.
+    // Requirement ids of a skill that are in the resolved set, each once, in ordinal order.
+    static string[] Successors(SortedDictionary<string, SkillManifest> found, string id) =>
+        found[id].Requires.Select(requirement => requirement.Id).Where(found.ContainsKey).Distinct(StringComparer.Ordinal).OrderBy(item => item, StringComparer.Ordinal).ToArray();
+
+    // Iterative depth-first search (explicit stack, so deep chains cannot overflow the call stack) visiting skills and
+    // their requirements in ordinal order. Every back edge yields one cycle, rotated to start at its smallest id, closed
+    // by repeating it, and reported once. This finds at least one cycle in every cyclic component; it is not an
+    // enumeration of all elementary cycles.
     static List<string[]> Cycles(SortedDictionary<string, SkillManifest> found)
     {
         var cycles = new List<string[]>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var state = new Dictionary<string, int>(StringComparer.Ordinal);
-        var stack = new List<string>();
-        void Visit(string id)
+        var path = new List<string>();
+        var position = new Dictionary<string, int>(StringComparer.Ordinal);
+        var frames = new Stack<(string Id, string[] Next, int Index)>();
+        void Enter(string id)
         {
             state[id] = 1;
-            stack.Add(id);
-            foreach (var next in found[id].Requires.Select(requirement => requirement.Id).Where(found.ContainsKey).OrderBy(item => item, StringComparer.Ordinal))
+            position[id] = path.Count;
+            path.Add(id);
+            frames.Push((id, Successors(found, id), 0));
+        }
+        foreach (var origin in found.Keys)
+        {
+            if (state.ContainsKey(origin)) continue;
+            Enter(origin);
+            while (frames.Count > 0)
             {
-                var mark = state.GetValueOrDefault(next);
-                if (mark == 0) Visit(next);
+                var (id, next, index) = frames.Pop();
+                if (index == next.Length)
+                {
+                    path.RemoveAt(path.Count - 1);
+                    position.Remove(id);
+                    state[id] = 2;
+                    continue;
+                }
+                frames.Push((id, next, index + 1));
+                var target = next[index];
+                var mark = state.GetValueOrDefault(target);
+                if (mark == 0) Enter(target);
                 else if (mark == 1)
                 {
-                    var members = stack.Skip(stack.IndexOf(next)).ToList();
+                    var members = path.GetRange(position[target], path.Count - position[target]);
                     var start = members.IndexOf(members.Min(StringComparer.Ordinal)!);
                     var rotated = members.Skip(start).Concat(members.Take(start)).ToList();
                     rotated.Add(rotated[0]);
                     if (seen.Add(string.Join("|", rotated))) cycles.Add(rotated.ToArray());
                 }
             }
-            stack.RemoveAt(stack.Count - 1);
-            state[id] = 2;
         }
-        foreach (var id in found.Keys) if (!state.ContainsKey(id)) Visit(id);
         return cycles;
     }
 
-    // Kahn's algorithm: requirements first, ties by ordinal id. Called only when the graph has no cycle.
+    // Kahn's algorithm over distinct requirement edges: requirements first, ties by ordinal id. Called only when the
+    // graph has no cycle.
     static SkillManifest[] TopologicalOrder(SortedDictionary<string, SkillManifest> found)
     {
-        var remaining = found.ToDictionary(pair => pair.Key, pair => pair.Value.Requires.Count(requirement => found.ContainsKey(requirement.Id)), StringComparer.Ordinal);
+        var remaining = new Dictionary<string, int>(StringComparer.Ordinal);
+        var dependents = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var id in found.Keys)
+        {
+            var requirements = Successors(found, id);
+            remaining[id] = requirements.Length;
+            foreach (var requirement in requirements)
+            {
+                if (!dependents.TryGetValue(requirement, out var list)) dependents[requirement] = list = new List<string>();
+                list.Add(id);
+            }
+        }
         var ready = new SortedSet<string>(remaining.Where(pair => pair.Value == 0).Select(pair => pair.Key), StringComparer.Ordinal);
         var order = new List<SkillManifest>();
         while (ready.Count > 0)
@@ -162,11 +207,8 @@ public static class SkillResolver
             var id = ready.Min!;
             ready.Remove(id);
             order.Add(found[id]);
-            foreach (var (otherId, other) in found)
-            {
-                if (!other.Requires.Any(requirement => requirement.Id == id)) continue;
-                if (--remaining[otherId] == 0) ready.Add(otherId);
-            }
+            if (!dependents.TryGetValue(id, out var waiting)) continue;
+            foreach (var dependent in waiting) if (--remaining[dependent] == 0) ready.Add(dependent);
         }
         return order.ToArray();
     }

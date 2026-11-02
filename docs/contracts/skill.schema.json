@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["manifest_version", "id", "version", "kind", "description", "priority"],
   "properties": {
-    "manifest_version": { "const": 1 },
+    "manifest_version": { "const": 1, "description": "Written as the integer token 1 only; SkillParser refuses 1.0 and 1e0, which JSON Schema const treats as equal." },
     "id": { "$ref": "#/$defs/skillId" },
     "version": { "$ref": "#/$defs/semver" },
     "kind": { "enum": ["style", "typology", "code", "qa"] },
@@ -28,12 +28,12 @@
   },
   "$defs": {
     "text": { "description": "Non-blank well-formed text. SkillParser counts maxLength in UTF-16 code units.", "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "\\S" },
-    "int32": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647, "description": "Written as an integer token only (no fraction or exponent), 32-bit." },
+    "int32": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647, "description": "32-bit, written as an integer token only: SkillParser refuses a fraction or exponent (1.0, 1e0) that JSON Schema integer accepts." },
     "number": { "type": "number", "description": "Finite number; -0 is read as 0." },
     "scalar": { "oneOf": [{ "$ref": "#/$defs/number" }, { "$ref": "#/$defs/text" }, { "type": "boolean" }] },
     "skillId": { "description": "Reverse-DNS-like id: at least two dot-separated labels of [a-z0-9-] starting with a letter, 3-128 characters.", "type": "string", "pattern": "^(?=.{3,128}$)[a-z][a-z0-9-]{0,62}(\\.[a-z][a-z0-9-]{0,62})+$" },
     "semver": { "description": "MAJOR.MINOR.PATCH without leading zeros, pre-release or build metadata; each component at most 9 digits.", "type": "string", "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$" },
-    "range": { "description": "* or single-space-separated comparators that must all hold; each is a semver optionally prefixed by =, >, >=, <, <=, ^ (same left-most non-zero component) or ~ (same major and minor).", "type": "string", "minLength": 1, "maxLength": 128 },
+    "range": { "description": "* or single-space-separated comparators that must all hold; each is a semver optionally prefixed by =, >, >=, <, <=, ^ (same left-most non-zero component) or ~ (same major and minor).", "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^(\\*|(=|>=|<=|>|<|\\^|~)?(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})( (=|>=|<=|>|<|\\^|~)?(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8}))*)$" },
     "settingKey": { "description": "Dotted path of at least two [a-z][a-z0-9_]* segments, 3-128 characters.", "type": "string", "pattern": "^(?=.{3,128}$)[a-z][a-z0-9_]{0,63}(\\.[a-z][a-z0-9_]{0,63})+$" },
     "name": { "description": "Parameter, property or element kind name.", "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
     "requirement": {
@@ -43,7 +43,7 @@
       "properties": { "id": { "$ref": "#/$defs/skillId" }, "range": { "$ref": "#/$defs/range" } }
     },
     "parameter": {
-      "description": "A typed parameter with a default; min and max are allowed only for number and integer, and the default lies within them.",
+      "description": "A typed parameter with a default whose JSON type follows type; min and max are allowed only for number and integer (integer tokens for integer). That the default lies within [min, max] and min <= max is enforced by SkillParser only.",
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "type", "default"],
@@ -54,7 +54,13 @@
         "min": { "$ref": "#/$defs/number" },
         "max": { "$ref": "#/$defs/number" },
         "description": { "$ref": "#/$defs/text" }
-      }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "number" } } }, "then": { "properties": { "default": { "$ref": "#/$defs/number" } } } },
+        { "if": { "properties": { "type": { "const": "integer" } } }, "then": { "properties": { "default": { "$ref": "#/$defs/int32" }, "min": { "$ref": "#/$defs/int32" }, "max": { "$ref": "#/$defs/int32" } } } },
+        { "if": { "properties": { "type": { "const": "boolean" } } }, "then": { "properties": { "default": { "type": "boolean" } }, "not": { "anyOf": [{ "required": ["min"] }, { "required": ["max"] }] } } },
+        { "if": { "properties": { "type": { "const": "string" } } }, "then": { "properties": { "default": { "$ref": "#/$defs/text" } }, "not": { "anyOf": [{ "required": ["min"] }, { "required": ["max"] }] } } }
+      ]
     },
     "rule": {
       "type": "object",
@@ -77,7 +83,7 @@
       "maxProperties": 1,
       "properties": {
         "element": { "$ref": "#/$defs/name" },
-        "room": { "type": "string", "pattern": "^[A-Za-z0-9 _*-]{1,128}$" }
+        "room": { "type": "string", "pattern": "^(?=.*[^ ])[A-Za-z0-9 _*-]{1,128}$" }
       }
     },
     "check": {
@@ -93,6 +99,8 @@
       "additionalProperties": false,
       "required": ["op", "property"],
       "oneOf": [{ "required": ["value"] }, { "required": ["parameter"] }],
+      "if": { "properties": { "op": { "enum": ["min", "max"] } } },
+      "then": { "properties": { "value": { "$ref": "#/$defs/number" } } },
       "properties": {
         "op": { "enum": ["min", "max", "equals"] },
         "property": { "$ref": "#/$defs/name" },

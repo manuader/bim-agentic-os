@@ -151,14 +151,25 @@ public sealed record SkillManifest(int ManifestVersion, string Id, SkillVersion 
     public const int CurrentVersion = 1;
 }
 
-// Skills in ordinal id order.
-public sealed record SkillCatalog(IReadOnlyList<SkillManifest> Skills)
+// A set of skills with unique ids (two manifests with one id are refused as id_duplicate), kept in ordinal id order.
+public sealed class SkillCatalog
 {
-    public SkillManifest? Find(string id)
+    readonly Dictionary<string, SkillManifest> byId = new(StringComparer.Ordinal);
+
+    public SkillCatalog(IEnumerable<SkillManifest> skills)
     {
-        foreach (var skill in Skills) if (string.Equals(skill.Id, id, StringComparison.Ordinal)) return skill;
-        return null;
+        ArgumentNullException.ThrowIfNull(skills);
+        foreach (var skill in skills)
+        {
+            ArgumentNullException.ThrowIfNull(skill);
+            if (!byId.TryAdd(skill.Id, skill)) throw new SkillException(SkillCodes.IdDuplicate, "id", "skill " + skill.Id + " appears more than once in the catalog");
+        }
+        Skills = byId.Values.OrderBy(skill => skill.Id, StringComparer.Ordinal).ToArray();
     }
+
+    public IReadOnlyList<SkillManifest> Skills { get; }
+
+    public SkillManifest? Find(string id) => id is not null && byId.TryGetValue(id, out var skill) ? skill : null;
 }
 
 // A requested skill; Range defaults to "*".
