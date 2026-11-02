@@ -37,11 +37,10 @@ public static class IntentCompiler
     public static string SpaceKey(string room) => "space:" + room;
     public static string OpeningKey(string opening) => "opening:" + opening;
 
-    public static string WallKey(string room, IntentSide side, int segment = 0)
+    public static string WallKey(string room, IntentSide side, string? after = null)
     {
-        if (segment < 0) throw new ArgumentOutOfRangeException(nameof(segment));
         var key = "wall:" + room + ":" + IntentJson.Side(side);
-        return segment == 0 ? key : key + ":" + segment.ToString(CultureInfo.InvariantCulture);
+        return after is null ? key : key + ">" + after;
     }
 
     public static string SharedWallKey(string roomA, string roomB) =>
@@ -295,7 +294,7 @@ public static class IntentCompiler
             foreach (var group in levelWalls.Where(candidate => !candidate.Shared).GroupBy(candidate => (Room: candidate.Low ?? candidate.High!, candidate.Side)))
             {
                 var index = 0;
-                foreach (var stretch in group.OrderBy(candidate => candidate.Start)) stretch.Key = WallKey(group.Key.Room, group.Key.Side, index++);
+                foreach (var stretch in group.OrderBy(candidate => candidate.Start)) stretch.Key = WallKey(group.Key.Room, group.Key.Side, index == 0 ? null : index.ToString(CultureInfo.InvariantCulture)); index++;
             }
 
             // Parallel walls on distinct axes overlap in plan when closer than half their thicknesses combined.

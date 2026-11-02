@@ -77,6 +77,7 @@ public static class IntentCodes
     public const string NotAdjacent = "not_adjacent";
     public const string OpeningOutsideWall = "opening_outside_wall";
     public const string OpeningOverlap = "opening_overlap";
+    public const string DoorSillInvalid = "door_sill_invalid";
 }
 
 // Typed refusal. Message equals Code. Parser refusals carry Field (JSON path); compile refusals carry Issues.

@@ -60,8 +60,9 @@ try
     Check(IntentCompiler.Id(projectId, "space:a") == RoomCompiler.Id(projectId, "space:a"), "ids are RoomCompiler.Id(project, intent key): SHA-256 of a stable key");
     Check(IntentCompiler.LevelKey("l1") == "level:l1" && IntentCompiler.SpaceKey("a") == "space:a" && IntentCompiler.OpeningKey("d1") == "opening:d1",
         "level, space and opening intent keys");
-    Check(IntentCompiler.WallKey("a", IntentSide.South) == "wall:a:south" && IntentCompiler.WallKey("a", IntentSide.East, 1) == "wall:a:east:1",
-        "exterior wall keys are room, side and segment index (index 0 omitted)", IntentCompiler.WallKey("a", IntentSide.East, 1));
+    Check(IntentCompiler.Id(projectId, "space:a") == Guid.Parse("254784a6-edd3-3254-203a-b0172d136dd3"), "golden id pins SHA-256(\"<project:D>:<key>\")[0..16] as Guid bytes");
+    Check(IntentCompiler.WallKey("a", IntentSide.South) == "wall:a:south" && IntentCompiler.WallKey("a", IntentSide.East, "b") == "wall:a:east>b",
+        "unshared stretch keys are room and side, plus the neighbour whose shared stretch precedes them", IntentCompiler.WallKey("a", IntentSide.East, "b"));
     Check(IntentCompiler.SharedWallKey("b", "a") == "wall:a|b" && IntentCompiler.SharedWallKey("a", "b") == "wall:a|b", "shared wall key is the ordinal room pair", IntentCompiler.SharedWallKey("b", "a"));
 
     // ---- Valid multi-room compilation ----
@@ -147,13 +148,14 @@ try
     var hash = Compiler.Hash(project);
     var reversed = new LayoutIntent(1, provenance, defaultLevels.Reverse().ToArray(), defaultTypes.Reverse().ToArray(), baseRooms.Reverse().ToArray(), baseOpenings.Reverse().ToArray());
     Check(Compiler.Hash(IntentCompiler.Compile(projectId, 5, reversed)) == hash, "reversed input order gives byte-identical hash");
-    var shuffled = new LayoutIntent(1, provenance, defaultLevels, defaultTypes, baseRooms.OrderBy(room => room.Key == "c" ? 0 : 1).ToArray(),
-        baseOpenings.OrderBy(opening => opening.Key.Length).ThenByDescending(opening => opening.Key, StringComparer.Ordinal).ToArray());
+    T[] Rotate<T>(IEnumerable<T> items) { var list = items.ToArray(); return list.Skip(1).Concat(list.Take(1)).ToArray(); }
+    var shuffled = new LayoutIntent(1, provenance, Rotate(defaultLevels), Rotate(defaultTypes), Rotate(baseRooms), Rotate(Rotate(baseOpenings)));
+    Check(!shuffled.Rooms.SequenceEqual(baseRooms) && !shuffled.Levels.SequenceEqual(defaultLevels) && !shuffled.WallTypes.SequenceEqual(defaultTypes) && !shuffled.Openings.SequenceEqual(baseOpenings),
+        "the shuffle permutes every collection");
     Check(JsonSerializer.Serialize(IntentCompiler.Compile(projectId, 5, shuffled)) == JsonSerializer.Serialize(project), "shuffled input gives byte-identical project JSON");
     var renamed = new LayoutIntent(1, provenance, defaultLevels.Select(level => level with { Name = "Renamed " + level.Key }).ToArray(),
         defaultTypes.Select(type => type with { Name = "Renamed " + type.Key }).ToArray(), baseRooms.Select(room => room with { Name = "Renamed " + room.Key }).ToArray(), baseOpenings);
     Check(Compiler.Hash(IntentCompiler.Compile(projectId, 5, renamed)) == hash, "renaming levels, types and rooms changes nothing compiled");
-    Check(Compiler.Hash(IntentCompiler.Compile(projectId, 5, baseLayout)) == hash, "compiling twice is identical");
     Check(IntentCompiler.Compile(Guid.Parse("00000000-0000-0000-0000-0000000000aa"), 5, baseLayout).Elements.Select(element => element.Id).Intersect(project.Elements.Select(element => element.Id)).Any() == false,
         "ids are scoped by project id");
 
@@ -180,16 +182,51 @@ try
     // ---- Partial adjacency splits a side into segments ----
     var notched = Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("b", 4, 1, 3, 1) }, new[]
     {
-        Op("d1", IntentOpeningKind.Door, Side("a", IntentSide.East), 1.05, 0.9, 2.1, 0),
+        Op("d1", IntentOpeningKind.Door, Side("a", IntentSide.East), 1.15, 0.7, 2.1, 0),
         Op("w1", IntentOpeningKind.Window, Side("a", IntentSide.East), 2.2, 0.6, 1, 1),
     });
     Check(IntentCompiler.Validate(notched).Length == 0, "notched layout validates", ShowIssues(notched));
     var notchedProject = IntentCompiler.Compile(projectId, 0, notched);
-    Check(Geometry(notchedProject, "wall:a:east", 4, 0, 4, 1, 2.8, 0.2) && Geometry(notchedProject, "wall:a|b", 4, 1, 4, 2, 2.8, 0.2) && Geometry(notchedProject, "wall:a:east:1", 4, 2, 4, 3, 2.8, 0.2),
-        "a east splits into a:east, a|b and a:east:1", GeometryOf(notchedProject, "wall:a:east") + GeometryOf(notchedProject, "wall:a|b") + GeometryOf(notchedProject, "wall:a:east:1"));
+    Check(Geometry(notchedProject, "wall:a:east", 4, 0, 4, 1, 2.8, 0.2) && Geometry(notchedProject, "wall:a|b", 4, 1, 4, 2, 2.8, 0.2) && Geometry(notchedProject, "wall:a:east>b", 4, 2, 4, 3, 2.8, 0.2),
+        "a east splits into a:east, a|b and a:east>b", GeometryOf(notchedProject, "wall:a:east") + GeometryOf(notchedProject, "wall:a|b") + GeometryOf(notchedProject, "wall:a:east>b"));
     Check(Find(notchedProject, "wall:b:west") is null && notchedProject.Elements.Count(element => element.Kind == "wall") == 9, "b west is fully shared; 9 walls in all");
-    Check(Find(notchedProject, "opening:d1")?.Dependencies.Last() == Id("wall:a|b") && Find(notchedProject, "opening:w1")?.Dependencies.Last() == Id("wall:a:east:1"),
+    Check(Find(notchedProject, "opening:d1")?.Dependencies.Last() == Id("wall:a|b") && Find(notchedProject, "opening:w1")?.Dependencies.Last() == Id("wall:a:east>b"),
         "room-side openings resolve to the segment that contains them");
+    Check(Has(Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("b", 4, 1, 3, 1) }, new[] { Op("d1", IntentOpeningKind.Door, Side("a", IntentSide.East), 1.05, 0.9, 2.1, 0) }), IntentCodes.OpeningOutsideWall, "d1"),
+        "an opening reaching into the joined perpendicular wall's half thickness is outside the clear span");
+    // Reverse lookup from element id to intent key over every key the two layouts could produce.
+    Plan DiffOf(LayoutIntent source, LayoutIntent target)
+    {
+        var left = IntentCompiler.Compile(projectId, 0, source); var right = IntentCompiler.Compile(projectId, 0, target);
+        var diff = Compiler.Diff(left, right);
+        var roomKeys = source.Rooms.Concat(target.Rooms).Select(room => room.Key).Distinct().ToArray();
+        var candidates = roomKeys.SelectMany(room => Enum.GetValues<IntentSide>().SelectMany(side => roomKeys.Select(other => IntentCompiler.WallKey(room, side, other)).Append(IntentCompiler.WallKey(room, side)))
+                .Concat(roomKeys.Select(other => IntentCompiler.SharedWallKey(room, other))).Append(IntentCompiler.SpaceKey(room)))
+            .Concat(source.Levels.Concat(target.Levels).Select(level => IntentCompiler.LevelKey(level.Key)))
+            .Concat(source.Openings.Concat(target.Openings).Select(opening => IntentCompiler.OpeningKey(opening.Key)))
+            .Distinct().ToDictionary(Id);
+        string Name(Guid id) => candidates.TryGetValue(id, out var key) ? key : id.ToString("N");
+        string[] Keys(string action) => diff.Operations.Where(operation => operation.Action == action).Select(operation => Name(operation.Element.Id)).Order(StringComparer.Ordinal).ToArray();
+        return new Plan(Keys("create"), Keys("update"), Keys("delete"), diff);
+    }
+    // ---- Stretch identity when a neighbour moves ----
+    var notchRooms = new[] { Rm("a", 0, 0, 4, 3), Rm("b", 4, 1, 3, 1) };
+    var slid = DiffOf(Layout(notchRooms), Layout(new[] { notchRooms[0], notchRooms[1] with { YMetres = 1.5 } }));
+    Check(slid.Created.Length == 0 && slid.Deleted.Length == 0 && slid.Updated.Contains("wall:a:east") && slid.Updated.Contains("wall:a|b") && slid.Updated.Contains("wall:a:east>b"),
+        "sliding b keeps every stretch identity (a:east, a|b, a:east>b only move)", slid.Show());
+    var cornered = DiffOf(Layout(notchRooms), Layout(new[] { notchRooms[0], notchRooms[1] with { YMetres = 0 } }));
+    Check(cornered.Created.Length == 0 && cornered.Deleted.SequenceEqual(new[] { "wall:a:east" }) && cornered.Updated.Contains("wall:a:east>b") && cornered.Updated.Contains("wall:a|b"),
+        "when b reaches a's corner the corner stretch is deleted, never reused for another stretch", cornered.Show());
+    // ---- A width change that changes which walls are shared ----
+    var widenedC = DiffOf(baseLayout, Layout(baseRooms.Select(room => room.Key == "c" ? room with { WidthMetres = 7 } : room).ToArray(), baseOpenings));
+    Check(widenedC.Created.SequenceEqual(new[] { "wall:b|c" }) && widenedC.Deleted.SequenceEqual(new[] { "wall:b:north" }),
+        "widening c to 7 m creates wall:b|c and deletes wall:b:north", widenedC.Show());
+    Check(widenedC.Updated.SequenceEqual(new[] { "space:b", "space:c", "wall:c:east", "wall:c:north" }.Order(StringComparer.Ordinal)),
+        "and updates only c's moved walls and the two re-bounded spaces", widenedC.Show());
+    // ---- Snapping stays local ----
+    var far = DiffOf(baseLayout, Layout(baseRooms.Append(Rm("far", 3.9999995, 100, 4, 3)).ToArray(), baseOpenings));
+    Check(far.Updated.Length == 0 && far.Deleted.Length == 0 && far.Created.SequenceEqual(new[] { "space:far", "wall:far:east", "wall:far:north", "wall:far:south", "wall:far:west" }),
+        "a far room near-equal to a grid line moves nothing else", far.Show());
     var straddle = Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("b", 4, 1, 3, 1) }, new[] { Op("w1", IntentOpeningKind.Window, Side("a", IntentSide.East), 0.5, 1, 1, 1) });
     Check(Has(straddle, IntentCodes.OpeningOutsideWall, "w1"), "an opening across a segment boundary is outside its wall", ShowIssues(straddle));
 
@@ -204,6 +241,10 @@ try
     Check(Has(Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("x", 3, 1, 2, 1) }), IntentCodes.RoomOverlap, "a"), "overlapping rooms are reported");
     Check(IntentCompiler.Validate(Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("x", 4, 3, 2, 2) })).Length == 0, "rooms touching at a corner are valid");
     Check(Has(Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("x", 4.05, 0, 2, 3) }), IntentCodes.WallClash), "parallel walls closer than their thickness clash");
+    Check(Has(Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("b", 4.05, 3, 3, 3) }), IntentCodes.WallClash), "perpendicular wall bodies overlapping off the axes clash (b north-east)");
+    Check(Has(Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("b", 4.05, -3, 3, 3) }), IntentCodes.WallClash), "perpendicular wall bodies overlapping off the axes clash (b south-east)");
+    Check(IntentCompiler.Validate(Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("b", 4.3, 3, 3, 3) })).Length == 0, "walls whose bodies stay apart are valid");
+    Check(IntentCompiler.Validate(Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("b", 1, 3, 2, 2) })).Length == 0, "a T join where b's axes meet a's north axis is valid");
     Check(Has(Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("b", 4, 0, 3, 3, type: "ext") }), IntentCodes.SharedWallConflict, "a"), "a shared stretch with two wall types conflicts");
     Check(Has(Layout(new[] { Rm("a", 0, 0, 4, 3, "l9") }), IntentCodes.UnknownLevel, "a"), "unknown level");
     Check(Has(Layout(new[] { Rm("a", 0, 0, 4, 3, type: "nope") }), IntentCodes.UnknownWallType, "a"), "unknown wall type");
@@ -219,7 +260,9 @@ try
     Check(Has(Layout(oneRoom, new[] { Window("w1", -0.1, 1, 1, 1) }), IntentCodes.OpeningOutsideWall, "w1"), "opening before the wall start");
     Check(Has(Layout(oneRoom, new[] { Window("w1", 1, 1, 2, 1) }), IntentCodes.OpeningOutsideWall, "w1"), "opening above the wall top");
     Check(Has(Layout(oneRoom, new[] { Window("w1", 1, 1, 1, -0.5) }), IntentCodes.OpeningOutsideWall, "w1"), "opening below the level");
-    Check(IntentCompiler.Validate(Layout(oneRoom, new[] { Window("w1", 0, 4, 2.8, 0) })).Length == 0, "an opening filling its wall exactly is inside");
+    Check(IntentCompiler.Validate(Layout(oneRoom, new[] { Window("w1", 0.1, 3.8, 2.8, 0) })).Length == 0, "an opening filling the clear span exactly is inside");
+    Check(Has(Layout(oneRoom, new[] { Window("w1", 0, 4, 2.8, 0) }), IntentCodes.OpeningOutsideWall, "w1"), "an opening over the full axis span runs into the corner walls");
+    Check(Has(Layout(oneRoom, new[] { Op("d1", IntentOpeningKind.Door, Side("a", IntentSide.South), 1, 0.9, 2.1, 0.1) }), IntentCodes.DoorSillInvalid, "d1"), "a door must sit on the level (sill 0)");
     Check(Has(Layout(oneRoom, new[] { Window("w1", 1, 1, 1, 1), Window("w2", 1.5, 1, 1, 1) }), IntentCodes.OpeningOverlap, "w1"), "overlapping openings on one wall");
     Check(IntentCompiler.Validate(Layout(oneRoom, new[] { Window("w1", 1, 1, 1, 1), Window("w2", 2, 1, 1, 1) })).Length == 0, "abutting openings do not overlap");
     Check(IntentCompiler.Validate(Layout(oneRoom, new[] { Op("d1", IntentOpeningKind.Door, Side("a", IntentSide.South), 1, 0.9, 2.0, 0), Window("w1", 1, 0.9, 0.5, 2.1) })).Length == 0,
@@ -245,6 +288,12 @@ try
     Check(Has(Layout(oneRoom) with { Provenance = new Provenance("", "unit") }, IntentCodes.ProvenanceInvalid), "blank provenance");
     Check(Has(Layout(oneRoom) with { Version = 2 }, IntentCodes.VersionUnsupported), "unsupported version");
     Check(Has(Layout(Enumerable.Range(0, LayoutIntent.MaxRooms + 1).Select(i => Rm("r" + N(i), 10 * i, 0, 4, 3)).ToArray()), IntentCodes.LimitExceeded), "room count is bounded");
+    var dupA = Layout(new[] { Rm("a", 0, 0, double.NaN, 3), Rm("a", 10, 0, 4, 3) });
+    var dupB = dupA with { Rooms = dupA.Rooms.Reverse().ToArray() };
+    Check(JsonSerializer.Serialize(IntentCompiler.Validate(dupA)) == JsonSerializer.Serialize(IntentCompiler.Validate(dupB)) && Has(dupA, IntentCodes.DuplicateKey, "a") && Has(dupA, IntentCodes.DimensionInvalid, "a") && Has(dupB, IntentCodes.DimensionInvalid, "a"),
+        "duplicates: every entry is checked and the issues do not depend on order", ShowIssues(dupA) + " vs " + ShowIssues(dupB));
+    var crossDup = Layout(new[] { Rm("l1", 0, 0, 4, 3), Rm("l1", 10, 0, 4, 3) }, levels: new[] { Lv("l1", 0), Lv("l1", 3) });
+    Check(IntentCompiler.Validate(crossDup).Count(issue => issue.Code == IntentCodes.DuplicateKey) == 2, "duplicates are reported per collection", ShowIssues(crossDup));
     var invalid = Layout(new[] { Rm("a", 0, 0, 4, 3), Rm("x", 3, 1, 2, 1), Rm("y", 0, 0, 4, 3, "l9") }, new[] { Window("w1", 3.5, 1, 1, 1) });
     var invalidReversed = invalid with { Rooms = invalid.Rooms.Reverse().ToArray() };
     Check(JsonSerializer.Serialize(IntentCompiler.Validate(invalid)) == JsonSerializer.Serialize(IntentCompiler.Validate(invalidReversed)) && IntentCompiler.Validate(invalid).Length > 0,
@@ -325,3 +374,8 @@ catch (Exception error)
 
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, intent_contract = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
+
+sealed record Plan(string[] Created, string[] Updated, string[] Deleted, ExecutionPlan Execution)
+{
+    public string Show() => "create " + string.Join(",", Created) + " update " + string.Join(",", Updated) + " delete " + string.Join(",", Deleted);
+}
