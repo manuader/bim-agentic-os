@@ -111,9 +111,15 @@ static class CatalogueV2Checks
         Check(Accepts("roof with negative base offset accepted", Envelope("roof.create_footprint", With(Roof(), "base_offset_mm", -500)))?.Args is RoofFootprintCreateArgs { BaseOffset.Millimetres: -500 }, "roof base offset binds -500 mm");
         Check(Accepts("explicitly closed footprint accepted", Envelope("roof.create_footprint", With(Roof(), "boundary", Outline((0, 0), (8000, 0), (8000, 6000), (0, 6000), (0, 0)))))?.Args is RoofFootprintCreateArgs { Boundary.Count: 4 }, "repeated closing footprint vertex is dropped");
         Accepts("concave L-shaped footprint accepted", Envelope("roof.create_footprint", With(Roof(), "boundary", Outline((0, 0), (8000, 0), (8000, 3000), (4000, 3000), (4000, 6000), (0, 6000)))));
-        foreach (var (label, value) in new (string, double)[] { ("zero", 0), ("negative", -5), ("90", 90), ("over 90", 120) })
+        foreach (var (label, value) in new (string, double)[] { ("zero", 0), ("negative", -5), ("90", 90), ("over 90", 120), ("89.9 on an 8 m footprint", 89.9), ("just above the 85 degree cap", 85.001) })
             Rejects("roof slope " + label + " is angle_invalid", Envelope("roof.create_footprint", Roof(value)), RevitCommandCodes.AngleInvalid, "args.slope_deg");
-        Accepts("roof slope 89.9 accepted", Envelope("roof.create_footprint", Roof(89.9)));
+        Accepts("roof slope 85 on an 8 m footprint accepted", Envelope("roof.create_footprint", Roof(85)));
+        Rejects("85 degree roof on a 20 km footprint rises above the Revit limit", Envelope("roof.create_footprint", With(Roof(85), "boundary", Outline((0, 0), (2e7, 0), (2e7, 2e7), (0, 2e7)))), RevitCommandCodes.AngleInvalid, "args.slope_deg");
+        Accepts("flat roof on a 20 km footprint accepted (no rise)", Envelope("roof.create_footprint", With(Roof(null), "boundary", Outline((0, 0), (2e7, 0), (2e7, 2e7), (0, 2e7)))));
+        Check(Near(RevitCommandGeometryV2.MinimumWidthMm(new[] { P(0, 0), P(8000, 0), P(8000, 6000), P(0, 6000) }), 6000, 1e-9), "minimum width of an 8 x 6 m rectangle is 6000 mm");
+        Check(Near(RevitCommandGeometryV2.MinimumWidthMm(new[] { P(0, 0), P(8000, 0), P(8000, 3000), P(4000, 3000), P(4000, 6000), P(0, 6000) }), 6000, 1e-9), "minimum width of an L footprint is taken over its convex hull");
+        Check(Near(RevitCommandGeometryV2.MinimumWidthMm(new[] { P(0, 0), P(4000, 0), P(0, 3000) }), 2400, 1e-9), "minimum width of a 3-4-5 triangle is its smallest height (2400 mm)");
+        Check(RevitCommandGeometryV2.MaxRoofSlopeDeg == 85, "roof slope cap is 85 degrees");
         RejectsText("roof slope overflowing to infinity", Envelope("roof.create_footprint", Roof()).ToJsonString().Replace("\"slope_deg\":30", "\"slope_deg\":1e400"), RevitCommandCodes.AngleInvalid, "args.slope_deg");
         Rejects("roof slope as string", Envelope("roof.create_footprint", With(Roof(), "slope_deg", "30")), RevitCommandCodes.ArgsInvalid, "args.slope_deg");
         Rejects("roof base offset beyond the Revit limit", Envelope("roof.create_footprint", With(Roof(), "base_offset_mm", 9_144_001)), RevitCommandCodes.LengthInvalid, "args.base_offset_mm");
@@ -231,11 +237,15 @@ static class CatalogueV2Checks
     {
         Check(CodeOf(() => CommandRulesV2.CheckCurtainWallType("Curtain")) is null, "a Curtain wall type is accepted by curtain_wall.create");
         foreach (var kind in new[] { "Basic", "Stacked" })
-            Check(CodeOf(() => CommandRulesV2.CheckCurtainWallType(kind)) == RevitCommandCodes.ReferenceNotFound, "a " + kind + " wall type is refused by curtain_wall.create");
+            Check(CodeOf(() => CommandRulesV2.CheckCurtainWallType(kind)) == RevitCommandCodes.ArgsInvalid, "a " + kind + " wall type is args_invalid for curtain_wall.create (it exists, it is the wrong kind)");
+        Check(CommandRulesV2.Created(TypeUid, new[] { LevelUid, TopUid }, new[] { TopUid, TypeUid }).SequenceEqual(new[] { TypeUid, LevelUid, TopUid }), "created lists the primary element first, then each child once");
+        RevitCommandException? workshared = null;
+        try { CommandAdmission.CheckWrite(FixturePath, new CommandDocumentFacts(FixturePath, Uid, false, false, true, false), () => new RevitCommandPolicy(new[] { @"C:\Repo\.bim\native-runs" }), new RevitFileSystemProbe(_ => false, _ => null)); }
+        catch (RevitCommandException error) { workshared = error; }
+        Check(workshared is { Code: RevitCommandCodes.DocumentNotEnabled } && workshared.Detail is { } detail && detail.Contains("workshared", StringComparison.Ordinal) && !detail.Contains("v1", StringComparison.Ordinal), "the workshared refusal applies to every catalogue command, not only v1", workshared?.Detail ?? "accepted");
         Check(CodeOf(() => CommandRulesV2.CheckStairLevels(LevelUid, 0, TopUid, 3000)) is null, "stair between two levels 3000 mm apart is allowed");
         Check(CodeOf(() => CommandRulesV2.CheckStairLevels(LevelUid, 0, LevelUid, 0)) == RevitCommandCodes.LevelsNotDistinct, "stair whose references resolve to one level is levels_not_distinct");
         Check(CodeOf(() => CommandRulesV2.CheckStairLevels(LevelUid, 3000, TopUid, 0)) == RevitCommandCodes.LevelsNotDistinct && CodeOf(() => CommandRulesV2.CheckStairLevels(LevelUid, 3000, TopUid, 3001)) == RevitCommandCodes.LevelsNotDistinct, "stair top level must be above the base level by more than 1.2 mm");
-        Check(Near(CommandRulesV2.SlopeRatio(Angle.FromDegrees(45)), 1, 1e-12) && Near(CommandRulesV2.SlopeDegrees(CommandRulesV2.SlopeRatio(Angle.FromDegrees(30))), 30, 1e-9), "roof slope degrees convert to Revit's rise/run ratio and back");
         Check(!CommandRulesV2.IsUGridLine(vertical: true) && CommandRulesV2.IsUGridLine(vertical: false), "on a curtain wall vertical lines are V grid lines and horizontal lines are U grid lines (unverified in Revit; the readback checks orientation)");
         var line = new LineWallCurve(P(0, 0), P(5000, 0));
         Check(CommandGeometry.Near(CommandRulesV2.PointAlong(line, 1000), new PlanPoint(1000, 0)), "point along a line wall");
@@ -260,23 +270,36 @@ static class CatalogueV2Checks
     static void Readbacks()
     {
         ObservedRoofEdge Edge(bool slopes, double? degrees) => new(slopes, degrees);
-        var hip = new ObservedRoof("60f91daf-3dd7-4283-a86d-24137b73f3da-00000300", LevelUid, TypeUid, 0, new[] { Edge(true, 30), Edge(true, 30), Edge(true, 30), Edge(true, 30.0000000001) });
-        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, 4, 30, 0, hip) is null, "hip roof readback matches");
-        Check(CommandReadbackV2.Roof(TopUid, TypeUid, 4, 30, 0, hip) is { } wrongLevel && wrongLevel.Contains("level", StringComparison.Ordinal), "roof on another level is a mismatch");
-        Check(CommandReadbackV2.Roof(LevelUid, TopUid, 4, 30, 0, hip) is { } wrongType && wrongType.Contains("type", StringComparison.Ordinal), "roof of another type is a mismatch");
-        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, 5, 30, 0, hip) is { } wrongEdges && wrongEdges.Contains("edges", StringComparison.Ordinal), "roof footprint edge count mismatch is reported");
-        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, 4, 35, 0, hip) is not null, "roof slope mismatch is reported");
-        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, 4, 30, 0, hip with { Edges = new[] { Edge(true, 30), Edge(false, null), Edge(true, 30), Edge(true, 30) } }) is not null, "a hip roof edge that does not define slope is a mismatch");
-        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, 4, null, 0, hip with { Edges = new[] { Edge(false, null), Edge(false, null), Edge(false, null), Edge(false, null) } }) is null, "flat roof readback matches");
-        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, 4, null, 0, hip) is not null, "a flat roof whose edges define slope is a mismatch");
-        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, 4, 30, -500, hip) is not null && CommandReadbackV2.Roof(LevelUid, TypeUid, 4, 30, 0, hip with { BaseOffsetMm = null }) is not null, "roof base offset mismatch or unreadable offset is reported");
+        var footprint = new[] { P(0, 0), P(8000, 0), P(8000, 6000), P(0, 6000) };
+        var sketch = new[] { new PlanPoint(8000, 0), new PlanPoint(8000, 6000), new PlanPoint(0, 6000), new PlanPoint(0, 0) };
+        var hip = new ObservedRoof("60f91daf-3dd7-4283-a86d-24137b73f3da-00000300", LevelUid, TypeUid, 0, new[] { Edge(true, 30), Edge(true, 30), Edge(true, 30), Edge(true, 30.0000000001) }, 30, 1, sketch);
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip) is null, "hip roof readback matches (sketch vertices may start elsewhere)");
+        Check(CommandReadbackV2.Roof(TopUid, TypeUid, footprint, 30, 0, hip) is { } wrongLevel && wrongLevel.Contains("level", StringComparison.Ordinal), "roof on another level is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TopUid, footprint, 30, 0, hip) is { } wrongType && wrongType.Contains("type", StringComparison.Ordinal), "roof of another type is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { Footprint = sketch.Take(3).ToArray() }) is { } wrongEdges && wrongEdges.Contains("edges", StringComparison.Ordinal), "roof sketch with a different edge count is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { Footprint = new[] { new PlanPoint(9000, 0), new PlanPoint(9000, 6000), new PlanPoint(0, 6000), new PlanPoint(0, 0) } }) is { } wrongArea && wrongArea.Contains("area", StringComparison.Ordinal), "roof sketch of another area is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { Footprint = new[] { new PlanPoint(8000, 0), new PlanPoint(6000, 6000), new PlanPoint(-2000, 6000), new PlanPoint(0, 0) } }) is { } wrongVertex && wrongVertex.Contains("vertex", StringComparison.Ordinal), "roof sketch of the same area but other vertices is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { Profiles = 2 }) is not null, "a roof sketch with two loops is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { Edges = hip.Edges.Take(3).ToArray() }) is not null, "a sloped-edge list shorter than the sketch is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 35, 0, hip with { SlopeParameterDeg = 35 }) is not null, "roof edge slope mismatch is reported");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { SlopeParameterDeg = 35 }) is { } wrongParameter && wrongParameter.Contains("Slope parameter", StringComparison.Ordinal), "the roof Slope parameter is checked independently of the edges");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { SlopeParameterDeg = null }) is not null, "an unreadable roof Slope parameter is a mismatch for a sloped roof");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { Edges = new[] { Edge(true, 30), Edge(false, null), Edge(true, 30), Edge(true, 30) } }) is not null, "a hip roof edge that does not define slope is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, null, 0, hip with { Edges = new[] { Edge(false, null), Edge(false, null), Edge(false, null), Edge(false, null) }, SlopeParameterDeg = null }) is null, "flat roof readback matches (no Slope parameter needed)");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, null, 0, hip) is not null, "a flat roof whose edges define slope is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, -500, hip) is not null && CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { BaseOffsetMm = null }) is not null, "roof base offset mismatch or unreadable offset is reported");
 
-        var stairs = new ObservedStairs("60f91daf-3dd7-4283-a86d-24137b73f3da-00000400", LevelUid, TopUid, new double?[] { 1100 }, 17);
-        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, stairs) is null, "stair readback matches");
-        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, stairs with { TopLevelUid = LevelUid }) is not null && CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, stairs with { BaseLevelUid = null }) is not null, "stair level mismatch or unreadable level is reported");
-        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, stairs with { RunWidthsMm = new double?[] { 1100, 1100 } }) is { } runs && runs.Contains("run", StringComparison.Ordinal), "a stair with two runs is a mismatch");
-        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, stairs with { RunWidthsMm = new double?[] { 1000 } }) is not null && CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, stairs with { RunWidthsMm = new double?[] { null } }) is not null, "stair run width mismatch or unreadable width is reported");
-        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, stairs with { Risers = 0 }) is not null && CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, stairs with { Risers = null }) is null, "a stair without risers is a mismatch; an unreadable riser count is not");
+        PlanPoint runStart = new(0, 0), runEnd = new(4000, 0);
+        var stairs = new ObservedStairs("60f91daf-3dd7-4283-a86d-24137b73f3da-00000400", LevelUid, TopUid, new double?[] { 1100 }, 17, 17, runStart, runEnd);
+        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs) is null, "stair readback matches");
+        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { TopLevelUid = LevelUid }) is not null && CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { BaseLevelUid = null }) is not null, "stair level mismatch or unreadable level is reported");
+        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { RunWidthsMm = new double?[] { 1100, 1100 } }) is { } runs && runs.Contains("run", StringComparison.Ordinal), "a stair with two runs is a mismatch");
+        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { RunWidthsMm = new double?[] { 1000 } }) is not null && CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { RunWidthsMm = new double?[] { null } }) is not null, "stair run width mismatch or unreadable width is reported");
+        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { Risers = 0, DesiredRisers = 0 }) is not null, "a stair without risers is a mismatch");
+        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { Risers = 12 }) is { } shortStair && shortStair.Contains("top level", StringComparison.Ordinal), "a stair with fewer actual than desired risers does not reach the top level");
+        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { Risers = null }) is not null && CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { DesiredRisers = null }) is not null, "an unreadable actual or desired riser count is a mismatch");
+        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { RunStart = runEnd, RunEnd = runStart }) is not null, "a run going the other way (top step at the requested start) is a mismatch");
+        Check(CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { RunEnd = new PlanPoint(3000, 0) }) is not null && CommandReadbackV2.Stairs(LevelUid, TopUid, 1100, runStart, runEnd, stairs with { RunStart = null }) is not null, "a shortened or unreadable run path is a mismatch");
 
         var expected = new ExpectedCurtainGrid(new[] { new PlanPoint(2000, 0), new PlanPoint(4000, 0) }, 2000, new[] { 1500.0 }, new PlanPoint(2500, 0));
         ObservedGridLine Vertical(double x) => new("60f91daf-3dd7-4283-a86d-24137b73f3da-00000501", new PlanPoint(x, 0), 0, new PlanPoint(x, 0), 4000);
@@ -299,12 +322,15 @@ static class CatalogueV2Checks
         var types = JsonNode.Parse(CommandReadbackV2.RoofTypesJson(new[] { new RoofTypeRow("Z roof", TypeUid, 300), new RoofTypeRow("A roof", LevelUid, null) }))!;
         Check(types["roof_types"]!.AsArray().Select(row => row!["name"]!.GetValue<string>()).SequenceEqual(new[] { "A roof", "Z roof" }) && types["roof_types"]![0]!["width_mm"] is null && types["roof_types"]![1]!["width_mm"]!.GetValue<double>() == 300, "roof types readback is sorted by name with width_mm or null", types.ToJsonString());
         var roofJson = JsonNode.Parse(CommandReadbackV2.RoofJson(hip))!["roof"]!;
+        Check(roofJson["slope_parameter_deg"]!.GetValue<double>() == 30 && roofJson["footprint"]!.AsArray().Count == 4 && Near(roofJson["area_mm2"]!.GetValue<double>(), 4.8e7), "roof readback JSON reports the Slope parameter, the sketch footprint and its area", roofJson.ToJsonString());
         Check(roofJson["unique_id"]!.GetValue<string>() == hip.UniqueId && roofJson["level_unique_id"]!.GetValue<string>() == LevelUid && roofJson["type_unique_id"]!.GetValue<string>() == TypeUid && roofJson["base_offset_mm"]!.GetValue<double>() == 0
             && roofJson["edges"]!.AsArray().Count == 4 && roofJson["edges"]![0]!["defines_slope"]!.GetValue<bool>() && roofJson["edges"]![0]!["slope_deg"]!.GetValue<double>() == 30, "roof readback JSON reports level, type, offset and each footprint edge", roofJson.ToJsonString());
-        var stairsJson = JsonNode.Parse(CommandReadbackV2.StairsJson(stairs))!["stairs"]!;
+        var stairsJson = JsonNode.Parse(CommandReadbackV2.StairsJson(stairs, new[] { TypeUid }))!["stairs"]!;
+        Check(stairsJson["desired_risers"]!.GetValue<int>() == 17 && stairsJson["run"]!["end"]![0]!.GetValue<double>() == 4000 && stairsJson["railing_unique_ids"]!.AsArray().Single()!.GetValue<string>() == TypeUid, "stairs readback JSON reports desired risers, the run path and the railings created with it", stairsJson.ToJsonString());
         Check(stairsJson["base_level_unique_id"]!.GetValue<string>() == LevelUid && stairsJson["top_level_unique_id"]!.GetValue<string>() == TopUid && stairsJson["run_widths_mm"]!.AsArray().Single()!.GetValue<double>() == 1100 && stairsJson["risers"]!.GetValue<int>() == 17, "stairs readback JSON reports levels, run widths and risers", stairsJson.ToJsonString());
         var wall = new ObservedWall("60f91daf-3dd7-4283-a86d-24137b73f3da-00000700", LevelUid, TypeUid, false, new PlanPoint(0, 0), new PlanPoint(5000, 0), 5000, null, null, 4000, 0, null);
-        var curtainJson = JsonNode.Parse(CommandReadbackV2.CurtainWallJson(wall, 5, 3, new[] { "60f91daf-3dd7-4283-a86d-24137b73f3da-00000501" }))!;
+        var curtainJson = JsonNode.Parse(CommandReadbackV2.CurtainWallJson(wall, 5, 3, new[] { "60f91daf-3dd7-4283-a86d-24137b73f3da-00000501" }, 24, 38))!;
+        Check(curtainJson["curtain_grid"]!["panels"]!.GetValue<int>() == 24 && curtainJson["curtain_grid"]!["mullions"]!.GetValue<int>() == 38, "curtain wall readback JSON counts the panels and mullions Revit made (their UniqueIds are in created)", curtainJson.ToJsonString());
         Check(curtainJson["wall"]!["unique_id"]!.GetValue<string>() == wall.UniqueId && curtainJson["wall"]!["curve"]!["kind"]!.GetValue<string>() == "line" && curtainJson["curtain_grid"]!["vertical_lines"]!.GetValue<int>() == 5 && curtainJson["curtain_grid"]!["horizontal_lines"]!.GetValue<int>() == 3
             && curtainJson["curtain_grid"]!["added_grid_line_unique_ids"]!.AsArray().Count == 1, "curtain wall readback JSON embeds the wall readback and the grid totals", curtainJson.ToJsonString());
         var openingJson = JsonNode.Parse(CommandReadbackV2.FloorOpeningJson(observedOpening))!["floor_opening"]!;
