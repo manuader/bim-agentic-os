@@ -389,6 +389,43 @@
       ],
       "blocker": "Not wired into CLI/MCP/service paths; no grants/enablement loader; truncation of whole trailing entries is detected only with an externally kept head anchor.",
       "scope": "P10-03: read / write-copies / write-real-project per actor, copies roots explicit (default .bim/native-runs only), real-project writes need exact enablement; SHA-256 hash-chained JSONL audit log with flushed exclusive appends, tamper/torn-tail detection with typed codes; gate audits every decision and withholds it if the append fails. CI 41517584141 on Ubuntu and Windows."
+    },
+    {
+      "id": "layout-intent-compiler",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Intent.cs",
+        "core/Bim.Core/IntentCompiler.cs",
+        "core/Bim.Core/IntentJson.cs",
+        "tests/intent/Program.cs"
+      ],
+      "blocker": "door/window have no GeometryCodec arity; not yet bridged to Revit catalogue commands (P3-02); shared walls need one wall type.",
+      "scope": "P3-01: multi-room layout intent AST (levels, wall types, rectangular rooms, openings on sides or shared walls) compiled deterministically to existing BIM-IR records; shared walls emitted once, stable SHA ids from intent keys incl. neighbour-keyed stretches, thick-body wall clash checks, clear-span opening containment, minimal Compiler.Diff on one-room edits; strict canonical JSON. CI 41530804027."
+    },
+    {
+      "id": "skill-manifest-resolver",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/SkillParser.cs",
+        "core/Bim.Core/SkillLoader.cs",
+        "core/Bim.Core/SkillResolver.cs",
+        "docs/contracts/skill.schema.json",
+        "tests/skills/Program.cs",
+        "tests/skills/check_schema.py"
+      ],
+      "blocker": "Rules are resolved but not yet evaluated against a model; no CABA or style packs yet (P5-02, P5-03).",
+      "scope": "P5-01: versioned domain-skill manifest (kind, priority, semver requires, conflicts, typed parameters, dotted defaults, rules with closed check ops), strict bounded parser, link-refusing directory loader with typed codes, iterative resolver with dependency/version/conflict/cycle refusals and traceable priority/precedence default resolution; schema agreement checked by a jsonschema corpus in CI. CI 41533653759."
+    },
+    {
+      "id": "space-planner",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/SpacePlanner.cs",
+        "core/Bim.Generative/SpacePlan.cs",
+        "tests/generative/Program.cs"
+      ],
+      "blocker": "Slicing floorplans only (one compact rectangle per level, no corridors/L-shapes/doors); search is heuristic so search_exhausted is not a proof; CABA minimums arrive via PlannerRules once P5-02 exists.",
+      "scope": "P7-01: seeded deterministic rectangular space planner from a ProjectBrief: min/max area, min side and PlannerRules, required (door-width shared wall) and forbidden adjacency, no overlap, budget; exact 1/8192 m grid output verified as emitted; typed infeasible results (plan_too_large caps, budget_insufficient, search_exhausted), never throws. CI 41535913478."
     }
   ]
 }

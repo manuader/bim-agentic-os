@@ -89,8 +89,8 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P3-01 | Intent AST beyond one room | ⏳ | — | core/Bim.Core/Intent* | multi-room layout intents with wall types and openings compile to BIM-IR deterministically; tests | target unit-tested |
-| P3-02 | Compiler to catalogue bridge | ⛔ | P3-01 | core/Bim.Core/PlanToCommands* | an ExecutionPlan becomes ordered catalogue v1 commands with operation ids; tests | target unit-tested |
+| P3-01 | Intent AST beyond one room | ✅ | — | core/Bim.Core/Intent* | multi-room layout intents with wall types and openings compile to BIM-IR deterministically; tests | unit-tested (relay135, CI 41530804027) |
+| P3-02 | Compiler to catalogue bridge | ⏳ | P3-01 | core/Bim.Core/PlanToCommands* | an ExecutionPlan becomes ordered catalogue v1 commands with operation ids; tests | target unit-tested |
 
 ### Phase 4 — documentation engine
 
@@ -103,9 +103,9 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P5-01 | Skill manifest and loader | ⏳ | — | core/Bim.Skills (new); skills/ | versioned skill manifest (rules, defaults, parameters), loader with validation and conflict resolution by priority; tests | target unit-tested |
+| P5-01 | Skill manifest and loader | ✅ | — | core/Bim.Skills (new); skills/ | versioned skill manifest (rules, defaults, parameters), loader with validation and conflict resolution by priority; tests | unit-tested (relay135, CI 41533653759) |
 | P5-02 | CABA building code rule pack | ⏳ | — | skills/caba-codigo-edificacion; core/Bim.Skills | minimum areas, heights, sides, ventilation/illumination ratios with cited articles; validator over BIM-IR rooms; tests | target unit-tested |
-| P5-03 | Two contrasting style skills | ⛔ | P5-01 | skills/style-* | two style packs change defaults visibly with traceable rule ids; tests | target unit-tested |
+| P5-03 | Two contrasting style skills | ⏳ | P5-01 | skills/style-* | two style packs change defaults visibly with traceable rule ids; tests | target unit-tested |
 
 ### Phase 6 — CAD and requirements
 
@@ -119,8 +119,8 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P7-01 | Constraint space planner | ⏳ | P6-03 | core/Bim.Generative (new) | rectangular space planning honoring areas, adjacency and CABA minimums; deterministic seeds; tests | target unit-tested |
-| P7-02 | Alternatives with scoring | ⛔ | P7-01 | core/Bim.Generative | N alternatives scored and ranked with explanations; tests | target unit-tested |
+| P7-01 | Constraint space planner | ✅ | P6-03 | core/Bim.Generative (new) | rectangular space planning honoring areas, adjacency and CABA minimums; deterministic seeds; tests | unit-tested (relay135, CI 41535913478) |
+| P7-02 | Alternatives with scoring | ⏳ | P7-01 | core/Bim.Generative | N alternatives scored and ranked with explanations; tests | target unit-tested |
 
 ### Phase 8 — Rhino, Blender and IFC
 
@@ -150,7 +150,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 24/53 done (45.3 %)
+Progress: 27/53 done (50.9 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
@@ -159,13 +159,13 @@ Progress: 24/53 done (45.3 %)
 - Revit command surface — catalogue v1 (architecture): 3/5
 - Phase 1 — native kernel: 0/4
 - Phase 2 — semantic state and mirror: 1/3
-- Phase 3 — incremental compiler: 0/2
+- Phase 3 — incremental compiler: 1/2
 - Phase 4 — documentation engine: 0/2
-- Phase 5 — skills and design systems: 0/3
+- Phase 5 — skills and design systems: 1/3
 - Phase 6 — CAD and requirements: 1/3
-- Phase 7 — generative kernels: 0/2
+- Phase 7 — generative kernels: 1/2
 - Phase 8 — Rhino, Blender and IFC: 0/3
 - Phase 9 — Revit parity: 0/4
 - Phase 10 — global production: 1/3
-Next ready: P1-02, P1-03, P2-01, P3-01, P4-01, P5-01, P5-02, P6-01
+Next ready: P1-02, P1-03, P2-01, P3-02, P4-01, P5-02, P5-03, P6-01
 
