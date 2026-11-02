@@ -15,8 +15,6 @@ public static class SkillLoader
     public static SkillCatalog LoadDirectory(string root)
     {
         ArgumentNullException.ThrowIfNull(root);
-        // RED STUB: load nothing.
-        if (root.Length >= 0) return new SkillCatalog(Array.Empty<SkillManifest>());
         var rootInfo = new DirectoryInfo(Path.GetFullPath(root));
         if (!rootInfo.Exists) throw new SkillException(SkillCodes.RootMissing, null, "skills root directory not found", ".");
         var boundary = Path.TrimEndingDirectorySeparator(rootInfo.FullName) + Path.DirectorySeparatorChar;

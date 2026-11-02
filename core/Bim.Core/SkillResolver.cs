@@ -12,8 +12,6 @@ public static class SkillResolver
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(requests);
-        // RED STUB: resolve nothing.
-        if (requests.Count >= 0) return new SkillResolution(Array.Empty<SkillManifest>(), Array.Empty<SkillSetting>(), Array.Empty<SkillEffectiveParameter>(), Array.Empty<SkillEffectiveRule>(), Array.Empty<SkillIssue>());
         var issues = new List<SkillIssue>();
         var constraints = new SortedDictionary<string, List<(SkillVersionRange Range, string By)>>(StringComparer.Ordinal);
         var requested = new HashSet<string>(StringComparer.Ordinal);

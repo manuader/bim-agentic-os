@@ -128,8 +128,6 @@ public static class SkillParser
     public static SkillManifest Parse(string json)
     {
         ArgumentNullException.ThrowIfNull(json);
-        // RED STUB: refuse everything.
-        if (json.Length >= 0) throw new SkillException("not_implemented");
         if (json.Length > MaxInputChars) throw new SkillException(SkillCodes.InputTooLarge, null, "at most 65536 characters");
         JsonDocument document;
         try { document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = MaxDepth }); }
