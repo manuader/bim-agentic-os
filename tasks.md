@@ -82,7 +82,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
 | P2-01 | Revit to BIM-IR snapshot export | ⏳ | — | core/Bim.Core/Mirror*; runtimes/revit-native/Mirror* | query.snapshot returns walls/doors/windows/floors/rooms as BIM-IR elements with stable ids; contract tests | target unit-tested |
-| P2-02 | Semantic graph relations | ⏳ | — | core/Bim.Core/Graph* | hosted-by, bounds, on-level edges with queries and closure; tests | target unit-tested |
+| P2-02 | Semantic graph relations | ✅ | — | core/Bim.Core/Graph* | hosted-by, bounds, on-level edges with queries and closure; tests | unit-tested (relay134, CI 41511322582) |
 | P2-03 | External edit journal (DocumentChanged) | ⛔ | P2-01 | runtimes/revit-native/Journal* | events recorded with element ids and diff against last snapshot; compiles | target compiled |
 
 ### Phase 3 — incremental compiler
@@ -113,13 +113,13 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 |---|---|---|---|---|---|---|
 | P6-01 | DXF reader with provenance | ⏳ | — | adapters/cad (new); tests/cad | DXF layers/lines/polylines/arcs/blocks/text read to a provenance-tagged drawing model; wall-pair detection; fixtures; tests | target unit-tested |
 | P6-02 | PDF vector reader and scale calibration | ⏳ | — | adapters/cad; tests/cad | vector paths and text from PDF, scale from a known dimension, alignment; fixtures; tests | target unit-tested |
-| P6-03 | Project brief schema and validated extraction | ⏳ | — | core/Bim.Core/Brief* | brief JSON schema (rooms, areas, adjacencies, constraints) with validator and uncertainty fields; tests | target unit-tested |
+| P6-03 | Project brief schema and validated extraction | ✅ | — | core/Bim.Core/Brief* | brief JSON schema (rooms, areas, adjacencies, constraints) with validator and uncertainty fields; tests | unit-tested (relay134, CI 41514529827) |
 
 ### Phase 7 — generative kernels
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P7-01 | Constraint space planner | ⛔ | P6-03 | core/Bim.Generative (new) | rectangular space planning honoring areas, adjacency and CABA minimums; deterministic seeds; tests | target unit-tested |
+| P7-01 | Constraint space planner | ⏳ | P6-03 | core/Bim.Generative (new) | rectangular space planning honoring areas, adjacency and CABA minimums; deterministic seeds; tests | target unit-tested |
 | P7-02 | Alternatives with scoring | ⛔ | P7-01 | core/Bim.Generative | N alternatives scored and ranked with explanations; tests | target unit-tested |
 
 ### Phase 8 — Rhino, Blender and IFC
@@ -145,12 +145,12 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 |---|---|---|---|---|---|---|
 | P10-01 | IDS checks | ⏳ | — | runtimes/ifc; tests/ifc | IDS file validation of exported IFC with report; CI | target integration-tested (ifc) |
 | P10-02 | BCF export | ⏳ | — | core/Bim.Core/Bcf* | validation issues exported as BCF 3.0 zip; schema-valid; tests | target unit-tested |
-| P10-03 | Audit log and permissions | ⏳ | — | core/Bim.Core/Audit* | append-only audit of commands with actor and decision; permission policy (read/write/real-project); tests | target unit-tested |
+| P10-03 | Audit log and permissions | ✅ | — | core/Bim.Core/Audit* | append-only audit of commands with actor and decision; permission policy (read/write/real-project); tests | unit-tested (relay134, CI 41517584141) |
 
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 21/53 done (39.6 %)
+Progress: 24/53 done (45.3 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
@@ -158,14 +158,14 @@ Progress: 21/53 done (39.6 %)
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
 - Revit command surface — catalogue v1 (architecture): 3/5
 - Phase 1 — native kernel: 0/4
-- Phase 2 — semantic state and mirror: 0/3
+- Phase 2 — semantic state and mirror: 1/3
 - Phase 3 — incremental compiler: 0/2
 - Phase 4 — documentation engine: 0/2
 - Phase 5 — skills and design systems: 0/3
-- Phase 6 — CAD and requirements: 0/3
+- Phase 6 — CAD and requirements: 1/3
 - Phase 7 — generative kernels: 0/2
 - Phase 8 — Rhino, Blender and IFC: 0/3
 - Phase 9 — Revit parity: 0/4
-- Phase 10 — global production: 0/3
-Next ready: P1-01, P1-02, P1-03, P2-01, P2-02, P3-01, P4-01, P5-01
+- Phase 10 — global production: 1/3
+Next ready: P1-02, P1-03, P2-01, P3-01, P4-01, P5-01, P5-02, P6-01
 

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-23",
+  "updated": "2026-11-02",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -354,6 +354,41 @@
       ],
       "blocker": "Not run in Revit yet (C04, owner session).",
       "scope": "Executor for catalogue v1 in the add-in: queries, wall line/arc, door/window on wall, floor, room, each in one TransactionGroup with readback, rollback and ExtensibleStorage receipts; pipe opens only in validated fixture processes; legacy writes share the copies/link guard. Compiled with --warnaserror in CI native-build (41138879266); Autodesk-free admission/receipt/readback logic unit-tested."
+    },
+    {
+      "id": "semantic-graph-relations",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Graph.cs",
+        "tests/graph/Program.cs"
+      ],
+      "blocker": null,
+      "scope": "P2-02: derived typed graph (on-level, hosted-by, bounds, depends-on) over existing BIM-IR Project/Element without schema change; neighbour/relation queries, deterministic iterative closure (20k chains), AffectedBy(plan) equal to Compiler.Diff DirtyIds for create/update/delete. Typing by Element.Kind only. CI 41511322582 on Ubuntu and Windows."
+    },
+    {
+      "id": "project-brief-schema",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/BriefParser.cs",
+        "core/Bim.Core/BriefValidator.cs",
+        "docs/contracts/brief.schema.json",
+        "examples/brief/apartment-2br.json",
+        "tests/brief/Program.cs"
+      ],
+      "blocker": "No extraction from documents yet (needs P6-01/P6-02); brief is authored or produced by an agent.",
+      "scope": "P6-03: versioned project-brief JSON (rooms, areas, counts, levels, adjacencies, site, budget, jurisdiction) with per-value provenance/confidence; strict bounded parser with typed codes and JSON paths, semantic validator, canonical round-trip serializer, JSON Schema kept in agreement by tests. CI 41514529827."
+    },
+    {
+      "id": "permission-audit",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Permission.cs",
+        "core/Bim.Core/Audit.cs",
+        "core/Bim.Core/PermissionAuditGate.cs",
+        "tests/audit/Program.cs"
+      ],
+      "blocker": "Not wired into CLI/MCP/service paths; no grants/enablement loader; truncation of whole trailing entries is detected only with an externally kept head anchor.",
+      "scope": "P10-03: read / write-copies / write-real-project per actor, copies roots explicit (default .bim/native-runs only), real-project writes need exact enablement; SHA-256 hash-chained JSONL audit log with flushed exclusive appends, tamper/torn-tail detection with typed codes; gate audits every decision and withholds it if the append fails. CI 41517584141 on Ubuntu and Windows."
     }
   ]
 }
