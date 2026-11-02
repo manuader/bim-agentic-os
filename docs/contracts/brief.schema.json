@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/manuader/bim-agentic-os/docs/contracts/brief.schema.json",
+  "title": "BIM Agentic OS project brief v1",
+  "description": "Architectural programme extracted from a prompt or programme document. Areas in square metres, lengths in metres, levels as 0-based above-ground indices. Any extracted value may be written bare or as {value, provenance}. Structure (members, types, enumerations) is enforced by Bim.Core BriefParser; ranges, cross-references and consistency (unique room ids, min <= target <= max, sum of minimum areas within the budget, non-contradictory adjacencies) by BriefValidator. BriefSerializer writes the canonical compact form.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["brief_version", "name", "constraints", "rooms"],
+  "properties": {
+    "brief_version": { "const": 1 },
+    "name": { "$ref": "#/$defs/text" },
+    "constraints": { "$ref": "#/$defs/constraints" },
+    "rooms": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/room" } },
+    "adjacencies": { "type": "array", "items": { "$ref": "#/$defs/adjacency" }, "default": [] }
+  },
+  "$defs": {
+    "text": { "description": "Non-blank well-formed text. BriefParser counts maxLength in UTF-16 code units (a character outside the Basic Multilingual Plane counts 2), which is stricter than the code-point count of JSON Schema maxLength.", "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "\\S" },
+    "provenance": {
+      "description": "Where an extracted value came from and how certain the extraction is.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "confidence"],
+      "properties": {
+        "source": { "enum": ["user", "document", "inferred"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reference": { "$ref": "#/$defs/text", "description": "Free text locating the source, e.g. file name and quoted sentence." },
+        "page": { "type": "integer", "minimum": 1, "maximum": 2147483647, "description": "1-based page of the source document. Written as an integer token only (no fraction or exponent, so 1.0 and 1e0 are refused), 32-bit." }
+      }
+    },
+    "sourcedText": {
+      "oneOf": [
+        { "$ref": "#/$defs/text" },
+        { "type": "object", "additionalProperties": false, "required": ["value", "provenance"], "properties": { "value": { "$ref": "#/$defs/text" }, "provenance": { "$ref": "#/$defs/provenance" } } }
+      ]
+    },
+    "positiveNumber": { "type": "number", "exclusiveMinimum": 0 },
+    "sourcedPositiveNumber": {
+      "oneOf": [
+        { "$ref": "#/$defs/positiveNumber" },
+        { "type": "object", "additionalProperties": false, "required": ["value", "provenance"], "properties": { "value": { "$ref": "#/$defs/positiveNumber" }, "provenance": { "$ref": "#/$defs/provenance" } } }
+      ]
+    },
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 2147483647, "description": "Written as an integer token only (no fraction or exponent, so 1.0 and 1e0 are refused), 32-bit." },
+    "sourcedPositiveInteger": {
+      "oneOf": [
+        { "$ref": "#/$defs/positiveInteger" },
+        { "type": "object", "additionalProperties": false, "required": ["value", "provenance"], "properties": { "value": { "$ref": "#/$defs/positiveInteger" }, "provenance": { "$ref": "#/$defs/provenance" } } }
+      ]
+    },
+    "levelIndex": { "type": "integer", "minimum": 0, "maximum": 2147483647, "description": "0-based level index. Written as an integer token only (no fraction or exponent, so 1.0 and 1e0 are refused), 32-bit." },
+    "sourcedLevelIndex": {
+      "oneOf": [
+        { "$ref": "#/$defs/levelIndex" },
+        { "type": "object", "additionalProperties": false, "required": ["value", "provenance"], "properties": { "value": { "$ref": "#/$defs/levelIndex" }, "provenance": { "$ref": "#/$defs/provenance" } } }
+      ]
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jurisdiction": { "$ref": "#/$defs/sourcedText", "description": "Regulatory jurisdiction, e.g. CABA." },
+        "site": { "$ref": "#/$defs/site" },
+        "levels": { "$ref": "#/$defs/sourcedPositiveInteger", "description": "Number of above-ground levels." },
+        "total_area_budget_m2": { "$ref": "#/$defs/sourcedPositiveNumber", "description": "Total area budget; the sum of room min_area_m2 times count must not exceed it." }
+      }
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width_m", "depth_m"],
+      "properties": {
+        "width_m": { "$ref": "#/$defs/sourcedPositiveNumber" },
+        "depth_m": { "$ref": "#/$defs/sourcedPositiveNumber" }
+      }
+    },
+    "room": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$", "description": "Unique within the brief." },
+        "name": { "$ref": "#/$defs/text" },
+        "count": { "$ref": "#/$defs/sourcedPositiveInteger", "description": "Number of identical rooms; 1 when absent." },
+        "target_area_m2": { "$ref": "#/$defs/sourcedPositiveNumber", "description": "Must lie within min_area_m2..max_area_m2 when those are given." },
+        "min_area_m2": { "$ref": "#/$defs/sourcedPositiveNumber", "description": "Must not exceed max_area_m2." },
+        "max_area_m2": { "$ref": "#/$defs/sourcedPositiveNumber" },
+        "preferred_level": { "$ref": "#/$defs/sourcedLevelIndex", "description": "Below constraints.levels when that is given." },
+        "provenance": { "$ref": "#/$defs/provenance", "description": "Provenance of the room's existence in the programme." }
+      }
+    },
+    "adjacency": {
+      "description": "Symmetric relation between two distinct known rooms. A pair may not be both forbidden and required/preferred.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["a", "b", "kind"],
+      "properties": {
+        "a": { "$ref": "#/$defs/text", "description": "Room id." },
+        "b": { "$ref": "#/$defs/text", "description": "Room id." },
+        "kind": { "enum": ["required", "preferred", "forbidden"] },
+        "provenance": { "$ref": "#/$defs/provenance" }
+      }
+    }
+  }
+}
