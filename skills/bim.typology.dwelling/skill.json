@@ -1,0 +1,36 @@
+{
+  "manifest_version": 1,
+  "id": "bim.typology.dwelling",
+  "version": "1.0.0",
+  "kind": "typology",
+  "description": "Sample single-dwelling typology pack: illustrative planning defaults and programme checks. Not a building code; values are design recommendations only.",
+  "priority": 20,
+  "parameters": [
+    { "name": "bedroom_min_area_m2", "type": "number", "default": 9, "min": 6, "max": 20, "description": "Recommended minimum bedroom floor area." },
+    { "name": "max_levels", "type": "integer", "default": 3, "min": 1, "max": 5 }
+  ],
+  "defaults": {
+    "level.height_m": 2.8,
+    "room.bedroom.min_area_m2": 9,
+    "room.min_clear_height_m": 2.4,
+    "wall.exterior.thickness_m": 0.3,
+    "wall.interior.thickness_m": 0.1
+  },
+  "rules": [
+    {
+      "id": "bedroom-min-area",
+      "severity": "warning",
+      "target": { "room": "bedroom*" },
+      "check": { "op": "min", "property": "area_m2", "parameter": "bedroom_min_area_m2" },
+      "message": "Bedroom area is below the typology recommendation.",
+      "citation": "Sample typology recommendation (illustrative, not normative)."
+    },
+    {
+      "id": "living-daylight",
+      "severity": "info",
+      "target": { "room": "living*" },
+      "check": { "op": "ratio_min", "property": "window_area_m2", "over": "area_m2", "value": 0.125 },
+      "message": "Living room glazing is below one eighth of its floor area."
+    }
+  ]
+}

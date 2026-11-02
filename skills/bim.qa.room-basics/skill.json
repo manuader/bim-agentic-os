@@ -1,0 +1,53 @@
+{
+  "manifest_version": 1,
+  "id": "bim.qa.room-basics",
+  "version": "1.0.0",
+  "kind": "qa",
+  "description": "Sample model QA pack: basic sanity checks on rooms, walls and doors. Illustrative thresholds, not a building code.",
+  "priority": 50,
+  "parameters": [
+    { "name": "min_wall_thickness_m", "type": "number", "default": 0.05, "min": 0.01, "max": 1 },
+    { "name": "strict", "type": "boolean", "default": false }
+  ],
+  "defaults": {
+    "qa.report.include_info": true,
+    "room.min_clear_height_m": 2.5
+  },
+  "rules": [
+    {
+      "id": "room-area-positive",
+      "severity": "error",
+      "target": { "room": "*" },
+      "check": { "op": "min", "property": "area_m2", "value": 1 },
+      "message": "Room area is implausibly small."
+    },
+    {
+      "id": "wall-min-thickness",
+      "severity": "error",
+      "target": { "element": "wall" },
+      "check": { "op": "min", "property": "thickness_m", "parameter": "min_wall_thickness_m" },
+      "message": "Wall is thinner than the QA minimum."
+    },
+    {
+      "id": "wall-max-height",
+      "severity": "warning",
+      "target": { "element": "wall" },
+      "check": { "op": "max", "property": "height_m", "value": 12 },
+      "message": "Wall is taller than expected for one level."
+    },
+    {
+      "id": "wall-bounded",
+      "severity": "warning",
+      "target": { "element": "wall" },
+      "check": { "op": "equals", "property": "room_bounding", "value": true },
+      "message": "Wall does not bound rooms."
+    },
+    {
+      "id": "door-operation-known",
+      "severity": "info",
+      "target": { "element": "door" },
+      "check": { "op": "in", "property": "operation", "values": ["swing", "sliding", "folding"] },
+      "message": "Door operation is not one of the known kinds."
+    }
+  ]
+}
