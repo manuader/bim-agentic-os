@@ -21,6 +21,7 @@ string? Code(Action action)
 {
     try { action(); return null; }
     catch (ArgumentException error) { return error.Message; }
+    catch (InvalidOperationException error) { return error.Message; }
     catch (Exception error) { return "unexpected " + error.GetType().Name + ": " + error.Message; }
 }
 
@@ -78,6 +79,23 @@ try
     Check(affectedSouth.SequenceEqual(expectedSouth), "affected(south wall) is breadth-first with Guid-ordered layers", Show(affectedSouth));
     var southMoved = room with { Elements = room.Elements.Select(element => element.Id == south ? element with { GeometryMetres = new[] { 0.1, 0.1, 4.3, 0.1, 3.0, 0.2 } } : element).ToArray() };
     Check(affectedSouth.Order().SequenceEqual(Compiler.Diff(room, southMoved).DirtyIds), "affected(south wall) equals Diff dirty closure");
+    // AffectedBy: plan-level closure over before and after, so created and deleted elements count too.
+    // 101 level, 102 wall A, 103 wall B, 104 door on B, 105 space bounded by A, 106 sheet on space; 107 door on A and 108 its tag are created.
+    Element Wall(int n, double height) => new(G(n), "wall", new[] { 0, 0, 4, 0, height, 0.2 }, new[] { G(101) }, provenance);
+    var editBefore = P(E(101, "level"), Wall(102, 3), Wall(103, 3), E(104, "door", 103), E(105, "space", 102), E(106, "sheet", 105));
+    var created = P(editBefore.Elements.Append(E(107, "door", 102)).ToArray());
+    var createPlan = Compiler.Diff(editBefore, created);
+    Check(Same(SemanticGraph.AffectedBy(createPlan, editBefore, created), 107) && Same(createPlan.DirtyIds, 107), "created door: affected-by equals Diff dirty ids", Show(SemanticGraph.AffectedBy(createPlan, editBefore, created)));
+    var deleted = P(editBefore.Elements.Where(element => element.Id != G(103) && element.Id != G(104)).ToArray());
+    var deletePlan = Compiler.Diff(editBefore, deleted);
+    Check(Same(SemanticGraph.AffectedBy(deletePlan, editBefore, deleted), 103, 104) && Same(deletePlan.DirtyIds, 103, 104), "deleted wall and its door: affected-by equals Diff dirty ids", Show(SemanticGraph.AffectedBy(deletePlan, editBefore, deleted)));
+    var mixed = P(E(101, "level"), Wall(102, 3.5), E(105, "space", 102), E(106, "sheet", 105), E(107, "door", 102), E(108, "tag", 107));
+    var mixedPlan = Compiler.Diff(editBefore, mixed);
+    var mixedAffected = SemanticGraph.AffectedBy(mixedPlan, editBefore, mixed);
+    Check(mixedAffected.Order().SequenceEqual(mixedPlan.DirtyIds) && mixedPlan.DirtyIds.Length == 7, "create + update + delete: affected-by equals Diff dirty ids", Show(mixedAffected) + " vs " + Show(mixedPlan.DirtyIds));
+    Check(Same(mixedAffected, 102, 103, 104, 107, 108, 105, 106), "affected-by order: changed elements Guid-ordered, then dependents by distance", Show(mixedAffected));
+    Check(Same(SemanticGraph.AffectedBy(Compiler.Diff(editBefore, editBefore), editBefore, editBefore)), "no-op plan affects nothing");
+    Check(Code(() => SemanticGraph.AffectedBy(createPlan, editBefore, deleted)) == "plan_mismatch", "affected-by refuses a plan that is not the deterministic diff", Code(() => SemanticGraph.AffectedBy(createPlan, editBefore, deleted)) ?? "accepted");
     Check(graph.Prerequisites(R("sheet")).Order().SequenceEqual(room.Elements.Select(element => element.Id).Where(id => id != R("sheet")).Order()), "sheet transitively requires everything else");
 
     // ---- Hosted elements on a wall ----
@@ -87,6 +105,9 @@ try
     Check(Same(hosted.Hosts(G(2)), 3, 4, 5), "what wall 2 hosts: door, window, opening", Show(hosted.Hosts(G(2))));
     Check(Same(hosted.Hosts(G(8)), 9), "what wall 8 hosts: its door");
     Check(hosted.HostOf(G(3)) == G(2) && hosted.HostOf(G(9)) == G(8) && hosted.HostOf(G(7)) is null && hosted.HostOf(G(2)) is null, "host lookup");
+    var twoHosts = SemanticGraph.Build(P(E(1, "level"), E(2, "wall", 1), E(8, "wall", 1), E(3, "door", 8, 2)));
+    Check(twoHosts.HostOf(G(3)) is null, "door naming two walls has an ambiguous host: null, not the lowest Guid", twoHosts.HostOf(G(3))?.ToString() ?? "null");
+    Check(Same(twoHosts.Neighbours(G(3), GraphDirection.Prerequisites, GraphEdgeKind.HostedBy), 2, 8) && Same(twoHosts.Hosts(G(8)), 3), "both candidate hosts stay visible as hosted-by edges");
     Check(Same(hosted.OnLevel(G(1)), 2, 3, 8), "on level 1: both walls and the door that also names the level");
     Check(Same(hosted.Boundaries(G(6)), 2, 8), "space 6 bounded by walls 2 and 8");
     Check(Same(hosted.Neighbours(G(2), GraphDirection.Dependents), 3, 4, 5, 6), "dependents of wall 2", Show(hosted.Neighbours(G(2), GraphDirection.Dependents)));
@@ -97,6 +118,11 @@ try
     Check(Same(hosted.Neighbours(G(3), GraphDirection.Prerequisites, GraphEdgeKind.OnLevel), 1), "door 3 prerequisites filtered to on-level");
     Check(hosted.EdgesOf(G(3), GraphDirection.Prerequisites).SequenceEqual(new[] { new GraphEdge(G(3), G(1), GraphEdgeKind.OnLevel), new GraphEdge(G(3), G(2), GraphEdgeKind.HostedBy) }), "door 3 typed outgoing edges in Guid order");
     Check(hosted.EdgesOf(G(7), GraphDirection.Prerequisites).SequenceEqual(new[] { new GraphEdge(G(7), G(3), GraphEdgeKind.DependsOn) }), "tag keeps the generic dependency edge");
+    // Wall 8: outgoing 8->1, incoming 6->8 and 9->8; unsorted concatenation would put 8->1 first.
+    Check(hosted.EdgesOf(G(8), GraphDirection.Both).SequenceEqual(new[] { new GraphEdge(G(6), G(8), GraphEdgeKind.Bounds), new GraphEdge(G(8), G(1), GraphEdgeKind.OnLevel), new GraphEdge(G(9), G(8), GraphEdgeKind.HostedBy) }),
+        "both-direction edges of wall 8 are ordered by dependent then prerequisite", string.Join(";", hosted.EdgesOf(G(8), GraphDirection.Both)));
+    Check(hosted.EdgesOf(G(3), GraphDirection.Both).SequenceEqual(new[] { new GraphEdge(G(3), G(1), GraphEdgeKind.OnLevel), new GraphEdge(G(3), G(2), GraphEdgeKind.HostedBy), new GraphEdge(G(7), G(3), GraphEdgeKind.DependsOn) }),
+        "both-direction edges of door 3 mix outgoing and incoming in order");
     Check(hosted.EdgesOf(G(2), GraphDirection.Both, GraphEdgeKind.OnLevel).SequenceEqual(new[] { new GraphEdge(G(2), G(1), GraphEdgeKind.OnLevel) }), "edges of wall 2 filtered by kind");
     Check(Same(hosted.Affected(G(2)), 2, 3, 4, 5, 6, 7), "changing wall 2 affects its hosted elements, the space and the door tag", Show(hosted.Affected(G(2))));
     Check(Same(hosted.Affected(G(6), G(3)), 3, 6, 7), "multi-seed closure: seeds Guid-ordered then dependents");
@@ -114,7 +140,9 @@ try
         E(3, "door", 1, 2), E(8, "wall", 1), E(2, "wall", 1), E(1, "level")));
     Check(shuffled.Edges.SequenceEqual(hosted.Edges), "edges are identical regardless of element and dependency order; duplicate dependencies collapse");
     Check(shuffled.Affected(G(1)).SequenceEqual(hosted.Affected(G(1))) && shuffled.Closure(new[] { G(9) }, GraphDirection.Both).SequenceEqual(hosted.Closure(new[] { G(9) }, GraphDirection.Both)), "closures are identical regardless of input order");
-    Check(JsonSerializer.Serialize(SemanticGraph.Build(room).Edges) == JsonSerializer.Serialize(graph.Edges), "rebuilding gives byte-identical edge JSON");
+    // The persisted form (ProjectStore JSON) carries everything the graph needs: no hidden in-memory state.
+    var persisted = JsonSerializer.Deserialize<Project>(JsonSerializer.Serialize(room))!;
+    Check(SemanticGraph.Build(persisted).Edges.SequenceEqual(graph.Edges), "graph rebuilt from the persisted project JSON has the same typed edges");
 
     // ---- Cycles (Validate rejects them, but the graph view still terminates) ----
     var cyclic = SemanticGraph.Build(P(E(1, "wall", 2), E(2, "wall", 1), E(3, "door", 1)));

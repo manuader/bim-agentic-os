@@ -189,4 +189,7 @@ public sealed class SemanticGraph
 
     // Everything an element transitively requires, excluding the element itself.
     public IReadOnlyList<Guid> Prerequisites(Guid id) => Closure(new[] { id }, GraphDirection.Prerequisites, includeSeeds: false);
+
+    // Red stub (P2-02 review): replaced by the plan-level closure.
+    public static IReadOnlyList<Guid> AffectedBy(ExecutionPlan plan, Project before, Project after) => plan.Operations.Length + before.Elements.Length + after.Elements.Length < 0 ? plan.DirtyIds : Array.Empty<Guid>();
 }
