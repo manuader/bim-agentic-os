@@ -7,6 +7,9 @@ Failures print one JSON object {"error": code, "detail": text} on stderr and exi
 
 The persisted BIM-IR schema is unchanged: the adapter reads and writes exactly
 Project{Id,Revision,Elements[{Id,Kind,GeometryMetres,Dependencies,Provenance{Source,Approval}}]}.
+Input checks are stricter than Core in places: UUIDs must be lowercase text, members must be exactly
+the Core ones, kinds must be ones the Core GeometryCodec decodes, strings must be valid Unicode, and
+lengths must be representable in a .3dm (see MIN_LENGTH/MAX_COORDINATE).
 """
 import json
 import math
@@ -32,6 +35,10 @@ UNIT_DIVISOR = {rhino3dm.UnitSystem.Meters: 1.0, rhino3dm.UnitSystem.Millimeters
 # ~1e-15 m; they are snapped to the nanometre grid so export->import->export is a fixed point.
 DECIMALS = 9
 POSITION_TOLERANCE = 1e-7  # metres; structural checks only, never used to accept wrong geometry
+# Lengths that survive the tolerance checks and nanometre snapping above. Core accepts smaller or
+# farther values; export refuses them (rhino_precision) instead of writing a file import would reject.
+MIN_LENGTH = 1e-6
+MAX_COORDINATE = 1e5
 USER_KEYS = ('bim.id', 'bim.kind', 'bim.order', 'bim.dependencies', 'bim.provenance.source', 'bim.provenance.approval')
 UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
@@ -57,7 +64,19 @@ def _uuid(value, where):
 
 def _number(value, where):
     _require(isinstance(value, (int, float)) and not isinstance(value, bool), f'{where} must be a number')
-    return float(value)
+    try:
+        return float(value)
+    except OverflowError:
+        raise RhinoAdapterError('bim_ir_invalid', f'{where} is outside the double range') from None
+
+
+def _text(value, where):
+    _require(isinstance(value, str), f'{where} must be a string')
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise RhinoAdapterError('bim_ir_invalid', f'{where} is not valid Unicode (lone surrogate)') from None
+    return value
 
 
 def validate_project(project):
@@ -72,7 +91,7 @@ def validate_project(project):
         _require(isinstance(element, dict) and set(element) == {'Id', 'Kind', 'GeometryMetres', 'Dependencies', 'Provenance'},
                  f'{where} needs exactly Id, Kind, GeometryMetres, Dependencies, Provenance')
         _uuid(element['Id'], f'{where}.Id')
-        _require(isinstance(element['Kind'], str), f'{where}.Kind must be a string')
+        _text(element['Kind'], f'{where}.Kind')
         _require(isinstance(element['GeometryMetres'], list), f'{where}.GeometryMetres must be an array')
         for i, value in enumerate(element['GeometryMetres']):
             _number(value, f'{where}.GeometryMetres[{i}]')
@@ -80,8 +99,9 @@ def validate_project(project):
         for i, value in enumerate(element['Dependencies']):
             _uuid(value, f'{where}.Dependencies[{i}]')
         provenance = element['Provenance']
-        _require(isinstance(provenance, dict) and set(provenance) == {'Source', 'Approval'}
-                 and all(isinstance(provenance[k], str) for k in provenance), f'{where}.Provenance needs string Source and Approval')
+        _require(isinstance(provenance, dict) and set(provenance) == {'Source', 'Approval'}, f'{where}.Provenance needs exactly Source and Approval')
+        _text(provenance['Source'], f'{where}.Provenance.Source')
+        _text(provenance['Approval'], f'{where}.Provenance.Approval')
     elements = project['Elements']
     ids = [e['Id'] for e in elements]
     if len(set(ids)) != len(ids):
@@ -118,6 +138,37 @@ def validate_project(project):
                 ready.append(child)
     if processed != len(ids):
         raise RhinoAdapterError('dependency_cycle', 'Cyclic logical dependencies')
+    return project
+
+
+def check_representable(project):
+    """Refuse values a .3dm round trip cannot carry faithfully (Core itself accepts them)."""
+    def coordinate(value, what, element_id):
+        if abs(value) > MAX_COORDINATE:
+            raise RhinoAdapterError('rhino_precision', f'{element_id} {what} {value} m is beyond +/-{MAX_COORDINATE} m')
+
+    def length(value, what, element_id):
+        if value < MIN_LENGTH:
+            raise RhinoAdapterError('rhino_precision', f'{element_id} {what} {value} m is below {MIN_LENGTH} m')
+        coordinate(value, what, element_id)
+
+    for e in project['Elements']:
+        g = [float(v) for v in e['GeometryMetres']]
+        if e['Kind'] == 'wall':
+            for i, what in enumerate(('start.x', 'start.y', 'end.x', 'end.y')):
+                coordinate(g[i], what, e['Id'])
+            length(math.hypot(g[2] - g[0], g[3] - g[1]), 'axis length', e['Id'])
+            length(g[4], 'height', e['Id'])
+            length(g[5], 'thickness', e['Id'])
+        elif e['Kind'] == 'level':
+            coordinate(g[0], 'elevation', e['Id'])
+        elif e['Kind'] == 'space':
+            if g[2] <= 0 or g[3] <= 0:
+                raise RhinoAdapterError('rhino_space_geometry', f"{e['Id']} width and depth must be positive to form a rectangle")
+            length(g[2], 'width', e['Id'])
+            length(g[3], 'depth', e['Id'])
+            for value, what in ((g[0], 'corner.x'), (g[1], 'corner.y'), (g[0] + g[2], 'far corner.x'), (g[1] + g[3], 'far corner.y')):
+                coordinate(value, what, e['Id'])
     return project
 
 
@@ -165,8 +216,13 @@ def _geometry(element, by_id):
     return rhino3dm.Point(rhino3dm.Point3d(0, 0, 0))
 
 
+def _encode_text(value):
+    # Rhino deletes a user string set to "", so text is stored JSON-encoded and is never empty.
+    return json.dumps(value, ensure_ascii=False)
+
+
 def build_model(project):
-    validate_project(project)
+    check_representable(validate_project(project))
     model = rhino3dm.File3dm()
     model.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
     root = rhino3dm.Layer()
@@ -190,8 +246,8 @@ def build_model(project):
         attributes.LayerIndex = layer_index[LAYER_OF_KIND[element['Kind']]]
         values = {'bim.id': element['Id'], 'bim.kind': element['Kind'], 'bim.order': str(order),
                   'bim.dependencies': json.dumps(element['Dependencies'], separators=(',', ':')),
-                  'bim.provenance.source': element['Provenance']['Source'],
-                  'bim.provenance.approval': element['Provenance']['Approval']}
+                  'bim.provenance.source': _encode_text(element['Provenance']['Source']),
+                  'bim.provenance.approval': _encode_text(element['Provenance']['Approval'])}
         for key in USER_KEYS:
             attributes.SetUserString(key, values[key])
         added = model.Objects.Add(_geometry(element, by_id), attributes)
@@ -201,23 +257,30 @@ def build_model(project):
 
 
 def export_project(project, output_path):
-    """Write a new .3dm. Refuses an existing output; publishes via a temporary file and rename."""
+    """Write a new .3dm. Never replaces an existing file, even one created while exporting.
+
+    rhino3dm writes into OUTPUT.pending, created exclusively (an existing file or symlink there is
+    refused), and the result is published with a hard link, which fails if OUTPUT appeared meanwhile.
+    """
     output = pathlib.Path(output_path)
     if output.exists() or output.is_symlink():
         raise RhinoAdapterError('output_exists', str(output))
     model = build_model(project)
     pending = output.with_name(output.name + '.pending')
-    if pending.exists() or pending.is_symlink():
-        raise RhinoAdapterError('output_exists', str(pending))
+    try:
+        descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    except FileExistsError:
+        raise RhinoAdapterError('output_exists', f'{pending} exists (stale pending file or symlink)') from None
+    os.close(descriptor)
     try:
         if not model.Write(str(pending), 7):
             raise RhinoAdapterError('rhino_write_failed', str(output))
-        if output.exists() or output.is_symlink():
-            raise RhinoAdapterError('output_exists', str(output))
-        os.replace(pending, output)
+        try:
+            os.link(pending, output)
+        except FileExistsError:
+            raise RhinoAdapterError('output_exists', f'{output} appeared during export') from None
     finally:
-        if pending.exists():
-            pending.unlink()
+        os.unlink(pending)
     return output
 
 
@@ -228,8 +291,17 @@ def _snap(value):
     return 0.0 if snapped == 0 else snapped
 
 
+def _metres(value, scale):
+    if scale == 1000.0:
+        # Core LengthUnits.NormalizeMillimetres: drop less than 1e-6 mm of conversion noise.
+        integer = round(value)
+        if abs(value - integer) <= 1e-6:
+            value = float(integer)
+    return value / scale
+
+
 def _xyz(point, scale):
-    return point.X / scale, point.Y / scale, point.Z / scale
+    return _metres(point.X, scale), _metres(point.Y, scale), _metres(point.Z, scale)
 
 
 def _polyline_points(curve, scale, code, element_id):
@@ -267,7 +339,7 @@ def _read_wall(geometry, scale, element_id):
         if min(math.hypot(t[0] - b[0], t[1] - b[1]) for b in bottom) > POSITION_TOLERANCE:
             raise RhinoAdapterError('rhino_wall_geometry', f'{element_id} profile sides must be vertical')
     height = max(zs) - base
-    return [start[0], start[1], end[0], end[1], _snap(height), _snap(thickness)]
+    return [start[0], start[1], end[0], end[1], _snap(height), _snap(thickness)], base
 
 
 def _read_space(geometry, scale, element_id):
@@ -283,13 +355,27 @@ def _read_space(geometry, scale, element_id):
         raise RhinoAdapterError('rhino_space_geometry', f'{element_id} is not an axis-aligned rectangle')
     if max(c[2] for c in corners) - min(c[2] for c in corners) > POSITION_TOLERANCE:
         raise RhinoAdapterError('rhino_space_geometry', f'{element_id} outline is not horizontal')
-    return [x0, y0, _snap(x1 - x0), _snap(y1 - y0)]
+    return [x0, y0, _snap(x1 - x0), _snap(y1 - y0)], corners[0][2]
 
 
-def _read_point(geometry, kind, element_id):
+def _read_point(geometry, kind, element_id, scale):
     if not isinstance(geometry, rhino3dm.Point):
         raise RhinoAdapterError('rhino_geometry_mismatch', f'{element_id} {kind} is {type(geometry).__name__}, not a Point')
-    return geometry.Location
+    x, y, z = _xyz(geometry.Location, scale)
+    if abs(x) > POSITION_TOLERANCE or abs(y) > POSITION_TOLERANCE or (kind != 'level' and abs(z) > POSITION_TOLERANCE):
+        expected = '(0, 0, elevation)' if kind == 'level' else 'the origin'
+        raise RhinoAdapterError('rhino_position_mismatch', f'{element_id} {kind} marker is at ({x}, {y}, {z}), expected {expected}')
+    return z
+
+
+def _decode_text(value, where):
+    try:
+        decoded = json.loads(value)
+    except (ValueError, RecursionError):
+        decoded = None
+    if not isinstance(decoded, str):
+        raise RhinoAdapterError('rhino_object_invalid', f'{where} is not a JSON-encoded string')
+    return decoded
 
 
 def _read_strings(attributes):
@@ -320,6 +406,7 @@ def import_project(input_path):
         raise RhinoAdapterError('rhino_not_bim', 'BIM root layer lacks a valid project id/revision')
     path_of = {layer.Index: layer.FullPath for layer in layers}
     records = []
+    bases = {}
     for obj in model.Objects:
         attributes = obj.Attributes
         strings = _read_strings(attributes)
@@ -340,27 +427,40 @@ def import_project(input_path):
             raise RhinoAdapterError('rhino_object_invalid', f'{element_id} bim.order {strings["bim.order"]!r}')
         try:
             dependencies = json.loads(strings['bim.dependencies'])
-        except ValueError:
+        except (ValueError, RecursionError):
             raise RhinoAdapterError('rhino_object_invalid', f'{element_id} bim.dependencies is not JSON') from None
         geometry = obj.Geometry
+        base = None
         if kind == 'wall':
-            values = _read_wall(geometry, scale, element_id)
+            values, base = _read_wall(geometry, scale, element_id)
         elif kind == 'space':
-            values = _read_space(geometry, scale, element_id)
+            values, base = _read_space(geometry, scale, element_id)
         elif kind == 'level':
-            values = [_read_point(geometry, kind, element_id).Z / scale]
+            values = [_read_point(geometry, kind, element_id, scale)]
         else:
-            _read_point(geometry, kind, element_id)
+            _read_point(geometry, kind, element_id, scale)
             values = []
+        source = _decode_text(strings['bim.provenance.source'], f'{element_id} bim.provenance.source')
+        approval = _decode_text(strings['bim.provenance.approval'], f'{element_id} bim.provenance.approval')
+        bases[element_id] = base
         records.append((int(strings['bim.order']), {
             'Id': element_id, 'Kind': kind, 'GeometryMetres': values, 'Dependencies': dependencies,
-            'Provenance': {'Source': strings['bim.provenance.source'], 'Approval': strings['bim.provenance.approval']}}))
+            'Provenance': {'Source': source, 'Approval': approval}}))
     orders = sorted(order for order, _ in records)
     if orders != list(range(len(records))):
         raise RhinoAdapterError('rhino_object_invalid', 'bim.order values are not a permutation of 0..n-1')
     records.sort(key=lambda item: item[0])
     project = {'Id': project_id, 'Revision': int(revision), 'Elements': [element for _, element in records]}
-    return validate_project(project)
+    validate_project(project)
+    # Walls and spaces must still stand on the level export placed them on: a vertical move in Rhino
+    # has no BIM-IR field to land in, so it is refused rather than dropped.
+    by_id = {e['Id']: e for e in project['Elements']}
+    for element in project['Elements']:
+        if bases[element['Id']] is not None:
+            expected = _base_elevation(element, by_id)
+            if abs(bases[element['Id']] - expected) > POSITION_TOLERANCE:
+                raise RhinoAdapterError('rhino_elevation_mismatch', f"{element['Id']} {element['Kind']} base is at {bases[element['Id']]} m, its level is at {expected} m")
+    return check_representable(project)
 
 
 # ---------------------------------------------------------------- Core-shaped JSON
@@ -387,7 +487,9 @@ def _main(argv):
             try:
                 project = json.loads(pathlib.Path(argv[1]).read_text(encoding='utf-8-sig'))
             except (OSError, ValueError) as error:
-                raise RhinoAdapterError('bim_ir_invalid', f'cannot read {argv[1]}: {error}') from None
+                raise RhinoAdapterError('bim_ir_invalid', f'cannot read {argv[1]}: {type(error).__name__}: {error}') from None
+            except RecursionError:
+                raise RhinoAdapterError('bim_ir_invalid', f'{argv[1]} nests too deeply') from None
             output = export_project(project, argv[2])
             print(json.dumps({'status': 'exported', 'elements': len(project['Elements']), 'path': str(output)}))
             return 0
@@ -397,6 +499,9 @@ def _main(argv):
         raise RhinoAdapterError('usage', 'bim_rhino.py export PROJECT_JSON OUTPUT_3DM | import INPUT_3DM')
     except RhinoAdapterError as error:
         print(json.dumps({'error': error.code, 'detail': error.detail}), file=sys.stderr)
+        return 1
+    except Exception as error:  # one JSON error line, never a traceback
+        print(json.dumps({'error': 'internal_error', 'detail': f'{type(error).__name__}: {error}'}), file=sys.stderr)
         return 1
 
 
