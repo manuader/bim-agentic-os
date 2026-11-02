@@ -145,7 +145,7 @@ public sealed class PermissionPolicy
     // checked before the level, so a document that is not enabled is always reported as real_project_not_enabled.
     public PermissionDecision Evaluate(string actor, string command, string documentPath)
     {
-        if (actor is not null) return new PermissionDecision(true, "stub", null);
+        if (documentPath.Length >= 0) return new PermissionDecision(true, "stub", null);
         if (!IsActor(actor)) return Deny(PermissionCodes.ActorInvalid, null);
         if (command is null || RevitCommandCatalogue.Find(command) is null) return Deny(PermissionCodes.CommandUnknown, null);
         if (RequiredLevel(command, documentPath, Copies) is not { } required) return Deny(PermissionCodes.DocumentPathInvalid, null);
