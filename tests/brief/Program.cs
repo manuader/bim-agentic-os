@@ -87,8 +87,8 @@ try
     var laundry = example?.Rooms.FirstOrDefault(room => room.Id == "laundry");
     Check(laundry is { Provenance.Source: BriefSource.Inferred, TargetAreaSquareMetres: { Value: 3, Provenance.Confidence: 0.5 }, MinAreaSquareMetres: { Value: 2, Provenance: null } },
         "inferred laundry room keeps room-level and value-level provenance; bare min has none");
-    Check(example?.Rooms.First(room => room.Id == "bathroom") is { EffectiveCount: 1, Count: { Value: 1, Provenance.Source: BriefSource.User } }
-        && example.Rooms.First(room => room.Id == "kitchen") is { EffectiveCount: 1, Count: null, MaxAreaSquareMetres.Value: 10 }, "count binds when given and defaults to 1");
+    Check(example?.Rooms.FirstOrDefault(room => room.Id == "bathroom") is { EffectiveCount: 1, Count: { Value: 1, Provenance.Source: BriefSource.User } }
+        && example.Rooms.FirstOrDefault(room => room.Id == "kitchen") is { EffectiveCount: 1, Count: null, MaxAreaSquareMetres.Value: 10 }, "count binds when given and defaults to 1");
     Check(example?.Adjacencies[4] is { A: "kitchen", B: "bedroom_main", Kind: BriefAdjacencyKind.Forbidden, Provenance.Confidence: 0.9 }, "forbidden adjacency binds kind and provenance");
 
     // ---- Canonical serializer ----
