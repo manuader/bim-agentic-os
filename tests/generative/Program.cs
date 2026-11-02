@@ -459,6 +459,31 @@ try
     Check(softPlan.IsFeasible && softPlan.HardViolations.Count == 0 && Has(softPlan, PlanCodes.AdjacencyPreferred, "a/b", false, false) && softPlan.Violations.Count == 1,
         "an impossible preferred adjacency still plans feasibly with one unsatisfied soft constraint", Violations(softPlan));
 
+    // ---- tiny budgets: typed refusals, never exceptions ----
+    Infeasible("a budget below the grid slack is refused as budget_insufficient",
+        Attempt(Brief("tiny budget", 10, 10, new[] { Room("a", 10), Room("b", 8) }, budget: 0.001)), PlanCodes.BudgetInsufficient, "plan");
+    var deepTimer = Stopwatch.StartNew();
+    var deep = Attempt(Brief("deep tiny budget", 100, 100, new[] { Room("a", 2), Room("b", 1, level: 199) }, levels: 200, budget: 3));
+    deepTimer.Stop();
+    Infeasible("200 levels on a 100 x 100 footprint with a 3 m2 budget are refused as budget_insufficient", deep, PlanCodes.BudgetInsufficient, "plan");
+    Check(deepTimer.Elapsed.TotalSeconds < 2, "the 200-level tiny-budget brief returns within 2 s", deepTimer.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms");
+    string? tinyProblem = null;
+    var tinyCount = 0;
+    foreach (var tinyBudget in new[] { 1e-9, 0.001, 0.01, 0.1, 1, 5, 20 })
+        foreach (var (tinyWidth, tinyDepth) in new[] { (0.5, 0.5), (3.0, 3.0), (10.0, 10.0) })
+            for (var roomCount = 1; roomCount <= 5; roomCount++)
+            {
+                var tinyRooms = Enumerable.Range(0, roomCount).Select(i => Room("t" + i.ToString(CultureInfo.InvariantCulture), 1 + i, i == 0 ? Math.Min(0.5, tinyBudget) : null)).ToArray();
+                var tinyBrief = Brief("tiny", tinyWidth, tinyDepth, tinyRooms, budget: tinyBudget);
+                var plan = Attempt(tinyBrief, roomCount);
+                tinyCount++;
+                var problem = plan.IsFeasible ? Invariants(tinyBrief, plan)
+                    : plan.Rooms.Count == 0 && plan.Constraints.Count > 0 && plan.Constraints.All(c => !c.Satisfied && !c.Code.StartsWith("threw", StringComparison.Ordinal)) ? null : "malformed or thrown: " + Violations(plan);
+                if (problem is not null && tinyProblem is null)
+                    tinyProblem = "budget " + F(tinyBudget) + " site " + F(tinyWidth) + " rooms " + roomCount.ToString(CultureInfo.InvariantCulture) + ": " + problem;
+            }
+    Check(tinyProblem is null && tinyCount == 105, "Plan never throws over tiny budgets, 1-5 rooms and small footprints", tinyProblem ?? "");
+
     // ---- 30-room performance ----
     string Id(int i) => "r" + i.ToString("00", CultureInfo.InvariantCulture);
     var bigRooms = Enumerable.Range(0, 30).Select(i => { var target = 6.0 + (i * 7 % 15); return Room(Id(i), target, target * 0.8, target * 1.3, name: "Room " + Id(i)); }).ToArray();
