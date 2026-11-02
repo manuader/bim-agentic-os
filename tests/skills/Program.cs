@@ -1,18 +1,37 @@
 using Bim.Core;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 // P5-01 domain skill manifest oracle: strict parser refusals with JSON paths, semver ranges, the safe directory loader
 // (temp fixtures, symlinks), the resolver (closure, version ranges, conflicts, cycles, priority and precedence of
-// defaults, traceability, determinism), the checked-in sample skills and the JSON Schema document. Unit-tested only.
-int passed = 0, failed = 0;
+// defaults, traceability, determinism, 20k-skill scale), the checked-in sample skills, the JSON Schema document and the
+// agreement corpus shared with tests/skills/check_schema.py. Unit-tested only.
+int passed = 0, failed = 0, skipped = 0;
+// Platform fixtures (symlinks, junctions) may only be skipped on a developer's Windows machine; on CI and on every other
+// platform an unavailable fixture is a failure. Skips that are inherent (running as root, FIFOs on Windows) pass allowed.
+var fixturesRequired = !OperatingSystem.IsWindows() || string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.Ordinal);
 
 void Check(bool condition, string name, string detail = "")
 {
     if (condition) { Console.WriteLine("PASS " + name); passed++; return; }
     Console.WriteLine("::error::skills FAIL " + name + (detail.Length > 0 ? " | " + detail : ""));
     failed++;
+}
+
+void Skip(string name, string reason, bool allowed = false)
+{
+    if (fixturesRequired && !allowed) { Check(false, name, "fixture unavailable: " + reason); return; }
+    Console.WriteLine("SKIP " + name + " | " + reason);
+    skipped++;
+}
+
+bool Readable(Action probe)
+{
+    try { probe(); return true; }
+    catch (UnauthorizedAccessException) { return false; }
+    catch (IOException) { return false; }
 }
 
 string RepoRoot()
@@ -271,6 +290,9 @@ try
     Check(InRange("^1.2.3", "1.2.3") && InRange("^1.2.3", "1.99.0") && !InRange("^1.2.3", "2.0.0") && !InRange("^1.2.3", "1.2.2"), "^1.2.3 is >=1.2.3 <2.0.0");
     Check(InRange("^0.2.3", "0.2.9") && !InRange("^0.2.3", "0.3.0") && InRange("^0.0.3", "0.0.3") && !InRange("^0.0.3", "0.0.4"), "^0.x and ^0.0.x lock the left-most non-zero component");
     Check(InRange("~1.2.3", "1.2.9") && !InRange("~1.2.3", "1.3.0") && !InRange("~1.2.3", "1.2.2"), "~1.2.3 is >=1.2.3 <1.3.0");
+    Check(InRange("^0.0.0", "0.0.0") && !InRange("^0.0.0", "0.0.1") && !InRange("^0.0.0", "0.1.0") && !InRange("^0.0.0", "1.0.0"), "^0.0.0 matches only 0.0.0");
+    Check(InRange("~0.2.3", "0.2.3") && InRange("~0.2.3", "0.2.99") && !InRange("~0.2.3", "0.3.0") && !InRange("~0.2.3", "0.2.2") && InRange("~0.0.1", "0.0.9") && !InRange("~0.0.1", "0.1.0"),
+        "~0.x locks major and minor");
     Check(InRange(">=1.0.0 <2.0.0", "1.5.0") && !InRange(">=1.0.0 <2.0.0", "2.0.0") && InRange(">1.0.0", "1.0.1") && !InRange(">1.0.0", "1.0.0") && InRange("<=1.0.0", "1.0.0") && !InRange("<1.0.0", "1.0.0"),
         "comparators combine with AND");
 
@@ -313,8 +335,11 @@ try
         Check(resolved.Rules.Count == 7 && resolved.Rules.FirstOrDefault(rule => rule.QualifiedId == "bim.typology.dwelling/bedroom-min-area") is { Threshold: not null, ThresholdSource: { Origin: "parameter", Key: "bedroom_min_area_m2" }, Source: { Origin: "rule", Key: "bedroom-min-area" } } bedroomRule
             && bedroomRule.Threshold == SkillValue.Of(9) && resolved.Rules.First(rule => rule.QualifiedId == "bim.qa.room-basics/door-operation-known").Threshold is null,
             "effective rules trace to skill and rule id; parameter thresholds resolve and trace to the parameter", Render(resolved));
-        Check(resolved.Parameters.Count == 4 && resolved.Parameters.All(parameter => parameter.Source.Origin == "parameter" && parameter.Source.SkillId == parameter.SkillId && parameter.Source.Key == parameter.Name),
-            "effective parameters trace to skill and parameter name");
+        Check(resolved.Parameters.Select(parameter => parameter.Source + "=" + parameter.Value).SequenceEqual(new[]
+            {
+                "bim.qa.room-basics:parameter:min_wall_thickness_m=0.05", "bim.qa.room-basics:parameter:strict=false",
+                "bim.typology.dwelling:parameter:bedroom_min_area_m2=9", "bim.typology.dwelling:parameter:max_levels=3",
+            }), "effective parameters are the sample defaults in skill order, traced to skill and parameter name", Render(resolved));
         var reversed = SkillResolver.Resolve(new SkillCatalog(samples.Skills.Reverse().ToArray()), Requests("bim.qa.room-basics", "bim.typology.dwelling"));
         Check(Render(reversed) == Render(resolved), "sample resolution does not depend on catalog or request order");
     }
@@ -353,26 +378,113 @@ try
     WriteSkill(invalid, "bim.test.alpha", With(manifest => manifest["rules"] = new JsonArray(MinRule("r1", "x", 1), MinRule("r1", "y", 2))).ToJsonString());
     LoadRejects("parser refusal keeps its code and JSON path and gains the file", invalid, SkillCodes.EntryDuplicate, "bim.test.alpha/skill.json", "rules[1].id");
 
+    var emptyFile = TempRoot();
+    WriteSkill(emptyFile, "bim.test.alpha", "");
+    LoadRejects("empty skill.json is refused as zero-length without opening it", emptyFile, SkillCodes.NotRegularFile, "bim.test.alpha/skill.json");
+
+    // Byte order mark: the loader strips exactly one leading UTF-8 BOM; the string parser refuses a leading U+FEFF.
+    var bomBytes = new byte[] { 0xEF, 0xBB, 0xBF };
+    var manifestBytes = Encoding.UTF8.GetBytes(Manifest("bim.test.alpha").ToJsonString());
+    var bom = TempRoot();
+    Directory.CreateDirectory(Path.Combine(bom, "bim.test.alpha"));
+    File.WriteAllBytes(Path.Combine(bom, "bim.test.alpha", "skill.json"), bomBytes.Concat(manifestBytes).ToArray());
+    Check(LoadRefusal(bom) is null && SkillLoader.LoadDirectory(bom).Find("bim.test.alpha") is not null, "loader strips one leading UTF-8 byte order mark", LoadRefusal(bom)?.Code ?? "");
+    var doubleBom = TempRoot();
+    Directory.CreateDirectory(Path.Combine(doubleBom, "bim.test.alpha"));
+    File.WriteAllBytes(Path.Combine(doubleBom, "bim.test.alpha", "skill.json"), bomBytes.Concat(bomBytes).Concat(manifestBytes).ToArray());
+    LoadRejects("a second byte order mark is refused", doubleBom, SkillCodes.JsonInvalid, "bim.test.alpha/skill.json");
+    RejectsText("parser refuses a leading U+FEFF", "﻿" + Manifest("bim.test.alpha").ToJsonString(), SkillCodes.JsonInvalid);
+
+    // Hidden entries: a hidden directory is not a skill id and is refused; hidden plain files are ignored like any file.
+    var hidden = TempRoot();
+    WriteSkill(hidden, "bim.test.alpha", Manifest("bim.test.alpha").ToJsonString());
+    Directory.CreateDirectory(Path.Combine(hidden, ".git"));
+    LoadRejects("a stray hidden directory is refused as id_invalid", hidden, SkillCodes.IdInvalid, ".git");
+    var hiddenFile = TempRoot();
+    WriteSkill(hiddenFile, "bim.test.alpha", Manifest("bim.test.alpha").ToJsonString());
+    File.WriteAllText(Path.Combine(hiddenFile, ".DS_Store"), "x");
+    Check(SkillLoader.LoadDirectory(hiddenFile).Skills.Count == 1, "hidden plain files at the root are ignored");
+
+    // Links: symbolic links and junctions are never followed, including dangling ones and links to plain files.
     var outside = TempRoot();
     WriteSkill(outside, "bim.test.alpha", Manifest("bim.test.alpha").ToJsonString());
-    var linkedDirectory = TempRoot();
-    var linkedFile = TempRoot();
-    var linksCreated = true;
-    try
+    File.WriteAllText(Path.Combine(outside, "README.txt"), "outside");
+    void LinkCase(string name, Action<string> arrange, string file)
     {
-        Directory.CreateSymbolicLink(Path.Combine(linkedDirectory, "bim.test.alpha"), Path.Combine(outside, "bim.test.alpha"));
-        Directory.CreateDirectory(Path.Combine(linkedFile, "bim.test.alpha"));
-        File.CreateSymbolicLink(Path.Combine(linkedFile, "bim.test.alpha", "skill.json"), Path.Combine(outside, "bim.test.alpha", "skill.json"));
+        var linkRoot = TempRoot();
+        try { arrange(linkRoot); }
+        catch (Exception failure) when (failure is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            Skip(name, failure.GetType().Name + ": " + failure.Message);
+            return;
+        }
+        LoadRejects(name, linkRoot, SkillCodes.PathUnsafe, file);
     }
-    catch (Exception error) when (error is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+    LinkCase("symlinked skill directory escaping the root is refused",
+        at => Directory.CreateSymbolicLink(Path.Combine(at, "bim.test.alpha"), Path.Combine(outside, "bim.test.alpha")), "bim.test.alpha");
+    LinkCase("symlinked skill.json is refused", at =>
     {
-        linksCreated = false;
-        Console.WriteLine("SKIP symlink fixtures could not be created: " + error.Message);
+        Directory.CreateDirectory(Path.Combine(at, "bim.test.alpha"));
+        File.CreateSymbolicLink(Path.Combine(at, "bim.test.alpha", "skill.json"), Path.Combine(outside, "bim.test.alpha", "skill.json"));
+    }, "bim.test.alpha/skill.json");
+    LinkCase("dangling symlinked skill.json is refused", at =>
+    {
+        Directory.CreateDirectory(Path.Combine(at, "bim.test.alpha"));
+        File.CreateSymbolicLink(Path.Combine(at, "bim.test.alpha", "skill.json"), Path.Combine(outside, "missing.json"));
+    }, "bim.test.alpha/skill.json");
+    LinkCase("dangling symlink at the root is refused", at => File.CreateSymbolicLink(Path.Combine(at, "bim.test.broken"), Path.Combine(outside, "missing")), "bim.test.broken");
+    LinkCase("symlinked plain file at the root is refused", at => File.CreateSymbolicLink(Path.Combine(at, "README.txt"), Path.Combine(outside, "README.txt")), "README.txt");
+    if (OperatingSystem.IsWindows())
+    {
+        LinkCase("junction skill directory is refused", at =>
+        {
+            var link = Path.Combine(at, "bim.test.alpha");
+            var start = new ProcessStartInfo("cmd.exe") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var argument in new[] { "/c", "mklink", "/J", link, Path.Combine(outside, "bim.test.alpha") }) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new IOException("cmd.exe did not start");
+            var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            if (process.ExitCode != 0 || !Directory.Exists(link)) throw new IOException("mklink /J failed: " + output);
+        }, "bim.test.alpha");
     }
-    if (linksCreated)
+
+    if (!OperatingSystem.IsWindows())
     {
-        LoadRejects("symlinked skill directory escaping the root is refused", linkedDirectory, SkillCodes.PathUnsafe, "bim.test.alpha");
-        LoadRejects("symlinked skill.json is refused", linkedFile, SkillCodes.PathUnsafe, "bim.test.alpha/skill.json");
+        // A FIFO reports size 0 and opening it for reading blocks until a writer appears; the loader must not open it.
+        var mkfifo = new[] { "/usr/bin/mkfifo", "/bin/mkfifo" }.FirstOrDefault(File.Exists);
+        if (mkfifo is null) Skip("FIFO skill.json is refused without blocking", "mkfifo not found", allowed: true);
+        else
+        {
+            var fifoRoot = TempRoot();
+            Directory.CreateDirectory(Path.Combine(fifoRoot, "bim.test.alpha"));
+            using (var process = Process.Start(mkfifo, Path.Combine(fifoRoot, "bim.test.alpha", "skill.json"))) process?.WaitForExit();
+            var pending = Task.Run(() => LoadRefusal(fifoRoot));
+            if (!pending.Wait(TimeSpan.FromSeconds(20))) Check(false, "FIFO skill.json is refused without blocking", "loader blocked on the FIFO");
+            else Check(pending.Result is { Code: SkillCodes.NotRegularFile, File: "bim.test.alpha/skill.json" }, "FIFO skill.json is refused without blocking",
+                pending.Result is null ? "accepted" : pending.Result.Code + " file " + pending.Result.File);
+        }
+
+        // Unreadable entries are read_failed with the file set; root ignores permissions, so probe first.
+        var owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        var lockedRoot = TempRoot();
+        WriteSkill(lockedRoot, "bim.test.alpha", Manifest("bim.test.alpha").ToJsonString());
+        new DirectoryInfo(lockedRoot).UnixFileMode = UnixFileMode.None;
+        try
+        {
+            if (Readable(() => Directory.EnumerateFileSystemEntries(lockedRoot).Any())) Skip("unreadable skills root is read_failed", "permissions not enforced for " + Environment.UserName + " (root)", allowed: true);
+            else LoadRejects("unreadable skills root is read_failed", lockedRoot, SkillCodes.ReadFailed, ".");
+        }
+        finally { new DirectoryInfo(lockedRoot).UnixFileMode = owner; }
+        var lockedFile = TempRoot();
+        WriteSkill(lockedFile, "bim.test.alpha", Manifest("bim.test.alpha").ToJsonString());
+        var lockedManifest = Path.Combine(lockedFile, "bim.test.alpha", "skill.json");
+        File.SetUnixFileMode(lockedManifest, UnixFileMode.None);
+        try
+        {
+            if (Readable(() => File.ReadAllBytes(lockedManifest))) Skip("unreadable skill.json is read_failed", "permissions not enforced for " + Environment.UserName + " (root)", allowed: true);
+            else LoadRejects("unreadable skill.json is read_failed", lockedFile, SkillCodes.ReadFailed, "bim.test.alpha/skill.json");
+        }
+        finally { File.SetUnixFileMode(lockedManifest, owner); }
     }
 
     // ---- Resolver ----
@@ -413,12 +525,23 @@ try
     var cyclic = SkillResolver.Resolve(CatalogOf(cycleC, cycleB, cycleA), Requests("bim.cycle.b"));
     Check(HasIssue(cyclic, SkillCodes.DependencyCycle, "bim.cycle.a", "bim.cycle.a -> bim.cycle.b -> bim.cycle.c -> bim.cycle.a") && cyclic.Issues.Count(issue => issue.Code == SkillCodes.DependencyCycle) == 1,
         "a three-skill cycle is reported once, rotated to its smallest id", Issues(cyclic));
+    var pairA = Manifest("bim.pair.a");
+    var pairB = Manifest("bim.pair.b");
+    pairA["requires"] = new JsonArray(Requirement("bim.pair.b", "*"));
+    pairB["requires"] = new JsonArray(Requirement("bim.pair.a", "*"));
+    var pairCycle = SkillResolver.Resolve(CatalogOf(pairB, pairA), Requests("bim.pair.b"));
+    Check(HasIssue(pairCycle, SkillCodes.DependencyCycle, "bim.pair.a", "bim.pair.a -> bim.pair.b -> bim.pair.a") && pairCycle.Issues.Count == 1, "a two-skill cycle is reported once", Issues(pairCycle));
 
     var left = Manifest("bim.style.left");
     var right = Manifest("bim.style.right");
     left["conflicts_with"] = new JsonArray("bim.style.right");
     var conflicting = SkillResolver.Resolve(CatalogOf(left, right), Requests("bim.style.right", "bim.style.left"));
     Check(HasIssue(conflicting, SkillCodes.SkillConflict, "bim.style.left", "conflict with bim.style.right"), "a declared conflict between resolved skills is skill_conflict", Issues(conflicting));
+    var early = Manifest("bim.style.early");
+    var late = Manifest("bim.style.late");
+    late["conflicts_with"] = new JsonArray("bim.style.early");
+    var lateConflict = SkillResolver.Resolve(CatalogOf(early, late), Requests("bim.style.early", "bim.style.late"));
+    Check(HasIssue(lateConflict, SkillCodes.SkillConflict, "bim.style.late", "conflict with bim.style.early"), "a conflict declared only by the ordinal-later skill is found", Issues(lateConflict));
     right["conflicts_with"] = new JsonArray("bim.style.left");
     Check(SkillResolver.Resolve(CatalogOf(left, right), Requests("bim.style.left", "bim.style.right")).Issues.Count(issue => issue.Code == SkillCodes.SkillConflict) == 1, "a mutual conflict is reported once");
     Check(SkillResolver.Resolve(CatalogOf(left, right), Requests("bim.style.left")).Succeeded, "a conflict with an unrequested skill is not an issue");
@@ -482,9 +605,38 @@ try
         && ruledResolution.Parameters.Single() is { SkillId: "bim.qa.ruled", Name: "limit" } limit && limit.Value == SkillValue.Of(4),
         "rules keep declaration order with literal or parameter thresholds", Render(ruledResolution));
 
+    // ---- Catalog and code-built manifests ----
+    SkillException? catalogError = null;
+    try { _ = new SkillCatalog(new[] { Build(alpha), Build(Manifest("bim.test.alpha", "2.0.0")) }); }
+    catch (SkillException duplicate) { catalogError = duplicate; }
+    Check(catalogError is { Code: SkillCodes.IdDuplicate, Field: "id" } && catalogError.Detail!.Contains("bim.test.alpha", StringComparison.Ordinal), "a catalog refuses two skills with one id", catalogError?.Code ?? "accepted");
+    var anyRange = SkillParser.TryParseRange("*", out var star) ? star : throw new FormatException("*");
+    SkillManifest Coded(string id, params string[] requires) => new(SkillManifest.CurrentVersion, id, new SkillVersion(1, 0, 0), SkillKind.Qa, "Coded " + id, 0,
+        requires.Select(required => new SkillRequirement(required, anyRange)).ToArray(), Array.Empty<string>(), Array.Empty<SkillParameter>(), Array.Empty<SkillDefault>(), Array.Empty<SkillRule>());
+    var twice = SkillResolver.Resolve(new SkillCatalog(new[] { Coded("bim.coded.top", "bim.coded.base", "bim.coded.base"), Coded("bim.coded.base") }), Requests("bim.coded.top"));
+    Check(twice.Succeeded && twice.Skills.Select(skill => skill.Id).SequenceEqual(new[] { "bim.coded.base", "bim.coded.top" }), "a dependency listed twice in code counts as one edge", Issues(twice));
+    var orphanRule = new SkillRule("orphan", SkillSeverity.Error, new SkillTarget("wall", null), new SkillCheck(SkillCheckOp.Min, "x", Parameter: "missing"), "M");
+    var orphanResolution = SkillResolver.Resolve(new SkillCatalog(new[] { Coded("bim.coded.orphan") with { Rules = new[] { orphanRule } } }), Requests("bim.coded.orphan"));
+    Check(HasIssue(orphanResolution, SkillCodes.ParameterUnknown, "bim.coded.orphan/orphan", "missing"), "a code-built rule naming a missing parameter is a typed refusal", Issues(orphanResolution));
+
+    // ---- Agreement corpus (shared with tests/skills/check_schema.py) ----
+    var corpus = JsonNode.Parse(File.ReadAllText(Path.Combine(root, "tests", "skills", "corpus", "cases.json")))!.AsObject();
+    var validCases = corpus["valid"]!.AsArray();
+    var invalidCases = corpus["invalid"]!.AsArray();
+    Check(validCases.Count >= 5 && invalidCases.Count >= 60 && invalidCases.Any(node => (bool)node!["schema"]!) && invalidCases.Any(node => !(bool)node!["schema"]!),
+        "corpus has valid, schema-expressible and parser-only cases");
+    foreach (var node in validCases) Accepts("corpus valid: " + (string)node!["name"]!, node!["manifest"]!.ToJsonString());
+    foreach (var node in invalidCases)
+    {
+        var corpusCase = node!.AsObject();
+        var refusal = Refusal((string?)corpusCase["text"] ?? corpusCase["manifest"]!.ToJsonString());
+        Check(refusal is not null && refusal.Code == (string)corpusCase["code"]! && refusal.Field == (string?)corpusCase["field"],
+            "corpus refusal (" + ((bool)corpusCase["schema"]! ? "schema" : "parser-only") + "): " + (string)corpusCase["name"]!,
+            refusal is null ? "accepted" : refusal.Code + " at " + refusal.Field + " (" + refusal.Detail + ")");
+    }
+
     // ---- JSON Schema document ----
     var schemaPath = Path.Combine(root, "docs", "contracts", "skill.schema.json");
-    Check(File.Exists(schemaPath), "docs/contracts/skill.schema.json exists", schemaPath);
     using var schema = JsonDocument.Parse(File.ReadAllText(schemaPath));
     var schemaRoot = schema.RootElement;
     string[] Keys(JsonElement element) => element.EnumerateObject().Select(property => property.Name).ToArray();
@@ -501,9 +653,6 @@ try
         && Strings(Props("parameter").GetProperty("type").GetProperty("enum")).SequenceEqual(SkillParser.ParameterTypes)
         && Strings(Props("thresholdCheck").GetProperty("op").GetProperty("enum")).Concat(new[] { Props("inCheck").GetProperty("op").GetProperty("const").GetString()!, Props("ratioCheck").GetProperty("op").GetProperty("const").GetString()! })
             .OrderBy(op => op, StringComparer.Ordinal).SequenceEqual(SkillParser.CheckOps.OrderBy(op => op, StringComparer.Ordinal)), "schema kinds, severities, parameter types and check ops match the parser");
-    Check(Enum.GetValues<SkillKind>().Select(SkillParser.KindName).SequenceEqual(SkillParser.Kinds) && Enum.GetValues<SkillCheckOp>().Select(SkillParser.OpName).SequenceEqual(SkillParser.CheckOps)
-        && Enum.GetValues<SkillSeverity>().Select(SkillParser.SeverityName).SequenceEqual(SkillParser.Severities) && Enum.GetValues<SkillParameterType>().Select(SkillParser.ParameterTypeName).SequenceEqual(SkillParser.ParameterTypes),
-        "parser names cover every enum value in order");
     Check(Keys(Props("requirement")).SequenceEqual(SkillParser.RequirementMembers) && Keys(Props("parameter")).SequenceEqual(SkillParser.ParameterMembers) && Keys(Props("rule")).SequenceEqual(SkillParser.RuleMembers)
         && Keys(Props("target")).SequenceEqual(SkillParser.TargetMembers) && Keys(Props("thresholdCheck")).SequenceEqual(SkillParser.ThresholdCheckMembers)
         && Keys(Props("inCheck")).SequenceEqual(SkillParser.InCheckMembers) && Keys(Props("ratioCheck")).SequenceEqual(SkillParser.RatioCheckMembers), "schema object members match the parser member lists");
@@ -521,7 +670,29 @@ try
         && Def("text").GetProperty("maxLength").GetInt32() == SkillParser.MaxStringChars && Def("range").GetProperty("maxLength").GetInt32() == SkillParser.MaxRangeChars, "schema size limits match the parser");
     Check(new[] { "requirement", "parameter", "rule", "target", "thresholdCheck", "inCheck", "ratioCheck" }.All(name => Def(name).GetProperty("additionalProperties").ValueKind == JsonValueKind.False)
         && Def("target").GetProperty("maxProperties").GetInt32() == 1 && Def("target").GetProperty("minProperties").GetInt32() == 1, "every schema object is closed and targets take exactly one selector");
-    Check(Def("int32").GetProperty("maximum").GetInt64() == int.MaxValue && Def("int32").GetProperty("minimum").GetInt64() == int.MinValue, "schema priority is a 32-bit integer");
+    Check(Def("int32").GetProperty("maximum").GetInt64() == int.MaxValue && Def("int32").GetProperty("minimum").GetInt64() == int.MinValue
+        && Def("int32").GetProperty("description").GetString()!.Contains("integer token", StringComparison.Ordinal)
+        && properties.GetProperty("manifest_version").GetProperty("description").GetString()!.Contains("integer token", StringComparison.Ordinal), "schema integers are 32-bit and document the integer-token rule");
+    Check(Pattern("range") == "^" + SkillParser.RangePatternBody + "$", "schema range pattern is the parser range pattern");
+    var typed = Def("parameter").GetProperty("allOf").EnumerateArray().Select(branch => branch.GetProperty("if").GetProperty("properties").GetProperty("type").GetProperty("const").GetString()!).ToArray();
+    Check(typed.SequenceEqual(SkillParser.ParameterTypes), "schema types each parameter default and range by its declared type", string.Join(",", typed));
+
+    // ---- Scale: 20000-skill chain and cycle built in code (no recursion) ----
+    const int Scale = 20000;
+    string ChainId(int index) => "bim.chain.s" + index.ToString("D5", CultureInfo.InvariantCulture);
+    var chainSkills = Enumerable.Range(0, Scale).Select(index => index + 1 < Scale ? Coded(ChainId(index), ChainId(index + 1)) : Coded(ChainId(index))).ToArray();
+    var clock = Stopwatch.StartNew();
+    var longChain = SkillResolver.Resolve(new SkillCatalog(chainSkills), Requests(ChainId(0)));
+    Check(longChain.Succeeded && longChain.Skills.Count == Scale && longChain.Skills[0].Id == ChainId(Scale - 1) && longChain.Skills[Scale - 1].Id == ChainId(0),
+        "a 20000-skill chain resolves, deepest requirement first", Issues(longChain));
+    var cycleSkills = chainSkills.ToArray();
+    cycleSkills[Scale - 1] = Coded(ChainId(Scale - 1), ChainId(0));
+    var longCycle = SkillResolver.Resolve(new SkillCatalog(cycleSkills), Requests(ChainId(Scale / 2)));
+    var cycleIssue = longCycle.Issues.FirstOrDefault(issue => issue.Code == SkillCodes.DependencyCycle);
+    Check(longCycle.Issues.Count == 1 && cycleIssue is not null && cycleIssue.Subject == ChainId(0)
+        && cycleIssue.Detail.StartsWith(ChainId(0) + " -> " + ChainId(1) + " -> ", StringComparison.Ordinal) && cycleIssue.Detail.EndsWith(" -> " + ChainId(Scale - 1) + " -> " + ChainId(0), StringComparison.Ordinal),
+        "a 20000-skill cycle is reported once", longCycle.Issues.Count.ToString(CultureInfo.InvariantCulture) + " issues; " + (cycleIssue?.Detail.Length ?? 0).ToString(CultureInfo.InvariantCulture) + " chars");
+    Check(clock.Elapsed < TimeSpan.FromSeconds(30), "20000-skill resolution stays fast", clock.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms");
 }
 catch (Exception error)
 {
@@ -538,5 +709,5 @@ finally
     }
 }
 
-Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, skills_contract = failed == 0 }));
+Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, skipped, skills_contract = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;

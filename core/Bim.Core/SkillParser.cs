@@ -23,6 +23,8 @@ public static class SkillParser
     // Skill id: reverse-DNS-like, at least two dot-separated labels of [a-z0-9-] starting with a letter, at most 128.
     public const string IdPatternBody = "(?=.{3,128}$)[a-z][a-z0-9-]{0,62}(\\.[a-z][a-z0-9-]{0,62})+";
     public const string SemverPatternBody = "(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})";
+    // Version range: "*" or single-space-separated comparators, each an optional =, >=, <=, >, <, ^ or ~ and a semver.
+    public const string RangePatternBody = "(\\*|(=|>=|<=|>|<|\\^|~)?" + SemverPatternBody + "( (=|>=|<=|>|<|\\^|~)?" + SemverPatternBody + ")*)";
     // Dotted setting path such as wall.exterior.thickness_m: at least two segments of [a-z0-9_] starting with a letter.
     public const string KeyPatternBody = "(?=.{3,128}$)[a-z][a-z0-9_]{0,63}(\\.[a-z][a-z0-9_]{0,63})+";
     // Parameter names, property names and element kinds.

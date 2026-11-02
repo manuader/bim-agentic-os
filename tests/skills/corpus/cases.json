@@ -1,0 +1,5151 @@
+{
+ "description": "Skill manifest agreement corpus. valid: SkillParser accepts and the schema validates. invalid: SkillParser refuses with code at field (null for the document); schema true means docs/contracts/skill.schema.json also rejects it, false means the schema cannot express the refusal (it accepts the document, or the text is not plain JSON). Each case gives a manifest object or raw text.",
+ "valid": [
+  {
+   "name": "minimal",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10
+   }
+  },
+  {
+   "name": "every field and check op",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.style.sample-pack",
+    "version": "2.10.3",
+    "kind": "style",
+    "description": "Corpus skill",
+    "priority": -5,
+    "requires": [
+     {
+      "id": "bim.qa.base",
+      "range": "^1.2.0"
+     },
+     {
+      "id": "bim.typology.house",
+      "range": ">=1.0.0 <3.0.0"
+     }
+    ],
+    "conflicts_with": [
+     "bim.style.other"
+    ],
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "description": "Depth."
+     },
+     {
+      "name": "count",
+      "type": "integer",
+      "default": 3,
+      "min": 1
+     },
+     {
+      "name": "flag",
+      "type": "boolean",
+      "default": true
+     },
+     {
+      "name": "finish",
+      "type": "string",
+      "default": "matte"
+     }
+    ],
+    "defaults": {
+     "wall.exterior.thickness_m": 0.25,
+     "facade.finish": "brick",
+     "roof.flat": false
+    },
+    "rules": [
+     {
+      "id": "a1",
+      "severity": "warning",
+      "target": {
+       "room": "Bed*"
+      },
+      "check": {
+       "op": "max",
+       "property": "area_m2",
+       "parameter": "depth"
+      },
+      "message": "Too small.",
+      "citation": "C"
+     },
+     {
+      "id": "a2",
+      "severity": "info",
+      "target": {
+       "element": "door"
+      },
+      "check": {
+       "op": "equals",
+       "property": "finish",
+       "parameter": "finish"
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "a3",
+      "severity": "error",
+      "target": {
+       "element": "door"
+      },
+      "check": {
+       "op": "in",
+       "property": "operation",
+       "values": [
+        "swing",
+        2,
+        true
+       ]
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "a4",
+      "severity": "error",
+      "target": {
+       "room": "*"
+      },
+      "check": {
+       "op": "ratio_min",
+       "property": "window_area_m2",
+       "over": "area_m2",
+       "value": 0.1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "a5",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "equals",
+       "property": "room_bounding",
+       "value": true
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "inclusive parameter bounds",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "number",
+      "default": 1,
+      "min": 1,
+      "max": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "equals over a boolean parameter",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "flag",
+      "type": "boolean",
+      "default": true
+     }
+    ],
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "equals",
+       "property": "x",
+       "parameter": "flag"
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "range forms",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.r.a",
+      "range": "*"
+     },
+     {
+      "id": "bim.r.b",
+      "range": "^0.0.0"
+     },
+     {
+      "id": "bim.r.c",
+      "range": "~0.2.3"
+     },
+     {
+      "id": "bim.r.d",
+      "range": "=1.0.0"
+     },
+     {
+      "id": "bim.r.e",
+      "range": "1.0.0"
+     },
+     {
+      "id": "bim.r.f",
+      "range": ">1.0.0 <=2.0.0"
+     }
+    ]
+   }
+  },
+  {
+   "name": "room glob with spaces",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "room": "Main bed room*"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "unknown root member",
+   "schema": true,
+   "code": "member_unknown",
+   "field": "name",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "name": "x"
+   }
+  },
+  {
+   "name": "missing description",
+   "schema": true,
+   "code": "member_missing",
+   "field": "description",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "priority": 10
+   }
+  },
+  {
+   "name": "manifest_version 2",
+   "schema": true,
+   "code": "version_unsupported",
+   "field": "manifest_version",
+   "manifest": {
+    "manifest_version": 2,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10
+   }
+  },
+  {
+   "name": "unknown kind",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "kind",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "jurisdiction",
+    "description": "Corpus skill",
+    "priority": 10
+   }
+  },
+  {
+   "name": "single-label id",
+   "schema": true,
+   "code": "id_invalid",
+   "field": "id",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "qa",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10
+   }
+  },
+  {
+   "name": "two-component version",
+   "schema": true,
+   "code": "semver_invalid",
+   "field": "version",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10
+   }
+  },
+  {
+   "name": "pre-release version",
+   "schema": true,
+   "code": "semver_invalid",
+   "field": "version",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0-beta",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10
+   }
+  },
+  {
+   "name": "priority above int32",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "priority",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 2147483648
+   }
+  },
+  {
+   "name": "string priority",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "priority",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": "1"
+   }
+  },
+  {
+   "name": "blank description",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "description",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "  ",
+    "priority": 10
+   }
+  },
+  {
+   "name": "description over 2048 characters",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "description",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "priority": 10
+   }
+  },
+  {
+   "name": "requirement with bad id",
+   "schema": true,
+   "code": "id_invalid",
+   "field": "requires[0].id",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "base",
+      "range": "*"
+     }
+    ]
+   }
+  },
+  {
+   "name": "requirement without range",
+   "schema": true,
+   "code": "member_missing",
+   "field": "requires[0].range",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.qa.base"
+     }
+    ]
+   }
+  },
+  {
+   "name": "range missing components",
+   "schema": true,
+   "code": "range_invalid",
+   "field": "requires[0].range",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.qa.base",
+      "range": "^1"
+     }
+    ]
+   }
+  },
+  {
+   "name": "range with space after operator",
+   "schema": true,
+   "code": "range_invalid",
+   "field": "requires[0].range",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.qa.base",
+      "range": ">= 1.0.0"
+     }
+    ]
+   }
+  },
+  {
+   "name": "range with double space",
+   "schema": true,
+   "code": "range_invalid",
+   "field": "requires[0].range",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.qa.base",
+      "range": "1.0.0  2.0.0"
+     }
+    ]
+   }
+  },
+  {
+   "name": "range with alternation",
+   "schema": true,
+   "code": "range_invalid",
+   "field": "requires[0].range",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.qa.base",
+      "range": "1.0.0 || 2.0.0"
+     }
+    ]
+   }
+  },
+  {
+   "name": "range with x wildcard",
+   "schema": true,
+   "code": "range_invalid",
+   "field": "requires[0].range",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.qa.base",
+      "range": "1.x"
+     }
+    ]
+   }
+  },
+  {
+   "name": "duplicate conflict",
+   "schema": true,
+   "code": "entry_duplicate",
+   "field": "conflicts_with[1]",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "conflicts_with": [
+     "bim.qa.x",
+     "bim.qa.x"
+    ]
+   }
+  },
+  {
+   "name": "single-segment defaults key",
+   "schema": true,
+   "code": "key_invalid",
+   "field": "defaults.wall",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "defaults": {
+     "wall": 1
+    }
+   }
+  },
+  {
+   "name": "null default value",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "defaults.wall.height_m",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "defaults": {
+     "wall.height_m": null
+    }
+   }
+  },
+  {
+   "name": "object default value",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "defaults.wall.height_m",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "defaults": {
+     "wall.height_m": {}
+    }
+   }
+  },
+  {
+   "name": "number parameter with text default",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "parameters[0].default",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "number",
+      "default": "1"
+     }
+    ]
+   }
+  },
+  {
+   "name": "integer parameter with fractional default",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "parameters[0].default",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "integer",
+      "default": 1.5
+     }
+    ]
+   }
+  },
+  {
+   "name": "boolean parameter with number default",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "parameters[0].default",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "boolean",
+      "default": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "string parameter with number default",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "parameters[0].default",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "string",
+      "default": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "boolean parameter with min",
+   "schema": true,
+   "code": "bounds_invalid",
+   "field": "parameters[0].min",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "boolean",
+      "default": true,
+      "min": 0
+     }
+    ]
+   }
+  },
+  {
+   "name": "string parameter with max",
+   "schema": true,
+   "code": "bounds_invalid",
+   "field": "parameters[0].max",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "string",
+      "default": "a",
+      "max": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "integer parameter with fractional max",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "parameters[0].max",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "integer",
+      "default": 1,
+      "max": 2.5
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown parameter member",
+   "schema": true,
+   "code": "member_unknown",
+   "field": "parameters[0].unit",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "number",
+      "default": 1,
+      "unit": "m"
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown severity",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "rules[0].severity",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "fatal",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "rule id with space",
+   "schema": true,
+   "code": "id_invalid",
+   "field": "rules[0].id",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "R 1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "rule without message",
+   "schema": true,
+   "code": "member_missing",
+   "field": "rules[0].message",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "target with both selectors",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "rules[0].target",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall",
+       "room": "*"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "empty target",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "rules[0].target",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {},
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "room glob with regex syntax",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "rules[0].target.room",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "room": "bed(room)?"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "blank room glob",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "rules[0].target.room",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "room": "   "
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "upper-case element kind",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "rules[0].target.element",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "Wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown check op",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "rules[0].check.op",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "between",
+       "property": "x",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "min with text value",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "rules[0].check.value",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "x",
+       "value": "1"
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "max with boolean value",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "rules[0].check.value",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "max",
+       "property": "x",
+       "value": true
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "ratio_min with text value",
+   "schema": true,
+   "code": "type_invalid",
+   "field": "rules[0].check.value",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "ratio_min",
+       "property": "x",
+       "over": "y",
+       "value": "1"
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "value and parameter",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "rules[0].check.value",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "x",
+       "value": 1,
+       "parameter": "p"
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "neither value nor parameter",
+   "schema": true,
+   "code": "member_missing",
+   "field": "rules[0].check.value",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "max",
+       "property": "x"
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "min with over",
+   "schema": true,
+   "code": "member_unknown",
+   "field": "rules[0].check.over",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "x",
+       "over": "y",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "in with value",
+   "schema": true,
+   "code": "member_unknown",
+   "field": "rules[0].check.value",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "in",
+       "property": "x",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "in with empty values",
+   "schema": true,
+   "code": "value_invalid",
+   "field": "rules[0].check.values",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "in",
+       "property": "x",
+       "values": []
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "in with duplicate values",
+   "schema": true,
+   "code": "entry_duplicate",
+   "field": "rules[0].check.values[2]",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "in",
+       "property": "x",
+       "values": [
+        "a",
+        "b",
+        "a"
+       ]
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "in with too many values",
+   "schema": true,
+   "code": "too_many_items",
+   "field": "rules[0].check.values",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "in",
+       "property": "x",
+       "values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64
+       ]
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "ratio_min without over",
+   "schema": true,
+   "code": "member_missing",
+   "field": "rules[0].check.over",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "ratio_min",
+       "property": "x",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "too many rules",
+   "schema": true,
+   "code": "too_many_items",
+   "field": "rules",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r0",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r2",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r3",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r4",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r5",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r6",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r7",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r8",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r9",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r10",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r11",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r12",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r13",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r14",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r15",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r16",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r17",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r18",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r19",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r20",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r21",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r22",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r23",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r24",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r25",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r26",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r27",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r28",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r29",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r30",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r31",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r32",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r33",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r34",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r35",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r36",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r37",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r38",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r39",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r40",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r41",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r42",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r43",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r44",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r45",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r46",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r47",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r48",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r49",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r50",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r51",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r52",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r53",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r54",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r55",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r56",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r57",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r58",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r59",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r60",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r61",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r62",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r63",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r64",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r65",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r66",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r67",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r68",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r69",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r70",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r71",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r72",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r73",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r74",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r75",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r76",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r77",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r78",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r79",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r80",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r81",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r82",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r83",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r84",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r85",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r86",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r87",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r88",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r89",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r90",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r91",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r92",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r93",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r94",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r95",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r96",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r97",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r98",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r99",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r100",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r101",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r102",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r103",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r104",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r105",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r106",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r107",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r108",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r109",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r110",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r111",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r112",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r113",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r114",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r115",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r116",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r117",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r118",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r119",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r120",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r121",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r122",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r123",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r124",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r125",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r126",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r127",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r128",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r129",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r130",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r131",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r132",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r133",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r134",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r135",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r136",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r137",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r138",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r139",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r140",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r141",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r142",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r143",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r144",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r145",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r146",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r147",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r148",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r149",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r150",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r151",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r152",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r153",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r154",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r155",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r156",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r157",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r158",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r159",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r160",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r161",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r162",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r163",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r164",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r165",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r166",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r167",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r168",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r169",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r170",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r171",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r172",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r173",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r174",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r175",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r176",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r177",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r178",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r179",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r180",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r181",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r182",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r183",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r184",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r185",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r186",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r187",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r188",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r189",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r190",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r191",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r192",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r193",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r194",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r195",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r196",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r197",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r198",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r199",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r200",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r201",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r202",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r203",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r204",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r205",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r206",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r207",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r208",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r209",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r210",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r211",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r212",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r213",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r214",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r215",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r216",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r217",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r218",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r219",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r220",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r221",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r222",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r223",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r224",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r225",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r226",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r227",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r228",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r229",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r230",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r231",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r232",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r233",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r234",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r235",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r236",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r237",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r238",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r239",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r240",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r241",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r242",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r243",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r244",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r245",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r246",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r247",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r248",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r249",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r250",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r251",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r252",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r253",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r254",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r255",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r256",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "duplicate root member",
+   "schema": false,
+   "code": "member_duplicate",
+   "field": "priority",
+   "text": "{\"manifest_version\":1,\"id\":\"bim.test.alpha\",\"version\":\"1.0.0\",\"kind\":\"qa\",\"description\":\"Corpus skill\",\"priority\":10,\"priority\":3}"
+  },
+  {
+   "name": "comment",
+   "schema": false,
+   "code": "json_invalid",
+   "field": null,
+   "text": "{/*c*/\"manifest_version\":1,\"id\":\"bim.test.alpha\",\"version\":\"1.0.0\",\"kind\":\"qa\",\"description\":\"Corpus skill\",\"priority\":10}"
+  },
+  {
+   "name": "trailing comma",
+   "schema": false,
+   "code": "json_invalid",
+   "field": null,
+   "text": "{\"manifest_version\":1,\"id\":\"bim.test.alpha\",\"version\":\"1.0.0\",\"kind\":\"qa\",\"description\":\"Corpus skill\",\"priority\":10,}"
+  },
+  {
+   "name": "leading byte order mark",
+   "schema": false,
+   "code": "json_invalid",
+   "field": null,
+   "text": "\ufeff{\"manifest_version\":1,\"id\":\"bim.test.alpha\",\"version\":\"1.0.0\",\"kind\":\"qa\",\"description\":\"Corpus skill\",\"priority\":10}"
+  },
+  {
+   "name": "fractional integer token for priority",
+   "schema": false,
+   "code": "type_invalid",
+   "field": "priority",
+   "text": "{\"manifest_version\":1,\"id\":\"bim.test.alpha\",\"version\":\"1.0.0\",\"kind\":\"qa\",\"description\":\"Corpus skill\",\"priority\":10.0}"
+  },
+  {
+   "name": "fractional integer token for manifest_version",
+   "schema": false,
+   "code": "version_unsupported",
+   "field": "manifest_version",
+   "text": "{\"manifest_version\":1.0,\"id\":\"bim.test.alpha\",\"version\":\"1.0.0\",\"kind\":\"qa\",\"description\":\"Corpus skill\",\"priority\":10}"
+  },
+  {
+   "name": "description over 2048 UTF-16 code units",
+   "schema": false,
+   "code": "value_invalid",
+   "field": "description",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+    "priority": 10
+   }
+  },
+  {
+   "name": "self requirement",
+   "schema": false,
+   "code": "self_reference",
+   "field": "requires[0].id",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.test.alpha",
+      "range": "*"
+     }
+    ]
+   }
+  },
+  {
+   "name": "duplicate requirement",
+   "schema": false,
+   "code": "entry_duplicate",
+   "field": "requires[1].id",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.qa.base",
+      "range": "*"
+     },
+     {
+      "id": "bim.qa.base",
+      "range": "^1.0.0"
+     }
+    ]
+   }
+  },
+  {
+   "name": "self conflict",
+   "schema": false,
+   "code": "self_reference",
+   "field": "conflicts_with[0]",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "conflicts_with": [
+     "bim.test.alpha"
+    ]
+   }
+  },
+  {
+   "name": "requiring and conflicting with one skill",
+   "schema": false,
+   "code": "self_reference",
+   "field": "conflicts_with[0]",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "requires": [
+     {
+      "id": "bim.qa.x",
+      "range": "*"
+     }
+    ],
+    "conflicts_with": [
+     "bim.qa.x"
+    ]
+   }
+  },
+  {
+   "name": "duplicate parameter name",
+   "schema": false,
+   "code": "entry_duplicate",
+   "field": "parameters[1].name",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "number",
+      "default": 1
+     },
+     {
+      "name": "depth",
+      "type": "number",
+      "default": 2
+     }
+    ]
+   }
+  },
+  {
+   "name": "inverted parameter bounds",
+   "schema": false,
+   "code": "bounds_invalid",
+   "field": "parameters[0].max",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "number",
+      "default": 1,
+      "min": 2,
+      "max": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "default below min",
+   "schema": false,
+   "code": "default_out_of_range",
+   "field": "parameters[0].default",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "depth",
+      "type": "number",
+      "default": 1,
+      "min": 1.5
+     }
+    ]
+   }
+  },
+  {
+   "name": "duplicate rule id",
+   "schema": false,
+   "code": "entry_duplicate",
+   "field": "rules[1].id",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Too small."
+     },
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "thickness_m",
+       "value": 1
+      },
+      "message": "Other."
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown rule parameter",
+   "schema": false,
+   "code": "parameter_unknown",
+   "field": "rules[0].check.parameter",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "x",
+       "parameter": "missing"
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "min over a boolean parameter",
+   "schema": false,
+   "code": "parameter_type_mismatch",
+   "field": "rules[0].check.parameter",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "parameters": [
+     {
+      "name": "flag",
+      "type": "boolean",
+      "default": true
+     }
+    ],
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "min",
+       "property": "x",
+       "parameter": "flag"
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  },
+  {
+   "name": "ratio_min over itself",
+   "schema": false,
+   "code": "value_invalid",
+   "field": "rules[0].check.over",
+   "manifest": {
+    "manifest_version": 1,
+    "id": "bim.test.alpha",
+    "version": "1.0.0",
+    "kind": "qa",
+    "description": "Corpus skill",
+    "priority": 10,
+    "rules": [
+     {
+      "id": "r1",
+      "severity": "error",
+      "target": {
+       "element": "wall"
+      },
+      "check": {
+       "op": "ratio_min",
+       "property": "x",
+       "over": "x",
+       "value": 1
+      },
+      "message": "Too small."
+     }
+    ]
+   }
+  }
+ ]
+}

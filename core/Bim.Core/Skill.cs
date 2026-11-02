@@ -230,6 +230,12 @@ public static class SkillCodes
     public const string PathUnsafe = "path_unsafe";
     public const string ManifestMissing = "manifest_missing";
     public const string IdMismatch = "id_mismatch";
+    // An I/O or permission failure while enumerating the root or reading a manifest.
+    public const string ReadFailed = "read_failed";
+    // A zero-length manifest (empty file, or a FIFO, device or socket) or a handle that is not a seekable regular file.
+    public const string NotRegularFile = "not_regular_file";
+    // Catalog refusal: two manifests with one id.
+    public const string IdDuplicate = "id_duplicate";
     // Resolver issues (SkillIssue).
     public const string RequestInvalid = "request_invalid";
     public const string SkillMissing = "skill_missing";
