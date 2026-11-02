@@ -47,6 +47,9 @@ public sealed class App : IExternalApplication, IExternalEventHandler
                     } catch(Exception e) {await writer.WriteLineAsync(JsonSerializer.Serialize(new {status="failed",code=e.Message}));}
                 }
             } catch(OperationCanceledException) {break;}
+            // A client that disconnects while the server flushes or disposes (IOException "pipe is broken") or any other
+            // per-connection fault must not end the listener: the next client needs a fresh server instance.
+            catch(Exception) when(!stop.IsCancellationRequested) { await Task.Delay(50); }
         }
     }
     public void Execute(UIApplication app)
