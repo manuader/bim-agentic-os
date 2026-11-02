@@ -4,7 +4,7 @@ namespace Bim.Core;
 
 // Catalogue v2 (P9-01): roofs, stairs, curtain walls and floor openings. Same envelope (protocol_version 1), schema
 // subset, unit rules, copies-only guard and receipts as v1; v1 commands are unchanged. Vendor-free like every
-// RevitCommands*.cs file; the add-in executor (runtimes/revit-native/CommandsExecutorV2.cs) consumes these types.
+// RevitCommands*.cs file; the add-in executor consumes these types.
 
 // Footprint roof: a closed outline on a level. Slope null is a flat roof; otherwise every edge defines that slope.
 public sealed record RoofFootprintCreateArgs(string Level, string Type, IReadOnlyList<Point2> Boundary, Angle? Slope, Length BaseOffset) : RevitCommandArgs;
