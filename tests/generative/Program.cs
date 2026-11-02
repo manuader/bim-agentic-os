@@ -61,7 +61,9 @@ string? Invariants(ProjectBrief brief, SpacePlan plan, PlannerOptions? options =
     if (!plan.IsFeasible) return "not feasible: " + Violations(plan);
     var door = options?.DoorWidthMetres ?? PlannerOptions.DefaultDoorWidthMetres;
     var problems = new List<string>();
-    if (plan.Violations.Count > 0) problems.Add("feasible plan lists violations: " + Violations(plan));
+    // Preferred adjacencies are soft: a feasible plan may miss them, but never a hard constraint.
+    if (plan.Violations.Any(v => v.Hard)) problems.Add("feasible plan lists hard violations: " + Violations(plan));
+    if (plan.Constraints.Any(c => c.Hard == (c.Code == PlanCodes.AdjacencyPreferred))) problems.Add("only preferred adjacencies may be soft");
     var expected = brief.Rooms.Sum(room => room.EffectiveCount);
     if (plan.Rooms.Count != expected) problems.Add("rooms " + plan.Rooms.Count.ToString(CultureInfo.InvariantCulture) + " != " + expected.ToString(CultureInfo.InvariantCulture));
     if (plan.Footprint is not { } footprint) return "feasible plan without footprint";
