@@ -36,6 +36,8 @@ public static class SpacePlanner
     // half the range when the range is narrower.
     const double AreaMargin = 0.01;
     const double Epsilon = 1e-7;
+    // Every allocated area stays strictly positive, so slicing ratios are always defined.
+    const double MinimumAllocatedArea = 1e-6;
     // Fixed evaluation budget per restart for large levels.
     const int EvaluationBudget = 120000;
     const int Restarts = 8;
@@ -82,6 +84,8 @@ public static class SpacePlanner
             if (members.Length == 0) continue;
             var problem = Problem(units, members, pairs, footprint, door);
             var layout = Search(problem, seed, level);
+            if (layout is null)
+                return Infeasible(brief, seed, levels, footprint, door, new[] { Violation(PlanCodes.SearchExhausted, "level " + Text(level), "the seeded search produced no finite-cost layout") });
             for (var local = 0; local < members.Length; local++) boxes[members[local]] = layout[local];
         }
 
@@ -296,9 +300,13 @@ public static class SpacePlanner
             Shrink(members, usableArea);
         }
         if (budget is not { } limit) return;
+        // Building rectangles may add up to the grid slack, so the minimums must fit strictly inside budget - slack.
         var total = units.Sum(unit => unit.MinArea);
+        var capacity = limit - slack;
         if (total > limit) refusals.Add(Violation(PlanCodes.BudgetInsufficient, "plan", "minimum areas " + Text(total) + " m2 exceed budget " + Text(limit) + " m2"));
-        else Shrink(units, limit - slack);
+        else if (!(capacity > total))
+            refusals.Add(Violation(PlanCodes.BudgetInsufficient, "plan", "minimum areas " + Text(total) + " m2 plus grid slack " + Text(slack) + " m2 leave no room within budget " + Text(limit) + " m2"));
+        else Shrink(units, capacity);
     }
 
     // Scales every desired area toward its floor (the margin-raised lower bound, or the minimum when even the floors do
@@ -320,7 +328,7 @@ public static class SpacePlanner
         }
         var minimum = units.Sum(unit => unit.MinArea);
         var scale = desired - minimum > 0 ? Math.Max(0, (capacity - minimum) / (desired - minimum)) : 0;
-        foreach (var unit in units) unit.Desired = unit.MinArea + (unit.Desired - unit.MinArea) * scale;
+        foreach (var unit in units) unit.Desired = Math.Max(MinimumAllocatedArea, unit.MinArea + (unit.Desired - unit.MinArea) * scale);
     }
 
     // Adjacencies deduplicated by unordered pair and kind, in brief order, with their instance indices.
@@ -361,7 +369,8 @@ public static class SpacePlanner
 
     // ---- layout ----
 
-    static Box[] Search(LevelProblem problem, int seed, int level)
+    // Null only when no genome had a finite cost; the caller reports that as search_exhausted.
+    static Box[]? Search(LevelProblem problem, int seed, int level)
     {
         var count = problem.Areas.Length;
         var random = new SplitMix(seed, level);
@@ -384,7 +393,7 @@ public static class SpacePlanner
             }
             var current = new Genome(order, new int[Math.Max(0, count - 1)], new bool[Math.Max(0, count - 1)], restart % 2 == 0 ? WidthSteps : random.Next(WidthSteps + 1));
             var cost = Cost(problem, current);
-            if (cost < bestCost) { bestCost = cost; best = current; }
+            if (best is null || cost < bestCost) { bestCost = cost; best = current; }
             for (var iteration = 0; iteration < iterations; iteration++)
             {
                 var candidate = current.Copy();
@@ -399,7 +408,7 @@ public static class SpacePlanner
                 }
             }
         }
-        return Layout(problem, best ?? throw new InvalidOperationException("search produced no layout"));
+        return best is null ? null : Layout(problem, best);
     }
 
     static void Mutate(Genome genome, SplitMix random)
@@ -432,12 +441,13 @@ public static class SpacePlanner
     static double Cost(LevelProblem problem, Genome genome)
     {
         var (hard, score) = Evaluate(problem, Layout(problem, genome));
-        return hard * HardWeight + (1 - score);
+        var cost = hard * HardWeight + (1 - score);
+        return double.IsFinite(cost) ? cost : double.MaxValue;
     }
 
     static Box[] Layout(LevelProblem problem, Genome genome)
     {
-        var total = problem.Areas.Sum();
+        var total = Math.Max(problem.Areas.Sum(), MinimumAllocatedArea);
         var width = FloorGrid(problem.Width);
         var depth = FloorGrid(problem.Depth);
         var narrowest = Math.Min(width, Math.Max(CeilGrid(total / depth), 1 / GridScale));
@@ -472,7 +482,7 @@ public static class SpacePlanner
         var cut = Math.Clamp(balanced + genome.Shift[index], low + 1, high - 1);
         double left = 0;
         for (var i = low; i < cut; i++) left += problem.Areas[genome.Order[i]];
-        var ratio = left / total;
+        var ratio = total > 0 ? left / total : (double)(cut - low) / (high - low);
         var vertical = box.X1 - box.X0 >= box.Y1 - box.Y0;
         if (genome.Flip[index]) vertical = !vertical;
         if (vertical)
