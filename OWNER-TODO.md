@@ -46,3 +46,9 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [x] git pull, check-native-source.ps1 (PASSED), N21 runs 1–2 pass.
 - [ ] Close the leftover test Revit "BIM-Agentic-Test" without saving (third N21 run, timed out).
 - [ ] N21 third run, later: `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Runs 1` and click Load Once.
+
+## Relay134 (2026-11-02, cloud)
+- [x] GitHub access for the cloud scheduled relay works now (push to baton/state and main, API/CI reads). Older "give the scheduled task GitHub access" items are resolved.
+- [ ] 🔒 P1-04/C04 catalogue re-run with the pipe fix (main includes ed5c759): `git pull` then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (click Load Once). Expect 17/17.
+- [ ] 🔒 N21 third run: `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Runs 1`.
+- Optional: allow dot.net / builds.dotnet.microsoft.com / api.nuget.org in network egress so cloud relays can build locally (faster than CI round-trips). Not required.
