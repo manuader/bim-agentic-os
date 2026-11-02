@@ -1,0 +1,75 @@
+{
+  "brief_version": 1,
+  "name": "Two-bedroom apartment, CABA",
+  "constraints": {
+    "jurisdiction": {
+      "value": "CABA",
+      "provenance": { "source": "user", "confidence": 1, "reference": "prompt: apartment in Buenos Aires city" }
+    },
+    "site": {
+      "width_m": { "value": 8.66, "provenance": { "source": "document", "confidence": 0.9, "reference": "programa.pdf: lot 8.66 x 20 m", "page": 1 } },
+      "depth_m": { "value": 20, "provenance": { "source": "document", "confidence": 0.9, "reference": "programa.pdf: lot 8.66 x 20 m", "page": 1 } }
+    },
+    "levels": 1,
+    "total_area_budget_m2": {
+      "value": 75,
+      "provenance": { "source": "document", "confidence": 0.8, "reference": "programa.pdf: 'superficie cubierta total 75 m2'", "page": 2 }
+    }
+  },
+  "rooms": [
+    {
+      "id": "living_dining",
+      "name": "Living-dining",
+      "target_area_m2": { "value": 24, "provenance": { "source": "document", "confidence": 0.85, "reference": "programa.pdf: 'estar-comedor 24 m2'", "page": 2 } },
+      "min_area_m2": 20,
+      "preferred_level": 0
+    },
+    {
+      "id": "kitchen",
+      "name": "Kitchen",
+      "target_area_m2": 8,
+      "min_area_m2": 6,
+      "max_area_m2": 10
+    },
+    {
+      "id": "bedroom_main",
+      "name": "Main bedroom",
+      "target_area_m2": { "value": 12, "provenance": { "source": "document", "confidence": 0.85, "page": 2 } },
+      "min_area_m2": 10,
+      "max_area_m2": 14
+    },
+    {
+      "id": "bedroom_2",
+      "name": "Second bedroom",
+      "target_area_m2": 9,
+      "min_area_m2": 7.5
+    },
+    {
+      "id": "bathroom",
+      "name": "Bathroom",
+      "count": { "value": 1, "provenance": { "source": "user", "confidence": 0.95 } },
+      "target_area_m2": 4.5,
+      "min_area_m2": 3.5
+    },
+    {
+      "id": "laundry",
+      "name": "Laundry",
+      "target_area_m2": { "value": 3, "provenance": { "source": "inferred", "confidence": 0.5, "reference": "typical for a two-bedroom unit" } },
+      "min_area_m2": 2,
+      "provenance": { "source": "inferred", "confidence": 0.6, "reference": "not in programa.pdf; usual service area" }
+    },
+    {
+      "id": "hall",
+      "name": "Hall",
+      "target_area_m2": 4,
+      "min_area_m2": 3
+    }
+  ],
+  "adjacencies": [
+    { "a": "kitchen", "b": "living_dining", "kind": "required", "provenance": { "source": "document", "confidence": 0.8, "page": 2 } },
+    { "a": "bedroom_main", "b": "bathroom", "kind": "preferred" },
+    { "a": "kitchen", "b": "laundry", "kind": "preferred", "provenance": { "source": "inferred", "confidence": 0.55 } },
+    { "a": "hall", "b": "living_dining", "kind": "required" },
+    { "a": "kitchen", "b": "bedroom_main", "kind": "forbidden", "provenance": { "source": "user", "confidence": 0.9 } }
+  ]
+}
