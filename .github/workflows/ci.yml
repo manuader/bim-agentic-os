@@ -63,6 +63,10 @@ jobs:
           .tools/ifc/bin/python -m pip check
       - name: Real IFC integration regressions
         run: .tools/ifc/bin/python -m unittest discover -s tests/ifc -p 'test_*.py' -v
+      - name: Skill manifest schema agreement
+        run: |
+          .tools/ifc/bin/python -m pip install jsonschema==4.23.0
+          .tools/ifc/bin/python -I tests/skills/check_schema.py
       - name: Evaluate real IFC and enforce portable acceptance
         shell: pwsh
         run: |

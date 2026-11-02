@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/manuader/bim-agentic-os/docs/contracts/skill.schema.json",
+  "title": "BIM Agentic OS domain skill manifest v1",
+  "description": "A portable, versioned pack of design knowledge stored at skills/<id>/skill.json, where the directory name equals id. Structure, patterns, semver, ranges, parameter bounds and internal references (unique names, rule parameters, no self requirement or conflict) are enforced by Bim.Core SkillParser; SkillLoader adds size, path and symlink safety; SkillResolver composes skills into effective settings (higher priority wins, equal priority with different values is a conflict unless a precedence order is given).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest_version", "id", "version", "kind", "description", "priority"],
+  "properties": {
+    "manifest_version": { "const": 1, "description": "Written as the integer token 1 only; SkillParser refuses 1.0 and 1e0, which JSON Schema const treats as equal." },
+    "id": { "$ref": "#/$defs/skillId" },
+    "version": { "$ref": "#/$defs/semver" },
+    "kind": { "enum": ["style", "typology", "code", "qa"] },
+    "description": { "$ref": "#/$defs/text" },
+    "priority": { "$ref": "#/$defs/int32" },
+    "requires": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/requirement" }, "default": [] },
+    "conflicts_with": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/skillId" }, "default": [] },
+    "parameters": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/parameter" }, "default": [] },
+    "defaults": {
+      "description": "Dotted setting path to scalar value, for example wall.exterior.thickness_m or room.bedroom.min_area_m2.",
+      "type": "object",
+      "maxProperties": 512,
+      "propertyNames": { "$ref": "#/$defs/settingKey" },
+      "additionalProperties": { "$ref": "#/$defs/scalar" },
+      "default": {}
+    },
+    "rules": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/rule" }, "default": [] }
+  },
+  "$defs": {
+    "text": { "description": "Non-blank well-formed text. SkillParser counts maxLength in UTF-16 code units.", "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "\\S" },
+    "int32": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647, "description": "32-bit, written as an integer token only: SkillParser refuses a fraction or exponent (1.0, 1e0) that JSON Schema integer accepts." },
+    "number": { "type": "number", "description": "Finite number; -0 is read as 0." },
+    "scalar": { "oneOf": [{ "$ref": "#/$defs/number" }, { "$ref": "#/$defs/text" }, { "type": "boolean" }] },
+    "skillId": { "description": "Reverse-DNS-like id: at least two dot-separated labels of [a-z0-9-] starting with a letter, 3-128 characters.", "type": "string", "pattern": "^(?=.{3,128}$)[a-z][a-z0-9-]{0,62}(\\.[a-z][a-z0-9-]{0,62})+$" },
+    "semver": { "description": "MAJOR.MINOR.PATCH without leading zeros, pre-release or build metadata; each component at most 9 digits.", "type": "string", "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$" },
+    "range": { "description": "* or single-space-separated comparators that must all hold; each is a semver optionally prefixed by =, >, >=, <, <=, ^ (same left-most non-zero component) or ~ (same major and minor).", "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^(\\*|(=|>=|<=|>|<|\\^|~)?(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})( (=|>=|<=|>|<|\\^|~)?(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8}))*)$" },
+    "settingKey": { "description": "Dotted path of at least two [a-z][a-z0-9_]* segments, 3-128 characters.", "type": "string", "pattern": "^(?=.{3,128}$)[a-z][a-z0-9_]{0,63}(\\.[a-z][a-z0-9_]{0,63})+$" },
+    "name": { "description": "Parameter, property or element kind name.", "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "range"],
+      "properties": { "id": { "$ref": "#/$defs/skillId" }, "range": { "$ref": "#/$defs/range" } }
+    },
+    "parameter": {
+      "description": "A typed parameter with a default whose JSON type follows type; min and max are allowed only for number and integer (integer tokens for integer). That the default lies within [min, max] and min <= max is enforced by SkillParser only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "default"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "type": { "enum": ["number", "integer", "boolean", "string"] },
+        "default": { "$ref": "#/$defs/scalar" },
+        "min": { "$ref": "#/$defs/number" },
+        "max": { "$ref": "#/$defs/number" },
+        "description": { "$ref": "#/$defs/text" }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "number" } } }, "then": { "properties": { "default": { "$ref": "#/$defs/number" } } } },
+        { "if": { "properties": { "type": { "const": "integer" } } }, "then": { "properties": { "default": { "$ref": "#/$defs/int32" }, "min": { "$ref": "#/$defs/int32" }, "max": { "$ref": "#/$defs/int32" } } } },
+        { "if": { "properties": { "type": { "const": "boolean" } } }, "then": { "properties": { "default": { "type": "boolean" } }, "not": { "anyOf": [{ "required": ["min"] }, { "required": ["max"] }] } } },
+        { "if": { "properties": { "type": { "const": "string" } } }, "then": { "properties": { "default": { "$ref": "#/$defs/text" } }, "not": { "anyOf": [{ "required": ["min"] }, { "required": ["max"] }] } } }
+      ]
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "target", "check", "message"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+        "severity": { "enum": ["error", "warning", "info"] },
+        "target": { "$ref": "#/$defs/target" },
+        "check": { "$ref": "#/$defs/check" },
+        "message": { "$ref": "#/$defs/text" },
+        "citation": { "$ref": "#/$defs/text" }
+      }
+    },
+    "target": {
+      "description": "Exactly one of an element kind or a case-insensitive room name glob where * matches any run of characters.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "element": { "$ref": "#/$defs/name" },
+        "room": { "type": "string", "pattern": "^(?=.*[^ ])[A-Za-z0-9 _*-]{1,128}$" }
+      }
+    },
+    "check": {
+      "description": "A closed set of comparisons over named properties. min: property >= threshold; max: property <= threshold; equals: property == threshold; in: property is one of values; ratio_min: property / over >= threshold. The threshold is a literal value or the name of one of the skill's parameters (number or integer except for equals).",
+      "oneOf": [
+        { "$ref": "#/$defs/thresholdCheck" },
+        { "$ref": "#/$defs/inCheck" },
+        { "$ref": "#/$defs/ratioCheck" }
+      ]
+    },
+    "thresholdCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "property"],
+      "oneOf": [{ "required": ["value"] }, { "required": ["parameter"] }],
+      "if": { "properties": { "op": { "enum": ["min", "max"] } } },
+      "then": { "properties": { "value": { "$ref": "#/$defs/number" } } },
+      "properties": {
+        "op": { "enum": ["min", "max", "equals"] },
+        "property": { "$ref": "#/$defs/name" },
+        "value": { "$ref": "#/$defs/scalar" },
+        "parameter": { "$ref": "#/$defs/name" }
+      }
+    },
+    "inCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "property", "values"],
+      "properties": {
+        "op": { "const": "in" },
+        "property": { "$ref": "#/$defs/name" },
+        "values": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/scalar" } }
+      }
+    },
+    "ratioCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "property", "over"],
+      "oneOf": [{ "required": ["value"] }, { "required": ["parameter"] }],
+      "properties": {
+        "op": { "const": "ratio_min" },
+        "property": { "$ref": "#/$defs/name" },
+        "over": { "$ref": "#/$defs/name" },
+        "value": { "$ref": "#/$defs/number" },
+        "parameter": { "$ref": "#/$defs/name" }
+      }
+    }
+  }
+}
