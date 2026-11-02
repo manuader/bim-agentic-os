@@ -3,7 +3,8 @@ namespace Bim.Generative;
 // Space plan v1: rectangular rooms laid out from a validated project brief (Bim.Core.ProjectBrief). Lengths are
 // metres, areas square metres, levels 0-based. Every room rectangle is axis-aligned with its origin at the south-west
 // corner of the footprint, which itself sits at (0, 0). A plan is either feasible (every hard constraint satisfied)
-// or infeasible (no rooms, only the violated constraints). SpacePlanSerializer writes the canonical form.
+// or infeasible (no rooms, only the violated constraints). Rectangle coordinates lie on a 1/8192 m grid, so they are
+// exact doubles: a room's Right (X + Width) is bit-identical to the X of the neighbour it shares that edge with. SpacePlanSerializer writes the canonical form.
 public enum SpacePlanStatus { Feasible, Infeasible }
 
 public sealed record PlanFootprint(double WidthMetres, double DepthMetres);
@@ -32,6 +33,7 @@ public sealed record SpacePlan(SpacePlanStatus Status, string BriefName, int See
     public const int CurrentVersion = 1;
     public bool IsFeasible => Status == SpacePlanStatus.Feasible;
     public IReadOnlyList<PlanConstraint> Violations => Constraints.Where(constraint => !constraint.Satisfied).ToArray();
+    public IReadOnlyList<PlanConstraint> HardViolations => Constraints.Where(constraint => constraint.Hard && !constraint.Satisfied).ToArray();
 }
 
 // A minimum-dimension rule for the rooms it selects: RoomId matches a room id exactly, NamePattern matches the room
@@ -63,6 +65,11 @@ public static class PlanCodes
     public const string AreaRangeConflict = "area_range_conflict";
     public const string LevelAreaInsufficient = "level_area_insufficient";
     public const string BudgetInsufficient = "budget_insufficient";
+    // More levels, room instances or footprint size than SpacePlanner.MaxLevels / MaxInstances / MaxFootprintMetres.
+    public const string PlanTooLarge = "plan_too_large";
+    // The seeded search ended without a layout meeting every hard constraint (not a proof that none exists); the
+    // violated constraints of its best layout follow.
+    public const string SearchExhausted = "search_exhausted";
     // Constraints checked on the layout.
     public const string AreaMin = "area_min";
     public const string AreaMax = "area_max";

@@ -3,6 +3,7 @@ using Bim.Generative;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 // P7-01 constraint space planner oracle: the checked-in apartment-2br brief, every constraint type (area range,
 // minimum side, required/forbidden/preferred adjacency, footprint, levels, counts, budget, planner rules), canonical
 // output determinism across runs, seeds and cultures, typed infeasible results, non-overlap and in-site invariants
@@ -54,15 +55,18 @@ bool Has(SpacePlan plan, string code, string subject, bool hard, bool satisfied)
 double ShortSide(PlannedRoom? room) => room is null ? -1 : Math.Min(room.Rect.Width, room.Rect.Depth);
 string Layout(SpacePlan plan) => string.Join(";", plan.Rooms.Select(r => r.InstanceId + "@" + r.Level.ToString(CultureInfo.InvariantCulture) + ":" + F(r.Rect.X) + "," + F(r.Rect.Y) + "," + F(r.Rect.Width) + "," + F(r.Rect.Depth)));
 
-// Independent oracle for a feasible plan: counts, areas against the brief, footprint containment, level range,
-// pairwise non-overlap per level, adjacency semantics and the area budget. Null when everything holds.
+// Independent oracle for a feasible plan: counts; areas against the brief and the planner rules (rule minimum area,
+// rule minimum side, and that side squared raising the minimum area), checked exactly on the output rectangles;
+// strict maxima; footprint containment; level range; pairwise non-overlap per level; bit-identical shared edges;
+// adjacency semantics and the area budget. Null when everything holds.
 string? Invariants(ProjectBrief brief, SpacePlan plan, PlannerOptions? options = null)
 {
     if (!plan.IsFeasible) return "not feasible: " + Violations(plan);
     var door = options?.DoorWidthMetres ?? PlannerOptions.DefaultDoorWidthMetres;
+    var rules = options?.Rules?.Rules ?? Array.Empty<PlannerRule>();
     var problems = new List<string>();
     // Preferred adjacencies are soft: a feasible plan may miss them, but never a hard constraint.
-    if (plan.Violations.Any(v => v.Hard)) problems.Add("feasible plan lists hard violations: " + Violations(plan));
+    if (plan.HardViolations.Count > 0 || plan.Violations.Any(v => v.Hard)) problems.Add("feasible plan lists hard violations: " + Violations(plan));
     if (plan.Constraints.Any(c => c.Hard == (c.Code == PlanCodes.AdjacencyPreferred))) problems.Add("only preferred adjacencies may be soft");
     var expected = brief.Rooms.Sum(room => room.EffectiveCount);
     if (plan.Rooms.Count != expected) problems.Add("rooms " + plan.Rooms.Count.ToString(CultureInfo.InvariantCulture) + " != " + expected.ToString(CultureInfo.InvariantCulture));
@@ -73,15 +77,31 @@ string? Invariants(ProjectBrief brief, SpacePlan plan, PlannerOptions? options =
         var spec = brief.Rooms.FirstOrDefault(r => r.Id == room.RoomId);
         if (spec is null) { problems.Add("unknown room " + room.RoomId); continue; }
         var rect = room.Rect;
+        double minArea = spec.MinAreaSquareMetres?.Value ?? 0, minSide = 0;
+        foreach (var rule in rules.Where(candidate => (candidate.RoomId is null || candidate.RoomId == spec.Id) && (candidate.NamePattern is null || Wildcard(candidate.NamePattern, spec.Name))))
+        {
+            minArea = Math.Max(minArea, rule.MinAreaSquareMetres ?? 0);
+            minSide = Math.Max(minSide, rule.MinSideMetres ?? 0);
+        }
+        minArea = Math.Max(minArea, minSide * minSide);
         if (!(rect.Width > 0 && rect.Depth > 0)) problems.Add(room.InstanceId + " degenerate");
-        if (spec.MinAreaSquareMetres is { } min && room.AreaSquareMetres < min.Value) problems.Add(room.InstanceId + " area " + F(room.AreaSquareMetres) + " below min " + F(min.Value));
-        if (spec.MaxAreaSquareMetres is { } max && room.AreaSquareMetres > max.Value + 0.02) problems.Add(room.InstanceId + " area " + F(room.AreaSquareMetres) + " above max " + F(max.Value));
-        if (rect.X < -1e-9 || rect.Y < -1e-9 || rect.Right > footprint.WidthMetres + 1e-9 || rect.Top > footprint.DepthMetres + 1e-9) problems.Add(room.InstanceId + " outside footprint");
+        if (rect.Area != room.AreaSquareMetres || rect.Width * rect.Depth < minArea) problems.Add(room.InstanceId + " area " + F(rect.Area) + " below min " + F(minArea));
+        if (Math.Min(rect.Width, rect.Depth) < minSide) problems.Add(room.InstanceId + " side " + F(Math.Min(rect.Width, rect.Depth)) + " below min " + F(minSide));
+        if (spec.MaxAreaSquareMetres is { } max && rect.Area > max.Value + 1e-9) problems.Add(room.InstanceId + " area " + F(rect.Area) + " above max " + F(max.Value));
+        if (rect.X < 0 || rect.Y < 0 || rect.Right > footprint.WidthMetres || rect.Top > footprint.DepthMetres) problems.Add(room.InstanceId + " outside footprint");
         if (room.Level < 0 || room.Level >= levels) problems.Add(room.InstanceId + " level out of range");
     }
     for (var i = 0; i < plan.Rooms.Count; i++)
         for (var j = i + 1; j < plan.Rooms.Count; j++)
-            if (plan.Rooms[i].Level == plan.Rooms[j].Level && Overlaps(plan.Rooms[i].Rect, plan.Rooms[j].Rect)) problems.Add(plan.Rooms[i].InstanceId + " overlaps " + plan.Rooms[j].InstanceId);
+        {
+            var (x, y) = (plan.Rooms[i], plan.Rooms[j]);
+            if (x.Level != y.Level) continue;
+            if (Overlaps(x.Rect, y.Rect)) problems.Add(x.InstanceId + " overlaps " + y.InstanceId);
+            // Edges that nearly coincide must coincide exactly: X + Width of one equals X of the other, bit for bit.
+            foreach (var (edge, start) in new[] { (x.Rect.Right, y.Rect.X), (y.Rect.Right, x.Rect.X), (x.Rect.Top, y.Rect.Y), (y.Rect.Top, x.Rect.Y) })
+                if (Math.Abs(edge - start) < 1e-6 && BitConverter.DoubleToInt64Bits(edge) != BitConverter.DoubleToInt64Bits(start))
+                    problems.Add(x.InstanceId + "/" + y.InstanceId + " edges differ by " + (edge - start).ToString("R", CultureInfo.InvariantCulture));
+        }
     foreach (var adjacency in brief.Adjacencies)
     {
         var a = plan.Rooms.Where(room => room.RoomId == adjacency.A).ToArray();
@@ -99,7 +119,7 @@ string? Invariants(ProjectBrief brief, SpacePlan plan, PlannerOptions? options =
                     if (x.Level == y.Level && SharedEdge(x.Rect, y.Rect) > 1e-6) problems.Add(x.InstanceId + " touches forbidden " + y.InstanceId);
         }
     }
-    if (brief.Constraints.TotalAreaBudgetSquareMetres is { } budget && plan.Rooms.Sum(room => room.AreaSquareMetres) > budget.Value + 0.02) problems.Add("budget exceeded");
+    if (brief.Constraints.TotalAreaBudgetSquareMetres is { } budget && plan.Rooms.Sum(room => room.AreaSquareMetres) > budget.Value + 1e-9) problems.Add("budget exceeded");
     return problems.Count == 0 ? null : string.Join("; ", problems.Take(6));
 }
 
@@ -196,8 +216,9 @@ try
         var rooms = top.GetProperty("rooms");
         var plan7 = Attempt(example, 7);
         Check(rooms.GetArrayLength() == 7 && rooms.EnumerateArray().Zip(plan7.Rooms).All(pair => pair.First.GetProperty("instance").GetString() == pair.Second.InstanceId
-            && Math.Abs(pair.First.GetProperty("x_m").GetDouble() - pair.Second.Rect.X) < 1e-6 && Math.Abs(pair.First.GetProperty("width_m").GetDouble() - pair.Second.Rect.Width) < 1e-6
-            && Math.Abs(pair.First.GetProperty("area_m2").GetDouble() - pair.Second.AreaSquareMetres) < 1e-6), "canonical JSON rooms mirror the plan rectangles");
+            && pair.First.GetProperty("x_m").GetDouble() == pair.Second.Rect.X && pair.First.GetProperty("y_m").GetDouble() == pair.Second.Rect.Y
+            && pair.First.GetProperty("width_m").GetDouble() == pair.Second.Rect.Width && pair.First.GetProperty("depth_m").GetDouble() == pair.Second.Rect.Depth
+            && pair.First.GetProperty("area_m2").GetDouble() == pair.Second.AreaSquareMetres), "canonical JSON rooms reproduce the plan rectangles exactly");
         Check(top.GetProperty("constraints").GetArrayLength() == plan7.Constraints.Count && top.GetProperty("footprint").GetProperty("width_m").GetDouble() == 8.66,
             "canonical JSON lists every constraint and the footprint");
         Check(!canonical.Contains('\n', StringComparison.Ordinal) && canonical.StartsWith("{\"plan_version\":1,\"status\":\"feasible\",", StringComparison.Ordinal), "canonical JSON is compact with fixed member order");
@@ -264,7 +285,7 @@ try
     var ranged = Brief("ranged", 6, 6, new[] { Room("study", min: 12, max: 14), Room("store", min: 3), Room("spare") });
     var rangedPlan = Attempt(ranged, 2);
     Check(rangedPlan.IsFeasible && Invariants(ranged, rangedPlan) is null, "rooms with only min/max or no areas plan feasibly", Invariants(ranged, rangedPlan) ?? "");
-    Check(Find(rangedPlan, "study") is { } study && study.AreaSquareMetres >= 12 && study.AreaSquareMetres <= 14.02 && Has(rangedPlan, PlanCodes.AreaMax, "study", true, true),
+    Check(Find(rangedPlan, "study") is { } study && study.AreaSquareMetres >= 12 && study.AreaSquareMetres <= 14 && Has(rangedPlan, PlanCodes.AreaMax, "study", true, true),
         "min/max range bounds the study area", F(Find(rangedPlan, "study")?.AreaSquareMetres ?? -1));
     Check(Find(rangedPlan, "store") is { } store && store.AreaSquareMetres >= 3 && Find(rangedPlan, "spare") is { AreaSquareMetres: > 0 }, "min-only and area-free rooms get positive area");
 
@@ -310,7 +331,7 @@ try
 
     var budgeted = Brief("budget", 10, 10, new[] { Room("a", 20, 15), Room("b", 20, 15) }, budget: 34);
     var budgetedPlan = Attempt(budgeted, 1);
-    Check(budgetedPlan.IsFeasible && budgetedPlan.Rooms.Sum(r => r.AreaSquareMetres) <= 34.02 && budgetedPlan.Rooms.All(r => r.AreaSquareMetres >= 15) && Has(budgetedPlan, PlanCodes.AreaBudget, "plan", true, true),
+    Check(budgetedPlan.IsFeasible && budgetedPlan.Rooms.Sum(r => r.AreaSquareMetres) <= 34 && budgetedPlan.Rooms.All(r => r.AreaSquareMetres >= 15) && Has(budgetedPlan, PlanCodes.AreaBudget, "plan", true, true),
         "areas shrink toward their minimums to meet the budget", Layout(budgetedPlan));
 
     // ---- infeasible briefs: typed results, never exceptions ----
@@ -330,7 +351,7 @@ try
     Infeasible("a door wider than any wall makes the required adjacency infeasible",
         Attempt(Brief("tiny", 3, 3, new[] { Room("a", 4), Room("b", 4) }, new[] { Adj("a", "b", BriefAdjacencyKind.Required) }), 1, new PlannerOptions(DoorWidthMetres: 4)),
         PlanCodes.AdjacencyRequired, "a/b");
-    Infeasible("two rooms on one level always touch, so forbidding it is infeasible",
+    Infeasible("the planner tiles one rectangle per level and cannot separate its only two rooms, so forbidding their contact is reported infeasible",
         Attempt(Brief("pair", 10, 10, new[] { Room("a", 10), Room("b", 10) }, new[] { Adj("a", "b", BriefAdjacencyKind.Forbidden) })), PlanCodes.AdjacencyForbidden, "a/b");
     Infeasible("a required adjacency across levels is infeasible",
         Attempt(Brief("split", 6, 6, new[] { Room("a", 10, level: 0), Room("b", 10, level: 1) }, new[] { Adj("a", "b", BriefAdjacencyKind.Required) }, levels: 2)), PlanCodes.AdjacencyRequired, "a/b");
@@ -358,6 +379,85 @@ try
     try { SpacePlanner.Plan(null!, 1); }
     catch (ArgumentNullException) { nullBrief = true; }
     Check(nullBrief, "a null brief is a programming error (ArgumentNullException)");
+
+    // ---- search exhaustion versus provable refusals ----
+    bool Exhausted(SpacePlan plan) => plan.Violations.Any(c => c.Code == PlanCodes.SearchExhausted && c.Subject == "plan" && c.Hard && c.Detail.Length > 0);
+    var exhaustedCases = new[]
+    {
+        Attempt(Brief("narrow", 5, 30, new[] { Room("big", 30), Room("small", 6) }), 1, new PlannerOptions(Rules: new PlannerRules(new[] { new PlannerRule(RoomId: "big", MinSideMetres: 6) }))),
+        Attempt(Brief("tiny", 3, 3, new[] { Room("a", 4), Room("b", 4) }, new[] { Adj("a", "b", BriefAdjacencyKind.Required) }), 1, new PlannerOptions(DoorWidthMetres: 4)),
+        Attempt(Brief("pair", 10, 10, new[] { Room("a", 10), Room("b", 10) }, new[] { Adj("a", "b", BriefAdjacencyKind.Forbidden) })),
+    };
+    Check(exhaustedCases.All(Exhausted) && exhaustedCases.All(plan => plan.HardViolations.Count >= 2), "a search that finds no layout reports search_exhausted with the violated constraints",
+        string.Join(" || ", exhaustedCases.Select(Violations)));
+    var refusedCases = new[] { Attempt(crowded, 1), Attempt(Brief("nowhere", null, null, new[] { Room("a", 10) })), Attempt(simple, 1, new PlannerOptions(DoorWidthMetres: 0)) };
+    Check(refusedCases.All(plan => !plan.IsFeasible && !Exhausted(plan)), "provable input refusals never report search_exhausted", string.Join(" || ", refusedCases.Select(Violations)));
+
+    // ---- size caps: typed plan_too_large, fast, never an exception ----
+    void TooLarge(string name, ProjectBrief brief, string subject)
+    {
+        var timer = Stopwatch.StartNew();
+        var plan = Attempt(brief, 1);
+        timer.Stop();
+        Infeasible(name, plan, PlanCodes.PlanTooLarge, subject);
+        Check(timer.Elapsed.TotalSeconds < 2, name + " returns within 2 s", timer.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms");
+    }
+    TooLarge("2 000 000 000 levels are refused as plan_too_large", Brief("tall", 6, 6, new[] { Room("a", 10) }, levels: 2000000000), "constraints.levels");
+    TooLarge("preferred level int.MaxValue without a level count is refused as plan_too_large", Brief("high", 6, 6, new[] { Room("a", 10, level: int.MaxValue) }), "rooms[0].preferred_level");
+    TooLarge("a count of 1 000 000 is refused as plan_too_large", Brief("many", 6, 6, new[] { Room("a", 1, count: 1000000) }), "rooms");
+    TooLarge("more than SpacePlanner.MaxInstances instances are refused", Brief("over", 100, 100, new[] { Room("a", 1, count: 400), Room("b", 1, count: 101) }), "rooms");
+    TooLarge("a site wider than SpacePlanner.MaxFootprintMetres is refused", Brief("vast", 1e12, 6, new[] { Room("a", 10) }), "footprint");
+    Check(SpacePlanner.MaxLevels == 200 && SpacePlanner.MaxInstances == 500, "the documented caps are 200 levels and 500 instances");
+    var capLevels = Brief("cap levels", 6, 6, new[] { Room("a", 10, level: 0), Room("b", 10, level: 199) }, levels: 200);
+    var capPlan = Attempt(capLevels, 1);
+    Check(capPlan.IsFeasible && Find(capPlan, "b")?.Level == 199 && Invariants(capLevels, capPlan) is null, "200 levels, the cap, still plan", Violations(capPlan));
+
+    // ---- narrow and degenerate area ranges stay inside the range ----
+    string? narrowProblem = null;
+    foreach (var (low, high) in new[] { (10.0, 10.005), (10.0, 10.02), (7.5, 7.5001) })
+    {
+        var narrow = Brief("narrow range", 6, 6, new[] { Room("tight", min: low, max: high), Room("free", 8) });
+        for (var seed = 1; seed <= 4; seed++)
+        {
+            var plan = Attempt(narrow, seed);
+            var tight = Find(plan, "tight");
+            var problem = plan.IsFeasible
+                ? (tight is not null && tight.AreaSquareMetres >= low && tight.AreaSquareMetres <= high + 1e-9 ? Invariants(narrow, plan) : "tight area " + F(tight?.AreaSquareMetres ?? -1))
+                : high - low >= 0.005 ? "infeasible: " + Violations(plan) : Exhausted(plan) ? null : "infeasible without search_exhausted: " + Violations(plan);
+            if (problem is not null && narrowProblem is null) narrowProblem = F(low) + ".." + F(high) + " seed " + seed.ToString(CultureInfo.InvariantCulture) + ": " + problem;
+        }
+    }
+    Check(narrowProblem is null, "ranges of 0.005 m2 and wider plan inside the range; narrower ones are inside the range or search_exhausted", narrowProblem ?? "");
+    string? exactProblem = null;
+    var exact = Brief("exact", 6, 6, new[] { Room("fixed", min: 10, max: 10), Room("free", 8) });
+    for (var seed = 1; seed <= 4; seed++)
+    {
+        var plan = Attempt(exact, seed);
+        var problem = plan.IsFeasible
+            ? (Find(plan, "fixed") is { } fixedRoom && fixedRoom.AreaSquareMetres >= 10 && fixedRoom.AreaSquareMetres <= 10 + 1e-9 ? null : "fixed area outside 10..10")
+            : Exhausted(plan) && plan.Violations.Any(c => (c.Code == PlanCodes.AreaMin || c.Code == PlanCodes.AreaMax) && c.Subject == "fixed") ? null : "unexpected: " + Violations(plan);
+        if (problem is not null && exactProblem is null) exactProblem = "seed " + seed.ToString(CultureInfo.InvariantCulture) + ": " + problem;
+    }
+    Check(exactProblem is null, "min = max is never reported satisfied outside the range", exactProblem ?? "");
+
+    // ---- level assignment ----
+    var balanced = Brief("balanced levels", 6, 6, new[] { Room("a", min: 19), Room("b", min: 16), Room("c", min: 16), Room("d", min: 19) }, levels: 2);
+    var balancedPlan = Attempt(balanced, 1);
+    Check(balancedPlan.IsFeasible && Invariants(balanced, balancedPlan) is null && Find(balancedPlan, "a")?.Level != Find(balancedPlan, "d")?.Level,
+        "largest-first assignment fits minimums {19,16,16,19} into two 6 x 6 levels", Violations(balancedPlan) + " " + Layout(balancedPlan));
+
+    // ---- budget shrinking never refills a level ----
+    var refill = Brief("refill", 4, 5, new[] { Room("a", min: 10, level: 0), Room("b", min: 9.995, level: 0), Room("c", 5, 5, level: 1) }, levels: 2, budget: 25.01);
+    var refillPlan = Attempt(refill, 1);
+    var levelZero = refillPlan.Rooms.Where(r => r.Level == 0).Sum(r => r.AreaSquareMetres);
+    Check(refillPlan.IsFeasible && Invariants(refill, refillPlan) is null && levelZero <= 20 && refillPlan.Rooms.Sum(r => r.AreaSquareMetres) <= 25.01,
+        "budget shrinking keeps a full level within its footprint", Violations(refillPlan) + " level 0 " + F(levelZero));
+
+    // ---- an impossible preferred adjacency is only a soft miss ----
+    var softBrief = Brief("soft", 6, 6, new[] { Room("a", 10, level: 0), Room("b", 10, level: 1) }, new[] { Adj("a", "b", BriefAdjacencyKind.Preferred) }, levels: 2);
+    var softPlan = Attempt(softBrief, 1);
+    Check(softPlan.IsFeasible && softPlan.HardViolations.Count == 0 && Has(softPlan, PlanCodes.AdjacencyPreferred, "a/b", false, false) && softPlan.Violations.Count == 1,
+        "an impossible preferred adjacency still plans feasibly with one unsatisfied soft constraint", Violations(softPlan));
 
     // ---- 30-room performance ----
     string Id(int i) => "r" + i.ToString("00", CultureInfo.InvariantCulture);
@@ -397,5 +497,10 @@ static double SharedEdge(PlanRect a, PlanRect b)
     if (Math.Abs(a.Top - b.Y) < tolerance || Math.Abs(b.Top - a.Y) < tolerance) return Math.Max(0, Math.Min(a.Right, b.Right) - Math.Max(a.X, b.X));
     return 0;
 }
+
+// Independent wildcard matcher for rule name patterns: '*' any run, '?' one character, case-insensitive.
+static bool Wildcard(string pattern, string text) =>
+    Regex.IsMatch(text, @"\A" + Regex.Escape(pattern).Replace(@"\*", ".*", StringComparison.Ordinal).Replace(@"\?", ".", StringComparison.Ordinal) + @"\z",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline, TimeSpan.FromSeconds(1));
 
 static bool Overlaps(PlanRect a, PlanRect b) => Math.Min(a.Right, b.Right) - Math.Max(a.X, b.X) > 1e-6 && Math.Min(a.Top, b.Top) - Math.Max(a.Y, b.Y) > 1e-6;

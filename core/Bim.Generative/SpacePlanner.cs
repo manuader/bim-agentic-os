@@ -23,6 +23,9 @@ public static class SpacePlanner
 {
     // Max-area and budget checks allow this much over; minimum areas are never relaxed.
     public const double AreaToleranceSquareMetres = 0.02;
+    public const int MaxLevels = 200;
+    public const int MaxInstances = 500;
+    public const double MaxFootprintMetres = 10000;
     const double GridScale = 10000;
     const double AreaMargin = 0.01;
     const double Epsilon = 1e-7;
@@ -43,6 +46,8 @@ public static class SpacePlanner
         foreach (var issue in BriefValidator.Validate(brief))
             if (issue.Severity == BriefSeverity.Error) refusals.Add(Violation(PlanCodes.BriefInvalid, issue.Field, issue.Code + ": " + issue.Detail));
         if (refusals.Count > 0) return Infeasible(brief, seed, levels, null, door, refusals);
+        // Red stub: oversized briefs are not handled yet.
+        if (levels > MaxLevels || brief.Rooms.Sum(room => (long)room.EffectiveCount) > MaxInstances) throw new NotSupportedException("oversized brief");
         // Without a level count the brief may still name preferred levels; plan as many levels as they need.
         if (brief.Constraints.Levels is null) levels = Math.Max(1, brief.Rooms.Max(room => (room.PreferredLevel?.Value ?? 0) + 1));
         if (!Positive(door)) refusals.Add(Violation(PlanCodes.OptionsInvalid, "door_width_m", "positive finite door width required"));
