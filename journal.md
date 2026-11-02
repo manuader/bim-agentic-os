@@ -944,3 +944,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay69 — 2026-11-02T17:05:11Z (Claude, owner chat)
 - Run state moved to GitHub branch baton/state; device scheduled task disabled; cloud scheduled task created. C04 owner session 20261102T165801Z: query.levels PASSED in real Revit (first catalogue command verified); all later requests failed with pipe_connect_timeout: listener died after the first connection. Fix ed5c759 on relay69-pipe-resilience (catch per-connection faults), CI pending.
+
+## Relay134 — 2026-11-02T18:52:53Z (Claude, cloud scheduled)
+- 18:Z LOCK taken (was FREE).
