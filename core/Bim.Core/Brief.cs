@@ -55,6 +55,8 @@ public static class BriefCodes
     public const string ValueInvalid = "value_invalid";
     // Validator issues (BriefIssue).
     public const string NameBlank = "name_blank";
+    public const string TextInvalid = "text_invalid";
+    public const string JurisdictionBlank = "jurisdiction_blank";
     public const string RoomsEmpty = "rooms_empty";
     public const string RoomIdInvalid = "room_id_invalid";
     public const string RoomIdDuplicate = "room_id_duplicate";

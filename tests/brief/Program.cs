@@ -1,4 +1,5 @@
 using Bim.Core;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 // P6-03 project brief contract oracle: strict parser refusals with JSON paths, every validator branch, canonical
@@ -62,10 +63,27 @@ void Flags(string name, JsonNode brief, string code, string field, BriefSeverity
     var issues = IssuesOf(brief);
     Check(issues.Any(issue => issue.Code == code && issue.Field == field && issue.Severity == severity && issue.Detail.Length > 0), name, Describe(issues));
 }
+// Any brief without validator errors must survive Serialize -> Parse -> Serialize unchanged.
+string? RoundTripFailure(ProjectBrief brief)
+{
+    try
+    {
+        var first = BriefSerializer.Serialize(brief);
+        var second = BriefSerializer.Serialize(BriefParser.Parse(first));
+        return first == second ? null : "unstable: " + first + " != " + second;
+    }
+    catch (Exception error) { return error.GetType().Name + " " + error.Message + (error is BriefException typed ? " at " + typed.Field : ""); }
+}
 void Clean(string name, JsonNode brief)
 {
     var issues = IssuesOf(brief);
     Check(issues.Length == 0, name, Describe(issues));
+    if (issues.Length == 0) Check(RoundTripFailure(BriefParser.Parse(brief.ToJsonString())) is null, name + " (round-trips)", RoundTripFailure(BriefParser.Parse(brief.ToJsonString())) ?? "");
+}
+void BuiltFlags(string name, ProjectBrief brief, string code, string field)
+{
+    var issues = BriefValidator.Validate(brief);
+    Check(issues.Any(issue => issue.Code == code && issue.Field == field && issue.Severity == BriefSeverity.Error), name, Describe(issues));
 }
 JsonObject With(Action<JsonObject> change) { var brief = Minimal(); change(brief); return brief; }
 
@@ -145,6 +163,7 @@ try
     RejectsText("array root", "[]", BriefCodes.TypeInvalid);
     RejectsText("too large input", "{\"name\":\"" + new string('x', BriefParser.MaxInputChars) + "\"}", BriefCodes.InputTooLarge);
     RejectsText("nesting deeper than the bound", new string('[', BriefParser.MaxDepth + 2) + new string(']', BriefParser.MaxDepth + 2), BriefCodes.JsonInvalid);
+    RejectsText("raw lone surrogate character", Minimal().ToJsonString().Replace("Test brief", "bad \uD800 name", StringComparison.Ordinal), BriefCodes.JsonInvalid);
     RejectsText("lone surrogate string", Minimal().ToJsonString().Replace("Test brief", "bad \\ud800 name", StringComparison.Ordinal), BriefCodes.JsonInvalid);
     Rejects("missing brief_version", With(brief => brief.Remove("brief_version")), BriefCodes.VersionUnsupported, "brief_version");
     Rejects("brief_version 2", With(brief => brief["brief_version"] = 2), BriefCodes.VersionUnsupported, "brief_version");
@@ -168,6 +187,16 @@ try
     Rejects("area as string", With(brief => RoomAt(brief, 0)["target_area_m2"] = "20"), BriefCodes.TypeInvalid, "rooms[0].target_area_m2");
     Rejects("area as null", With(brief => RoomAt(brief, 0)["min_area_m2"] = null), BriefCodes.TypeInvalid, "rooms[0].min_area_m2");
     RejectsText("area overflowing double", Minimal().ToJsonString().Replace("\"name\":\"Living\"", "\"name\":\"Living\",\"max_area_m2\":1e400", StringComparison.Ordinal), BriefCodes.TypeInvalid, "rooms[0].max_area_m2");
+    var astral = "\U0001F600";
+    Check(BriefParser.Parse(With(brief => brief["name"] = string.Concat(Enumerable.Repeat(astral, BriefParser.MaxStringChars / 2))).ToJsonString()).Name.Length == BriefParser.MaxStringChars,
+        "text length counts UTF-16 code units: 1024 astral characters (2048 units) are accepted");
+    Rejects("text length counts UTF-16 code units: 1025 astral characters are refused", With(brief => brief["name"] = string.Concat(Enumerable.Repeat(astral, BriefParser.MaxStringChars / 2 + 1))), BriefCodes.ValueInvalid, "name");
+    RejectsText("count written as 1.0 is not an integer token", Minimal().ToJsonString().Replace("\"name\":\"Living\"", "\"name\":\"Living\",\"count\":1.0", StringComparison.Ordinal), BriefCodes.TypeInvalid, "rooms[0].count");
+    RejectsText("count written as 1e0 is not an integer token", Minimal().ToJsonString().Replace("\"name\":\"Living\"", "\"name\":\"Living\",\"count\":1e0", StringComparison.Ordinal), BriefCodes.TypeInvalid, "rooms[0].count");
+    Rejects("count above Int32.MaxValue", With(brief => RoomAt(brief, 0)["count"] = 2147483648L), BriefCodes.TypeInvalid, "rooms[0].count");
+    Check(BriefParser.Parse(With(brief => { var provenance = Prov("document", 0.5); provenance["page"] = int.MaxValue; RoomAt(brief, 0)["provenance"] = provenance; }).ToJsonString()).Rooms[0].Provenance?.Page == int.MaxValue,
+        "page Int32.MaxValue is accepted");
+    Rejects("page above Int32.MaxValue", With(brief => { var provenance = Prov("document", 0.5); provenance["page"] = 2147483648L; RoomAt(brief, 0)["provenance"] = provenance; }), BriefCodes.TypeInvalid, "rooms[0].provenance.page");
     Rejects("fractional count", With(brief => RoomAt(brief, 0)["count"] = 1.5), BriefCodes.TypeInvalid, "rooms[0].count");
     Rejects("fractional preferred level", With(brief => RoomAt(brief, 0)["preferred_level"] = 0.5), BriefCodes.TypeInvalid, "rooms[0].preferred_level");
     Rejects("sourced value without provenance", With(brief => RoomAt(brief, 0)["target_area_m2"] = new JsonObject { ["value"] = 20 }), BriefCodes.MemberMissing, "rooms[0].target_area_m2.provenance");
@@ -263,8 +292,62 @@ try
     }));
     Check(several.Select(issue => issue.Code).SequenceEqual(new[] { BriefCodes.AreaNonPositive, BriefCodes.RoomIdDuplicate, BriefCodes.AdjacencyRoomUnknown }), "issues are all reported in document order", Describe(several));
     var invalidBuilt = BriefValidator.Validate(new ProjectBrief(2, " ", new BriefConstraints(), new[] { new BriefRoom("Bad Id", "") }, Array.Empty<BriefAdjacency>()));
-    Check(invalidBuilt.Select(issue => issue.Code).SequenceEqual(new[] { BriefCodes.VersionUnsupported, BriefCodes.NameBlank, BriefCodes.RoomIdInvalid, BriefCodes.NameBlank }),
+    Check(invalidBuilt.Select(issue => issue.Code).SequenceEqual(new[] { BriefCodes.VersionUnsupported, BriefCodes.TextInvalid, BriefCodes.RoomIdInvalid, BriefCodes.TextInvalid }),
         "validator also guards briefs built in code (version, blank names, room id format)", Describe(invalidBuilt));
+    var longName = new string('n', 3000);
+    BuiltFlags("built brief with a 3000-character room name", built with { Rooms = new[] { built.Rooms[0] with { Name = longName }, built.Rooms[1] } }, BriefCodes.TextInvalid, "rooms[0].name");
+    BuiltFlags("built brief with an empty provenance reference", built with { Rooms = new[] { built.Rooms[0], built.Rooms[1] with { Provenance = new BriefProvenance(BriefSource.Inferred, 0.25, "") } } },
+        BriefCodes.TextInvalid, "rooms[1].provenance.reference");
+    BuiltFlags("built brief with an over-long value reference", built with { Constraints = built.Constraints with { Site = new BriefSite(new BriefValue<double>(10), new BriefValue<double>(30, new BriefProvenance(BriefSource.Document, 0.7, longName))) } },
+        BriefCodes.TextInvalid, "constraints.site.depth_m.provenance.reference");
+    BuiltFlags("built brief with a 3000-character name", built with { Name = longName }, BriefCodes.TextInvalid, "name");
+    BuiltFlags("built brief with a lone surrogate in a room name", built with { Rooms = new[] { built.Rooms[0] with { Name = "bad \uD800" }, built.Rooms[1] } }, BriefCodes.TextInvalid, "rooms[0].name");
+    BuiltFlags("built brief with a blank jurisdiction", built with { Constraints = built.Constraints with { Jurisdiction = new BriefValue<string>(" ") } }, BriefCodes.JurisdictionBlank, "constraints.jurisdiction");
+    BuiltFlags("built brief with an over-long jurisdiction", built with { Constraints = built.Constraints with { Jurisdiction = new BriefValue<string>(longName) } }, BriefCodes.JurisdictionBlank, "constraints.jurisdiction");
+    // Validates => round-trips, over briefs built in code that probe every text and number rule.
+    var candidates = new[]
+    {
+        built,
+        built with { Name = string.Concat(Enumerable.Repeat("\U0001F600", BriefParser.MaxStringChars / 2)) },
+        built with { Name = longName },
+        built with { Name = "bad \uD800" },
+        built with { Name = "" },
+        built with { Rooms = new[] { built.Rooms[0], built.Rooms[1] with { Provenance = new BriefProvenance(BriefSource.Inferred, 0.25, "") } } },
+        built with { Rooms = new[] { built.Rooms[0], built.Rooms[1] with { Provenance = new BriefProvenance(BriefSource.Inferred, double.NaN) } } },
+        built with { Rooms = new[] { built.Rooms[0] with { MaxAreaSquareMetres = new BriefValue<double>(double.PositiveInfinity) }, built.Rooms[1] } },
+        built with { Constraints = built.Constraints with { Jurisdiction = new BriefValue<string>(" ") } },
+        built with { Adjacencies = new[] { new BriefAdjacency("studio", "", BriefAdjacencyKind.Required) } },
+        built with { Rooms = new[] { built.Rooms[0] with { Id = "bad\uD800" }, built.Rooms[1] } },
+    };
+    var validated = 0;
+    var roundTripFailures = new List<string>();
+    foreach (var candidate in candidates)
+    {
+        if (BriefValidator.HasErrors(BriefValidator.Validate(candidate))) continue;
+        validated++;
+        if (RoundTripFailure(candidate) is { } failure) roundTripFailures.Add(failure);
+    }
+    Check(validated == 2 && roundTripFailures.Count == 0, "every candidate brief that validates round-trips; the others are refused by the validator",
+        "validated " + validated.ToString(CultureInfo.InvariantCulture) + "; " + string.Join(" | ", roundTripFailures));
+
+    // ---- Culture independence ----
+    var invariantBuilt = BriefSerializer.Serialize(built);
+    var overBudgetBuilt = built with
+    {
+        Constraints = built.Constraints with { TotalAreaBudgetSquareMetres = new BriefValue<double>(50.25) },
+        Rooms = new[] { built.Rooms[0] with { MinAreaSquareMetres = new BriefValue<double>(26.25), MaxAreaSquareMetres = null, TargetAreaSquareMetres = null }, built.Rooms[1] },
+    };
+    var previousCulture = CultureInfo.CurrentCulture;
+    try
+    {
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
+        Check(BriefSerializer.Serialize(built) == invariantBuilt && invariantBuilt.Contains("120.5", StringComparison.Ordinal), "serializer output is identical under de-DE", invariantBuilt);
+        var budgetIssue = BriefValidator.Validate(overBudgetBuilt).FirstOrDefault(issue => issue.Code == BriefCodes.BudgetExceeded);
+        Check(budgetIssue is not null && budgetIssue.Detail.Contains("52.5", StringComparison.Ordinal) && budgetIssue.Detail.Contains("50.25", StringComparison.Ordinal) && !budgetIssue.Detail.Contains("52,5", StringComparison.Ordinal),
+            "validator details use invariant numbers under de-DE", budgetIssue?.Detail ?? "no budget issue");
+        Check(BriefSerializer.Serialize(BriefParser.Parse(invariantBuilt)) == invariantBuilt, "parser reads numbers invariantly under de-DE");
+    }
+    finally { CultureInfo.CurrentCulture = previousCulture; }
     Check(BriefValidator.Validate(built with { Constraints = built.Constraints with { TotalAreaBudgetSquareMetres = new BriefValue<double>(double.PositiveInfinity) } })
         .Any(issue => issue.Code == BriefCodes.BudgetNonPositive), "non-finite budget built in code is flagged");
 
@@ -292,6 +375,12 @@ try
         && Strings(Def("provenance").GetProperty("required")).SequenceEqual(new[] { "source", "confidence" })
         && Strings(Def("provenance").GetProperty("properties").GetProperty("source").GetProperty("enum")).SequenceEqual(Enum.GetValues<BriefSource>().Select(BriefSerializer.Source))
         && Def("provenance").GetProperty("properties").GetProperty("confidence").GetProperty("maximum").GetDouble() == 1, "schema provenance members, sources and confidence range match");
+    var integerDefs = new[] { Def("positiveInteger"), Def("levelIndex"), Def("provenance").GetProperty("properties").GetProperty("page") };
+    Check(integerDefs.All(definition => definition.GetProperty("type").GetString() == "integer" && definition.GetProperty("maximum").GetInt64() == int.MaxValue
+        && definition.GetProperty("description").GetString()!.Contains("integer token", StringComparison.Ordinal)),
+        "schema integers state Int32 maximum and the integer-token-only rule the parser enforces");
+    Check(Def("text").GetProperty("maxLength").GetInt32() == BriefParser.MaxStringChars && Def("text").GetProperty("description").GetString()!.Contains("UTF-16 code units", StringComparison.Ordinal)
+        && Def("room").GetProperty("properties").GetProperty("id").GetProperty("pattern").GetString()!.EndsWith("{0,63}$", StringComparison.Ordinal), "schema text documents the UTF-16 code-unit length rule");
     Check(new[] { "constraints", "site", "room", "adjacency", "provenance" }.All(name => Def(name).GetProperty("additionalProperties").ValueKind == JsonValueKind.False), "every schema object is closed");
 }
 catch (Exception error)
