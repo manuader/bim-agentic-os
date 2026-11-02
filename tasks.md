@@ -72,10 +72,10 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P1-01 | Pipe listener survives per-connection faults | ⏳ | — | runtimes/revit-native/App.cs | CI green; C04 re-run reaches 17 steps | target compiled |
+| P1-01 | Pipe listener survives per-connection faults | 🟢 | — | runtimes/revit-native/App.cs | CI green; C04 re-run reaches 17 steps | target compiled |
 | P1-02 | Generic element query and inspect commands | ⏳ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | query.elements by category/level with parameters; contract tests; compiles | target unit-tested |
 | P1-03 | MCP server setup for the Claude app | ⏳ | — | docs/mcp-setup.md; scripts/install-mcp.ps1 | one-command install registers the MCP server in Claude Desktop config with a backup; tested on a temp config | target unit-tested |
-| P1-04 | Catalogue smoke re-run in Revit | 🔒 | P1-01 | owner session | owner runs -Catalogue; 17/17 | target verified-in-revit |
+| P1-04 | Catalogue smoke re-run in Revit | 🔒 | P1-01 | owner session (fix ed5c759 on main; owner re-runs -Catalogue) | owner runs -Catalogue; 17/17 | target verified-in-revit |
 
 ### Phase 2 — semantic state and mirror
 
