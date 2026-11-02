@@ -64,15 +64,108 @@ Owner scope change 2026-10-30, [ADR0009](docs/architecture/adr/0009-revit-comman
 | C04 | Owner smoke of catalogue v1 in Revit | 🔒 | C03 | scripts/owner-native-session.ps1 -Catalogue (ready, c82f2b6); artifacts | curved wall, door, floor, room created on a fixture with readback and no-duplicate retry | target verified-in-revit |
 | C05 | Guarded free path (ADR + implementation) | ⛔ | C03 | docs/architecture/adr; runtimes/revit-native | ADR accepted; free C# runs in a rolled-back transaction group with change report | target unit-tested |
 
+## All-phases roadmap
+
+Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadmap](docs/plans/2026-11-02-all-phases-roadmap.md). C04 first run (20261102T165801Z): query.levels passed in Revit, later steps hit a dead pipe listener (P1-01).
+
+### Phase 1 — native kernel
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P1-01 | Pipe listener survives per-connection faults | ⏳ | — | runtimes/revit-native/App.cs | CI green; C04 re-run reaches 17 steps | target compiled |
+| P1-02 | Generic element query and inspect commands | ⏳ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | query.elements by category/level with parameters; contract tests; compiles | target unit-tested |
+| P1-03 | MCP server setup for the Claude app | ⏳ | — | docs/mcp-setup.md; scripts/install-mcp.ps1 | one-command install registers the MCP server in Claude Desktop config with a backup; tested on a temp config | target unit-tested |
+| P1-04 | Catalogue smoke re-run in Revit | 🔒 | P1-01 | owner session | owner runs -Catalogue; 17/17 | target verified-in-revit |
+
+### Phase 2 — semantic state and mirror
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P2-01 | Revit to BIM-IR snapshot export | ⏳ | — | core/Bim.Core/Mirror*; runtimes/revit-native/Mirror* | query.snapshot returns walls/doors/windows/floors/rooms as BIM-IR elements with stable ids; contract tests | target unit-tested |
+| P2-02 | Semantic graph relations | ⏳ | — | core/Bim.Core/Graph* | hosted-by, bounds, on-level edges with queries and closure; tests | target unit-tested |
+| P2-03 | External edit journal (DocumentChanged) | ⛔ | P2-01 | runtimes/revit-native/Journal* | events recorded with element ids and diff against last snapshot; compiles | target compiled |
+
+### Phase 3 — incremental compiler
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P3-01 | Intent AST beyond one room | ⏳ | — | core/Bim.Core/Intent* | multi-room layout intents with wall types and openings compile to BIM-IR deterministically; tests | target unit-tested |
+| P3-02 | Compiler to catalogue bridge | ⛔ | P3-01 | core/Bim.Core/PlanToCommands* | an ExecutionPlan becomes ordered catalogue v1 commands with operation ids; tests | target unit-tested |
+
+### Phase 4 — documentation engine
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P4-01 | View commands (plan, section, 3D) | ⏳ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | view.create plan/section/3d contracts and executor; compiles | target compiled |
+| P4-02 | Dimensions, tags, schedules and sheets commands | ⛔ | P4-01 | same | contracts and executor for dimension/tag/schedule/sheet; compiles | target compiled |
+
+### Phase 5 — skills and design systems
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P5-01 | Skill manifest and loader | ⏳ | — | core/Bim.Skills (new); skills/ | versioned skill manifest (rules, defaults, parameters), loader with validation and conflict resolution by priority; tests | target unit-tested |
+| P5-02 | CABA building code rule pack | ⏳ | — | skills/caba-codigo-edificacion; core/Bim.Skills | minimum areas, heights, sides, ventilation/illumination ratios with cited articles; validator over BIM-IR rooms; tests | target unit-tested |
+| P5-03 | Two contrasting style skills | ⛔ | P5-01 | skills/style-* | two style packs change defaults visibly with traceable rule ids; tests | target unit-tested |
+
+### Phase 6 — CAD and requirements
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P6-01 | DXF reader with provenance | ⏳ | — | adapters/cad (new); tests/cad | DXF layers/lines/polylines/arcs/blocks/text read to a provenance-tagged drawing model; wall-pair detection; fixtures; tests | target unit-tested |
+| P6-02 | PDF vector reader and scale calibration | ⏳ | — | adapters/cad; tests/cad | vector paths and text from PDF, scale from a known dimension, alignment; fixtures; tests | target unit-tested |
+| P6-03 | Project brief schema and validated extraction | ⏳ | — | core/Bim.Core/Brief* | brief JSON schema (rooms, areas, adjacencies, constraints) with validator and uncertainty fields; tests | target unit-tested |
+
+### Phase 7 — generative kernels
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P7-01 | Constraint space planner | ⛔ | P6-03 | core/Bim.Generative (new) | rectangular space planning honoring areas, adjacency and CABA minimums; deterministic seeds; tests | target unit-tested |
+| P7-02 | Alternatives with scoring | ⛔ | P7-01 | core/Bim.Generative | N alternatives scored and ranked with explanations; tests | target unit-tested |
+
+### Phase 8 — Rhino, Blender and IFC
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P8-01 | IFC import to BIM-IR and roundtrip | ⏳ | — | runtimes/ifc; adapters/ifc | IFC walls/openings/spaces read to BIM-IR; export→import→export stable; CI on 3 OS | target integration-tested (ifc) |
+| P8-02 | Rhino .3dm adapter without Rhino | ⏳ | — | adapters/rhino (new) | rhino3dm (MIT) write/read of BIM-IR geometry; tests | target unit-tested |
+| P8-03 | Blender adapter | 🔒 | — | adapters/blender | bpy exporter script; execution needs Blender installed | target described |
+
+### Phase 9 — Revit parity
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P9-01 | Catalogue v2: roofs, stairs, curtain walls, slab openings | ⏳ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | contracts, validators, executor; compiles | target compiled |
+| P9-02 | Structure: grids, columns, beams, foundations | ⏳ | — | same | contracts, validators, executor; compiles | target compiled |
+| P9-03 | Guarded free path (ADR + implementation) | ⏳ | — | docs/architecture/adr; runtimes/revit-native | ADR accepted by owner rules; compiled C# runs in rolled-back group with change report; compiles | target compiled |
+| P9-04 | Revit parity census registry | ⏳ | — | capabilities/ | machine-readable census of Revit functions with coverage state and tests linking | target described |
+
+### Phase 10 — global production
+
+| ID | Task | Status | Dependencies | Owned files | Done when | Verification |
+|---|---|---|---|---|---|---|
+| P10-01 | IDS checks | ⏳ | — | runtimes/ifc; tests/ifc | IDS file validation of exported IFC with report; CI | target integration-tested (ifc) |
+| P10-02 | BCF export | ⏳ | — | core/Bim.Core/Bcf* | validation issues exported as BCF 3.0 zip; schema-valid; tests | target unit-tested |
+| P10-03 | Audit log and permissions | ⏳ | — | core/Bim.Core/Audit* | append-only audit of commands with actor and decision; permission policy (read/write/real-project); tests | target unit-tested |
+
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 21/24 done (87.5 %)
+Progress: 21/53 done (39.6 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
 - Relay7 batch — platform coverage, rebuild baseline, recovery guard: 3/3
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
 - Revit command surface — catalogue v1 (architecture): 3/5
-Next ready: 
+- Phase 1 — native kernel: 0/4
+- Phase 2 — semantic state and mirror: 0/3
+- Phase 3 — incremental compiler: 0/2
+- Phase 4 — documentation engine: 0/2
+- Phase 5 — skills and design systems: 0/3
+- Phase 6 — CAD and requirements: 0/3
+- Phase 7 — generative kernels: 0/2
+- Phase 8 — Rhino, Blender and IFC: 0/3
+- Phase 9 — Revit parity: 0/4
+- Phase 10 — global production: 0/3
+Next ready: P1-01, P1-02, P1-03, P2-01, P2-02, P3-01, P4-01, P5-01
 
