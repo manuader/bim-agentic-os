@@ -1,3 +1,4 @@
+using System.Text.Json;
 namespace Bim.Core;
 
 // P2-02 semantic graph: a derived, read-only view over BIM-IR. Edge types come only from data that
@@ -130,11 +131,12 @@ public sealed class SemanticGraph
     public IReadOnlyList<Guid> LevelOf(Guid id) => Neighbours(id, GraphDirection.Prerequisites, GraphEdgeKind.OnLevel);
     // Doors, windows and openings a wall hosts.
     public IReadOnlyList<Guid> Hosts(Guid wallId) => Neighbours(wallId, GraphDirection.Dependents, GraphEdgeKind.HostedBy);
-    // The hosting wall, or null; if several walls are named, the lowest Guid.
+    // The single hosting wall, or null when there is none or the host is ambiguous (several walls named);
+    // use Neighbours(id, Prerequisites, HostedBy) to see every candidate.
     public Guid? HostOf(Guid id)
     {
         var hosts = Neighbours(id, GraphDirection.Prerequisites, GraphEdgeKind.HostedBy);
-        return hosts.Count == 0 ? null : hosts[0];
+        return hosts.Count == 1 ? hosts[0] : null;
     }
     // Walls that bound a space/room.
     public IReadOnlyList<Guid> Boundaries(Guid spaceId) => Neighbours(spaceId, GraphDirection.Prerequisites, GraphEdgeKind.Bounds);
@@ -183,13 +185,44 @@ public sealed class SemanticGraph
         return (includeSeeds ? result : result.GetRange(seedCount, result.Count - seedCount)).AsReadOnly();
     }
 
-    // Everything affected when the given elements change: the seeds and all transitive dependents
-    // (the same set as the Compiler.Diff dirty closure, in closure order).
+    // The seeds and all their transitive dependents within this graph's single project. This equals the
+    // Compiler.Diff dirty set only for updates whose dependencies are unchanged; for a before/after edit
+    // (creates, deletes, rewired dependencies) use AffectedBy.
     public IReadOnlyList<Guid> Affected(params Guid[] changed) => Closure(changed, GraphDirection.Dependents);
 
     // Everything an element transitively requires, excluding the element itself.
     public IReadOnlyList<Guid> Prerequisites(Guid id) => Closure(new[] { id }, GraphDirection.Prerequisites, includeSeeds: false);
 
-    // Red stub (P2-02 review): replaced by the plan-level closure.
-    public static IReadOnlyList<Guid> AffectedBy(ExecutionPlan plan, Project before, Project after) => plan.Operations.Length + before.Elements.Length + after.Elements.Length < 0 ? plan.DirtyIds : Array.Empty<Guid>();
+    // Everything affected by an edit: the elements the plan creates, updates or deletes, then every element of
+    // before or after that transitively depends on one of them. Same set as plan.DirtyIds (Compiler.Diff),
+    // ordered like Closure: changed elements in Guid order, then dependents by distance and Guid.
+    // The plan must be the deterministic diff of before and after (same acceptance rule as SemanticDiff).
+    public static IReadOnlyList<Guid> AffectedBy(ExecutionPlan plan, Project before, Project after)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(before);
+        ArgumentNullException.ThrowIfNull(after);
+        if (JsonSerializer.Serialize(Compiler.Diff(before, after)) != JsonSerializer.Serialize(plan)) throw new InvalidOperationException("plan_mismatch");
+        var dependents = new Dictionary<Guid, List<Guid>>();
+        foreach (var element in before.Elements.Concat(after.Elements))
+            foreach (var dependency in element.Dependencies)
+            {
+                if (!dependents.TryGetValue(dependency, out var list)) dependents.Add(dependency, list = new());
+                list.Add(element.Id);
+            }
+        var visited = new HashSet<Guid>();
+        var layer = plan.Operations.Select(operation => operation.Element.Id).Where(visited.Add).Order().ToList();
+        var result = new List<Guid>();
+        while (layer.Count > 0)
+        {
+            result.AddRange(layer);
+            var next = new List<Guid>();
+            foreach (var id in layer)
+                if (dependents.TryGetValue(id, out var list))
+                    foreach (var dependent in list) if (visited.Add(dependent)) next.Add(dependent);
+            next.Sort();
+            layer = next;
+        }
+        return result.AsReadOnly();
+    }
 }
