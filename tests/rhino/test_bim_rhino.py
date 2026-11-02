@@ -145,10 +145,11 @@ class ExportFile(Base):
             self.assertEqual(element['Id'], a.GetUserString('bim.id'))
             self.assertEqual(element['Kind'], a.GetUserString('bim.kind'))
             self.assertEqual(element['Dependencies'], json.loads(a.GetUserString('bim.dependencies')))
-            self.assertEqual(element['Provenance']['Source'], a.GetUserString('bim.provenance.source'))
-            self.assertEqual(element['Provenance']['Approval'], a.GetUserString('bim.provenance.approval'))
+            # Text values are stored JSON-encoded so an empty string survives (Rhino drops empty user strings).
+            self.assertEqual(element['Provenance']['Source'], json.loads(a.GetUserString('bim.provenance.source')))
+            self.assertEqual(element['Provenance']['Approval'], json.loads(a.GetUserString('bim.provenance.approval')))
         diagonal = [o for o in objects if str(o.Attributes.Id) == '00000000-0000-0000-0000-000000000013'][0]
-        self.assertEqual('diagonal wall, café', diagonal.Attributes.GetUserString('bim.provenance.source'))
+        self.assertEqual('"diagonal wall, café"', diagonal.Attributes.GetUserString('bim.provenance.source'))
 
     def test_walls_are_extrusions_along_their_axis_at_level_elevation(self):
         model = rhino3dm.File3dm.Read(str(self.exported()))
@@ -180,6 +181,37 @@ class ExportFile(Base):
         out.write_bytes(b'keep')
         self.assertRefused('output_exists', br.export_project, copy.deepcopy(FIXTURE), out)
         self.assertEqual(b'keep', out.read_bytes())
+
+
+    def test_pending_symlink_is_refused_and_its_target_untouched(self):
+        out = self.path('model.3dm')
+        victim = self.path('victim.bin')
+        victim.write_bytes(b'victim')
+        pending = self.path('model.3dm.pending')
+        pending.symlink_to(victim)
+        self.assertRefused('output_exists', br.export_project, copy.deepcopy(FIXTURE), out)
+        self.assertEqual(b'victim', victim.read_bytes())
+        self.assertTrue(pending.is_symlink())
+        self.assertFalse(out.exists())
+
+    def test_output_created_during_export_is_not_overwritten(self):
+        out = self.path('model.3dm')
+        original = br.build_model
+        def racing(project):
+            model = original(project)
+            out.write_bytes(b'raced')
+            return model
+        br.build_model = racing
+        try:
+            self.assertRefused('output_exists', br.export_project, copy.deepcopy(FIXTURE), out)
+        finally:
+            br.build_model = original
+        self.assertEqual(b'raced', out.read_bytes())
+        self.assertEqual(['model.3dm'], sorted(p.name for p in self.dir.iterdir()))
+
+    def test_success_leaves_only_the_output(self):
+        self.exported()
+        self.assertEqual(['model.3dm'], sorted(p.name for p in self.dir.iterdir()))
 
 
 class Roundtrip(Base):
@@ -223,6 +255,66 @@ class Roundtrip(Base):
         imported = subprocess.run([sys.executable, '-I', str(ADAPTER), 'import', str(out)], capture_output=True, text=True, timeout=60)
         self.assertEqual(0, imported.returncode, imported.stderr)
         self.assertEqual(EXAMPLE_TEXT, imported.stdout.strip())
+
+    def test_empty_provenance_strings_round_trip(self):
+        project = json.loads(EXAMPLE_TEXT)
+        for element in project['Elements']:
+            element['Provenance'] = {'Source': '', 'Approval': ''}
+        self.assertEqual(br.dumps(project), br.dumps(br.import_project(self.exported(project))))
+
+    def test_far_but_supported_coordinates_round_trip_stably(self):
+        far = copy.deepcopy(FIXTURE)
+        for element in far['Elements']:
+            g = element['GeometryMetres']
+            if element['Kind'] == 'wall':
+                g[0] += 90000; g[1] -= 90000; g[2] += 90000; g[3] -= 90000
+            elif element['Kind'] == 'space':
+                g[0] += 90000; g[1] -= 90000
+        first = br.import_project(self.exported(far))
+        self.assertProjectClose(far, first)
+        self.assertEqual(br.dumps(first), br.dumps(br.import_project(self.exported(first, 'again.3dm'))))
+
+    def test_millimetre_conversion_noise_is_normalized_like_core(self):
+        # Core LengthUnits.NormalizeMillimetres snaps values within 1e-6 mm of an integer.
+        def noisy(geometry, strings, layer_path, object_id):
+            wall = rhino3dm.Extrusion()
+            self.assertTrue(wall.SetPathAndUp(rhino3dm.Point3d(100.00000000000001, 0, 0), rhino3dm.Point3d(5400, 0, 0), rhino3dm.Vector3d(0, 0, 1)))
+            profile = rhino3dm.PolylineCurve([rhino3dm.Point3d(-100, 0, 0), rhino3dm.Point3d(100, 0, 0), rhino3dm.Point3d(100, 3000, 0), rhino3dm.Point3d(-100, 3000, 0), rhino3dm.Point3d(-100, 0, 0)])
+            self.assertTrue(wall.SetOuterProfile(profile, True))
+            return wall, strings, layer_path, object_id
+        self.assertNotEqual(100.0, 100.00000000000001)
+        source = self.rewrite(self.exported(json.loads(EXAMPLE_TEXT)), only('wall', noisy), units=rhino3dm.UnitSystem.Millimeters)
+        self.assertEqual(EXAMPLE_TEXT.replace('"GeometryMetres":[0,0,5.4', '"GeometryMetres":[0.1,0,5.4'), br.dumps(br.import_project(source)))
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, '-I', str(ADAPTER), *args], capture_output=True, text=True, timeout=120)
+
+    def assertCliError(self, code, result):
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertEqual('', result.stdout)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertEqual(1, len(result.stderr.strip().splitlines()), result.stderr)
+        self.assertEqual(code, json.loads(result.stderr)['error'], result.stderr)
+
+    def test_cli_usage_error(self):
+        self.assertCliError('usage', self.run_cli())
+        self.assertCliError('usage', self.run_cli('convert', 'a', 'b'))
+
+    def test_cli_malformed_json_inputs_are_one_json_error(self):
+        valid = EXAMPLE_TEXT
+        texts = {
+            'huge_integer': valid.replace('"GeometryMetres":[0,0,5.4', '"GeometryMetres":[1' + '0' * 400 + ',0,5.4'),
+            'deep_nesting': '[' * 200000 + ']' * 200000,
+            'lone_surrogate': valid.replace('"Source":"synthetic core fixture"', '"Source":"\\ud800"'),
+            'not_json': '{',
+        }
+        self.assertIn('\\ud800', texts['lone_surrogate'])
+        for name, text in texts.items():
+            with self.subTest(name):
+                source = self.path(f'{name}.json')
+                source.write_text(text, encoding='utf-8')
+                self.assertCliError('bim_ir_invalid', self.run_cli('export', str(source), str(self.path(f'{name}.3dm'))))
+                self.assertFalse(self.path(f'{name}.3dm').exists())
 
     def test_cli_failure_is_one_json_error_and_exit_one(self):
         bad = self.path('bad.3dm')
@@ -275,6 +367,33 @@ class ExportRefusals(Base):
 
     def test_dependency_cycle(self):
         self.refuse('dependency_cycle', lambda p: p['Elements'][0]['Dependencies'].append(p['Elements'][1]['Id']))
+
+    def test_huge_integer_is_not_a_finite_double(self):
+        self.refuse('bim_ir_invalid', lambda p: p['Elements'][0].update(GeometryMetres=[10 ** 400]))
+
+    def test_lone_surrogate_text(self):
+        self.refuse('bim_ir_invalid', lambda p: p['Elements'][1]['Provenance'].update(Source='\ud800'))
+
+    def test_thickness_below_representable_precision(self):
+        self.refuse('rhino_precision', lambda p: p['Elements'][1].update(GeometryMetres=[0, 0, 5, 0, 3, 1e-10]))
+
+    def test_height_below_representable_precision(self):
+        self.refuse('rhino_precision', lambda p: p['Elements'][1].update(GeometryMetres=[0, 0, 5, 0, 5e-7, 0.2]))
+
+    def test_axis_below_representable_precision(self):
+        self.refuse('rhino_precision', lambda p: p['Elements'][1].update(GeometryMetres=[0, 0, 5e-8, 0, 3, 0.2]))
+
+    def test_coordinate_beyond_supported_range(self):
+        self.refuse('rhino_precision', lambda p: p['Elements'][1].update(GeometryMetres=[2e5, 0, 2e5 + 5, 0, 3, 0.2]))
+
+    def test_level_elevation_beyond_supported_range(self):
+        self.refuse('rhino_precision', lambda p: p['Elements'][0].update(GeometryMetres=[-2e5]))
+
+    def test_zero_width_space(self):
+        self.refuse('rhino_space_geometry', lambda p: p['Elements'][5].update(GeometryMetres=[0.1, 0.1, 0, 4.0]))
+
+    def test_negative_depth_space(self):
+        self.refuse('rhino_space_geometry', lambda p: p['Elements'][5].update(GeometryMetres=[0.1, 0.1, 5.0, -4.0]))
 
     def test_unknown_member_is_not_a_bim_ir_record(self):
         self.refuse('bim_ir_invalid', lambda p: p['Elements'][1].update(Level='L1'))
@@ -344,9 +463,32 @@ class ImportRefusals(Base):
         edit = only('wall', lambda g, s, l, i: (g, {**s, 'bim.dependencies': dangling}, l, i))
         self.assertRefused('missing_dependency', br.import_project, self.rewrite(self.exported(), edit))
 
-    def test_missing_identity_string(self):
+    def test_missing_order_string(self):
         edit = only('space', lambda g, s, l, i: (g, {k: v for k, v in s.items() if k != 'bim.order'}, l, i))
         self.assertRefused('rhino_object_invalid', br.import_project, self.rewrite(self.exported(), edit))
+
+    def lifted(self, kind, dz):
+        def lift(geometry, strings, layer_path, object_id):
+            self.assertTrue(geometry.Translate(rhino3dm.Vector3d(0, 0, dz)))
+            return geometry, strings, layer_path, object_id
+        return self.rewrite(self.exported(), only(kind, lift))
+
+    def test_wall_lifted_off_its_level(self):
+        self.assertRefused('rhino_elevation_mismatch', br.import_project, self.lifted('wall', 0.5))
+
+    def test_space_lifted_off_its_level(self):
+        self.assertRefused('rhino_elevation_mismatch', br.import_project, self.lifted('space', -0.25))
+
+    def test_level_moved_alone_leaves_its_hosted_elements_behind(self):
+        self.assertRefused('rhino_elevation_mismatch', br.import_project, self.lifted('level', 1.0))
+
+    def test_level_point_moved_horizontally(self):
+        edit = only('level', lambda g, s, l, i: (rhino3dm.Point(rhino3dm.Point3d(1, 0, 3.5)), s, l, i))
+        self.assertRefused('rhino_position_mismatch', br.import_project, self.rewrite(self.exported(), edit))
+
+    def test_documentation_marker_moved(self):
+        edit = only('sheet', lambda g, s, l, i: (rhino3dm.Point(rhino3dm.Point3d(0, 0, 1)), s, l, i))
+        self.assertRefused('rhino_position_mismatch', br.import_project, self.rewrite(self.exported(), edit))
 
     def test_rotated_space_is_not_an_axis_aligned_rectangle(self):
         def rotate(geometry, strings, layer_path, object_id):

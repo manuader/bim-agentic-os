@@ -3,6 +3,9 @@ import pathlib
 import sys
 import unittest
 
+# Guards against a discovery change silently running fewer regressions. Raise it when tests are added.
+MINIMUM_TESTS = 60
+
 
 def one_line(text, limit=900):
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
@@ -18,7 +21,10 @@ def main():
     for test, trace in problems[:40]:
         print(f'::error title=rhino {test.id()}::{one_line(trace)}')
     print(f'::notice title=rhino tests::ran={result.testsRun} failures={len(result.failures)} errors={len(result.errors)} skipped={len(result.skipped)}')
-    return 0 if result.wasSuccessful() and result.testsRun > 0 else 1
+    if result.testsRun < MINIMUM_TESTS:
+        print(f'::error title=rhino tests::ran {result.testsRun} tests, expected at least {MINIMUM_TESTS}')
+        return 1
+    return 0 if result.wasSuccessful() else 1
 
 
 if __name__ == '__main__':
