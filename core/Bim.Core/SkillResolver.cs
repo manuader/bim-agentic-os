@@ -20,10 +20,12 @@ public static class SkillResolver
         foreach (var request in requests.OrderBy(item => item.Id, StringComparer.Ordinal).ThenBy(item => item.Range, StringComparer.Ordinal))
         {
             ArgumentNullException.ThrowIfNull(request);
-            if (!SkillParser.IsId(request.Id)) { issues.Add(new(SkillCodes.RequestInvalid, request.Id ?? "", "requested id is not a skill id")); continue; }
-            if (!SkillParser.TryParseRange(request.Range, out var range)) { issues.Add(new(SkillCodes.RequestInvalid, request.Id, "requested range " + request.Range + " is not a semver range")); continue; }
-            requested.Add(request.Id);
-            Constrain(constraints, request.Id, range, RequestLabel);
+            // Callers outside nullable analysis may pass null members; they are refused like any other bad request.
+            var requestId = request.Id ?? "";
+            if (!SkillParser.IsId(requestId)) { issues.Add(new(SkillCodes.RequestInvalid, requestId, "requested id is not a skill id")); continue; }
+            if (!SkillParser.TryParseRange(request.Range, out var range)) { issues.Add(new(SkillCodes.RequestInvalid, requestId, "requested range " + request.Range + " is not a semver range")); continue; }
+            requested.Add(requestId);
+            Constrain(constraints, requestId, range, RequestLabel);
         }
 
         // Dependency closure over the catalog.
