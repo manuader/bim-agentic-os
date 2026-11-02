@@ -94,6 +94,21 @@ jobs:
           name: ifc-rebuild-benchmark
           include-hidden-files: true
           path: .bim/rebuild-benchmark/
+  rhino:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install approved isolated rhino3dm (MIT) dependency
+        run: |
+          python -m venv .tools/rhino
+          .tools/rhino/bin/python -m pip install --only-binary=:all: -r requirements/rhino.txt
+          .tools/rhino/bin/python -m pip check
+      - name: rhino3dm API probe (temporary)
+        continue-on-error: true
+        run: .tools/rhino/bin/python -I tests/rhino/probe_api.py
   core-windows:
     runs-on: windows-latest
     steps:
