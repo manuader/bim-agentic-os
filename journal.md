@@ -968,3 +968,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay136 — 2026-11-02T22:52:58Z (Claude, cloud scheduled)
 - 22:52Z LOCK taken (was FREE since relay135 22:31:47Z).
+- 23:31Z dispatched 3 workers (untouched phases 1, 8, 9): P1-03 MCP installer, P8-02 rhino3dm adapter, P9-01 catalogue v2.
+- 23:31Z workers green: P1-03 a3fb41c (red 41541565035, green 41542251137), P8-02 7ec5a99 (red 41542946788, green 41543506209; rhino3dm 8.17.0 MIT), P9-01 57aaf3b (red 41542251813, green 41544796057; 2 attempts: static-gate comment, test JsonObject reuse). Next: independent reviews.
