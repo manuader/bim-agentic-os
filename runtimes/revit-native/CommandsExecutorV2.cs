@@ -11,17 +11,23 @@ namespace Bim.Revit;
 //
 // Revit 2025 API used (https://www.revitapidocs.com/2025/):
 //   Document.Create.NewFootPrintRoof(CurveArray, Level, RoofType, out ModelCurveArray), FootPrintRoof.DefinesSlope /
-//     SlopeAngle (rise over run) per footprint ModelCurve, BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM
+//     SlopeAngle per footprint ModelCurve and FootPrintRoof.GetProfiles (the sketch, read back independently of the
+//     creation mapping), BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM / ROOF_SLOPE; slopes converted only through
+//     UnitUtils with UnitTypeId.SlopeDegrees (Revit's internal slope unit is rise over run)
 //   StairsEditScope(Document, string).Start(ElementId baseLevel, ElementId topLevel), Commit(IFailuresPreprocessor);
 //     StairsRun.CreateStraightRun(Document, ElementId, Line, StairsRunJustification), StairsRun.ActualRunWidth,
-//     Stairs.GetStairsRuns / ActualRisersNumber, STAIRS_BASE_LEVEL_PARAM / STAIRS_TOP_LEVEL_PARAM
+//     StairsRun.GetStairsPath, Stairs.GetStairsRuns / ActualRisersNumber / DesiredRisersNumber /
+//     GetAssociatedRailings, STAIRS_BASE_LEVEL_PARAM / STAIRS_TOP_LEVEL_PARAM
 //   Wall.Create with a WallKind.Curtain type, Wall.CurtainGrid, CurtainGrid.AddGridLine(bool isUGridLine, XYZ, bool),
-//     CurtainGridLine.FullCurve, CurtainGrid.NumULines / NumVLines
+//     CurtainGridLine.FullCurve, CurtainGrid.NumULines / NumVLines / GetPanelIds / GetMullionIds
 //   Document.Create.NewOpening(Element host, CurveArray profile, bool perpendicularFace), Opening.Host /
 //     IsRectBoundary / BoundaryCurves
 // Unverified in Revit (owner session required): whether a StairsEditScope may start inside the command's
 // TransactionGroup (IsPermitted is checked and a refusal is transaction_failed), the U/V orientation of curtain grid
-// lines on a wall (the readback checks orientation and rolls back if it is swapped), and the footprint slope units.
+// lines on a wall (the readback checks orientation and rolls back if it is swapped), whether the stairs path of a
+// centre-justified straight run starts at the requested run start, and that ROOF_SLOPE carries the edge slope.
+// created lists the primary element and the children these APIs name (runs, railings, grid lines, panels,
+// mullions); other elements Revit may add as a side effect (for example joins or tags) are not diffed.
 internal static partial class CommandExecutor
 {
     static RoofType[] RoofTypes(Document d) => new FilteredElementCollector(d).OfClass(typeof(RoofType)).Cast<RoofType>().ToArray();
@@ -42,6 +48,11 @@ internal static partial class CommandExecutor
         return array;
     }
 
+    static double SlopeDegrees(double internalSlope) => UnitUtils.ConvertFromInternalUnits(internalSlope, UnitTypeId.SlopeDegrees);
+
+    // UniqueIds of the elements that still exist, in the given order.
+    static IEnumerable<string> Uids(Document d, IEnumerable<ElementId> ids) => ids.Select(id => d.GetElement(id)?.UniqueId).OfType<string>();
+
     static XYZ AtPlan(PlanPoint point, double zMillimetres) => new(U(point.X), U(point.Y), U(zMillimetres));
 
     static string? LevelParameterUid(Document d, RevitElement element, BuiltInParameter parameter) =>
@@ -54,11 +65,19 @@ internal static partial class CommandExecutor
         var footprint = Polygon(args.Boundary, level.ProjectElevation);
         FootPrintRoof? roof = null;
         var edges = new List<ModelCurve>();
-        ObservedRoof Observe(FootPrintRoof created) => new(created.UniqueId, UniqueIdOf(d, created.LevelId), UniqueIdOf(d, created.GetTypeId()),
-            LengthParameter(created, BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM),
-            edges.Where(edge => edge.IsValidObject)
-                .Select(edge => created.get_DefinesSlope(edge) ? new ObservedRoofEdge(true, CommandRulesV2.SlopeDegrees(created.get_SlopeAngle(edge))) : new ObservedRoofEdge(false, null))
-                .ToArray());
+        // Read from the roof's own sketch, not from the creation mapping.
+        ObservedRoof Observe(FootPrintRoof created)
+        {
+            var profiles = created.GetProfiles();
+            var sketch = new List<ModelCurve>();
+            foreach (ModelCurveArray loop in profiles)
+                foreach (ModelCurve curve in loop) sketch.Add(curve);
+            var slopeParameter = created.get_Parameter(BuiltInParameter.ROOF_SLOPE) is { HasValue: true, StorageType: StorageType.Double } value ? SlopeDegrees(value.AsDouble()) : (double?)null;
+            return new ObservedRoof(created.UniqueId, UniqueIdOf(d, created.LevelId), UniqueIdOf(d, created.GetTypeId()),
+                LengthParameter(created, BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM),
+                sketch.Select(edge => created.get_DefinesSlope(edge) ? new ObservedRoofEdge(true, SlopeDegrees(created.get_SlopeAngle(edge))) : new ObservedRoofEdge(false, null)).ToArray(),
+                slopeParameter, profiles.Size, sketch.Select(edge => Plan(edge.GeometryCurve.GetEndPoint(0))).ToArray());
+        }
         return new WritePlan(
             () =>
             {
@@ -68,7 +87,7 @@ internal static partial class CommandExecutor
                 foreach (var edge in edges)
                 {
                     created.set_DefinesSlope(edge, args.Slope is not null);
-                    if (args.Slope is { } slope) created.set_SlopeAngle(edge, CommandRulesV2.SlopeRatio(slope));
+                    if (args.Slope is { } slope) created.set_SlopeAngle(edge, UnitUtils.ConvertToInternalUnits(slope.Degrees, UnitTypeId.SlopeDegrees));
                 }
                 if (args.BaseOffset.Millimetres != 0)
                 {
@@ -78,7 +97,7 @@ internal static partial class CommandExecutor
                 }
             },
             () => roof is { IsValidObject: true } created
-                ? CommandReadbackV2.Roof(level.UniqueId, type.UniqueId, args.Boundary.Count, args.Slope?.Degrees, args.BaseOffset.Millimetres, Observe(created))
+                ? CommandReadbackV2.Roof(level.UniqueId, type.UniqueId, args.Boundary, args.Slope?.Degrees, args.BaseOffset.Millimetres, Observe(created))
                 : "the roof no longer exists",
             () => CommandReadbackV2.RoofJson(Observe(roof!)),
             () => new[] { roof!.UniqueId },
@@ -108,7 +127,11 @@ internal static partial class CommandExecutor
             if (vertical.Concat(horizontal).Any(line => !line.IsValidObject)) return "an added curtain grid line no longer exists";
             return CommandReadbackV2.CurtainGrid(grid, vertical.Select(GridLineOf).ToArray(), horizontal.Select(GridLineOf).ToArray());
         }
-        IReadOnlyList<string> Created() => new[] { wall!.UniqueId }.Concat(vertical.Concat(horizontal).Select(line => line.UniqueId)).ToArray();
+        string[] Added() => vertical.Concat(horizontal).Select(line => line.UniqueId).ToArray();
+        // Panels and mullions are regenerated with the grid; they are read after the transaction commits.
+        IReadOnlyList<string> Created() => CommandRulesV2.Created(wall!.UniqueId, Added(),
+            wall.CurtainGrid is { } panelGrid ? Uids(d, panelGrid.GetPanelIds()) : Array.Empty<string>(),
+            wall.CurtainGrid is { } mullionGrid ? Uids(d, mullionGrid.GetMullionIds()) : Array.Empty<string>());
         return new WritePlan(
             () =>
             {
@@ -122,7 +145,8 @@ internal static partial class CommandExecutor
                 foreach (var z in grid.HorizontalZMm) horizontal.Add(curtainGrid.AddGridLine(CommandRulesV2.IsUGridLine(vertical: false), AtPlan(grid.HorizontalAt, z), false));
             },
             Check,
-            () => CommandReadbackV2.CurtainWallJson(ObserveWall(d, wall!), wall!.CurtainGrid?.NumVLines ?? 0, wall.CurtainGrid?.NumULines ?? 0, Created().Skip(1).ToArray()),
+            () => CommandReadbackV2.CurtainWallJson(ObserveWall(d, wall!), wall!.CurtainGrid?.NumVLines ?? 0, wall.CurtainGrid?.NumULines ?? 0, Added(),
+                wall.CurtainGrid?.GetPanelIds().Count ?? 0, wall.CurtainGrid?.GetMullionIds().Count ?? 0),
             Created,
             Array.Empty<string>);
     }
@@ -160,10 +184,22 @@ internal static partial class CommandExecutor
         var runLine = Line.CreateBound(At(args.RunStart, z), At(args.RunEnd, z));
         var failures = new CommandFailures();
         Stairs? stairs = null;
-        ObservedStairs Observe(Stairs created) => new(created.UniqueId,
-            LevelParameterUid(d, created, BuiltInParameter.STAIRS_BASE_LEVEL_PARAM), LevelParameterUid(d, created, BuiltInParameter.STAIRS_TOP_LEVEL_PARAM),
-            created.GetStairsRuns().Select(id => d.GetElement(id) is StairsRun run ? Mm(run.ActualRunWidth) : (double?)null).ToArray(),
-            created.ActualRisersNumber);
+        ObservedStairs Observe(Stairs created)
+        {
+            var runs = created.GetStairsRuns().Select(id => d.GetElement(id) as StairsRun).ToArray();
+            PlanPoint? start = null, end = null;
+            if (runs is [{ } only])
+            {
+                var path = only.GetStairsPath().ToList();
+                if (path.Count > 0) { start = Plan(path[0].GetEndPoint(0)); end = Plan(path[^1].GetEndPoint(1)); }
+            }
+            return new ObservedStairs(created.UniqueId,
+                LevelParameterUid(d, created, BuiltInParameter.STAIRS_BASE_LEVEL_PARAM), LevelParameterUid(d, created, BuiltInParameter.STAIRS_TOP_LEVEL_PARAM),
+                runs.Select(run => run is null ? (double?)null : Mm(run.ActualRunWidth)).ToArray(),
+                created.ActualRisersNumber, created.DesiredRisersNumber, start, end);
+        }
+        var requestedStart = new PlanPoint(args.RunStart.X.Millimetres, args.RunStart.Y.Millimetres);
+        var requestedEnd = new PlanPoint(args.RunEnd.X.Millimetres, args.RunEnd.Y.Millimetres);
         using var group = new TransactionGroup(d, "BIM Agentic OS " + envelope.Command + " " + envelope.OperationId);
         if (group.Start() != TransactionStatus.Started) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "transaction group did not start");
         try
@@ -206,10 +242,10 @@ internal static partial class CommandExecutor
             }
             if (failures.Errors.Count > 0) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, string.Join("; ", failures.Errors));
             if (stairs is not { IsValidObject: true } done) throw Mismatch("the stair no longer exists");
-            if (CommandReadbackV2.Stairs(baseLevel.UniqueId, topLevel.UniqueId, args.Width.Millimetres, Observe(done)) is { } mismatch) throw Mismatch(mismatch);
-            var created = new List<string> { done.UniqueId };
-            created.AddRange(done.GetStairsRuns().Select(id => UniqueIdOf(d, id)));
-            var response = CommandResponses.Success(request, created, Array.Empty<string>(), CommandReadbackV2.StairsJson(Observe(done)), failures.Warnings.ToArray());
+            if (CommandReadbackV2.Stairs(baseLevel.UniqueId, topLevel.UniqueId, args.Width.Millimetres, requestedStart, requestedEnd, Observe(done)) is { } mismatch) throw Mismatch(mismatch);
+            var railings = Uids(d, done.GetAssociatedRailings()).ToArray();
+            var created = CommandRulesV2.Created(done.UniqueId, Uids(d, done.GetStairsRuns()), railings);
+            var response = CommandResponses.Success(request, created, Array.Empty<string>(), CommandReadbackV2.StairsJson(Observe(done), railings), failures.Warnings.ToArray());
             return Persist(d, request, store, group, response);
         }
         catch

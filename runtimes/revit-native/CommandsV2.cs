@@ -11,9 +11,11 @@ namespace Bim.Revit;
 public sealed record RoofTypeRow(string Name, string UniqueId, double? WidthMm);
 // One footprint edge as Revit reports it: whether it defines slope and, if so, its slope in degrees.
 public sealed record ObservedRoofEdge(bool DefinesSlope, double? SlopeDeg);
-public sealed record ObservedRoof(string UniqueId, string LevelUid, string TypeUid, double? BaseOffsetMm, IReadOnlyList<ObservedRoofEdge> Edges);
-// Nullable values are parameters that could not be read.
-public sealed record ObservedStairs(string UniqueId, string? BaseLevelUid, string? TopLevelUid, IReadOnlyList<double?> RunWidthsMm, int? Risers);
+// Edges and Footprint come from the roof's own sketch (FootPrintRoof.GetProfiles), not from the creation call's
+// mapping; SlopeParameterDeg is the roof's Slope parameter (ROOF_SLOPE), read separately from the edges.
+public sealed record ObservedRoof(string UniqueId, string LevelUid, string TypeUid, double? BaseOffsetMm, IReadOnlyList<ObservedRoofEdge> Edges, double? SlopeParameterDeg, int Profiles, IReadOnlyList<PlanPoint> Footprint);
+// Nullable values are parameters that could not be read. RunStart/RunEnd: the run's stairs path, bottom to top.
+public sealed record ObservedStairs(string UniqueId, string? BaseLevelUid, string? TopLevelUid, IReadOnlyList<double?> RunWidthsMm, int? Risers, int? DesiredRisers, PlanPoint? RunStart, PlanPoint? RunEnd);
 // Where the added curtain grid lines must be: vertical lines through these plan points (placed at VerticalZMm),
 // horizontal lines at these project elevations (placed at the plan point HorizontalAt).
 public sealed record ExpectedCurtainGrid(IReadOnlyList<PlanPoint> Vertical, double VerticalZMm, IReadOnlyList<double> HorizontalZMm, PlanPoint HorizontalAt);
@@ -26,7 +28,7 @@ public static class CommandRulesV2
     // Wall kinds are WallKind names ("Basic", "Curtain", "Stacked").
     public static void CheckCurtainWallType(string wallKind)
     {
-        if (wallKind != "Curtain") throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.type", "not a curtain wall type (kind " + wallKind + "); pick a type of kind Curtain from revit_query_wall_types");
+        if (wallKind != "Curtain") throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.type", "not a curtain wall type (kind " + wallKind + "); pick a type of kind Curtain from revit_query_wall_types");
     }
 
     // After resolution: two references may still name one level (a name and its UniqueId), and the top must be above.
@@ -36,9 +38,14 @@ public static class CommandRulesV2
         if (!(topElevationMm - baseElevationMm >= RevitCommandGeometry.MinSegmentMm)) throw new RevitCommandException(RevitCommandCodes.LevelsNotDistinct, "args.top_level", "the top level must be above the base level");
     }
 
-    // Revit stores a roof edge slope as rise over run (FootPrintRoof.SlopeAngle), not as an angle.
-    public static double SlopeRatio(Angle slope) => Math.Tan(slope.Radians);
-    public static double SlopeDegrees(double ratio) => Math.Atan(ratio) * 180 / Math.PI;
+    // The created list: the primary element first, then every child UniqueId once (ordinal), in the order given.
+    public static IReadOnlyList<string> Created(string primary, params IEnumerable<string>[] children)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal) { primary };
+        var created = new List<string> { primary };
+        foreach (var uid in children.SelectMany(group => group)) if (seen.Add(uid)) created.Add(uid);
+        return created;
+    }
 
     // CurtainGrid.AddGridLine(isUGridLine, ...): on a curtain wall U grid lines are taken to be horizontal and V grid
     // lines vertical. Unverified in Revit; CommandReadbackV2.CurtainGrid checks each added line's orientation, so a
@@ -102,12 +109,14 @@ public static class CommandReadbackV2
     static string F(PlanPoint point) => "(" + F(point.X) + ", " + F(point.Y) + ")";
     static string Uid(string? value) => value ?? "unreadable";
 
-    public static string? Roof(string levelUid, string typeUid, int edgeCount, double? slopeDeg, double baseOffsetMm, ObservedRoof observed)
+    public static string? Roof(string levelUid, string typeUid, IReadOnlyList<Point2> boundary, double? slopeDeg, double baseOffsetMm, ObservedRoof observed)
     {
         if (observed.LevelUid != levelUid) return "roof level is " + observed.LevelUid + ", expected " + levelUid;
         if (observed.TypeUid != typeUid) return "roof type is " + observed.TypeUid + ", expected " + typeUid;
         if (observed.BaseOffsetMm is not { } offset || !Near(offset, baseOffsetMm)) return "roof base offset is " + (observed.BaseOffsetMm is { } o ? F(o) : "unreadable") + " mm, expected " + F(baseOffsetMm);
-        if (observed.Edges.Count != edgeCount) return "roof footprint has " + observed.Edges.Count + " edges, expected " + edgeCount;
+        if (observed.Profiles != 1) return "roof sketch has " + observed.Profiles + " loops, expected 1";
+        if (Outline("roof sketch", boundary, observed.Footprint) is { } outline) return outline;
+        if (observed.Edges.Count != boundary.Count) return "roof sketch reports slope for " + observed.Edges.Count + " edges, expected " + boundary.Count;
         for (var i = 0; i < observed.Edges.Count; i++)
         {
             var edge = observed.Edges[i];
@@ -118,16 +127,39 @@ public static class CommandReadbackV2
             else if (!edge.DefinesSlope) return "roof footprint edge " + i + " does not define slope";
             else if (edge.SlopeDeg is not { } actual || !(Math.Abs(actual - slope) <= SlopeToleranceDeg)) return "roof footprint edge " + i + " slope is " + (edge.SlopeDeg is { } s ? F(s) : "unreadable") + " degrees, expected " + F(slope);
         }
+        if (slopeDeg is { } requested && (observed.SlopeParameterDeg is not { } parameter || !(Math.Abs(parameter - requested) <= SlopeToleranceDeg)))
+            return "roof Slope parameter is " + (observed.SlopeParameterDeg is { } p ? F(p) : "unreadable") + " degrees, expected " + F(requested);
         return null;
     }
 
-    public static string? Stairs(string baseLevelUid, string topLevelUid, double widthMm, ObservedStairs observed)
+    // Same vertex count, same area (1 mm2 plus 1e-9 relative) and every requested vertex present (any start, either
+    // orientation). Null when the observed outline is the requested one.
+    static string? Outline(string what, IReadOnlyList<Point2> requested, IReadOnlyList<PlanPoint> observed)
+    {
+        if (observed.Count != requested.Count) return what + " has " + observed.Count + " edges, expected " + requested.Count;
+        var expectedArea = CommandGeometry.PolygonAreaMm2(requested);
+        var area = AreaMm2(observed);
+        if (!(Math.Abs(area - expectedArea) <= 1 + 1e-9 * expectedArea)) return what + " area is " + F(area) + " mm2, expected " + F(expectedArea);
+        foreach (var vertex in requested)
+        {
+            var point = new PlanPoint(vertex.X.Millimetres, vertex.Y.Millimetres);
+            if (!observed.Any(observedVertex => CommandGeometry.Near(observedVertex, point))) return what + " has no vertex at " + F(point);
+        }
+        return null;
+    }
+
+    public static string? Stairs(string baseLevelUid, string topLevelUid, double widthMm, PlanPoint runStart, PlanPoint runEnd, ObservedStairs observed)
     {
         if (observed.BaseLevelUid != baseLevelUid) return "stair base level is " + Uid(observed.BaseLevelUid) + ", expected " + baseLevelUid;
         if (observed.TopLevelUid != topLevelUid) return "stair top level is " + Uid(observed.TopLevelUid) + ", expected " + topLevelUid;
         if (observed.RunWidthsMm.Count != 1) return "stair has " + observed.RunWidthsMm.Count + " runs, expected 1";
         if (observed.RunWidthsMm[0] is not { } width || !Near(width, widthMm)) return "stair run width is " + (observed.RunWidthsMm[0] is { } w ? F(w) : "unreadable") + " mm, expected " + F(widthMm);
-        if (observed.Risers is { } risers && risers < 1) return "stair has no risers";
+        if (observed.Risers is not { } risers || observed.DesiredRisers is not { } desired) return "stair riser count is unreadable (actual " + (observed.Risers?.ToString(CultureInfo.InvariantCulture) ?? "unreadable") + ", desired " + (observed.DesiredRisers?.ToString(CultureInfo.InvariantCulture) ?? "unreadable") + ")";
+        if (risers < 1) return "stair has no risers";
+        // Revit keeps a stair whose run is too short: it then has fewer actual than desired risers.
+        if (risers != desired) return "stair has " + risers + " of " + desired + " risers: it does not reach the top level";
+        if (observed.RunStart is not { } start || observed.RunEnd is not { } end) return "stair run path is unreadable";
+        if (!CommandGeometry.Near(start, runStart) || !CommandGeometry.Near(end, runEnd)) return "stair run goes from " + F(start) + " to " + F(end) + ", expected " + F(runStart) + " to " + F(runEnd);
         return null;
     }
 
@@ -154,16 +186,7 @@ public static class CommandReadbackV2
     {
         if (observed.HostUid != hostUid) return "opening host is " + (observed.HostUid ?? "none") + ", expected floor " + hostUid;
         if (observed.IsRectBoundary) return "opening has a rectangular boundary, expected the requested profile";
-        if (observed.Vertices.Count != profile.Count) return "opening profile has " + observed.Vertices.Count + " vertices, expected " + profile.Count;
-        var expectedArea = CommandGeometry.PolygonAreaMm2(profile);
-        var area = AreaMm2(observed.Vertices);
-        if (!(Math.Abs(area - expectedArea) <= 1 + 1e-9 * expectedArea)) return "opening area is " + F(area) + " mm2, expected " + F(expectedArea);
-        foreach (var vertex in profile)
-        {
-            var point = new PlanPoint(vertex.X.Millimetres, vertex.Y.Millimetres);
-            if (!observed.Vertices.Any(observedVertex => CommandGeometry.Near(observedVertex, point))) return "opening profile has no vertex at " + F(point);
-        }
-        return null;
+        return Outline("opening profile", profile, observed.Vertices);
     }
 
     // Positive enclosed area, relative to the first vertex for precision.
@@ -233,11 +256,32 @@ public static class CommandReadbackV2
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
+        Number(writer, "slope_parameter_deg", roof.SlopeParameterDeg);
+        writer.WriteNumber("loops", roof.Profiles);
+        Points(writer, "footprint", roof.Footprint);
+        Number(writer, "area_mm2", AreaMm2(roof.Footprint));
         writer.WriteEndObject();
         writer.WriteEndObject();
     });
 
-    public static string StairsJson(ObservedStairs stairs) => Json(writer =>
+    static void Points(Utf8JsonWriter writer, string name, IReadOnlyList<PlanPoint> points)
+    {
+        writer.WriteStartArray(name);
+        foreach (var point in points) Point(writer, point);
+        writer.WriteEndArray();
+    }
+
+    static void Point(Utf8JsonWriter writer, PlanPoint? point)
+    {
+        if (point is null) { writer.WriteNullValue(); return; }
+        writer.WriteStartArray();
+        writer.WriteNumberValue(point.X);
+        writer.WriteNumberValue(point.Y);
+        writer.WriteEndArray();
+    }
+
+    // railingUids: the railings Revit created with the stair (Stairs.GetAssociatedRailings); they are also in created.
+    public static string StairsJson(ObservedStairs stairs, IReadOnlyList<string> railingUids) => Json(writer =>
     {
         writer.WriteStartObject();
         writer.WriteStartObject("stairs");
@@ -253,12 +297,25 @@ public static class CommandReadbackV2
         writer.WriteEndArray();
         if (stairs.Risers is { } risers) writer.WriteNumber("risers", risers);
         else writer.WriteNull("risers");
+        if (stairs.DesiredRisers is { } desired) writer.WriteNumber("desired_risers", desired);
+        else writer.WriteNull("desired_risers");
+        writer.WriteStartObject("run");
+        writer.WritePropertyName("start");
+        Point(writer, stairs.RunStart);
+        writer.WritePropertyName("end");
+        Point(writer, stairs.RunEnd);
+        writer.WriteEndObject();
+        writer.WriteStartArray("railing_unique_ids");
+        foreach (var uid in railingUids) writer.WriteStringValue(uid);
+        writer.WriteEndArray();
         writer.WriteEndObject();
         writer.WriteEndObject();
     });
 
     // {"wall": <the wall.create readback wall object>, "curtain_grid": {totals on the wall, added line UniqueIds}}.
-    public static string CurtainWallJson(ObservedWall wall, int verticalLines, int horizontalLines, IReadOnlyList<string> addedGridLineUids) => Json(writer =>
+    // panels and mullions: what Revit made on the wall's grid (CurtainGrid.GetPanelIds / GetMullionIds); their
+    // UniqueIds are reported in created, after the wall and the added grid lines.
+    public static string CurtainWallJson(ObservedWall wall, int verticalLines, int horizontalLines, IReadOnlyList<string> addedGridLineUids, int panels, int mullions) => Json(writer =>
     {
         using var wallJson = JsonDocument.Parse(CommandReadback.WallJson(wall));
         writer.WriteStartObject();
@@ -270,6 +327,8 @@ public static class CommandReadbackV2
         writer.WriteStartArray("added_grid_line_unique_ids");
         foreach (var uid in addedGridLineUids) writer.WriteStringValue(uid);
         writer.WriteEndArray();
+        writer.WriteNumber("panels", panels);
+        writer.WriteNumber("mullions", mullions);
         writer.WriteEndObject();
         writer.WriteEndObject();
     });
@@ -281,15 +340,7 @@ public static class CommandReadbackV2
         writer.WriteString("unique_id", opening.UniqueId);
         Text(writer, "host_floor_unique_id", opening.HostUid);
         writer.WriteBoolean("rect_boundary", opening.IsRectBoundary);
-        writer.WriteStartArray("profile");
-        foreach (var vertex in opening.Vertices)
-        {
-            writer.WriteStartArray();
-            writer.WriteNumberValue(vertex.X);
-            writer.WriteNumberValue(vertex.Y);
-            writer.WriteEndArray();
-        }
-        writer.WriteEndArray();
+        Points(writer, "profile", opening.Vertices);
         Number(writer, "area_mm2", AreaMm2(opening.Vertices));
         writer.WriteEndObject();
         writer.WriteEndObject();

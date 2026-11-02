@@ -21,6 +21,41 @@ public static class RevitCommandGeometryV2
 {
     // Curtain grid lines added per direction by one command.
     public const int MaxCurtainGridLines = 500;
+    // Steeper roof slopes are refused: near 90 degrees the ridge height (rise over run) explodes.
+    public const double MaxRoofSlopeDeg = 85;
+
+    // Smallest width of the outline: over its convex hull, the least of each hull edge's farthest vertex distance.
+    // Half of it is the longest run any sloped edge can have before slopes meet, so tan(slope) times that half
+    // bounds the roof rise.
+    public static double MinimumWidthMm(IReadOnlyList<Point2> outline)
+    {
+        if (outline.Count < 3) return 0;
+        double ox = outline[0].X.Millimetres, oy = outline[0].Y.Millimetres;
+        var points = outline.Select(point => (X: point.X.Millimetres - ox, Y: point.Y.Millimetres - oy)).Distinct().OrderBy(point => point.X).ThenBy(point => point.Y).ToList();
+        static double Cross((double X, double Y) o, (double X, double Y) a, (double X, double Y) b) => (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
+        var hull = new List<(double X, double Y)>();
+        foreach (var pass in new[] { points, Enumerable.Reverse(points).ToList() })
+        {
+            var start = hull.Count;
+            foreach (var point in pass)
+            {
+                while (hull.Count >= start + 2 && Cross(hull[^2], hull[^1], point) <= 0) hull.RemoveAt(hull.Count - 1);
+                hull.Add(point);
+            }
+            hull.RemoveAt(hull.Count - 1);
+        }
+        if (hull.Count < 3) return 0;
+        var width = double.PositiveInfinity;
+        for (var i = 0; i < hull.Count; i++)
+        {
+            var a = hull[i];
+            var b = hull[(i + 1) % hull.Count];
+            var length = RevitCommandGeometry.Distance(a.X, a.Y, b.X, b.Y);
+            if (!(length > 0)) continue;
+            width = Math.Min(width, hull.Max(point => Math.Abs(Cross(a, b, point)) / length));
+        }
+        return double.IsFinite(width) ? width : 0;
+    }
 
     public static double CurveLengthMm(WallCurve curve) => curve switch
     {
@@ -67,7 +102,7 @@ public static partial class RevitCommandCatalogue
         string OutlineSchema(string description) => outline.Replace("@D@", description, StringComparison.Ordinal);
         const string BaseOffset = """{"type":"number","description":"Base offset from the level in millimetres; may be negative, at most 9144000 either way; default 0"}""";
 
-        var roof = Fill("""{"type":"object","properties":{"level":@0@,"type":@1@,"boundary":@2@,"slope_deg":{"type":"number","description":"Slope of every footprint edge in degrees, greater than 0 and less than 90 (a hip roof); omit for a flat roof"},"base_offset_mm":@3@},"required":["level","type","boundary"],"additionalProperties":false}""",
+        var roof = Fill("""{"type":"object","properties":{"level":@0@,"type":@1@,"boundary":@2@,"slope_deg":{"type":"number","description":"Slope of every footprint edge in degrees, greater than 0 and at most 85 (a hip roof); omit for a flat roof"},"base_offset_mm":@3@},"required":["level","type","boundary"],"additionalProperties":false}""",
             Reference("Base level: name or UniqueId from revit_query_levels"), Reference("Roof type: name or UniqueId from revit_query_roof_types"),
             OutlineSchema("Closed footprint outline as [x, y] millimetre vertices; the closing edge is implicit; must not self-intersect"), BaseOffset);
 
@@ -113,7 +148,9 @@ public static partial class RevitCommandCatalogue
         {
             var degrees = Number(slopeElement);
             var angle = RevitUnits.Degrees(degrees, "args.slope_deg");
-            if (!(degrees > 0 && degrees < 90)) throw new RevitCommandException(RevitCommandCodes.AngleInvalid, "args.slope_deg", "slope must be greater than 0 and less than 90 degrees; omit it for a flat roof");
+            if (!(degrees > 0 && degrees <= RevitCommandGeometryV2.MaxRoofSlopeDeg)) throw new RevitCommandException(RevitCommandCodes.AngleInvalid, "args.slope_deg", "slope must be greater than 0 and at most 85 degrees; omit it for a flat roof");
+            var rise = Math.Tan(angle.Radians) * RevitCommandGeometryV2.MinimumWidthMm(boundary) / 2;
+            if (!(rise <= RevitCommandGeometry.MaxRevitLengthMm)) throw new RevitCommandException(RevitCommandCodes.AngleInvalid, "args.slope_deg", "the roof would rise up to " + rise.ToString("R", CultureInfo.InvariantCulture) + " mm, above 9144000 mm (Revit's 30000 ft limit)");
             slope = angle;
         }
         var baseOffset = args.TryGetProperty("base_offset_mm", out var offset)
