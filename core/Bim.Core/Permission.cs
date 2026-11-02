@@ -44,34 +44,44 @@ public sealed class PermissionPolicyException : ArgumentException
 
 // Pure, deterministic decision over who may run which catalogue command on which document.
 // Classification reuses the existing contracts: the catalogue entry of the command name says whether it writes (the
-// envelope's Spec is not trusted), and RevitCopiesGuard.Check with the copies policy says whether a write targets an
-// enabled test copy. A write outside every copies root is a real-project write: denied unless that exact document
-// path is in the explicit enablement list (the owner rule "writes only to test copies until the owner enables real
-// projects") and the actor holds WriteRealProject. The copies guard, link guard and service keep their own checks;
-// this policy is an additional gate, never a replacement.
+// envelope's Spec is not trusted), and RevitCopiesGuard.IsUnder against an explicit list of test-copy roots says
+// whether a write targets a test copy. The copies roots are passed explicitly (DefaultCopiesRoots: only the
+// repository .bim/native-runs) and are deliberately NOT taken from RevitCommandPolicy, whose EnabledRoots also hold
+// the owner file lines meant for enabled real projects. Every other write is a real-project write: denied unless
+// that exact document path is in the explicit enablement list (the owner rule "writes only to test copies until the
+// owner enables real projects") and the actor holds WriteRealProject. The copies guard, link guard and service keep
+// their own checks; this policy is an additional gate, never a replacement.
 public sealed class PermissionPolicy
 {
     public const int MaxActorChars = 128;
 
     readonly Dictionary<string, PermissionLevel> levels;
 
-    PermissionPolicy(Dictionary<string, PermissionLevel> levels, IReadOnlyList<string> enablements, RevitCommandPolicy copies)
+    PermissionPolicy(Dictionary<string, PermissionLevel> levels, IReadOnlyList<string> enablements, IReadOnlyList<string> copiesRoots)
     {
         this.levels = levels;
         RealProjectEnablements = enablements;
-        Copies = copies;
+        CopiesRoots = copiesRoots;
     }
 
-    public RevitCommandPolicy Copies { get; }
+    public IReadOnlyList<string> CopiesRoots { get; }
     public IReadOnlyList<string> RealProjectEnablements { get; }
 
-    // Fails closed on any malformed grant or enablement: duplicate or invalid actor, undefined level, or an enablement
-    // that is not an absolute normalized path or is too broad (a drive root, "/" or a bare UNC share).
-    public static PermissionPolicy Create(IEnumerable<PermissionGrant> grants, IEnumerable<string> realProjectEnablements, RevitCommandPolicy copies)
+    // The only default test-copy root: <repository>/.bim/native-runs, where owner sessions place fixture copies.
+    public static IReadOnlyList<string> DefaultCopiesRoots(string repositoryRoot)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryRoot);
+        return new[] { Path.Combine(repositoryRoot, ".bim", "native-runs") };
+    }
+
+    // Fails closed on any malformed grant, enablement or copies root: duplicate or invalid actor (including the gate's
+    // InvalidActor placeholder), undefined level, or a path that is not absolute and normalized or is too broad (a
+    // drive root, "/" or a bare UNC share).
+    public static PermissionPolicy Create(IEnumerable<PermissionGrant> grants, IEnumerable<string> realProjectEnablements, IEnumerable<string> copiesRoots)
     {
         ArgumentNullException.ThrowIfNull(grants);
         ArgumentNullException.ThrowIfNull(realProjectEnablements);
-        ArgumentNullException.ThrowIfNull(copies);
+        ArgumentNullException.ThrowIfNull(copiesRoots);
         var levels = new Dictionary<string, PermissionLevel>(StringComparer.Ordinal);
         foreach (var grant in grants)
         {
@@ -86,7 +96,14 @@ public sealed class PermissionPolicy
             if (RevitCopiesGuard.IsTooBroad(entry)) throw new PermissionPolicyException(PermissionCodes.PolicyInvalid, "enablement too broad");
             enablements.Add(entry);
         }
-        return new PermissionPolicy(levels, enablements.AsReadOnly(), copies);
+        var roots = new List<string>();
+        foreach (var root in copiesRoots)
+        {
+            if (!RevitCopiesGuard.IsAbsoluteNormalized(root)) throw new PermissionPolicyException(PermissionCodes.PolicyInvalid, "copies root must be an absolute path without . or .. segments");
+            if (RevitCopiesGuard.IsTooBroad(root)) throw new PermissionPolicyException(PermissionCodes.PolicyInvalid, "copies root too broad");
+            roots.Add(root);
+        }
+        return new PermissionPolicy(levels, enablements.AsReadOnly(), roots.AsReadOnly());
     }
 
     // 1-128 characters, no control characters, no unpaired surrogates, not all whitespace.
@@ -115,19 +132,19 @@ public sealed class PermissionPolicy
     public PermissionLevel? LevelOf(string actor) => actor is not null && levels.TryGetValue(actor, out var level) ? level : null;
 
     // Null when the command is not in the catalogue or the path is not an absolute normalized document path.
-    public static PermissionLevel? RequiredLevel(string command, string documentPath, RevitCommandPolicy copies)
+    public static PermissionLevel? RequiredLevel(string command, string documentPath, IReadOnlyList<string> copiesRoots)
     {
-        ArgumentNullException.ThrowIfNull(copies);
+        ArgumentNullException.ThrowIfNull(copiesRoots);
         if (command is null || RevitCommandCatalogue.Find(command) is not { } spec) return null;
-        if (RevitCopiesGuard.Check(false, documentPath, copies) is not null) return null;
+        if (!RevitCopiesGuard.IsAbsoluteNormalized(documentPath)) return null;
         if (!spec.Writes) return PermissionLevel.Read;
-        return RevitCopiesGuard.Check(true, documentPath, copies) is null ? PermissionLevel.WriteCopies : PermissionLevel.WriteRealProject;
+        return copiesRoots.Any(root => RevitCopiesGuard.IsUnder(documentPath, root)) ? PermissionLevel.WriteCopies : PermissionLevel.WriteRealProject;
     }
 
     public PermissionLevel? Classify(RevitCommandEnvelope envelope)
     {
         ArgumentNullException.ThrowIfNull(envelope);
-        return RequiredLevel(envelope.Command, envelope.Document.Path, Copies);
+        return RequiredLevel(envelope.Command, envelope.Document.Path, CopiesRoots);
     }
 
     // Exact document match (same segments, compared like the copies guard); an enablement never acts as a root.
@@ -147,7 +164,7 @@ public sealed class PermissionPolicy
     {
         if (!IsActor(actor)) return Deny(PermissionCodes.ActorInvalid, null);
         if (command is null || RevitCommandCatalogue.Find(command) is null) return Deny(PermissionCodes.CommandUnknown, null);
-        if (RequiredLevel(command, documentPath, Copies) is not { } required) return Deny(PermissionCodes.DocumentPathInvalid, null);
+        if (RequiredLevel(command, documentPath, CopiesRoots) is not { } required) return Deny(PermissionCodes.DocumentPathInvalid, null);
         if (LevelOf(actor) is not { } granted) return Deny(PermissionCodes.ActorUnknown, required);
         switch (required)
         {

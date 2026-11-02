@@ -1,18 +1,28 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+[assembly: InternalsVisibleTo("Bim.Audit.Tests")]
 namespace Bim.Core;
 
 // P10-03 append-only audit log: a new JSON Lines file format, one entry per line, LF-terminated, UTF-8 without BOM.
-// Each line is the canonical JSON object (members in this fixed order, written by Utf8JsonWriter with default
-// escaping and no whitespace):
+// Each line is the canonical JSON object, members in this fixed order and no whitespace:
 //   seq, utc, actor, operation_id, command, document, decision, reason, prev_hash, hash
+// seq is a JSON integer; utc is yyyy-MM-ddTHH:mm:ss.fffffffZ; decision is "allow" or "deny"; hashes are 64 lowercase
+// hex characters. Strings are written by Utf8JsonWriter with its default encoder (System.Text.Json
+// JavaScriptEncoder.Default): every non-ASCII character and the HTML-sensitive ASCII characters, among them & + < > '
+// and the double quote, become \uXXXX with upper-case hex (so & is \u0026, + is \u002B, e-acute is \u00E9, and a
+// character outside the BMP is its two surrogate escapes); the backslash is written \\; other printable ASCII is
+// literal. Control characters are refused on append, so they never occur. A line that parses but is not
+// byte-identical to this serialization is audit_entry_not_canonical.
 // hash = lowercase hex SHA-256 of the UTF-8 bytes of the same object without the hash member; prev_hash is the
 // previous entry's hash, or 64 zeros for seq 1. Seq starts at 1 and increases by one.
-// The chain is unkeyed: it detects edits, removals, reordering and torn writes, but whoever can rewrite the whole
-// file can recompute it, and removing whole trailing entries leaves a valid shorter chain. Keeping the head anchor
-// (seq + hash) outside the file and passing it to Verify/Open closes both gaps for everything up to that anchor.
+// Limits. The chain is unkeyed: it detects edits, removals, reordering and torn writes inside the file, but
+// (1) removing whole trailing entries leaves a valid, shorter chain, so truncation at an entry boundary is NOT
+// detectable from the file alone, and (2) whoever can rewrite the whole file can recompute every hash. Only a head
+// anchor (seq + hash, AuditLog.Head) kept outside the file and passed to Verify/Open detects both, for everything up
+// to that anchor (audit_truncated / audit_anchor_mismatch). This file does not store that anchor; the caller must.
 public static class AuditCodes
 {
     public const string Ok = "ok";
@@ -28,6 +38,7 @@ public static class AuditCodes
     public const string FileUnreadable = "audit_file_unreadable";
     public const string ChangedExternally = "audit_changed_externally";
     public const string InputInvalid = "audit_input_invalid";
+    public const string Locked = "audit_locked";
 }
 
 public sealed record AuditEntry(long Seq, string Utc, string Actor, string OperationId, string Command, string Document, string Decision, string Reason, string PrevHash, string Hash);
@@ -36,7 +47,9 @@ public sealed record AuditAnchor(long Seq, string Hash);
 
 // Entries holds the entries verified before the first problem (all of them when Ok). Line is the 1-based line of
 // the problem, or null when the problem is not at one line (truncated, a malformed anchor, a missing file).
-public sealed record AuditVerification(string Code, long? Line, string? Detail, IReadOnlyList<AuditEntry> Entries)
+// VerifiedBytes is the byte length of those entries' lines (the whole input when Ok): AuditLog.Open continues from
+// exactly the bytes it verified.
+public sealed record AuditVerification(string Code, long? Line, string? Detail, IReadOnlyList<AuditEntry> Entries, long VerifiedBytes)
 {
     public bool Ok => Code == AuditCodes.Ok;
     public AuditAnchor Head => Entries.Count == 0 ? new AuditAnchor(0, AuditLogFormat.GenesisHash) : new AuditAnchor(Entries[^1].Seq, Entries[^1].Hash);
@@ -123,7 +136,7 @@ public static class AuditLogFormat
         byte[] bytes;
         try
         {
-            if (!File.Exists(path)) return new AuditVerification(AuditCodes.FileMissing, null, null, Array.Empty<AuditEntry>());
+            if (!File.Exists(path)) return new AuditVerification(AuditCodes.FileMissing, null, null, Array.Empty<AuditEntry>(), 0);
             using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var copy = new MemoryStream();
             file.CopyTo(copy);
@@ -131,7 +144,7 @@ public static class AuditLogFormat
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            return new AuditVerification(AuditCodes.FileUnreadable, null, error.GetType().Name, Array.Empty<AuditEntry>());
+            return new AuditVerification(AuditCodes.FileUnreadable, null, error.GetType().Name, Array.Empty<AuditEntry>(), 0);
         }
         return VerifyBytes(bytes, anchor);
     }
@@ -145,37 +158,39 @@ public static class AuditLogFormat
         var previous = GenesisHash;
         long line = 0;
         var start = 0;
+        var verified = 0;
         while (start < bytes.Length)
         {
             line++;
             var length = bytes[start..].IndexOf((byte)'\n');
-            if (length < 0) return new AuditVerification(AuditCodes.TornTail, line, "final line has no LF terminator", entries.AsReadOnly());
+            if (length < 0) return Fail(AuditCodes.TornTail, line, "final line has no LF terminator", entries, verified);
             var raw = bytes.Slice(start, length);
             start += length + 1;
             string text;
             try { text = Utf8.GetString(raw); }
-            catch (DecoderFallbackException) { return Fail(AuditCodes.EntryMalformed, line, "invalid UTF-8", entries); }
-            if (Parse(text, out var problem) is not { } entry) return Fail(AuditCodes.EntryMalformed, line, problem, entries);
-            if (Line(entry) != text) return Fail(AuditCodes.EntryNotCanonical, line, "line differs from the canonical serialization", entries);
-            if (entry.Seq != line) return Fail(AuditCodes.SequenceBroken, line, "seq " + entry.Seq.ToString(CultureInfo.InvariantCulture) + " where " + line.ToString(CultureInfo.InvariantCulture) + " expected", entries);
-            if (entry.PrevHash != previous) return Fail(AuditCodes.ChainBroken, line, "prev_hash does not match the previous entry", entries);
-            if (ComputeHash(entry) != entry.Hash) return Fail(AuditCodes.HashMismatch, line, "hash does not match the entry", entries);
+            catch (DecoderFallbackException) { return Fail(AuditCodes.EntryMalformed, line, "invalid UTF-8", entries, verified); }
+            if (Parse(text, out var problem) is not { } entry) return Fail(AuditCodes.EntryMalformed, line, problem, entries, verified);
+            if (Line(entry) != text) return Fail(AuditCodes.EntryNotCanonical, line, "line differs from the canonical serialization", entries, verified);
+            if (entry.Seq != line) return Fail(AuditCodes.SequenceBroken, line, "seq " + entry.Seq.ToString(CultureInfo.InvariantCulture) + " where " + line.ToString(CultureInfo.InvariantCulture) + " expected", entries, verified);
+            if (entry.PrevHash != previous) return Fail(AuditCodes.ChainBroken, line, "prev_hash does not match the previous entry", entries, verified);
+            if (ComputeHash(entry) != entry.Hash) return Fail(AuditCodes.HashMismatch, line, "hash does not match the entry", entries, verified);
             entries.Add(entry);
             previous = entry.Hash;
+            verified = start;
         }
         if (anchor is not null)
         {
             if (anchor.Seq < 0 || !IsHash(anchor.Hash) || (anchor.Seq == 0 && anchor.Hash != GenesisHash))
-                return Fail(AuditCodes.AnchorMismatch, null, "anchor is not a valid seq and hash", entries);
+                return Fail(AuditCodes.AnchorMismatch, null, "anchor is not a valid seq and hash", entries, verified);
             if (anchor.Seq > entries.Count)
-                return Fail(AuditCodes.Truncated, null, "log has " + entries.Count.ToString(CultureInfo.InvariantCulture) + " entries; anchor expects at least " + anchor.Seq.ToString(CultureInfo.InvariantCulture), entries);
+                return Fail(AuditCodes.Truncated, null, "log has " + entries.Count.ToString(CultureInfo.InvariantCulture) + " entries; anchor expects at least " + anchor.Seq.ToString(CultureInfo.InvariantCulture), entries, verified);
             if (anchor.Seq > 0 && entries[(int)(anchor.Seq - 1)].Hash != anchor.Hash)
-                return Fail(AuditCodes.AnchorMismatch, anchor.Seq, "entry hash differs from the anchor", entries);
+                return Fail(AuditCodes.AnchorMismatch, anchor.Seq, "entry hash differs from the anchor", entries, verified);
         }
-        return new AuditVerification(AuditCodes.Ok, null, null, entries.AsReadOnly());
+        return Fail(AuditCodes.Ok, null, null, entries, verified);
     }
 
-    static AuditVerification Fail(string code, long? line, string? detail, List<AuditEntry> entries) => new(code, line, detail, entries.AsReadOnly());
+    static AuditVerification Fail(string code, long? line, string? detail, List<AuditEntry> entries, long verified) => new(code, line, detail, entries.AsReadOnly(), verified);
 
     static AuditEntry? Parse(string text, out string problem)
     {
@@ -218,10 +233,12 @@ public static class AuditLogFormat
 }
 
 // One writer per file. Open verifies the whole existing file (and the optional anchor kept elsewhere) and refuses
-// any damage, including a torn final line: it reports it and never truncates or repairs. Append writes one
-// LF-terminated line in FileMode.Append and flushes it to disk (Flush(true)) before returning; it first checks the
-// file length is what this instance last wrote, so another writer or an external edit makes it refuse. A failed
-// write faults the instance; reopening then reports the damage.
+// any damage, including a torn final line: it reports it and never truncates or repairs. The instance continues
+// from the byte length Verify actually read, never from a later look at the file. Append opens the file with
+// FileShare.None (audit_locked while another handle holds it), checks the length is what this instance last wrote
+// or verified (audit_changed_externally otherwise, so a second writer can never produce a duplicate seq), writes one
+// LF-terminated line in FileMode.Append and flushes it to disk (Flush(true)) before returning. A failed write faults
+// the instance; reopening then reports the damage.
 public sealed class AuditLog
 {
     readonly object gate = new();
@@ -240,7 +257,10 @@ public sealed class AuditLog
     public string FilePath { get; }
     public AuditAnchor Head { get; private set; }
 
-    public static AuditLog Open(string path, Func<DateTimeOffset> clock, AuditAnchor? anchor = null)
+    public static AuditLog Open(string path, Func<DateTimeOffset> clock, AuditAnchor? anchor = null) => Open(path, clock, anchor, null);
+
+    // afterVerify is a test seam that runs between verification and construction (a concurrent writer's window).
+    internal static AuditLog Open(string path, Func<DateTimeOffset> clock, AuditAnchor? anchor, Action? afterVerify)
     {
         ArgumentNullException.ThrowIfNull(clock);
         if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path)) throw new AuditLogException(AuditCodes.InputInvalid, null, "absolute log path required");
@@ -256,6 +276,7 @@ public sealed class AuditLog
             return new AuditLog(full, clock, empty.Head, 0);
         }
         if (!existing.Ok) throw new AuditLogException(existing.Code, existing.Line, existing.Detail);
+        afterVerify?.Invoke();
         return new AuditLog(full, clock, existing.Head, new FileInfo(full).Length);
     }
 
@@ -279,7 +300,12 @@ public sealed class AuditLog
             var unsigned = new AuditEntry(Head.Seq + 1, utc, actor, operationId, command, documentPath, allowed ? AuditLogFormat.Allow : AuditLogFormat.Deny, reason, Head.Hash, "");
             var entry = unsigned with { Hash = AuditLogFormat.ComputeHash(unsigned) };
             var bytes = Encoding.UTF8.GetBytes(AuditLogFormat.Line(entry) + "\n");
-            using var file = new FileStream(FilePath, FileMode.Append, FileAccess.Write, FileShare.Read);
+            FileStream file;
+            // FileShare.None: exclusive on Windows and an exclusive advisory lock (flock) on Unix, so two writers
+            // never interleave; the length check under that lock then catches any write since this instance's last.
+            try { file = new FileStream(FilePath, FileMode.Append, FileAccess.Write, FileShare.None); }
+            catch (IOException error) { throw new AuditLogException(AuditCodes.Locked, null, error.GetType().Name); }
+            using var handle = file;
             if (file.Length != length) throw new AuditLogException(AuditCodes.ChangedExternally, null, "log length differs from the last append");
             try
             {

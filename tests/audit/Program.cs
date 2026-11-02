@@ -56,7 +56,7 @@ string? AuditCode(Action action)
 string Describe(PermissionDecision decision) => (decision.Allowed ? "allow " : "deny ") + decision.Reason + " required " + decision.Required;
 string Sha(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
 
-var copies = RevitCommandPolicy.FromAllowlist(null, CopiesRoot);
+var copies = PermissionPolicy.DefaultCopiesRoots(@"C:\Repo");
 var grants = new[]
 {
     new PermissionGrant("reader", PermissionLevel.Read),
@@ -125,7 +125,7 @@ try
     Check(!d.Allowed && d.Reason == PermissionCodes.RealProjectNotEnabled, "enablement is not a directory root: a path below it is not enabled", Describe(d));
     d = enabled.Evaluate("owner", Envelope("wall.create", @"c:/projects/REAL/tower.RVT"));
     Check(d.Allowed && d.Reason == PermissionCodes.RealProjectEnabled, "drive paths match the enablement case- and separator-insensitively like the copies guard", Describe(d));
-    var unixEnabled = PermissionPolicy.Create(grants, new[] { "/srv/projects/Tower.rvt" }, RevitCommandPolicy.None);
+    var unixEnabled = PermissionPolicy.Create(grants, new[] { "/srv/projects/Tower.rvt" }, Array.Empty<string>());
     d = unixEnabled.Evaluate("owner", Envelope("wall.create", "/srv/projects/Tower.rvt"));
     Check(d.Allowed && d.Reason == PermissionCodes.RealProjectEnabled, "a '/'-rooted enabled document is allowed", Describe(d));
     d = unixEnabled.Evaluate("owner", Envelope("wall.create", "/srv/projects/tower.rvt"));
@@ -159,13 +159,30 @@ try
     var reversed = PermissionPolicy.Create(grants.Reverse(), new[] { RealPath }, copies);
     var all = new[] { "reader", "copier", "owner", "stranger" };
     var envelopes = new[] { query, copyWrite, realWrite };
-    Check(all.All(a => envelopes.All(env => enabled.Evaluate(a, env) == reversed.Evaluate(a, env) && enabled.Evaluate(a, env) == enabled.Evaluate(a, env))), "decisions are deterministic and independent of grant order");
-    Check(RevitCopiesGuard.Check(true, RealPath, copies) == RevitCommandCodes.DocumentNotEnabled && RevitCopiesGuard.Check(true, FixturePath, copies) is null, "the copies guard keeps its own decision (unchanged)");
+    Check(all.All(a => envelopes.All(env => enabled.Evaluate(a, env) == reversed.Evaluate(a, env))), "decisions are deterministic and independent of grant order");
+    var guardPolicy = new RevitCommandPolicy(new[] { CopiesRoot });
+    Check(RevitCopiesGuard.Check(true, RealPath, guardPolicy) == RevitCommandCodes.DocumentNotEnabled && RevitCopiesGuard.Check(true, FixturePath, guardPolicy) is null, "the copies guard keeps its own decision (unchanged)");
+
+    // ---- Owner-file roots are not test copies ----
+    var ownerRoots = RevitCommandPolicy.FromAllowlist("# owner enabled\n" + @"C:\Owner\Enabled" + "\n" + @"C:\Projects\Copies\Tower-copy.rvt" + "\n", CopiesRoot);
+    const string OwnerDoc = @"C:\Owner\Enabled\Tower.rvt";
+    Check(RevitCopiesGuard.Check(true, OwnerDoc, ownerRoots) is null, "precondition: the copies guard allows a write under an owner-file root");
+    Check(copies.Count == 1 && RevitCopiesGuard.IsUnder(FixturePath, copies[0]) && policy.CopiesRoots.SequenceEqual(copies), "DefaultCopiesRoots is only <repository>/.bim/native-runs");
+    d = policy.Evaluate("copier", Envelope("wall.create", OwnerDoc));
+    Check(!d.Allowed && d.Reason == PermissionCodes.RealProjectNotEnabled && d.Required == PermissionLevel.WriteRealProject, "a write under an owner-file root is a real-project write: denied for a write-copies actor", Describe(d));
+    d = policy.Evaluate("copier", Envelope("wall.create", @"C:\Projects\Copies\Tower-copy.rvt"));
+    Check(!d.Allowed && d.Reason == PermissionCodes.RealProjectNotEnabled, "an owner-file exact document is not a test copy either", Describe(d));
+    var ownerEnabled = PermissionPolicy.Create(grants, new[] { OwnerDoc }, copies);
+    Check(ownerEnabled.Evaluate("owner", Envelope("wall.create", OwnerDoc)) is { Allowed: true, Reason: PermissionCodes.RealProjectEnabled } && !ownerEnabled.Evaluate("copier", Envelope("wall.create", OwnerDoc)).Allowed, "it needs write-real-project plus an exact enablement");
+    var extraRoot = PermissionPolicy.Create(grants, Array.Empty<string>(), new[] { @"C:\Scratch\copies" });
+    Check(extraRoot.Evaluate("copier", Envelope("wall.create", @"C:\Scratch\copies\a.rvt")) is { Allowed: true, Reason: PermissionCodes.WriteCopiesAllowed } && extraRoot.Classify(copyWrite) == PermissionLevel.WriteRealProject, "only the explicitly passed copies roots are write-copies");
+    Check(PolicyCode(() => PermissionPolicy.Create(grants, Array.Empty<string>(), new[] { "copies" })) == PermissionCodes.PolicyInvalid && PolicyCode(() => PermissionPolicy.Create(grants, Array.Empty<string>(), new[] { @"D:\" })) == PermissionCodes.PolicyInvalid, "a relative or too-broad copies root is policy_invalid");
 
     // ---- Policy construction ----
     Check(PolicyCode(() => PermissionPolicy.Create(new[] { new PermissionGrant("a", PermissionLevel.Read), new PermissionGrant("a", PermissionLevel.WriteCopies) }, Array.Empty<string>(), copies)) == PermissionCodes.PolicyInvalid, "a duplicate actor grant is policy_invalid");
     Check(PolicyCode(() => PermissionPolicy.Create(new[] { new PermissionGrant("a", (PermissionLevel)99) }, Array.Empty<string>(), copies)) == PermissionCodes.PolicyInvalid, "an undefined level is policy_invalid");
     Check(PolicyCode(() => PermissionPolicy.Create(new[] { new PermissionGrant("bad\tactor", PermissionLevel.Read) }, Array.Empty<string>(), copies)) == PermissionCodes.PolicyInvalid, "an invalid actor id in a grant is policy_invalid");
+    Check(PolicyCode(() => PermissionPolicy.Create(new[] { new PermissionGrant(PermissionAuditGate.InvalidActor, PermissionLevel.WriteRealProject) }, Array.Empty<string>(), copies)) == PermissionCodes.PolicyInvalid, "the gate's invalid-actor placeholder cannot be granted");
     Check(PolicyCode(() => PermissionPolicy.Create(grants, new[] { "Tower.rvt" }, copies)) == PermissionCodes.PolicyInvalid, "a relative enablement is policy_invalid");
     Check(PolicyCode(() => PermissionPolicy.Create(grants, new[] { @"C:\" }, copies)) == PermissionCodes.PolicyInvalid, "a drive-root enablement is policy_invalid");
     Check(PolicyCode(() => PermissionPolicy.Create(grants, new[] { "/" }, copies)) == PermissionCodes.PolicyInvalid, "a '/' enablement is policy_invalid");
@@ -202,6 +219,32 @@ try
     twin.Append("reader", "op-2", "wall.create", RealPath, false, PermissionCodes.RealProjectNotEnabled);
     twin.Append("reader", "op-3", "query.levels", RealPath, true, PermissionCodes.ReadAllowed);
     Check(File.ReadAllBytes(twinPath).SequenceEqual(File.ReadAllBytes(logPath)), "same clock and inputs produce a byte-identical log");
+
+    // Known answer for escaping: & + " and a non-ASCII character.
+    var escapedPath = Path.Combine(work, "escape", "audit.jsonl");
+    var escapedLog = AuditLog.Open(escapedPath, Clock());
+    var oddDocument = "/srv/Café & \"Co\"+1/T.rvt";
+    var escaped = escapedLog.Append("copier", "op-1", "wall.create", oddDocument, true, PermissionCodes.WriteCopiesAllowed);
+    var escapedBody = "{\"seq\":1,\"utc\":\"2026-11-02T10:00:00.0000000Z\",\"actor\":\"copier\",\"operation_id\":\"op-1\",\"command\":\"wall.create\",\"document\":\"/srv/Caf\\u00E9 \\u0026 \\u0022Co\\u0022\\u002B1/T.rvt\",\"decision\":\"allow\",\"reason\":\"write_copies_allowed\",\"prev_hash\":\"" + Genesis + "\"}";
+    var escapedText = File.ReadAllText(escapedPath);
+    Check(escapedText == escapedBody[..^1] + ",\"hash\":\"" + Sha(escapedBody) + "\"}\n" && escaped.Hash == Sha(escapedBody), "& + \" and non-ASCII are written as upper-case \\uXXXX escapes and hashed as written", escapedText);
+    var escapedCheck = AuditLogFormat.Verify(escapedPath);
+    Check(escapedCheck.Ok && escapedCheck.Entries[0].Document == oddDocument && escapedText.All(c => c < 128), "escaped entries round-trip and the file is pure ASCII");
+
+    // Exclusive append handle and sequential writers.
+    using (var holder = new FileStream(twinPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+    {
+        Check(AuditCode(() => twin.Append("owner", "op-4", "floor.create", RealPath, true, PermissionCodes.RealProjectEnabled)) == AuditCodes.Locked, "append while another handle holds the file exclusively is audit_locked");
+    }
+    Check(File.ReadAllBytes(twinPath).SequenceEqual(File.ReadAllBytes(logPath)), "a locked append writes nothing");
+    var twin4 = twin.Append("owner", "op-4", "floor.create", RealPath, true, PermissionCodes.RealProjectEnabled);
+    Check(twin4.Seq == 4, "after the lock is released the same instance appends seq 4");
+    var twinSecond = AuditLog.Open(twinPath, Clock());
+    var twin5 = twinSecond.Append("owner", "op-5", "floor.create", RealPath, true, PermissionCodes.RealProjectEnabled);
+    Check(AuditCode(() => twin.Append("owner", "op-6", "floor.create", RealPath, true, PermissionCodes.RealProjectEnabled)) == AuditCodes.ChangedExternally, "the first writer refuses after a second writer appended");
+    var twinCheck = AuditLogFormat.Verify(twinPath);
+    Check(twin5.Seq == 5 && twinCheck.Ok && twinCheck.Entries.Select(x => x.Seq).SequenceEqual(new long[] { 1, 2, 3, 4, 5 }), "two writers on one file produce one chain without a duplicate seq", twinCheck.Code);
+    Check(twinCheck.VerifiedBytes == new FileInfo(twinPath).Length, "VerifiedBytes of a valid log is its length");
 
     // Reopen continues the chain; the earlier instance sees the external append and refuses.
     var reopened = AuditLog.Open(logPath, () => new DateTimeOffset(2026, 11, 2, 7, 0, 5, TimeSpan.FromHours(-3)), log.Head);
@@ -318,6 +361,15 @@ try
     Check(AuditCode(() => AuditLog.Open(absentPath, Clock(), new AuditAnchor(4, fourth.Hash))) == AuditCodes.Truncated && !File.Exists(absentPath), "Open of a missing log with a non-genesis anchor is truncated and creates nothing");
     var thrown = Assert(() => AuditLog.Open(tornPath, Clock()));
     Check(thrown is { Code: AuditCodes.TornTail, Line: 4 } && thrown.Message.Contains(AuditCodes.TornTail, StringComparison.Ordinal), "the refusal carries the code and line");
+    var tornCheck = AuditLogFormat.Verify(tornPath);
+    Check(tornCheck.VerifiedBytes == Encoding.UTF8.GetByteCount(Join(goodLines.Take(3))), "VerifiedBytes of a torn log covers only its complete entries");
+
+    // Open continues from the bytes it verified, not from a later look at the file.
+    var racePath = Path.Combine(work, "race.jsonl");
+    File.WriteAllText(racePath, Join(goodLines.Take(2)));
+    var raced = AuditLog.Open(racePath, Clock(), null, () => File.AppendAllText(racePath, goodLines[2] + "\n"));
+    Check(raced.Head == new AuditAnchor(2, second.Hash), "Open's head is the verified head");
+    Check(AuditCode(() => raced.Append("owner", "op-9", "floor.create", RealPath, true, PermissionCodes.RealProjectEnabled)) == AuditCodes.ChangedExternally && AuditLogFormat.Verify(racePath).Entries.Count == 3, "a file that grew between verify and open is refused on the first append");
 
     // ---- Audited permission gate ----
     var gatePath = Path.Combine(work, "gate", "audit.jsonl");
@@ -338,8 +390,11 @@ try
     Check(entries.Count == 4 && entries[1] is { Actor: "copier", OperationId: "op-real", Decision: "deny", Reason: PermissionCodes.LevelInsufficient } && entries[2] is { Actor: "owner", Decision: "allow", Reason: PermissionCodes.RealProjectEnabled }, "denied and real-project entries record the injected actor");
     Check(entries.Count == 4 && entries[3] is { Decision: "deny", Reason: PermissionCodes.ActorInvalid } && entries[3].Actor == PermissionAuditGate.InvalidActor, "an invalid actor is recorded under a fixed placeholder", entries.Count == 4 ? entries[3].Actor : "");
     var gateBefore = File.ReadAllBytes(gatePath);
+    actor = "copier";
+    Check(enabled.Evaluate("copier", copyWrite).Allowed, "precondition: the policy allows copier on the test copy");
     File.AppendAllText(gatePath, "x");
-    Check(AuditCode(() => gate.Authorize(query)) == AuditCodes.ChangedExternally, "the gate fails closed when the audit cannot be appended");
+    PermissionDecision? withheld = null;
+    Check(AuditCode(() => withheld = gate.Authorize(copyWrite)) == AuditCodes.ChangedExternally && withheld is null, "an allowed decision is withheld when the audit cannot be appended");
     File.WriteAllBytes(gatePath, gateBefore);
 }
 catch (Exception error)
