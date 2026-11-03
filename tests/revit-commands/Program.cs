@@ -356,7 +356,7 @@ try
     Check(names.SequenceEqual(new[] { "query.levels", "query.wall_types", "query.floor_types", "query.family_symbols", "wall.create", "opening.place", "floor.create", "room.create" }), "catalogue v1 lists the eight commands in order", string.Join(",", names));
     Check(RevitCommandCatalogue.V1.Where(spec => !spec.Writes).Select(spec => spec.Name).All(name => name.StartsWith("query.", StringComparison.Ordinal)) && RevitCommandCatalogue.V1.Count(spec => spec.Writes) == 4, "queries are read-only and the four creators write");
     Check(RevitCommandCatalogue.Find("wall.create")?.Writes == true && RevitCommandCatalogue.Find("wall.delete") is null, "catalogue lookup by name");
-    Check(RevitCommandCatalogue.V1.Select(spec => spec.ToolName).Distinct().Count() == 8 && RevitCommandCatalogue.V1.All(spec => System.Text.RegularExpressions.Regex.IsMatch(spec.ToolName, @"\Arevit_[a-z_]+\z") && spec.ToolName == "revit_" + spec.Name.Replace('.', '_')), "tool names are revit_<command with . replaced by _>");
+    Check(RevitCommandCatalogue.All.Select(spec => spec.ToolName).Distinct(StringComparer.Ordinal).Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.All(spec => System.Text.RegularExpressions.Regex.IsMatch(spec.ToolName, @"\A[a-zA-Z0-9_-]{1,64}\z") && spec.ToolName == "revit_" + spec.Name.Replace('.', '_')), "every catalogue tool name is distinct, matches the MCP name rule and is revit_<command with . replaced by _>");
     Check(RevitCommandCatalogue.V1.All(spec => spec.Description.Length > 20 && spec.Description.EndsWith('.')), "every command has a plain-English description");
     foreach (var spec in RevitCommandCatalogue.V1)
     {
@@ -479,8 +479,8 @@ try
 
     var listed = Call("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]!.AsArray();
     var listedNames = listed.Select(tool => tool!["name"]!.GetValue<string>()).ToArray();
-    Check(listedNames.SequenceEqual(new[] { "diff", "validate", "room", "plan" }.Concat(RevitCommandCatalogue.V1.Select(spec => spec.ToolName))), "tools/list = core tools then exactly the catalogue tools", string.Join(",", listedNames));
-    foreach (var spec in RevitCommandCatalogue.V1)
+    Check(listedNames.SequenceEqual(new[] { "diff", "validate", "room", "plan" }.Concat(RevitCommandCatalogue.All.Select(spec => spec.ToolName))), "tools/list = core tools then exactly the catalogue tools", string.Join(",", listedNames));
+    foreach (var spec in RevitCommandCatalogue.All)
     {
         var tool = listed.Single(t => t!["name"]!.GetValue<string>() == spec.ToolName)!;
         var schema = tool["inputSchema"]!;

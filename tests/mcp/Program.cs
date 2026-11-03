@@ -72,11 +72,107 @@ Check(server.Handle("""{"jsonrpc":"2.0","method":"notifications/unknown","params
 
 var list=Call(Request(2,"tools/list",null));
 var tools=list["result"]!["tools"]!.AsArray();
-Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,"+string.Join(",",RevitCommandCatalogue.V1.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, then one revit_* tool per catalogue v1 command");
+Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
 Check(RevitCommandCatalogue.V1.Select(c=>c.ToolName).SequenceEqual(new[]{"revit_query_levels","revit_query_wall_types","revit_query_floor_types","revit_query_family_symbols","revit_wall_create","revit_opening_place","revit_floor_create","revit_room_create"}),"catalogue v1 tool names are the eight ADR0009 commands");
 Check(tools.All(t=>t!["inputSchema"]!["type"]!.GetValue<string>()=="object" && t!["inputSchema"]!["properties"] is JsonObject && t!["inputSchema"]!["required"] is JsonArray && !string.IsNullOrWhiteSpace(t!["description"]!.GetValue<string>())),"every tool has a JSON Schema object inputSchema and description");
 string Required(string tool)=>string.Join(",",tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!["inputSchema"]!["required"]!.AsArray().Select(x=>x!.GetValue<string>()));
 Check(Required("diff")=="before,after" && Required("validate")=="project" && Required("room")=="project_guid,revision,intent" && Required("plan")=="store_path,desired","tool schemas require the CLI inputs");
+
+// P9-05: the Revit tools are derived from the whole catalogue (v1 + v2 + whatever is added later), never a fixed list.
+// Each tool states the P10-03 permission level it needs on a test copy; a write to a real project needs more.
+const string McpUid="60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b";
+const string McpCopy=@"C:\Repo\.bim\native-runs\run-1\BIM-Agentic-Test.rvt";
+const string McpReal=@"C:\Projects\Real\Tower.rvt";
+var copiesRoots=PermissionPolicy.DefaultCopiesRoots(@"C:\Repo");
+string LevelName(PermissionLevel level)=>level switch { PermissionLevel.Read=>"read", PermissionLevel.WriteCopies=>"write-copies", PermissionLevel.WriteRealProject=>"write-real-project", _=>throw new Exception("level") };
+var revitTools=tools.Where(t=>t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal)).ToArray();
+Check(revitTools.Length==RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(c=>c.ToolName).Distinct().Count()==RevitCommandCatalogue.All.Count,"exactly one revit_* tool per catalogue command, no extra and no duplicate");
+var mcpToolName=new System.Text.RegularExpressions.Regex(@"\A[a-zA-Z0-9_-]{1,64}\z");
+Check(tools.All(t=>mcpToolName.IsMatch(t!["name"]!.GetValue<string>())) && tools.Select(t=>t!["name"]!.GetValue<string>()).Distinct(StringComparer.Ordinal).Count()==tools.Count,"every listed tool name is unique and matches ^[a-zA-Z0-9_-]{1,64}$");
+foreach(var v2 in new[]{"revit_query_roof_types","revit_roof_create_footprint","revit_stair_create","revit_curtain_wall_create","revit_floor_create_opening"})
+    Check(tools.Count(t=>t!["name"]!.GetValue<string>()==v2)==1,"catalogue v2 tool "+v2+" is listed");
+Check(RevitCommandCatalogue.V2.All(spec=>RevitCommandCatalogue.All.Contains(spec)) && RevitCommandCatalogue.V1.All(spec=>RevitCommandCatalogue.All.Contains(spec)),"the catalogue enumeration contains v1 and v2");
+foreach(var spec in RevitCommandCatalogue.All) {
+    var tool=tools.Single(t=>t!["name"]!.GetValue<string>()==spec.ToolName)!;
+    var schema=tool["inputSchema"]!;
+    Check(schema["properties"]!["args"]!.ToJsonString()==JsonNode.Parse(spec.ArgsSchemaJson)!.ToJsonString()
+        && string.Join(",",schema["required"]!.AsArray().Select(x=>x!.GetValue<string>()))=="pipe_name,operation_id,document,args"
+        && schema["additionalProperties"]!.GetValue<bool>()==false
+        && tool["description"]!.GetValue<string>().StartsWith(spec.Description,StringComparison.Ordinal),spec.ToolName+" schema embeds the catalogue args schema and description");
+    var required=PermissionPolicy.RequiredLevel(spec.Name,McpCopy,copiesRoots) ?? throw new Exception("catalogue command without a level: "+spec.Name);
+    Check(required==(spec.Writes?PermissionLevel.WriteCopies:PermissionLevel.Read),spec.Name+" policy level on a test copy follows read/write");
+    Check(tool["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()==LevelName(required) && tool["permission_level"]==null,spec.ToolName+" lists _meta bim-agentic-os/permission_level "+LevelName(required)+" (P10-03 policy on a test copy) and no top-level field");
+    var annotations=tool["annotations"]?.AsObject();
+    Check(annotations?["readOnlyHint"]?.GetValue<bool>()==!spec.Writes,spec.ToolName+" annotations.readOnlyHint is "+(!spec.Writes));
+    if(spec.Writes) {
+        Check(annotations!["destructiveHint"]?.GetValue<bool>()==false && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint false, idempotentHint true (operation_id replay)");
+        var description=tool["description"]!.GetValue<string>();
+        Check(PermissionPolicy.RequiredLevel(spec.Name,McpReal,copiesRoots)==PermissionLevel.WriteRealProject
+            && description.Contains(".bim/native-runs",StringComparison.Ordinal) && description.Contains(".bim/revit-enabled-roots.txt",StringComparison.Ordinal)
+            && description.Contains("no per-document or per-actor check",StringComparison.Ordinal),spec.ToolName+" on a real project needs write-real-project; description states the directory-root write rule");
+    }
+    else Check(annotations!.Count==1,spec.ToolName+" read annotations carry only readOnlyHint");
+}
+Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal)).All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools carry no Revit permission level or annotations");
+Check(McpServer.PermissionLevelName(PermissionLevel.Read)=="read" && McpServer.PermissionLevelName(PermissionLevel.WriteCopies)=="write-copies" && McpServer.PermissionLevelName(PermissionLevel.WriteRealProject)=="write-real-project","PermissionLevelName names the three P10-03 levels");
+var outOfRange=false;
+try { McpServer.PermissionLevelName((PermissionLevel)99); } catch(ArgumentOutOfRangeException) { outOfRange=true; }
+Check(outOfRange,"PermissionLevelName rejects an undefined level with ArgumentOutOfRangeException");
+
+// The tool list fails closed at construction: duplicate or non-MCP tool names throw instead of shadowing a tool.
+RevitCommandSpec Synthetic(string name,bool writes=false)=>new(name,writes,"Synthetic test command.","""{"type":"object","properties":{},"additionalProperties":false}""",_=>new EmptyQueryArgs());
+string? BuildError(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpServer(catalogue,RevitCommandPolicy.None,null,null); return null; } catch(InvalidOperationException error) { return error.Message; } }
+string? NameError(params string[] names) { try { McpServer.CheckToolNames(names); return null; } catch(InvalidOperationException error) { return error.Message; } }
+Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)}) is null,"an injected catalogue with distinct valid names builds");
+var syntheticServer=new McpServer(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)},RevitCommandPolicy.None,null,null);
+Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
+Check(BuildError(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")})=="tool_name_duplicate: revit_a_b_c","colliding tool names (a.b_c vs a_b.c) fail closed at construction");
+Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("query.levels")})=="tool_name_duplicate: revit_query_levels","a duplicated command fails closed at construction");
+Check(BuildError(new[]{Synthetic("a b")})=="tool_name_invalid: revit_a b","a tool name outside [a-zA-Z0-9_-] fails closed at construction");
+Check(BuildError(new[]{Synthetic(new string('x',59))})?.StartsWith("tool_name_invalid: ",StringComparison.Ordinal)==true,"a tool name longer than 64 characters fails closed at construction");
+Check(BuildError(new[]{Synthetic("not.in_catalogue")})=="permission_level_unknown: not.in_catalogue","an entry the permission policy cannot classify fails closed at construction");
+Check(NameError("revit_"+new string('x',58),"diff")==null && NameError("")!=null && NameError("diff","diff")=="tool_name_duplicate: diff","the name rule accepts 64 characters and rejects empty and duplicate names");
+
+// v2 tools reach the same guarded service: reads go to the pipe on any document, writes only on enabled test copies.
+var forwardedLines=new List<string>();
+var guarded=new McpServer(new RevitCommandPolicy(new[]{@"C:\Repo\.bim\native-runs"}),(pipe,line)=>{ forwardedLines.Add(line); return null; },new RevitFileSystemProbe(_=>false,_=>null));
+JsonObject Guarded(string tool,JsonNode commandArgs,string path)=>Node(guarded.Handle(Request(11,"tools/call",new JsonObject{["name"]=tool,["arguments"]=new JsonObject{["pipe_name"]="bim-agentic-os-2025-4242",["operation_id"]="op-p9-05",["document"]=new JsonObject{["path"]=path,["unique_id"]=McpUid},["args"]=commandArgs}})) ?? throw new Exception("no response")).AsObject();
+string FailureCode(JsonObject response)=>Node(Text(response))["code"]!.GetValue<string>();
+JsonArray Outline()=>new JsonArray(new JsonArray(0,0),new JsonArray(5000,0),new JsonArray(5000,4000),new JsonArray(0,4000));
+var v2Writes=new (string Tool,Func<JsonNode> Args)[] {
+    ("revit_roof_create_footprint",()=>new JsonObject{["level"]="Level 1",["type"]="Basic Roof",["boundary"]=Outline()}),
+    ("revit_stair_create",()=>new JsonObject{["base_level"]="Level 1",["top_level"]="Level 2",["run"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(4000,0)},["width_mm"]=1000}),
+    ("revit_curtain_wall_create",()=>new JsonObject{["level"]="Level 1",["type"]="Curtain Wall 1",["height_mm"]=3000,["curve"]=new JsonObject{["kind"]="line",["start"]=new JsonArray(0,0),["end"]=new JsonArray(5000,0)}}),
+    ("revit_floor_create_opening",()=>new JsonObject{["host_floor_uid"]=McpUid,["profile"]=new JsonArray(new JsonArray(1000,1000),new JsonArray(2000,1000),new JsonArray(2000,2000),new JsonArray(1000,2000))}),
+};
+var roofTypes=Guarded("revit_query_roof_types",new JsonObject(),McpReal);
+Check(IsError(roofTypes) && FailureCode(roofTypes)==RevitCommandCodes.NoResponse && forwardedLines.Count==1 && forwardedLines[0].Contains("query.roof_types",StringComparison.Ordinal),"revit_query_roof_types is read-only: forwarded to the pipe even on a real project");
+foreach(var (tool,makeArgs) in v2Writes) {
+    var before=forwardedLines.Count;
+    var refused=Guarded(tool,makeArgs(),McpReal);
+    Check(IsError(refused) && FailureCode(refused)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+    var allowed=Guarded(tool,makeArgs(),McpCopy);
+    Check(IsError(allowed) && FailureCode(allowed)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,tool+" on an enabled test copy passes the guards and is forwarded");
+}
+
+// Every catalogue entry with sample arguments is forwarded as an envelope whose command is that entry's name.
+var sampleArgs=new Dictionary<string,Func<JsonNode>>{
+    ["query.levels"]=()=>new JsonObject(), ["query.wall_types"]=()=>new JsonObject(), ["query.floor_types"]=()=>new JsonObject(),
+    ["query.family_symbols"]=()=>new JsonObject{["category"]="door"},
+    ["wall.create"]=()=>new JsonObject{["level"]="Level 1",["type"]="Generic - 200mm",["height_mm"]=3000,["curve"]=new JsonObject{["kind"]="line",["start"]=new JsonArray(0,0),["end"]=new JsonArray(5000,0)}},
+    ["opening.place"]=()=>new JsonObject{["category"]="door",["symbol"]="Single-Flush: 0915 x 2134mm",["host_wall_uid"]=McpUid,["position_along_mm"]=1000},
+    ["floor.create"]=()=>new JsonObject{["level"]="Level 1",["type"]="Generic 150mm",["boundary"]=Outline()},
+    ["room.create"]=()=>new JsonObject{["level"]="Level 1",["point"]=new JsonArray(1000,1000)},
+    ["query.roof_types"]=()=>new JsonObject(),
+};
+foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
+Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
+foreach(var spec in RevitCommandCatalogue.All.Where(spec=>sampleArgs.ContainsKey(spec.Name))) {
+    var before=forwardedLines.Count;
+    var forwarded=Guarded(spec.ToolName,sampleArgs[spec.Name](),McpCopy);
+    var wire=forwardedLines.Count==before+1 ? Node(forwardedLines[^1]) : null;
+    Check(IsError(forwarded) && FailureCode(forwarded)==RevitCommandCodes.NoResponse && wire?["Command"]?["command"]?.GetValue<string>()==spec.Name && wire["Command"]!["document"]!["path"]!.GetValue<string>()==McpCopy,spec.ToolName+" forwards one envelope with command "+spec.Name);
+}
 
 var diff=ToolCall("diff",new JsonObject{["before"]=Node(beforeText),["after"]=Node(afterText)});
 Check(!IsError(diff) && HasType(diff) && Text(diff)==JsonSerializer.Serialize(Compiler.Diff(P(beforeText),P(afterText))),"diff text byte-equal to CLI serialization of Compiler.Diff");

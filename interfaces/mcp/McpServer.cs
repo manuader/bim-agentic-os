@@ -16,10 +16,16 @@ namespace Bim.Mcp;
 //   status failed); here revision must be a JSON integer in Int32 range, otherwise the call is rejected with -32602.
 // - missing or wrongly typed arguments are rejected with -32602 instead of the CLI usage/null failures.
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
-// ADR0009: one revit_<command> tool per RevitCommandCatalogue.V1 entry is generated from the catalogue. Each builds the
+// ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
+// from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
+// a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
+// write-copies; a write to a real project needs write-real-project plus an exact owner enablement), and best-effort
+// annotations. Tool names must be unique and match ^[a-zA-Z0-9_-]{1,64}$, or construction throws. Each builds the
 // command envelope from its arguments and runs RevitCommandService.Run, the same code as the CLI revit-command verb,
 // so its text equals that verb's stdout for the same envelope. Write commands pass the copies-only and link guards
-// first; the policy is the repository's .bim/native-runs plus the owner file .bim/revit-enabled-roots.txt, never a tool call.
+// first; the policy is the repository's .bim/native-runs plus every directory root listed in the owner file
+// .bim/revit-enabled-roots.txt, never a tool call. The MCP server does not apply the per-document enablement or the
+// per-actor grants of PermissionPolicy, and writes no audit log.
 public sealed class McpServer
 {
     public const int MaxLineChars = 8 * 1024 * 1024;
@@ -34,7 +40,7 @@ public sealed class McpServer
     const int InternalError = -32603;
 
     sealed record ParameterSpec(string Name, string Type, string Description);
-    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null);
+    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null, PermissionLevel? Permission = null);
 
     static readonly ToolSpec[] CoreTools =
     [
@@ -62,11 +68,18 @@ public sealed class McpServer
     // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), the real process pipe and file system.
     // A malformed owner file enables no write at all.
     public McpServer(RevitCommandPolicy? revitPolicy = null, Func<string, string, string?>? revitTransport = null, RevitFileSystemProbe? revitProbe = null)
+        : this(RevitCommandCatalogue.All, revitPolicy, revitTransport, revitProbe) { }
+
+    // Tests inject a synthetic catalogue here; production always uses RevitCommandCatalogue.All.
+    internal McpServer(IReadOnlyList<RevitCommandSpec> catalogue, RevitCommandPolicy? revitPolicy, Func<string, string, string?>? revitTransport, RevitFileSystemProbe? revitProbe)
     {
         this.revitPolicy = revitPolicy ?? DefaultPolicy();
         this.revitTransport = revitTransport ?? RevitCommandService.PipeTransport;
         this.revitProbe = revitProbe ?? RevitFileSystemProbe.Real;
-        tools = [.. CoreTools, .. RevitCommandCatalogue.V1.Select(RevitTool)];
+        ArgumentNullException.ThrowIfNull(catalogue);
+        // Names first, so a collision is reported as such before any entry is classified.
+        CheckToolNames([.. CoreTools.Select(tool => tool.Name), .. catalogue.Select(spec => spec.ToolName)]);
+        tools = [.. CoreTools, .. catalogue.Select(RevitTool)];
     }
 
     static RevitCommandPolicy DefaultPolicy()
@@ -75,11 +88,48 @@ public sealed class McpServer
         catch (RevitCommandException) { return RevitCommandPolicy.None; }
     }
 
+    // MCP tool names: unique, 1-64 characters of [a-zA-Z0-9_-]. A collision (a.b_c and a_b.c both map to revit_a_b_c)
+    // would make one command unreachable or shadow another, so the server refuses to start.
+    static readonly System.Text.RegularExpressions.Regex ToolNamePattern = new(@"\A[a-zA-Z0-9_-]{1,64}\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    internal static void CheckToolNames(IReadOnlyList<string> names)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var name in names)
+        {
+            if (name is null || !ToolNamePattern.IsMatch(name)) throw new InvalidOperationException("tool_name_invalid: " + name);
+            if (!seen.Add(name)) throw new InvalidOperationException("tool_name_duplicate: " + name);
+        }
+    }
+
+    // The P10-03 level a command needs on a test copy, asked of PermissionPolicy itself with a probe document under a
+    // probe copies root. A catalogue entry the policy cannot classify fails construction.
+    const string CopiesProbeRoot = @"C:\bim-agentic-os\.bim\native-runs";
+    const string CopiesProbeDocument = @"C:\bim-agentic-os\.bim\native-runs\probe\probe.rvt";
+
+    static PermissionLevel LevelOnCopy(RevitCommandSpec spec) =>
+        PermissionPolicy.RequiredLevel(spec.Name, CopiesProbeDocument, new[] { CopiesProbeRoot })
+        ?? throw new InvalidOperationException("permission_level_unknown: " + spec.Name);
+
     ToolSpec RevitTool(RevitCommandSpec spec) => new(spec.ToolName,
-        spec.Description + " Forwards to the Revit add-in on the explicit process pipe; " + (spec.Writes ? "write: refused unless the document is under an enabled test root." : "read-only: allowed on any document."),
+        spec.Description + " Forwards to the Revit add-in on the explicit process pipe; " + (spec.Writes
+            ? "write: refused unless the document is under the repository .bim/native-runs or a directory root listed in .bim/revit-enabled-roots.txt (no per-document or per-actor check)."
+            : "read-only: allowed on any document."),
         [new ParameterSpec("pipe_name", "string", ""), new ParameterSpec("operation_id", "string", ""), new ParameterSpec("document", "object", ""), new ParameterSpec("args", "object", "")],
         arguments => RevitCall(spec, arguments),
-        RevitInputSchema(spec));
+        RevitInputSchema(spec),
+        LevelOnCopy(spec));
+
+    public const string PermissionMetaKey = "bim-agentic-os/permission_level";
+
+    // Level names as written in OWNER.md and the P10-03 policy comments.
+    public static string PermissionLevelName(PermissionLevel level) => level switch
+    {
+        PermissionLevel.Read => "read",
+        PermissionLevel.WriteCopies => "write-copies",
+        PermissionLevel.WriteRealProject => "write-real-project",
+        _ => throw new ArgumentOutOfRangeException(nameof(level)),
+    };
 
     static string RevitInputSchema(RevitCommandSpec spec)
     {
@@ -241,13 +291,32 @@ public sealed class McpServer
 
     JsonObject ListTools() => new()
     {
-        ["tools"] = new JsonArray(tools.Select(tool => (JsonNode?)new JsonObject
+        ["tools"] = new JsonArray(tools.Select(tool => (JsonNode?)ListedTool(tool)).ToArray()),
+    };
+
+    static JsonObject ListedTool(ToolSpec tool)
+    {
+        var listed = new JsonObject
         {
             ["name"] = tool.Name,
             ["description"] = tool.Description,
             ["inputSchema"] = tool.InputSchemaJson is { } inputSchema ? JsonNode.Parse(inputSchema) : Schema(tool.Parameters),
-        }).ToArray()),
-    };
+        };
+        if (tool.Permission is { } level)
+        {
+            // Tool annotations and _meta postdate the advertised 2024-11-05 protocol: best-effort hints that clients
+            // may ignore. Writes are additive and replay by operation_id, hence not destructive and idempotent.
+            var annotations = new JsonObject { ["readOnlyHint"] = level == PermissionLevel.Read };
+            if (level != PermissionLevel.Read)
+            {
+                annotations["destructiveHint"] = false;
+                annotations["idempotentHint"] = true;
+            }
+            listed["annotations"] = annotations;
+            listed["_meta"] = new JsonObject { [PermissionMetaKey] = PermissionLevelName(level) };
+        }
+        return listed;
+    }
 
     static JsonObject Schema(ParameterSpec[] parameters)
     {
