@@ -182,6 +182,8 @@ def world_box(product):
 
 
 class ThirdParty(Annotated):
+    maxDiff = None
+
     @classmethod
     def setUpClass(cls):
         cls.ifc = load()
