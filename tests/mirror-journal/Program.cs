@@ -83,6 +83,9 @@ try
     Check(journal.Entries(Doc, afterSequence: 4).Single().Sequence == 5, "entries filter by sequence after a baseline");
     var many = Enumerable.Range(0, MirrorJournal.MaxIdsPerList + 10).Select(i => "uid-" + i.ToString("D6")).ToArray();
     var big = new MirrorJournal(Clock).Record(Change(Enumerable.Range(0, MirrorJournal.MaxNames + 3).Select(i => new string('n', i == 0 ? MirrorJournal.MaxNameLength + 50 : 3)).ToArray(), added: many) with { });
+    var longName = new MirrorJournal(Clock).Record(Change(new[] { new string('n', MirrorJournal.MaxNameLength + 1) }));
+    Check(longName is { NamesTruncated: true, Truncated: true }, "a truncated transaction name marks the entry truncated");
+    Check(new MirrorJournal(Clock).Record(Change(new[] { "Short" })) is { NamesTruncated: false, Truncated: false }, "short names leave the entry complete");
     Check(big is not null && big.AddedUids.Count == MirrorJournal.MaxIdsPerList && big.AddedTotal == MirrorJournal.MaxIdsPerList + 10 && big.Truncated
         && big.AddedUids[0] == "uid-000000" && big.TransactionNames.Count == MirrorJournal.MaxNames && big.TransactionNames[0].Length == MirrorJournal.MaxNameLength,
         "id lists and transaction names are capped and the entry says it is truncated with the true total");
@@ -93,13 +96,24 @@ try
     Check(new MirrorJournal(Clock).Record(Change(new[] { "X" }, operation: "")) is { Operation: "unknown" }, "a missing operation is recorded as unknown");
     journal.RecordFailure();
     Check(journal.Failures == 1, "recorder failures are counted instead of thrown into Revit");
+    journal.RecordUnidentified();
+    Check(journal.Unidentified == 1, "events from documents without a unique id are counted");
+
+    // ---- Total id budget across the journal, oldest evicted first ----
+    Check(Code(() => new MirrorJournal(Clock, idBudget: 0)) == "journal_id_budget_invalid", "a non-positive id budget is refused");
+    var budget = new MirrorJournal(Clock, capacity: 100, idBudget: 5);
+    for (var i = 0; i < 4; i++) budget.Record(Change(new[] { "Edit " + i }, modified: new[] { W1 }, deleted: new long[] { i }));
+    Check(budget.Entries().Select(entry => entry.Sequence).SequenceEqual(new long[] { 3, 4 }) && budget.Dropped == 2 && budget.RetainedIds == 4 && budget.FirstRetainedSequence == 3,
+        "entries beyond the total id budget are evicted oldest first", $"retained {string.Join(",", budget.Entries().Select(e => e.Sequence))} ids {budget.RetainedIds} dropped {budget.Dropped}");
+    budget.Record(Change(new[] { "Paste" }, added: new[] { "a", "b", "c", "d", "e", "f", "g" }));
+    Check(budget.Entries().Select(entry => entry.Sequence).SequenceEqual(new long[] { 5 }) && budget.RetainedIds == 7, "the newest entry is kept even when it alone exceeds the budget");
 
     // ---- Diagnostic JSON (journal_version 1, never persisted) ----
     var single = new MirrorJournal(() => start);
-    single.Record(Change(new[] { "Move" }, added: new[] { W1 }, modified: new[] { D1 }, deleted: new long[] { 12 }));
-    var expectedEntry = "{\"sequence\":1,\"recorded_at\":\"2026-11-03T12:00:00.000Z\",\"document_unique_id\":\"" + Doc + "\",\"operation\":\"TransactionCommitted\",\"origin\":\"external\",\"transaction_names\":[\"Move\"],\"added\":[\"" + W1 + "\"],\"modified\":[\"" + D1 + "\"],\"deleted_element_ids\":[12],\"added_total\":1,\"modified_total\":1,\"deleted_total\":1,\"truncated\":false}";
+    single.Record(Change(new[] { "Move" }, added: new[] { W1 }, modified: new[] { D1 }, deleted: new long[] { 12 }) with { DocumentPath = @"C:\Fixtures\A.rvt" });
+    var expectedEntry = "{\"sequence\":1,\"recorded_at\":\"2026-11-03T12:00:00.000Z\",\"document_unique_id\":\"" + Doc + "\",\"document_path\":\"C:\\\\Fixtures\\\\A.rvt\",\"operation\":\"TransactionCommitted\",\"origin\":\"external\",\"transaction_names\":[\"Move\"],\"added\":[\"" + W1 + "\"],\"modified\":[\"" + D1 + "\"],\"deleted_element_ids\":[12],\"added_total\":1,\"modified_total\":1,\"deleted_total\":1,\"truncated\":false}";
     var journalJson = single.ToJson();
-    Check(journalJson == "{\"journal_version\":1,\"capacity\":" + MirrorJournal.DefaultCapacity + ",\"last_sequence\":1,\"dropped\":0,\"skipped_add_in\":0,\"failures\":0,\"entries\":[" + expectedEntry + "]}",
+    Check(journalJson == "{\"journal_version\":1,\"capacity\":" + MirrorJournal.DefaultCapacity + ",\"last_sequence\":1,\"dropped\":0,\"skipped_add_in\":0,\"failures\":0,\"unidentified\":0,\"id_budget\":" + MirrorJournal.DefaultIdBudget + ",\"retained_ids\":3,\"entries\":[" + expectedEntry + "]}",
         "journal JSON is canonical", journalJson);
     using (var parsed = JsonDocument.Parse(journal.ToJson(Doc, 2))) Check(parsed.RootElement.GetProperty("entries").GetArrayLength() == 2, "journal JSON honours document and sequence filters");
 
@@ -109,6 +123,11 @@ try
     Check(same.IsEmpty && same.Added.Count == 0 && same.Removed.Count == 0 && same.Changed.Count == 0, "the same model observed in another order has an empty diff");
     var noise = MirrorSnapshotDiffer.Compare(before, Snap(Doc, Wall(W1, 0, 0, 5000.0000001, 0), Wall(W2, 5000, 0, 5000, 4000), Door(D1, W1, 1000, 0), new MirrorObservedElement(MirrorCategories.Floor, F1) { LevelUid = L1 }));
     Check(noise.IsEmpty, "sub-micrometre conversion noise is not a change");
+    // The diff tolerance itself (1e-3 mm): values the mapper does not normalize (0.4 um) are equal, 2 um is a change.
+    var atTolerance = MirrorSnapshotDiffer.Compare(Snap(Doc, Wall(W1, 0, 0, 1000, 0)), Snap(Doc, Wall(W1, 0, 0, 1000.0004, 0)));
+    Check(atTolerance.IsEmpty, "1000.0004 mm against 1000 mm is within the diff tolerance", atTolerance.ToJson());
+    var overTolerance = MirrorSnapshotDiffer.Compare(Snap(Doc, Wall(W1, 0, 0, 1000, 0)), Snap(Doc, Wall(W1, 0, 0, 1000.002, 0)));
+    Check(overTolerance.Changed.SingleOrDefault()?.Fields.Select(field => field.Field).SequenceEqual(new[] { "bx" }) == true, "1000.002 mm against 1000 mm is a change of bx", overTolerance.ToJson());
     // External edits: W1 lengthened and taller, W2 deleted (door rehosting not involved), W3 added, the floor removed.
     var after = Snap(Doc, Wall(W1, 0, 0, 6000, 0, height: 3200), Wall(W3, 0, 0, 0, 4000), Door(D1, W1, 1000, 0));
     var diff = MirrorSnapshotDiffer.Compare(before, after);
@@ -167,6 +186,101 @@ try
             && root.GetProperty("entries").GetArrayLength() == 0 && root.GetProperty("diff").GetProperty("added").GetArrayLength() == 1,
             "report JSON carries the baseline, journal entries and diff", reportJson);
     }
+
+    // ---- Failures since the baseline make the journal incomplete ----
+    var failing = new MirrorJournalTracker(new MirrorJournal(() => start));
+    var f1 = failing.Report(Snap(Doc));
+    failing.Journal.RecordFailure();
+    var f2 = failing.Report(Snap(Doc));
+    Check(f1.JournalComplete && !f2.JournalComplete && f2.FailuresSinceBaseline == 1, "a recorder failure since the baseline makes the report incomplete", $"{f1.JournalComplete} {f2.JournalComplete} {f2.FailuresSinceBaseline}");
+    var f3 = failing.Report(Snap(Doc));
+    Check(f3.JournalComplete && f3.FailuresSinceBaseline == 0, "the next report after it is complete again");
+
+    // ---- Two copies of the same file (same unique ids) do not share a baseline or entries ----
+    const string PathA = @"C:\Fixtures\A.rvt", PathB = @"C:\Fixtures\B.rvt";
+    var copies = new MirrorJournalTracker(new MirrorJournal(() => start));
+    copies.Journal.Record(Change(new[] { "Edit A" }, modified: new[] { W1 }) with { DocumentPath = PathA });
+    copies.Journal.Record(Change(new[] { "Edit B" }, modified: new[] { W2 }) with { DocumentPath = PathB });
+    var a1 = copies.Report(Snap(Doc, Wall(W1, 0, 0, 5000, 0)), PathA);
+    var b1 = copies.Report(Snap(Doc, Wall(W1, 0, 0, 6000, 0)), PathB);
+    Check(!a1.BaselineExisted && !b1.BaselineExisted && a1.Entries.Single().TransactionNames[0] == "Edit A" && b1.Entries.Single().TransactionNames[0] == "Edit B" && b1.DocumentPath == PathB,
+        "each copy has its own baseline and only its own entries");
+    var a2 = copies.Report(Snap(Doc, Wall(W1, 0, 0, 5000, 0)), PathA.ToLowerInvariant());
+    Check(a2.BaselineExisted && a2.Diff.IsEmpty && copies.HasBaseline(Doc, PathB) && !copies.HasBaseline(Doc, @"C:\Fixtures\C.rvt"), "a copy's baseline is matched by its own path (ignoring case), not the other copy's");
+    Check(copies.Journal.Entries(Doc, documentPath: PathA).Single().DocumentPath == PathA, "entries filter by document path");
+
+    // ---- Per-reply caps with continuation through after_sequence ----
+    var paged = new MirrorJournalTracker(new MirrorJournal(() => start));
+    for (var i = 0; i < 5; i++) paged.Journal.Record(Change(new[] { "Edit " + i }, modified: new[] { W1, W2 }));
+    var page1 = paged.Report(Snap(Doc), options: new MirrorJournalReadOptions(MaxEntries: 2));
+    Check(page1.Entries.Select(entry => entry.Sequence).SequenceEqual(new long[] { 1, 2 }) && page1.HasMore && page1.NextAfterSequence == 2 && page1.CurrentSequence == 5,
+        "a reply holds at most max_entries entries and says where to continue", $"{string.Join(",", page1.Entries.Select(e => e.Sequence))} more {page1.HasMore} next {page1.NextAfterSequence}");
+    var page2 = paged.Report(Snap(Doc), options: new MirrorJournalReadOptions(AfterSequence: page1.NextAfterSequence, Peek: true, MaxEntries: 2));
+    var page3 = paged.Report(Snap(Doc), options: new MirrorJournalReadOptions(AfterSequence: page2.NextAfterSequence, Peek: true, MaxEntries: 2));
+    Check(page2.Entries.Select(entry => entry.Sequence).SequenceEqual(new long[] { 3, 4 }) && page2.HasMore && page3.Entries.Single().Sequence == 5 && !page3.HasMore && page3.NextAfterSequence == 5 && page3.AfterSequence == 4,
+        "continuation pages through after_sequence reach the last entry");
+    var idPaged = new MirrorJournalTracker(new MirrorJournal(() => start));
+    for (var i = 0; i < 3; i++) idPaged.Journal.Record(Change(new[] { "Edit " + i }, modified: new[] { W1, W2 }));
+    var idPage = idPaged.Report(Snap(Doc), options: new MirrorJournalReadOptions(MaxIds: 3));
+    Check(idPage.Entries.Count == 1 && idPage.HasMore && idPage.NextAfterSequence == 1, "a reply also stops at its id budget (at least one entry)");
+    Check(Code(() => paged.Report(Snap(Doc), options: new MirrorJournalReadOptions(AfterSequence: 99))) == "journal_after_sequence_invalid", "an after_sequence beyond the journal is refused");
+    Check(Code(() => paged.Report(Snap(Doc), options: new MirrorJournalReadOptions(MaxEntries: 0))) == "journal_options_invalid", "a non-positive max_entries is refused");
+
+    // ---- Retry safety: peek never moves the baseline; after_sequence re-reads a lost reply ----
+    var retry = new MirrorJournalTracker(new MirrorJournal(() => start));
+    retry.Journal.Record(Change(new[] { "Wall" }, added: new[] { W1 }));
+    var peekA = retry.Report(Snap(Doc, Wall(W1, 0, 0, 5000, 0)), options: new MirrorJournalReadOptions(Peek: true));
+    var peekB = retry.Report(Snap(Doc, Wall(W1, 0, 0, 5000, 0)), options: new MirrorJournalReadOptions(Peek: true));
+    Check(peekA.Peek && peekA.ToJson() == peekB.ToJson() && !retry.HasBaseline(Doc) && peekA.Diff.Added.Count == 2, "a repeated peek returns the same reply and sets no baseline", peekA.ToJson());
+    var committed = retry.Report(Snap(Doc, Wall(W1, 0, 0, 5000, 0)));
+    retry.Journal.Record(Change(new[] { "Drag" }, modified: new[] { W1 }));
+    var lost = retry.Report(Snap(Doc, Wall(W1, 0, 0, 6000, 0)));
+    var again = retry.Report(Snap(Doc, Wall(W1, 0, 0, 6000, 0)), options: new MirrorJournalReadOptions(AfterSequence: committed.CurrentSequence, Peek: true));
+    Check(lost.Entries.Single().Sequence == 2 && again.Entries.Single().Sequence == 2 && again.JournalComplete, "a client that lost a reply re-reads its entries with after_sequence");
+    Check(MirrorJournalReadOptions.Parse(null) == new MirrorJournalReadOptions() && MirrorJournalReadOptions.Parse("{\"after_sequence\":7,\"peek\":true,\"max_entries\":10}") == new MirrorJournalReadOptions(AfterSequence: 7, Peek: true, MaxEntries: 10),
+        "read options parse from the journal.read request member");
+    foreach (var bad in new[] { "[]", "{\"after_sequence\":-1}", "{\"after_sequence\":1.5}", "{\"peek\":\"yes\"}", "{\"max_entries\":0}", "{\"max_entries\":100000}", "{\"colour\":1}", "not json" })
+        Check(Code(() => MirrorJournalReadOptions.Parse(bad)) == "journal_options_invalid", "invalid read options are refused: " + bad);
+    using (var parsed = JsonDocument.Parse(page1.ToJson()))
+    {
+        var root = parsed.RootElement;
+        Check(root.GetProperty("document_path").GetString() == "" && root.GetProperty("after_sequence").GetInt64() == 0 && !root.GetProperty("peek").GetBoolean() && root.GetProperty("has_more").GetBoolean()
+            && root.GetProperty("next_after_sequence").GetInt64() == 2 && root.GetProperty("failures_since_baseline").GetInt64() == 0, "report JSON carries paging, peek and failure fields", page1.ToJson());
+    }
+
+    // ---- Source guards over the native add-in (compiled only in CI) ----
+    var repo = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory);
+    var native = repo is null ? null : Path.Combine(repo, "runtimes", "revit-native");
+    var app = native is null || !File.Exists(Path.Combine(native, "App.cs")) ? null : File.ReadAllText(Path.Combine(native, "App.cs"));
+    string Between(string text, string from, string to) { var i = text.IndexOf(from, StringComparison.Ordinal); var j = i < 0 ? -1 : text.IndexOf(to, i + from.Length, StringComparison.Ordinal); return i < 0 || j < 0 ? "" : text[i..j]; }
+    var startup = app is null ? "" : Between(app, "public Result OnStartup", "void Expose()");
+    var expose = app is null ? "" : Between(app, "void Expose()", "void Withdraw()");
+    var withdraw = app is null ? "" : Between(app, "void Withdraw()", "public Result OnShutdown");
+    Check(app is not null && !startup.Contains("JournalRecorder.Attach", StringComparison.Ordinal), "OnStartup does not subscribe the journal before the fixture config is validated", app is null ? "App.cs not found" : startup);
+    var pipeCheck = expose.IndexOf("PipeAllowed", StringComparison.Ordinal);
+    var attachAt = expose.IndexOf("JournalRecorder.Attach", StringComparison.Ordinal);
+    Check(pipeCheck >= 0 && attachAt > pipeCheck, "Expose subscribes the journal only after AddInGate.PipeAllowed", expose);
+    Check(withdraw.Contains("JournalRecorder.Detach", StringComparison.Ordinal), "Withdraw unsubscribes the journal", withdraw);
+    var names = new List<(string File, string Name)>();
+    var dynamicNames = new List<string>();
+    foreach (var file in native is null || !Directory.Exists(native) ? Array.Empty<string>() : Directory.GetFiles(native, "*.cs"))
+    {
+        var text = File.ReadAllText(file);
+        // new Transaction / TransactionGroup / SubTransaction / StairsEditScope (doc, name ...) and the NativeRoomFixture
+        // helper Transaction(d, "name", ...): the name argument must start with a string literal the journal recognises.
+        foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(text, @"(?:new\s+(?:Transaction|TransactionGroup|SubTransaction|StairsEditScope)|(?<![\w.])Transaction)\s*\(\s*\w+\s*,\s*(?<arg>[^,)]+)"))
+        {
+            var arg = match.Groups["arg"].Value.Trim();
+            var literal = System.Text.RegularExpressions.Regex.Match(arg, "^\"(?<s>[^\"]*)\"");
+            if (literal.Success) names.Add((Path.GetFileName(file), literal.Groups["s"].Value));
+            else dynamicNames.Add(Path.GetFileName(file) + ": " + arg);
+        }
+    }
+    Check(names.Count >= 15, "the source scan finds the add-in's transaction names", names.Count.ToString());
+    var unknown = names.Where(item => !MirrorJournal.IsAddInTransaction(item.Name)).Select(item => item.File + ": " + item.Name).ToArray();
+    Check(unknown.Length == 0, "every literal Transaction / TransactionGroup name in the native runtime is recognised as the add-in's", string.Join("; ", unknown));
+    // Only the NativeRoomFixture helper passes a variable name; its callers' literals are scanned above.
+    Check(dynamicNames.SequenceEqual(new[] { "NativeRoomFixture.cs: name" }), "no other transaction takes a name the scan cannot see", string.Join("; ", dynamicNames));
 
     // ---- Thread safety: concurrent records keep unique, gap-free sequences ----
     var concurrent = new MirrorJournal(() => start, capacity: 10000);
