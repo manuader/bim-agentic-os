@@ -89,3 +89,10 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay144 (2026-11-03, cloud)
 - [ ] 🔒 P1-05 modify/delete probe (fixture copy only, never production): `git pull` (main a31af61), then in an owner Revit session (`pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1`, Load Once) run the recipe in docs/SESSION-2026-11-03-relay144-modify-cad-draft-prototypes.md "Owner probe": element.set_parameter dry-run/real/replay, read-only refusal, type parameter also_modified; element.delete dry-run dependents, pinned dependent refusal, confirm_dependents.
 - Still open: 🔒 -Catalogue re-run (P1-04/C04) + views/snapshot/elements/structure/journal/documentation probes; N21 run 3; CABA to-verify review; optional MCP install; optional Blender .glb check.
+
+## Relay145 (2026-11-03, cloud)
+- [x] P1-04/C04 catalogue v1 17/17 in Revit (owner session 20261103T174908Z) → ✅ verified-in-revit. CABA values confirmed → owner-confirmed in the rule pack (P5-06).
+- [ ] 🔒 ONE run verifies everything waiting for Revit (P1-06, replaces the separate views/snapshot/elements/structure/journal/documentation/modify probes): `git pull`, then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue`, click Load Once, don't touch the child Revit until it ends. Pass = line ends `resultado: TODO OK` (total 81/81). `OK con bloqueados: …` = the test template lacks a family/type/level (named in "Bloqueado el paso" lines). Schedule fields assume an English Revit UI. Close the child Revit without saving. Evidence: .bim/native-sessions/<utc>/summary.json. Details: docs/owner-verification-session.md.
+- [ ] Decide: are escritorio, estudio and biblioteca third class like dormitorio? (9 CABA rules stay to-verify until you say so.)
+- [ ] Decide: OK to keep the 4-code Uniclass 2015 excerpt (CC BY-ND 4.0, attributed, unmodified) in the repo? (core/Bim.Core/Classification/README.md)
+- Still open: 🔒 N21 run 3 (`... -Runs 1`); optional Blender .glb check.
