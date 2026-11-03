@@ -143,7 +143,7 @@ static class CatalogueV2Checks
     {
         using (var schema = JsonDocument.Parse(RevitCommandCatalogue.Find("roof.create_footprint")!.ArgsSchemaJson))
         {
-            var property = schema.RootElement.GetProperty("properties").TryGetProperty("sloped_edges", out var edges) ? edges : default;
+            var property = schema.RootElement.GetProperty("properties").TryGetProperty("sloped_edges", out var slopedSchema) ? slopedSchema : default;
             Check(property.ValueKind == JsonValueKind.Object && property.GetProperty("type").GetString() == "array" && property.GetProperty("items").GetProperty("type").GetString() == "integer"
                 && property.GetProperty("minItems").GetInt32() == 1 && property.GetProperty("description").GetString()!.Contains("slope_deg", StringComparison.Ordinal),
                 "roof.create_footprint schema offers sloped_edges: an array of integer edge indices that needs slope_deg");
@@ -347,7 +347,7 @@ static class CatalogueV2Checks
         var gable = hip with { Edges = gableEdges };
         var ridgeAlongX = new[] { 0, 2 };
         Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable, ridgeAlongX) is null, "gable roof readback matches: the sloped edges are found by geometry, not by sketch position");
-        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable, new[] { 1, 3 }) is { } swapped && swapped.Contains("boundary edge", StringComparison.Ordinal), "a gable whose other pair of edges defines slope is a mismatch naming the boundary edge", swapped ?? "");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable, new[] { 1, 3 }) is { } swapped && swapped.Contains("boundary edge", StringComparison.Ordinal), "a gable whose other pair of edges defines slope is a mismatch naming the boundary edge");
         Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable) is not null, "a hip request read back on a gable is a mismatch");
         Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip, ridgeAlongX) is not null, "a gable request whose edges carry no geometry is a mismatch (cannot be matched)");
         Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable with { Edges = new[] { gableEdges[0], gableEdges[1], gableEdges[0], gableEdges[3] } }, ridgeAlongX) is not null, "two sketch edges on one boundary edge is a mismatch");

@@ -9,8 +9,9 @@ namespace Bim.Revit;
 // Revit facts (converted with UnitUtils) and calls the Revit API.
 
 public sealed record RoofTypeRow(string Name, string UniqueId, double? WidthMm);
-// One footprint edge as Revit reports it: whether it defines slope and, if so, its slope in degrees.
-public sealed record ObservedRoofEdge(bool DefinesSlope, double? SlopeDeg);
+// One footprint edge as Revit reports it: whether it defines slope and, if so, its slope in degrees; Start and End are
+// the sketch curve's plan end points (null when not read).
+public sealed record ObservedRoofEdge(bool DefinesSlope, double? SlopeDeg, PlanPoint? Start = null, PlanPoint? End = null);
 // Edges and Footprint come from the roof's own sketch (FootPrintRoof.GetProfiles), not from the creation call's
 // mapping; SlopeParameterDeg is the roof's Slope parameter (ROOF_SLOPE), read separately from the edges.
 public sealed record ObservedRoof(string UniqueId, string LevelUid, string TypeUid, double? BaseOffsetMm, IReadOnlyList<ObservedRoofEdge> Edges, double? SlopeParameterDeg, int Profiles, IReadOnlyList<PlanPoint> Footprint);
@@ -25,6 +26,37 @@ public sealed record ObservedFloorOpening(string UniqueId, string? HostUid, bool
 
 public static class CommandRulesV2
 {
+    // The boundary edge (vertex i to vertex i + 1, the last edge closing back to vertex 0) whose end points are these,
+    // in either direction, within the readback tolerance; null when none is.
+    public static int? EdgeIndex(IReadOnlyList<Point2> boundary, PlanPoint start, PlanPoint end)
+    {
+        for (var i = 0; i < boundary.Count; i++)
+        {
+            PlanPoint a = new(boundary[i].X.Millimetres, boundary[i].Y.Millimetres), b = new(boundary[(i + 1) % boundary.Count].X.Millimetres, boundary[(i + 1) % boundary.Count].Y.Millimetres);
+            if ((CommandGeometry.Near(start, a) && CommandGeometry.Near(end, b)) || (CommandGeometry.Near(start, b) && CommandGeometry.Near(end, a))) return i;
+        }
+        return null;
+    }
+
+    // NewFootPrintRoof's model curve mapping need not follow the input order: each curve is matched to a requested
+    // edge by its end points. Every edge must be matched by exactly one curve, else transaction_failed.
+    public static int[] MatchRoofEdges(IReadOnlyList<Point2> boundary, IReadOnlyList<(PlanPoint Start, PlanPoint End)> curves)
+    {
+        if (curves.Count != boundary.Count) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.boundary", "Revit mapped " + curves.Count + " footprint curves for " + boundary.Count + " requested edges");
+        var indices = new int[curves.Count];
+        var taken = new HashSet<int>();
+        for (var k = 0; k < curves.Count; k++)
+        {
+            var (start, end) = curves[k];
+            var index = EdgeIndex(boundary, start, end) ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.boundary", "footprint curve from (" + F(start) + ") to (" + F(end) + ") matches no requested edge");
+            if (!taken.Add(index)) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.boundary", "two footprint curves match requested edge " + index);
+            indices[k] = index;
+        }
+        return indices;
+    }
+
+    static string F(PlanPoint point) => point.X.ToString("R", CultureInfo.InvariantCulture) + ", " + point.Y.ToString("R", CultureInfo.InvariantCulture);
+
     // Wall kinds are WallKind names ("Basic", "Curtain", "Stacked").
     public static void CheckCurtainWallType(string wallKind)
     {
@@ -109,7 +141,9 @@ public static class CommandReadbackV2
     static string F(PlanPoint point) => "(" + F(point.X) + ", " + F(point.Y) + ")";
     static string Uid(string? value) => value ?? "unreadable";
 
-    public static string? Roof(string levelUid, string typeUid, IReadOnlyList<Point2> boundary, double? slopeDeg, double baseOffsetMm, ObservedRoof observed)
+    // slopedEdges: the requested boundary edges that define slope (null: every edge when slopeDeg is given). With a
+    // list, each sketch edge is matched to its boundary edge by geometry, never by position in the sketch.
+    public static string? Roof(string levelUid, string typeUid, IReadOnlyList<Point2> boundary, double? slopeDeg, double baseOffsetMm, ObservedRoof observed, IReadOnlyList<int>? slopedEdges = null)
     {
         if (observed.LevelUid != levelUid) return "roof level is " + observed.LevelUid + ", expected " + levelUid;
         if (observed.TypeUid != typeUid) return "roof type is " + observed.TypeUid + ", expected " + typeUid;
@@ -117,15 +151,30 @@ public static class CommandReadbackV2
         if (observed.Profiles != 1) return "roof sketch has " + observed.Profiles + " loops, expected 1";
         if (Outline("roof sketch", boundary, observed.Footprint) is { } outline) return outline;
         if (observed.Edges.Count != boundary.Count) return "roof sketch reports slope for " + observed.Edges.Count + " edges, expected " + boundary.Count;
+        var matched = new HashSet<int>();
         for (var i = 0; i < observed.Edges.Count; i++)
         {
             var edge = observed.Edges[i];
+            var name = "roof footprint edge " + i;
+            var slopes = slopeDeg is not null;
+            if (slopedEdges is not null)
+            {
+                if (edge.Start is not { } start || edge.End is not { } end) return name + " has no readable end points to match a boundary edge";
+                if (CommandRulesV2.EdgeIndex(boundary, start, end) is not { } index) return name + " lies on no requested boundary edge";
+                if (!matched.Add(index)) return name + " lies on boundary edge " + index + ", which another sketch edge already covers";
+                name += " (boundary edge " + index + ")";
+                slopes = slopeDeg is not null && slopedEdges.Contains(index);
+            }
             if (slopeDeg is not { } slope)
             {
-                if (edge.DefinesSlope) return "roof footprint edge " + i + " defines slope; a flat roof was requested";
+                if (edge.DefinesSlope) return name + " defines slope; a flat roof was requested";
             }
-            else if (!edge.DefinesSlope) return "roof footprint edge " + i + " does not define slope";
-            else if (edge.SlopeDeg is not { } actual || !(Math.Abs(actual - slope) <= SlopeToleranceDeg)) return "roof footprint edge " + i + " slope is " + (edge.SlopeDeg is { } s ? F(s) : "unreadable") + " degrees, expected " + F(slope);
+            else if (!slopes)
+            {
+                if (edge.DefinesSlope) return name + " defines slope; it is not in sloped_edges";
+            }
+            else if (!edge.DefinesSlope) return name + " does not define slope";
+            else if (edge.SlopeDeg is not { } actual || !(Math.Abs(actual - slope) <= SlopeToleranceDeg)) return name + " slope is " + (edge.SlopeDeg is { } s ? F(s) : "unreadable") + " degrees, expected " + F(slope);
         }
         if (slopeDeg is { } requested && (observed.SlopeParameterDeg is not { } parameter || !(Math.Abs(parameter - requested) <= SlopeToleranceDeg)))
             return "roof Slope parameter is " + (observed.SlopeParameterDeg is { } p ? F(p) : "unreadable") + " degrees, expected " + F(requested);
@@ -239,8 +288,12 @@ public static class CommandReadbackV2
         writer.WriteEndObject();
     });
 
-    public static string RoofJson(ObservedRoof roof) => Json(writer =>
+    // With the requested boundary, each sketch edge names the boundary edge it lies on (boundary_edge, null when none)
+    // and sloped_edges lists, sorted, the boundary edges whose sketch edge defines slope: read from the roof, not the
+    // request.
+    public static string RoofJson(ObservedRoof roof, IReadOnlyList<Point2>? boundary = null) => Json(writer =>
     {
+        int? IndexOf(ObservedRoofEdge edge) => boundary is not null && edge.Start is { } start && edge.End is { } end ? CommandRulesV2.EdgeIndex(boundary, start, end) : null;
         writer.WriteStartObject();
         writer.WriteStartObject("roof");
         writer.WriteString("unique_id", roof.UniqueId);
@@ -253,9 +306,27 @@ public static class CommandReadbackV2
             writer.WriteStartObject();
             writer.WriteBoolean("defines_slope", edge.DefinesSlope);
             Number(writer, "slope_deg", edge.SlopeDeg);
+            if (edge.Start is not null || edge.End is not null)
+            {
+                writer.WritePropertyName("start");
+                Point(writer, edge.Start);
+                writer.WritePropertyName("end");
+                Point(writer, edge.End);
+            }
+            if (boundary is not null)
+            {
+                if (IndexOf(edge) is { } index) writer.WriteNumber("boundary_edge", index);
+                else writer.WriteNull("boundary_edge");
+            }
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
+        if (boundary is not null)
+        {
+            writer.WriteStartArray("sloped_edges");
+            foreach (var index in roof.Edges.Where(edge => edge.DefinesSlope).Select(IndexOf).OfType<int>().Distinct().OrderBy(index => index)) writer.WriteNumberValue(index);
+            writer.WriteEndArray();
+        }
         Number(writer, "slope_parameter_deg", roof.SlopeParameterDeg);
         writer.WriteNumber("loops", roof.Profiles);
         Points(writer, "footprint", roof.Footprint);

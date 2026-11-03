@@ -12,8 +12,9 @@ public sealed record RevitCommandSpec(string Name, bool Writes, string Descripti
 
 // Partial: catalogue v2 (P9-01) lives in RevitCommandsCatalogueV2.cs, the view commands (P4-01) in RevitCommandsViews.cs,
 // query.snapshot (P2-01) in Mirror.cs, the element queries (P1-02) in RevitCommandsQuery.cs, the structure commands
-// (P9-02) in RevitCommandsStructure.cs, the documentation commands (P4-02) in RevitCommandsDocumentation.cs and the
-// modify and delete commands (P1-05) in RevitCommandsModify.cs.
+// (P9-02) in RevitCommandsStructure.cs, the documentation commands (P4-02) in RevitCommandsDocumentation.cs, the
+// modify and delete commands (P1-05) in RevitCommandsModify.cs and the materials and roof type commands in
+// RevitCommandsMaterials.cs.
 public static partial class RevitCommandCatalogue
 {
     public const int Version = 1;
@@ -68,9 +69,10 @@ public static partial class RevitCommandCatalogue
     // Every command the protocol accepts: v1, then v2, then the view commands (P4-01), then query.snapshot (P2-01,
     // Mirror.cs), then query.elements and query.inspect (P1-02, RevitCommandsQuery.cs), then the structure commands (P9-02,
     // RevitCommandsStructure.cs), then the documentation commands (P4-02, RevitCommandsDocumentation.cs), then the
-    // modify and delete commands (P1-05, RevitCommandsModify.cs). Lazy because those entries live in other parts of
-    // this partial class, whose static initializers may run in any order.
-    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).ToArray());
+    // modify and delete commands (P1-05, RevitCommandsModify.cs), then query.materials and roof_type.create
+    // (RevitCommandsMaterials.cs). Lazy because those entries live in other parts of this partial class, whose static
+    // initializers may run in any order.
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).Concat(Materials).ToArray());
     public static IReadOnlyList<RevitCommandSpec> All => AllSpecs.Value;
 
     public static RevitCommandSpec? Find(string name) => All.FirstOrDefault(spec => spec.Name == name);
