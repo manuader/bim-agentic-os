@@ -23,8 +23,8 @@ static class CatalogueFamiliesChecks
     const string TimberColumn = Library + @"\English\Structural Columns\Wood\M_Timber-Column.rfa";
     const string RepoStove = @"C:\Repo\.bim\families\Focus Gyrofocus.rfa";
     static readonly string[] FamilyCommands = { "family.load", "family_instance.place" };
-    static readonly string[] SymbolCategories = { "door", "window", "structural_column", "structural_framing", "generic_model", "specialty_equipment", "furniture", "lighting_fixture", "plumbing_fixture", "mechanical_equipment", "casework" };
-    static readonly string[] Placeable = { "generic_model", "specialty_equipment", "furniture", "lighting_fixture", "plumbing_fixture", "mechanical_equipment", "casework" };
+    static readonly string[] SymbolCategories = { "door", "window", "structural_column", "structural_framing", "generic_model", "specialty_equipment", "furniture", "lighting_fixture", "plumbing_fixture", "mechanical_equipment", "casework", "planting", "site", "entourage" };
+    static readonly string[] Placeable = { "generic_model", "specialty_equipment", "furniture", "lighting_fixture", "plumbing_fixture", "mechanical_equipment", "casework", "planting", "site", "entourage" };
 
     static Action<bool, string, string> check = (_, _, _) => { };
     static void Check(bool condition, string name, string detail = "") => check(condition, name, detail);
@@ -122,6 +122,8 @@ static class CatalogueFamiliesChecks
         Check(RevitFamilyRules.BuiltInCategory("door") == "OST_Doors" && RevitFamilyRules.BuiltInCategory("window") == "OST_Windows" && RevitFamilyRules.BuiltInCategory("specialty_equipment") == "OST_SpecialityEquipment"
             && RevitFamilyRules.BuiltInCategory("mechanical_equipment") == "OST_MechanicalEquipment" && RevitFamilyRules.BuiltInCategory("generic_model") == "OST_GenericModel" && RevitFamilyRules.BuiltInCategory("structural_column") == "OST_StructuralColumns",
             "door, window, specialty (Revit spells it Speciality), mechanical, generic model and structural column categories map to their BuiltInCategory");
+        Check(RevitFamilyRules.BuiltInCategory("planting") == "OST_Planting" && RevitFamilyRules.BuiltInCategory("site") == "OST_Site" && RevitFamilyRules.BuiltInCategory("entourage") == "OST_Entourage",
+            "site model categories: planting (RPC trees and shrubs), site and entourage map to OST_Planting, OST_Site and OST_Entourage");
         Check(Thrown(() => RevitFamilyRules.BuiltInCategory("wall"))?.Code == RevitCommandCodes.ArgsInvalid, "a category that is not a family category is args_invalid");
         Check(RevitFamilyRules.FriendlyCategory("OST_SpecialityEquipment") == "specialty_equipment" && RevitFamilyRules.FriendlyCategory("OST_Doors") == "door" && RevitFamilyRules.FriendlyCategory("OST_Walls") is null && RevitFamilyRules.FriendlyCategory(null) is null,
             "FriendlyCategory names a family category from its BuiltInCategory, null otherwise");
@@ -176,6 +178,10 @@ static class CatalogueFamiliesChecks
         foreach (var required in new[] { "category", "symbol", "level", "point" })
             Rejects("family_instance.place without " + required, Envelope("family_instance.place", With(Place(), required, null)), RevitCommandCodes.ArgsInvalid, "args." + required);
         Rejects("family_instance.place with a host", Envelope("family_instance.place", With(Place(), "host_uid", InstanceUid)), RevitCommandCodes.ArgsInvalid, "args.host_uid");
+        // A tree on sloping terrain: the caller gives the terrain height above the level as offset_mm.
+        Check(Accepts("planting on terrain accepted", Envelope("family_instance.place", new JsonObject { ["category"] = "planting", ["symbol"] = "RPC Tree - Deciduous: Red Maple - 9 Meters", ["level"] = "Level 1", ["point"] = Pair(-6000, 22000), ["offset_mm"] = 850, ["rotation_deg"] = 30 }))?.Args is FamilyInstancePlaceArgs { Category: "planting" } tree && Near(tree.Offset.Millimetres, 850),
+            "a planting instance takes the terrain height above the level as offset_mm");
+        Rejects("family_instance.place has no toposolid host member", Envelope("family_instance.place", With(Place(), "host_toposolid_uid", InstanceUid)), RevitCommandCodes.ArgsInvalid, "args.host_toposolid_uid");
         Rejects("family_instance.place empty symbol", Envelope("family_instance.place", With(Place(), "symbol", "")), RevitCommandCodes.ArgsInvalid, "args.symbol");
     }
 
@@ -335,7 +341,7 @@ static class CatalogueFamiliesChecks
         var symbols = json["symbols"]!.AsArray();
         Check(symbols.Count == 2 && (string?)symbols[0]!["type"] == "100x100mm" && (string?)symbols[0]!["reference"] == "M_Timber-Column: 100x100mm" && (string?)symbols[0]!["unique_id"] == OtherSymbolUid && (bool?)symbols[0]!["active"] == true && (string?)symbols[1]!["type"] == "140x140mm",
             "family readback lists its types ordered by name with the Family: Type reference, UniqueId and active flag", symbols.ToJsonString());
-        var unmapped = JsonNode.Parse(CommandReadbackFamilies.FamilyJson(CommandRulesFamilies.AlreadyLoaded, RepoStove, family with { BuiltInCategory = "OST_Entourage", CategoryName = null }))!["family"]!;
+        var unmapped = JsonNode.Parse(CommandReadbackFamilies.FamilyJson(CommandRulesFamilies.AlreadyLoaded, RepoStove, family with { BuiltInCategory = "OST_Columns", CategoryName = null }))!["family"]!;
         Check(unmapped["category"] is null && unmapped["category_name"] is null && (string?)unmapped["outcome"] == "already_loaded", "a category outside the family vocabulary reads back as null with its BuiltInCategory");
 
         var instance = Instance();
