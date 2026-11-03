@@ -1,0 +1,97 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 /MediaBox [0 0 200 100] /Resources << /Font << /F1 6 0 R >> /XObject << /Fm1 7 0 R >> >> >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents [4 0 R 5 0 R] >>
+endobj
+4 0 obj
+<< /Length 152 >>
+stream
+2 0 0 2 10 20 cm
+q
+0 1 -1 0 0 0 cm
+0 0 m
+10 0 l
+S
+q
+1 0 0 1 5 0 cm
+0 0 m
+1 1 l
+S
+Q
+Q
+0 0 m
+10 0 l
+S
+BT
+/F1 10 Tf
+[(A) -120 (B)] TJ
+<48656C6C6F> Tj
+ET
+Q
+
+endstream
+endobj
+5 0 obj
+<< /Length 23 >>
+stream
+/Fm1 Do
+0 0 10 10 re
+f
+
+endstream
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+7 0 obj
+<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Matrix [1 0 0 1 100 0] /Length 15 >>
+stream
+0 0 m
+0 10 l
+S
+
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /Rotate 90 /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 10 0 R >>
+stream
+1 0 0 RG
+[3] 0 d
+BT
+/F1 8 Tf
+0 1 -1 0 50 60 Tm
+(UP) Tj
+ET
+
+endstream
+endobj
+10 0 obj
+58
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000216 00000 n 
+0000000311 00000 n 
+0000000514 00000 n 
+0000000587 00000 n 
+0000000657 00000 n 
+0000000796 00000 n 
+0000000870 00000 n 
+0000000982 00000 n 
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+1001
+%%EOF
