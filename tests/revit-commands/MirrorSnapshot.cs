@@ -250,7 +250,7 @@ static class MirrorSnapshotChecks
         Check(Missing(rotated, R1)?.Detail.Contains("rotated", StringComparison.Ordinal) == true, "room_not_rectangular detail mentions rotated rectangles", Missing(rotated, R1)?.Detail ?? "mapped");
 
         Check(MirrorSnapshotMapper.MaxElements == 20000 && MirrorSnapshotMapper.TooLargeCode == "snapshot_too_large", "the snapshot cap is 20000 observed elements with code snapshot_too_large");
-        var many = Enumerable.Range(0, MirrorSnapshotMapper.MaxElements - 2).Select(i => new MirrorObservedElement(MirrorCategories.Floor, "60f91daf-3dd7-4283-a86d-24137b73f3da-" + i.ToString("x8"))).ToArray();
+        var many = Enumerable.Range(0, MirrorSnapshotMapper.MaxElements - 2).Select(i => new MirrorObservedElement(MirrorCategories.Floor, "aaaaaaaa-3dd7-4283-a86d-24137b73f3da-" + i.ToString("x8"))).ToArray();
         var atCap = Map(many);
         Check(atCap.Unmapped.Count == many.Length && atCap.Elements.Count == 2, "exactly MaxElements observed records (levels included) still map");
         string? code = null;
