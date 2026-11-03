@@ -274,8 +274,7 @@ public static class MirrorDrift
     };
     static readonly HashSet<string> AxisKinds = new(StringComparer.Ordinal) { "wall", "door", "window" };
 
-    public static bool IsComparableKind(string? kind) => !ReviewFixes || (kind is not null && FieldNames.ContainsKey(kind));
-    static readonly bool ReviewFixes = false;
+    public static bool IsComparableKind(string? kind) => kind is not null && FieldNames.ContainsKey(kind);
 
     // Fixed-format invariant number text; values that round to zero print without a sign.
     internal static string Fixed(double value, int decimals) =>
@@ -306,7 +305,7 @@ public static class MirrorDrift
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) throw new ArgumentException(JournalInvalidCode + " object required");
             var body = root;
-            if (ReviewFixes && root.TryGetProperty("status", out var status))
+            if (root.TryGetProperty("status", out var status))
             {
                 if (status.ValueKind != JsonValueKind.String || status.GetString() != "succeeded") throw new ArgumentException(JournalInvalidCode + " status is not succeeded");
                 if (!root.TryGetProperty("report", out body) || body.ValueKind != JsonValueKind.Object) throw new ArgumentException(JournalInvalidCode + " report required");
@@ -624,13 +623,6 @@ public static class MirrorDrift
             id => context.CoreKinds.TryGetValue(id, out var kind) ? kind : null);
         var revitRoles = Roles(revit.Dependencies, id => context.Sources.TryGetValue(id, out var uid) ? uid : "snapshot:" + id.ToString("D"),
             id => context.SnapshotKinds.TryGetValue(id, out var kind) ? kind : null);
-        if (!ReviewFixes)
-        {
-            var x0 = string.Join(",", (core.Dependencies ?? Array.Empty<Guid>()).Select(id => context.NativeIds.TryGetValue(id, out var uid) ? uid : ""));
-            var y0 = string.Join(",", (revit.Dependencies ?? Array.Empty<Guid>()).Select(id => context.Sources.TryGetValue(id, out var uid) ? uid : ""));
-            if (x0 != y0) fields.Add(new("dependencies", x0, y0, null));
-            return fields;
-        }
         void Set(string field, string[] x, string[] y)
         {
             string Text(string[] values) => string.Join(",", values);
