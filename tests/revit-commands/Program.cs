@@ -402,6 +402,9 @@ try
     // ---- Site commands: toposolid types, toposolids and toposolid subdivisions ----
     CatalogueSiteChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
+    // ---- wall.attach: wall top or base attached to a roof, floor, ceiling or toposolid ----
+    CatalogueWallAttachChecks.Run((condition, name, detail) => Check(condition, name, detail));
+
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
     RevitFileSystemProbe Probe(Func<string, bool> isLink, Func<string, int?> links) => new(path => { probed.Add(path); return isLink(path); }, links);

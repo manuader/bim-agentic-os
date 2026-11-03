@@ -188,6 +188,7 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["query.toposolid_types"]=()=>new JsonObject(),
     ["toposolid.create"]=()=>new JsonObject{["level"]="Level 1",["type"]="Toposolid 2000mm",["points"]=new JsonArray(new JsonArray(0,0,0),new JsonArray(30000,0,500),new JsonArray(30000,20000,4500),new JsonArray(0,20000,4000)),["comment"]="site"},
     ["toposolid.create_subdivision"]=()=>new JsonObject{["host_uid"]=McpUid,["outline"]=new JsonArray(new JsonArray(0,9000),new JsonArray(30000,9000),new JsonArray(30000,10500),new JsonArray(0,10500)),["material"]="Gravel"},
+    ["wall.attach"]=()=>new JsonObject{["wall_uid"]=McpUid,["target_uid"]="60f91daf-3dd7-4283-a86d-24137b73f3da-00000e01",["location"]="top"},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
@@ -276,6 +277,17 @@ foreach(var (tool,readOnly) in new[]{("revit_query_toposolid_types",true),("revi
     var onReal=Guarded(tool,sampleArgs[spec.Name](),McpReal);
     if(readOnly) Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,tool+" is read-only: forwarded to the pipe even on a real project");
     else Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+}
+// wall.attach: a generated additive write tool with the copies-only guard.
+Check(RevitCommandCatalogue.WallAttach.Select(spec=>spec.Name).SequenceEqual(new[]{"wall.attach"}) && RevitCommandCatalogue.WallAttach.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover wall.attach, in the catalogue enumeration");
+{
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="revit_wall_attach");
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && listed?["annotations"]?["destructiveHint"]?.GetValue<bool>()==false && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies","revit_wall_attach is listed write-copies with destructiveHint false");
+    var before=forwardedLines.Count;
+    var onReal=Guarded("revit_wall_attach",sampleArgs["wall.attach"](),McpReal);
+    Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,"revit_wall_attach on a real project is refused document_not_enabled before the pipe");
+    var self=Guarded("revit_wall_attach",new JsonObject{["wall_uid"]=McpUid,["target_uid"]=McpUid},McpCopy);
+    Check(IsError(self) && FailureCode(self)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before,"revit_wall_attach of a wall to itself is args_invalid before the pipe");
 }
 foreach(var tool in new[]{"revit_query_elements","revit_query_inspect"}) {
     var listed=tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!;

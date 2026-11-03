@@ -95,6 +95,9 @@ try
         Check(RevitCommandCatalogue.Materials.Any(spec => spec.Name == command), "materials catalogue has " + command);
         Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == onCopy && PermissionPolicy.RequiredLevel(command, RealPath, copies) == onReal, command + " requires " + onCopy + " on a copy and " + onReal + " on a real project");
     }
+    // wall.attach writes copies only.
+    Check(RevitCommandCatalogue.WallAttach.Any(spec => spec.Name == "wall.attach" && spec.Writes), "wall attach catalogue has write wall.attach");
+    Check(PermissionPolicy.RequiredLevel("wall.attach", FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel("wall.attach", RealPath, copies) == PermissionLevel.WriteRealProject, "wall.attach requires write-copies on a copy and write-real-project on a real project");
     // P9-05: the five catalogue v2 commands keep the v1 read/write split.
     var v2Levels = new (string Command, PermissionLevel Copy, PermissionLevel Real)[]
     {
