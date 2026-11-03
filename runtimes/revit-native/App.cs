@@ -15,7 +15,8 @@ public sealed class App : IExternalApplication, IExternalEventHandler
     // start only after FixtureBootstrap validated the config and opened the fixture (AddInGate.PipeAllowed).
     public Result OnStartup(UIControlledApplication app)
     {
-        if(!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AddInGate.ConfigVariable))) FixtureBootstrap.Attach(app,Expose,Withdraw);
+        // P2-03: the external edit journal records DocumentChanged only in the same opted-in sessions (JournalRecorder.cs).
+        if(!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AddInGate.ConfigVariable))) { JournalRecorder.Attach(app.ControlledApplication); FixtureBootstrap.Attach(app,Expose,Withdraw); }
         return Result.Succeeded;
     }
     // Called from FixtureBootstrap's Idling handler (an API context) once the fixture is open, before its result is published.
@@ -26,7 +27,7 @@ public sealed class App : IExternalApplication, IExternalEventHandler
     }
     // A bootstrap that failed after Expose must not leave a pipe behind.
     void Withdraw() { stop.Cancel(); signal?.Dispose(); signal=null; }
-    public Result OnShutdown(UIControlledApplication app) { stop.Cancel(); signal?.Dispose(); return Result.Succeeded; }
+    public Result OnShutdown(UIControlledApplication app) { stop.Cancel(); signal?.Dispose(); JournalRecorder.Detach(app.ControlledApplication); return Result.Succeeded; }
     public string GetName()=>"BIM Agentic OS serialized native dispatcher";
     async Task Listen()
     {
@@ -55,7 +56,7 @@ public sealed class App : IExternalApplication, IExternalEventHandler
     public void Execute(UIApplication app)
     {
         while(queue.TryDequeue(out var job)) {
-            try { job.Item2.SetResult(Run(app,job.Item1)); }
+            try { job.Item2.SetResult(JournalRecorder.Dispatching(()=>Run(app,job.Item1))); }
             catch(Exception e) {job.Item2.SetResult(JsonSerializer.Serialize(new {status="failed",code=e.Message,verification="unverified"}));}
         }
     }
@@ -65,6 +66,7 @@ public sealed class App : IExternalApplication, IExternalEventHandler
         if(r.Operation==Bim.Core.RevitCommandProtocol.WireOperation) return CommandExecutor.Run(app,r);
         if(r.Operation=="fixture.room.ab") return NativeRoomFixture.Run(app,r);
         if(r.Operation=="fixture.checkpoint") return FixtureCheckpoint.Run(app,r);
+        if(r.Operation==JournalRecorder.ReadOperation) return JournalRecorder.Read(app,r);
         var d=app.ActiveUIDocument?.Document ?? throw new InvalidOperationException("no_document");
         if(string.IsNullOrWhiteSpace(r.DocumentPath)||!String.Equals(d.PathName,r.DocumentPath,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("document_conflict");
         // Legacy primitives pass the same copies-only and link guard as revit.command writes; only inspect reads.
