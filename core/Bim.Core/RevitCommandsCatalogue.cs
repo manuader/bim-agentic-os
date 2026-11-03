@@ -11,7 +11,8 @@ public sealed record RevitCommandSpec(string Name, bool Writes, string Descripti
 }
 
 // Partial: catalogue v2 (P9-01) lives in RevitCommandsCatalogueV2.cs, the view commands (P4-01) in RevitCommandsViews.cs,
-// query.snapshot (P2-01) in Mirror.cs and the element queries (P1-02) in RevitCommandsQuery.cs.
+// query.snapshot (P2-01) in Mirror.cs, the element queries (P1-02) in RevitCommandsQuery.cs and the structure commands
+// (P9-02) in RevitCommandsStructure.cs.
 public static partial class RevitCommandCatalogue
 {
     public const int Version = 1;
@@ -64,9 +65,10 @@ public static partial class RevitCommandCatalogue
     };
 
     // Every command the protocol accepts: v1, then v2, then the view commands (P4-01), then query.snapshot (P2-01,
-    // Mirror.cs), then query.elements and query.inspect (P1-02, RevitCommandsQuery.cs). Lazy because those entries live in other parts of this partial class, whose static initializers may
-    // run in any order.
-    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).ToArray());
+    // Mirror.cs), then query.elements and query.inspect (P1-02, RevitCommandsQuery.cs), then the structure commands (P9-02,
+    // RevitCommandsStructure.cs). Lazy because those entries live in other parts of this partial class, whose static
+    // initializers may run in any order.
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).ToArray());
     public static IReadOnlyList<RevitCommandSpec> All => AllSpecs.Value;
 
     public static RevitCommandSpec? Find(string name) => All.FirstOrDefault(spec => spec.Name == name);
