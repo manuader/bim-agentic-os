@@ -89,7 +89,7 @@ internal static partial class CommandExecutor
             var materials = MaterialParameters(created, writableOnly: false);
             var materialUid = materials.Length == 1 && materials[0].AsElementId() is { } id && id != ElementId.InvalidElementId ? UniqueIdOf(d, id) : null;
             return new ObservedSubdivision(created.UniqueId, HostUidOf(d, created), host.IsValidObject && host.GetSubDivisionIds().Contains(created.Id), materialUid,
-                created.get_Parameter(ParameterTypeId.ToposolidSubdivideHeight) is { HasValue: true, StorageType: StorageType.Double } height ? Mm(height.AsDouble()) : null,
+                created.GetParameter(ParameterTypeId.ToposolidSubdivideHeight) is { HasValue: true, StorageType: StorageType.Double } height ? Mm(height.AsDouble()) : null,
                 BoxOf(created), CommentOf(created));
         }
         return new WritePlan(
@@ -105,7 +105,7 @@ internal static partial class CommandExecutor
                 }
                 if (args.SubdivideHeight is { } height)
                 {
-                    var parameter = created.get_Parameter(ParameterTypeId.ToposolidSubdivideHeight);
+                    var parameter = created.GetParameter(ParameterTypeId.ToposolidSubdivideHeight);
                     if (parameter is null || parameter.IsReadOnly || !parameter.Set(U(height.Millimetres)))
                         throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.subdivide_height_mm", "the sub-divide height of this subdivision cannot be set");
                 }
