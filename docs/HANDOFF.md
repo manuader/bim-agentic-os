@@ -18,6 +18,7 @@ Core C#/.NET8 compiles room intents into unchanged persisted records and compute
 
 ## 4. Sessions, newest first
 
+- Relay136 (Claude, cloud scheduled): P1-03 Claude Desktop MCP installer, P8-02 rhino3dm .3dm adapter, P9-01 Revit catalogue v2 (roofs, stairs, curtain walls, floor openings); reviewed, should-fix closed with tests, green. New P9-05 (expose v2 through MCP). [Session](SESSION-2026-11-03-relay136-mcp-rhino-catalogue-v2.md).
 - Relay135 (Claude, cloud scheduled): P3-01 multi-room layout intent compiler, P5-01 skill manifest/loader/resolver, P7-01 seeded space planner on the project brief; reviewed (one planner blocker fixed twice) and green. P3-02, P5-03, P7-02 unblocked. [Session](SESSION-2026-11-02-relay135-intent-skills-planner.md).
 - Relay134 (Claude, cloud scheduled): first cloud relay with GitHub push/API. P2-02 semantic graph relations, P6-03 project brief schema/validator, P10-03 permission policy + hash-chained audit log; each red→green in CI and independently reviewed. P7-01 unblocked. [Session](SESSION-2026-11-02-relay134-graph-brief-audit.md).
 - Relay68 (Claude, owner chat): owner scope change to a general Revit command surface ([ADR0009](architecture/adr/0009-revit-command-surface.md)); C01–C03 landed (CI compiles the add-in, protocol + catalogue v1 + MCP tools, executor), C04 owner smoke ready. [Session](SESSION-2026-10-30-relay68-revit-command-surface.md).

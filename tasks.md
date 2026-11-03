@@ -74,7 +74,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 |---|---|---|---|---|---|---|
 | P1-01 | Pipe listener survives per-connection faults | 🟢 | — | runtimes/revit-native/App.cs | CI green; C04 re-run reaches 17 steps | target compiled |
 | P1-02 | Generic element query and inspect commands | ⏳ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | query.elements by category/level with parameters; contract tests; compiles | target unit-tested |
-| P1-03 | MCP server setup for the Claude app | ⏳ | — | docs/mcp-setup.md; scripts/install-mcp.ps1 | one-command install registers the MCP server in Claude Desktop config with a backup; tested on a temp config | target unit-tested |
+| P1-03 | MCP server setup for the Claude app | ✅ | — | docs/mcp-setup.md; scripts/install-mcp.ps1 | one-command install registers the MCP server in Claude Desktop config with a backup; tested on a temp config | unit-tested (relay136, CI 41550944034; not run on the owner's Claude Desktop) |
 | P1-04 | Catalogue smoke re-run in Revit | 🔒 | P1-01 | owner session (fix ed5c759 on main; owner re-runs -Catalogue) | owner runs -Catalogue; 17/17 | target verified-in-revit |
 
 ### Phase 2 — semantic state and mirror
@@ -127,17 +127,18 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
 | P8-01 | IFC import to BIM-IR and roundtrip | ⏳ | — | runtimes/ifc; adapters/ifc | IFC walls/openings/spaces read to BIM-IR; export→import→export stable; CI on 3 OS | target integration-tested (ifc) |
-| P8-02 | Rhino .3dm adapter without Rhino | ⏳ | — | adapters/rhino (new) | rhino3dm (MIT) write/read of BIM-IR geometry; tests | target unit-tested |
+| P8-02 | Rhino .3dm adapter without Rhino | ✅ | — | adapters/rhino (new) | rhino3dm (MIT) write/read of BIM-IR geometry; tests | unit-tested against real rhino3dm 8.17.0 on Linux (relay136, CI 41548519960; never opened in Rhino) |
 | P8-03 | Blender adapter | 🔒 | — | adapters/blender | bpy exporter script; execution needs Blender installed | target described |
 
 ### Phase 9 — Revit parity
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P9-01 | Catalogue v2: roofs, stairs, curtain walls, slab openings | ⏳ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | contracts, validators, executor; compiles | target compiled |
+| P9-01 | Catalogue v2: roofs, stairs, curtain walls, slab openings | ✅ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | contracts, validators, executor; compiles | compiled executor + unit-tested contracts (relay136, CI 41547173763; not verified-in-revit) |
 | P9-02 | Structure: grids, columns, beams, foundations | ⏳ | — | same | contracts, validators, executor; compiles | target compiled |
 | P9-03 | Guarded free path (ADR + implementation) | ⏳ | — | docs/architecture/adr; runtimes/revit-native | ADR accepted by owner rules; compiled C# runs in rolled-back group with change report; compiles | target compiled |
 | P9-04 | Revit parity census registry | ⏳ | — | capabilities/ | machine-readable census of Revit functions with coverage state and tests linking | target described |
+| P9-05 | Expose catalogue v2 as MCP tools | ⏳ | P9-01 | interfaces/mcp/McpServer.cs; tests/mcp; tests/audit; docs/contracts/module-contracts.md | MCP tools/list built from RevitCommandCatalogue.All; v2 permission levels asserted; contract doc lists v2 | target unit-tested |
 
 ### Phase 10 — global production
 
@@ -150,22 +151,22 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 27/53 done (50.9 %)
+Progress: 30/54 done (55.6 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
 - Relay7 batch — platform coverage, rebuild baseline, recovery guard: 3/3
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
 - Revit command surface — catalogue v1 (architecture): 3/5
-- Phase 1 — native kernel: 0/4
+- Phase 1 — native kernel: 1/4
 - Phase 2 — semantic state and mirror: 1/3
 - Phase 3 — incremental compiler: 1/2
 - Phase 4 — documentation engine: 0/2
 - Phase 5 — skills and design systems: 1/3
 - Phase 6 — CAD and requirements: 1/3
 - Phase 7 — generative kernels: 1/2
-- Phase 8 — Rhino, Blender and IFC: 0/3
-- Phase 9 — Revit parity: 0/4
+- Phase 8 — Rhino, Blender and IFC: 1/3
+- Phase 9 — Revit parity: 1/5
 - Phase 10 — global production: 1/3
-Next ready: P1-02, P1-03, P2-01, P3-02, P4-01, P5-02, P5-03, P6-01
+Next ready: P1-02, P2-01, P3-02, P4-01, P5-02, P5-03, P6-01, P6-02
 
