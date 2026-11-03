@@ -30,7 +30,8 @@ namespace Bim.Revit;
 // sheets) are in CommandsExecutorDocumentation.cs; element.set_parameter and element.delete (P1-05) are in
 // CommandsExecutorModify.cs; query.materials and roof_type.create are in CommandsExecutorMaterials.cs;
 // family.load and family_instance.place are in CommandsExecutorFamilies.cs; site commands (toposolids and
-// subdivisions) are in CommandsExecutorSite.cs.
+// subdivisions) are in CommandsExecutorSite.cs; material.create, wall_type.create and floor_type.create (P9-06) are
+// in CommandsExecutorTypes.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -85,6 +86,9 @@ internal static partial class CommandExecutor
             FamilyInstancePlaceArgs instance => FamilyInstanceWrite(d, instance),
             ToposolidCreateArgs toposolid => ToposolidWrite(d, toposolid),
             ToposolidSubdivisionCreateArgs subdivision => ToposolidSubdivisionWrite(d, subdivision),
+            MaterialCreateArgs material => MaterialWrite(d, material),
+            WallTypeCreateArgs wallType => WallTypeWrite(d, wallType),
+            FloorTypeCreateArgs floorType => FloorTypeWrite(d, floorType),
             // A stair is created through a StairsEditScope, which cannot start inside the plan's write transaction.
             StairCreateArgs => null,
             _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
