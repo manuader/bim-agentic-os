@@ -43,12 +43,14 @@ Assert $rejected 'empty level list accepted'
 
 # --- Sequence against the in-process fake ---
 # -All runs every group (the owner one-run sequence); default is v1 only. -NoWire leaves out the journal.read invoker.
-# -Wrap (param index, key, json, inner) can stand in front of the fake CLI invoker.
-function Invoke-FakeSequence([hashtable]$Faults = @{}, [switch]$All, [switch]$NoWire, [scriptblock]$Wrap) {
+# -Wrap / -WireWrap (param index, key, json, inner) can stand in front of the fake CLI / wire invoker.
+function Invoke-FakeSequence([hashtable]$Faults = @{}, [switch]$All, [switch]$NoWire, [scriptblock]$Wrap, [scriptblock]$WireWrap) {
     $fake = New-FakeRevitState $documentUid $Faults
+    $fake.DocumentPath = $documentPath
     $invoke = { param($index, $key, $json) $text = Invoke-FakeRevitCommand $fake $json; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
     $wire = { param($index, $key, $line) $text = Invoke-FakeRevitWire $fake $line; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
     if ($Wrap) { $inner = $invoke; $invoke = { param($index, $key, $json) & $Wrap $index $key $json $inner } }
+    if ($WireWrap) { $innerWire = $wire; $wire = { param($index, $key, $line) & $WireWrap $index $key $line $innerWire } }
     $parameters = @{ Stamp = $stamp; Run = 1; DocumentPath = $documentPath; DocumentUid = $documentUid; Invoke = $invoke; V1Only = !$All }
     if (!$NoWire) { $parameters['InvokeWire'] = $wire }
     $result = Invoke-CatalogueSequence @parameters
@@ -169,6 +171,53 @@ Assert ($null -ne $dead.aborted -and !$deadStep.passed -and $deadStep.reason -li
 Assert ($after.Count -gt 0 -and @($after | Where-Object { $null -ne $_.request }).Count -eq 0) 'no step after a lost pipe is sent (journal wire steps included)'
 Assert ((Get-Group $dead 'v1').passed -eq 17 -and (Get-Group $dead 'v2').failed -eq 0 -and (Get-Group $dead 'vistas').failed -eq 0) 'groups before the lost pipe keep their results'
 Assert ((Format-CatalogueSummary $dead) -like '*DETENIDO*pipe_connect_timeout*') "lost-pipe summary: $(Format-CatalogueSummary $dead)"
+# Review follow-ups: both wall faces, section crop/origin, locale-free parameters, refusal field and detail.
+$faces = @($full.steps | Where-Object { $_.key -like 'doc-dim-walls-*' })
+Assert ($faces.Count -eq 2 -and @($faces | Where-Object { $_.passed }).Count -eq 2 -and $faces[0].request.args.wall_face -eq 'interior' -and $faces[1].request.args.wall_face -eq 'exterior') 'wall dimensions on both faces'
+Assert (@($faces[1].comparisons | Where-Object { $_.check -like '*2 x espesor*' -and $_.ok -and $_.requested -eq 400 }).Count -eq 1) 'exterior and interior differ by twice the wall width'
+$section = @($full.steps | Where-Object { $_.key -eq 'views-section' })[0]
+Assert (@($section.comparisons | Where-Object { $_.check -like 'recorte*' -or $_.check -like 'origen*' }).Count -eq 3) 'section checks crop x/z spans and origin y'
+Assert (@($full.steps | Where-Object { $_.key -eq 'm-comments' })[0].request.args.parameter.built_in -eq 'ALL_MODEL_INSTANCE_COMMENTS') 'Comments set by built-in id'
+Assert (@(@($full.steps | Where-Object { $_.key -eq 'q-params' })[0].request.args.parameters) -notcontains 'Comments') 'no localized parameter name in q-params'
+foreach ($key in @('m-readonly', 'm-delete-unconfirmed')) { $refusal = @($full.steps | Where-Object { $_.key -eq $key })[0]; Assert ($refusal.passed -and @($refusal.comparisons | Where-Object { $_.ok }).Count -eq 2) "$key checks field and detail" }
+$wrongField = (Invoke-FakeSequence -All -Wrap { param($index, $key, $json, $inner) $reply = & $inner $index $key $json; if ($key -eq 'm-readonly') { $reply.output = $reply.output.Replace('"field":"args.parameter"', '"field":"args.value"') }; $reply }).Result
+Assert ((Get-Group $wrongField 'modificar').failed -eq 1 -and [string]@($wrongField.steps | Where-Object { $_.key -eq 'm-readonly' })[0].reason -like '*campo rechazado*args.value*') "a refusal on another field must fail: $(Get-FailedSteps $wrongField)"
+$scheduleFails = (Invoke-FakeSequence @{ FailCommands = @('schedule.create') } -All).Result
+Assert ([string]@($scheduleFails.steps | Where-Object { $_.key -eq 'doc-schedule' })[0].reason -like '*transaction_failed*interfaz en inglés*') 'schedule failure names the English UI precondition'
+Assert (@($full.steps | Where-Object { $_.key -eq 'j-baseline' })[0].passed -and @(@($full.steps | Where-Object { $_.key -eq 'j-baseline' })[0].comparisons | Where-Object { $_.check -like '*baseline_existed*' }).Count -eq 1) 'first journal read has no baseline'
+$conflictFake = New-FakeRevitState $documentUid
+$conflictFake.DocumentPath = $documentPath
+Assert ((Invoke-FakeRevitWire $conflictFake (New-CatalogueWireLine '/other/BIM-Agentic-Test.rvt' 'journal.read' $null)) -like '*document_conflict*') 'fake journal.read refuses another document path'
+
+# Missing fixture preconditions are blocked, not failed.
+$noColumns = (Invoke-FakeSequence @{ NoStructuralTypes = @('column') } -All).Result
+$structure = Get-Group $noColumns 'estructura'
+Assert ($structure.blocked -eq 2 -and $structure.failed -eq 0 -and $noColumns.overall.failed -eq 0 -and !$noColumns.all_passed) "missing column type blocks 2 steps: $(Get-FailedSteps $noColumns)"
+Assert ((@($noColumns.steps | Where-Object { $_.blocked } | ForEach-Object { $_.key }) -join ',') -eq 's-types-column,s-column') "blocked steps: $(@($noColumns.steps | Where-Object { $_.blocked } | ForEach-Object { $_.key }) -join ',')"
+Assert ([string]@($noColumns.steps | Where-Object { $_.key -eq 's-column' })[0].reason -like '*bloqueado*column*') 'a blocked dependent names the missing precondition'
+$noColumnsLine = Format-CatalogueSummary $noColumns
+Assert ($noColumnsLine -like '*estructura 10/12 (2 bloqueados)*' -and $noColumnsLine -like '*resultado: OK con bloqueados: estructura (2)' -and $noColumnsLine -notlike '*FALLÓ*' -and $noColumnsLine -notlike '*TODO OK*') "blocked-only summary: $noColumnsLine"
+$oneLevel = (Invoke-FakeSequence @{ SingleLevel = $true } -All).Result
+Assert ($oneLevel.overall.failed -eq 0 -and (Get-Group $oneLevel 'v2').blocked -eq 3 -and (Get-Group $oneLevel 'estructura').blocked -eq 4 -and $oneLevel.counts.passed -eq 17) "one level blocks the roof, stair, column, beam and footing: $(Get-FailedSteps $oneLevel)"
+$mixed = (Invoke-FakeSequence @{ NoStructuralTypes = @('column'); FailCommands = @('roof.create_footprint') } -All).Result
+Assert ((Format-CatalogueSummary $mixed) -like '*resultado: FALLÓ en v2; bloqueados en estructura (2)') "failed and blocked summary: $(Format-CatalogueSummary $mixed)"
+$joinedBlocked = Join-CatalogueResults @($noColumns)
+Assert ($joinedBlocked.overall.blocked -eq 2 -and !$joinedBlocked.all_passed -and (Format-CatalogueSummary $joinedBlocked) -like '*OK con bloqueados*') 'session totals keep blocked counts'
+
+# A lost pipe on the journal.read wire line stops the run too.
+$wireDead = @{ On = $false }
+$wireDeadLine = '{"status":"failed","code":"pipe_io_error","field":"pipe_name","detail":"IOException: broken pipe","created":[],"modified":[],"deleted":[],"readback":null,"receipt":null,"warnings":[]}'
+$deadJournal = (Invoke-FakeSequence -All -WireWrap { param($index, $key, $line, $inner) if ($key -eq 'j-after') { $wireDead.On = $true }; if ($wireDead.On) { return @{ output = $wireDeadLine; exit_code = 1; timed_out = $false } }; & $inner $index $key $line }).Result
+$jAfter = @($deadJournal.steps | Where-Object { $_.key -eq 'j-after' })[0]
+Assert ($null -ne $deadJournal.aborted -and $deadJournal.aborted -like '*pipe_io_error*' -and !$jAfter.passed -and @($deadJournal.steps | Where-Object { $_.index -gt $jAfter.index -and $null -ne $_.request }).Count -eq 0) "lost wire pipe must stop the run: $($deadJournal.aborted)"
+Assert (@($deadJournal.steps | Where-Object { $_.key -in 'j-baseline', 'j-wall' -and $_.passed }).Count -eq 2 -and (Get-Group $deadJournal 'modificar').not_sent -eq (Get-Group $deadJournal 'modificar').total) 'journal steps before it kept, the destructive group never sent'
+
+# v1 only: a lost pipe also stops the remaining v1 steps (new in P1-06; before, each later step was still sent).
+$v1Dead = @{ On = $false }
+$v1DeadRun = (Invoke-FakeSequence -Wrap { param($index, $key, $json, $inner) if ($key -eq 'door') { $v1Dead.On = $true }; if ($v1Dead.On) { return @{ output = $deadLine; exit_code = 1; timed_out = $false } }; & $inner $index $key $json }).Result
+$doorStep = @($v1DeadRun.steps | Where-Object { $_.key -eq 'door' })[0]
+Assert ($v1DeadRun.groups.Count -eq 1 -and $null -ne $v1DeadRun.aborted -and $v1DeadRun.counts.passed -eq $doorStep.index - 1 -and $v1DeadRun.counts.not_sent -eq 17 - $doorStep.index) "v1-only lost pipe: $($v1DeadRun.counts | ConvertTo-Json -Compress)"
+Assert ((Format-CatalogueSummary $v1DeadRun) -eq "Catálogo: $($doorStep.index - 1)/17 pasos OK; DETENIDO: $($v1DeadRun.aborted)") "v1-only stopped line: $(Format-CatalogueSummary $v1DeadRun)"
 # Session totals over several runs.
 $joined = Join-CatalogueResults @($full, $roofFails)
 Assert ($joined.counts.passed -eq 34 -and (Get-Group $joined 'v2').failed -eq 1 -and $joined.overall.total -eq 2 * $full.overall.total -and !$joined.all_passed) 'session totals sum the runs by group'

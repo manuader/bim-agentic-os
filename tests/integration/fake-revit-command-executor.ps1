@@ -6,7 +6,9 @@
 # one; dry runs store none), keeps a small element table so references, dependents, snapshots and the journal.read
 # wire answer (Invoke-FakeRevitWire) are consistent, and records every operation_id it receives. Faults (hashtable):
 # ReplayNotFlagged, ReplayNewElement, WrongRadius (v1); FailCommands = @(names) answer transaction_failed;
-# RoofSlopeOff reports a different roof slope; SnapshotUnstable makes every snapshot differ. It proves nothing about Revit.
+# RoofSlopeOff reports a different roof slope; SnapshotUnstable makes every snapshot differ; SingleLevel leaves the
+# model with one level; NoStructuralTypes = @(categories) lists none of those structural types. With DocumentPath set
+# on the state, a journal.read for another path answers document_conflict. It proves nothing about Revit.
 Set-StrictMode -Version Latest
 
 $script:FakeBuiltInCategories = @{ wall = 'OST_Walls'; door = 'OST_Doors'; window = 'OST_Windows'; floor = 'OST_Floors'; room = 'OST_Rooms'; roof = 'OST_Roofs'; stair = 'OST_Stairs'; grid = 'OST_Grids'; level = 'OST_Levels' }
@@ -14,7 +16,7 @@ $script:FakeCategoryNames = @{ wall = 'Walls'; door = 'Doors'; window = 'Windows
 
 function New-FakeRevitState([string]$DocumentUid, [hashtable]$Faults = @{}) {
     @{ DocumentUid = $DocumentUid; Receipts = @{}; Received = [Collections.Generic.List[string]]::new(); Next = 0; Faults = $Faults; Episode = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0'
-        Elements = [ordered]@{}; Cache = @{}; Placed = @{}; ElementNumber = 100000; SkippedAddIn = 0; JournalBaseline = $null; Snapshots = 0 }
+        Elements = [ordered]@{}; Cache = @{}; Placed = @{}; ElementNumber = 100000; SkippedAddIn = 0; JournalBaseline = $null; Snapshots = 0; DocumentPath = $null }
 }
 
 function New-FakeUniqueId($State) { $State.Next++; '{0}-{1:x8}' -f $State.Episode, (4096 + $State.Next) }
@@ -43,7 +45,7 @@ function Get-FakeCached($State, [string]$Key, [scriptblock]$Create) {
 function Get-FakeLevels($State) {
     return , (Get-FakeCached $State 'levels' {
         [ordered]@{ name = 'Level 1'; unique_id = (New-FakeUniqueId $State); elevation_mm = 0; project_elevation_mm = 0 }
-        [ordered]@{ name = 'Level 2'; unique_id = (New-FakeUniqueId $State); elevation_mm = 4000; project_elevation_mm = 4000 } })
+        if (!$State.Faults.ContainsKey('SingleLevel')) { [ordered]@{ name = 'Level 2'; unique_id = (New-FakeUniqueId $State); elevation_mm = 4000; project_elevation_mm = 4000 } } })
 }
 
 function Get-FakeLevelRef($State, $LevelUid) {
@@ -306,7 +308,7 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
                 $s = @($a.line.start); $e = @($a.line.end)
                 $dx = [double]$e[0] - [double]$s[0]; $dy = [double]$e[1] - [double]$s[1]; $length = [Math]::Sqrt($dx * $dx + $dy * $dy)
                 $ux = $dx / $length; $uy = $dy / $length
-                $view['section'] = [ordered]@{ right_direction = @($ux, $uy, 0); up_direction = @(0, 0, 1); view_direction = @($uy, (0 - $ux), 0); origin = @($s[0], $s[1], $a.bottom_elevation_mm); crop_min = @(0, $a.bottom_elevation_mm, 0); crop_max = @($length, $a.top_elevation_mm, $a.depth_mm); far_clip_mm = $a.depth_mm; crop_box_active = $true }
+                $view['section'] = [ordered]@{ right_direction = @($ux, $uy, 0); up_direction = @(0, 0, 1); view_direction = @($uy, (0 - $ux), 0); origin = @($s[0], $s[1], $a.bottom_elevation_mm); crop_min = @($e[0], $e[1], $a.top_elevation_mm); crop_max = @($s[0], $s[1], $a.bottom_elevation_mm); far_clip_mm = $a.depth_mm; crop_box_active = $true }
             }
             if ($command -eq 'view.create_3d') {
                 $box = Get-FakeArg $a 'section_box'
@@ -344,9 +346,13 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
         'query.grids' { [ordered]@{ grids = @(@($State.Elements.Values) | Where-Object { $_.Category -eq 'grid' } | ForEach-Object { [ordered]@{ name = $_.Name; unique_id = $_.UniqueId; curved = $false; start = $_.Start; end = $_.End } }) } }
         'query.structural_types' {
             $category = [string]$a.category
-            [ordered]@{ category = $category; structural_types = (Get-FakeCached $State "structural:$category" {
-                $family = if ($category -eq 'wall_foundation') { $null } else { "Fake $category" }
-                [ordered]@{ family = $family; type = 'Standard'; reference = $(if ($family) { "${family}: Standard" } else { 'Standard' }); unique_id = (New-FakeUniqueId $State); active = $true; placement_type = $null } }) }
+            $types = @()
+            if (!($State.Faults.ContainsKey('NoStructuralTypes') -and @($State.Faults['NoStructuralTypes']) -contains $category)) {
+                $types = Get-FakeCached $State "structural:$category" {
+                    $family = if ($category -eq 'wall_foundation') { $null } else { "Fake $category" }
+                    [ordered]@{ family = $family; type = 'Standard'; reference = $(if ($family) { "${family}: Standard" } else { 'Standard' }); unique_id = (New-FakeUniqueId $State); active = $true; placement_type = $null } }
+            }
+            [ordered]@{ category = $category; structural_types = $types }
         }
         'grid.create' {
             $uid = New-FakeUniqueId $State; $created = @($uid)
@@ -480,6 +486,7 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
     $request = $Line | ConvertFrom-Json
     $State.Received.Add('journal.read')
     if ([string]$request.Operation -ne 'journal.read') { return '{"status":"failed","code":"unsupported_capability"}' }
+    if ($null -ne $State.DocumentPath -and ![string]::Equals([string]$request.DocumentPath, $State.DocumentPath, [StringComparison]::OrdinalIgnoreCase)) { return '{"status":"failed","code":"document_conflict"}' }
     $options = Get-FakeArg $request 'Journal'
     $peek = [bool](Get-FakeArg $options 'peek')
     $current = [ordered]@{}
