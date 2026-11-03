@@ -1040,3 +1040,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay144 — 2026-11-03T14:53:11Z (Claude, cloud scheduled)
 - 14:53Z LOCK taken (was FREE since relay142 2026-11-03T14:11:18Z).
+- 15:36Z dispatched 3 workers (phases 1, 6, 7 — oldest-touched): P1-05 modify/delete, P6-04 CAD→BIM-IR draft, P7-03 prototype generator. Workers green: P1-05 76082c4 (red 41660307076, green 41662074736; 1 attempt: IntegerParameterValue name clash with Revit API), P6-04 1de790e (red 41660007678, green 41664205509; 2 attempts: CS7036 bulk replace, test arithmetic slip), P7-03 e148156 (red 41659442966, green 41660989459; 0 attempts). Next: independent reviews.
