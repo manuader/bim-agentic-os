@@ -210,8 +210,7 @@ public static class PlanRunner
     public static RevitPlanRunReport Run(RevitCommandPlan plan, IRevitCommandTransport transport)
     {
         ArgumentNullException.ThrowIfNull(transport);
-        _ = Layout.Of(plan);
-        throw new NotImplementedException("P3-03 red stub");
+        return Execute(plan, Layout.Of(plan), PlanSha256(plan), Array.Empty<RevitCompletedStep>(), transport);
     }
 
     // Re-runs the level check (the document may have changed since) and then only the pending steps; completed steps
@@ -227,7 +226,8 @@ public static class PlanRunner
         if (report.Version != Version || report.Completed is null || report.Pending is null) throw new ArgumentException("report_invalid");
         if (report.PlanSha256 != sha) throw new ArgumentException("report_plan_mismatch");
         Validate(layout, report);
-        throw new NotImplementedException("P3-03 red stub");
+        if (report.Pending.Count == 0) return report;
+        return Execute(plan, layout, sha, report.Completed, transport);
     }
 
     sealed record Layout(RevitCommandStep? Check, IReadOnlyList<RevitCommandStep> Steps, IReadOnlySet<string> Needed)
