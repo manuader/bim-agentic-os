@@ -66,7 +66,7 @@ internal static class DraftTests
                 var north = d.Walls[2];
                 C(NearP(north.Start, 5900, 3900) && NearP(north.End, 100, 3900) && Near(north.Confidence, 5600.0 / 6000), "dxf north wall runs -x and closes both corners", Wall(north));
                 var west = d.Walls[3];
-                C(NearP(west.Start, 100, 3900) && NearP(west.End, 100, 100) && Near(west.Confidence, 5600.0 / 6000), "dxf west wall", Wall(west));
+                C(NearP(west.Start, 100, 3900) && NearP(west.End, 100, 100) && Near(west.Confidence, 3600.0 / 4000), "dxf west wall (inner 3600 / outer 4000)", Wall(west));
                 var partition = d.Walls[4];
                 C(NearP(partition.Start, 3050, 3900) && NearP(partition.End, 3050, 2500) && Near(partition.ThicknessMillimetres, 100) && Near(partition.Confidence, 0.85)
                     && partition.Notes.Contains("start:joined") && partition.Notes.Contains("end:unclosed"),
