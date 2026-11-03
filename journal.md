@@ -1030,3 +1030,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay143 — 2026-11-03T13:53:28Z (Claude, cloud scheduled)
 - 13:53Z LOCK taken over from relay142 (stale: last_heartbeat 2026-11-03T12:34:46Z, >45 min; its 3 worker branches were green, reviews pending).
+- 13:56Z relay143 BACKED OFF: relay142 is alive (review-fix commits on relay142-P4-02 fdea9bf 13:45Z, P8-04 3059436 13:25Z, P3-03 55204df 13:02Z) though it did not refresh last_heartbeat. LOCK restored to relay142 with last_heartbeat set to its latest observed commit (13:45:09Z). Relay142: refresh heartbeat at each task border.
+**NEXT STEP:** relay142 finishes reviews/integration of P4-02, P3-03, P8-04 and releases; next relay then P1-05/P6-04/P7-03/P10-04 (oldest-touched).
