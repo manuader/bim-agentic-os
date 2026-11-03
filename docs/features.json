@@ -640,6 +640,38 @@
       ],
       "blocker": "Native DocumentChanged recorder compiled only, never run in Revit; only attached in validated fixture sessions; reachable through the raw pipe operation journal.read, not the catalogue/MCP; deleted elements are numeric ids only; snapshot diff includes add-in changes.",
       "scope": "P2-03: Revit-free bounded append-only journal (entry capacity and total id budget, per-reply caps with after_sequence paging, peek mode, per-copy baselines keyed by UniqueId+path, failure-aware journal_complete, add-in vs external origin) and a mirror snapshot differ (added/removed/changed with named fields, 1e-6 m tolerance) unit-tested; DocumentChanged recorder compiled against Revit 2025 reference assemblies. CI 41624965893."
+    },
+    {
+      "id": "revit-documentation-commands",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsDocumentation.cs",
+        "runtimes/revit-native/CommandsDocumentation.cs",
+        "runtimes/revit-native/CommandsExecutorDocumentation.cs",
+        "tests/revit-commands/CatalogueDocumentation.cs"
+      ],
+      "blocker": "Never run in Revit; whether grid/wall side-face references dimension correctly, tag head position, schedule field names and viewport/schedule placement points match readback is only confirmed by an owner probe; no schedule level filter, tag type choice, section-view dimensions/tags.",
+      "scope": "P4-02: query.title_blocks, dimension.create_linear (plan views, parallel grids/walls, wall face, perpendicular tolerance), tag.create (by category, leader requires head), schedule.create (fields, sort), sheet.create (title block, unique number), sheet.place_view (viewport or schedule instance, legends on many sheets) on the catalogue envelope with copies-only guard, operation_id receipts and readback with rollback; contracts and Revit-free rules unit-tested, executor compiled against Revit 2025 reference assemblies. CI 41647155908."
+    },
+    {
+      "id": "plan-runner",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/PlanRunner.cs",
+        "tests/plan-to-commands/PlanRunnerTests.cs"
+      ],
+      "blocker": "Fake transport only; no concrete pipe adapter class; created_missing does not clear on resume (receipt replays); never run against Revit.",
+      "scope": "P3-03: runs a RevitCommandPlan through an injected transport \u2014 level preconditions first (no writes on issues), host placeholders from created[0], strict receipt matching, stop on first failure with a deterministic resumable JSON report, resume re-sends only pending steps relying on operation_id replay; tampered reports refused. CI 41640877159."
+    },
+    {
+      "id": "gltf-export",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/gltf/Bim.Gltf/GltfExporter.cs",
+        "tests/gltf/Program.cs"
+      ],
+      "blocker": "Never opened in Blender nor run through the Khronos glTF-Validator; no CLI verb; wall joins not resolved; BIM-IR carries no openings/slabs so none are exported.",
+      "scope": "P8-04: BCL-only deterministic BIM-IR \u2192 glTF 2.0 (.glb and .gltf with embedded buffer): walls as boxes, spaces as floor quads, levels as nodes, extras {bim_id, kind, type, level}, Z-up\u2192Y-up, per-kind materials; in-test spec validator with mutation tests; golden SHA-256 equal on Linux and Windows; bounded input and precision checks; never-overwrite writer. CI 41644141785."
     }
   ]
 }

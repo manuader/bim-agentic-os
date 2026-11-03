@@ -116,3 +116,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P9-02: no failed attempts (initial and review rounds).
 - P5-03 Attempt1 (red push 747f783, run 41615318757): test helper `Check` passed as `Action<bool,string,string>` but called with 2 arguments (compile error, not an oracle failure) → local wrapper with optional detail (2225179). Review round: no failed attempts; qa clear-height default changed 2.5→2.6 as a value fix (CABA minimum), the Program.cs assertion follows the value.
 - P2-03 Attempt1: hypothesis a core comment naming the add-in path trips the harness "Core dependency boundary" gate → reworded comment (5f6c382). Review round: no failed attempts.
+
+### Relay142 (2026-11-03, cloud)
+- P4-02 Attempt1 (run 41634179122, ee2de53, native-build only): hypothesis `Point2` is a reference type → wrong, it is a struct; optional `Point2?` did not convert (CS1503) → unwrapped with `is { } x` patterns (70941f9). Review round: no failed attempts.
+- P3-03: no failed attempts in the first round. Review round Attempt1 (run 41637892756, a033b62): new test local `again` clashed with an existing method-level local (CS0136) → renamed (79c2457, valid red 41639513716).
+- P8-04: no failed attempts (initial and review rounds); golden SHA-256 values unchanged by review fixes, equal on Linux and Windows.

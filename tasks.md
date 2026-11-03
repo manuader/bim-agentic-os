@@ -94,7 +94,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 |---|---|---|---|---|---|---|
 | P3-01 | Intent AST beyond one room | ✅ | — | core/Bim.Core/Intent* | multi-room layout intents with wall types and openings compile to BIM-IR deterministically; tests | unit-tested (relay135, CI 41530804027) |
 | P3-02 | Compiler to catalogue bridge | ✅ | P3-01 | core/Bim.Core/PlanToCommands* | an ExecutionPlan becomes ordered catalogue v1 commands with operation ids; tests | unit-tested (relay139, CI 41586824187; levels are preconditions, not created) |
-| P3-03 | Plan runner with step envelopes | ⏳ | P3-02 | core/Bim.Core/PlanRunner*; tests/plan-to-commands | runs a RevitCommandPlan step by step through an injected transport, fills host placeholders from created[0], checks level preconditions against query.levels, stops on first failure with a resumable report; fake-transport tests | target unit-tested |
+| P3-03 | Plan runner with step envelopes | ✅ | P3-02 | core/Bim.Core/PlanRunner*; tests/plan-to-commands | runs a RevitCommandPlan step by step through an injected transport, fills host placeholders from created[0], checks level preconditions against query.levels, stops on first failure with a resumable report; fake-transport tests | unit-tested (relay142, CI 41640877159; fake transport only, no concrete pipe adapter class) |
 | P3-04 | Localized validation of plan changes | ⏳ | P3-02 | core/Bim.Core/LocalValidation*; tests/plan-to-commands | after a Compiler.Diff, only elements in the affected closure (graph neighbours) are revalidated; result equals full validation on a corpus; tests | target unit-tested |
 
 ### Phase 4 — documentation engine
@@ -102,7 +102,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
 | P4-01 | View commands (plan, section, 3D) | ✅ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | view.create plan/section/3d contracts and executor; compiles | compiled executor + unit-tested contracts (relay137, CI 41560983214; not verified-in-revit; owner probe tests/integration/native-views-probe.ps1) |
-| P4-02 | Dimensions, tags, schedules and sheets commands | ⏳ | P4-01 | same | contracts and executor for dimension/tag/schedule/sheet; compiles | target compiled |
+| P4-02 | Dimensions, tags, schedules and sheets commands | ✅ | P4-01 | same | contracts and executor for dimension/tag/schedule/sheet; compiles | compiled executor + unit-tested contracts (relay142, CI 41647155908; query.title_blocks, dimension.create_linear, tag.create, schedule.create, sheet.create, sheet.place_view; not verified-in-revit; no schedule level filter) |
 
 ### Phase 5 — skills and design systems
 
@@ -138,6 +138,10 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P8-01 | IFC import to BIM-IR and roundtrip | ✅ | — | runtimes/ifc; adapters/ifc | IFC walls/openings/spaces read to BIM-IR; export→import→export stable; CI on 3 OS | integration-tested (ifc) on ubuntu/windows/macos (relay139, CI 41588411915; own exporter output only, no third-party IFC) |
 | P8-02 | Rhino .3dm adapter without Rhino | ✅ | — | adapters/rhino (new) | rhino3dm (MIT) write/read of BIM-IR geometry; tests | unit-tested against real rhino3dm 8.17.0 on Linux (relay136, CI 41548519960; never opened in Rhino) |
 | P8-03 | Blender adapter | 🔒 | — | adapters/blender | bpy exporter script; execution needs Blender installed | target described |
+| P8-04 | BIM-IR to glTF 2.0 export for Blender interchange | ✅ | — | adapters/gltf (new); tests/gltf | deterministic .glb/.gltf of walls/spaces/levels with extras, Y-up, golden SHA-256 equal on Linux/Windows, in-test spec validator; tests | unit-tested (relay142, CI 41644141785; never opened in Blender nor the Khronos validator; no wall joins) |
+| P8-05 | Third-party IFC import robustness | ⏳ | P8-01 | runtimes/ifc; tests/ifc | IFC files not written by our exporter (IfcOpenShell-authored IFC4 with IfcWall + IfcExtrudedAreaSolid/IfcPolyline, mapped/boolean-clipped walls, IfcSpace with footprint, IFC2X3) import to BIM-IR with an explicit unsupported/approximated report instead of failure; fixtures generated in CI with IfcOpenShell; tests | target integration-tested (ifc) |
+| P8-06 | Rhino .3dm to BIM-IR draft import | ⏳ | P8-02 | adapters/rhino; tests/rhino | .3dm curves/extrusions on named layers (walls/spaces) read via rhino3dm into a non-persisted BIM-IR draft proposal with per-object confidence and an unmapped report; roundtrip with the P8-02 writer; tests | target unit-tested |
+| P8-07 | glTF export CLI verb and openings | ⛔ | P8-04 | interfaces/cli; adapters/gltf | `export-gltf` CLI verb with bounded output path; wall openings from door/window elements when BIM-IR carries them, else documented absent; tests | target unit-tested |
 
 ### Phase 9 — Revit parity
 
@@ -162,7 +166,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 45/65 done (69.2 %)
+Progress: 48/69 done (69.6 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
@@ -171,13 +175,13 @@ Progress: 45/65 done (69.2 %)
 - Revit command surface — catalogue v1 (architecture): 3/5
 - Phase 1 — native kernel: 2/5
 - Phase 2 — semantic state and mirror: 3/5
-- Phase 3 — incremental compiler: 2/4
-- Phase 4 — documentation engine: 1/2
+- Phase 3 — incremental compiler: 3/4
+- Phase 4 — documentation engine: 2/2
 - Phase 5 — skills and design systems: 3/5
 - Phase 6 — CAD and requirements: 3/4
 - Phase 7 — generative kernels: 2/3
-- Phase 8 — Rhino, Blender and IFC: 2/3
+- Phase 8 — Rhino, Blender and IFC: 3/7
 - Phase 9 — Revit parity: 3/5
 - Phase 10 — global production: 3/5
-Next ready: P1-05, P2-04, P2-05, P3-03, P3-04, P4-02, P5-04, P5-05
+Next ready: P1-05, P2-04, P2-05, P3-04, P5-04, P5-05, P6-04, P7-03
 
