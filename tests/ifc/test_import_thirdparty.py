@@ -10,6 +10,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import math
 import pathlib
 import subprocess
 import sys
@@ -108,6 +109,8 @@ class Model:
         entity = ifcopenshell.api.root.create_entity(self.f, ifc_class=ifc_class, name=name)
         if self.schema == 'IFC2X3' and entity.is_a('IfcSpatialStructureElement'):
             entity.CompositionType = 'ELEMENT'
+        if self.schema == 'IFC2X3' and entity.is_a('IfcSpace'):
+            entity.InteriorOrExteriorSpace = 'INTERNAL'
         for key, value in attributes.items():
             setattr(entity, key, value)
         return entity
@@ -237,8 +240,9 @@ class ThirdParty(Annotated):
         for actual, wanted in zip((lo[0], lo[1], hi[0], hi[1], hi[2] - lo[2]), (*expected, height)):
             self.assertAlmostEqual(wanted, actual, places=6, msg=(wall_element, lo, hi))
 
-    def test_ifc4_third_party_walls_spaces_and_unsupported_products(self):
-        m = self.model('IFC4')
+    def third_party(self, schema):
+        """The same third-party cases authored in IFC4 or IFC2X3 (IfcIndexedPolyCurve only exists in IFC4)."""
+        m = self.model(schema)
         f = m.f
         storey = m.storey(0)
         # 1. API-authored wall: ifcopenshell.api.geometry.add_wall_representation (extruded polyline footprint).
@@ -258,6 +262,14 @@ class ThirdParty(Annotated):
         m.contain(storey, typed_wall)
         m.place(typed_wall, (10.0, 0.0, 0.0), x_axis=(0.0, 1.0, 0.0))
         ifcopenshell.api.type.assign_type(f, related_objects=[typed_wall], relating_type=wall_type)
+        # 3b. A type with Axis and Body maps: the mapped Axis (drawn east to west) sets the BIM-IR wall direction.
+        axis_type = m.create('IfcWallType', 'axis wall type')
+        m.assign(axis_type, m.representation([m.polyline([(4, 0), (0, 0)], closed=False)], 'Axis', 'Curve2D', m.axis_context),
+                 m.representation([m.extrusion(m.rectangle((2.0, 0.0), 4.0, 0.2), 3.0)]))
+        axis_wall = m.create('IfcWall', 'mapped axis wall')
+        m.contain(storey, axis_wall)
+        m.place(axis_wall, (0.0, 40.0, 0.0))
+        ifcopenshell.api.type.assign_type(f, related_objects=[axis_wall], relating_type=axis_type)
         # 4. Hand-mapped item with a rotated MappingTarget; 4b. the same map with a non-identity MappingOrigin, which
         # ISO 10303-43 and the IfcOpenShell kernel read differently: reported unsupported, not guessed.
         source = m.representation([m.extrusion(m.rectangle((3.0, 0.1), 4.0, 0.2), 2.8)])
@@ -268,21 +280,54 @@ class ThirdParty(Annotated):
             m.contain(storey, product)
             m.place(product)
             m.assign(product, m.representation([f.create_entity('IfcMappedItem', MappingSource=rep_map, MappingTarget=target)], kind='MappedRepresentation'))
+
+        def half_space(location, axis=None):
+            plane = f.create_entity('IfcPlane', Position=m.placement3(location, axis=axis))
+            return f.create_entity('IfcHalfSpaceSolid', BaseSurface=plane, AgreementFlag=False)  # material on the normal side
+
+        def clipped(first, *spaces):
+            for space in spaces:
+                first = f.create_entity('IfcBooleanClippingResult', Operator='DIFFERENCE', FirstOperand=first, SecondOperand=space)
+            return first
+
         # 5. Boolean-clipped (sloped top) wall with an Axis: approximated by its unclipped extrusion.
         clipped_wall = m.create('IfcWall', 'clipped wall')
         m.contain(storey, clipped_wall)
         m.place(clipped_wall, (0.0, 30.0, 0.0))
-        plane = f.create_entity('IfcPlane', Position=m.placement3((0, 0, 3.0), axis=(-0.1, 0, 1)))
-        clip = f.create_entity('IfcBooleanClippingResult', Operator='DIFFERENCE', FirstOperand=m.extrusion(m.rectangle((3.0, 0.0), 6.0, 0.2), 3.5),
-                               SecondOperand=f.create_entity('IfcHalfSpaceSolid', BaseSurface=plane, AgreementFlag=False))
         m.assign(clipped_wall, m.representation([m.polyline([(0, 0), (6, 0)], closed=False)], 'Axis', 'Curve2D', m.axis_context),
-                 m.representation([clip], kind='Clipping'))
+                 m.representation([clipped(m.extrusion(m.rectangle((3.0, 0.0), 6.0, 0.2), 3.5), half_space((0, 0, 3.0), (-0.1, 0, 1)))], kind='Clipping'))
+        # 5b. Exact horizontal top clip: 3.5 m extrusion cut at 3.0 m is a 3.0 m prism, imported.
+        flat_clip_wall = m.create('IfcWall', 'horizontally clipped wall')
+        m.contain(storey, flat_clip_wall)
+        m.place(flat_clip_wall, (0.0, 60.0, 0.0))
+        m.assign(flat_clip_wall, m.representation([clipped(m.extrusion(m.rectangle((3.0, 0.0), 6.0, 0.2), 3.5), half_space((0, 0, 3.0)))], kind='Clipping'))
+        # 5c. Gable wall (two sloped clips) hosting a window: the window is exact relative to an approximated host.
+        gable_wall = m.create('IfcWall', 'gable wall')
+        m.contain(storey, gable_wall)
+        m.place(gable_wall, (0.0, 50.0, 0.0))
+        m.assign(gable_wall, m.representation([m.polyline([(0, 0), (6, 0)], closed=False)], 'Axis', 'Curve2D', m.axis_context),
+                 m.representation([clipped(m.extrusion(m.rectangle((3.0, 0.0), 6.0, 0.2), 4.0), half_space((0, 0, 3.0), (-0.5, 0, 1)), half_space((6, 0, 3.0), (0.5, 0, 1)))], kind='Clipping'))
+        opening = m.create('IfcOpeningElement', 'gable opening')
+        m.place(opening, (2.0, 50.0, 0.0))
+        m.assign(opening, m.representation([m.extrusion(m.rectangle((0.5, 0.0), 1.0, 0.3), 1.2, base=0.9)]))
+        ifcopenshell.api.feature.add_feature(f, feature=opening, element=gable_wall)
+        window = m.create('IfcWindow', 'gable window')
+        m.contain(storey, window)
+        m.place(window, (2.0, 50.0, 0.0))
+        ifcopenshell.api.feature.add_filling(f, opening=opening, element=window)
         # 6. Mitred (trapezoid) polyline profile: approximated by its bounding rectangle along the longest edge.
         mitred_wall = m.create('IfcWall', 'mitred wall')
         m.contain(storey, mitred_wall)
         m.place(mitred_wall, (0.0, 20.0, 0.0))
         m.assign(mitred_wall, m.representation([m.extrusion(m.polygon(m.polyline([(0, -0.1), (4, -0.1), (3.8, 0.1), (0.2, 0.1)])), 3.0)]))
-        # 7. Space with Body (extruded polyline) and FootPrint; 8. space with a FootPrint IfcIndexedPolyCurve only;
+        # 6b. Curved wall faceted into 16 segments: a bounding rectangle would be mostly air, so it is unsupported.
+        outer = [(5.2 * math.cos(math.pi / 2 * i / 16), 5.2 * math.sin(math.pi / 2 * i / 16)) for i in range(17)]
+        inner = [(5.0 * math.cos(math.pi / 2 * i / 16), 5.0 * math.sin(math.pi / 2 * i / 16)) for i in reversed(range(17))]
+        curved_wall = m.create('IfcWall', 'curved wall')
+        m.contain(storey, curved_wall)
+        m.place(curved_wall, (40.0, 0.0, 0.0))
+        m.assign(curved_wall, m.representation([m.extrusion(m.polygon(m.polyline(outer + inner)), 3.0)]))
+        # 7. Space with Body (extruded polyline) and FootPrint; 8. space with a FootPrint curve only;
         # 9. L-shaped space: unsupported.
         room = m.create('IfcSpace', 'room')
         ifcopenshell.api.aggregate.assign_object(f, products=[room], relating_object=storey)
@@ -296,8 +341,11 @@ class ThirdParty(Annotated):
         flat = m.create('IfcSpace', 'footprint only')
         ifcopenshell.api.aggregate.assign_object(f, products=[flat], relating_object=storey)
         m.place(flat, (10.0, 10.0, 0.0))
-        indexed = f.create_entity('IfcIndexedPolyCurve', Points=f.create_entity('IfcCartesianPointList2D', CoordList=((0., 0.), (3., 0.), (3., 2.), (0., 2.), (0., 0.))))
-        m.assign(flat, m.representation([indexed], 'FootPrint', 'Curve2D', m.footprint_context))
+        if schema == 'IFC4':
+            curve = f.create_entity('IfcIndexedPolyCurve', Points=f.create_entity('IfcCartesianPointList2D', CoordList=((0., 0.), (3., 0.), (3., 2.), (0., 2.), (0., 0.))))
+        else:
+            curve = m.polyline([(0, 0), (3, 0), (3, 2), (0, 2)])
+        m.assign(flat, m.representation([curve], 'FootPrint', 'Curve2D', m.footprint_context))
         ell = m.create('IfcSpace', 'L room')
         ifcopenshell.api.aggregate.assign_object(f, products=[ell], relating_object=storey)
         m.place(ell, (30.0, 0.0, 0.0))
@@ -308,41 +356,55 @@ class ThirdParty(Annotated):
         m.contain(storey, slab, column)
 
         # Fixture preconditions: the authoring API produced the representations this test is about.
-        self.assertEqual(['IfcMappedItem'], [i.is_a() for r in typed_wall.Representation.Representations if r.RepresentationIdentifier == 'Body' for i in r.Items])
+        def items(product, identifier):
+            return [i.is_a() for r in product.Representation.Representations if r.RepresentationIdentifier == identifier for i in r.Items]
+        self.assertEqual(['IfcMappedItem'], items(typed_wall, 'Body'))
+        self.assertEqual((['IfcMappedItem'], ['IfcMappedItem']), (items(axis_wall, 'Axis'), items(axis_wall, 'Body')))
         self.assertTrue(f.by_type('IfcBooleanClippingResult') and f.by_type('IfcArbitraryClosedProfileDef'))
-        path = m.write(self.dir / 'third-party.ifc')
+        self.assertEqual(schema, f.schema)
+        path = m.write(self.dir / f'third-party-{schema}.ifc')
 
         report = self.ifc.import_ifc(path)
-        self.assertEqual('IFC4', report['ifc_schema'])
+        self.assertEqual(schema, report['ifc_schema'])
         self.assertReportConsistent(report)
         rows = self.rows(report)
-        status = {name: (rows[p.GlobalId]['status'], rows[p.GlobalId]['reasons']) for name, p in (
-            ('storey', storey), ('api', api_wall), ('poly', poly_wall), ('typed', typed_wall), ('mapped', mapped_wall), ('origin', origin_wall), ('clipped', clipped_wall),
-            ('mitred', mitred_wall), ('room', room), ('flat', flat), ('ell', ell), ('slab', slab), ('column', column))}
+        named = (('storey', storey), ('api', api_wall), ('poly', poly_wall), ('typed', typed_wall), ('axis', axis_wall), ('mapped', mapped_wall), ('origin', origin_wall),
+                 ('clipped', clipped_wall), ('flatclip', flat_clip_wall), ('gable', gable_wall), ('window', window), ('mitred', mitred_wall), ('curved', curved_wall),
+                 ('room', room), ('flat', flat), ('ell', ell), ('slab', slab), ('column', column))
+        status = {name: (rows[p.GlobalId]['status'], rows[p.GlobalId]['reasons']) for name, p in named}
         self.assertEqual({
-            'storey': ('imported', []), 'api': ('imported', []), 'poly': ('imported', []), 'typed': ('imported', []), 'mapped': ('imported', []), 'origin': ('unsupported', ['unsupported_representation']),
-            'clipped': ('approximated', ['boolean_clipping_ignored']), 'mitred': ('approximated', ['profile_bounding_rectangle']),
+            'storey': ('imported', []), 'api': ('imported', []), 'poly': ('imported', []), 'typed': ('imported', []), 'axis': ('imported', []), 'mapped': ('imported', []),
+            'origin': ('unsupported', ['unsupported_representation']),
+            'clipped': ('approximated', ['boolean_clipping_ignored']), 'flatclip': ('imported', []),
+            'gable': ('approximated', ['boolean_clipping_ignored']), 'window': ('approximated', ['host_approximated']),
+            'mitred': ('approximated', ['profile_bounding_rectangle']), 'curved': ('unsupported', ['profile_fill_too_low']),
             'room': ('imported', []), 'flat': ('imported', []), 'ell': ('unsupported', ['room_not_rectangular']),
             'slab': ('unsupported', ['no_bim_ir_kind']), 'column': ('unsupported', ['category_unsupported']),
         }, status)
-        self.assertEqual({'imported': 7, 'approximated': 2, 'unsupported': 4}, report['summary'])
+        self.assertEqual({'imported': 9, 'approximated': 4, 'unsupported': 5}, report['summary'])
         self.assertNotIn(m.site.GlobalId, rows, 'spatial structure above storeys is not listed')
 
         pg = m.project.GlobalId
         level = derived(pg, storey.GlobalId)
         geometry = {name: self.element(report, pg, p)['GeometryMetres'] for name, p in (
-            ('poly', poly_wall), ('mapped', mapped_wall), ('clipped', clipped_wall), ('mitred', mitred_wall), ('room', room), ('flat', flat))}
+            ('poly', poly_wall), ('axis', axis_wall), ('mapped', mapped_wall), ('clipped', clipped_wall), ('flatclip', flat_clip_wall), ('gable', gable_wall),
+            ('window', window), ('mitred', mitred_wall), ('room', room), ('flat', flat))}
         self.assertEqual({
             'poly': [0, 8, 5, 8, 2.7, 0.3],
+            'axis': [4, 40, 0, 40, 3, 0.2],
             'mapped': [19.9, 6, 19.9, 10, 2.8, 0.2],
             'clipped': [0, 30, 6, 30, 3.5, 0.2],
+            'flatclip': [0, 60, 6, 60, 3, 0.2],
+            'gable': [0, 50, 6, 50, 4, 0.2],
+            'window': [2, 50, 3, 50, 0.9, 1.2],
             'mitred': [0, 20, 4, 20, 3, 0.2],
             'room': [0.1, 0.1, 5.8, 4],
             'flat': [10, 10, 3, 2],
         }, geometry)
+        self.assertEqual([level, derived(pg, gable_wall.GlobalId)], self.element(report, pg, window)['Dependencies'])
         self.assertEqual([level, derived(pg, poly_wall.GlobalId)], self.element(report, pg, room)['Dependencies'])
-        # API-authored and type-mapped walls: compared with the geometry kernel's world bounds.
-        for product in (api_wall, typed_wall, mapped_wall, poly_wall):
+        # API-authored, type-mapped and exactly clipped walls: compared with the geometry kernel's world bounds.
+        for product in (api_wall, typed_wall, axis_wall, mapped_wall, poly_wall, flat_clip_wall):
             self.assertWallMatchesKernel(self.element(report, pg, product), product)
         api = self.element(report, pg, api_wall)['GeometryMetres']
         typed = self.element(report, pg, typed_wall)['GeometryMetres']
@@ -352,10 +414,20 @@ class ThirdParty(Annotated):
         _, _, clipped_volume = world_box(clipped_wall)
         self.assertLess(clipped_volume, 6 * 3.5 * 0.2 - 0.2)
         self.assertIn('unclipped', rows[clipped_wall.GlobalId]['detail'])
+        self.assertIn('host', rows[window.GlobalId]['detail'])
         self.assertIn('MappingOrigin', rows[origin_wall.GlobalId]['detail'])
+        # Polygon approximations state both areas and their ratio; below 0.9 the wall is refused.
+        self.assertRegex(rows[mitred_wall.GlobalId]['detail'], r'polygon area 0\.76 m2.*rectangle area 0\.8 m2.*ratio 0\.95')
+        self.assertRegex(rows[curved_wall.GlobalId]['detail'], r'polygon area [0-9.]+ m2.*rectangle area [0-9.]+ m2.*ratio 0\.[0-8]')
         self.assertTrue(all(e['Provenance'] == OBSERVED for e in report['project']['Elements']))
         self.assertEqual(report, self.ifc.import_ifc(path), 'import must be deterministic')
-        self.assertRoundtrips(report, 'reexport.ifc')
+        self.assertRoundtrips(report, f'reexport-{schema}.ifc')
+
+    def test_ifc4_third_party_walls_spaces_and_unsupported_products(self):
+        self.third_party('IFC4')
+
+    def test_ifc2x3_third_party_walls_spaces_and_unsupported_products(self):
+        self.third_party('IFC2X3')
 
     def test_ifc2x3_file_imports_exactly(self):
         m = self.model('IFC2X3')
@@ -403,16 +475,30 @@ class ThirdParty(Annotated):
         self.assertRoundtrips(report, 'ifc2x3-as-ifc4.ifc')
 
     def test_mapped_and_clipped_bodies_stay_unsupported_where_not_approximated(self):
-        """Approximation is for walls only: a clipped space body or a scaled mapped item is reported, not guessed."""
+        """Approximation is for walls only: a sloped-clipped space body, a scaled mapped item or a broken outline is reported, not guessed."""
         m = self.model('IFC4')
         f = m.f
         storey = m.storey(0)
         space = m.create('IfcSpace', 'clipped space')
         ifcopenshell.api.aggregate.assign_object(f, products=[space], relating_object=storey)
         m.place(space)
-        plane = f.create_entity('IfcPlane', Position=m.placement3((0, 0, 2.0)))
-        m.assign(space, m.representation([f.create_entity('IfcBooleanClippingResult', Operator='DIFFERENCE', FirstOperand=m.extrusion(m.rectangle((2, 2), 4, 4), 3.0),
-                                                           SecondOperand=f.create_entity('IfcHalfSpaceSolid', BaseSurface=plane, AgreementFlag=False))], kind='Clipping'))
+        def sloped_clip(centre):
+            plane = f.create_entity('IfcPlane', Position=m.placement3((0, 0, 2.0), axis=(0.3, 0, 1)))
+            return m.representation([f.create_entity('IfcBooleanClippingResult', Operator='DIFFERENCE', FirstOperand=m.extrusion(m.rectangle(centre, 4, 4), 3.0),
+                                                     SecondOperand=f.create_entity('IfcHalfSpaceSolid', BaseSurface=plane, AgreementFlag=False))], kind='Clipping')
+        m.assign(space, sloped_clip((2, 2)))
+        # A space whose Body is unreadable but whose FootPrint is a rectangle is read from the FootPrint.
+        fallback = m.create('IfcSpace', 'clipped space with footprint')
+        ifcopenshell.api.aggregate.assign_object(f, products=[fallback], relating_object=storey)
+        m.place(fallback, (10.0, 0.0, 0.0))
+        m.assign(fallback, sloped_clip((2, 2)), m.representation([m.polyline([(0, 0), (4, 0), (4, 4), (0, 4)])], 'FootPrint', 'Curve2D', m.footprint_context))
+        # An IfcIndexedPolyCurve whose segments do not connect is not a closed outline.
+        broken = m.create('IfcSpace', 'disconnected footprint')
+        ifcopenshell.api.aggregate.assign_object(f, products=[broken], relating_object=storey)
+        m.place(broken, (20.0, 0.0, 0.0))
+        segments = [f.create_entity('IfcLineIndex', (1, 2)), f.create_entity('IfcLineIndex', (3, 4))]
+        disconnected = f.create_entity('IfcIndexedPolyCurve', Points=f.create_entity('IfcCartesianPointList2D', CoordList=((0., 0.), (3., 0.), (3., 2.), (0., 2.))), Segments=segments)
+        m.assign(broken, m.representation([disconnected], 'FootPrint', 'Curve2D', m.footprint_context))
         rep_map = f.create_entity('IfcRepresentationMap', MappingOrigin=m.placement3(), MappedRepresentation=m.representation([m.extrusion(m.rectangle((2, 0), 4, 0.2), 3)]))
         scaled = m.create('IfcWall', 'scaled wall')
         m.contain(storey, scaled)
@@ -424,7 +510,9 @@ class ThirdParty(Annotated):
         rows = self.rows(report)
         self.assertEqual(('unsupported', ['unsupported_representation']), (rows[space.GlobalId]['status'], rows[space.GlobalId]['reasons']))
         self.assertEqual(('unsupported', ['unsupported_representation']), (rows[scaled.GlobalId]['status'], rows[scaled.GlobalId]['reasons']))
-        self.assertEqual({'imported': 1, 'approximated': 0, 'unsupported': 2}, report['summary'])
+        self.assertEqual(('unsupported', ['unsupported_representation']), (rows[broken.GlobalId]['status'], rows[broken.GlobalId]['reasons']))
+        self.assertEqual(('imported', [10, 0, 4, 4]), (rows[fallback.GlobalId]['status'], self.element(report, m.project.GlobalId, fallback)['GeometryMetres']))
+        self.assertEqual({'imported': 2, 'approximated': 0, 'unsupported': 3}, report['summary'])
 
     def test_command_line_prints_the_entity_report(self):
         m = self.model('IFC4')
