@@ -141,7 +141,9 @@ static class CatalogueDocumentationChecks
     {
         var tag = Accepts("tag accepted", Envelope("tag.create", Tag()));
         Check(tag?.Args is TagCreateArgs { ViewUid: ViewUid, ElementUid: WallUid, Leader: false, Orientation: "horizontal", Head: { } head } && Near(head.X.Millimetres, 3000) && Near(head.Y.Millimetres, 500), "tag binds view, element, head in millimetres, no leader and horizontal by default");
-        Check(Accepts("tag without head accepted", Envelope("tag.create", With(With(With(Tag(), "head", null), "leader", true), "orientation", "vertical")))?.Args is TagCreateArgs { Head: null, Leader: true, Orientation: "vertical" }, "tag head is optional; leader and orientation bind");
+        Check(Accepts("tag with leader and orientation accepted", Envelope("tag.create", With(With(Tag(), "leader", true), "orientation", "vertical")))?.Args is TagCreateArgs { Head: not null, Leader: true, Orientation: "vertical" }, "tag leader and orientation bind");
+        Rejects("tag leader without head", Envelope("tag.create", With(With(Tag(), "head", null), "leader", true)), RevitCommandCodes.ArgsInvalid, "args.leader");
+        Check(Accepts("tag without head or leader accepted", Envelope("tag.create", With(Tag(), "head", null)))?.Args is TagCreateArgs { Head: null, Leader: false }, "a tag without head places the head at the element without a leader");
         Rejects("tag unknown orientation", Envelope("tag.create", With(Tag(), "orientation", "model")), RevitCommandCodes.ArgsInvalid, "args.orientation");
         Rejects("tag leader not a boolean", Envelope("tag.create", With(Tag(), "leader", "yes")), RevitCommandCodes.ArgsInvalid, "args.leader");
         Rejects("tag head coordinate beyond 1e8 mm", Envelope("tag.create", With(Tag(), "head", Pair(2e8, 0))), RevitCommandCodes.LengthInvalid, "args.head[0]");
@@ -183,6 +185,9 @@ static class CatalogueDocumentationChecks
         Check(place?.Args is SheetPlaceViewArgs { SheetUid: SheetUid, ViewUid: ViewUid, Center: { } c } && Near(c.X.Millimetres, 420) && Near(c.Y.Millimetres, 297), "place view binds sheet, view and the sheet point in millimetres");
         Rejects("place view without center", Envelope("sheet.place_view", With(Place(), "center", null)), RevitCommandCodes.ArgsInvalid, "args.center");
         Rejects("place view far off the sheet", Envelope("sheet.place_view", With(Place(), "center", Pair(100001, 0))), RevitCommandCodes.LengthInvalid, "args.center");
+        Rejects("place view far below the sheet", Envelope("sheet.place_view", With(Place(), "center", Pair(0, -100001))), RevitCommandCodes.LengthInvalid, "args.center");
+        Check(Accepts("place view at +100000 mm accepted", Envelope("sheet.place_view", With(Place(), "center", Pair(100000, 100000))))?.Args is SheetPlaceViewArgs, "a sheet point exactly 100000 mm from the origin is accepted");
+        Check(Accepts("place view at -100000 mm accepted", Envelope("sheet.place_view", With(Place(), "center", Pair(-100000, -100000))))?.Args is SheetPlaceViewArgs, "a sheet point exactly -100000 mm from the origin is accepted");
         Rejects("place view sheet that is not a UniqueId", Envelope("sheet.place_view", With(Place(), "sheet_uid", "A101")), RevitCommandCodes.ArgsInvalid, "args.sheet_uid");
     }
 
@@ -242,6 +247,10 @@ static class CatalogueDocumentationChecks
         Check(Near(CommandRulesDocumentation.Layout(gridA, reversed, null, null).ExpectedMm, 6000), "an opposite-running parallel grid measures the same distance");
         var requested = CommandRulesDocumentation.Layout(gridA, gridB, P(-500, 3000), P(6500, 3000));
         Check(Near(requested.ExpectedMm, 6000) && requested.Start == P(-500, 3000) && requested.End == P(6500, 3000), "a requested perpendicular dimension line is kept and measures the reference distance");
+        DimensionLayout? shortLine = null;
+        var shortRefusal = Thrown(() => shortLine = CommandRulesDocumentation.Layout(gridA, gridB, P(0, 1000), P(100, 1000.001)));
+        Check(shortRefusal is null && shortLine is { } kept && Near(kept.ExpectedMm, 6000) && kept.End == P(100, 1000.001), "a 100 mm dimension line off perpendicular by a 0.001 mm readback rounding is accepted", shortRefusal?.Detail ?? "");
+        Check(Thrown(() => CommandRulesDocumentation.Layout(gridA, gridB, P(0, 1000), P(100, 1000.01))) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.line" }, "a 100 mm dimension line 0.01 mm off perpendicular is args_invalid");
         Check(Thrown(() => CommandRulesDocumentation.Layout(gridA, gridB, P(0, 0), P(6000, 100))) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.line" }, "a dimension line that is not perpendicular to the references is args_invalid");
         var skew = CommandRulesDocumentation.LineDatum(GridBUid, "grid", P(6000, 0), P(6100, 12000), "args.second_uid");
         Check(Thrown(() => CommandRulesDocumentation.Layout(gridA, skew, null, null)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.second_uid" } notParallel && notParallel.Detail!.Contains("parallel", StringComparison.Ordinal), "references that are not parallel are args_invalid");
@@ -251,6 +260,7 @@ static class CatalogueDocumentationChecks
         var face = CommandRulesDocumentation.FaceDatum(WallUid, "wall_exterior", P(3000, 100), 0, 2, 0, "args.second_uid");
         Check(Near(face.NormalX, 0) && Near(face.NormalY, 1) && face.Kind == "wall_exterior", "a vertical wall face datum keeps its point and the normalised plan normal");
         Check(Thrown(() => CommandRulesDocumentation.FaceDatum(WallUid, "wall_exterior", P(0, 0), 0, 1, 0.1, "args.first_uid")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.first_uid" }, "a wall face that is not vertical is args_invalid");
+        Check(Thrown(() => CommandRulesDocumentation.FaceDatum(WallUid, "wall_exterior", P(0, 0), 0, 0, 0, "args.first_uid")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.first_uid" }, "a wall face with a zero normal is args_invalid");
         var wallA = CommandRulesDocumentation.FaceDatum(WallUid, "wall_exterior", P(0, 100), 0, -1, 0, "args.first_uid");
         Check(Thrown(() => CommandRulesDocumentation.Layout(wallA, face, null, null)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.second_uid" }, "two wall faces in one plane are args_invalid");
         Check(Near(CommandRulesDocumentation.Layout(wallA, CommandRulesDocumentation.FaceDatum(GridBUid, "wall_interior", P(500, 4100), 0, 1, 0, "args.second_uid"), null, null).ExpectedMm, 4000), "opposite-facing parallel wall faces measure their plan distance");
@@ -276,6 +286,10 @@ static class CatalogueDocumentationChecks
         Check(Thrown(() => CommandRulesDocumentation.CheckPlaceable("FloorPlan", true, false, false, null, true)) is { Code: RevitCommandCodes.ArgsInvalid }, "a view template cannot be placed");
         Check(Thrown(() => CommandRulesDocumentation.CheckPlaceable("DrawingSheet", false, false, false, null, true)) is { Code: RevitCommandCodes.ArgsInvalid }, "a sheet cannot be placed on a sheet");
         Check(Thrown(() => CommandRulesDocumentation.CheckPlaceable("Schedule", false, true, true, null, true)) is { Code: RevitCommandCodes.ArgsInvalid }, "a title block revision schedule cannot be placed");
+        foreach (var browser in new[] { "ProjectBrowser", "Internal" })
+            Check(Thrown(() => CommandRulesDocumentation.CheckPlaceable(browser, false, false, false, null, true)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.view_uid" } refused && refused.Detail!.Contains(browser, StringComparison.Ordinal), "a " + browser + " view cannot be placed on a sheet");
+        Check(Thrown(() => CommandRulesDocumentation.CheckPlaceable("Legend", false, false, false, "A101", true)) is null && CommandRulesDocumentation.CheckPlaceable("Legend", false, false, false, "A101", true) == CommandRulesDocumentation.ViewportKind, "a legend already on a sheet may be placed again as a viewport");
+        Check(Thrown(() => CommandRulesDocumentation.CheckPlaceable("Legend", false, false, false, "A101", false)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.view_uid" }, "a legend Revit refuses to add (CanAddViewToSheet false) is args_invalid");
     }
 
     static void Readbacks()
@@ -316,6 +330,7 @@ static class CatalogueDocumentationChecks
         Check(CommandReadbackDocumentation.Schedule(args with { Name = null, SortBy = null }, schedule with { Name = "Door Schedule 1", SortFields = Array.Empty<string>() }) is null, "an automatic schedule name is accepted when none was requested");
         Check(CommandReadbackDocumentation.Schedule(args with { SortBy = null }, schedule) is not null, "a sort that was not requested is a mismatch");
         Check(CommandReadbackDocumentation.Schedule(args, schedule with { IsTemplate = true }) is not null, "a schedule template is a mismatch");
+        Check(CommandReadbackDocumentation.Schedule(args, schedule with { BuiltInCategory = null }) is { } unreadableCategory && unreadableCategory.Contains("unreadable", StringComparison.Ordinal), "an unreadable schedule category is a mismatch");
 
         var sheet = new ObservedSheet(SheetUid, "A101", "Ground Floor", new[] { TitleBlockUid });
         Check(CommandReadbackDocumentation.Sheet("A101", "Ground Floor", TitleBlockUid, sheet) is null, "sheet readback matches");
@@ -332,6 +347,9 @@ static class CatalogueDocumentationChecks
         Check(CommandReadbackDocumentation.Placement("viewport", SheetUid, ViewUid, P(420, 297), placement with { Center = null }) is not null, "an unreadable viewport centre is a mismatch");
         Check(CommandReadbackDocumentation.Placement("viewport", SheetUid, ViewUid, P(420, 297), placement with { SheetUid = TitleBlockUid }) is { } onSheet && onSheet.Contains("sheet", StringComparison.Ordinal), "a viewport on another sheet is a mismatch");
         Check(CommandReadbackDocumentation.Placement("viewport", SheetUid, ViewUid, P(420, 297), placement with { ViewUid = OtherViewUid }) is not null, "a viewport of another view is a mismatch");
+        var scheduleInstance = new ObservedPlacement(ElementUid, "schedule", SheetUid, OtherViewUid, P(20, 580));
+        Check(CommandReadbackDocumentation.Placement("schedule", SheetUid, OtherViewUid, P(20, 580), scheduleInstance) is null, "schedule sheet instance readback matches");
+        Check(CommandReadbackDocumentation.Placement("schedule", SheetUid, OtherViewUid, P(20, 580), scheduleInstance with { Center = P(20, 581) }) is not null, "a schedule sheet instance placed elsewhere is a mismatch");
         Check(CommandReadbackDocumentation.Placement("schedule", SheetUid, ViewUid, P(420, 297), placement) is { } kind && kind.Contains("schedule", StringComparison.Ordinal), "a viewport where a schedule instance was expected is a mismatch");
     }
 
