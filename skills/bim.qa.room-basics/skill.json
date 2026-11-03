@@ -11,7 +11,7 @@
   ],
   "defaults": {
     "qa.report.include_info": true,
-    "room.min_clear_height_m": 2.5
+    "room.min_clear_height_m": 2.6
   },
   "rules": [
     {

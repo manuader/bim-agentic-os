@@ -314,8 +314,9 @@ try
     SkillCatalog? samples = null;
     try { samples = SkillLoader.LoadDirectory(skillsRoot); }
     catch (SkillException error) { Check(false, "skills/ loads", error.Code + " " + error.File + " at " + error.Field + " (" + error.Detail + ")"); }
-    Check(samples is { Skills.Count: 3 } && samples.Skills[0].Id == "ar.caba.codigo-edificacion" && samples.Skills[1].Id == "bim.qa.room-basics" && samples.Skills[2].Id == "bim.typology.dwelling",
-        "skills/ holds the CABA code pack and the qa and typology samples in ordinal order",
+    Check(samples is { Skills.Count: 5 } && samples.Skills[0].Id == "ar.caba.codigo-edificacion" && samples.Skills[1].Id == "bim.qa.room-basics" && samples.Skills[2].Id == "bim.style.compact-modern"
+        && samples.Skills[3].Id == "bim.style.warm-masonry" && samples.Skills[4].Id == "bim.typology.dwelling",
+        "skills/ holds the CABA code pack, the qa sample, the two style packs and the typology sample in ordinal order",
         samples is null ? "" : string.Join(",", samples.Skills.Select(skill => skill.Id)));
     Check(samples?.Find("bim.qa.room-basics") is { Kind: SkillKind.Qa, Priority: 50 } qa && qa.Rules.Select(rule => rule.Check.Op).Distinct().Count() == 4
         && samples.Find("bim.typology.dwelling") is { Kind: SkillKind.Typology, Priority: 20 } dwelling && dwelling.Rules.Any(rule => rule.Check.Op == SkillCheckOp.RatioMin),
@@ -327,7 +328,7 @@ try
         var resolved = SkillResolver.Resolve(samples, Requests("bim.typology.dwelling", "bim.qa.room-basics"));
         Check(resolved.Succeeded && resolved.Skills.Select(skill => skill.Id).SequenceEqual(new[] { "bim.qa.room-basics", "bim.typology.dwelling" }), "samples resolve together", Issues(resolved));
         Check(resolved.Setting("room.min_clear_height_m") is { Decision: SkillDecision.Priority, Source: { SkillId: "bim.qa.room-basics", Origin: "default", Key: "room.min_clear_height_m" }, Overridden.Count: 1 } clear
-            && clear.Value == SkillValue.Of(2.5) && clear.Overridden[0] == new SkillTrace("bim.typology.dwelling", SkillTrace.DefaultOrigin, "room.min_clear_height_m"),
+            && clear.Value == SkillValue.Of(2.6) && clear.Overridden[0] == new SkillTrace("bim.typology.dwelling", SkillTrace.DefaultOrigin, "room.min_clear_height_m"),
             "overlapping sample default: qa priority 50 beats typology priority 20 and the loser is recorded", Render(resolved));
         Check(resolved.Setting("wall.exterior.thickness_m") is { Decision: SkillDecision.Only, Overridden.Count: 0, Source.SkillId: "bim.typology.dwelling" } wall && wall.Value == SkillValue.Of(0.3),
             "single-source sample default traces to its skill and key");
@@ -918,6 +919,9 @@ try
     Check(Pattern("range") == "^" + SkillParser.RangePatternBody + "$", "schema range pattern is the parser range pattern");
     var typed = Def("parameter").GetProperty("allOf").EnumerateArray().Select(branch => branch.GetProperty("if").GetProperty("properties").GetProperty("type").GetProperty("const").GetString()!).ToArray();
     Check(typed.SequenceEqual(SkillParser.ParameterTypes), "schema types each parameter default and range by its declared type", string.Join(",", typed));
+
+    // ---- P5-03 contrasting style packs (tests/skills/StyleSkillTests.cs) ----
+    StyleSkillTests.Run(root, Check);
 
     // ---- Scale: 20000-skill chain and cycle built in code (no recursion) ----
     const int Scale = 20000;
