@@ -83,6 +83,12 @@ try
         var onReal = spec.Writes ? PermissionLevel.WriteRealProject : PermissionLevel.Read;
         Check(PermissionPolicy.RequiredLevel(spec.Name, RealPath, copies) == onReal, "catalogue " + spec.Name + " on a real project requires " + onReal);
     }
+    // P1-02: the generic element queries are read on a copy and on a real project.
+    foreach (var command in new[] { "query.elements", "query.inspect" })
+    {
+        Check(RevitCommandCatalogue.Elements.Any(spec => spec.Name == command && !spec.Writes), "element query catalogue has read-only " + command);
+        Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == PermissionLevel.Read && PermissionPolicy.RequiredLevel(command, RealPath, copies) == PermissionLevel.Read, command + " requires read on a copy and on a real project");
+    }
     // P9-05: the five catalogue v2 commands keep the v1 read/write split.
     var v2Levels = new (string Command, PermissionLevel Copy, PermissionLevel Real)[]
     {

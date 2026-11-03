@@ -29,7 +29,8 @@ internal static partial class CommandExecutor
     static string QueryMirror(Document d, RevitCommandEnvelope envelope) => envelope.Args switch
     {
         EmptyQueryArgs when envelope.Command == "query.snapshot" => MirrorSnapshotMapper.Map(MirrorObserve(d, envelope)).ToJson(),
-        _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
+        // P1-02 element queries (CommandsExecutorQuery.cs).
+        _ => QueryElements(d, envelope),
     };
 
     static MirrorPoint MirrorAt(XYZ point) => new(Mm(point.X), Mm(point.Y));
