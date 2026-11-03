@@ -4,11 +4,10 @@
   "version": "1.0.0",
   "name": "Uniclass 2015",
   "publisher": "NBS",
-  "edition": "EF v1.16",
-  "edition_date": "2026-07",
+  "edition": "EF v1.16 (July 2026)",
   "source_url": "https://uniclass.thenbs.com",
   "retrieved": "2026-11-03",
-  "licence": "Uniclass 2015 tables (c) Hubexo North UK Ltd, delivered by NBS, licensed CC BY-ND 4.0 (https://creativecommons.org/licenses/by-nd/4.0/) per https://uniclass.thenbs.com/download. Codes and titles below are copied verbatim and unmodified from the Elements/functions (EF) table; whether a verbatim excerpt is a permitted redistribution under BY-ND was not legally reviewed: verify the licence before redistribution.",
+  "licence": "Uniclass 2015 tables (c) Hubexo North UK Ltd, delivered by NBS, licensed CC BY-ND 4.0 (https://creativecommons.org/licenses/by-nd/4.0/) per https://uniclass.thenbs.com/download. Codes and titles below are copied verbatim and unmodified from the Elements/functions (EF) table; whether a verbatim excerpt is a permitted redistribution under BY-ND was not legally reviewed: verify the licence before redistribution. Provided as is, without warranty of any kind; NBS does not endorse this kind-to-code mapping.",
   "code_pattern": "^EF(_[0-9]{2}){1,3}$",
   "rules": [
     { "kind": "door", "code": "EF_25_30_25", "title": "Doors", "location": "https://uniclass.thenbs.com/taxon/ef_25_30_25" },
