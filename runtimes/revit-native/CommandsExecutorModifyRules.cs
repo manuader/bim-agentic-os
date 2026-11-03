@@ -25,6 +25,9 @@ public static class CommandRulesModify
     public const double AngleToleranceDegrees = 1e-6;
     // Refusal details name at most this many UniqueIds, then the count of the rest.
     public const int MaxListedInDetail = 20;
+    // Replies and receipts list at most this many dependents or other modified elements; beyond it they carry the
+    // count (and for dependents a SHA-256), so a large cascade cannot fill the receipt store.
+    public const int MaxDependentsListed = 100;
 
     static RevitCommandException ArgsInvalid(string field, string detail) => new(RevitCommandCodes.ArgsInvalid, field, detail);
 
@@ -67,16 +70,50 @@ public static class CommandRulesModify
         if (count > 1) throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.parameter.name", count + " parameters of the element are named " + name + "; pass built_in or guid instead");
     }
 
+    static string? Undeletable(DeleteTargetFacts element) =>
+        element.ProjectInformation ? "is the document's Project Information"
+        : element.ReceiptStore ? "is the command receipt store"
+        : element.ActiveView ? "is the active view"
+        : element.Pinned ? "is pinned; unpin it in Revit first"
+        : element.InGroup ? "is a member of a group; edit or ungroup the group in Revit first"
+        : !element.CanDelete ? "cannot be deleted (DocumentValidation.CanDeleteElement)"
+        : null;
+
     public static void CheckDeletable(DeleteTargetFacts target, string field)
     {
-        string? reason = target.ProjectInformation ? "is the document's Project Information"
-            : target.ReceiptStore ? "is the command receipt store"
-            : target.ActiveView ? "is the active view"
-            : target.Pinned ? "is pinned; unpin it in Revit first"
-            : target.InGroup ? "is a member of a group; edit or ungroup the group in Revit first"
-            : !target.CanDelete ? "cannot be deleted (DocumentValidation.CanDeleteElement)"
-            : null;
-        if (reason is not null) throw ArgsInvalid(field, "element " + target.UniqueId + " " + reason);
+        if (Undeletable(target) is { } reason) throw ArgsInvalid(field, "element " + target.UniqueId + " " + reason);
+    }
+
+    // Every element the cascade would remove must be deletable on its own terms: a pinned, grouped or otherwise
+    // protected dependent refuses the whole delete.
+    public static void CheckDependents(IReadOnlyList<DeleteTargetFacts> dependents)
+    {
+        foreach (var dependent in dependents)
+        {
+            if (Undeletable(dependent) is { } reason) throw ArgsInvalid("args.element_uids", "the delete would also remove dependent element " + dependent.UniqueId + ", which " + reason);
+        }
+    }
+
+    // set_parameter: Revit refuses parameter changes on group members unless the group is edited.
+    public static void CheckParameterElement(string uniqueId, bool inGroup)
+    {
+        if (inGroup) throw ArgsInvalid("args.element_uid", "element " + uniqueId + " is a member of a group; edit or ungroup the group in Revit first");
+    }
+
+    // A Revit ArgumentException or InvalidOperationException from Parameter.Set or Document.Delete is a refusal of the
+    // request, not an executor failure.
+    public static RevitCommandException RevitRefused(string? field, string message) => new(RevitCommandCodes.ArgsInvalid, field, "Revit refused: " + message);
+
+    // Real runs store a receipt (and need room for one first); dry runs never store anything.
+    public static bool StoresReceipt(bool dryRun) => !dryRun;
+
+    // set_parameter side effects (pre/post element id snapshot and the modified ids of the transaction): any deleted
+    // element refuses the change; the other modified ids are returned, distinct and sorted.
+    public static IReadOnlyList<long> SetParameterEffects(long targetId, IReadOnlyCollection<long> deleted, IReadOnlyCollection<long> modified)
+    {
+        if (deleted.Count > 0)
+            throw ArgsInvalid("args.value", "the change would delete " + deleted.Count + " element(s) (ids " + string.Join(", ", deleted.OrderBy(id => id).Take(MaxListedInDetail)) + "); refused");
+        return modified.Where(id => id != targetId).Distinct().OrderBy(id => id).ToArray();
     }
 
     // deletedUids: the UniqueId of every element id Revit's Document.Delete returned (null when none could be read).
@@ -93,9 +130,12 @@ public static class CommandRulesModify
         return new DeleteCascade(dependents, deletedUids.Count(uid => uid is null));
     }
 
-    // A cascade must be fully named and must not reach a protected element (ProjectInformation, the receipt store).
+    // A cascade must be fully named, small enough to confirm (dry runs included) and must not reach a protected element
+    // (ProjectInformation, the receipt store).
     public static void CheckCascade(DeleteCascade cascade, IReadOnlyList<string> protectedUids)
     {
+        if (cascade.Dependents.Count > RevitModifyRules.MaxConfirmedDependents)
+            throw ArgsInvalid("args.element_uids", "the delete would also remove " + cascade.Dependents.Count + " elements, more than the " + RevitModifyRules.MaxConfirmedDependents + " confirm_dependents can hold; delete fewer elements at a time");
         if (cascade.Unidentified > 0)
             throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.element_uids", cascade.Unidentified + " of the elements Revit would delete cannot be named by UniqueId; refused");
         var reached = cascade.Dependents.Where(uid => protectedUids.Contains(uid, StringComparer.OrdinalIgnoreCase)).ToArray();
@@ -126,6 +166,15 @@ public static class CommandRulesModify
     {
         if (!new HashSet<long>(probe).SetEquals(actual))
             throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "the delete removed " + actual.Count + " element(s) where its probe removed " + probe.Count + "; rolled back");
+    }
+
+    // The kept delete, after commit, may have removed nothing outside the probe's set (pre/post id snapshot).
+    public static void CheckNoExtraDeletions(IReadOnlyCollection<long> probe, IReadOnlyCollection<long> removed)
+    {
+        var expected = new HashSet<long>(probe);
+        var extra = removed.Where(id => !expected.Contains(id)).Distinct().OrderBy(id => id).ToArray();
+        if (extra.Length > 0)
+            throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "the delete also removed " + extra.Length + " element(s) its probe did not (ids " + string.Join(", ", extra.Take(MaxListedInDetail)) + "); rolled back");
     }
 
     // Same stored value, within the readback tolerances for numbers.
@@ -178,7 +227,9 @@ public static class CommandReadbackModify
     // {"set_parameter": {dry_run, element_unique_id, parameter: {name, id, built_in, storage, spec, shared}, kind,
     // before, after, changed}}; before/after are values in the request shape ({kind, mm|m2|deg|text|integer|yes_no|uid})
     // or null when the parameter has no value.
-    public static string ParameterJson(bool dryRun, string elementUid, string kind, ObservedParameter before, ObservedParameter after, bool changed) => Wrapped("set_parameter", writer =>
+    // also_modified: other elements the change modified (at most MaxDependentsListed listed), also_modified_count and
+    // also_modified_listed.
+    public static string ParameterJson(bool dryRun, string elementUid, string kind, ObservedParameter before, ObservedParameter after, bool changed, IReadOnlyList<string> alsoModified) => Wrapped("set_parameter", writer =>
     {
         writer.WriteBoolean("dry_run", dryRun);
         writer.WriteString("element_unique_id", elementUid);
@@ -194,6 +245,10 @@ public static class CommandReadbackModify
         Value(writer, "before", kind, before);
         Value(writer, "after", kind, after);
         writer.WriteBoolean("changed", changed);
+        var listed = alsoModified.Count <= CommandRulesModify.MaxDependentsListed;
+        Strings(writer, "also_modified", alsoModified.Take(CommandRulesModify.MaxDependentsListed));
+        writer.WriteNumber("also_modified_count", alsoModified.Count);
+        writer.WriteBoolean("also_modified_listed", listed);
     });
 
     static void Value(Utf8JsonWriter writer, string name, string kind, ObservedParameter observed)
@@ -224,16 +279,30 @@ public static class CommandReadbackModify
         writer.WriteEndObject();
     }
 
-    // {"delete": {dry_run, targets, dependents, deleted_count, confirmed}}: confirmed is whether confirm_dependents
-    // named exactly the dependents.
+    // {"delete": {dry_run, targets, dependents, dependents_count, dependents_sha256, dependents_listed, deleted_count,
+    // confirmed}}: a dry run lists every dependent; a real run (whose reply is stored as the receipt) lists them only up
+    // to MaxDependentsListed, else dependents is null. confirmed: confirm_dependents named exactly the dependents.
     public static string DeleteJson(bool dryRun, IReadOnlyList<string> targets, IReadOnlyList<string> dependents, bool confirmed) => Wrapped("delete", writer =>
     {
         writer.WriteBoolean("dry_run", dryRun);
         Strings(writer, "targets", targets);
-        Strings(writer, "dependents", dependents);
+        var listed = DependentsListed(dryRun, dependents.Count);
+        if (listed) Strings(writer, "dependents", dependents); else writer.WriteNull("dependents");
+        writer.WriteNumber("dependents_count", dependents.Count);
+        writer.WriteString("dependents_sha256", DependentsSha256(dependents));
+        writer.WriteBoolean("dependents_listed", listed);
         writer.WriteNumber("deleted_count", targets.Count + dependents.Count);
         writer.WriteBoolean("confirmed", confirmed);
     });
+
+    public static bool DependentsListed(bool dryRun, int count) => dryRun || count <= CommandRulesModify.MaxDependentsListed;
+
+    // Lower-case hex SHA-256 of the lower-case UniqueIds, sorted ordinally, joined by '\n' (UTF-8).
+    public static string DependentsSha256(IEnumerable<string> dependents)
+    {
+        var text = string.Join("\n", dependents.Select(uid => uid.ToLowerInvariant()).OrderBy(uid => uid, StringComparer.Ordinal));
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+    }
 
     static void Strings(Utf8JsonWriter writer, string name, IEnumerable<string> values)
     {
@@ -254,5 +323,38 @@ public static class CommandReadbackModify
             writer.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+}
+
+// A modify reply and whether it is persisted as the receipt (real runs) or only returned (dry runs, whose transaction
+// group the executor rolls back).
+public sealed record ModifyReply(RevitCommandResponse Response, bool Persist);
+
+public static class CommandResponsesModify
+{
+    static RevitCommandReceipt Receipt(CommandRequest request) =>
+        new(request.Envelope.OperationId, request.Envelope.Command, request.Envelope.Document.UniqueId, request.RequestSha256, false);
+
+    // modified: nothing for a dry run; else the target when its value changed, then the other modified elements when
+    // there are at most MaxDependentsListed of them (the report counts them all).
+    public static ModifyReply SetParameter(CommandRequest request, bool dryRun, string elementUid, bool changed, IReadOnlyList<string> alsoModified, string readbackJson, IReadOnlyList<string> warnings)
+    {
+        var modified = new List<string>();
+        if (!dryRun)
+        {
+            if (changed) modified.Add(elementUid);
+            if (alsoModified.Count <= CommandRulesModify.MaxDependentsListed) modified.AddRange(alsoModified);
+        }
+        return new ModifyReply(RevitCommandResponse.Success(Receipt(request), Array.Empty<string>(), modified, Array.Empty<string>(), readbackJson, warnings), CommandRulesModify.StoresReceipt(dryRun));
+    }
+
+    // deleted: nothing for a dry run; else the targets, then the dependents when they are listed in the report.
+    public static ModifyReply Delete(CommandRequest request, bool dryRun, IReadOnlyList<string> targets, IReadOnlyList<string> dependents, IReadOnlyList<string> confirmed, IReadOnlyList<string> warnings)
+    {
+        var readback = CommandReadbackModify.DeleteJson(dryRun, targets, dependents, CommandRulesModify.Confirmed(dependents, confirmed));
+        var deleted = dryRun ? Array.Empty<string>()
+            : CommandReadbackModify.DependentsListed(false, dependents.Count) ? targets.Concat(dependents).ToArray()
+            : targets.ToArray();
+        return new ModifyReply(RevitCommandResponse.Success(Receipt(request), Array.Empty<string>(), Array.Empty<string>(), deleted, readback, warnings), CommandRulesModify.StoresReceipt(dryRun));
     }
 }

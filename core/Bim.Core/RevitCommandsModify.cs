@@ -54,6 +54,8 @@ public static class RevitModifyRules
     public const int MaxTextLength = 4096;
     // Revit areas beyond (30000 ft)^2 are meaningless; anything above 1e8 m2 is treated as a units mistake.
     public const double MaxAreaSquareMetres = 1e8;
+    // Angle parameters (rotations, slopes) are within one turn either way; more is treated as a units mistake.
+    public const double MaxAngleDegrees = 360;
 }
 
 public static partial class RevitCommandCatalogue
@@ -78,7 +80,7 @@ public static partial class RevitCommandCatalogue
         var value = Fill("""{"description":"Typed value; its kind must match the parameter's storage and data type","oneOf":[@0@,@1@,@2@,@3@,@4@,@5@,@6@]}""",
             Branch(RevitParameterValueKinds.Length, "mm", """{"type":"number","description":"Millimetres; may be negative; at most 9144000 either way (Revit limit)"}""", "A length parameter, in millimetres"),
             Branch(RevitParameterValueKinds.Area, "m2", """{"type":"number","description":"Square metres, 0 or more, at most 1e8"}""", "An area parameter, in square metres"),
-            Branch(RevitParameterValueKinds.Angle, "deg", """{"type":"number","description":"Degrees"}""", "An angle parameter, in degrees"),
+            Branch(RevitParameterValueKinds.Angle, "deg", """{"type":"number","description":"Degrees, from -360 to 360"}""", "An angle parameter, in degrees"),
             Branch(RevitParameterValueKinds.Text, "text", """{"type":"string","description":"Text, up to 4096 characters, no NUL; empty clears the text","maxLength":4096,"pattern":"^[^\\u0000]*$"}""", "A text parameter"),
             Branch(RevitParameterValueKinds.Integer, "integer", """{"type":"integer","description":"A 32-bit integer"}""", "An integer parameter (not an enumeration)"),
             Branch(RevitParameterValueKinds.YesNo, "yes_no", """{"type":"boolean","description":"Yes (true) or No (false)"}""", "A Yes/No parameter"),
@@ -123,7 +125,10 @@ public static partial class RevitCommandCatalogue
                     throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.value.m2", "finite square metres from 0 to 1e8 required");
                 return new AreaValueArg(Area.FromSquareMetres(area));
             case RevitParameterValueKinds.Angle:
-                return new AngleValueArg(RevitUnits.Degrees(Number(value.GetProperty("deg")), "args.value.deg"));
+                var degrees = Number(value.GetProperty("deg"));
+                var angle = RevitUnits.Degrees(degrees, "args.value.deg");
+                if (Math.Abs(degrees) > RevitModifyRules.MaxAngleDegrees) throw new RevitCommandException(RevitCommandCodes.AngleInvalid, "args.value.deg", "angle beyond 360 degrees either way");
+                return new AngleValueArg(angle);
             case RevitParameterValueKinds.Text:
                 return new TextValueArg(value.GetProperty("text").GetString()!);
             case RevitParameterValueKinds.Integer:
