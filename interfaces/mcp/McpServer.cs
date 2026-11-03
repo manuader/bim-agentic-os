@@ -16,7 +16,10 @@ namespace Bim.Mcp;
 //   status failed); here revision must be a JSON integer in Int32 range, otherwise the call is rejected with -32602.
 // - missing or wrongly typed arguments are rejected with -32602 instead of the CLI usage/null failures.
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
-// ADR0009: one revit_<command> tool per RevitCommandCatalogue.V1 entry is generated from the catalogue. Each builds the
+// ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
+// from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
+// a test copy (permission_level read or write-copies; a write to a real project needs write-real-project plus an exact
+// owner enablement) and annotations.readOnlyHint. Each builds the
 // command envelope from its arguments and runs RevitCommandService.Run, the same code as the CLI revit-command verb,
 // so its text equals that verb's stdout for the same envelope. Write commands pass the copies-only and link guards
 // first; the policy is the repository's .bim/native-runs plus the owner file .bim/revit-enabled-roots.txt, never a tool call.
@@ -34,7 +37,7 @@ public sealed class McpServer
     const int InternalError = -32603;
 
     sealed record ParameterSpec(string Name, string Type, string Description);
-    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null);
+    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null, PermissionLevel? Permission = null);
 
     static readonly ToolSpec[] CoreTools =
     [
@@ -66,7 +69,7 @@ public sealed class McpServer
         this.revitPolicy = revitPolicy ?? DefaultPolicy();
         this.revitTransport = revitTransport ?? RevitCommandService.PipeTransport;
         this.revitProbe = revitProbe ?? RevitFileSystemProbe.Real;
-        tools = [.. CoreTools, .. RevitCommandCatalogue.V1.Select(RevitTool)];
+        tools = [.. CoreTools, .. RevitCommandCatalogue.All.Select(RevitTool)];
     }
 
     static RevitCommandPolicy DefaultPolicy()
@@ -79,7 +82,17 @@ public sealed class McpServer
         spec.Description + " Forwards to the Revit add-in on the explicit process pipe; " + (spec.Writes ? "write: refused unless the document is under an enabled test root." : "read-only: allowed on any document."),
         [new ParameterSpec("pipe_name", "string", ""), new ParameterSpec("operation_id", "string", ""), new ParameterSpec("document", "object", ""), new ParameterSpec("args", "object", "")],
         arguments => RevitCall(spec, arguments),
-        RevitInputSchema(spec));
+        RevitInputSchema(spec),
+        spec.Writes ? PermissionLevel.WriteCopies : PermissionLevel.Read);
+
+    // Level names as written in OWNER.md and the P10-03 policy comments.
+    public static string PermissionLevelName(PermissionLevel level) => level switch
+    {
+        PermissionLevel.Read => "read",
+        PermissionLevel.WriteCopies => "write-copies",
+        PermissionLevel.WriteRealProject => "write-real-project",
+        _ => throw new ArgumentOutOfRangeException(nameof(level)),
+    };
 
     static string RevitInputSchema(RevitCommandSpec spec)
     {
@@ -241,13 +254,24 @@ public sealed class McpServer
 
     JsonObject ListTools() => new()
     {
-        ["tools"] = new JsonArray(tools.Select(tool => (JsonNode?)new JsonObject
+        ["tools"] = new JsonArray(tools.Select(tool => (JsonNode?)ListedTool(tool)).ToArray()),
+    };
+
+    static JsonObject ListedTool(ToolSpec tool)
+    {
+        var listed = new JsonObject
         {
             ["name"] = tool.Name,
             ["description"] = tool.Description,
             ["inputSchema"] = tool.InputSchemaJson is { } inputSchema ? JsonNode.Parse(inputSchema) : Schema(tool.Parameters),
-        }).ToArray()),
-    };
+        };
+        if (tool.Permission is { } level)
+        {
+            listed["permission_level"] = PermissionLevelName(level);
+            listed["annotations"] = new JsonObject { ["readOnlyHint"] = level == PermissionLevel.Read };
+        }
+        return listed;
+    }
 
     static JsonObject Schema(ParameterSpec[] parameters)
     {
