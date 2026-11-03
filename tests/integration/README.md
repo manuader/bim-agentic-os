@@ -39,3 +39,11 @@ Use the returned fixture-result.json for every argument:
 ```
 
 The wrapper creates options exclusively and never retries a dispatched request. Room A, real hosted door/two windows, dimension, plan/3D, room schedule and sheet are created, saved/closed/reopened and read back. A forced real mutation is rolled back; a400mm correction is then saved/closed/reopened and its persisted retry checked. The independent strict C# A/B criteria are unchanged. Target compilation and synthetic guards do not establish native acceptance; consult the current evidence artifact for actual execution results. Revit2025.2 is the only locally targeted version; Spanish installed family paths are explicit prerequisites.
+
+## View commands readback probe (P4-01, owner-run)
+
+`native-views-probe.ps1` creates one `view.create_section` (line (0,0)->(6000,0), depth 3000 mm, elevations -500..4000 mm) and one `view.create_3d` with a section box (0,0,0)..(8000,6000,3500) mm through the CLI `revit-command` verb on an enabled `BIM-Agentic-Test*.rvt` copy, sends each request once, and writes requests, responses and a requested-vs-observed table to a new `views-probe-<stamp>` folder. It is not run by CI; a compiled executor and unit-tested contracts are not native evidence.
+
+```powershell
+./tests/integration/native-views-probe.ps1 -DocumentPath <result.documentPath> -DocumentIdentity <result.documentUniqueId> -PipeName <result.pipeName> -Dotnet <absolute-dotnet.exe> -CliDll <absolute-Bim.Cli.dll> -EvidenceDirectory <absolute-run-directory>
+```

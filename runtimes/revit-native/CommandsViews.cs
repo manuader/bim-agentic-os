@@ -73,10 +73,18 @@ public static class CommandRulesViews
         if (templateViewType != viewType) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.view_template", "the view template is for " + templateViewType + " views, not " + viewType);
     }
 
-    // Names of existing views of the same ViewType; Revit refuses a duplicate, so it is refused before any write.
+    // Names of existing views of the same ViewType and of every view template. Revit refuses a duplicate; the check is
+    // case-insensitive (stricter than any Revit rule) so a collision fails closed here instead of as a Revit throw.
     public static void CheckNameFree(string? name, IEnumerable<string> existing)
     {
-        if (name is not null && existing.Contains(name, StringComparer.Ordinal)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a view named '" + name + "' already exists for this kind of view");
+        if (name is not null && existing.Contains(name, StringComparer.OrdinalIgnoreCase)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a view or view template named '" + name + "' (ignoring case) already exists");
+    }
+
+    // A view family type with a default template (ViewFamilyType.DefaultTemplateId) applies it to new views, and the
+    // template may control the scale, so an explicit scale is refused like scale with view_template.
+    public static void CheckScaleAllowed(bool hasDefaultTemplate, int? scale)
+    {
+        if (hasDefaultTemplate && scale is not null) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.scale", "this view family type applies a default view template that may control the scale; omit scale or pick a type without a default template");
     }
 
     // Unit vector along the section line and the line length.
@@ -268,7 +276,8 @@ public static class CommandReadbackViews
         writer.WriteStartObject("three_d");
         writer.WriteBoolean("perspective", threeD.IsPerspective);
         writer.WriteBoolean("section_box_active", threeD.SectionBoxActive);
-        if (threeD.BoxMin is { } min && threeD.BoxMax is { } max)
+        // GetSectionBox returns the model extents even when the box is off: report a box only when it is active.
+        if (threeD.SectionBoxActive && threeD.BoxMin is { } min && threeD.BoxMax is { } max)
         {
             writer.WriteStartObject("section_box");
             Vector(writer, "min", min);

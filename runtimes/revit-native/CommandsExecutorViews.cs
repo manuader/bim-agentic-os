@@ -5,11 +5,12 @@ namespace Bim.Revit;
 // P4-01 view commands Revit executor: query.view_family_types, query.view_templates, view.create_plan,
 // view.create_section and view.create_3d. Same admission, receipts, transaction group, failure handling and
 // readback-before-receipt as catalogue v1 (CommandsExecutor.cs); every decision that needs no Revit object is in
-// CommandsViews.cs (unit-tested). Evidence level: compiled against the Revit 2025 reference assemblies in CI; nothing
-// here has run in Revit.
+// CommandsViews.cs (unit-tested). Evidence level: compiled (native-build job of GitHub Actions run 41557700949, head
+// e2304c8, against the Revit 2025 reference assemblies with --warnaserror); nothing here has run in Revit.
+// Owner probe: tests/integration/native-views-probe.ps1 dumps requested vs observed values on a fixture copy.
 //
 // Revit 2025 API used (https://www.revitapidocs.com/2025/):
-//   ViewFamilyType.ViewFamily, Document.GetDefaultElementTypeId(ElementTypeGroup.ViewTypeFloorPlan / ViewTypeCeilingPlan /
+//   ViewFamilyType.ViewFamily / DefaultTemplateId, Document.GetDefaultElementTypeId(ElementTypeGroup.ViewTypeFloorPlan / ViewTypeCeilingPlan /
 //     ViewTypeSection / ViewType3D), View.IsTemplate / ViewType / Name / Scale / ViewTemplateId / IsValidViewTemplate
 //   ViewPlan.Create(Document, ElementId viewFamilyTypeId, ElementId levelId), ViewPlan.GenLevel
 //   ViewSection.CreateSection(Document, ElementId viewFamilyTypeId, BoundingBoxXYZ sectionBox), View.RightDirection /
@@ -73,7 +74,8 @@ internal static partial class CommandExecutor
             template = Resolve(ViewTemplates(d), candidate => new CommandCandidate(candidate.UniqueId, candidate.Name), reference, "args.view_template", "view template");
             CommandRulesViews.CheckTemplate(template.ViewType.ToString(), viewType);
         }
-        CommandRulesViews.CheckNameFree(options.Name, AllViews(d).Where(view => !view.IsTemplate && view.ViewType.ToString() == viewType).Select(view => view.Name));
+        CommandRulesViews.CheckScaleAllowed(type.DefaultTemplateId != ElementId.InvalidElementId && d.GetElement(type.DefaultTemplateId) is View, options.Scale);
+        CommandRulesViews.CheckNameFree(options.Name, AllViews(d).Where(view => view.IsTemplate || view.ViewType.ToString() == viewType).Select(view => view.Name));
         return new ViewSetup(type, template, viewType);
     }
 
@@ -158,9 +160,11 @@ internal static partial class CommandExecutor
         Observed3D Observe(View3D created)
         {
             var orientation = created.GetOrientation();
-            var box = created.GetSectionBox();
+            // GetSectionBox returns the model extents even when the box is off: read a box only when it is active.
+            var active = created.IsSectionBoxActive;
+            var box = active ? created.GetSectionBox() : null;
             var transform = box?.Transform;
-            return new Observed3D(created.IsPerspective, created.IsSectionBoxActive,
+            return new Observed3D(created.IsPerspective, active,
                 transform is null ? null : Direction(transform.BasisX), transform is null ? null : Direction(transform.BasisY), transform is null ? null : Direction(transform.BasisZ),
                 box is null || transform is null ? null : Position(transform.OfPoint(box.Min)), box is null || transform is null ? null : Position(transform.OfPoint(box.Max)),
                 Direction(orientation.ForwardDirection), Direction(orientation.UpDirection));
