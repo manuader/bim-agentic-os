@@ -24,7 +24,8 @@ namespace Bim.Revit;
 //   Document.Create.NewRoom(Level, UV): same calls as NativeRoomFixture.cs, which ran in Revit 2025.
 //   FailureHandlingOptions.SetFailuresPreprocessor / SetClearAfterRollback, FailuresAccessor.GetFailureMessages /
 //   DeleteWarning (FailuresAccessor dea68b06-a061-fc05-d814-db741f2e7f14).
-// Partial: catalogue v2 (roofs, stairs, curtain walls, floor openings) is in CommandsExecutorV2.cs.
+// Partial: catalogue v2 (roofs, stairs, curtain walls, floor openings) is in CommandsExecutorV2.cs; view commands
+// (P4-01: plan, section, 3D) are in CommandsExecutorViews.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -59,6 +60,9 @@ internal static partial class CommandExecutor
             RoofFootprintCreateArgs roof => RoofPlan(d, roof),
             CurtainWallCreateArgs curtain => CurtainWallPlan(d, curtain),
             FloorOpeningCreateArgs opening => FloorOpeningPlan(d, opening),
+            ViewPlanCreateArgs view => ViewPlanWrite(d, view),
+            ViewSectionCreateArgs view => ViewSectionWrite(d, view),
+            View3DCreateArgs view => View3DWrite(d, view),
             // A stair is created through a StairsEditScope, which cannot start inside the plan's write transaction.
             StairCreateArgs => null,
             _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),

@@ -36,7 +36,7 @@ internal static partial class CommandExecutor
     {
         EmptyQueryArgs when envelope.Command == "query.roof_types" =>
             CommandReadbackV2.RoofTypesJson(RoofTypes(d).Select(type => new RoofTypeRow(type.Name, type.UniqueId, type.GetCompoundStructure() is { } layers ? Mm(layers.GetWidth()) : null))),
-        _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
+        _ => QueryViews(d, envelope),
     };
 
     // Closed outline (implicit closing edge) as lines in the plane z (internal units).

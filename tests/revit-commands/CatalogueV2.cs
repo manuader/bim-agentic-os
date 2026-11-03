@@ -81,8 +81,8 @@ static class CatalogueV2Checks
         var v2 = RevitCommandCatalogue.V2.Select(spec => spec.Name).ToArray();
         Check(v2.SequenceEqual(new[] { "query.roof_types", "roof.create_footprint", "stair.create", "curtain_wall.create", "floor.create_opening" }), "catalogue v2 lists query.roof_types and the four new creators in order", string.Join(",", v2));
         Check(RevitCommandCatalogue.V1.Select(spec => spec.Name).SequenceEqual(new[] { "query.levels", "query.wall_types", "query.floor_types", "query.family_symbols", "wall.create", "opening.place", "floor.create", "room.create" }), "catalogue v1 is unchanged by v2");
-        Check(RevitCommandCatalogue.All.SequenceEqual(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2)), "All is v1 then v2");
-        Check(RevitCommandCatalogue.All.Select(spec => spec.Name).Distinct().Count() == 13 && RevitCommandCatalogue.All.Select(spec => spec.ToolName).Distinct().Count() == 13, "command and tool names stay distinct across v1 and v2");
+        Check(RevitCommandCatalogue.All.Take(13).SequenceEqual(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2)), "All starts with v1 then v2 (later catalogue parts follow)");
+        Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Select(spec => spec.Name).Distinct().Count() == 13 && RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Select(spec => spec.ToolName).Distinct().Count() == 13, "command and tool names stay distinct across v1 and v2");
         Check(RevitCommandCatalogue.V2.All(spec => System.Text.RegularExpressions.Regex.IsMatch(spec.ToolName, @"\Arevit_[a-z_]+\z")), "v2 tool names are revit_<command with . replaced by _>");
         Check(RevitCommandCatalogue.V2.Count(spec => spec.Writes) == 4 && RevitCommandCatalogue.Find("query.roof_types") is { Writes: false }, "v2 query is read-only and the four creators write");
         foreach (var name in v2) Check(ReferenceEquals(RevitCommandCatalogue.Find(name), RevitCommandCatalogue.V2.Single(spec => spec.Name == name)), "Find resolves v2 command " + name);
