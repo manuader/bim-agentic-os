@@ -391,9 +391,11 @@ internal static class DraftTests
             C(ThrowsArgument(() => CadToBimIr.FromDxf(Drawing("x.dxf", room), options with { MinThicknessMillimetres = 0 })), "review zero MinThickness refused");
             C(ThrowsArgument(() => CadToBimIr.FromDxf(Drawing("x.dxf", room), options with { MinOverlapMillimetres = 10 })), "review MinOverlap not above JoinTolerance refused");
 
-            var dup = CadToBimIr.FromDxf(Drawing("dup.dxf", Lines((0, 0, 3000, 0), (0, 0.005, 3000, 0.005), (0, 200, 3000, 200))), options with { MinThicknessMillimetres = 0.001 });
-            C(dup.Walls.Count == 1 && Near(dup.Walls[0].ThicknessMillimetres, 200) && dup.Walls.All(w => w.ThicknessMillimetres > options.JoinToleranceMillimetres) && Core.Compiler.Validate(dup.ToProject()).Length == 0,
-                "review duplicated face line never gives a zero-thickness wall", string.Join(" | ", dup.Walls.Select(Wall)));
+            var fine = options with { MinThicknessMillimetres = 1, JoinToleranceMillimetres = 0.5 };
+            var dup = CadToBimIr.FromDxf(Drawing("dup.dxf", Lines((0, 0, 3000, 0), (0, 0, 3000, 0), (0, 0.3, 3000, 0.3), (0, 200, 3000, 200))), fine);
+            C(dup.Walls.Count == 1 && Near(dup.Walls[0].ThicknessMillimetres, 200) && dup.Walls.All(w => w.ThicknessMillimetres > fine.JoinToleranceMillimetres)
+                && dup.ToProject().Elements.Where(e => e.Kind == "wall").All(e => e.GeometryMetres[5] > 0) && Core.Compiler.Validate(dup.ToProject()).Length == 0,
+                "review coincident and near-coincident face lines never give a zero-thickness wall", string.Join(" | ", dup.Walls.Select(Wall)));
 
             var tee = CadToBimIr.FromDxf(Drawing("tee.dxf", Lines((0, 0, 6000, 0), (200, 200, 2900, 200), (3000, 200, 5800, 200), (2900, 200, 2900, 3000), (3000, 200, 3000, 3000))), options);
             C(tee.Walls.Count == 2 && NearP(tee.Walls[0].Start, 200, 100) && NearP(tee.Walls[0].End, 5800, 100) && tee.Walls[0].Notes.Contains("merged-shared-face")

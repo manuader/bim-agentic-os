@@ -8,28 +8,36 @@ namespace Bim.Cad;
 // Nothing is persisted and the BIM-IR schema is unchanged; the result is a proposal with an uncertainty report.
 //
 // 1. Candidates. Straight segments (LINE, straight LWPOLYLINE segments, PDF subpaths) in millimetres, after exploding
-//    INSERTs, filtered like WallPairDetector (WallLayers, paper space, invisible, hidden layers). Geometry of door and
-//    window blocks/forms is set aside for openings; geometry of other blocks/forms is reported (unmatched-block) and
-//    left out unless WallsFromUnmatchedBlocks.
-// 2. Pairs. WallPairDetector proposes pairs (confidence descending, then drawing order). A pair is accepted unless the
-//    stretch it uses on one of its two lines overlaps (by more than JoinTolerance) a stretch already used by an accepted
-//    pair; a refused pair is reported against the accepted one as ambiguous-thickness (other thickness) or
-//    ambiguous-pairing (same thickness, other partner). Each segment keeps only its accepted stretches, so a line is
-//    scanned against its own few stretches, not against every pair.
-// 3. Openings. A door/window is hosted on the accepted wall whose band (axis +- thickness/2 + JoinTolerance) holds most
-//    of its points (line ends, arc ends, DXF insertion point); a tie with a non-collinear wall is ambiguous-host. The
-//    host is merged with every collinear piece of the same thickness touching the opening's stretch, so wall lines
-//    broken at the opening become one wall (merged-across-opening). Collinear touching pieces merge too
-//    (merged-split-lines).
+//    INSERTs, filtered like WallPairDetector (WallLayers, paper space, invisible, hidden layers); points that are not
+//    finite after scaling are dropped. An entity drawn through INSERTs (DXF insert path) or Form XObjects (PDF Do path)
+//    belongs to the outermost insert/form on that path whose block name / form object is a door or window; geometry of
+//    other blocks/forms is reported once per innermost insert/form (unmatched-block) and left out unless
+//    WallsFromUnmatchedBlocks.
+// 2. Pairs. WallPairDetector proposes pairs (confidence descending, then drawing order). Pairs no thicker than
+//    JoinTolerance are dropped (duplicated lines). A pair is accepted unless the stretch it uses on one of its two
+//    lines overlaps (by more than JoinTolerance) a stretch already used by an accepted pair; a refused pair is reported
+//    against the accepted one as ambiguous-thickness (other thickness) or ambiguous-pairing (same thickness, other
+//    partner). Each segment keeps only its accepted stretches, so a line is scanned against its own few stretches.
+// 3. Merges. Accepted collinear pieces of the same thickness on one shared face line whose stretches are at most
+//    MaxThickness + JoinTolerance apart are one wall (merged-shared-face: a through wall whose other face is broken by
+//    a tee). A door/window is hosted on the accepted wall whose band (axis +- thickness/2 + JoinTolerance) holds most
+//    of its points (line ends, arc ends, top-level DXF insertion point); a tie with a non-collinear wall is
+//    ambiguous-host. The host is merged with every collinear piece of the same thickness touching the opening's
+//    stretch (merged-across-opening). Collinear touching pieces merge too (merged-split-lines).
 // 4. Joins. Each wall end within (t1+t2)/2 + JoinTolerance of a non-parallel wall is snapped to the axis intersection
 //    (corner or tee); an end within MaxGap beyond that reach (or of a collinear wall) is a gap; otherwise unclosed.
 //    Each end that is not joined multiplies the wall confidence by 0.85; an ambiguous wall's confidence is halved.
-// 5. Report. Lines in no accepted pair are unpaired-line unless they are caps (no longer than MaxThickness and centred
+// 5. Openings must fit the clear span of the host (axis minus half the thickness of the wall joined at each end, as in
+//    IntentCompiler): a stretch past it is clamped (opening-beyond-clear-span, confidence x0.6). Openings overlapping
+//    on one host are found by sorting per host and sweeping (opening-overlap, confidence x0.5 for both).
+// 6. Report. Lines in no accepted pair are unpaired-line unless they are caps (no longer than MaxThickness and centred
 //    on a wall end, such as door jambs).
 // Neighbour queries go through a uniform grid with cell = MaxThickness + JoinTolerance + MaxGap, so each query looks at
-// a 5x5 block of cells; every grid insertion and visited entry counts against MaxWork, which bounds dense inputs.
-// Proposals are numbered in drawing order (cad:wall:n by first face line, cad:opening:n by INSERT/Do order); element ids
-// are RoomCompiler.Id(ProjectId, key) and the level key is cad:level.
+// a 5x5 block of cells. Every exploded entity, flattened PDF point, registered segment, grid insertion and visited
+// entry counts against MaxWork, and MaxSegments is enforced while segments are registered, so dense inputs fail fast.
+// Keys are positional: cad:wall:n numbers walls by their first face line in drawing order and cad:opening:n numbers
+// openings by first appearance of their INSERT/Do; they are not stable across edits of the drawing. Element ids are
+// RoomCompiler.Id(ProjectId, key) and the level key is cad:level. When two inserts share a DXF handle, the first wins.
 public static class CadToBimIr
 {
     private const double EndPenalty = 0.85;
@@ -41,55 +49,78 @@ public static class CadToBimIr
         var scale = options.MillimetresPerUnit ?? (drawing.MetresPerUnit is { } metres ? metres * 1000 : throw new CadDraftException("uncalibrated", "the DXF has no length units; set MillimetresPerUnit"));
         if (!(scale > 0) || !double.IsFinite(scale)) throw new CadDraftException("uncalibrated", "the DXF length scale is not a positive finite number");
         var work = new Budget(options.MaxWork);
-        var input = new Input(drawing.SourceFile, "dxf", scale);
+        var input = new Input(drawing.SourceFile, "dxf", scale, options.MaxSegments, work);
         HashSet<string>? hidden = options.SkipHiddenLayers
             ? new HashSet<string>(drawing.Layers.Where(l => l.Frozen || l.Off).Select(l => l.Name), StringComparer.OrdinalIgnoreCase)
             : null;
         bool Visible(DxfProvenance p) =>
             !(p.PaperSpace && !options.IncludePaperSpace) && !(p.Invisible && !options.IncludeInvisible) && !(hidden is not null && hidden.Contains(p.Layer));
+        static string Key(DxfProvenance p) => p.Handle ?? "@" + I(p.Line);
+        string? Kind(string block) => Matches(block, options.DoorBlocks) ? "door" : Matches(block, options.WindowBlocks) ? "window" : null;
 
-        // Top-level INSERTs: openings, unmatched blocks or skipped (not visible).
-        var roles = new Dictionary<string, int>(StringComparer.Ordinal);
-        const int Skipped = -1, Unmatched = -2;
+        // Every INSERT by the key the exploder writes into insert paths: top-level ones and those inside blocks.
+        var inserts = new Dictionary<string, DxfInsert>(StringComparer.Ordinal);
+        var skipped = new HashSet<string>(StringComparer.Ordinal);
+        var openingOf = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var entity in drawing.Entities)
         {
             if (entity is not DxfInsert insert) continue;
             work.Spend();
-            var key = insert.Provenance.Handle ?? "@" + I(insert.Provenance.Line);
-            if (roles.ContainsKey(key)) continue;
-            if (!Visible(insert.Provenance)) { roles[key] = Skipped; continue; }
-            var source = DxfSource(insert.Provenance, null);
-            var kind = Matches(insert.BlockName, options.DoorBlocks) ? "door" : Matches(insert.BlockName, options.WindowBlocks) ? "window" : null;
-            if (kind is null)
-            {
-                roles[key] = Unmatched;
-                input.Report.Add(new Pending("unmatched-block", "block " + insert.BlockName + " is not a door or window block", P(insert.Insertion * scale), null, new[] { source }));
-                continue;
-            }
-            if (input.Openings.Count >= options.MaxOpenings) throw Limit("more than " + I(options.MaxOpenings) + " openings");
-            roles[key] = input.Openings.Count;
-            var opening = new OpeningInput(kind, insert.BlockName, source);
-            opening.Points.Add(insert.Insertion * scale);
-            input.Openings.Add(opening);
+            var key = Key(insert.Provenance);
+            if (!inserts.TryAdd(key, insert)) continue;
+            if (!Visible(insert.Provenance)) { skipped.Add(key); continue; }
+            if (Kind(insert.BlockName) is not { } kind) continue;
+            // Top-level openings are registered in drawing order (even when their block has no geometry) with their
+            // insertion point as an extra hosting sample.
+            openingOf[key] = AddOpening(input, options, kind, insert.BlockName, DxfSource(insert.Provenance, null));
+            if (Finite(insert.Insertion * scale)) input.Openings[openingOf[key]].Points.Add(insert.Insertion * scale);
         }
+        foreach (var block in drawing.Blocks)
+            foreach (var entity in block.Entities)
+            {
+                work.Spend();
+                if (entity is DxfInsert insert) inserts.TryAdd(Key(insert.Provenance), insert);
+            }
 
         DxfExplodedDrawing exploded;
         try { exploded = drawing.Explode(); }
         catch (DxfFormatException error) when (error.Code == "explode-limit") { throw Limit(error.Message); }
         var layers = options.WallLayers is null ? null : new HashSet<string>(options.WallLayers, StringComparer.OrdinalIgnoreCase);
+        var reported = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entity in exploded.Entities)
         {
             work.Spend();
             var provenance = entity.Provenance;
-            if (provenance.InsertPath.Count > 0 && roles.TryGetValue(provenance.InsertPath[0], out var role))
+            var path = provenance.InsertPath;
+            if (path.Count > 0)
             {
-                if (role == Skipped) continue;
-                if (role >= 0)
+                if (skipped.Contains(path[0])) continue;
+                var opening = -1;
+                for (var i = 0; i < path.Count && opening < 0; i++)
                 {
-                    AddPrimitives(input, input.Openings[role], entity, scale, options);
+                    work.Spend();
+                    if (!inserts.TryGetValue(path[i], out var insert) || Kind(insert.BlockName) is not { } kind) continue;
+                    var key = string.Join(">", path.Take(i + 1));
+                    if (!openingOf.TryGetValue(key, out opening))
+                    {
+                        opening = AddOpening(input, options, kind, insert.BlockName, DxfSource(insert.Provenance with { InsertPath = path.Take(i).ToArray() }, null));
+                        openingOf[key] = opening;
+                    }
+                }
+                if (opening >= 0)
+                {
+                    AddPrimitives(input, input.Openings[opening], entity, scale, options);
                     continue;
                 }
-                if (role == Unmatched && !options.WallsFromUnmatchedBlocks) continue;
+                var full = string.Join(">", path);
+                if (reported.Add(full))
+                {
+                    var name = inserts.TryGetValue(path[^1], out var inner) ? inner.BlockName : "?";
+                    var source = inner is null ? DxfSource(provenance, null) : DxfSource(inner.Provenance with { InsertPath = path.Take(path.Count - 1).ToArray() }, null);
+                    var at = path.Count == 1 && inner is not null ? Pf(inner.Insertion * scale) : null;
+                    input.Report.Add(new Pending("unmatched-block", "block " + name + " is not a door or window block", at, null, new[] { source }));
+                }
+                if (!options.WallsFromUnmatchedBlocks) continue;
             }
             if (!Visible(provenance) || (layers is not null && !layers.Contains(provenance.Layer))) continue;
             input.AddCandidate(entity, scale, 0, null);
@@ -102,54 +133,77 @@ public static class CadToBimIr
         ArgumentNullException.ThrowIfNull(document);
         Validate(options);
         if (calibration is null) throw new CadDraftException("uncalibrated", "a PDF page needs a calibration");
+        if (!(calibration.MillimetresPerUnit > 0) || !double.IsFinite(calibration.MillimetresPerUnit) || !calibration.Transform.IsFinite)
+            throw new CadDraftException("uncalibrated", "the PDF calibration scale or transform is not finite and positive");
         var page = document.Pages.FirstOrDefault(p => p.Number == pageNumber) ?? throw new CadDraftException("page-missing", "the PDF has no page " + I(pageNumber));
         var work = new Budget(options.MaxWork);
-        var input = new Input(document.SourceFile, "pdf", calibration.MillimetresPerUnit);
+        var input = new Input(document.SourceFile, "pdf", calibration.MillimetresPerUnit, options.MaxSegments, work);
         var layers = options.WallLayers is null ? null : new HashSet<string>(options.WallLayers, StringComparer.OrdinalIgnoreCase);
-        var groups = new Dictionary<string, int>(StringComparer.Ordinal);
-        const int Unmatched = -2;
+        var openingOf = new Dictionary<string, int>(StringComparer.Ordinal);
+        var reported = new HashSet<string>(StringComparer.Ordinal);
+        CadDraftSource DoSource(IReadOnlyList<string> path, int step)
+        {
+            var (caller, op) = Invocation(path[step]);
+            return new CadDraftSource(document.SourceFile, "pdf", "p" + I(page.Number) + ":o" + I(caller) + ":i" + I(op), "PDF-P" + I(page.Number), "PDF-DO", null, page.Number, caller, op, null, 0, path.Take(step).ToArray());
+        }
         foreach (var element in page.Elements)
         {
             work.Spend();
             var provenance = element.Provenance;
             var path = provenance.XObjectPath;
-            int role = int.MinValue;
+            var opening = -1;
+            var unmatched = false;
             if (path.Count > 0)
             {
-                if (!groups.TryGetValue(path[0], out role))
+                // The form invoked by step k is the content stream of step k + 1, or the element's own stream.
+                for (var k = 0; k < path.Count && opening < 0; k++)
                 {
-                    var (caller, op) = Invocation(path[0]);
-                    var form = path.Count > 1 ? Invocation(path[1]).Object : provenance.ObjectNumber;
-                    var name = "form:o" + I(form);
-                    var source = new CadDraftSource(document.SourceFile, "pdf", "p" + I(page.Number) + ":o" + I(caller) + ":i" + I(op), "PDF-P" + I(page.Number), "PDF-DO", null, page.Number, caller, op, null, 0, Array.Empty<string>());
+                    work.Spend();
+                    var form = k + 1 < path.Count ? Invocation(path[k + 1]).Object : provenance.ObjectNumber;
                     var kind = options.PdfDoorForms.Contains(form) ? "door" : options.PdfWindowForms.Contains(form) ? "window" : null;
-                    if (kind is null)
+                    if (kind is null) continue;
+                    var key = string.Join(">", path.Take(k + 1));
+                    if (!openingOf.TryGetValue(key, out opening))
                     {
-                        role = Unmatched;
-                        input.Report.Add(new Pending("unmatched-block", "form " + name + " is not a listed door or window form", null, null, new[] { source }));
+                        opening = AddOpening(input, options, kind, "form:o" + I(form), DoSource(path, k));
+                        openingOf[key] = opening;
                     }
-                    else
-                    {
-                        if (input.Openings.Count >= options.MaxOpenings) throw Limit("more than " + I(options.MaxOpenings) + " openings");
-                        role = input.Openings.Count;
-                        input.Openings.Add(new OpeningInput(kind, name, source));
-                    }
-                    groups[path[0]] = role;
+                }
+                if (opening < 0)
+                {
+                    unmatched = true;
+                    if (reported.Add(string.Join(">", path)))
+                        input.Report.Add(new Pending("unmatched-block", "form form:o" + I(provenance.ObjectNumber) + " is not a listed door or window form", null, null, new[] { DoSource(path, path.Count - 1) }));
                 }
             }
-            if (element is not PdfPath) continue;
+            if (element is not PdfPath painted) continue;
+            if (unmatched && !options.WallsFromUnmatchedBlocks) continue;
+            // Charge the flattened points before flattening.
+            long points = 0;
+            foreach (var subpath in painted.Subpaths)
+            {
+                points++;
+                foreach (var segment in subpath.Segments) points += segment.Kind == PdfSegmentKind.Cubic ? options.CurveSegments : 1;
+            }
+            work.Spend(points);
             var converted = PdfToDxf.Convert(page with { Elements = new[] { element } }, calibration, options.CurveSegments);
             for (var part = 0; part < converted.Count; part++)
             {
                 work.Spend();
                 var entity = converted[part];
-                if (role >= 0) { AddPrimitives(input, input.Openings[role], entity, 1, options); continue; }
-                if (role == Unmatched && !options.WallsFromUnmatchedBlocks) continue;
+                if (opening >= 0) { AddPrimitives(input, input.Openings[opening], entity, 1, options); continue; }
                 if (layers is not null && !layers.Contains(entity.Provenance.Layer)) continue;
                 input.AddCandidate(entity, 1, part, provenance);
             }
         }
         return Draft(input, options, work);
+    }
+
+    private static int AddOpening(Input input, CadToBimIrOptions options, string kind, string blockName, CadDraftSource source)
+    {
+        if (input.Openings.Count >= options.MaxOpenings) throw Limit("more than " + I(options.MaxOpenings) + " openings");
+        input.Openings.Add(new OpeningInput(kind, blockName, source));
+        return input.Openings.Count - 1;
     }
 
     // ---------------- pipeline ----------------
@@ -174,6 +228,7 @@ public static class CadToBimIr
         foreach (var pair in pairs)
         {
             work.Spend();
+            if (!(pair.Thickness > tol)) continue;
             var a = input.Segment(pair.A);
             var b = input.Segment(pair.B);
             var ia = a.Interval(pair.CenterlineStart, pair.CenterlineEnd);
@@ -203,6 +258,26 @@ public static class CadToBimIr
         var sets = new UnionFind(raw.Count);
         var mergedByOpening = new bool[raw.Count];
         var mergedBySplit = new bool[raw.Count];
+        var mergedSharedFace = new bool[raw.Count];
+
+        // Pieces of a through wall whose other face is broken at a tee: same face line, same thickness, stretches at
+        // most MaxThickness + JoinTolerance apart. Each face line only compares its own accepted stretches.
+        var faceReach = options.MaxThicknessMillimetres + tol;
+        foreach (var segment in input.Segments)
+        {
+            if (segment.Accepted.Count < 2) continue;
+            var accepted = segment.Accepted.OrderBy(x => x.Low).ToList();
+            for (var i = 1; i < accepted.Count; i++)
+            {
+                work.Spend();
+                var previous = accepted[i - 1];
+                var current = accepted[i];
+                if (current.Low - previous.High > faceReach) continue;
+                if (Math.Abs(previous.Wall.Thickness - current.Wall.Thickness) > tol) continue;
+                if (!Collinear(previous.Wall, current.Wall, tol, options.AngleToleranceDegrees, true)) continue;
+                if (sets.Union(previous.Wall.Index, current.Wall.Index)) { mergedSharedFace[previous.Wall.Index] = true; mergedSharedFace[current.Wall.Index] = true; }
+            }
+        }
 
         // 3. Host openings on raw walls and merge across them.
         var near = new List<int>();
@@ -285,6 +360,7 @@ public static class CadToBimIr
             finalOf[wall.Index] = final.Index;
             if (mergedByOpening[wall.Index]) final.MergedByOpening = true;
             if (mergedBySplit[wall.Index]) final.MergedBySplit = true;
+            if (mergedSharedFace[wall.Index]) final.MergedSharedFace = true;
         }
         foreach (var final in finals) final.Close(work);
 
@@ -300,7 +376,7 @@ public static class CadToBimIr
                 var end = side == 0 ? final.Start : final.End;
                 near.Clear();
                 finalGrid.QueryAll(new[] { end }, near);
-                double joinDistance = double.PositiveInfinity, gapDistance = double.PositiveInfinity;
+                double joinDistance = double.PositiveInfinity, gapDistance = double.PositiveInfinity, partner = 0;
                 double? snap = null;
                 var joined = false;
                 foreach (var index in near)
@@ -312,7 +388,7 @@ public static class CadToBimIr
                     if (Parallel(final.Direction, other.Direction, options.AngleToleranceDegrees))
                     {
                         if (Math.Abs(Cross(final.Direction, other.Start - final.Start)) > tol || Math.Abs(Cross(final.Direction, other.End - final.Start)) > tol) continue;
-                        if (distance <= tol) { if (distance < joinDistance) { joinDistance = distance; joined = true; snap = null; } }
+                        if (distance <= tol) { if (distance < joinDistance) { joinDistance = distance; joined = true; snap = null; partner = 0; } }
                         else if (distance <= options.MaxGapMillimetres && distance < gapDistance) gapDistance = distance;
                         continue;
                     }
@@ -322,15 +398,15 @@ public static class CadToBimIr
                         var along = Cross(other.Start - end, other.Direction) / Cross(final.Direction, other.Direction);
                         if (double.IsFinite(along) && Math.Abs(along) <= reach)
                         {
-                            if (distance < joinDistance) { joinDistance = distance; joined = true; snap = Dot(end + final.Direction * along - final.Start, final.Direction); }
+                            if (distance < joinDistance) { joinDistance = distance; joined = true; partner = other.Thickness; snap = Dot(end + final.Direction * along - final.Start, final.Direction); }
                             continue;
                         }
                     }
                     if (distance <= reach + options.MaxGapMillimetres && distance < gapDistance) gapDistance = distance;
                 }
-                if (joined) { ends[final.Index, side] = new EndState("joined", 0); snaps[final.Index, side] = snap; }
-                else if (double.IsFinite(gapDistance)) ends[final.Index, side] = new EndState("gap", gapDistance);
-                else ends[final.Index, side] = new EndState("unclosed", 0);
+                if (joined) { ends[final.Index, side] = new EndState("joined", 0, partner); snaps[final.Index, side] = snap; }
+                else if (double.IsFinite(gapDistance)) ends[final.Index, side] = new EndState("gap", gapDistance, 0);
+                else ends[final.Index, side] = new EndState("unclosed", 0, 0);
             }
         }
         foreach (var final in finals)
@@ -352,6 +428,7 @@ public static class CadToBimIr
             var notes = new List<string>();
             if (final.MergedByOpening) notes.Add("merged-across-opening");
             if (final.MergedBySplit) notes.Add("merged-split-lines");
+            if (final.MergedSharedFace) notes.Add("merged-shared-face");
             var alternatives = final.Members.SelectMany(m => m.Alternatives).ToList();
             if (alternatives.Any(a => a.Code == "ambiguous-thickness")) notes.Add("ambiguous-thickness");
             if (alternatives.Any(a => a.Code == "ambiguous-pairing")) notes.Add("ambiguous-pairing");
@@ -378,34 +455,51 @@ public static class CadToBimIr
         }
 
         var openings = new List<CadOpeningProposal>(hosted.Count);
+        var placed = new List<(int Host, double Low, double High, int Opening)>(hosted.Count);
         foreach (var (opening, host, ambiguous) in hosted)
         {
             work.Spend();
             var final = finals[finalOf[host]];
             var wall = walls[final.Index];
             var (s0, s1) = Extent(opening.Primitives, final.Start, final.Direction, work);
+            if (!double.IsFinite(s0) || !double.IsFinite(s1))
+            {
+                input.Report.Add(new Pending("unhosted-opening", opening.Kind + " block " + opening.BlockName + " has no finite stretch on its host wall", null, null, new[] { opening.Source }));
+                continue;
+            }
             var beyond = s0 < -tol || s1 > final.Length + tol;
-            var c0 = Math.Clamp(s0, 0, final.Length);
-            var c1 = Math.Clamp(s1, 0, final.Length);
+            // Clear span: the axis minus half the thickness of the wall joined at each end (IntentCompiler's rule).
+            var low = ends[final.Index, 0].PartnerThickness / 2;
+            var high = final.Length - ends[final.Index, 1].PartnerThickness / 2;
+            var outside = !beyond && (s0 < low - tol || s1 > high + tol);
+            var c0 = Math.Clamp(s0, low, Math.Max(low, high));
+            var c1 = Math.Clamp(s1, low, Math.Max(low, high));
             if (!(c1 - c0 > tol))
             {
-                input.Report.Add(new Pending("unhosted-opening", opening.Kind + " block " + opening.BlockName + " has no width on its host wall", P(final.At(s0)), null, new[] { opening.Source }));
+                input.Report.Add(new Pending("unhosted-opening", opening.Kind + " block " + opening.BlockName + " has no width inside the clear span of its host wall", P(final.At(s0)), null, new[] { opening.Source }));
                 continue;
             }
             var key = "cad:opening:" + I(openings.Count + 1);
             var notes = new List<string>();
             var confidence = 1.0;
+            var middle = P(final.At((c0 + c1) / 2));
             if (ambiguous)
             {
                 notes.Add("ambiguous-host");
                 confidence *= 0.5;
-                Report(new Pending("ambiguous-host", opening.Kind + " block " + opening.BlockName + " fits more than one wall equally", P(final.At((c0 + c1) / 2)), null, new[] { opening.Source }), key);
+                Report(new Pending("ambiguous-host", opening.Kind + " block " + opening.BlockName + " fits more than one wall equally", middle, null, new[] { opening.Source }), key);
             }
             if (beyond)
             {
                 notes.Add("beyond-host");
                 confidence *= 0.6;
-                Report(new Pending("opening-beyond-host", opening.Kind + " block " + opening.BlockName + " extends past its host wall and was clamped", P(final.At((c0 + c1) / 2)), null, new[] { opening.Source }), key);
+                Report(new Pending("opening-beyond-host", opening.Kind + " block " + opening.BlockName + " extends past its host wall and was clamped", middle, null, new[] { opening.Source }), key);
+            }
+            if (outside)
+            {
+                notes.Add("beyond-clear-span");
+                confidence *= 0.6;
+                Report(new Pending("opening-beyond-clear-span", opening.Kind + " block " + opening.BlockName + " extends into a wall joined to its host and was clamped to the clear span", middle, null, new[] { opening.Source }), key);
             }
             notes.Add("sill-assumed");
             notes.Add("height-assumed");
@@ -416,7 +510,34 @@ public static class CadToBimIr
             var b = P(final.At(c1));
             var element = new BimElement(RoomCompiler.Id(options.ProjectId, key), opening.Kind, new[] { M(a.X), M(a.Y), M(b.X), M(b.Y), M(sill), M(height) },
                 new[] { level.Id, wall.Element.Id }, provenance);
+            placed.Add((final.Index, c0, c1, openings.Count));
             openings.Add(new CadOpeningProposal(key, opening.Kind, element, wall.Key, a, b, c1 - c0, sill, height, confidence, opening.BlockName, opening.Source, notes.ToArray()));
+        }
+
+        // Openings overlapping on one host: sort by host then stretch and sweep, so the work is O(n log n).
+        placed.Sort((x, y) => x.Host != y.Host ? x.Host.CompareTo(y.Host) : x.Low != y.Low ? x.Low.CompareTo(y.Low) : x.Opening.CompareTo(y.Opening));
+        var overlapping = new HashSet<int>();
+        for (var i = 1; i < placed.Count; i++)
+        {
+            work.Spend();
+            var previous = placed[i - 1];
+            var current = placed[i];
+            if (previous.Host != current.Host) continue;
+            var overlap = Math.Min(previous.High, current.High) - current.Low;
+            if (!(overlap > tol)) continue;
+            overlapping.Add(previous.Opening);
+            overlapping.Add(current.Opening);
+            var later = openings[current.Opening];
+            var earlier = openings[previous.Opening];
+            Report(new Pending("opening-overlap", later.Kind + " block " + later.BlockName + " overlaps " + earlier.Key + " by " + F(overlap) + " mm on " + later.HostKey,
+                P(finals[current.Host].At(current.Low + overlap / 2)), overlap, new[] { later.Source, earlier.Source }), later.Key);
+            // Keep the sweep correct for a chain of overlaps.
+            if (previous.High > current.High) placed[i] = current with { High = previous.High };
+        }
+        foreach (var index in overlapping.Order())
+        {
+            var opening = openings[index];
+            openings[index] = opening with { Confidence = opening.Confidence * 0.5, Notes = opening.Notes.Append("overlap").ToArray() };
         }
 
         // 5. Unpaired lines (caps excluded).
@@ -457,6 +578,7 @@ public static class CadToBimIr
     {
         void Add(Primitive primitive)
         {
+            if (!Finite(primitive.A) || !Finite(primitive.B) || (primitive.IsArc && (!Finite(primitive.Center) || !double.IsFinite(primitive.Radius)))) return;
             if (++input.PrimitiveCount > options.MaxOpeningPrimitives) throw Limit("more than " + I(options.MaxOpeningPrimitives) + " opening primitives");
             opening.Primitives.Add(primitive);
             opening.Points.Add(primitive.A);
@@ -515,16 +637,23 @@ public static class CadToBimIr
         static bool NonNegative(double v) => double.IsFinite(v) && v >= 0;
         static bool Positive(double v) => double.IsFinite(v) && v > 0;
         Require(options.ProjectId != Guid.Empty, "ProjectId must not be empty");
-        Require(NonNegative(options.MinThicknessMillimetres), "MinThicknessMillimetres must be a finite non-negative length");
+        Require(Positive(options.MinThicknessMillimetres), "MinThicknessMillimetres must be a finite positive length");
         Require(Positive(options.MaxThicknessMillimetres) && options.MaxThicknessMillimetres >= options.MinThicknessMillimetres, "MaxThicknessMillimetres must be finite, positive and at least MinThicknessMillimetres");
         Require(NonNegative(options.MinOverlapMillimetres), "MinOverlapMillimetres must be a finite non-negative length");
         Require(options.AngleToleranceDegrees > 0 && options.AngleToleranceDegrees < 90, "AngleToleranceDegrees must be in (0, 90)");
         Require(NonNegative(options.JoinToleranceMillimetres), "JoinToleranceMillimetres must be a finite non-negative length");
+        Require(options.MinThicknessMillimetres > options.JoinToleranceMillimetres, "MinThicknessMillimetres must be greater than JoinToleranceMillimetres");
+        Require(options.MinOverlapMillimetres > options.JoinToleranceMillimetres, "MinOverlapMillimetres must be greater than JoinToleranceMillimetres");
         Require(NonNegative(options.MaxGapMillimetres), "MaxGapMillimetres must be a finite non-negative length");
         Require(options.MillimetresPerUnit is null || Positive(options.MillimetresPerUnit.Value), "MillimetresPerUnit must be positive and finite");
         Require(double.IsFinite(options.LevelElevationMillimetres), "LevelElevationMillimetres must be finite");
         Require(Positive(options.WallHeightMillimetres) && Positive(options.DoorHeightMillimetres) && Positive(options.WindowHeightMillimetres), "heights must be positive and finite");
         Require(NonNegative(options.DoorSillMillimetres) && NonNegative(options.WindowSillMillimetres), "sills must be finite and non-negative");
+        // Core opening rules (IntentCompiler.Validate / IntentCodes.DoorSillInvalid, OpeningOutsideWall): a door sits on
+        // its level and an opening stays within the wall height, so a draft can never propose an invalid opening.
+        Require(options.DoorSillMillimetres == 0, "DoorSillMillimetres must be 0: a door sits on its level");
+        Require(options.DoorSillMillimetres + options.DoorHeightMillimetres <= options.WallHeightMillimetres, "DoorSillMillimetres plus DoorHeightMillimetres must stay within WallHeightMillimetres");
+        Require(options.WindowSillMillimetres + options.WindowHeightMillimetres <= options.WallHeightMillimetres, "WindowSillMillimetres plus WindowHeightMillimetres must stay within WallHeightMillimetres");
         Require(!string.IsNullOrWhiteSpace(options.Approval), "Approval must not be blank");
         Require(options.DoorBlocks is not null && options.WindowBlocks is not null && options.PdfDoorForms is not null && options.PdfWindowForms is not null, "block and form lists must not be null");
         Require(options.CurveSegments >= 1 && options.CurveSegments <= 1024, "CurveSegments must be in [1, 1024]");
@@ -574,6 +703,9 @@ public static class CadToBimIr
     // -0 and 0 are one quantity, so hashes of equal drafts are equal.
     private static CadDraftPoint P(Point2 p) => new(p.X == 0 ? 0.0 : p.X, p.Y == 0 ? 0.0 : p.Y);
 
+    // Report locations are optional, so a non-finite one is left out instead of serialized.
+    private static CadDraftPoint? Pf(Point2 p) => Finite(p) ? P(p) : null;
+
     private static double M(double millimetres)
     {
         var metres = Bim.Core.Length.FromMillimetres(millimetres).Metres;
@@ -590,19 +722,20 @@ public static class CadToBimIr
 
     private sealed record Pending(string Code, string Message, CadDraftPoint? At, double? Value, IReadOnlyList<CadDraftSource> Sources);
 
-    private readonly record struct EndState(string Kind, double Distance);
+    private readonly record struct EndState(string Kind, double Distance, double PartnerThickness);
 
     private sealed class Budget(long max)
     {
         private long spent;
 
-        public void Spend()
+        public void Spend(long units = 1)
         {
-            if (++spent > max) throw Limit("more than " + I(max) + " work units");
+            spent = units > 0 && spent <= long.MaxValue - units ? spent + units : long.MaxValue;
+            if (spent > max) throw Limit("more than " + I(max) + " work units");
         }
     }
 
-    private sealed class Input(string sourceFile, string format, double scale)
+    private sealed class Input(string sourceFile, string format, double scale, int maxSegments, Budget work)
     {
         private readonly Dictionary<DxfProvenance, (int Order, CadDraftSource Source)> sources = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<(int, int), SegmentState> segments = new();
@@ -622,8 +755,8 @@ public static class CadToBimIr
         {
             DxfEntity? scaled = entity switch
             {
-                DxfLine line => new DxfLine(entity.Provenance with { }, line.Start * factor, line.End * factor),
-                DxfPolyline polyline => new DxfPolyline(entity.Provenance with { }, polyline.Vertices.Select(v => new DxfVertex(v.Point * factor, v.Bulge)).ToArray(), polyline.Closed),
+                DxfLine line when Finite(line.Start * factor) && Finite(line.End * factor) => new DxfLine(entity.Provenance with { }, line.Start * factor, line.End * factor),
+                DxfPolyline polyline when polyline.Vertices.All(v => Finite(v.Point * factor)) => new DxfPolyline(entity.Provenance with { }, polyline.Vertices.Select(v => new DxfVertex(v.Point * factor, v.Bulge)).ToArray(), polyline.Closed),
                 _ => null,
             };
             if (scaled is null) return;
@@ -642,8 +775,10 @@ public static class CadToBimIr
 
         private void Register(int order, int index, CadDraftSource source, Point2 start, Point2 end)
         {
+            work.Spend();
             var length = (end - start).Length;
-            if (!(length > 0) || !double.IsFinite(length) || !Finite(start)) return;
+            if (!(length > 0) || !double.IsFinite(length) || !Finite(start) || !Finite(end)) return;
+            if (Segments.Count >= maxSegments) throw Limit("more than " + I(maxSegments) + " candidate segments");
             var state = new SegmentState(order, index, source, start, end, length);
             segments[(order, index)] = state;
             Segments.Add(state);
@@ -846,6 +981,7 @@ public static class CadToBimIr
     private sealed class Grid
     {
         private const double MaxCellIndex = 1e15;
+        private const long MaxSteps = 1_000_000;
         private readonly double cell;
         private readonly Dictionary<(long, long), List<int>> cells = new();
         private readonly int[] stamp;
@@ -864,8 +1000,8 @@ public static class CadToBimIr
         public void Add(int id, Point2 a, Point2 b)
         {
             var length = (b - a).Length;
-            var steps = (long)Math.Ceiling(length / (cell / 2));
-            if (!(steps >= 1)) steps = 1;
+            var raw = double.IsFinite(length) ? Math.Ceiling(length / (cell / 2)) : 1;
+            var steps = raw >= 1 && raw <= MaxSteps ? (long)raw : raw > MaxSteps ? MaxSteps : 1;
             for (long k = 0; k <= steps; k++)
             {
                 work.Spend();
