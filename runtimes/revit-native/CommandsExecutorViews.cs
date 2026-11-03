@@ -47,7 +47,7 @@ internal static partial class CommandExecutor
         ViewFamilyTypeQueryArgs query => ViewFamilyTypesQuery(d, query.Family),
         EmptyQueryArgs when envelope.Command == "query.view_templates" =>
             CommandReadbackViews.ViewTemplatesJson(ViewTemplates(d).Select(template => new ViewTemplateRow(template.Name, template.UniqueId, template.ViewType.ToString()))),
-        _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
+        _ => QueryMirror(d, envelope),
     };
 
     static string ViewFamilyTypesQuery(Document d, string? family)
