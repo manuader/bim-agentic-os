@@ -124,7 +124,8 @@ static class MirrorDriftChecks
             new MirrorAddInReceipt("op-1", "door.create", Doc, 2, new[] { D1 }),
             new MirrorAddInReceipt("op-9", "wall.create", OtherDoc, 3, new[] { W3 }),
         };
-        var withReceipts = MirrorDrift.Compare(drifted, committed, receipts: receipts);
+        var documentScope = new MirrorDriftOptions(Scope: MirrorDriftScopes.Document);
+        var withReceipts = MirrorDrift.Compare(drifted, committed, options: documentScope, receipts: receipts);
         var r = withReceipts.Findings.ToDictionary(finding => finding.UniqueId);
         Check(r[W2] is { Classification: MirrorDriftClasses.AddInPending } && r[W2].Evidence.SequenceEqual(new[] { "receipt:op-2" }), "a receipt newer than or on Core's committed revision makes the change addin_pending", withReceipts.ToJson());
         Check(r[D1].Classification == MirrorDriftClasses.Unknown && r[W3].Classification == MirrorDriftClasses.Unknown && withReceipts.Summary.IgnoredEvidence == 1,
@@ -165,6 +166,8 @@ static class MirrorDriftChecks
 
         ReviewChecks(observation, committed, journal, Read);
 
+        NativeFixtureChecks(observation);
+
         // ---- Bounded report ----
         var capped = MirrorDrift.Compare(drifted, committed, journal, new MirrorDriftOptions(JournalAfterSequence: 4, MaxFindings: 1));
         Check(capped.Truncated && capped.Findings.Count == 1 && capped.Findings[0].UniqueId == W2 && capped.Summary.Drift == 3, "MaxFindings caps the findings, keeps true totals and says truncated", capped.ToJson());
@@ -180,7 +183,7 @@ static class MirrorDriftChecks
         };
         var permuted = MirrorDrift.Compare(permutedSnapshot, permutedModel, journal.Reverse().ToArray(), new MirrorDriftOptions(JournalAfterSequence: 4));
         Check(permuted.ToJson() == first, "permuted snapshot, model, map and journal give byte-identical reports", permuted.ToJson());
-        var receiptsPermuted = MirrorDrift.Compare(drifted, committed, receipts: receipts.Reverse().ToArray()).ToJson();
+        var receiptsPermuted = MirrorDrift.Compare(drifted, committed, options: documentScope, receipts: receipts.Reverse().ToArray()).ToJson();
         Check(receiptsPermuted == withReceipts.ToJson(), "permuted receipts give byte-identical reports");
         using (var parsed = JsonDocument.Parse(first))
         {
@@ -188,7 +191,7 @@ static class MirrorDriftChecks
             Check(root.GetProperty("drift_version").GetInt32() == 1 && root.GetProperty("document_unique_id").GetString() == Doc && root.GetProperty("core_revision").GetInt32() == 3
                 && root.GetProperty("summary").GetProperty("drift").GetInt32() == 3 && root.GetProperty("findings").GetArrayLength() == 3, "report JSON carries version, identity, revision and summary", first);
         }
-        Check(first.StartsWith("{\"drift_version\":1,\"document_unique_id\":\"" + Doc + "\",\"core_project_id\":\"a0000000-0000-4000-8000-000000000000\",\"core_revision\":3,\"options\":{\"length_tolerance_mm\":1.000,\"angle_tolerance_deg\":0.1000,\"journal_after_sequence\":4,\"max_findings\":5000},", StringComparison.Ordinal),
+        Check(first.StartsWith("{\"drift_version\":1,\"document_unique_id\":\"" + Doc + "\",\"core_project_id\":\"a0000000-0000-4000-8000-000000000000\",\"core_revision\":3,\"options\":{\"length_tolerance_mm\":1.000,\"angle_tolerance_deg\":0.1000,\"journal_after_sequence\":4,\"max_findings\":5000,\"scope\":\"map_only\"},", StringComparison.Ordinal),
             "report JSON header is canonical with fixed number formatting", first);
         Check(first.Contains("{\"kind\":\"changed\",\"unique_id\":\"" + W2 + "\",\"core_id\":\"c0000000-0000-4000-8000-000000000003\",\"snapshot_id\":\"" + MirrorSnapshotMapper.Id(Doc, W2).ToString("D") + "\",\"element_kind\":\"wall\",\"classification\":\"addin_pending\",\"evidence\":[\"journal:6:add-in\"],\"fields\":[{\"field\":\"ax\",\"core\":\"5.000000\",\"revit\":\"5.050000\",\"delta\":\"50.000\"}", StringComparison.Ordinal),
             "a changed finding serializes canonically", first);
@@ -228,8 +231,13 @@ static class MirrorDriftChecks
             "the wrapped reply classifies like the raw journal and is complete", fromReply.ToJson());
         Check(Code(() => MirrorDrift.ParseJournal(replyJson.Replace("\"status\": \"succeeded\"", "\"status\": \"failed\"", StringComparison.Ordinal))) == MirrorDrift.JournalInvalidCode,
             "a journal.read reply whose status is not succeeded is refused");
-        Check(Code(() => MirrorDrift.ParseJournal(replyJson.Replace("\"peek\": true", "\"peek\": false", StringComparison.Ordinal))) == MirrorDrift.JournalInvalidCode,
-            "a journal.read reply read without peek is refused");
+        var notPeek = MirrorDrift.Compare(drifted, committed, MirrorDrift.ParseJournal(replyJson.Replace("\"peek\": true", "\"peek\": false", StringComparison.Ordinal)), new MirrorDriftOptions(JournalAfterSequence: 4));
+        Check(notPeek.EvidenceNotes.SequenceEqual(new[] { "journal_not_peek" }) && notPeek.Summary.ExternalEdit == 2,
+            "a journal.read reply read without peek is accepted with a journal_not_peek note", string.Join(",", notPeek.EvidenceNotes));
+        var detached = MirrorDrift.Compare(drifted, committed, MirrorDrift.ParseJournal(replyJson.Replace("\"attached\": true", "\"attached\": false", StringComparison.Ordinal)), new MirrorDriftOptions(JournalAfterSequence: 4));
+        Check(detached.EvidenceIncomplete && detached.EvidenceNotes.SequenceEqual(new[] { "journal_detached" }), "a reply from a detached recorder is noted journal_detached", string.Join(",", detached.EvidenceNotes));
+        var laterAfter = MirrorDrift.Compare(drifted, committed, reply, new MirrorDriftOptions(JournalAfterSequence: 2));
+        Check(laterAfter.EvidenceIncomplete && laterAfter.EvidenceNotes.SequenceEqual(new[] { "journal_after_mismatch" }), "a reply read after a later sequence than Core's commit point is noted journal_after_mismatch", string.Join(",", laterAfter.EvidenceNotes));
         // (6) Completeness travels into the report.
         var partial = MirrorDrift.ParseJournal(replyJson.Replace("\"journal_complete\": true", "\"journal_complete\": false", StringComparison.Ordinal).Replace("\"has_more\": false", "\"has_more\": true", StringComparison.Ordinal)
             .Replace("\"truncated\": false", "\"truncated\": true", StringComparison.Ordinal));
@@ -336,5 +344,69 @@ static class MirrorDriftChecks
             all &= MirrorDrift.Compare(shuffledSnapshot, shuffledModel, shuffledReply, new MirrorDriftOptions(LengthToleranceMm: 0.25, AngleToleranceDeg: 0.05, JournalAfterSequence: 4)).ToJson() == expected;
         }
         Check(all, "eight random permutations of model, map, journal and snapshot give byte-identical reports");
+    }
+    // Re-review: the native Room fixture's persisted State ({"Project","Map","Receipts"}) keys its door and windows by
+    // "fixture:<role>" and family symbols by "<kind>-symbol"; template content with no owner is out of the map_only scope.
+    static void NativeFixtureChecks(MirrorObservation observation)
+    {
+        const string P = "60f91daf-3dd7-4283-a86d-24137b73f3da-";
+        const string L1 = P + "00000137";
+        const string L2 = P + "00000138";
+        var template = observation.Elements.Single(element => element.UniqueId == W1);
+        // NativeRoomFixture.Compile: width 4, depth 4, height 3, thickness 0.2 at the origin.
+        var roomId = Guid.Parse("cd178069-b563-4de9-84f4-3bdc08d7a2a1");
+        var project = RoomCompiler.Compile(Guid.Parse("a8b37b05-20e7-41c2-b337-c41fad54eff4"), 1, new RoomIntent(roomId, 4, 4, 3, 0.2, 0, 0, "m", new Provenance("isolated native Room fixture", "user-authorized native fixture")));
+        var roles = new[] { "level", "south", "east", "north", "west", "space", "plan", "schedule", "sheet" };
+        var uid = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (var i = 0; i < roles.Length; i++) uid[roles[i]] = roles[i] == "level" ? L1 : P + (0xc001 + i).ToString("x8");
+        foreach (var (role, n) in new[] { ("door", 0xd001), ("window-east", 0xd002), ("window-north", 0xd003), ("door-symbol", 0xe001), ("window-symbol", 0xe002) }) uid[role] = P + n.ToString("x8");
+        var map = roles.ToDictionary(role => RoomCompiler.Id(roomId, role).ToString("D"), role => uid[role]);
+        foreach (var role in new[] { "door", "window-east", "window-north" }) map["fixture:" + role] = uid[role];
+        map["door-symbol"] = uid["door-symbol"];
+        map["window-symbol"] = uid["window-symbol"];
+        var stateJson = JsonSerializer.Serialize(new { Project = project, Map = map, Receipts = new Dictionary<string, string> { ["native-room-width-400-v1"] = "ABC" } });
+        var model = MirrorCommittedModel.FromNativeState(Doc, stateJson);
+        Check(model.NativeIds.Count == 9 && model.IgnoredMapKeys.SequenceEqual(new[] { "door-symbol", "fixture:door", "fixture:window-east", "fixture:window-north", "window-symbol" }),
+            "the native Room State payload parses with its fixture and symbol keys kept apart", string.Join(",", model.IgnoredMapKeys));
+        // Walls on the centreline of the 0.2 m shell: x 0.1 .. 4.3, y 0.1 .. 4.3; interior 0.2 .. 4.2.
+        MirrorObservedElement ShellWall(string role, double ax, double ay, double bx, double by) => template with { UniqueId = uid[role], Start = new MirrorPoint(ax, ay), End = new MirrorPoint(bx, by) };
+        var elements = new List<MirrorObservedElement>
+        {
+            ShellWall("south", 100, 100, 4300, 100), ShellWall("east", 4300, 100, 4300, 4300), ShellWall("north", 4300, 4300, 100, 4300), ShellWall("west", 100, 4300, 100, 100),
+            new(MirrorCategories.Room, uid["space"])
+            {
+                LevelUid = L1,
+                Loops = new[] { new MirrorLoop(new[] { new MirrorPoint(200, 200), new MirrorPoint(4200, 200), new MirrorPoint(4200, 4200), new MirrorPoint(200, 4200) }, false, new[] { uid["south"], uid["east"], uid["north"], uid["west"] }) },
+            },
+            new(MirrorCategories.Door, uid["door"]) { LevelUid = L1, HostUid = uid["south"], Location = new MirrorPoint(2200, 100), WidthMm = 900, HeightMm = 2100 },
+            new(MirrorCategories.Window, uid["window-east"]) { LevelUid = L1, HostUid = uid["east"], Location = new MirrorPoint(4300, 2200), WidthMm = 1000, HeightMm = 1200, SillMm = 900 },
+            new(MirrorCategories.Window, uid["window-north"]) { LevelUid = L1, HostUid = uid["north"], Location = new MirrorPoint(2200, 4300), WidthMm = 1000, HeightMm = 1200, SillMm = 900 },
+        };
+        var pristineObservation = observation with { Elements = elements.ToArray() };
+        var pristine = MirrorDrift.Compare(MirrorSnapshotMapper.Map(pristineObservation), model);
+        Check(!pristine.HasDrift && pristine.Summary.Extra == 0 && pristine.Summary.Unchanged == 6 && pristine.Summary.NotComparable == 8 && pristine.Summary.IgnoredMapKeys == 5,
+            "a pristine native Room fixture has no drift: its door and windows are claimed by fixture keys", pristine.ToJson());
+        var byKey = pristine.NotComparable.Where(entry => entry.Reason == MirrorDrift.MapKeyNotBimIr).ToDictionary(entry => entry.MapKey);
+        Check(byKey.Count == 5 && byKey["fixture:door"] is { CoreId: null, ElementKind: "door" } && byKey["fixture:window-east"].ElementKind == "window" && byKey["door-symbol"].ElementKind == ""
+            && byKey["fixture:door"].UniqueId == uid["door"], "fixture and symbol map entries are not comparable with reason map_key_not_bim_ir and the snapshot kind", pristine.ToJson());
+        using (var parsed = JsonDocument.Parse(pristine.ToJson()))
+            Check(parsed.RootElement.GetProperty("not_comparable").EnumerateArray().Any(entry => entry.GetProperty("map_key").GetString() == "fixture:door" && entry.GetProperty("core_id").ValueKind == JsonValueKind.Null),
+                "map key entries serialize with map_key and a null core_id");
+        var clash = new Dictionary<string, string>(map) { ["fixture:door"] = uid["south"] };
+        Check(Code(() => MirrorDrift.Compare(MirrorSnapshotMapper.Map(pristineObservation), MirrorCommittedModel.FromNativeState(Doc, JsonSerializer.Serialize(new { Project = project, Map = clash, Receipts = new Dictionary<string, string>() })))) == MirrorDrift.MapInvalidCode,
+            "a fixture key naming a committed element's UniqueId is a corrupt map");
+
+        // Scope: a template level (Level 2) nobody owns is out of scope by default and extra in document scope.
+        var withTemplate = MirrorSnapshotMapper.Map(pristineObservation with { Levels = pristineObservation.Levels.Append(new MirrorObservedLevel(L2, "Level 2", 4000)).ToArray() });
+        var mapOnly = MirrorDrift.Compare(withTemplate, model);
+        Check(!mapOnly.HasDrift && mapOnly.Summary.OutOfScope == 1 && mapOnly.OutOfScope.Single() is { UniqueId: L2, ElementKind: "level" },
+            "an unowned template level without evidence is out of the map_only scope", mapOnly.ToJson());
+        using (var parsed = JsonDocument.Parse(mapOnly.ToJson()))
+            Check(parsed.RootElement.GetProperty("out_of_scope")[0].GetProperty("classification").GetString() == MirrorDriftClasses.OutOfScope, "out of scope entries are classified in JSON");
+        var whole = MirrorDrift.Compare(withTemplate, model, options: new MirrorDriftOptions(Scope: MirrorDriftScopes.Document));
+        Check(whole.Summary is { Extra: 1, OutOfScope: 0 } && whole.Findings.Single() is { Kind: MirrorDriftKinds.Extra, UniqueId: L2, Classification: MirrorDriftClasses.Unknown }, "document scope counts the unowned level as extra", whole.ToJson());
+        var touched = MirrorDrift.Compare(withTemplate, model, new[] { new MirrorJournalEntry(1, DateTimeOffset.UnixEpoch, Doc, "TransactionCommitted", MirrorJournalOrigins.External, new[] { "Level" }, new[] { L2 }, Array.Empty<string>(), Array.Empty<long>(), 1, 0, 0) });
+        Check(touched.Summary is { Extra: 1, ExternalEdit: 1, OutOfScope: 0 }, "an unowned element named by journal evidence is extra even in map_only scope", touched.ToJson());
+        Check(Code(() => MirrorDrift.Compare(withTemplate, model, options: new MirrorDriftOptions(Scope: "everything"))) == MirrorDriftOptions.InvalidCode, "an unknown scope is refused");
     }
 }

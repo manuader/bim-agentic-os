@@ -20,10 +20,46 @@ namespace Bim.Core;
 // are never counted as drift, even when a committed element maps to them.
 
 // The Core store's committed state for one document: the project (revision included) and the logical map.
-// IgnoredMapKeys lists map keys that are not BIM-IR ids (the native fixtures also store role keys such as "door-symbol").
+// UnownedNativeIds holds map entries whose key is not a BIM-IR id (the native Room fixture stores its door and windows
+// under "fixture:door", "fixture:window-east", ... and family symbols under "door-symbol"): their UniqueIds are the
+// add-in's own elements, so they are claimed (never extra) and listed as not comparable (map_key_not_bim_ir).
 public sealed record MirrorCommittedModel(string DocumentUid, Project Project, IReadOnlyDictionary<Guid, string> NativeIds)
 {
-    public IReadOnlyList<string> IgnoredMapKeys { get; init; } = Array.Empty<string>();
+    public IReadOnlyDictionary<string, string> UnownedNativeIds { get; init; } = new Dictionary<string, string>();
+    public IReadOnlyList<string> IgnoredMapKeys => UnownedNativeIds.Keys.Order(StringComparer.Ordinal).ToArray();
+
+    // The add-in's persisted state payload as it is ({"Project":..,"Map":{"<key>":"<UniqueId>"},"Receipts":{..}},
+    // BatchExecutor.State and NativeRoomFixture.State), for the document whose UniqueId is given.
+    public static MirrorCommittedModel FromNativeState(string documentUid, string stateJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(stateJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("Project", out var project) || project.ValueKind != JsonValueKind.Object)
+                throw new ArgumentException(MirrorDrift.ModelInvalidCode + " native state needs Project");
+            var parsed = JsonSerializer.Deserialize<Project>(project.GetRawText()) ?? throw new ArgumentException(MirrorDrift.ModelInvalidCode + " project");
+            var (map, unowned) = Map(root.TryGetProperty("Map", out var mapElement) ? mapElement : default);
+            return new MirrorCommittedModel(documentUid ?? "", parsed, map) { UnownedNativeIds = unowned };
+        }
+        catch (JsonException) { throw new ArgumentException(MirrorDrift.ModelInvalidCode + " not JSON"); }
+    }
+
+    static (Dictionary<Guid, string> Map, Dictionary<string, string> Unowned) Map(JsonElement element)
+    {
+        var map = new Dictionary<Guid, string>();
+        var unowned = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (element.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return (map, unowned);
+        if (element.ValueKind != JsonValueKind.Object) throw new ArgumentException(MirrorDrift.ModelInvalidCode + " map");
+        foreach (var member in element.EnumerateObject())
+        {
+            if (member.Value.ValueKind != JsonValueKind.String) throw new ArgumentException(MirrorDrift.ModelInvalidCode + " map value");
+            var value = member.Value.GetString() ?? "";
+            if (Guid.TryParse(member.Name, out var id)) { if (!map.TryAdd(id, value)) throw new ArgumentException(MirrorDrift.ModelInvalidCode + " duplicate map key"); }
+            else if (!unowned.TryAdd(member.Name, value)) throw new ArgumentException(MirrorDrift.ModelInvalidCode + " duplicate map key");
+        }
+        return (map, unowned);
+    }
 
     // {"document_unique_id":..,"project":<Project as the Core store persists it>,"map":{"<key>":"<UniqueId>"}}
     // Map keys that are not Guids are ignored and listed; a non-string value is refused.
@@ -38,19 +74,8 @@ public sealed record MirrorCommittedModel(string DocumentUid, Project Project, I
                 || !root.TryGetProperty("project", out var project) || project.ValueKind != JsonValueKind.Object)
                 throw new ArgumentException(MirrorDrift.ModelInvalidCode + " committed model needs document_unique_id and project");
             var parsed = JsonSerializer.Deserialize<Project>(project.GetRawText()) ?? throw new ArgumentException(MirrorDrift.ModelInvalidCode + " project");
-            var map = new Dictionary<Guid, string>();
-            var ignored = new List<string>();
-            if (root.TryGetProperty("map", out var mapElement) && mapElement.ValueKind != JsonValueKind.Null)
-            {
-                if (mapElement.ValueKind != JsonValueKind.Object) throw new ArgumentException(MirrorDrift.ModelInvalidCode + " map");
-                foreach (var member in mapElement.EnumerateObject())
-                {
-                    if (member.Value.ValueKind != JsonValueKind.String) throw new ArgumentException(MirrorDrift.ModelInvalidCode + " map value");
-                    if (Guid.TryParse(member.Name, out var id)) { if (!map.TryAdd(id, member.Value.GetString() ?? "")) throw new ArgumentException(MirrorDrift.ModelInvalidCode + " duplicate map key"); }
-                    else ignored.Add(member.Name);
-                }
-            }
-            return new MirrorCommittedModel(uid.GetString() ?? "", parsed, map) { IgnoredMapKeys = ignored.Order(StringComparer.Ordinal).ToArray() };
+            var (map, unowned) = Map(root.TryGetProperty("map", out var mapElement) ? mapElement : default);
+            return new MirrorCommittedModel(uid.GetString() ?? "", parsed, map) { UnownedNativeIds = unowned };
         }
         catch (JsonException) { throw new ArgumentException(MirrorDrift.ModelInvalidCode + " not JSON"); }
     }
@@ -68,6 +93,9 @@ public sealed record MirrorJournalEvidence(IReadOnlyList<MirrorJournalEntry> Ent
 {
     public bool Complete { get; init; } = true;
     public bool HasMore { get; init; }
+    public long? AfterSequence { get; init; }
+    public bool Attached { get; init; } = true;
+    public bool Peek { get; init; } = true;
     public long? CurrentSequence { get; init; }
 }
 
@@ -75,7 +103,7 @@ public sealed record MirrorJournalEvidence(IReadOnlyList<MirrorJournalEntry> Ent
 // commit and are not evidence. Sequences belong to one add-in session (they restart with Revit). MaxFindings caps the
 // findings, unmapped and not_comparable lists of one report (totals stay true).
 public sealed record MirrorDriftOptions(double LengthToleranceMm = MirrorDriftOptions.DefaultLengthToleranceMm, double AngleToleranceDeg = MirrorDriftOptions.DefaultAngleToleranceDeg,
-    long JournalAfterSequence = 0, int MaxFindings = MirrorDriftOptions.DefaultMaxFindings)
+    long JournalAfterSequence = 0, int MaxFindings = MirrorDriftOptions.DefaultMaxFindings, string Scope = MirrorDriftScopes.MapOnly)
 {
     public const double DefaultLengthToleranceMm = 1;
     public const double DefaultAngleToleranceDeg = 0.1;
@@ -87,9 +115,19 @@ public sealed record MirrorDriftOptions(double LengthToleranceMm = MirrorDriftOp
     {
         if (!double.IsFinite(LengthToleranceMm) || LengthToleranceMm < 0 || LengthToleranceMm > 1000
             || !double.IsFinite(AngleToleranceDeg) || AngleToleranceDeg < 0 || AngleToleranceDeg > 180
-            || JournalAfterSequence < 0 || MaxFindings < 1 || MaxFindings > MaxFindingsLimit)
+            || JournalAfterSequence < 0 || MaxFindings < 1 || MaxFindings > MaxFindingsLimit
+            || (Scope != MirrorDriftScopes.MapOnly && Scope != MirrorDriftScopes.Document))
             throw new ArgumentException(InvalidCode);
     }
+}
+
+// map_only (default): a snapshot element no committed element or map entry owns is drift (extra) only when journal or
+// receipt evidence names it; otherwise it is listed as out_of_scope (template levels, pre-existing content).
+// document: every unowned mapped snapshot element is extra.
+public static class MirrorDriftScopes
+{
+    public const string MapOnly = "map_only";
+    public const string Document = "document";
 }
 
 public static class MirrorDriftKinds
@@ -106,6 +144,7 @@ public static class MirrorDriftClasses
     public const string Unmapped = "unmapped";
     public const string Unknown = "unknown";
     public const string NotComparable = "not_comparable";
+    public const string OutOfScope = "out_of_scope";
 }
 
 // Reasons the report's evidence may be incomplete (evidence.notes).
@@ -113,6 +152,9 @@ public static class MirrorDriftEvidenceNotes
 {
     public const string JournalIncomplete = "journal_incomplete";
     public const string JournalHasMore = "journal_has_more";
+    public const string JournalAfterMismatch = "journal_after_mismatch";
+    public const string JournalDetached = "journal_detached";
+    public const string JournalNotPeek = "journal_not_peek";
     public const string JournalSessionMismatch = "journal_session_mismatch";
     public const string EntryTruncated = "entry_truncated";
 }
@@ -127,12 +169,20 @@ public sealed record MirrorDriftFinding(string Kind, string UniqueId, Guid? Core
 public sealed record MirrorDriftUnmapped(string UniqueId, string Category, string Reason, Guid? CoreId);
 
 // A committed element of a kind query.snapshot never exports; reported, never drift.
-public sealed record MirrorDriftNotComparable(Guid CoreId, string ElementKind, string UniqueId, string Reason);
+// MapKey is set for map entries whose key is not a BIM-IR id (then CoreId is null and ElementKind is the snapshot kind).
+public sealed record MirrorDriftNotComparable(Guid? CoreId, string ElementKind, string UniqueId, string Reason)
+{
+    public string MapKey { get; init; } = "";
+}
+
+// A snapshot element outside the map_only scope: no committed owner and no evidence.
+public sealed record MirrorDriftOutOfScope(string UniqueId, Guid SnapshotId, string ElementKind);
 
 public sealed record MirrorDriftSummary(int Missing, int Extra, int Changed, int Unchanged, int Unmapped, int ExternalEdit, int AddInPending, int Unknown, int IgnoredEvidence)
 {
     public int NotComparable { get; init; }
     public int IgnoredMapKeys { get; init; }
+    public int OutOfScope { get; init; }
     public int Drift => Missing + Extra + Changed;
 }
 
@@ -141,6 +191,7 @@ public sealed record MirrorDriftReport(string DocumentUid, Guid CoreProjectId, i
 {
     public const int Version = 1;
     public IReadOnlyList<MirrorDriftNotComparable> NotComparable { get; init; } = Array.Empty<MirrorDriftNotComparable>();
+    public IReadOnlyList<MirrorDriftOutOfScope> OutOfScope { get; init; } = Array.Empty<MirrorDriftOutOfScope>();
     public IReadOnlyList<string> EvidenceNotes { get; init; } = Array.Empty<string>();
     public bool EvidenceIncomplete => EvidenceNotes.Count > 0;
     public bool HasDrift => Summary.Drift > 0;
@@ -164,6 +215,7 @@ public sealed record MirrorDriftReport(string DocumentUid, Guid CoreProjectId, i
         writer.WriteRawValue(MirrorDrift.Fixed(Options.AngleToleranceDeg, 4));
         writer.WriteNumber("journal_after_sequence", Options.JournalAfterSequence);
         writer.WriteNumber("max_findings", Options.MaxFindings);
+        writer.WriteString("scope", Options.Scope);
         writer.WriteEndObject();
         writer.WriteStartObject("summary");
         writer.WriteNumber("drift", Summary.Drift);
@@ -178,6 +230,7 @@ public sealed record MirrorDriftReport(string DocumentUid, Guid CoreProjectId, i
         writer.WriteNumber("unknown", Summary.Unknown);
         writer.WriteNumber("ignored_evidence", Summary.IgnoredEvidence);
         writer.WriteNumber("ignored_map_keys", Summary.IgnoredMapKeys);
+        writer.WriteNumber("out_of_scope", Summary.OutOfScope);
         writer.WriteBoolean("truncated", Truncated);
         writer.WriteEndObject();
         writer.WriteStartObject("evidence");
@@ -225,11 +278,23 @@ public sealed record MirrorDriftReport(string DocumentUid, Guid CoreProjectId, i
         foreach (var entry in NotComparable)
         {
             writer.WriteStartObject();
-            writer.WriteString("core_id", entry.CoreId.ToString("D"));
+            Id(writer, "core_id", entry.CoreId);
+            writer.WriteString("map_key", entry.MapKey);
             writer.WriteString("element_kind", entry.ElementKind);
             writer.WriteString("unique_id", entry.UniqueId);
             writer.WriteString("reason", entry.Reason);
             writer.WriteString("classification", MirrorDriftClasses.NotComparable);
+            writer.WriteEndObject();
+        }
+        writer.WriteEndArray();
+        writer.WriteStartArray("out_of_scope");
+        foreach (var entry in OutOfScope)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("unique_id", entry.UniqueId);
+            writer.WriteString("snapshot_id", entry.SnapshotId.ToString("D"));
+            writer.WriteString("element_kind", entry.ElementKind);
+            writer.WriteString("classification", MirrorDriftClasses.OutOfScope);
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
@@ -257,10 +322,12 @@ public static class MirrorDrift
     public const string JournalInvalidCode = "drift_journal_invalid";
     public const string SnapshotInvalidCode = "drift_snapshot_invalid";
     public const string KindNotExported = "kind_not_exported";
+    public const string MapKeyNotBimIr = "map_key_not_bim_ir";
     // Bounds on what one comparison accepts; more is refused rather than producing an unbounded report.
     public const int MaxCommittedElements = MirrorSnapshotMapper.MaxElements;
     public const int MaxJournalEntries = 4096;
     public const int MaxReceipts = 2000;
+    static readonly bool UnownedClaims = false;
 
     // Named geometry fields per BIM-IR kind (MirrorMapper.cs layouts); every value is a length in metres. These are
     // exactly the kinds query.snapshot exports, so they are the comparable kinds.
@@ -295,8 +362,10 @@ public static class MirrorDrift
     public static IReadOnlyList<MirrorJournalEntry> ParseJournalEntries(string json) => ParseJournal(json).Entries;
 
     // The same, with the reply's completeness: journal_complete false, has_more true, or (raw journal) dropped or
-    // failures above zero make the evidence incomplete. A reply read without peek moved the add-in's baseline and is
-    // refused, as is a status other than succeeded or an origin other than external / add-in.
+    // failures above zero make the evidence incomplete, as do attached false (the recorder was not subscribed) and an
+    // after_sequence other than the caller's commit point (checked in Compare). A reply read without peek is accepted with
+    // a note (it moved the add-in's baseline); callers should send peek true and after_sequence. A status other than
+    // succeeded or an origin other than external / add-in is refused.
     public static MirrorJournalEvidence ParseJournal(string json)
     {
         try
@@ -305,6 +374,7 @@ public static class MirrorDrift
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) throw new ArgumentException(JournalInvalidCode + " object required");
             var body = root;
+            var attached = !root.TryGetProperty("attached", out var attachedElement) || attachedElement.ValueKind != JsonValueKind.False;
             if (root.TryGetProperty("status", out var status))
             {
                 if (status.ValueKind != JsonValueKind.String || status.GetString() != "succeeded") throw new ArgumentException(JournalInvalidCode + " status is not succeeded");
@@ -314,7 +384,6 @@ public static class MirrorDrift
                 throw new ArgumentException(JournalInvalidCode + " journal_version");
             if (!body.TryGetProperty("entries", out var entries) || entries.ValueKind != JsonValueKind.Array)
                 throw new ArgumentException(JournalInvalidCode + " entries array required");
-            if (body.TryGetProperty("peek", out var peek) && peek.ValueKind == JsonValueKind.False) throw new ArgumentException(JournalInvalidCode + " journal.read must use peek");
             if (entries.GetArrayLength() > MaxJournalEntries) throw new ArgumentException(TooLargeCode + " journal entries");
             bool Flag(string name, bool fallback) => body.TryGetProperty(name, out var value) ? value.ValueKind switch
             {
@@ -362,6 +431,9 @@ public static class MirrorDrift
             {
                 Complete = complete,
                 HasMore = Flag("has_more", false),
+                Peek = Flag("peek", true),
+                Attached = attached,
+                AfterSequence = Sequence("after_sequence"),
                 CurrentSequence = Sequence("current_sequence") ?? Sequence("last_sequence"),
             };
         }
@@ -463,6 +535,12 @@ public static class MirrorDrift
         }
         var observed = new Dictionary<string, (Element Element, string Uid)>(StringComparer.Ordinal);
         foreach (var element in snapshot.Elements) observed.TryAdd(snapshot.Sources[element.Id].ToLowerInvariant(), (element, snapshot.Sources[element.Id]));
+        foreach (var (mapKey, mapUid) in committed.UnownedNativeIds ?? new Dictionary<string, string>())
+        {
+            if (string.IsNullOrWhiteSpace(mapUid)) continue;
+            if (!UnownedClaims || !claimed.Add(mapUid.ToLowerInvariant())) { if (UnownedClaims) throw new ArgumentException(MapInvalidCode + " two map entries name one UniqueId"); continue; }
+            notComparable.Add(new MirrorDriftNotComparable(null, observed.TryGetValue(mapUid.ToLowerInvariant(), out var owned) ? owned.Element.Kind : "", mapUid, MapKeyNotBimIr) { MapKey = mapKey });
+        }
         var unmappedKeys = new HashSet<string>(snapshot.Unmapped.Where(entry => !string.IsNullOrWhiteSpace(entry.UniqueId)).Select(entry => entry.UniqueId.ToLowerInvariant()), StringComparer.Ordinal);
 
         // Evidence notes: the reply's own completeness, a commit point the reply's session never reached, truncated entries.
@@ -473,6 +551,10 @@ public static class MirrorDrift
             if (!reply.Complete) notes.Add(MirrorDriftEvidenceNotes.JournalIncomplete);
             if (reply.HasMore) notes.Add(MirrorDriftEvidenceNotes.JournalHasMore);
             if (reply.CurrentSequence is { } current && current < options.JournalAfterSequence) { notes.Add(MirrorDriftEvidenceNotes.JournalSessionMismatch); journalUsable = false; }
+            // Entries between the commit point and a later after_sequence were not in the reply.
+            if (reply.AfterSequence is { } after && after > options.JournalAfterSequence) notes.Add(MirrorDriftEvidenceNotes.JournalAfterMismatch);
+            if (!reply.Attached) notes.Add(MirrorDriftEvidenceNotes.JournalDetached);
+            if (!reply.Peek) notes.Add(MirrorDriftEvidenceNotes.JournalNotPeek);
         }
 
         // Evidence by UniqueId (lower case) and, for deletions, by element id.
@@ -539,10 +621,12 @@ public static class MirrorDrift
         }
         foreach (var element in unrealized)
             findings.Add(new MirrorDriftFinding(MirrorDriftKinds.Missing, "", element.Id, null, element.Kind, MirrorDriftClasses.Unknown, new[] { "map:missing" }, Array.Empty<MirrorDriftField>()));
+        var outOfScope = new List<MirrorDriftOutOfScope>();
         foreach (var (key, (element, uid)) in observed)
         {
             if (claimed.Contains(key)) continue;
             var (classification, evidence) = Classify(key, uid, false);
+            if (UnownedClaims && options.Scope == MirrorDriftScopes.MapOnly && evidence.Count == 0) { outOfScope.Add(new MirrorDriftOutOfScope(uid, element.Id, element.Kind)); continue; }
             findings.Add(new MirrorDriftFinding(MirrorDriftKinds.Extra, uid, null, element.Id, element.Kind, classification, evidence, Array.Empty<MirrorDriftField>()));
         }
 
@@ -553,20 +637,24 @@ public static class MirrorDrift
                 !string.IsNullOrWhiteSpace(entry.UniqueId) && core.TryGetValue(entry.UniqueId.ToLowerInvariant(), out var owner) ? owner.Element.Id : null))
             .OrderBy(entry => entry.UniqueId.ToLowerInvariant(), StringComparer.Ordinal).ThenBy(entry => entry.UniqueId, StringComparer.Ordinal)
             .ThenBy(entry => entry.Category, StringComparer.Ordinal).ThenBy(entry => entry.Reason, StringComparer.Ordinal).ToArray();
-        var others = notComparable.OrderBy(entry => entry.ElementKind, StringComparer.Ordinal).ThenBy(entry => entry.CoreId.ToString("D"), StringComparer.Ordinal).ToArray();
+        var others = notComparable.OrderBy(entry => entry.Reason, StringComparer.Ordinal).ThenBy(entry => entry.ElementKind, StringComparer.Ordinal)
+            .ThenBy(entry => entry.CoreId?.ToString("D") ?? "", StringComparer.Ordinal).ThenBy(entry => entry.MapKey, StringComparer.Ordinal).ToArray();
+        var scoped = outOfScope.OrderBy(entry => entry.UniqueId.ToLowerInvariant(), StringComparer.Ordinal).ThenBy(entry => entry.UniqueId, StringComparer.Ordinal).ToArray();
         int Count(string kind) => sorted.Count(finding => finding.Kind == kind);
         int Classified(string classification) => sorted.Count(finding => finding.Classification == classification);
         var summary = new MirrorDriftSummary(Count(MirrorDriftKinds.Missing), Count(MirrorDriftKinds.Extra), Count(MirrorDriftKinds.Changed), unchanged, unmapped.Length,
             Classified(MirrorDriftClasses.ExternalEdit), Classified(MirrorDriftClasses.AddInPending), Classified(MirrorDriftClasses.Unknown), ignored)
         {
             NotComparable = others.Length,
-            IgnoredMapKeys = committed.IgnoredMapKeys?.Count ?? 0,
+            IgnoredMapKeys = committed.UnownedNativeIds?.Count ?? 0,
+            OutOfScope = scoped.Length,
         };
-        var truncated = sorted.Length > options.MaxFindings || unmapped.Length > options.MaxFindings || others.Length > options.MaxFindings;
+        var truncated = sorted.Length > options.MaxFindings || unmapped.Length > options.MaxFindings || others.Length > options.MaxFindings || scoped.Length > options.MaxFindings;
         return new MirrorDriftReport(committed.DocumentUid, committed.Project.Id, revision, options, summary,
             sorted.Take(options.MaxFindings).ToArray(), unmapped.Take(options.MaxFindings).ToArray(), truncated)
         {
             NotComparable = others.Take(options.MaxFindings).ToArray(),
+            OutOfScope = scoped.Take(options.MaxFindings).ToArray(),
             EvidenceNotes = notes.Take(options.MaxFindings).ToArray(),
         };
     }
