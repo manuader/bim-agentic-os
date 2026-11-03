@@ -247,7 +247,7 @@ class ForeignIfc(Scratch):
         report = self.ifc.import_ifc(changed)
         self.assertEqual({
             ('door', gid['door'], 'host_unknown'),
-            ('IfcSlab', slab.GlobalId, 'category_unsupported'),
+            ('IfcSlab', slab.GlobalId, 'no_bim_ir_kind'),
             ('opening', opening.GlobalId, 'no_bim_ir_kind'),
             ('space', gid['room'], 'room_not_rectangular'),
             ('wall', gid['west'], 'wall_base_offset_unsupported'),
