@@ -33,9 +33,32 @@ The C# subprocess port bounds execution/output, pins the worker to the current r
 
 Metrics state their scope. IFC logical-product counters exclude auxiliary schema entities; timings are measured runtime phases. Unknown master metrics remain null with reasons. The full architectural correction through validated Revit documentation remains unmeasured.
 
+## IDS checks (subset of IDS 1.0)
+
+`runtimes/ifc/ids_check.py` checks an IFC file against a buildingSMART IDS 1.0 file and prints a deterministic JSON report (`bim.ids-report/1`). It is stdlib XML plus the approved IfcOpenShell; the LGPL `ifctester` package is not used.
+
+```powershell
+./.tools/ifc/Scripts/python.exe runtimes/ifc/ids_check.py spec.ids model.ifc [--output report.json]
+```
+
+Exit codes: `0` every evaluated specification passed, `1` at least one failed (or no specification applies to the model's schema), `2` invalid/unsupported IDS or unreadable IFC. The report lists each specification with its cardinality, `applicable_count`, `status` (`pass`/`fail`/`skipped`) and `failures` (entity class, GlobalId, STEP id, reason), plus overall `status`, `counts`, file basenames and SHA-256 hashes (no local paths). Invalid input gives `status: invalid` and `error.code`.
+
+Supported subset:
+
+- Input: UTF-8 only (other declared encodings and DOCTYPE/ENTITY declarations are refused). Specification attributes are limited to name, ifcVersion (tokens IFC2X3, IFC4, IFC4X3_ADD2; an IFC4X3 model maps to IFC4X3_ADD2), identifier, description and instructions.
+- Applicability needs exactly one `entity` facet (name, predefinedType; exact class) and may add attribute/property/classification facets, all ANDed. A type object's PredefinedType other than NOTDEFINED takes precedence over the occurrence; `USERDEFINED` resolves to ElementType (type) or ObjectType (occurrence).
+- Facets: `attribute` (name, value), `property` (propertySet, baseName, value, `dataType`; IfcPropertySingleValue only, type property sets apply under occurrence values) and `classification` (value = Identification, system = IfcClassification Name).
+- Values: `ids:simpleValue` (exact, case-sensitive text; a numeric model value compares numerically with an XSD-numeric literal, 1e-6 relative tolerance; booleans as `TRUE`/`FALSE`). `xs:restriction` needs a base: `xs:string` (string values only), `xs:integer`, `xs:decimal`, `xs:double`, `xs:float` (numeric values only; literals validated). `xs:enumeration` with any of these; `xs:pattern` only with `xs:string`. Sibling patterns are alternatives and each is implicitly anchored. `\s`/`\S` and `.` are translated to their XSD meaning (`[ \t\n\r]`, `[^\n\r]`); compared strings are capped at 4096 characters.
+- Units: IDS values are SI. Length/area/volume property measures are converted from the project's IfcSIUnit (including prefixes such as MILLI). Any other unit-bearing measure, and any numeric attribute (attributes carry no measure type), is only compared when every project unit is an SI base unit; otherwise `IFC_UNSUPPORTED_UNIT`. A model without a unit assignment is treated as SI.
+- Specification cardinality from applicability `minOccurs/maxOccurs`: `1/unbounded` required (no applicable entity fails), `0/unbounded` optional, `0/0` prohibited (every applicable entity fails; requirements are not allowed). Facet `cardinality` required/optional/prohibited. Empty strings and nulls count as absent. A specification for another schema is `skipped`.
+
+Fail-closed codes (exit 2): `IDS_DOCTYPE_FORBIDDEN`, `IDS_XML_MALFORMED` (including non-UTF-8), `IDS_NOT_IDS`, `IDS_INVALID`, `IDS_UNSUPPORTED_FACET` (partOf, material, applicability without exactly one entity facet), `IDS_UNSUPPORTED_RESTRICTION` (bounds, length, mixed restrictions, other bases, XSD-only or divergent regex such as `\w`, `\p{..}`, `\i`, `\$`, nested classes/subtraction, unescaped `^`/`$`, `(?`, lazy/stacked quantifiers, nested repeating quantifiers like `(a+)+`), `IDS_UNSUPPORTED_CARDINALITY`, `IDS_UNSUPPORTED_ATTRIBUTE` (including IDS 0.9 style minOccurs/maxOccurs on a specification), `IDS_UNKNOWN_ENTITY`, `IDS_UNREADABLE`, `IFC_UNREADABLE`, `IFC_UNSUPPORTED_PROPERTY_KIND` (a matching quantity set, enumerated/list/bounded property), `IFC_UNSUPPORTED_UNIT`, `IFC_VALUE_TOO_LONG`, `OUTPUT_UNWRITABLE` and `INTERNAL` (unexpected error; no traceback or local path).
+
+Known gaps: partOf/material facets, quantity sets, numeric bounds/length restrictions, entity-name inheritance and patterns, attribute-name patterns, unit-aware numeric attributes, conversion-based units, IDS XSD validation of the whole document, and the official buildingSMART test-case corpus. `tests/ifc/test_ids.py` checks an IFC exported by `worker.create` against `tests/ifc/fixtures/ids` (passing, failing, unsupported) plus small IfcOpenShell-built door models (typed, classified, metre and millimetre units) in the `ifc` and `ifc-portable` CI jobs.
+
 ## Limits
 
-This is a bounded canonical RoomCompiler rectangle/width-correction adapter, not a general IFC editor or arbitrary BIM-IR execution service. The low-level API preserves bytes on no-op; the full A/B harness rejects no-op before creating an output directory because it must observe an actual correction/rollback. It does not implement complete RVT/IFC roundtrip, native Revit documentation, production model merging, human architectural approval, IDS/BCF execution or Blender. Expanded typed BIM-IR contracts still require a separately approved schema ADR. Generated models stay in ignored `.bim/`; published summaries must exclude personal paths and production identifiers.
+This is a bounded canonical RoomCompiler rectangle/width-correction adapter, not a general IFC editor or arbitrary BIM-IR execution service. The low-level API preserves bytes on no-op; the full A/B harness rejects no-op before creating an output directory because it must observe an actual correction/rollback. It does not implement complete RVT/IFC roundtrip, native Revit documentation, production model merging, human architectural approval, full IDS (only the subset above), BCF execution or Blender. Expanded typed BIM-IR contracts still require a separately approved schema ADR. Generated models stay in ignored `.bim/`; published summaries must exclude personal paths and production identifiers.
 
 The IFC receipt binds the committed snapshot and its revision; it does not atomically publish a separate Core ProjectStore file. Coordination/recovery across those stores remains a gap. Current tests prove persisted IFC state and successive compiled corrections, not a distributed transaction or complete live mirror.
 
