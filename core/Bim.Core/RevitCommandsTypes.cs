@@ -8,7 +8,7 @@ namespace Bim.Core;
 // (CommandsExecutorTypes.cs) consumes these types. Layer functions are RevitMaterialRules.Functions
 // (RevitCommandsMaterials.cs), the same as roof_type.create.
 
-// A colour as 0-255 channels (Revit Autodesk.Revit.DB.Color bytes).
+// A colour as 0-255 channels (the byte channels of a Revit Color).
 public sealed record RgbColor(int Red, int Green, int Blue);
 // A new material named Name. Every other member is optional: null means not requested (left at Revit's default
 // and not compared when an existing material of that name is found). AppearanceAsset is an existing appearance asset
