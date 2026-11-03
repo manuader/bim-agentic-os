@@ -459,5 +459,8 @@ catch (Exception error)
 // P6-02 PDF vector reader, calibration and alignment (tests/cad/PdfTests.cs).
 PdfTests.Run(Check, fixtures);
 
+// P6-04 CAD drawing to BIM-IR draft with uncertainty (tests/cad/DraftTests.cs).
+DraftTests.Run(Check, fixtures);
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
