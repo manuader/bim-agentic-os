@@ -672,6 +672,46 @@
       ],
       "blocker": "Never opened in Blender nor run through the Khronos glTF-Validator; no CLI verb; wall joins not resolved; BIM-IR carries no openings/slabs so none are exported.",
       "scope": "P8-04: BCL-only deterministic BIM-IR \u2192 glTF 2.0 (.glb and .gltf with embedded buffer): walls as boxes, spaces as floor quads, levels as nodes, extras {bim_id, kind, type, level}, Z-up\u2192Y-up, per-kind materials; in-test spec validator with mutation tests; golden SHA-256 equal on Linux and Windows; bounded input and precision checks; never-overwrite writer. CI 41644141785."
+    },
+    {
+      "id": "revit-modify-delete-commands",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsModify.cs",
+        "runtimes/revit-native/CommandsExecutorModify.cs",
+        "runtimes/revit-native/CommandsExecutorModifyRules.cs",
+        "tests/revit-commands/CatalogueModify.cs",
+        "tests/mcp/Program.cs",
+        "tests/audit/Program.cs"
+      ],
+      "blocker": "Not verified-in-revit (owner session on a test copy needed). Not offered: integer enumerations, unitless/other measured numbers, clearing element-id parameters, type parameters through an instance. Unverified whether DocumentChanged fires inside the transaction group (also_modified may be empty; side-effect deletions are still caught by the id snapshot); three full id collections per delete may be slow on large models.",
+      "scope": "P1-05: element.set_parameter (name/built_in/shared guid; typed length mm, area m2, angle \u00b1360\u00b0, text, int32, yes/no, element UniqueId; refuses read-only/unsupported/group members; readback before and after failure processing; refuses side-effect deletions, reports also_modified) and element.delete (1\u2013100 targets; rolled-back probe lists dependents; dependents get target protections; real delete needs confirm_dependents exactly; \u22641000 dependents; post-commit no-extra-deletions check; compact receipts with dependents count + SHA-256); dry_run rolls back and stores no receipt; copies-only and link guards; MCP destructiveHint true only for these two. Contracts unit-tested, executor compiled. CI 41668015221."
+    },
+    {
+      "id": "cad-to-bim-ir-draft",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/cad/Bim.Cad/CadToBimIr.cs",
+        "adapters/cad/Bim.Cad/CadToBimIrModel.cs",
+        "tests/cad/DraftTests.cs",
+        "tests/cad/fixtures/draft-plan.dxf",
+        "tests/cad/fixtures/draft-plan.pdf"
+      ],
+      "blocker": "Generated fixtures only, no real architectural plans; heights/sills are option defaults marked assumed; PDF openings need listed form object numbers; straight walls only, no mismatched-thickness joins; draft ids are positional (not stable across edits); not exposed through CLI/MCP.",
+      "scope": "P6-04: calibrated DXF/PDF \u2192 non-persisted draft of BIM-IR walls and door/window openings (existing Element shape, metres, Compiler.Validate-clean) with per-element confidence, file/layer/handle or page/operator provenance, mm copies, and an uncertainty report (unpaired-line, ambiguous-thickness/pairing, gap, unclosed-join, unmatched-block, unhosted/ambiguous-host, opening-overlap, opening-beyond-clear-span, uncertainty-limit); nested door blocks, through-wall tees, grid neighbour lookups and work budgets with draft-limit. CI 41672486856."
+    },
+    {
+      "id": "generative-apartment-prototypes",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/Prototype.cs",
+        "core/Bim.Generative/PrototypeTemplates.cs",
+        "core/Bim.Generative/PrototypeGenerator.cs",
+        "core/Bim.Generative/PrototypeSerializer.cs",
+        "tests/generative/PrototypeTests.cs"
+      ],
+      "blocker": "Rooms planned around approved ones share one free rectangle; no corridors/doors as elements (P7-04); level 0 only; CABA values copied into code and drift-guarded by tests reading the skill pack; not exposed through CLI/MCP.",
+      "scope": "P7-03: 1/2/3-bedroom typology templates produce P6-03 briefs on a given lot with CABA minimums (incl. corridor side for halls) and ranked layouts (P7-01 planner + P7-02 ranker); approved rooms/walls are kept bit-identical on reconfiguration (typology, lot depth), moving layouts rejected with reasons, unsatisfiable approval sets refused up front with typed codes; canonical culture-invariant JSON with a pinned SHA-256. CI 41675668145."
     }
   ]
 }
