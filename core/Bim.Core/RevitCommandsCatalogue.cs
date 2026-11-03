@@ -62,9 +62,10 @@ public static partial class RevitCommandCatalogue
         new RevitCommandSpec("room.create", true, "Place a room on a level at a plan point inside an enclosed area, with optional name and number. Allowed only on enabled test copies.", RoomSchema, BindRoom),
     };
 
-    // Every command the protocol accepts: v1, then v2, then the view commands (P4-01). Lazy because those entries
-    // live in other parts of this partial class, whose static initializers may run in any order.
-    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).ToArray());
+    // Every command the protocol accepts: v1, then v2, then the view commands (P4-01), then query.snapshot (P2-01,
+    // Mirror.cs). Lazy because those entries live in other parts of this partial class, whose static initializers may
+    // run in any order.
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).ToArray());
     public static IReadOnlyList<RevitCommandSpec> All => AllSpecs.Value;
 
     public static RevitCommandSpec? Find(string name) => All.FirstOrDefault(spec => spec.Name == name);

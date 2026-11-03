@@ -81,8 +81,8 @@ static class CatalogueViewsChecks
     {
         var names = RevitCommandCatalogue.Views.Select(spec => spec.Name).ToArray();
         Check(names.SequenceEqual(ViewCommands), "view catalogue lists the two queries and three creators in order", string.Join(",", names));
-        Check(RevitCommandCatalogue.All.SequenceEqual(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views)), "All is v1, then v2, then the view commands");
-        Check(RevitCommandCatalogue.All.Select(spec => spec.Name).Distinct().Count() == 18 && RevitCommandCatalogue.All.Select(spec => spec.ToolName).Distinct().Count() == 18, "command and tool names stay distinct across v1, v2 and views");
+        Check(RevitCommandCatalogue.All.Take(18).SequenceEqual(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views)), "All starts with v1, then v2, then the view commands (later catalogue parts follow)");
+        Check(RevitCommandCatalogue.All.Select(spec => spec.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(spec => spec.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct across every catalogue part");
         Check(RevitCommandCatalogue.Views.All(spec => spec.ToolName == "revit_" + spec.Name.Replace('.', '_') && System.Text.RegularExpressions.Regex.IsMatch(spec.ToolName, @"\Arevit_[a-z0-9_]+\z")), "view tool names are revit_<command with . replaced by _>");
         Check(RevitCommandCatalogue.Views.Where(spec => spec.Writes).Select(spec => spec.Name).SequenceEqual(new[] { "view.create_plan", "view.create_section", "view.create_3d" }), "the three view creators write; the two queries are read-only");
         foreach (var name in names) Check(ReferenceEquals(RevitCommandCatalogue.Find(name), RevitCommandCatalogue.Views.Single(spec => spec.Name == name)), "Find resolves view command " + name);
