@@ -1,14 +1,15 @@
 # Headless stand-in for the add-in pipe, for test-catalogue-session.ps1 only: serves one request line per connection
-# on the given process-shaped pipe name, answers it with fake-revit-command-executor.ps1 and logs every received
-# operation_id (one per line) so the test can prove which requests the CLI forwarded. Stops after MaxRequests
+# on the given process-shaped pipe name, answers it with fake-revit-command-executor.ps1 (revit.command lines through
+# Invoke-FakeRevitCommand, journal.read lines through Invoke-FakeRevitWire) and logs every received operation_id, or
+# "journal.read", one per line, so the test can prove which requests reached the pipe. Stops after MaxRequests
 # connections or TimeoutSeconds.
 param(
     [Parameter(Mandatory)][string]$PipeName,
     [Parameter(Mandatory)][string]$DocumentUid,
     [Parameter(Mandatory)][string]$ReadyFile,
     [Parameter(Mandatory)][string]$LogFile,
-    [ValidateRange(1, 100)][int]$MaxRequests = 40,
-    [ValidateRange(5, 600)][int]$TimeoutSeconds = 180
+    [ValidateRange(1, 1000)][int]$MaxRequests = 400,
+    [ValidateRange(5, 1800)][int]$TimeoutSeconds = 600
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/fake-revit-command-executor.ps1"
@@ -32,7 +33,11 @@ for ($served = 0; $served -lt $MaxRequests -and [DateTime]::UtcNow -lt $deadline
         $marker = '"Command":'
         $at = $line.LastIndexOf($marker, [StringComparison]::Ordinal)
         $outer = $line | ConvertFrom-Json
-        if ($at -lt 0 -or $outer.Operation -ne 'revit.command' -or !$line.EndsWith('}')) { $response = ConvertTo-FakeResponseJson (New-FakeFailure 'envelope_invalid' $null 'not a revit.command wire line') }
+        if ($outer.Operation -eq 'journal.read') {
+            $response = Invoke-FakeRevitWire $state $line
+            [IO.File]::AppendAllText($LogFile, "journal.read`n")
+        }
+        elseif ($at -lt 0 -or $outer.Operation -ne 'revit.command' -or !$line.EndsWith('}')) { $response = ConvertTo-FakeResponseJson (New-FakeFailure 'envelope_invalid' $null 'not a revit.command wire line') }
         else {
             $commandText = $line.Substring($at + $marker.Length, $line.Length - $at - $marker.Length - 1)
             $response = Invoke-FakeRevitCommand $state $commandText
