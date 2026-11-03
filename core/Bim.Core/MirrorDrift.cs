@@ -301,8 +301,6 @@ public static class MirrorDrift
         catch (InvalidOperationException) { throw new ArgumentException(SnapshotInvalidCode + " value type"); }
     }
 
-    static readonly bool RedPhase = true;
-
     sealed class Evidence
     {
         public readonly List<(long Sequence, string Text, bool External)> Journal = new();
@@ -312,7 +310,6 @@ public static class MirrorDrift
     public static MirrorDriftReport Compare(MirrorSnapshot snapshot, MirrorCommittedModel committed, IReadOnlyList<MirrorJournalEntry>? journal = null,
         MirrorDriftOptions? options = null, IReadOnlyList<MirrorAddInReceipt>? receipts = null)
     {
-        if (RedPhase) throw new NotImplementedException("drift_compare_not_implemented");
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(committed);
         options ??= new MirrorDriftOptions();
