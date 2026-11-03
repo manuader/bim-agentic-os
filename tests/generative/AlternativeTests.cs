@@ -205,16 +205,18 @@ static class AlternativeTests
             && AlternativeSetSerializer.Serialize(infeasible) == AlternativeSetSerializer.Serialize(AlternativeGenerator.Generate(crowded, new AlternativeOptions(3))), "infeasible sets serialize deterministically");
 
         // ---- the upper bound plans within time ----
-        // Four rooms with a range-only room and two preferred pairs, so distinct layouts score differently (a 3-room brief
-        // with exact targets only yields mirror-equivalent layouts with equal totals).
-        var small = Brief("small", 8, 6, new[] { Room("a", 12), Room("b", 9), Room("c", min: 5, max: 8), Room("d", 5) },
-            new[] { Adj("a", "b", BriefAdjacencyKind.Required), Adj("a", "c", BriefAdjacencyKind.Preferred), Adj("b", "d", BriefAdjacencyKind.Preferred) });
+        // apartment-2br from seed 0 covers seeds 0..11, which give layouts with different totals. Small briefs whose
+        // targets the search meets exactly give only mirror-equivalent layouts: several ranked, all with equal totals.
         var watch = Stopwatch.StartNew();
-        var full = AlternativeGenerator.Generate(small, new AlternativeOptions(AlternativeGenerator.MaxCount, BaseSeed: int.MaxValue - 10));
+        var full = AlternativeGenerator.Generate(example, new AlternativeOptions(AlternativeGenerator.MaxCount, BaseSeed: 0));
         watch.Stop();
-        Check(full.Alternatives.Count == 64 && full.Alternatives.Select(a => a.Seed).Distinct().Count() == 64 && full.Ranked.Count >= 2 && full.Ranked.Select(a => a.Total).Distinct().Count() >= 2 && full.Ranked.All(a => ExplanationProblem(a) is null),
-            "64 alternatives (seeds wrapping past int.MaxValue) are distinct and explained", Describe(full));
-        Check(watch.Elapsed.TotalSeconds < 30, "64 alternatives of a 4-room brief take under 30 s", watch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms");
+        Check(full.Alternatives.Count == 64 && full.Alternatives.Select(a => a.Seed).Distinct().Count() == 64 && full.Ranked.Count >= 2 && full.Ranked.Select(a => a.Total).Distinct().Count() >= 2
+            && full.Ranked.All(a => ExplanationProblem(a) is null), "64 apartment-2br alternatives are distinct, explained and differ in total", Describe(full));
+        Check(watch.Elapsed.TotalSeconds < 30, "64 apartment-2br alternatives take under 30 s", watch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms");
+        var small = Brief("small", 6, 6, new[] { Room("a", 10), Room("b", 8), Room("c", 6) }, new[] { Adj("a", "b", BriefAdjacencyKind.Required) });
+        var wrapped = AlternativeGenerator.Generate(small, new AlternativeOptions(16, BaseSeed: int.MaxValue - 10));
+        Check(wrapped.Alternatives.Count == 16 && wrapped.Alternatives.Select(a => a.Seed).Distinct().Count() == 16 && wrapped.Alternatives.Any(a => a.Seed == int.MinValue)
+            && wrapped.Ranked.Count >= 2 && wrapped.Ranked.All(a => ExplanationProblem(a) is null), "seeds wrapping past int.MaxValue stay distinct and rank", Describe(wrapped));
     }
 
     // Null when the alternative has the six criteria in order, normalized scores in [0, 1], effective weights summing
