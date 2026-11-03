@@ -19,7 +19,7 @@ public sealed record ScoringWeights(double AreaFit = 0.30, double Adjacency = 0.
 public sealed record CriterionScore(string Criterion, double Raw, double Normalized, double Weight, double Contribution, string Detail);
 
 // Index is the generation position (0-based) and the stable tie-break. Rank is 1-based for ranked alternatives and 0
-// otherwise. Total is the in-order sum of the criteria contributions (0 when not ranked). Reasons explain a rejection:
+// otherwise. Total is the in-order sum of the criteria contributions, at most 1 (0 when not ranked). Reasons explain a rejection:
 // the plan's violations for an infeasible alternative, the earlier alternative for a duplicate.
 public sealed record Alternative(int Index, int Seed, AlternativeStatus Status, int Rank, double Total, IReadOnlyList<CriterionScore> Criteria,
     IReadOnlyList<string> Reasons, int? DuplicateOfIndex, SpacePlan Plan);
@@ -44,5 +44,6 @@ public static class AlternativeCodes
     // Rejection reasons of single alternatives.
     public const string DuplicateGeometry = "duplicate_geometry";
     public const string PlanEmpty = "plan_empty";
+    public const string RectInvalid = "rect_invalid";
     public const string ScoreNotFinite = "score_not_finite";
 }

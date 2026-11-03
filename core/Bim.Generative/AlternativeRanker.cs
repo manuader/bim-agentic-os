@@ -5,29 +5,35 @@ namespace Bim.Generative;
 // Scores and ranks a list of space plans of one brief. Steps:
 // 1. Refuse an empty or oversized list (alternatives_count_invalid, 1..AlternativeGenerator.MaxCount) and invalid
 //    weights (weights_invalid: any weight negative or non-finite, or all zero) before looking at any plan.
-// 2. Reject every infeasible plan (status infeasible, reasons = its violations) and every feasible plan without rooms
-//    (plan_empty). A feasible plan whose rooms (instance id, level, x, y, width, depth, compared bit for bit) equal
-//    those of an earlier feasible plan is a duplicate (duplicate_geometry naming that plan's seed and index).
+// 2. Reject every infeasible plan (status infeasible, reasons = its violations), every feasible plan without rooms
+//    (plan_empty) and every plan with a room whose width or depth is not positive and finite (rect_invalid). A
+//    feasible plan whose rooms equal those of an earlier ranked plan is a duplicate (duplicate_geometry naming that
+//    plan's seed and index). Rooms are compared as the sorted set of (room id, level, x, y, width, depth bit
+//    patterns), so swapping two instances of one room or reordering the room list does not escape deduplication.
 // 3. Score each remaining plan with six criteria, each normalized to [0, 1] with higher better:
-//    area_fit     raw: mean relative deviation |area - reference| / reference over the instances that have a reference
-//                 area (the brief target, else the midpoint of a min/max range); normalized: max(0, 1 - raw); raw 0
-//                 when no room has a reference.
-//    adjacency    raw: fraction of instance checks met over the brief's required and preferred adjacencies (each
-//                 instance of either room must share a wall of at least the plan's door width with an instance of the
-//                 other room on its level); normalized: raw; 1 when the brief has no such adjacency.
+//    area_fit     raw: mean over the rooms with an area requirement of the per-room relative deviation, clamped to 1:
+//                 |area - target| / target for a room with a target; for a room with only a min and/or max, 0 inside
+//                 the range, else (min - area) / min or (area - max) / max. normalized: 1 - raw; raw 0 when no room
+//                 states an area.
+//    adjacency    raw: mean over the brief's preferred adjacency pairs of the fraction of instance checks met (each
+//                 instance of either room shares a wall of at least the plan's door width with an instance of the other
+//                 room on its level); normalized: raw; 1 when the brief has no preferred pair. Required pairs are hard
+//                 planner gates (always met in a ranked plan) and forbidden pairs hard exclusions, so neither is scored.
 //    proportions  raw: mean room aspect ratio (long side / short side); normalized: mean per-room quality
 //                 min(1, 2 / aspect), so proportions up to 2:1 are ideal.
-//    compactness  raw: mean over occupied levels of the room bounding box perimeter / (4 * sqrt(box area)), 1 for a
-//                 square envelope; normalized: 1 / raw.
-//    perimeter    raw: total room perimeter / total room area (m of wall per m2, a circulation and wall-length proxy);
-//                 normalized: sum of 4 * sqrt(room area) (the perimeter of equal-area squares) / total room perimeter.
+//    compactness  raw: mean over occupied levels of the room bounding box perimeter / (4 * sqrt(sum of room areas)),
+//                 1 only when the rooms fill a square envelope; scattered rooms and elongated envelopes both raise it;
+//                 normalized: 1 / raw (clamped to 1).
+//    perimeter    raw: total room perimeter / total room area (m of wall per m2, a room-shape and wall-length proxy,
+//                 not a circulation model: the planner has no corridors); normalized: sum of 4 * sqrt(room area) (the
+//                 perimeter of equal-area squares) / total room perimeter.
 //    compliance   raw: fraction of the plan's hard planner checks satisfied (area_min/area_max/side_min including rule
 //                 minimums such as CABA dimensions, in_site, no_overlap, area_budget, required/forbidden adjacency);
 //                 normalized: raw; 1 when the plan lists none. Only feasible plans are ranked, so it is 1 for every
 //                 ranked alternative and documents the gate rather than separating them.
 //    Each weight is divided by the sum of weights; contribution = weight * normalized; the total is the sum of the
-//    contributions in the order above, so the explanation always adds up to the total. A non-finite measure rejects
-//    the plan (score_not_finite).
+//    contributions in the order above, clamped to at most 1 against rounding only, so the explanation adds up to the
+//    total. A non-finite measure rejects the plan (score_not_finite); such a plan is never the original of a duplicate.
 // 4. Rank by total descending, ties by generation index ascending (a stable, deterministic order). Ranked
 //    alternatives come first with ranks 1..k, then duplicates and infeasible ones in generation order.
 public static class AlternativeRanker
@@ -67,6 +73,13 @@ public static class AlternativeRanker
                 rejected.Add(Rejected(index, plan, AlternativeStatus.Infeasible, new[] { AlternativeCodes.PlanEmpty + "@plan: a feasible plan without rooms cannot be scored" }, null));
                 continue;
             }
+            var invalid = plan.Rooms.Where(room => !(double.IsFinite(room.Rect.Width) && room.Rect.Width > 0 && double.IsFinite(room.Rect.Depth) && room.Rect.Depth > 0)).ToArray();
+            if (invalid.Length > 0)
+            {
+                rejected.Add(Rejected(index, plan, AlternativeStatus.Infeasible, invalid.Select(room => AlternativeCodes.RectInvalid + "@" + room.InstanceId
+                    + ": width and depth must be positive and finite").ToArray(), null));
+                continue;
+            }
             var key = GeometryKey(plan);
             if (seen.TryGetValue(key, out var original))
             {
@@ -74,7 +87,6 @@ public static class AlternativeRanker
                     + Text(plans[original].Seed) + " (index " + Text(original) + ")" }, original));
                 continue;
             }
-            seen[key] = index;
             var criteria = Score(brief, plan, effective);
             if (criteria.Any(criterion => !double.IsFinite(criterion.Raw) || !double.IsFinite(criterion.Normalized)))
             {
@@ -84,6 +96,8 @@ public static class AlternativeRanker
             }
             double total = 0;
             foreach (var criterion in criteria) total += criterion.Contribution;
+            total = Math.Min(1, total);
+            seen[key] = index;
             scored.Add(new Alternative(index, plan.Seed, AlternativeStatus.Ranked, 0, total, criteria, Array.Empty<string>(), null, plan));
         }
         var ordered = scored.OrderByDescending(alternative => alternative.Total).ThenBy(alternative => alternative.Index)
@@ -118,8 +132,8 @@ public static class AlternativeRanker
     static Alternative Rejected(int index, SpacePlan plan, AlternativeStatus status, IReadOnlyList<string> reasons, int? duplicateOf) =>
         new(index, plan.Seed, status, 0, 0, Array.Empty<CriterionScore>(), reasons, duplicateOf, plan);
 
-    static string GeometryKey(SpacePlan plan) => string.Join(";", plan.Rooms.Select(room => room.InstanceId + "\u0001" + Text(room.Level) + "\u0001" + Bits(room.Rect.X)
-        + "," + Bits(room.Rect.Y) + "," + Bits(room.Rect.Width) + "," + Bits(room.Rect.Depth)));
+    static string GeometryKey(SpacePlan plan) => string.Join(";", plan.Rooms.Select(room => room.RoomId + "\u0001" + Text(room.Level) + "\u0001" + Bits(room.Rect.X)
+        + "," + Bits(room.Rect.Y) + "," + Bits(room.Rect.Width) + "," + Bits(room.Rect.Depth)).OrderBy(entry => entry, StringComparer.Ordinal));
 
     static string Bits(double value) => BitConverter.DoubleToInt64Bits(value == 0 ? 0 : value).ToString(CultureInfo.InvariantCulture);
 
@@ -135,38 +149,51 @@ public static class AlternativeRanker
         foreach (var room in rooms)
         {
             if (!specs.TryGetValue(room.RoomId, out var spec)) continue;
-            double? reference = spec.TargetAreaSquareMetres?.Value
-                ?? (spec.MinAreaSquareMetres is { } low && spec.MaxAreaSquareMetres is { } high ? (double?)((low.Value + high.Value) / 2) : null);
-            if (reference is not { } value || !(value > 0)) continue;
-            deviation += Math.Abs(room.AreaSquareMetres - value) / value;
+            var roomArea = room.AreaSquareMetres;
+            double roomDeviation;
+            if (spec.TargetAreaSquareMetres is { } target && target.Value > 0) roomDeviation = Math.Abs(roomArea - target.Value) / target.Value;
+            else if (spec.MinAreaSquareMetres is not null || spec.MaxAreaSquareMetres is not null)
+            {
+                roomDeviation = 0;
+                if (spec.MinAreaSquareMetres is { } low && low.Value > 0 && roomArea < low.Value) roomDeviation = (low.Value - roomArea) / low.Value;
+                if (spec.MaxAreaSquareMetres is { } high && high.Value > 0 && roomArea > high.Value) roomDeviation = (roomArea - high.Value) / high.Value;
+            }
+            else continue;
+            deviation += Math.Min(1, roomDeviation);
             referenced++;
         }
         var areaRaw = referenced == 0 ? 0 : deviation / referenced;
-        var areaDetail = referenced == 0 ? "no room has a target area or min/max range"
-            : "mean relative deviation from the reference area over " + Text(referenced) + " of " + Text(rooms.Count) + " rooms (target, else range midpoint)";
+        var areaDetail = referenced == 0 ? "no room states a target area or min/max range"
+            : "mean relative deviation (per room at most 1; ranges penalised only outside) over " + Text(referenced) + " of " + Text(rooms.Count) + " rooms";
 
         // adjacency
         var door = plan.DoorWidthMetres;
+        double pairScores = 0;
         int checks = 0, met = 0, pairCount = 0;
-        var pairs = new HashSet<(string, string, BriefAdjacencyKind)>();
+        var pairs = new HashSet<(string, string)>();
         foreach (var adjacency in brief.Adjacencies)
         {
-            if (adjacency.Kind == BriefAdjacencyKind.Forbidden) continue;
-            var key = string.CompareOrdinal(adjacency.A, adjacency.B) < 0 ? (adjacency.A, adjacency.B, adjacency.Kind) : (adjacency.B, adjacency.A, adjacency.Kind);
+            if (adjacency.Kind != BriefAdjacencyKind.Preferred) continue;
+            var key = string.CompareOrdinal(adjacency.A, adjacency.B) < 0 ? (adjacency.A, adjacency.B) : (adjacency.B, adjacency.A);
             if (!pairs.Add(key)) continue;
-            pairCount++;
             var a = rooms.Where(room => room.RoomId == adjacency.A).ToArray();
             var b = rooms.Where(room => room.RoomId == adjacency.B).ToArray();
+            int pairChecks = 0, pairMet = 0;
             foreach (var (side, other) in new[] { (a, b), (b, a) })
                 foreach (var room in side)
                 {
-                    checks++;
-                    if (other.Any(partner => partner.Level == room.Level && Shared(room.Rect, partner.Rect) >= door)) met++;
+                    pairChecks++;
+                    if (other.Any(partner => partner.Level == room.Level && Shared(room.Rect, partner.Rect) >= door)) pairMet++;
                 }
+            if (pairChecks == 0) continue;
+            pairScores += (double)pairMet / pairChecks;
+            checks += pairChecks;
+            met += pairMet;
+            pairCount++;
         }
-        var adjacencyRaw = checks == 0 ? 1 : (double)met / checks;
-        var adjacencyDetail = checks == 0 ? "the brief has no required or preferred adjacency"
-            : Text(met) + " of " + Text(checks) + " instance checks over " + Text(pairCount) + " required/preferred adjacencies share a wall of at least " + Format(door) + " m";
+        var adjacencyRaw = pairCount == 0 ? 1 : pairScores / pairCount;
+        var adjacencyDetail = pairCount == 0 ? "the brief has no preferred adjacency (required ones are hard planner gates)"
+            : "mean over " + Text(pairCount) + " preferred pairs; " + Text(met) + " of " + Text(checks) + " instance checks share a wall of at least " + Format(door) + " m";
 
         // proportions
         double aspectSum = 0, qualitySum = 0;
@@ -188,7 +215,8 @@ public static class AlternativeRanker
         {
             var width = group.Max(room => room.Rect.Right) - group.Min(room => room.Rect.X);
             var depth = group.Max(room => room.Rect.Top) - group.Min(room => room.Rect.Y);
-            ratioSum += 2 * (width + depth) / (4 * Math.Sqrt(width * depth));
+            var filled = group.Sum(room => room.AreaSquareMetres);
+            ratioSum += 2 * (width + depth) / (4 * Math.Sqrt(filled));
             levels++;
         }
         var compactRaw = ratioSum / levels;
@@ -213,7 +241,7 @@ public static class AlternativeRanker
             Criterion("area_fit", areaRaw, Math.Max(0, 1 - areaRaw), weights[0], areaDetail),
             Criterion("adjacency", adjacencyRaw, adjacencyRaw, weights[1], adjacencyDetail),
             Criterion("proportions", aspectRaw, aspectNormalized, weights[2], "mean aspect ratio " + Format(aspectRaw) + " over " + Text(rooms.Count) + " rooms; quality min(1, 2 / aspect)"),
-            Criterion("compactness", compactRaw, 1 / compactRaw, weights[3], "mean envelope perimeter / (4 sqrt(area)) over " + Text(levels) + " levels; 1 is a square envelope"),
+            Criterion("compactness", compactRaw, 1 / compactRaw, weights[3], "mean bounding box perimeter / (4 sqrt(room area)) over " + Text(levels) + " levels; 1 is a square envelope filled by its rooms"),
             Criterion("perimeter", perimeterRaw, ideal / perimeter, weights[4], "room perimeter " + Format(perimeter) + " m over " + Format(area) + " m2; equal-area squares need " + Format(ideal) + " m"),
             Criterion("compliance", complianceRaw, complianceRaw, weights[5], hard.Length == 0 ? "the plan lists no hard planner checks"
                 : Text(satisfied) + " of " + Text(hard.Length) + " hard planner checks satisfied (areas, sides incl. rule minimums, site, overlap, budget, adjacency)"),
