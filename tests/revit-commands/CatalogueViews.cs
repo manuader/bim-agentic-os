@@ -247,9 +247,12 @@ static class CatalogueViewsChecks
 
         Check(Thrown(() => CommandRulesViews.CheckTemplate("FloorPlan", "FloorPlan")) is null, "a floor plan template fits a floor plan");
         Check(Thrown(() => CommandRulesViews.CheckTemplate("Section", "FloorPlan")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.view_template" }, "a section template on a floor plan is args_invalid");
-        Check(Thrown(() => CommandRulesViews.CheckNameFree("Level 1", new[] { "Level 2", "level 1" })) is null, "a name differing only in case from an existing view is free (ordinal)");
+        Check(Thrown(() => CommandRulesViews.CheckNameFree("Level 1", new[] { "Level 2", "level 1" })) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.name" }, "a name differing only in case from an existing view or template is args_invalid (fail closed: Revit name rules are not ordinal)");
+        Check(Thrown(() => CommandRulesViews.CheckNameFree("Level 1", new[] { "Level 2", "Level 10" })) is null, "a name no existing view or template uses is free");
         Check(Thrown(() => CommandRulesViews.CheckNameFree("Level 1", new[] { "Level 2", "Level 1" })) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.name" }, "a name already used by a view of the same type is args_invalid");
         Check(Thrown(() => CommandRulesViews.CheckNameFree(null, new[] { "Level 1" })) is null, "no requested name never collides");
+        Check(Thrown(() => CommandRulesViews.CheckScaleAllowed(hasDefaultTemplate: false, scale: 50)) is null && Thrown(() => CommandRulesViews.CheckScaleAllowed(hasDefaultTemplate: true, scale: null)) is null, "a scale is allowed when the view family type applies no default template, and no scale is always allowed");
+        Check(Thrown(() => CommandRulesViews.CheckScaleAllowed(hasDefaultTemplate: true, scale: 50)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.scale" } scaleRefusal && scaleRefusal.Detail!.Contains("template", StringComparison.Ordinal), "a scale with a view family type that applies a default template is args_invalid on args.scale");
 
         var args = (ViewSectionCreateArgs)RevitCommandProtocol.Parse(Envelope("view.create_section", Section()).ToJsonString()).Args;
         var frame = CommandRulesViews.Section(args);
@@ -322,6 +325,9 @@ static class CatalogueViewsChecks
         var threeJson = JsonNode.Parse(CommandReadbackViews.ThreeDJson(plan with { ViewType = "ThreeD", LevelUid = null }, iso))!["view"]!;
         Check(!threeJson["three_d"]!["perspective"]!.GetValue<bool>() && threeJson["three_d"]!["section_box_active"]!.GetValue<bool>() && threeJson["three_d"]!["section_box"]!["max"]![0]!.GetValue<double>() == 8000 && threeJson["three_d"]!["forward_direction"]!.AsArray().Count == 3,
             "3D readback JSON embeds the view, perspective flag, section box and orientation", threeJson.ToJsonString());
+        var inactive = JsonNode.Parse(CommandReadbackViews.ThreeDJson(plan with { ViewType = "ThreeD", LevelUid = null }, iso with { SectionBoxActive = false }))!["view"]!;
+        Check(inactive["three_d"]!["section_box"] is null && !inactive["three_d"]!["section_box_active"]!.GetValue<bool>(), "3D readback JSON reports a null section box when the box is inactive, even if Revit returns its extents", inactive.ToJsonString());
+        Check(CommandReadbackViews.ThreeD(null, iso with { SectionBoxActive = false }) is null, "an inactive section box with readable extents matches a request without a box");
         var plain = JsonNode.Parse(CommandReadbackViews.ThreeDJson(plan with { ViewType = "ThreeD", LevelUid = null }, iso with { SectionBoxActive = false, BoxMin = null, BoxMax = null }))!["view"]!;
         Check(plain["three_d"]!["section_box"] is null, "3D readback JSON reports a null section box when there is none", plain.ToJsonString());
     }
