@@ -1077,3 +1077,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay147 — 2026-11-03T22:53:12Z (Claude, cloud scheduled)
 - 22:53Z LOCK taken (was FREE since relay145 2026-11-03T22:17:32Z).
+- 22:53Z dispatching 3 workers (owner PRIORITY Phase 9 batch from OWNER.md 18:49 + oldest-touched phases 8, 3): P9-06 material.create + wall_type.create + floor_type.create with layers (new; also loading P9-07 roof.create_extrusion, P9-08 document.save/save_as into enabled roots, P9-09 direct_shape site elements as ⏳), P8-05 third-party IFC import robustness, P3-04 localized validation. Owner chat active on merge-wall-profile (22:50Z) — not touched.
