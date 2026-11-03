@@ -23,7 +23,7 @@ try {
         }
         if (!$Dotnet) { throw 'net8 SDK missing. Install .NET 8 SDK or explicitly use -HostOnly; target build remains unverified.' }
         Invoke-EvidenceCommand sdk $Dotnet @('--info') $evidence
-        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/typed-geometry','tests/evaluation','tests/Bim.Tests','tests/reconcile','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/integration/NativeReconcileGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp','tests/cli','tests/revit-commands','tests/integration/RevitCommandGuard.Tests','tests/graph','tests/brief','tests/audit','tests/intent','tests/skills','core/Bim.Generative','tests/generative','adapters/cad/Bim.Cad','tests/cad')) {
+        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/typed-geometry','tests/evaluation','tests/Bim.Tests','tests/reconcile','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/integration/NativeReconcileGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp','tests/cli','tests/revit-commands','tests/integration/RevitCommandGuard.Tests','tests/graph','tests/brief','tests/audit','tests/intent','tests/plan-to-commands','tests/skills','core/Bim.Generative','tests/generative','adapters/cad/Bim.Cad','tests/cad')) {
             Invoke-EvidenceCommand ('build-' + ($project -replace '/', '-')) $Dotnet @('build',"$root/$project",'--configuration','Release','--warnaserror') $evidence
         }
         Invoke-EvidenceCommand evaluator-unit-health $Dotnet @('run','--project',"$root/tests/evaluation",'--configuration','Release','--no-build') $evidence
@@ -46,6 +46,7 @@ try {
         Invoke-EvidenceCommand revit-commands-contract $Dotnet @('run','--project',"$root/tests/revit-commands",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand revit-command-guards $Dotnet @('run','--project',"$root/tests/integration/RevitCommandGuard.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand intent-tests $Dotnet @('run','--project',"$root/tests/intent",'--configuration','Release','--no-build') $evidence
+        Invoke-EvidenceCommand plan-to-commands-tests $Dotnet @('run','--project',"$root/tests/plan-to-commands",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand skills-tests $Dotnet @('run','--project',"$root/tests/skills",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand generative-tests $Dotnet @('run','--project',"$root/tests/generative",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand cad-tests $Dotnet @('run','--project',"$root/tests/cad",'--configuration','Release','--no-build') $evidence
