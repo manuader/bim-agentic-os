@@ -49,6 +49,10 @@ The committed snapshot increments revision after applying a same-revision plan. 
 
 Core UUIDs are persisted in `BimCompiledIdentity`; IFC GlobalIds and STEP identities remain stable through corrections. Before/after physical readback is checked against intended boxes and independent world triangulation/schema validation. CLI `ifc-export before.json after.json plan.json room-guid operation-id` emits the adapter envelope. The evaluator uses the same export service for its default5→5.4m case; custom widths are tested separately without weakening its fixed master A/B oracle.
 
+## glTF 2.0 export for Blender interchange (P8-04)
+
+`adapters/gltf/Bim.Gltf` (BCL-only, references `core/Bim.Core`) converts a compiled BIM-IR `Project` into a `.glb` or a `.gltf` with an embedded buffer; [README](../../adapters/gltf/README.md). Input must pass `Compiler.Validate` and `GeometryCodec.Problem`; at most 10 000 elements; coordinates (including wall face corners) within ±1e4 m and lengths of at least 1 mm (`gltf_precision`); `WriteGlb` never overwrites (`output_exists`) and removes its own file on a failed write. One root node per project and one child node per element named `<kind> <id>` with extras `{bim_id, kind, type (always null), level}`; walls become centre-line boxes from their level elevation, spaces their interior rectangle at level elevation, levels empty nodes at their elevation, documentation empty nodes. Metres, BIM Z-up mapped to glTF Y-up as (x, y, z) → (x, z, −y), per-kind materials. Output bytes are deterministic across OS and culture (golden SHA-256 in `tests/gltf`). Export only: no import, no CLI command, no openings or slabs (not in BIM-IR), not run in Blender. Status: unit-tested.
+
 ## Isolated native Room A/B port
 
 `fixture.room.ab` is a bounded fixture operation using the existing Request fields: exact DocumentPath, UniqueId=ProjectInformation.UniqueId, empty Metres and null Batch/Checkpoint. It runs through the serialized ExternalEvent only. It does not widen primitive batch support or change saved Core records.
