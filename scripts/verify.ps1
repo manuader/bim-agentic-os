@@ -11,6 +11,7 @@ try {
     Invoke-EvidenceCommand native-smoke-cli $pwsh @('-NoProfile','-File',"$root/tests/integration/test-native-smoke-cli.ps1") $evidence
     Invoke-EvidenceCommand fixture-launcher $pwsh @('-NoProfile','-File',"$root/tests/integration/test-fixture-launcher.ps1") $evidence
     Invoke-EvidenceCommand catalogue-session $pwsh @('-NoProfile','-File',"$root/tests/integration/test-catalogue-session.ps1") $evidence
+    Invoke-EvidenceCommand install-mcp $pwsh @('-NoProfile','-File',"$root/tests/integration/test-install-mcp.ps1") $evidence
     if ($HostOnly) {
         'MODE host-only: net8 target build and native execution UNVERIFIED'
         Invoke-EvidenceCommand core-tests $pwsh @('-NoProfile','-File',"$PSScriptRoot/test-roslyn.ps1") $evidence
@@ -33,6 +34,7 @@ try {
         Invoke-EvidenceCommand catalogue-session-cli $pwsh @('-NoProfile','-File',"$root/tests/integration/test-catalogue-session.ps1",'-Dotnet',$Dotnet,'-CliDll',"$root/interfaces/cli/bin/Release/net8.0/Bim.Cli.dll") $evidence
         Invoke-EvidenceCommand native-room-contract $Dotnet @('run','--project',"$root/tests/native-room",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand mcp-contract $Dotnet @('run','--project',"$root/tests/mcp",'--configuration','Release','--no-build') $evidence
+        Invoke-EvidenceCommand install-mcp-launch $pwsh @('-NoProfile','-File',"$root/tests/integration/test-install-mcp.ps1",'-Dotnet',$Dotnet,'-McpDll',"$root/interfaces/mcp/bin/Release/net8.0/Bim.Mcp.dll") $evidence
         Invoke-EvidenceCommand native-room-guards $Dotnet @('run','--project',"$root/tests/integration/NativeRoomGuard.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand native-reconcile-guards $Dotnet @('run','--project',"$root/tests/integration/NativeReconcileGuard.Tests",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand checkpoint-guards $Dotnet @('run','--project',"$root/tests/integration/CheckpointGuard.Tests",'--configuration','Release','--no-build') $evidence
