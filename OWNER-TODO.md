@@ -55,3 +55,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay135 (2026-11-02, cloud)
 - No new owner action. Still open: 🔒 P1-04/C04 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and 🔒 N21 `... -Runs 1`.
+
+## Relay136 (2026-11-03, cloud)
+- [ ] Optional, when convenient: register the MCP server in Claude Desktop (P1-03). Quit Claude Desktop, `git pull`, then `pwsh -NoProfile -File scripts/install-mcp.ps1 -Build` (prints CONFIG path and makes a backup; roll back with `-Uninstall`). Check Settings → Developer shows bim-agentic-os. See docs/mcp-setup.md.
+- [ ] 🔒 Catalogue v2 (P9-01: roof, stair, curtain wall, floor opening) still needs an owner-attended smoke run on a test copy; it will be added to `-Catalogue` in a later relay. Still open: 🔒 P1-04/C04 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and 🔒 N21 `... -Runs 1`.
