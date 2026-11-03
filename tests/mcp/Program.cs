@@ -121,15 +121,17 @@ Check(outOfRange,"PermissionLevelName rejects an undefined level with ArgumentOu
 
 // The tool list fails closed at construction: duplicate or non-MCP tool names throw instead of shadowing a tool.
 RevitCommandSpec Synthetic(string name,bool writes=false)=>new(name,writes,"Synthetic test command.","""{"type":"object","properties":{},"additionalProperties":false}""",_=>new EmptyQueryArgs());
-bool Throws(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpServer(catalogue,RevitCommandPolicy.None,null,null); return false; } catch(InvalidOperationException) { return true; } }
-Check(!Throws(new[]{Synthetic("a.b"),Synthetic("c.d",true)}),"a synthetic catalogue with distinct valid names builds");
-var syntheticServer=new McpServer(new[]{Synthetic("a.b"),Synthetic("c.d",true)},RevitCommandPolicy.None,null,null);
-Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,revit_a_b,revit_c_d","the tool list follows the injected catalogue");
-Check(Throws(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")}),"colliding tool names (a.b_c vs a_b.c) fail closed at construction");
-Check(Throws(new[]{Synthetic("a.b"),Synthetic("a.b")}),"a duplicated command fails closed at construction");
-Check(Throws(new[]{Synthetic("a b")}),"a tool name outside [a-zA-Z0-9_-] fails closed at construction");
-Check(Throws(new[]{Synthetic(new string('x',59))}),"a tool name longer than 64 characters fails closed at construction");
-Check(!Throws(new[]{Synthetic(new string('x',58))}),"a 64-character tool name is accepted");
+string? BuildError(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpServer(catalogue,RevitCommandPolicy.None,null,null); return null; } catch(InvalidOperationException error) { return error.Message; } }
+string? NameError(params string[] names) { try { McpServer.CheckToolNames(names); return null; } catch(InvalidOperationException error) { return error.Message; } }
+Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)}) is null,"an injected catalogue with distinct valid names builds");
+var syntheticServer=new McpServer(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)},RevitCommandPolicy.None,null,null);
+Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
+Check(BuildError(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")})=="tool_name_duplicate: revit_a_b_c","colliding tool names (a.b_c vs a_b.c) fail closed at construction");
+Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("query.levels")})=="tool_name_duplicate: revit_query_levels","a duplicated command fails closed at construction");
+Check(BuildError(new[]{Synthetic("a b")})=="tool_name_invalid: revit_a b","a tool name outside [a-zA-Z0-9_-] fails closed at construction");
+Check(BuildError(new[]{Synthetic(new string('x',59))})?.StartsWith("tool_name_invalid: ",StringComparison.Ordinal)==true,"a tool name longer than 64 characters fails closed at construction");
+Check(BuildError(new[]{Synthetic("not.in_catalogue")})=="permission_level_unknown: not.in_catalogue","an entry the permission policy cannot classify fails closed at construction");
+Check(NameError("revit_"+new string('x',58),"diff")==null && NameError("")!=null && NameError("diff","diff")=="tool_name_duplicate: diff","the name rule accepts 64 characters and rejects empty and duplicate names");
 
 // v2 tools reach the same guarded service: reads go to the pipe on any document, writes only on enabled test copies.
 var forwardedLines=new List<string>();
