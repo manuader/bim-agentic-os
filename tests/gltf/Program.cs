@@ -60,6 +60,9 @@ var fixture = new Project(PID, 7, [
     if (20L + jsonLength > glb.Length) { issues.Add("JSON chunk overruns file"); return (issues, empty, Array.Empty<byte>()); }
     var jsonBytes = glb.AsSpan(20, jsonLength).ToArray();
     if (jsonBytes.Length >= 3 && jsonBytes[0] == 0xEF && jsonBytes[1] == 0xBB && jsonBytes[2] == 0xBF) issues.Add("JSON chunk has a BOM");
+    // Padding after the JSON value must be spaces (0x20), byte for byte.
+    var lastBrace = Array.LastIndexOf(jsonBytes, (byte)'}');
+    for (var i = lastBrace + 1; i < jsonBytes.Length; i++) if (jsonBytes[i] != 0x20) { issues.Add("JSON chunk padding is not 0x20"); break; }
     JsonElement root;
     try { root = JsonDocument.Parse(new UTF8Encoding(false, true).GetString(jsonBytes).TrimEnd(' ')).RootElement; }
     catch (Exception error) { issues.Add("JSON chunk does not parse: " + error.Message); return (issues, empty, Array.Empty<byte>()); }
@@ -100,6 +103,11 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
         if (buffers.Length == 1 && buffers[0].TryGetProperty("uri", out _)) issues.Add("GLB buffer 0 has a uri");
         if (buffers.Length == 1 && (Int(buffers[0], "byteLength") > bin.Length || bin.Length - Int(buffers[0], "byteLength") > 3)) issues.Add("buffer byteLength does not match BIN chunk");
         if (buffers.Length == 0 && bin.Length > 0) issues.Add("BIN chunk without buffer");
+        if (buffers.Length == 1)
+        {
+            var used = Math.Max(Int(buffers[0], "byteLength"), 0);
+            for (var i = used; i < bin.Length; i++) if (bin[i] != 0) { issues.Add("BIN chunk padding is not zero"); break; }
+        }
     }
     foreach (var b in buffers) if (Int(b, "byteLength") < 1) issues.Add("buffer byteLength < 1");
     var accessorsPerView = new int[views.Length];
@@ -168,6 +176,7 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
             if (mat < 0 || mat >= materials.Length) issues.Add($"mesh {m} material index invalid");
             var count = Int(pa, "count");
             if (nor >= 0 && (nor >= accessors.Length || Int(accessors[nor], "count") != count || accessors[nor].GetProperty("type").GetString() != "VEC3")) issues.Add($"mesh {m} NORMAL does not match POSITION");
+            if (nor >= 0 && nor < accessors.Length && Int(accessors[nor], "componentType") != 5126) issues.Add($"mesh {m} NORMAL not FLOAT");
             if (ind < 0 || ind >= accessors.Length) { issues.Add($"mesh {m} indices missing"); continue; }
             var ia = accessors[ind];
             if (Int(ia, "componentType") is not (5121 or 5123 or 5125) || ia.GetProperty("type").GetString() != "SCALAR") issues.Add($"mesh {m} indices not unsigned SCALAR");
@@ -181,7 +190,8 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
                 if (min[c].GetSingle() != lo || max[c].GetSingle() != hi) issues.Add($"mesh {m} POSITION min/max[{c}] differ from data ({min[c]}/{max[c]} vs {lo}/{hi})");
             }
             var indexCount = Int(ia, "count");
-            for (var i = 0; i < indexCount; i++) if (ReadIndex(ind, i) >= count) { issues.Add($"mesh {m} index {i} out of range"); break; }
+            var indicesInRange = true;
+            for (var i = 0; i < indexCount; i++) if (ReadIndex(ind, i) >= count) { issues.Add($"mesh {m} index {i} out of range"); indicesInRange = false; break; }
             if (nor >= 0)
             {
                 for (var i = 0; i < count; i++)
@@ -201,6 +211,37 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
                     if (cx * ReadF(nor, a, 0) + cy * ReadF(nor, a, 1) + cz * ReadF(nor, a, 2) <= 0) { issues.Add($"mesh {m} triangle {i / 3} winding disagrees with normal"); break; }
                 }
             }
+            // Closed meshes (every edge, by position, shared by exactly two triangles) must face outward: each
+            // triangle's geometric normal points away from the vertex centroid. Catches inside-out walls whose
+            // winding and vertex normals were flipped together.
+            if (indicesInRange && indexCount % 3 == 0)
+            {
+                (float, float, float) V(int k) => (ReadF(pos, k, 0), ReadF(pos, k, 1), ReadF(pos, k, 2));
+                var edgeUse = new Dictionary<((float, float, float), (float, float, float)), int>();
+                for (var i = 0; i < indexCount; i += 3)
+                {
+                    for (var e = 0; e < 3; e++)
+                    {
+                        var p = V((int)ReadIndex(ind, i + e)); var q = V((int)ReadIndex(ind, i + (e + 1) % 3));
+                        var key = Comparer<(float, float, float)>.Default.Compare(p, q) <= 0 ? (p, q) : (q, p);
+                        edgeUse[key] = edgeUse.GetValueOrDefault(key) + 1;
+                    }
+                }
+                if (edgeUse.Count > 0 && edgeUse.Values.All(u => u == 2))
+                {
+                    double mx = 0, my = 0, mz = 0;
+                    for (var k = 0; k < count; k++) { mx += ReadF(pos, k, 0); my += ReadF(pos, k, 1); mz += ReadF(pos, k, 2); }
+                    mx /= count; my /= count; mz /= count;
+                    for (var i = 0; i < indexCount; i += 3)
+                    {
+                        var a = V((int)ReadIndex(ind, i)); var b = V((int)ReadIndex(ind, i + 1)); var c = V((int)ReadIndex(ind, i + 2));
+                        double ux = b.Item1 - a.Item1, uy = b.Item2 - a.Item2, uz = b.Item3 - a.Item3, vx = c.Item1 - a.Item1, vy = c.Item2 - a.Item2, vz = c.Item3 - a.Item3;
+                        double cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+                        double tx = (a.Item1 + b.Item1 + c.Item1) / 3 - mx, ty = (a.Item2 + b.Item2 + c.Item2) / 3 - my, tz = (a.Item3 + b.Item3 + c.Item3) / 3 - mz;
+                        if (tx * cx + ty * cy + tz * cz <= 0) { issues.Add($"mesh {m} triangle {i / 3} faces inward (inside-out closed mesh)"); break; }
+                    }
+                }
+            }
         }
     }
     var meshUse = new int[meshes.Length];
@@ -215,6 +256,11 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
             if (c < 0 || c >= nodes.Length || c == n) issues.Add($"node {n} child invalid"); else childOf[c]++;
         }
         if (nodes[n].TryGetProperty("children", out var ch) && ch.GetArrayLength() == 0) issues.Add($"node {n} children empty");
+        foreach (var (prop, length) in new[] { ("translation", 3), ("rotation", 4), ("scale", 3), ("matrix", 16) })
+            if (nodes[n].TryGetProperty(prop, out var trs) && (trs.ValueKind != JsonValueKind.Array || trs.GetArrayLength() != length || trs.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.Number)))
+                issues.Add($"node {n} {prop} must have {length} numbers");
+        if (nodes[n].TryGetProperty("matrix", out _) && (nodes[n].TryGetProperty("translation", out _) || nodes[n].TryGetProperty("rotation", out _) || nodes[n].TryGetProperty("scale", out _)))
+            issues.Add($"node {n} has matrix together with TRS");
     }
     for (var n = 0; n < nodes.Length; n++) if (childOf[n] > 1) issues.Add($"node {n} has more than one parent");
     for (var m = 0; m < meshes.Length; m++) if (meshUse[m] != 1) issues.Add($"mesh {m} used by {meshUse[m]} nodes (expected 1)");
@@ -222,18 +268,24 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
     if (root.TryGetProperty("scene", out _) && (scene < 0 || scene >= scenes.Length)) issues.Add("scene index invalid");
     foreach (var s in scenes) foreach (var n in Arr(s, "nodes")) { var i = n.GetInt32(); if (i < 0 || i >= nodes.Length || childOf[i] > 0) issues.Add("scene root node invalid or not a root"); }
     foreach (var mat in materials)
-        if (mat.TryGetProperty("pbrMetallicRoughness", out var pbr) && pbr.TryGetProperty("baseColorFactor", out var bc) && (bc.GetArrayLength() != 4 || bc.EnumerateArray().Any(x => x.GetDouble() is < 0 or > 1))) issues.Add("material baseColorFactor invalid");
+    {
+        if (mat.TryGetProperty("doubleSided", out var ds) && ds.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) issues.Add("material doubleSided is not a boolean");
+        if (!mat.TryGetProperty("pbrMetallicRoughness", out var pbr)) continue;
+        if (pbr.TryGetProperty("baseColorFactor", out var bc) && (bc.ValueKind != JsonValueKind.Array || bc.GetArrayLength() != 4 || bc.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.Number || x.GetDouble() is < 0 or > 1))) issues.Add("material baseColorFactor invalid");
+        foreach (var factor in new[] { "metallicFactor", "roughnessFactor" })
+            if (pbr.TryGetProperty(factor, out var fv) && (fv.ValueKind != JsonValueKind.Number || fv.GetDouble() is < 0 or > 1)) issues.Add("material " + factor + " outside [0,1]");
+    }
     return issues;
 }
 
-byte[] Repack(string json, byte[] bin)
+byte[] Repack(string json, byte[] bin, byte jsonPad = 0x20)
 {
     var j = Encoding.UTF8.GetBytes(json); var pad = (j.Length + 3) & ~3;
     var total = 20 + pad + (bin.Length > 0 ? 8 + bin.Length : 0);
     var o = new byte[total];
     BinaryPrimitives.WriteUInt32LittleEndian(o.AsSpan(0), 0x46546C67); BinaryPrimitives.WriteUInt32LittleEndian(o.AsSpan(4), 2); BinaryPrimitives.WriteUInt32LittleEndian(o.AsSpan(8), (uint)total);
     BinaryPrimitives.WriteUInt32LittleEndian(o.AsSpan(12), (uint)pad); BinaryPrimitives.WriteUInt32LittleEndian(o.AsSpan(16), 0x4E4F534A);
-    j.CopyTo(o, 20); for (var i = 20 + j.Length; i < 20 + pad; i++) o[i] = 0x20;
+    j.CopyTo(o, 20); for (var i = 20 + j.Length; i < 20 + pad; i++) o[i] = jsonPad;
     if (bin.Length > 0) { BinaryPrimitives.WriteUInt32LittleEndian(o.AsSpan(20 + pad), (uint)bin.Length); BinaryPrimitives.WriteUInt32LittleEndian(o.AsSpan(24 + pad), 0x004E4942); bin.CopyTo(o, 28 + pad); }
     return o;
 }
@@ -245,8 +297,9 @@ float[] Positions(JsonElement root, byte[] bin, JsonElement node)
     var acc = Arr(root, "accessors")[mesh.GetProperty("primitives")[0].GetProperty("attributes").GetProperty("POSITION").GetInt32()];
     var view = Arr(root, "bufferViews")[acc.GetProperty("bufferView").GetInt32()];
     var at = Int(view, "byteOffset", 0) + Int(acc, "byteOffset", 0);
+    var stride = Int(view, "byteStride", 12);
     var o = new float[acc.GetProperty("count").GetInt32() * 3];
-    for (var i = 0; i < o.Length; i++) o[i] = BinaryPrimitives.ReadSingleLittleEndian(bin.AsSpan(at + 4 * i));
+    for (var i = 0; i < o.Length; i++) o[i] = BinaryPrimitives.ReadSingleLittleEndian(bin.AsSpan(at + stride * (i / 3) + 4 * (i % 3)));
     return o;
 }
 int IndexCount(JsonElement root, JsonElement node)
@@ -317,8 +370,14 @@ try
     var culture = CultureInfo.CurrentCulture;
     try
     {
-        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
-        Check(GltfExporter.ExportGlb(fixture).SequenceEqual(glb), "export bytes do not depend on the current culture (de-DE)");
+        // sv-SE and fa-IR format negative numbers with a non-ASCII minus sign (U+2212 / U+200E U+2212) under ICU.
+        Check(new[] { "sv-SE", "fa-IR" }.Any(c => CultureInfo.GetCultureInfo(c).NumberFormat.NegativeSign.Any(ch => ch > 0x7F)), "precondition: a test culture has a non-ASCII minus sign",
+            string.Join(",", new[] { "sv-SE", "fa-IR" }.Select(c => string.Join(" ", CultureInfo.GetCultureInfo(c).NumberFormat.NegativeSign.Select(ch => ((int)ch).ToString("X4", CultureInfo.InvariantCulture))))));
+        foreach (var name in new[] { "de-DE", "sv-SE", "fa-IR" })
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(name);
+            Check(GltfExporter.ExportGlb(fixture).SequenceEqual(glb) && GltfExporter.ExportGltf(fixture) == GltfExporter.ExportGltf(fixture), "export bytes do not depend on the current culture (" + name + ")");
+        }
     }
     finally { CultureInfo.CurrentCulture = culture; }
     Check(Hex(glb) == GoldenGlb, "fixture GLB golden SHA-256", Hex(glb) + " length " + glb.Length.ToString(CultureInfo.InvariantCulture));
@@ -385,6 +444,61 @@ try
     Check(Parse(Repack(glbJson, badIndex)).Issues.Any(i => i.Contains("out of range", StringComparison.Ordinal)), "validator rejects an index past the vertex count");
     var oddView = JsonNode.Parse(glbJson)!.AsObject(); oddView["bufferViews"]![1]!["byteOffset"] = 2;
     Check(Parse(Repack(oddView.ToJsonString(), bin)).Issues.Any(i => i.Contains("not 4-aligned", StringComparison.Ordinal)), "validator rejects an unaligned bufferView");
+    // Inside-out wall: flip the bottom face's two triangles and its four vertex normals together, so winding and
+    // normals still agree; only the outward-facing check can catch it.
+    var fixtureViews = Arr(root, "bufferViews"); var fixtureAccessors = Arr(root, "accessors");
+    int indexAt = Int(fixtureViews[2], "byteOffset", 0) + Int(fixtureAccessors[2], "byteOffset", 0), normalAt = Int(fixtureViews[1], "byteOffset", 0) + Int(fixtureAccessors[1], "byteOffset", 0);
+    var insideOut = (byte[])bin.Clone();
+    uint[] flipped = [0, 2, 1, 0, 3, 2];
+    for (var i = 0; i < flipped.Length; i++) BinaryPrimitives.WriteUInt32LittleEndian(insideOut.AsSpan(indexAt + 4 * i), flipped[i]);
+    for (var i = 0; i < 12; i++) { var at = normalAt + 4 * i; BinaryPrimitives.WriteSingleLittleEndian(insideOut.AsSpan(at), -BinaryPrimitives.ReadSingleLittleEndian(insideOut.AsSpan(at))); }
+    var insideOutIssues = Parse(Repack(glbJson, insideOut)).Issues;
+    Check(insideOutIssues.Any(i => i.Contains("mesh 0 triangle 0 faces inward", StringComparison.Ordinal)) && !insideOutIssues.Any(i => i.Contains("winding", StringComparison.Ordinal)),
+        "validator rejects an inside-out wall face whose winding and normals were flipped together", string.Join("; ", insideOutIssues));
+    const string MinimalJson = "{\"asset\":{\"version\":\"2.0\"}}";
+    Check(Encoding.UTF8.GetByteCount(MinimalJson) % 4 != 0 && Parse(Repack(MinimalJson, Array.Empty<byte>())).Issues.Count == 0, "minimal GLB with space padding is valid");
+    Check(Parse(Repack(MinimalJson, Array.Empty<byte>(), 0x00)).Issues.Contains("JSON chunk padding is not 0x20"), "validator rejects JSON chunk padding that is not 0x20");
+    const string OneBufferJson = "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"byteLength\":2}]}";
+    Check(Parse(Repack(OneBufferJson, [1, 2, 0, 0])).Issues.Count == 0, "BIN chunk with zero padding is valid");
+    Check(Parse(Repack(OneBufferJson, [1, 2, 0, 9])).Issues.Contains("BIN chunk padding is not zero"), "validator rejects non-zero BIN chunk padding");
+    var intNormal = JsonNode.Parse(glbJson)!.AsObject(); intNormal["accessors"]![1]!["componentType"] = 5125;
+    Check(Parse(Repack(intNormal.ToJsonString(), bin)).Issues.Contains("mesh 0 NORMAL not FLOAT"), "validator rejects a non-FLOAT NORMAL accessor");
+    var shortTranslation = JsonNode.Parse(glbJson)!.AsObject(); shortTranslation["nodes"]![2]!["translation"] = JsonNode.Parse("[0,3]");
+    Check(Parse(Repack(shortTranslation.ToJsonString(), bin)).Issues.Contains("node 2 translation must have 3 numbers"), "validator rejects a translation without 3 numbers");
+    var matrixAndTrs = JsonNode.Parse(glbJson)!.AsObject(); matrixAndTrs["nodes"]![2]!["matrix"] = JsonNode.Parse("[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]");
+    Check(Parse(Repack(matrixAndTrs.ToJsonString(), bin)).Issues.Contains("node 2 has matrix together with TRS"), "validator rejects matrix together with translation");
+    var numberDoubleSided = JsonNode.Parse(glbJson)!.AsObject(); numberDoubleSided["materials"]![1]!["doubleSided"] = 1;
+    Check(Parse(Repack(numberDoubleSided.ToJsonString(), bin)).Issues.Contains("material doubleSided is not a boolean"), "validator rejects a non-boolean doubleSided");
+    var metallic = JsonNode.Parse(glbJson)!.AsObject(); metallic["materials"]![0]!["pbrMetallicRoughness"]!["metallicFactor"] = 2;
+    Check(Parse(Repack(metallic.ToJsonString(), bin)).Issues.Contains("material metallicFactor outside [0,1]"), "validator rejects metallicFactor outside [0,1]");
+    var rough = JsonNode.Parse(glbJson)!.AsObject(); rough["materials"]![0]!["pbrMetallicRoughness"]!["roughnessFactor"] = -0.5;
+    Check(Parse(Repack(rough.ToJsonString(), bin)).Issues.Contains("material roughnessFactor outside [0,1]"), "validator rejects roughnessFactor outside [0,1]");
+    // Re-layout the fixture with positions and normals interleaved (byteStride 24): still valid, same positions.
+    var positionView = fixtureViews[0]; var normalView = fixtureViews[1]; var indexView = fixtureViews[2];
+    int vertexBytes = Int(positionView, "byteLength"), indexBytes = Int(indexView, "byteLength");
+    var interleaved = new byte[2 * vertexBytes + indexBytes];
+    for (var v = 0; v < vertexBytes / 12; v++)
+    {
+        Array.Copy(bin, Int(positionView, "byteOffset", 0) + 12 * v, interleaved, 24 * v, 12);
+        Array.Copy(bin, Int(normalView, "byteOffset", 0) + 12 * v, interleaved, 24 * v + 12, 12);
+    }
+    Array.Copy(bin, Int(indexView, "byteOffset", 0), interleaved, 2 * vertexBytes, indexBytes);
+    var interleavedJson = JsonNode.Parse(glbJson)!.AsObject();
+    var interleavedAccessors = interleavedJson["accessors"]!.AsArray();
+    for (var mesh = 0; mesh < Arr(root, "meshes").Length; mesh++)
+    {
+        var positionOffset = interleavedAccessors[3 * mesh]!["byteOffset"]!.GetValue<int>();
+        interleavedAccessors[3 * mesh]!["byteOffset"] = 2 * positionOffset;
+        interleavedAccessors[3 * mesh + 1]!["bufferView"] = 0; interleavedAccessors[3 * mesh + 1]!["byteOffset"] = 2 * positionOffset + 12;
+        interleavedAccessors[3 * mesh + 2]!["bufferView"] = 1;
+    }
+    interleavedJson["bufferViews"] = JsonNode.Parse("[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" + (2 * vertexBytes).ToString(CultureInfo.InvariantCulture) + ",\"byteStride\":24,\"target\":34962},"
+        + "{\"buffer\":0,\"byteOffset\":" + (2 * vertexBytes).ToString(CultureInfo.InvariantCulture) + ",\"byteLength\":" + indexBytes.ToString(CultureInfo.InvariantCulture) + ",\"target\":34963}]");
+    interleavedJson["buffers"]![0]!["byteLength"] = interleaved.Length;
+    var (interleavedIssues, interleavedRoot, interleavedBin) = Parse(Repack(interleavedJson.ToJsonString(), interleaved));
+    Check(interleavedIssues.Count == 0, "interleaved byteStride 24 layout passes the validator (reads honour byteStride)", string.Join("; ", interleavedIssues));
+    Check(new[] { w1, w3, sp }.All(n => Positions(interleavedRoot, interleavedBin, NodeNamed(interleavedRoot, n.GetProperty("name").GetString()!)).SequenceEqual(Positions(root, bin, n))),
+        "Positions honours byteStride: interleaved layout reads the same vertices");
 
     // ---------------- bounded input and refusals ----------------
     Project Levels(int n) => new(PID, 0, Enumerable.Range(0, n).Select(i => E(new Guid(i + 1, 0, 0, new byte[8]), "level", [i * 0.5])).ToArray());
@@ -402,6 +516,10 @@ try
     Check(Code(() => GltfExporter.ExportGlb(new Project(PID, 0, [E(L1, "level", [double.NaN])]))) == "units", "refuses non-finite geometry");
     Check(Code(() => GltfExporter.ExportGlb(new Project(PID, 0, [E(W1, "wall", [0, 0, 2e4, 0, 3, 0.2])]))) == "gltf_precision", "refuses coordinates beyond float32 millimetre precision");
     Check(Code(() => GltfExporter.ExportGlb(new Project(PID, 0, [E(W1, "wall", [0, 0, 4, 0, 3, 1e-4])]))) == "gltf_precision", "refuses a sub-millimetre thickness");
+    // Axis endpoints at y = 1e4 are inside the bound, but the faces at y = 1e4 +/- 0.5 are not.
+    Check(Code(() => GltfExporter.ExportGlb(new Project(PID, 0, [E(W1, "wall", [0, 1e4, 5, 1e4, 3, 1])]))) == "gltf_precision", "refuses a wall whose offset face corners pass the coordinate bound");
+    Check(Code(() => GltfExporter.ExportGlb(new Project(PID, 0, [E(W1, "wall", [1e4, 0, 1e4, 5, 3, 0.2])]))) == "gltf_precision", "refuses a wall whose thickness pushes x past the bound");
+    Check(Code(() => GltfExporter.ExportGlb(new Project(PID, 0, [E(W1, "wall", [0, 9999, 5, 9999, 3, 1])]))) is null, "accepts a wall whose face corners stay inside the bound");
     Check(Code(() => GltfExporter.ExportGlb(new Project(PID, 0, [E(L1, "level", [9e3]), E(W1, "wall", [0, 0, 4, 0, 2e3, 0.2], L1)]))) == "gltf_precision", "refuses a wall top beyond the coordinate bound");
     Check(Code(() => GltfExporter.ExportGlb(new Project(PID, 0, [E(SP, "space", [0, 0, -2, 3])]))) == "gltf_space_geometry", "refuses a space with negative width");
 
@@ -414,6 +532,16 @@ try
         GltfExporter.WriteGlb(fixture, path);
         Check(File.ReadAllBytes(path).SequenceEqual(glb), "WriteGlb writes the exported bytes");
         Check(Code(() => GltfExporter.WriteGlb(fixture, path)) == "output_exists" && File.ReadAllBytes(path).SequenceEqual(glb), "WriteGlb never replaces an existing file");
+        var existingDirectory = Path.Combine(dir, "existing-directory.glb");
+        Directory.CreateDirectory(existingDirectory);
+        Check(Code(() => GltfExporter.WriteGlb(fixture, existingDirectory)) == "output_exists" && Directory.Exists(existingDirectory), "WriteGlb on an existing directory is output_exists (IOException on Unix, UnauthorizedAccessException on Windows)",
+            Code(() => GltfExporter.WriteGlb(fixture, existingDirectory)) ?? "no refusal");
+        var failingPath = Path.Combine(dir, "failing.glb");
+        var failure = Code(() => GltfExporter.WriteGlb(fixture, failingPath, stream => new FailingStream(stream, 100)));
+        Check(failure is not null && failure.StartsWith("unexpected IOException", StringComparison.Ordinal) && failure.Contains("injected write failure", StringComparison.Ordinal), "a write failure propagates the original IOException", failure ?? "no failure");
+        Check(!File.Exists(failingPath), "a write failure leaves no truncated file behind");
+        GltfExporter.WriteGlb(fixture, failingPath);
+        Check(File.ReadAllBytes(failingPath).SequenceEqual(glb), "the path is writable again after a failed write");
     }
     finally { Directory.Delete(dir, true); }
 }
@@ -424,3 +552,25 @@ catch (Exception error)
 
 Console.WriteLine($"gltf: {passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;
+
+// Writes the first `allowed` bytes to the real file, flushes them, then fails: a truncated output on disk.
+sealed class FailingStream(Stream inner, int allowed) : Stream
+{
+    int written;
+    public override bool CanRead => false;
+    public override bool CanSeek => false;
+    public override bool CanWrite => true;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() => inner.Flush();
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        var take = Math.Min(count, Math.Max(0, allowed - written));
+        inner.Write(buffer, offset, take);
+        written += take;
+        if (take < count) { inner.Flush(); throw new IOException("injected write failure"); }
+    }
+}

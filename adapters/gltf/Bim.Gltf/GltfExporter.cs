@@ -64,13 +64,16 @@ public static class GltfExporter
     public static string ExportGltf(Project project) => Build(project, embedUri: true).Json;
 
     // Writes a new .glb; never replaces an existing file (output_exists).
-    public static void WriteGlb(Project project, string path)
+    public static void WriteGlb(Project project, string path) => WriteGlb(project, path, stream => stream);
+
+    // Test seam: wrap lets a test inject a stream that fails part-way.
+    internal static void WriteGlb(Project project, string path, Func<Stream, Stream> wrap)
     {
         var bytes = ExportGlb(project);
         FileStream file;
         try { file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None); }
         catch (IOException) when (File.Exists(path) || Directory.Exists(path)) { throw new GltfExportException("output_exists", path); }
-        using (file) { file.Write(bytes); file.Flush(true); }
+        using (file) { var stream = wrap(file); stream.Write(bytes); stream.Flush(); file.Flush(true); }
     }
 
     static int Pad4(int length) => (length + 3) & ~3;
