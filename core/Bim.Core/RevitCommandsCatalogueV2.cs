@@ -6,8 +6,13 @@ namespace Bim.Core;
 // subset, unit rules, copies-only guard and receipts as v1; v1 commands are unchanged. Vendor-free like every
 // RevitCommands*.cs file; the add-in executor consumes these types.
 
-// Footprint roof: a closed outline on a level. Slope null is a flat roof; otherwise every edge defines that slope.
-public sealed record RoofFootprintCreateArgs(string Level, string Type, IReadOnlyList<Point2> Boundary, Angle? Slope, Length BaseOffset) : RevitCommandArgs;
+// Footprint roof: a closed outline on a level. Slope null is a flat roof. Otherwise SlopedEdges (sorted, distinct
+// 0-based edge indices; edge i runs from Boundary[i] to Boundary[i + 1], the last edge closes back to Boundary[0])
+// lists the edges that define that slope, for example the two long sides of a gable; null slopes every edge (hip).
+public sealed record RoofFootprintCreateArgs(string Level, string Type, IReadOnlyList<Point2> Boundary, Angle? Slope, Length BaseOffset, IReadOnlyList<int>? SlopedEdges = null) : RevitCommandArgs
+{
+    public bool DefinesSlope(int edge) => Slope is not null && (SlopedEdges is null || SlopedEdges.Contains(edge));
+}
 // One straight run from RunStart (bottom) to RunEnd (top) between two distinct levels, with the default stairs type.
 public sealed record StairCreateArgs(string BaseLevel, string TopLevel, Point2 RunStart, Point2 RunEnd, Length Width) : RevitCommandArgs;
 // A wall of a Curtain kind type; optional extra grid lines on this wall only (VerticalSpacing along the wall from its
@@ -57,6 +62,17 @@ public static class RevitCommandGeometryV2
         return double.IsFinite(width) ? width : 0;
     }
 
+    // Largest distance between two outline vertices: the longest run a slope can have when only some edges define
+    // slope (a shed roof rises across the whole footprint).
+    public static double MaximumSpanMm(IReadOnlyList<Point2> outline)
+    {
+        var span = 0.0;
+        for (var i = 0; i < outline.Count; i++)
+            for (var j = i + 1; j < outline.Count; j++)
+                span = Math.Max(span, RevitCommandGeometry.Distance(outline[i].X.Millimetres, outline[i].Y.Millimetres, outline[j].X.Millimetres, outline[j].Y.Millimetres));
+        return span;
+    }
+
     public static double CurveLengthMm(WallCurve curve) => curve switch
     {
         LineWallCurve line => RevitCommandGeometry.Distance(line.Start.X.Millimetres, line.Start.Y.Millimetres, line.End.X.Millimetres, line.End.Y.Millimetres),
@@ -102,9 +118,9 @@ public static partial class RevitCommandCatalogue
         string OutlineSchema(string description) => outline.Replace("@D@", description, StringComparison.Ordinal);
         const string BaseOffset = """{"type":"number","description":"Base offset from the level in millimetres; may be negative, at most 9144000 either way; default 0"}""";
 
-        var roof = Fill("""{"type":"object","properties":{"level":@0@,"type":@1@,"boundary":@2@,"slope_deg":{"type":"number","description":"Slope of every footprint edge in degrees, greater than 0 and at most 85 (a hip roof); omit for a flat roof"},"base_offset_mm":@3@},"required":["level","type","boundary"],"additionalProperties":false}""",
+        var roof = Fill("""{"type":"object","properties":{"level":@0@,"type":@1@,"boundary":@2@,"slope_deg":{"type":"number","description":"Slope in degrees of the edges that define slope, greater than 0 and at most 85; without sloped_edges every edge slopes (a hip roof); omit for a flat roof"},"sloped_edges":{"type":"array","description":"Which footprint edges define the slope, as 0-based edge indices: edge i runs from boundary vertex i to vertex i + 1 and the last edge closes back to vertex 0; distinct; needs slope_deg; omit to slope every edge. A gable (two slopes meeting at a ridge) on a rectangle lists its two long sides, for example [0, 2] when the ridge runs along edge 0","items":{"type":"integer"},"minItems":1,"maxItems":@4@},"base_offset_mm":@3@},"required":["level","type","boundary"],"additionalProperties":false}""",
             Reference("Base level: name or UniqueId from revit_query_levels"), Reference("Roof type: name or UniqueId from revit_query_roof_types"),
-            OutlineSchema("Closed footprint outline as [x, y] millimetre vertices; the closing edge is implicit; must not self-intersect"), BaseOffset);
+            OutlineSchema("Closed footprint outline as [x, y] millimetre vertices; the closing edge is implicit; must not self-intersect"), BaseOffset, MaxBoundaryPoints.ToString(CultureInfo.InvariantCulture));
 
         var run = Fill("""{"type":"object","description":"Straight run centre line in plan, from the bottom step to the top step, in millimetres","properties":{"start":@0@,"end":@1@},"required":["start","end"],"additionalProperties":false}""", Point, Point);
         var stair = Fill("""{"type":"object","properties":{"base_level":@0@,"top_level":@1@,"run":@2@,"width_mm":{"type":"number","description":"Run width in millimetres, at least 1.2 and at most 9144000"}},"required":["base_level","top_level","run","width_mm"],"additionalProperties":false}""",
@@ -121,7 +137,7 @@ public static partial class RevitCommandCatalogue
         return new[]
         {
             new RevitCommandSpec("query.roof_types", false, "List the roof types available in the document with name, UniqueId and thickness in millimetres. Read-only.", EmptySchema, _ => new EmptyQueryArgs()),
-            new RevitCommandSpec("roof.create_footprint", true, "Create a footprint roof of a given type on a level from a closed outline in millimetres, flat or with one slope on every edge (hip roof). Allowed only on enabled test copies.", roof, BindRoof),
+            new RevitCommandSpec("roof.create_footprint", true, "Create a footprint roof of a given type on a level from a closed outline in millimetres: flat, with one slope on every edge (hip roof), or with that slope only on the edges listed in sloped_edges (a gable roof slopes its two long sides, a shed roof one edge). Allowed only on enabled test copies.", roof, BindRoof),
             new RevitCommandSpec("stair.create", true, "Create a stair with one straight run between a base and a top level, along a plan line with a run width in millimetres. Allowed only on enabled test copies.", stair, BindStair),
             new RevitCommandSpec("curtain_wall.create", true, "Create one straight or curved curtain wall of a curtain wall type on a level, with optional extra vertical and horizontal grid lines at a spacing in millimetres. Allowed only on enabled test copies.", curtain, BindCurtainWall),
             new RevitCommandSpec("floor.create_opening", true, "Cut an opening through an existing floor along a closed, non-self-intersecting profile in millimetres. Allowed only on enabled test copies.", opening, BindFloorOpening),
@@ -144,12 +160,15 @@ public static partial class RevitCommandCatalogue
     {
         var boundary = BindOutline(args, "boundary");
         Angle? slope = null;
+        var slopedEdges = BindSlopedEdges(args, boundary.Count);
         if (args.TryGetProperty("slope_deg", out var slopeElement))
         {
             var degrees = Number(slopeElement);
             var angle = RevitUnits.Degrees(degrees, "args.slope_deg");
             if (!(degrees > 0 && degrees <= RevitCommandGeometryV2.MaxRoofSlopeDeg)) throw new RevitCommandException(RevitCommandCodes.AngleInvalid, "args.slope_deg", "slope must be greater than 0 and at most 85 degrees; omit it for a flat roof");
-            var rise = Math.Tan(angle.Radians) * RevitCommandGeometryV2.MinimumWidthMm(boundary) / 2;
+            // Every edge sloped: slopes meet within half the minimum width. Some edges only: up to the whole span.
+            var run = slopedEdges is null || slopedEdges.Count == boundary.Count ? RevitCommandGeometryV2.MinimumWidthMm(boundary) / 2 : RevitCommandGeometryV2.MaximumSpanMm(boundary);
+            var rise = Math.Tan(angle.Radians) * run;
             if (!(rise <= RevitCommandGeometry.MaxRevitLengthMm)) throw new RevitCommandException(RevitCommandCodes.AngleInvalid, "args.slope_deg", "the roof would rise up to " + rise.ToString("R", CultureInfo.InvariantCulture) + " mm, above 9144000 mm (Revit's 30000 ft limit)");
             slope = angle;
         }
@@ -157,7 +176,25 @@ public static partial class RevitCommandCatalogue
             ? RevitUnits.Millimetres(Number(offset), "args.base_offset_mm", allowNegative: true, allowZero: true)
             : Length.FromMetres(0);
         if (Math.Abs(baseOffset.Millimetres) > RevitCommandGeometry.MaxRevitLengthMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, "args.base_offset_mm", "base offset beyond 9144000 mm (Revit's 30000 ft limit)");
-        return new RoofFootprintCreateArgs(args.GetProperty("level").GetString()!, args.GetProperty("type").GetString()!, boundary, slope, baseOffset);
+        if (slopedEdges is not null && slope is null) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.sloped_edges", "sloped_edges needs slope_deg; omit both for a flat roof");
+        return new RoofFootprintCreateArgs(args.GetProperty("level").GetString()!, args.GetProperty("type").GetString()!, boundary, slope, baseOffset, slopedEdges);
+    }
+
+    // Distinct 0-based edge indices below edgeCount (after a repeated closing vertex is dropped), sorted; null when absent.
+    static IReadOnlyList<int>? BindSlopedEdges(JsonElement args, int edgeCount)
+    {
+        if (!args.TryGetProperty("sloped_edges", out var element)) return null;
+        var seen = new HashSet<int>();
+        var index = 0;
+        foreach (var item in element.EnumerateArray())
+        {
+            var field = "args.sloped_edges[" + index + "]";
+            var edge = item.GetInt64();
+            if (edge < 0 || edge >= edgeCount) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, field, "edge " + edge + " does not exist: the footprint has " + edgeCount + " edges, numbered 0 to " + (edgeCount - 1) + " (edge i runs from vertex i to vertex i + 1)");
+            if (!seen.Add((int)edge)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, field, "edge " + edge + " is listed twice");
+            index++;
+        }
+        return seen.OrderBy(edge => edge).ToArray();
     }
 
     static RevitCommandArgs BindStair(JsonElement args)

@@ -22,6 +22,9 @@ namespace Bim.Revit;
 //     CurtainGridLine.FullCurve, CurtainGrid.NumULines / NumVLines / GetPanelIds / GetMullionIds
 //   Document.Create.NewOpening(Element host, CurveArray profile, bool perpendicularFace), Opening.Host /
 //     IsRectBoundary / BoundaryCurves
+// Per-edge slope (sloped_edges, gable/shed roofs): FootPrintRoof.set_DefinesSlope / set_SlopeAngle per mapped
+//   ModelCurve, the curve matched to its requested edge by GeometryCurve end points; the readback reads the sketch
+//   (GetProfiles) and matches it to the requested edges the same way.
 // Unverified in Revit (owner session required): whether a StairsEditScope may start inside the command's
 // TransactionGroup (IsPermitted is checked and a refusal is transaction_failed), the U/V orientation of curtain grid
 // lines on a wall (the readback checks orientation and rolls back if it is swapped), whether the stairs path of a
@@ -75,19 +78,29 @@ internal static partial class CommandExecutor
             var slopeParameter = created.get_Parameter(BuiltInParameter.ROOF_SLOPE) is { HasValue: true, StorageType: StorageType.Double } value ? SlopeDegrees(value.AsDouble()) : (double?)null;
             return new ObservedRoof(created.UniqueId, UniqueIdOf(d, created.LevelId), UniqueIdOf(d, created.GetTypeId()),
                 LengthParameter(created, BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM),
-                sketch.Select(edge => created.get_DefinesSlope(edge) ? new ObservedRoofEdge(true, SlopeDegrees(created.get_SlopeAngle(edge))) : new ObservedRoofEdge(false, null)).ToArray(),
+                sketch.Select(edge => new ObservedRoofEdge(created.get_DefinesSlope(edge), created.get_DefinesSlope(edge) ? SlopeDegrees(created.get_SlopeAngle(edge)) : null,
+                    Plan(edge.GeometryCurve.GetEndPoint(0)), Plan(edge.GeometryCurve.GetEndPoint(1)))).ToArray(),
                 slopeParameter, profiles.Size, sketch.Select(edge => Plan(edge.GeometryCurve.GetEndPoint(0))).ToArray());
         }
         return new WritePlan(
             () =>
             {
-                var created = d.Create.NewFootPrintRoof(footprint, level, type, out var mapping);
+                // Revit 2025 throws ArgumentNullException ("Value cannot be null") unless the out mapping array is
+                // pre-allocated: the native side writes into the caller's instance (observed in owner chat 2026-11-03).
+                ModelCurveArray mapping = new ModelCurveArray();
+                var created = d.Create.NewFootPrintRoof(footprint, level, type, out mapping);
                 roof = created;
                 foreach (ModelCurve edge in mapping) edges.Add(edge);
-                foreach (var edge in edges)
+                // With sloped_edges the mapping order is not trusted: each model curve is matched to its requested edge
+                // by end points (CommandRulesV2.MatchRoofEdges). Flat and hip roofs treat every edge alike.
+                var indices = args.SlopedEdges is null
+                    ? Enumerable.Range(0, edges.Count).ToArray()
+                    : CommandRulesV2.MatchRoofEdges(args.Boundary, edges.Select(edge => (Plan(edge.GeometryCurve.GetEndPoint(0)), Plan(edge.GeometryCurve.GetEndPoint(1)))).ToArray());
+                for (var k = 0; k < edges.Count; k++)
                 {
-                    created.set_DefinesSlope(edge, args.Slope is not null);
-                    if (args.Slope is { } slope) created.set_SlopeAngle(edge, UnitUtils.ConvertToInternalUnits(slope.Degrees, UnitTypeId.SlopeDegrees));
+                    var slopes = args.SlopedEdges is null ? args.Slope is not null : args.DefinesSlope(indices[k]);
+                    created.set_DefinesSlope(edges[k], slopes);
+                    if (slopes && args.Slope is { } slope) created.set_SlopeAngle(edges[k], UnitUtils.ConvertToInternalUnits(slope.Degrees, UnitTypeId.SlopeDegrees));
                 }
                 if (args.BaseOffset.Millimetres != 0)
                 {
@@ -97,9 +110,9 @@ internal static partial class CommandExecutor
                 }
             },
             () => roof is { IsValidObject: true } created
-                ? CommandReadbackV2.Roof(level.UniqueId, type.UniqueId, args.Boundary, args.Slope?.Degrees, args.BaseOffset.Millimetres, Observe(created))
+                ? CommandReadbackV2.Roof(level.UniqueId, type.UniqueId, args.Boundary, args.Slope?.Degrees, args.BaseOffset.Millimetres, Observe(created), args.SlopedEdges)
                 : "the roof no longer exists",
-            () => CommandReadbackV2.RoofJson(Observe(roof!)),
+            () => CommandReadbackV2.RoofJson(Observe(roof!), args.Boundary),
             () => new[] { roof!.UniqueId },
             Array.Empty<string>);
     }

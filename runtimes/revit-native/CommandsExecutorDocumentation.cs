@@ -41,7 +41,7 @@ internal static partial class CommandExecutor
     {
         EmptyQueryArgs when envelope.Command == "query.title_blocks" =>
             CommandReadbackDocumentation.TitleBlocksJson(TitleBlocks(d).Select(symbol => new TitleBlockRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive))),
-        _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
+        _ => QueryMaterials(d, envelope),
     };
 
     static RevitElement ElementByUid(Document d, string uid, string field) =>

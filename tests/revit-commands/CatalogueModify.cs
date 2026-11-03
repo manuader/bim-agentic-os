@@ -81,8 +81,8 @@ static class CatalogueModifyChecks
         Check(names.SequenceEqual(ModifyCommands), "modify catalogue lists element.set_parameter then element.delete", string.Join(",", names));
         var throughDocumentation = RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror).Concat(RevitCommandCatalogue.Elements)
             .Concat(RevitCommandCatalogue.Structure).Concat(RevitCommandCatalogue.Documentation).ToArray();
-        Check(RevitCommandCatalogue.All.Take(throughDocumentation.Length).SequenceEqual(throughDocumentation) && RevitCommandCatalogue.All.Skip(throughDocumentation.Length).SequenceEqual(RevitCommandCatalogue.Modify),
-            "All is v1, v2, views, snapshot, element queries, structure, documentation, then the modify commands last");
+        Check(RevitCommandCatalogue.All.Take(throughDocumentation.Length).SequenceEqual(throughDocumentation) && RevitCommandCatalogue.All.Skip(throughDocumentation.Length).Take(RevitCommandCatalogue.Modify.Count).SequenceEqual(RevitCommandCatalogue.Modify),
+            "All is v1, v2, views, snapshot, element queries, structure, documentation, then the modify commands (later catalogue parts follow)");
         Check(RevitCommandCatalogue.All.Select(spec => spec.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(spec => spec.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct with the modify commands");
         Check(RevitCommandCatalogue.Modify.Select(spec => spec.ToolName).SequenceEqual(new[] { "revit_element_set_parameter", "revit_element_delete" }), "modify tool names are revit_element_set_parameter and revit_element_delete");
         Check(RevitCommandCatalogue.Modify.All(spec => spec.Writes), "both modify commands are writes (dry runs included)");

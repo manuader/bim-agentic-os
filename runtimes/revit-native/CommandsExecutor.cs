@@ -28,7 +28,7 @@ namespace Bim.Revit;
 // (P4-01: plan, section, 3D) are in CommandsExecutorViews.cs; structure commands (P9-02: grids, columns, beams,
 // foundations) are in CommandsExecutorStructure.cs; documentation commands (P4-02: dimensions, tags, schedules,
 // sheets) are in CommandsExecutorDocumentation.cs; element.set_parameter and element.delete (P1-05) are in
-// CommandsExecutorModify.cs.
+// CommandsExecutorModify.cs; query.materials and roof_type.create are in CommandsExecutorMaterials.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -78,6 +78,7 @@ internal static partial class CommandExecutor
             ScheduleCreateArgs schedule => ScheduleWrite(d, schedule),
             SheetCreateArgs sheet => SheetWrite(d, sheet),
             SheetPlaceViewArgs place => PlaceViewWrite(d, place),
+            RoofTypeCreateArgs roofType => RoofTypeWrite(d, roofType),
             // A stair is created through a StairsEditScope, which cannot start inside the plan's write transaction.
             StairCreateArgs => null,
             _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),

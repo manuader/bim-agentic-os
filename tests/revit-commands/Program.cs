@@ -395,6 +395,9 @@ try
     // ---- Modify and delete commands (P1-05): element.set_parameter, element.delete ----
     CatalogueModifyChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
+    // ---- Materials and layered roof types (chat-roof-gable): query.materials, roof_type.create ----
+    CatalogueMaterialsChecks.Run((condition, name, detail) => Check(condition, name, detail));
+
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
     RevitFileSystemProbe Probe(Func<string, bool> isLink, Func<string, int?> links) => new(path => { probed.Add(path); return isLink(path); }, links);
