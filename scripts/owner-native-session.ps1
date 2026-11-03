@@ -2,9 +2,20 @@
 # Each run uses a NEW child Revit process with its own run directory and staged manifest. Revit processes that
 # were already running (for example a production model) are recorded and never touched. The unsigned add-in
 # prompt needs the owner's Load Once in each child; this script only waits for it, it never answers it.
-# -Catalogue (C04) replaces the A/B evaluation with the scripted catalogue v1 smoke of scripts/owner-catalogue-steps.ps1
-# through the CLI revit-command verb, records .bim/native-sessions/<utc>/catalogue-run<N>.json and, unless
-# -CloseWaitSeconds is given, leaves the child Revit open so the owner can look at the (unsaved) result.
+# -Catalogue (C04 + P1-06 one-run verification) replaces the A/B evaluation with the scripted owner sequence of
+# scripts/owner-catalogue-steps.ps1 through the CLI revit-command verb: first the 17 catalogue v1 steps, unchanged,
+# then, in one go, every later group that waits for Revit, each step checked against its readback with requested vs
+# observed rows: v2 (P9-01 roof, stair, curtain wall, floor opening), vistas (P4-01 plan, section, boxed 3D),
+# snapshot (P2-01 query.snapshot twice byte-identical, door/window on the wall axis, floor unmapped), consultas
+# (P1-02 query.elements/query.inspect, truncation, reference_not_found), estructura (P9-02), documentacion (P4-02
+# dimensions, tags, schedule, sheet, views on the sheet, duplicate placement refused), diario (P2-03 journal.read,
+# sent straight to the add-in pipe) and modificar (P1-05 set_parameter dry run/real/replay, delete dry run/refused/
+# confirmed; destructive, always last). A failed step or group never stops later groups; a timeout, a lost pipe or a
+# closed Revit stops the run (nothing more is sent). -CatalogueV1Only (implies -Catalogue) runs only the 17 v1 steps.
+# Records .bim/native-sessions/<utc>/catalogue-run<N>.json (every step: request, response, requested vs observed,
+# pass/fail) and prints the result line: "Catálogo: 17/17 pasos OK; grupos: v2 6/6, ...; total N/N; resultado: TODO OK"
+# means everything passed ("resultado: FALLÓ en <grupos>" names the failed groups). Unless -CloseWaitSeconds is given
+# the child Revit stays open so the owner can look at the (unsaved) result. See docs/owner-verification-session.md.
 [CmdletBinding()]
 param(
  [ValidateRange(1,10)][int]$Runs = 3,
@@ -15,6 +26,7 @@ param(
  [ValidateRange(0,600)][int]$CloseWaitSeconds = 180,
  [switch]$SkipSourceCheck,
  [switch]$Catalogue,
+ [switch]$CatalogueV1Only,
  [ValidateRange(10,1800)][int]$StepTimeoutSeconds = 300
 )
 $ErrorActionPreference = 'Stop'
@@ -24,6 +36,7 @@ if (!$IsWindows) { throw 'Windows with Revit 2025 required' }
 $root = Split-Path $PSScriptRoot
 Set-Location $root
 . (Join-Path $PSScriptRoot 'owner-catalogue-steps.ps1')
+if ($CatalogueV1Only) { $Catalogue = [switch]$true }
 if ($Catalogue -and !$PSBoundParameters.ContainsKey('Runs')) { $Runs = 1 }
 if ($Catalogue -and !$PSBoundParameters.ContainsKey('CloseWaitSeconds')) { $CloseWaitSeconds = 0 }
 $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
@@ -32,7 +45,7 @@ New-Item -ItemType Directory -Force $session | Out-Null
 $log = Join-Path $session 'session.log'
 function Say([string]$text) { $line = '[' + [DateTime]::UtcNow.ToString('HH:mm:ssZ') + '] ' + $text; Write-Host $line; Add-Content -LiteralPath $log -Value $line }
 function Sha([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
-$summary = [ordered]@{ schema_version = 1; mode = $(if ($Catalogue) { 'catalogue' } else { 'room_ab' }); started_utc = [DateTime]::UtcNow.ToString('o'); session = $session; head = ''; protected_revit_pids = @(); source_check = 'not_run'; builds = [ordered]@{}; runs = @(); finished_utc = $null; outcome = 'incomplete' }
+$summary = [ordered]@{ schema_version = 1; mode = $(if ($Catalogue) { 'catalogue' } else { 'room_ab' }); catalogue_scope = $(if (!$Catalogue) { $null } elseif ($CatalogueV1Only) { 'v1_only' } else { 'one_run_all_groups' }); started_utc = [DateTime]::UtcNow.ToString('o'); session = $session; head = ''; protected_revit_pids = @(); source_check = 'not_run'; builds = [ordered]@{}; runs = @(); finished_utc = $null; outcome = 'incomplete' }
 function Save { $summary.finished_utc = [DateTime]::UtcNow.ToString('o'); $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $session 'summary.json') }
 
 try {
@@ -119,22 +132,26 @@ try {
    if (![IO.Path]::GetFullPath([string]$boot.documentPath).Equals($expectedDocument, [StringComparison]::OrdinalIgnoreCase)) { $run.bootstrap = 'document_mismatch'; throw "Run $i fixture document is not this run's own fixture" }
    $run.bootstrap = 'succeeded'
    if ($Catalogue) {
-    Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script crea muros, una puerta, una ventana, un suelo y una habitación en el modelo de prueba. No toque Revit hasta que termine."
+    if ($CatalogueV1Only) { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script crea muros, una puerta, una ventana, un suelo y una habitación en el modelo de prueba (solo catálogo v1). No toque Revit hasta que termine." }
+    else { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script corre el catálogo v1 y después todos los grupos pendientes (v2, vistas, snapshot, consultas, estructura, documentación, diario y, al final, modificar y borrar) en el modelo de prueba. No toque Revit hasta que termine." }
     $catalogueRequests = Join-Path $runDir 'catalogue-requests'
     $catalogueInvoke = { param($index, $key, $json) Invoke-CatalogueCli -Dotnet $dotnet -CliDll $cli -PipeName $boot.pipeName -RequestDirectory $catalogueRequests -Index $index -Key $key -Json $json -TimeoutSeconds $StepTimeoutSeconds }
-    $sequence = Invoke-CatalogueSequence -Stamp $stamp -Run $i -DocumentPath $boot.documentPath -DocumentUid $boot.documentUniqueId -Invoke $catalogueInvoke -Progress { param($line) Say "  $line" } -Alive { !$child.HasExited }
+    $catalogueWire = { param($index, $key, $line) Invoke-CatalogueWire -PipeName $boot.pipeName -Line $line -RequestDirectory $catalogueRequests -Index $index -Key $key -TimeoutSeconds $StepTimeoutSeconds }
+    $sequence = Invoke-CatalogueSequence -Stamp $stamp -Run $i -DocumentPath $boot.documentPath -DocumentUid $boot.documentUniqueId -Invoke $catalogueInvoke -InvokeWire $catalogueWire -V1Only:$CatalogueV1Only -Progress { param($line) Say "  $line" } -Alive { !$child.HasExited }
     $cataloguePath = Join-Path $session "catalogue-run$i.json"
     [ordered]@{
      schema_version = 1; session_stamp = $stamp; run = $i; head = $summary.head; child_pid = $child.Id; pipe_name = $boot.pipeName
      document_path = $boot.documentPath; document_unique_id = $boot.documentUniqueId; revit_build = $boot.revitBuild
-     result_line = (Format-CatalogueResult $sequence.counts); counts = $sequence.counts; picked = $sequence.picked
+     scope = $summary.catalogue_scope
+     result_line = (Format-CatalogueSummary $sequence); counts = $sequence.counts; groups = $sequence.groups; overall = $sequence.overall; all_passed = $sequence.all_passed; aborted = $sequence.aborted; picked = $sequence.picked
      document_saved = $false
-     document_note = 'Catalogue v1 has no save command and this session adds none: the changes live only in the open child Revit. Closing it without saving discards them.'
+     document_note = 'The catalogue has no save command and this session adds none: the changes (including the last group, which deletes the v1 south wall and its door) live only in the open child Revit. Closing it without saving discards them.'
      steps = $sequence.steps
     } | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $cataloguePath
-    $run.catalogue = [ordered]@{ file = $cataloguePath; counts = $sequence.counts }
-    $run.outcome = Format-CatalogueResult $sequence.counts
-    foreach ($step in @($sequence.steps | Where-Object { !$_.passed })) { Say "  Falló el paso $($step.index) ($($step.description)): $($step.reason)" }
+    $run.catalogue = [ordered]@{ file = $cataloguePath; counts = $sequence.counts; groups = $sequence.groups; overall = $sequence.overall; all_passed = $sequence.all_passed; aborted = $sequence.aborted }
+    $run.outcome = Format-CatalogueSummary $sequence
+    foreach ($step in @($sequence.steps | Where-Object { !$_.passed })) { Say "  Falló el paso $($step.index) [$($step.group)] ($($step.description)): $($step.reason)" }
+    foreach ($group in @($sequence.groups)) { Say "  Grupo $($group.key): $($group.passed)/$($group.total) OK$(if ($group.not_sent) { ", $($group.not_sent) sin enviar" })" }
     Say ">>> Ejecución ${i}: $($run.outcome). Detalle: $cataloguePath"
    }
    else {
@@ -168,9 +185,9 @@ try {
   }
  }
  if ($Catalogue) {
-  $total = [ordered]@{ passed = 0; total = 0 }
-  foreach ($done in @($summary.runs | Where-Object { $_.catalogue })) { $total.passed += $done.catalogue.counts.passed; $total.total += $done.catalogue.counts.total }
-  $summary.outcome = Format-CatalogueResult $total
+  $joined = Join-CatalogueResults @($summary.runs | Where-Object { $_.catalogue } | ForEach-Object { $_.catalogue })
+  $summary.outcome = Format-CatalogueSummary $joined
+  $summary['catalogue_all_passed'] = $joined.all_passed
   Say ">>> Sesión terminada. $($summary.outcome)"
  }
  else {

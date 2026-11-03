@@ -1,8 +1,10 @@
-# C04 owner smoke of Revit command catalogue v1: the scripted step list, envelope building, picking references from
-# query results and checking each response. Dot-sourced by scripts/owner-native-session.ps1 -Catalogue (which passes
-# an invoker that runs the CLI "revit-command" verb against the child Revit's pipe) and by
-# tests/integration/test-catalogue-session.ps1 (which passes fakes). Everything here except Invoke-CatalogueCli is
-# pure; nothing here starts, stops or saves Revit.
+# C04 owner smoke of Revit command catalogue v1 and, after it, the P1-06 one-run verification groups (catalogue v2,
+# views, snapshot, element queries, structure, documentation, journal, modify/delete): the scripted step lists, envelope
+# building, picking references from query results and checking each response with requested vs observed rows.
+# Dot-sourced by scripts/owner-native-session.ps1 -Catalogue (which passes an invoker that runs the CLI
+# "revit-command" verb against the child Revit's pipe and a wire invoker for journal.read) and by
+# tests/integration/test-catalogue-session.ps1 (which passes fakes). Everything here except Invoke-CatalogueCli and
+# Invoke-CatalogueWire is pure; nothing here starts, stops or saves Revit. See docs/owner-verification-session.md.
 Set-StrictMode -Version Latest
 
 $script:CatalogueOperationIdPattern = '\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z'
@@ -209,9 +211,759 @@ function Get-CatalogueSteps {
     return , $steps.ToArray()
 }
 
-# Runs every step in order through $Invoke (param index, key, envelopeJson; returns @{ output; exit_code; timed_out }).
-# $Progress (optional) receives one Spanish line per step; $Alive (optional) returns $false when the child Revit is gone.
-# A timeout means unknown completion: the remaining steps are not sent. Nothing is retried automatically.
+# --- P1-06 one-run verification: everything else that waits for Revit, after the 17 v1 steps ---
+# Each later group is a list of steps in the v1 shape (Key, Es, Command, Expect, Build, Check, optional ReuseOf), plus
+# Wire = $true for journal.read, a pipe Operation outside the revit.command catalogue that goes straight to the add-in
+# pipe through the wire invoker (Invoke-CatalogueWire). Checks record requested vs observed rows with the
+# Test-Catalogue* helpers below. Inputs shared across groups: only the v1 picks and v1 query responses; every later
+# group makes its own levels pair, views and grids, so one failing group leaves the next ones runnable. The modify and
+# delete group (destructive) is last.
+$script:CatalogueTransportCodes = @('pipe_connect_timeout', 'pipe_io_error', 'no_response')
+# A well-formed UniqueId that no element has (query.inspect must answer reference_not_found).
+$script:CatalogueMissingUid = '00000000-0000-0000-0000-000000000000-00000000'
+# The requested-vs-observed list of the step whose Check is running (set by Invoke-CatalogueSequence), else $null.
+$script:CatalogueComparisons = $null
+
+# Nested member by dotted path ('readback.view.section'), or $null.
+function Get-CataloguePath($Object, [string]$Path) {
+    $value = $Object
+    foreach ($name in $Path.Split('.')) { $value = Get-CatalogueMember $value $name }
+    return $value
+}
+
+# Array member by dotted path without nulls; always an array (possibly empty).
+function Get-CatalogueArray($Object, [string]$Path) {
+    $value = $Object
+    foreach ($name in $Path.Split('.')) { $value = Get-CatalogueMember $value $name }
+    return , @(@($value) | Where-Object { $null -ne $_ })
+}
+
+function Get-CatalogueFirstCreated($Response) {
+    $created = Get-CatalogueList $Response 'created'
+    if ($created.Count) { return [string]$created[0] }
+    return $null
+}
+
+function ConvertTo-CatalogueText($Value) {
+    if ($null -eq $Value) { return 'null' }
+    return (ConvertTo-Json -InputObject $Value -Compress -Depth 8)
+}
+
+# Records one requested-vs-observed row for the running step; returns $null when it holds, else the reason.
+function Add-CatalogueComparison([string]$What, $Requested, $Observed, [bool]$Ok) {
+    if ($null -ne $script:CatalogueComparisons) { $script:CatalogueComparisons.Add([ordered]@{ check = $What; requested = $Requested; observed = $Observed; ok = $Ok }) }
+    if ($Ok) { return $null }
+    return "${What}: se pidió $(ConvertTo-CatalogueText $Requested), se observó $(ConvertTo-CatalogueText $Observed)"
+}
+
+function Test-CatalogueSame([string]$What, $Requested, $Observed) {
+    $ok = ($null -ne $Observed) -and ([string]$Requested -eq [string]$Observed)
+    return Add-CatalogueComparison $What $Requested $Observed $ok
+}
+
+function Test-CatalogueNumber([string]$What, [double]$Requested, $Observed, [double]$Tolerance) {
+    return Add-CatalogueComparison $What $Requested $Observed (Test-CatalogueNear $Observed $Requested $Tolerance)
+}
+
+function Test-CataloguePoint([string]$What, [double[]]$Requested, $Observed, [double]$Tolerance) {
+    $values = @($Observed)
+    $ok = $values.Count -eq $Requested.Count
+    for ($i = 0; $ok -and $i -lt $Requested.Count; $i++) { $ok = Test-CatalogueNear $values[$i] $Requested[$i] $Tolerance }
+    return Add-CatalogueComparison $What $Requested $Observed $ok
+}
+
+function Test-CatalogueContains([string]$What, $Needle, $List) {
+    $items = @(@($List) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    $ok = ($null -ne $Needle) -and ($items -contains [string]$Needle)
+    return Add-CatalogueComparison $What $Needle $items $ok
+}
+
+function Test-CatalogueCondition([string]$What, $Requested, $Observed, [bool]$Ok) {
+    return Add-CatalogueComparison $What $Requested $Observed $Ok
+}
+
+# All failed checks of a step joined, or $null when every check held.
+function Join-CatalogueReasons([object[]]$Reasons) {
+    $bad = @($Reasons | Where-Object { $_ })
+    if ($bad.Count) { return ($bad -join '; ') }
+    return $null
+}
+
+# The two lowest levels by elevation (base and top of the stair and the column).
+function Select-CatalogueLevelPair($Response) {
+    $levels = Get-CatalogueList (Get-CatalogueMember $Response 'readback') 'levels'
+    $sorted = @($levels | Sort-Object { [double](Get-CatalogueMember $_ 'elevation_mm') })
+    if ($sorted.Count -lt 2) { throw 'el documento necesita dos niveles (base y superior) para la escalera y la columna' }
+    return @{ low = [string](Get-CatalogueMember $sorted[0] 'unique_id'); high = [string](Get-CatalogueMember $sorted[1] 'unique_id') }
+}
+
+function Select-CatalogueRoofType($Response) {
+    $all = Get-CatalogueList (Get-CatalogueMember $Response 'readback') 'roof_types'
+    $types = @($all | Where-Object { [string](Get-CatalogueMember $_ 'name') -notmatch '(?i)glaz|glass|vidri' })
+    if (!$types.Count) { throw 'no hay ningún tipo de techo (no vidriado) en el documento' }
+    return [string](Get-CatalogueMember $types[0] 'unique_id')
+}
+
+function Select-CatalogueCurtainType($Response) {
+    $all = Get-CatalogueList (Get-CatalogueMember $Response 'readback') 'wall_types'
+    $curtain = @($all | Where-Object { (Get-CatalogueMember $_ 'kind') -eq 'Curtain' })
+    if (!$curtain.Count) { throw 'no hay ningún tipo de muro cortina (Curtain) en el documento' }
+    return [string](Get-CatalogueMember $curtain[0] 'unique_id')
+}
+
+function Select-CatalogueStructuralType($Response, [string]$Category) {
+    $readback = Get-CatalogueMember $Response 'readback'
+    if ((Get-CatalogueMember $readback 'category') -ne $Category) { throw 'la consulta de tipos estructurales respondió para otra categoría' }
+    $types = Get-CatalogueList $readback 'structural_types'
+    if (!$types.Count) { throw "no hay cargado ningún tipo estructural de categoría $Category" }
+    return [string](Get-CatalogueMember $types[0] 'unique_id')
+}
+
+# One parameter of a query.inspect reply by its BuiltInParameter name, or $null.
+function Find-CatalogueParameter($Response, [string]$BuiltIn) {
+    foreach ($parameter in (Get-CatalogueArray $Response 'readback.parameters')) {
+        if ((Get-CatalogueMember $parameter 'built_in') -eq $BuiltIn) { return $parameter }
+    }
+    return $null
+}
+
+# The wall height read back by query.inspect, compared with the expected millimetres.
+function Test-CatalogueInspectHeight($Response, [string]$WallUid, [double]$HeightMm) {
+    $height = Find-CatalogueParameter $Response 'WALL_USER_HEIGHT_PARAM'
+    return Join-CatalogueReasons @(
+        (Test-CatalogueSame 'elemento inspeccionado' $WallUid (Get-CataloguePath $Response 'readback.element.unique_id')),
+        (Test-CatalogueNumber 'altura sin restricciones (WALL_USER_HEIGHT_PARAM, mm)' $HeightMm (Get-CatalogueMember $height 'value') 0.01),
+        (Test-CatalogueSame 'unidad de la altura' 'mm' (Get-CatalogueMember $height 'unit')))
+}
+
+# A query.snapshot reply: the BIM-IR id of a source UniqueId, and the element with that id.
+function Find-CatalogueSnapshotId($Readback, [string]$UniqueId) {
+    foreach ($source in (Get-CatalogueList $Readback 'sources')) {
+        if ([string](Get-CatalogueMember $source 'unique_id') -eq $UniqueId) { return [string](Get-CatalogueMember $source 'id') }
+    }
+    return $null
+}
+
+function Find-CatalogueSnapshotElement($Readback, [string]$Id) {
+    foreach ($element in (Get-CatalogueList $Readback 'elements')) {
+        if ([string](Get-CatalogueMember $element 'Id') -eq $Id) { return $element }
+    }
+    return $null
+}
+
+# A door or window of the snapshot lies on its host wall axis, AlongMm from the wall start, with the given sill.
+function Test-CatalogueSnapshotOpening($Readback, [string]$What, [string]$OpeningUid, [string]$WallUid, [double]$AlongMm, [double]$SillMm) {
+    $openingId = Find-CatalogueSnapshotId $Readback $OpeningUid
+    $wallId = Find-CatalogueSnapshotId $Readback $WallUid
+    if (!$openingId -or !$wallId) { return Test-CatalogueCondition "$What y su muro mapeados en BIM-IR" 'mapeados' "puerta/ventana: $openingId, muro: $wallId" $false }
+    $opening = Find-CatalogueSnapshotElement $Readback $openingId
+    $wall = Find-CatalogueSnapshotElement $Readback $wallId
+    $dependencies = @((Get-CatalogueList $opening 'Dependencies') | ForEach-Object { [string]$_ })
+    $g = Get-CatalogueList $opening 'GeometryMetres'
+    $w = Get-CatalogueList $wall 'GeometryMetres'
+    if ($g.Count -lt 6 -or $w.Count -lt 4) { return Test-CatalogueCondition "geometría de $What y del muro" '6 y 6 números' "$($g.Count) y $($w.Count)" $false }
+    $dx = [double]$w[2] - [double]$w[0]
+    $dy = [double]$w[3] - [double]$w[1]
+    $length = [Math]::Sqrt($dx * $dx + $dy * $dy)
+    if (!($length -gt 0)) { return Test-CatalogueCondition "eje del muro de $What" 'longitud > 0' $length $false }
+    $mx = ([double]$g[0] + [double]$g[2]) / 2 - [double]$w[0]
+    $my = ([double]$g[1] + [double]$g[3]) / 2 - [double]$w[1]
+    $along = ($mx * $dx + $my * $dy) / $length * 1000
+    $off = [Math]::Abs($mx * $dy - $my * $dx) / $length * 1000
+    return Join-CatalogueReasons @(
+        (Test-CatalogueContains "$What depende de su muro anfitrión" $wallId $dependencies),
+        (Test-CatalogueNumber "$What sobre el eje del muro: distancia desde el inicio (mm)" $AlongMm $along 1),
+        (Test-CatalogueNumber "${What}: distancia al eje del muro (mm)" 0 $off 1),
+        (Test-CatalogueNumber "${What}: antepecho (mm)" $SillMm ([double]$g[4] * 1000) 1))
+}
+
+function Test-CatalogueSnapshotUnmapped($Readback, [string]$What, [string]$UniqueId, [string]$Reason) {
+    $entry = $null
+    foreach ($row in (Get-CatalogueList $Readback 'unmapped')) { if ([string](Get-CatalogueMember $row 'unique_id') -eq $UniqueId) { $entry = $row } }
+    return Test-CatalogueSame "$What en unmapped con motivo" $Reason (Get-CatalogueMember $entry 'reason')
+}
+
+# The raw readback text of a response line (between "readback": and the top-level ,"receipt":), for byte comparison.
+function Get-CatalogueRawReadback([string]$Text) {
+    if (!$Text) { return $null }
+    $start = $Text.IndexOf('"readback":', [StringComparison]::Ordinal)
+    $end = $Text.LastIndexOf(',"receipt":', [StringComparison]::Ordinal)
+    if ($start -lt 0 -or $end -le $start) { return $null }
+    return $Text.Substring($start + 11, $end - $start - 11)
+}
+
+function Test-CatalogueSameText([string]$What, [string]$First, [string]$Second) {
+    $ok = ($First.Length -gt 0) -and [string]::Equals($First, $Second, [StringComparison]::Ordinal)
+    return Test-CatalogueCondition $What "$($First.Length) bytes iguales" "$($Second.Length) bytes$(if (!$ok) { ', distintos' })" $ok
+}
+
+function Get-CatalogueViewName([string]$What) { "C04 $Stamp r$Run $What" }
+
+# P9-01 catalogue v2. The roof sits on the upper level over the v1 rectangle; the stair and the curtain wall stay
+# clear of the v1 elements; the opening is cut through the v1 floor.
+function Get-CatalogueV2Steps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'v2-levels'; Es = 'Consultar niveles (base y superior)'; Command = 'query.levels'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{} }
+        Check = { param($r) $pair = Select-CatalogueLevelPair $r; $picked['level_low'] = $pair.low; $picked['level_high'] = $pair.high; $null } })
+    $steps.Add(@{ Key = 'v2-roof-types'; Es = 'Consultar tipos de techo'; Command = 'query.roof_types'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{} }; Check = { param($r) $picked['roof_type'] = Select-CatalogueRoofType $r; $null } })
+    $steps.Add(@{ Key = 'v2-roof'; Es = 'Techo a cuatro aguas (30 grados) sobre el rectángulo, en el nivel superior'; Command = 'roof.create_footprint'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'level_high', 'roof_type'; [ordered]@{ level = $picked['level_high']; type = $picked['roof_type']; boundary = @($script:CatalogueRectangle | ForEach-Object { , @($_[0], $_[1]) }); slope_deg = 30 } }
+        Check = {
+            param($r)
+            $roof = Get-CataloguePath $r 'readback.roof'
+            $edges = Get-CatalogueList $roof 'edges'
+            $sloped = @($edges | Where-Object { (Get-CatalogueMember $_ 'defines_slope') -eq $true -and (Test-CatalogueNear (Get-CatalogueMember $_ 'slope_deg') 30 0.001) })
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'techo = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $roof 'unique_id')),
+                (Test-CatalogueSame 'nivel del techo' $picked['level_high'] (Get-CatalogueMember $roof 'level_unique_id')),
+                (Test-CatalogueSame 'tipo del techo' $picked['roof_type'] (Get-CatalogueMember $roof 'type_unique_id')),
+                (Test-CatalogueCondition 'bordes que definen pendiente de 30 grados' 4 $sloped.Count ($edges.Count -eq 4 -and $sloped.Count -eq 4)),
+                (Test-CatalogueNumber 'área de la huella (mm2)' 24000000 (Get-CatalogueMember $roof 'area_mm2') 24))
+        } })
+    $steps.Add(@{ Key = 'v2-stair'; Es = 'Escalera recta de un tramo (ancho 1000 mm) del nivel base al superior'; Command = 'stair.create'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'level_low', 'level_high'; [ordered]@{ base_level = $picked['level_low']; top_level = $picked['level_high']; run = [ordered]@{ start = @(-8000, 0); end = @(-8000, 6500) }; width_mm = 1000 } }
+        Check = {
+            param($r)
+            $stairs = Get-CataloguePath $r 'readback.stairs'
+            $widths = Get-CatalogueArray $stairs 'run_widths_mm'
+            $width = if ($widths.Count) { $widths[0] } else { $null }
+            Join-CatalogueReasons @(
+                (Test-CatalogueContains 'escalera entre los elementos creados' (Get-CatalogueMember $stairs 'unique_id') (Get-CatalogueList $r 'created')),
+                (Test-CatalogueSame 'nivel base' $picked['level_low'] (Get-CatalogueMember $stairs 'base_level_unique_id')),
+                (Test-CatalogueSame 'nivel superior' $picked['level_high'] (Get-CatalogueMember $stairs 'top_level_unique_id')),
+                (Test-CatalogueNumber 'ancho del tramo (mm)' 1000 $width 0.01),
+                (Test-CataloguePoint 'inicio del tramo (mm)' @(-8000, 0) (Get-CataloguePath $stairs 'run.start') 0.01),
+                (Test-CataloguePoint 'fin del tramo (mm)' @(-8000, 6500) (Get-CataloguePath $stairs 'run.end') 0.01),
+                (Test-CatalogueSame 'contrahuellas reales = deseadas (llega al nivel superior)' (Get-CatalogueMember $stairs 'desired_risers') (Get-CatalogueMember $stairs 'risers')))
+        } })
+    $steps.Add(@{ Key = 'v2-curtain-wall'; Es = 'Muro cortina recto de 6000 mm con 3 líneas de rejilla verticales y 2 horizontales'; Command = 'curtain_wall.create'; Expect = @{ Status = 'succeeded' }
+        Build = {
+            Need 'level'
+            $picked['curtain_type'] = Select-CatalogueCurtainType (Response 'query-wall-types')
+            [ordered]@{ level = $picked['level']; type = $picked['curtain_type']; height_mm = 3000; curve = [ordered]@{ kind = 'line'; start = @(0, -3000); end = @(6000, -3000) }; grid = [ordered]@{ vertical_spacing_mm = 1500; horizontal_spacing_mm = 1000 } }
+        }
+        Check = {
+            param($r)
+            $wall = Get-CataloguePath $r 'readback.wall'
+            $added = Get-CatalogueArray $r 'readback.curtain_grid.added_grid_line_unique_ids'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'muro cortina = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $wall 'unique_id')),
+                (Test-CatalogueSame 'tipo de muro cortina' $picked['curtain_type'] (Get-CatalogueMember $wall 'type_unique_id')),
+                (Test-CatalogueNumber 'altura (mm)' 3000 (Get-CatalogueMember $wall 'height_mm') 0.01),
+                (Test-CatalogueCondition 'líneas de rejilla agregadas (3 verticales + 2 horizontales)' 5 $added.Count ($added.Count -eq 5)))
+        } })
+    $steps.Add(@{ Key = 'v2-floor-opening'; Es = 'Hueco de 1000 x 1000 mm en el suelo del rectángulo'; Command = 'floor.create_opening'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ host_floor_uid = (Created 'floor'); profile = @(@(1000, 1000), @(2000, 1000), @(2000, 2000), @(1000, 2000)) } }
+        Check = {
+            param($r)
+            $opening = Get-CataloguePath $r 'readback.floor_opening'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'hueco = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $opening 'unique_id')),
+                (Test-CatalogueSame 'suelo anfitrión' (Created 'floor') (Get-CatalogueMember $opening 'host_floor_unique_id')),
+                (Test-CatalogueSame 'contorno pedido (no rectangular de Revit)' $false (Get-CatalogueMember $opening 'rect_boundary')),
+                (Test-CatalogueNumber 'área del hueco (mm2)' 1000000 (Get-CatalogueMember $opening 'area_mm2') 1))
+        } })
+    return , $steps.ToArray()
+}
+
+# P4-01 views: the same section and boxed 3D requests and expected values as tests/integration/native-views-probe.ps1.
+function Get-CatalogueViewSteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'views-family-types'; Es = 'Consultar tipos de vista de corte'; Command = 'query.view_family_types'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ family = 'section' } }
+        Check = { param($r) $rows = Get-CatalogueArray $r 'readback.view_family_types'; Test-CatalogueCondition 'tipos de vista de corte' '>= 1' $rows.Count ($rows.Count -ge 1) } })
+    $steps.Add(@{ Key = 'views-templates'; Es = 'Consultar plantillas de vista'; Command = 'query.view_templates'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{} }
+        Check = { param($r) $readback = Get-CatalogueMember $r 'readback'; Test-CatalogueCondition 'lista view_templates presente' 'presente' $(if ($null -ne $readback -and $null -ne $readback.PSObject.Properties['view_templates']) { 'presente' } else { 'ausente' }) ($null -ne $readback -and $null -ne $readback.PSObject.Properties['view_templates']) } })
+    $steps.Add(@{ Key = 'views-plan'; Es = 'Planta del nivel de los muros'; Command = 'view.create_plan'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'level'; [ordered]@{ level = $picked['level']; kind = 'floor_plan'; name = (Get-CatalogueViewName 'planta') } }
+        Check = {
+            param($r)
+            $view = Get-CataloguePath $r 'readback.view'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'vista = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $view 'unique_id')),
+                (Test-CatalogueSame 'nombre' (Get-CatalogueViewName 'planta') (Get-CatalogueMember $view 'name')),
+                (Test-CatalogueSame 'tipo de vista' 'FloorPlan' (Get-CatalogueMember $view 'view_type')),
+                (Test-CatalogueSame 'nivel de la planta' $picked['level'] (Get-CatalogueMember $view 'level_unique_id')))
+        } })
+    $steps.Add(@{ Key = 'views-section'; Es = 'Corte a lo largo del muro sur (0,0)-(6000,0), profundidad 3000 mm, de -500 a 4000 mm'; Command = 'view.create_section'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ line = [ordered]@{ start = @(0, 0); end = @(6000, 0) }; depth_mm = 3000; bottom_elevation_mm = -500; top_elevation_mm = 4000; name = (Get-CatalogueViewName 'corte') } }
+        Check = {
+            param($r)
+            $view = Get-CataloguePath $r 'readback.view'
+            $section = Get-CatalogueMember $view 'section'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'vista = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $view 'unique_id')),
+                (Test-CatalogueSame 'nombre' (Get-CatalogueViewName 'corte') (Get-CatalogueMember $view 'name')),
+                (Test-CataloguePoint 'dirección derecha' @(1, 0, 0) (Get-CatalogueMember $section 'right_direction') 0.000001),
+                (Test-CataloguePoint 'dirección arriba' @(0, 0, 1) (Get-CatalogueMember $section 'up_direction') 0.000001),
+                (Test-CataloguePoint 'dirección de vista (hacia el observador)' @(0, -1, 0) (Get-CatalogueMember $section 'view_direction') 0.000001),
+                (Test-CatalogueNumber 'profundidad far clip (mm)' 3000 (Get-CatalogueMember $section 'far_clip_mm') 0.01),
+                (Test-CatalogueSame 'recorte activo' $true (Get-CatalogueMember $section 'crop_box_active')))
+        } })
+    $steps.Add(@{ Key = 'views-3d'; Es = 'Vista 3D isométrica con caja de sección (0,0,0)-(8000,6000,3500)'; Command = 'view.create_3d'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ section_box = [ordered]@{ min = @(0, 0, 0); max = @(8000, 6000, 3500) }; name = (Get-CatalogueViewName '3D') } }
+        Check = {
+            param($r)
+            $view = Get-CataloguePath $r 'readback.view'
+            $threeD = Get-CatalogueMember $view 'three_d'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'vista = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $view 'unique_id')),
+                (Test-CatalogueSame 'perspectiva' $false (Get-CatalogueMember $threeD 'perspective')),
+                (Test-CatalogueSame 'caja de sección activa' $true (Get-CatalogueMember $threeD 'section_box_active')),
+                (Test-CataloguePoint 'caja: mínimo (mm)' @(0, 0, 0) (Get-CataloguePath $threeD 'section_box.min') 0.01),
+                (Test-CataloguePoint 'caja: máximo (mm)' @(8000, 6000, 3500) (Get-CataloguePath $threeD 'section_box.max') 0.01))
+        } })
+    return , $steps.ToArray()
+}
+
+# P2-01 query.snapshot: twice byte-identical; the v1 door and window on their wall axes; the floor and the curved wall
+# listed under unmapped.
+function Get-CatalogueSnapshotSteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'snap-1'; Es = 'Instantánea BIM-IR del modelo (query.snapshot)'; Command = 'query.snapshot'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{} }
+        Check = {
+            param($r)
+            $readback = Get-CatalogueMember $r 'readback'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'snapshot_version' 1 (Get-CatalogueMember $readback 'snapshot_version')),
+                (Test-CatalogueSame 'documento' $DocumentUid (Get-CatalogueMember $readback 'document_unique_id')),
+                (Test-CatalogueSnapshotOpening $readback 'puerta' (Created 'door') $picked['wall-south'] 1500 0),
+                (Test-CatalogueSnapshotOpening $readback 'ventana' (Created 'window') $picked['wall-east'] 2000 900),
+                (Test-CatalogueSnapshotUnmapped $readback 'suelo' (Created 'floor') 'no_bim_ir_kind'),
+                (Test-CatalogueSnapshotUnmapped $readback 'muro curvo' $picked['wall-arc'] 'curved_wall_unsupported'))
+        } })
+    $steps.Add(@{ Key = 'snap-2'; Es = 'Segunda instantánea sin cambios: debe ser idéntica byte a byte'; Command = 'query.snapshot'; Expect = @{ Status = 'succeeded' }
+        Build = { if (!$rawText.ContainsKey('snap-1')) { throw 'falta la primera instantánea' }; [ordered]@{} }
+        Check = { param($r) Test-CatalogueSameText 'readback idéntico a la primera instantánea' (Get-CatalogueRawReadback $rawText['snap-1']) (Get-CatalogueRawReadback $rawText['snap-2']) } })
+    return , $steps.ToArray()
+}
+
+# P1-02 query.elements and query.inspect, including truncation by limit, missing parameters and reference_not_found.
+function Get-CatalogueQuerySteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'q-walls'; Es = 'Listar muros (query.elements por categoría)'; Command = 'query.elements'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-south'; [ordered]@{ category = 'wall' } }
+        Check = {
+            param($r)
+            $readback = Get-CatalogueMember $r 'readback'
+            $rows = Get-CatalogueList $readback 'elements'
+            $uids = @($rows | ForEach-Object { Get-CatalogueMember $_ 'unique_id' })
+            $matched = Get-CatalogueMember $readback 'matched'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'categoría Revit' 'OST_Walls' (Get-CatalogueMember $readback 'built_in_category')),
+                (Test-CatalogueCondition 'coincidencias (al menos los 5 muros de v1)' '>= 5' $matched (($null -ne $matched) -and ($matched -ge 5))),
+                (Test-CatalogueContains 'incluye el muro sur' $picked['wall-south'] $uids),
+                (Test-CatalogueSame 'returned = filas' $rows.Count (Get-CatalogueMember $readback 'returned')),
+                (Test-CatalogueSame 'truncado' $false (Get-CatalogueMember $readback 'truncated')))
+        } })
+    $steps.Add(@{ Key = 'q-walls-limit'; Es = 'Listar muros con límite 1 (debe truncar)'; Command = 'query.elements'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ category = 'wall'; limit = 1 } }
+        Check = {
+            param($r)
+            $readback = Get-CatalogueMember $r 'readback'
+            $rows = Get-CatalogueList $readback 'elements'
+            Join-CatalogueReasons @(
+                (Test-CatalogueCondition 'filas devueltas' 1 $rows.Count ($rows.Count -eq 1)),
+                (Test-CatalogueSame 'returned' 1 (Get-CatalogueMember $readback 'returned')),
+                (Test-CatalogueSame 'truncado' $true (Get-CatalogueMember $readback 'truncated')),
+                (Test-CatalogueSame 'motivo del truncado' 'limit' (Get-CatalogueMember $readback 'truncated_reason')))
+        } })
+    $steps.Add(@{ Key = 'q-doors-level'; Es = 'Listar puertas del nivel de los muros'; Command = 'query.elements'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'level'; [ordered]@{ category = 'door'; level = $picked['level'] } }
+        Check = {
+            param($r)
+            $readback = Get-CatalogueMember $r 'readback'
+            $uids = @((Get-CatalogueList $readback 'elements') | ForEach-Object { Get-CatalogueMember $_ 'unique_id' })
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'nivel del filtro' $picked['level'] (Get-CataloguePath $readback 'level.unique_id')),
+                (Test-CatalogueContains 'incluye la puerta de v1' (Created 'door') $uids))
+        } })
+    $steps.Add(@{ Key = 'q-params'; Es = 'Listar muros leyendo Comments y un parámetro inexistente'; Command = 'query.elements'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-south'; [ordered]@{ category = 'wall'; parameters = @('Comments', 'C04 Missing Parameter'); limit = 100 } }
+        Check = {
+            param($r)
+            $row = $null
+            foreach ($candidate in (Get-CatalogueArray $r 'readback.elements')) { if ((Get-CatalogueMember $candidate 'unique_id') -eq $picked['wall-south']) { $row = $candidate } }
+            $names = @((Get-CatalogueList $row 'parameters') | ForEach-Object { Get-CatalogueMember $_ 'name' })
+            Join-CatalogueReasons @(
+                (Test-CatalogueContains 'el muro sur lee Comments' 'Comments' $names),
+                (Test-CatalogueContains 'parámetro inexistente en missing_parameters' 'C04 Missing Parameter' (Get-CatalogueList $row 'missing_parameters')))
+        } })
+    $steps.Add(@{ Key = 'q-inspect'; Es = 'Inspeccionar el muro sur (query.inspect)'; Command = 'query.inspect'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-south'; [ordered]@{ unique_id = $picked['wall-south'] } }
+        Check = {
+            param($r)
+            $count = Get-CataloguePath $r 'readback.parameter_count'
+            Join-CatalogueReasons @(
+                (Test-CatalogueInspectHeight $r $picked['wall-south'] $script:CatalogueWallHeightMm),
+                (Test-CatalogueCondition 'parámetros leídos' '>= 1' $count (($null -ne $count) -and ($count -ge 1))))
+        } })
+    $steps.Add(@{ Key = 'q-inspect-missing'; Es = 'Inspeccionar un UniqueId inexistente (debe responder reference_not_found)'; Command = 'query.inspect'; Expect = @{ Status = 'failed'; Code = 'reference_not_found' }
+        Build = { [ordered]@{ unique_id = $script:CatalogueMissingUid } }; Check = { param($r) $null } })
+    return , $steps.ToArray()
+}
+
+# P9-02 structure, away from the v1 rectangle (x = 20000 mm); the wall foundation goes under the v1 north wall.
+function Get-CatalogueStructureSteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 's-levels'; Es = 'Consultar niveles (base y superior)'; Command = 'query.levels'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{} }
+        Check = { param($r) $pair = Select-CatalogueLevelPair $r; $picked['level_low'] = $pair.low; $picked['level_high'] = $pair.high; $null } })
+    foreach ($category in @('column', 'framing', 'foundation', 'wall_foundation')) {
+        $steps.Add(@{ Key = "s-types-$($category -replace '_', '-')"; Es = "Consultar tipos estructurales: $category"; Command = 'query.structural_types'; Expect = @{ Status = 'succeeded' }; Category = $category
+            Build = { [ordered]@{ category = $spec.Category } }
+            Check = { param($r) $picked["structural_$($spec.Category)"] = Select-CatalogueStructuralType $r $spec.Category; $null } })
+    }
+    $steps.Add(@{ Key = 's-grids'; Es = 'Consultar ejes (query.grids)'; Command = 'query.grids'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{} }
+        Check = { param($r) $readback = Get-CatalogueMember $r 'readback'; $present = ($null -ne $readback) -and ($null -ne $readback.PSObject.Properties['grids']); Test-CatalogueCondition 'lista grids presente' 'presente' $(if ($present) { 'presente' } else { 'ausente' }) $present } })
+    $steps.Add(@{ Key = 's-grid'; Es = 'Eje recto de (20000,-2000) a (20000,6000)'; Command = 'grid.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { [ordered]@{ line = [ordered]@{ start = @(20000, -2000); end = @(20000, 6000) } } }
+        Check = {
+            param($r)
+            $grid = Get-CataloguePath $r 'readback.grid'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'eje = elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $grid 'unique_id')),
+                (Test-CatalogueSame 'eje recto' $false (Get-CatalogueMember $grid 'curved')),
+                (Test-CataloguePoint 'inicio (mm)' @(20000, -2000) (Get-CatalogueMember $grid 'start') 0.01),
+                (Test-CataloguePoint 'fin (mm)' @(20000, 6000) (Get-CatalogueMember $grid 'end') 0.01))
+        } })
+    $steps.Add(@{ Key = 's-grid-retry'; Es = 'Repetir el eje con el mismo identificador (no debe duplicarse)'; Command = 'grid.create'; ReuseOf = 's-grid'; Expect = @{ Status = 'succeeded'; Replayed = $true; Created = 1 }
+        Build = { [ordered]@{ line = [ordered]@{ start = @(20000, -2000); end = @(20000, 6000) } } }
+        Check = { param($r) Test-CatalogueSame 'el reintento devuelve el mismo eje' (Created 's-grid') (Get-CatalogueFirstCreated $r) } })
+    $steps.Add(@{ Key = 's-column'; Es = 'Columna estructural en (20000,0) del nivel base al superior'; Command = 'structural_column.create'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'structural_column', 'level_low', 'level_high'; [ordered]@{ type = $picked['structural_column']; point = @(20000, 0); base_level = $picked['level_low']; top_level = $picked['level_high'] } }
+        Check = {
+            param($r)
+            $column = Get-CataloguePath $r 'readback.structural_column'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'columna = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $column 'unique_id')),
+                (Test-CatalogueSame 'tipo' $picked['structural_column'] (Get-CatalogueMember $column 'type_unique_id')),
+                (Test-CataloguePoint 'punto (mm)' @(20000, 0) (Get-CatalogueMember $column 'point') 0.01),
+                (Test-CatalogueSame 'nivel base' $picked['level_low'] (Get-CatalogueMember $column 'base_level_unique_id')),
+                (Test-CatalogueSame 'nivel superior' $picked['level_high'] (Get-CatalogueMember $column 'top_level_unique_id')),
+                (Test-CatalogueSame 'vertical (no inclinada)' $false (Get-CatalogueMember $column 'slanted')))
+        } })
+    $steps.Add(@{ Key = 's-beam'; Es = 'Viga de (20000,0) a (26000,0) en el nivel superior'; Command = 'structural_beam.create'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'structural_framing', 'level_high'; [ordered]@{ level = $picked['level_high']; type = $picked['structural_framing']; line = [ordered]@{ start = @(20000, 0); end = @(26000, 0) } } }
+        Check = {
+            param($r)
+            $beam = Get-CataloguePath $r 'readback.structural_beam'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'viga = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $beam 'unique_id')),
+                (Test-CatalogueSame 'tipo' $picked['structural_framing'] (Get-CatalogueMember $beam 'type_unique_id')),
+                (Test-CatalogueSame 'nivel de referencia' $picked['level_high'] (Get-CatalogueMember $beam 'level_unique_id')),
+                (Test-CataloguePoint 'inicio (mm)' @(20000, 0) (Get-CatalogueMember $beam 'start') 0.01),
+                (Test-CataloguePoint 'fin (mm)' @(26000, 0) (Get-CatalogueMember $beam 'end') 0.01))
+        } })
+    $steps.Add(@{ Key = 's-footing'; Es = 'Zapata aislada bajo la columna (20000,0) en el nivel base'; Command = 'foundation.create_isolated'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'structural_foundation', 'level_low'; [ordered]@{ level = $picked['level_low']; type = $picked['structural_foundation']; point = @(20000, 0) } }
+        Check = {
+            param($r)
+            $footing = Get-CataloguePath $r 'readback.foundation'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'zapata = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $footing 'unique_id')),
+                (Test-CatalogueSame 'tipo' $picked['structural_foundation'] (Get-CatalogueMember $footing 'type_unique_id')),
+                (Test-CatalogueSame 'nivel' $picked['level_low'] (Get-CatalogueMember $footing 'level_unique_id')),
+                (Test-CataloguePoint 'punto (mm)' @(20000, 0) (Get-CatalogueMember $footing 'point') 0.01))
+        } })
+    $steps.Add(@{ Key = 's-wall-foundation'; Es = 'Cimiento corrido bajo el muro norte'; Command = 'foundation.create_wall'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'structural_wall_foundation', 'wall-north'; [ordered]@{ host_wall_uid = $picked['wall-north']; type = $picked['structural_wall_foundation'] } }
+        Check = {
+            param($r)
+            $foundation = Get-CataloguePath $r 'readback.wall_foundation'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'cimiento = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $foundation 'unique_id')),
+                (Test-CatalogueSame 'tipo' $picked['structural_wall_foundation'] (Get-CatalogueMember $foundation 'type_unique_id')),
+                (Test-CatalogueSame 'muro anfitrión' $picked['wall-north'] (Get-CatalogueMember $foundation 'host_wall_unique_id')))
+        } })
+    return , $steps.ToArray()
+}
+
+# P4-02 documentation, in its own floor plan with its own two grids 3000 mm apart.
+function Get-CatalogueDocumentationSteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'doc-title-blocks'; Es = 'Consultar carátulas (query.title_blocks)'; Command = 'query.title_blocks'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{} }
+        Check = { param($r) $readback = Get-CatalogueMember $r 'readback'; $present = ($null -ne $readback) -and ($null -ne $readback.PSObject.Properties['title_blocks']); Test-CatalogueCondition 'lista title_blocks presente' 'presente' $(if ($present) { 'presente' } else { 'ausente' }) $present } })
+    $steps.Add(@{ Key = 'doc-plan'; Es = 'Planta para documentar'; Command = 'view.create_plan'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'level'; [ordered]@{ level = $picked['level']; kind = 'floor_plan'; name = (Get-CatalogueViewName 'documentacion') } }
+        Check = { param($r) Test-CatalogueSame 'nivel de la planta' $picked['level'] (Get-CataloguePath $r 'readback.view.level_unique_id') } })
+    $steps.Add(@{ Key = 'doc-grid-1'; Es = 'Eje vertical en x = -2000'; Command = 'grid.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { [ordered]@{ line = [ordered]@{ start = @(-2000, -1000); end = @(-2000, 5000) } } }; Check = { param($r) $null } })
+    $steps.Add(@{ Key = 'doc-grid-2'; Es = 'Eje vertical en x = -5000'; Command = 'grid.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { [ordered]@{ line = [ordered]@{ start = @(-5000, -1000); end = @(-5000, 5000) } } }; Check = { param($r) $null } })
+    $steps.Add(@{ Key = 'doc-dim-grids'; Es = 'Cota entre los dos ejes (3000 mm)'; Command = 'dimension.create_linear'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ view_uid = (Created 'doc-plan'); first_uid = (Created 'doc-grid-1'); second_uid = (Created 'doc-grid-2') } }
+        Check = {
+            param($r)
+            $dimension = Get-CataloguePath $r 'readback.dimension'
+            $references = Get-CatalogueList $dimension 'reference_unique_ids'
+            Join-CatalogueReasons @(
+                (Test-CatalogueNumber 'valor de la cota (mm)' 3000 (Get-CatalogueMember $dimension 'value_mm') 0.01),
+                (Test-CatalogueSame 'vista de la cota' (Created 'doc-plan') (Get-CatalogueMember $dimension 'view_unique_id')),
+                (Test-CatalogueContains 'referencia: primer eje' (Created 'doc-grid-1') $references),
+                (Test-CatalogueContains 'referencia: segundo eje' (Created 'doc-grid-2') $references))
+        } })
+    $steps.Add(@{ Key = 'doc-dim-walls'; Es = 'Cota entre las caras interiores de los muros sur y norte'; Command = 'dimension.create_linear'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-south', 'wall-north'; [ordered]@{ view_uid = (Created 'doc-plan'); first_uid = $picked['wall-south']; second_uid = $picked['wall-north']; wall_face = 'interior' } }
+        Check = {
+            param($r)
+            $width = $null
+            foreach ($type in (Get-CatalogueList (Get-CatalogueMember (Response 'query-wall-types') 'readback') 'wall_types')) { if ((Get-CatalogueMember $type 'unique_id') -eq $picked['wall_type']) { $width = Get-CatalogueMember $type 'width_mm' } }
+            $value = Get-CataloguePath $r 'readback.dimension.value_mm'
+            $gap = if (Test-CatalogueNear $value 0 1e12) { [Math]::Abs([double]$value - 4000) } else { $null }
+            $references = Get-CatalogueArray $r 'readback.dimension.reference_unique_ids'
+            Join-CatalogueReasons @(
+                (Test-CatalogueNumber '|valor - 4000 mm entre ejes| = espesor del tipo de muro (mm)' ([double]$width) $gap 0.5),
+                (Test-CatalogueContains 'referencia: muro sur' $picked['wall-south'] $references),
+                (Test-CatalogueContains 'referencia: muro norte' $picked['wall-north'] $references))
+        } })
+    $steps.Add(@{ Key = 'doc-tag-wall'; Es = 'Etiqueta del muro sur (sin directriz)'; Command = 'tag.create'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-south'; [ordered]@{ view_uid = (Created 'doc-plan'); element_uid = $picked['wall-south'] } }
+        Check = {
+            param($r)
+            $tag = Get-CataloguePath $r 'readback.tag'
+            Join-CatalogueReasons @(
+                (Test-CatalogueContains 'etiqueta del muro sur' $picked['wall-south'] (Get-CatalogueList $tag 'tagged_unique_ids')),
+                (Test-CatalogueSame 'sin directriz' $false (Get-CatalogueMember $tag 'has_leader')),
+                (Test-CatalogueSame 'no huérfana' $false (Get-CatalogueMember $tag 'orphaned')))
+        } })
+    $steps.Add(@{ Key = 'doc-tag-door'; Es = 'Etiqueta de la puerta con directriz y cabeza en (1500,-1500)'; Command = 'tag.create'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ view_uid = (Created 'doc-plan'); element_uid = (Created 'door'); head = @(1500, -1500); leader = $true } }
+        Check = {
+            param($r)
+            $tag = Get-CataloguePath $r 'readback.tag'
+            Join-CatalogueReasons @(
+                (Test-CatalogueContains 'etiqueta de la puerta' (Created 'door') (Get-CatalogueList $tag 'tagged_unique_ids')),
+                (Test-CatalogueSame 'con directriz' $true (Get-CatalogueMember $tag 'has_leader')),
+                (Test-CataloguePoint 'cabeza (mm)' @(1500, -1500) (Get-CatalogueMember $tag 'head') 1))
+        } })
+    $steps.Add(@{ Key = 'doc-schedule'; Es = 'Tabla de puertas con Mark y Type, ordenada por Mark'; Command = 'schedule.create'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ category = 'door'; fields = @('Mark', 'Type'); sort_by = 'Mark'; name = (Get-CatalogueViewName 'puertas') } }
+        Check = {
+            param($r)
+            $schedule = Get-CataloguePath $r 'readback.schedule'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'categoría' 'OST_Doors' (Get-CatalogueMember $schedule 'built_in_category')),
+                (Test-CatalogueSame 'campos' 'Mark,Type' ((Get-CatalogueList $schedule 'fields') -join ',')),
+                (Test-CatalogueSame 'orden' 'Mark' ((Get-CatalogueList $schedule 'sort_fields') -join ',')))
+        } })
+    $steps.Add(@{ Key = 'doc-sheet'; Es = 'Lámina sin carátula'; Command = 'sheet.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { [ordered]@{ number = "C04-r$Run-A101"; name = 'Prueba' } }
+        Check = {
+            param($r)
+            $sheet = Get-CataloguePath $r 'readback.sheet'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'número' "C04-r$Run-A101" (Get-CatalogueMember $sheet 'number')),
+                (Test-CatalogueSame 'nombre' 'Prueba' (Get-CatalogueMember $sheet 'name')))
+        } })
+    $steps.Add(@{ Key = 'doc-sheet-retry'; Es = 'Repetir la lámina con el mismo identificador (no debe duplicarse)'; Command = 'sheet.create'; ReuseOf = 'doc-sheet'; Expect = @{ Status = 'succeeded'; Replayed = $true; Created = 1 }
+        Build = { [ordered]@{ number = "C04-r$Run-A101"; name = 'Prueba' } }
+        Check = { param($r) Test-CatalogueSame 'el reintento devuelve la misma lámina' (Created 'doc-sheet') (Get-CatalogueFirstCreated $r) } })
+    $steps.Add(@{ Key = 'doc-place-plan'; Es = 'Colocar la planta en la lámina en (420,297)'; Command = 'sheet.place_view'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ sheet_uid = (Created 'doc-sheet'); view_uid = (Created 'doc-plan'); center = @(420, 297) } }
+        Check = {
+            param($r)
+            $placement = Get-CataloguePath $r 'readback.placement'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'lámina' (Created 'doc-sheet') (Get-CatalogueMember $placement 'sheet_unique_id')),
+                (Test-CatalogueSame 'vista' (Created 'doc-plan') (Get-CatalogueMember $placement 'view_unique_id')),
+                (Test-CataloguePoint 'centro (mm de lámina)' @(420, 297) (Get-CatalogueMember $placement 'center') 1))
+        } })
+    $steps.Add(@{ Key = 'doc-place-schedule'; Es = 'Colocar la tabla de puertas en la lámina en (100,100)'; Command = 'sheet.place_view'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ sheet_uid = (Created 'doc-sheet'); view_uid = (Created 'doc-schedule'); center = @(100, 100) } }
+        Check = {
+            param($r)
+            $placement = Get-CataloguePath $r 'readback.placement'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'lámina' (Created 'doc-sheet') (Get-CatalogueMember $placement 'sheet_unique_id')),
+                (Test-CatalogueSame 'tabla' (Created 'doc-schedule') (Get-CatalogueMember $placement 'view_unique_id')))
+        } })
+    $steps.Add(@{ Key = 'doc-place-plan-again'; Es = 'Colocar otra vez la misma planta (debe rechazarse nombrando la lámina)'; Command = 'sheet.place_view'; Expect = @{ Status = 'failed'; Code = 'args_invalid' }
+        Build = { [ordered]@{ sheet_uid = (Created 'doc-sheet'); view_uid = (Created 'doc-plan'); center = @(200, 200) } }
+        Check = { param($r) $detail = [string](Get-CatalogueMember $r 'detail'); Test-CatalogueCondition 'el rechazo nombra la lámina' "C04-r$Run-A101" $detail ($detail -like "*C04-r$Run-A101*") } })
+    return , $steps.ToArray()
+}
+
+# P2-03 journal.read: baseline, one CLI wall (skipped as add-in, seen in the diff), an empty read, two equal peeks.
+function Get-CatalogueJournalSteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'j-baseline'; Es = 'Leer el diario (línea base)'; Command = 'journal.read'; Wire = $true; Expect = @{ Status = 'succeeded' }
+        Build = { $null }
+        Check = {
+            param($r)
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'grabador suscrito (attached)' $true (Get-CatalogueMember $r 'attached')),
+                (Test-CatalogueSame 'documento' $DocumentUid (Get-CataloguePath $r 'report.document_unique_id')))
+        } })
+    $steps.Add(@{ Key = 'j-wall'; Es = 'Muro recto nuevo por la CLI, de (0,9000) a (3000,9000)'; Command = 'wall.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { Need 'level', 'wall_type'; New-CatalogueLineWall $picked['level'] $picked['wall_type'] @(0, 9000) @(3000, 9000) }
+        Check = { param($r) $null } })
+    $steps.Add(@{ Key = 'j-after'; Es = 'Leer el diario: el muro aparece en el diff y la escritura de la CLI no cuenta como externa'; Command = 'journal.read'; Wire = $true; Expect = @{ Status = 'succeeded' }
+        Build = { $null = Response 'j-baseline'; $null = Created 'j-wall'; $null }
+        Check = {
+            param($r)
+            $wallUid = Created 'j-wall'
+            $before = Get-CatalogueMember (Response 'j-baseline') 'skipped_add_in'
+            $skipped = Get-CatalogueMember $r 'skipped_add_in'
+            $report = Get-CatalogueMember $r 'report'
+            $added = @((Get-CatalogueArray $report 'diff.added') | ForEach-Object { Get-CatalogueMember $_ 'unique_id' })
+            $external = @((Get-CatalogueArray $report 'entries') | Where-Object { (Get-CatalogueMember $_ 'origin') -eq 'external' -and ((Get-CatalogueList $_ 'added') -contains $wallUid) })
+            Join-CatalogueReasons @(
+                (Test-CatalogueCondition 'skipped_add_in creció (escritura propia del complemento)' "> $before" $skipped (($null -ne $skipped) -and ($null -ne $before) -and ([long]$skipped -gt [long]$before))),
+                (Test-CatalogueSame 'línea base previa (baseline_existed)' $true (Get-CatalogueMember $report 'baseline_existed')),
+                (Test-CatalogueContains 'diff.added incluye el muro nuevo' $wallUid $added),
+                (Test-CatalogueCondition 'ninguna entrada externa con el muro nuevo' 0 $external.Count ($external.Count -eq 0)))
+        } })
+    $steps.Add(@{ Key = 'j-empty'; Es = 'Leer el diario otra vez sin cambios: vacío'; Command = 'journal.read'; Wire = $true; Expect = @{ Status = 'succeeded' }
+        Build = { $null }
+        Check = {
+            param($r)
+            $report = Get-CatalogueMember $r 'report'
+            $sizes = @((Get-CatalogueArray $report 'entries').Count, (Get-CatalogueArray $report 'diff.added').Count, (Get-CatalogueArray $report 'diff.removed').Count, (Get-CatalogueArray $report 'diff.changed').Count)
+            Test-CatalogueCondition 'entradas, agregados, quitados y cambiados' '0,0,0,0' ($sizes -join ',') (($sizes -join ',') -eq '0,0,0,0')
+        } })
+    $steps.Add(@{ Key = 'j-peek-1'; Es = 'Leer el diario con peek'; Command = 'journal.read'; Wire = $true; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{ peek = $true } }
+        Check = { param($r) Test-CatalogueSame 'peek' $true (Get-CataloguePath $r 'report.peek') } })
+    $steps.Add(@{ Key = 'j-peek-2'; Es = 'Repetir peek: misma respuesta byte a byte'; Command = 'journal.read'; Wire = $true; Expect = @{ Status = 'succeeded' }
+        Build = { if (!$rawText.ContainsKey('j-peek-1')) { throw 'falta el primer peek' }; [ordered]@{ peek = $true } }
+        Check = { param($r) Test-CatalogueSameText 'respuesta idéntica al primer peek' $rawText['j-peek-1'] $rawText['j-peek-2'] } })
+    return , $steps.ToArray()
+}
+
+# P1-05 modify and delete, destructive, always last: the v1 west wall height and comments, then the v1 south wall
+# (which hosts the v1 door) is deleted after a dry run and a refused unconfirmed delete.
+function Get-CatalogueModifySteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $height = [ordered]@{ built_in = 'WALL_USER_HEIGHT_PARAM' }
+    $steps.Add(@{ Key = 'm-inspect-before'; Es = 'Inspeccionar la altura del muro oeste (3000 mm)'; Command = 'query.inspect'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-west'; [ordered]@{ unique_id = $picked['wall-west'] } }
+        Check = { param($r) Test-CatalogueInspectHeight $r $picked['wall-west'] 3000 } })
+    $steps.Add(@{ Key = 'm-height-dry'; Es = 'Altura del muro oeste a 3200 mm en simulacro (dry_run)'; Command = 'element.set_parameter'; Expect = @{ Status = 'succeeded' }; Parameter = $height
+        Build = { Need 'wall-west'; [ordered]@{ element_uid = $picked['wall-west']; parameter = $spec.Parameter; value = [ordered]@{ kind = 'length'; mm = 3200 }; dry_run = $true } }
+        Check = {
+            param($r)
+            $set = Get-CataloguePath $r 'readback.set_parameter'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'simulacro' $true (Get-CatalogueMember $set 'dry_run')),
+                (Test-CatalogueSame 'elemento' $picked['wall-west'] (Get-CatalogueMember $set 'element_unique_id')),
+                (Test-CatalogueNumber 'antes (mm)' 3000 (Get-CataloguePath $set 'before.mm') 0.01),
+                (Test-CatalogueNumber 'después (mm)' 3200 (Get-CataloguePath $set 'after.mm') 0.01),
+                (Test-CatalogueSame 'cambiaría' $true (Get-CatalogueMember $set 'changed')),
+                (Test-CatalogueCondition 'modified vacío en simulacro' 0 (Get-CatalogueList $r 'modified').Count ((Get-CatalogueList $r 'modified').Count -eq 0)))
+        } })
+    $steps.Add(@{ Key = 'm-inspect-dry'; Es = 'Inspeccionar: la altura sigue en 3000 mm tras el simulacro'; Command = 'query.inspect'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-west'; [ordered]@{ unique_id = $picked['wall-west'] } }
+        Check = { param($r) Test-CatalogueInspectHeight $r $picked['wall-west'] 3000 } })
+    $steps.Add(@{ Key = 'm-height'; Es = 'Altura del muro oeste a 3200 mm (real)'; Command = 'element.set_parameter'; Expect = @{ Status = 'succeeded' }; Parameter = $height
+        Build = { Need 'wall-west'; [ordered]@{ element_uid = $picked['wall-west']; parameter = $spec.Parameter; value = [ordered]@{ kind = 'length'; mm = 3200 } } }
+        Check = {
+            param($r)
+            $set = Get-CataloguePath $r 'readback.set_parameter'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'simulacro' $false (Get-CatalogueMember $set 'dry_run')),
+                (Test-CatalogueNumber 'después (mm)' 3200 (Get-CataloguePath $set 'after.mm') 0.01),
+                (Test-CatalogueContains 'modified incluye el muro oeste' $picked['wall-west'] (Get-CatalogueList $r 'modified')))
+        } })
+    $steps.Add(@{ Key = 'm-height-retry'; Es = 'Repetir el cambio de altura con el mismo identificador (respuesta guardada)'; Command = 'element.set_parameter'; ReuseOf = 'm-height'; Expect = @{ Status = 'succeeded'; Replayed = $true }; Parameter = $height
+        Build = { Need 'wall-west'; [ordered]@{ element_uid = $picked['wall-west']; parameter = $spec.Parameter; value = [ordered]@{ kind = 'length'; mm = 3200 } } }
+        Check = { param($r) Test-CatalogueNumber 'después (mm, respuesta guardada)' 3200 (Get-CataloguePath $r 'readback.set_parameter.after.mm') 0.01 } })
+    $steps.Add(@{ Key = 'm-inspect-after'; Es = 'Inspeccionar: la altura quedó en 3200 mm'; Command = 'query.inspect'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-west'; [ordered]@{ unique_id = $picked['wall-west'] } }
+        Check = { param($r) Test-CatalogueInspectHeight $r $picked['wall-west'] 3200 } })
+    $steps.Add(@{ Key = 'm-comments'; Es = 'Comentario de texto en el muro oeste'; Command = 'element.set_parameter'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-west'; [ordered]@{ element_uid = $picked['wall-west']; parameter = [ordered]@{ name = 'Comments' }; value = [ordered]@{ kind = 'text'; text = "C04 r$Run" } } }
+        Check = { param($r) Test-CatalogueSame 'texto leído' "C04 r$Run" (Get-CataloguePath $r 'readback.set_parameter.after.text') } })
+    $steps.Add(@{ Key = 'm-readonly'; Es = 'Parámetro de solo lectura (largo del muro): debe rechazarse'; Command = 'element.set_parameter'; Expect = @{ Status = 'failed'; Code = 'args_invalid' }
+        Build = { Need 'wall-west'; [ordered]@{ element_uid = $picked['wall-west']; parameter = [ordered]@{ built_in = 'CURVE_ELEM_LENGTH' }; value = [ordered]@{ kind = 'length'; mm = 1000 } } }
+        Check = { param($r) $null } })
+    $steps.Add(@{ Key = 'm-delete-dry'; Es = 'Borrar el muro sur en simulacro: la puerta debe figurar como dependiente'; Command = 'element.delete'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-south'; [ordered]@{ element_uids = @($picked['wall-south']); dry_run = $true } }
+        Check = {
+            param($r)
+            $delete = Get-CataloguePath $r 'readback.delete'
+            $dependents = Get-CatalogueList $delete 'dependents'
+            $reason = Join-CatalogueReasons @(
+                (Test-CatalogueSame 'simulacro' $true (Get-CatalogueMember $delete 'dry_run')),
+                (Test-CatalogueContains 'objetivo' $picked['wall-south'] (Get-CatalogueList $delete 'targets')),
+                (Test-CatalogueContains 'la puerta es dependiente' (Created 'door') $dependents),
+                (Test-CatalogueCondition 'deleted vacío en simulacro' 0 (Get-CatalogueList $r 'deleted').Count ((Get-CatalogueList $r 'deleted').Count -eq 0)))
+            if ($null -eq $reason) { $picked['delete_dependents'] = @($dependents | ForEach-Object { [string]$_ }) }
+            $reason
+        } })
+    $steps.Add(@{ Key = 'm-delete-unconfirmed'; Es = 'Borrar el muro sur sin confirmar dependientes: debe rechazarse'; Command = 'element.delete'; Expect = @{ Status = 'failed'; Code = 'args_invalid' }
+        Build = { Need 'wall-south', 'delete_dependents'; [ordered]@{ element_uids = @($picked['wall-south']) } }
+        Check = { param($r) $null } })
+    $steps.Add(@{ Key = 'm-delete'; Es = 'Borrar el muro sur confirmando exactamente los dependientes del simulacro'; Command = 'element.delete'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'wall-south', 'delete_dependents'; [ordered]@{ element_uids = @($picked['wall-south']); confirm_dependents = @($picked['delete_dependents']) } }
+        Check = {
+            param($r)
+            $deleted = Get-CatalogueList $r 'deleted'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'dependientes confirmados' $true (Get-CataloguePath $r 'readback.delete.confirmed')),
+                (Test-CatalogueContains 'deleted incluye el muro sur' $picked['wall-south'] $deleted),
+                (Test-CatalogueContains 'deleted incluye la puerta' (Created 'door') $deleted))
+        } })
+    $steps.Add(@{ Key = 'm-inspect-deleted'; Es = 'Inspeccionar el muro borrado (debe responder reference_not_found)'; Command = 'query.inspect'; Expect = @{ Status = 'failed'; Code = 'reference_not_found' }
+        Build = { Need 'wall-south'; [ordered]@{ unique_id = $picked['wall-south'] } }
+        Check = { param($r) $null } })
+    return , $steps.ToArray()
+}
+
+# The v1 group, then (unless V1Only) the later groups in a fixed order with the destructive one last. Group keys name
+# the groups in the summary line.
+function Get-CatalogueGroups([switch]$V1Only) {
+    $groups = [Collections.Generic.List[hashtable]]::new()
+    $groups.Add(@{ Key = 'v1'; Es = 'Catálogo v1 (C04): muros, puerta, ventana, suelo, habitación, reintento y rechazos'; Steps = (Get-CatalogueSteps) })
+    if (!$V1Only) {
+        $groups.Add(@{ Key = 'v2'; Es = 'Catálogo v2 (P9-01): techo, escalera, muro cortina, hueco en suelo'; Steps = (Get-CatalogueV2Steps) })
+        $groups.Add(@{ Key = 'vistas'; Es = 'Vistas (P4-01): planta, corte y 3D con caja de sección'; Steps = (Get-CatalogueViewSteps) })
+        $groups.Add(@{ Key = 'snapshot'; Es = 'Instantánea BIM-IR (P2-01): dos veces idéntica, aberturas sobre el eje, suelo sin mapear'; Steps = (Get-CatalogueSnapshotSteps) })
+        $groups.Add(@{ Key = 'consultas'; Es = 'Consultas de elementos (P1-02): query.elements y query.inspect'; Steps = (Get-CatalogueQuerySteps) })
+        $groups.Add(@{ Key = 'estructura'; Es = 'Estructura (P9-02): ejes, columna, viga, zapata, cimiento corrido'; Steps = (Get-CatalogueStructureSteps) })
+        $groups.Add(@{ Key = 'documentacion'; Es = 'Documentación (P4-02): cotas, etiquetas, tabla, lámina y vistas en lámina'; Steps = (Get-CatalogueDocumentationSteps) })
+        $groups.Add(@{ Key = 'diario'; Es = 'Diario de cambios (P2-03): journal.read'; Steps = (Get-CatalogueJournalSteps) })
+        $groups.Add(@{ Key = 'modificar'; Es = 'Modificar y borrar (P1-05, destructivo, al final)'; Steps = (Get-CatalogueModifySteps) })
+    }
+    return , $groups.ToArray()
+}
+
+function Get-CatalogueCounts($Records) {
+    $list = @($Records | Where-Object { $null -ne $_ })
+    $passed = @($list | Where-Object { $_.passed }).Count
+    return [ordered]@{ total = $list.Count; passed = $passed; failed = $list.Count - $passed; not_sent = @($list | Where-Object { $null -eq $_.request }).Count }
+}
+
+function Test-CatalogueWireResponse($Response, $ExitCode) {
+    if ($null -eq $Response) { return 'no JSON response' }
+    $status = Get-CatalogueMember $Response 'status'
+    if ($status -ne 'succeeded') { return "expected success, got ${status}/$(Get-CatalogueMember $Response 'code')" }
+    if ($ExitCode -ne 0) { return "success reported with exit code $ExitCode" }
+    if ($null -eq (Get-CatalogueMember $Response 'report')) { return 'success without report' }
+    return $null
+}
+
+# A pipe wire line for an Operation outside the revit.command catalogue (journal.read): the add-in Request record.
+function New-CatalogueWireLine([string]$DocumentPath, [string]$Operation, $Options) {
+    $line = [ordered]@{ DocumentPath = $DocumentPath; Operation = $Operation; UniqueId = $null; Metres = @() }
+    if ($null -ne $Options) { $line['Journal'] = $Options }
+    return ($line | ConvertTo-Json -Depth 8 -Compress)
+}
+
+# Runs every step of every group in order. $Invoke (param index, key, envelopeJson; returns @{ output; exit_code;
+# timed_out }) sends catalogue envelopes; $InvokeWire (same shape, with the wire line) sends journal.read; without it
+# those steps are not sent. $Progress (optional) receives one Spanish line per step; $Alive (optional) returns $false
+# when the child Revit is gone. A timeout (unknown completion), a lost pipe (pipe_connect_timeout, pipe_io_error,
+# no_response), a CLI error or a closed Revit stops the run: the remaining steps of every group are not sent. A failed
+# step or group never stops later groups: a later step that needs something a failed step should have made is not
+# sent and says what is missing. Nothing is retried automatically. -V1Only runs only the 17 v1 steps. counts are the
+# v1 counts (unchanged meaning); groups, overall, all_passed and aborted cover the whole run.
 function Invoke-CatalogueSequence {
     param(
         [Parameter(Mandatory)][string]$Stamp,
@@ -219,28 +971,47 @@ function Invoke-CatalogueSequence {
         [Parameter(Mandatory)][string]$DocumentPath,
         [Parameter(Mandatory)][string]$DocumentUid,
         [Parameter(Mandatory)][scriptblock]$Invoke,
+        [scriptblock]$InvokeWire,
         [scriptblock]$Progress,
-        [scriptblock]$Alive
+        [scriptblock]$Alive,
+        [switch]$V1Only
     )
     $picked = @{}
+    $createdBy = @{}
+    $responses = @{}
+    $rawText = @{}
     function Need([string[]]$Names) { foreach ($name in $Names) { if (!$picked.ContainsKey($name) -or !$picked[$name]) { throw "falta $name de un paso anterior" } } }
-    $specs = Get-CatalogueSteps
+    function Created([string]$Key) { if (!$createdBy.ContainsKey($Key)) { throw "falta el elemento creado en el paso $Key" }; return [string]$createdBy[$Key] }
+    function Response([string]$Key) { if (!$responses.ContainsKey($Key)) { throw "falta la respuesta del paso $Key" }; return $responses[$Key] }
+    $groups = Get-CatalogueGroups -V1Only:$V1Only
+    $plan = [Collections.Generic.List[object]]::new()
+    foreach ($group in $groups) { foreach ($step in $group.Steps) { $plan.Add(@{ Group = $group.Key; Spec = $step }) } }
     $records = [Collections.Generic.List[object]]::new()
     $aborted = $null
     $index = 0
-    foreach ($spec in $specs) {
+    foreach ($item in $plan) {
         $index++
-        $operationId = New-CatalogueOperationId $Stamp $Run $(if ($spec.ContainsKey('ReuseOf')) { $spec.ReuseOf } else { $spec.Key })
-        $record = [ordered]@{ index = $index; key = $spec.Key; description = $spec.Es; command = $spec.Command; operation_id = $operationId; expected = $spec.Expect; request = $null; response = $null; raw_response = $null; exit_code = $null; timed_out = $false; elapsed_ms = $null; passed = $false; reason = $null }
+        $spec = $item.Spec
+        $wire = $spec.ContainsKey('Wire') -and $spec.Wire
+        $operationId = if ($wire) { $null } else { New-CatalogueOperationId $Stamp $Run $(if ($spec.ContainsKey('ReuseOf')) { $spec.ReuseOf } else { $spec.Key }) }
+        $record = [ordered]@{ index = $index; group = $item.Group; key = $spec.Key; description = $spec.Es; command = $spec.Command; operation_id = $operationId; expected = $spec.Expect; request = $null; response = $null; raw_response = $null; exit_code = $null; timed_out = $false; elapsed_ms = $null; passed = $false; reason = $null; comparisons = [Collections.Generic.List[object]]::new() }
         $records.Add($record)
-        if ($Progress) { & $Progress "Paso $index/$($specs.Count): $($spec.Es)" }
+        if ($Progress) { & $Progress "Paso $index/$($plan.Count) [$($item.Group)]: $($spec.Es)" }
         if ($aborted) { $record.reason = "no enviado: $aborted"; continue }
         if ($Alive -and !(& $Alive)) { $aborted = 'el Revit de prueba se cerró'; $record.reason = "no enviado: $aborted"; continue }
         try { $stepArgs = & $spec.Build } catch { $record.reason = 'no enviado: ' + $_.Exception.Message; continue }
-        $envelopeJson = New-CatalogueEnvelope $operationId $DocumentPath $DocumentUid $spec.Command $stepArgs
-        $record.request = $envelopeJson | ConvertFrom-Json
+        if ($wire) {
+            if (!$InvokeWire) { $record.reason = "no enviado: falta el canal directo al pipe para $($spec.Command)"; continue }
+            $requestText = New-CatalogueWireLine $DocumentPath $spec.Command $stepArgs
+            $invoker = $InvokeWire
+        }
+        else {
+            $requestText = New-CatalogueEnvelope $operationId $DocumentPath $DocumentUid $spec.Command $stepArgs
+            $invoker = $Invoke
+        }
+        $record.request = $requestText | ConvertFrom-Json
         $watch = [Diagnostics.Stopwatch]::StartNew()
-        try { $result = & $Invoke $index $spec.Key $envelopeJson } catch { $watch.Stop(); $aborted = 'error al ejecutar la CLI: ' + $_.Exception.Message; $record.reason = $aborted; continue }
+        try { $result = & $invoker $index $spec.Key $requestText } catch { $watch.Stop(); $aborted = 'error al ejecutar la CLI: ' + $_.Exception.Message; $record.reason = $aborted; continue }
         $watch.Stop()
         $record.elapsed_ms = [Math]::Round($watch.Elapsed.TotalMilliseconds, 1)
         $record.exit_code = $result.exit_code
@@ -251,22 +1022,75 @@ function Invoke-CatalogueSequence {
         try { $parsed = $text | ConvertFrom-Json -ErrorAction Stop } catch { $parsed = $null }
         if ($null -eq $parsed) { $record.raw_response = $text; $record.reason = 'response is not JSON'; continue }
         $record.response = $parsed
-        $reason = Test-CatalogueResponse $parsed $result.exit_code $operationId $spec.Expect
+        $responses[$spec.Key] = $parsed
+        $rawText[$spec.Key] = $text
+        $code = [string](Get-CatalogueMember $parsed 'code')
+        if ($script:CatalogueTransportCodes -contains $code -and $spec.Expect['Code'] -ne $code) {
+            $aborted = "se perdió la conexión con el Revit de prueba en el paso $index ($code)"
+            $record.reason = $aborted
+            continue
+        }
+        $reason = if ($wire) { Test-CatalogueWireResponse $parsed $result.exit_code } else { Test-CatalogueResponse $parsed $result.exit_code $operationId $spec.Expect }
         if ($null -eq $reason) {
-            try { $reason = & $spec.Check $parsed } catch { $reason = $_.Exception.Message }
+            $script:CatalogueComparisons = $record.comparisons
+            try { $reason = & $spec.Check $parsed } catch { $reason = $_.Exception.Message } finally { $script:CatalogueComparisons = $null }
         }
         $record.passed = $null -eq $reason
         $record.reason = $reason
+        if ($record.passed) {
+            $first = Get-CatalogueFirstCreated $parsed
+            if ($first) { $createdBy[$spec.Key] = $first }
+        }
     }
-    $passed = @($records | Where-Object { $_.passed }).Count
+    $all = $records.ToArray()
+    $summaries = @(foreach ($group in $groups) {
+        $counts = Get-CatalogueCounts @($all | Where-Object { $_.group -eq $group.Key })
+        [ordered]@{ key = $group.Key; description = $group.Es; total = $counts.total; passed = $counts.passed; failed = $counts.failed; not_sent = $counts.not_sent }
+    })
+    $overall = Get-CatalogueCounts $all
     return [ordered]@{
         picked = $picked
-        steps = $records.ToArray()
-        counts = [ordered]@{ total = $records.Count; passed = $passed; failed = $records.Count - $passed; not_sent = @($records | Where-Object { $null -eq $_.request }).Count }
+        steps = $all
+        counts = Get-CatalogueCounts @($all | Where-Object { $_.group -eq 'v1' })
+        groups = $summaries
+        overall = $overall
+        all_passed = ($overall.failed -eq 0)
+        aborted = $aborted
     }
 }
 
 function Format-CatalogueResult($Counts) { "Catálogo: $($Counts.passed)/$($Counts.total) pasos OK" }
+
+# The owner's result line: the v1 line unchanged ("Catálogo: 17/17 pasos OK"), then, when later groups ran, each
+# group's passed/total, the overall total and the verdict naming every failed group (and why the run stopped).
+function Format-CatalogueSummary($Result) {
+    $line = Format-CatalogueResult $Result.counts
+    $extra = @(@($Result.groups) | Where-Object { $_.key -ne 'v1' })
+    if (!$extra.Count) { return $line }
+    $parts = @($extra | ForEach-Object { "$($_.key) $($_.passed)/$($_.total)" })
+    $failed = @(@($Result.groups) | Where-Object { $_.failed -gt 0 } | ForEach-Object { $_.key })
+    $verdict = if ($failed.Count) { 'FALLÓ en ' + ($failed -join ', ') } else { 'TODO OK' }
+    if ($Result.aborted) { $verdict += " (DETENIDO: $($Result.aborted))" }
+    return "$line; grupos: $($parts -join ', '); total $($Result.overall.passed)/$($Result.overall.total); resultado: $verdict"
+}
+
+# Sums several runs' results (counts, groups by key, overall) for the session summary line.
+function Join-CatalogueResults([object[]]$Results) {
+    $names = @('total', 'passed', 'failed', 'not_sent')
+    $v1 = [ordered]@{ total = 0; passed = 0; failed = 0; not_sent = 0 }
+    $overall = [ordered]@{ total = 0; passed = 0; failed = 0; not_sent = 0 }
+    $groups = [ordered]@{}
+    $aborted = $null
+    foreach ($result in @($Results | Where-Object { $null -ne $_ })) {
+        foreach ($name in $names) { $v1[$name] += [int]$result.counts[$name]; $overall[$name] += [int]$result.overall[$name] }
+        foreach ($group in @($result.groups)) {
+            if (!$groups.Contains($group.key)) { $groups[$group.key] = [ordered]@{ key = $group.key; description = $group.description; total = 0; passed = 0; failed = 0; not_sent = 0 } }
+            foreach ($name in $names) { $groups[$group.key][$name] += [int]$group[$name] }
+        }
+        if (!$aborted -and $result.aborted) { $aborted = $result.aborted }
+    }
+    return [ordered]@{ counts = $v1; groups = @($groups.Values); overall = $overall; all_passed = ($overall.failed -eq 0); aborted = $aborted }
+}
 
 # One CLI call: the envelope goes to a new numbered file, then "dotnet Bim.Cli.dll revit-command <file> <pipe>" with a
 # bounded wait. On timeout only that CLI process is stopped (never Revit) and the step counts as unknown completion.
@@ -300,4 +1124,61 @@ function Invoke-CatalogueCli {
         else { $process.WaitForExit() }
         return @{ output = $out.GetAwaiter().GetResult(); stderr = $err.GetAwaiter().GetResult(); exit_code = $(if ($exited) { $process.ExitCode } else { $null }); timed_out = !$exited; request_file = $file }
     } finally { $process.Dispose() }
+}
+
+
+# One wire line straight to the add-in pipe, for Operations outside the revit.command catalogue (journal.read, which is
+# read-only): the line is saved to a new numbered file like the CLI requests, sent once on the process pipe and one
+# response line is read with a bounded wait. A pipe that cannot be reached answers pipe_connect_timeout or pipe_io_error
+# (the run then stops); a reply that does not come in time counts as a timeout (unknown completion).
+function Invoke-CatalogueWire {
+    param(
+        [Parameter(Mandatory)][string]$PipeName,
+        [Parameter(Mandatory)][string]$Line,
+        [string]$RequestDirectory,
+        [int]$Index,
+        [string]$Key,
+        [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120,
+        [ValidateRange(100, 60000)][int]$ConnectTimeoutMs = 5000
+    )
+    if ($RequestDirectory) {
+        New-Item -ItemType Directory -Force $RequestDirectory | Out-Null
+        $file = Join-Path $RequestDirectory ('{0:D2}-{1}.json' -f $Index, $Key)
+        $stream = [IO.File]::Open($file, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Line); $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+    }
+    function Failure([string]$Code, [string]$Detail) {
+        $failure = [ordered]@{ status = 'failed'; code = $Code; field = 'pipe_name'; detail = $Detail; created = @(); modified = @(); deleted = @(); readback = $null; receipt = $null; warnings = @() }
+        return @{ output = ($failure | ConvertTo-Json -Compress); exit_code = 1; timed_out = $false }
+    }
+    function Inner($Exception) {
+        while ($Exception -is [Management.Automation.MethodInvocationException] -and $null -ne $Exception.InnerException) { $Exception = $Exception.InnerException }
+        return $Exception
+    }
+    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
+    try {
+        try { $pipe.Connect($ConnectTimeoutMs) }
+        catch {
+            $error0 = Inner $_.Exception
+            if ($error0 -is [TimeoutException]) { return Failure 'pipe_connect_timeout' 'no add-in listening on this process pipe' }
+            return Failure 'pipe_io_error' $error0.GetType().Name
+        }
+        $utf8 = [Text.UTF8Encoding]::new($false)
+        $writer = [IO.StreamWriter]::new($pipe, $utf8, 4096, $true)
+        $reader = [IO.StreamReader]::new($pipe, $utf8, $false, 4096, $true)
+        try {
+            $writer.AutoFlush = $true
+            $writer.WriteLine($Line)
+            $read = $reader.ReadLineAsync()
+            if (!$read.Wait($TimeoutSeconds * 1000)) { return @{ output = ''; exit_code = $null; timed_out = $true } }
+            $response = $read.GetAwaiter().GetResult()
+        }
+        catch { return Failure 'pipe_io_error' (Inner $_.Exception).GetType().Name }
+        finally { try { $reader.Dispose(); $writer.Dispose() } catch { $null = $_ } }
+        if ($null -eq $response) { return Failure 'no_response' 'pipe closed without a response line' }
+        $status = $null
+        try { $status = ($response | ConvertFrom-Json -ErrorAction Stop).status } catch { $status = $null }
+        return @{ output = $response; exit_code = $(if ($status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false }
+    }
+    finally { $pipe.Dispose() }
 }
