@@ -77,3 +77,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - No new owner action (PDF reader, alternatives scoring and BCF export are headless and unit-tested in CI).
 - Optional: if you have a BCF viewer (e.g. BIMcollab Zoom, Solibri), open a BCF produced by tests/bcf to confirm it loads; the official buildingSMART XSDs could not be fetched from the cloud.
 - Still open: 🔒 P1-04/C04 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), 🔒 P4-01 views probe, 🔒 P2-01 query.snapshot, 🔒 P1-02 query.elements/inspect, 🔒 N21 `... -Runs 1`, CABA to-verify values review, optional MCP install.
+
+## Relay141 (2026-11-03, cloud)
+- [ ] 🔒 P9-02 structure commands + P2-03 edit journal, in the same Revit session on a test copy (never production): `git pull` (main 2b3b36e), then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once). Probe steps are in docs/SESSION-2026-11-03-relay141-structure-styles-journal.md ("Owner probes"). No new decision needed.
