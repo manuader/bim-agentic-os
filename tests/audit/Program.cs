@@ -114,6 +114,17 @@ try
                 && !onRealByCopier.Allowed && onRealByCopier.Reason == PermissionCodes.RealProjectNotEnabled,
                 "v2 write " + command + ": reader denied, write-copies allowed on a copy, real project not enabled", Describe(onCopyByReader) + " / " + Describe(onRealByCopier));
     }
+    // P9-02: the structure commands keep the read/write split: queries read anywhere, creators write copies only.
+    foreach (var (command, writes) in new[] { ("query.grids", false), ("query.structural_types", false), ("grid.create", true), ("structural_column.create", true), ("structural_beam.create", true), ("foundation.create_isolated", true), ("foundation.create_wall", true) })
+    {
+        Check(RevitCommandCatalogue.Structure.Any(spec => spec.Name == command && spec.Writes == writes), "structure catalogue has " + (writes ? "write " : "read-only ") + command);
+        var structurePolicy = PermissionPolicy.Create(grants, Array.Empty<string>(), copies);
+        if (writes)
+            Check(!structurePolicy.Evaluate("reader", command, FixturePath).Allowed && structurePolicy.Evaluate("copier", command, FixturePath).Allowed
+                && structurePolicy.Evaluate("copier", command, RealPath) is { Allowed: false, Reason: PermissionCodes.RealProjectNotEnabled }, "structure write " + command + ": reader denied, write-copies allowed on a copy, real project not enabled");
+        else
+            Check(structurePolicy.Evaluate("reader", command, RealPath) is { Allowed: true, Reason: PermissionCodes.ReadAllowed }, "structure read " + command + " is allowed for a reader on a real project");
+    }
     Check(PermissionPolicy.RequiredLevel("bogus.command", FixturePath, copies) is null, "an unknown command has no required level");
     var forged = realWrite with { Spec = RevitCommandCatalogue.Find("query.levels")! };
     Check(policy.Classify(forged) == PermissionLevel.WriteRealProject, "classification follows the catalogue entry of the command name, not a forged spec");

@@ -166,10 +166,28 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["query.roof_types"]=()=>new JsonObject(),
     ["query.elements"]=()=>new JsonObject{["category"]="wall",["level"]="Level 1",["parameters"]=new JsonArray("Mark"),["limit"]=50},
     ["query.inspect"]=()=>new JsonObject{["unique_id"]=McpUid},
+    ["query.grids"]=()=>new JsonObject(), ["query.structural_types"]=()=>new JsonObject{["category"]="framing"},
+    ["grid.create"]=()=>new JsonObject{["line"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(0,12000)},["name"]="A"},
+    ["structural_column.create"]=()=>new JsonObject{["type"]="W10x49",["point"]=new JsonArray(6000,4000),["base_level"]="Level 1",["top_level"]="Level 2"},
+    ["structural_beam.create"]=()=>new JsonObject{["level"]="Level 2",["type"]="W12x26",["line"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(6000,0)}},
+    ["foundation.create_isolated"]=()=>new JsonObject{["level"]="Level 1",["type"]="1800 x 1200 x 450mm",["point"]=new JsonArray(6000,4000)},
+    ["foundation.create_wall"]=()=>new JsonObject{["host_wall_uid"]=McpUid,["type"]="Bearing Footing - 900 x 300"},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
 Check(RevitCommandCatalogue.Elements.Select(spec=>spec.Name).SequenceEqual(new[]{"query.elements","query.inspect"}) && RevitCommandCatalogue.Elements.All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover the P1-02 element queries");
+// P9-02: the structure commands are generated tools with the same read/write split and guards.
+Check(RevitCommandCatalogue.Structure.Select(spec=>spec.Name).SequenceEqual(new[]{"query.grids","query.structural_types","grid.create","structural_column.create","structural_beam.create","foundation.create_isolated","foundation.create_wall"}) && RevitCommandCatalogue.Structure.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the P9-02 structure commands, all in the catalogue enumeration");
+foreach(var (tool,readOnly) in new[]{("revit_query_grids",true),("revit_query_structural_types",true),("revit_grid_create",false),("revit_structural_column_create",false),("revit_structural_beam_create",false),("revit_foundation_create_isolated",false),("revit_foundation_create_wall",false)}) {
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==readOnly && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()==(readOnly?"read":"write-copies"),"structure tool "+tool+" is listed with readOnlyHint "+readOnly);
+    var spec=RevitCommandCatalogue.All.SingleOrDefault(c=>c.ToolName==tool);
+    if(spec is null) continue;
+    var before=forwardedLines.Count;
+    var onReal=Guarded(tool,sampleArgs[spec.Name](),McpReal);
+    if(readOnly) Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,tool+" is read-only: forwarded to the pipe even on a real project");
+    else Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+}
 foreach(var tool in new[]{"revit_query_elements","revit_query_inspect"}) {
     var listed=tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!;
     Check(listed["annotations"]?["readOnlyHint"]?.GetValue<bool>()==true && listed["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="read",tool+" is listed read-only with permission level read");
