@@ -278,8 +278,8 @@ static class PlanRunnerTests
                 "a translated " + label + " with level preconditions and no steps completes with zero sends", ShowSafe(outcome, error) + " " + source?.ToJson());
             if (outcome is { } done && source is { } translated)
             {
-                var again = Safe(() => PlanRunner.Resume(translated, RevitPlanRunReport.Parse(done.ToJson()), idle), out var againError);
-                Check(again?.ToJson() == done.ToJson() && idle.Sent.Count == 0, "the " + label + " report resumes to itself", ShowSafe(again, againError));
+                var itself = Safe(() => PlanRunner.Resume(translated, RevitPlanRunReport.Parse(done.ToJson()), idle), out var itselfError);
+                Check(itself?.ToJson() == done.ToJson() && idle.Sent.Count == 0, "the " + label + " report resumes to itself", ShowSafe(itself, itselfError));
                 if (label == "levels-only intent") { levelsOnlyReport = done; levelsOnlyPlan = translated; }
             }
         }
