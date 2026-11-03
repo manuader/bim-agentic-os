@@ -425,6 +425,56 @@ internal static class PdfTests
             // N3: a TJ adjustment below -200 reads as a word space.
             var spaced = PdfReader.Parse(OnePage("BT /F1 10 Tf [(A) -250 (B) -100 (C)] TJ ET"), "tj.pdf").Pages[0].Elements.OfType<PdfText>().Select(t => t.Value).ToList();
             C(spaced.Count == 1 && spaced[0] == "A BC", "N3 TJ adjustment -250 inserts a space, -100 does not", string.Join("|", spaced));
+
+            // Re-review blocker 1: Do must not copy the pending path; a path built across a Do is still painted.
+            var pending = string.Concat(Enumerable.Repeat("0 0 m 1 1 l ", 300_000)) + string.Concat(Enumerable.Repeat("/X Do ", 1_000_000));
+            var emptyForm = (5, StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 1 1]", Array.Empty<byte>()));
+            var pendingInput = Build(PageObjects(StreamBody("", L(pending)), "/Resources << /XObject << /X 5 0 R >> >>").Append(emptyForm));
+            var pendingCode = CodeWithin(() => PdfReader.Parse(pendingInput, "pending.pdf"), 10_000);
+            C(pendingCode is null or "operator-limit" or "interpret-limit", "RB1 300000 pending subpaths and 1000000 Do of an empty form finish within the time bound", pendingCode ?? "ok");
+            var across = PdfReader.Parse(Build(PageObjects(StreamBody("", L("0 0 m 1 1 l /X Do 2 0 l S")), "/Resources << /XObject << /X 5 0 R >> >>").Append(
+                (5, StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 1 1]", L("5 5 m 6 6 l S"))))), "across.pdf");
+            var acrossPaths = across.Pages[0].Elements.OfType<PdfPath>().ToList();
+            C(acrossPaths.Count == 2 && acrossPaths[0].Provenance.ObjectNumber == 5 && acrossPaths[1].Provenance.ObjectNumber == 4 && acrossPaths[1].Subpaths.Count == 1
+                && acrossPaths[1].Subpaths[0].Segments.Count == 2 && NearP(acrossPaths[1].Subpaths[0].Segments[1].End, 2, 0),
+                "RB1 path built across a Do is painted after the form's own path", DescribeDocument(across));
+
+            // Re-review blocker 2: shared direct /Kids dictionaries are walked once (2^31 paths otherwise).
+            var tree = new List<(int, byte[])> { (1, L("<< /Type /Catalog /Pages 2 0 R >>")), (2, L("<< /Type /Pages /Kids 10 0 R >>")) };
+            for (var level = 0; level <= 30; level++) tree.Add((10 + level, L("[<< /Kids " + I(11 + level) + " 0 R >> << /Kids " + I(11 + level) + " 0 R >>]")));
+            tree.Add((41, L("[]")));
+            var treeInput = Build(tree);
+            var treeCode = CodeWithin(() => PdfReader.Parse(treeInput, "tree.pdf"), 10_000);
+            C(treeCode is "no-pages" or "depth-limit" or "page-limit" or "object-limit", "RB2 31 levels of shared direct /Kids refused quickly", treeCode ?? "null");
+
+            // Should-fix 1: a parsed-element budget refuses huge name arrays in content and in object streams.
+            var names = Concat(L("["), L(string.Concat(Enumerable.Repeat("/a", 10_000_000))), L("] 0 0 m"));
+            var namesInput = Build(PageObjects(StreamBody("/Filter /FlateDecode", Deflate(names, CompressionLevel.Fastest))));
+            var namesCode = CodeWithin(() => PdfReader.Parse(namesInput, "names.pdf"), 20_000);
+            C(namesCode == "element-limit", "SF1 a 20 MB name array in a content stream refused as element-limit", namesCode ?? "null");
+            var namesStream = PageObjects(StreamBody("", L("0 0 m 1 0 l S")));
+            namesStream.Add((6, StreamBody("/Type /ObjStm /N 1 /First 4 /Filter /FlateDecode", Deflate(Concat(L("9 0 "), names), CompressionLevel.Fastest))));
+            var namesStreamInput = Build(namesStream);
+            var namesStreamCode = CodeWithin(() => PdfReader.Parse(namesStreamInput, "names-objstm.pdf"), 20_000);
+            C(namesStreamCode == "element-limit", "SF1 a 20 MB name array inside an object stream refused as element-limit", namesStreamCode ?? "null");
+
+            // Should-fix 2: the name length limit counts #xx escapes as written.
+            var escaped = PdfReader.Parse(OnePage("BT /" + string.Concat(Enumerable.Repeat("#41", 100)) + " 12 Tf ET"), "escaped.pdf");
+            C(escaped.Warnings.Any(w => w.Code == "content-malformed"), "SF2 a name of 100 #xx escapes (300 bytes) is malformed", Warnings(escaped));
+
+            // Should-fix 3: a malformed trailer does not swallow a later revision.
+            var damaged = Concat(revision1, L("trailer\n<< /Size (\n4 0 obj\n"), StreamBody("", L("0 0 m 20 0 l S")), L("\nendobj\ntrailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n0\n%%EOF\n"));
+            var afterDamage = PdfReader.Parse(damaged, "damaged-trailer.pdf");
+            C(afterDamage.Pages.Count == 1 && afterDamage.Pages[0].Elements.Count == 1 && afterDamage.Pages[0].Elements[0] is PdfPath dp && NearP(dp.Subpaths[0].Segments[0].End, 20, 0)
+                && afterDamage.Warnings.Any(w => w.Code == "trailer-malformed"), "SF3 revision after a malformed trailer is still read", Warnings(afterDamage) + " " + DescribeDocument(afterDamage));
+
+            // Nit: huge text matrices give a finite height or a warning, never an infinite height.
+            var e63 = "1" + new string('0', 63);
+            var hugeText = PdfReader.Parse(OnePage(e63 + " 0 0 " + e63 + " 0 0 cm " + e63 + " 0 0 " + e63 + " 0 0 cm BT /F1 12 Tf " + e63 + " 0 0 " + e63 + " 0 0 Tm (H) Tj ET"), "huge-text.pdf");
+            var hugeHeights = hugeText.Pages[0].Elements.OfType<PdfText>().Select(t => t.Height).ToList();
+            C(hugeHeights.Count == 1 && double.IsFinite(hugeHeights[0]) && Math.Abs(hugeHeights[0] / 1.2e190 - 1) < 1e-9, "NIT text at scale 1e189 has a finite height", string.Join(",", hugeHeights.Select(F)));
+            var infiniteText = PdfReader.Parse(OnePage(e63 + " 0 0 " + e63 + " 0 0 cm " + e63 + " 0 0 " + e63 + " 0 0 cm " + e63 + " 0 0 " + e63 + " 0 0 cm BT /F1 " + e63 + " Tf " + e63 + " 0 0 " + e63 + " 0 0 Tm (H) Tj ET"), "inf-text.pdf");
+            C(!infiniteText.Pages[0].Elements.OfType<PdfText>().Any() && infiniteText.Warnings.Any(w => w.Code == "operand-error"), "NIT text whose height overflows is skipped with a warning", Warnings(infiniteText));
         }
         catch (Exception error)
         {
