@@ -30,7 +30,8 @@ namespace Bim.Revit;
 // sheets) are in CommandsExecutorDocumentation.cs; element.set_parameter and element.delete (P1-05) are in
 // CommandsExecutorModify.cs; query.materials and roof_type.create are in CommandsExecutorMaterials.cs;
 // family.load and family_instance.place are in CommandsExecutorFamilies.cs; site commands (toposolids and
-// subdivisions) are in CommandsExecutorSite.cs; wall.set_profile is in CommandsExecutorWallProfile.cs.
+// subdivisions) are in CommandsExecutorSite.cs; wall.set_profile is in CommandsExecutorWallProfile.cs; fill patterns,
+// materials, layered wall/floor types and element.change_type are in CommandsExecutorMaterialTypes.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -85,6 +86,11 @@ internal static partial class CommandExecutor
             FamilyInstancePlaceArgs instance => FamilyInstanceWrite(d, instance),
             ToposolidCreateArgs toposolid => ToposolidWrite(d, toposolid),
             ToposolidSubdivisionCreateArgs subdivision => ToposolidSubdivisionWrite(d, subdivision),
+            MaterialCreateArgs material => MaterialCreateWrite(d, material),
+            MaterialSetArgs material => MaterialSetWrite(d, material),
+            WallTypeCreateArgs wallType => WallTypeWrite(d, wallType),
+            FloorTypeCreateArgs floorType => FloorTypeWrite(d, floorType),
+            ElementChangeTypeArgs change => ChangeTypeWrite(d, change),
             // A stair is created through a StairsEditScope, which cannot start inside the plan's write transaction.
             StairCreateArgs => null,
             // A wall profile is edited through a SketchEditScope (CommandsExecutorWallProfile.cs), for the same reason.
@@ -141,6 +147,7 @@ internal static partial class CommandExecutor
         FamilySymbolQueryArgs symbols =>
             CommandReadback.SymbolsJson(symbols.Category, Symbols(d, symbols.Category).Select(symbol => new SymbolRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive, WallHosted(symbol), symbol.Family.FamilyPlacementType.ToString()))),
         EmptyQueryArgs when envelope.Command == "query.toposolid_types" => QuerySite(d),
+        FillPatternQueryArgs patterns => QueryFillPatterns(d, patterns),
         _ => QueryV2(d, envelope),
     };
 

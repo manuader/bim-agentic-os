@@ -235,8 +235,9 @@ static class CatalogueMaterialTypesChecks
         Check(CommandRulesMaterialTypes.PatternTarget("Model") == "model" && CommandRulesMaterialTypes.PatternTarget("Drafting") == "drafting", "Revit FillPatternTarget reads back as model or drafting");
         Check(CommandRulesMaterialTypes.Includes("all", "model") && CommandRulesMaterialTypes.Includes("all", "drafting") && CommandRulesMaterialTypes.Includes("model", "model") && !CommandRulesMaterialTypes.Includes("model", "drafting") && !CommandRulesMaterialTypes.Includes("drafting", "model"), "the target filter keeps matching patterns, all keeps both");
         Check(CommandRulesMaterialTypes.PatternName("model", "Masonry - Stone") == "model: Masonry - Stone", "a fill pattern can also be named target: name when the same name exists for both targets");
-        Check(CommandRulesMaterialTypes.ExpectedLayers(new[] { new HostTypeLayerArg("structure", "Piedra local", Length.FromMillimetres(550)), new HostTypeLayerArg("thermal_air", "Air", Length.FromMillimetres(25)) }, new[] { StoneUid, AirUid })
-            .SequenceEqual(new[] { new ExpectedRoofLayer("structure", StoneUid, 550), new ExpectedRoofLayer("insulation", AirUid, 25) }), "expected layers use the canonical function (thermal_air reads back as insulation)");
+        var expectedLayers = CommandRulesMaterialTypes.ExpectedLayers(new[] { new HostTypeLayerArg("structure", "Piedra local", Length.FromMillimetres(550)), new HostTypeLayerArg("thermal_air", "Air", Length.FromMillimetres(25)) }, new[] { StoneUid, AirUid });
+        Check(expectedLayers.Count == 2 && expectedLayers[0] is { Function: "structure", MaterialUid: StoneUid } stoneLayer && Near(stoneLayer.ThicknessMm, 550, 1e-9)
+            && expectedLayers[1] is { Function: "insulation", MaterialUid: AirUid } airLayer && Near(airLayer.ThicknessMm, 25, 1e-9), "expected layers use the canonical function (thermal_air reads back as insulation)");
 
         foreach (var kind in new[] { "wall", "floor", "roof", "family_instance" })
             Check(Thrown(() => CommandRulesMaterialTypes.CheckChangeTypeKind(kind, "X")) is null, "element.change_type supports " + kind);

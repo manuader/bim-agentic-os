@@ -33,14 +33,19 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   keep every point above that, or create the terrain on a lower level. Boulders = small 10-point toposolids.
   Trails = `toposolid.create_subdivision` with a material (no gravel in the template: "Earth").
 - **Trees on slopes**: `family_instance.place` with `offset_mm` = terrain height at that point.
-- **Template gaps**: the default metric template has no ceramic tile or stone cladding materials and no wood-clad
-  wall types; creating materials / wall types with layers is a pending capability.
+- **Template gaps**: the default metric template has no ceramic tile, stone, dark metal or wood cladding materials and
+  no wood-clad wall types. Use `material.create` (duplicate a close material with `base_material`, e.g. "Metal Deck" or
+  "Softwood, Lumber", so it keeps a render appearance; set `color` for shaded views; pick stone/wood patterns with
+  `query.fill_patterns`), `material.set` to darken/adjust, then `wall_type.create` / `floor_type.create` (structure =
+  core; `thermal_air` = Revit's Thermal/Air Layer) and `element.change_type` to switch existing walls/floors/roofs.
+  Realistic views still show the base material's appearance asset (textures are not authored by the commands).
 - **Saving**: there is no save command yet; the owner saves with *Guardar como*. Pending capability.
 
 ## Pending capabilities found in real use
 - `wall.set_profile` (gable walls on 2025.2) — in progress.
 - Open an owner project (not a fixture copy) with the command pipe — in progress (`scripts/owner-open-project.ps1`).
-- Create materials (appearance, color, texture) and wall/floor types with layers (stone, wood cladding, sheet metal).
+- Materials (color, patterns, duplicate-for-appearance), wall/floor types with layers and element.change_type — added
+  (chat-materials-types, unit-tested, executor compiled only); authoring appearance assets/textures is still pending.
 - Curved roofs (extrusion roofs) for barrel/curved sheet-metal roofs.
 - Document save / save-as to an enabled folder.
 - Model in-place / direct shapes for site-specific elements (a boulder kept inside the building).
