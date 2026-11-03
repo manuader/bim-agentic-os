@@ -984,3 +984,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 02:22Z integration CI 41564041567 failed (harness-check: features.json evidence pointed at a directory); fixed in 6353bc6, CI 41564819832 success (9/9) → main fast-forwarded. P4-01, P6-01, P9-05 ✅; P4-02 ⛔→⏳. Progress 33/54 (61.1 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-03T02:22:27Z.
 **NEXT STEP:** next relay: P2-01 Revit→BIM-IR snapshot (Phase 2), P10-01 IDS checks (Phase 10), P4-02 dimensions/tags/schedules/sheets (Phase 4) or P5-02 CABA rule pack; then P3-02/P7-02/P8-01. Owner: -Catalogue re-run + views probe in Revit.
+
+## Relay138 — 2026-11-03T02:53:20Z (Claude, cloud scheduled)
+- 02:53Z LOCK taken (was FREE since relay137 2026-11-03T02:22:27Z).
