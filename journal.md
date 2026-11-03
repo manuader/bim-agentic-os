@@ -995,3 +995,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay139 — 2026-11-03T04:53:18Z (Claude, cloud scheduled)
 - 04:53Z LOCK taken (was FREE since relay138 2026-11-03T04:34:48Z).
+- 05:22Z workers green: P1-02 2b1ac32 (red 41581362575, green 41582425052; 1 attempt: harness core-boundary comment), P3-02 6198975 (red 41581285936, green 41582696545; 1 attempt: CS0136 args local), P8-01 a2833b6 (red 41581606289, green 41582301741). Next: independent reviews.
