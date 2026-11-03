@@ -81,7 +81,8 @@ internal static partial class CommandExecutor
             var sketchId = wall.SketchId;
             if (sketchId == ElementId.InvalidElementId)
             {
-                ProfileTransaction(d, "BIM Agentic OS " + envelope.Command + " sketch", failures, () => sketchId = wall.CreateProfileSketch().Id);
+                using var sketchTx = new Transaction(d, "BIM Agentic OS wall.set_profile sketch");
+                RunProfileTransaction(sketchTx, failures, () => sketchId = wall.CreateProfileSketch().Id);
                 createdSketch = true;
             }
             using (var scope = new SketchEditScope(d, "BIM Agentic OS " + envelope.Command))
@@ -90,7 +91,9 @@ internal static partial class CommandExecutor
                 scope.Start(sketchId);
                 try
                 {
-                    ProfileTransaction(d, "BIM Agentic OS " + envelope.Command, failures, () =>
+                    // Disposed (committed) before the scope commits.
+                    using (var editTx = new Transaction(d, "BIM Agentic OS wall.set_profile"))
+                        RunProfileTransaction(editTx, failures, () =>
                     {
                         var sketch = d.GetElement(sketchId) as Sketch ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "the wall's profile sketch is missing");
                         var sketchPlane = sketch.SketchPlane;
@@ -128,10 +131,10 @@ internal static partial class CommandExecutor
         }
     }
 
-    // One transaction with the command's failure preprocessor; an error or a failed commit is transaction_failed.
-    static void ProfileTransaction(Document d, string name, CommandFailures failures, Action apply)
+    // Runs one transaction (constructed by the caller with a literal add-in name, so the journal source scan sees it)
+    // with the command's failure preprocessor; an error or a failed commit is transaction_failed.
+    static void RunProfileTransaction(Transaction tx, CommandFailures failures, Action apply)
     {
-        using var tx = new Transaction(d, name);
         if (tx.Start() != TransactionStatus.Started) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "transaction did not start");
         var options = tx.GetFailureHandlingOptions();
         options.SetFailuresPreprocessor(failures);
