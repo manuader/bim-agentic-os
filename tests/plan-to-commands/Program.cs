@@ -369,6 +369,14 @@ try
         }
         finally { CultureInfo.CurrentCulture = original; CultureInfo.CurrentUICulture = original; }
     }
+
+    // ---- P3-03 plan runner (PlanRunnerTests.cs) ----
+    // Real Translate outputs with level preconditions and no steps: a levels-only intent, and the base plan without wall types.
+    var levelsOnlyIntent = Layout(Array.Empty<IntentRoom>(), Array.Empty<IntentOpening>());
+    PlanRunnerTests.Run(result,
+        () => PlanToCommands.Translate(IntentCompiler.Compile(projectId, 5, levelsOnlyIntent), RevitBindings.FromIntent(projectId, levelsOnlyIntent, document, null, null)),
+        () => PlanToCommands.Translate(plan, bindings with { WallTypes = Array.Empty<RevitWallTypeBinding>() }),
+        (condition, name, detail) => Check(condition, name, detail));
 }
 catch (Exception error)
 {
