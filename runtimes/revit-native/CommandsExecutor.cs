@@ -28,7 +28,7 @@ namespace Bim.Revit;
 // (P4-01: plan, section, 3D) are in CommandsExecutorViews.cs; structure commands (P9-02: grids, columns, beams,
 // foundations) are in CommandsExecutorStructure.cs; documentation commands (P4-02: dimensions, tags, schedules,
 // sheets) are in CommandsExecutorDocumentation.cs; element.set_parameter and element.delete (P1-05) are in
-// CommandsExecutorModify.cs.
+// CommandsExecutorModify.cs; site commands (toposolids and subdivisions) are in CommandsExecutorSite.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -78,6 +78,8 @@ internal static partial class CommandExecutor
             ScheduleCreateArgs schedule => ScheduleWrite(d, schedule),
             SheetCreateArgs sheet => SheetWrite(d, sheet),
             SheetPlaceViewArgs place => PlaceViewWrite(d, place),
+            ToposolidCreateArgs toposolid => ToposolidWrite(d, toposolid),
+            ToposolidSubdivisionCreateArgs subdivision => ToposolidSubdivisionWrite(d, subdivision),
             // A stair is created through a StairsEditScope, which cannot start inside the plan's write transaction.
             StairCreateArgs => null,
             _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
@@ -129,6 +131,7 @@ internal static partial class CommandExecutor
             CommandReadback.FloorTypesJson(FloorTypes(d).Select(type => new FloorTypeRow(type.Name, type.UniqueId, type.GetCompoundStructure() is { } layers ? Mm(layers.GetWidth()) : null))),
         FamilySymbolQueryArgs symbols =>
             CommandReadback.SymbolsJson(symbols.Category, Symbols(d, symbols.Category).Select(symbol => new SymbolRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive, WallHosted(symbol)))),
+        EmptyQueryArgs when envelope.Command == "query.toposolid_types" => QuerySite(d),
         _ => QueryV2(d, envelope),
     };
 

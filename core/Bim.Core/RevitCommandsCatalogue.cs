@@ -68,9 +68,10 @@ public static partial class RevitCommandCatalogue
     // Every command the protocol accepts: v1, then v2, then the view commands (P4-01), then query.snapshot (P2-01,
     // Mirror.cs), then query.elements and query.inspect (P1-02, RevitCommandsQuery.cs), then the structure commands (P9-02,
     // RevitCommandsStructure.cs), then the documentation commands (P4-02, RevitCommandsDocumentation.cs), then the
-    // modify and delete commands (P1-05, RevitCommandsModify.cs). Lazy because those entries live in other parts of
+    // modify and delete commands (P1-05, RevitCommandsModify.cs), then the site commands (toposolids,
+    // RevitCommandsSite.cs). Lazy because those entries live in other parts of
     // this partial class, whose static initializers may run in any order.
-    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).ToArray());
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).Concat(Site).ToArray());
     public static IReadOnlyList<RevitCommandSpec> All => AllSpecs.Value;
 
     public static RevitCommandSpec? Find(string name) => All.FirstOrDefault(spec => spec.Name == name);
