@@ -403,6 +403,8 @@ try
     CatalogueSiteChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- Owner project mode: which real .rvt may be opened with the command pipe (scripts/owner-open-project.ps1) ----
     OwnerProjectChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- wall.set_profile: replace a straight wall's elevation profile (gable end walls) ----
+    CatalogueWallProfileChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();

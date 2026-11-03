@@ -31,6 +31,25 @@ public static class CommandRulesSite
         return new BoxMm(all.Min(p => p.X), all.Min(p => p.Y), all.Min(p => p.Z), all.Max(p => p.X), all.Max(p => p.Y), all.Max(p => p.Z));
     }
 
+    // Revit 2025 keeps a toposolid's bottom flat at the level's project elevation minus the type thickness (found in
+    // real Revit): a point below that cannot be represented and is refused before Revit is called, at the first such
+    // point's z. A point exactly at the bottom is allowed. A type without layer structure (thickness null) is not
+    // checked here.
+    public static void CheckAboveBottom(IReadOnlyList<double> pointZsMm, double levelElevationMm, double? thicknessMm)
+    {
+        if (thicknessMm is not { } thickness || !double.IsFinite(thickness)) return;
+        var bottom = levelElevationMm - thickness;
+        for (var i = 0; i < pointZsMm.Count; i++)
+        {
+            if (pointZsMm[i] < bottom - CommandGeometry.ToleranceMm)
+                throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.points[" + i + "][2]",
+                    "point z " + F(pointZsMm[i]) + " mm is lower than the level minus the type thickness (" + F(bottom) + " mm = " + F(levelElevationMm) + " - " + F(thickness)
+                    + "); points lower than the level minus the type thickness are not supported (Revit keeps a flat bottom there): raise the point, use a thicker type or a lower level");
+        }
+    }
+
+    static string F(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+
     // A subdivision is hosted by a toposolid that is not itself a subdivision.
     public static void CheckSubdivisionHost(bool isSubdivision)
     {
@@ -56,8 +75,10 @@ public static class CommandReadbackSite
     static bool Same(string? a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
     static bool Close(double a, double b) => Math.Abs(a - b) <= CommandRulesSite.BoxToleranceMm;
 
-    // requested: the extents of the requested points. The plan extents of the toposolid are their convex hull's, the
-    // top is the highest point and the bottom (the top face less the type thickness) is not above the lowest point.
+    // requested: the extents of the requested points. The plan extents of the toposolid are their convex hull's and
+    // the top is the highest point. The bottom is only required to lie below the top: Revit 2025 keeps it flat at the
+    // level elevation minus the type thickness, which may be above the lowest point (points below that are refused up
+    // front by CommandRulesSite.CheckAboveBottom).
     public static string? Toposolid(string levelUid, string typeUid, BoxMm requested, string? comment, ObservedToposolid observed)
     {
         if (!Same(observed.TypeUid, typeUid)) return "toposolid type is " + observed.TypeUid + ", expected " + typeUid;
@@ -67,7 +88,7 @@ public static class CommandReadbackSite
         if (!Close(box.MinX, requested.MinX) || !Close(box.MinY, requested.MinY) || !Close(box.MaxX, requested.MaxX) || !Close(box.MaxY, requested.MaxY))
             return "toposolid plan extents are (" + F(box.MinX) + ", " + F(box.MinY) + ") to (" + F(box.MaxX) + ", " + F(box.MaxY) + "), expected the points' (" + F(requested.MinX) + ", " + F(requested.MinY) + ") to (" + F(requested.MaxX) + ", " + F(requested.MaxY) + ")";
         if (!Close(box.MaxZ, requested.MaxZ)) return "toposolid top is at " + F(box.MaxZ) + " mm, expected the highest point's " + F(requested.MaxZ) + " mm (z is a project elevation)";
-        if (!(box.MinZ <= requested.MinZ + CommandRulesSite.BoxToleranceMm) || !(box.MinZ < box.MaxZ)) return "toposolid bottom is at " + F(box.MinZ) + " mm, expected below the lowest point's " + F(requested.MinZ) + " mm";
+        if (!(box.MinZ < box.MaxZ)) return "toposolid bottom is at " + F(box.MinZ) + " mm, expected below its top at " + F(box.MaxZ) + " mm (no thickness)";
         if (comment is not null && !string.Equals(observed.Comment, comment, StringComparison.Ordinal)) return "toposolid Comments is " + (observed.Comment is null ? "unreadable" : "'" + observed.Comment + "'") + ", expected '" + comment + "'";
         return null;
     }

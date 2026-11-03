@@ -102,8 +102,9 @@ static class CatalogueModifyChecks
         foreach (var spec in RevitCommandCatalogue.Modify)
             Check(PermissionPolicy.RequiredLevel(spec.Name, FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel(spec.Name, RealPath, copies) == PermissionLevel.WriteRealProject,
                 "permission level of " + spec.Name + " is write-copies on a copy and write-real-project elsewhere");
-        Check(RevitCommandCatalogue.Modify.All(spec => RevitCommandCatalogue.IsDestructive(spec.Name)) && RevitCommandCatalogue.All.Except(RevitCommandCatalogue.Modify).All(spec => !RevitCommandCatalogue.IsDestructive(spec.Name))
-            && !RevitCommandCatalogue.IsDestructive(null) && !RevitCommandCatalogue.IsDestructive("element.purge"), "exactly the modify commands are destructive; additive writes and queries are not");
+        var changing = RevitCommandCatalogue.Modify.Concat(RevitCommandCatalogue.WallProfile).ToArray();
+        Check(changing.All(spec => RevitCommandCatalogue.IsDestructive(spec.Name)) && RevitCommandCatalogue.All.Except(changing).All(spec => !RevitCommandCatalogue.IsDestructive(spec.Name))
+            && !RevitCommandCatalogue.IsDestructive(null) && !RevitCommandCatalogue.IsDestructive("element.purge"), "exactly the modify commands and wall.set_profile are destructive; additive writes and queries are not");
     }
 
     static void SetParameterBinding()

@@ -95,6 +95,9 @@ try
         Check(RevitCommandCatalogue.Materials.Any(spec => spec.Name == command), "materials catalogue has " + command);
         Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == onCopy && PermissionPolicy.RequiredLevel(command, RealPath, copies) == onReal, command + " requires " + onCopy + " on a copy and " + onReal + " on a real project");
     }
+    // wall.set_profile changes an existing wall: a destructive write, copies only.
+    Check(RevitCommandCatalogue.WallProfile.Any(spec => spec.Name == "wall.set_profile" && spec.Writes) && RevitCommandCatalogue.IsDestructive("wall.set_profile"), "wall profile catalogue has destructive write wall.set_profile");
+    Check(PermissionPolicy.RequiredLevel("wall.set_profile", FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel("wall.set_profile", RealPath, copies) == PermissionLevel.WriteRealProject, "wall.set_profile requires write-copies on a copy and write-real-project on a real project");
     // P9-05: the five catalogue v2 commands keep the v1 read/write split.
     var v2Levels = new (string Command, PermissionLevel Copy, PermissionLevel Real)[]
     {

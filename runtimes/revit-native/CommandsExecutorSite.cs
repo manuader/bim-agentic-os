@@ -55,6 +55,8 @@ internal static partial class CommandExecutor
         // Model coordinates: z is a project elevation, like Level.ProjectElevation.
         var points = args.Points.Select(point => new XYZ(U(point.X.Millimetres), U(point.Y.Millimetres), U(point.Z.Millimetres))).ToList();
         var requested = CommandRulesSite.Extents(args.Points.Select(point => (point.X.Millimetres, point.Y.Millimetres, point.Z.Millimetres)));
+        // Revit keeps the bottom flat at the level minus the type thickness: refuse lower points before creating anything.
+        CommandRulesSite.CheckAboveBottom(args.Points.Select(point => point.Z.Millimetres).ToArray(), Mm(level.ProjectElevation), type.GetCompoundStructure() is { } layers ? Mm(layers.GetWidth()) : null);
         Toposolid? toposolid = null;
         ObservedToposolid Observe(Toposolid created) => new(created.UniqueId, created.LevelId == ElementId.InvalidElementId ? null : UniqueIdOf(d, created.LevelId),
             UniqueIdOf(d, created.GetTypeId()), HostUidOf(d, created), BoxOf(created), CommentOf(created));
