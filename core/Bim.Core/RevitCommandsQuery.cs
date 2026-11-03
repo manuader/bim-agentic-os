@@ -23,6 +23,8 @@ public static class RevitElementQueryRules
     public const int MaxInspectParameters = 2000;
     // Longer string values (and display texts) are cut to this many characters and flagged value_truncated.
     public const int MaxStringChars = 1024;
+    // Whole reply (UTF-8 bytes): rows (or inspected parameters) stop being added before it would be exceeded.
+    public const int MaxReplyBytes = 4 * 1024 * 1024;
 
     // Friendly category names and the Revit BuiltInCategory each stands for. Any other category is given by its
     // BuiltInCategory name (OST_...).
@@ -76,6 +78,25 @@ public static class RevitParameterUnits
     public const string SquareMetres = "m2";
     public const string CubicMetres = "m3";
     public const string Degrees = "deg";
+    // Any other spec: the add-in reports a measurable value in the document's display unit (named by its unit type
+    // id) and anything else as Revit's raw number without a unit.
+    public const string Display = "display";
+
+    // Routes a parameter data type id (ForgeTypeId text, e.g. autodesk.spec.aec:length-2.0.0) to its typed unit,
+    // ignoring the trailing schema version; null for no spec (empty or null id).
+    public static string? ForSpec(string? specTypeId)
+    {
+        if (string.IsNullOrEmpty(specTypeId)) return null;
+        var unversioned = System.Text.RegularExpressions.Regex.Replace(specTypeId, @"-[0-9]+(\.[0-9]+)*\z", "", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        return unversioned switch
+        {
+            "autodesk.spec.aec:length" => Millimetres,
+            "autodesk.spec.aec:area" => SquareMetres,
+            "autodesk.spec.aec:volume" => CubicMetres,
+            "autodesk.spec.aec:angle" => Degrees,
+            _ => Display,
+        };
+    }
 }
 
 // Where a parameter was read: on the element itself or on its ElementType.
@@ -119,17 +140,21 @@ public sealed record ObservedQueryElement(long Id, string UniqueId, string? Cate
 }
 
 // Reply JSON of both queries: members in a fixed order, elements by ascending id, inspect parameters by name, then
-// instance before type, then id; strings cut at MaxStringChars.
+// instance before type, then id; strings cut at MaxStringChars; the whole reply within MaxReplyBytes.
 public static class RevitElementQueryJson
 {
-    // matched: how many elements passed the filter (the reply holds at most limit of them).
-    public static string Elements(ElementQueryArgs args, ObservedReference? level, int matched, IEnumerable<ObservedQueryElement> rows)
+    public const string TruncatedLimit = "limit";
+    public const string TruncatedBytes = "bytes";
+
+    // matched: how many elements passed the filter; truncatedByLimit: paging (RevitElementQueryRules.Page) cut them at
+    // the limit. truncated is that or the byte budget; truncated_reason says which (bytes wins), null when neither.
+    public static string Elements(ElementQueryArgs args, ObservedReference? level, int matched, bool truncatedByLimit, IEnumerable<ObservedQueryElement> rows)
     {
         var ordered = rows.OrderBy(row => row.Id).ToArray();
         if (ordered.Length > args.Limit) throw new ArgumentException("more rows than the limit", nameof(rows));
         if (ordered.Select(row => row.Id).Distinct().Count() != ordered.Length) throw new ArgumentException("duplicate element id", nameof(rows));
         if (matched < ordered.Length) throw new ArgumentOutOfRangeException(nameof(matched));
-        return Write(writer =>
+        void Reply(Utf8JsonWriter writer, int returned, bool truncated, string? reason, IReadOnlyList<byte[]> items)
         {
             writer.WriteStartObject();
             WriteNullable(writer, "category", args.Category);
@@ -138,24 +163,26 @@ public static class RevitElementQueryJson
             WriteReference(writer, level);
             writer.WriteNumber("limit", args.Limit);
             writer.WriteNumber("matched", matched);
-            writer.WriteNumber("returned", ordered.Length);
-            writer.WriteBoolean("truncated", matched > ordered.Length);
+            writer.WriteNumber("returned", returned);
+            writer.WriteBoolean("truncated", truncated);
+            WriteNullable(writer, "truncated_reason", reason);
             writer.WriteStartArray("elements");
-            foreach (var row in ordered)
-            {
-                writer.WriteStartObject();
-                WriteElement(writer, row);
-                writer.WriteStartArray("parameters");
-                foreach (var parameter in row.Parameters) WriteParameter(writer, parameter);
-                writer.WriteEndArray();
-                writer.WriteStartArray("missing_parameters");
-                foreach (var name in row.Missing) writer.WriteStringValue(name);
-                writer.WriteEndArray();
-                writer.WriteEndObject();
-            }
+            foreach (var item in items) writer.WriteRawValue(item, skipInputValidation: true);
             writer.WriteEndArray();
             writer.WriteEndObject();
-        });
+        }
+        return Bounded(ordered.Select(row => Bytes(writer =>
+        {
+            writer.WriteStartObject();
+            WriteElement(writer, row);
+            writer.WriteStartArray("parameters");
+            foreach (var parameter in row.Parameters) WriteParameter(writer, parameter);
+            writer.WriteEndArray();
+            writer.WriteStartArray("missing_parameters");
+            foreach (var name in row.Missing) writer.WriteStringValue(name);
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        })), ordered.Length, truncatedByLimit, Reply);
     }
 
     public static IReadOnlyList<ObservedParameter> InspectOrder(IEnumerable<ObservedParameter> parameters) =>
@@ -166,28 +193,50 @@ public static class RevitElementQueryJson
     public static string Inspect(ObservedQueryElement element, IEnumerable<ObservedParameter> parameters)
     {
         var ordered = InspectOrder(parameters);
-        var kept = ordered.Take(RevitElementQueryRules.MaxInspectParameters).ToArray();
-        return Write(writer =>
+        var candidates = ordered.Take(RevitElementQueryRules.MaxInspectParameters).ToArray();
+        void Reply(Utf8JsonWriter writer, int returned, bool truncated, string? reason, IReadOnlyList<byte[]> items)
         {
             writer.WriteStartObject();
             writer.WriteStartObject("element");
             WriteElement(writer, element);
             writer.WriteEndObject();
             writer.WriteNumber("parameter_count", ordered.Count);
-            writer.WriteNumber("returned", kept.Length);
-            writer.WriteBoolean("truncated", ordered.Count > kept.Length);
+            writer.WriteNumber("returned", returned);
+            writer.WriteBoolean("truncated", truncated);
+            WriteNullable(writer, "truncated_reason", reason);
             writer.WriteStartArray("parameters");
-            foreach (var parameter in kept) WriteParameter(writer, parameter);
+            foreach (var item in items) writer.WriteRawValue(item, skipInputValidation: true);
             writer.WriteEndArray();
             writer.WriteEndObject();
-        });
+        }
+        return Bounded(candidates.Select(parameter => Bytes(writer => WriteParameter(writer, parameter))), candidates.Length, ordered.Count > candidates.Length, Reply);
     }
 
-    static string Write(Action<Utf8JsonWriter> body)
+    // Adds serialized items (lazily, in order) while the whole reply stays within MaxReplyBytes. The fixed part is
+    // measured with the most items and the longer truncation members it can have, so the final reply never exceeds it.
+    static string Bounded(IEnumerable<byte[]> items, int most, bool truncatedByLimit, Action<Utf8JsonWriter, int, bool, string?, IReadOnlyList<byte[]>> reply)
+    {
+        var used = Bytes(writer => reply(writer, most, false, TruncatedLimit, Array.Empty<byte[]>())).Length;
+        var kept = new List<byte[]>();
+        var cut = false;
+        foreach (var item in items)
+        {
+            var added = item.Length + (kept.Count > 0 ? 1 : 0);
+            if (used + added > RevitElementQueryRules.MaxReplyBytes) { cut = true; break; }
+            used += added;
+            kept.Add(item);
+        }
+        var reason = cut ? TruncatedBytes : truncatedByLimit ? TruncatedLimit : null;
+        var bytes = Bytes(writer => reply(writer, kept.Count, cut || truncatedByLimit, reason, kept));
+        if (bytes.Length > RevitElementQueryRules.MaxReplyBytes) throw new InvalidOperationException("reply over the byte budget");
+        return Encoding.UTF8.GetString(bytes);
+    }
+
+    static byte[] Bytes(Action<Utf8JsonWriter> body)
     {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer)) body(writer);
-        return Encoding.UTF8.GetString(buffer.ToArray());
+        return buffer.ToArray();
     }
 
     static void WriteElement(Utf8JsonWriter writer, ObservedQueryElement element)

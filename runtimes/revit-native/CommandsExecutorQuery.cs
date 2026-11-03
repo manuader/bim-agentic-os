@@ -16,10 +16,11 @@ namespace Bim.Revit;
 //   Element.Parameters, Element.GetParameters(string), Element.get_Parameter(BuiltInParameter)
 //   Parameter.Definition (Name, GetDataType; InternalDefinition.BuiltInParameter), Parameter.Id, StorageType,
 //     HasValue, IsReadOnly, IsShared, AsString, AsInteger, AsDouble, AsElementId, AsValueString, GetUnitTypeId
-//   UnitUtils.ConvertFromInternalUnits, UnitUtils.IsMeasurableSpec, SpecTypeId.Length / Area / Volume / Angle,
-//     UnitTypeId.Millimeters / SquareMeters / CubicMeters / Degrees
+//   UnitUtils.ConvertFromInternalUnits, UnitUtils.IsMeasurableSpec, ForgeTypeId(string),
+//     UnitTypeId.Millimeters / SquareMeters / CubicMeters / Degrees, Category.CategoryType (CategoryType.Model)
 // An element's level is Element.LevelId, else its FAMILY_LEVEL_PARAM, SCHEDULE_LEVEL_PARAM or
-// INSTANCE_REFERENCE_LEVEL_PARAM. Elements without a category are skipped. Only the selected (at most limit) elements
+// INSTANCE_REFERENCE_LEVEL_PARAM. Elements without a category are skipped, and without a category filter only
+// model-category elements are kept (no views, sheets or annotations). Only the selected (at most limit) elements
 // are read beyond their id and level.
 // Unverified in Revit (owner session required): which elements report a level through LevelId versus a level
 // parameter, and the parameter set and display texts of the fixture's families.
@@ -48,11 +49,13 @@ internal static partial class CommandExecutor
         var matched = new List<long>();
         foreach (var element in collector)
         {
-            if (element.Category is null) continue;
+            if (element.Category is not { } elementCategory) continue;
+            // Without a category filter, model elements only: no views, sheets, annotations or other internal elements.
+            if (args.BuiltInCategory is null && elementCategory.CategoryType != CategoryType.Model) continue;
             if (level is not null && ElementLevelId(element) != level.Id) continue;
             matched.Add(element.Id.Value);
         }
-        var (selected, _) = RevitElementQueryRules.Page(matched, args.Limit);
+        var (selected, truncated) = RevitElementQueryRules.Page(matched, args.Limit);
         var rows = new List<ObservedQueryElement>();
         foreach (var id in selected)
         {
@@ -62,7 +65,7 @@ internal static partial class CommandExecutor
             rows.Add(ObserveQueryElement(d, element, type) with { Parameters = parameters, Missing = missing });
         }
         var levelReference = level is null ? null : new ObservedReference(level.Name, level.UniqueId);
-        return RevitElementQueryJson.Elements(args, levelReference, matched.Distinct().Count(), rows);
+        return RevitElementQueryJson.Elements(args, levelReference, matched.Distinct().Count(), truncated, rows);
     }
 
     static string InspectQuery(Document d, ElementInspectArgs args)
@@ -101,7 +104,7 @@ internal static partial class CommandExecutor
         var levelId = ElementLevelId(element);
         var level = levelId == ElementId.InvalidElementId ? null : d.GetElement(levelId) as Level;
         var category = element.Category;
-        return new ObservedQueryElement(element.Id.Value, element.UniqueId, category?.Name, category is null ? null : category.BuiltInCategory.ToString())
+        return new ObservedQueryElement(element.Id.Value, element.UniqueId, category?.Name, category is null || category.BuiltInCategory == BuiltInCategory.INVALID ? null : category.BuiltInCategory.ToString())
         {
             Level = level is null ? null : new ObservedReference(level.Name, level.UniqueId),
             FamilyName = type?.FamilyName,
@@ -141,8 +144,9 @@ internal static partial class CommandExecutor
     {
         var definition = parameter.Definition;
         var builtIn = definition is InternalDefinition internalDefinition && internalDefinition.BuiltInParameter != BuiltInParameter.INVALID ? internalDefinition.BuiltInParameter.ToString() : null;
-        var spec = definition.GetDataType();
-        var specText = spec is null || string.IsNullOrEmpty(spec.TypeId) ? null : spec.TypeId;
+        string? specText = null;
+        try { specText = definition.GetDataType()?.TypeId is { Length: > 0 } typeId ? typeId : null; }
+        catch (Autodesk.Revit.Exceptions.ApplicationException) { specText = null; }
         var storage = parameter.StorageType switch
         {
             StorageType.String => RevitParameterStorage.String,
@@ -159,7 +163,7 @@ internal static partial class CommandExecutor
                 case StorageType.String: observed = observed with { Text = parameter.AsString() }; break;
                 case StorageType.Integer: observed = observed with { Integer = parameter.AsInteger() }; break;
                 case StorageType.Double:
-                    var (number, unit) = TypedNumber(parameter, spec);
+                    var (number, unit) = TypedNumber(parameter, specText);
                     observed = observed with { Number = number, Unit = unit };
                     break;
                 case StorageType.ElementId:
@@ -175,25 +179,30 @@ internal static partial class CommandExecutor
         return observed with { Display = display };
     }
 
-    // Lengths in mm, areas in m2, volumes in m3, angles in degrees; any other measurable value in the document's
-    // display unit for it (named by its unit type id); anything else as Revit's raw number without a unit.
-    static (double Number, string? Unit) TypedNumber(Parameter parameter, ForgeTypeId? spec)
+    // Unit routing is RevitParameterUnits.ForSpec (core, unit-tested): lengths in mm, areas in m2, volumes in m3,
+    // angles in degrees; any other measurable value in the document's display unit for it (named by its unit type
+    // id); anything else as Revit's raw number without a unit.
+    static (double Number, string? Unit) TypedNumber(Parameter parameter, string? specText)
     {
         var raw = parameter.AsDouble();
-        if (spec is null || string.IsNullOrEmpty(spec.TypeId)) return (raw, null);
-        if (spec.Equals(SpecTypeId.Length)) return (Mm(raw), RevitParameterUnits.Millimetres);
-        if (spec.Equals(SpecTypeId.Area)) return (UnitUtils.ConvertFromInternalUnits(raw, UnitTypeId.SquareMeters), RevitParameterUnits.SquareMetres);
-        if (spec.Equals(SpecTypeId.Volume)) return (UnitUtils.ConvertFromInternalUnits(raw, UnitTypeId.CubicMeters), RevitParameterUnits.CubicMetres);
-        if (spec.Equals(SpecTypeId.Angle)) return (UnitUtils.ConvertFromInternalUnits(raw, UnitTypeId.Degrees), RevitParameterUnits.Degrees);
-        try
+        switch (RevitParameterUnits.ForSpec(specText))
         {
-            if (UnitUtils.IsMeasurableSpec(spec))
-            {
-                var unit = parameter.GetUnitTypeId();
-                return (UnitUtils.ConvertFromInternalUnits(raw, unit), unit.TypeId);
-            }
+            case RevitParameterUnits.Millimetres: return (LengthUnits.NormalizeMillimetres(UnitUtils.ConvertFromInternalUnits(raw, UnitTypeId.Millimeters)), RevitParameterUnits.Millimetres);
+            case RevitParameterUnits.SquareMetres: return (UnitUtils.ConvertFromInternalUnits(raw, UnitTypeId.SquareMeters), RevitParameterUnits.SquareMetres);
+            case RevitParameterUnits.CubicMetres: return (UnitUtils.ConvertFromInternalUnits(raw, UnitTypeId.CubicMeters), RevitParameterUnits.CubicMetres);
+            case RevitParameterUnits.Degrees: return (UnitUtils.ConvertFromInternalUnits(raw, UnitTypeId.Degrees), RevitParameterUnits.Degrees);
+            case RevitParameterUnits.Display:
+                try
+                {
+                    if (UnitUtils.IsMeasurableSpec(new ForgeTypeId(specText)))
+                    {
+                        var unit = parameter.GetUnitTypeId();
+                        return (UnitUtils.ConvertFromInternalUnits(raw, unit), unit.TypeId);
+                    }
+                }
+                catch (Autodesk.Revit.Exceptions.ApplicationException) { }
+                return (raw, null);
+            default: return (raw, null);
         }
-        catch (Autodesk.Revit.Exceptions.ApplicationException) { }
-        return (raw, null);
     }
 }
