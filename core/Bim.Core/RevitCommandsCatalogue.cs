@@ -10,7 +10,7 @@ public sealed record RevitCommandSpec(string Name, bool Writes, string Descripti
     public string ToolName => ToolPrefix + Name.Replace('.', '_');
 }
 
-// Partial: catalogue v2 (P9-01) lives in RevitCommandsCatalogueV2.cs.
+// Partial: catalogue v2 (P9-01) lives in RevitCommandsCatalogueV2.cs, the view commands (P4-01) in RevitCommandsViews.cs.
 public static partial class RevitCommandCatalogue
 {
     public const int Version = 1;
@@ -62,9 +62,9 @@ public static partial class RevitCommandCatalogue
         new RevitCommandSpec("room.create", true, "Place a room on a level at a plan point inside an enclosed area, with optional name and number. Allowed only on enabled test copies.", RoomSchema, BindRoom),
     };
 
-    // Every command the protocol accepts: v1, then v2. Lazy because the v2 entries live in another part of this
-    // partial class, whose static initializers may run in either order.
-    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).ToArray());
+    // Every command the protocol accepts: v1, then v2, then the view commands (P4-01). Lazy because those entries
+    // live in other parts of this partial class, whose static initializers may run in any order.
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).ToArray());
     public static IReadOnlyList<RevitCommandSpec> All => AllSpecs.Value;
 
     public static RevitCommandSpec? Find(string name) => All.FirstOrDefault(spec => spec.Name == name);
