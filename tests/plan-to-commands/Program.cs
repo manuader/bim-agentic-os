@@ -354,7 +354,7 @@ try
         "an element without a level dependency says level unbound");
 
     // ---- Review follow-ups: pinned output and culture independence ----
-    const string goldenJsonSha256 = "PENDING";
+    const string goldenJsonSha256 = "6fda56d898e0f1e2ee5480d9d49d7c0e94fc4ae65c5b6d7537a0f12284a9e3c9";
     var jsonSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
     Check(jsonSha == goldenJsonSha256, "pinned SHA-256 of the base layout ToJson()", jsonSha);
     var original = CultureInfo.CurrentCulture;
