@@ -9,8 +9,11 @@ mcpServers is refused and nothing is written. Before any change to an existing f
 <config>.bak-<UTC stamp> is written next to it; the new content goes to a temp file in the same directory and is
 moved over the config. A run that would not change the entry is a no-op: no write and no backup. -DryRun prints the
 planned file and writes nothing. -Uninstall removes only that entry (a missing config or entry is a no-op).
-See docs/mcp-setup.md.
+A symlinked config is refused. On Windows without -ConfigPath, a single MSIX install folder
+(%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude) is preferred over %APPDATA%\Claude; when both hold
+candidates the script refuses and lists them. See docs/mcp-setup.md.
 #>
+#Requires -Version 7.2
 [CmdletBinding()]
 param(
     [string]$ConfigPath,
@@ -31,9 +34,23 @@ function Resolve-FullPath([string]$Path) { $ExecutionContext.SessionState.Path.G
 function Get-DefaultConfigPath {
     if ($IsWindows) {
         if (!$env:APPDATA) { throw 'APPDATA is not set; pass -ConfigPath explicitly.' }
-        return Join-Path (Join-Path $env:APPDATA 'Claude') 'claude_desktop_config.json'
+        $classic = [IO.Path]::GetFullPath((Join-Path (Join-Path $env:APPDATA 'Claude') 'claude_desktop_config.json'))
+        # The MSIX (Store/packaged) build virtualizes %APPDATA% under its package folder.
+        $packaged = @()
+        if ($env:LOCALAPPDATA -and (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'Packages') -PathType Container)) {
+            $packaged = @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue |
+                ForEach-Object { Join-Path $_.FullName 'LocalCache/Roaming/Claude' } |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
+                ForEach-Object { [IO.Path]::GetFullPath((Join-Path $_ 'claude_desktop_config.json')) } | Sort-Object)
+        }
+        if ($packaged.Count -eq 0) { $script:ConfigReason = 'classic install location'; return $classic }
+        $candidates = @($packaged)
+        if (Test-Path -LiteralPath $classic) { $candidates = @($classic) + $candidates }
+        if ($candidates.Count -gt 1) { throw ("Several Claude Desktop config locations exist; pass -ConfigPath with the one your Claude Desktop uses (Settings > Developer > Edit Config shows it). Candidates:`n  " + ($candidates -join "`n  ")) }
+        $script:ConfigReason = 'MSIX install location'
+        return $packaged[0]
     }
-    if ($IsMacOS) { return Join-Path $HOME 'Library/Application Support/Claude/claude_desktop_config.json' }
+    if ($IsMacOS) { $script:ConfigReason = 'macOS default location'; return Join-Path $HOME 'Library/Application Support/Claude/claude_desktop_config.json' }
     throw 'Claude Desktop has no default config location on this OS; pass -ConfigPath explicitly.'
 }
 
@@ -66,14 +83,18 @@ function Read-Config([string]$Path) {
 
 function Get-Servers($Config, [string]$Path) {
     $servers = $null
-    if (!$Config.TryGetPropertyValue('mcpServers', [ref]$servers)) { return $null }
+    if (!$Config.TryGetPropertyValue('mcpServers', [ref]$servers) -or $null -eq $servers) { return $null }
     if ($servers -isnot [System.Text.Json.Nodes.JsonObject]) { throw "Refusing to change ${Path}: mcpServers is not a JSON object. Nothing was written." }
     return , $servers
 }
 
 if ([string]::IsNullOrWhiteSpace($ServerName)) { throw '-ServerName must not be empty.' }
+$ConfigReason = 'explicit -ConfigPath'
 if (!$ConfigPath) { $ConfigPath = Get-DefaultConfigPath }
 $ConfigPath = Resolve-FullPath $ConfigPath
+"CONFIG $ConfigPath ($ConfigReason)"
+$linkInfo = [IO.FileInfo]::new($ConfigPath)
+if ($linkInfo.LinkTarget) { throw "Refusing to change ${ConfigPath}: it is a symbolic link (to $($linkInfo.LinkTarget)). Pass -ConfigPath with the real file. Nothing was written." }
 if ((Test-Path -LiteralPath $ConfigPath) -and !(Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw "$ConfigPath exists but is not a file." }
 
 $entry = $null
@@ -119,8 +140,9 @@ if ($Uninstall) {
     if (!$exists) { $config = [System.Text.Json.Nodes.JsonObject]::new() }
     $servers = Get-Servers $config $ConfigPath
     if ($null -eq $servers) {
+        # Missing or null mcpServers: the indexer adds the key, or replaces the null in place.
         $servers = [System.Text.Json.Nodes.JsonObject]::new()
-        $config.Add('mcpServers', $servers)
+        $config['mcpServers'] = $servers
     }
     $current = $null
     if ($servers.TryGetPropertyValue($ServerName, [ref]$current) -and $null -ne $current -and $current.ToJsonString() -eq $entry.ToJsonString()) {
@@ -143,6 +165,7 @@ if ($DryRun) {
     exit 0
 }
 
+if (@(Get-Process -Name 'Claude' -ErrorAction SilentlyContinue).Count) { Write-Warning 'Claude Desktop appears to be running; quit it before restarting so it does not overwrite this change.' }
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $ConfigPath))
 if ($exists) {
     $backup = $ConfigPath + '.bak-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
@@ -151,7 +174,9 @@ if ($exists) {
 }
 $temp = $ConfigPath + '.tmp-' + [Guid]::NewGuid().ToString('N')
 try {
-    [IO.File]::WriteAllText($temp, $text, [Text.UTF8Encoding]::new($false))
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($text)
+    $stream = [IO.FileStream]::new($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
     [IO.File]::Move($temp, $ConfigPath, $true)
 } finally {
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
