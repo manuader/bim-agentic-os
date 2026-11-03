@@ -71,8 +71,9 @@ static class StyleSkillTests
         + finding.Property + " measured=" + (finding.Measured?.ToString("R", CultureInfo.InvariantCulture) ?? "-") + " required=" + (finding.Required?.ToString("R", CultureInfo.InvariantCulture) ?? "-")
         + " | " + finding.Detail)) + "\nunmatched " + string.Join(",", report.UnmatchedRoomIds);
 
-    public static void Run(string root, Action<bool, string, string> check)
+    public static void Run(string root, Action<bool, string, string> sink)
     {
+        void check(bool condition, string name, string detail = "") => sink(condition, name, detail);
         SkillCatalog catalog;
         try { catalog = SkillLoader.LoadDirectory(Path.Combine(root, "skills")); }
         catch (SkillException error) { check(false, "style: skills/ loads", error.Code + " " + error.File + " at " + error.Field + " (" + error.Detail + ")"); return; }
