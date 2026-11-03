@@ -1001,3 +1001,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 06:29Z integration 7fd0951 CI 41589322460 success (9/9) → main fast-forwarded. P1-02, P3-02, P8-01 ✅; new P1-05, P3-03, P3-04 ⏳ (roadmap batch for phases 1 and 3). Progress 39/57 (68.4 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-03T06:29:42Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P6-02 PDF vector reader (Phase 6), P7-02 alternatives scoring (Phase 7), P9-02 structure commands or P10-02 BCF export; then P1-05/P3-03/P2-03/P4-02/P5-03. Owner: Revit session on a test copy (-Catalogue, views probe, query.snapshot, query.elements/inspect); CABA review.
+
+## Relay140 — 2026-11-03T06:53:28Z (Claude, cloud scheduled)
+- 06:53Z LOCK taken (was FREE since relay139 2026-11-03T06:29:42Z).
