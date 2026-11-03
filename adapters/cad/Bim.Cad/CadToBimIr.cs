@@ -910,6 +910,7 @@ public static class CadToBimIr
         public double Thickness { get; } = first.Thickness;
         public bool MergedByOpening { get; set; }
         public bool MergedBySplit { get; set; }
+        public bool MergedSharedFace { get; set; }
         public Point2 Start { get; private set; } = first.Start;
         public Point2 End { get; private set; } = first.End;
         public double Length { get; private set; } = first.Length;
