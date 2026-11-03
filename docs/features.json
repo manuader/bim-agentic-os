@@ -568,6 +568,43 @@
       ],
       "blocker": "Only own-exporter and worker-authored IFC tested (no third-party authoring-tool files); horizontally extruded openings (typical Revit/ArchiCAD exports), layered/clipped/curved walls and Brep bodies are unmapped; provenance is never carried through IFC (imports are observed).",
       "scope": "P8-01: IFC storeys/walls/doors/windows (fill\u2192opening\u2192void to a mapped wall)/spaces read into existing BIM-IR with full placement composition and unit conversion, unmapped list with reasons and dependency cascade, range/precision/size refusals; deterministic validated IFC4 exporter; export\u2192import\u2192export stable (DATA section byte-identical). CI 41588411915 (ifc + ifc-portable on 3 OS)."
+    },
+    {
+      "id": "cad-pdf-vector-reader",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/cad/Bim.Cad/PdfReader.cs",
+        "adapters/cad/Bim.Cad/PdfContent.cs",
+        "adapters/cad/Bim.Cad/PdfCalibration.cs",
+        "tests/cad/PdfTests.cs",
+        "tests/cad/fixtures/simple-plan.pdf"
+      ],
+      "blocker": "Hand-written/generated fixtures only, no real-world CAD-exported PDFs; no font metrics (no glyph advance), no CID/ToUnicode text; FlateDecode without predictors only; encrypted PDFs refused; /Rotate reported not applied; clipping/optional content not modelled; depth-limit refuses the whole document.",
+      "scope": "P6-02: BCL-only PDF reader (paths m/l/c/v/y/h/re with paint ops, text Tj/TJ/'/\" with Tm/Td/TD/T*/TL/Ts, cm and q/Q, Form XObjects with invoking-Do provenance chain, concatenated /Contents, object streams, FlateDecode, latest revision wins) into a provenance-tagged model; scale calibration from a known dimension and alignment; conversion to the DXF entity model (wall-pair detection works on calibrated PDFs); bounded size/objects/operators/depth/decoded/interpreted bytes/parsed elements with stable refusal codes; truncation sweep and mutation fuzz. CI 41605199617."
+    },
+    {
+      "id": "generative-alternatives-scoring",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/AlternativeGenerator.cs",
+        "core/Bim.Generative/AlternativeRanker.cs",
+        "core/Bim.Generative/AlternativeSetSerializer.cs",
+        "tests/generative/AlternativeTests.cs"
+      ],
+      "blocker": "Mirrored/rotated layouts are not deduplicated; compliance criterion is a gate (always 1 for ranked plans); perimeter is a room-shape proxy, no circulation model; not exposed through CLI/MCP.",
+      "scope": "P7-02: N (1..64) alternatives from distinct deterministic seeds, geometric dedup by room id/level/rect bits, six weighted criteria (area fit, preferred adjacency per pair, proportions, compactness with fill, perimeter, compliance) with per-criterion raw/normalized/weight/contribution explanation summing to the total, infeasible/invalid reasons, stable ranking, canonical culture-invariant JSON. CI 41600090447."
+    },
+    {
+      "id": "bcf-export",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Bcf.cs",
+        "core/Bim.Core/BcfZip.cs",
+        "tests/bcf/Program.cs",
+        "tests/bcf/schemas/README.md"
+      ],
+      "blocker": "Validated only against project-authored subset XSDs (official buildingSMART BCF-XML 3.0 XSDs not fetched; their licence unchecked); no snapshots, comments, Header/Files or clipping planes; never opened in a BCF viewer; no CLI/MCP caller yet.",
+      "scope": "P10-02: neutral validation issues to a BCF 3.0 zip (bcf.version, extensions.xml, project.bcfp, per-topic markup.bcf and optional viewpoint.bcfv with IfcGuid/AuthoringToolId components and perspective/orthogonal camera); SHA-256-derived UUIDs, IFC GUID compression, hand-written stored zip with fixed headers \u2014 golden SHA-256 equal on Linux and Windows; per-field and whole-export limits with stable codes. CI 41603185340."
     }
   ]
 }

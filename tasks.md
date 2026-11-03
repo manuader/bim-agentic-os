@@ -115,15 +115,17 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
 | P6-01 | DXF reader with provenance | ✅ | — | adapters/cad (new); tests/cad | DXF layers/lines/polylines/arcs/blocks/text read to a provenance-tagged drawing model; wall-pair detection; fixtures; tests | unit-tested (relay137, CI 41559877398; hand-written ASCII fixtures, BCL only) |
-| P6-02 | PDF vector reader and scale calibration | ⏳ | — | adapters/cad; tests/cad | vector paths and text from PDF, scale from a known dimension, alignment; fixtures; tests | target unit-tested |
+| P6-02 | PDF vector reader and scale calibration | ✅ | — | adapters/cad; tests/cad | vector paths and text from PDF, scale from a known dimension, alignment; fixtures; tests | unit-tested (relay140, CI 41605199617; BCL only, hand-written/generated fixtures, no real-world PDFs; no font metrics/CID text) |
 | P6-03 | Project brief schema and validated extraction | ✅ | — | core/Bim.Core/Brief* | brief JSON schema (rooms, areas, adjacencies, constraints) with validator and uncertainty fields; tests | unit-tested (relay134, CI 41514529827) |
+| P6-04 | CAD drawing to BIM-IR draft with uncertainty | ⏳ | P6-01, P6-02 | adapters/cad/Bim.Cad/CadToBimIr*; tests/cad | calibrated DXF/PDF wall pairs and door/window blocks become a draft BIM-IR wall/opening proposal (not persisted) with per-element confidence, source provenance and an uncertainty report (unpaired lines, ambiguous thickness, gaps); fixtures; tests | target unit-tested |
 
 ### Phase 7 — generative kernels
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
 | P7-01 | Constraint space planner | ✅ | P6-03 | core/Bim.Generative (new) | rectangular space planning honoring areas, adjacency and CABA minimums; deterministic seeds; tests | unit-tested (relay135, CI 41535913478) |
-| P7-02 | Alternatives with scoring | ⏳ | P7-01 | core/Bim.Generative | N alternatives scored and ranked with explanations; tests | target unit-tested |
+| P7-02 | Alternatives with scoring | ✅ | P7-01 | core/Bim.Generative | N alternatives scored and ranked with explanations; tests | unit-tested (relay140, CI 41600090447; mirrored layouts not deduplicated; no circulation model) |
+| P7-03 | Apartment prototype generator | ⏳ | P7-02 | core/Bim.Generative/Prototype*; tests/generative | typology templates (1/2/3-bedroom) produce briefs and ranked layouts on a given lot that keep approved invariants (fixed rooms/walls) when reconfigured; deterministic; tests | target unit-tested |
 
 ### Phase 8 — Rhino, Blender and IFC
 
@@ -148,13 +150,15 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
 | P10-01 | IDS checks | ✅ | — | runtimes/ifc/ids_check.py; tests/ifc | IDS file validation of exported IFC with report; CI | integration-tested (ifc) (relay138, CI 41575714191; IDS 1.0 subset) |
-| P10-02 | BCF export | ⏳ | — | core/Bim.Core/Bcf* | validation issues exported as BCF 3.0 zip; schema-valid; tests | target unit-tested |
+| P10-02 | BCF export | ✅ | — | core/Bim.Core/Bcf* | validation issues exported as BCF 3.0 zip; schema-valid; tests | unit-tested (relay140, CI 41603185340; valid against project-authored subset XSDs only, official buildingSMART XSDs not fetched; golden zip hash equal on Linux/Windows) |
 | P10-03 | Audit log and permissions | ✅ | — | core/Bim.Core/Audit* | append-only audit of commands with actor and decision; permission policy (read/write/real-project); tests | unit-tested (relay134, CI 41517584141) |
+| P10-04 | Installer and packaging manifest | ⏳ | — | scripts/package*.ps1; tests/packaging | release layout (CLI, MCP server, add-in manifest without Revit assemblies) with SHA-256 manifest and version stamp, reproducible on CI, verified by a test that rebuilds and compares | target unit-tested |
+| P10-05 | Offline classification mapping (bSDD-style) | ⏳ | — | core/Bim.Core/Classification*; tests/classification | versioned offline dictionary (e.g. Uniclass/OmniClass subset with licence notes) maps BIM-IR kinds/types to classification codes and IFC classification references; unknown → explicit unmapped; tests | target unit-tested |
 
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 39/57 done (68.4 %)
+Progress: 42/61 done (68.9 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
@@ -166,10 +170,10 @@ Progress: 39/57 done (68.4 %)
 - Phase 3 — incremental compiler: 2/4
 - Phase 4 — documentation engine: 1/2
 - Phase 5 — skills and design systems: 2/3
-- Phase 6 — CAD and requirements: 2/3
-- Phase 7 — generative kernels: 1/2
+- Phase 6 — CAD and requirements: 3/4
+- Phase 7 — generative kernels: 2/3
 - Phase 8 — Rhino, Blender and IFC: 2/3
 - Phase 9 — Revit parity: 2/5
-- Phase 10 — global production: 2/3
-Next ready: P1-05, P2-03, P3-03, P3-04, P4-02, P5-03, P6-02, P7-02
+- Phase 10 — global production: 3/5
+Next ready: P1-05, P2-03, P3-03, P3-04, P4-02, P5-03, P6-04, P7-03
 

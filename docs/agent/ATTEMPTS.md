@@ -106,3 +106,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P1-02 Attempt1: hypothesis a core comment naming the add-in path trips the harness "Core dependency boundary" gate (`runtimes/` in core) → reworded comment (2b1ac32). Attempt2 (review round): spec id literals containing the vendor name trip the same gate → match spec ids by shape (4a51ca6). No test changed.
 - P3-02 Attempt1: hypothesis test locals named `args` clash with the implicit top-level-statements `args` (CS0136) → renamed to `values` (6198975). Golden output hash pinned from CI output (regression pin, 9e0884c).
 - P8-01: no failed attempts.
+
+### Relay140 (2026-11-03, cloud)
+- P6-02: no failed attempts across three rounds (initial, review blockers B1–B4, re-review blockers).
+- P7-02 Attempt1 ("64 alternatives differ in total"): hypothesis a 3-room 6x6 brief yields layouts with different totals → wrong, 4 ranked with equal totals (run 41599100287). Attempt2: richer 4-room brief with preferred pairs → wrong, 8 ranked all equal (run 41599597953; small briefs give equal-score mirrored layouts). Attempt3 succeeded: the 64 case uses apartment-2br from seed 0 (run 41600090447). Oracle not relaxed (still ≥2 ranked and ≥2 distinct totals).
+- P10-02: no failed attempts; golden zip SHA-256 pinned from CI output (identical on Linux and Windows, run 41602416672).
