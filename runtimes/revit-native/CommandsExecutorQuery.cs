@@ -30,7 +30,7 @@ internal static partial class CommandExecutor
     {
         ElementQueryArgs query => ElementsQuery(d, query),
         ElementInspectArgs inspect => InspectQuery(d, inspect),
-        _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
+        _ => QueryStructure(d, envelope),
     };
 
     static readonly BuiltInParameter[] LevelParameters = { BuiltInParameter.FAMILY_LEVEL_PARAM, BuiltInParameter.SCHEDULE_LEVEL_PARAM, BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM };

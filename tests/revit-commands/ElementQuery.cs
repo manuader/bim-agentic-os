@@ -50,7 +50,8 @@ static class ElementQueryChecks
     static void Catalogue()
     {
         Check(RevitCommandCatalogue.Elements.Select(spec => spec.Name).SequenceEqual(new[] { "query.elements", "query.inspect" }), "element query catalogue part lists query.elements then query.inspect");
-        Check(RevitCommandCatalogue.All.SequenceEqual(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror).Concat(RevitCommandCatalogue.Elements)), "All is v1, v2, views, snapshot, then the element queries");
+        var throughElements = RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror).Concat(RevitCommandCatalogue.Elements).ToArray();
+        Check(RevitCommandCatalogue.All.Take(throughElements.Length).SequenceEqual(throughElements), "All is v1, v2, views, snapshot, then the element queries (later catalogue parts follow)");
         var copies = new[] { @"C:\Repo\.bim\native-runs" };
         foreach (var (name, tool) in new[] { ("query.elements", "revit_query_elements"), ("query.inspect", "revit_query_inspect") })
         {
