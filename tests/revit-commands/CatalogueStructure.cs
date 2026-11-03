@@ -241,8 +241,13 @@ static class CatalogueStructureChecks
         Check(Thrown(() => CommandRulesStructure.BuiltInCategory("door")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.category" }, "an unknown structural category is args_invalid");
         Check(CommandRulesStructure.ColumnStructuralType == "Column" && CommandRulesStructure.BeamStructuralType == "Beam" && CommandRulesStructure.FootingStructuralType == "Footing", "Revit StructuralType names are Column, Beam and Footing");
 
-        Check(Thrown(() => CommandRulesStructure.CheckGridNameFree("A", new[] { "B", "a" })) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.name" }, "a grid name differing only in case from an existing grid is args_invalid (fail closed)");
-        Check(Thrown(() => CommandRulesStructure.CheckGridNameFree("A", new[] { "B", "AA" })) is null && Thrown(() => CommandRulesStructure.CheckGridNameFree(null, new[] { "A" })) is null, "a free grid name and no grid name never collide");
+        Check(Thrown(() => CommandRulesStructure.CheckGridNameFree("A", new[] { "B", "a" }, Array.Empty<string>())) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.name" }, "a grid name differing only in case from an existing grid is args_invalid (fail closed)");
+        Check(Thrown(() => CommandRulesStructure.CheckGridNameFree("A", new[] { "B", "AA" }, new[] { "C" })) is null && Thrown(() => CommandRulesStructure.CheckGridNameFree(null, new[] { "A" }, new[] { "A" })) is null, "a free grid name and no grid name never collide");
+
+        Check(Thrown(() => CommandRulesStructure.CheckGridNameFree("A", new[] { "B" }, new[] { "a" })) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.name" } multi && multi.Detail!.Contains("multi-segment", StringComparison.Ordinal), "a grid name already used by a multi-segment grid is args_invalid");
+        Check(Thrown(() => CommandRulesStructure.CheckIsolatedFoundationPlacement("OneLevelBased")) is null, "a one-level-based foundation family type can be placed as an isolated foundation");
+        foreach (var placement in new[] { "WorkPlaneBased", "OneLevelBasedHosted", "TwoLevelsBased", "CurveBased", "ViewBased" })
+            Check(Thrown(() => CommandRulesStructure.CheckIsolatedFoundationPlacement(placement)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.type" } refusal && refusal.Detail!.Contains(placement, StringComparison.Ordinal), "a " + placement + " foundation family type is args_invalid on args.type");
 
         Check(Near(CommandRulesStructure.ColumnHeightMm(Level1Uid, 0, 0, Level2Uid, 4000, 0), 4000), "column height is top level plus top offset minus base level plus base offset");
         Check(Near(CommandRulesStructure.ColumnHeightMm(Level1Uid, 0, -300, Level2Uid, 4000, 150), 4450), "column height counts both offsets");
@@ -280,21 +285,29 @@ static class CatalogueStructureChecks
         Check(CommandReadbackStructure.Column(TypeUid, P(6000, 4000), Level1Uid, Level2Uid, 0, 150, column with { TopOffsetMm = null }) is { } topOffset && topOffset.Contains("top offset", StringComparison.Ordinal), "an unreadable top offset is a mismatch");
         Check(CommandReadbackStructure.Column(TypeUid, P(6000, 4000), Level1Uid, Level2Uid, -300, 150, column with { BaseOffsetMm = -300.0004, TopOffsetMm = 150.0004 }) is null, "offsets within the 1e-3 mm tolerance match");
 
-        var beam = new ObservedBeam(ElementUid, TypeUid, "Beam", Level2Uid, P(0, 0), P(6000, 0));
+        var beam = new ObservedBeam(ElementUid, TypeUid, "Beam", Level2Uid, P(0, 0), P(6000, 0), 0, 0);
         Check(CommandReadbackStructure.Beam(TypeUid, Level2Uid, P(0, 0), P(6000, 0), beam) is null, "beam readback matches");
         Check(CommandReadbackStructure.Beam(TypeUid, Level2Uid, P(0, 0), P(6000, 0), beam with { StructuralType = "Brace" }) is { } brace && brace.Contains("structural type", StringComparison.Ordinal), "a brace is a mismatch for a beam");
         Check(CommandReadbackStructure.Beam(TypeUid, Level1Uid, P(0, 0), P(6000, 0), beam) is { } level && level.Contains("level", StringComparison.Ordinal), "a beam on another reference level is a mismatch");
         Check(CommandReadbackStructure.Beam(TypeUid, Level2Uid, P(0, 0), P(6000, 0), beam with { LevelUid = null }) is not null, "an unreadable beam reference level is a mismatch");
         Check(CommandReadbackStructure.Beam(TypeUid, Level2Uid, P(0, 0), P(6000, 0), beam with { Start = P(6000, 0), End = P(0, 0) }) is not null, "a reversed beam is a mismatch");
+        Check(CommandReadbackStructure.Beam(TypeUid, Level2Uid, P(0, 0), P(6000, 0), beam with { EndOffsetMm = 100 }) is { } endOffset && endOffset.Contains("end level offset", StringComparison.Ordinal), "a beam end offset of 100 mm is a mismatch (the beam must lie in the level plane)");
+        Check(CommandReadbackStructure.Beam(TypeUid, Level2Uid, P(0, 0), P(6000, 0), beam with { StartOffsetMm = -100 }) is { } startOffset && startOffset.Contains("start level offset", StringComparison.Ordinal), "a beam start offset of -100 mm is a mismatch");
+        Check(CommandReadbackStructure.Beam(TypeUid, Level2Uid, P(0, 0), P(6000, 0), beam with { StartOffsetMm = null }) is not null, "an unreadable beam start offset is a mismatch");
+        Check(CommandReadbackStructure.Beam(TypeUid, Level2Uid, P(0, 0), P(6000, 0), beam with { StartOffsetMm = 0.0004, EndOffsetMm = -0.0004 }) is null, "beam offsets within the 1e-3 mm tolerance match");
         Check(CommandReadbackStructure.Beam(TypeUid, Level2Uid, P(0, 0), P(6000, 0), beam with { End = null }) is not null, "an unreadable beam location curve is a mismatch");
         Check(CommandReadbackStructure.Beam(OtherTypeUid, Level2Uid, P(0, 0), P(6000, 0), beam) is not null, "a beam of another type is a mismatch");
 
-        var footing = new ObservedFooting(ElementUid, TypeUid, "Footing", Level1Uid, P(6000, 4000));
-        Check(CommandReadbackStructure.Footing(TypeUid, Level1Uid, P(6000, 4000), footing) is null, "isolated foundation readback matches");
-        Check(CommandReadbackStructure.Footing(TypeUid, Level1Uid, P(6000, 4000), footing with { StructuralType = "NonStructural" }) is not null, "a non-structural foundation is a mismatch");
-        Check(CommandReadbackStructure.Footing(TypeUid, Level2Uid, P(6000, 4000), footing) is { } footingLevel && footingLevel.Contains("level", StringComparison.Ordinal), "a foundation on another level is a mismatch");
-        Check(CommandReadbackStructure.Footing(TypeUid, Level1Uid, P(6000, 4000), footing with { Point = P(6001, 4000) }) is not null, "a foundation elsewhere in plan is a mismatch");
-        Check(CommandReadbackStructure.Footing(OtherTypeUid, Level1Uid, P(6000, 4000), footing) is not null, "a foundation of another type is a mismatch");
+        var footing = new ObservedFooting(ElementUid, TypeUid, "Footing", Level1Uid, P(6000, 4000), -250);
+        Check(CommandReadbackStructure.Footing(TypeUid, Level1Uid, P(6000, 4000), -250, footing) is null, "isolated foundation readback matches");
+        Check(CommandReadbackStructure.Footing(TypeUid, Level1Uid, P(6000, 4000), -250, footing with { StructuralType = "NonStructural" }) is not null, "a non-structural foundation is a mismatch");
+        Check(CommandReadbackStructure.Footing(TypeUid, Level2Uid, P(6000, 4000), -250, footing) is { } footingLevel && footingLevel.Contains("level", StringComparison.Ordinal), "a foundation on another level is a mismatch");
+        Check(CommandReadbackStructure.Footing(TypeUid, Level1Uid, P(6000, 4000), -250, footing with { Point = P(6001, 4000) }) is not null, "a foundation elsewhere in plan is a mismatch");
+        Check(CommandReadbackStructure.Footing(OtherTypeUid, Level1Uid, P(6000, 4000), -250, footing) is not null, "a foundation of another type is a mismatch");
+
+        Check(CommandReadbackStructure.Footing(TypeUid, Level1Uid, P(6000, 4000), -250, footing with { ZMm = -249 }) is { } elevation && elevation.Contains("elevation", StringComparison.Ordinal), "a foundation 1 mm above its level is a mismatch");
+        Check(CommandReadbackStructure.Footing(TypeUid, Level1Uid, P(6000, 4000), -250, footing with { ZMm = null }) is not null, "an unreadable foundation elevation is a mismatch");
+        Check(CommandReadbackStructure.Footing(TypeUid, Level1Uid, P(6000, 4000), -250, footing with { ZMm = -250.0004 }) is null, "a foundation elevation within the 1e-3 mm tolerance matches");
 
         var wallFoundation = new ObservedWallFoundation(ElementUid, TypeUid, WallUid);
         Check(CommandReadbackStructure.WallFoundation(TypeUid, WallUid, wallFoundation) is null, "wall foundation readback matches");
@@ -307,12 +320,12 @@ static class CatalogueStructureChecks
         var grids = JsonNode.Parse(CommandReadbackStructure.GridsJson(new[] { new GridRow("B", OtherTypeUid, false, P(6000, 0), P(6000, 12000)), new GridRow("A", TypeUid, true, P(0, 0), P(0, 12000)) }))!["grids"]!.AsArray();
         Check(grids.Select(row => row!["name"]!.GetValue<string>()).SequenceEqual(new[] { "A", "B" }) && grids[0]!["curved"]!.GetValue<bool>() && grids[1]!["end"]![1]!.GetValue<double>() == 12000 && grids[1]!["unique_id"]!.GetValue<string>() == OtherTypeUid,
             "grids readback is sorted by name with UniqueId, curved flag and plan end points", grids.ToJsonString());
-        var types = JsonNode.Parse(CommandReadbackStructure.StructuralTypesJson("column", new[] { new StructuralTypeRow("W-Wide Flange-Column", "W10x49", TypeUid, false), new StructuralTypeRow("Concrete-Rectangular-Column", "300 x 450mm", OtherTypeUid, true) }))!;
+        var types = JsonNode.Parse(CommandReadbackStructure.StructuralTypesJson("column", new[] { new StructuralTypeRow("W-Wide Flange-Column", "W10x49", TypeUid, false, "OneLevelBased"), new StructuralTypeRow("Concrete-Rectangular-Column", "300 x 450mm", OtherTypeUid, true, "TwoLevelsBased") }))!;
         var rows = types["structural_types"]!.AsArray();
-        Check(types["category"]!.GetValue<string>() == "column" && rows.Select(row => row!["family"]!.GetValue<string>()).SequenceEqual(new[] { "Concrete-Rectangular-Column", "W-Wide Flange-Column" }) && rows[1]!["reference"]!.GetValue<string>() == "W-Wide Flange-Column: W10x49" && !rows[1]!["active"]!.GetValue<bool>(),
+        Check(types["category"]!.GetValue<string>() == "column" && rows.Select(row => row!["family"]!.GetValue<string>()).SequenceEqual(new[] { "Concrete-Rectangular-Column", "W-Wide Flange-Column" }) && rows[1]!["reference"]!.GetValue<string>() == "W-Wide Flange-Column: W10x49" && !rows[1]!["active"]!.GetValue<bool>() && rows[1]!["placement_type"]!.GetValue<string>() == "OneLevelBased" && rows[0]!["placement_type"]!.GetValue<string>() == "TwoLevelsBased",
             "structural types readback is sorted by family then type with the Family: Type reference and active flag", types.ToJsonString());
-        var wallTypes = JsonNode.Parse(CommandReadbackStructure.StructuralTypesJson("wall_foundation", new[] { new StructuralTypeRow(null, "Bearing Footing - 900 x 300", TypeUid, true) }))!["structural_types"]![0]!;
-        Check(wallTypes["family"] is null && wallTypes["reference"]!.GetValue<string>() == "Bearing Footing - 900 x 300", "a wall foundation type has no family and is referenced by its name", wallTypes.ToJsonString());
+        var wallTypes = JsonNode.Parse(CommandReadbackStructure.StructuralTypesJson("wall_foundation", new[] { new StructuralTypeRow(null, "Bearing Footing - 900 x 300", TypeUid, true, null) }))!["structural_types"]![0]!;
+        Check(wallTypes["family"] is null && wallTypes["placement_type"] is null && wallTypes["reference"]!.GetValue<string>() == "Bearing Footing - 900 x 300", "a wall foundation type has no family and is referenced by its name", wallTypes.ToJsonString());
 
         var grid = JsonNode.Parse(CommandReadbackStructure.GridJson(new ObservedGrid(ElementUid, "A", false, P(0, 0), P(0, 12000))))!["grid"]!;
         Check(grid["unique_id"]!.GetValue<string>() == ElementUid && grid["name"]!.GetValue<string>() == "A" && !grid["curved"]!.GetValue<bool>() && grid["start"]![0]!.GetValue<double>() == 0 && grid["end"]![1]!.GetValue<double>() == 12000, "grid readback JSON reports UniqueId, name, curved flag and end points", grid.ToJsonString());
@@ -320,10 +333,10 @@ static class CatalogueStructureChecks
         Check(column["type_unique_id"]!.GetValue<string>() == TypeUid && column["structural_type"]!.GetValue<string>() == "Column" && !column["slanted"]!.GetValue<bool>() && column["point"]![0]!.GetValue<double>() == 6000
             && column["base_level_unique_id"]!.GetValue<string>() == Level1Uid && column["top_level_unique_id"]!.GetValue<string>() == Level2Uid && column["base_offset_mm"]!.GetValue<double>() == -300 && column["top_offset_mm"] is null,
             "column readback JSON reports type, structural type, slant, point, levels and offsets (null when unreadable)", column.ToJsonString());
-        var beam = JsonNode.Parse(CommandReadbackStructure.BeamJson(new ObservedBeam(ElementUid, TypeUid, "Beam", Level2Uid, P(0, 0), null)))!["structural_beam"]!;
-        Check(beam["level_unique_id"]!.GetValue<string>() == Level2Uid && beam["structural_type"]!.GetValue<string>() == "Beam" && beam["start"]![0]!.GetValue<double>() == 0 && beam["end"] is null, "beam readback JSON reports level, structural type and end points (null when unreadable)", beam.ToJsonString());
-        var footing = JsonNode.Parse(CommandReadbackStructure.FootingJson(new ObservedFooting(ElementUid, TypeUid, "Footing", Level1Uid, P(6000, 4000))))!["foundation"]!;
-        Check(footing["structural_type"]!.GetValue<string>() == "Footing" && footing["level_unique_id"]!.GetValue<string>() == Level1Uid && footing["point"]![1]!.GetValue<double>() == 4000, "isolated foundation readback JSON reports structural type, level and point", footing.ToJsonString());
+        var beam = JsonNode.Parse(CommandReadbackStructure.BeamJson(new ObservedBeam(ElementUid, TypeUid, "Beam", Level2Uid, P(0, 0), null, 0, null)))!["structural_beam"]!;
+        Check(beam["level_unique_id"]!.GetValue<string>() == Level2Uid && beam["structural_type"]!.GetValue<string>() == "Beam" && beam["start"]![0]!.GetValue<double>() == 0 && beam["end"] is null && beam["start_level_offset_mm"]!.GetValue<double>() == 0 && beam["end_level_offset_mm"] is null, "beam readback JSON reports level, structural type and end points (null when unreadable)", beam.ToJsonString());
+        var footing = JsonNode.Parse(CommandReadbackStructure.FootingJson(new ObservedFooting(ElementUid, TypeUid, "Footing", Level1Uid, P(6000, 4000), -250)))!["foundation"]!;
+        Check(footing["structural_type"]!.GetValue<string>() == "Footing" && footing["level_unique_id"]!.GetValue<string>() == Level1Uid && footing["point"]![1]!.GetValue<double>() == 4000 && footing["z_mm"]!.GetValue<double>() == -250, "isolated foundation readback JSON reports structural type, level, point and elevation", footing.ToJsonString());
         var wallFoundation = JsonNode.Parse(CommandReadbackStructure.WallFoundationJson(new ObservedWallFoundation(ElementUid, TypeUid, WallUid)))!["wall_foundation"]!;
         Check(wallFoundation["unique_id"]!.GetValue<string>() == ElementUid && wallFoundation["type_unique_id"]!.GetValue<string>() == TypeUid && wallFoundation["host_wall_unique_id"]!.GetValue<string>() == WallUid, "wall foundation readback JSON reports type and host wall", wallFoundation.ToJsonString());
     }
