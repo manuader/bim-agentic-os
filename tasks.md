@@ -61,7 +61,7 @@ Owner scope change 2026-10-30, [ADR0009](docs/architecture/adr/0009-revit-comman
 | C01 | CI compiles the Revit add-in | ✅ | — | runtimes/revit-native/Bim.Revit.csproj; .github/workflows/ci.yml | windows CI job builds Bim.Revit with --warnaserror using build-only reference assemblies; local installed-Revit build unchanged | target compiled |
 | C02 | Command protocol, catalogue v1 contracts and MCP tools | ✅ | — | core/Bim.Core/RevitCommands*.cs; interfaces/mcp; tests/revit-commands | envelope, validators, copies-only guard and generated MCP tools unit-tested in CI | target unit-tested |
 | C03 | Revit executor for catalogue v1 | ✅ | C01, C02 | runtimes/revit-native/Commands*.cs; App.cs dispatch | queries, wall line/arc, door/window, floor, room compile in CI; Autodesk-free parts tested | target compiled |
-| C04 | Owner smoke of catalogue v1 in Revit | 🔒 | C03 | scripts/owner-native-session.ps1 -Catalogue (ready, c82f2b6); artifacts | curved wall, door, floor, room created on a fixture with readback and no-duplicate retry | target verified-in-revit |
+| C04 | Owner smoke of catalogue v1 in Revit | ✅ | C03 | scripts/owner-native-session.ps1 -Catalogue (ready, c82f2b6); artifacts | curved wall, door, floor, room created on a fixture with readback and no-duplicate retry | verified-in-revit (owner session 20261103T174908Z, head a31af61, Revit 25.2.0.38: catalogue v1 17/17) |
 | C05 | Guarded free path (ADR + implementation) | ⛔ | C03 | docs/architecture/adr; runtimes/revit-native | ADR accepted; free C# runs in a rolled-back transaction group with change report | target unit-tested |
 
 ## All-phases roadmap
@@ -72,11 +72,14 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P1-01 | Pipe listener survives per-connection faults | 🟢 | — | runtimes/revit-native/App.cs | CI green; C04 re-run reaches 17 steps | target compiled |
+| P1-01 | Pipe listener survives per-connection faults | ✅ | — | runtimes/revit-native/App.cs | CI green; C04 re-run reaches 17 steps | compiled; owner session 20261103T174908Z reached and passed all 17 catalogue steps over the pipe (verified-in-revit) |
 | P1-02 | Generic element query and inspect commands | ✅ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | query.elements by category/level with parameters; contract tests; compiles | unit-tested contracts + compiled executor (relay139, CI 41584475032; 4 MiB reply budget; not run in Revit) |
 | P1-03 | MCP server setup for the Claude app | ✅ | — | docs/mcp-setup.md; scripts/install-mcp.ps1 | one-command install registers the MCP server in Claude Desktop config with a backup; tested on a temp config | unit-tested (relay136, CI 41550944034; not run on the owner's Claude Desktop) |
-| P1-04 | Catalogue smoke re-run in Revit | 🔒 | P1-01 | owner session (fix ed5c759 on main; owner re-runs -Catalogue) | owner runs -Catalogue; 17/17 | target verified-in-revit |
+| P1-04 | Catalogue smoke re-run in Revit | ✅ | P1-01 | owner session (fix ed5c759 on main; owner re-runs -Catalogue) | owner runs -Catalogue; 17/17 | verified-in-revit (owner session 20261103T174908Z, head a31af61, Revit 25.2.0.38: 17/17; production PID untouched) |
 | P1-05 | Modify and delete commands under the copies guard | ✅ | P1-02 | core/Bim.Core/RevitCommandsModify*; runtimes/revit-native/CommandsExecutorModify* | element.set_parameter and element.delete with UniqueId targets, typed units, refused on non-copy documents, receipts and dry-run change report; contract tests; compiles | compiled executor + unit-tested contracts (relay144, CI 41668015221; element.set_parameter typed values, element.delete with dependents probe + confirm_dependents, dry-run rolled back, compact receipts; not verified-in-revit) |
+| P1-06 | One-run owner verification session | ✅ | P1-04 | scripts/owner-catalogue-steps.ps1; scripts/owner-native-session.ps1; tests/integration/test-catalogue-session.ps1; docs/owner-verification-session.md | one -Catalogue run continues after v1 17/17 with groups v2, views, snapshot, queries, structure, documentation, journal, modify (destructive last), requested vs observed per step, blocked preconditions, -CatalogueV1Only; fake-pipe and real-CLI tests | unit-tested (relay145, CI 41704794976; 81 steps; groups become verified-in-revit only after the owner run) |
+| P1-07 | Multi-command batch with one undo | ⏳ | P1-05 | core/Bim.Core/RevitCommandsBatch*; runtimes/revit-native/CommandsExecutorBatch*; tests/revit-commands | `command.batch` runs 1–50 catalogue write commands in one TransactionGroup (all-or-nothing, one undo entry), per-step readback and receipts, refusal names the failed step and rolls back everything, replay idempotent; copies guard; contract tests; compiles | target compiled |
+| P1-08 | Save a test copy command | ⏳ | P1-05 | core/Bim.Core/RevitCommandsSave*; runtimes/revit-native/CommandsExecutorSave*; tests/revit-commands | `document.save_copy` saves the open fixture document as a new BIM-Agentic-Test*.rvt under the copies root only (refuses overwrite, other folders, links, real projects), returns path and SHA-256; contract tests; compiles | target compiled |
 
 ### Phase 2 — semantic state and mirror
 
@@ -85,7 +88,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P2-01 | Revit to BIM-IR snapshot export | ✅ | — | core/Bim.Core/Mirror*; runtimes/revit-native/Mirror* | query.snapshot returns walls/doors/windows/floors/rooms as BIM-IR elements with stable ids; contract tests | unit-tested (relay138, CI 41573858213; mapper unit-tested, collector compiled; not run in Revit) |
 | P2-02 | Semantic graph relations | ✅ | — | core/Bim.Core/Graph* | hosted-by, bounds, on-level edges with queries and closure; tests | unit-tested (relay134, CI 41511322582) |
 | P2-03 | External edit journal (DocumentChanged) | ✅ | P2-01 | runtimes/revit-native/Journal* | events recorded with element ids and diff against last snapshot; compiles | compiled recorder + unit-tested journal/diff (relay141, CI 41624965893; raw pipe journal.read, not in catalogue/MCP; not verified-in-revit) |
-| P2-04 | Drift detection between mirror and Core | ⏳ | P2-01, P2-03 | core/Bim.Core/MirrorDrift*; tests/mirror-journal | compares a query.snapshot against the Core store's committed BIM-IR for the same document: missing/extra/changed elements classified (external edit, add-in pending, unmapped) with a stable drift report; fixtures; tests | target unit-tested |
+| P2-04 | Drift detection between mirror and Core | ✅ | P2-01, P2-03 | core/Bim.Core/MirrorDrift*; tests/mirror-journal | compares a query.snapshot against the Core store's committed BIM-IR for the same document: missing/extra/changed elements classified (external edit, add-in pending, unmapped) with a stable drift report; fixtures; tests | unit-tested (relay145, CI 41714702286; MirrorDrift.Compare: missing/extra/changed by role sets with mm/deg tolerances, external_edit/addin_pending/unknown, not_comparable kinds and native fixture keys, map_only scope, journal.read reply with completeness notes; not wired to CLI/MCP) |
 | P2-05 | Journal and snapshot exposure as catalogue query | ⏳ | P2-03 | core/Bim.Core/RevitCommandsJournal*; runtimes/revit-native/CommandsExecutorJournal*; tests/revit-commands | query.journal catalogue command (peek/after_sequence/max_entries) mirroring the raw journal.read, read-only level in MCP/audit tables; contract tests; compiles | target compiled |
 
 ### Phase 3 — incremental compiler
@@ -114,6 +117,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P5-03 | Two contrasting style skills | ✅ | P5-01 | skills/style-* | two style packs change defaults visibly with traceable rule ids; tests | unit-tested (relay141, CI 41623346293; bim.style.compact-modern and bim.style.warm-masonry; qa clear height raised to CABA 2.6) |
 | P5-04 | Style defaults feed the intent compiler | ⏳ | P5-03, P3-01 | core/Bim.Core/IntentSkillDefaults*; tests/intent | resolved skill defaults (wall thickness/type, level and clear height, sill/head) fill unspecified intent fields before compile with per-field provenance (rule id); explicit intent values win; same intent + two styles → two different deterministic BIM-IR outputs; tests | target unit-tested |
 | P5-05 | QA recipe skill pack over BIM-IR | ⏳ | P5-01 | skills/bim.qa.*; core/Bim.Core/SkillElementValidator*; tests/skills | element-targeted rules (wall thickness bounds, door/window size, openings inside host) evaluated over BIM-IR elements with traceable findings; closes the "element rules carried but not evaluated" gap; tests | target unit-tested |
+| P5-06 | CABA values confirmed by the owner | ✅ | P5-02 | skills/ar.caba.codigo-edificacion/skill.json; core/Bim.Core/SkillRoomValidator.cs; tests/skills | owner-confirmed confidence with confirmed_by/confirmed_on; the values the owner confirmed (2.60/2.40/2.10 m heights, x = 10, k = i/3, dormitorio third class) flipped; tests | unit-tested (relay145, CI 41707994544; 49 cited, 36 owner-confirmed, 9 to-verify: escritorio/estudio/biblioteca class assignment) |
 
 ### Phase 6 — CAD and requirements
 
@@ -165,27 +169,27 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P10-02 | BCF export | ✅ | — | core/Bim.Core/Bcf* | validation issues exported as BCF 3.0 zip; schema-valid; tests | unit-tested (relay140, CI 41603185340; valid against project-authored subset XSDs only, official buildingSMART XSDs not fetched; golden zip hash equal on Linux/Windows) |
 | P10-03 | Audit log and permissions | ✅ | — | core/Bim.Core/Audit* | append-only audit of commands with actor and decision; permission policy (read/write/real-project); tests | unit-tested (relay134, CI 41517584141) |
 | P10-04 | Installer and packaging manifest | ⏳ | — | scripts/package*.ps1; tests/packaging | release layout (CLI, MCP server, add-in manifest without Revit assemblies) with SHA-256 manifest and version stamp, reproducible on CI, verified by a test that rebuilds and compares | target unit-tested |
-| P10-05 | Offline classification mapping (bSDD-style) | ⏳ | — | core/Bim.Core/Classification*; tests/classification | versioned offline dictionary (e.g. Uniclass/OmniClass subset with licence notes) maps BIM-IR kinds/types to classification codes and IFC classification references; unknown → explicit unmapped; tests | target unit-tested |
+| P10-05 | Offline classification mapping (bSDD-style) | ✅ | — | core/Bim.Core/Classification*; tests/classification | versioned offline dictionary (e.g. Uniclass/OmniClass subset with licence notes) maps BIM-IR kinds/types to classification codes and IFC classification references; unknown → explicit unmapped; tests | unit-tested (relay145, CI 41710780183; embedded Uniclass 2015 EF subset (4 codes, CC BY-ND 4.0 attribution, redistribution to review), strict loader, IFC4 IfcClassificationReference fields, explicit unmapped; not written to IFC yet) |
 
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 51/73 done (69.9 %)
+Progress: 58/77 done (75.3 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
 - Relay7 batch — platform coverage, rebuild baseline, recovery guard: 3/3
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
-- Revit command surface — catalogue v1 (architecture): 3/5
-- Phase 1 — native kernel: 3/5
-- Phase 2 — semantic state and mirror: 3/5
+- Revit command surface — catalogue v1 (architecture): 4/5
+- Phase 1 — native kernel: 6/8
+- Phase 2 — semantic state and mirror: 4/5
 - Phase 3 — incremental compiler: 3/4
 - Phase 4 — documentation engine: 2/3
-- Phase 5 — skills and design systems: 3/5
+- Phase 5 — skills and design systems: 4/6
 - Phase 6 — CAD and requirements: 4/5
 - Phase 7 — generative kernels: 3/5
 - Phase 8 — Rhino, Blender and IFC: 3/7
 - Phase 9 — Revit parity: 3/5
-- Phase 10 — global production: 3/5
-Next ready: P2-04, P2-05, P3-04, P4-03, P5-04, P5-05, P6-05, P7-04
+- Phase 10 — global production: 4/5
+Next ready: P1-07, P1-08, P2-05, P3-04, P4-03, P5-04, P5-05, P6-05
 

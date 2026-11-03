@@ -346,14 +346,14 @@
     },
     {
       "id": "revit-command-executor-v1",
-      "status": "compiled",
+      "status": "verified-in-revit",
       "evidence": [
         "runtimes/revit-native/CommandsExecutor.cs",
         "runtimes/revit-native/CommandsContract.cs",
         "tests/integration/RevitCommandGuard.Tests/Program.cs"
       ],
-      "blocker": "Not run in Revit yet (C04, owner session).",
-      "scope": "Executor for catalogue v1 in the add-in: queries, wall line/arc, door/window on wall, floor, room, each in one TransactionGroup with readback, rollback and ExtensibleStorage receipts; pipe opens only in validated fixture processes; legacy writes share the copies/link guard. Compiled with --warnaserror in CI native-build (41138879266); Autodesk-free admission/receipt/readback logic unit-tested."
+      "blocker": "Catalogue v1 only; later commands (v2, views, structure, documentation, modify) are verified only by owner chat sessions or the pending one-run session (P1-06).",
+      "scope": "Executor for catalogue v1 in the add-in: queries, wall line/arc, door/window on wall, floor, room, each in one TransactionGroup with readback, rollback and ExtensibleStorage receipts; pipe opens only in validated fixture processes; legacy writes share the copies/link guard. Compiled with --warnaserror in CI native-build (41138879266); Autodesk-free admission/receipt/readback logic unit-tested. Owner session 20261103T174908Z (head a31af61, Revit 25.2.0.38): catalogue v1 17/17 OK on a test copy (queries, 4 straight walls, curved wall r=3000 0-90 deg, door, window sill 900, floor 6000x4000, room, idempotent replay, conflicting-id refusal, collinear-arc refusal); production Revit untouched."
     },
     {
       "id": "semantic-graph-relations",
@@ -520,8 +520,8 @@
         "core/Bim.Core/SkillRoomValidator.cs",
         "tests/skills/Program.cs"
       ],
-      "blocker": "Several values are marked to-verify (heights, illumination/ventilation ratios, local classes) and need review by the owner against Ley 6.100 and its RT; BIM-IR rooms carry no names or openings, so light/ventilation rules are not evaluable on model data; clear height is approximated from wall height; not yet wired into the space planner.",
-      "scope": "P5-02: CABA C\u00f3digo de Edificaci\u00f3n room rules (areas, minimum sides, heights, illumination/ventilation ratios) with article citations and cited/to-verify confidence, validator over BIM-IR rooms with pass/fail/not_evaluable findings, unmatched rooms block compliance, parameter overrides within bounds. CI 41576795164."
+      "blocker": "9 rules (escritorio/estudio/biblioteca third-class assignment) stay to-verify; BIM-IR rooms carry no names or openings, so light/ventilation rules are not evaluable on model data; clear height is approximated from wall height; not yet wired into the space planner.",
+      "scope": "P5-02: CABA C\u00f3digo de Edificaci\u00f3n room rules (areas, minimum sides, heights, illumination/ventilation ratios) with article citations and cited/to-verify confidence, validator over BIM-IR rooms with pass/fail/not_evaluable findings, unmatched rooms block compliance, parameter overrides within bounds. CI 41576795164. P5-06 (relay145, CI 41707994544): owner-confirmed confidence (confirmed_by architect (owner), confirmed_on 2026-11-03) for 36 rules the owner confirmed (2.60/2.40/2.10 m heights, x = 10, k = i/3, dormitorio third class); 49 cited, 9 to-verify."
     },
     {
       "id": "ifc-ids-checks",
@@ -712,6 +712,41 @@
       ],
       "blocker": "Rooms planned around approved ones share one free rectangle; no corridors/doors as elements (P7-04); level 0 only; CABA values copied into code and drift-guarded by tests reading the skill pack; not exposed through CLI/MCP.",
       "scope": "P7-03: 1/2/3-bedroom typology templates produce P6-03 briefs on a given lot with CABA minimums (incl. corridor side for halls) and ranked layouts (P7-01 planner + P7-02 ranker); approved rooms/walls are kept bit-identical on reconfiguration (typology, lot depth), moving layouts rejected with reasons, unsatisfiable approval sets refused up front with typed codes; canonical culture-invariant JSON with a pinned SHA-256. CI 41675668145."
+    },
+    {
+      "id": "owner-one-run-verification",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/owner-catalogue-steps.ps1",
+        "scripts/owner-native-session.ps1",
+        "tests/integration/test-catalogue-session.ps1",
+        "docs/owner-verification-session.md"
+      ],
+      "blocker": "Not run by the owner yet; schedule fields need an English Revit UI; missing fixture families are reported as blocked steps.",
+      "scope": "P1-06: -Catalogue continues after the unchanged 17 v1 steps with groups v2 (6), vistas (5), snapshot (2), consultas (6), estructura (12), documentacion (15), diario (6), modificar (12, destructive last) = 81 steps; requested vs observed per step; group failures do not stop later groups, lost pipe stops the run; blocked preconditions counted separately; -CatalogueV1Only. Fake-pipe and real-CLI tests in CI 41704794976."
+    },
+    {
+      "id": "mirror-drift",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/MirrorDrift.cs",
+        "tests/mirror-journal/MirrorDriftChecks.cs",
+        "tests/mirror-journal/fixtures/drift"
+      ],
+      "blocker": "Not wired to CLI/MCP/catalogue; journal_version 1 has no session id; caller supplies the native map, receipts and journal cutoff; unmapped-in-Revit elements are reported as unmapped, not drift.",
+      "scope": "P2-04: MirrorDrift.Compare(query.snapshot, committed BIM-IR + native map, journal.read reply, receipts) -> deterministic drift_version 1 report: missing/extra/changed (dependency roles as sets, 1 mm / 0.1 deg tolerances), classified external_edit/addin_pending/unknown, not_comparable for non-exported kinds and non-BIM-IR map keys, map_only scope for template elements, evidence completeness notes; document identity, bounds and culture invariance tested. CI 41714702286."
+    },
+    {
+      "id": "classification-offline",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Classification.cs",
+        "core/Bim.Core/Classification/uniclass2015-ef-subset.json",
+        "core/Bim.Core/Classification/README.md",
+        "tests/classification/Program.cs"
+      ],
+      "blocker": "Per-kind rules only (BIM-IR has no types); spaces and levels unmapped; no real OmniClass data; not written into IFC output, no CLI/MCP; CC BY-ND 4.0 redistribution of the excerpt to be reviewed by the owner.",
+      "scope": "P10-05: strict versioned offline dictionary format bim.classification-dictionary/1 (embedded resource + file loader, size/UTF-8/duplicate-key/regex bounds), Uniclass 2015 EF v1.16 subset (walls, doors, windows, floors), IFC4 IfcClassificationReference/IfcClassification fields, explicit unmapped with reasons, multi-dictionary catalog. CI 41710780183."
     }
   ]
 }
