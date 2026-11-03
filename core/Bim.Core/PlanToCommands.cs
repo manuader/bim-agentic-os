@@ -45,7 +45,12 @@ public sealed record RevitCommandStep(string OperationId, string Command, Guid? 
 
 // A level the steps rely on: it must already exist in the document as Level. Action is the plan action ("create")
 // when the level is a plan operation, null when it is only referenced; ElevationMm is known only for plan operations.
-public sealed record RevitLevelPrecondition(Guid ElementId, string? Action, string Level, double? ElevationMm);
+// CheckOperation is the query.levels step whose readback PlanToCommands.CheckPreconditions checks it against (null
+// when no step was emitted).
+public sealed record RevitLevelPrecondition(Guid ElementId, string? Action, string Level, double? ElevationMm, string? CheckOperation);
+
+// A precondition the query.levels readback contradicts.
+public sealed record RevitPreconditionIssue(Guid ElementId, string Level, string Code, string Detail);
 
 public sealed record RevitUnsupportedElement(Guid ElementId, string ElementKind, string Action, string Code, string Detail);
 
@@ -60,6 +65,10 @@ public static class PlanToCommandsCodes
     public const string HostUnresolved = "host_unresolved";
     public const string DependencyUnsupported = "dependency_unsupported";
     public const string CommandInvalid = "command_invalid";
+    // CheckPreconditions against the query.levels readback.
+    public const string LevelMissing = "level_missing";
+    public const string LevelAmbiguous = "level_ambiguous";
+    public const string LevelElevationMismatch = "level_elevation_mismatch";
 }
 
 public sealed record RevitCommandPlan(int Version, Guid ProjectId, int ExpectedRevision, string AfterHash, RevitDocumentRef Document,
@@ -89,6 +98,7 @@ public sealed record RevitCommandPlan(int Version, Guid ProjectId, int ExpectedR
                 if (item.Action is null) writer.WriteNull("action"); else writer.WriteString("action", item.Action);
                 writer.WriteString("level", item.Level);
                 if (item.ElevationMm is { } elevation) writer.WriteNumber("elevation_mm", elevation); else writer.WriteNull("elevation_mm");
+                if (item.CheckOperation is null) writer.WriteNull("check_operation"); else writer.WriteString("check_operation", item.CheckOperation);
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
@@ -141,22 +151,36 @@ public sealed record RevitCommandPlan(int Version, Guid ProjectId, int ExpectedR
 
 public static class PlanToCommands
 {
-    public const int Version = 1;
+    public const int Version = 2;
     // Stands in for a host wall UniqueId until the wall step has run; RevitStepInput says where the real value comes
     // from. Revit never issues an all-zero UniqueId, so a placeholder sent by mistake fails with reference_not_found.
     public const string PlaceholderUniqueId = "00000000-0000-0000-0000-000000000000-00000000";
-    // Thickness match for wall type bindings and the distance an opening centre may sit off its host axis, in metres.
+    // Metres: the farthest an opening centre may sit off its host axis or beyond its ends, and the least opening width.
     public const double Tolerance = 1e-6;
+    // Metres: two wall type bindings, or a binding and a wall thickness, match within this.
     const double BindingTolerance = 1e-9;
+    // Millimetres: a readback level elevation may differ this much from the BIM-IR elevation (Revit stores feet).
+    public const double ElevationToleranceMm = 0.001;
     static readonly string[] OpeningUnmapped = { "height_m", "width_m" };
 
     // "op." + the first 16 bytes (lowercase hex) of SHA-256 over the UTF-8 text
-    // "plan-to-commands/1\n<projectId:D>\n<expectedRevision>\n<afterHash>\n<elementId:D or empty>\n<command>".
-    // The same plan gives the same ids (a retry replays); another plan or revision gives new ids.
-    public static string OperationId(Guid projectId, int expectedRevision, string afterHash, Guid? elementId, string command)
+    // "plan-to-commands/2\n<projectId:D>\n<expectedRevision>\n<afterHash>\n<elementId:D or empty>\n<command>\n
+    //  <document unique_id>\n<document path>\n<canonical args>\n<input operation ids joined by ','>".
+    // The canonical args leave out host_wall_uid while it holds PlaceholderUniqueId; the host comes in through the
+    // input operation ids instead. So the id changes whenever the request it guards would change (another binding,
+    // document, or host wall), and the same plan and bindings give the same ids (a retry replays).
+    public static string OperationId(Guid projectId, int expectedRevision, string afterHash, Guid? elementId, string command,
+        RevitDocumentRef document, string argsJson, IReadOnlyList<string> inputOperations)
     {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(inputOperations);
+        var args = JsonNode.Parse(argsJson) as JsonObject ?? throw new ArgumentException("args_not_object");
+        if (args["host_wall_uid"] is JsonValue host && host.TryGetValue<string>(out var uid) && uid == PlaceholderUniqueId) args.Remove("host_wall_uid");
+        string identity;
+        using (var parsed = JsonDocument.Parse(args.ToJsonString())) identity = RevitCommandProtocol.Canonical(parsed.RootElement);
         var text = "plan-to-commands/" + Version.ToString(CultureInfo.InvariantCulture) + "\n" + projectId.ToString("D") + "\n"
-            + expectedRevision.ToString(CultureInfo.InvariantCulture) + "\n" + afterHash + "\n" + (elementId?.ToString("D") ?? "") + "\n" + command;
+            + expectedRevision.ToString(CultureInfo.InvariantCulture) + "\n" + afterHash + "\n" + (elementId?.ToString("D") ?? "") + "\n" + command + "\n"
+            + document.UniqueId + "\n" + document.Path + "\n" + identity + "\n" + string.Join(",", inputOperations);
         return "op." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)), 0, 16).ToLowerInvariant();
     }
 
@@ -185,8 +209,10 @@ public static class PlanToCommands
         foreach (var operation in plan.Operations)
             if (!operations.TryAdd(operation.Element.Id, operation)) throw new ArgumentException("plan_duplicate_element");
         var ordered = operations.Values.OrderBy(operation => operation.Element.Id.ToString("D"), StringComparer.Ordinal).ToArray();
-        string Id(Guid? elementId, string command) => OperationId(plan.ProjectId, plan.ExpectedRevision, plan.AfterHash, elementId, command);
-        var levelsCheck = Id(null, "query.levels");
+        string Id(Guid? elementId, string command, string canonical, IReadOnlyList<RevitStepInput> inputs) =>
+            OperationId(plan.ProjectId, plan.ExpectedRevision, plan.AfterHash, elementId, command, bindings.Document, canonical, inputs.Select(input => input.FromOperation).ToArray());
+        var levelsArgs = CanonicalArgs(Parse(bindings.Document, PendingOperationId, "query.levels", "{}"));
+        var levelsCheck = Id(null, "query.levels", levelsArgs, Array.Empty<RevitStepInput>());
 
         var unsupported = new List<RevitUnsupportedElement>();
         var failed = new HashSet<Guid>();
@@ -213,7 +239,7 @@ public static class PlanToCommands
                 case "level":
                     if (!Finite(element, 1)) Refuse(operation, PlanToCommandsCodes.GeometryInvalid, "level geometry must be [elevation]");
                     else if (!bindings.Levels.TryGetValue(element.Id, out var reference)) Refuse(operation, PlanToCommandsCodes.LevelUnbound, "catalogue v1 cannot create levels and no existing Revit level is bound");
-                    else preconditions[element.Id] = new RevitLevelPrecondition(element.Id, operation.Action, reference, Mm(element.GeometryMetres[0]));
+                    else preconditions[element.Id] = new RevitLevelPrecondition(element.Id, operation.Action, reference, Mm(element.GeometryMetres[0]), null);
                     break;
                 case "wall": walls.Add(operation); break;
                 case "door":
@@ -230,8 +256,8 @@ public static class PlanToCommands
             Guid? level = null;
             foreach (var dependency in operation.Element.Dependencies)
                 if (bindings.Levels.ContainsKey(dependency) || (operations.TryGetValue(dependency, out var candidate) && candidate.Element.Kind == "level")) { level = dependency; break; }
-            if (level is not { } levelId) { Refuse(operation, PlanToCommandsCodes.LevelUnbound, "no level dependency"); return null; }
-            if (!bindings.Levels.TryGetValue(levelId, out var reference)) { Refuse(operation, PlanToCommandsCodes.LevelUnbound, "level " + levelId.ToString("D") + " has no Revit level binding"); return null; }
+            if (level is not { } levelId) { Refuse(operation, PlanToCommandsCodes.LevelUnbound, "level unbound: no bound or planned level among the dependencies"); return null; }
+            if (!bindings.Levels.TryGetValue(levelId, out var reference)) { Refuse(operation, PlanToCommandsCodes.LevelUnbound, "level unbound: level " + levelId.ToString("D") + " has no Revit level binding"); return null; }
             if (failed.Contains(levelId)) { Refuse(operation, PlanToCommandsCodes.DependencyUnsupported, "level " + levelId.ToString("D") + " is unsupported"); return null; }
             return (levelId, reference);
         }
@@ -239,7 +265,7 @@ public static class PlanToCommands
         // Canonical args once the catalogue accepts the command; otherwise reports command_invalid and returns null.
         string? Validate(Operation operation, string command, string args)
         {
-            try { return CanonicalArgs(Parse(bindings.Document, Id(operation.Element.Id, command), command, args)); }
+            try { return CanonicalArgs(Parse(bindings.Document, PendingOperationId, command, args)); }
             catch (RevitCommandException error)
             {
                 Refuse(operation, PlanToCommandsCodes.CommandInvalid, error.Code + "@" + (error.Field ?? "") + ": " + (error.Detail ?? ""));
@@ -249,7 +275,7 @@ public static class PlanToCommands
 
         RevitCommandStep Emit(Operation operation, string command, string canonical, IReadOnlyList<string> dependsOn, IReadOnlyList<RevitStepInput> inputs, IReadOnlyList<string> unmapped)
         {
-            var operationId = Id(operation.Element.Id, command);
+            var operationId = Id(operation.Element.Id, command, canonical, inputs);
             emitted[operation.Element.Id] = operationId;
             return new RevitCommandStep(operationId, command, operation.Element.Id, operation.Element.Kind, dependsOn, canonical, inputs, unmapped);
         }
@@ -289,6 +315,7 @@ public static class PlanToCommands
             var g = element.GeometryMetres;
             var door = element.Kind == "door";
             if (!Finite(element, 6) || !(g[5] > 0) || g[4] < 0) { Refuse(operation, PlanToCommandsCodes.GeometryInvalid, "opening geometry must be [ax,ay,bx,by,sill,height]"); continue; }
+            if (Math.Sqrt((g[2] - g[0]) * (g[2] - g[0]) + (g[3] - g[1]) * (g[3] - g[1])) < Tolerance) { Refuse(operation, PlanToCommandsCodes.GeometryInvalid, "opening has no width along its host"); continue; }
             if (door && g[4] != 0) { Refuse(operation, PlanToCommandsCodes.GeometryInvalid, "opening.place gives doors no sill height; sill must be 0"); continue; }
             var symbol = door ? bindings.DoorSymbol : bindings.WindowSymbol;
             if (symbol is null) { Refuse(operation, PlanToCommandsCodes.SymbolUnbound, "no " + element.Kind + " family type bound"); continue; }
@@ -339,15 +366,15 @@ public static class PlanToCommands
 
         var steps = new List<RevitCommandStep>();
         if (wallSteps.Count > 0 || roomSteps.Count > 0)
-            steps.Add(new RevitCommandStep(levelsCheck, "query.levels", null, null, Array.Empty<string>(), CanonicalArgs(Parse(bindings.Document, levelsCheck, "query.levels", "{}")),
-                Array.Empty<RevitStepInput>(), Array.Empty<string>()));
+            steps.Add(new RevitCommandStep(levelsCheck, "query.levels", null, null, Array.Empty<string>(), levelsArgs, Array.Empty<RevitStepInput>(), Array.Empty<string>()));
         steps.AddRange(wallSteps);
         steps.AddRange(openingSteps);
         steps.AddRange(roomSteps);
         foreach (var level in referencedLevels.Where(level => !preconditions.ContainsKey(level)))
-            preconditions[level] = new RevitLevelPrecondition(level, null, bindings.Levels[level], null);
+            preconditions[level] = new RevitLevelPrecondition(level, null, bindings.Levels[level], null, null);
+        var check = steps.Count > 0 ? levelsCheck : null;
         return new RevitCommandPlan(Version, plan.ProjectId, plan.ExpectedRevision, plan.AfterHash, bindings.Document,
-            preconditions.Values.OrderBy(item => item.ElementId.ToString("D"), StringComparer.Ordinal).ToArray(), steps,
+            preconditions.Values.OrderBy(item => item.ElementId.ToString("D"), StringComparer.Ordinal).Select(item => item with { CheckOperation = check }).ToArray(), steps,
             unsupported.OrderBy(item => item.ElementId.ToString("D"), StringComparer.Ordinal).ToArray());
     }
 
@@ -361,12 +388,55 @@ public static class PlanToCommands
         var args = JsonNode.Parse(step.ArgsJson) as JsonObject ?? throw new ArgumentException("args_not_object");
         foreach (var input in step.Inputs)
         {
+            if (!input.Field.StartsWith("args.", StringComparison.Ordinal) || input.Field.Length == "args.".Length || input.Field.IndexOf('.', "args.".Length) >= 0)
+                throw new ArgumentException("input_field_unsupported");
+            if (input.Select != "created[0]") throw new ArgumentException("input_select_unsupported");
+            if (!step.DependsOn.Contains(input.FromOperation, StringComparer.Ordinal)) throw new ArgumentException("input_not_dependency");
             if (!createdByOperation.TryGetValue(input.FromOperation, out var uniqueId)) throw new ArgumentException("input_unresolved");
-            if (!input.Field.StartsWith("args.", StringComparison.Ordinal) || input.Field.IndexOf('.', 5) >= 0) throw new ArgumentException("input_field_unsupported");
             args[input.Field["args.".Length..]] = uniqueId;
         }
         return Parse(plan.Document, step.OperationId, step.Command, args.ToJsonString());
     }
+
+    // Checks the plan's level preconditions against the readback of its query.levels step ({"levels": [{name,
+    // unique_id, elevation_mm, ...}]}). A reference that is a UniqueId matches unique_id ignoring case, otherwise it
+    // matches name exactly, as the executor resolves it. A level must match exactly one row; a precondition with an
+    // elevation must also be within ElevationToleranceMm of elevation_mm. Empty when all hold.
+    public static IReadOnlyList<RevitPreconditionIssue> CheckPreconditions(RevitCommandPlan plan, string levelsReadbackJson)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var rows = new List<(string Name, string UniqueId, double ElevationMm)>();
+        try
+        {
+            using var readback = JsonDocument.Parse(levelsReadbackJson);
+            if (readback.RootElement.ValueKind != JsonValueKind.Object || !readback.RootElement.TryGetProperty("levels", out var levels) || levels.ValueKind != JsonValueKind.Array)
+                throw new RevitCommandException(RevitCommandCodes.ResponseInvalid, "readback.levels", "array of levels required");
+            foreach (var row in levels.EnumerateArray())
+            {
+                if (row.ValueKind != JsonValueKind.Object || !row.TryGetProperty("name", out var name) || name.ValueKind != JsonValueKind.String
+                    || !row.TryGetProperty("unique_id", out var uid) || uid.ValueKind != JsonValueKind.String
+                    || !row.TryGetProperty("elevation_mm", out var elevation) || elevation.ValueKind != JsonValueKind.Number || !elevation.TryGetDouble(out var elevationMm) || !double.IsFinite(elevationMm))
+                    throw new RevitCommandException(RevitCommandCodes.ResponseInvalid, "readback.levels", "each level needs name, unique_id and a finite elevation_mm");
+                rows.Add((name.GetString()!, uid.GetString()!, elevationMm));
+            }
+        }
+        catch (JsonException error) { throw new RevitCommandException(RevitCommandCodes.ResponseInvalid, "readback", error.Message); }
+        var issues = new List<RevitPreconditionIssue>();
+        foreach (var precondition in plan.Preconditions)
+        {
+            var byUniqueId = RevitCommandProtocol.IsUniqueId(precondition.Level);
+            var matches = rows.Where(row => byUniqueId ? string.Equals(row.UniqueId, precondition.Level, StringComparison.OrdinalIgnoreCase) : row.Name == precondition.Level).ToArray();
+            if (matches.Length == 0) issues.Add(new RevitPreconditionIssue(precondition.ElementId, precondition.Level, PlanToCommandsCodes.LevelMissing, "no level " + precondition.Level + " in the document"));
+            else if (matches.Length > 1) issues.Add(new RevitPreconditionIssue(precondition.ElementId, precondition.Level, PlanToCommandsCodes.LevelAmbiguous, matches.Length.ToString(CultureInfo.InvariantCulture) + " levels match " + precondition.Level + "; bind the UniqueId"));
+            else if (precondition.ElevationMm is { } expected && !(Math.Abs(matches[0].ElevationMm - expected) <= ElevationToleranceMm))
+                issues.Add(new RevitPreconditionIssue(precondition.ElementId, precondition.Level, PlanToCommandsCodes.LevelElevationMismatch,
+                    "elevation " + matches[0].ElevationMm.ToString("R", CultureInfo.InvariantCulture) + " mm, BIM-IR " + expected.ToString("R", CultureInfo.InvariantCulture) + " mm"));
+        }
+        return issues;
+    }
+
+    // Operation id used only while the catalogue validates args; the real id is derived from the canonical args.
+    const string PendingOperationId = "op.pending";
 
     static RevitCommandEnvelope Parse(RevitDocumentRef document, string operationId, string command, string args) => RevitCommandProtocol.Parse(Json(writer =>
     {
