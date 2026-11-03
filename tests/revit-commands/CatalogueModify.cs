@@ -71,6 +71,8 @@ static class CatalogueModifyChecks
         DeleteRules();
         Readbacks();
         ReadbackJson();
+        SideEffects();
+        Replies();
     }
 
     static void Catalogue()
@@ -135,6 +137,8 @@ static class CatalogueModifyChecks
         Rejects("set_parameter overflowing length", Envelope("element.set_parameter", Set(Value("length", "mm", JsonNode.Parse("1e400")))), RevitCommandCodes.LengthInvalid, "args.value.mm");
         Rejects("set_parameter negative area", Envelope("element.set_parameter", Set(Value("area", "m2", -1))), RevitCommandCodes.ArgsInvalid, "args.value.m2");
         Rejects("set_parameter area beyond 1e8 m2", Envelope("element.set_parameter", Set(Value("area", "m2", 2e8))), RevitCommandCodes.ArgsInvalid, "args.value.m2");
+        Rejects("set_parameter angle beyond 360 degrees", Envelope("element.set_parameter", Set(Value("angle", "deg", 360.5))), RevitCommandCodes.AngleInvalid, "args.value.deg");
+        Check(Accepts("set_parameter angle of -360 degrees accepted", Envelope("element.set_parameter", Set(Value("angle", "deg", -360))))?.Args is ElementSetParameterArgs { Value: AngleValueArg }, "angles from -360 to 360 degrees are accepted");
         Rejects("set_parameter angle beyond 1e6 degrees", Envelope("element.set_parameter", Set(Value("angle", "deg", 2e6))), RevitCommandCodes.AngleInvalid, "args.value.deg");
         Rejects("set_parameter fractional integer", Envelope("element.set_parameter", Set(Value("integer", "integer", 1.5))), RevitCommandCodes.ArgsInvalid, "args.value.integer");
         Rejects("set_parameter integer beyond 32 bits", Envelope("element.set_parameter", Set(Value("integer", "integer", 3_000_000_000L))), RevitCommandCodes.ArgsInvalid, "args.value.integer");
@@ -323,13 +327,15 @@ static class CatalogueModifyChecks
     static void ReadbackJson()
     {
         var before = new ObservedParameter("Unconnected Height", -1001300, "WALL_USER_HEIGHT_PARAM", RevitParameterSources.Instance, "double", LengthSpec, true, false, false) { Number = 3000, Unit = "mm" };
-        var report = JsonNode.Parse(CommandReadbackModify.ParameterJson(true, WallUid, "length", before, before with { Number = 3200 }, true))!["set_parameter"]!;
+        var report = JsonNode.Parse(CommandReadbackModify.ParameterJson(true, WallUid, "length", before, before with { Number = 3200 }, true, new[] { DoorUid }))!["set_parameter"]!;
         Check(report["dry_run"]!.GetValue<bool>() && report["element_unique_id"]!.GetValue<string>() == WallUid && report["kind"]!.GetValue<string>() == "length" && report["changed"]!.GetValue<bool>()
             && report["before"]!["kind"]!.GetValue<string>() == "length" && report["before"]!["mm"]!.GetValue<double>() == 3000 && report["after"]!["mm"]!.GetValue<double>() == 3200
             && report["parameter"]!["name"]!.GetValue<string>() == "Unconnected Height" && report["parameter"]!["built_in"]!.GetValue<string>() == "WALL_USER_HEIGHT_PARAM" && report["parameter"]!["id"]!.GetValue<long>() == -1001300
             && report["parameter"]!["storage"]!.GetValue<string>() == "double" && report["parameter"]!["spec"]!.GetValue<string>() == LengthSpec && !report["parameter"]!["shared"]!.GetValue<bool>(),
             "set_parameter change report: dry run flag, element, parameter identity, kind, before and after in millimetres, changed", report.ToJsonString());
-        var cleared = JsonNode.Parse(CommandReadbackModify.ParameterJson(false, WallUid, "text", Param("string", null) with { Text = "old" }, Param("string", null) with { HasValue = false }, true))!["set_parameter"]!;
+        Check(report["also_modified"]!.AsArray().Select(uid => uid!.GetValue<string>()).SequenceEqual(new[] { DoorUid }) && report["also_modified_count"]!.GetValue<int>() == 1 && report["also_modified_listed"]!.GetValue<bool>(),
+            "set_parameter change report lists the other elements the change modified", report.ToJsonString());
+        var cleared = JsonNode.Parse(CommandReadbackModify.ParameterJson(false, WallUid, "text", Param("string", null) with { Text = "old" }, Param("string", null) with { HasValue = false }, true, Array.Empty<string>()))!["set_parameter"]!;
         Check(!cleared["dry_run"]!.GetValue<bool>() && cleared["before"]!["text"]!.GetValue<string>() == "old" && cleared["after"] is null && cleared["parameter"]!["built_in"] is null && cleared["parameter"]!["spec"] is null, "a value-less parameter reports null; unknown identity members are null", cleared.ToJsonString());
         var shapes = new (string Kind, ObservedParameter Observed, string Member, Func<JsonNode, bool> Holds)[]
         {
@@ -341,18 +347,108 @@ static class CatalogueModifyChecks
         };
         foreach (var (kind, observed, member, holds) in shapes)
         {
-            var value = JsonNode.Parse(CommandReadbackModify.ParameterJson(false, WallUid, kind, observed, observed, false))!["set_parameter"]!["after"]!;
+            var value = JsonNode.Parse(CommandReadbackModify.ParameterJson(false, WallUid, kind, observed, observed, false, Array.Empty<string>()))!["set_parameter"]!["after"]!;
             Check(value["kind"]!.GetValue<string>() == kind && value[member] is { } node && holds(node) && value.AsObject().Count == 2, kind + " values are reported in the request shape {kind, " + member + "}", value.ToJsonString());
         }
         var delete = JsonNode.Parse(CommandReadbackModify.DeleteJson(true, new[] { WallUid }, new[] { DoorUid, WindowUid }, false))!["delete"]!;
         Check(delete["dry_run"]!.GetValue<bool>() && delete["targets"]!.AsArray().Select(uid => uid!.GetValue<string>()).SequenceEqual(new[] { WallUid }) && delete["dependents"]!.AsArray().Select(uid => uid!.GetValue<string>()).SequenceEqual(new[] { DoorUid, WindowUid })
             && delete["deleted_count"]!.GetValue<int>() == 3 && !delete["confirmed"]!.GetValue<bool>(), "delete change report: dry run flag, targets, dependents, total count and whether the dependents were confirmed", delete.ToJsonString());
 
-        // The reply a dry run returns: success with a receipt, nothing in created/modified/deleted, the report as readback.
-        var receipt = new RevitCommandReceipt("op-modify", "element.delete", Uid, new string('a', 64), false);
-        var dry = RevitCommandResponse.Parse(RevitCommandResponse.Success(receipt, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), CommandReadbackModify.DeleteJson(true, new[] { WallUid }, new[] { DoorUid }, false), Array.Empty<string>()).ToJson());
-        Check(dry.IsSuccess && dry.Deleted.Count == 0 && JsonNode.Parse(dry.ReadbackJson!)!["delete"]!["dependents"]![0]!.GetValue<string>() == DoorUid, "a dry-run reply parses with an empty deleted list and the dependents in its readback");
-        var kept = RevitCommandResponse.Parse(RevitCommandResponse.Success(receipt, Array.Empty<string>(), Array.Empty<string>(), new[] { WallUid, DoorUid }, CommandReadbackModify.DeleteJson(false, new[] { WallUid }, new[] { DoorUid }, true), Array.Empty<string>()).ToJson());
-        Check(kept.Deleted.SequenceEqual(new[] { WallUid, DoorUid }), "a kept delete lists the targets and dependents as deleted UniqueIds");
+        Check(delete["dependents_count"]!.GetValue<int>() == 2 && delete["dependents_listed"]!.GetValue<bool>() && delete["dependents_sha256"]!.GetValue<string>() == CommandReadbackModify.DependentsSha256(new[] { WindowUid.ToUpperInvariant(), DoorUid }),
+            "delete change report carries the dependents count and an order- and case-independent SHA-256", delete.ToJsonString());
+        var expectedHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(DoorUid + "\n" + WindowUid))).ToLowerInvariant();
+        Check(CommandReadbackModify.DependentsSha256(new[] { WindowUid, DoorUid }) == expectedHash && CommandReadbackModify.DependentsSha256(Array.Empty<string>()) == Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Array.Empty<byte>())).ToLowerInvariant(),
+            "the dependents hash is SHA-256 of the lower-case UniqueIds, sorted, joined by newlines");
+    }
+
+    static CommandRequest Request(string command, JsonObject args)
+    {
+        var envelope = RevitCommandProtocol.Parse(Envelope(command, args).ToJsonString());
+        return new CommandRequest(envelope, envelope.RequestSha256);
+    }
+
+    static void SideEffects()
+    {
+        // Review item 1: the kept delete may remove nothing beyond the probe's set (pre/post id snapshot).
+        Check(Thrown(() => CommandRulesModify.CheckNoExtraDeletions(new long[] { 5, 9, 11 }, new long[] { 11, 5 })) is null, "a kept delete that removed only probed ids passes");
+        var extra = Thrown(() => CommandRulesModify.CheckNoExtraDeletions(new long[] { 5, 9 }, new long[] { 5, 9, 4242 }));
+        Check(extra is { Code: RevitCommandCodes.TransactionFailed } && extra.Detail!.Contains("4242", StringComparison.Ordinal), "a kept delete that removed an id outside the probe set is transaction_failed naming it", extra?.Detail ?? "");
+
+        // Review item 2: every dependent passes the same deletable facts as a target.
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(DoorUid), Target(WindowUid) })) is null, "ordinary dependents pass");
+        foreach (var (facts, word) in new[]
+        {
+            (Target(DoorUid) with { Pinned = true }, "pinned"),
+            (Target(DoorUid) with { InGroup = true }, "group"),
+            (Target(DoorUid) with { ActiveView = true }, "active view"),
+            (Target(DoorUid) with { CanDelete = false }, "CanDeleteElement"),
+        })
+        {
+            var refusal = Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(WindowUid), facts }));
+            Check(refusal is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.element_uids" } && refusal.Detail!.Contains(word, StringComparison.Ordinal) && refusal.Detail.Contains(DoorUid, StringComparison.Ordinal) && refusal.Detail.Contains("dependent", StringComparison.Ordinal),
+                "a dependent that is " + word + " refuses the delete, naming it", refusal?.Detail ?? "");
+        }
+
+        // Review item 3: a cascade beyond what confirm_dependents can hold is refused, dry run or not.
+        var tooMany = Enumerable.Range(1, RevitModifyRules.MaxConfirmedDependents + 1).Select(Hex).ToArray();
+        Check(Thrown(() => CommandRulesModify.CheckCascade(new DeleteCascade(tooMany.Take(RevitModifyRules.MaxConfirmedDependents).ToArray(), 0), Array.Empty<string>())) is null, "a cascade of 1000 dependents can be confirmed");
+        var huge = Thrown(() => CommandRulesModify.CheckCascade(new DeleteCascade(tooMany, 0), Array.Empty<string>()));
+        Check(huge is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.element_uids" } && huge.Detail!.Contains("1001", StringComparison.Ordinal), "a cascade of 1001 dependents is args_invalid (checked before the dry-run report)", huge?.Detail ?? "");
+
+        // Review item 4: a parameter change may not delete anything; other modified elements are reported.
+        var others = CommandRulesModify.SetParameterEffects(100, Array.Empty<long>(), new long[] { 300, 100, 200, 300 });
+        Check(others.SequenceEqual(new long[] { 200, 300 }), "elements modified besides the target are reported once, sorted", string.Join(",", others));
+        Check(CommandRulesModify.SetParameterEffects(100, Array.Empty<long>(), new long[] { 100 }).Count == 0, "a change that modifies only its target reports nothing else");
+        var deletes = Thrown(() => CommandRulesModify.SetParameterEffects(100, new long[] { 77 }, Array.Empty<long>()));
+        Check(deletes is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.value" } && deletes.Detail!.Contains("77", StringComparison.Ordinal) && deletes.Detail.Contains("delete", StringComparison.Ordinal), "a parameter change that deletes elements is refused naming them", deletes?.Detail ?? "");
+
+        // NITs: group members are refused for set_parameter; Revit's own argument refusals become args_invalid.
+        Check(Thrown(() => CommandRulesModify.CheckParameterElement(WallUid, false)) is null, "an element outside groups takes a parameter change");
+        Check(Thrown(() => CommandRulesModify.CheckParameterElement(WallUid, true)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.element_uid" } refusedGroup && refusedGroup.Detail!.Contains("group", StringComparison.Ordinal), "a group member is refused for a parameter change");
+        Check(CommandRulesModify.RevitRefused("args.value", "The value is out of range.") is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.value" } refusedByRevit && refusedByRevit.Detail!.Contains("out of range", StringComparison.Ordinal), "a Revit argument or operation refusal is args_invalid with Revit's message");
+    }
+
+    // Review item 5: reply assembly and the receipt decision, Autodesk-free.
+    static void Replies()
+    {
+        Check(CommandRulesModify.StoresReceipt(false) && !CommandRulesModify.StoresReceipt(true), "real runs store a receipt (and need room for it); dry runs never do");
+        var setRequest = Request("element.set_parameter", Set(Value("length", "mm", 3000)));
+        var report = CommandReadbackModify.ParameterJson(true, WallUid, "length", Param("double", LengthSpec), Param("double", LengthSpec), true, new[] { DoorUid });
+        var drySet = CommandResponsesModify.SetParameter(setRequest, true, WallUid, true, new[] { DoorUid }, report, new[] { "warning" });
+        Check(!drySet.Persist && drySet.Response.IsSuccess && drySet.Response.Created.Count == 0 && drySet.Response.Modified.Count == 0 && drySet.Response.Deleted.Count == 0 && drySet.Response.ReadbackJson == report && drySet.Response.Warnings.SequenceEqual(new[] { "warning" })
+            && drySet.Response.Receipt == new RevitCommandReceipt("op-modify", "element.set_parameter", Uid, setRequest.RequestSha256, false), "a dry-run set_parameter reply is a success with empty lists, the report and a receipt answering the request, and is not persisted");
+        var realSet = CommandResponsesModify.SetParameter(setRequest, false, WallUid, true, new[] { DoorUid }, report, Array.Empty<string>());
+        Check(realSet.Persist && realSet.Response.Modified.SequenceEqual(new[] { WallUid, DoorUid }) && realSet.Response.Created.Count == 0 && realSet.Response.Deleted.Count == 0, "a real set_parameter reply lists the target and the other modified elements and is persisted");
+        Check(CommandResponsesModify.SetParameter(setRequest, false, WallUid, false, Array.Empty<string>(), report, Array.Empty<string>()).Response.Modified.Count == 0, "an unchanged value modifies nothing");
+        var manyOthers = Enumerable.Range(1, 500).Select(Hex).ToArray();
+        var bulkSet = CommandResponsesModify.SetParameter(setRequest, false, WallUid, true, manyOthers, report, Array.Empty<string>());
+        Check(bulkSet.Response.Modified.SequenceEqual(new[] { WallUid }), "beyond 100 other modified elements the reply lists only the target (count in the report)");
+        var bulkReport = JsonNode.Parse(CommandReadbackModify.ParameterJson(false, WallUid, "length", Param("double", LengthSpec), Param("double", LengthSpec), true, manyOthers))!["set_parameter"]!;
+        Check(bulkReport["also_modified_count"]!.GetValue<int>() == 500 && !bulkReport["also_modified_listed"]!.GetValue<bool>() && bulkReport["also_modified"]!.AsArray().Count == CommandRulesModify.MaxDependentsListed, "the report bounds the other modified elements to 100 and counts all of them");
+
+        var deleteRequest = Request("element.delete", Delete(WallUid));
+        var dryDelete = CommandResponsesModify.Delete(deleteRequest, true, new[] { WallUid }, new[] { DoorUid }, Array.Empty<string>(), Array.Empty<string>());
+        Check(!dryDelete.Persist && dryDelete.Response.Deleted.Count == 0 && dryDelete.Response.Modified.Count == 0 && JsonNode.Parse(dryDelete.Response.ReadbackJson!)!["delete"]!["dependents"]![0]!.GetValue<string>() == DoorUid
+            && !JsonNode.Parse(dryDelete.Response.ReadbackJson!)!["delete"]!["confirmed"]!.GetValue<bool>(), "a dry-run delete reply deletes nothing, lists the dependents, is unconfirmed and is not persisted");
+        var keptDelete = CommandResponsesModify.Delete(deleteRequest, false, new[] { WallUid }, new[] { DoorUid }, new[] { DoorUid }, Array.Empty<string>());
+        Check(keptDelete.Persist && keptDelete.Response.Deleted.SequenceEqual(new[] { WallUid, DoorUid }) && JsonNode.Parse(keptDelete.Response.ReadbackJson!)!["delete"]!["confirmed"]!.GetValue<bool>(), "a kept delete reply lists targets then dependents, confirmed, and is persisted");
+        Check(RevitCommandResponse.Parse(keptDelete.Response.ToJson()).Deleted.SequenceEqual(new[] { WallUid, DoorUid }), "the kept delete reply round-trips through the strict response reader");
+
+        // Receipt size: a 1000-dependent kept delete stays compact; its dry run still lists every dependent.
+        var thousand = Enumerable.Range(1, RevitModifyRules.MaxConfirmedDependents).Select(Hex).ToArray();
+        var targets = Enumerable.Range(5000, RevitModifyRules.MaxDeleteTargets).Select(Hex).ToArray();
+        var bigKept = CommandResponsesModify.Delete(deleteRequest, false, targets, thousand, thousand, Array.Empty<string>());
+        var bigJson = bigKept.Response.ToJson();
+        var bigReport = JsonNode.Parse(bigKept.Response.ReadbackJson!)!["delete"]!;
+        Check(bigJson.Length < 16384 && bigKept.Response.Deleted.SequenceEqual(targets) && bigReport["dependents"] is null && !bigReport["dependents_listed"]!.GetValue<bool>()
+            && bigReport["dependents_count"]!.GetValue<int>() == 1000 && bigReport["dependents_sha256"]!.GetValue<string>() == CommandReadbackModify.DependentsSha256(thousand) && bigReport["deleted_count"]!.GetValue<int>() == 1100,
+            "a kept delete of 100 targets and 1000 dependents replies (and stores) under 16 KiB: targets listed, dependents as count and hash", bigJson.Length + " characters");
+        var bigDry = CommandResponsesModify.Delete(deleteRequest, true, targets, thousand, Array.Empty<string>(), Array.Empty<string>());
+        Check(JsonNode.Parse(bigDry.Response.ReadbackJson!)!["delete"]!["dependents"]!.AsArray().Count == 1000, "the dry run of the same delete lists all 1000 dependents (never stored)");
+        var hundred = thousand.Take(CommandRulesModify.MaxDependentsListed).ToArray();
+        Check(CommandResponsesModify.Delete(deleteRequest, false, new[] { WallUid }, hundred, hundred, Array.Empty<string>()).Response.Deleted.Count == 101, "up to 100 dependents are listed as deleted");
+        var receipts = new Dictionary<string, StoredCommandReceipt>();
+        for (var i = 0; i < 200; i++) receipts["op-" + i] = CommandReceiptStore.Record(deleteRequest with { Envelope = deleteRequest.Envelope with { OperationId = "op-" + i } } , bigKept.Response with { Receipt = bigKept.Response.Receipt! with { OperationId = "op-" + i } });
+        Check(Thrown(() => CommandReceiptStore.SerializeBounded(receipts)) is null, "200 maximal kept deletes fit the 4 MB receipt store (a full 1100-UniqueId list would hold about 70)");
     }
 }
