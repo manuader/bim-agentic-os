@@ -389,6 +389,9 @@ try
     // ---- Structure commands (P9-02): grids, columns, beams, foundations ----
     CatalogueStructureChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
+    // ---- Documentation commands (P4-02): dimensions, tags, schedules, sheets ----
+    CatalogueDocumentationChecks.Run((condition, name, detail) => Check(condition, name, detail));
+
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
     RevitFileSystemProbe Probe(Func<string, bool> isLink, Func<string, int?> links) => new(path => { probed.Add(path); return isLink(path); }, links);
