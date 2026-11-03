@@ -987,3 +987,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay138 — 2026-11-03T02:53:20Z (Claude, cloud scheduled)
 - 02:53Z LOCK taken (was FREE since relay137 2026-11-03T02:22:27Z).
+- 03:26Z dispatched 3 workers (phases 2, 5, 10): P2-01 query.snapshot, P5-02 CABA rule pack, P10-01 IDS checks. All green: P2-01 9df7102 (red 41569410455, green 41570410565), P5-02 c06d256 (red 41570421785, green 41571379423; 1 attempt: test helper type CS0029), P10-01 da3948e (red 41569326884, green 41569990272). Next: independent reviews.
