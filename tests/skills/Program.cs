@@ -415,7 +415,7 @@ try
         Check(Only(new RoomFacts("r1", "Dormitorio", 9, 3, 2.6, 1.2, 0.2), "dormitorio-ventilation-ratio") is { Severity: SkillSeverity.Warning }, "a bedroom ventilation below A/30 fails only the ventilation ratio");
         Check(Only(new RoomFacts("r1", "Estar", 8.5, 2.9, 2.7, 1.2, 0.4), "estar-area-min") is { Required: 9 }, "a living room below 9 m2 fails");
         Check(Only(new RoomFacts("r1", "Monoambiente", 17.5, 3.5, 2.7, 2, 0.7), "monoambiente-area-min") is { Required: 18 }, "a studio below 18 m2 fails");
-        Check(Only(new RoomFacts("r1", "Estar comedor", 12, 2.7, 2.7, 1.2, 0.4), "estar-side-min") is { Required: 2.8 }, "a living room narrower than 2.80 m fails");
+        Check(Only(new RoomFacts("r1", "Estar", 12, 2.7, 2.7, 1.2, 0.4), "estar-side-min") is { Required: 2.8 }, "a living room narrower than 2.80 m fails");
         Check(Only(new RoomFacts("r1", "Living", 12, 3, 2.5, 1.2, 0.4), "living-height-min") is { Required: 2.6 }, "an English living room alias lower than 2.60 m fails");
         Check(Only(new RoomFacts("r1", "Cocina", 2.9, 1.5), "cocina-area-min") is { Required: 3 }, "a kitchen below 3 m2 fails");
         Check(Only(new RoomFacts("r1", "Kitchen", 3.5, 1.4), "kitchen-side-min") is { Required: 1.5 }, "a kitchen narrower than 1.50 m fails");
@@ -510,6 +510,80 @@ try
         Check(SkillRoomValidator.ParseCitation("Art. 9; source_confidence=cited; source=https://example.org/a;b") is { Article: "Art. 9", Confidence: "cited", Source: "https://example.org/a;b" }
             && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=maybe") is { Confidence: "to-verify", Source: null } && SkillRoomValidator.ParseCitation(null) is { Article: "", Confidence: "to-verify" },
             "citations parse into article, confidence and source; an unknown confidence is to-verify");
+
+        // ---- Review fixes (P5-02 review B1, S1-S6) ----
+        // B1: compliance needs every room classified and every applicable rule evaluated.
+        var unnamedReport = SkillRoomValidator.Validate(cabaResolution, unnamed);
+        Check(unnamedReport.Findings.Count == 0 && !unnamedReport.Compliant && !unnamedReport.Complete, "a report whose only room is unmatched is neither compliant nor complete", Show(unnamedReport));
+        Check(!Run(goodRoom, new RoomFacts("lav", "Lavadero", 2, 1)).Compliant && Run(goodRoom).Complete && !partialRoom.Complete,
+            "an unmatched room or a not_evaluable rule breaks compliance; a fully evaluated room is complete");
+        var diario = Run(new RoomFacts("cd", "Comedor diario", 8, 2.8, 2.6, 1, 0.3));
+        Check(Find(diario, "cd", "comedor-area-min") is { Outcome: RoomCheckOutcome.Fail, Required: 9 } && !diario.Compliant && diario.UnmatchedRoomIds.Count == 0,
+            "comedor diario is a first-class comedor: below 9 m2 it fails and the report is not compliant", Show(diario));
+
+        // S1: room-name classification, pinned per name.
+        string[] RuleIds(string name) => Run(new RoomFacts("q", name)).Findings.Select(finding => finding.RuleId[(Caba.Length + 1)..]).ToArray();
+        Check(RuleIds("Comedor estar").Contains("comedor-area-min") && RuleIds("Comedor-living").Contains("comedor-area-min") && RuleIds("Comedor 1").Contains("comedor-area-min")
+            && RuleIds("Comedor diario").Contains("comedor-area-min"), "comedor names (estar, -living, numbered, diario) are first class");
+        var cocinaComedor = RuleIds("Cocina comedor");
+        Check(cocinaComedor.Contains("cocina-comedor-area-min") && cocinaComedor.Contains("cocina-comedor-side-min") && cocinaComedor.Contains("cocina-comedor-height-min")
+            && cocinaComedor.Contains("cocina-area-min") && RuleIds("Cocina-comedor").Contains("cocina-comedor-guion-area-min"),
+            "a cocina comedor is judged as a first-class room, not only as a kitchen", string.Join(",", cocinaComedor));
+        Check(Only(new RoomFacts("r1", "Cocina comedor", 8, 2.8, 2.7, 1, 0.3), "cocina-comedor-area-min") is { Required: 9 }, "a cocina comedor below 9 m2 fails the first-class area rule");
+        Check(RuleIds("Dormitorio de servicio").Contains("dormitorio-area-min"), "dormitorio de servicio is a third-class dormitorio");
+        Check(RuleIds("Studio").Contains("studio-area-min") && !RuleIds("Studio").Any(id => id.StartsWith("estudio", StringComparison.Ordinal))
+            && RuleIds("Estudio").Contains("estudio-area-min") && !RuleIds("Estudio").Any(id => id.StartsWith("studio", StringComparison.Ordinal)),
+            "Studio is a single first-class room while Estudio is third class");
+        Check(SkillRoomValidator.NormalizeName("  Baño  principal \t") == "Bano principal" && RuleIds("  Dormitorio 1 ").Contains("dormitorio-area-min"),
+            "names are trimmed and non-breaking or repeated spaces collapse before matching");
+        Check(RuleIds("Bano tipo 1").Contains("bano-tipo-1-area-min") && RuleIds("Baño tipo 2").Contains("bano-tipo-2-area-min") && Threshold("bano-tipo-1-area-min") == 3
+            && Threshold("bano-tipo-2-area-min") == 2.5, "numeric bathroom type aliases carry the type I and type II minimums");
+
+        // S2: runtime parameter overrides, bounds-checked against the manifest parameter.
+        var narrowCorridor = new RoomFacts("cor", "Corredor", 3, 0.96, 2.4);
+        var overrides = new Dictionary<string, double> { [Caba + "/corredor_lado_min_m"] = 0.95 };
+        Check(Find(SkillRoomValidator.Validate(cabaResolution, new[] { narrowCorridor }, overrides), "cor", "corredor-side-min") is { Outcome: RoomCheckOutcome.Pass, Required: 0.95 }
+            && Find(Run(narrowCorridor), "cor", "corredor-side-min") is { Outcome: RoomCheckOutcome.Fail, Required: 1 }, "an override of 0.95 m passes a 0.96 m corridor that the 1.00 m default fails");
+        Check(Refused(() => SkillRoomValidator.Validate(cabaResolution, new[] { narrowCorridor }, new Dictionary<string, double> { [Caba + "/corredor_lado_min_m"] = 0.94 }))
+            && Refused(() => SkillRoomValidator.Validate(cabaResolution, new[] { narrowCorridor }, new Dictionary<string, double> { [Caba + "/corredor_lado_min_m"] = double.NaN }))
+            && Refused(() => SkillRoomValidator.Validate(cabaResolution, new[] { narrowCorridor }, new Dictionary<string, double> { [Caba + "/nope"] = 1 }))
+            && Refused(() => SkillRoomValidator.Validate(caba, new[] { narrowCorridor }, new Dictionary<string, double> { ["corredor_lado_min_m"] = 1 })),
+            "overrides below the parameter minimum, non-finite, unknown or unqualified are refused");
+        Check(caba.Rules.First(rule => rule.Id == "corredor-side-min").Message is var corridorMessage && !corridorMessage.Contains("1.0", StringComparison.Ordinal) && corridorMessage.Contains("corredor_lado_min_m", StringComparison.Ordinal),
+            "the corridor message names the parameter, not a literal width");
+
+        // S3: area-dependent heights are not evaluable above 16 m2.
+        var bigBedroom = Run(new RoomFacts("big", "Dormitorio", 20, 4, 2.45, 2.5, 0.8));
+        Check(Find(bigBedroom, "big", "dormitorio-height-min") is { Outcome: RoomCheckOutcome.NotEvaluable } bigHeight && bigHeight.Detail.Contains("area_m2", StringComparison.Ordinal)
+            && bigHeight.Detail.Contains("16", StringComparison.Ordinal) && !bigBedroom.Compliant, "a 20 m2 bedroom at 2.45 m is not evaluable for height and not compliant", Show(bigBedroom));
+        Check(Find(Run(new RoomFacts("e16", "Dormitorio", 16, 4, 2.4, 2, 0.6)), "e16", "dormitorio-height-min")?.Outcome == RoomCheckOutcome.Pass
+            && Find(Run(new RoomFacts("c18", "Corredor", 18, 1.2, 2.2)), "c18", "corredor-height-min")?.Outcome == RoomCheckOutcome.NotEvaluable
+            && Find(Run(new RoomFacts("na", "Dormitorio", null, 3, 2.6)), "na", "dormitorio-height-min")?.Outcome == RoomCheckOutcome.NotEvaluable
+            && Find(Run(new RoomFacts("s20", "Estar", 20, 4, 2.6, 2, 0.7)), "s20", "estar-height-min")?.Outcome == RoomCheckOutcome.Pass,
+            "the 16 m2 boundary is evaluated; corridors above 16 m2 and rooms of unknown area are not; first-class heights apply at any area");
+
+        // S4: model clear height is null when any bounding wall is undecodable, and flagged approximate otherwise.
+        Check(fromModel[0].ClearHeightApproximate && Find(modelReport, spaceId.ToString("D"), "dormitorio-height-min") is { Outcome: RoomCheckOutcome.Pass } approxHeight
+            && approxHeight.Detail.Contains("approximat", StringComparison.Ordinal) && !new RoomFacts("m", "Dormitorio", 9, 3, 2.6).ClearHeightApproximate,
+            "a BIM-IR clear height is flagged as an approximation from wall height");
+        var brokenWallId = RoomCompiler.Id(compiledRoomId, "south");
+        var broken = project with { Elements = project.Elements.Select(element => element.Id == brokenWallId ? element with { GeometryMetres = new[] { 0.0, 0, 3, 0, 2.7, 0 } } : element).ToArray() };
+        var brokenFacts = RoomFacts.FromProject(broken, new Dictionary<Guid, string> { [spaceId] = "Dormitorio" });
+        Check(brokenFacts.Count == 1 && brokenFacts[0].ClearHeightMetres is null && brokenFacts[0].AreaSquareMetres is not null
+            && Find(SkillRoomValidator.Validate(cabaResolution, brokenFacts), spaceId.ToString("D"), "dormitorio-height-min")?.Outcome == RoomCheckOutcome.NotEvaluable,
+            "one undecodable bounding wall makes the model clear height unknown");
+
+        // S5: no unverified flexibility claims; the third-class assignment is marked to confirm.
+        Check(caba.Rules.Where(rule => rule.Id.StartsWith("dormitorio", StringComparison.Ordinal)).All(rule => !rule.Message.Contains("6.25", StringComparison.Ordinal) && !rule.Message.Contains("flexib", StringComparison.OrdinalIgnoreCase))
+            && caba.Rules.First(rule => rule.Id == "dormitorio-height-min").Citation!.Contains("to confirm", StringComparison.Ordinal), "dormitorio rules make no flexibility claim and flag the class assignment");
+
+        // S6: tolerance edges and citation member order.
+        Check(Find(Run(new RoomFacts("t1", "Dormitorio", 7.5 - 5e-9, 3)), "t1", "dormitorio-area-min")?.Outcome == RoomCheckOutcome.Pass
+            && Find(Run(new RoomFacts("t2", "Dormitorio", 7.5 - 1e-7, 3)), "t2", "dormitorio-area-min")?.Outcome == RoomCheckOutcome.Fail, "7.5 - 5e-9 passes within tolerance; 7.5 - 1e-7 fails");
+        var forward = SkillRoomValidator.ParseCitation("Art. 9; source_confidence=cited; applies_if=area_m2<=16; source=https://x.org/a;b");
+        var backward = SkillRoomValidator.ParseCitation("Art. 9; source=https://x.org/a;b; applies_if=area_m2<=16; source_confidence=cited");
+        Check(forward == backward && forward is { Article: "Art. 9", Confidence: "cited", Source: "https://x.org/a;b", AppliesIf: "area_m2<=16" }, "citation members parse the same in any order",
+            forward + " / " + backward);
     }
 
     // ---- Loader with temp fixtures ----
