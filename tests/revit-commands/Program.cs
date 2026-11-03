@@ -377,6 +377,9 @@ try
     // ---- Catalogue v2 (P9-01): roofs, stairs, curtain walls, floor openings ----
     CatalogueV2Checks.Run((condition, name, detail) => Check(condition, name, detail));
 
+    // ---- View commands (P4-01): plan, section, 3D ----
+    CatalogueViewsChecks.Run((condition, name, detail) => Check(condition, name, detail));
+
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
     RevitFileSystemProbe Probe(Func<string, bool> isLink, Func<string, int?> links) => new(path => { probed.Add(path); return isLink(path); }, links);
