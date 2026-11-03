@@ -105,8 +105,8 @@ foreach(var spec in RevitCommandCatalogue.All) {
     var annotations=tool["annotations"]?.AsObject();
     Check(annotations?["readOnlyHint"]?.GetValue<bool>()==!spec.Writes,spec.ToolName+" annotations.readOnlyHint is "+(!spec.Writes));
     if(spec.Writes) {
-        var destructive=new[]{"element.set_parameter","element.delete"}.Contains(spec.Name);
-        Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter and element.delete change or remove existing elements), idempotentHint true (operation_id replay)");
+        var destructive=new[]{"element.set_parameter","element.delete","wall.set_profile"}.Contains(spec.Name);
+        Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter, element.delete and wall.set_profile change or remove existing elements), idempotentHint true (operation_id replay)");
         var description=tool["description"]!.GetValue<string>();
         Check(PermissionPolicy.RequiredLevel(spec.Name,McpReal,copiesRoots)==PermissionLevel.WriteRealProject
             && description.Contains(".bim/native-runs",StringComparison.Ordinal) && description.Contains(".bim/revit-enabled-roots.txt",StringComparison.Ordinal)
