@@ -15,13 +15,16 @@ namespace Bim.Revit;
 //     NewFamilyInstance(Curve, FamilySymbol, Level, StructuralType.Beam); FamilyInstance.StructuralType /
 //     IsSlantedColumn / Location (LocationPoint, LocationCurve) / Symbol; FamilySymbol.IsActive / Activate
 //   BuiltInParameter.FAMILY_BASE_LEVEL_PARAM / FAMILY_TOP_LEVEL_PARAM / FAMILY_BASE_LEVEL_OFFSET_PARAM /
-//     FAMILY_TOP_LEVEL_OFFSET_PARAM (columns), INSTANCE_REFERENCE_LEVEL_PARAM (beams), FAMILY_LEVEL_PARAM (footings)
+//     FAMILY_TOP_LEVEL_OFFSET_PARAM (columns), INSTANCE_REFERENCE_LEVEL_PARAM and STRUCTURAL_BEAM_END0_ELEVATION /
+//     STRUCTURAL_BEAM_END1_ELEVATION (beams), FAMILY_LEVEL_PARAM (footings), Family.FamilyPlacementType,
+//     MultiSegmentGrid.Name
 //   WallFoundation.Create(Document, ElementId wallFoundationTypeId, ElementId wallId), WallFoundation.WallId,
 //     WallFoundationType
 // Unverified in Revit (owner session required): that a column placed with the base level keeps the plan point and
 // accepts the top level and both offsets as set (each is read back from its parameter and rolls back on a
 // difference); that a beam's LocationCurve keeps the requested end points and direction and its reference level is
-// INSTANCE_REFERENCE_LEVEL_PARAM; that a footing reports its level through LevelId (else FAMILY_LEVEL_PARAM); and
+// INSTANCE_REFERENCE_LEVEL_PARAM with both level offsets 0; that a footing reports its level through LevelId (else
+// FAMILY_LEVEL_PARAM) and keeps its LocationPoint at the level's project elevation; and
 // whether WallFoundation.Create refuses a wall that already has one (checked before the call). created lists the
 // placed element only: joins, cut-backs or analytical elements Revit adds are not diffed.
 internal static partial class CommandExecutor
@@ -41,9 +44,9 @@ internal static partial class CommandExecutor
         EmptyQueryArgs when envelope.Command == "query.grids" =>
             CommandReadbackStructure.GridsJson(Grids(d).Select(grid => { var observed = ObserveGrid(grid); return new GridRow(observed.Name, observed.UniqueId, observed.Curved, observed.Start, observed.End); })),
         StructuralTypeQueryArgs { Category: "wall_foundation" } query =>
-            CommandReadbackStructure.StructuralTypesJson(query.Category, WallFoundationTypes(d).Select(type => new StructuralTypeRow(null, type.Name, type.UniqueId, true))),
+            CommandReadbackStructure.StructuralTypesJson(query.Category, WallFoundationTypes(d).Select(type => new StructuralTypeRow(null, type.Name, type.UniqueId, true, null))),
         StructuralTypeQueryArgs query =>
-            CommandReadbackStructure.StructuralTypesJson(query.Category, StructuralSymbols(d, query.Category).Select(symbol => new StructuralTypeRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive))),
+            CommandReadbackStructure.StructuralTypesJson(query.Category, StructuralSymbols(d, query.Category).Select(symbol => new StructuralTypeRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive, symbol.Family.FamilyPlacementType.ToString()))),
         _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
     };
 
@@ -68,7 +71,8 @@ internal static partial class CommandExecutor
 
     static WritePlan GridWrite(Document d, GridCreateArgs args)
     {
-        CommandRulesStructure.CheckGridNameFree(args.Name, Grids(d).Select(grid => grid.Name));
+        CommandRulesStructure.CheckGridNameFree(args.Name, Grids(d).Select(grid => grid.Name),
+            new FilteredElementCollector(d).OfClass(typeof(MultiSegmentGrid)).Cast<MultiSegmentGrid>().Select(grid => grid.Name));
         var line = Line.CreateBound(At(args.Start, 0), At(args.End, 0));
         Grid? grid = null;
         return new WritePlan(
@@ -128,7 +132,8 @@ internal static partial class CommandExecutor
         {
             var curve = (created.Location as LocationCurve)?.Curve;
             return new ObservedBeam(created.UniqueId, created.Symbol.UniqueId, created.StructuralType.ToString(), LevelParameterUid(d, created, BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM),
-                curve is null ? null : Plan(curve.GetEndPoint(0)), curve is null ? null : Plan(curve.GetEndPoint(1)));
+                curve is null ? null : Plan(curve.GetEndPoint(0)), curve is null ? null : Plan(curve.GetEndPoint(1)),
+                LengthParameter(created, BuiltInParameter.STRUCTURAL_BEAM_END0_ELEVATION), LengthParameter(created, BuiltInParameter.STRUCTURAL_BEAM_END1_ELEVATION));
         }
         return new WritePlan(
             () =>
@@ -148,11 +153,12 @@ internal static partial class CommandExecutor
     {
         var level = ResolveLevel(d, args.Level, "args.level");
         var symbol = ResolveStructuralSymbol(d, "foundation", args.Type, "args.type", "isolated foundation type");
+        CommandRulesStructure.CheckIsolatedFoundationPlacement(symbol.Family.FamilyPlacementType.ToString());
         FamilyInstance? footing = null;
         var activated = false;
         ObservedFooting Observe(FamilyInstance created) => new(created.UniqueId, created.Symbol.UniqueId, created.StructuralType.ToString(),
             created.LevelId != ElementId.InvalidElementId && d.GetElement(created.LevelId) is Level own ? own.UniqueId : LevelParameterUid(d, created, BuiltInParameter.FAMILY_LEVEL_PARAM),
-            LocationPlanPoint(created));
+            LocationPlanPoint(created), created.Location is LocationPoint location ? (double?)Mm(location.Point.Z) : null);
         return new WritePlan(
             () =>
             {
@@ -160,7 +166,7 @@ internal static partial class CommandExecutor
                 footing = d.Create.NewFamilyInstance(At(args.Point, level.ProjectElevation), symbol, level, StructuralType.Footing);
             },
             () => footing is { IsValidObject: true } created
-                ? CommandReadbackStructure.Footing(symbol.UniqueId, level.UniqueId, Requested(args.Point), Observe(created))
+                ? CommandReadbackStructure.Footing(symbol.UniqueId, level.UniqueId, Requested(args.Point), Mm(level.ProjectElevation), Observe(created))
                 : "the foundation no longer exists",
             () => CommandReadbackStructure.FootingJson(Observe(footing!)),
             () => new[] { footing!.UniqueId },

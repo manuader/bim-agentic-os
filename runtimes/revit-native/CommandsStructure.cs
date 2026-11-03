@@ -9,16 +9,19 @@ namespace Bim.Revit;
 // converted with UnitUtils) and calls the Revit API. Revit enum values travel as their ToString() text
 // (StructuralType "Column", "Beam", "Footing"; WallKind "Basic").
 
-// Family null: a wall foundation type, which is not a family symbol.
-public sealed record StructuralTypeRow(string? Family, string Type, string UniqueId, bool Active);
+// Family and PlacementType (the family's FamilyPlacementType name) null: a wall foundation type, which is not a
+// family symbol.
+public sealed record StructuralTypeRow(string? Family, string Type, string UniqueId, bool Active, string? PlacementType);
 public sealed record GridRow(string Name, string UniqueId, bool Curved, PlanPoint Start, PlanPoint End);
 public sealed record ObservedGrid(string UniqueId, string Name, bool Curved, PlanPoint Start, PlanPoint End);
 // Nullable values could not be read. Point: the LocationPoint in plan; levels and offsets: the column's
 // FAMILY_BASE_LEVEL_PARAM, FAMILY_TOP_LEVEL_PARAM, FAMILY_BASE_LEVEL_OFFSET_PARAM and FAMILY_TOP_LEVEL_OFFSET_PARAM.
 public sealed record ObservedColumn(string UniqueId, string TypeUid, string StructuralType, bool Slanted, PlanPoint? Point, string? BaseLevelUid, string? TopLevelUid, double? BaseOffsetMm, double? TopOffsetMm);
-// LevelUid: INSTANCE_REFERENCE_LEVEL_PARAM; Start/End: the LocationCurve end points in plan.
-public sealed record ObservedBeam(string UniqueId, string TypeUid, string StructuralType, string? LevelUid, PlanPoint? Start, PlanPoint? End);
-public sealed record ObservedFooting(string UniqueId, string TypeUid, string StructuralType, string? LevelUid, PlanPoint? Point);
+// LevelUid: INSTANCE_REFERENCE_LEVEL_PARAM; Start/End: the LocationCurve end points in plan; StartOffsetMm /
+// EndOffsetMm: the Start and End Level Offset (STRUCTURAL_BEAM_END0_ELEVATION / STRUCTURAL_BEAM_END1_ELEVATION).
+public sealed record ObservedBeam(string UniqueId, string TypeUid, string StructuralType, string? LevelUid, PlanPoint? Start, PlanPoint? End, double? StartOffsetMm, double? EndOffsetMm);
+// Point and ZMm: the LocationPoint in plan and its elevation in millimetres (same frame as the level's project elevation).
+public sealed record ObservedFooting(string UniqueId, string TypeUid, string StructuralType, string? LevelUid, PlanPoint? Point, double? ZMm);
 // WallUid: WallFoundation.WallId, null when it names no wall.
 public sealed record ObservedWallFoundation(string UniqueId, string TypeUid, string? WallUid);
 
@@ -39,10 +42,20 @@ public static class CommandRulesStructure
         _ => throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.category", "unknown structural category " + category),
     };
 
-    // Revit refuses a duplicate grid name; compared ignoring case (stricter than Revit) so a collision fails closed here.
-    public static void CheckGridNameFree(string? name, IEnumerable<string> existing)
+    // Revit refuses a grid name used by another grid or by a multi-segment grid; compared ignoring case (stricter than
+    // Revit) so a collision fails closed here.
+    public static void CheckGridNameFree(string? name, IEnumerable<string> gridNames, IEnumerable<string> multiSegmentGridNames)
     {
-        if (name is not null && existing.Contains(name, StringComparer.OrdinalIgnoreCase)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a grid named '" + name + "' (ignoring case) already exists");
+        if (name is null) return;
+        if (gridNames.Contains(name, StringComparer.OrdinalIgnoreCase)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a grid named '" + name + "' (ignoring case) already exists");
+        if (multiSegmentGridNames.Contains(name, StringComparer.OrdinalIgnoreCase)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a multi-segment grid named '" + name + "' (ignoring case) already exists");
+    }
+
+    // foundation.create_isolated places a point instance on a level: only a one-level-based family (FamilyPlacementType
+    // name) fits; hosted, work-plane, two-level, curve or view based foundation families are refused.
+    public static void CheckIsolatedFoundationPlacement(string placementType)
+    {
+        if (placementType != "OneLevelBased") throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.type", "the foundation family is " + placementType + "; an isolated foundation needs a OneLevelBased family type (see placement_type in revit_query_structural_types)");
     }
 
     // After level resolution (two references may name one level). Elevations are project elevations in millimetres.
@@ -102,15 +115,20 @@ public static class CommandReadbackStructure
         if (observed.StructuralType != CommandRulesStructure.BeamStructuralType) return "beam structural type is " + observed.StructuralType + ", expected " + CommandRulesStructure.BeamStructuralType;
         if (!Same(observed.LevelUid, levelUid)) return "beam reference level is " + Uid(observed.LevelUid) + ", expected " + levelUid;
         if (!At(observed.Start, start) || !At(observed.End, end)) return "beam goes from " + F(observed.Start) + " to " + F(observed.End) + ", expected " + F(start) + " to " + F(end);
+        // The beam lies in the level plane: both level offsets are zero.
+        if (observed.StartOffsetMm is not { } startOffset || !Near(startOffset, 0)) return "beam start level offset is " + F(observed.StartOffsetMm) + " mm, expected 0";
+        if (observed.EndOffsetMm is not { } endOffset || !Near(endOffset, 0)) return "beam end level offset is " + F(observed.EndOffsetMm) + " mm, expected 0";
         return null;
     }
 
-    public static string? Footing(string typeUid, string levelUid, PlanPoint point, ObservedFooting observed)
+    // levelElevationMm: the level's project elevation, where the foundation was placed.
+    public static string? Footing(string typeUid, string levelUid, PlanPoint point, double levelElevationMm, ObservedFooting observed)
     {
         if (!Same(observed.TypeUid, typeUid)) return "foundation type is " + observed.TypeUid + ", expected " + typeUid;
         if (observed.StructuralType != CommandRulesStructure.FootingStructuralType) return "foundation structural type is " + observed.StructuralType + ", expected " + CommandRulesStructure.FootingStructuralType;
         if (!Same(observed.LevelUid, levelUid)) return "foundation level is " + Uid(observed.LevelUid) + ", expected " + levelUid;
         if (!At(observed.Point, point)) return "foundation is at " + F(observed.Point) + ", expected " + F(point);
+        if (observed.ZMm is not { } z || !Near(z, levelElevationMm)) return "foundation elevation is " + F(observed.ZMm) + " mm, expected the level elevation " + F(levelElevationMm);
         return null;
     }
 
@@ -183,6 +201,7 @@ public static class CommandReadbackStructure
             writer.WriteString("reference", row.Family is { } family ? CommandReferences.Qualified(family, row.Type) : row.Type);
             writer.WriteString("unique_id", row.UniqueId);
             writer.WriteBoolean("active", row.Active);
+            Text(writer, "placement_type", row.PlacementType);
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
@@ -228,6 +247,8 @@ public static class CommandReadbackStructure
         Text(writer, "level_unique_id", beam.LevelUid);
         Point(writer, "start", beam.Start);
         Point(writer, "end", beam.End);
+        Number(writer, "start_level_offset_mm", beam.StartOffsetMm);
+        Number(writer, "end_level_offset_mm", beam.EndOffsetMm);
     });
 
     public static string FootingJson(ObservedFooting footing) => Wrapped("foundation", writer =>
@@ -237,6 +258,7 @@ public static class CommandReadbackStructure
         writer.WriteString("structural_type", footing.StructuralType);
         Text(writer, "level_unique_id", footing.LevelUid);
         Point(writer, "point", footing.Point);
+        Number(writer, "z_mm", footing.ZMm);
     });
 
     public static string WallFoundationJson(ObservedWallFoundation foundation) => Wrapped("wall_foundation", writer =>
