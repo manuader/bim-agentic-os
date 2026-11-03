@@ -38,10 +38,10 @@ internal static class PdfTests
         return result;
     }
 
-    internal static byte[] Deflate(byte[] data)
+    internal static byte[] Deflate(byte[] data, CompressionLevel level = CompressionLevel.Optimal)
     {
         using var buffer = new MemoryStream();
-        using (var zlib = new ZLibStream(buffer, CompressionLevel.Optimal, true)) zlib.Write(data, 0, data.Length);
+        using (var zlib = new ZLibStream(buffer, level, true)) zlib.Write(data, 0, data.Length);
         return buffer.ToArray();
     }
 
@@ -100,6 +100,13 @@ internal static class PdfTests
         try { action(); return null; }
         catch (PdfFormatException error) { return error.Code; }
         catch (Exception error) { return "unexpected " + error.GetType().Name + ": " + error.Message; }
+    }
+
+    // Runs a read on the thread pool and gives up after milliseconds, so a hang is a failure instead of a stuck job.
+    private static string? CodeWithin(Func<object?> action, int milliseconds)
+    {
+        var task = Task.Run(() => CodeOf(action));
+        return task.Wait(milliseconds) ? task.Result : "timeout after " + I(milliseconds) + " ms";
     }
 
     private static bool ThrowsArgument(Action action)
@@ -255,7 +262,7 @@ internal static class PdfTests
             var p2 = doc.Pages[1];
             C(p2.Number == 2 && p2.ObjectNumber == 8 && p2.MediaBox == new PdfRect(0, 0, 200, 100) && p2.Rotate == 90, "transforms page 2 inherits the media box and has /Rotate 90", p2.MediaBox + " " + I(p2.Rotate));
             C(p2.Elements.Count == 1 && p2.Elements[0] is PdfText up && up.Value == "UP" && NearP(up.Origin, 50, 60) && Near(up.RotationDegrees, 90) && Near(up.Height, 8) && up.Provenance.ObjectNumber == 9 && up.Provenance.OperatorIndex == 5,
-                "transforms rotated text from Tm, stream with indirect /Length", string.Join(" / ", p2.Elements.Select(DescribeElement)));
+                "transforms rotated text from Tm, stream with an indirect /Length read through the endstream fallback", string.Join(" / ", p2.Elements.Select(DescribeElement)));
         }
         catch (Exception error)
         {
@@ -322,6 +329,106 @@ internal static class PdfTests
         catch (Exception error)
         {
             check(false, "pdf operators unexpected " + error.GetType().Name + ": " + error.Message, "");
+        }
+
+        // ---------- review blockers and should-fix items ----------
+        try
+        {
+            // B1: malformed inline images are content-malformed warnings, never an internal exception.
+            foreach (var content in new[] { "BI /W (abc", "BI <zz> ID", "BI " + new string('A', 300) })
+            {
+                PdfDocument? read = null;
+                var code = CodeOf(() => read = PdfReader.Parse(OnePage(content), "bi.pdf"));
+                C(code is null && read is not null && read.Warnings.Any(w => w.Code == "content-malformed"), "B1 malformed inline image warned: " + (content.Length > 20 ? content[..20] : content),
+                    (code ?? "") + " " + (read is null ? "" : Warnings(read)));
+            }
+
+            // B2: many failing trailers are each parsed at most once.
+            var trailers = Concat(L("%PDF-1.7\n"), L(string.Concat(Enumerable.Repeat("trailer (", 200_000))));
+            var trailerCode = CodeWithin(() => PdfReader.Parse(trailers, "trailers.pdf"), 10_000);
+            C(trailerCode == "no-pages", "B2 200000 unterminated trailers refused within the time bound", trailerCode ?? "null");
+
+            // B3: object-stream entries are bounded by the next offset; non-increasing offsets are refused.
+            byte[] ObjStmDocument(bool sameOffset, bool terminated)
+            {
+                var header = new StringBuilder();
+                for (var k = 0; k < 100_000; k++) header.Append(I(1000 + k)).Append(' ').Append(I(sameOffset ? 0 : k)).Append(' ');
+                var head = L(header.ToString());
+                var body = new byte[10_000_000];
+                Array.Fill(body, (byte)'a');
+                body[0] = (byte)'(';
+                if (terminated) body[^1] = (byte)')';
+                var objs = PageObjects(StreamBody("", L("0 0 m 1 0 l S")));
+                objs.Add((6, StreamBody("/Type /ObjStm /N 100000 /First " + I(head.Length) + " /Filter /FlateDecode", Deflate(Concat(head, body), CompressionLevel.Fastest))));
+                return Build(objs);
+            }
+            foreach (var (sameOffset, terminated) in new[] { (true, false), (true, true), (false, false), (false, true) })
+            {
+                var input = ObjStmDocument(sameOffset, terminated);
+                PdfDocument? read = null;
+                var code = CodeWithin(() => read = PdfReader.Parse(input, "objstm-bomb.pdf"), 15_000);
+                C(code is null && read is not null && read.Pages.Count == 1 && read.Pages[0].Elements.Count == 1 && (!sameOffset || read.Warnings.Any(w => w.Code == "objstm-malformed" && w.ObjectNumber == 6)),
+                    "B3 object stream with 100000 entries over a 10 MB literal (same offset " + sameOffset + ", terminated " + terminated + ") read within the time bound", code ?? "ok");
+            }
+
+            // B4: Form XObject reuse is charged to the interpreted-bytes budget.
+            var zeros = new byte[100_000_000];
+            for (var k = 0; k < zeros.Length; k++) zeros[k] = (byte)(k % 2 == 0 ? '0' : ' ');
+            var formObjects = PageObjects(StreamBody("", L(string.Concat(Enumerable.Repeat("/X Do\n", 100_000)))), "/Resources << /XObject << /X 5 0 R >> >>");
+            formObjects.Add((5, StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode", Deflate(zeros, CompressionLevel.Fastest))));
+            var zeroInput = Build(formObjects);
+            zeros = Array.Empty<byte>();
+            var zeroCode = CodeWithin(() => PdfReader.Parse(zeroInput, "form-zeros.pdf"), 30_000);
+            C(zeroCode == "interpret-limit", "B4 a 100 MB operand-only form invoked 100000 times refused as interpret-limit", zeroCode ?? "null");
+            var bigText = Concat(L("BT /F1 1 Tf ("), Enumerable.Repeat((byte)'a', 10_000_000).ToArray(), L(") Tj ET"));
+            var textObjects = PageObjects(StreamBody("", L(string.Concat(Enumerable.Repeat("/X Do\n", 1000)))), "/Resources << /XObject << /X 5 0 R >> >>");
+            textObjects.Add((5, StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode", Deflate(bigText, CompressionLevel.Fastest))));
+            var textInput = Build(textObjects);
+            var textCode = CodeWithin(() => PdfReader.Parse(textInput, "form-text.pdf"), 30_000);
+            C(textCode == "interpret-limit", "B4 a form showing a 10 MB string invoked 1000 times refused as interpret-limit", textCode ?? "null");
+
+            // S2: a /Contents array is one concatenated stream.
+            var split = PdfReader.Parse(Build(new List<(int, byte[])>
+            {
+                (1, L("<< /Type /Catalog /Pages 2 0 R >>")),
+                (2, L("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+                (3, L("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Contents [4 0 R 5 0 R] >>")),
+                (4, StreamBody("", L("0 0 m 10 0 l"))),
+                (5, StreamBody("", L("S"))),
+            }), "split.pdf");
+            C(split.Pages[0].Elements.Count == 1 && split.Pages[0].Elements[0] is PdfPath splitPath && splitPath.Provenance.ObjectNumber == 5 && splitPath.Provenance.OperatorIndex == 0
+                && splitPath.Subpaths[0].Segments[0].OperatorIndex == 1 && NearP(splitPath.Subpaths[0].Segments[0].End, 10, 0) && split.Warnings.Count == 0,
+                "S2 path started in content stream 4 is painted by S in stream 5", Warnings(split) + " " + DescribeDocument(split));
+
+            // S3: two draws of one form are distinguishable.
+            var twice = PdfReader.Parse(Build(PageObjects(StreamBody("", L("/X Do 1 0 0 1 50 0 cm /X Do")), "/Resources << /XObject << /X 5 0 R >> >>").Append(
+                (5, StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 1 1]", L("0 0 m 10 0 l S"))))), "twice.pdf");
+            var twiceEntities = twice.Pages[0].ToDxfEntities();
+            C(twiceEntities.Count == 2 && twiceEntities[0] is DxfLine l0 && twiceEntities[1] is DxfLine l1 && NearP(l1.Start, 50, 0) && NearP(l1.End, 60, 0)
+                && l0.Provenance.Handle == "p1:o5:i2@o4:i0" && l1.Provenance.Handle == "p1:o5:i2@o4:i2"
+                && string.Join(">", l0.Provenance.InsertPath) == "o4:i0" && string.Join(">", l1.Provenance.InsertPath) == "o4:i2",
+                "S3 repeated Form XObject draws carry the invoking Do in handle and InsertPath", string.Join(" ; ", twiceEntities.Select(e => e.Provenance.Handle + " [" + string.Join(">", e.Provenance.InsertPath) + "]")));
+
+            // S1: incremental updates, the latest occurrence in the file wins (direct over direct, ObjStm over direct, direct over ObjStm).
+            var revision1 = Build(PageObjects(StreamBody("", L("0 0 m 10 0 l S"))));
+            var revision2 = Concat(revision1, L("4 0 obj\n"), StreamBody("", L("0 0 m 20 0 l S")), L("\nendobj\ntrailer\n<< /Size 5 /Root 1 0 R >>\n%%EOF\n"));
+            var updated = PdfReader.Parse(revision2, "update.pdf");
+            C(updated.Pages[0].Elements.Count == 1 && updated.Pages[0].Elements[0] is PdfPath up1 && NearP(up1.Subpaths[0].Segments[0].End, 20, 0), "S1 a later direct object replaces an earlier one", DescribeDocument(updated));
+            var newerPage = L("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 70 70] /Contents 4 0 R >>");
+            var revision3 = Concat(revision1, L("7 0 obj\n"), StreamBody("/Type /ObjStm /N 1 /First 4", Concat(L("3 0 "), newerPage)), L("\nendobj\ntrailer\n<< /Size 8 /Root 1 0 R >>\n%%EOF\n"));
+            var fromStream = PdfReader.Parse(revision3, "update-objstm.pdf");
+            C(fromStream.Pages[0].MediaBox == new PdfRect(0, 0, 70, 70), "S1 an object in a later object stream replaces an earlier direct object", fromStream.Pages[0].MediaBox.ToString());
+            var revision4 = Concat(revision3, L("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 80 80] /Contents 4 0 R >>\nendobj\ntrailer\n<< /Size 8 /Root 1 0 R >>\n%%EOF\n"));
+            var direct = PdfReader.Parse(revision4, "update-direct.pdf");
+            C(direct.Pages[0].MediaBox == new PdfRect(0, 0, 80, 80), "S1 a later direct object replaces an object in an earlier object stream", direct.Pages[0].MediaBox.ToString());
+
+            // N3: a TJ adjustment below -200 reads as a word space.
+            var spaced = PdfReader.Parse(OnePage("BT /F1 10 Tf [(A) -250 (B) -100 (C)] TJ ET"), "tj.pdf").Pages[0].Elements.OfType<PdfText>().Select(t => t.Value).ToList();
+            C(spaced.Count == 1 && spaced[0] == "A BC", "N3 TJ adjustment -250 inserts a space, -100 does not", string.Join("|", spaced));
+        }
+        catch (Exception error)
+        {
+            check(false, "pdf review unexpected " + error.GetType().Name + ": " + error.Message, "");
         }
 
         // ---------- refusals and bounds ----------
