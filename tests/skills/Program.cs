@@ -356,13 +356,38 @@ try
         var cabaCitations = caba.Rules.Select(rule => (rule, cited: SkillRoomValidator.ParseCitation(rule.Citation))).ToArray();
         Check(cabaCitations.All(item => item.rule.Citation is not null && item.cited.Article.Length > 0 && item.cited.Article.Contains("CE CABA", StringComparison.Ordinal)
                 && item.cited.Article.Contains("art. 3.", StringComparison.Ordinal) && item.cited.Source is { Length: > 0 }
-                && (item.cited.Confidence == SkillRoomValidator.ConfidenceCited || item.cited.Confidence == SkillRoomValidator.ConfidenceToVerify)
+                && (item.cited.Confidence == SkillRoomValidator.ConfidenceCited || item.cited.Confidence == SkillRoomValidator.ConfidenceOwnerConfirmed
+                    || item.cited.Confidence == SkillRoomValidator.ConfidenceToVerify)
                 && item.rule.Citation!.Contains("source_confidence=" + item.cited.Confidence, StringComparison.Ordinal)),
-            "every CABA rule cites an article, an explicit source_confidence (cited or to-verify) and a source",
+            "every CABA rule cites an article, an explicit source_confidence (cited, owner-confirmed or to-verify) and a source",
             string.Join(", ", cabaCitations.Where(item => item.cited.Source is null).Select(item => item.rule.Id)));
         Check(cabaCitations.Where(item => item.cited.Confidence == SkillRoomValidator.ConfidenceCited).All(item => item.cited.Source!.StartsWith("https://", StringComparison.Ordinal))
-            && cabaCitations.Count(item => item.cited.Confidence == SkillRoomValidator.ConfidenceCited) > 0 && cabaCitations.Count(item => item.cited.Confidence == SkillRoomValidator.ConfidenceToVerify) > 0,
-            "cited CABA rules name an https source; unverified numbers are marked to-verify");
+            && cabaCitations.Count(item => item.cited.Confidence == SkillRoomValidator.ConfidenceCited) > 0 && cabaCitations.Count(item => item.cited.Confidence == SkillRoomValidator.ConfidenceOwnerConfirmed) > 0,
+            "cited CABA rules name an https source; the pack carries cited and owner-confirmed rules");
+        // P5-06: the owner (an architect, 2026-11-03) confirmed the heights 2.60 / 2.40 / 2.10 m, x = 10, k = i/3 and the dormitorio
+        // third-class assignment. Owner-confirmed rules record who and when; nothing else may claim owner confirmation.
+        Check(cabaCitations.Where(item => item.cited.Confidence == SkillRoomValidator.ConfidenceOwnerConfirmed)
+                .All(item => item.cited is { ConfirmedBy: "architect (owner)", ConfirmedOn: "2026-11-03" } && item.cited.Source is { Length: > 0 }),
+            "every owner-confirmed CABA rule records confirmed_by=architect (owner) and confirmed_on=2026-11-03 and keeps its source",
+            string.Join(", ", cabaCitations.Where(item => item.cited.Confidence == SkillRoomValidator.ConfidenceOwnerConfirmed && item.cited.ConfirmedBy is null).Select(item => item.rule.Id)));
+        bool OwnerValue(SkillRule rule) => rule.Check switch
+        {
+            { Op: SkillCheckOp.Min, Property: RoomFacts.ClearHeightKey, Value: { Kind: SkillValueKind.Number, Number: 2.6 or 2.4 or 2.1 } } => true,
+            { Op: SkillCheckOp.RatioMin, Property: RoomFacts.WindowAreaKey, Over: RoomFacts.AreaKey, Value: { Kind: SkillValueKind.Number, Number: 0.1 } } => true,
+            { Op: SkillCheckOp.RatioMin, Property: RoomFacts.VentilationAreaKey, Over: RoomFacts.AreaKey, Value: { Kind: SkillValueKind.Number, Number: var ratio } } => Math.Abs(ratio - 1.0 / 30) < 1e-12,
+            _ => false,
+        };
+        // Third-class rooms other than the dormitorio (escritorio, estudio, biblioteca): the owner confirmed the values but not their class assignment.
+        bool ClassPending(SkillRule rule) => rule.Target.RoomPattern is "escritorio*" or "estudio*" or "biblioteca*";
+        var ownerNotConfirmed = cabaCitations.Where(item => OwnerValue(item.rule) && !ClassPending(item.rule) && item.cited.Confidence != SkillRoomValidator.ConfidenceOwnerConfirmed).Select(item => item.rule.Id).ToArray();
+        Check(ownerNotConfirmed.Length == 0 && cabaCitations.Count(item => OwnerValue(item.rule) && !ClassPending(item.rule)) >= 36,
+            "every CABA rule carrying an owner-confirmed value (heights 2.6/2.4/2.1, illumination 0.1, ventilation 1/30) for a first-class room, dormitorio/bedroom or corridor is owner-confirmed",
+            string.Join(", ", ownerNotConfirmed));
+        var unexpectedToVerify = cabaCitations.Where(item => item.cited.Confidence == SkillRoomValidator.ConfidenceToVerify && !(OwnerValue(item.rule) && ClassPending(item.rule))).Select(item => item.rule.Id).ToArray();
+        Check(unexpectedToVerify.Length == 0 && cabaCitations.Where(item => ClassPending(item.rule) && OwnerValue(item.rule)).All(item => item.cited.Confidence == SkillRoomValidator.ConfidenceToVerify),
+            "only the escritorio/estudio/biblioteca height and opening rules, whose class assignment the owner did not confirm, stay to-verify", string.Join(", ", unexpectedToVerify));
+        Check(cabaCitations.Where(item => item.cited.Confidence != SkillRoomValidator.ConfidenceOwnerConfirmed).All(item => item.cited is { ConfirmedBy: null, ConfirmedOn: null }),
+            "cited and to-verify CABA rules carry no confirmation members");
         Check(caba.Rules.All(rule => RoomFacts.Properties.Contains(rule.Check.Property) && (rule.Check.Over is null || RoomFacts.Properties.Contains(rule.Check.Over))),
             "every CABA rule property is a room fact the validator knows");
         Check(new[] { "area_m2", "min_side_m", "clear_height_m", "window_area_m2", "ventilation_area_m2" }.All(property => caba.Rules.Any(rule => rule.Check.Property == property))
@@ -377,8 +402,10 @@ try
             && Threshold("bano-tipo-ii-area-min") == 2.5 && Threshold("bano-area-min") == 1.4 && Threshold("bano-side-min") == 0.9 && Threshold("retrete-side-min") == 0.75,
             "CABA minimum areas and sides match RT-030809-020309-01 section 2", Render(cabaResolution));
         Check(new[] { "estar-area-min", "dormitorio-side-min", "cocina-area-min", "bano-tipo-i-side-min", "corredor-side-min" }.All(id => Confidence(id) == SkillRoomValidator.ConfidenceCited)
-            && new[] { "estar-height-min", "dormitorio-height-min", "dormitorio-illumination-ratio", "dormitorio-ventilation-ratio" }.All(id => Confidence(id) == SkillRoomValidator.ConfidenceToVerify),
-            "RT-sourced areas and sides are cited; heights and opening ratios from a secondary summary stay to-verify");
+            && new[] { "estar-height-min", "local-unico-height-min", "dormitorio-height-min", "bedroom-height-min", "corredor-height-min", "pasillo-height-min",
+                "dormitorio-illumination-ratio", "dormitorio-ventilation-ratio", "living-illumination-ratio", "monoambiente-ventilation-ratio" }.All(id => Confidence(id) == SkillRoomValidator.ConfidenceOwnerConfirmed)
+            && new[] { "escritorio-height-min", "estudio-illumination-ratio", "biblioteca-ventilation-ratio" }.All(id => Confidence(id) == SkillRoomValidator.ConfidenceToVerify),
+            "RT-sourced areas and sides are cited; owner-confirmed heights and opening ratios are owner-confirmed; unconfirmed class assignments stay to-verify");
         Check(cabaResolution.Rules.FirstOrDefault(rule => rule.QualifiedId == Caba + "/corredor-side-min") is { ThresholdSource: { Origin: "parameter", Key: "corredor_lado_min_m" } } corridorRule
             && corridorRule.Threshold == SkillValue.Of(1.0), "the corridor width is a traceable parameter defaulting to 1.00 m");
         var together = SkillResolver.Resolve(samples!, Requests(Caba, "bim.qa.room-basics", "bim.typology.dwelling"));
@@ -409,8 +436,11 @@ try
         Check(Only(new RoomFacts("r1", "Dormitorio", 7.25, 2.5, 2.6, 1.2, 0.4), "dormitorio-area-min") is { Measured: 7.25, Required: 7.5, Outcome: RoomCheckOutcome.Fail },
             "a bedroom below 7.50 m2 fails only the area rule");
         Check(Only(new RoomFacts("r1", "Dormitorio", 9.6, 2.4, 2.6, 1.2, 0.4), "dormitorio-side-min") is { Measured: 2.4, Required: 2.5 }, "a bedroom narrower than 2.50 m fails only the side rule");
-        Check(Only(new RoomFacts("r1", "Dormitorio", 9, 3, 2.3, 1.2, 0.4), "dormitorio-height-min") is { Measured: 2.3, Required: 2.4, SourceConfidence: "to-verify" },
-            "a bedroom lower than 2.40 m fails only the height rule and says the value is to-verify");
+        Check(Only(new RoomFacts("r1", "Dormitorio", 9, 3, 2.3, 1.2, 0.4), "dormitorio-height-min") is { Measured: 2.3, Required: 2.4, SourceConfidence: "owner-confirmed", ConfirmedBy: "architect (owner)", ConfirmedOn: "2026-11-03" },
+            "a bedroom lower than 2.40 m fails only the height rule and says the value is owner-confirmed, by whom and when");
+        Check(Only(new RoomFacts("r1", "Bedroom", 9, 3, 2.3, 1.2, 0.4), "bedroom-height-min") is { SourceConfidence: "owner-confirmed" }
+            && Find(goodReport, "r-good", "dormitorio-area-min") is { ConfirmedBy: null, ConfirmedOn: null },
+            "an English bedroom alias finding is owner-confirmed; a cited finding has no confirmation members");
         Check(Only(new RoomFacts("r1", "Dormitorio", 9, 3, 2.6, 0.8, 0.4), "dormitorio-illumination-ratio") is { Required: 0.1, Severity: SkillSeverity.Warning } light
             && Math.Abs(light.Measured!.Value - 0.8 / 9) < 1e-12, "a bedroom window below A/10 fails only the illumination ratio, measured as window over floor area");
         Check(Only(new RoomFacts("r1", "Dormitorio", 9, 3, 2.6, 1.2, 0.2), "dormitorio-ventilation-ratio") is { Severity: SkillSeverity.Warning }, "a bedroom ventilation below A/30 fails only the ventilation ratio");
@@ -511,6 +541,16 @@ try
         Check(SkillRoomValidator.ParseCitation("Art. 9; source_confidence=cited; source=https://example.org/a;b") is { Article: "Art. 9", Confidence: "cited", Source: "https://example.org/a;b" }
             && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=maybe") is { Confidence: "to-verify", Source: null } && SkillRoomValidator.ParseCitation(null) is { Article: "", Confidence: "to-verify" },
             "citations parse into article, confidence and source; an unknown confidence is to-verify");
+        // P5-06: owner-confirmed is a third confidence; who and when are members in any order; unknown values stay to-verify.
+        var ownerForward = SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-confirmed; confirmed_by=architect (owner); confirmed_on=2026-11-03; source=https://x.org/a;b");
+        var ownerBackward = SkillRoomValidator.ParseCitation("Art. 9; source=https://x.org/a;b; confirmed_on=2026-11-03; confirmed_by=architect (owner); source_confidence=owner-confirmed");
+        Check(SkillRoomValidator.ConfidenceOwnerConfirmed == "owner-confirmed" && ownerForward == ownerBackward
+            && ownerForward is { Article: "Art. 9", Confidence: "owner-confirmed", ConfirmedBy: "architect (owner)", ConfirmedOn: "2026-11-03", Source: "https://x.org/a;b", AppliesIf: null },
+            "an owner-confirmed citation parses with confirmed_by and confirmed_on in either member order", ownerForward + " / " + ownerBackward);
+        Check(SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-approved; confirmed_by=someone") is { Confidence: "to-verify", ConfirmedBy: "someone" }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=Owner-Confirmed") is { Confidence: "to-verify" }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=cited") is { Confidence: "cited", ConfirmedBy: null, ConfirmedOn: null },
+            "an unknown or differently cased confidence is still to-verify; absent confirmation members are null");
 
         // ---- Review fixes (P5-02 review B1, S1-S6) ----
         // B1: compliance needs every room classified and every applicable rule evaluated.
