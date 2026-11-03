@@ -5,16 +5,18 @@ using Autodesk.Revit.UI;
 using Bim.Core;
 namespace Bim.Revit;
 
-// P2-03 external edit recorder. Subscribes to Application.DocumentChanged (only in opted-in fixture sessions, see
-// App.OnStartup) and records, per event, the added and modified elements as UniqueIds, the deleted element ids (a
+// P2-03 external edit recorder. Subscribes to Application.DocumentChanged only in opted-in fixture sessions, after
+// AddInGate.PipeAllowed validated the config (App.Expose; App.Withdraw and OnShutdown unsubscribe), and records, per event, the added and modified elements as UniqueIds, the deleted element ids (a
 // deleted element can no longer be resolved to a UniqueId), the transaction names and the undo operation into the
 // Revit-free core journal (core/Bim.Core/MirrorJournal.cs). It never writes to the document: no transaction, no
 // receipt, nothing persisted. Changes raised while App.Execute runs a request, or committed under the add-in's own
 // transaction names, are the add-in's and are skipped (counted) by the journal; undo and redo are always external.
 //
 // "journal.read" (pipe Operation, outside the revit.command catalogue) takes a fresh query.snapshot of the active
-// document and answers the journal entries since the previous journal.read of that document together with the
-// snapshot diff against it, then makes the new snapshot the baseline. Read-only.
+// document (UniqueId and path) and answers the journal entries since the previous journal.read of that document together
+// with the snapshot diff against it, then makes the new snapshot the baseline. Read-only. The optional Request.Journal
+// member {"after_sequence":n,"peek":true,"max_entries":m} pages through capped replies and re-reads a lost reply; peek
+// leaves the baseline in place (MirrorJournalReadOptions).
 //
 // Revit 2025 API used (https://www.revitapidocs.com/2025/): ControlledApplication.DocumentChanged,
 //   DocumentChangedEventArgs.GetDocument / GetAddedElementIds / GetModifiedElementIds / GetDeletedElementIds /
@@ -61,7 +63,7 @@ internal static class JournalRecorder
             var d = e.GetDocument();
             if (d is null || d.IsFamilyDocument) return;
             var documentUid = d.ProjectInformation?.UniqueId;
-            if (string.IsNullOrWhiteSpace(documentUid)) return;
+            if (string.IsNullOrWhiteSpace(documentUid)) { Tracker.Journal.RecordUnidentified(); return; }
             var added = e.GetAddedElementIds();
             var modified = e.GetModifiedElementIds();
             var deleted = e.GetDeletedElementIds();
@@ -72,6 +74,7 @@ internal static class JournalRecorder
                 AddedTotal = added.Count,
                 ModifiedTotal = modified.Count,
                 DeletedTotal = deleted.Count,
+                DocumentPath = d.PathName ?? "",
             });
         }
         // Never throw into Revit's event dispatch; the fault is counted and reported by journal.read.
@@ -86,10 +89,11 @@ internal static class JournalRecorder
     {
         var d = app.ActiveUIDocument?.Document ?? throw new InvalidOperationException("no_document");
         if (string.IsNullOrWhiteSpace(r.DocumentPath) || !string.Equals(d.PathName, r.DocumentPath, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("document_conflict");
-        var report = Tracker.Report(CommandExecutor.JournalSnapshot(d));
+        var options = MirrorJournalReadOptions.Parse(r.Journal is { } journalOptions ? journalOptions.GetRawText() : null);
+        var report = Tracker.Report(CommandExecutor.JournalSnapshot(d), d.PathName ?? "", options);
         var journal = Tracker.Journal;
         return "{\"status\":\"succeeded\",\"verification\":\"unverified\",\"attached\":" + (attached ? "true" : "false")
-            + ",\"dropped\":" + journal.Dropped + ",\"skipped_add_in\":" + journal.SkippedAddIn + ",\"failures\":" + journal.Failures
+            + ",\"dropped\":" + journal.Dropped + ",\"skipped_add_in\":" + journal.SkippedAddIn + ",\"failures\":" + journal.Failures + ",\"unidentified\":" + journal.Unidentified
             + ",\"report\":" + report.ToJson() + "}";
     }
 }

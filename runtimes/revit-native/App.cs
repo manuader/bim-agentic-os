@@ -6,27 +6,28 @@ using System.Text.Json;
 namespace Bim.Revit;
 
 // Command: the ADR0009 envelope for Operation "revit.command", kept as received so its raw text can be hashed.
-public record Request(string DocumentPath,string Operation,string? UniqueId,double[] Metres, Bim.Core.NativeBatchRequest? Batch = null, FixtureCheckpointRequest? Checkpoint = null, JsonElement? Command = null);
+public record Request(string DocumentPath,string Operation,string? UniqueId,double[] Metres, Bim.Core.NativeBatchRequest? Batch = null, FixtureCheckpointRequest? Checkpoint = null, JsonElement? Command = null, JsonElement? Journal = null);
 public sealed class App : IExternalApplication, IExternalEventHandler
 {
     readonly ConcurrentQueue<(Request,TaskCompletionSource<string>)> queue=new();
-    CancellationTokenSource stop=new(); ExternalEvent? signal; Task? server;
+    CancellationTokenSource stop=new(); ExternalEvent? signal; Task? server; Autodesk.Revit.ApplicationServices.ControlledApplication? controlled;
     // Production Revit (no BIM_AGENTIC_TEST_CONFIG) gets no ExternalEvent and no pipe. With the opt-in variable, both
     // start only after FixtureBootstrap validated the config and opened the fixture (AddInGate.PipeAllowed).
     public Result OnStartup(UIControlledApplication app)
     {
-        // P2-03: the external edit journal records DocumentChanged only in the same opted-in sessions (JournalRecorder.cs).
-        if(!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AddInGate.ConfigVariable))) { JournalRecorder.Attach(app.ControlledApplication); FixtureBootstrap.Attach(app,Expose,Withdraw); }
+        if(!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AddInGate.ConfigVariable))) { controlled=app.ControlledApplication; FixtureBootstrap.Attach(app,Expose,Withdraw); }
         return Result.Succeeded;
     }
     // Called from FixtureBootstrap's Idling handler (an API context) once the fixture is open, before its result is published.
     void Expose()
     {
         if(!AddInGate.PipeAllowed(Environment.GetEnvironmentVariable(AddInGate.ConfigVariable),true) || server!=null) return;
+        // P2-03: the external edit journal (JournalRecorder.cs) subscribes to DocumentChanged only once the config is validated.
+        if(controlled!=null) JournalRecorder.Attach(controlled);
         signal=ExternalEvent.Create(this); server=Task.Run(Listen);
     }
     // A bootstrap that failed after Expose must not leave a pipe behind.
-    void Withdraw() { stop.Cancel(); signal?.Dispose(); signal=null; }
+    void Withdraw() { stop.Cancel(); signal?.Dispose(); signal=null; if(controlled!=null) JournalRecorder.Detach(controlled); }
     public Result OnShutdown(UIControlledApplication app) { stop.Cancel(); signal?.Dispose(); JournalRecorder.Detach(app.ControlledApplication); return Result.Succeeded; }
     public string GetName()=>"BIM Agentic OS serialized native dispatcher";
     async Task Listen()
