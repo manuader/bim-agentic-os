@@ -3,8 +3,8 @@ using System.Text;
 using System.Text.Json;
 namespace Bim.Core;
 
-// P2-03 external edit journal. Revit-free: the add-in's Application.DocumentChanged recorder (runtimes/revit-native/
-// JournalRecorder.cs) converts the event's added/modified element ids to UniqueIds, keeps deleted element ids as numbers
+// P2-03 external edit journal. Vendor-free: the add-in's Application.DocumentChanged recorder (JournalRecorder.cs in
+// the native runtime) converts the event's added/modified element ids to UniqueIds, keeps deleted element ids as numbers
 // (a deleted element can no longer be resolved to its UniqueId), and hands one MirrorJournalChange per event to
 // MirrorJournal.Record. The journal is a bounded, append-only, in-memory diagnostic: it is never written to the Core
 // store, the document or any persisted format; ToJson is a separately versioned diagnostic reply (journal_version 1).
