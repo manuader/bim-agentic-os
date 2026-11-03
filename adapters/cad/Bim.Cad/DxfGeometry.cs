@@ -2,6 +2,9 @@ namespace Bim.Cad;
 
 public static class DxfGeometry
 {
+    // Largest accepted |bulge|: 1e6 is already a full circle to within 1e-12 of a turn; larger values are rejected.
+    public const double MaxBulge = 1e6;
+
     // Polyline segments in order (closing segment last for a closed polyline). A bulged segment becomes an arc whose
     // StartAngleDegrees..EndAngleDegrees is the counter-clockwise span: from the start vertex for a positive bulge,
     // from the end vertex for a negative (clockwise) bulge. A zero-length chord is always straight.
@@ -30,6 +33,7 @@ public static class DxfGeometry
         var offset = length / 2 * ((1 - bulge * bulge) / (2 * bulge));
         var center = mid + normal * offset;
         var radius = length * (1 + bulge * bulge) / (4 * Math.Abs(bulge));
+        if (!double.IsFinite(center.X) || !double.IsFinite(center.Y) || !double.IsFinite(radius)) return new DxfPolylineSegment(index, start, end, bulge, null, 0, 0, 0);
         var a0 = Degrees(start - center);
         var a1 = Degrees(end - center);
         return bulge > 0

@@ -118,6 +118,8 @@ public static class DxfJson
         writer.WriteString("handle", p.Handle);
         writer.WriteString("layer", p.Layer);
         writer.WriteNumber("line", p.Line);
+        writer.WriteBoolean("paper_space", p.PaperSpace);
+        writer.WriteBoolean("invisible", p.Invisible);
         writer.WriteStartArray("insert_path");
         foreach (var handle in p.InsertPath) writer.WriteStringValue(handle);
         writer.WriteEndArray();

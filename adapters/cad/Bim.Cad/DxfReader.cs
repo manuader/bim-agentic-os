@@ -57,8 +57,10 @@ public static class DxfReader
     private static DxfDrawing ParseText(string text, string sourceFile)
     {
         if (text.AsSpan().Trim().IsEmpty) throw new DxfFormatException("empty", 0, "DXF input is empty");
+        var invalidText = DxfTextFormat.ReplaceLoneSurrogates(ref text);
         var pairs = Tokenize(text);
         var state = new ParseState(sourceFile);
+        if (invalidText) state.Warn("invalid-text", 0, "lone UTF-16 surrogates in the input replaced with U+FFFD");
         var i = 0;
         var strayReported = false;
         while (true)
@@ -158,8 +160,8 @@ public static class DxfReader
         private readonly List<DxfWarning> warnings = new();
         private readonly List<DxfEntity> entities = new();
         private readonly List<DxfProvenance> unsupported = new();
-        private readonly Dictionary<string, DxfLayer> layers = new(StringComparer.Ordinal);
-        private readonly SortedSet<string> usedLayers = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, DxfLayer> layers = new(StringComparer.OrdinalIgnoreCase);
+        private readonly SortedSet<string> usedLayers = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<DxfBlock> blocks = new();
         private readonly HashSet<string> blockNames = new(StringComparer.OrdinalIgnoreCase);
         private int? insUnits;
@@ -245,7 +247,11 @@ public static class DxfReader
         {
             var layerGroup = record.First(8)?.Value.Trim();
             var layer = string.IsNullOrEmpty(layerGroup) ? "0" : layerGroup;
-            var provenance = new DxfProvenance(sourceFile, record.First(5)?.Value.Trim(), layer, record.Type, record.Line);
+            var provenance = new DxfProvenance(sourceFile, record.First(5)?.Value.Trim(), layer, record.Type, record.Line)
+            {
+                PaperSpace = record.First(67) is { } space && DxfValues.Int(space) == 1,
+                Invisible = record.First(60) is { } visibility && DxfValues.Int(visibility) == 1,
+            };
             if (record.Type is "VERTEX" or "SEQEND") return null;
             usedLayers.Add(layer);
             var entity = DxfEntityBuilder.Build(record, provenance, this);
@@ -341,6 +347,7 @@ public static class DxfReader
                         }
                         if (open) vertices.Add(new DxfVertex(new Point2(x, y), bulge));
                         if (vertices.Count < 2) return Invalid(r, state, "LWPOLYLINE needs at least two vertices");
+                        if (vertices.Any(v => Math.Abs(v.Bulge) > DxfGeometry.MaxBulge)) return Invalid(r, state, "LWPOLYLINE bulge magnitude above " + DxfGeometry.MaxBulge.ToString(CultureInfo.InvariantCulture));
                         if (declared is { } count && count != vertices.Count)
                             state.Warn("vertex-count-mismatch", r.Line, "LWPOLYLINE declares " + count.ToString(CultureInfo.InvariantCulture) + " vertices but has " + vertices.Count.ToString(CultureInfo.InvariantCulture));
                         if (Ocs(r, p, state)) vertices = vertices.Select(v => new DxfVertex(Flip(v.Point), -v.Bulge)).ToList();
@@ -367,7 +374,13 @@ public static class DxfReader
                         else value = r.First(1)?.Value ?? "";
                         // MTEXT 10/20 is in world coordinates; TEXT is in the entity's OCS.
                         if (!mtext && Ocs(r, p, state)) { insertion = Flip(insertion); rotation = 180 - rotation; }
-                        return new DxfText(p, insertion, height, DxfValues.NormaliseDegrees(rotation), value, mtext ? DxfTextFormat.PlainMText(value) : DxfTextFormat.PlainText(value), mtext);
+                        var plain = DxfTextFormat.PlainText(value);
+                        if (mtext)
+                        {
+                            plain = DxfTextFormat.PlainMText(value, out var invalid);
+                            if (invalid) state.Warn("invalid-text", r.Line, "MTEXT \\U+ escape of a lone surrogate replaced with U+FFFD");
+                        }
+                        return new DxfText(p, insertion, height, DxfValues.NormaliseDegrees(rotation), value, plain, mtext);
                     }
                 case "INSERT":
                     {
@@ -488,8 +501,31 @@ internal static class DxfTextFormat
         .Replace("%%c", "Ø", StringComparison.OrdinalIgnoreCase)
         .Replace("%%%", "%", StringComparison.Ordinal);
 
-    public static string PlainMText(string value)
+    // Replaces unpaired UTF-16 surrogates (which no JSON or UTF-8 writer accepts) with U+FFFD; true when any was found.
+    public static bool ReplaceLoneSurrogates(ref string text)
     {
+        StringBuilder? builder = null;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var ch = text[i];
+            var lone = char.IsHighSurrogate(ch) ? !(i + 1 < text.Length && char.IsLowSurrogate(text[i + 1])) : char.IsLowSurrogate(ch);
+            if (char.IsHighSurrogate(ch) && !lone)
+            {
+                builder?.Append(ch).Append(text[i + 1]);
+                i++;
+                continue;
+            }
+            if (lone) builder ??= new StringBuilder(text, 0, i, text.Length);
+            builder?.Append(lone ? '\uFFFD' : ch);
+        }
+        if (builder is null) return false;
+        text = builder.ToString();
+        return true;
+    }
+
+    public static string PlainMText(string value, out bool invalid)
+    {
+        invalid = false;
         var builder = new StringBuilder(value.Length);
         for (var i = 0; i < value.Length; i++)
         {
@@ -512,7 +548,8 @@ internal static class DxfTextFormat
                         break;
                     }
                 case 'U' when i + 5 < value.Length && value[i + 1] == '+' && int.TryParse(value.AsSpan(i + 2, 4), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var codePoint):
-                    builder.Append((char)codePoint);
+                    if (codePoint >= 0xD800 && codePoint <= 0xDFFF) { builder.Append('\uFFFD'); invalid = true; }
+                    else builder.Append((char)codePoint);
                     i += 5;
                     break;
                 case 'A': case 'C': case 'c': case 'F': case 'f': case 'H': case 'h': case 'Q': case 'q': case 'T': case 't': case 'W': case 'w': case 'p':

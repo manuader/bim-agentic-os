@@ -76,7 +76,8 @@ public enum DxfUnits
 }
 
 // The whole file. Entities are the ENTITIES section in file order; Blocks are sorted by name (ordinal); Layers are
-// the LAYER table entries plus any layer referenced by an entity but not declared (Declared = false), sorted by name
+// the LAYER table entries plus any layer referenced by an entity but not declared (Declared = false); names match
+// case-insensitively, as in DXF, and the list is sorted by name
 // (ordinal). InsUnits is the raw $INSUNITS value (null when absent); MetresPerUnit is null when the units are
 // unspecified, unitless or unknown. Unsupported lists entities of types this reader does not model.
 public sealed record DxfDrawing(
@@ -103,7 +104,7 @@ public sealed record DxfReadOptions(long MaxBytes = 256L * 1024 * 1024);
 
 // Thrown for input that is not a readable ASCII DXF: Code is a stable identifier (binary-dxf, empty, too-large,
 // malformed-group-code, missing-value, bad-number, malformed-structure, unterminated-section, missing-eof,
-// explode-limit), Line the
+// explode-limit; detect-limit from wall-pair detection), Line the
 // 1-based line where the problem was found (0 when not tied to a line).
 public sealed class DxfFormatException : Exception
 {

@@ -7,7 +7,9 @@ namespace Bim.Cad;
 // counter-clockwise sense by swapping the end angles, and negates polyline bulges); under a non-uniform scale they
 // and bulged polyline segments are tessellated into straight polylines with an arc-tessellated warning. Missing
 // blocks and block cycles are skipped with warnings; nesting deeper than MaxDepth or more than MaxEntities output
-// entities raise explode-limit, so exponential nesting never hangs.
+// entities raise explode-limit. Every visited entity or INSERT and every warning also counts against MaxWork, so
+// exponential nesting raises explode-limit quickly even when its leaves are empty, unsupported or missing blocks.
+// Paper-space and invisible flags are inherited from enclosing INSERTs.
 public static class DxfExploder
 {
     public static DxfExplodedDrawing Explode(DxfDrawing drawing, DxfExplodeOptions options)
@@ -16,9 +18,10 @@ public static class DxfExploder
         ArgumentNullException.ThrowIfNull(options);
         if (options.MaxDepth < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxDepth must be at least 1");
         if (options.MaxEntities < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxEntities must be at least 1");
+        if (options.MaxWork < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxWork must be at least 1");
         if (options.ArcTessellationSegments < 4 || options.ArcTessellationSegments > 4096) throw new ArgumentOutOfRangeException(nameof(options), "ArcTessellationSegments must be in 4..4096");
         var context = new Context(drawing, options);
-        foreach (var entity in drawing.Entities) context.Emit(entity, Affine.Identity, Array.Empty<string>(), null, 0);
+        foreach (var entity in drawing.Entities) context.Emit(entity, Affine.Identity, Array.Empty<string>(), null, false, false, 0);
         return new DxfExplodedDrawing(context.Output.ToArray(), context.Warnings.ToArray());
     }
 
@@ -27,6 +30,7 @@ public static class DxfExploder
         private readonly Dictionary<string, DxfBlock> blocks = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> stack = new();
         private readonly DxfExplodeOptions options;
+        private long work;
 
         public Context(DxfDrawing drawing, DxfExplodeOptions options)
         {
@@ -37,21 +41,38 @@ public static class DxfExploder
         public List<DxfEntity> Output { get; } = new();
         public List<DxfWarning> Warnings { get; } = new();
 
-        public void Emit(DxfEntity entity, Affine transform, IReadOnlyList<string> path, string? inheritedLayer, int depth)
+        private void Spend(int line)
+        {
+            if (++work > options.MaxWork)
+                throw new DxfFormatException("explode-limit", line, "exploding inserts needs more than " + options.MaxWork.ToString(CultureInfo.InvariantCulture) + " work units (entities, inserts and warnings)");
+        }
+
+        private void Warn(string code, int line, string message)
+        {
+            Spend(line);
+            Warnings.Add(new DxfWarning(code, line, message));
+        }
+
+        public void Emit(DxfEntity entity, Affine transform, IReadOnlyList<string> path, string? inheritedLayer, bool inheritedPaper, bool inheritedInvisible, int depth)
         {
             var source = entity.Provenance;
+            Spend(source.Line);
             var layer = inheritedLayer is not null && source.Layer == "0" ? inheritedLayer : source.Layer;
-            var provenance = path.Count == 0 && layer == source.Layer ? source : source with { Layer = layer, InsertPath = path };
+            var paper = source.PaperSpace || inheritedPaper;
+            var invisible = source.Invisible || inheritedInvisible;
+            var provenance = path.Count == 0 && layer == source.Layer && paper == source.PaperSpace && invisible == source.Invisible
+                ? source
+                : source with { Layer = layer, InsertPath = path, PaperSpace = paper, Invisible = invisible };
             if (entity is DxfInsert insert)
             {
                 if (!blocks.TryGetValue(insert.BlockName, out var block))
                 {
-                    Warnings.Add(new DxfWarning("block-missing", source.Line, "INSERT references undefined block " + insert.BlockName));
+                    Warn("block-missing", source.Line, "INSERT references undefined block " + insert.BlockName);
                     return;
                 }
                 if (stack.Contains(block.Name, StringComparer.OrdinalIgnoreCase))
                 {
-                    Warnings.Add(new DxfWarning("block-cycle", source.Line, "INSERT of block " + block.Name + " inside itself skipped"));
+                    Warn("block-cycle", source.Line, "INSERT of block " + block.Name + " inside itself skipped");
                     return;
                 }
                 if (depth + 1 > options.MaxDepth)
@@ -63,7 +84,7 @@ public static class DxfExploder
                 var world = transform.Compose(local);
                 var childPath = path.Append(source.Handle ?? "@" + source.Line.ToString(CultureInfo.InvariantCulture)).ToArray();
                 stack.Add(block.Name);
-                foreach (var child in block.Entities) Emit(child, world, childPath, layer, depth + 1);
+                foreach (var child in block.Entities) Emit(child, world, childPath, layer, paper, invisible, depth + 1);
                 stack.RemoveAt(stack.Count - 1);
                 return;
             }
@@ -116,14 +137,14 @@ public static class DxfExploder
 
         private DxfPolyline Tessellate(DxfProvenance p, Affine m, Point2 center, double radius, double startDegrees, double spanDegrees, bool closed)
         {
-            Warnings.Add(new DxfWarning("arc-tessellated", p.Line, p.EntityType + " under a non-uniform insert scale tessellated into a polyline"));
+            Warn("arc-tessellated", p.Line, p.EntityType + " under a non-uniform insert scale tessellated into a polyline");
             var points = ArcPoints(center, radius, startDegrees, spanDegrees, closed);
             return new DxfPolyline(p, points.Select(point => new DxfVertex(m.Apply(point), 0)).ToArray(), closed);
         }
 
         private DxfPolyline TessellatePolyline(DxfProvenance p, Affine m, DxfPolyline polyline)
         {
-            Warnings.Add(new DxfWarning("arc-tessellated", p.Line, "LWPOLYLINE bulges under a non-uniform insert scale tessellated"));
+            Warn("arc-tessellated", p.Line, "LWPOLYLINE bulges under a non-uniform insert scale tessellated");
             var points = new List<Point2>();
             var segments = polyline.Segments();
             foreach (var segment in segments)
