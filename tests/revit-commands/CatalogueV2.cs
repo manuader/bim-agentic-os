@@ -131,6 +131,58 @@ static class CatalogueV2Checks
         Rejects("bow-tie roof footprint", Envelope("roof.create_footprint", With(Roof(), "boundary", Outline((0, 0), (2000, 2000), (2000, 0), (0, 2000)))), RevitCommandCodes.BoundarySelfIntersecting);
         Rejects("roof footprint with a repeated vertex", Envelope("roof.create_footprint", With(Roof(), "boundary", Outline((0, 0), (4000, 0), (4000, 0), (4000, 3000)))), RevitCommandCodes.BoundaryEdgeTooShort, "args.boundary[1]");
         RejectsText("roof footprint vertex overflowing to infinity", Envelope("roof.create_footprint", Roof()).ToJsonString().Replace("[8000,0]", "[1e400,0]"), RevitCommandCodes.LengthInvalid, "args.boundary[1][0]");
+        GableRoofs();
+    }
+
+    static JsonArray Indices(params int[] edges) => new(edges.Select(edge => (JsonNode?)edge).ToArray());
+    static JsonObject Gable(params int[] edges) => With(Roof(), "sloped_edges", Indices(edges));
+
+    // Per-edge slope (chat-roof-gable): sloped_edges lists the footprint edges that define slope; edge i runs from
+    // boundary vertex i to vertex i + 1 and the last edge closes back to vertex 0.
+    static void GableRoofs()
+    {
+        using (var schema = JsonDocument.Parse(RevitCommandCatalogue.Find("roof.create_footprint")!.ArgsSchemaJson))
+        {
+            var property = schema.RootElement.GetProperty("properties").TryGetProperty("sloped_edges", out var edges) ? edges : default;
+            Check(property.ValueKind == JsonValueKind.Object && property.GetProperty("type").GetString() == "array" && property.GetProperty("items").GetProperty("type").GetString() == "integer"
+                && property.GetProperty("minItems").GetInt32() == 1 && property.GetProperty("description").GetString()!.Contains("slope_deg", StringComparison.Ordinal),
+                "roof.create_footprint schema offers sloped_edges: an array of integer edge indices that needs slope_deg");
+            Check(!schema.RootElement.GetProperty("required").EnumerateArray().Any(name => name.GetString() == "sloped_edges"), "sloped_edges is optional");
+        }
+        Check(RevitCommandCatalogue.Find("roof.create_footprint")!.Description.Contains("gable", StringComparison.Ordinal), "roof.create_footprint description names the gable option");
+        var gable = Accepts("gable roof (sloped_edges 2 and 0) accepted", Envelope("roof.create_footprint", Gable(2, 0)));
+        Check(gable?.Args is RoofFootprintCreateArgs { SlopedEdges: { } edges, Slope: not null } g && edges.SequenceEqual(new[] { 0, 2 }) && g.DefinesSlope(0) && !g.DefinesSlope(1) && g.DefinesSlope(2) && !g.DefinesSlope(3),
+            "sloped_edges binds sorted edge indices and only those edges define slope");
+        Check(Accepts("hip roof without sloped_edges accepted", Envelope("roof.create_footprint", Roof()))?.Args is RoofFootprintCreateArgs { SlopedEdges: null } hip && Enumerable.Range(0, 4).All(hip.DefinesSlope),
+            "without sloped_edges every edge of a sloped roof defines slope (unchanged hip behaviour)");
+        Check(Accepts("flat roof accepted", Envelope("roof.create_footprint", Roof(null)))?.Args is RoofFootprintCreateArgs { SlopedEdges: null } flat && !Enumerable.Range(0, 4).Any(flat.DefinesSlope), "a flat roof has no edge defining slope");
+        Check(Accepts("shed roof (one sloped edge) accepted", Envelope("roof.create_footprint", Gable(3)))?.Args is RoofFootprintCreateArgs { SlopedEdges.Count: 1 }, "a single sloped edge (shed roof) is accepted");
+        Check(Accepts("all four edges listed accepted", Envelope("roof.create_footprint", Gable(0, 1, 2, 3)))?.Args is RoofFootprintCreateArgs { SlopedEdges.Count: 4 } all && Enumerable.Range(0, 4).All(all.DefinesSlope), "listing every edge is a hip roof");
+        Rejects("sloped_edges without slope_deg", Envelope("roof.create_footprint", With(Roof(null), "sloped_edges", Indices(0, 2))), RevitCommandCodes.ArgsInvalid, "args.sloped_edges");
+        Rejects("sloped_edges index past the last edge", Envelope("roof.create_footprint", Gable(0, 4)), RevitCommandCodes.ArgsInvalid, "args.sloped_edges[1]");
+        Rejects("negative sloped_edges index", Envelope("roof.create_footprint", Gable(-1)), RevitCommandCodes.ArgsInvalid, "args.sloped_edges[0]");
+        Rejects("sloped_edges listing an edge twice", Envelope("roof.create_footprint", Gable(2, 2)), RevitCommandCodes.ArgsInvalid, "args.sloped_edges[1]");
+        Rejects("empty sloped_edges", Envelope("roof.create_footprint", With(Roof(), "sloped_edges", new JsonArray())), RevitCommandCodes.ArgsInvalid, "args.sloped_edges");
+        Rejects("fractional sloped_edges index", Envelope("roof.create_footprint", With(Roof(), "sloped_edges", new JsonArray(1.5))), RevitCommandCodes.ArgsInvalid, "args.sloped_edges[0]");
+        Rejects("sloped_edges as a number", Envelope("roof.create_footprint", With(Roof(), "sloped_edges", 0)), RevitCommandCodes.ArgsInvalid, "args.sloped_edges");
+        Rejects("explicit closing vertex does not add an edge", Envelope("roof.create_footprint", With(With(Roof(), "boundary", Outline((0, 0), (8000, 0), (8000, 6000), (0, 6000), (0, 0))), "sloped_edges", Indices(4))), RevitCommandCodes.ArgsInvalid, "args.sloped_edges[0]");
+        // A partial set of sloped edges can rise over the whole footprint (a shed roof): the rise bound uses the
+        // outline's largest vertex distance instead of half its minimum width.
+        var square = Outline((0, 0), (1e6, 0), (1e6, 1e6), (0, 1e6));
+        Accepts("85 degree hip roof on a 1 km square accepted (rise from half the width)", Envelope("roof.create_footprint", With(Roof(85), "boundary", square.DeepClone())));
+        Rejects("85 degree shed roof on a 1 km square rises above the Revit limit", Envelope("roof.create_footprint", With(With(Roof(85), "boundary", square.DeepClone()), "sloped_edges", Indices(0))), RevitCommandCodes.AngleInvalid, "args.slope_deg");
+        Check(Near(RevitCommandGeometryV2.MaximumSpanMm(new[] { P(0, 0), P(8000, 0), P(8000, 6000), P(0, 6000) }), 10000, 1e-9), "the largest vertex distance of an 8 x 6 m rectangle is its 10 m diagonal");
+
+        // Creation mapping: model curves are matched to the requested edges by their end points, in any order and
+        // either direction, never by position.
+        var rectangle = new[] { P(0, 0), P(8000, 0), P(8000, 6000), P(0, 6000) };
+        (PlanPoint, PlanPoint) Curve(double x0, double y0, double x1, double y1) => (new PlanPoint(x0, y0), new PlanPoint(x1, y1));
+        var shuffled = new[] { Curve(8000, 0, 8000, 6000), Curve(0, 6000, 8000, 6000), Curve(0, 6000, 0, 0), Curve(0.0004, 0, 8000, -0.0004) };
+        Check(CommandRulesV2.MatchRoofEdges(rectangle, shuffled).SequenceEqual(new[] { 1, 2, 3, 0 }), "model curves map to boundary edges by end points, in any order, reversed or within 1e-3 mm");
+        Check(CodeOf(() => CommandRulesV2.MatchRoofEdges(rectangle, new[] { Curve(8000, 0, 8000, 6000), Curve(0, 6000, 8000, 6000), Curve(0, 6000, 0, 0), Curve(0, 0, 4000, 0) })) == RevitCommandCodes.TransactionFailed, "a model curve on no requested edge is transaction_failed");
+        Check(CodeOf(() => CommandRulesV2.MatchRoofEdges(rectangle, new[] { Curve(8000, 0, 8000, 6000), Curve(8000, 6000, 8000, 0), Curve(0, 6000, 0, 0), Curve(0, 0, 8000, 0) })) == RevitCommandCodes.TransactionFailed, "two model curves on one requested edge are transaction_failed");
+        Check(CodeOf(() => CommandRulesV2.MatchRoofEdges(rectangle, shuffled.Take(3).ToArray())) == RevitCommandCodes.TransactionFailed, "a mapping with fewer curves than edges is transaction_failed");
+        Check(CommandRulesV2.EdgeIndex(rectangle, new PlanPoint(8000, 6000), new PlanPoint(0, 6000)) == 2 && CommandRulesV2.EdgeIndex(rectangle, new PlanPoint(0, 0), new PlanPoint(8000, 6000)) is null, "EdgeIndex names the boundary edge with those end points, or null");
     }
 
     static void Stairs()
@@ -288,6 +340,24 @@ static class CatalogueV2Checks
         Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, null, 0, hip with { Edges = new[] { Edge(false, null), Edge(false, null), Edge(false, null), Edge(false, null) }, SlopeParameterDeg = null }) is null, "flat roof readback matches (no Slope parameter needed)");
         Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, null, 0, hip) is not null, "a flat roof whose edges define slope is a mismatch");
         Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, -500, hip) is not null && CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip with { BaseOffsetMm = null }) is not null, "roof base offset mismatch or unreadable offset is reported");
+
+        // Gable: the sketch starts at boundary edge 1 and edge 3 runs backwards; edges 0 and 2 define slope.
+        ObservedRoofEdge On(bool slopes, double x0, double y0, double x1, double y1) => new(slopes, slopes ? 30 : null, new PlanPoint(x0, y0), new PlanPoint(x1, y1));
+        var gableEdges = new[] { On(false, 8000, 0, 8000, 6000), On(true, 8000, 6000, 0, 6000), On(false, 0, 0, 0, 6000), On(true, 0, 0, 8000, 0) };
+        var gable = hip with { Edges = gableEdges };
+        var ridgeAlongX = new[] { 0, 2 };
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable, ridgeAlongX) is null, "gable roof readback matches: the sloped edges are found by geometry, not by sketch position");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable, new[] { 1, 3 }) is { } swapped && swapped.Contains("boundary edge", StringComparison.Ordinal), "a gable whose other pair of edges defines slope is a mismatch naming the boundary edge", swapped ?? "");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable) is not null, "a hip request read back on a gable is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, hip, ridgeAlongX) is not null, "a gable request whose edges carry no geometry is a mismatch (cannot be matched)");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable with { Edges = new[] { gableEdges[0], gableEdges[1], gableEdges[0], gableEdges[3] } }, ridgeAlongX) is not null, "two sketch edges on one boundary edge is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable with { Edges = new[] { gableEdges[0], gableEdges[1], On(false, 0, 0, 0, 5000), gableEdges[3] } }, ridgeAlongX) is not null, "a sketch edge on no boundary edge is a mismatch");
+        Check(CommandReadbackV2.Roof(LevelUid, TypeUid, footprint, 30, 0, gable with { Edges = new[] { gableEdges[0], On(true, 8000, 6000, 0, 6000) with { SlopeDeg = 25 }, gableEdges[2], gableEdges[3] } }, ridgeAlongX) is not null, "a gable edge with another slope is a mismatch");
+        var gableJson = JsonNode.Parse(CommandReadbackV2.RoofJson(gable, footprint))!["roof"]!;
+        Check(gableJson["sloped_edges"]!.AsArray().Select(index => index!.GetValue<int>()).SequenceEqual(ridgeAlongX), "roof readback JSON reports which boundary edges define slope, from the roof's own sketch", gableJson.ToJsonString());
+        Check(gableJson["edges"]![1]!["boundary_edge"]!.GetValue<int>() == 2 && gableJson["edges"]![1]!["start"]![0]!.GetValue<double>() == 8000 && gableJson["edges"]![1]!["end"]![0]!.GetValue<double>() == 0 && gableJson["edges"]![0]!["defines_slope"]!.GetValue<bool>() == false,
+            "each sketch edge in the readback JSON names its boundary edge and its end points", gableJson.ToJsonString());
+        Check(JsonNode.Parse(CommandReadbackV2.RoofJson(hip))!["roof"]!["sloped_edges"] is null, "without the boundary the readback JSON has no sloped_edges index list");
 
         PlanPoint runStart = new(0, 0), runEnd = new(4000, 0);
         var stairs = new ObservedStairs("60f91daf-3dd7-4283-a86d-24137b73f3da-00000400", LevelUid, TopUid, new double?[] { 1100 }, 17, 17, runStart, runEnd);

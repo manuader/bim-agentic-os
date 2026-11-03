@@ -181,6 +181,8 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["sheet.place_view"]=()=>new JsonObject{["sheet_uid"]=McpUid,["view_uid"]="60f91daf-3dd7-4283-a86d-24137b73f3da-00000e01",["center"]=new JsonArray(420,297)},
     ["element.set_parameter"]=()=>new JsonObject{["element_uid"]=McpUid,["parameter"]=new JsonObject{["built_in"]="ALL_MODEL_INSTANCE_COMMENTS"},["value"]=new JsonObject{["kind"]="text",["text"]="checked"},["dry_run"]=true},
     ["element.delete"]=()=>new JsonObject{["element_uids"]=new JsonArray(McpUid),["dry_run"]=true},
+    ["query.materials"]=()=>new JsonObject(),
+    ["roof_type.create"]=()=>new JsonObject{["name"]="Cabin roof",["base_type"]="Basic Roof - Generic 300mm",["layers"]=new JsonArray(new JsonObject{["function"]="finish1",["material"]="Roofing - Tile",["thickness_mm"]=20},new JsonObject{["function"]="membrane",["material"]="Roofing - Membrane",["thickness_mm"]=0},new JsonObject{["function"]="structure",["material"]="Wood",["thickness_mm"]=150})},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
@@ -222,6 +224,27 @@ foreach(var tool in new[]{"revit_element_set_parameter","revit_element_delete"})
     Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" dry run on a real project is refused document_not_enabled before the pipe");
     var onCopy=Guarded(tool,sampleArgs[spec.Name](),McpCopy);
     Check(IsError(onCopy) && FailureCode(onCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["args"]?["dry_run"]?.GetValue<bool>()==true,tool+" dry run on an enabled test copy is forwarded with dry_run true");
+}
+// chat-roof-gable: materials query and layered roof types are generated tools with the same read/write split and guards.
+Check(RevitCommandCatalogue.Materials.Select(spec=>spec.Name).SequenceEqual(new[]{"query.materials","roof_type.create"}) && RevitCommandCatalogue.Materials.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the materials commands, all in the catalogue enumeration");
+foreach(var (tool,readOnly) in new[]{("revit_query_materials",true),("revit_roof_type_create",false)}) {
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==readOnly && (readOnly || listed?["annotations"]?["destructiveHint"]?.GetValue<bool>()==false) && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()==(readOnly?"read":"write-copies"),"materials tool "+tool+" is listed with readOnlyHint "+readOnly+" (an added type is not destructive)");
+    var spec=RevitCommandCatalogue.All.SingleOrDefault(c=>c.ToolName==tool);
+    if(spec is null) continue;
+    var before=forwardedLines.Count;
+    var onReal=Guarded(tool,sampleArgs[spec.Name](),McpReal);
+    if(readOnly) Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,tool+" is read-only: forwarded to the pipe even on a real project");
+    else Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+}
+// chat-roof-gable: a gable footprint roof (sloped_edges) goes through the generated tool unchanged.
+{
+    var before=forwardedLines.Count;
+    var gableArgs=new JsonObject{["level"]="Level 2",["type"]="Cabin roof",["boundary"]=new JsonArray(new JsonArray(0,0),new JsonArray(8000,0),new JsonArray(8000,6000),new JsonArray(0,6000)),["slope_deg"]=30,["sloped_edges"]=new JsonArray(0,2)};
+    var gable=Guarded("revit_roof_create_footprint",gableArgs,McpCopy);
+    Check(IsError(gable) && FailureCode(gable)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["args"]?["sloped_edges"]?.ToJsonString()=="[0,2]","revit_roof_create_footprint forwards a gable request with its sloped_edges");
+    var invalid=Guarded("revit_roof_create_footprint",new JsonObject{["level"]="Level 2",["type"]="Cabin roof",["boundary"]=Outline(),["sloped_edges"]=new JsonArray(0,2)},McpCopy);
+    Check(IsError(invalid) && FailureCode(invalid)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before+1,"sloped_edges without slope_deg is args_invalid before the pipe");
 }
 foreach(var tool in new[]{"revit_query_elements","revit_query_inspect"}) {
     var listed=tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!;

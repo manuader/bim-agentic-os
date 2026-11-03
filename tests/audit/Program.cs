@@ -89,6 +89,12 @@ try
         Check(RevitCommandCatalogue.Elements.Any(spec => spec.Name == command && !spec.Writes), "element query catalogue has read-only " + command);
         Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == PermissionLevel.Read && PermissionPolicy.RequiredLevel(command, RealPath, copies) == PermissionLevel.Read, command + " requires read on a copy and on a real project");
     }
+    // chat-roof-gable: query.materials is read anywhere; roof_type.create writes copies only.
+    foreach (var (command, onCopy, onReal) in new (string, PermissionLevel, PermissionLevel)[] { ("query.materials", PermissionLevel.Read, PermissionLevel.Read), ("roof_type.create", PermissionLevel.WriteCopies, PermissionLevel.WriteRealProject) })
+    {
+        Check(RevitCommandCatalogue.Materials.Any(spec => spec.Name == command), "materials catalogue has " + command);
+        Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == onCopy && PermissionPolicy.RequiredLevel(command, RealPath, copies) == onReal, command + " requires " + onCopy + " on a copy and " + onReal + " on a real project");
+    }
     // P9-05: the five catalogue v2 commands keep the v1 read/write split.
     var v2Levels = new (string Command, PermissionLevel Copy, PermissionLevel Real)[]
     {
