@@ -454,7 +454,7 @@ try
             && Find(Run(millimetres), "mm", "dormitorio-area-min")?.Outcome == RoomCheckOutcome.Pass, "millimetre lengths convert to metres and square metres before checking");
         Check(RoomFacts.Rectangle("x", "Cocina", Length.FromMetres(1.5), Length.FromMetres(2)).MinSideMetres == 1.5 && RoomFacts.Rectangle("x", "Cocina", Length.FromMetres(2), Length.FromMetres(1.5)).MinSideMetres == 1.5,
             "the shortest side does not depend on orientation");
-        bool Refused(Func<RoomFacts> make) { try { make(); return false; } catch (ArgumentException) { return true; } }
+        bool Refused(Func<object> make) { try { make(); return false; } catch (ArgumentException) { return true; } }
         Check(Refused(() => new RoomFacts("x", "Dormitorio", -1)) && Refused(() => new RoomFacts("x", "Dormitorio", double.NaN)) && Refused(() => new RoomFacts("x", "Dormitorio", 9, double.PositiveInfinity))
             && Refused(() => new RoomFacts("", "Dormitorio")) && Refused(() => new RoomFacts("x", "Dormitorio", ventilationAreaSquareMetres: -0.1)),
             "negative, non-finite measurements and blank ids are refused");
