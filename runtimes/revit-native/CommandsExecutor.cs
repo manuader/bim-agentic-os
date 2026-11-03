@@ -26,7 +26,8 @@ namespace Bim.Revit;
 //   DeleteWarning (FailuresAccessor dea68b06-a061-fc05-d814-db741f2e7f14).
 // Partial: catalogue v2 (roofs, stairs, curtain walls, floor openings) is in CommandsExecutorV2.cs; view commands
 // (P4-01: plan, section, 3D) are in CommandsExecutorViews.cs; structure commands (P9-02: grids, columns, beams,
-// foundations) are in CommandsExecutorStructure.cs.
+// foundations) are in CommandsExecutorStructure.cs; documentation commands (P4-02: dimensions, tags, schedules,
+// sheets) are in CommandsExecutorDocumentation.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -69,6 +70,11 @@ internal static partial class CommandExecutor
             StructuralBeamCreateArgs beam => BeamWrite(d, beam),
             IsolatedFoundationCreateArgs footing => IsolatedFoundationWrite(d, footing),
             WallFoundationCreateArgs foundation => WallFoundationWrite(d, foundation),
+            DimensionLinearCreateArgs dimension => DimensionWrite(d, dimension),
+            TagCreateArgs tag => TagWrite(d, tag),
+            ScheduleCreateArgs schedule => ScheduleWrite(d, schedule),
+            SheetCreateArgs sheet => SheetWrite(d, sheet),
+            SheetPlaceViewArgs place => PlaceViewWrite(d, place),
             // A stair is created through a StairsEditScope, which cannot start inside the plan's write transaction.
             StairCreateArgs => null,
             _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),

@@ -47,7 +47,7 @@ internal static partial class CommandExecutor
             CommandReadbackStructure.StructuralTypesJson(query.Category, WallFoundationTypes(d).Select(type => new StructuralTypeRow(null, type.Name, type.UniqueId, true, null))),
         StructuralTypeQueryArgs query =>
             CommandReadbackStructure.StructuralTypesJson(query.Category, StructuralSymbols(d, query.Category).Select(symbol => new StructuralTypeRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive, symbol.Family.FamilyPlacementType.ToString()))),
-        _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
+        _ => QueryDocumentation(d, envelope),
     };
 
     static ObservedGrid ObserveGrid(Grid grid)
