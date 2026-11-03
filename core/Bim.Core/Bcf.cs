@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml;
@@ -11,7 +10,12 @@ namespace Bim.Core;
 // markup.bcf and, when the issue has a camera or affected elements, viewpoint.bcfv.
 // Determinism: GUIDs are name-based (SHA-256 of "bim-agentic-os/bcf/{kind}/{name}", RFC 9562 version 8), the
 // timestamp is injected and normalized to UTC, topics are ordered by issue id (ordinal), element ids are deduplicated
-// and ordered, and every zip entry carries the same timestamp, so the same input yields a byte-identical zip.
+// and ordered, and the archive is written by BcfZip (stored entries, fixed headers, one DOS timestamp), so the same
+// input yields a byte-identical zip on every OS and runtime. CreationDate keeps the injected second; the zip entry
+// time has DOS 2-second resolution, so an odd second rounds down there.
+// Bounds: per-field limits (BcfLimits) plus a whole-export budget estimated before any XML is written:
+// 6 bytes per input character (worst case of UTF-8 and XML escaping), with OriginatingSystem counted once per element
+// id, + 4096 per issue + 128 per element id. The generated entries are checked against the same budget afterwards.
 public enum BcfSeverity { Error, Warning, Info }
 
 public enum BcfCameraKind { Perspective, Orthogonal }
@@ -34,7 +38,8 @@ public sealed record BcfCamera(BcfCameraKind Kind, BcfVector ViewPoint, BcfVecto
 public sealed record BcfIssue(string Id, string Title, string? Description, BcfSeverity Severity, string? RuleId = null,
     IReadOnlyList<string>? ElementIds = null, BcfCamera? Camera = null);
 
-public sealed record BcfExportOptions(string ProjectId, string ProjectName, string Author, DateTimeOffset Timestamp);
+// OriginatingSystem, when given, is written next to every AuthoringToolId component.
+public sealed record BcfExportOptions(string ProjectId, string ProjectName, string Author, DateTimeOffset Timestamp, string? OriginatingSystem = null);
 
 public sealed record BcfEntry(string Path, byte[] Content);
 
@@ -47,6 +52,10 @@ public static class BcfLimits
     public const int MaxElementsPerIssue = 1000;
     public const int MaxElementIdLength = 128;
     public const double MaxCoordinate = 1e7;
+    public const long MaxTotalBytes = 64L * 1024 * 1024;
+    public const int BytesPerChar = 6;
+    public const int IssueOverhead = 4096;
+    public const int ElementOverhead = 128;
 }
 
 public static class BcfCodes
@@ -60,6 +69,7 @@ public static class BcfCodes
     public const string ElementsInvalid = "bcf_elements_invalid";
     public const string CameraInvalid = "bcf_camera_invalid";
     public const string OptionsInvalid = "bcf_options_invalid";
+    public const string TotalTooLarge = "bcf_total_too_large";
 }
 
 public sealed class BcfExportException : ArgumentException
@@ -90,10 +100,16 @@ public static class BcfExport
     {
         SkillSeverity.Error => BcfSeverity.Error,
         SkillSeverity.Warning => BcfSeverity.Warning,
-        _ => BcfSeverity.Info,
+        SkillSeverity.Info => BcfSeverity.Info,
+        _ => throw new BcfExportException(BcfCodes.IssueInvalid, "undefined skill severity"),
     };
 
-    public static BcfSeverity FromBrief(BriefSeverity severity) => severity == BriefSeverity.Error ? BcfSeverity.Error : BcfSeverity.Warning;
+    public static BcfSeverity FromBrief(BriefSeverity severity) => severity switch
+    {
+        BriefSeverity.Error => BcfSeverity.Error,
+        BriefSeverity.Warning => BcfSeverity.Warning,
+        _ => throw new BcfExportException(BcfCodes.IssueInvalid, "undefined brief severity"),
+    };
 
     public static string TopicGuid(string issueId) => DeriveGuid("topic", issueId);
     public static string ViewpointGuid(string issueId) => DeriveGuid("viewpoint", issueId);
@@ -127,19 +143,7 @@ public static class BcfExport
     public static byte[] WriteZip(IReadOnlyList<BcfIssue> issues, BcfExportOptions options)
     {
         var entries = Entries(issues, options);
-        var stamp = ZipStamp(options.Timestamp);
-        using var buffer = new MemoryStream();
-        using (var archive = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
-        {
-            foreach (var entry in entries)
-            {
-                var zipEntry = archive.CreateEntry(entry.Path, CompressionLevel.Optimal);
-                zipEntry.LastWriteTime = stamp;
-                using var stream = zipEntry.Open();
-                stream.Write(entry.Content);
-            }
-        }
-        return buffer.ToArray();
+        return BcfZip.Write(entries, options.Timestamp);
     }
 
     public static IReadOnlyList<BcfEntry> Entries(IReadOnlyList<BcfIssue> issues, BcfExportOptions options)
@@ -150,10 +154,13 @@ public static class BcfExport
         if (issues.Count > BcfLimits.MaxIssues) throw new BcfExportException(BcfCodes.IssuesTooMany, issues.Count + " > " + BcfLimits.MaxIssues);
         var ids = new HashSet<string>(StringComparer.Ordinal);
         var prepared = new List<(BcfIssue Issue, IReadOnlyList<Component> Components)>(issues.Count);
+        var budget = (long)BcfLimits.BytesPerChar * (options.ProjectId.Length + options.ProjectName.Length + options.Author.Length + (options.OriginatingSystem?.Length ?? 0)) + BcfLimits.IssueOverhead;
         foreach (var issue in issues)
         {
             var components = ValidateIssue(issue);
             if (!ids.Add(issue.Id)) throw new BcfExportException(BcfCodes.IdDuplicate, issue.Id);
+            budget += EstimatedBytes(issue, options.OriginatingSystem?.Length ?? 0);
+            if (budget > BcfLimits.MaxTotalBytes) throw new BcfExportException(BcfCodes.TotalTooLarge, "estimated export exceeds " + BcfLimits.MaxTotalBytes + " bytes");
             prepared.Add((issue, components));
         }
         prepared.Sort((left, right) => string.CompareOrdinal(left.Issue.Id, right.Issue.Id));
@@ -223,8 +230,9 @@ public static class BcfExport
                 writer.WriteEndElement();
                 writer.WriteEndElement();
             })));
-            if (hasViewpoint) entries.Add(new(topicGuid + "/" + ViewpointFile, Xml(writer => Viewpoint(writer, viewpointGuid, components, issue.Camera))));
+            if (hasViewpoint) entries.Add(new(topicGuid + "/" + ViewpointFile, Xml(writer => Viewpoint(writer, viewpointGuid, components, issue.Camera, options.OriginatingSystem))));
         }
+        if (entries.Sum(entry => (long)entry.Content.Length) > BcfLimits.MaxTotalBytes) throw new BcfExportException(BcfCodes.TotalTooLarge, "export exceeds " + BcfLimits.MaxTotalBytes + " bytes");
         return entries;
     }
 
@@ -233,7 +241,15 @@ public static class BcfExport
         public string Key => IfcGuid ?? AuthoringToolId!;
     }
 
-    private static void Viewpoint(XmlWriter writer, string guid, IReadOnlyList<Component> components, BcfCamera? camera)
+    private static long EstimatedBytes(BcfIssue issue, int originatingSystemLength)
+    {
+        var elements = issue.ElementIds ?? Array.Empty<string>();
+        long chars = issue.Id.Length + issue.Title.Length + (issue.Description?.Length ?? 0) + (issue.RuleId?.Length ?? 0);
+        foreach (var element in elements) chars += element.Length + originatingSystemLength;
+        return chars * BcfLimits.BytesPerChar + BcfLimits.IssueOverhead + (long)elements.Count * BcfLimits.ElementOverhead;
+    }
+
+    private static void Viewpoint(XmlWriter writer, string guid, IReadOnlyList<Component> components, BcfCamera? camera, string? originatingSystem)
     {
         writer.WriteStartElement("VisualizationInfo");
         writer.WriteAttributeString("Guid", guid);
@@ -245,7 +261,11 @@ public static class BcfExport
             {
                 writer.WriteStartElement("Component");
                 if (component.IfcGuid is not null) writer.WriteAttributeString("IfcGuid", component.IfcGuid);
-                if (component.AuthoringToolId is not null) writer.WriteElementString("AuthoringToolId", component.AuthoringToolId);
+                if (component.AuthoringToolId is not null)
+                {
+                    if (originatingSystem is not null) writer.WriteElementString("OriginatingSystem", originatingSystem);
+                    writer.WriteElementString("AuthoringToolId", component.AuthoringToolId);
+                }
                 writer.WriteEndElement();
             }
             writer.WriteEndElement();
@@ -306,18 +326,12 @@ public static class BcfExport
         return buffer.ToArray();
     }
 
-    private static DateTimeOffset ZipStamp(DateTimeOffset timestamp)
-    {
-        var utc = timestamp.UtcDateTime;
-        var even = new DateTime(utc.Year, utc.Month, utc.Day, utc.Hour, utc.Minute, utc.Second - utc.Second % 2, DateTimeKind.Unspecified);
-        return new DateTimeOffset(even, TimeSpan.Zero);
-    }
-
     private static void ValidateOptions(BcfExportOptions options)
     {
-        if (!IsLine(options.ProjectId, BcfLimits.MaxIdLength)) throw new BcfExportException(BcfCodes.OptionsInvalid, "project id");
+        if (!IsIdentifier(options.ProjectId, BcfLimits.MaxIdLength)) throw new BcfExportException(BcfCodes.OptionsInvalid, "project id");
         if (!IsLine(options.ProjectName, BcfLimits.MaxTitleLength)) throw new BcfExportException(BcfCodes.OptionsInvalid, "project name");
-        if (!IsLine(options.Author, BcfLimits.MaxIdLength)) throw new BcfExportException(BcfCodes.OptionsInvalid, "author");
+        if (!IsIdentifier(options.Author, BcfLimits.MaxIdLength)) throw new BcfExportException(BcfCodes.OptionsInvalid, "author");
+        if (options.OriginatingSystem is not null && !IsIdentifier(options.OriginatingSystem, BcfLimits.MaxIdLength)) throw new BcfExportException(BcfCodes.OptionsInvalid, "originating system");
         var year = options.Timestamp.UtcDateTime.Year;
         if (year < 1980 || year > 2107) throw new BcfExportException(BcfCodes.OptionsInvalid, "timestamp outside 1980..2107");
     }
@@ -325,19 +339,23 @@ public static class BcfExport
     private static IReadOnlyList<Component> ValidateIssue(BcfIssue? issue)
     {
         if (issue is null) throw new BcfExportException(BcfCodes.IssueInvalid, "null issue");
-        if (!IsLine(issue.Id, BcfLimits.MaxIdLength)) throw new BcfExportException(BcfCodes.IdInvalid, "issue id must be 1.." + BcfLimits.MaxIdLength + " printable characters");
+        if (!IsIdentifier(issue.Id, BcfLimits.MaxIdLength)) throw new BcfExportException(BcfCodes.IdInvalid, "issue id must be 1.." + BcfLimits.MaxIdLength + " printable characters without surrounding whitespace");
         if (!Enum.IsDefined(issue.Severity)) throw new BcfExportException(BcfCodes.IssueInvalid, "undefined severity for " + issue.Id);
         Text(issue.Title, BcfLimits.MaxTitleLength, multiline: false, "title of " + issue.Id);
         if (issue.Description is not null) Text(issue.Description, BcfLimits.MaxDescriptionLength, multiline: true, "description of " + issue.Id, allowBlank: true);
-        if (issue.RuleId is not null) Text(issue.RuleId, BcfLimits.MaxIdLength, multiline: false, "rule id of " + issue.Id);
+        if (issue.RuleId is not null)
+        {
+            Text(issue.RuleId, BcfLimits.MaxIdLength, multiline: false, "rule id of " + issue.Id);
+            if (issue.RuleId.Trim().Length != issue.RuleId.Length) throw new BcfExportException(BcfCodes.TextInvalid, "rule id of " + issue.Id + " has surrounding whitespace");
+        }
         if (issue.Camera is not null) ValidateCamera(issue.Camera, issue.Id);
         var elements = issue.ElementIds ?? Array.Empty<string>();
         if (elements.Count > BcfLimits.MaxElementsPerIssue) throw new BcfExportException(BcfCodes.ElementsInvalid, issue.Id + " has more than " + BcfLimits.MaxElementsPerIssue + " elements");
         var components = new SortedDictionary<string, Component>(StringComparer.Ordinal);
         foreach (var element in elements)
         {
-            if (!IsLine(element, BcfLimits.MaxElementIdLength)) throw new BcfExportException(BcfCodes.ElementsInvalid, "element id of " + issue.Id);
-            var component = Classify(element.Trim());
+            if (!IsIdentifier(element, BcfLimits.MaxElementIdLength)) throw new BcfExportException(BcfCodes.ElementsInvalid, "element id of " + issue.Id);
+            var component = Classify(element);
             components.TryAdd(component.Key, component);
         }
         return components.Values.ToList();
@@ -345,7 +363,8 @@ public static class BcfExport
 
     private static Component Classify(string element)
     {
-        if (element.Length == 36 && Guid.TryParseExact(element, "D", out var guid)) return new Component(ToIfcGuid(guid), null);
+        if ((element.Length == 36 && Guid.TryParseExact(element, "D", out var guid)) || (element.Length == 38 && Guid.TryParseExact(element, "B", out guid)))
+            return new Component(ToIfcGuid(guid), null);
         if (element.Length == 22 && element[0] is >= '0' and <= '3' && element.All(c => IfcAlphabet.Contains(c, StringComparison.Ordinal))) return new Component(element, null);
         return new Component(null, element);
     }
@@ -358,12 +377,19 @@ public static class BcfExport
         if (!Enum.IsDefined(camera.Kind)) throw new BcfExportException(BcfCodes.CameraInvalid, "undefined camera kind for " + issueId);
         if (!Finite(camera.ViewPoint) || !Finite(camera.Direction) || !Finite(camera.UpVector)) throw new BcfExportException(BcfCodes.CameraInvalid, "non-finite or out-of-range camera vector for " + issueId);
         if (!NonZero(camera.Direction) || !NonZero(camera.UpVector)) throw new BcfExportException(BcfCodes.CameraInvalid, "zero camera direction or up vector for " + issueId);
+        var d = camera.Direction;
+        var u = camera.UpVector;
+        var cross = new BcfVector(d.Y * u.Z - d.Z * u.Y, d.Z * u.X - d.X * u.Z, d.X * u.Y - d.Y * u.X);
+        if (cross.X * cross.X + cross.Y * cross.Y + cross.Z * cross.Z <= 1e-12 * (d.X * d.X + d.Y * d.Y + d.Z * d.Z) * (u.X * u.X + u.Y * u.Y + u.Z * u.Z))
+            throw new BcfExportException(BcfCodes.CameraInvalid, "camera direction and up vector are parallel for " + issueId);
         if (!double.IsFinite(camera.AspectRatio) || camera.AspectRatio <= 0 || camera.AspectRatio > 1000) throw new BcfExportException(BcfCodes.CameraInvalid, "aspect ratio for " + issueId);
         var valid = camera.Kind == BcfCameraKind.Perspective
             ? double.IsFinite(camera.Value) && camera.Value >= 45 && camera.Value <= 60
             : double.IsFinite(camera.Value) && camera.Value > 0 && camera.Value <= BcfLimits.MaxCoordinate;
         if (!valid) throw new BcfExportException(BcfCodes.CameraInvalid, (camera.Kind == BcfCameraKind.Perspective ? "field of view must be 45..60" : "view-to-world scale must be positive") + " for " + issueId);
     }
+
+    private static bool IsIdentifier(string? value, int maxLength) => IsLine(value, maxLength) && value!.Trim().Length == value.Length;
 
     private static bool IsLine(string? value, int maxLength) =>
         value is not null && value.Length <= maxLength && !string.IsNullOrWhiteSpace(value) && IsXmlText(value, multiline: false);

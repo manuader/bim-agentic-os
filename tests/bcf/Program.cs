@@ -361,12 +361,13 @@ try
     Check(Code(() => BcfExport.WriteZip(new[] { Ok() }, options with { Author = "" })) == BcfCodes.OptionsInvalid, "empty author refused");
     Check(Code(() => BcfExport.WriteZip(new[] { Ok() }, options with { ProjectId = " " })) == BcfCodes.OptionsInvalid, "blank project id refused");
     Check(Code(() => BcfExport.WriteZip(new[] { Ok() }, options with { Timestamp = new DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero) })) == BcfCodes.OptionsInvalid, "timestamp outside the zip date range refused");
-    // Whole-export budget with every field at its maximum (documented estimate: 6 bytes per character + 4096 per issue + 128 per element).
+    // Whole-export budget with every field at its maximum (documented estimate: 6 bytes per character, OriginatingSystem
+    // counted once per element id, + 4096 per issue + 128 per element).
     var maxElements = Enumerable.Range(0, BcfLimits.MaxElementsPerIssue).Select(i => ("el-" + i).PadRight(BcfLimits.MaxElementIdLength, 'e')).ToList();
     var maxCamera = BcfCamera.Perspective(new BcfVector(1, 2, 3), forward, up, 50, 1);
     BcfIssue Max(int i) => new(("max-" + i).PadRight(BcfLimits.MaxIdLength, 'x'), new string('T', BcfLimits.MaxTitleLength), new string('D', BcfLimits.MaxDescriptionLength),
         BcfSeverity.Warning, new string('r', BcfLimits.MaxIdLength), maxElements, maxCamera);
-    var perIssue = 6L * (BcfLimits.MaxIdLength + BcfLimits.MaxTitleLength + BcfLimits.MaxDescriptionLength + BcfLimits.MaxIdLength + BcfLimits.MaxElementsPerIssue * BcfLimits.MaxElementIdLength) + 4096 + 128L * BcfLimits.MaxElementsPerIssue;
+    var perIssue = 6L * (BcfLimits.MaxIdLength + BcfLimits.MaxTitleLength + BcfLimits.MaxDescriptionLength + BcfLimits.MaxIdLength + BcfLimits.MaxElementsPerIssue * (BcfLimits.MaxElementIdLength + options.OriginatingSystem!.Length)) + 4096 + 128L * BcfLimits.MaxElementsPerIssue;
     var baseBytes = 6L * (options.ProjectId.Length + options.ProjectName.Length + options.Author.Length + options.OriginatingSystem!.Length) + 4096;
     var fits = (int)((BcfLimits.MaxTotalBytes - baseBytes) / perIssue);
     Check(BcfLimits.MaxTotalBytes == 64L * 1024 * 1024 && fits > 0 && fits < BcfLimits.MaxIssues, "budget is 64 MiB and binds before the issue count", fits.ToString(System.Globalization.CultureInfo.InvariantCulture));
