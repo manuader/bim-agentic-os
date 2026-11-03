@@ -459,8 +459,46 @@
         "runtimes/revit-native/CommandsV2.cs",
         "tests/revit-commands/CatalogueV2.cs"
       ],
-      "blocker": "Executor never run in Revit (owner session needed); not exposed through MCP yet (P9-05); StairsEditScope inside the group, curtain grid U/V and ROOF_SLOPE behaviour unverified.",
+      "blocker": "Executor never run in Revit (owner session needed); StairsEditScope inside the group, curtain grid U/V and ROOF_SLOPE behaviour unverified.",
       "scope": "P9-01: query.roof_types, roof.create_footprint, stair.create, curtain_wall.create, floor.create_opening with copies guard, receipts and independent readback (footprint/area, UnitUtils slope, riser completeness, run path, panels/mullions/railings). Contracts and Revit-free rules unit-tested; executor compiled in native-build, CI 41547173763."
+    },
+    {
+      "id": "revit-view-commands",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsViews.cs",
+        "runtimes/revit-native/CommandsViews.cs",
+        "runtimes/revit-native/CommandsExecutorViews.cs",
+        "tests/revit-commands/CatalogueViews.cs",
+        "tests/integration/native-views-probe.ps1"
+      ],
+      "blocker": "Executor never run in Revit; CreateSection box frame/far clip and SetSectionBox exact round-trip unverified (owner probe tests/integration/native-views-probe.ps1); section marker not listed in created; no MCP forwarded-command sample args for view.*.",
+      "scope": "P4-01: query.view_family_types, query.view_templates, view.create_plan, view.create_section, view.create_3d with copies guard, receipts, validators (scale vs template/default template, case-insensitive name uniqueness incl. templates) and readback rollback. Contracts unit-tested; executor compiled in native-build, CI 41560983214."
+    },
+    {
+      "id": "cad-dxf-reader",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/cad/Bim.Cad/DxfReader.cs",
+        "adapters/cad/Bim.Cad/DxfExploder.cs",
+        "adapters/cad/Bim.Cad/WallPairDetector.cs",
+        "tests/cad/Program.cs",
+        "tests/cad/fixtures"
+      ],
+      "blocker": "Hand-written fixtures only (no real-world DXF corpus); binary DXF/DWG, POLYLINE/VERTEX, SPLINE, ELLIPSE, HATCH, DIMENSION not read; arc walls and collinear merge not detected; not yet connected to BIM-IR.",
+      "scope": "P6-01: BCL-only ASCII DXF reader with provenance (file, handle, layer, type, line, insert chain, paper space/invisible), $INSUNITS, layers, LINE/ARC/CIRCLE/LWPOLYLINE/TEXT/MTEXT/INSERT, bounded explode and wall-pair detection with confidence and work limits, canonical JSON. CI 41559877398 (Ubuntu + Windows)."
+    },
+    {
+      "id": "mcp-revit-catalogue",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/mcp/McpServer.cs",
+        "tests/mcp/Program.cs",
+        "tests/audit/Program.cs",
+        "docs/contracts/module-contracts.md"
+      ],
+      "blocker": "MCP labels permission levels but does not enforce per-actor grants or audit; writes allowed under any enabled root directory; not run against the owner's Claude Desktop.",
+      "scope": "P9-05: MCP tools/list built from RevitCommandCatalogue.All (v1, v2, views) with fail-closed name checks, _meta permission level from PermissionPolicy, readOnly/destructive/idempotent hints; copies guard unchanged. CI 41562897314."
     }
   ]
 }

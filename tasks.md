@@ -96,8 +96,8 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P4-01 | View commands (plan, section, 3D) | ⏳ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | view.create plan/section/3d contracts and executor; compiles | target compiled |
-| P4-02 | Dimensions, tags, schedules and sheets commands | ⛔ | P4-01 | same | contracts and executor for dimension/tag/schedule/sheet; compiles | target compiled |
+| P4-01 | View commands (plan, section, 3D) | ✅ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | view.create plan/section/3d contracts and executor; compiles | compiled executor + unit-tested contracts (relay137, CI 41560983214; not verified-in-revit; owner probe tests/integration/native-views-probe.ps1) |
+| P4-02 | Dimensions, tags, schedules and sheets commands | ⏳ | P4-01 | same | contracts and executor for dimension/tag/schedule/sheet; compiles | target compiled |
 
 ### Phase 5 — skills and design systems
 
@@ -111,7 +111,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P6-01 | DXF reader with provenance | ⏳ | — | adapters/cad (new); tests/cad | DXF layers/lines/polylines/arcs/blocks/text read to a provenance-tagged drawing model; wall-pair detection; fixtures; tests | target unit-tested |
+| P6-01 | DXF reader with provenance | ✅ | — | adapters/cad (new); tests/cad | DXF layers/lines/polylines/arcs/blocks/text read to a provenance-tagged drawing model; wall-pair detection; fixtures; tests | unit-tested (relay137, CI 41559877398; hand-written ASCII fixtures, BCL only) |
 | P6-02 | PDF vector reader and scale calibration | ⏳ | — | adapters/cad; tests/cad | vector paths and text from PDF, scale from a known dimension, alignment; fixtures; tests | target unit-tested |
 | P6-03 | Project brief schema and validated extraction | ✅ | — | core/Bim.Core/Brief* | brief JSON schema (rooms, areas, adjacencies, constraints) with validator and uncertainty fields; tests | unit-tested (relay134, CI 41514529827) |
 
@@ -138,7 +138,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P9-02 | Structure: grids, columns, beams, foundations | ⏳ | — | same | contracts, validators, executor; compiles | target compiled |
 | P9-03 | Guarded free path (ADR + implementation) | ⏳ | — | docs/architecture/adr; runtimes/revit-native | ADR accepted by owner rules; compiled C# runs in rolled-back group with change report; compiles | target compiled |
 | P9-04 | Revit parity census registry | ⏳ | — | capabilities/ | machine-readable census of Revit functions with coverage state and tests linking | target described |
-| P9-05 | Expose catalogue v2 as MCP tools | ⏳ | P9-01 | interfaces/mcp/McpServer.cs; tests/mcp; tests/audit; docs/contracts/module-contracts.md | MCP tools/list built from RevitCommandCatalogue.All; v2 permission levels asserted; contract doc lists v2 | target unit-tested |
+| P9-05 | Expose catalogue v2 as MCP tools | ✅ | P9-01 | interfaces/mcp/McpServer.cs; tests/mcp; tests/audit; docs/contracts/module-contracts.md | MCP tools/list built from RevitCommandCatalogue.All; v2 permission levels asserted; contract doc lists v2 | unit-tested (relay137, CI 41562897314; labels only, no per-actor enforcement in MCP) |
 
 ### Phase 10 — global production
 
@@ -151,7 +151,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 30/54 done (55.6 %)
+Progress: 33/54 done (61.1 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
@@ -161,12 +161,12 @@ Progress: 30/54 done (55.6 %)
 - Phase 1 — native kernel: 1/4
 - Phase 2 — semantic state and mirror: 1/3
 - Phase 3 — incremental compiler: 1/2
-- Phase 4 — documentation engine: 0/2
+- Phase 4 — documentation engine: 1/2
 - Phase 5 — skills and design systems: 1/3
-- Phase 6 — CAD and requirements: 1/3
+- Phase 6 — CAD and requirements: 2/3
 - Phase 7 — generative kernels: 1/2
 - Phase 8 — Rhino, Blender and IFC: 1/3
-- Phase 9 — Revit parity: 1/5
+- Phase 9 — Revit parity: 2/5
 - Phase 10 — global production: 1/3
-Next ready: P1-02, P2-01, P3-02, P4-01, P5-02, P5-03, P6-01, P6-02
+Next ready: P1-02, P2-01, P3-02, P4-02, P5-02, P5-03, P6-02, P7-02
 
