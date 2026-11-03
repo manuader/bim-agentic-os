@@ -1,0 +1,155 @@
+using System.Globalization;
+namespace Bim.Cad;
+
+// Replaces every INSERT, recursively, by its block's entities in world coordinates:
+// world = parent ∘ translate(insertion) ∘ rotate(rotation) ∘ scale(sx, sy) ∘ translate(-block base point).
+// Under a similarity (uniform scale, rotation, mirror) arcs and circles stay arcs and circles (a mirror keeps the
+// counter-clockwise sense by swapping the end angles, and negates polyline bulges); under a non-uniform scale they
+// and bulged polyline segments are tessellated into straight polylines with an arc-tessellated warning. Missing
+// blocks and block cycles are skipped with warnings; nesting deeper than MaxDepth or more than MaxEntities output
+// entities raise explode-limit, so exponential nesting never hangs.
+public static class DxfExploder
+{
+    public static DxfExplodedDrawing Explode(DxfDrawing drawing, DxfExplodeOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(drawing);
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.MaxDepth < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxDepth must be at least 1");
+        if (options.MaxEntities < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxEntities must be at least 1");
+        if (options.ArcTessellationSegments < 4 || options.ArcTessellationSegments > 4096) throw new ArgumentOutOfRangeException(nameof(options), "ArcTessellationSegments must be in 4..4096");
+        var context = new Context(drawing, options);
+        foreach (var entity in drawing.Entities) context.Emit(entity, Affine.Identity, Array.Empty<string>(), null, 0);
+        return new DxfExplodedDrawing(context.Output.ToArray(), context.Warnings.ToArray());
+    }
+
+    private sealed class Context
+    {
+        private readonly Dictionary<string, DxfBlock> blocks = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> stack = new();
+        private readonly DxfExplodeOptions options;
+
+        public Context(DxfDrawing drawing, DxfExplodeOptions options)
+        {
+            this.options = options;
+            foreach (var block in drawing.Blocks) blocks.TryAdd(block.Name, block);
+        }
+
+        public List<DxfEntity> Output { get; } = new();
+        public List<DxfWarning> Warnings { get; } = new();
+
+        public void Emit(DxfEntity entity, Affine transform, IReadOnlyList<string> path, string? inheritedLayer, int depth)
+        {
+            var source = entity.Provenance;
+            var layer = inheritedLayer is not null && source.Layer == "0" ? inheritedLayer : source.Layer;
+            var provenance = path.Count == 0 && layer == source.Layer ? source : source with { Layer = layer, InsertPath = path };
+            if (entity is DxfInsert insert)
+            {
+                if (!blocks.TryGetValue(insert.BlockName, out var block))
+                {
+                    Warnings.Add(new DxfWarning("block-missing", source.Line, "INSERT references undefined block " + insert.BlockName));
+                    return;
+                }
+                if (stack.Contains(block.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    Warnings.Add(new DxfWarning("block-cycle", source.Line, "INSERT of block " + block.Name + " inside itself skipped"));
+                    return;
+                }
+                if (depth + 1 > options.MaxDepth)
+                    throw new DxfFormatException("explode-limit", source.Line, "block nesting deeper than " + options.MaxDepth.ToString(CultureInfo.InvariantCulture));
+                var local = Affine.Translate(insert.Insertion)
+                    .Compose(Affine.Rotate(insert.RotationDegrees))
+                    .Compose(Affine.Scale(insert.ScaleX, insert.ScaleY))
+                    .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
+                var world = transform.Compose(local);
+                var childPath = path.Append(source.Handle ?? "@" + source.Line.ToString(CultureInfo.InvariantCulture)).ToArray();
+                stack.Add(block.Name);
+                foreach (var child in block.Entities) Emit(child, world, childPath, layer, depth + 1);
+                stack.RemoveAt(stack.Count - 1);
+                return;
+            }
+            Add(transform.IsIdentity ? Relabel(entity, provenance) : Transform(entity, transform, provenance));
+        }
+
+        private void Add(DxfEntity? entity)
+        {
+            if (entity is null) return;
+            if (Output.Count >= options.MaxEntities)
+                throw new DxfFormatException("explode-limit", entity.Provenance.Line, "exploding inserts produces more than " + options.MaxEntities.ToString(CultureInfo.InvariantCulture) + " entities");
+            Output.Add(entity);
+        }
+
+        private static DxfEntity Relabel(DxfEntity entity, DxfProvenance provenance) => ReferenceEquals(entity.Provenance, provenance) ? entity : entity with { Provenance = provenance };
+
+        private DxfEntity? Transform(DxfEntity entity, Affine m, DxfProvenance p)
+        {
+            var mirrored = m.Determinant < 0;
+            switch (entity)
+            {
+                case DxfLine line:
+                    return new DxfLine(p, m.Apply(line.Start), m.Apply(line.End));
+                case DxfCircle circle:
+                    if (m.IsConformal) return new DxfCircle(p, m.Apply(circle.Center), circle.Radius * m.UniformScale);
+                    return Tessellate(p, m, circle.Center, circle.Radius, 0, 360, true);
+                case DxfArc arc:
+                    if (m.IsConformal)
+                    {
+                        var center = m.Apply(arc.Center);
+                        var a0 = DxfGeometry.Degrees(m.Apply(DxfGeometry.PointAt(arc.Center, arc.Radius, arc.StartAngleDegrees)) - center);
+                        var a1 = DxfGeometry.Degrees(m.Apply(DxfGeometry.PointAt(arc.Center, arc.Radius, arc.EndAngleDegrees)) - center);
+                        return mirrored ? new DxfArc(p, center, arc.Radius * m.UniformScale, a1, a0) : new DxfArc(p, center, arc.Radius * m.UniformScale, a0, a1);
+                    }
+                    return Tessellate(p, m, arc.Center, arc.Radius, arc.StartAngleDegrees, DxfGeometry.Span(arc.StartAngleDegrees, arc.EndAngleDegrees), false);
+                case DxfPolyline polyline:
+                    if (m.IsConformal || polyline.Vertices.All(v => v.Bulge == 0))
+                        return new DxfPolyline(p, polyline.Vertices.Select(v => new DxfVertex(m.Apply(v.Point), mirrored ? -v.Bulge : v.Bulge)).ToArray(), polyline.Closed);
+                    return TessellatePolyline(p, m, polyline);
+                case DxfText text:
+                    {
+                        var direction = m.ApplyVector(new Point2(Math.Cos(text.RotationDegrees * Math.PI / 180), Math.Sin(text.RotationDegrees * Math.PI / 180)));
+                        var up = m.ApplyVector(new Point2(-Math.Sin(text.RotationDegrees * Math.PI / 180), Math.Cos(text.RotationDegrees * Math.PI / 180)));
+                        return text with { Provenance = p, Insertion = m.Apply(text.Insertion), Height = text.Height * up.Length, RotationDegrees = DxfGeometry.Degrees(direction) };
+                    }
+                default:
+                    return entity with { Provenance = p };
+            }
+        }
+
+        private DxfPolyline Tessellate(DxfProvenance p, Affine m, Point2 center, double radius, double startDegrees, double spanDegrees, bool closed)
+        {
+            Warnings.Add(new DxfWarning("arc-tessellated", p.Line, p.EntityType + " under a non-uniform insert scale tessellated into a polyline"));
+            var points = ArcPoints(center, radius, startDegrees, spanDegrees, closed);
+            return new DxfPolyline(p, points.Select(point => new DxfVertex(m.Apply(point), 0)).ToArray(), closed);
+        }
+
+        private DxfPolyline TessellatePolyline(DxfProvenance p, Affine m, DxfPolyline polyline)
+        {
+            Warnings.Add(new DxfWarning("arc-tessellated", p.Line, "LWPOLYLINE bulges under a non-uniform insert scale tessellated"));
+            var points = new List<Point2>();
+            var segments = polyline.Segments();
+            foreach (var segment in segments)
+            {
+                if (points.Count == 0) points.Add(segment.Start);
+                if (segment.Center is { } center)
+                {
+                    var arc = segment.Bulge > 0
+                        ? ArcPoints(center, segment.Radius, segment.StartAngleDegrees, DxfGeometry.Span(segment.StartAngleDegrees, segment.EndAngleDegrees), false)
+                        : ArcPoints(center, segment.Radius, segment.StartAngleDegrees, DxfGeometry.Span(segment.StartAngleDegrees, segment.EndAngleDegrees), false).AsEnumerable().Reverse().ToList();
+                    for (var k = 1; k < arc.Count - 1; k++) points.Add(arc[k]);
+                }
+                points.Add(segment.End);
+            }
+            // A closed polyline's last segment returns to the first vertex, which is already the first point.
+            if (polyline.Closed && points.Count > 1) points.RemoveAt(points.Count - 1);
+            return new DxfPolyline(p, points.Select(point => new DxfVertex(m.Apply(point), 0)).ToArray(), polyline.Closed);
+        }
+
+        private List<Point2> ArcPoints(Point2 center, double radius, double startDegrees, double spanDegrees, bool closed)
+        {
+            var steps = Math.Max(4, (int)Math.Ceiling(options.ArcTessellationSegments * spanDegrees / 360));
+            var points = new List<Point2>(steps + 1);
+            var count = closed ? steps : steps + 1;
+            for (var k = 0; k < count; k++) points.Add(DxfGeometry.PointAt(center, radius, startDegrees + spanDegrees * k / steps));
+            return points;
+        }
+    }
+}

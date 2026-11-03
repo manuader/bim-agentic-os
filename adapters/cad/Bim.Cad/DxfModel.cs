@@ -95,7 +95,8 @@ public sealed record DxfExplodedDrawing(IReadOnlyList<DxfEntity> Entities, IRead
 public sealed record DxfReadOptions(long MaxBytes = 256L * 1024 * 1024);
 
 // Thrown for input that is not a readable ASCII DXF: Code is a stable identifier (binary-dxf, empty, too-large,
-// malformed-group-code, missing-value, bad-number, unterminated-section, missing-eof, explode-limit), Line the
+// malformed-group-code, missing-value, bad-number, malformed-structure, unterminated-section, missing-eof,
+// explode-limit), Line the
 // 1-based line where the problem was found (0 when not tied to a line).
 public sealed class DxfFormatException : Exception
 {
