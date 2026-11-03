@@ -134,8 +134,8 @@ public sealed record RoomValidationReport(IReadOnlyList<RoomFinding> Findings, I
 // "<article>; source_confidence=<cited|owner-confirmed|to-verify>; confirmed_by=<who>; confirmed_on=<date>;
 // applies_if=<property><=<number>; source=<reference>", members after the article in any order and all optional.
 // cited: the number was checked in the named source; owner-confirmed: the project owner (confirmed_by, on confirmed_on)
-// confirmed the value although no primary source was checked; to-verify: pending review. AppliesIf, ConfirmedBy and
-// ConfirmedOn are the raw member texts, or null.
+// confirmed the value although no primary source was checked; to-verify: pending review. AppliesIf is the raw condition
+// text, or null. ConfirmedBy and ConfirmedOn are the raw member texts when the confidence is owner-confirmed, else null.
 public sealed record SkillCitation(string Article, string Confidence, string? Source, string? AppliesIf = null, string? ConfirmedBy = null, string? ConfirmedOn = null);
 
 public static class SkillRoomValidator
@@ -155,16 +155,22 @@ public static class SkillRoomValidator
     static readonly string[] Markers = { ConfidenceMarker, SourceMarker, AppliesIfMarker, ConfirmedByMarker, ConfirmedOnMarker };
 
     // The skill manifest format has no dedicated confidence field, so code packs carry it inside the citation text.
-    // A missing or unknown confidence (matched ordinally, so case matters) is to-verify; a missing citation has an empty article.
+    // Member names and confidence values are matched ordinally, so case matters: "Confirmed_By=" or "Owner-Confirmed" are not
+    // recognised. A missing or unknown confidence is to-verify; so is owner-confirmed without a non-empty confirmed_by and
+    // confirmed_on, and any citation that repeats a member. Confirmation members are kept only for owner-confirmed.
+    // A missing citation has an empty article.
     public static SkillCitation ParseCitation(string? citation)
     {
         if (string.IsNullOrWhiteSpace(citation)) return new SkillCitation("", ConfidenceToVerify, null);
         // Each member runs from its marker to the next marker (or the end), so values may contain ';' without a space.
         var found = new List<(int At, string Marker)>();
+        var repeated = false;
         foreach (var marker in Markers)
         {
             var at = citation.IndexOf(marker, StringComparison.Ordinal);
-            if (at >= 0) found.Add((at, marker));
+            if (at < 0) continue;
+            found.Add((at, marker));
+            repeated |= citation.IndexOf(marker, at + marker.Length, StringComparison.Ordinal) >= 0;
         }
         found.Sort((left, right) => left.At.CompareTo(right.At));
         var article = (found.Count == 0 ? citation : citation[..found[0].At]).Trim();
@@ -175,9 +181,18 @@ public static class SkillRoomValidator
             var end = index + 1 < found.Count ? found[index + 1].At : citation.Length;
             values[found[index].Marker] = citation[start..end].Trim();
         }
-        var confidence = values.TryGetValue(ConfidenceMarker, out var level) && level is ConfidenceCited or ConfidenceOwnerConfirmed or ConfidenceToVerify ? level : ConfidenceToVerify;
         string? Member(string marker) => values.TryGetValue(marker, out var value) && value.Length > 0 ? value : null;
-        return new SkillCitation(article, confidence, Member(SourceMarker), Member(AppliesIfMarker), Member(ConfirmedByMarker), Member(ConfirmedOnMarker));
+        var level = Member(ConfidenceMarker);
+        var confirmedBy = Member(ConfirmedByMarker);
+        var confirmedOn = Member(ConfirmedOnMarker);
+        var confidence = repeated ? ConfidenceToVerify : level switch
+        {
+            ConfidenceCited => ConfidenceCited,
+            ConfidenceOwnerConfirmed when confirmedBy is not null && confirmedOn is not null => ConfidenceOwnerConfirmed,
+            _ => ConfidenceToVerify,
+        };
+        var owner = confidence == ConfidenceOwnerConfirmed;
+        return new SkillCitation(article, confidence, Member(SourceMarker), Member(AppliesIfMarker), owner ? confirmedBy : null, owner ? confirmedOn : null);
     }
 
     // Parses "<property><=<number>" (invariant number), the only applies_if form.
