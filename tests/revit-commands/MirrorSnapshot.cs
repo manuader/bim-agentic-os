@@ -36,12 +36,13 @@ static class MirrorSnapshotChecks
         Unmapped();
         Determinism();
         EmptyModel();
+        ReviewFixes();
     }
 
     static MirrorPoint P(double x, double y) => new(x, y);
     static MirrorObservedLevel[] Levels() => new[] { new MirrorObservedLevel(L1, "Level 1", 0), new MirrorObservedLevel(L2, "Level 2", 3000) };
     static MirrorObservedElement Wall(string uid, double ax, double ay, double bx, double by, string? level = L1) =>
-        new(MirrorCategories.Wall, uid) { LevelUid = level, Start = P(ax, ay), End = P(bx, by), HeightMm = 3000, ThicknessMm = 200 };
+        new(MirrorCategories.Wall, uid) { LevelUid = level, Start = P(ax, ay), End = P(bx, by), HeightMm = 3000, ThicknessMm = 200, WallKind = "Basic", LocationLineIsCenterline = true, BaseOffsetMm = 0 };
     static MirrorObservedElement Door(string uid, string? host, double x, double y, double width = 900) =>
         new(MirrorCategories.Door, uid) { LevelUid = L1, HostUid = host, Location = P(x, y), WidthMm = width, HeightMm = 2100 };
     static MirrorObservedElement Window(string uid, string? host, double x, double y) =>
@@ -54,7 +55,7 @@ static class MirrorSnapshotChecks
     {
         Wall(W1, 0, 0, 5000, 0),
         Wall(W2, 5000, 0, 5000, 4000),
-        new MirrorObservedElement(MirrorCategories.Wall, W3) { LevelUid = L1, Curved = true, HeightMm = 3000, ThicknessMm = 200 },
+        new MirrorObservedElement(MirrorCategories.Wall, W3) { LevelUid = L1, Curved = true, HeightMm = 3000, ThicknessMm = 200, WallKind = "Basic", LocationLineIsCenterline = true, BaseOffsetMm = 0 },
         Door(D1, W1, 1000, 0),
         Window(N1, W2, 5000, 2000),
         new MirrorObservedElement(MirrorCategories.Floor, F1) { LevelUid = L1 },
@@ -107,9 +108,9 @@ static class MirrorSnapshotChecks
         Check(wall is not null && wall.Dependencies.SequenceEqual(new[] { Id(L1) }), "wall depends on its level");
         var level = ById(snapshot, L2);
         Check(level is { Kind: "level" } && level.GeometryMetres.SequenceEqual(new[] { 3.0 }) && level.Dependencies.Length == 0, "level maps to [elevation] in metres with no dependencies", G(level));
-        var odd = Map(new[] { new MirrorObservedElement(MirrorCategories.Wall, W1) { LevelUid = L1, Start = P(12.5, -7.25), End = P(1234.5, 0.1), HeightMm = 2750.5, ThicknessMm = 123.4 } });
+        var odd = Map(new[] { Wall(W1, 12.5, -7.25, 1234.5, 0.1) with { HeightMm = 2750.5, ThicknessMm = 123.4 } });
         Check(ById(odd, W1)?.GeometryMetres.SequenceEqual(new[] { Length.FromMillimetres(12.5).Metres, Length.FromMillimetres(-7.25).Metres, Length.FromMillimetres(1234.5).Metres, Length.FromMillimetres(0.1).Metres, Length.FromMillimetres(2750.5).Metres, Length.FromMillimetres(123.4).Metres }) == true, "millimetres convert to metres through Length.FromMillimetres", G(ById(odd, W1)));
-        var noise = Map(new[] { new MirrorObservedElement(MirrorCategories.Wall, W1) { LevelUid = L1, Start = P(0.0000001, 0), End = P(4999.9999999, 0), HeightMm = 3000, ThicknessMm = 200 } });
+        var noise = Map(new[] { Wall(W1, 0.0000001, 0, 4999.9999999, 0) });
         Check(ById(noise, W1)?.GeometryMetres.SequenceEqual(new[] { 0, 0, 5, 0, 3, 0.2 }) == true, "sub-micrometre conversion noise is normalized like the readback", G(ById(noise, W1)));
         Check(Compiler.Validate(new Project(Guid.NewGuid(), 0, snapshot.Elements.ToArray())).Length == 0, "the mapped elements form a valid BIM-IR project (no duplicate, dangling dependency or bad wall)", JsonSerializer.Serialize(Compiler.Validate(new Project(Guid.NewGuid(), 0, snapshot.Elements.ToArray()))));
     }
@@ -211,6 +212,67 @@ static class MirrorSnapshotChecks
         Check(sources.Count == mapped.Count && sources.Select(s => s!["id"]!.GetValue<string>()).SequenceEqual(mapped.Select(e => e.Id.ToString("D"))) && sources.All(s => s!["unique_id"] is not null && s["category"] is not null), "sources list id, unique_id and category in element order");
         var unmapped = root["unmapped"]!.AsArray();
         Check(unmapped.Select(u => u!["unique_id"]!.GetValue<string>()).SequenceEqual(new[] { F1, W3 }) && unmapped.All(u => u!.AsObject().Select(p => p.Key).SequenceEqual(new[] { "category", "unique_id", "reason", "detail" })), "unmapped entries are category, unique_id, reason, detail ordered by category then UniqueId", unmapped.ToJsonString());
+    }
+
+    // Independent review of P2-01: wall location line, wall kinds, base offset, door sill, demolished elements, size cap,
+    // read-only source scan and the remaining unmapped branches.
+    static void ReviewFixes()
+    {
+        var host = Wall(W1, 0, 0, 5000, 0);
+        var door = Door(D1, W1, 1000, 0);
+        MirrorSnapshot With(MirrorObservedElement wall) => Map(new[] { wall, door });
+        var finish = With(host with { LocationLineIsCenterline = false });
+        Check(Missing(finish, W1)?.Reason == MirrorReasons.WallLocationLineNotCenterline && Missing(finish, D1)?.Reason == MirrorReasons.HostUnknown, "a wall whose location line is not the wall centerline is unmapped wall_location_line_not_centerline and its door host_unknown", Missing(finish, W1)?.Reason ?? "mapped");
+        Check(Missing(With(host with { LocationLineIsCenterline = null }), W1)?.Reason == MirrorReasons.MissingData, "a wall with an unreadable location line is unmapped missing_data");
+        var curtain = With(host with { WallKind = "Curtain" });
+        Check(Missing(curtain, W1)?.Reason == MirrorReasons.CurtainWall && Missing(curtain, D1)?.Reason == MirrorReasons.HostUnknown, "a curtain wall is unmapped curtain_wall_unsupported and its door host_unknown", Missing(curtain, W1)?.Reason ?? "mapped");
+        var stacked = With(host with { WallKind = "Stacked" });
+        Check(Missing(stacked, W1)?.Reason == MirrorReasons.StackedWall && Missing(stacked, D1)?.Reason == MirrorReasons.HostUnknown, "a stacked wall is unmapped stacked_wall_unsupported and its door host_unknown", Missing(stacked, W1)?.Reason ?? "mapped");
+        Check(Missing(With(host with { WallKind = null }), W1)?.Reason == MirrorReasons.MissingData, "a wall of unknown kind is unmapped missing_data");
+        var raised = With(host with { BaseOffsetMm = 150 });
+        Check(Missing(raised, W1)?.Reason == MirrorReasons.WallBaseOffset && Missing(raised, D1)?.Reason == MirrorReasons.HostUnknown, "a wall with a base offset is unmapped wall_base_offset_unsupported and its door host_unknown", Missing(raised, W1)?.Reason ?? "mapped");
+        Check(Missing(With(host with { BaseOffsetMm = -150 }), W1)?.Reason == MirrorReasons.WallBaseOffset, "a negative base offset is unmapped wall_base_offset_unsupported too");
+        Check(ById(With(host with { BaseOffsetMm = 0.0000001 }), W1) is not null, "conversion noise in a zero base offset still maps");
+        Check(Missing(With(host with { BaseOffsetMm = null }), W1)?.Reason == MirrorReasons.MissingData, "a wall with an unreadable base offset is unmapped missing_data");
+        Check(Missing(Map(new[] { host, door with { SillMm = 10 } }), D1)?.Reason == MirrorReasons.InvalidGeometry, "a door with a non-zero sill is unmapped invalid_geometry (doors sit on their level)");
+        Check(ById(Map(new[] { host, door with { SillMm = 0 } }), D1) is not null, "a door with sill 0 maps");
+        var demolished = Map(new[] { host with { Demolished = true }, door, Room(R1, Rectangle()) with { Demolished = true } });
+        Check(Missing(demolished, W1)?.Reason == MirrorReasons.Demolished && Missing(demolished, R1)?.Reason == MirrorReasons.Demolished && Missing(demolished, D1)?.Reason == MirrorReasons.HostUnknown, "demolished elements are unmapped demolished and their openings host_unknown");
+        var noLevel = Map(new[] { host, door with { LevelUid = null }, Room(R1, Rectangle()) with { LevelUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-0000ffff" } });
+        Check(Missing(noLevel, D1)?.Reason == MirrorReasons.LevelUnknown && Missing(noLevel, R1)?.Reason == MirrorReasons.LevelUnknown, "an opening or room without a mapped level is unmapped level_unknown");
+        foreach (var (label, bad) in new[] { ("zero width", door with { WidthMm = 0 }), ("negative width", door with { WidthMm = -900 }), ("zero height", door with { HeightMm = 0 }), ("negative sill", Window(N1, W1, 1000, 0) with { SillMm = -1 }), ("non-finite point", door with { Location = P(double.NaN, 0) }) })
+            Check(Missing(Map(new[] { host, bad }), bad.UniqueId)?.Reason == MirrorReasons.InvalidGeometry, "an opening with " + label + " is unmapped invalid_geometry");
+        var infinite = Map(Array.Empty<MirrorObservedElement>(), new[] { new MirrorObservedLevel(L1, "Level 1", double.PositiveInfinity) });
+        Check(Missing(infinite, L1)?.Reason == MirrorReasons.InvalidGeometry, "a non-finite level elevation is unmapped invalid_geometry");
+        var noHeight = Map(new[] { host with { HeightMm = null }, Window(N1, W1, 1000, 0) });
+        Check(Missing(noHeight, W1)?.Reason == MirrorReasons.MissingData && Missing(noHeight, N1)?.Reason == MirrorReasons.HostUnknown, "a window on a wall that failed for missing height is unmapped host_unknown");
+        var rotated = Map(new[] { Room(R1, new[] { P(0, 0), P(3000, 3000), P(0, 6000), P(-3000, 3000) }) });
+        Check(Missing(rotated, R1)?.Detail.Contains("rotated", StringComparison.Ordinal) == true, "room_not_rectangular detail mentions rotated rectangles", Missing(rotated, R1)?.Detail ?? "mapped");
+
+        Check(MirrorSnapshotMapper.MaxElements == 20000 && MirrorSnapshotMapper.TooLargeCode == "snapshot_too_large", "the snapshot cap is 20000 observed elements with code snapshot_too_large");
+        var many = Enumerable.Range(0, MirrorSnapshotMapper.MaxElements - 2).Select(i => new MirrorObservedElement(MirrorCategories.Floor, "60f91daf-3dd7-4283-a86d-24137b73f3da-" + i.ToString("x8"))).ToArray();
+        var atCap = Map(many);
+        Check(atCap.Unmapped.Count == many.Length && atCap.Elements.Count == 2, "exactly MaxElements observed records (levels included) still map");
+        string? code = null;
+        try { Map(many.Append(new MirrorObservedElement(MirrorCategories.Floor, F1))); }
+        catch (RevitCommandException error) { code = error.Code; }
+        Check(code == "snapshot_too_large", "one record over MaxElements fails snapshot_too_large instead of an unbounded reply", code ?? "no failure");
+        string? early = null;
+        try { MirrorSnapshotMapper.CheckSize(MirrorSnapshotMapper.MaxElements + 1); } catch (RevitCommandException error) { early = error.Code; }
+        Check(early == "snapshot_too_large" && Thrown(() => MirrorSnapshotMapper.CheckSize(MirrorSnapshotMapper.MaxElements)) is null, "CheckSize lets the collector stop early at the same cap");
+
+        var root = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory);
+        var source = root is null ? null : Path.Combine(root, "runtimes", "revit-native", "Mirror.cs");
+        var text = source is not null && File.Exists(source) ? File.ReadAllText(source) : null;
+        var write = text is null ? null : System.Text.RegularExpressions.Regex.Match(text, @"\b(Transaction|TransactionGroup|SubTransaction)\b|\.Set\(|Regenerate|\.Delete\(|\.Create\.");
+        Check(text is not null && !write!.Success, "the snapshot collector source has no Transaction, TransactionGroup, SubTransaction, .Set(, Regenerate, .Delete( or document creation call", text is null ? "source not found" : write!.Value);
+        Check(text is not null && text.Contains("DesignOption", StringComparison.Ordinal) && text.Contains("DemolishedPhaseId", StringComparison.Ordinal) && text.Contains("WALL_KEY_REF_PARAM", StringComparison.Ordinal) && text.Contains("WALL_BASE_OFFSET", StringComparison.Ordinal) && text.Contains("level.Elevation", StringComparison.Ordinal) && !text.Contains("ProjectElevation", StringComparison.Ordinal), "the collector reads design options, demolition, location line, base offset and Level.Elevation (not ProjectElevation)");
+    }
+
+    static RevitCommandException? Thrown(Action action)
+    {
+        try { action(); return null; }
+        catch (RevitCommandException error) { return error; }
     }
 
     static void EmptyModel()
