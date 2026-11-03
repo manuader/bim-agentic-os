@@ -136,7 +136,7 @@ Check(NameError("revit_"+new string('x',58),"diff")==null && NameError("")!=null
 
 // v2 tools reach the same guarded service: reads go to the pipe on any document, writes only on enabled test copies.
 var forwardedLines=new List<string>();
-var guarded=new McpServer(new RevitCommandPolicy(new[]{@"C:\Repo\.bim\native-runs"}),(pipe,line)=>{ forwardedLines.Add(line); return null; },new RevitFileSystemProbe(_=>false,_=>null));
+var guarded=new McpServer(new RevitCommandPolicy(new[]{@"C:\Repo\.bim\native-runs"}) with { ContentLibraryRoots=new[]{@"C:\ProgramData\Autodesk\RVT 2025\Libraries"} },(pipe,line)=>{ forwardedLines.Add(line); return null; },new RevitFileSystemProbe(_=>false,_=>null));
 JsonObject Guarded(string tool,JsonNode commandArgs,string path)=>Node(guarded.Handle(Request(11,"tools/call",new JsonObject{["name"]=tool,["arguments"]=new JsonObject{["pipe_name"]="bim-agentic-os-2025-4242",["operation_id"]="op-p9-05",["document"]=new JsonObject{["path"]=path,["unique_id"]=McpUid},["args"]=commandArgs}})) ?? throw new Exception("no response")).AsObject();
 string FailureCode(JsonObject response)=>Node(Text(response))["code"]!.GetValue<string>();
 JsonArray Outline()=>new JsonArray(new JsonArray(0,0),new JsonArray(5000,0),new JsonArray(5000,4000),new JsonArray(0,4000));

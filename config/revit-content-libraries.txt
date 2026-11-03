@@ -1,0 +1,4 @@
+# Read-only Revit content libraries family.load may read .rfa files from (RevitCommandPolicy.ContentLibraryRoots).
+# One absolute directory per line; blank lines and # comments are ignored; same entry rules as
+# .bim/revit-enabled-roots.txt. The repository's own .bim/families folder is always a source.
+C:\ProgramData\Autodesk\RVT 2025\Libraries

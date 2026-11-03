@@ -35,7 +35,7 @@ public static class RevitCommandCodes
     public const string DocumentNotEnabled = "document_not_enabled";
     public const string DocumentLinkRefused = "document_link_refused";
     public const string AllowlistInvalid = "allowlist_invalid";
-    // family.load: the .rfa is outside .bim/families and the Autodesk library, behind a link, missing or too large.
+    // family.load: the .rfa is outside .bim/families and the listed content libraries, behind a link, missing or too large.
     public const string FamilySourceRefused = "family_source_refused";
     // Transport.
     public const string ExplicitProcessPipeRequired = "explicit_process_pipe_required";

@@ -248,8 +248,10 @@ try
     var boundLoad = CommandWire.Bind(FixturePath, Uid, null, false, Canonical(loadEnvelope));
     Check(boundLoad.Envelope.Args is FamilyLoadArgs { Path: LibraryColumn, FamilyName: "M_Timber-Column", Overwrite: false } && boundLoad.Envelope.Spec.Writes, "executor re-binds family.load as a write with the family name from the file name");
     Check(Admit(boundLoad.Envelope, Facts()) is null && Admit(RevitCommandProtocol.Parse(Envelope("family.load", new JsonObject { ["path"] = LibraryColumn }, RealPath).ToJsonString()), Facts(RealPath)) is { Code: RevitCommandCodes.DocumentNotEnabled }, "family.load is admitted on the fixture copy and refused on a real project like any write");
-    Check(RevitFamilySourceGuard.Check(LibraryColumn, policy.FamilySourceRoots, noLinks) is null && RevitFamilySourceGuard.Check(@"C:\Repo\.bim\families\Stove.rfa", policy.FamilySourceRoots, noLinks) is not null
-        && RevitFamilySourceGuard.Check(@"C:\Repo\.bim\families\Stove.rfa", (policy with { RepositoryDirectory = @"C:\Repo" }).FamilySourceRoots, noLinks) is null, "the executor's family sources come from its own repository policy: the library always, .bim/families only with a repository");
+    var libraryPolicy = policy with { ContentLibraryRoots = new[] { @"C:\ProgramData\Autodesk\RVT 2025\Libraries" } };
+    Check(RevitFamilySourceGuard.Check(LibraryColumn, policy.FamilySourceRoots, noLinks) is not null && RevitFamilySourceGuard.Check(LibraryColumn, libraryPolicy.FamilySourceRoots, noLinks) is null
+        && RevitFamilySourceGuard.Check(@"C:\Repo\.bim\families\Stove.rfa", libraryPolicy.FamilySourceRoots, noLinks) is not null
+        && RevitFamilySourceGuard.Check(@"C:\Repo\.bim\families\Stove.rfa", (libraryPolicy with { RepositoryDirectory = @"C:\Repo" }).FamilySourceRoots, noLinks) is null, "the executor's family sources come from its own repository policy: listed content libraries, and .bim/families only with a repository");
     var placeEnvelope = Envelope("family_instance.place", new JsonObject { ["category"] = "generic_model", ["symbol"] = SymbolUid, ["level"] = LevelUid, ["point"] = Pair(4000, 15000), ["offset_mm"] = 1200 });
     Check(CommandWire.Bind(FixturePath, Uid, null, false, Canonical(placeEnvelope)).Envelope.Args is FamilyInstancePlaceArgs { Category: "generic_model", Symbol: SymbolUid } placeArgs && placeArgs.Offset.Millimetres == 1200, "executor re-binds family_instance.place with the offset in millimetres");
 

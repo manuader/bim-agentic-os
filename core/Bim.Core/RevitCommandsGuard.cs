@@ -14,10 +14,12 @@ public sealed record RevitCommandPolicy(IReadOnlyList<string> EnabledRoots)
 
     public static RevitCommandPolicy None { get; } = new(Array.Empty<string>());
 
-    // The repository the policy was read from (ForRepository), else null. family.load reads families only from its
-    // .bim/families folder and the Autodesk library (RevitFamilySourceGuard).
+    // The repository the policy was read from (ForRepository), else null, and the read-only content library roots
+    // listed in its config/revit-content-libraries.txt. family.load reads families only from the repository's
+    // .bim/families folder and those libraries (RevitFamilySourceGuard).
     public string? RepositoryDirectory { get; init; }
-    public IReadOnlyList<string> FamilySourceRoots => RevitFamilySourceGuard.Roots(RepositoryDirectory);
+    public IReadOnlyList<string> ContentLibraryRoots { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> FamilySourceRoots => RevitFamilySourceGuard.Roots(RepositoryDirectory, ContentLibraryRoots);
 
     // Allowlist text: one absolute path per line (a directory root or an exact document); blank lines and lines
     // starting with # are ignored. Any malformed or too-broad entry (a drive root, "/", or a UNC path without
@@ -57,23 +59,24 @@ public sealed record RevitCommandPolicy(IReadOnlyList<string> EnabledRoots)
     {
         var root = RepositoryRoot(startDirectory);
         if (root is null) return None;
-        return FromAllowlist(ReadEnabledRootsFile(Path.Combine(root, ".bim", "revit-enabled-roots.txt")), Path.Combine(root, ".bim", "native-runs")) with { RepositoryDirectory = root };
+        var libraries = FromAllowlist(ReadEnabledRootsFile(Path.Combine(root, "config", "revit-content-libraries.txt"), RevitFamilySourceGuard.ContentLibrariesFile), null).EnabledRoots;
+        return FromAllowlist(ReadEnabledRootsFile(Path.Combine(root, ".bim", "revit-enabled-roots.txt"), EnabledRootsFile), Path.Combine(root, ".bim", "native-runs")) with { RepositoryDirectory = root, ContentLibraryRoots = libraries };
     }
 
-    // Missing file: no extra roots. A link, an oversized file or an unreadable file fails closed.
-    static string? ReadEnabledRootsFile(string path)
+    // Missing file: no entries. A link, an oversized file or an unreadable file fails closed (label names the file).
+    static string? ReadEnabledRootsFile(string path, string label)
     {
         try
         {
             var info = new FileInfo(path);
-            if (info.LinkTarget is not null) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, EnabledRootsFile, "must not be a link");
+            if (info.LinkTarget is not null) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, label, "must not be a link");
             if (!info.Exists) return null;
-            if (info.Length > MaxEnabledRootsFileBytes) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, EnabledRootsFile, "larger than 65536 bytes");
+            if (info.Length > MaxEnabledRootsFileBytes) throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, label, "larger than 65536 bytes");
             return File.ReadAllText(path);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, EnabledRootsFile, error.GetType().Name);
+            throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, label, error.GetType().Name);
         }
     }
 

@@ -91,7 +91,7 @@ static class CatalogueFamiliesChecks
         Check(RevitCommandCatalogue.All.Select(spec => spec.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(spec => spec.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct with the family commands");
         foreach (var name in names) Check(ReferenceEquals(RevitCommandCatalogue.Find(name), RevitCommandCatalogue.Families.Single(spec => spec.Name == name)), "Find resolves family command " + name);
         Check(RevitCommandCatalogue.Families.All(spec => spec.Description.Length > 20 && spec.Description.EndsWith('.') && spec.Description.Contains("enabled test copies", StringComparison.Ordinal)), "family commands have plain-English descriptions stating the copies-only rule");
-        Check(RevitCommandCatalogue.Find("family.load")!.Description.Contains(".bim/families", StringComparison.Ordinal) && RevitCommandCatalogue.Find("family.load")!.Description.Contains(Library, StringComparison.Ordinal) && RevitCommandCatalogue.Find("family.load")!.Description.Contains("overwrite", StringComparison.Ordinal),
+        Check(RevitCommandCatalogue.Find("family.load")!.Description.Contains(".bim/families", StringComparison.Ordinal) && RevitCommandCatalogue.Find("family.load")!.Description.Contains("config/revit-content-libraries.txt", StringComparison.Ordinal) && RevitCommandCatalogue.Find("family.load")!.Description.Contains("overwrite", StringComparison.Ordinal),
             "family.load description names both allowed sources and the overwrite flag");
         Check(RevitCommandCatalogue.Find("family_instance.place")!.Description.Contains("offset_mm", StringComparison.Ordinal) && RevitCommandCatalogue.Find("family_instance.place")!.Description.Contains("host", StringComparison.Ordinal), "family_instance.place description names the offset and the hosted-family refusal");
         Check(RevitCommandCatalogue.Families.All(spec => !RevitCommandCatalogue.IsDestructive(spec.Name)), "family commands are additive, not destructive");
@@ -206,17 +206,18 @@ static class CatalogueFamiliesChecks
 
     static void SourceGuard()
     {
-        var repo = RevitFamilySourceGuard.Roots(@"C:\Repo");
-        Check(repo.SequenceEqual(new[] { Path.Combine(@"C:\Repo", ".bim", "families"), Library }), "with a repository the sources are <repo>/.bim/families and the Autodesk 2025 library", string.Join(";", repo));
-        Check(RevitFamilySourceGuard.Roots(null).SequenceEqual(new[] { Library }), "without a repository only the Autodesk library is a source");
-        Check(RevitFamilySourceGuard.AutodeskContentRoot == Library && RevitFamilySourceGuard.RepositoryFamiliesDirectory == ".bim/families" && RevitFamilySourceGuard.MaxFamilyBytes == 100L * 1024 * 1024, "source constants: .bim/families, the RVT 2025 Libraries folder and a 100 MiB cap");
-        Check(RevitCommandPolicy.FromAllowlist(null, @"C:\Repo\.bim\native-runs").FamilySourceRoots.SequenceEqual(new[] { Library }) && (new RevitCommandPolicy(Array.Empty<string>()) with { RepositoryDirectory = @"C:\Repo" }).FamilySourceRoots.SequenceEqual(repo),
-            "the policy's family sources follow its repository root");
+        var repo = RevitFamilySourceGuard.Roots(@"C:\Repo", new[] { Library });
+        Check(repo.SequenceEqual(new[] { Path.Combine(@"C:\Repo", ".bim", "families"), Library }), "with a repository the sources are <repo>/.bim/families and the listed content libraries", string.Join(";", repo));
+        Check(RevitFamilySourceGuard.Roots(null, new[] { Library }).SequenceEqual(new[] { Library }) && RevitFamilySourceGuard.Roots(null, Array.Empty<string>()).Count == 0, "without a repository only the listed content libraries are sources");
+        Check(RevitFamilySourceGuard.ContentLibrariesFile == "config/revit-content-libraries.txt" && RevitFamilySourceGuard.RepositoryFamiliesDirectory == ".bim/families" && RevitFamilySourceGuard.MaxFamilyBytes == 100L * 1024 * 1024, "source constants: .bim/families, config/revit-content-libraries.txt and a 100 MiB cap");
+        Check(RevitCommandPolicy.FromAllowlist(null, @"C:\Repo\.bim\native-runs").FamilySourceRoots.Count == 0 && (new RevitCommandPolicy(Array.Empty<string>()) with { RepositoryDirectory = @"C:\Repo", ContentLibraryRoots = new[] { Library } }).FamilySourceRoots.SequenceEqual(repo),
+            "the policy's family sources follow its repository and content libraries; a bare policy has none");
         var repository = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory)!;
-        Check(RevitCommandPolicy.ForRepository(AppContext.BaseDirectory).RepositoryDirectory == repository, "ForRepository records the repository root for the family sources");
+        var repositoryPolicy = RevitCommandPolicy.ForRepository(AppContext.BaseDirectory);
+        Check(repositoryPolicy.RepositoryDirectory == repository && repositoryPolicy.ContentLibraryRoots.SequenceEqual(new[] { Library }), "ForRepository records the repository and the shipped config/revit-content-libraries.txt lists the Revit 2025 library", string.Join(";", repositoryPolicy.ContentLibraryRoots));
         var roots = repo;
         var noLinks = new RevitFileSystemProbe(_ => false, _ => null);
-        Check(RevitFamilySourceGuard.Check(TimberColumn, roots, noLinks) is null, "a family in the Autodesk library is an allowed source");
+        Check(RevitFamilySourceGuard.Check(TimberColumn, roots, noLinks) is null, "a family in a listed content library is an allowed source");
         Check(RevitFamilySourceGuard.Check(RepoStove, roots, noLinks) is null && RevitFamilySourceGuard.Check(@"c:\repo\.BIM\Families\sub\Stove.rfa", roots, noLinks) is null, "a family under .bim/families (any depth, Windows case rules) is an allowed source");
         Check(RevitFamilySourceGuard.Check(@"C:\Users\owner\Downloads\Stove.rfa", roots, noLinks) is { } outside && outside.Contains(".bim/families", StringComparison.Ordinal), "a family outside both sources is refused, naming where to put it");
         Check(RevitFamilySourceGuard.Check(@"C:\Repo\.bim\families-old\Stove.rfa", roots, noLinks) is not null, "a sibling directory with the same prefix is not a source (whole segments)");
@@ -244,7 +245,7 @@ static class CatalogueFamiliesChecks
             Directory.CreateDirectory(families);
             var stove = Path.Combine(families, "Stove.rfa");
             File.WriteAllBytes(stove, new byte[] { 1, 2, 3 });
-            var roots = RevitFamilySourceGuard.Roots(repo);
+            var roots = RevitFamilySourceGuard.Roots(repo, Array.Empty<string>());
             Check(RevitFamilySourceGuard.Check(stove, roots, RevitFileSystemProbe.Real) is null && RevitFamilySourceGuard.SizeProblem(new FileInfo(stove).Length) is null, "a real .rfa under .bim/families passes the real probe");
             var outside = Path.Combine(work, "outside");
             Directory.CreateDirectory(outside);
@@ -262,11 +263,32 @@ static class CatalogueFamiliesChecks
             else Console.WriteLine("SKIP symlink creation not permitted here; the injected probe cases cover links");
         }
         finally { try { Directory.Delete(work, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        // The content libraries file of a repository: entries follow the allowlist rules; a malformed or linked file fails closed.
+        var repos = Path.Combine(Path.GetTempPath(), "family-libraries-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string Repo(string name, string? libraries)
+            {
+                var root = Path.Combine(repos, name);
+                Directory.CreateDirectory(Path.Combine(root, "config"));
+                File.WriteAllText(Path.Combine(root, "global.json"), "{}");
+                if (libraries is not null) File.WriteAllText(Path.Combine(root, "config", "revit-content-libraries.txt"), libraries);
+                return root;
+            }
+            var listed = RevitCommandPolicy.ForRepository(Repo("listed", "# libraries\n/srv/revit/Libraries\n\nD:\\Content\\Revit\n"));
+            Check(listed.ContentLibraryRoots.SequenceEqual(new[] { "/srv/revit/Libraries", @"D:\Content\Revit" }) && listed.FamilySourceRoots.Count == 3, "content library entries are read in order, comments and blank lines ignored");
+            Check(RevitCommandPolicy.ForRepository(Repo("none", null)).ContentLibraryRoots.Count == 0, "without the file no content library is a source");
+            string? Code(Action action) { try { action(); return null; } catch (RevitCommandException error) { return error.Code; } }
+            Check(Code(() => RevitCommandPolicy.ForRepository(Repo("relative", "Libraries\n"))) == RevitCommandCodes.AllowlistInvalid && Code(() => RevitCommandPolicy.ForRepository(Repo("broad", "C:\\\n"))) == RevitCommandCodes.AllowlistInvalid,
+                "a relative or too-broad content library entry is allowlist_invalid");
+            Check(Code(() => RevitCommandPolicy.ForRepository(Repo("huge", new string('#', 70000)))) == RevitCommandCodes.AllowlistInvalid, "an oversized content libraries file is allowlist_invalid");
+        }
+        finally { try { Directory.Delete(repos, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
     }
 
     static void ClientPath()
     {
-        var policy = new RevitCommandPolicy(new[] { @"C:\Repo\.bim\native-runs" }) with { RepositoryDirectory = @"C:\Repo" };
+        var policy = new RevitCommandPolicy(new[] { @"C:\Repo\.bim\native-runs" }) with { RepositoryDirectory = @"C:\Repo", ContentLibraryRoots = new[] { Library } };
         var forwarded = new List<string>();
         string? Transport(string pipe, string line) { forwarded.Add(line); return Answer(line); }
         var noLinks = new RevitFileSystemProbe(_ => false, _ => null);
@@ -284,7 +306,7 @@ static class CatalogueFamiliesChecks
             "family.load from outside the sources is family_source_refused at args.path before the pipe", outside.Line);
         var linked = RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("family.load", Load(RepoStove)).ToJsonString(), policy, Transport, new RevitFileSystemProbe(path => path.EndsWith("families", StringComparison.Ordinal), _ => null));
         Check(linked.IsError && !linked.Forwarded && JsonNode.Parse(linked.Line)!["code"]!.GetValue<string>() == RevitCommandCodes.FamilySourceRefused && forwarded.Count == before2, "family.load through a linked source directory is family_source_refused before the pipe", linked.Line);
-        var noRepo = RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("family.load", Load(RepoStove)).ToJsonString(), new RevitCommandPolicy(new[] { @"C:\Repo\.bim\native-runs" }), Transport, noLinks);
+        var noRepo = RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("family.load", Load(RepoStove)).ToJsonString(), new RevitCommandPolicy(new[] { @"C:\Repo\.bim\native-runs" }) with { ContentLibraryRoots = new[] { Library } }, Transport, noLinks);
         Check(noRepo.IsError && JsonNode.Parse(noRepo.Line)!["code"]!.GetValue<string>() == RevitCommandCodes.FamilySourceRefused, "without a known repository .bim/families is not a source", noRepo.Line);
     }
 
@@ -309,7 +331,7 @@ static class CatalogueFamiliesChecks
             && Thrown(() => CommandRulesFamilies.LoadOutcome(true, true, true, false)) is { Code: RevitCommandCodes.TransactionFailed }, "a load that leaves no family is transaction_failed");
         Check(CommandRulesFamilies.OnFamilyFound(false) == (false, false) && CommandRulesFamilies.OnFamilyFound(true) == (true, true), "an existing family is reloaded, with its parameter values overwritten, only when overwrite is set");
         Check(CommandRulesFamilies.OnSharedFamilyFound(false) == (true, false, false) && CommandRulesFamilies.OnSharedFamilyFound(true) == (true, true, true), "a shared nested family keeps the project version and values unless overwrite is set");
-        var roots = RevitFamilySourceGuard.Roots(@"C:\Repo");
+        var roots = RevitFamilySourceGuard.Roots(@"C:\Repo", new[] { Library });
         var noLinks = new RevitFileSystemProbe(_ => false, _ => null);
         Check(Thrown(() => CommandRulesFamilies.CheckSource(RepoStove, roots, noLinks, 4096, RepoStove)) is null, "the executor admits a family under a source whose full path resolves to itself");
         Check(Thrown(() => CommandRulesFamilies.CheckSource(@"C:\Elsewhere\Stove.rfa", roots, noLinks, 4096, @"C:\Elsewhere\Stove.rfa")) is { Code: RevitCommandCodes.FamilySourceRefused, Field: "args.path" }, "the executor repeats the source check");
