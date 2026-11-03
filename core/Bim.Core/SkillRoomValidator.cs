@@ -112,10 +112,12 @@ public sealed record RoomFacts
 public enum RoomCheckOutcome { Pass, Fail, NotEvaluable }
 
 // One rule applied to one room. RuleId is the qualified skill/rule id. Article, SourceConfidence and Source come from the
-// rule citation (see SkillRoomValidator.ParseCitation). Measured is the room value (property / over for ratio_min), null
-// when not evaluable; Required is the resolved threshold when numeric. Detail explains the outcome in invariant text.
+// rule citation (see SkillRoomValidator.ParseCitation), as do ConfirmedBy and ConfirmedOn (who confirmed an owner-confirmed
+// value and when, or null). Measured is the room value (property / over for ratio_min), null when not evaluable; Required is
+// the resolved threshold when numeric. Detail explains the outcome in invariant text.
 public sealed record RoomFinding(string RoomId, string RoomName, string RuleId, string Article, string SourceConfidence, string? Source,
-    SkillSeverity Severity, RoomCheckOutcome Outcome, string Property, double? Measured, double? Required, string Message, string Detail);
+    SkillSeverity Severity, RoomCheckOutcome Outcome, string Property, double? Measured, double? Required, string Message, string Detail,
+    string? ConfirmedBy = null, string? ConfirmedOn = null);
 
 // Findings ordered by room id then rule id; UnmatchedRoomIds lists, in ordinal order, rooms that no room rule targets.
 public sealed record RoomValidationReport(IReadOnlyList<RoomFinding> Findings, IReadOnlyList<string> UnmatchedRoomIds)
@@ -129,13 +131,17 @@ public sealed record RoomValidationReport(IReadOnlyList<RoomFinding> Findings, I
 }
 
 // Article, confidence, source and applicability parsed from a rule citation of the form
-// "<article>; source_confidence=<cited|to-verify>; applies_if=<property><=<number>; source=<reference>", members after the
-// article in any order. AppliesIf is the raw condition text, or null.
-public sealed record SkillCitation(string Article, string Confidence, string? Source, string? AppliesIf = null);
+// "<article>; source_confidence=<cited|owner-confirmed|to-verify>; confirmed_by=<who>; confirmed_on=<date>;
+// applies_if=<property><=<number>; source=<reference>", members after the article in any order and all optional.
+// cited: the number was checked in the named source; owner-confirmed: the project owner (confirmed_by, on confirmed_on)
+// confirmed the value although no primary source was checked; to-verify: pending review. AppliesIf, ConfirmedBy and
+// ConfirmedOn are the raw member texts, or null.
+public sealed record SkillCitation(string Article, string Confidence, string? Source, string? AppliesIf = null, string? ConfirmedBy = null, string? ConfirmedOn = null);
 
 public static class SkillRoomValidator
 {
     public const string ConfidenceCited = "cited";
+    public const string ConfidenceOwnerConfirmed = "owner-confirmed";
     public const string ConfidenceToVerify = "to-verify";
     // Comparisons allow this much relative slack (times max(1, |threshold|)) so unit conversion and decimal thresholds
     // such as 1/30 written in JSON do not flip an exact boundary; anything further below fails.
@@ -144,10 +150,12 @@ public static class SkillRoomValidator
     const string ConfidenceMarker = "; source_confidence=";
     const string SourceMarker = "; source=";
     const string AppliesIfMarker = "; applies_if=";
-    static readonly string[] Markers = { ConfidenceMarker, SourceMarker, AppliesIfMarker };
+    const string ConfirmedByMarker = "; confirmed_by=";
+    const string ConfirmedOnMarker = "; confirmed_on=";
+    static readonly string[] Markers = { ConfidenceMarker, SourceMarker, AppliesIfMarker, ConfirmedByMarker, ConfirmedOnMarker };
 
     // The skill manifest format has no dedicated confidence field, so code packs carry it inside the citation text.
-    // A missing or unknown confidence is to-verify; a missing citation has an empty article.
+    // A missing or unknown confidence (matched ordinally, so case matters) is to-verify; a missing citation has an empty article.
     public static SkillCitation ParseCitation(string? citation)
     {
         if (string.IsNullOrWhiteSpace(citation)) return new SkillCitation("", ConfidenceToVerify, null);
@@ -167,10 +175,9 @@ public static class SkillRoomValidator
             var end = index + 1 < found.Count ? found[index + 1].At : citation.Length;
             values[found[index].Marker] = citation[start..end].Trim();
         }
-        var confidence = values.TryGetValue(ConfidenceMarker, out var level) && level is ConfidenceCited or ConfidenceToVerify ? level : ConfidenceToVerify;
-        var source = values.TryGetValue(SourceMarker, out var reference) && reference.Length > 0 ? reference : null;
-        var appliesIf = values.TryGetValue(AppliesIfMarker, out var condition) && condition.Length > 0 ? condition : null;
-        return new SkillCitation(article, confidence, source, appliesIf);
+        var confidence = values.TryGetValue(ConfidenceMarker, out var level) && level is ConfidenceCited or ConfidenceOwnerConfirmed or ConfidenceToVerify ? level : ConfidenceToVerify;
+        string? Member(string marker) => values.TryGetValue(marker, out var value) && value.Length > 0 ? value : null;
+        return new SkillCitation(article, confidence, Member(SourceMarker), Member(AppliesIfMarker), Member(ConfirmedByMarker), Member(ConfirmedOnMarker));
     }
 
     // Parses "<property><=<number>" (invariant number), the only applies_if form.
@@ -276,7 +283,8 @@ public static class SkillRoomValidator
         if (effective.ThresholdSource is { Origin: SkillTrace.ParameterOrigin } parameterSource && overrides.TryGetValue(parameterSource.SkillId + "/" + parameterSource.Key, out var overridden))
             required = overridden;
         RoomFinding Finding(RoomCheckOutcome outcome, double? measured, string detail) =>
-            new(room.Id, room.Name, effective.QualifiedId, citation.Article, citation.Confidence, citation.Source, rule.Severity, outcome, check.Property, measured, required, rule.Message, detail);
+            new(room.Id, room.Name, effective.QualifiedId, citation.Article, citation.Confidence, citation.Source, rule.Severity, outcome, check.Property, measured, required, rule.Message, detail,
+                citation.ConfirmedBy, citation.ConfirmedOn);
 
         if (check.Op is not (SkillCheckOp.Min or SkillCheckOp.Max or SkillCheckOp.RatioMin))
             return Finding(RoomCheckOutcome.NotEvaluable, null, "check op " + SkillParser.OpName(check.Op) + " is not supported for room facts");
