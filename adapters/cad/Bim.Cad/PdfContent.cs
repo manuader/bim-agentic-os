@@ -22,6 +22,7 @@ internal sealed class PdfContentInterpreter
     private bool inText;
     private PdfMatrix textMatrix = PdfMatrix.Identity;
     private PdfMatrix lineMatrix = PdfMatrix.Identity;
+    private IReadOnlyList<string> invocation = Array.Empty<string>();
 
     public PdfContentInterpreter(PdfFile file, int page)
     {
@@ -33,23 +34,59 @@ internal sealed class PdfContentInterpreter
 
     private readonly record struct GraphicsState(PdfMatrix Ctm, double LineWidth, string FontName, double FontSize, double Leading, double Rise);
 
-    public void Run(int objectNumber, byte[] content, Dictionary<string, object>? resources, int depth)
+    // Interprets content as one stream. A page's /Contents array is concatenated (with a white-space byte between
+    // parts) as the PDF specification requires, so a path or a token may continue from one part into the next; each
+    // operator is attributed to the part (object number) that holds its first byte and indexed within that part.
+    // The whole input is charged to the document's interpreted-bytes budget before it is read.
+    public void Run(IReadOnlyList<(int ObjectNumber, byte[] Content)> parts, Dictionary<string, object>? resources, int depth)
     {
+        if (parts.Count == 0) return;
+        byte[] content;
+        var starts = new int[parts.Count];
+        if (parts.Count == 1) content = parts[0].Content;
+        else
+        {
+            long total = parts.Sum(p => (long)p.Content.Length + 1);
+            file.ChargeInterpreted(total);
+            if (total > int.MaxValue) throw new PdfFormatException("interpret-limit", -1, "page content too large to interpret");
+            content = new byte[total];
+            var at = 0;
+            for (var k = 0; k < parts.Count; k++)
+            {
+                starts[k] = at;
+                Buffer.BlockCopy(parts[k].Content, 0, content, at, parts[k].Content.Length);
+                at += parts[k].Content.Length;
+                content[at++] = 10;
+            }
+        }
+        if (parts.Count == 1) file.ChargeInterpreted(content.Length);
+        var counters = new int[parts.Count];
+        var part = 0;
         var options = file.Options;
         var lexer = new PdfLexer(content, 0, content.Length, options.MaxDepth);
         var operands = new List<object>();
-        var index = 0;
         while (true)
         {
             object? token;
+            lexer.SkipWhite();
             var offset = lexer.Position;
             try
             {
                 token = lexer.ReadObject(false);
+                while (part + 1 < parts.Count && offset >= starts[part + 1]) part++;
+                if (token is PdfKeyword { Value: "BI" })
+                {
+                    file.CountOperator(offset);
+                    var imageIndex = counters[part]++;
+                    if (!SkipInlineImage(lexer)) Warn("content-malformed", parts[part].ObjectNumber, imageIndex, "inline image without ID ... EI");
+                    operands.Clear();
+                    continue;
+                }
             }
             catch (PdfSyntaxException error)
             {
-                file.Warn("content-malformed", page, objectNumber, index, error.Message + " at stream offset " + error.Offset.ToString(CultureInfo.InvariantCulture));
+                while (part + 1 < parts.Count && error.Offset >= starts[part + 1]) part++;
+                Warn("content-malformed", parts[part].ObjectNumber, counters[part], error.Message + " at offset " + (error.Offset - starts[part]).ToString(CultureInfo.InvariantCulture));
                 break;
             }
             if (token is null) break;
@@ -59,14 +96,8 @@ internal sealed class PdfContentInterpreter
                 continue;
             }
             file.CountOperator(offset);
-            var operatorIndex = index++;
-            if (keyword.Value == "BI")
-            {
-                if (!SkipInlineImage(lexer)) file.Warn("content-malformed", page, objectNumber, operatorIndex, "inline image without ID ... EI");
-                operands.Clear();
-                continue;
-            }
-            Execute(keyword.Value, operands, objectNumber, operatorIndex, resources, depth);
+            var operatorIndex = counters[part]++;
+            Execute(keyword.Value, operands, parts[part].ObjectNumber, operatorIndex, resources, depth);
             operands.Clear();
         }
         FinishSubpath();
@@ -248,11 +279,17 @@ internal sealed class PdfContentInterpreter
                 else Warn("operand-error", objectNumber, operatorIndex, "\" expects two numbers and a string");
                 break;
             case "TJ":
-                if (operands.Count == 1 && operands[0] is List<object> parts)
+                if (operands.Count == 1 && operands[0] is List<object> pieces)
                 {
-                    var bytes = new List<byte>();
-                    foreach (var part in parts) if (part is PdfString piece) bytes.AddRange(piece.Bytes);
-                    Show(bytes.ToArray(), objectNumber, operatorIndex, op);
+                    // Strings are decoded one by one; an adjustment below -200 thousandths of an em reads as a word space.
+                    var joined = new StringBuilder();
+                    long byteCount = 0;
+                    foreach (var item in pieces)
+                    {
+                        if (item is PdfString piece) { joined.Append(DecodeText(piece.Bytes)); byteCount += piece.Bytes.Length; }
+                        else if (item is PdfNumber adjustment && adjustment.Value < -200 && joined.Length > 0 && joined[^1] != ' ') joined.Append(' ');
+                    }
+                    Show(joined.ToString(), byteCount, objectNumber, operatorIndex, op);
                 }
                 else Warn("operand-error", objectNumber, operatorIndex, "TJ expects an array");
                 break;
@@ -314,7 +351,7 @@ internal sealed class PdfContentInterpreter
         if (close) ClosePath(operatorIndex, op);
         FinishSubpath();
         if (subpaths.Count > 0)
-            elements.Add(new PdfPath(new PdfProvenance(file.SourceFile, page, objectNumber, operatorIndex, op), subpaths.ToArray(), stroke, fill, evenOdd, state.LineWidth));
+            elements.Add(new PdfPath(Provenance(objectNumber, operatorIndex, op), subpaths.ToArray(), stroke, fill, evenOdd, state.LineWidth));
         ResetPath();
     }
 
@@ -326,8 +363,18 @@ internal sealed class PdfContentInterpreter
         textMatrix = moved;
     }
 
+    private PdfProvenance Provenance(int objectNumber, int operatorIndex, string op) =>
+        new(file.SourceFile, page, objectNumber, operatorIndex, op) { XObjectPath = invocation };
+
     private void Show(byte[] bytes, int objectNumber, int operatorIndex, string op)
     {
+        file.ChargeInterpreted(bytes.Length);
+        Show(DecodeText(bytes), 0, objectNumber, operatorIndex, op);
+    }
+
+    private void Show(string text, long byteCount, int objectNumber, int operatorIndex, string op)
+    {
+        file.ChargeInterpreted(byteCount);
         if (!inText)
         {
             Warn("text-outside-bt", objectNumber, operatorIndex, op + " outside BT ... ET");
@@ -342,7 +389,7 @@ internal sealed class PdfContentInterpreter
         }
         var height = Math.Abs(state.FontSize) * Math.Sqrt(rendering.C * rendering.C + rendering.D * rendering.D);
         var rotation = PdfGeometry.AngleDegrees(rendering.A, rendering.B);
-        elements.Add(new PdfText(new PdfProvenance(file.SourceFile, page, objectNumber, operatorIndex, op), origin, DecodeText(bytes), state.FontName, state.FontSize, height, rotation));
+        elements.Add(new PdfText(Provenance(objectNumber, operatorIndex, op), origin, text, state.FontName, state.FontSize, height, rotation));
     }
 
     internal static string DecodeText(byte[] bytes)
@@ -395,7 +442,16 @@ internal sealed class PdfContentInterpreter
             if (ctm.IsFinite) state = state with { Ctm = ctm };
             stackFloor = stack.Count;
             var formResources = file.Resolve(PdfFile.Get(form.Dictionary, "Resources")) as Dictionary<string, object> ?? resources;
-            Run(form.ObjectNumber, content, formResources, depth + 1);
+            var savedInvocation = invocation;
+            invocation = invocation.Append("o" + objectNumber.ToString(CultureInfo.InvariantCulture) + ":i" + operatorIndex.ToString(CultureInfo.InvariantCulture)).ToArray();
+            try
+            {
+                Run(new[] { (form.ObjectNumber, content) }, formResources, depth + 1);
+            }
+            finally
+            {
+                invocation = savedInvocation;
+            }
             while (stack.Count > savedDepth) stack.Pop();
             stackFloor = savedFloor;
             state = savedState;

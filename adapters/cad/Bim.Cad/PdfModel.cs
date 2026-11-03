@@ -49,8 +49,13 @@ public readonly record struct PdfMatrix(double A, double B, double C, double D, 
 
 // Where an element came from: source file name, 1-based page number, the object number of the content stream (or Form
 // XObject) that holds the operator, the 0-based index of the operator within that stream, and the operator itself
-// (the painting operator of a path, the showing operator of a text).
-public sealed record PdfProvenance(string SourceFile, int Page, int ObjectNumber, int OperatorIndex, string Operator);
+// (the painting operator of a path, the showing operator of a text). For an element drawn by a Form XObject,
+// XObjectPath lists the invoking Do operators from the page inwards as "o{object}:i{operator index}", so repeated draws
+// of one form are distinguishable; it is empty for elements drawn directly by the page.
+public sealed record PdfProvenance(string SourceFile, int Page, int ObjectNumber, int OperatorIndex, string Operator)
+{
+    public IReadOnlyList<string> XObjectPath { get; init; } = Array.Empty<string>();
+}
 
 public enum PdfSegmentKind { Line, Cubic }
 
@@ -95,7 +100,8 @@ public sealed record PdfWarning(string Code, int Page, int ObjectNumber, int Ope
 public sealed record PdfDocument(string SourceFile, string Version, IReadOnlyList<PdfPage> Pages, IReadOnlyList<PdfWarning> Warnings);
 
 // Bounds for one read. MaxDepth bounds object nesting, q/Q nesting, page-tree depth and Form XObject nesting;
-// MaxOperators counts content operators over the whole document; MaxDecodedBytes counts decompressed bytes in total.
+// MaxOperators counts content operators over the whole document; MaxDecodedBytes counts decompressed bytes in total;
+// MaxInterpretedBytes counts content bytes lexed (every page and every Form XObject invocation) plus shown text bytes.
 public sealed record PdfReadOptions(
     long MaxBytes = 64L * 1024 * 1024,
     int MaxObjects = 200_000,
@@ -103,10 +109,11 @@ public sealed record PdfReadOptions(
     int MaxDepth = 32,
     long MaxDecodedBytes = 256L * 1024 * 1024,
     int MaxPages = 10_000,
-    int MaxWarnings = 1_000);
+    int MaxWarnings = 1_000,
+    long MaxInterpretedBytes = 128L * 1024 * 1024);
 
 // Thrown for input this reader refuses: Code is a stable identifier (empty, too-large, not-pdf, encrypted, no-pages,
-// object-limit, operator-limit, depth-limit, decode-limit, page-limit), Offset the byte offset in the file or in the
+// object-limit, operator-limit, depth-limit, decode-limit, interpret-limit, page-limit), Offset the byte offset in the file or in the
 // decoded stream where it was found (-1 when not tied to an offset).
 public sealed class PdfFormatException : Exception
 {

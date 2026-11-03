@@ -134,12 +134,34 @@ internal sealed class PdfLexer
         };
     }
 
+    private static readonly PdfNumber[] SmallIntegers = Enumerable.Range(0, 1024).Select(i => new PdfNumber(i, true)).ToArray();
+
     private PdfNumber? ParseNumber(int start, int length)
     {
         if (length == 0 || length > 64) return null;
+        // Fast path for short integers (the bulk of real content streams): no string allocation.
+        var i = start;
+        var negative = data[i] == '-';
+        if (negative || data[i] == '+') i++;
+        if (i < start + length && start + length - i <= 9)
+        {
+            var value = 0;
+            var digits = true;
+            for (var k = i; k < start + length; k++)
+            {
+                var c = data[k];
+                if (c < '0' || c > '9') { digits = false; break; }
+                value = value * 10 + (c - '0');
+            }
+            if (digits)
+            {
+                if (!negative && value < SmallIntegers.Length) return SmallIntegers[value];
+                return new PdfNumber(negative ? -value : value, true);
+            }
+        }
         var text = Encoding.ASCII.GetString(data, start, length);
-        if (!double.TryParse(text, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value)) return null;
-        return new PdfNumber(value, text.IndexOf('.', StringComparison.Ordinal) < 0);
+        if (!double.TryParse(text, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var parsed) || !double.IsFinite(parsed)) return null;
+        return new PdfNumber(parsed, text.IndexOf('.', StringComparison.Ordinal) < 0);
     }
 
     private bool TryReferenceTail(out int generation)

@@ -4,8 +4,10 @@ using System.Text;
 namespace Bim.Cad;
 
 // Reader for the vector content of PDF pages, written with the BCL only. The file is scanned for "n g obj" objects
-// (the xref table is not trusted, so damaged offsets and missing tables are tolerated), compressed object streams
-// (/Type /ObjStm) are expanded, the catalog comes from the last trailer or cross-reference stream (or a /Type /Catalog
+// (the xref table is not trusted, so damaged offsets and missing tables are tolerated; when an object number occurs
+// more than once, as after incremental updates, the occurrence latest in the file wins), compressed object streams
+// (/Type /ObjStm) are expanded (an object in a stream counts as occurring at the stream's position), the catalog
+// comes from the last trailer or cross-reference stream (or a /Type /Catalog
 // object), and the page tree is walked with inherited /Resources, /MediaBox and /Rotate. Each page's content streams
 // are then interpreted by PdfContentInterpreter. Only FlateDecode (without predictors) is decoded. Every refusal is a
 // PdfFormatException with a stable code; recoverable problems are PdfWarnings; every step is bounded by PdfReadOptions.
@@ -49,6 +51,7 @@ public static class PdfReader
         if (options.MaxDecodedBytes < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxDecodedBytes must be positive");
         if (options.MaxPages < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxPages must be positive");
         if (options.MaxWarnings < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxWarnings must be positive");
+        if (options.MaxInterpretedBytes < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxInterpretedBytes must be positive");
     }
 
     private static PdfFormatException TooLarge(long size, PdfReadOptions options) =>
@@ -60,13 +63,14 @@ internal sealed class PdfFile
 {
     private readonly byte[] data;
     private readonly Dictionary<int, object> objects = new();
-    private readonly Dictionary<int, object> compressed = new();
+    private readonly Dictionary<int, int> positions = new();
     private readonly List<Dictionary<string, object>> trailers = new();
     private readonly Dictionary<int, byte[]?> decodedCache = new();
     private readonly List<PdfWarning> warnings = new();
     private int objectCount;
     private long decodedTotal;
     private long operatorCount;
+    private long interpretedBytes;
 
     public PdfFile(byte[] data, string sourceFile, PdfReadOptions options)
     {
@@ -88,6 +92,13 @@ internal sealed class PdfFile
     {
         if (++operatorCount > Options.MaxOperators)
             throw new PdfFormatException("operator-limit", offset, "content operators exceed MaxOperators " + Options.MaxOperators.ToString(CultureInfo.InvariantCulture));
+    }
+
+    public void ChargeInterpreted(long bytes)
+    {
+        interpretedBytes += bytes;
+        if (interpretedBytes > Options.MaxInterpretedBytes)
+            throw new PdfFormatException("interpret-limit", -1, "interpreted content exceeds MaxInterpretedBytes " + Options.MaxInterpretedBytes.ToString(CultureInfo.InvariantCulture));
     }
 
     public PdfDocument Read(string version)
@@ -112,11 +123,13 @@ internal sealed class PdfFile
             if (Resolve(inherited.Rotate) is PdfNumber r && Math.Abs(r.Value) < 1e9) rotate = (((int)Math.Round(r.Value) % 360) + 360) % 360;
             var interpreter = new PdfContentInterpreter(this, pageNumber);
             var resources = Resolve(inherited.Resources) as Dictionary<string, object>;
+            var parts = new List<(int ObjectNumber, byte[] Content)>();
             foreach (var stream in ContentStreams(node, pageNumber, number))
             {
                 var content = Decode(stream, pageNumber);
-                if (content is not null) interpreter.Run(stream.ObjectNumber, content, resources, 0);
+                if (content is not null) parts.Add((stream.ObjectNumber, content));
             }
+            interpreter.Run(parts, resources, 0);
             pages.Add(new PdfPage(pageNumber, number, mediaBox ?? new PdfRect(0, 0, 612, 792), rotate, interpreter.Elements));
         }
         return new PdfDocument(SourceFile, version, pages, warnings.ToList());
@@ -150,8 +163,9 @@ internal sealed class PdfFile
                 }
                 catch (PdfSyntaxException)
                 {
+                    // Resume after everything the failed parse consumed, so each byte is parsed as a trailer at most once.
                     Warn("trailer-malformed", 0, 0, -1, "malformed trailer at offset " + i.ToString(CultureInfo.InvariantCulture));
-                    i += 7;
+                    i = Math.Max(lexer.Position, i + 7);
                 }
                 continue;
             }
@@ -261,10 +275,12 @@ internal sealed class PdfFile
                     after = endStream + 9;
                 }
                 objects[number] = new PdfStream(dictionary, start, length, number);
+                positions[number] = bodyStart;
                 return after;
             }
         }
         objects[number] = value ?? PdfNull.Instance;
+        positions[number] = bodyStart;
         return Math.Max(lexer.Position, bodyStart);
     }
 
@@ -276,7 +292,7 @@ internal sealed class PdfFile
 
     private void ExpandObjectStreams()
     {
-        var streams = objects.Values.OfType<PdfStream>().Where(s => IsName(s.Dictionary, "Type", "ObjStm")).OrderBy(s => s.ObjectNumber).ToList();
+        var streams = objects.Values.OfType<PdfStream>().Where(s => IsName(s.Dictionary, "Type", "ObjStm")).OrderBy(s => s.Start).ToList();
         foreach (var stream in streams)
         {
             var decoded = Decode(stream, 0);
@@ -290,33 +306,48 @@ internal sealed class PdfFile
             var count = (int)n.Value;
             var firstOffset = (int)first.Value;
             var header = new PdfLexer(decoded, 0, firstOffset, Options.MaxDepth);
+            var entries = new List<(int Number, int Offset)>();
+            var valid = true;
             try
             {
-                for (var k = 0; k < count; k++)
+                for (var k = 0; k < count && valid; k++)
                 {
                     if (header.ReadObject(false) is not PdfNumber { IsInteger: true } objectNumber || header.ReadObject(false) is not PdfNumber { IsInteger: true } offset
-                        || objectNumber.Value < 0 || objectNumber.Value > int.MaxValue || offset.Value < 0 || offset.Value > decoded.Length - firstOffset)
+                        || objectNumber.Value < 0 || objectNumber.Value > int.MaxValue || offset.Value < 0 || offset.Value > decoded.Length - firstOffset
+                        || (entries.Count > 0 && offset.Value <= entries[^1].Offset))
                     {
-                        Warn("objstm-malformed", 0, stream.ObjectNumber, -1, "object stream header is malformed");
+                        valid = false;
                         break;
                     }
-                    CountObject(-1);
-                    var inner = (int)objectNumber.Value;
-                    if (objects.ContainsKey(inner) || compressed.ContainsKey(inner)) continue;
-                    var lexer = new PdfLexer(decoded, firstOffset + (int)offset.Value, decoded.Length, Options.MaxDepth);
-                    try
-                    {
-                        compressed[inner] = lexer.ReadObject(true) ?? PdfNull.Instance;
-                    }
-                    catch (PdfSyntaxException error)
-                    {
-                        Warn("object-malformed", 0, inner, -1, "compressed object " + inner.ToString(CultureInfo.InvariantCulture) + ": " + error.Message);
-                    }
+                    entries.Add(((int)objectNumber.Value, (int)offset.Value));
                 }
             }
             catch (PdfSyntaxException)
             {
-                Warn("objstm-malformed", 0, stream.ObjectNumber, -1, "object stream header is malformed");
+                valid = false;
+            }
+            if (!valid)
+            {
+                Warn("objstm-malformed", 0, stream.ObjectNumber, -1, "object stream header is malformed or its offsets are not strictly increasing");
+                continue;
+            }
+            // Each object is parsed only within [its offset, the next offset), so the work is linear in the stream.
+            for (var k = 0; k < entries.Count; k++)
+            {
+                CountObject(-1);
+                var (inner, offset) = entries[k];
+                if (positions.TryGetValue(inner, out var seen) && seen > stream.Start) continue;
+                var limit = firstOffset + (k + 1 < entries.Count ? entries[k + 1].Offset : decoded.Length - firstOffset);
+                var lexer = new PdfLexer(decoded, firstOffset + offset, limit, Options.MaxDepth);
+                try
+                {
+                    objects[inner] = lexer.ReadObject(true) ?? PdfNull.Instance;
+                    positions[inner] = stream.Start;
+                }
+                catch (PdfSyntaxException error)
+                {
+                    Warn("object-malformed", 0, inner, -1, "compressed object " + inner.ToString(CultureInfo.InvariantCulture) + ": " + error.Message);
+                }
             }
         }
     }
@@ -328,7 +359,6 @@ internal sealed class PdfFile
         for (var hops = 0; value is PdfRef reference && hops < 32; hops++)
         {
             if (objects.TryGetValue(reference.Number, out var direct)) value = direct;
-            else if (compressed.TryGetValue(reference.Number, out var inner)) value = inner;
             else return null;
         }
         return value is PdfRef or PdfNull ? null : value;
@@ -346,7 +376,7 @@ internal sealed class PdfFile
         {
             if (Resolve(Get(candidate, "Root")) is Dictionary<string, object> root && Resolve(Get(root, "Pages")) is Dictionary<string, object>) return root;
         }
-        foreach (var number in objects.Keys.Concat(compressed.Keys).OrderBy(k => k))
+        foreach (var number in objects.Keys.OrderBy(k => k).ToList())
         {
             if (Resolve(new PdfRef(number, 0)) is Dictionary<string, object> dictionary && IsName(dictionary, "Type", "Catalog") && Resolve(Get(dictionary, "Pages")) is Dictionary<string, object>) return dictionary;
         }

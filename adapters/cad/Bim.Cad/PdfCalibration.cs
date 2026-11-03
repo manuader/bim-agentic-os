@@ -46,8 +46,9 @@ public sealed record PdfCalibration(double MillimetresPerUnit, PdfMatrix Transfo
 
 // PDF page elements as DXF drawing-model entities. Each subpath becomes a DxfLine (one open straight segment) or a
 // DxfPolyline (curves flattened, closed when the subpath is closed); each text becomes a DxfText. Provenance: the PDF
-// source file, Handle "p{page}:o{object}:i{operator index}", Layer "PDF-P{page}", EntityType PDF-PATH or PDF-TEXT, and
-// Line = operator index + 1.
+// source file, Handle "p{page}:o{object}:i{operator index}" (followed by "@" and the Form XObject invocation chain joined
+// with ">" when the element was drawn by a form), InsertPath = that chain, Layer "PDF-P{page}", EntityType PDF-PATH or
+// PDF-TEXT, and Line = operator index + 1.
 internal static class PdfToDxf
 {
     public static IReadOnlyList<DxfEntity> Convert(PdfPage page, PdfCalibration? calibration, int curveSegments)
@@ -61,11 +62,12 @@ internal static class PdfToDxf
         foreach (var element in page.Elements)
         {
             var source = element.Provenance;
-            var handle = "p" + I(source.Page) + ":o" + I(source.ObjectNumber) + ":i" + I(source.OperatorIndex);
+            var handle = "p" + I(source.Page) + ":o" + I(source.ObjectNumber) + ":i" + I(source.OperatorIndex)
+                + (source.XObjectPath.Count > 0 ? "@" + string.Join(">", source.XObjectPath) : "");
             var layer = "PDF-P" + I(source.Page);
             if (element is PdfPath path)
             {
-                var provenance = new DxfProvenance(source.SourceFile, handle, layer, "PDF-PATH", source.OperatorIndex + 1);
+                var provenance = new DxfProvenance(source.SourceFile, handle, layer, "PDF-PATH", source.OperatorIndex + 1, source.XObjectPath);
                 foreach (var subpath in path.Subpaths)
                 {
                     var points = subpath.Flatten(curveSegments).Select(transform.Apply).ToList();
@@ -81,7 +83,7 @@ internal static class PdfToDxf
             }
             else if (element is PdfText text)
             {
-                var provenance = new DxfProvenance(source.SourceFile, handle, layer, "PDF-TEXT", source.OperatorIndex + 1);
+                var provenance = new DxfProvenance(source.SourceFile, handle, layer, "PDF-TEXT", source.OperatorIndex + 1, source.XObjectPath);
                 result.Add(new DxfText(provenance, transform.Apply(text.Origin), text.Height * scale, PdfGeometry.NormalizeDegrees(text.RotationDegrees + rotation), text.Value, text.Value, false));
             }
         }
