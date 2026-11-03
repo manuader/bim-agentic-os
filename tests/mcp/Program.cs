@@ -105,7 +105,8 @@ foreach(var spec in RevitCommandCatalogue.All) {
     var annotations=tool["annotations"]?.AsObject();
     Check(annotations?["readOnlyHint"]?.GetValue<bool>()==!spec.Writes,spec.ToolName+" annotations.readOnlyHint is "+(!spec.Writes));
     if(spec.Writes) {
-        Check(annotations!["destructiveHint"]?.GetValue<bool>()==false && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint false, idempotentHint true (operation_id replay)");
+        var destructive=new[]{"element.set_parameter","element.delete"}.Contains(spec.Name);
+        Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter and element.delete change or remove existing elements), idempotentHint true (operation_id replay)");
         var description=tool["description"]!.GetValue<string>();
         Check(PermissionPolicy.RequiredLevel(spec.Name,McpReal,copiesRoots)==PermissionLevel.WriteRealProject
             && description.Contains(".bim/native-runs",StringComparison.Ordinal) && description.Contains(".bim/revit-enabled-roots.txt",StringComparison.Ordinal)
@@ -178,6 +179,8 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["schedule.create"]=()=>new JsonObject{["category"]="door",["fields"]=new JsonArray("Mark","Type"),["sort_by"]="Mark"},
     ["sheet.create"]=()=>new JsonObject{["number"]="A101",["name"]="Ground Floor"},
     ["sheet.place_view"]=()=>new JsonObject{["sheet_uid"]=McpUid,["view_uid"]="60f91daf-3dd7-4283-a86d-24137b73f3da-00000e01",["center"]=new JsonArray(420,297)},
+    ["element.set_parameter"]=()=>new JsonObject{["element_uid"]=McpUid,["parameter"]=new JsonObject{["built_in"]="ALL_MODEL_INSTANCE_COMMENTS"},["value"]=new JsonObject{["kind"]="text",["text"]="checked"},["dry_run"]=true},
+    ["element.delete"]=()=>new JsonObject{["element_uids"]=new JsonArray(McpUid),["dry_run"]=true},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
@@ -205,6 +208,20 @@ foreach(var (tool,readOnly) in new[]{("revit_query_title_blocks",true),("revit_d
     var onReal=Guarded(tool,sampleArgs[spec.Name](),McpReal);
     if(readOnly) Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,tool+" is read-only: forwarded to the pipe even on a real project");
     else Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+}
+// P1-05: the modify and delete commands are generated write tools, flagged destructive, guarded even as dry runs.
+Check(RevitCommandCatalogue.Modify.Select(spec=>spec.Name).SequenceEqual(new[]{"element.set_parameter","element.delete"}) && RevitCommandCatalogue.Modify.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the P1-05 modify commands, all in the catalogue enumeration");
+foreach(var tool in new[]{"revit_element_set_parameter","revit_element_delete"}) {
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && listed?["annotations"]?["destructiveHint"]?.GetValue<bool>()==true && listed?["annotations"]?["idempotentHint"]?.GetValue<bool>()==true
+        && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies","modify tool "+tool+" is listed write-copies with destructiveHint true and idempotentHint true");
+    var spec=RevitCommandCatalogue.All.SingleOrDefault(c=>c.ToolName==tool);
+    if(spec is null) continue;
+    var before=forwardedLines.Count;
+    var onReal=Guarded(tool,sampleArgs[spec.Name](),McpReal);
+    Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" dry run on a real project is refused document_not_enabled before the pipe");
+    var onCopy=Guarded(tool,sampleArgs[spec.Name](),McpCopy);
+    Check(IsError(onCopy) && FailureCode(onCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["args"]?["dry_run"]?.GetValue<bool>()==true,tool+" dry run on an enabled test copy is forwarded with dry_run true");
 }
 foreach(var tool in new[]{"revit_query_elements","revit_query_inspect"}) {
     var listed=tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!;

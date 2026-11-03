@@ -27,7 +27,8 @@ namespace Bim.Revit;
 // Partial: catalogue v2 (roofs, stairs, curtain walls, floor openings) is in CommandsExecutorV2.cs; view commands
 // (P4-01: plan, section, 3D) are in CommandsExecutorViews.cs; structure commands (P9-02: grids, columns, beams,
 // foundations) are in CommandsExecutorStructure.cs; documentation commands (P4-02: dimensions, tags, schedules,
-// sheets) are in CommandsExecutorDocumentation.cs.
+// sheets) are in CommandsExecutorDocumentation.cs; element.set_parameter and element.delete (P1-05) are in
+// CommandsExecutorModify.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -52,6 +53,8 @@ internal static partial class CommandExecutor
             case CommandReceiptAction.Replay: return CommandReceiptStore.ReplayJson(store.Receipts[envelope.OperationId]);
             case CommandReceiptAction.Conflict: throw CommandReceiptStore.Conflict(envelope.OperationId);
         }
+        // Modify and delete (P1-05, CommandsExecutorModify.cs) run their own transactions: a dry run stores no receipt.
+        if (envelope.Args is ElementSetParameterArgs or ElementDeleteArgs) return ModifyExecute(d, request, store);
         CommandReceiptStore.EnsureRoom(store.Receipts);
         var plan = envelope.Args switch
         {

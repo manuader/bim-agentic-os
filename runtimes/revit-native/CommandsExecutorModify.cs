@@ -1,0 +1,257 @@
+using Autodesk.Revit.DB;
+using Bim.Core;
+using RevitElement = Autodesk.Revit.DB.Element;
+namespace Bim.Revit;
+
+// P1-05 element.set_parameter and element.delete Revit executor. Same admission (copies-only guard), receipts and
+// transaction group as catalogue v1 (CommandsExecutor.cs); every decision that needs no Revit object is in
+// CommandsExecutorModifyRules.cs (unit-tested). A dry run runs the same transaction (failure processing included,
+// so its warnings are reported), reads back and reports the change, then rolls the transaction group back: nothing
+// is written and no receipt is stored. Evidence level: compiled against the Revit 2025 reference assemblies in CI;
+// nothing here has run in Revit.
+//
+// Revit 2025 API used (https://www.revitapidocs.com/2025/):
+//   Element.GetParameters(string), Element.get_Parameter(BuiltInParameter), Element.get_Parameter(Guid),
+//   Parameter.Set(double | int | string | ElementId), Parameter.IsReadOnly / StorageType, Definition.GetDataType,
+//   SpecTypeId.Boolean.YesNo, SpecTypeId.Int.Integer, UnitUtils.ConvertToInternalUnits with UnitTypeId.Millimeters /
+//   SquareMeters / Degrees
+//   Document.Delete(ICollection<ElementId>) (returns every deleted id), DocumentValidation.CanDeleteElement,
+//   Element.Pinned / GroupId, Document.ActiveView, Document.ProjectInformation
+// element.delete first deletes inside a probe transaction that is always rolled back, to name every element Revit
+// would delete (the ids exist again after the rollback); the kept delete must remove exactly the same ids.
+// Side effects: element.delete compares a pre/post snapshot of every element id (FilteredElementCollector with
+// ElementIsElementTypeFilter both ways) so the kept delete removes nothing beyond its probe; element.set_parameter
+// refuses a change that deletes any element and reports the other ids Application.DocumentChanged lists as modified.
+// Revit ArgumentException / InvalidOperationException from Parameter.Set or Document.Delete become args_invalid.
+// Unverified in Revit (owner session required): that Document.Delete returns the same ids in the probe and the kept
+// transaction; that DocumentChanged fires for a transaction committed inside an open transaction group; that elements deleted with a target (hosted doors, sketches, tags) all have a readable UniqueId after
+// the probe rollback; that UnitUtils round trips of areas and angles stay within 1e-6 m2 and 1e-6 degrees.
+internal static partial class CommandExecutor
+{
+    static string ModifyExecute(Document d, CommandRequest request, ReceiptStore store) => request.Envelope.Args switch
+    {
+        ElementSetParameterArgs args => SetParameterRun(d, request, store, args),
+        ElementDeleteArgs args => DeleteRun(d, request, store, args),
+        _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", request.Envelope.Command),
+    };
+
+    static Parameter ResolveParameter(RevitElement element, RevitParameterRef reference)
+    {
+        switch (reference)
+        {
+            case ParameterByName byName:
+                var named = element.GetParameters(byName.Name).Where(parameter => parameter.Definition is not null).ToArray();
+                CommandRulesModify.CheckNamedMatches(named.Length, byName.Name);
+                return named[0];
+            case ParameterByBuiltIn byBuiltIn:
+                // The schema allows only upper-case letters, digits and underscores, so no numeric or comma form parses.
+                if (!Enum.TryParse<BuiltInParameter>(byBuiltIn.BuiltIn, false, out var builtIn) || !Enum.IsDefined(builtIn) || builtIn == BuiltInParameter.INVALID)
+                    throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.parameter.built_in", "Revit has no BuiltInParameter named " + byBuiltIn.BuiltIn);
+                return element.get_Parameter(builtIn) is { Definition: not null } found ? found
+                    : throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.parameter.built_in", "the element has no parameter " + byBuiltIn.BuiltIn);
+            case ParameterByGuid byGuid:
+                return element.get_Parameter(byGuid.Guid) is { Definition: not null } shared ? shared
+                    : throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.parameter.guid", "the element has no shared parameter " + byGuid.Guid.ToString("D"));
+            default:
+                throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.parameter", "unsupported parameter reference");
+        }
+    }
+
+    static ParameterTarget Target(Document d, Parameter parameter)
+    {
+        ForgeTypeId? dataType = null;
+        try { dataType = parameter.Definition.GetDataType(); }
+        catch (Autodesk.Revit.Exceptions.ApplicationException) { dataType = null; }
+        var yesNo = dataType is not null && dataType.Equals(SpecTypeId.Boolean.YesNo);
+        var integer = dataType is not null && dataType.Equals(SpecTypeId.Int.Integer);
+        return new ParameterTarget(ObserveParameter(d, parameter, RevitParameterSources.Instance), yesNo, integer);
+    }
+
+    static bool SetValue(Parameter parameter, RevitParameterValue value, ElementId? elementValue) => value switch
+    {
+        LengthValueArg length => parameter.Set(UnitUtils.ConvertToInternalUnits(length.Value.Millimetres, UnitTypeId.Millimeters)),
+        AreaValueArg area => parameter.Set(UnitUtils.ConvertToInternalUnits(area.Value.SquareMetres, UnitTypeId.SquareMeters)),
+        AngleValueArg angle => parameter.Set(UnitUtils.ConvertToInternalUnits(angle.Value.Degrees, UnitTypeId.Degrees)),
+        TextValueArg text => parameter.Set(text.Value),
+        IntegerValueArg integer => parameter.Set(integer.Value),
+        YesNoValueArg yesNo => parameter.Set(yesNo.Value ? 1 : 0),
+        ElementValueArg => parameter.Set(elementValue!),
+        _ => false,
+    };
+
+    // Every element id in the document (instances and types), for the pre/post deletion snapshot.
+    static HashSet<long> ElementIds(Document d) =>
+        new FilteredElementCollector(d).WherePasses(new LogicalOrFilter(new ElementIsElementTypeFilter(false), new ElementIsElementTypeFilter(true)))
+            .ToElementIds().Select(id => id.Value).ToHashSet();
+
+    static long[] Removed(HashSet<long> before, Document d)
+    {
+        var after = ElementIds(d);
+        return before.Where(id => !after.Contains(id)).ToArray();
+    }
+
+    // Revit's own argument and operation refusals become args_invalid at the given field.
+    static T Refusing<T>(string field, Func<T> call)
+    {
+        try { return call(); }
+        catch (Autodesk.Revit.Exceptions.ArgumentException error) { throw CommandRulesModify.RevitRefused(field, error.Message); }
+        catch (Autodesk.Revit.Exceptions.InvalidOperationException error) { throw CommandRulesModify.RevitRefused(field, error.Message); }
+    }
+
+    static string Finish(Document d, CommandRequest request, ReceiptStore store, TransactionGroup group, ModifyReply reply) =>
+        reply.Persist ? Persist(d, request, store, group, reply.Response) : RollBackDryRun(group, reply.Response);
+
+    static string SetParameterRun(Document d, CommandRequest request, ReceiptStore store, ElementSetParameterArgs args)
+    {
+        var element = ElementByUid(d, args.ElementUid, "args.element_uid");
+        CommandRulesModify.CheckParameterElement(element.UniqueId, element.GroupId is { } groupId && groupId != ElementId.InvalidElementId);
+        var parameter = ResolveParameter(element, args.Parameter);
+        var target = Target(d, parameter);
+        var kind = CommandRulesModify.CheckSettable(target, args.Value);
+        var elementValue = args.Value is ElementValueArg value ? ElementByUid(d, value.UniqueId, "args.value.uid").Id : null;
+        var before = target.Parameter;
+        if (CommandRulesModify.StoresReceipt(args.DryRun)) CommandReceiptStore.EnsureRoom(store.Receipts);
+        var failures = new CommandFailures();
+        var snapshot = ElementIds(d);
+        // DocumentChanged reports the ids each committed transaction modified (unverified inside a transaction group).
+        var modifiedIds = new List<long>();
+        void OnChanged(object? sender, Autodesk.Revit.DB.Events.DocumentChangedEventArgs changed)
+        {
+            if (changed.GetDocument().Equals(d)) modifiedIds.AddRange(changed.GetModifiedElementIds().Select(id => id.Value));
+        }
+        using var group = StartGroup(d, request);
+        try
+        {
+            d.Application.DocumentChanged += OnChanged;
+            try
+            {
+                ModifyTransaction(d, request, failures, () =>
+                {
+                    if (!Refusing("args.value", () => SetValue(parameter, args.Value, elementValue)))
+                        throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.value", "Revit refused the value for parameter " + before.Name);
+                    d.Regenerate();
+                    if (CommandReadbackModify.Parameter(args.Value, ObserveParameter(d, parameter, RevitParameterSources.Instance)) is { } mismatch) throw Mismatch(mismatch);
+                });
+            }
+            finally { d.Application.DocumentChanged -= OnChanged; }
+            // Failure processing may change the element: resolve the parameter again and read back before any receipt.
+            if (!element.IsValidObject) throw Mismatch("the element no longer exists");
+            var others = CommandRulesModify.SetParameterEffects(element.Id.Value, Removed(snapshot, d), modifiedIds);
+            var alsoModified = others.Select(id => d.GetElement(new ElementId(id))?.UniqueId).Where(uid => uid is not null).Select(uid => uid!).ToArray();
+            var after = ObserveParameter(d, ResolveParameter(element, args.Parameter), RevitParameterSources.Instance);
+            if (CommandReadbackModify.Parameter(args.Value, after) is { } afterMismatch) throw Mismatch(afterMismatch);
+            var changed = !CommandRulesModify.SameValue(kind, before, after);
+            var readback = CommandReadbackModify.ParameterJson(args.DryRun, element.UniqueId, kind, before, after, changed, alsoModified);
+            return Finish(d, request, store, group, CommandResponsesModify.SetParameter(request, args.DryRun, element.UniqueId, changed, alsoModified, readback, failures.Warnings.ToArray()));
+        }
+        catch
+        {
+            if (group.GetStatus() == TransactionStatus.Started) group.RollBack();
+            throw;
+        }
+    }
+
+    static DeleteTargetFacts DeleteFacts(Document d, RevitElement element, ElementId? projectInformationId, ElementId? storeId, ElementId? activeViewId) =>
+        new(element.UniqueId, DocumentValidation.CanDeleteElement(d, element.Id), element.Pinned,
+            element.GroupId is { } groupId && groupId != ElementId.InvalidElementId,
+            projectInformationId is not null && element.Id == projectInformationId,
+            storeId is not null && element.Id == storeId,
+            activeViewId is not null && element.Id == activeViewId);
+
+    static string DeleteRun(Document d, CommandRequest request, ReceiptStore store, ElementDeleteArgs args)
+    {
+        var targets = args.ElementUids.Select((uid, i) => ElementByUid(d, uid, "args.element_uids[" + i + "]")).ToArray();
+        var projectInformation = d.ProjectInformation;
+        var activeViewId = d.ActiveView?.Id;
+        for (var i = 0; i < targets.Length; i++)
+            CommandRulesModify.CheckDeletable(DeleteFacts(d, targets[i], projectInformation?.Id, store.Storage?.Id, activeViewId), "args.element_uids[" + i + "]");
+        var protectedUids = new[] { projectInformation?.UniqueId, store.Storage?.UniqueId }.Where(uid => uid is not null).Select(uid => uid!).ToArray();
+        var targetUids = targets.Select(element => element.UniqueId).ToArray();
+        var ids = targets.Select(element => element.Id).ToList();
+        if (CommandRulesModify.StoresReceipt(args.DryRun)) CommandReceiptStore.EnsureRoom(store.Receipts);
+        var failures = new CommandFailures();
+        var snapshot = ElementIds(d);
+        using var group = StartGroup(d, request);
+        try
+        {
+            // Probe: what Revit deletes with the targets (Document.Delete's ids plus anything regeneration removed,
+            // from the pre/post snapshot). The probe transaction is ALWAYS rolled back, so the elements exist again
+            // and can be named by UniqueId and checked below.
+            long[] probeDeleted;
+            HashSet<long> probeSet;
+            using (var probeTx = new Transaction(d, "BIM Agentic OS element.delete probe"))
+            {
+                if (probeTx.Start() != TransactionStatus.Started) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "probe transaction did not start");
+                try
+                {
+                    probeDeleted = Refusing("args.element_uids", () => d.Delete(ids)).Select(id => id.Value).ToArray();
+                    d.Regenerate();
+                    probeSet = probeDeleted.Concat(Removed(snapshot, d)).ToHashSet();
+                }
+                finally { if (probeTx.GetStatus() == TransactionStatus.Started) probeTx.RollBack(); }
+            }
+            var cascade = CommandRulesModify.Cascade(targetUids, probeSet.Select(id => d.GetElement(new ElementId(id))?.UniqueId).ToArray());
+            CommandRulesModify.CheckCascade(cascade, protectedUids);
+            CommandRulesModify.CheckDependents(cascade.Dependents.Select(uid => DeleteFacts(d, d.GetElement(uid), projectInformation?.Id, store.Storage?.Id, activeViewId)).ToArray());
+            if (!args.DryRun) CommandRulesModify.CheckConfirmed(cascade.Dependents, args.ConfirmDependents);
+            ModifyTransaction(d, request, failures, () =>
+            {
+                var deleted = Refusing("args.element_uids", () => d.Delete(ids)).Select(id => id.Value).ToArray();
+                CommandRulesModify.CheckSameCascade(probeDeleted, deleted);
+                d.Regenerate();
+            });
+            // After commit (failure processing included): nothing beyond the probe set may be gone, and none of it may remain.
+            CommandRulesModify.CheckNoExtraDeletions(probeSet, Removed(snapshot, d));
+            var expected = targetUids.Concat(cascade.Dependents).ToArray();
+            if (CommandReadbackModify.Deleted(expected.Where(uid => d.GetElement(uid) is not null).ToArray()) is { } mismatch) throw Mismatch(mismatch);
+            return Finish(d, request, store, group, CommandResponsesModify.Delete(request, args.DryRun, targetUids, cascade.Dependents, args.ConfirmDependents, failures.Warnings.ToArray()));
+        }
+        catch
+        {
+            if (group.GetStatus() == TransactionStatus.Started) group.RollBack();
+            throw;
+        }
+    }
+
+    static TransactionGroup StartGroup(Document d, CommandRequest request)
+    {
+        var group = new TransactionGroup(d, "BIM Agentic OS " + request.Envelope.Command + " " + request.Envelope.OperationId);
+        if (group.Start() != TransactionStatus.Started)
+        {
+            group.Dispose();
+            throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "transaction group did not start");
+        }
+        return group;
+    }
+
+    // One write transaction with the catalogue's failure handling: warnings are collected and removed, any error rolls
+    // back as transaction_failed.
+    static void ModifyTransaction(Document d, CommandRequest request, CommandFailures failures, Action apply)
+    {
+        using var tx = new Transaction(d, "BIM Agentic OS " + request.Envelope.Command);
+        if (tx.Start() != TransactionStatus.Started) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "transaction did not start");
+        var options = tx.GetFailureHandlingOptions();
+        options.SetFailuresPreprocessor(failures);
+        options.SetClearAfterRollback(true);
+        tx.SetFailureHandlingOptions(options);
+        try
+        {
+            apply();
+            var status = tx.Commit();
+            if (status != TransactionStatus.Committed)
+                throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, failures.Errors.Count > 0 ? string.Join("; ", failures.Errors) : "Revit did not commit the transaction (" + status + ")");
+        }
+        catch
+        {
+            if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
+            throw;
+        }
+    }
+
+    // A dry run's committed transaction is undone by rolling its group back; the report is returned, never stored.
+    static string RollBackDryRun(TransactionGroup group, RevitCommandResponse response)
+    {
+        if (group.RollBack() != TransactionStatus.RolledBack) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "the dry run could not be rolled back");
+        return response.ToJson();
+    }
+}

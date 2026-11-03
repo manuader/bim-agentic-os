@@ -136,6 +136,15 @@ try
         else
             Check(documentationPolicy.Evaluate("reader", command, RealPath) is { Allowed: true, Reason: PermissionCodes.ReadAllowed }, "documentation read " + command + " is allowed for a reader on a real project");
     }
+    // P1-05: element.set_parameter and element.delete are writes (dry runs included): copies only, never read level.
+    foreach (var command in new[] { "element.set_parameter", "element.delete" })
+    {
+        Check(RevitCommandCatalogue.Modify.Any(spec => spec.Name == command && spec.Writes) && RevitCommandCatalogue.IsDestructive(command), "modify catalogue has destructive write " + command);
+        var modifyPolicy = PermissionPolicy.Create(grants, Array.Empty<string>(), copies);
+        Check(modifyPolicy.Evaluate("reader", command, FixturePath) is { Allowed: false, Reason: PermissionCodes.LevelInsufficient } && modifyPolicy.Evaluate("copier", command, FixturePath) is { Allowed: true, Reason: PermissionCodes.WriteCopiesAllowed }
+            && modifyPolicy.Evaluate("copier", command, RealPath) is { Allowed: false, Reason: PermissionCodes.RealProjectNotEnabled } && modifyPolicy.Evaluate("owner", command, RealPath) is { Allowed: false, Reason: PermissionCodes.RealProjectNotEnabled },
+            "modify write " + command + ": reader denied, write-copies allowed on a copy, real project not enabled even for the owner grant");
+    }
     Check(PermissionPolicy.RequiredLevel("bogus.command", FixturePath, copies) is null, "an unknown command has no required level");
     var forged = realWrite with { Spec = RevitCommandCatalogue.Find("query.levels")! };
     Check(policy.Classify(forged) == PermissionLevel.WriteRealProject, "classification follows the catalogue entry of the command name, not a forged spec");
