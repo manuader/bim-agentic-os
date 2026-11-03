@@ -172,7 +172,8 @@ public sealed record RevitPlanRunReport(int Version, string PlanSha256, string S
 
     static IEnumerable<JsonElement> Items(JsonElement element) => element.ValueKind == JsonValueKind.Array ? element.EnumerateArray().ToArray() : throw Invalid();
 
-    static string Text(JsonElement element) => element.ValueKind == JsonValueKind.String && element.GetString() is { Length: > 0 } text ? text : throw Invalid();
+    // Any string, empty included: whatever ToJson() writes reads back.
+    static string Text(JsonElement element) => element.ValueKind == JsonValueKind.String ? element.GetString()! : throw Invalid();
 
     static string? NullableText(JsonElement element) => element.ValueKind == JsonValueKind.Null ? null : element.ValueKind == JsonValueKind.String ? element.GetString() : throw Invalid();
 
@@ -241,7 +242,8 @@ public static class PlanRunner
             ArgumentNullException.ThrowIfNull(plan);
             if (plan.Steps.Select(step => step.OperationId).Distinct(StringComparer.Ordinal).Count() != plan.Steps.Count) throw new ArgumentException("plan_duplicate_operation");
             RevitCommandStep? check = null;
-            if (plan.Preconditions.Count > 0)
+            // A plan without steps has nothing to guard: its preconditions carry no check_operation and nothing is sent.
+            if (plan.Preconditions.Count > 0 && plan.Steps.Count > 0)
             {
                 var ids = plan.Preconditions.Select(item => item.CheckOperation).Distinct().ToArray();
                 check = ids.Length == 1 && ids[0] is { } id ? plan.Steps.FirstOrDefault(step => step.OperationId == id && step.Command == "query.levels") : null;
@@ -267,12 +269,23 @@ public static class PlanRunner
         }
         for (var i = 0; i < report.Pending.Count; i++)
             if (report.Pending[i] != layout.Steps[report.Completed.Count + i].OperationId) throw Invalid();
-        var consistent = report.Status switch
+        // The failed step must be the level check or pending[0], with that step's command and element.
+        var failedStep = report.Failed is not { } failure ? null
+            : layout.Check is { } checkStep && failure.OperationId == checkStep.OperationId ? checkStep
+            : report.Pending.Count > 0 && failure.OperationId == report.Pending[0] ? layout.Steps[report.Completed.Count]
+            : throw Invalid();
+        if (report.Failed is { } failedReport && failedStep is not null && (failedReport.Command != failedStep.Command || failedReport.ElementId != failedStep.ElementId)) throw Invalid();
+        var failedCheck = failedStep is not null && ReferenceEquals(failedStep, layout.Check);
+        // levels_check: null without a plan check or when the check itself failed; otherwise the plan's check with its issues.
+        var levels = report.LevelsCheck;
+        if (levels is not null && (levels.Issues is null || levels.Issues.Any(issue => issue is null))) throw Invalid();
+        var levelsConsistent = layout.Check is not { } check || failedCheck ? levels is null
+            : levels is not null && levels.OperationId == check.OperationId && (report.Status == RevitPlanRunStatus.PreconditionFailed) == (levels.Issues.Count > 0);
+        var consistent = levelsConsistent && report.Status switch
         {
             RevitPlanRunStatus.Completed => report.Pending.Count == 0 && report.Failed is null,
-            RevitPlanRunStatus.Failed => report.Pending.Count > 0 && report.Failed is { } failed
-                && (failed.OperationId == report.Pending[0] || failed.OperationId == layout.Check?.OperationId),
-            RevitPlanRunStatus.PreconditionFailed => report.Pending.Count > 0 && report.Failed is null && report.LevelsCheck is { Issues.Count: > 0 },
+            RevitPlanRunStatus.Failed => report.Pending.Count > 0 && failedStep is not null,
+            RevitPlanRunStatus.PreconditionFailed => report.Pending.Count > 0 && report.Failed is null && layout.Check is not null,
             _ => false,
         };
         if (!consistent) throw Invalid();
@@ -294,7 +307,7 @@ public static class PlanRunner
             if (response!.ReadbackJson is not { } readback) return Report(RevitPlanRunStatus.Failed, Fail(check, RevitCommandCodes.ResponseInvalid, "readback", "query.levels returned no readback"));
             IReadOnlyList<RevitPreconditionIssue> issues;
             try { issues = PlanToCommands.CheckPreconditions(plan, readback); }
-            catch (RevitCommandException error) { return Report(RevitPlanRunStatus.Failed, Fail(check, error.Code, error.Field, error.Detail)); }
+            catch (RevitCommandException error) { return Report(RevitPlanRunStatus.Failed, Fail(check, error.Code, error.Field, MalformedReadbackDetail)); }
             levels = new RevitLevelsCheck(check.OperationId, issues.ToArray());
             if (issues.Count > 0) return Report(RevitPlanRunStatus.PreconditionFailed, null);
         }
@@ -319,17 +332,19 @@ public static class PlanRunner
     {
         RevitCommandEnvelope envelope;
         try { envelope = PlanToCommands.Envelope(plan, step, created); }
-        catch (RevitCommandException error) { return (null, Fail(step, error.Code, error.Field, error.Detail)); }
+        catch (RevitCommandException error) { return (null, Fail(step, error.Code, error.Field, error.Code == RevitCommandCodes.EnvelopeInvalid ? "the envelope was refused" : error.Detail)); }
         catch (ArgumentException error) { return (null, Fail(step, error.Message, null, null)); }
         string? line;
         try { line = transport.Send(envelope.CanonicalJson); }
         catch (TimeoutException error) { return (null, Fail(step, RevitCommandCodes.PipeConnectTimeout, null, error.GetType().Name)); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return (null, Fail(step, RevitCommandCodes.PipeIoError, null, error.GetType().Name)); }
+        // Any other transport failure is pipe_io_error too, with only the exception type name (messages vary by culture).
+        catch (Exception error) { return (null, Fail(step, RevitCommandCodes.PipeIoError, null, error.GetType().Name)); }
         if (line is null) return (null, Fail(step, RevitCommandCodes.NoResponse, null, "the transport returned no reply"));
         RevitCommandResponse response;
         try { response = RevitCommandResponse.Parse(line); }
-        catch (RevitCommandException error) { return (null, Fail(step, RevitCommandCodes.ResponseInvalid, error.Field, error.Detail)); }
-        if (!response.IsSuccess) return (null, Fail(step, response.Code, response.Field, response.Detail));
+        catch (RevitCommandException error) { return (null, Fail(step, RevitCommandCodes.ResponseInvalid, error.Field, MalformedReplyDetail)); }
+        if (!response.IsSuccess)
+            return (null, response.Code == RevitCommandCodes.Ok ? Fail(step, RevitCommandCodes.ResponseInvalid, "code", "a failed reply with code ok") : Fail(step, response.Code, response.Field, response.Detail));
         var receipt = response.Receipt!;
         var mismatch = receipt.OperationId != envelope.OperationId ? "operation_id"
             : receipt.Command != envelope.Command ? "command"
