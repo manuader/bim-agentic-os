@@ -81,7 +81,10 @@ internal static partial class CommandExecutor
         return new WritePlan(
             () =>
             {
-                var created = d.Create.NewFootPrintRoof(footprint, level, type, out var mapping);
+                // Revit 2025 throws ArgumentNullException ("Value cannot be null") unless the out mapping array is
+                // pre-allocated: the native side writes into the caller's instance (observed in owner chat 2026-11-03).
+                ModelCurveArray mapping = new ModelCurveArray();
+                var created = d.Create.NewFootPrintRoof(footprint, level, type, out mapping);
                 roof = created;
                 foreach (ModelCurve edge in mapping) edges.Add(edge);
                 foreach (var edge in edges)
