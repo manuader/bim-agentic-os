@@ -327,7 +327,6 @@ public static class MirrorDrift
     public const int MaxCommittedElements = MirrorSnapshotMapper.MaxElements;
     public const int MaxJournalEntries = 4096;
     public const int MaxReceipts = 2000;
-    static readonly bool UnownedClaims = false;
 
     // Named geometry fields per BIM-IR kind (MirrorMapper.cs layouts); every value is a length in metres. These are
     // exactly the kinds query.snapshot exports, so they are the comparable kinds.
@@ -538,7 +537,7 @@ public static class MirrorDrift
         foreach (var (mapKey, mapUid) in committed.UnownedNativeIds ?? new Dictionary<string, string>())
         {
             if (string.IsNullOrWhiteSpace(mapUid)) continue;
-            if (!UnownedClaims || !claimed.Add(mapUid.ToLowerInvariant())) { if (UnownedClaims) throw new ArgumentException(MapInvalidCode + " two map entries name one UniqueId"); continue; }
+            if (!claimed.Add(mapUid.ToLowerInvariant())) throw new ArgumentException(MapInvalidCode + " two map entries name one UniqueId");
             notComparable.Add(new MirrorDriftNotComparable(null, observed.TryGetValue(mapUid.ToLowerInvariant(), out var owned) ? owned.Element.Kind : "", mapUid, MapKeyNotBimIr) { MapKey = mapKey });
         }
         var unmappedKeys = new HashSet<string>(snapshot.Unmapped.Where(entry => !string.IsNullOrWhiteSpace(entry.UniqueId)).Select(entry => entry.UniqueId.ToLowerInvariant()), StringComparer.Ordinal);
@@ -626,7 +625,7 @@ public static class MirrorDrift
         {
             if (claimed.Contains(key)) continue;
             var (classification, evidence) = Classify(key, uid, false);
-            if (UnownedClaims && options.Scope == MirrorDriftScopes.MapOnly && evidence.Count == 0) { outOfScope.Add(new MirrorDriftOutOfScope(uid, element.Id, element.Kind)); continue; }
+            if (options.Scope == MirrorDriftScopes.MapOnly && evidence.Count == 0) { outOfScope.Add(new MirrorDriftOutOfScope(uid, element.Id, element.Kind)); continue; }
             findings.Add(new MirrorDriftFinding(MirrorDriftKinds.Extra, uid, null, element.Id, element.Kind, classification, evidence, Array.Empty<MirrorDriftField>()));
         }
 
