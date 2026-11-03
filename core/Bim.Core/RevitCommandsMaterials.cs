@@ -31,7 +31,7 @@ public static partial class RevitCommandCatalogue
     static IReadOnlyList<RevitCommandSpec> BuildMaterials()
     {
         var functions = string.Join(",", RevitMaterialRules.Functions.Select(function => "\"" + function + "\""));
-        var layer = Fill("""{"type":"object","description":"One layer of the roof build-up","properties":{"function":{"type":"string","description":"Layer function: finish1 (outer finish, for example tiles), finish2, substrate (for example boards), structure (for example rafters), insulation or membrane","enum":[@0@]},"material":@1@,"thickness_mm":{"type":"number","description":"Layer thickness in millimetres: exactly 0 for a membrane, otherwise greater than 0 and at most 9144000"}},"required":["function","material","thickness_mm"],"additionalProperties":false}""",
+        var layer = Fill("""{"type":"object","description":"One layer of the roof build-up","properties":{"function":{"type":"string","description":"Layer function: finish1 (outer finish, for example tiles), finish2, substrate (for example boards), structure (for example rafters), insulation or membrane","enum":[@0@]},"material":@1@,"thickness_mm":{"type":"number","description":"Layer thickness in millimetres: exactly 0 for a membrane, otherwise at least 1.2 (Revit minimum) and at most 9144000"}},"required":["function","material","thickness_mm"],"additionalProperties":false}""",
             functions, Reference("Material: name or UniqueId from revit_query_materials"));
         var roofType = Fill("""{"type":"object","properties":{"name":@0@,"base_type":@1@,"layers":{"type":"array","description":"Layers from exterior (top of the roof) to interior (bottom), 1 to @3@; at least one layer thicker than 0","items":@2@,"minItems":1,"maxItems":@3@}},"required":["name","base_type","layers"],"additionalProperties":false}""",
             Text("Name of the new roof type; none of \\\\ : { } [ ] | ; < > ? ` ~ and no leading or trailing space. If a roof type of this name already exists with exactly these layers it is returned unchanged; with other layers the request is refused", 256),
@@ -61,6 +61,7 @@ public static partial class RevitCommandCatalogue
                 if (thickness.Millimetres != 0) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "a membrane layer has no thickness in Revit; give 0");
             }
             else if (thickness.Millimetres == 0) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "only a membrane layer may be 0 mm thick");
+            else if (thickness.Millimetres < RevitTypeRules.MinLayerThicknessMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, RevitTypeRules.TooThin);
             if (thickness.Millimetres > RevitCommandGeometry.MaxRevitLengthMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "thickness above 9144000 mm (Revit's 30000 ft limit)");
             layers.Add(new RoofTypeLayerArg(function, layer.GetProperty("material").GetString()!, thickness));
             index++;

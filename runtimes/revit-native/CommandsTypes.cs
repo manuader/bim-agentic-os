@@ -14,8 +14,11 @@ public sealed record ExpectedTypeLayer(string Function, string MaterialUid, doub
 // A compound structure layer as Revit reports it; Function is CommandRulesMaterials.FunctionName of its
 // MaterialFunctionAssignment; MaterialUid/MaterialName are null when the layer has no material.
 public sealed record ObservedTypeLayer(string Function, string? MaterialUid, string? MaterialName, double WidthMm);
-// Layers null: the type has no compound structure. WidthMm: CompoundStructure.GetWidth.
-public sealed record ObservedLayeredType(string UniqueId, string Name, IReadOnlyList<ObservedTypeLayer>? Layers, double? WidthMm);
+// Layers null: the type has no compound structure. WidthMm: CompoundStructure.GetWidth. ExteriorShellLayers /
+// InteriorShellLayers: GetNumberOfShellLayers(Exterior / Interior); StructuralMaterialIndex: StructuralMaterialIndex
+// (-1 when none); all null without a compound structure.
+public sealed record ObservedLayeredType(string UniqueId, string Name, IReadOnlyList<ObservedTypeLayer>? Layers, double? WidthMm,
+    int? ExteriorShellLayers, int? InteriorShellLayers, int? StructuralMaterialIndex);
 // A material as Revit reports it: Color null when Material.Color is not valid; MaterialClass/MaterialCategory null
 // when empty; the appearance asset null when the material has none.
 public sealed record ObservedMaterial(string UniqueId, string Name, RgbColor? Color, int Transparency, int Shininess, int Smoothness,
@@ -32,6 +35,15 @@ public static class CommandRulesTypes
         "Stacked" => "is a stacked wall type (made of other wall types, no layers of its own)",
         _ => "is a wall type of kind " + revitKind + ", not a basic wall",
     };
+
+    // Which existing element a create request names: the first exact (ordinal) name match, else the first match
+    // ignoring case (Revit type and material names ignore case), else null (nothing of that name: create it).
+    public static int? PickExisting(IReadOnlyList<string> names, string name)
+    {
+        for (var i = 0; i < names.Count; i++) if (string.Equals(names[i], name, StringComparison.Ordinal)) return i;
+        for (var i = 0; i < names.Count; i++) if (string.Equals(names[i], name, StringComparison.OrdinalIgnoreCase)) return i;
+        return null;
+    }
 }
 
 public static class CommandReadbackTypes
@@ -53,8 +65,17 @@ public static class CommandReadbackTypes
             if (!string.Equals(layer.MaterialUid, want.MaterialUid, StringComparison.OrdinalIgnoreCase)) return what + " layer " + i + " material is " + (layer.MaterialUid ?? "none") + ", expected " + want.MaterialUid;
             if (!CommandGeometry.Near(layer.WidthMm, want.ThicknessMm)) return what + " layer " + i + " thickness is " + F(layer.WidthMm) + " mm, expected " + F(want.ThicknessMm);
         }
+        // The core is the run of structure layers (RevitTypeRules.CoreRange): that many exterior and interior shell
+        // layers around it, and the first structure layer as the structural material layer.
+        var (first, last) = RevitTypeRules.CoreRange(expected.Select(layer => layer.Function).ToArray(), "args.layers");
+        var interior = expected.Count - 1 - last;
+        if (observed.ExteriorShellLayers != first || observed.InteriorShellLayers != interior)
+            return what + " core has " + Count(observed.ExteriorShellLayers) + " exterior and " + Count(observed.InteriorShellLayers) + " interior shell layers, expected " + first + " and " + interior + " (core layers " + first + " to " + last + ")";
+        if (observed.StructuralMaterialIndex != first) return what + " structural material layer is " + Count(observed.StructuralMaterialIndex) + ", expected " + first;
         return null;
     }
+
+    static string Count(int? value) => value?.ToString(CultureInfo.InvariantCulture) ?? "unknown";
 
     static string Rgb(RgbColor? color) => color is null ? "none" : color.Red + "," + color.Green + "," + color.Blue;
 
@@ -87,8 +108,8 @@ public static class CommandReadbackTypes
         else writer.WriteString(name, value);
     }
 
-    // {<member>: {unique_id, name, existing, width_mm, layers: [{function, material_unique_id, material_name,
-    // thickness_mm}]}}, member wall_type or floor_type, layers in compound structure order (exterior or top first).
+    // {<member>: {unique_id, name, existing, width_mm, core: {first, last}|null, structural_material_index,
+    // layers: [{function, material_unique_id, material_name, thickness_mm}]}}, member wall_type or floor_type, layers in compound structure order (exterior or top first).
     public static string LayeredTypeJson(string member, ObservedLayeredType type, bool existing) => Json(writer =>
     {
         writer.WriteStartObject();
@@ -98,6 +119,17 @@ public static class CommandReadbackTypes
         writer.WriteBoolean("existing", existing);
         if (type.WidthMm is { } width && double.IsFinite(width)) writer.WriteNumber("width_mm", width);
         else writer.WriteNull("width_mm");
+        // core: {first, last} layer indices from the shell counts, null without layers or shell counts.
+        if (type.Layers is { } coreLayers && type.ExteriorShellLayers is { } exterior && type.InteriorShellLayers is { } interiorShell)
+        {
+            writer.WriteStartObject("core");
+            writer.WriteNumber("first", exterior);
+            writer.WriteNumber("last", coreLayers.Count - 1 - interiorShell);
+            writer.WriteEndObject();
+        }
+        else writer.WriteNull("core");
+        if (type.StructuralMaterialIndex is { } structural) writer.WriteNumber("structural_material_index", structural);
+        else writer.WriteNull("structural_material_index");
         writer.WriteStartArray("layers");
         foreach (var layer in type.Layers ?? Array.Empty<ObservedTypeLayer>())
         {

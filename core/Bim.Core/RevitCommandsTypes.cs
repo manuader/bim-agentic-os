@@ -28,6 +28,11 @@ public static class RevitTypeRules
     public const int MaxTransparency = 100;
     public const int MaxShininess = 128;
     public const int MaxSmoothness = 100;
+    // Thinnest non-membrane layer accepted: Revit's minimum compound structure layer thickness is 1/256 ft
+    // (1.190625 mm); 1.2 mm keeps a margin over it after unit conversion (also applied by roof_type.create).
+    public const double MinLayerThicknessMm = 1.2;
+
+    public static string TooThin => "layer thinner than 1.2 mm (Revit's minimum layer thickness is 1/256 ft, 1.190625 mm)";
 
     // The core of a layered type: from the first to the last structure layer (indices into functions). Revit needs a
     // core and refuses a membrane inside it, so no structure layer, or a membrane between structure layers, is
@@ -59,7 +64,7 @@ public static partial class RevitCommandCatalogue
     static string TypeLayerSchema(string what)
     {
         var functions = string.Join(",", RevitMaterialRules.Functions.Select(function => "\"" + function + "\""));
-        return Fill("""{"type":"object","description":"One layer of the @2@ build-up","properties":{"function":{"type":"string","description":"Layer function: finish1 (outer finish, for example stone cladding or floor boards), finish2 (inner finish, for example plaster), substrate, structure (the core, for example block or a concrete slab), insulation or membrane","enum":[@0@]},"material":@1@,"thickness_mm":{"type":"number","description":"Layer thickness in millimetres: exactly 0 for a membrane, otherwise greater than 0 and at most 9144000"}},"required":["function","material","thickness_mm"],"additionalProperties":false}""",
+        return Fill("""{"type":"object","description":"One layer of the @2@ build-up","properties":{"function":{"type":"string","description":"Layer function: finish1 (outer finish, for example stone cladding or floor boards), finish2 (inner finish, for example plaster), substrate, structure (the core, for example block or a concrete slab), insulation or membrane","enum":[@0@]},"material":@1@,"thickness_mm":{"type":"number","description":"Layer thickness in millimetres: exactly 0 for a membrane, otherwise at least 1.2 (Revit minimum) and at most 9144000"}},"required":["function","material","thickness_mm"],"additionalProperties":false}""",
             functions, Reference("Material: name or UniqueId from revit_query_materials"), what);
     }
 
@@ -132,11 +137,12 @@ public static partial class RevitCommandCatalogue
                 if (thickness.Millimetres != 0) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "a membrane layer has no thickness in Revit; give 0");
             }
             else if (thickness.Millimetres == 0) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "only a membrane layer may be 0 mm thick");
+            else if (thickness.Millimetres < RevitTypeRules.MinLayerThicknessMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, RevitTypeRules.TooThin);
             if (thickness.Millimetres > RevitCommandGeometry.MaxRevitLengthMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "thickness above 9144000 mm (Revit's 30000 ft limit)");
             layers.Add(new TypeLayerArg(function, layer.GetProperty("material").GetString()!, thickness));
             index++;
         }
-        if (layers.All(layer => layer.Thickness.Millimetres == 0)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.layers", "at least one layer must be thicker than 0 mm");
+        // CoreRange needs a structure layer, which is never 0 mm, so a build-up of only membranes is refused here.
         RevitTypeRules.CoreRange(layers.Select(layer => layer.Function).ToArray(), "args.layers");
         return (name, args.GetProperty("base_type").GetString()!, layers);
     }

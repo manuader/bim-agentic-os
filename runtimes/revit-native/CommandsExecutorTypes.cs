@@ -17,7 +17,12 @@ namespace Bim.Revit;
 //   SetNumberOfShellLayers(ShellLayerType, int), StructuralMaterialIndex, IsValid(Document, out errors, out pairs)
 // Unverified in Revit (owner session required): that a wall type duplicated from a basic wall with sweeps, reveals or
 // wrapping keeps those once the simple structure is set; that a floor type duplicated from one with a variable-thickness
-// layer keeps no variable layer; that an appearance asset shared by two materials renders the same on both.
+// layer keeps no variable layer; that an appearance asset shared by two materials renders the same on both; that the
+// shell layer counts and StructuralMaterialIndex survive SetCompoundStructure as set (they are read back); that 1.2 mm
+// (RevitTypeRules.MinLayerThicknessMm) is accepted for every layer function; whether type names must be unique across
+// system families (a wall type named like a floor type) and whether material names are unique ignoring case (Duplicate
+// and Material.Create refusals become args_invalid); and how Material.Color shows when the material's
+// UseRenderAppearanceForShading is on (the graphics colour is set and read back, the shading shown is not checked).
 internal static partial class CommandExecutor
 {
     static AppearanceAssetElement[] AppearanceAssets(Document d) => new FilteredElementCollector(d).OfClass(typeof(AppearanceAssetElement)).Cast<AppearanceAssetElement>().ToArray();
@@ -39,9 +44,12 @@ internal static partial class CommandExecutor
             : null;
         var assetUid = asset?.UniqueId;
 
-        // A material of that name (Revit material names ignore case): returned unchanged when identical, else refused.
-        if (Materials(d).FirstOrDefault(material => string.Equals(material.Name, args.Name, StringComparison.OrdinalIgnoreCase)) is { } existing)
+        // A material of that name (exact name first, then ignoring case: CommandRulesTypes.PickExisting): returned
+        // unchanged when identical, else refused.
+        var materials = Materials(d);
+        if (CommandRulesTypes.PickExisting(materials.Select(material => material.Name).ToArray(), args.Name) is { } index)
         {
+            var existing = materials[index];
             if (CommandReadbackTypes.Material(args, assetUid, ObserveMaterial(d, existing)) is { } difference)
                 throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a material named '" + existing.Name + "' already exists and differs (" + difference + "); choose another name");
             return new WritePlan(
@@ -56,7 +64,10 @@ internal static partial class CommandExecutor
         return new WritePlan(
             () =>
             {
-                var material = d.GetElement(Material.Create(d, args.Name)) as Material ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.name", "Revit did not create the material");
+                ElementId id;
+                try { id = Material.Create(d, args.Name); }
+                catch (Autodesk.Revit.Exceptions.ArgumentException error) { throw CommandRulesModify.RevitRefused("args.name", error.Message); }
+                var material = d.GetElement(id) as Material ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.name", "Revit did not create the material");
                 created = material;
                 if (args.Color is { } color) material.Color = new Color((byte)color.Red, (byte)color.Green, (byte)color.Blue);
                 if (args.Transparency is { } transparency) material.Transparency = transparency;
@@ -79,7 +90,10 @@ internal static partial class CommandExecutor
             var material = d.GetElement(layer.MaterialId) as Material;
             return new ObservedTypeLayer(CommandRulesMaterials.FunctionName(layer.Function.ToString()), material?.UniqueId, material?.Name, Mm(layer.Width));
         }).ToArray();
-        return new ObservedLayeredType(type.UniqueId, type.Name, layers, structure is null ? null : Mm(structure.GetWidth()));
+        return structure is null
+            ? new ObservedLayeredType(type.UniqueId, type.Name, null, null, null, null, null)
+            : new ObservedLayeredType(type.UniqueId, type.Name, layers, Mm(structure.GetWidth()),
+                structure.GetNumberOfShellLayers(ShellLayerType.Exterior), structure.GetNumberOfShellLayers(ShellLayerType.Interior), structure.StructuralMaterialIndex);
     }
 
     static WritePlan WallTypeWrite(Document d, WallTypeCreateArgs args)
@@ -88,7 +102,7 @@ internal static partial class CommandExecutor
         var baseType = Resolve(wallTypes, wallType => new CommandCandidate(wallType.UniqueId, wallType.Name), args.BaseType, "args.base_type", "wall type");
         if (CommandRulesTypes.WallKindProblem(baseType.Kind.ToString()) is { } problem)
             throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.base_type", "wall type '" + baseType.Name + "' " + problem + "; pick a basic wall type from revit_query_wall_types");
-        var existing = wallTypes.FirstOrDefault(wallType => string.Equals(wallType.Name, args.Name, StringComparison.OrdinalIgnoreCase));
+        var existing = CommandRulesTypes.PickExisting(wallTypes.Select(wallType => wallType.Name).ToArray(), args.Name) is { } index ? wallTypes[index] : null;
         if (existing is not null && CommandRulesTypes.WallKindProblem(existing.Kind.ToString()) is { } existingProblem)
             throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a wall type named '" + existing.Name + "' already exists and " + existingProblem + "; choose another name");
         return LayeredTypeWrite(d, baseType, existing, args.Name, args.Layers, "wall type", "wall_type");
@@ -98,7 +112,7 @@ internal static partial class CommandExecutor
     {
         var floorTypes = FloorTypes(d);
         var baseType = Resolve(floorTypes, floorType => new CommandCandidate(floorType.UniqueId, floorType.Name), args.BaseType, "args.base_type", "floor type");
-        var existing = floorTypes.FirstOrDefault(floorType => string.Equals(floorType.Name, args.Name, StringComparison.OrdinalIgnoreCase));
+        var existing = CommandRulesTypes.PickExisting(floorTypes.Select(floorType => floorType.Name).ToArray(), args.Name) is { } index ? floorTypes[index] : null;
         return LayeredTypeWrite(d, baseType, existing, args.Name, args.Layers, "floor type", "floor_type");
     }
 
@@ -130,7 +144,10 @@ internal static partial class CommandExecutor
         return new WritePlan(
             () =>
             {
-                var duplicate = baseType.Duplicate(name) as HostObjAttributes ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.base_type", "Revit did not duplicate the " + what);
+                ElementType copy;
+                try { copy = baseType.Duplicate(name); }
+                catch (Autodesk.Revit.Exceptions.ArgumentException error) { throw CommandRulesModify.RevitRefused("args.name", error.Message); }
+                var duplicate = copy as HostObjAttributes ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.base_type", "Revit did not duplicate the " + what);
                 created = duplicate;
                 var layers = new List<CompoundStructureLayer>();
                 for (var i = 0; i < requested.Count; i++)
