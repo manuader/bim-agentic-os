@@ -4,7 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 // P10-05 offline classification oracle (core/Bim.Core/Classification.cs): the checked-in Uniclass 2015 EF subset,
 // strict loader refusals, IFC IfcClassificationReference fields, explicit unmapped reasons, determinism and selection of
-// one dictionary among several (the second one is synthetic). No network, no IFC writer: unit-tested only.
+// one dictionary among several (the second one is synthetic). The built-in dictionary is the embedded resource; the
+// checked-in file is also read with LoadFile and must be identical. No network, no IFC writer: unit-tested only.
 int passed = 0, failed = 0;
 void Check(bool condition, string name, string detail = "")
 {
@@ -46,7 +47,7 @@ JsonObject Minimal() => new()
     ["name"] = "Test",
     ["publisher"] = "Tests",
     ["edition"] = "1",
-    ["edition_date"] = "2026-01",
+    ["edition_date"] = "2026-01-15",
     ["source_url"] = "https://example.org/dict",
     ["retrieved"] = "2026-11-03",
     ["licence"] = "synthetic test data",
@@ -59,12 +60,18 @@ try
 {
     // ---------------- checked-in Uniclass subset ----------------
     ClassificationDictionary? uniclass = null;
-    var loadCode = Code(() => uniclass = ClassificationDictionaryParser.LoadFile(uniclassPath));
-    Check(loadCode is null && uniclass is not null, "uniclass subset loads", loadCode ?? "");
+    var loadCode = Code(() => uniclass = ClassificationDictionaryParser.LoadBuiltIn("uniclass2015-ef-subset"));
+    Check(loadCode is null && uniclass is not null, "built-in uniclass subset loads from the embedded resource", loadCode ?? "");
+    ClassificationDictionary? fromFile = null;
+    var fileCode = Code(() => fromFile = ClassificationDictionaryParser.LoadFile(uniclassPath));
+    Check(fileCode is null && fromFile is not null && uniclass is not null && JsonSerializer.Serialize(fromFile) == JsonSerializer.Serialize(uniclass), "LoadFile of the checked-in file equals the embedded copy", fileCode ?? "");
+    Check(Code(() => ClassificationDictionaryParser.LoadBuiltIn("omniclass-table23")) == ClassificationCodes.UnknownDictionary, "unknown built-in id refused");
+    Check(Code(() => ClassificationDictionaryParser.LoadBuiltIn("../uniclass2015-ef-subset")) == ClassificationCodes.UnknownDictionary, "malformed built-in id refused");
+    Check(ClassificationDictionaryParser.BuiltInIds.SequenceEqual(new[] { "uniclass2015-ef-subset" }), "built-in ids listed", string.Join(",", ClassificationDictionaryParser.BuiltInIds));
     if (uniclass is not null)
     {
         Check(uniclass.Id == "uniclass2015-ef-subset" && uniclass.Version == "1.0.0", "uniclass id and version", uniclass.Id + " " + uniclass.Version);
-        Check(uniclass.Publisher == "NBS" && uniclass.Edition == "EF v1.16" && uniclass.EditionDate == "2026-07", "uniclass edition", uniclass.Edition);
+        Check(uniclass.Publisher == "NBS" && uniclass.Edition == "EF v1.16 (July 2026)" && uniclass.EditionDate is null, "uniclass edition (month only, so no IfcDate)", uniclass.Edition);
         Check(uniclass.Licence.Contains("CC BY-ND 4.0") && uniclass.Licence.Contains("verify the licence before redistribution"), "uniclass licence note");
         var expected = new Dictionary<string, (string Code, string Title)>
         {
@@ -91,12 +98,18 @@ try
         {
             Check(w.Ifc.Identification == "EF_25_10" && w.Ifc.Name == "Walls" && w.Ifc.Location == "https://uniclass.thenbs.com/taxon/ef_25_10", "wall IfcClassificationReference fields", w.Ifc.ToString());
             var s = w.Ifc.ReferencedSource;
-            Check(s.Name == "Uniclass 2015" && s.Source == "NBS" && s.Edition == "EF v1.16" && s.EditionDate == "2026-07" && s.Location == "https://uniclass.thenbs.com", "wall IfcClassification fields", s.ToString());
+            Check(s.Name == "Uniclass 2015" && s.Source == "NBS" && s.Edition == "EF v1.16 (July 2026)" && s.EditionDate is null && s.Location == "https://uniclass.thenbs.com", "wall IfcClassification fields", s.ToString());
         }
         Check(result.Mapped.SingleOrDefault(m => m.ElementId == door.Id)?.Ifc.Identification == "EF_25_30_25", "door mapped to EF_25_30_25");
         Check(result.Mapped.SingleOrDefault(m => m.ElementId == window.Id)?.Ifc.Identification == "EF_25_30_97", "window mapped to EF_25_30_97");
         var sp = result.Unmapped.SingleOrDefault(u => u.ElementId == space.Id);
         Check(sp is not null && sp.Reason == ClassificationCodes.Excluded && sp.Note.Contains("SL table"), "space excluded with dictionary note", sp?.ToString() ?? "missing");
+        var lv = result.Unmapped.SingleOrDefault(u => u.ElementId == level.Id);
+        Check(lv is not null && lv.Kind == "level" && lv.Reason == ClassificationCodes.Excluded && lv.Note.Contains("storey"), "level excluded with dictionary note", lv?.ToString() ?? "missing");
+        var floor = Classification.Map(uniclass, E("0e000000-0000-4000-8000-000000000002", "floor", []));
+        Check(floor.Mapped.Count == 1 && floor.Mapped[0].Code == "EF_30_20" && floor.Mapped[0].Ifc.Name == "Floors" && floor.Mapped[0].Ifc.Location == "https://uniclass.thenbs.com/taxon/ef_30_20", "floor element mapped to EF_30_20", JsonSerializer.Serialize(floor));
+        var nullCode = Code(() => Classification.Map(uniclass, new Element[] { wall, null! }));
+        Check(nullCode is not null && nullCode.StartsWith("unexpected ArgumentException"), "null element refused", nullCode ?? "accepted");
         var pl = result.Unmapped.SingleOrDefault(u => u.ElementId == plan.Id);
         Check(pl is not null && pl.Kind == "plan" && pl.Reason == ClassificationCodes.NoRule && pl.Note.Contains("plan"), "plan has no rule", pl?.ToString() ?? "missing");
 
@@ -145,6 +158,18 @@ try
         ("http location", Mutate(m => m["rules"]![0]!["location"] = "http://example.org/x"), ClassificationCodes.ValueInvalid),
         ("relative source url", Mutate(m => m["source_url"] = "dict"), ClassificationCodes.ValueInvalid),
         ("bad edition date", Mutate(m => m["edition_date"] = "July 2026"), ClassificationCodes.ValueInvalid),
+        ("month-only edition date", Mutate(m => m["edition_date"] = "2026-07"), ClassificationCodes.ValueInvalid),
+        ("impossible edition date", Mutate(m => m["edition_date"] = "2026-02-30"), ClassificationCodes.ValueInvalid),
+        ("impossible retrieved date", Mutate(m => m["retrieved"] = "2026-13-01"), ClassificationCodes.ValueInvalid),
+        ("lone surrogate in value", Minimal().ToJsonString().Replace("Test wall", "Test \\ud800wall"), ClassificationCodes.InvalidJson),
+        ("lone surrogate in member name", Minimal().ToJsonString().Replace("{\"format\"", "{\"\\udc00\":1,\"format\""), ClassificationCodes.InvalidJson),
+        ("trailing comma", Minimal().ToJsonString().Replace("]}", "],}"), ClassificationCodes.InvalidJson),
+        ("too deep", Mutate(m => m["rules"]![0]!["title"] = JsonNode.Parse("[[[[[[[[[[1]]]]]]]]]]")), ClassificationCodes.InvalidJson),
+        ("non-string kind", Mutate(m => m["rules"]![0]!["kind"] = 7), ClassificationCodes.ValueInvalid),
+        ("label over 255 characters", Mutate(m => m["rules"]![0]!["title"] = new string('t', 256)), ClassificationCodes.ValueInvalid),
+        ("duplicate exclusion kind", Mutate(m => m["unmapped"] = new JsonArray(new JsonObject { ["kind"] = "space", ["note"] = "n" }, new JsonObject { ["kind"] = "space", ["note"] = "again" })), ClassificationCodes.DuplicateKind),
+        ("backreference code pattern", Mutate(m => m["code_pattern"] = "^(T)-\\1$"), ClassificationCodes.ValueInvalid),
+        ("rules plus exclusions over the cap", Mutate(m => { var r = new JsonArray(); var x = new JsonArray(); for (var i = 0; i < 257; i++) { var kind = "k" + (char)('a' + i % 26) + (char)('a' + i / 26); if (i < 200) r.Add(new JsonObject { ["kind"] = kind, ["code"] = "T-01", ["title"] = "t", ["location"] = "https://example.org/x" }); else x.Add(new JsonObject { ["kind"] = kind, ["note"] = "n" }); } m["rules"] = r; m["unmapped"] = x; }), ClassificationCodes.TooManyItems),
         ("bad kind", Mutate(m => m["rules"]![0]!["kind"] = "Wall"), ClassificationCodes.ValueInvalid),
         ("duplicate rule kind", Mutate(m => m["rules"]!.AsArray().Add(new JsonObject { ["kind"] = "wall", ["code"] = "T-02", ["title"] = "Again", ["location"] = "https://example.org/x" })), ClassificationCodes.DuplicateKind),
         ("rule and exclusion share a kind", Mutate(m => m["unmapped"] = new JsonArray(new JsonObject { ["kind"] = "wall", ["note"] = "n" })), ClassificationCodes.DuplicateKind),
@@ -180,6 +205,11 @@ try
         File.WriteAllBytes(bad, badBytes);
         Check(Code(() => ClassificationDictionaryParser.LoadFile(bad)) == ClassificationCodes.InvalidJson, "invalid UTF-8 refused");
         Check(Code(() => ClassificationDictionaryParser.LoadFile(Path.Combine(temp, "missing.json"))) == ClassificationCodes.ReadFailed, "missing file refused");
+        var doubleBom = Path.Combine(temp, "double-bom.json");
+        File.WriteAllBytes(doubleBom, [0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes(Minimal().ToJsonString())]);
+        Check(Code(() => ClassificationDictionaryParser.LoadFile(doubleBom)) == ClassificationCodes.InvalidJson, "second BOM refused");
+        Check(Code(() => ClassificationDictionaryParser.LoadFile("")) == ClassificationCodes.ReadFailed, "empty path refused as read failure");
+        Check(Code(() => ClassificationDictionaryParser.LoadFile("bad\0name.json")) == ClassificationCodes.ReadFailed, "path with NUL refused as read failure");
     }
     finally { try { Directory.Delete(temp, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
 }

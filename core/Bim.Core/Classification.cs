@@ -71,6 +71,9 @@ public static class ClassificationDictionaryParser
     static readonly string[] RuleMembers = { "kind", "code", "title", "location" };
     static readonly string[] ExclusionMembers = { "kind", "note" };
 
+    public static IReadOnlyList<string> BuiltInIds => System.Array.Empty<string>();
+    public static ClassificationDictionary LoadBuiltIn(string id) => throw new NotImplementedException("P10-05 review red stub " + id);
+
     // Reads at most MaxInputBytes + 1 bytes, strips one UTF-8 byte order mark and requires strict UTF-8.
     public static ClassificationDictionary LoadFile(string path)
     {
