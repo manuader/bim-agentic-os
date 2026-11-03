@@ -1070,3 +1070,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 21:15Z integration head 8026f0d (relay145-integration on main 1256e08: 4 merges + board/features/session/handoff/attempts) pushed; waiting CI.
 - 21:29Z integration CI 41720203376 failed only on harness-check (features.json evidence was a directory); fixed 04e2bab, waiting CI.
 - 21:47Z integration 04e2bab CI 41722290026: 8/9 success, ifc-portable (macos) cancelled (runner) → re-run.
+- 21:59Z integration 04e2bab CI 41722290026 success (9/9 after macOS re-run); main moved to a7cd5b4 (owner chat docs) → merged main, head a996f81, waiting CI before fast-forward.
