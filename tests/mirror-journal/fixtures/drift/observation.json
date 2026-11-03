@@ -1,0 +1,65 @@
+{
+  "document_uid": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+  "levels": [
+    {
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00000137",
+      "name": "Level 1",
+      "elevation_mm": 0
+    }
+  ],
+  "elements": [
+    {
+      "category": "wall",
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00001001",
+      "level_uid": "60f91daf-3dd7-4283-a86d-24137b73f3da-00000137",
+      "start": {
+        "x_mm": 0,
+        "y_mm": 0
+      },
+      "end": {
+        "x_mm": 5000,
+        "y_mm": 0
+      },
+      "height_mm": 3000,
+      "thickness_mm": 200,
+      "wall_kind": "Basic",
+      "location_line_is_centerline": true,
+      "base_offset_mm": 0
+    },
+    {
+      "category": "wall",
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00001002",
+      "level_uid": "60f91daf-3dd7-4283-a86d-24137b73f3da-00000137",
+      "start": {
+        "x_mm": 5000,
+        "y_mm": 0
+      },
+      "end": {
+        "x_mm": 5000,
+        "y_mm": 4000
+      },
+      "height_mm": 3000,
+      "thickness_mm": 200,
+      "wall_kind": "Basic",
+      "location_line_is_centerline": true,
+      "base_offset_mm": 0
+    },
+    {
+      "category": "door",
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00002001",
+      "level_uid": "60f91daf-3dd7-4283-a86d-24137b73f3da-00000137",
+      "host_uid": "60f91daf-3dd7-4283-a86d-24137b73f3da-00001001",
+      "location": {
+        "x_mm": 1000,
+        "y_mm": 0
+      },
+      "width_mm": 900,
+      "height_mm": 2100
+    },
+    {
+      "category": "floor",
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00004001",
+      "level_uid": "60f91daf-3dd7-4283-a86d-24137b73f3da-00000137"
+    }
+  ]
+}
