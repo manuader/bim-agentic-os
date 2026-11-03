@@ -462,7 +462,12 @@ def execute(directory,packet=None):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--output-dir');parser.add_argument('--request');parser.add_argument('--receipt');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--output-dir');parser.add_argument('--request');parser.add_argument('--receipt');parser.add_argument('--import-ifc');args=parser.parse_args()
+    if args.import_ifc is not None:
+        # P8-01: read-only IFC -> BIM-IR import report; the mapping lives in ifc_import.py.
+        if args.output_dir is not None or args.request is not None or args.receipt is not None:parser.error('--import-ifc is read-only and takes no other arguments')
+        spec=importlib.util.spec_from_file_location('bim_ifc_import',Path(__file__).with_name('ifc_import.py'));module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        return module.main(['import',args.import_ifc])
     if args.receipt is not None:
         if args.output_dir is not None or args.request is not None:parser.error('--receipt is read-only and takes no other arguments')
         try:print(json.dumps(receipt(Path(args.receipt)),allow_nan=False));return 0
