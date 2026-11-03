@@ -266,6 +266,8 @@ try
     Check(!AddInGate.PipeAllowed(@"C:\Repo\.bim\native-runs\run-1\config.json", false), "config set but bootstrap not validated and completed: no pipe");
     Check(AddInGate.PipeAllowed(@"C:\Repo\.bim\native-runs\run-1\config.json", true), "config set and bootstrap completed: the pipe may open");
     Check(AddInGate.ConfigVariable == "BIM_AGENTIC_TEST_CONFIG", "gate reads the same opt-in variable as FixtureBootstrap");
+    // ---- Owner project mode: its own opt-in variable, config validation and opened-document checks ----
+    ProjectModeChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Legacy primitive operations pass the same copies/link guard as revit.command writes ----
     foreach (var operation in new[] { "level.create", "wall.create", "wall.axis.update", "element.delete", "batch", "something.new" })

@@ -11,6 +11,7 @@ try {
     Invoke-EvidenceCommand native-smoke-cli $pwsh @('-NoProfile','-File',"$root/tests/integration/test-native-smoke-cli.ps1") $evidence
     Invoke-EvidenceCommand fixture-launcher $pwsh @('-NoProfile','-File',"$root/tests/integration/test-fixture-launcher.ps1") $evidence
     Invoke-EvidenceCommand catalogue-session $pwsh @('-NoProfile','-File',"$root/tests/integration/test-catalogue-session.ps1") $evidence
+    Invoke-EvidenceCommand owner-open-project $pwsh @('-NoProfile','-File',"$root/tests/integration/test-owner-open-project.ps1") $evidence
     Invoke-EvidenceCommand install-mcp $pwsh @('-NoProfile','-File',"$root/tests/integration/test-install-mcp.ps1") $evidence
     if ($HostOnly) {
         'MODE host-only: net8 target build and native execution UNVERIFIED'
