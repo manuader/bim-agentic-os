@@ -48,14 +48,15 @@ static class AlternativeTests
         Check(nullThrows, "a null brief is a programming error (ArgumentNullException)");
 
         // ---- apartment-2br: N alternatives, distinct seeds, ranked and explained ----
-        const int n = 10;
-        var set = AlternativeGenerator.Generate(example, new AlternativeOptions(n, BaseSeed: 3));
+        const int n = 12;
+        var set = AlternativeGenerator.Generate(example, new AlternativeOptions(n, BaseSeed: 0));
         Check(set.Status == AlternativeSetStatus.Ranked && set.Requested == n && set.Alternatives.Count == n && set.Refusals.Count == 0 && set.BriefName == example.Name,
-            "apartment-2br yields 10 alternatives with a ranked status", Describe(set));
+            "apartment-2br yields 12 alternatives with a ranked status", Describe(set));
         var seeds = set.Alternatives.OrderBy(a => a.Index).Select(a => a.Seed).ToArray();
-        Check(seeds.SequenceEqual(Enumerable.Range(3, n)) && set.Alternatives.Select(a => a.Index).OrderBy(i => i).SequenceEqual(Enumerable.Range(0, n)),
+        Check(seeds.SequenceEqual(Enumerable.Range(0, n)) && set.Alternatives.Select(a => a.Index).OrderBy(i => i).SequenceEqual(Enumerable.Range(0, n)),
             "alternative i uses seed base + i, so seeds are distinct", string.Join(",", seeds));
         var ranked = set.Ranked;
+        Check(ranked.Count >= 2 && ranked.Select(a => a.Total).Distinct().Count() >= 2, "apartment-2br gives at least two ranked alternatives with different totals", Describe(set));
         Check(ranked.Count >= 1 && ranked.Count + set.Alternatives.Count(a => a.Status == AlternativeStatus.Duplicate) + set.Alternatives.Count(a => a.Status == AlternativeStatus.Infeasible) == n,
             "every alternative is ranked, a duplicate or infeasible", Describe(set));
         Check(ranked.Select(a => a.Rank).SequenceEqual(Enumerable.Range(1, ranked.Count)) && set.Alternatives.Take(ranked.Count).SequenceEqual(ranked)
@@ -95,15 +96,15 @@ static class AlternativeTests
 
         // ---- determinism ----
         var canonical = AlternativeSetSerializer.Serialize(set);
-        Check(AlternativeSetSerializer.Serialize(AlternativeGenerator.Generate(example, new AlternativeOptions(n, BaseSeed: 3))) == canonical,
+        Check(AlternativeSetSerializer.Serialize(AlternativeGenerator.Generate(example, new AlternativeOptions(n, BaseSeed: 0))) == canonical,
             "same brief and options give byte-identical alternative sets");
-        Check(AlternativeSetSerializer.Serialize(AlternativeGenerator.Generate(example, new AlternativeOptions(n, 3, new PlannerOptions(), new ScoringWeights()))) == canonical,
+        Check(AlternativeSetSerializer.Serialize(AlternativeGenerator.Generate(example, new AlternativeOptions(n, 0, new PlannerOptions(), new ScoringWeights()))) == canonical,
             "explicit default planner options and weights reproduce the same bytes");
         var culture = CultureInfo.CurrentCulture;
         try
         {
             CultureInfo.CurrentCulture = new CultureInfo("de-DE");
-            Check(AlternativeSetSerializer.Serialize(AlternativeGenerator.Generate(example, new AlternativeOptions(n, BaseSeed: 3))) == canonical, "alternative output does not depend on the current culture");
+            Check(AlternativeSetSerializer.Serialize(AlternativeGenerator.Generate(example, new AlternativeOptions(n, BaseSeed: 0))) == canonical, "alternative output does not depend on the current culture");
         }
         finally { CultureInfo.CurrentCulture = culture; }
         using (var document = JsonDocument.Parse(canonical))
@@ -157,10 +158,42 @@ static class AlternativeTests
         var apart = Plan(adjacency, 2, new PlanRect(0, 0, 2, 4), new PlanRect(4, 0, 2, 4), new PlanRect(0, 4, 2, 4));
         var adjacencySet = AlternativeRanker.Rank(adjacency, new[] { apart, touching }, new ScoringWeights(0, 1, 0, 0, 0, 0));
         var adjacencyRaw = adjacencySet.Ranked.Select(a => a.Criteria.First(c => c.Criterion == "adjacency").Raw).ToArray();
-        Check(adjacencySet.Ranked.Count == 2 && adjacencySet.Ranked[0].Seed == 1 && adjacencyRaw[0] == 1 && adjacencyRaw[1] == 0.5,
-            "adjacency satisfaction counts door-width walls between required and preferred instances", string.Join(",", adjacencyRaw.Select(R)));
+        Check(adjacencySet.Ranked.Count == 2 && adjacencySet.Ranked[0].Seed == 1 && adjacencyRaw[0] == 1 && adjacencyRaw[1] == 0,
+            "adjacency scores preferred pairs only: the required pair (a hard planner gate) does not dilute it", string.Join(",", adjacencyRaw.Select(R)));
         var rankerRefused = AlternativeRanker.Rank(crafted, Array.Empty<SpacePlan>());
         Check(rankerRefused.Status == AlternativeSetStatus.Refused && rankerRefused.Refusals.Any(r => r.Code == AlternativeCodes.CountInvalid), "ranking zero plans is refused", Describe(rankerRefused));
+
+        // ---- review fixes: compactness fill, preferred-only adjacency, order-free dedup, area fit, rejections ----
+        var unit = Brief("unit", 20, 20, new[] { Room("a", 1), Room("b", 1) });
+        var touchingPair = Plan(unit, 1, new PlanRect(0, 0, 1, 1), new PlanRect(1, 0, 1, 1));
+        var scattered = Plan(unit, 2, new PlanRect(0, 0, 1, 1), new PlanRect(9, 9, 1, 1));
+        var compact = AlternativeRanker.Rank(unit, new[] { scattered, touchingPair }, new ScoringWeights(0, 0, 0, 1, 0, 0));
+        Check(compact.Ranked.Count == 2 && compact.Ranked[0].Seed == 1 && compact.Ranked[1].Criteria.First(c => c.Criterion == "compactness").Normalized < 0.5,
+            "compactness rewards rooms that fill their envelope over scattered rooms", Describe(compact));
+        var beds = Brief("beds", 20, 20, new[] { Room("bed", 9, count: 2), Room("hall", 4) });
+        var bedsA = Explicit("beds", 1, Placed("bed#1", "bed", 1, 0, 0, 3, 3), Placed("bed#2", "bed", 2, 3, 0, 3, 3), Placed("hall", "hall", 1, 0, 3, 6, 1));
+        var bedsSwapped = Explicit("beds", 2, Placed("bed#1", "bed", 1, 3, 0, 3, 3), Placed("bed#2", "bed", 2, 0, 0, 3, 3), Placed("hall", "hall", 1, 0, 3, 6, 1));
+        var bedsReordered = Explicit("beds", 3, Placed("hall", "hall", 1, 0, 3, 6, 1), Placed("bed#1", "bed", 1, 0, 0, 3, 3), Placed("bed#2", "bed", 2, 3, 0, 3, 3));
+        var bedsSet = AlternativeRanker.Rank(beds, new[] { bedsA, bedsSwapped, bedsReordered });
+        Check(bedsSet.Ranked.Count == 1 && bedsSet.Alternatives.Where(a => a.Index > 0).All(a => a.Status == AlternativeStatus.Duplicate && a.DuplicateOfIndex == 0),
+            "swapping instances of one room or reordering the room list is still a duplicate", Describe(bedsSet));
+        var ranges = Brief("ranges", 20, 20, new[] { Room("r", min: 6, max: 10), Room("s", 8) });
+        var inside = Plan(ranges, 1, new PlanRect(0, 0, 3, 3), new PlanRect(3, 0, 2, 4));
+        var outside = Plan(ranges, 2, new PlanRect(0, 0, 4, 3), new PlanRect(4, 0, 2, 4));
+        var rangeFit = AlternativeRanker.Rank(ranges, new[] { inside, outside }).Alternatives.OrderBy(a => a.Index).Select(a => a.Criteria.First(c => c.Criterion == "area_fit")).ToArray();
+        Check(rangeFit.Length == 2 && rangeFit[0].Raw == 0 && rangeFit[0].Normalized == 1 && Math.Abs(rangeFit[1].Raw - 0.1) < 1e-12,
+            "a range-only room scores full area fit anywhere inside its range and is penalised only outside", string.Join(",", rangeFit.Select(c => R(c.Raw))));
+        var far = Plan(crafted, 1, new PlanRect(0, 0, 4, 6), new PlanRect(4, 0, 2, 4));
+        var farFit = AlternativeRanker.Rank(crafted, new[] { far }).Ranked.Select(a => a.Criteria.First(c => c.Criterion == "area_fit")).FirstOrDefault();
+        Check(farFit is not null && Math.Abs(farFit.Raw - 0.5) < 1e-12 && Math.Abs(farFit.Normalized - 0.5) < 1e-12, "area fit clamps each room's deviation to 1 before averaging",
+            farFit is null ? "" : R(farFit.Raw));
+        var degenerate = AlternativeRanker.Rank(crafted, new[] { Plan(crafted, 1, new PlanRect(0, 0, 0, 4), new PlanRect(0, 0, 2, 4)), slim });
+        Check(degenerate.Ranked.Count == 1 && degenerate.Alternatives.Any(a => a.Index == 0 && a.Status == AlternativeStatus.Infeasible && a.Reasons.Any(r => r.Contains(AlternativeCodes.RectInvalid, StringComparison.Ordinal))),
+            "a room with zero width is rejected as rect_invalid", Describe(degenerate));
+        var huge = Plan(unit, 1, new PlanRect(0, 0, 1, 1), new PlanRect(1e308, 0, 1, 1));
+        var hugeSet = AlternativeRanker.Rank(unit, new[] { huge, Plan(unit, 2, new PlanRect(0, 0, 1, 1), new PlanRect(1e308, 0, 1, 1)), touchingPair });
+        Check(hugeSet.Alternatives.Where(a => a.Index < 2).All(a => a.Status == AlternativeStatus.Infeasible && a.DuplicateOfIndex is null && a.Reasons.Any(r => r.Contains(AlternativeCodes.ScoreNotFinite, StringComparison.Ordinal)))
+            && hugeSet.Ranked.Count == 1, "a plan rejected for a non-finite score is never the original of a duplicate", Describe(hugeSet));
 
         // ---- infeasible briefs: reported, not thrown ----
         var crowded = Brief("crowded", 4, 4, new[] { Room("a", min: 10), Room("b", min: 10) });
@@ -176,7 +209,7 @@ static class AlternativeTests
         var watch = Stopwatch.StartNew();
         var full = AlternativeGenerator.Generate(small, new AlternativeOptions(AlternativeGenerator.MaxCount, BaseSeed: int.MaxValue - 10));
         watch.Stop();
-        Check(full.Alternatives.Count == 64 && full.Alternatives.Select(a => a.Seed).Distinct().Count() == 64 && full.Ranked.Count >= 1 && full.Ranked.All(a => ExplanationProblem(a) is null),
+        Check(full.Alternatives.Count == 64 && full.Alternatives.Select(a => a.Seed).Distinct().Count() == 64 && full.Ranked.Count >= 2 && full.Ranked.Select(a => a.Total).Distinct().Count() >= 2 && full.Ranked.All(a => ExplanationProblem(a) is null),
             "64 alternatives (seeds wrapping past int.MaxValue) are distinct and explained", Describe(full));
         Check(watch.Elapsed.TotalSeconds < 30, "64 alternatives of a 3-room brief take under 30 s", watch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms");
     }
@@ -196,7 +229,9 @@ static class AlternativeTests
             weights += criterion.Weight;
         }
         if (Math.Abs(weights - 1) > 1e-12) return "weights sum to " + R(weights);
-        return sum == alternative.Total && alternative.Total >= 0 && alternative.Total <= 1 + 1e-12 ? null : "contributions sum to " + R(sum) + " but total is " + R(alternative.Total);
+        // The total is the in-order sum, clamped to 1 only against rounding.
+        var expected = Math.Min(1, sum);
+        return expected == alternative.Total && sum - alternative.Total < 1e-12 && alternative.Total >= 0 && alternative.Total <= 1 ? null : "contributions sum to " + R(sum) + " but total is " + R(alternative.Total);
     }
 
     static string Geometry(SpacePlan plan) => string.Join(";", plan.Rooms.Select(r => r.InstanceId + "@" + Text(r.Level) + ":" + R(r.Rect.X) + "," + R(r.Rect.Y) + "," + R(r.Rect.Width) + "," + R(r.Rect.Depth)));
@@ -210,7 +245,14 @@ static class AlternativeTests
 
     static BriefValue<double> V(double value) => new(value);
 
-    static BriefRoom Room(string id, double? target = null, double? min = null) => new(id, id, null, target is { } t ? V(t) : null, min is { } low ? V(low) : null);
+    static BriefRoom Room(string id, double? target = null, double? min = null, double? max = null, int? count = null) =>
+        new(id, id, count is { } c ? new BriefValue<int>(c) : null, target is { } t ? V(t) : null, min is { } low ? V(low) : null, max is { } high ? V(high) : null);
+
+    static SpacePlan Explicit(string brief, int seed, params PlannedRoom[] rooms) =>
+        new(SpacePlanStatus.Feasible, brief, seed, 1, new PlanFootprint(20, 20), 0.9, rooms, Array.Empty<PlanConstraint>(), 0);
+
+    static PlannedRoom Placed(string instance, string room, int index, double x, double y, double width, double depth) =>
+        new(instance, room, room, index, 0, new PlanRect(x, y, width, depth));
 
     static BriefAdjacency Adj(string a, string b, BriefAdjacencyKind kind) => new(a, b, kind);
 
