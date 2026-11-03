@@ -111,3 +111,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P6-02: no failed attempts across three rounds (initial, review blockers B1–B4, re-review blockers).
 - P7-02 Attempt1 ("64 alternatives differ in total"): hypothesis a 3-room 6x6 brief yields layouts with different totals → wrong, 4 ranked with equal totals (run 41599100287). Attempt2: richer 4-room brief with preferred pairs → wrong, 8 ranked all equal (run 41599597953; small briefs give equal-score mirrored layouts). Attempt3 succeeded: the 64 case uses apartment-2br from seed 0 (run 41600090447). Oracle not relaxed (still ≥2 ranked and ≥2 distinct totals).
 - P10-02: no failed attempts; golden zip SHA-256 pinned from CI output (identical on Linux and Windows, run 41602416672).
+
+### Relay141 (2026-11-03, cloud)
+- P9-02: no failed attempts (initial and review rounds).
+- P5-03 Attempt1 (red push 747f783, run 41615318757): test helper `Check` passed as `Action<bool,string,string>` but called with 2 arguments (compile error, not an oracle failure) → local wrapper with optional detail (2225179). Review round: no failed attempts; qa clear-height default changed 2.5→2.6 as a value fix (CABA minimum), the Program.cs assertion follows the value.
+- P2-03 Attempt1: hypothesis a core comment naming the add-in path trips the harness "Core dependency boundary" gate → reworded comment (5f6c382). Review round: no failed attempts.

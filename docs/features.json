@@ -605,6 +605,41 @@
       ],
       "blocker": "Validated only against project-authored subset XSDs (official buildingSMART BCF-XML 3.0 XSDs not fetched; their licence unchecked); no snapshots, comments, Header/Files or clipping planes; never opened in a BCF viewer; no CLI/MCP caller yet.",
       "scope": "P10-02: neutral validation issues to a BCF 3.0 zip (bcf.version, extensions.xml, project.bcfp, per-topic markup.bcf and optional viewpoint.bcfv with IfcGuid/AuthoringToolId components and perspective/orthogonal camera); SHA-256-derived UUIDs, IFC GUID compression, hand-written stored zip with fixed headers \u2014 golden SHA-256 equal on Linux and Windows; per-field and whole-export limits with stable codes. CI 41603185340."
+    },
+    {
+      "id": "revit-structure-commands",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsStructure.cs",
+        "runtimes/revit-native/CommandsStructure.cs",
+        "runtimes/revit-native/CommandsExecutorStructure.cs",
+        "tests/revit-commands/CatalogueStructure.cs"
+      ],
+      "blocker": "Never run in Revit (no owner session yet, no native probe script); readback does not check column absolute elevation or beam curve z; joins/analytical elements Revit adds are not diffed; no arc grids, slanted columns, beam end offsets or curved beams.",
+      "scope": "P9-02: query.grids, query.structural_types (with placement_type), grid.create, structural_column.create, structural_beam.create, foundation.create_isolated (OneLevelBased only), foundation.create_wall on the catalogue envelope with typed validators, copies-only guard, operation_id receipts and independent readback (plan position, levels, type, column offsets, beam end offsets, footing elevation) rolling back on mismatch; contracts unit-tested, executor compiled against Revit 2025 reference assemblies. CI 41621106554."
+    },
+    {
+      "id": "style-skill-packs",
+      "status": "unit-tested",
+      "evidence": [
+        "skills/bim.style.compact-modern/skill.json",
+        "skills/bim.style.warm-masonry/skill.json",
+        "tests/skills/StyleSkillTests.cs"
+      ],
+      "blocker": "Defaults have no per-default rule id (traced as <skill>:default:<key>); element-targeted rules carried but not evaluated; window ratio/sill/head/doors/finishes are not checked by any validator; not yet consumed by the intent compiler.",
+      "scope": "P5-03: two contrasting style packs (compact modern vs warm masonry) at priority 30 that differ on all 13 shared defaults, with 20 traceable rules each covering every CABA clear-height room at least as strictly as CABA; composition with CABA, qa and dwelling typology resolved deterministically by priority; qa clear-height default raised to the CABA 2.6 m minimum. CI 41623346293."
+    },
+    {
+      "id": "mirror-edit-journal",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/MirrorJournal.cs",
+        "core/Bim.Core/MirrorJournalDiff.cs",
+        "runtimes/revit-native/JournalRecorder.cs",
+        "tests/mirror-journal/Program.cs"
+      ],
+      "blocker": "Native DocumentChanged recorder compiled only, never run in Revit; only attached in validated fixture sessions; reachable through the raw pipe operation journal.read, not the catalogue/MCP; deleted elements are numeric ids only; snapshot diff includes add-in changes.",
+      "scope": "P2-03: Revit-free bounded append-only journal (entry capacity and total id budget, per-reply caps with after_sequence paging, peek mode, per-copy baselines keyed by UniqueId+path, failure-aware journal_complete, add-in vs external origin) and a mirror snapshot differ (added/removed/changed with named fields, 1e-6 m tolerance) unit-tested; DocumentChanged recorder compiled against Revit 2025 reference assemblies. CI 41624965893."
     }
   ]
 }
