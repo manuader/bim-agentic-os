@@ -36,6 +36,9 @@ public static class CommandRulesDocumentation
     public const string ScheduleKind = "schedule";
     // Unit-vector components agree within this (well above double/feet round-trip noise).
     public const double DirectionTolerance = 1e-6;
+    // A requested dimension line may be off perpendicular by this much at each end (the readback rounding of a
+    // coordinate), so its allowed sine grows as the line gets shorter.
+    public const double LineEndToleranceMm = 1e-3;
 
     // Plan views: dimensions and tags take plan millimetre points, drawn in the plane of the view's level.
     public static readonly IReadOnlyList<string> AnnotationViewTypes = new[] { "FloorPlan", "CeilingPlan", "EngineeringPlan", "AreaPlan" };
@@ -77,7 +80,8 @@ public static class CommandRulesDocumentation
 
     static double Cross(double ax, double ay, double bx, double by) => ax * by - ay * bx;
 
-    // The references must be parallel and at least 1.2 mm apart. A requested line must run along their normal;
+    // The references must be parallel and at least 1.2 mm apart. A requested line must run along their normal (its
+    // ends within LineEndToleranceMm of a perpendicular line);
     // without one, the line goes from the first reference's point straight across to the second reference.
     public static DimensionLayout Layout(PlanDatum first, PlanDatum second, PlanPoint? lineStart, PlanPoint? lineEnd)
     {
@@ -90,7 +94,7 @@ public static class CommandRulesDocumentation
         {
             double dx = lineEnd.X - lineStart.X, dy = lineEnd.Y - lineStart.Y;
             var length = Math.Sqrt(dx * dx + dy * dy);
-            if (Math.Abs(Cross(dx / length, dy / length, first.NormalX, first.NormalY)) > DirectionTolerance)
+            if (Math.Abs(Cross(dx / length, dy / length, first.NormalX, first.NormalY)) > DirectionTolerance + 2 * LineEndToleranceMm / length)
                 throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.line", "the dimension line must be perpendicular to the references");
             return new DimensionLayout(lineStart, lineEnd, distance);
         }
@@ -126,7 +130,8 @@ public static class CommandRulesDocumentation
         if (existing.Contains(number, StringComparer.OrdinalIgnoreCase)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.number", "a sheet numbered '" + number + "' (ignoring case) already exists");
     }
 
-    // Returns the placement kind. placedOnSheet: the number of the sheet a non-schedule view is already on, else null;
+    // Returns the placement kind. placedOnSheet: the number of the sheet a non-schedule view is already on, else null
+    // (ignored for legends);
     // canAdd: Viewport.CanAddViewToSheet (ignored for schedules, which may appear on several sheets).
     public static string CheckPlaceable(string viewType, bool isTemplate, bool isSchedule, bool isRevisionSchedule, string? placedOnSheet, bool canAdd)
     {
@@ -137,7 +142,8 @@ public static class CommandRulesDocumentation
             if (isRevisionSchedule) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.view_uid", "a title block revision schedule cannot be placed on a sheet");
             return ScheduleKind;
         }
-        if (placedOnSheet is not null) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.view_uid", "the view is already placed on sheet " + placedOnSheet);
+        // A legend may appear on many sheets: only Viewport.CanAddViewToSheet decides.
+        if (placedOnSheet is not null && viewType != "Legend") throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.view_uid", "the view is already placed on sheet " + placedOnSheet);
         if (!canAdd) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.view_uid", "Revit refuses to add this view to the sheet (Viewport.CanAddViewToSheet)");
         return ViewportKind;
     }

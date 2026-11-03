@@ -152,6 +152,8 @@ internal static partial class CommandExecutor
                 schedule = created;
                 var definition = created.Definition;
                 while (definition.GetFieldCount() > 0) definition.RemoveField(0);
+                // Schedulable fields exist only on a created schedule, so names resolve inside the write: an unknown or
+                // ambiguous name throws reference_not_found here and the transaction group rolls back.
                 var available = definition.GetSchedulableFields();
                 var picks = CommandRulesDocumentation.PickFields(available.Select(field => field.GetName(d)).ToArray(), args.Fields);
                 for (var i = 0; i < picks.Length; i++)
@@ -177,7 +179,7 @@ internal static partial class CommandExecutor
         ViewSheet? sheet = null;
         var activated = false;
         ObservedSheet Observe(ViewSheet created) => new(created.UniqueId, created.SheetNumber, created.Name,
-            new FilteredElementCollector(d).OfCategory(BuiltInCategory.OST_TitleBlocks).WhereElementIsNotElementType()
+            new FilteredElementCollector(d, created.Id).OfCategory(BuiltInCategory.OST_TitleBlocks).WhereElementIsNotElementType()
                 .Where(instance => instance.OwnerViewId == created.Id).Select(instance => UniqueIdOf(d, instance.GetTypeId())).ToArray());
         return new WritePlan(
             () =>

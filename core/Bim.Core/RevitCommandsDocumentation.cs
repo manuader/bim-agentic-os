@@ -51,11 +51,11 @@ public static partial class RevitCommandCatalogue
 
     static IReadOnlyList<RevitCommandSpec> BuildDocumentation()
     {
-        var line = Fill("""{"type":"object","description":"Dimension line in plan, in millimetres, perpendicular to the references; omit to draw it from the first reference straight across to the second","properties":{"start":@0@,"end":@1@},"required":["start","end"],"additionalProperties":false}""", Point, Point);
-        var dimension = Fill("""{"type":"object","properties":{"view_uid":@0@,"first_uid":@1@,"second_uid":@2@,"line":@3@,"wall_face":{"type":"string","description":"Which side face of a wall reference is measured; default exterior","enum":["exterior","interior"]}},"required":["view_uid","first_uid","second_uid"],"additionalProperties":false}""",
+        var line = Fill("""{"type":"object","description":"Dimension line in plan, in millimetres, perpendicular to the references (within 0.001 mm at each end over the line length); omit to draw it from the first reference straight across to the second","properties":{"start":@0@,"end":@1@},"required":["start","end"],"additionalProperties":false}""", Point, Point);
+        var dimension = Fill("""{"type":"object","properties":{"view_uid":@0@,"first_uid":@1@,"second_uid":@2@,"line":@3@,"wall_face":{"type":"string","description":"Which side face of a wall reference is measured; one face applies to both references when both are walls; default exterior","enum":["exterior","interior"]}},"required":["view_uid","first_uid","second_uid"],"additionalProperties":false}""",
             UniqueIdSchema, UniqueIdSchema, UniqueIdSchema, line);
 
-        var tag = Fill("""{"type":"object","properties":{"view_uid":@0@,"element_uid":@1@,"head":@2@,"leader":{"type":"boolean","description":"Draw a leader from the tag to the element; default false"},"orientation":{"type":"string","description":"Tag orientation; default horizontal","enum":["horizontal","vertical"]}},"required":["view_uid","element_uid"],"additionalProperties":false}""",
+        var tag = Fill("""{"type":"object","properties":{"view_uid":@0@,"element_uid":@1@,"head":@2@,"leader":{"type":"boolean","description":"Draw a leader from the tag to the element; default false; requires head"},"orientation":{"type":"string","description":"Tag orientation; default horizontal","enum":["horizontal","vertical"]}},"required":["view_uid","element_uid"],"additionalProperties":false}""",
             UniqueIdSchema, UniqueIdSchema, Point);
 
         var friendly = string.Join(",", RevitElementQueryRules.Categories.Select(category => "\"" + category.Name + "\""));
@@ -109,6 +109,8 @@ public static partial class RevitCommandCatalogue
     {
         Point2? head = args.TryGetProperty("head", out _) ? ToPoint(Coordinates(args, "head", "args.head")) : null;
         var leader = args.TryGetProperty("leader", out var leaderElement) && leaderElement.GetBoolean();
+        // Without a head the tag sits at the element's centre, where a leader would have no length.
+        if (leader && head is null) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.leader", "a leader needs a head point away from the element; give head");
         var orientation = args.TryGetProperty("orientation", out var orientationElement) ? orientationElement.GetString()! : "horizontal";
         return new TagCreateArgs(args.GetProperty("view_uid").GetString()!, args.GetProperty("element_uid").GetString()!, head, leader, orientation);
     }
