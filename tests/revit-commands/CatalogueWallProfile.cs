@@ -112,9 +112,9 @@ static class CatalogueWallProfileChecks
         Rejects("two vertices", Envelope(With(Gable(), "profile", Profile(P(0, 0), P(6000, 0)))), RevitCommandCodes.ArgsInvalid, "args.profile");
         var many = new JsonArray();
         for (var i = 0; i < 201; i++) { var a = 2 * Math.PI * i / 201; many.Add(new JsonArray(3000 + 3000 * Math.Cos(a), 3000 + 3000 * Math.Sin(a))); }
-        Rejects("201 vertices", Envelope(With(Gable(), "profile", many)), RevitCommandCodes.ArgsInvalid, "args.profile");
+        Rejects("201 vertices", Envelope(With(Gable(), "profile", many.DeepClone())), RevitCommandCodes.ArgsInvalid, "args.profile");
         many.RemoveAt(200);
-        Check(Accepts("200 vertices accepted", Envelope(With(Gable(), "profile", many)))?.Args is WallSetProfileArgs { Profile.Count: 200 }, "the 200-vertex cap is accepted");
+        Check(Accepts("200 vertices accepted", Envelope(With(Gable(), "profile", many.DeepClone())))?.Args is WallSetProfileArgs { Profile.Count: 200 }, "the 200-vertex cap is accepted");
         Rejects("no profile", Envelope(With(Gable(), "profile", null)), RevitCommandCodes.ArgsInvalid, "args.profile");
         Rejects("no wall", Envelope(With(Gable(), "wall_uid", null)), RevitCommandCodes.ArgsInvalid, "args.wall_uid");
         Rejects("wall not a UniqueId", Envelope(With(Gable(), "wall_uid", "Basic Wall")), RevitCommandCodes.ArgsInvalid, "args.wall_uid");
