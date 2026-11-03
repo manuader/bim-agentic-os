@@ -136,7 +136,7 @@ Check(NameError("revit_"+new string('x',58),"diff")==null && NameError("")!=null
 
 // v2 tools reach the same guarded service: reads go to the pipe on any document, writes only on enabled test copies.
 var forwardedLines=new List<string>();
-var guarded=new McpServer(new RevitCommandPolicy(new[]{@"C:\Repo\.bim\native-runs"}),(pipe,line)=>{ forwardedLines.Add(line); return null; },new RevitFileSystemProbe(_=>false,_=>null));
+var guarded=new McpServer(new RevitCommandPolicy(new[]{@"C:\Repo\.bim\native-runs"}) with { ContentLibraryRoots=new[]{@"C:\ProgramData\Autodesk\RVT 2025\Libraries"} },(pipe,line)=>{ forwardedLines.Add(line); return null; },new RevitFileSystemProbe(_=>false,_=>null));
 JsonObject Guarded(string tool,JsonNode commandArgs,string path)=>Node(guarded.Handle(Request(11,"tools/call",new JsonObject{["name"]=tool,["arguments"]=new JsonObject{["pipe_name"]="bim-agentic-os-2025-4242",["operation_id"]="op-p9-05",["document"]=new JsonObject{["path"]=path,["unique_id"]=McpUid},["args"]=commandArgs}})) ?? throw new Exception("no response")).AsObject();
 string FailureCode(JsonObject response)=>Node(Text(response))["code"]!.GetValue<string>();
 JsonArray Outline()=>new JsonArray(new JsonArray(0,0),new JsonArray(5000,0),new JsonArray(5000,4000),new JsonArray(0,4000));
@@ -183,6 +183,8 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["element.delete"]=()=>new JsonObject{["element_uids"]=new JsonArray(McpUid),["dry_run"]=true},
     ["query.materials"]=()=>new JsonObject(),
     ["roof_type.create"]=()=>new JsonObject{["name"]="Cabin roof",["base_type"]="Basic Roof - Generic 300mm",["layers"]=new JsonArray(new JsonObject{["function"]="finish1",["material"]="Roofing - Tile",["thickness_mm"]=20},new JsonObject{["function"]="membrane",["material"]="Roofing - Membrane",["thickness_mm"]=0},new JsonObject{["function"]="structure",["material"]="Wood",["thickness_mm"]=150})},
+    ["family.load"]=()=>new JsonObject{["path"]=@"C:\ProgramData\Autodesk\RVT 2025\Libraries\English\Structural Columns\Wood\M_Timber-Column.rfa"},
+    ["family_instance.place"]=()=>new JsonObject{["category"]="generic_model",["symbol"]="Focus Gyrofocus: Suspended",["level"]="Level 1",["point"]=new JsonArray(4000,15000),["offset_mm"]=1200},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
@@ -246,6 +248,19 @@ foreach(var (tool,readOnly) in new[]{("revit_query_materials",true),("revit_roof
     var gableInvalid=Guarded("revit_roof_create_footprint",new JsonObject{["level"]="Level 2",["type"]="Cabin roof",["boundary"]=Outline(),["sloped_edges"]=new JsonArray(0,2)},McpCopy);
     Check(IsError(gableInvalid) && FailureCode(gableInvalid)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before+1,"sloped_edges without slope_deg is args_invalid before the pipe");
 }
+// Family commands: generated additive write tools, guarded like every write; family.load also checks its source.
+Check(RevitCommandCatalogue.Families.Select(spec=>spec.Name).SequenceEqual(new[]{"family.load","family_instance.place"}) && RevitCommandCatalogue.Families.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the family commands, all in the catalogue enumeration");
+foreach(var tool in new[]{"revit_family_load","revit_family_instance_place"}) {
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && listed?["annotations"]?["destructiveHint"]?.GetValue<bool>()==false && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies","family tool "+tool+" is listed write-copies, additive (destructiveHint false)");
+    var spec=RevitCommandCatalogue.All.SingleOrDefault(c=>c.ToolName==tool);
+    if(spec is null) continue;
+    var before=forwardedLines.Count;
+    var onReal=Guarded(tool,sampleArgs[spec.Name](),McpReal);
+    Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+}
+var outsideLoad=Guarded("revit_family_load",new JsonObject{["path"]=@"C:\Users\owner\Downloads\Stove.rfa"},McpCopy);
+Check(IsError(outsideLoad) && FailureCode(outsideLoad)==RevitCommandCodes.FamilySourceRefused,"revit_family_load from outside .bim/families and the Autodesk library is family_source_refused before the pipe");
 foreach(var tool in new[]{"revit_query_elements","revit_query_inspect"}) {
     var listed=tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!;
     Check(listed["annotations"]?["readOnlyHint"]?.GetValue<bool>()==true && listed["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="read",tool+" is listed read-only with permission level read");

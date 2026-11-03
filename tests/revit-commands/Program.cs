@@ -397,6 +397,8 @@ try
 
     // ---- Materials and layered roof types (chat-roof-gable): query.materials, roof_type.create ----
     CatalogueMaterialsChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- Family commands: family.load, family_instance.place, family symbol categories, wood structure ----
+    CatalogueFamiliesChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();

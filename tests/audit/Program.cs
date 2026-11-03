@@ -151,6 +151,14 @@ try
             && modifyPolicy.Evaluate("copier", command, RealPath) is { Allowed: false, Reason: PermissionCodes.RealProjectNotEnabled } && modifyPolicy.Evaluate("owner", command, RealPath) is { Allowed: false, Reason: PermissionCodes.RealProjectNotEnabled },
             "modify write " + command + ": reader denied, write-copies allowed on a copy, real project not enabled even for the owner grant");
     }
+    // Family commands: family.load and family_instance.place are additive writes, copies only.
+    foreach (var command in new[] { "family.load", "family_instance.place" })
+    {
+        Check(RevitCommandCatalogue.Families.Any(spec => spec.Name == command && spec.Writes) && !RevitCommandCatalogue.IsDestructive(command), "family catalogue has additive write " + command);
+        var familyPolicy = PermissionPolicy.Create(grants, Array.Empty<string>(), copies);
+        Check(familyPolicy.Evaluate("reader", command, FixturePath) is { Allowed: false, Reason: PermissionCodes.LevelInsufficient } && familyPolicy.Evaluate("copier", command, FixturePath) is { Allowed: true, Reason: PermissionCodes.WriteCopiesAllowed }
+            && familyPolicy.Evaluate("copier", command, RealPath) is { Allowed: false, Reason: PermissionCodes.RealProjectNotEnabled }, "family write " + command + ": reader denied, write-copies allowed on a copy, real project not enabled");
+    }
     Check(PermissionPolicy.RequiredLevel("bogus.command", FixturePath, copies) is null, "an unknown command has no required level");
     var forged = realWrite with { Spec = RevitCommandCatalogue.Find("query.levels")! };
     Check(policy.Classify(forged) == PermissionLevel.WriteRealProject, "classification follows the catalogue entry of the command name, not a forged spec");

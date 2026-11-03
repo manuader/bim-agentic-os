@@ -239,6 +239,22 @@ try
     Check((double?)floorTypesJson["floor_types"]![0]!["width_mm"] == 150 && (string?)floorTypesJson["floor_types"]![0]!["unique_id"] == TypeUid, "floor types readback: name, unique_id, width_mm");
     var symbolsJson = JsonNode.Parse(CommandReadback.SymbolsJson("door", new[] { new SymbolRow("M_Single-Flush", "0915 x 2134mm", SymbolUid, false, true) }))!;
     Check((string?)symbolsJson["category"] == "door" && (string?)symbolsJson["family_symbols"]![0]!["family"] == "M_Single-Flush" && (string?)symbolsJson["family_symbols"]![0]!["type"] == "0915 x 2134mm" && (bool?)symbolsJson["family_symbols"]![0]!["active"] == false && (bool?)symbolsJson["family_symbols"]![0]!["wall_hosted"] == true && (string?)symbolsJson["family_symbols"]![0]!["reference"] == "M_Single-Flush: 0915 x 2134mm", "family symbols readback: family, type, reference, unique_id, active, wall_hosted");
+    var placedSymbols = JsonNode.Parse(CommandReadback.SymbolsJson("door", new[] { new SymbolRow("M_Single-Flush", "0915 x 2134mm", SymbolUid, false, true, "OneLevelBasedHosted") }))!["family_symbols"]![0]!;
+    Check((bool?)placedSymbols["wall_hosted"] == true && (string?)placedSymbols["placement_type"] == "OneLevelBasedHosted" && (string?)placedSymbols["reference"] == "M_Single-Flush: 0915 x 2134mm", "family symbols readback keeps the door fields and adds placement_type");
+
+    // ---- Family commands: the executor re-binds family.load and repeats the source guard on its own policy ----
+    const string LibraryColumn = @"C:\ProgramData\Autodesk\RVT 2025\Libraries\English\Structural Columns\Wood\M_Timber-Column.rfa";
+    var loadEnvelope = Envelope("family.load", new JsonObject { ["path"] = LibraryColumn });
+    var boundLoad = CommandWire.Bind(FixturePath, Uid, null, false, Canonical(loadEnvelope));
+    Check(boundLoad.Envelope.Args is FamilyLoadArgs { Path: LibraryColumn, FamilyName: "M_Timber-Column", Overwrite: false } && boundLoad.Envelope.Spec.Writes, "executor re-binds family.load as a write with the family name from the file name");
+    Check(Admit(boundLoad.Envelope, Facts()) is null && Admit(RevitCommandProtocol.Parse(Envelope("family.load", new JsonObject { ["path"] = LibraryColumn }, RealPath).ToJsonString()), Facts(RealPath)) is { Code: RevitCommandCodes.DocumentNotEnabled }, "family.load is admitted on the fixture copy and refused on a real project like any write");
+    var libraryPolicy = policy with { ContentLibraryRoots = new[] { @"C:\ProgramData\Autodesk\RVT 2025\Libraries" } };
+    Check(RevitFamilySourceGuard.Check(LibraryColumn, policy.FamilySourceRoots, noLinks) is not null && RevitFamilySourceGuard.Check(LibraryColumn, libraryPolicy.FamilySourceRoots, noLinks) is null
+        && RevitFamilySourceGuard.Check(@"C:\Repo\.bim\families\Stove.rfa", libraryPolicy.FamilySourceRoots, noLinks) is not null
+        && RevitFamilySourceGuard.Check(@"C:\Repo\.bim\families\Stove.rfa", (libraryPolicy with { RepositoryDirectory = @"C:\Repo" }).FamilySourceRoots, noLinks) is null, "the executor's family sources come from its own repository policy: listed content libraries, and .bim/families only with a repository");
+    var placeEnvelope = Envelope("family_instance.place", new JsonObject { ["category"] = "generic_model", ["symbol"] = SymbolUid, ["level"] = LevelUid, ["point"] = Pair(4000, 15000), ["offset_mm"] = 1200 });
+    Check(CommandWire.Bind(FixturePath, Uid, null, false, Canonical(placeEnvelope)).Envelope.Args is FamilyInstancePlaceArgs { Category: "generic_model", Symbol: SymbolUid } placeArgs && placeArgs.Offset.Millimetres == 1200, "executor re-binds family_instance.place with the offset in millimetres");
+
     var wallJson = JsonNode.Parse(CommandReadback.WallJson(Observed(new(0, 0), new(2000, 0), Math.PI * 1000, true, 1000, new(1000, 0))))!;
     Check((string?)wallJson["wall"]!["unique_id"] == NewUid && (string?)wallJson["wall"]!["curve"]!["kind"] == "arc" && (double?)wallJson["wall"]!["curve"]!["radius_mm"] == 1000 && (double?)wallJson["wall"]!["curve"]!["end"]![0] == 2000 && (double?)wallJson["wall"]!["height_mm"] == 3000, "wall readback JSON: curve kind, endpoints, radius, height");
     Check(JsonNode.Parse(CommandReadback.OpeningJson("window", opening))!["opening"]!["sill_mm"]!.GetValue<double>() == 900, "opening readback JSON carries the sill");

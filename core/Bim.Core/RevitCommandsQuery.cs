@@ -36,6 +36,8 @@ public static class RevitElementQueryRules
         ("structural_framing", "OST_StructuralFraming"), ("structural_foundation", "OST_StructuralFoundation"),
         ("furniture", "OST_Furniture"), ("casework", "OST_Casework"), ("plumbing_fixture", "OST_PlumbingFixtures"),
         ("lighting_fixture", "OST_LightingFixtures"), ("generic_model", "OST_GenericModel"),
+        ("specialty_equipment", "OST_SpecialityEquipment"), ("mechanical_equipment", "OST_MechanicalEquipment"),
+        ("planting", "OST_Planting"), ("site", "OST_Site"), ("entourage", "OST_Entourage"),
         ("curtain_panel", "OST_CurtainWallPanels"), ("curtain_mullion", "OST_CurtainWallMullions"),
         ("level", "OST_Levels"), ("grid", "OST_Grids"),
     };
