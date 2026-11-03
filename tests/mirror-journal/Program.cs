@@ -282,6 +282,9 @@ try
     // Only the NativeRoomFixture helper passes a variable name; its callers' literals are scanned above.
     Check(dynamicNames.SequenceEqual(new[] { "NativeRoomFixture.cs: name" }), "no other transaction takes a name the scan cannot see", string.Join("; ", dynamicNames));
 
+    // ---- P2-04 drift between the mirror and the Core store (MirrorDriftChecks.cs) ----
+    MirrorDriftChecks.Run(Check);
+
     // ---- Thread safety: concurrent records keep unique, gap-free sequences ----
     var concurrent = new MirrorJournal(() => start, capacity: 10000);
     Parallel.For(0, 2000, i => concurrent.Record(Change(new[] { "T" + i }, modified: new[] { W1 })));

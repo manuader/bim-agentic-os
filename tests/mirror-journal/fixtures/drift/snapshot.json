@@ -1,0 +1,107 @@
+{
+  "snapshot_version": 1,
+  "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+  "units": "m",
+  "elements": [
+    {
+      "Id": "44f5fc6b-7b17-c5fc-f1f6-b0b37865b3c6",
+      "Kind": "level",
+      "GeometryMetres": [
+        0
+      ],
+      "Dependencies": [],
+      "Provenance": {
+        "Source": "revit-snapshot",
+        "Approval": "observed"
+      }
+    },
+    {
+      "Id": "b3c223e3-23ef-a05c-2345-ab547eb5c0a5",
+      "Kind": "wall",
+      "GeometryMetres": [
+        0,
+        0,
+        5,
+        0,
+        3,
+        0.2
+      ],
+      "Dependencies": [
+        "44f5fc6b-7b17-c5fc-f1f6-b0b37865b3c6"
+      ],
+      "Provenance": {
+        "Source": "revit-snapshot",
+        "Approval": "observed"
+      }
+    },
+    {
+      "Id": "db98eeb5-3a66-7972-29a5-494ec813984a",
+      "Kind": "wall",
+      "GeometryMetres": [
+        5,
+        0,
+        5,
+        4,
+        3,
+        0.2
+      ],
+      "Dependencies": [
+        "44f5fc6b-7b17-c5fc-f1f6-b0b37865b3c6"
+      ],
+      "Provenance": {
+        "Source": "revit-snapshot",
+        "Approval": "observed"
+      }
+    },
+    {
+      "Id": "5f83f664-4e98-113a-3e1b-38f4a4fe7143",
+      "Kind": "door",
+      "GeometryMetres": [
+        0.55,
+        0,
+        1.45,
+        0,
+        0,
+        2.1
+      ],
+      "Dependencies": [
+        "44f5fc6b-7b17-c5fc-f1f6-b0b37865b3c6",
+        "b3c223e3-23ef-a05c-2345-ab547eb5c0a5"
+      ],
+      "Provenance": {
+        "Source": "revit-snapshot",
+        "Approval": "observed"
+      }
+    }
+  ],
+  "sources": [
+    {
+      "id": "44f5fc6b-7b17-c5fc-f1f6-b0b37865b3c6",
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00000137",
+      "category": "level"
+    },
+    {
+      "id": "b3c223e3-23ef-a05c-2345-ab547eb5c0a5",
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00001001",
+      "category": "wall"
+    },
+    {
+      "id": "db98eeb5-3a66-7972-29a5-494ec813984a",
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00001002",
+      "category": "wall"
+    },
+    {
+      "id": "5f83f664-4e98-113a-3e1b-38f4a4fe7143",
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00002001",
+      "category": "door"
+    }
+  ],
+  "unmapped": [
+    {
+      "category": "floor",
+      "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-00004001",
+      "reason": "no_bim_ir_kind",
+      "detail": "BIM-IR has no floor or slab element kind; adding one needs an owner-accepted ADR"
+    }
+  ]
+}
