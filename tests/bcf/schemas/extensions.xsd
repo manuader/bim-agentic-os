@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Project-authored structural subset of BCF 3.0 extensions.xsd (extensions.xml). Not the official buildingSMART schema; see README.md. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+  <xs:simpleType name="NonEmptyString">
+    <xs:restriction base="xs:string">
+      <xs:minLength value="1" />
+      <xs:pattern value=".*\S.*" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="Extensions">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="TopicTypes" minOccurs="0">
+          <xs:complexType><xs:sequence><xs:element name="TopicType" type="NonEmptyString" minOccurs="0" maxOccurs="unbounded" /></xs:sequence></xs:complexType>
+        </xs:element>
+        <xs:element name="TopicStatuses" minOccurs="0">
+          <xs:complexType><xs:sequence><xs:element name="TopicStatus" type="NonEmptyString" minOccurs="0" maxOccurs="unbounded" /></xs:sequence></xs:complexType>
+        </xs:element>
+        <xs:element name="Priorities" minOccurs="0">
+          <xs:complexType><xs:sequence><xs:element name="Priority" type="NonEmptyString" minOccurs="0" maxOccurs="unbounded" /></xs:sequence></xs:complexType>
+        </xs:element>
+        <xs:element name="TopicLabels" minOccurs="0">
+          <xs:complexType><xs:sequence><xs:element name="TopicLabel" type="NonEmptyString" minOccurs="0" maxOccurs="unbounded" /></xs:sequence></xs:complexType>
+        </xs:element>
+        <xs:element name="Users" minOccurs="0">
+          <xs:complexType><xs:sequence><xs:element name="User" type="NonEmptyString" minOccurs="0" maxOccurs="unbounded" /></xs:sequence></xs:complexType>
+        </xs:element>
+        <xs:element name="SnippetTypes" minOccurs="0">
+          <xs:complexType><xs:sequence><xs:element name="SnippetType" type="NonEmptyString" minOccurs="0" maxOccurs="unbounded" /></xs:sequence></xs:complexType>
+        </xs:element>
+        <xs:element name="Stages" minOccurs="0">
+          <xs:complexType><xs:sequence><xs:element name="Stage" type="NonEmptyString" minOccurs="0" maxOccurs="unbounded" /></xs:sequence></xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
