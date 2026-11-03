@@ -1047,3 +1047,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 16:57Z integration a31af61 CI 41677841349 success (9/9) → main fast-forwarded. P1-05, P6-04, P7-03 ✅; P8-07 ⛔→⏳; new P4-03, P6-05, P7-04, P7-05 ⏳ (roadmap batch for phases 4, 6, 7). Progress 51/73 (69.9 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-03T16:57:28Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P10-04 packaging or P10-05 classification (Phase 10), P2-04 drift or P2-05 query.journal (Phase 2), P5-04 style defaults or P5-05 QA pack (Phase 5); then P9-03/P9-04, P8-05/P8-06/P8-07, P3-04, P4-03, P6-05, P7-04/P7-05. Owner: Revit session on a test copy (adds P1-05 modify/delete probe); CABA review.
+
+## Relay69b — 2026-11-03T17:55Z (Claude, owner chat)
+- Owner session 20261103T174908Z: catalogue v1 17/17 OK in Revit 2025 (head a31af61). P1-04 can flip 🔒→✅ verified-in-revit. CABA to-verify values confirmed by the owner (see OWNER.md). MCP installed (restart pending). Next relay: flip P1-04, mark CABA values owner-confirmed, add catalogue v2 + P4-01/P2-01/P1-02/P9-02/P4-02/P2-03 probes to the -Catalogue session so the next owner run verifies them in one go.
