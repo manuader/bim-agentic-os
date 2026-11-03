@@ -634,7 +634,7 @@ public static class CadToBimIr
                 : new CadDraftSource(p.SourceFile, "pdf", p.Handle, p.Layer, p.EntityType, null, pdf.Page, pdf.ObjectNumber, pdf.OperatorIndex, null, part, pdf.XObjectPath);
             sources[p] = (order, source);
             Candidates.Add(scaled);
-            if (scaled is DxfLine l) Register(order, source, l.Start, l.End);
+            if (scaled is DxfLine l) Register(order, -1, source, l.Start, l.End);
             else if (scaled is DxfPolyline poly)
                 foreach (var segment in poly.Segments())
                     if (!segment.IsArc) Register(order, segment.Index, source with { SegmentIndex = segment.Index }, segment.Start, segment.End);
