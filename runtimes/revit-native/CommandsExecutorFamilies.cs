@@ -61,7 +61,7 @@ internal static partial class CommandExecutor
             () =>
             {
                 if (!CommandRulesFamilies.CallsLoad(existed, args.Overwrite)) return;
-                var returned = d.LoadFamily(args.Path, new FamilyLoadOptions(args.Overwrite), out var loaded);
+                var returned = d.LoadFamily(args.Path, new CommandFamilyLoadOptions(args.Overwrite), out var loaded);
                 family = loaded ?? (existed ? family : FamiliesNamed(d, args.FamilyName).SingleOrDefault());
                 outcome = CommandRulesFamilies.LoadOutcome(existed, args.Overwrite, returned, family is { IsValidObject: true });
             },
@@ -119,11 +119,11 @@ internal static partial class CommandExecutor
 
 // Loads a new family as is; an existing family (or shared nested family) is replaced, with its parameter values,
 // only when overwrite was requested. Decisions in CommandRulesFamilies.
-sealed class FamilyLoadOptions : IFamilyLoadOptions
+sealed class CommandFamilyLoadOptions : IFamilyLoadOptions
 {
     readonly bool overwrite;
 
-    public FamilyLoadOptions(bool overwrite) => this.overwrite = overwrite;
+    public CommandFamilyLoadOptions(bool overwrite) => this.overwrite = overwrite;
 
     public bool OnFamilyFound(bool familyInUse, out bool overwriteParameterValues)
     {

@@ -204,10 +204,10 @@ static class CatalogueFamiliesChecks
         Check(repo.SequenceEqual(new[] { Path.Combine(@"C:\Repo", ".bim", "families"), Library }), "with a repository the sources are <repo>/.bim/families and the Autodesk 2025 library", string.Join(";", repo));
         Check(RevitFamilySourceGuard.Roots(null).SequenceEqual(new[] { Library }), "without a repository only the Autodesk library is a source");
         Check(RevitFamilySourceGuard.AutodeskContentRoot == Library && RevitFamilySourceGuard.RepositoryFamiliesDirectory == ".bim/families" && RevitFamilySourceGuard.MaxFamilyBytes == 100L * 1024 * 1024, "source constants: .bim/families, the RVT 2025 Libraries folder and a 100 MiB cap");
-        Check(RevitCommandPolicy.FromAllowlist(null, @"C:\Repo\.bim\native-runs").FamilySourceRoots.SequenceEqual(new[] { Library }) && (new RevitCommandPolicy(Array.Empty<string>()) with { RepositoryRoot = @"C:\Repo" }).FamilySourceRoots.SequenceEqual(repo),
+        Check(RevitCommandPolicy.FromAllowlist(null, @"C:\Repo\.bim\native-runs").FamilySourceRoots.SequenceEqual(new[] { Library }) && (new RevitCommandPolicy(Array.Empty<string>()) with { RepositoryDirectory = @"C:\Repo" }).FamilySourceRoots.SequenceEqual(repo),
             "the policy's family sources follow its repository root");
         var repository = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory)!;
-        Check(RevitCommandPolicy.ForRepository(AppContext.BaseDirectory).RepositoryRoot == repository, "ForRepository records the repository root for the family sources");
+        Check(RevitCommandPolicy.ForRepository(AppContext.BaseDirectory).RepositoryDirectory == repository, "ForRepository records the repository root for the family sources");
         var roots = repo;
         var noLinks = new RevitFileSystemProbe(_ => false, _ => null);
         Check(RevitFamilySourceGuard.Check(TimberColumn, roots, noLinks) is null, "a family in the Autodesk library is an allowed source");
@@ -260,7 +260,7 @@ static class CatalogueFamiliesChecks
 
     static void ClientPath()
     {
-        var policy = new RevitCommandPolicy(new[] { @"C:\Repo\.bim\native-runs" }) with { RepositoryRoot = @"C:\Repo" };
+        var policy = new RevitCommandPolicy(new[] { @"C:\Repo\.bim\native-runs" }) with { RepositoryDirectory = @"C:\Repo" };
         var forwarded = new List<string>();
         string? Transport(string pipe, string line) { forwarded.Add(line); return Answer(line); }
         var noLinks = new RevitFileSystemProbe(_ => false, _ => null);

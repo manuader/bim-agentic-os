@@ -16,8 +16,8 @@ public sealed record RevitCommandPolicy(IReadOnlyList<string> EnabledRoots)
 
     // The repository the policy was read from (ForRepository), else null. family.load reads families only from its
     // .bim/families folder and the Autodesk library (RevitFamilySourceGuard).
-    public string? RepositoryRoot { get; init; }
-    public IReadOnlyList<string> FamilySourceRoots => RevitFamilySourceGuard.Roots(RepositoryRoot);
+    public string? RepositoryDirectory { get; init; }
+    public IReadOnlyList<string> FamilySourceRoots => RevitFamilySourceGuard.Roots(RepositoryDirectory);
 
     // Allowlist text: one absolute path per line (a directory root or an exact document); blank lines and lines
     // starting with # are ignored. Any malformed or too-broad entry (a drive root, "/", or a UNC path without
@@ -57,7 +57,7 @@ public sealed record RevitCommandPolicy(IReadOnlyList<string> EnabledRoots)
     {
         var root = RepositoryRoot(startDirectory);
         if (root is null) return None;
-        return FromAllowlist(ReadEnabledRootsFile(Path.Combine(root, ".bim", "revit-enabled-roots.txt")), Path.Combine(root, ".bim", "native-runs")) with { RepositoryRoot = root };
+        return FromAllowlist(ReadEnabledRootsFile(Path.Combine(root, ".bim", "revit-enabled-roots.txt")), Path.Combine(root, ".bim", "native-runs")) with { RepositoryDirectory = root };
     }
 
     // Missing file: no extra roots. A link, an oversized file or an unreadable file fails closed.
