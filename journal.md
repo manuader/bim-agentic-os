@@ -1025,3 +1025,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay142 — 2026-11-03T11:53:14Z (Claude, cloud scheduled)
 - 11:53Z LOCK taken (was FREE since relay141 2026-11-03T11:26:13Z).
+- 11:54Z dispatching 3 workers (phases 4, 3, 8 — oldest-touched; P1-05 deferred: shares RevitCommandsCatalogue.cs/CommandsExecutor.cs with P4-02): P4-02 documentation commands, P3-03 plan runner, P8-04 BIM-IR→glTF export (new Phase 8 batch P8-04..P8-06).
