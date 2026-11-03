@@ -1,0 +1,37 @@
+{
+  "manifest_version": 1,
+  "id": "bim.style.warm-masonry",
+  "version": "1.0.0",
+  "kind": "style",
+  "description": "Sample warm traditional masonry style pack: thick solid-brick walls with lime render, tall rooms, modest high-sill windows, pitched clay-tile roof, lime-plaster ceilings and terracotta floors. Design defaults and checks are illustrative recommendations only, not a building code; thresholds are never below the CABA code pack minimums they overlap. Excludes bim.style.compact-modern.",
+  "priority": 30,
+  "conflicts_with": ["bim.style.compact-modern"],
+  "parameters": [
+    { "name": "living_glazing_ratio_min", "type": "number", "default": 0.125, "min": 0.1, "max": 0.3, "description": "Recommended living-room window area over floor area. The lower bound 0.1 is the CABA A/10 illumination minimum, so an override cannot go below code." },
+    { "name": "clear_height_min_m", "type": "number", "default": 3.0, "min": 2.6, "max": 4, "description": "Recommended clear height of habitable rooms; equals room.min_clear_height_m. The lower bound 2.6 is the CABA living-room clear height minimum." }
+  ],
+  "defaults": {
+    "ceiling.finish": "lime-plaster",
+    "door.entrance.width_m": 1.2,
+    "door.interior.width_m": 0.9,
+    "floor.finish": "terracotta-tile",
+    "level.height_m": 3.3,
+    "roof.type": "pitched-clay-tile",
+    "room.min_clear_height_m": 3.0,
+    "wall.exterior.thickness_m": 0.45,
+    "wall.exterior.type": "solid-brick-450-lime-render",
+    "wall.interior.thickness_m": 0.15,
+    "window.head_height_m": 2.4,
+    "window.sill_height_m": 0.9,
+    "window.wall_ratio": 0.18
+  },
+  "rules": [
+    { "id": "bedroom-height-min", "severity": "info", "target": { "room": "bedroom*" }, "check": { "op": "min", "property": "clear_height_m", "parameter": "clear_height_min_m" }, "message": "Bedroom clear height is below the warm masonry style height.", "citation": "Style recommendation (warm masonry), not normative." },
+    { "id": "dormitorio-height-min", "severity": "info", "target": { "room": "dormitorio*" }, "check": { "op": "min", "property": "clear_height_m", "parameter": "clear_height_min_m" }, "message": "Dormitorio clear height is below the warm masonry style height.", "citation": "Style recommendation (warm masonry), not normative." },
+    { "id": "estar-glazing-min", "severity": "warning", "target": { "room": "estar*" }, "check": { "op": "ratio_min", "property": "window_area_m2", "over": "area_m2", "parameter": "living_glazing_ratio_min" }, "message": "Estar glazing is below the warm masonry style ratio.", "citation": "Style recommendation (warm masonry), not normative." },
+    { "id": "estar-height-min", "severity": "info", "target": { "room": "estar*" }, "check": { "op": "min", "property": "clear_height_m", "parameter": "clear_height_min_m" }, "message": "Estar clear height is below the warm masonry style height.", "citation": "Style recommendation (warm masonry), not normative." },
+    { "id": "living-glazing-min", "severity": "warning", "target": { "room": "living*" }, "check": { "op": "ratio_min", "property": "window_area_m2", "over": "area_m2", "parameter": "living_glazing_ratio_min" }, "message": "Living room glazing is below the warm masonry style ratio.", "citation": "Style recommendation (warm masonry), not normative." },
+    { "id": "living-height-min", "severity": "info", "target": { "room": "living*" }, "check": { "op": "min", "property": "clear_height_m", "parameter": "clear_height_min_m" }, "message": "Living room clear height is below the warm masonry style height.", "citation": "Style recommendation (warm masonry), not normative." },
+    { "id": "wall-thickness-min", "severity": "info", "target": { "element": "wall" }, "check": { "op": "min", "property": "thickness_m", "value": 0.15 }, "message": "Wall is thinner than the warm masonry style's solid brick.", "citation": "Style recommendation (warm masonry), not normative." }
+  ]
+}
