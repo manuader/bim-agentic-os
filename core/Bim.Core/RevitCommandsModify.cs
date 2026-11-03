@@ -32,14 +32,14 @@ public abstract record RevitParameterValue
 {
     public abstract string Kind { get; }
 }
-public sealed record LengthParameterValue(Length Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Length; }
-public sealed record AreaParameterValue(Area Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Area; }
-public sealed record AngleParameterValue(Angle Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Angle; }
-public sealed record TextParameterValue(string Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Text; }
-public sealed record IntegerParameterValue(int Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Integer; }
-public sealed record YesNoParameterValue(bool Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.YesNo; }
+public sealed record LengthValueArg(Length Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Length; }
+public sealed record AreaValueArg(Area Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Area; }
+public sealed record AngleValueArg(Angle Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Angle; }
+public sealed record TextValueArg(string Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Text; }
+public sealed record IntegerValueArg(int Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Integer; }
+public sealed record YesNoValueArg(bool Value) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.YesNo; }
 // An element id parameter set to the element with this UniqueId.
-public sealed record ElementParameterValue(string UniqueId) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Element; }
+public sealed record ElementValueArg(string UniqueId) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Element; }
 
 // Sets one parameter of one element (instance or type, by its own UniqueId).
 public sealed record ElementSetParameterArgs(string ElementUid, RevitParameterRef Parameter, RevitParameterValue Value, bool DryRun) : RevitCommandArgs;
@@ -116,24 +116,24 @@ public static partial class RevitCommandCatalogue
                 var length = RevitUnits.Millimetres(Number(value.GetProperty("mm")), "args.value.mm", allowNegative: true, allowZero: true);
                 if (Math.Abs(length.Millimetres) > RevitCommandGeometry.MaxRevitLengthMm)
                     throw new RevitCommandException(RevitCommandCodes.LengthInvalid, "args.value.mm", "length beyond 9144000 mm (Revit's 30000 ft limit)");
-                return new LengthParameterValue(length);
+                return new LengthValueArg(length);
             case RevitParameterValueKinds.Area:
                 var area = Number(value.GetProperty("m2"));
                 if (!double.IsFinite(area) || area < 0 || area > RevitModifyRules.MaxAreaSquareMetres)
                     throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.value.m2", "finite square metres from 0 to 1e8 required");
-                return new AreaParameterValue(Area.FromSquareMetres(area));
+                return new AreaValueArg(Area.FromSquareMetres(area));
             case RevitParameterValueKinds.Angle:
-                return new AngleParameterValue(RevitUnits.Degrees(Number(value.GetProperty("deg")), "args.value.deg"));
+                return new AngleValueArg(RevitUnits.Degrees(Number(value.GetProperty("deg")), "args.value.deg"));
             case RevitParameterValueKinds.Text:
-                return new TextParameterValue(value.GetProperty("text").GetString()!);
+                return new TextValueArg(value.GetProperty("text").GetString()!);
             case RevitParameterValueKinds.Integer:
                 if (!value.GetProperty("integer").TryGetInt32(out var integer))
                     throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.value.integer", "a 32-bit integer required");
-                return new IntegerParameterValue(integer);
+                return new IntegerValueArg(integer);
             case RevitParameterValueKinds.YesNo:
-                return new YesNoParameterValue(value.GetProperty("yes_no").GetBoolean());
+                return new YesNoValueArg(value.GetProperty("yes_no").GetBoolean());
             default:
-                return new ElementParameterValue(value.GetProperty("uid").GetString()!);
+                return new ElementValueArg(value.GetProperty("uid").GetString()!);
         }
     }
 

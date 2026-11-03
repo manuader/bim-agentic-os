@@ -65,13 +65,13 @@ internal static partial class CommandExecutor
 
     static bool SetValue(Parameter parameter, RevitParameterValue value, ElementId? elementValue) => value switch
     {
-        LengthParameterValue length => parameter.Set(UnitUtils.ConvertToInternalUnits(length.Value.Millimetres, UnitTypeId.Millimeters)),
-        AreaParameterValue area => parameter.Set(UnitUtils.ConvertToInternalUnits(area.Value.SquareMetres, UnitTypeId.SquareMeters)),
-        AngleParameterValue angle => parameter.Set(UnitUtils.ConvertToInternalUnits(angle.Value.Degrees, UnitTypeId.Degrees)),
-        TextParameterValue text => parameter.Set(text.Value),
-        IntegerParameterValue integer => parameter.Set(integer.Value),
-        YesNoParameterValue yesNo => parameter.Set(yesNo.Value ? 1 : 0),
-        ElementParameterValue => parameter.Set(elementValue!),
+        LengthValueArg length => parameter.Set(UnitUtils.ConvertToInternalUnits(length.Value.Millimetres, UnitTypeId.Millimeters)),
+        AreaValueArg area => parameter.Set(UnitUtils.ConvertToInternalUnits(area.Value.SquareMetres, UnitTypeId.SquareMeters)),
+        AngleValueArg angle => parameter.Set(UnitUtils.ConvertToInternalUnits(angle.Value.Degrees, UnitTypeId.Degrees)),
+        TextValueArg text => parameter.Set(text.Value),
+        IntegerValueArg integer => parameter.Set(integer.Value),
+        YesNoValueArg yesNo => parameter.Set(yesNo.Value ? 1 : 0),
+        ElementValueArg => parameter.Set(elementValue!),
         _ => false,
     };
 
@@ -81,7 +81,7 @@ internal static partial class CommandExecutor
         var parameter = ResolveParameter(element, args.Parameter);
         var target = Target(d, parameter);
         var kind = CommandRulesModify.CheckSettable(target, args.Value);
-        var elementValue = args.Value is ElementParameterValue value ? ElementByUid(d, value.UniqueId, "args.value.uid").Id : null;
+        var elementValue = args.Value is ElementValueArg value ? ElementByUid(d, value.UniqueId, "args.value.uid").Id : null;
         var before = target.Parameter;
         if (!args.DryRun) CommandReceiptStore.EnsureRoom(store.Receipts);
         var failures = new CommandFailures();

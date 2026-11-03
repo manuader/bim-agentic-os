@@ -107,21 +107,21 @@ static class CatalogueModifyChecks
     static void SetParameterBinding()
     {
         var length = Accepts("set_parameter length accepted", Envelope("element.set_parameter", Set(Value("length", "mm", 3200.5))));
-        Check(length?.Args is ElementSetParameterArgs { ElementUid: WallUid, Parameter: ParameterByName { Name: "Unconnected Height" }, Value: LengthParameterValue { Value: var mm }, DryRun: false } && Math.Abs(mm.Millimetres - 3200.5) < 1e-9 && Math.Abs(mm.Metres - 3.2005) < 1e-12,
+        Check(length?.Args is ElementSetParameterArgs { ElementUid: WallUid, Parameter: ParameterByName { Name: "Unconnected Height" }, Value: LengthValueArg { Value: var mm }, DryRun: false } && Math.Abs(mm.Millimetres - 3200.5) < 1e-9 && Math.Abs(mm.Metres - 3.2005) < 1e-12,
             "a length value binds to a typed Length in millimetres (metres inside), parameter by name, dry_run false by default");
-        Check(Accepts("negative length accepted", Envelope("element.set_parameter", Set(Value("length", "mm", -450))))?.Args is ElementSetParameterArgs { Value: LengthParameterValue { Value: var negative } } && Math.Abs(negative.Millimetres + 450) < 1e-9, "lengths may be negative (offsets)");
+        Check(Accepts("negative length accepted", Envelope("element.set_parameter", Set(Value("length", "mm", -450))))?.Args is ElementSetParameterArgs { Value: LengthValueArg { Value: var negative } } && Math.Abs(negative.Millimetres + 450) < 1e-9, "lengths may be negative (offsets)");
         var area = Accepts("set_parameter area accepted", Envelope("element.set_parameter", Set(Value("area", "m2", 12.5))));
-        Check(area?.Args is ElementSetParameterArgs { Value: AreaParameterValue { Value.SquareMetres: 12.5, Kind: "area" } }, "an area value binds to square metres");
+        Check(area?.Args is ElementSetParameterArgs { Value: AreaValueArg { Value.SquareMetres: 12.5, Kind: "area" } }, "an area value binds to square metres");
         var angle = Accepts("set_parameter angle accepted", Envelope("element.set_parameter", Set(Value("angle", "deg", 90))));
-        Check(angle?.Args is ElementSetParameterArgs { Value: AngleParameterValue { Value: var a, Kind: "angle" } } && Math.Abs(a.Radians - Math.PI / 2) < 1e-12, "an angle value binds to degrees (radians inside)");
+        Check(angle?.Args is ElementSetParameterArgs { Value: AngleValueArg { Value: var a, Kind: "angle" } } && Math.Abs(a.Radians - Math.PI / 2) < 1e-12, "an angle value binds to degrees (radians inside)");
         Check(Accepts("set_parameter text accepted", Envelope("element.set_parameter", Set(Value("text", "text", "Fire rated"), new JsonObject { ["built_in"] = "ALL_MODEL_INSTANCE_COMMENTS" })))?.Args
-            is ElementSetParameterArgs { Parameter: ParameterByBuiltIn { BuiltIn: "ALL_MODEL_INSTANCE_COMMENTS" }, Value: TextParameterValue { Value: "Fire rated", Kind: "text" } }, "a text value and a built-in parameter bind");
-        Check(Accepts("set_parameter empty text accepted", Envelope("element.set_parameter", Set(Value("text", "text", ""))))?.Args is ElementSetParameterArgs { Value: TextParameterValue { Value: "" } }, "an empty text clears the parameter");
-        Check(Accepts("set_parameter multi-line text accepted", Envelope("element.set_parameter", Set(Value("text", "text", "line 1\nline 2"))))?.Args is ElementSetParameterArgs { Value: TextParameterValue { Value: "line 1\nline 2" } }, "multi-line text is allowed");
+            is ElementSetParameterArgs { Parameter: ParameterByBuiltIn { BuiltIn: "ALL_MODEL_INSTANCE_COMMENTS" }, Value: TextValueArg { Value: "Fire rated", Kind: "text" } }, "a text value and a built-in parameter bind");
+        Check(Accepts("set_parameter empty text accepted", Envelope("element.set_parameter", Set(Value("text", "text", ""))))?.Args is ElementSetParameterArgs { Value: TextValueArg { Value: "" } }, "an empty text clears the parameter");
+        Check(Accepts("set_parameter multi-line text accepted", Envelope("element.set_parameter", Set(Value("text", "text", "line 1\nline 2"))))?.Args is ElementSetParameterArgs { Value: TextValueArg { Value: "line 1\nline 2" } }, "multi-line text is allowed");
         Check(Accepts("set_parameter integer accepted", Envelope("element.set_parameter", Set(Value("integer", "integer", -7), new JsonObject { ["guid"] = SharedGuid.ToUpperInvariant() })))?.Args
-            is ElementSetParameterArgs { Parameter: ParameterByGuid { Guid: var guid }, Value: IntegerParameterValue { Value: -7, Kind: "integer" } } && guid == Guid.Parse(SharedGuid), "an integer value and a shared parameter GUID (any hex case) bind");
-        Check(Accepts("set_parameter yes/no accepted", Envelope("element.set_parameter", With(Set(Value("yes_no", "yes_no", true)), "dry_run", true)))?.Args is ElementSetParameterArgs { Value: YesNoParameterValue { Value: true, Kind: "yes_no" }, DryRun: true }, "a yes/no value and dry_run bind");
-        Check(Accepts("set_parameter element accepted", Envelope("element.set_parameter", Set(Value("element", "uid", LevelUid))))?.Args is ElementSetParameterArgs { Value: ElementParameterValue { UniqueId: LevelUid, Kind: "element" } }, "an element value binds to a UniqueId");
+            is ElementSetParameterArgs { Parameter: ParameterByGuid { Guid: var guid }, Value: IntegerValueArg { Value: -7, Kind: "integer" } } && guid == Guid.Parse(SharedGuid), "an integer value and a shared parameter GUID (any hex case) bind");
+        Check(Accepts("set_parameter yes/no accepted", Envelope("element.set_parameter", With(Set(Value("yes_no", "yes_no", true)), "dry_run", true)))?.Args is ElementSetParameterArgs { Value: YesNoValueArg { Value: true, Kind: "yes_no" }, DryRun: true }, "a yes/no value and dry_run bind");
+        Check(Accepts("set_parameter element accepted", Envelope("element.set_parameter", Set(Value("element", "uid", LevelUid))))?.Args is ElementSetParameterArgs { Value: ElementValueArg { UniqueId: LevelUid, Kind: "element" } }, "an element value binds to a UniqueId");
         Check(RevitParameterValueKinds.All.SequenceEqual(new[] { "length", "area", "angle", "text", "integer", "yes_no", "element" }), "value kinds are length, area, angle, text, integer, yes_no and element");
 
         Rejects("set_parameter without value", Envelope("element.set_parameter", With(Set(Value("length", "mm", 1)), "value", null)), RevitCommandCodes.ArgsInvalid, "args.value");
@@ -232,15 +232,15 @@ static class CatalogueModifyChecks
             "integer parameters take yes_no or integer by data type; enumerations and parameters without storage are not settable");
 
         var lengthTarget = new ParameterTarget(Param("double", LengthSpec, name: "Unconnected Height"), false, false);
-        Check(Thrown(() => CommandRulesModify.CheckSettable(lengthTarget, new LengthParameterValue(Length.FromMillimetres(3000)))) is null && CommandRulesModify.CheckSettable(lengthTarget, new LengthParameterValue(Length.FromMillimetres(3000))) == "length", "a writable length parameter takes a length value");
-        var readOnly = Thrown(() => CommandRulesModify.CheckSettable(new ParameterTarget(Param("double", LengthSpec, readOnly: true, name: "Length"), false, false), new LengthParameterValue(Length.FromMillimetres(1))));
+        Check(Thrown(() => CommandRulesModify.CheckSettable(lengthTarget, new LengthValueArg(Length.FromMillimetres(3000)))) is null && CommandRulesModify.CheckSettable(lengthTarget, new LengthValueArg(Length.FromMillimetres(3000))) == "length", "a writable length parameter takes a length value");
+        var readOnly = Thrown(() => CommandRulesModify.CheckSettable(new ParameterTarget(Param("double", LengthSpec, readOnly: true, name: "Length"), false, false), new LengthValueArg(Length.FromMillimetres(1))));
         Check(readOnly is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.parameter" } && readOnly.Detail!.Contains("read-only", StringComparison.Ordinal) && readOnly.Detail.Contains("Length", StringComparison.Ordinal), "a read-only parameter is refused at args.parameter, named", readOnly?.Detail ?? "");
-        var readOnlyText = Thrown(() => CommandRulesModify.CheckSettable(new ParameterTarget(Param("string", null, readOnly: true), false, false), new TextParameterValue("x")));
+        var readOnlyText = Thrown(() => CommandRulesModify.CheckSettable(new ParameterTarget(Param("string", null, readOnly: true), false, false), new TextValueArg("x")));
         Check(readOnlyText is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.parameter" }, "read-only is refused before the value kind is considered");
-        var mismatch = Thrown(() => CommandRulesModify.CheckSettable(lengthTarget, new AreaParameterValue(Area.FromSquareMetres(2))));
+        var mismatch = Thrown(() => CommandRulesModify.CheckSettable(lengthTarget, new AreaValueArg(Area.FromSquareMetres(2))));
         Check(mismatch is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.value.kind" } && mismatch.Detail!.Contains("length", StringComparison.Ordinal), "a value of the wrong kind is refused at args.value.kind naming the expected kind", mismatch?.Detail ?? "");
-        Check(Thrown(() => CommandRulesModify.CheckSettable(new ParameterTarget(Param("integer", YesNoSpec), true, false), new IntegerParameterValue(1))) is { Field: "args.value.kind" }, "an integer value is refused for a yes/no parameter");
-        var enumeration = Thrown(() => CommandRulesModify.CheckSettable(new ParameterTarget(Param("integer", null, name: "Location Line"), false, false), new IntegerParameterValue(2)));
+        Check(Thrown(() => CommandRulesModify.CheckSettable(new ParameterTarget(Param("integer", YesNoSpec), true, false), new IntegerValueArg(1))) is { Field: "args.value.kind" }, "an integer value is refused for a yes/no parameter");
+        var enumeration = Thrown(() => CommandRulesModify.CheckSettable(new ParameterTarget(Param("integer", null, name: "Location Line"), false, false), new IntegerValueArg(2)));
         Check(enumeration is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.value" } && enumeration.Detail!.Contains("Location Line", StringComparison.Ordinal), "an enumerated integer parameter is refused as not settable", enumeration?.Detail ?? "");
         Check(Thrown(() => CommandRulesModify.CheckNamedMatches(1, "Comments")) is null, "a name matching exactly one parameter resolves");
         Check(Thrown(() => CommandRulesModify.CheckNamedMatches(0, "Comments")) is { Code: RevitCommandCodes.ReferenceNotFound, Field: "args.parameter.name" }, "a name matching no parameter is reference_not_found");
@@ -304,19 +304,19 @@ static class CatalogueModifyChecks
     static void Readbacks()
     {
         var length = Param("double", LengthSpec) with { Number = 3000.0005, Unit = "mm" };
-        Check(CommandReadbackModify.Parameter(new LengthParameterValue(Length.FromMillimetres(3000)), length) is null, "a length read back within 0.001 mm matches");
-        Check(CommandReadbackModify.Parameter(new LengthParameterValue(Length.FromMillimetres(3000)), length with { Number = 3000.002 }) is { } off && off.Contains("3000.002", StringComparison.Ordinal), "a length read back 0.002 mm off is a mismatch naming the value");
-        Check(CommandReadbackModify.Parameter(new LengthParameterValue(Length.FromMillimetres(3000)), length with { Unit = "m2" }) is not null, "a length read back in another unit is a mismatch");
+        Check(CommandReadbackModify.Parameter(new LengthValueArg(Length.FromMillimetres(3000)), length) is null, "a length read back within 0.001 mm matches");
+        Check(CommandReadbackModify.Parameter(new LengthValueArg(Length.FromMillimetres(3000)), length with { Number = 3000.002 }) is { } off && off.Contains("3000.002", StringComparison.Ordinal), "a length read back 0.002 mm off is a mismatch naming the value");
+        Check(CommandReadbackModify.Parameter(new LengthValueArg(Length.FromMillimetres(3000)), length with { Unit = "m2" }) is not null, "a length read back in another unit is a mismatch");
         var area = Param("double", AreaSpec) with { Number = 12.5000004, Unit = "m2" };
-        Check(CommandReadbackModify.Parameter(new AreaParameterValue(Area.FromSquareMetres(12.5)), area) is null && CommandReadbackModify.Parameter(new AreaParameterValue(Area.FromSquareMetres(12.5)), area with { Number = 12.51 }) is not null, "areas read back within 1e-6 m2");
+        Check(CommandReadbackModify.Parameter(new AreaValueArg(Area.FromSquareMetres(12.5)), area) is null && CommandReadbackModify.Parameter(new AreaValueArg(Area.FromSquareMetres(12.5)), area with { Number = 12.51 }) is not null, "areas read back within 1e-6 m2");
         var angle = Param("double", AngleSpec) with { Number = 90.0000001, Unit = "deg" };
-        Check(CommandReadbackModify.Parameter(new AngleParameterValue(Angle.FromDegrees(90)), angle) is null && CommandReadbackModify.Parameter(new AngleParameterValue(Angle.FromDegrees(90)), angle with { Number = 90.01 }) is not null, "angles read back within 1e-6 degrees");
+        Check(CommandReadbackModify.Parameter(new AngleValueArg(Angle.FromDegrees(90)), angle) is null && CommandReadbackModify.Parameter(new AngleValueArg(Angle.FromDegrees(90)), angle with { Number = 90.01 }) is not null, "angles read back within 1e-6 degrees");
         var text = Param("string", null) with { Text = "Fire rated" };
-        Check(CommandReadbackModify.Parameter(new TextParameterValue("Fire rated"), text) is null && CommandReadbackModify.Parameter(new TextParameterValue("Fire Rated"), text) is not null, "text reads back ordinally");
-        Check(CommandReadbackModify.Parameter(new TextParameterValue(""), Param("string", null) with { HasValue = false }) is null && CommandReadbackModify.Parameter(new TextParameterValue("x"), Param("string", null) with { HasValue = false }) is not null, "a cleared text may read back without a value; any other value must be present");
-        Check(CommandReadbackModify.Parameter(new IntegerParameterValue(-7), Param("integer", IntegerSpec) with { Integer = -7 }) is null && CommandReadbackModify.Parameter(new IntegerParameterValue(-7), Param("integer", IntegerSpec) with { Integer = 7 }) is not null, "integers read back exactly");
-        Check(CommandReadbackModify.Parameter(new YesNoParameterValue(true), Param("integer", YesNoSpec) with { Integer = 1 }) is null && CommandReadbackModify.Parameter(new YesNoParameterValue(false), Param("integer", YesNoSpec) with { Integer = 1 }) is not null, "yes/no reads back as 1 or 0");
-        Check(CommandReadbackModify.Parameter(new ElementParameterValue(LevelUid), Param("element_id", null) with { ElementUid = LevelUid.ToUpperInvariant() }) is null && CommandReadbackModify.Parameter(new ElementParameterValue(LevelUid), Param("element_id", null) with { ElementUid = null }) is not null, "element values read back by UniqueId");
+        Check(CommandReadbackModify.Parameter(new TextValueArg("Fire rated"), text) is null && CommandReadbackModify.Parameter(new TextValueArg("Fire Rated"), text) is not null, "text reads back ordinally");
+        Check(CommandReadbackModify.Parameter(new TextValueArg(""), Param("string", null) with { HasValue = false }) is null && CommandReadbackModify.Parameter(new TextValueArg("x"), Param("string", null) with { HasValue = false }) is not null, "a cleared text may read back without a value; any other value must be present");
+        Check(CommandReadbackModify.Parameter(new IntegerValueArg(-7), Param("integer", IntegerSpec) with { Integer = -7 }) is null && CommandReadbackModify.Parameter(new IntegerValueArg(-7), Param("integer", IntegerSpec) with { Integer = 7 }) is not null, "integers read back exactly");
+        Check(CommandReadbackModify.Parameter(new YesNoValueArg(true), Param("integer", YesNoSpec) with { Integer = 1 }) is null && CommandReadbackModify.Parameter(new YesNoValueArg(false), Param("integer", YesNoSpec) with { Integer = 1 }) is not null, "yes/no reads back as 1 or 0");
+        Check(CommandReadbackModify.Parameter(new ElementValueArg(LevelUid), Param("element_id", null) with { ElementUid = LevelUid.ToUpperInvariant() }) is null && CommandReadbackModify.Parameter(new ElementValueArg(LevelUid), Param("element_id", null) with { ElementUid = null }) is not null, "element values read back by UniqueId");
         Check(CommandReadbackModify.Deleted(Array.Empty<string>()) is null && CommandReadbackModify.Deleted(new[] { DoorUid }) is { } present && present.Contains(DoorUid, StringComparison.Ordinal), "a delete reads back as nothing left; a surviving element is a mismatch naming it");
     }
 

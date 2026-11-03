@@ -152,7 +152,7 @@ public static class CommandReadbackModify
     // Null when the parameter now holds the requested value; otherwise what differs.
     public static string? Parameter(RevitParameterValue requested, ObservedParameter after)
     {
-        if (requested is TextParameterValue { Value: "" } && !after.HasValue) return null;
+        if (requested is TextValueArg { Value: "" } && !after.HasValue) return null;
         if (!after.HasValue) return "parameter " + after.Name + " has no value after the set";
         string? Number(double expected, string unit, double tolerance, string what) =>
             after.Unit != unit || after.Number is not { } number ? "parameter " + after.Name + " reads back without a " + unit + " value"
@@ -160,13 +160,13 @@ public static class CommandReadbackModify
             : null;
         return requested switch
         {
-            LengthParameterValue length => Number(length.Value.Millimetres, RevitParameterUnits.Millimetres, CommandRulesModify.LengthToleranceMm, "length"),
-            AreaParameterValue area => Number(area.Value.SquareMetres, RevitParameterUnits.SquareMetres, CommandRulesModify.AreaToleranceSquareMetres, "area"),
-            AngleParameterValue angle => Number(angle.Value.Degrees, RevitParameterUnits.Degrees, CommandRulesModify.AngleToleranceDegrees, "angle"),
-            TextParameterValue text => (after.Text ?? "") == text.Value ? null : "parameter " + after.Name + " reads back a different text",
-            IntegerParameterValue integer => after.Integer == integer.Value ? null : "parameter " + after.Name + " reads back " + after.Integer + ", requested " + integer.Value,
-            YesNoParameterValue yesNo => after.Integer == (yesNo.Value ? 1 : 0) ? null : "parameter " + after.Name + " reads back " + after.Integer + ", requested " + (yesNo.Value ? "yes" : "no"),
-            ElementParameterValue element => string.Equals(after.ElementUid, element.UniqueId, StringComparison.OrdinalIgnoreCase) ? null : "parameter " + after.Name + " reads back element " + (after.ElementUid ?? "none") + ", requested " + element.UniqueId,
+            LengthValueArg length => Number(length.Value.Millimetres, RevitParameterUnits.Millimetres, CommandRulesModify.LengthToleranceMm, "length"),
+            AreaValueArg area => Number(area.Value.SquareMetres, RevitParameterUnits.SquareMetres, CommandRulesModify.AreaToleranceSquareMetres, "area"),
+            AngleValueArg angle => Number(angle.Value.Degrees, RevitParameterUnits.Degrees, CommandRulesModify.AngleToleranceDegrees, "angle"),
+            TextValueArg text => (after.Text ?? "") == text.Value ? null : "parameter " + after.Name + " reads back a different text",
+            IntegerValueArg integer => after.Integer == integer.Value ? null : "parameter " + after.Name + " reads back " + after.Integer + ", requested " + integer.Value,
+            YesNoValueArg yesNo => after.Integer == (yesNo.Value ? 1 : 0) ? null : "parameter " + after.Name + " reads back " + after.Integer + ", requested " + (yesNo.Value ? "yes" : "no"),
+            ElementValueArg element => string.Equals(after.ElementUid, element.UniqueId, StringComparison.OrdinalIgnoreCase) ? null : "parameter " + after.Name + " reads back element " + (after.ElementUid ?? "none") + ", requested " + element.UniqueId,
             _ => "unsupported value kind " + requested.Kind,
         };
     }
