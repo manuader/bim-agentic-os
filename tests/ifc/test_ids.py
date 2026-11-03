@@ -14,12 +14,18 @@ FIXTURES = ROOT / 'tests/ifc/fixtures/ids'
 NS = 'xmlns:ids="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
 
+_LOADED = {}
+
+
 def load(name, path):
+    if name in _LOADED:
+        return _LOADED[name]
     if not path.exists():
         raise AssertionError(f'{path.relative_to(ROOT)} missing: IDS checker not implemented')
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    _LOADED[name] = module
     return module
 
 
