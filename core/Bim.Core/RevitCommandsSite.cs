@@ -84,7 +84,7 @@ public static partial class RevitCommandCatalogue
         return new[]
         {
             new RevitCommandSpec("query.toposolid_types", false, "List the toposolid types available in the document with name, UniqueId and thickness in millimetres (null when the type has no layer structure). Read-only.", EmptySchema, _ => new EmptyQueryArgs()),
-            new RevitCommandSpec("toposolid.create", true, "Create a toposolid (Revit 2024+ terrain solid, also usable for small boulders) of a type on a level from 3 to 2000 [x, y, z] millimetre points of its top face, with an optional Comments text. Allowed only on enabled test copies.", toposolid, BindToposolid),
+            new RevitCommandSpec("toposolid.create", true, "Create a toposolid (Revit 2024+ terrain solid, also usable for small boulders) of a type on a level from 3 to 2000 [x, y, z] millimetre points of its top face, with an optional Comments text. Revit keeps the toposolid bottom flat at the level's elevation minus the type thickness, so points lower than the level minus the type thickness are not supported (Revit keeps a flat bottom there) and are refused as args_invalid; use a thicker type or a lower level. Allowed only on enabled test copies.", toposolid, BindToposolid),
             new RevitCommandSpec("toposolid.create_subdivision", true, "Mark a region of an existing toposolid (for example a trail) as a subdivision from a closed [x, y] millimetre outline, with an optional material, sub-divide height and Comments text. Allowed only on enabled test copies.", subdivision, BindToposolidSubdivision),
         };
     }

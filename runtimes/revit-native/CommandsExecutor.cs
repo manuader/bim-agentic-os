@@ -30,7 +30,7 @@ namespace Bim.Revit;
 // sheets) are in CommandsExecutorDocumentation.cs; element.set_parameter and element.delete (P1-05) are in
 // CommandsExecutorModify.cs; query.materials and roof_type.create are in CommandsExecutorMaterials.cs;
 // family.load and family_instance.place are in CommandsExecutorFamilies.cs; site commands (toposolids and
-// subdivisions) are in CommandsExecutorSite.cs.
+// subdivisions) are in CommandsExecutorSite.cs; wall.set_profile is in CommandsExecutorWallProfile.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -87,8 +87,11 @@ internal static partial class CommandExecutor
             ToposolidSubdivisionCreateArgs subdivision => ToposolidSubdivisionWrite(d, subdivision),
             // A stair is created through a StairsEditScope, which cannot start inside the plan's write transaction.
             StairCreateArgs => null,
+            // A wall profile is edited through a SketchEditScope (CommandsExecutorWallProfile.cs), for the same reason.
+            WallSetProfileArgs => null,
             _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
         };
+        if (plan is null && envelope.Args is WallSetProfileArgs profile) return WriteWallProfile(d, request, store, profile);
         if (plan is null) return WriteStair(d, request, store, (StairCreateArgs)envelope.Args);
         return Write(d, request, store, plan);
     }

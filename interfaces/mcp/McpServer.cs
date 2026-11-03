@@ -307,7 +307,7 @@ public sealed class McpServer
         {
             // Tool annotations and _meta postdate the advertised 2024-11-05 protocol: best-effort hints that clients
             // may ignore. Writes replay by operation_id, hence idempotent; they are additive (not destructive) except the
-            // P1-05 commands that change or delete existing elements (RevitCommandCatalogue.IsDestructive).
+            // P1-05 commands and wall.set_profile, which change or delete existing elements (RevitCommandCatalogue.IsDestructive).
             var annotations = new JsonObject { ["readOnlyHint"] = level == PermissionLevel.Read };
             if (level != PermissionLevel.Read)
             {
