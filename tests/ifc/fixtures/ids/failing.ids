@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ids:ids xmlns:ids="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <ids:info>
+    <ids:title>Isolated room export - failing subset</ids:title>
+  </ids:info>
+  <ids:specifications>
+    <ids:specification name="Walls carry identity" identifier="WALL-ID" ifcVersion="IFC4">
+      <ids:applicability minOccurs="1" maxOccurs="unbounded">
+        <ids:entity><ids:name><ids:simpleValue>IFCWALL</ids:simpleValue></ids:name></ids:entity>
+      </ids:applicability>
+      <ids:requirements>
+        <ids:property cardinality="required">
+          <ids:propertySet><ids:simpleValue>BimIdentity</ids:simpleValue></ids:propertySet>
+          <ids:baseName><ids:simpleValue>LogicalId</ids:simpleValue></ids:baseName>
+        </ids:property>
+      </ids:requirements>
+    </ids:specification>
+    <ids:specification name="Openings carry identity" identifier="OPENING-ID" ifcVersion="IFC4">
+      <ids:applicability minOccurs="1" maxOccurs="unbounded">
+        <ids:entity><ids:name><ids:simpleValue>IFCOPENINGELEMENT</ids:simpleValue></ids:name></ids:entity>
+      </ids:applicability>
+      <ids:requirements>
+        <ids:property cardinality="required">
+          <ids:propertySet><ids:simpleValue>BimIdentity</ids:simpleValue></ids:propertySet>
+          <ids:baseName><ids:simpleValue>LogicalId</ids:simpleValue></ids:baseName>
+        </ids:property>
+      </ids:requirements>
+    </ids:specification>
+    <ids:specification name="Windows are prohibited" identifier="NO-WINDOW" ifcVersion="IFC4">
+      <ids:applicability minOccurs="0" maxOccurs="0">
+        <ids:entity><ids:name><ids:simpleValue>IFCWINDOW</ids:simpleValue></ids:name></ids:entity>
+      </ids:applicability>
+    </ids:specification>
+    <ids:specification name="A slab is required" identifier="SLAB" ifcVersion="IFC4">
+      <ids:applicability minOccurs="1" maxOccurs="unbounded">
+        <ids:entity><ids:name><ids:simpleValue>IFCSLAB</ids:simpleValue></ids:name></ids:entity>
+      </ids:applicability>
+    </ids:specification>
+    <ids:specification name="Wall names must be numeric" identifier="WALL-NAME" ifcVersion="IFC4">
+      <ids:applicability minOccurs="1" maxOccurs="unbounded">
+        <ids:entity><ids:name><ids:simpleValue>IFCWALL</ids:simpleValue></ids:name></ids:entity>
+      </ids:applicability>
+      <ids:requirements>
+        <ids:attribute cardinality="required">
+          <ids:name><ids:simpleValue>Name</ids:simpleValue></ids:name>
+          <ids:value><xs:restriction base="xs:string"><xs:pattern value="[0-9]+"/></xs:restriction></ids:value>
+        </ids:attribute>
+      </ids:requirements>
+    </ids:specification>
+  </ids:specifications>
+</ids:ids>

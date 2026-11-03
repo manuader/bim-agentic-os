@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ids:ids xmlns:ids="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ids:info>
+    <ids:title>Isolated room export - passing subset</ids:title>
+  </ids:info>
+  <ids:specifications>
+    <ids:specification name="Walls carry identity" identifier="WALL-ID" ifcVersion="IFC4">
+      <ids:applicability minOccurs="1" maxOccurs="unbounded">
+        <ids:entity><ids:name><ids:simpleValue>IFCWALL</ids:simpleValue></ids:name></ids:entity>
+      </ids:applicability>
+      <ids:requirements>
+        <ids:attribute cardinality="required"><ids:name><ids:simpleValue>Name</ids:simpleValue></ids:name></ids:attribute>
+        <ids:property cardinality="required" dataType="IFCTEXT">
+          <ids:propertySet><ids:simpleValue>BimIdentity</ids:simpleValue></ids:propertySet>
+          <ids:baseName><ids:simpleValue>LogicalId</ids:simpleValue></ids:baseName>
+          <ids:value><xs:restriction base="xs:string"><xs:pattern value="(west|east|south|north)"/></xs:restriction></ids:value>
+        </ids:property>
+      </ids:requirements>
+    </ids:specification>
+    <ids:specification name="Internal room space" identifier="SPACE-INTERNAL" ifcVersion="IFC2X3 IFC4">
+      <ids:applicability minOccurs="1" maxOccurs="unbounded">
+        <ids:entity>
+          <ids:name><ids:simpleValue>IFCSPACE</ids:simpleValue></ids:name>
+          <ids:predefinedType><ids:simpleValue>INTERNAL</ids:simpleValue></ids:predefinedType>
+        </ids:entity>
+      </ids:applicability>
+      <ids:requirements>
+        <ids:attribute cardinality="required">
+          <ids:name><ids:simpleValue>Name</ids:simpleValue></ids:name>
+          <ids:value><xs:restriction base="xs:string"><xs:enumeration value="room"/><xs:enumeration value="space"/></xs:restriction></ids:value>
+        </ids:attribute>
+        <ids:property cardinality="required">
+          <ids:propertySet><ids:simpleValue>BimIdentity</ids:simpleValue></ids:propertySet>
+          <ids:baseName><ids:simpleValue>LogicalId</ids:simpleValue></ids:baseName>
+          <ids:value><ids:simpleValue>room</ids:simpleValue></ids:value>
+        </ids:property>
+      </ids:requirements>
+    </ids:specification>
+    <ids:specification name="No building element proxies" identifier="NO-PROXY" ifcVersion="IFC4">
+      <ids:applicability minOccurs="0" maxOccurs="0">
+        <ids:entity><ids:name><ids:simpleValue>IFCBUILDINGELEMENTPROXY</ids:simpleValue></ids:name></ids:entity>
+      </ids:applicability>
+    </ids:specification>
+    <ids:specification name="Door optional and prohibited data" identifier="DOOR-DATA" ifcVersion="IFC4">
+      <ids:applicability minOccurs="0" maxOccurs="unbounded">
+        <ids:entity><ids:name><ids:simpleValue>IFCDOOR</ids:simpleValue></ids:name></ids:entity>
+      </ids:applicability>
+      <ids:requirements>
+        <ids:attribute cardinality="prohibited"><ids:name><ids:simpleValue>Description</ids:simpleValue></ids:name></ids:attribute>
+        <ids:property cardinality="optional">
+          <ids:propertySet><ids:simpleValue>Pset_DoorCommon</ids:simpleValue></ids:propertySet>
+          <ids:baseName><ids:simpleValue>FireRating</ids:simpleValue></ids:baseName>
+          <ids:value><ids:simpleValue>EI30</ids:simpleValue></ids:value>
+        </ids:property>
+        <ids:classification cardinality="optional">
+          <ids:system><ids:simpleValue>Uniclass 2015</ids:simpleValue></ids:system>
+        </ids:classification>
+      </ids:requirements>
+    </ids:specification>
+  </ids:specifications>
+</ids:ids>
