@@ -65,11 +65,15 @@ public sealed class McpServer
     // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), the real process pipe and file system.
     // A malformed owner file enables no write at all.
     public McpServer(RevitCommandPolicy? revitPolicy = null, Func<string, string, string?>? revitTransport = null, RevitFileSystemProbe? revitProbe = null)
+        : this(RevitCommandCatalogue.All, revitPolicy, revitTransport, revitProbe) { }
+
+    // Tests inject a synthetic catalogue here; production always uses RevitCommandCatalogue.All.
+    internal McpServer(IReadOnlyList<RevitCommandSpec> catalogue, RevitCommandPolicy? revitPolicy, Func<string, string, string?>? revitTransport, RevitFileSystemProbe? revitProbe)
     {
         this.revitPolicy = revitPolicy ?? DefaultPolicy();
         this.revitTransport = revitTransport ?? RevitCommandService.PipeTransport;
         this.revitProbe = revitProbe ?? RevitFileSystemProbe.Real;
-        tools = [.. CoreTools, .. RevitCommandCatalogue.All.Select(RevitTool)];
+        tools = [.. CoreTools, .. catalogue.Select(RevitTool)];
     }
 
     static RevitCommandPolicy DefaultPolicy()
