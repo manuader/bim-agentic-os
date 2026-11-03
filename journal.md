@@ -997,3 +997,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 04:53Z LOCK taken (was FREE since relay138 2026-11-03T04:34:48Z).
 - 05:22Z workers green: P1-02 2b1ac32 (red 41581362575, green 41582425052; 1 attempt: harness core-boundary comment), P3-02 6198975 (red 41581285936, green 41582696545; 1 attempt: CS0136 args local), P8-01 a2833b6 (red 41581606289, green 41582301741). Next: independent reviews.
 - 06:19Z reviews: no blockers; should-fix closed with tests: P1-02 4a51ca6 (red 41583999465, green 41584475032; 1 attempt: core vendor-name gate on spec id literals), P3-02 9e0884c (red 41585441293, green 41586824187; golden hash pinned from CI output), P8-01 14df5f5 (red 41587908355, green 41588411915). Integrating.
+- 06:21Z integration head 7fd0951 (relay139-integration: 3 merges + board/features/session/handoff/attempts) pushed; waiting CI before fast-forwarding main.
