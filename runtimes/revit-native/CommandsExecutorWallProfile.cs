@@ -34,7 +34,7 @@ internal static partial class CommandExecutor
         var envelope = request.Envelope;
         var wall = d.GetElement(args.WallUid) as Wall ?? throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.wall_uid", "no wall with UniqueId " + args.WallUid);
         var curve = (wall.Location as LocationCurve)?.Curve ?? throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.wall_uid", "the wall has no location curve");
-        CommandRulesWallProfile.CheckWall(wall.WallType.Kind.ToString(), curve is not Line, wall.CanHaveProfileSketch());
+        CommandRulesWallProfile.CheckWall(wall.WallType.Kind.ToString(), curve is not Line, wall.SketchId != ElementId.InvalidElementId || wall.CanHaveProfileSketch());
         if (wall.GroupId != ElementId.InvalidElementId) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.wall_uid", "the wall is a group member; edit the group or ungroup it first");
         var line = (Line)curve;
         var level = d.GetElement(wall.LevelId) as Level ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "the wall has no base level");
