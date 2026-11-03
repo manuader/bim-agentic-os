@@ -6,7 +6,13 @@ IfcOpeningElement that voids a wall, and IfcSpace into the existing BIM-IR eleme
   wall   [ax,ay,bx,by,height,thickness]               [level]
   door / window [ax,ay,bx,by,sill,height]             [level, host wall]
   space  [corner x, corner y, width, depth]           [level, bounding walls in id order]
-Anything that cannot be represented exactly is listed under `unmapped` with a reason; nothing is guessed.
+Bodies are read through rigid IfcMappedItem chains and rectangular IfcArbitraryClosedProfileDef polylines
+(IfcPolyline or straight IfcIndexedPolyCurve); a space without Body may give its FootPrint curve. Those are exact.
+Walls alone may be approximated, with the loss stated: a half-space IfcBooleanClippingResult is read as its
+unclipped extrusion (boolean_clipping_ignored) and a non-rectangular polygon profile as its bounding rectangle
+along the longest edge (profile_bounding_rectangle). Anything else that cannot be represented is listed under
+`unmapped` with a reason. `entities` gives every listed product's status (imported / approximated / unsupported)
+with reasons and `summary` the counts (P8-05).
 Export writes BIM-IR of those kinds to a deterministic IFC4 file (GlobalIds derived from BIM-IR ids), so
 export -> import -> export gives the same BIM-IR and the same IFC DATA section. See docs/ifc.md.
 
@@ -79,6 +85,10 @@ IDENTITY_MISMATCH = 'identity_mismatch'
 HOST_LEVEL_MISMATCH = 'host_level_mismatch'
 OPENING_MULTIPLE_FILLS = 'opening_multiple_fills'
 COORDINATE_OUT_OF_RANGE = 'coordinate_out_of_range'
+# Approximation reasons: the element is imported, with a stated loss (walls only).
+BOOLEAN_CLIPPING_IGNORED = 'boolean_clipping_ignored'
+PROFILE_BOUNDING_RECTANGLE = 'profile_bounding_rectangle'
+STATUSES = ('imported', 'approximated', 'unsupported')
 
 
 class IfcAdapterError(ValueError):
@@ -143,6 +153,7 @@ class Reader:
 
     def __init__(self, f):
         self.f = f
+        self.notes = []  # (reason, detail) approximations recorded while reading the current element
         self.divisor, self.factor = _length_unit(f)
 
     def m(self, value):
@@ -178,32 +189,158 @@ class Reader:
             raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{p.is_a()} object placements are not read (local placements only)')
         return _compose(self.placement(p.PlacementRelTo, depth + 1), self.axis_placement(p.RelativePlacement))
 
-    def body(self, product, what):
-        """The single extruded rectangle of a product's Body: world frame centred on the profile, sizes, depth."""
+    def body(self, product, what, approximate=False, footprint=False):
+        """The single extruded rectangle of a product's Body: world frame centred on the profile, sizes, depth.
+
+        Read through IfcMappedItem chains (exact rigid maps only) and rectangular IfcArbitraryClosedProfileDef
+        polylines. With `approximate`, a boolean-clipped body is read as its unclipped extrusion and a
+        non-rectangular polygon profile as its bounding rectangle along the longest edge; each approximation is
+        recorded in `self.notes`. With `footprint`, a product without Body falls back to a FootPrint curve."""
         shapes = product.Representation.Representations if product.Representation else ()
         bodies = [r for r in shapes if r.RepresentationIdentifier == 'Body']
         if not bodies and len(shapes) == 1 and shapes[0].RepresentationIdentifier is None:
             bodies = list(shapes)
+        if not bodies and footprint:
+            prints = [r for r in shapes if r.RepresentationIdentifier == 'FootPrint']
+            if len(prints) == 1:
+                return self._footprint(product, prints[0], what)
         if len(bodies) != 1:
             raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} needs exactly one Body representation, found {len(bodies)}')
-        items = bodies[0].Items
-        if len(items) != 1 or items[0].is_a() != 'IfcExtrudedAreaSolid':
-            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body is not one IfcExtrudedAreaSolid ({", ".join(i.is_a() for i in items)})')
-        solid = items[0]
+        solid, frame = self._solid(bodies[0].Items, self.placement(product.ObjectPlacement), what, approximate, 0)
         profile = solid.SweptArea
-        if profile.is_a() != 'IfcRectangleProfileDef' or profile.ProfileType != 'AREA':
-            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body profile is {profile.is_a()}, not an AREA IfcRectangleProfileDef')
         direction = _unit(_ratios(solid.ExtrudedDirection), 'extrusion direction')
         if abs(direction[0]) > 1e-12 or abs(direction[1]) > 1e-12 or direction[2] <= 0:
             raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body is not extruded along its local +Z')
-        frame = _compose(_compose(self.placement(product.ObjectPlacement), self.axis_placement(solid.Position)), self.axis_placement(profile.Position))
+        frame = _compose(frame, self.axis_placement(solid.Position))
+        if profile.is_a() == 'IfcRectangleProfileDef' and profile.ProfileType == 'AREA':
+            frame = _compose(frame, self.axis_placement(profile.Position))
+            xdim, ydim = self.m(profile.XDim), self.m(profile.YDim)
+        elif profile.is_a() == 'IfcArbitraryClosedProfileDef' and profile.ProfileType == 'AREA':
+            local, xdim, ydim = self._polygon_rectangle(self.curve_points(profile.OuterCurve, what), what, approximate)
+            frame = _compose(frame, local)
+        else:
+            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body profile is {profile.is_a()}, not an AREA rectangle or rectangular polyline')
         x, y, z, origin = frame
         if abs(z[0]) > 1e-9 or abs(z[1]) > 1e-9 or z[2] < 1 - 1e-9:
             raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body is not extruded vertically upwards')
-        xdim, ydim, depth = self.m(profile.XDim), self.m(profile.YDim), self.m(solid.Depth)
+        depth = self.m(solid.Depth)
         if xdim <= 0 or ydim <= 0 or depth <= 0:
             raise Unmappable(INVALID_GEOMETRY, f'{what} body has a non-positive size')
         return dict(x=x, y=y, origin=origin, xdim=xdim, ydim=ydim, depth=depth)
+
+    def _solid(self, items, frame, what, approximate, depth):
+        """Resolve one Body item to (IfcExtrudedAreaSolid, frame of its object coordinates)."""
+        if depth > 16:
+            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body nests more than 16 mapped or boolean items')
+        if len(items) != 1:
+            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body is not one solid ({", ".join(i.is_a() for i in items)})')
+        item = items[0]
+        if item.is_a('IfcMappedItem'):
+            source = item.MappingSource
+            target = self.operator(item.MappingTarget, what)
+            origin = _inverse(self.axis_placement(source.MappingOrigin))
+            return self._solid(source.MappedRepresentation.Items, _compose(_compose(frame, target), origin), what, approximate, depth + 1)
+        if item.is_a('IfcBooleanClippingResult'):
+            clips = 0
+            while item.is_a('IfcBooleanClippingResult'):
+                if item.Operator != 'DIFFERENCE' or not item.SecondOperand.is_a('IfcHalfSpaceSolid'):
+                    raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body is a clipping result that is not a half-space DIFFERENCE')
+                clips, item = clips + 1, item.FirstOperand
+            if not approximate:
+                raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body is clipped by {clips} half-space(s); only walls are approximated')
+            self.notes.append((BOOLEAN_CLIPPING_IGNORED, f'{what} body is an IfcBooleanClippingResult: {clips} half-space clip(s) ignored and the unclipped extrusion imported (BIM-IR walls are prisms of one height), so the BIM-IR height is the unclipped maximum'))
+            return self._solid([item], frame, what, approximate, depth + 1)
+        if item.is_a() != 'IfcExtrudedAreaSolid':
+            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} body is {item.is_a()}, not an IfcExtrudedAreaSolid')
+        return item, frame
+
+    def operator(self, op, what):
+        """IfcCartesianTransformationOperator3D as a frame (IFC IfcBaseAxis); only rigid, unscaled maps are read."""
+        if op is None or not op.is_a('IfcCartesianTransformationOperator3D'):
+            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} mapped item target is {op.is_a() if op else None}, not a 3D transformation operator')
+        scales = [getattr(op, 'Scale', None), getattr(op, 'Scale2', None), getattr(op, 'Scale3', None)]
+        if any(s is not None and abs(float(s) - 1) > 1e-12 for s in scales):
+            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} mapped item is scaled ({scales}); only rigid maps are read')
+        z = _unit(_ratios(op.Axis3) if op.Axis3 else (0.0, 0.0, 1.0), 'mapping Axis3')
+        ref = _ratios(op.Axis1) if op.Axis1 else (1.0, 0.0, 0.0)
+        d = _dot(ref, z)
+        x = _unit((ref[0] - d * z[0], ref[1] - d * z[1], ref[2] - d * z[2]), 'mapping Axis1')
+        y = _cross(z, x)
+        if op.Axis2:
+            v = _ratios(op.Axis2)
+            dx, dz = _dot(v, x), _dot(v, z)
+            y = _unit((v[0] - dx * x[0] - dz * z[0], v[1] - dx * x[1] - dz * z[1], v[2] - dx * x[2] - dz * z[2]), 'mapping Axis2')
+        return (x, y, z, self.point(op.LocalOrigin))
+
+    def curve_points(self, curve, what):
+        """Vertices (metres, local 2D) of a straight-segment closed curve: IfcPolyline or IfcIndexedPolyCurve of lines."""
+        if curve.is_a('IfcPolyline'):
+            points = [self.point(p)[:2] for p in curve.Points]
+        elif curve.is_a('IfcIndexedPolyCurve'):
+            coords = [tuple(self.m(v) for v in c) for c in curve.Points.CoordList]
+            if curve.Segments:
+                order = []
+                for segment in curve.Segments:
+                    if not segment.is_a('IfcLineIndex'):
+                        raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} outline has a {segment.is_a()} segment; only straight lines are read')
+                    indices = list(segment.wrappedValue)
+                    order.extend(indices if not order or order[-1] != indices[0] else indices[1:])
+                coords = [coords[i - 1] for i in order]
+            points = [(c[0], c[1]) for c in coords]
+        else:
+            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} outline is {curve.is_a()}, not a straight polyline')
+        cleaned = []
+        for p in points:
+            if not cleaned or math.hypot(p[0] - cleaned[-1][0], p[1] - cleaned[-1][1]) > TOLERANCE:
+                cleaned.append(p)
+        if len(cleaned) > 1 and math.hypot(cleaned[0][0] - cleaned[-1][0], cleaned[0][1] - cleaned[-1][1]) <= TOLERANCE:
+            cleaned.pop()
+        changed = True
+        while changed and len(cleaned) >= 3:  # Drop collinear vertices so a rectangle with extra points is still one.
+            changed = False
+            for i in range(len(cleaned)):
+                a, b, c = cleaned[i - 1], cleaned[i], cleaned[(i + 1) % len(cleaned)]
+                u = _unit((b[0] - a[0], b[1] - a[1], 0.0), f'{what} outline edge')
+                v = _unit((c[0] - b[0], c[1] - b[1], 0.0), f'{what} outline edge')
+                if abs(u[0] * v[1] - u[1] * v[0]) <= 1e-9 and _dot(u, v) > 0:
+                    del cleaned[i]
+                    changed = True
+                    break
+        if len(cleaned) < 3:
+            raise Unmappable(INVALID_GEOMETRY, f'{what} outline has fewer than three distinct vertices')
+        return cleaned
+
+    def _polygon_rectangle(self, points, what, approximate):
+        """(local 2D frame centred on the rectangle, xdim, ydim) of a polygon; non-rectangles only when approximating."""
+        n = len(points)
+        edges = [_unit((points[(i + 1) % n][0] - points[i][0], points[(i + 1) % n][1] - points[i][1], 0.0), f'{what} outline edge') for i in range(n)]
+        if n == 4 and all(abs(_dot(edges[i], edges[(i + 1) % 4])) <= 1e-9 for i in range(4)):
+            u = edges[0]
+        elif approximate:
+            longest = max(range(n), key=lambda i: (math.hypot(points[(i + 1) % n][0] - points[i][0], points[(i + 1) % n][1] - points[i][1]), -i))
+            u = edges[longest]
+            self.notes.append((PROFILE_BOUNDING_RECTANGLE, f'{what} profile is a {n}-vertex polygon, imported as its bounding rectangle along its longest edge (area {abs(_area(points)):.6g} m2 of the rectangle\'s area shown in GeometryMetres)'))
+        else:
+            raise Unmappable(ROOM_NOT_RECTANGULAR if what == 'space' else UNSUPPORTED_REPRESENTATION, f'{what} outline is a {n}-vertex polygon, not a rectangle')
+        v = (-u[1], u[0])
+        along = [p[0] * u[0] + p[1] * u[1] for p in points]
+        across = [p[0] * v[0] + p[1] * v[1] for p in points]
+        s, t = (min(along) + max(along)) / 2, (min(across) + max(across)) / 2
+        centre = (s * u[0] + t * v[0], s * u[1] + t * v[1], 0.0)
+        return ((u[0], u[1], 0.0), (v[0], v[1], 0.0), (0.0, 0.0, 1.0), centre), max(along) - min(along), max(across) - min(across)
+
+    def _footprint(self, product, representation, what):
+        """A FootPrint curve (no Body) read as a horizontal rectangle in the product placement; it has no height."""
+        items = representation.Items
+        if len(items) == 1 and items[0].is_a('IfcGeometricCurveSet') and len(items[0].Elements) == 1:
+            items = items[0].Elements
+        if len(items) != 1:
+            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} FootPrint is not one closed curve')
+        local, xdim, ydim = self._polygon_rectangle(self.curve_points(items[0], what), what, False)
+        x, y, z, origin = _compose(self.placement(product.ObjectPlacement), local)
+        if abs(z[0]) > 1e-9 or abs(z[1]) > 1e-9 or z[2] < 1 - 1e-9:
+            raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} FootPrint is not horizontal')
+        return dict(x=x, y=y, origin=origin, xdim=xdim, ydim=ydim, depth=None)
 
     def axis(self, product):
         """Start and end (world, metres) of a 2-point IfcPolyline Axis representation, or None without one."""
@@ -215,6 +352,15 @@ class Reader:
             raise Unmappable(UNSUPPORTED_REPRESENTATION, 'wall Axis representation is not one straight 2-point IfcPolyline')
         frame = self.placement(product.ObjectPlacement)
         return [_apply(frame, self.point(p)) for p in axes[0].Items[0].Points]
+
+
+def _inverse(frame):
+    x, y, z, t = frame
+    return ((x[0], y[0], z[0]), (x[1], y[1], z[1]), (x[2], y[2], z[2]), (-_dot(x, t), -_dot(y, t), -_dot(z, t)))
+
+
+def _area(points):
+    return sum(points[i - 1][0] * points[i][1] - points[i][0] * points[i - 1][1] for i in range(len(points))) / 2
 
 
 def _ratios(direction):
@@ -374,7 +520,10 @@ def import_ifc(path):
         else:
             skip(p, CATEGORY_UNSUPPORTED, f'{p.is_a()} is not read (storeys, walls, doors, windows and spaces are)')
 
+    approximated = {}
+
     def attempt(product, kind, read):
+        reader.notes = []
         try:
             identifier, provenance = _identity(product, project_gid)
             geometry, dependencies, extra = read(product)
@@ -385,6 +534,8 @@ def import_ifc(path):
             skip(product, INVALID_GEOMETRY, f'unreadable {kind}: {type(error).__name__}: {error}')
             return None
         mapped.append(({'Id': identifier, 'Kind': kind, 'GeometryMetres': geometry, 'Dependencies': dependencies, 'Provenance': provenance}, product))
+        if reader.notes:
+            approximated[identifier] = sorted(set(reader.notes))
         return identifier, extra
 
     levels, elevations = {}, {}
@@ -414,7 +565,7 @@ def import_ifc(path):
         level = _storey_of(wall, levels)
         if level is None:
             raise Unmappable(LEVEL_UNKNOWN, 'wall is not contained in exactly one mapped storey')
-        body = reader.body(wall, 'wall')
+        body = reader.body(wall, 'wall', approximate=True)
         x, y, c = body['x'], body['y'], body['origin']
         if not _horizontal(x) or not _horizontal(y):
             raise Unmappable(UNSUPPORTED_REPRESENTATION, 'wall profile plane is not horizontal')
@@ -513,7 +664,7 @@ def import_ifc(path):
         level = _storey_of(space, levels)
         if level is None:
             raise Unmappable(LEVEL_UNKNOWN, 'space is not aggregated into exactly one mapped storey')
-        body = reader.body(space, 'space')
+        body = reader.body(space, 'space', footprint=True)
         x, y, c = body['x'], body['y'], body['origin']
         if not (_horizontal(x) and (abs(abs(x[0]) - 1) <= 1e-9 or abs(abs(x[1]) - 1) <= 1e-9)):
             raise Unmappable(ROOM_NOT_RECTANGULAR, 'space footprint is not an axis-aligned rectangle (a rotated rectangle is refused too)')
@@ -533,11 +684,24 @@ def import_ifc(path):
     if len(set(ids)) != len(ids):
         raise IfcAdapterError('duplicate_id', 'two IFC elements map to the same BIM-IR id')
     unmapped.sort(key=lambda u: (u['category'], u['global_id'], u['reason'], u['ifc_class']))
+    entities = []
+    for e, p in mapped:
+        notes = approximated.get(e['Id'], [])
+        entities.append({'category': e['Kind'], 'global_id': p.GlobalId, 'ifc_class': p.is_a(), 'status': 'approximated' if notes else 'imported', 'id': e['Id'],
+                         'reasons': [r for r, _ in notes], 'detail': '; '.join(d for _, d in notes)})
+    for u in unmapped:
+        entities.append({'category': u['category'], 'global_id': u['global_id'], 'ifc_class': u['ifc_class'], 'status': 'unsupported', 'id': None,
+                         'reasons': [u['reason']], 'detail': u['detail']})
+    entities.sort(key=lambda r: (r['category'], r['global_id'], r['ifc_class'], r['status'], r['reasons']))
     return {
         'import_version': 1, 'report_schema': REPORT_SCHEMA, 'ifc_schema': f.schema, 'units': 'm',
         'project': {'Id': project_id, 'Revision': revision, 'Elements': [e for e, _ in mapped]},
         'sources': [{'id': e['Id'], 'global_id': p.GlobalId, 'ifc_class': p.is_a()} for e, p in mapped],
         'unmapped': unmapped,
+        # Per-product outcome (P8-05): every mapped and every unmapped product once; spatial structure above
+        # storeys and openings read as part of their door or window are not listed.
+        'entities': entities,
+        'summary': {status: sum(1 for r in entities if r['status'] == status) for status in STATUSES},
     }
 
 
@@ -757,7 +921,7 @@ def export_project(project, output_path):
         f.write(str(pending))
         back = import_ifc(pending)
         expected = {'Id': project['Id'], 'Revision': project['Revision'], 'Elements': [dict(e, Provenance=dict(OBSERVED)) for e in supported]}
-        if back['unmapped'] or _shaped(back['project']) != _shaped(expected):
+        if back['unmapped'] or back['summary']['approximated'] or _shaped(back['project']) != _shaped(expected):
             raise IfcAdapterError('ifc_roundtrip_mismatch', 'the written IFC does not read back to the same BIM-IR; nothing was published')
         try:
             os.link(pending, output)  # Fails instead of replacing a file that appeared meanwhile.
