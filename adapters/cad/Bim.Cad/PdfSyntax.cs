@@ -25,6 +25,24 @@ internal sealed class PdfNull
 // A stream object: its dictionary and the location of its raw (still encoded) data in the file.
 internal sealed record PdfStream(Dictionary<string, object> Dictionary, int Start, int Length, int ObjectNumber);
 
+// The document-wide budget of parsed elements (names, array items and dictionary entries) shared by every lexer of one
+// read, so huge arrays or dictionaries are refused (PdfFormatException "element-limit") before they are allocated.
+internal sealed class PdfBudget
+{
+    private readonly long limit;
+    private long used;
+
+    public PdfBudget(long limit)
+    {
+        this.limit = limit;
+    }
+
+    public void Charge(int offset)
+    {
+        if (++used > limit) throw new PdfFormatException("element-limit", offset, "parsed names, array items and dictionary entries exceed MaxParsedElements " + limit.ToString(CultureInfo.InvariantCulture));
+    }
+}
+
 // A recoverable syntax error inside one object or content stream.
 internal sealed class PdfSyntaxException : Exception
 {
@@ -43,10 +61,12 @@ internal sealed class PdfLexer
     private readonly byte[] data;
     private readonly int end;
     private readonly int maxDepth;
+    private readonly PdfBudget? budget;
 
-    public PdfLexer(byte[] data, int start, int end, int maxDepth)
+    public PdfLexer(byte[] data, int start, int end, int maxDepth, PdfBudget? budget = null)
     {
         this.data = data;
+        this.budget = budget;
         this.end = Math.Min(end, data.Length);
         this.maxDepth = maxDepth;
         Position = Math.Clamp(start, 0, this.end);
@@ -186,10 +206,13 @@ internal sealed class PdfLexer
 
     private PdfName ReadName()
     {
+        budget?.Charge(Position);
         Position++;
+        var start = Position;
         var bytes = new List<byte>();
         while (Position < end && IsRegular(data[Position]))
         {
+            if (Position - start > 256) throw new PdfSyntaxException("name too long", start);
             var b = data[Position++];
             if (b == '#' && Position + 1 < end && Hex(data[Position]) >= 0 && Hex(data[Position + 1]) >= 0)
             {
@@ -198,8 +221,8 @@ internal sealed class PdfLexer
                 continue;
             }
             bytes.Add(b);
-            if (bytes.Count > 256) throw new PdfSyntaxException("name too long", Position);
         }
+        if (Position - start > 256) throw new PdfSyntaxException("name too long", start);
         return new PdfName(Encoding.Latin1.GetString(bytes.ToArray()));
     }
 
@@ -291,6 +314,7 @@ internal sealed class PdfLexer
             SkipWhite();
             if (Position >= end) throw new PdfSyntaxException("unterminated array", start);
             if (data[Position] == ']') { Position++; return items; }
+            budget?.Charge(Position);
             var item = ReadObject(allowRefs, depth) ?? throw new PdfSyntaxException("unterminated array", start);
             items.Add(item);
         }
@@ -311,6 +335,7 @@ internal sealed class PdfLexer
                 if (Position + 1 < end && data[Position + 1] == '>') { Position += 2; return dictionary; }
                 throw new PdfSyntaxException("malformed dictionary end", Position);
             }
+            budget?.Charge(Position);
             if (ReadObject(allowRefs, depth) is not PdfName key) throw new PdfSyntaxException("dictionary key is not a name", Position);
             SkipWhite();
             if (Position + 1 < end && data[Position] == '>' && data[Position + 1] == '>') { Position += 2; return dictionary; }

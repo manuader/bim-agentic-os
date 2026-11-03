@@ -101,7 +101,8 @@ public sealed record PdfDocument(string SourceFile, string Version, IReadOnlyLis
 
 // Bounds for one read. MaxDepth bounds object nesting, q/Q nesting, page-tree depth and Form XObject nesting;
 // MaxOperators counts content operators over the whole document; MaxDecodedBytes counts decompressed bytes in total;
-// MaxInterpretedBytes counts content bytes lexed (every page and every Form XObject invocation) plus shown text bytes.
+// MaxInterpretedBytes counts content bytes lexed (every page and every Form XObject invocation) plus shown text bytes;
+// MaxParsedElements counts names, array items and dictionary entries parsed anywhere in the document.
 public sealed record PdfReadOptions(
     long MaxBytes = 64L * 1024 * 1024,
     int MaxObjects = 200_000,
@@ -110,10 +111,12 @@ public sealed record PdfReadOptions(
     long MaxDecodedBytes = 256L * 1024 * 1024,
     int MaxPages = 10_000,
     int MaxWarnings = 1_000,
-    long MaxInterpretedBytes = 128L * 1024 * 1024);
+    long MaxInterpretedBytes = 128L * 1024 * 1024,
+    long MaxParsedElements = 4_000_000);
 
 // Thrown for input this reader refuses: Code is a stable identifier (empty, too-large, not-pdf, encrypted, no-pages,
-// object-limit, operator-limit, depth-limit, decode-limit, interpret-limit, page-limit), Offset the byte offset in the file or in the
+// object-limit, operator-limit, depth-limit, decode-limit, interpret-limit, element-limit,
+// page-limit), Offset the byte offset in the file or in the
 // decoded stream where it was found (-1 when not tied to an offset).
 public sealed class PdfFormatException : Exception
 {

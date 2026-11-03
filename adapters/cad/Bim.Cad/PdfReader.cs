@@ -51,6 +51,7 @@ public static class PdfReader
         if (options.MaxDecodedBytes < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxDecodedBytes must be positive");
         if (options.MaxPages < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxPages must be positive");
         if (options.MaxWarnings < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxWarnings must be positive");
+        if (options.MaxParsedElements < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxParsedElements must be positive");
         if (options.MaxInterpretedBytes < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxInterpretedBytes must be positive");
     }
 
@@ -77,7 +78,10 @@ internal sealed class PdfFile
         this.data = data;
         SourceFile = sourceFile;
         Options = options;
+        Budget = new PdfBudget(options.MaxParsedElements);
     }
+
+    public PdfBudget Budget { get; }
 
     public string SourceFile { get; }
     public PdfReadOptions Options { get; }
@@ -110,7 +114,7 @@ internal sealed class PdfFile
         var catalog = FindCatalog() ?? throw new PdfFormatException("no-pages", -1, "no document catalog found");
         var pagesRoot = catalog.TryGetValue("Pages", out var pagesValue) ? pagesValue : null;
         var leaves = new List<(int Number, Dictionary<string, object> Node, Inherited Attributes)>();
-        WalkPages(pagesRoot, new Inherited(null, null, null), 0, new HashSet<int>(), leaves);
+        WalkPages(pagesRoot, new Inherited(null, null, null), 0, new HashSet<object>(ReferenceEqualityComparer.Instance), leaves);
         if (leaves.Count == 0) throw new PdfFormatException("no-pages", -1, "the page tree has no pages");
         var pages = new List<PdfPage>(leaves.Count);
         for (var i = 0; i < leaves.Count; i++)
@@ -143,6 +147,9 @@ internal sealed class PdfFile
     {
         var endObjects = FindAll("endobj");
         var endStreams = FindAll("endstream");
+        // A trailer dictionary is parsed only up to the next trailer, startxref or obj keyword, so a damaged trailer
+        // costs at most its own region and never swallows a later revision.
+        var trailerBounds = FindAll("trailer").Concat(FindAll("startxref")).Concat(FindAll("obj")).OrderBy(x => x).ToList();
         var i = 0;
         while (i < data.Length)
         {
@@ -155,7 +162,8 @@ internal sealed class PdfFile
             var boundary = i == 0 || !PdfLexer.IsRegular(data[i - 1]);
             if (b == 't' && boundary && Matches(i, "trailer"))
             {
-                var lexer = new PdfLexer(data, i + 7, data.Length, Options.MaxDepth);
+                var bound = NextAtOrAfter(trailerBounds, i + 7);
+                var lexer = new PdfLexer(data, i + 7, bound < 0 ? data.Length : bound, Options.MaxDepth, Budget);
                 try
                 {
                     if (lexer.ReadObject(true) is Dictionary<string, object> trailer) trailers.Add(trailer);
@@ -163,9 +171,8 @@ internal sealed class PdfFile
                 }
                 catch (PdfSyntaxException)
                 {
-                    // Resume after everything the failed parse consumed, so each byte is parsed as a trailer at most once.
                     Warn("trailer-malformed", 0, 0, -1, "malformed trailer at offset " + i.ToString(CultureInfo.InvariantCulture));
-                    i = Math.Max(lexer.Position, i + 7);
+                    i += 7;
                 }
                 continue;
             }
@@ -232,7 +239,7 @@ internal sealed class PdfFile
         CountObject(bodyStart);
         var nextEnd = NextAtOrAfter(endObjects, bodyStart);
         var limit = nextEnd < 0 ? data.Length : nextEnd;
-        var lexer = new PdfLexer(data, bodyStart, limit, Options.MaxDepth);
+        var lexer = new PdfLexer(data, bodyStart, limit, Options.MaxDepth, Budget);
         object? value;
         try
         {
@@ -305,7 +312,7 @@ internal sealed class PdfFile
             }
             var count = (int)n.Value;
             var firstOffset = (int)first.Value;
-            var header = new PdfLexer(decoded, 0, firstOffset, Options.MaxDepth);
+            var header = new PdfLexer(decoded, 0, firstOffset, Options.MaxDepth, Budget);
             var entries = new List<(int Number, int Offset)>();
             var valid = true;
             try
@@ -338,7 +345,7 @@ internal sealed class PdfFile
                 var (inner, offset) = entries[k];
                 if (positions.TryGetValue(inner, out var seen) && seen > stream.Start) continue;
                 var limit = firstOffset + (k + 1 < entries.Count ? entries[k + 1].Offset : decoded.Length - firstOffset);
-                var lexer = new PdfLexer(decoded, firstOffset + offset, limit, Options.MaxDepth);
+                var lexer = new PdfLexer(decoded, firstOffset + offset, limit, Options.MaxDepth, Budget);
                 try
                 {
                     objects[inner] = lexer.ReadObject(true) ?? PdfNull.Instance;
@@ -383,18 +390,20 @@ internal sealed class PdfFile
         return null;
     }
 
-    private void WalkPages(object? nodeValue, Inherited inherited, int depth, HashSet<int> visited, List<(int, Dictionary<string, object>, Inherited)> leaves)
+    // Each node dictionary is walked at most once, by reference identity, so shared or cyclic /Kids (indirect or direct)
+    // cost linear work.
+    private void WalkPages(object? nodeValue, Inherited inherited, int depth, HashSet<object> visited, List<(int, Dictionary<string, object>, Inherited)> leaves)
     {
         var number = nodeValue is PdfRef reference ? reference.Number : 0;
-        if (number != 0 && !visited.Add(number))
-        {
-            Warn("page-tree-cycle", 0, number, -1, "page tree node " + number.ToString(CultureInfo.InvariantCulture) + " is visited twice");
-            return;
-        }
         if (depth > Options.MaxDepth) throw new PdfFormatException("depth-limit", -1, "page tree deeper than MaxDepth " + Options.MaxDepth.ToString(CultureInfo.InvariantCulture));
         if (Resolve(nodeValue) is not Dictionary<string, object> node)
         {
             Warn("page-missing", 0, number, -1, "page tree node is missing or not a dictionary");
+            return;
+        }
+        if (!visited.Add(node))
+        {
+            Warn("page-tree-cycle", 0, number, -1, "page tree node " + number.ToString(CultureInfo.InvariantCulture) + " is visited twice");
             return;
         }
         var attributes = new Inherited(Get(node, "Resources") ?? inherited.Resources, Get(node, "MediaBox") ?? inherited.MediaBox, Get(node, "Rotate") ?? inherited.Rotate);

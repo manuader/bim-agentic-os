@@ -13,7 +13,7 @@ internal sealed class PdfContentInterpreter
     private readonly List<PdfElement> elements = new();
     private readonly Stack<GraphicsState> stack = new();
     private readonly HashSet<int> activeForms = new();
-    private readonly List<PdfSubpath> subpaths = new();
+    private List<PdfSubpath> subpaths = new();
     private List<PdfSegment> segments = new();
     private GraphicsState state = new(PdfMatrix.Identity, 1, "", 0, 0, 0);
     private Point2? subpathStart;
@@ -63,7 +63,7 @@ internal sealed class PdfContentInterpreter
         var counters = new int[parts.Count];
         var part = 0;
         var options = file.Options;
-        var lexer = new PdfLexer(content, 0, content.Length, options.MaxDepth);
+        var lexer = new PdfLexer(content, 0, content.Length, options.MaxDepth, file.Budget);
         var operands = new List<object>();
         while (true)
         {
@@ -387,9 +387,25 @@ internal sealed class PdfContentInterpreter
             Warn("operand-error", objectNumber, operatorIndex, op + " gives a non-finite text position");
             return;
         }
-        var height = Math.Abs(state.FontSize) * Math.Sqrt(rendering.C * rendering.C + rendering.D * rendering.D);
+        var height = Math.Abs(state.FontSize) * Hypot(rendering.C, rendering.D);
+        if (!double.IsFinite(height))
+        {
+            Warn("operand-error", objectNumber, operatorIndex, op + " gives a non-finite text height");
+            return;
+        }
         var rotation = PdfGeometry.AngleDegrees(rendering.A, rendering.B);
         elements.Add(new PdfText(Provenance(objectNumber, operatorIndex, op), origin, text, state.FontName, state.FontSize, height, rotation));
+    }
+
+    // sqrt(x^2 + y^2) without overflow for large finite components.
+    private static double Hypot(double x, double y)
+    {
+        x = Math.Abs(x);
+        y = Math.Abs(y);
+        var max = Math.Max(x, y);
+        if (max == 0) return 0;
+        var min = Math.Min(x, y) / max;
+        return max * Math.Sqrt(1 + min * min);
     }
 
     internal static string DecodeText(byte[] bytes)
@@ -436,8 +452,12 @@ internal sealed class PdfContentInterpreter
             var savedFloor = stackFloor;
             var savedDepth = stack.Count;
             var savedText = (inText, textMatrix, lineMatrix);
-            var savedPath = (segments, subpathStart, current, subpaths.ToArray());
-            ResetPath();
+            // The pending path is set aside by reference (no copy) and a fresh one is used inside the form.
+            var savedPath = (segments, subpathStart, current, subpaths);
+            segments = new List<PdfSegment>();
+            subpaths = new List<PdfSubpath>();
+            subpathStart = null;
+            current = null;
             var ctm = matrix.Then(state.Ctm);
             if (ctm.IsFinite) state = state with { Ctm = ctm };
             stackFloor = stack.Count;
@@ -459,8 +479,7 @@ internal sealed class PdfContentInterpreter
             segments = savedPath.segments;
             subpathStart = savedPath.subpathStart;
             current = savedPath.current;
-            subpaths.Clear();
-            subpaths.AddRange(savedPath.Item4);
+            subpaths = savedPath.subpaths;
         }
         finally
         {
