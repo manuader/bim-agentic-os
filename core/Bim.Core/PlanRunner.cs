@@ -199,6 +199,9 @@ public sealed record RevitPlanRunReport(int Version, string PlanSha256, string S
 public static class PlanRunner
 {
     public const int Version = 1;
+    // Fixed details, so a report never carries a parser's (culture-dependent) message.
+    public const string MalformedReplyDetail = "reply is not a well-formed response";
+    public const string MalformedReadbackDetail = "query.levels readback is not well formed";
 
     // Lowercase hex SHA-256 of the plan's UTF-8 ToJson(): a report resumes only the plan it was made from.
     public static string PlanSha256(RevitCommandPlan plan)

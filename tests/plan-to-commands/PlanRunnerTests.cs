@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 // P3-03 oracle: PlanRunner executes a RevitCommandPlan step by step through an injected transport. It checks the level
 // preconditions first (one query.levels, no write on issues), fills hosts from the previous created[0], stops at the
@@ -78,7 +79,8 @@ static class PlanRunnerTests
     static string Names(JsonElement element) => string.Join(",", element.EnumerateObject().Select(property => property.Name));
 
     // plan: the P3-02 base layout (query.levels, 11 walls, 3 openings, 3 rooms; preconditions L1 at 0 mm, L2 at 3000 mm).
-    public static void Run(RevitCommandPlan plan, Action<bool, string, string> check)
+    // levelsOnly and allUnsupported: real Translate outputs with level preconditions and no steps.
+    public static void Run(RevitCommandPlan plan, Func<RevitCommandPlan> levelsOnly, Func<RevitCommandPlan> allUnsupported, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "runner: " + name, detail);
         string Show(RevitPlanRunReport report) => report.ToJson();
@@ -254,5 +256,151 @@ static class PlanRunnerTests
         var empty = PlanRunner.Run(plan with { Steps = Array.Empty<RevitCommandStep>(), Preconditions = Array.Empty<RevitLevelPrecondition>() }, nothing);
         Check(empty.Status == RevitPlanRunStatus.Completed && nothing.Sent.Count == 0 && empty.LevelsCheck is null && empty.Completed.Count == 0, "a plan without steps completes without sending anything", Show(empty));
         Check(Code(() => PlanRunner.Run(plan with { Steps = plan.Steps.Skip(1).ToArray() }, new FakeTransport())) == "argument:levels_check_missing", "preconditions without their query.levels step are refused");
+
+        // ======== Review follow-ups ========
+        RevitPlanRunReport? Safe(Func<RevitPlanRunReport> run, out string error)
+        {
+            try { error = ""; return run(); }
+            catch (Exception failure) { error = failure.GetType().Name + ": " + failure.Message; return null; }
+        }
+        string ShowSafe(RevitPlanRunReport? outcome, string error) => outcome?.ToJson() ?? error;
+
+        // ---- 1) A translated plan with preconditions but no steps completes with zero sends ----
+        RevitPlanRunReport? levelsOnlyReport = null;
+        RevitCommandPlan? levelsOnlyPlan = null;
+        foreach (var (label, make) in new (string, Func<RevitCommandPlan>)[] { ("levels-only intent", levelsOnly), ("all-unsupported plan", allUnsupported) })
+        {
+            RevitCommandPlan? source = null;
+            var idle = new FakeTransport();
+            var outcome = Safe(() => PlanRunner.Run(source = make(), idle), out var error);
+            Check(source is { Steps.Count: 0, Preconditions.Count: > 0 } && source.Preconditions.All(item => item.CheckOperation is null)
+                && outcome is { Status: RevitPlanRunStatus.Completed, LevelsCheck: null, Failed: null, Completed.Count: 0, Pending.Count: 0 } && idle.Sent.Count == 0,
+                "a translated " + label + " with level preconditions and no steps completes with zero sends", ShowSafe(outcome, error) + " " + source?.ToJson());
+            if (outcome is { } done && source is { } translated)
+            {
+                var again = Safe(() => PlanRunner.Resume(translated, RevitPlanRunReport.Parse(done.ToJson()), idle), out var againError);
+                Check(again?.ToJson() == done.ToJson() && idle.Sent.Count == 0, "the " + label + " report resumes to itself", ShowSafe(again, againError));
+                if (label == "levels-only intent") { levelsOnlyReport = done; levelsOnlyPlan = translated; }
+            }
+        }
+
+        // ---- 2) and 3) Transport exceptions ----
+        RevitPlanRunReport? Throwing(int index, Exception thrown, out FakeTransport transport, out string error)
+        {
+            var target = new FakeTransport();
+            target.Replies[writes[index]] = _ => throw thrown;
+            transport = target;
+            return Safe(() => PlanRunner.Run(plan, target), out error);
+        }
+        var odd = Throwing(2, new InvalidOperationException("pipe state 42"), out var oddTransport, out var oddError);
+        Check(odd is { Status: RevitPlanRunStatus.Failed, Failed: { Code: RevitCommandCodes.PipeIoError, Detail: "InvalidOperationException", OperationId: var oddOperation }, Completed.Count: 2 }
+            && oddOperation == writes[2] && odd.Pending[0] == writes[2] && oddTransport.Executed.Count == 2,
+            "any other transport exception fails the step as pipe_io_error with only its type name", ShowSafe(odd, oddError));
+        var slow = Throwing(0, new TimeoutException("no listener"), out _, out var slowError);
+        Check(slow is { Status: RevitPlanRunStatus.Failed, Failed: { Code: RevitCommandCodes.PipeConnectTimeout, Detail: "TimeoutException" }, Completed.Count: 0 }, "a transport timeout is pipe_connect_timeout", ShowSafe(slow, slowError));
+        var cut = Throwing(1, new IOException("broken pipe"), out _, out var cutError);
+        Check(cut is { Status: RevitPlanRunStatus.Failed, Failed: { Code: RevitCommandCodes.PipeIoError, Detail: "IOException" }, Completed.Count: 1 }, "a transport IOException is pipe_io_error", ShowSafe(cut, cutError));
+
+        // ---- 3) and 6) Reply checks ----
+        var otherCommand = FailOn(writes[0], envelope => Foreign(envelope, new RevitCommandReceipt(envelope.OperationId, "query.levels", envelope.Document.UniqueId, envelope.RequestSha256, false)), out _);
+        Check(otherCommand.Failed is { Code: RevitCommandCodes.ResponseInvalid, Field: "receipt", Detail: "receipt command does not match the request" },
+            "a success whose receipt names another command is response_invalid@receipt", Show(otherCommand));
+        var okFailure = FailOn(writes[0], _ => RevitCommandResponse.Failure(RevitCommandCodes.Ok, null, "odd").ToJson(), out _);
+        Check(okFailure.Failed is { Code: RevitCommandCodes.ResponseInvalid, Field: "code" } && okFailure.Completed.Count == 0, "a failed reply with code ok is response_invalid@code", Show(okFailure));
+        Check(garbage.Failed?.Detail == PlanRunner.MalformedReplyDetail && partial.Failed?.Detail == PlanRunner.MalformedReplyDetail,
+            "a malformed reply has a fixed detail, never a parser message", Show(garbage) + " " + Show(partial));
+        Check(unreadable.Failed?.Detail == PlanRunner.MalformedReadbackDetail, "a malformed level readback has a fixed detail", Show(unreadable));
+
+        // ---- 3) Resume whose level check fails, or finds issues, after steps completed ----
+        var storedBroken = RevitPlanRunReport.Parse(broken.ToJson());
+        var blocked = new FakeTransport();
+        blocked.Replies[checkId] = _ => RevitCommandResponse.Failure(RevitCommandCodes.DocumentConflict, "document", "another document is active").ToJson();
+        var stalled = Safe(() => PlanRunner.Resume(plan, storedBroken, blocked), out var stalledError);
+        Check(stalled is { Status: RevitPlanRunStatus.Failed, LevelsCheck: null, Failed.OperationId: var stalledOperation } && stalledOperation == checkId && stalled.Completed.Count == doorIndex
+            && stalled.Pending.SequenceEqual(broken.Pending) && blocked.Sent.Count == 1 && blocked.Executed.Count == 0,
+            "a level check failing on resume keeps the completed steps and sends no write", ShowSafe(stalled, stalledError));
+        if (stalled is { } stalledReport)
+        {
+            var unstalled = Safe(() => PlanRunner.Resume(plan, RevitPlanRunReport.Parse(stalledReport.ToJson()), blocked), out var unstalledError);
+            Check(unstalled is { Status: RevitPlanRunStatus.Completed } && Ids(unstalled.Completed).SequenceEqual(writes) && SentIds(blocked, 1).SequenceEqual(new[] { checkId }.Concat(writes.Skip(doorIndex))),
+                "that report, read back from JSON, resumes to completion", ShowSafe(unstalled, unstalledError));
+        }
+        var moved = new FakeTransport { LevelsReadback = Levels(("L1", UidL1, 0)) };
+        var held = Safe(() => PlanRunner.Resume(plan, storedBroken, moved), out var heldError);
+        Check(held is { Status: RevitPlanRunStatus.PreconditionFailed, Failed: null, LevelsCheck.Issues.Count: 1 } && held.Completed.Count == doorIndex && moved.Sent.Count == 1 && moved.Executed.Count == 0,
+            "a precondition issue found on resume keeps the completed steps and sends no write", ShowSafe(held, heldError));
+        if (held is { } heldReport)
+        {
+            moved.LevelsReadback = Levels(("L1", UidL1, 0), ("L2", UidL2, 3000));
+            var released = Safe(() => PlanRunner.Resume(plan, RevitPlanRunReport.Parse(heldReport.ToJson()), moved), out var releasedError);
+            Check(released is { Status: RevitPlanRunStatus.Completed } && Ids(released.Completed).SequenceEqual(writes) && moved.Executed.Count == writes.Length - doorIndex,
+                "that precondition_failed report, read back from JSON, resumes to completion", ShowSafe(released, releasedError));
+        }
+
+        // ---- 3) and 4) Tampered reports ----
+        void Refused(RevitPlanRunReport tampered, string name, RevitCommandPlan? target = null) =>
+            Check(Code(() => PlanRunner.Resume(target ?? plan, tampered, new FakeTransport())) == "argument:report_invalid", "Resume refuses " + name, tampered.ToJson());
+        RevitCompletedStep[] FirstChanged(Func<RevitCompletedStep, RevitCompletedStep> change) => broken.Completed.Select((step, i) => i == 0 ? change(step) : step).ToArray();
+        Refused(broken with { Completed = FirstChanged(step => step with { Command = "room.create" }) }, "a completed step with another command");
+        Refused(broken with { Completed = FirstChanged(step => step with { ElementId = Guid.Empty }) }, "a completed step with another element_id");
+        Refused(broken with { Completed = FirstChanged(step => step with { Created = new[] { "not-a-uid" } }) }, "a completed step whose created is not a UniqueId");
+        Refused(broken with { Failed = broken.Failed! with { OperationId = writes[0] } }, "a failed step that is neither pending[0] nor the level check");
+        Refused(broken with { Failed = broken.Failed! with { Command = "wall.create" } }, "a failed step with another command");
+        Refused(broken with { Failed = broken.Failed! with { ElementId = null } }, "a failed step with another element_id");
+        Refused(broken with { Version = 2 }, "runner_version 2");
+        Refused(refused with { LevelsCheck = refused.LevelsCheck! with { Issues = Array.Empty<RevitPreconditionIssue>() } }, "precondition_failed without issues");
+        Refused(broken with { LevelsCheck = broken.LevelsCheck! with { OperationId = writes[0] } }, "a levels_check naming another step");
+        Refused(broken with { LevelsCheck = null }, "a failed write step without the levels_check that preceded it");
+        Refused(conflict with { LevelsCheck = new RevitLevelsCheck(checkId, Array.Empty<RevitPreconditionIssue>()) }, "a failed level check that also reports a levels_check");
+        Refused(conflict with { Failed = conflict.Failed! with { Command = "wall.create" } }, "a failed level check with another command");
+        if (levelsOnlyReport is not null && levelsOnlyPlan is not null)
+            Refused(levelsOnlyReport with { LevelsCheck = new RevitLevelsCheck(checkId, Array.Empty<RevitPreconditionIssue>()) }, "a levels_check for a plan without a level check", levelsOnlyPlan);
+        Check(Code(() => PlanRunner.Run(plan with { Steps = plan.Steps.Append(plan.Steps[1]).ToArray() }, new FakeTransport())) == "argument:plan_duplicate_operation", "a plan with a repeated operation id is refused");
+
+        // ---- 3) Parse refuses extra, duplicate and mistyped members ----
+        string Mutate(string json, Action<JsonObject> change)
+        {
+            var node = JsonNode.Parse(json)!.AsObject();
+            change(node);
+            return node.ToJsonString();
+        }
+        var brokenJson = broken.ToJson();
+        foreach (var (label, text) in new[]
+        {
+            ("an extra member", Mutate(brokenJson, node => node["extra"] = 1)),
+            ("an extra completed member", Mutate(brokenJson, node => node["completed"]![0]!.AsObject()["extra"] = true)),
+            ("an extra failed member", Mutate(brokenJson, node => node["failed"]!.AsObject()["extra"] = "x")),
+            ("a duplicate member", "{\"status\":\"failed\"," + brokenJson[1..]),
+            ("a missing member", Mutate(brokenJson, node => node.Remove("pending"))),
+            ("a string runner_version", Mutate(brokenJson, node => node["runner_version"] = "1")),
+            ("a string replayed", Mutate(brokenJson, node => node["completed"]![0]!["replayed"] = "false")),
+            ("an object pending", Mutate(brokenJson, node => node["pending"] = new JsonObject())),
+            ("a numeric created item", Mutate(brokenJson, node => node["completed"]![0]!["created"] = new JsonArray(JsonValue.Create(1)))),
+            ("a non-GUID element_id", Mutate(brokenJson, node => node["failed"]!["element_id"] = "door")),
+            ("a numeric code", Mutate(brokenJson, node => node["failed"]!["code"] = 7)),
+            ("an array levels_check", Mutate(brokenJson, node => node["levels_check"] = new JsonArray())),
+        })
+            Check(Code(() => RevitPlanRunReport.Parse(text)) == "argument:report_invalid", "Parse refuses " + label, text);
+
+        // ---- 6) Whatever ToJson writes, Parse reads back (empty strings included) ----
+        var blank = new RevitPlanRunReport(PlanRunner.Version, "", RevitPlanRunStatus.Failed, new RevitLevelsCheck("", new[] { new RevitPreconditionIssue(Guid.Empty, "", "", "") }),
+            new[] { new RevitCompletedStep("", "", null, new[] { "" }, false, new[] { "" }) }, new RevitFailedStep("", "", null, "", "", ""), new[] { "" });
+        Check(Code(() => { if (RevitPlanRunReport.Parse(blank.ToJson()).ToJson() != blank.ToJson()) throw new InvalidOperationException("differs"); }) is null, "a report of empty strings round-trips", blank.ToJson());
+        var emptyReply = FailOn(writes[0], _ => RevitCommandResponse.Failure(RevitCommandCodes.TransactionFailed, "", "").ToJson(), out _);
+        Check(emptyReply.Failed is { Field: "", Detail: "" } && RevitPlanRunReport.Parse(emptyReply.ToJson()).ToJson() == emptyReply.ToJson(), "an empty field and detail from the executor round-trip", Show(emptyReply));
+        var quiet = new FakeTransport();
+        quiet.Replies[writes[0]] = envelope => RevitCommandResponse.Success(new RevitCommandReceipt(envelope.OperationId, envelope.Command, envelope.Document.UniqueId, envelope.RequestSha256, false),
+            new[] { FakeTransport.Episode + "00000aaa" }, Array.Empty<string>(), Array.Empty<string>(), null, new[] { "" }).ToJson();
+        var quietReport = PlanRunner.Run(plan, quiet);
+        Check(quietReport.Status == RevitPlanRunStatus.Completed && quietReport.Completed[0].Warnings.SequenceEqual(new[] { "" }) && RevitPlanRunReport.Parse(quietReport.ToJson()).ToJson() == quietReport.ToJson(),
+            "an empty warning round-trips", Show(quietReport));
+
+        // ---- 5) created_missing does not clear on resume: the receipt replays the empty created ----
+        var hostlessSent = hostless.Sent.Count;
+        var hostlessExecuted = hostless.Executed.Count;
+        var stillNoHost = Safe(() => PlanRunner.Resume(plan, RevitPlanRunReport.Parse(noHost.ToJson()), hostless), out var stillError);
+        Check(stillNoHost is { Status: RevitPlanRunStatus.Failed, Failed: { Code: PlanRunnerCodes.CreatedMissing, OperationId: var stillOperation } } && stillOperation == hostId
+            && hostless.Executed.Count == hostlessExecuted && hostless.Sent.Count == hostlessSent + 2 && hostless.Sent[^1].OperationId == hostId,
+            "resuming a created_missing report fails again with zero new writes (the receipt replays)", ShowSafe(stillNoHost, stillError));
     }
 }
