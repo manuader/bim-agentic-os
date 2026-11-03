@@ -27,7 +27,7 @@ line, because it is not a catalogue command). Do not touch the child Revit until
 The last lines are:
 
 ```
->>> Ejecución 1: Catálogo: 17/17 pasos OK; grupos: v2 6/6, vistas 5/5, snapshot 2/2, consultas 6/6, estructura 12/12, documentacion 14/14, diario 6/6, modificar 12/12; total 80/80; resultado: TODO OK
+>>> Ejecución 1: Catálogo: 17/17 pasos OK; grupos: v2 6/6, vistas 5/5, snapshot 2/2, consultas 6/6, estructura 12/12, documentacion 15/15, diario 6/6, modificar 12/12; total 81/81; resultado: TODO OK
 >>> Sesión terminada. Catálogo: 17/17 pasos OK; grupos: ...; resultado: TODO OK
 ```
 
@@ -35,8 +35,16 @@ The last lines are:
 - Each group shows passed/total. `resultado: TODO OK` means every step passed.
 - `resultado: FALLÓ en <grupos>` names every group with a failed step. A failed step or group never stops later groups.
   A later step that needs something a failed step should have made is not sent and says what is missing.
+- `resultado: OK con bloqueados: estructura (2)` means nothing failed, but the fixture lacked a precondition (a second
+  level, or a loaded type of a kind such as a structural column family): that step and every step that needs what it
+  should have picked are reported **blocked** (`Bloqueado el paso N ...: bloqueado: falta en el modelo de prueba: ...`),
+  counted apart from failures (`estructura 10/12 (2 bloqueados)`). With failures as well the verdict is
+  `FALLÓ en <grupos>; bloqueados en <grupo (n)>`.
 - `(DETENIDO: ...)` means the run stopped: a step timed out (unknown completion), the pipe was lost
-  (`pipe_connect_timeout`, `pipe_io_error`, `no_response`) or the child Revit closed. Nothing after that step was sent.
+  (`pipe_connect_timeout`, `pipe_io_error`, `no_response`, from the CLI or from the journal.read wire line) or the
+  child Revit closed. Nothing after that step was sent. This also applies inside the 17 v1 steps (new with P1-06:
+  before, every later v1 step was still sent and failed); a v1-only run that stopped prints
+  `Catálogo: n/17 pasos OK; DETENIDO: ...`.
 - One `Falló el paso N [grupo] (...)` line per failed step gives the reason as `<check>: se pidió <requested>, se observó
   <observed>`.
 
@@ -47,19 +55,29 @@ Evidence: `.bim/native-sessions/<utc>/catalogue-run1.json` (per step: group, req
 
 The model is never saved. The last group deletes the v1 south wall and its door; close the child Revit without saving.
 
+## Preconditions
+
+- Revit 2025 with the UI in **English**: `schedule.create` finds the fields `Mark` and `Type` by Revit's visible
+  (localized) name; the catalogue has no built-in id form for schedule fields, so a failure of that step carries
+  "precondición: Revit con la interfaz en inglés". Parameters are otherwise addressed by built-in id
+  (`ALL_MODEL_INSTANCE_COMMENTS`, `WALL_USER_HEIGHT_PARAM`, `CURVE_ELEM_LENGTH`), never by localized name.
+- The default metric template: two levels, a basic and a curtain wall type, a non-glazed roof type, wall-hosted door
+  and window types, and (for `estructura`) structural column, framing, isolated and wall foundation types. A missing
+  one blocks the steps that need it.
+
 ## Groups, in order
 
 | Group | Task | Steps and what each one checks |
 |---|---|---|
 | `v1` | C04 | The 17 unchanged v1 steps: queries, four walls, curved wall, door, window, floor, room, replay, conflict, client-side arc refusal. |
 | `v2` | P9-01 | Levels pair; roof types; hip roof (30 degrees) on the upper level over the 6000 x 4000 rectangle (level, type, 4 sloped edges, area); straight stair Level 1 to Level 2 at x = -8000 (levels, width 1000, run ends, risers = desired); straight curtain wall with 3 vertical + 2 horizontal added grid lines (type, height, 5 added lines); 1000 x 1000 opening in the v1 floor (host, profile, area). |
-| `vistas` | P4-01 | Section view family types; view templates; floor plan of the v1 level (name, type, level); section (0,0)-(6000,0), depth 3000, -500 to 4000 (right (1,0,0), up (0,0,1), view (0,-1,0), far clip, crop active); isometric 3D with box (0,0,0)-(8000,6000,3500). Same requests and expected values as `tests/integration/native-views-probe.ps1`. |
+| `vistas` | P4-01 | Section view family types; view templates; floor plan of the v1 level (name, type, level); section (0,0)-(6000,0), depth 3000, -500 to 4000 (right (1,0,0), up (0,0,1), view (0,-1,0), origin y 0, crop x 0 to 6000 and z -500 to 4000, far clip, crop active); isometric 3D with box (0,0,0)-(8000,6000,3500). Same requests and expected values as `tests/integration/native-views-probe.ps1`. |
 | `snapshot` | P2-01 | `query.snapshot` (document, v1 door 1500 mm and window 2000 mm along their host wall axes with sills 0 and 900, floor unmapped `no_bim_ir_kind`, curved wall unmapped `curved_wall_unsupported`); a second snapshot whose readback is byte-identical. |
-| `consultas` | P1-02 | `query.elements` walls (OST_Walls, at least 5, south wall listed, not truncated); limit 1 (truncated, reason `limit`); doors on the v1 level; Comments plus a missing parameter (`missing_parameters`); `query.inspect` of the south wall (WALL_USER_HEIGHT_PARAM 3000 mm); unknown UniqueId (`reference_not_found`). |
+| `consultas` | P1-02 | `query.elements` walls (OST_Walls, at least 5, south wall listed, not truncated); limit 1 (truncated, reason `limit`); doors on the v1 level; default parameters include Comments by built-in id; a missing parameter name (`missing_parameters`); `query.inspect` of the south wall (WALL_USER_HEIGHT_PARAM 3000 mm); unknown UniqueId (`reference_not_found`). |
 | `estructura` | P9-02 | Levels pair; structural types column, framing, foundation, wall_foundation; `query.grids`; grid (20000,-2000)-(20000,6000) and its replay; column at (20000,0) base to top level; beam (20000,0)-(26000,0) on the upper level; isolated footing at (20000,0); wall foundation under the v1 north wall. A template without a loaded structural family fails that type query and the steps that need it say so. |
-| `documentacion` | P4-02 | Title blocks; its own floor plan; two grids 3000 mm apart; dimension between the grids (3000 mm); dimension between the interior faces of the south and north walls (4000 mm minus the wall type width); wall tag; door tag with leader and head (1500,-1500); door schedule Mark, Type sorted by Mark; sheet `C04-r1-A101` and its replay; plan and schedule placed on the sheet; the same plan placed again refused with `args_invalid` naming the sheet. |
-| `diario` | P2-03 | `journal.read` baseline (attached, document); one CLI wall; read again (`skipped_add_in` grew, the wall is in `diff.added`, no external entry for it); an empty read; two `peek` reads that are byte-identical. |
-| `modificar` | P1-05, destructive, last | Inspect the west wall height (3000); `element.set_parameter` WALL_USER_HEIGHT_PARAM 3200 dry run (before 3000, after 3200, modified empty), inspect (still 3000), real (modified), replay (`replayed`), inspect (3200); Comments text; read-only CURVE_ELEM_LENGTH refused (`args_invalid`); `element.delete` of the south wall dry run (the door among the dependents), refused without `confirm_dependents` (`args_invalid`), deleted with exactly the dry-run dependents; inspect the deleted wall (`reference_not_found`). |
+| `documentacion` | P4-02 | Title blocks; its own floor plan; two grids 3000 mm apart; dimension between the grids (3000 mm); dimensions between the south and north walls on their interior and on their exterior faces (each 4000 mm ± the wall type width, the two differing by 2 × width; which face pair is the inner one depends on Revit's wall orientation, so it is not asserted); wall tag; door tag with leader and head (1500,-1500); door schedule Mark, Type sorted by Mark; sheet `C04-r1-A101` and its replay; plan and schedule placed on the sheet; the same plan placed again refused with `args_invalid` naming the sheet. |
+| `diario` | P2-03 | `journal.read` baseline (attached, document, `baseline_existed` false); one CLI wall; read again (`skipped_add_in` grew, the wall is in `diff.added`, no external entry for it); an empty read; two `peek` reads that are byte-identical. |
+| `modificar` | P1-05, destructive, last | Inspect the west wall height (3000); `element.set_parameter` WALL_USER_HEIGHT_PARAM 3200 dry run (before 3000, after 3200, modified empty), inspect (still 3000), real (modified), replay (`replayed`), inspect (3200); Comments text (ALL_MODEL_INSTANCE_COMMENTS); read-only CURVE_ELEM_LENGTH refused (`args_invalid`, field `args.parameter`, detail "read-only"); `element.delete` of the south wall dry run (the door among the dependents), refused without `confirm_dependents` (`args_invalid`, field `args.confirm_dependents`, detail "unconfirmed"), deleted with exactly the dry-run dependents; inspect the deleted wall (`reference_not_found`). |
 
 Every write uses a new `operation_id` (`c04-<utc>-r<run>-<step>`); replays reuse the original step's id on purpose.
 Nothing is retried automatically.

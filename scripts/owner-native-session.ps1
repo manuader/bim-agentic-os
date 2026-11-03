@@ -11,10 +11,14 @@
 # dimensions, tags, schedule, sheet, views on the sheet, duplicate placement refused), diario (P2-03 journal.read,
 # sent straight to the add-in pipe) and modificar (P1-05 set_parameter dry run/real/replay, delete dry run/refused/
 # confirmed; destructive, always last). A failed step or group never stops later groups; a timeout, a lost pipe or a
-# closed Revit stops the run (nothing more is sent). -CatalogueV1Only (implies -Catalogue) runs only the 17 v1 steps.
+# closed Revit stops the run (nothing more is sent; since P1-06 this also applies to the v1 steps, which before were
+# each still sent and failed). A missing fixture precondition (second level, a loaded type of a kind) makes the step
+# and its dependents "blocked", not failed. Schedule field names need the Revit UI in English. -CatalogueV1Only
+# (implies -Catalogue) runs only the 17 v1 steps.
 # Records .bim/native-sessions/<utc>/catalogue-run<N>.json (every step: request, response, requested vs observed,
 # pass/fail) and prints the result line: "Catálogo: 17/17 pasos OK; grupos: v2 6/6, ...; total N/N; resultado: TODO OK"
-# means everything passed ("resultado: FALLÓ en <grupos>" names the failed groups). Unless -CloseWaitSeconds is given
+# means everything passed ("resultado: FALLÓ en <grupos>" names the failed groups; "OK con bloqueados: <grupo (n)>"
+# means nothing failed but some preconditions were missing). Unless -CloseWaitSeconds is given
 # the child Revit stays open so the owner can look at the (unsaved) result. See docs/owner-verification-session.md.
 [CmdletBinding()]
 param(
@@ -150,8 +154,8 @@ try {
     } | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $cataloguePath
     $run.catalogue = [ordered]@{ file = $cataloguePath; counts = $sequence.counts; groups = $sequence.groups; overall = $sequence.overall; all_passed = $sequence.all_passed; aborted = $sequence.aborted }
     $run.outcome = Format-CatalogueSummary $sequence
-    foreach ($step in @($sequence.steps | Where-Object { !$_.passed })) { Say "  Falló el paso $($step.index) [$($step.group)] ($($step.description)): $($step.reason)" }
-    foreach ($group in @($sequence.groups)) { Say "  Grupo $($group.key): $($group.passed)/$($group.total) OK$(if ($group.not_sent) { ", $($group.not_sent) sin enviar" })" }
+    foreach ($step in @($sequence.steps | Where-Object { !$_.passed })) { Say "  $(if ($step.blocked) { 'Bloqueado' } else { 'Falló' }) el paso $($step.index) [$($step.group)] ($($step.description)): $($step.reason)" }
+    foreach ($group in @($sequence.groups)) { Say "  Grupo $($group.key): $($group.passed)/$($group.total) OK$(if ($group.blocked) { ", $($group.blocked) bloqueados" })$(if ($group.not_sent) { ", $($group.not_sent) sin enviar" })" }
     Say ">>> Ejecución ${i}: $($run.outcome). Detalle: $cataloguePath"
    }
    else {
