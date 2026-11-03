@@ -80,7 +80,7 @@ internal static partial class CommandExecutor
         var (view, z) = AnnotationView(d, args.ViewUid);
         var (first, firstReference) = DimensionReference(d, args.FirstUid, "args.first_uid", args.WallFace);
         var (second, secondReference) = DimensionReference(d, args.SecondUid, "args.second_uid", args.WallFace);
-        var layout = CommandRulesDocumentation.Layout(first, second, args.LineStart is null ? null : Requested(args.LineStart), args.LineEnd is null ? null : Requested(args.LineEnd));
+        var layout = CommandRulesDocumentation.Layout(first, second, args.LineStart is { } lineStart ? Requested(lineStart) : null, args.LineEnd is { } lineEnd ? Requested(lineEnd) : null);
         var line = Line.CreateBound(new XYZ(U(layout.Start.X), U(layout.Start.Y), z), new XYZ(U(layout.End.X), U(layout.End.Y), z));
         var references = new ReferenceArray();
         references.Append(firstReference);
@@ -110,7 +110,7 @@ internal static partial class CommandExecutor
         CommandRulesDocumentation.CheckTaggable(category is null || category.BuiltInCategory == BuiltInCategory.INVALID ? null : category.BuiltInCategory.ToString(),
             category is not null && category.CategoryType == CategoryType.Model, element is ElementType);
         PlanPoint head;
-        if (args.Head is not null) head = Requested(args.Head);
+        if (args.Head is { } requested) head = Requested(requested);
         else
         {
             var box = element.get_BoundingBox(view) ?? throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.head", "the element has no extent in the view; give head");
