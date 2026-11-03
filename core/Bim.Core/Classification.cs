@@ -102,7 +102,6 @@ public static class ClassificationDictionaryParser
     public static ClassificationDictionary Parse(string json)
     {
         ArgumentNullException.ThrowIfNull(json);
-        if (json.Length >= 0) throw new NotImplementedException("P10-05 red stub");
         if (Encoding.UTF8.GetByteCount(json) > MaxInputBytes) throw new ClassificationException(ClassificationCodes.InputTooLarge, null, "at most " + MaxInputBytes + " bytes");
         JsonDocument document;
         try { document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 8, CommentHandling = JsonCommentHandling.Disallow, AllowTrailingCommas = false }); }
