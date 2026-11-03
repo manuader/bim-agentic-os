@@ -1069,3 +1069,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 21:13Z P2-04 re-review: 1 new blocker (native fixture non-Guid map keys → false extras) + should-fix (scope, journal_after_mismatch, detached, non-peek); fixed a80941f (red 41713180303, green 41714702286; 0 attempts). Integrating.
 - 21:15Z integration head 8026f0d (relay145-integration on main 1256e08: 4 merges + board/features/session/handoff/attempts) pushed; waiting CI.
 - 21:29Z integration CI 41720203376 failed only on harness-check (features.json evidence was a directory); fixed 04e2bab, waiting CI.
+- 21:47Z integration 04e2bab CI 41722290026: 8/9 success, ifc-portable (macos) cancelled (runner) → re-run.
