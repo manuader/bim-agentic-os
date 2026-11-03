@@ -24,6 +24,7 @@ if (!$IsWindows) { throw 'Windows with Revit 2025 required' }
 $root = Split-Path $PSScriptRoot
 Set-Location $root
 . (Join-Path $PSScriptRoot 'owner-catalogue-steps.ps1')
+. (Join-Path $PSScriptRoot 'owner-revit-common.ps1')
 if ($Catalogue -and !$PSBoundParameters.ContainsKey('Runs')) { $Runs = 1 }
 if ($Catalogue -and !$PSBoundParameters.ContainsKey('CloseWaitSeconds')) { $CloseWaitSeconds = 0 }
 $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
@@ -31,7 +32,7 @@ $session = Join-Path $root ".bim/native-sessions/$stamp"
 New-Item -ItemType Directory -Force $session | Out-Null
 $log = Join-Path $session 'session.log'
 function Say([string]$text) { $line = '[' + [DateTime]::UtcNow.ToString('HH:mm:ssZ') + '] ' + $text; Write-Host $line; Add-Content -LiteralPath $log -Value $line }
-function Sha([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+function Sha([string]$path) { Get-OwnerSha $path }
 $summary = [ordered]@{ schema_version = 1; mode = $(if ($Catalogue) { 'catalogue' } else { 'room_ab' }); started_utc = [DateTime]::UtcNow.ToString('o'); session = $session; head = ''; protected_revit_pids = @(); source_check = 'not_run'; builds = [ordered]@{}; runs = @(); finished_utc = $null; outcome = 'incomplete' }
 function Save { $summary.finished_utc = [DateTime]::UtcNow.ToString('o'); $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $session 'summary.json') }
 
@@ -52,15 +53,9 @@ try {
   Say 'Native source check PASSED'
  }
 
- $dotnet = Join-Path $root '.tools/dotnet/dotnet.exe'
- if (!(Test-Path -LiteralPath $dotnet)) { $dotnet = (Get-Command dotnet -ErrorAction Stop).Source }
+ $dotnet = Get-OwnerDotnet $root
  Say "Step 2: Release builds with $dotnet"
- foreach ($project in @('runtimes/revit-native/Bim.Revit.csproj', 'interfaces/cli/Bim.Cli.csproj')) {
-  $buildLog = Join-Path $session ('build-' + [IO.Path]::GetFileNameWithoutExtension($project) + '.log')
-  & $dotnet build (Join-Path $root $project) --configuration Release --warnaserror *>&1 | Tee-Object -FilePath $buildLog | Out-Host
-  if ($LASTEXITCODE -ne 0) { $summary.builds[$project] = 'failed'; throw "Build failed: $project; see $buildLog" }
-  $summary.builds[$project] = 'passed'
- }
+ Invoke-OwnerReleaseBuild -Root $root -Dotnet $dotnet -LogDirectory $session -Projects @('runtimes/revit-native/Bim.Revit.csproj', 'interfaces/cli/Bim.Cli.csproj') -Results $summary.builds
  $assembly = (Resolve-Path (Join-Path $root 'runtimes/revit-native/bin/Release/net8.0-windows/Bim.Revit.dll')).Path
  $coreDll = Join-Path (Split-Path $assembly) 'Bim.Core.dll'
  $cli = (Resolve-Path (Join-Path $root 'interfaces/cli/bin/Release/net8.0/Bim.Cli.dll')).Path
@@ -69,15 +64,11 @@ try {
  Say "Built Bim.Revit.dll SHA256 $($summary.builds['Bim.Revit.dll_sha256'])"
  Save
 
- $addins = Join-Path $env:APPDATA 'Autodesk/Revit/Addins/2025'
- $manifest = Join-Path $addins 'Bim.Agentic.Fixture.addin'
- if (Test-Path -LiteralPath $manifest) {
-  $existing = Sha $manifest
-  $owned = @(Get-ChildItem (Join-Path $root '.bim/native-runs') -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'Bim.Agentic.Fixture.addin' } | Where-Object { (Test-Path -LiteralPath $_) -and (Sha $_) -eq $existing })
-  if (!$owned.Count) { throw "Existing $manifest is not a staged fixture manifest from this repo; review it manually" }
-  Remove-Item -LiteralPath $manifest
-  Say "Removed leftover fixture manifest from an earlier run ($($owned[0]))"
- }
+ $manifest = Get-OwnerInstalledManifest
+ $addins = Split-Path $manifest
+ # A leftover from an earlier native run or open-project session is removed only when this repository staged it.
+ $leftover = Remove-OwnerLeftoverManifest -Root $root -Manifest $manifest
+ if ($leftover) { Say "Removed leftover fixture manifest from an earlier run ($leftover)" }
 
  for ($i = 1; $i -le $Runs; $i++) {
   $run = [ordered]@{ index = $i; run_directory = ''; child_pid = $null; bootstrap = 'not_started'; evaluation_exit = $null; outcome = $null; verification_state = $null; product_acceptance = $null; counts = $null; total_ms = $null; revit_execute_ms = $null; staged_addin_sha256 = $null; closed = $null; catalogue = $null }
@@ -98,6 +89,8 @@ try {
   $result = Join-Path $runDir 'fixture-result.json'
   $start = [Diagnostics.ProcessStartInfo]::new($RevitExe)
   $start.UseShellExecute = $false
+  # Exactly one opt-in variable: an inherited project variable would make the add-in expose nothing.
+  $null = $start.Environment.Remove('BIM_AGENTIC_PROJECT_CONFIG')
   $start.Environment['BIM_AGENTIC_TEST_CONFIG'] = $config
   $child = [Diagnostics.Process]::Start($start)
   $run.child_pid = $child.Id

@@ -32,7 +32,7 @@ static class OwnerProjectChecks
             var folderNamedRvt = Directory.CreateDirectory(Path.Combine(enabled, "Folder.rvt")).FullName;
             var policy = RevitCommandPolicy.FromAllowlist("# owner\n" + enabled + "\n", runs);
             var noLinks = new RevitFileSystemProbe(_ => false, _ => null);
-            string? Code(string? path, RevitCommandPolicy? with = null, RevitFileSystemProbe? probe = null) => OwnerProjectGuard.Check(path, with ?? policy, probe ?? noLinks)?.Code;
+            string? Code(string? path, RevitCommandPolicy? other = null, RevitFileSystemProbe? probe = null) => OwnerProjectGuard.Check(path, other ?? policy, probe ?? noLinks)?.Code;
 
             Check(Code(project) is null, "an existing .rvt directly under an owner-enabled root may be opened in project mode");
             Check(Code(nested) is null, "an existing .rvt in a folder below an owner-enabled root may be opened");

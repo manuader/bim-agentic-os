@@ -11,17 +11,23 @@ public sealed class App : IExternalApplication, IExternalEventHandler
 {
     readonly ConcurrentQueue<(Request,TaskCompletionSource<string>)> queue=new();
     CancellationTokenSource stop=new(); ExternalEvent? signal; Task? server; Autodesk.Revit.ApplicationServices.ControlledApplication? controlled;
-    // Production Revit (no BIM_AGENTIC_TEST_CONFIG) gets no ExternalEvent and no pipe. With the opt-in variable, both
-    // start only after FixtureBootstrap validated the config and opened the fixture (AddInGate.PipeAllowed).
+    // Production Revit (neither BIM_AGENTIC_TEST_CONFIG nor BIM_AGENTIC_PROJECT_CONFIG) gets no ExternalEvent and no
+    // pipe; both variables at once select nothing either (AddInGate.StartupMode). With exactly one, both start only after
+    // its bootstrap validated the config and opened the document: FixtureBootstrap creates and opens a fixture copy,
+    // ProjectBootstrap opens the owner's enabled project as is (AddInGate.PipeAllowed).
+    static string? TestConfig() => Environment.GetEnvironmentVariable(AddInGate.ConfigVariable);
+    static string? ProjectConfigPath() => Environment.GetEnvironmentVariable(AddInGate.ProjectConfigVariable);
     public Result OnStartup(UIControlledApplication app)
     {
-        if(!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AddInGate.ConfigVariable))) { controlled=app.ControlledApplication; FixtureBootstrap.Attach(app,Expose,Withdraw); }
+        var mode=AddInGate.StartupMode(TestConfig(),ProjectConfigPath());
+        if(mode==AddInGate.FixtureMode) { controlled=app.ControlledApplication; FixtureBootstrap.Attach(app,Expose,Withdraw); }
+        else if(mode==AddInGate.ProjectMode) { controlled=app.ControlledApplication; ProjectBootstrap.Attach(app,ProjectConfigPath()!,Expose,Withdraw); }
         return Result.Succeeded;
     }
-    // Called from FixtureBootstrap's Idling handler (an API context) once the fixture is open, before its result is published.
+    // Called from the bootstrap's Idling handler (an API context) once its document is open, before its result is published.
     void Expose()
     {
-        if(!AddInGate.PipeAllowed(Environment.GetEnvironmentVariable(AddInGate.ConfigVariable),true) || server!=null) return;
+        if(!AddInGate.PipeAllowed(AddInGate.ActiveConfig(TestConfig(),ProjectConfigPath()),true) || server!=null) return;
         // P2-03: the external edit journal (JournalRecorder.cs) subscribes to DocumentChanged only once the config is validated.
         if(controlled!=null) JournalRecorder.Attach(controlled);
         signal=ExternalEvent.Create(this); server=Task.Run(Listen);
