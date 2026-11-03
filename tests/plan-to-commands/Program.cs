@@ -121,12 +121,12 @@ try
     Check(shared is not null && shared.Command == "wall.create" && shared.ElementKind == "wall", "shared wall a|b becomes one wall.create");
     if (shared is not null)
     {
-        var args = ArgsOf(shared);
-        var curve = args.GetProperty("curve");
-        Check(args.GetProperty("level").GetString() == "L1" && args.GetProperty("type").GetString() == "Generic 200" && Num(args, "height_mm") == 2800
+        var values = ArgsOf(shared);
+        var curve = values.GetProperty("curve");
+        Check(values.GetProperty("level").GetString() == "L1" && values.GetProperty("type").GetString() == "Generic 200" && Num(values, "height_mm") == 2800
             && curve.GetProperty("kind").GetString() == "line" && Pair(curve.GetProperty("start"), 4000, 0) && Pair(curve.GetProperty("end"), 4000, 3000),
             "wall args: bound level and type names, height and axis line in millimetres", shared.ArgsJson);
-        Check(!args.TryGetProperty("base_offset_mm", out _) && !args.TryGetProperty("structural", out _), "defaulted wall fields are omitted, never written with defaults", shared.ArgsJson);
+        Check(!values.TryGetProperty("base_offset_mm", out _) && !values.TryGetProperty("structural", out _), "defaulted wall fields are omitted, never written with defaults", shared.ArgsJson);
         Check(shared.DependsOn.SequenceEqual(new[] { result.Steps[0].OperationId }), "a wall depends on the level check");
     }
     var aWest = StepOf(result, "wall:a:west");
@@ -140,11 +140,11 @@ try
     Check(door is not null && door.Command == "opening.place" && door.ElementKind == "door", "door becomes opening.place");
     if (door is not null && shared is not null)
     {
-        var args = ArgsOf(door);
-        Check(args.GetProperty("category").GetString() == "door" && args.GetProperty("symbol").GetString() == "Single-Flush: 0915 x 2134mm"
-            && Math.Abs(Num(args, "position_along_mm") - 1450) <= 1e-6 && !args.TryGetProperty("sill_mm", out _),
+        var values = ArgsOf(door);
+        Check(values.GetProperty("category").GetString() == "door" && values.GetProperty("symbol").GetString() == "Single-Flush: 0915 x 2134mm"
+            && Math.Abs(Num(values, "position_along_mm") - 1450) <= 1e-6 && !values.TryGetProperty("sill_mm", out _),
             "door args: category, bound symbol, centre distance from host start (1000 + 900/2), no sill", door.ArgsJson);
-        Check(args.GetProperty("host_wall_uid").GetString() == PlanToCommands.PlaceholderUniqueId, "the host UniqueId is a documented placeholder until the wall exists", door.ArgsJson);
+        Check(values.GetProperty("host_wall_uid").GetString() == PlanToCommands.PlaceholderUniqueId, "the host UniqueId is a documented placeholder until the wall exists", door.ArgsJson);
         Check(door.Inputs.Count == 1 && door.Inputs[0] == new RevitStepInput("args.host_wall_uid", shared.OperationId, "created[0]"),
             "the host is bound to the wall step's first created UniqueId", string.Join(",", door.Inputs));
         Check(door.DependsOn.SequenceEqual(new[] { shared.OperationId }), "an opening depends on its host wall step");
@@ -169,9 +169,9 @@ try
     Check(roomA is not null && roomA.Command == "room.create" && roomA.ElementKind == "space", "space a becomes room.create");
     if (roomA is not null)
     {
-        var args = ArgsOf(roomA);
-        Check(args.GetProperty("level").GetString() == "L1" && Pair(args.GetProperty("point"), 2000, 1500) && !args.TryGetProperty("name", out _) && !args.TryGetProperty("number", out _),
-            "room args: level and the interior centre in millimetres; BIM-IR has no name or number", roomA.ArgsJson + " " + ShowPair(args.GetProperty("point")));
+        var values = ArgsOf(roomA);
+        Check(values.GetProperty("level").GetString() == "L1" && Pair(values.GetProperty("point"), 2000, 1500) && !values.TryGetProperty("name", out _) && !values.TryGetProperty("number", out _),
+            "room args: level and the interior centre in millimetres; BIM-IR has no name or number", roomA.ArgsJson + " " + ShowPair(values.GetProperty("point")));
         var expected = new[] { "wall:a:south", "wall:a:west", "wall:a:north", "wall:a|b" }.Select(key => StepOf(result, key)?.OperationId).OfType<string>().ToHashSet(StringComparer.Ordinal);
         Check(roomA.DependsOn.Count == 5 && roomA.DependsOn[0] == result.Steps[0].OperationId && roomA.DependsOn.Skip(1).ToHashSet().SetEquals(expected),
             "a room depends on the level check and its bounding wall steps", string.Join(",", roomA.DependsOn));
