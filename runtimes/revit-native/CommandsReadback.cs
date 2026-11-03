@@ -19,7 +19,8 @@ public sealed record ObservedRoom(string UniqueId, string LevelUid, string? Name
 public sealed record LevelRow(string Name, string UniqueId, double ElevationMm, double ProjectElevationMm);
 public sealed record WallTypeRow(string Name, string UniqueId, string Kind, double? WidthMm);
 public sealed record FloorTypeRow(string Name, string UniqueId, double? WidthMm);
-public sealed record SymbolRow(string Family, string Type, string UniqueId, bool Active, bool WallHosted);
+// PlacementType: the family's FamilyPlacementType name, written as placement_type when known.
+public sealed record SymbolRow(string Family, string Type, string UniqueId, bool Active, bool WallHosted, string? PlacementType = null);
 
 public static class CommandGeometry
 {
@@ -224,6 +225,7 @@ public static class CommandReadback
             writer.WriteString("unique_id", row.UniqueId);
             writer.WriteBoolean("active", row.Active);
             writer.WriteBoolean("wall_hosted", row.WallHosted);
+            if (row.PlacementType is { } placement) writer.WriteString("placement_type", placement);
             writer.WriteEndObject();
         }
         writer.WriteEndArray();

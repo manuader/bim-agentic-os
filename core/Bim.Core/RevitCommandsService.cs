@@ -7,7 +7,7 @@ namespace Bim.Core;
 public sealed record RevitCommandResult(string Line, bool IsError, bool Forwarded);
 
 // The single client path shared by the CLI "revit-command" verb and the generated MCP tools: pipe name check,
-// envelope validation, copies-only and link guards, wire size cap, one request/response line on the process pipe,
+// envelope validation, copies-only and link guards, the family.load source guard, wire size cap, one request/response line on the process pipe,
 // then a check that a success answers this very request.
 public static class RevitCommandService
 {
@@ -28,6 +28,8 @@ public static class RevitCommandService
         if (envelope.Spec.Writes && RevitCopiesGuard.MatchingRoot(envelope.Document.Path, policy) is { } root
             && RevitLinkGuard.Check(envelope.Document.Path, root, probe ?? RevitFileSystemProbe.Real) is { } linked)
             return Failure(linked, "document.path", linked == RevitCommandCodes.DocumentLinkRefused ? "a symlink, junction or hard link between the enabled root and the document" : null);
+        if (envelope.Args is FamilyLoadArgs load && RevitFamilySourceGuard.Check(load.Path, policy.FamilySourceRoots, probe ?? RevitFileSystemProbe.Real) is { } source)
+            return Failure(RevitCommandCodes.FamilySourceRefused, "args.path", source);
         var line = RevitCommandProtocol.WireLine(envelope);
         if (line.Length > RevitCommandProtocol.MaxRequestChars) return Failure(RevitCommandCodes.RequestTooLarge, null, "wire line exceeds 65536 characters");
         string? response;

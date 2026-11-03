@@ -13,7 +13,7 @@ public sealed record RevitCommandSpec(string Name, bool Writes, string Descripti
 // Partial: catalogue v2 (P9-01) lives in RevitCommandsCatalogueV2.cs, the view commands (P4-01) in RevitCommandsViews.cs,
 // query.snapshot (P2-01) in Mirror.cs, the element queries (P1-02) in RevitCommandsQuery.cs, the structure commands
 // (P9-02) in RevitCommandsStructure.cs, the documentation commands (P4-02) in RevitCommandsDocumentation.cs and the
-// modify and delete commands (P1-05) in RevitCommandsModify.cs.
+// modify and delete commands (P1-05) in RevitCommandsModify.cs and the family commands in RevitCommandsFamilies.cs.
 public static partial class RevitCommandCatalogue
 {
     public const int Version = 1;
@@ -39,7 +39,9 @@ public static partial class RevitCommandCatalogue
 
     const string EmptySchema = """{"type":"object","description":"No arguments; pass {}.","properties":{},"additionalProperties":false}""";
 
-    const string FamilySymbolsSchema = """{"type":"object","properties":{"category":{"type":"string","description":"Which loaded family types to list","enum":["door","window"]}},"required":["category"],"additionalProperties":false}""";
+    // Categories from RevitFamilyRules.SymbolCategories (RevitCommandsFamilies.cs): door and window, then the
+    // structural and loadable model categories.
+    static string FamilySymbolsSchema => Fill("""{"type":"object","properties":{"category":{"type":"string","description":"Which loaded family types to list","enum":[@0@]}},"required":["category"],"additionalProperties":false}""", FamilyCategoryEnum(RevitFamilyRules.SymbolCategories));
 
     static readonly string LineCurve = Fill("""{"type":"object","description":"Straight wall from start to end","properties":{"kind":{"type":"string","enum":["line"]},"start":@0@,"end":@1@},"required":["kind","start","end"],"additionalProperties":false}""", Point, Point);
     static readonly string ArcThroughCurve = Fill("""{"type":"object","description":"Curved wall from start to end passing through a third point (not collinear)","properties":{"kind":{"type":"string","enum":["arc"]},"start":@0@,"end":@1@,"through":@2@},"required":["kind","start","end","through"],"additionalProperties":false}""", Point, Point, Point);
@@ -58,7 +60,7 @@ public static partial class RevitCommandCatalogue
         new RevitCommandSpec("query.levels", false, "List the levels of the open Revit document with name, UniqueId and elevation in millimetres. Read-only.", EmptySchema, _ => new EmptyQueryArgs()),
         new RevitCommandSpec("query.wall_types", false, "List the wall types available in the document with name, UniqueId and width in millimetres. Read-only.", EmptySchema, _ => new EmptyQueryArgs()),
         new RevitCommandSpec("query.floor_types", false, "List the floor types available in the document with name, UniqueId and thickness in millimetres. Read-only.", EmptySchema, _ => new EmptyQueryArgs()),
-        new RevitCommandSpec("query.family_symbols", false, "List the loaded door or window family types with family name, type name and UniqueId. Read-only.", FamilySymbolsSchema, BindFamilySymbols),
+        new RevitCommandSpec("query.family_symbols", false, "List the loaded family types of one category (door, window, structural column or framing, generic model, specialty equipment, furniture, lighting, plumbing, mechanical equipment, casework) with family name, type name, placement type and UniqueId. Read-only.", FamilySymbolsSchema, BindFamilySymbols),
         new RevitCommandSpec("wall.create", true, "Create one straight or curved wall on a level. Lengths in millimetres, angles in degrees. Allowed only on enabled test copies.", WallSchema, BindWall),
         new RevitCommandSpec("opening.place", true, "Place a door or window of a loaded family type in a host wall, at a distance along the wall from its start. Allowed only on enabled test copies.", OpeningSchema, BindOpening),
         new RevitCommandSpec("floor.create", true, "Create a floor of a given type from a closed, non-self-intersecting outline in millimetres. Allowed only on enabled test copies.", FloorSchema, BindFloor),
@@ -68,9 +70,9 @@ public static partial class RevitCommandCatalogue
     // Every command the protocol accepts: v1, then v2, then the view commands (P4-01), then query.snapshot (P2-01,
     // Mirror.cs), then query.elements and query.inspect (P1-02, RevitCommandsQuery.cs), then the structure commands (P9-02,
     // RevitCommandsStructure.cs), then the documentation commands (P4-02, RevitCommandsDocumentation.cs), then the
-    // modify and delete commands (P1-05, RevitCommandsModify.cs). Lazy because those entries live in other parts of
+    // modify and delete commands (P1-05, RevitCommandsModify.cs), then the family commands (RevitCommandsFamilies.cs). Lazy because those entries live in other parts of
     // this partial class, whose static initializers may run in any order.
-    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).ToArray());
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).Concat(Families).ToArray());
     public static IReadOnlyList<RevitCommandSpec> All => AllSpecs.Value;
 
     public static RevitCommandSpec? Find(string name) => All.FirstOrDefault(spec => spec.Name == name);

@@ -28,7 +28,7 @@ namespace Bim.Revit;
 // (P4-01: plan, section, 3D) are in CommandsExecutorViews.cs; structure commands (P9-02: grids, columns, beams,
 // foundations) are in CommandsExecutorStructure.cs; documentation commands (P4-02: dimensions, tags, schedules,
 // sheets) are in CommandsExecutorDocumentation.cs; element.set_parameter and element.delete (P1-05) are in
-// CommandsExecutorModify.cs.
+// CommandsExecutorModify.cs; family.load and family_instance.place are in CommandsExecutorFamilies.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -78,6 +78,8 @@ internal static partial class CommandExecutor
             ScheduleCreateArgs schedule => ScheduleWrite(d, schedule),
             SheetCreateArgs sheet => SheetWrite(d, sheet),
             SheetPlaceViewArgs place => PlaceViewWrite(d, place),
+            FamilyLoadArgs load => FamilyLoadWrite(d, load),
+            FamilyInstancePlaceArgs instance => FamilyInstanceWrite(d, instance),
             // A stair is created through a StairsEditScope, which cannot start inside the plan's write transaction.
             StairCreateArgs => null,
             _ => throw new RevitCommandException(RevitCommandCodes.CommandUnknown, "command", envelope.Command),
@@ -110,8 +112,9 @@ internal static partial class CommandExecutor
     static Level[] Levels(Document d) => new FilteredElementCollector(d).OfClass(typeof(Level)).Cast<Level>().ToArray();
     static WallType[] WallTypes(Document d) => new FilteredElementCollector(d).OfClass(typeof(WallType)).Cast<WallType>().ToArray();
     static FloorType[] FloorTypes(Document d) => new FilteredElementCollector(d).OfClass(typeof(FloorType)).Cast<FloorType>().Where(type => CommandRules.OffersFloorType(type.IsFoundationSlab)).ToArray();
+    // category: a query.family_symbols category (RevitFamilyRules.SymbolCategories), door and window included.
     static FamilySymbol[] Symbols(Document d, string category) => new FilteredElementCollector(d).OfClass(typeof(FamilySymbol))
-        .OfCategory(category == "door" ? BuiltInCategory.OST_Doors : BuiltInCategory.OST_Windows).Cast<FamilySymbol>().ToArray();
+        .OfCategory(Enum.Parse<BuiltInCategory>(RevitFamilyRules.BuiltInCategory(category))).Cast<FamilySymbol>().ToArray();
     static bool WallHosted(FamilySymbol symbol) => symbol.Family.FamilyPlacementType == FamilyPlacementType.OneLevelBasedHosted;
 
     static T Resolve<T>(T[] items, Func<T, CommandCandidate> candidate, string reference, string field, string kind) =>
@@ -128,7 +131,7 @@ internal static partial class CommandExecutor
         EmptyQueryArgs when envelope.Command == "query.floor_types" =>
             CommandReadback.FloorTypesJson(FloorTypes(d).Select(type => new FloorTypeRow(type.Name, type.UniqueId, type.GetCompoundStructure() is { } layers ? Mm(layers.GetWidth()) : null))),
         FamilySymbolQueryArgs symbols =>
-            CommandReadback.SymbolsJson(symbols.Category, Symbols(d, symbols.Category).Select(symbol => new SymbolRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive, WallHosted(symbol)))),
+            CommandReadback.SymbolsJson(symbols.Category, Symbols(d, symbols.Category).Select(symbol => new SymbolRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive, WallHosted(symbol), symbol.Family.FamilyPlacementType.ToString()))),
         _ => QueryV2(d, envelope),
     };
 
