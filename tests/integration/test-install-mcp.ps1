@@ -32,7 +32,20 @@ function Get-Prop($Object, [string]$Name) {
 function Compact($Node) { if ($null -eq $Node) { '<missing>' } else { $Node.ToJsonString() } }
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ('install mcp test ' + [Guid]::NewGuid().ToString('N'))
+# Defence in depth: every default-location root the installer could consult points into the temp tree.
+$savedEnvironment = @{}
+foreach ($variable in 'APPDATA', 'LOCALAPPDATA', 'HOME') { $savedEnvironment[$variable] = [Environment]::GetEnvironmentVariable($variable, 'Process') }
+$fakeRoots = Join-Path $work 'fake roots'
+function Set-FakeRoots([string]$Base) {
+    foreach ($pair in @(@('APPDATA', 'AppData/Roaming'), @('LOCALAPPDATA', 'AppData/Local'), @('HOME', 'home'))) {
+        $path = Join-Path $Base $pair[1]
+        [void][IO.Directory]::CreateDirectory($path)
+        [Environment]::SetEnvironmentVariable($pair[0], $path, 'Process')
+    }
+}
 try {
+    Set-FakeRoots $fakeRoots
+    Assert ((Get-Content -LiteralPath $installer -TotalCount 40) -contains '#Requires -Version 7.2') 'installer must declare #Requires -Version 7.2'
     $tools = Join-Path $work 'fake sdk dir'
     New-Item -ItemType Directory -Force $tools | Out-Null
     $fakeDotnet = Join-Path $tools $(if ($IsWindows) { 'dotnet.exe' } else { 'dotnet' })
@@ -171,6 +184,70 @@ try {
         Assert ($run.Code -ne 0) "Linux without -ConfigPath accepted: $($run.Output)"
     }
 
+    # --- mcpServers: null counts as missing on install and as nothing to remove on uninstall ---
+    $nullServers = Join-Path $work 'Claude Config/null servers/claude_desktop_config.json'
+    New-Item -ItemType Directory -Force (Split-Path $nullServers) | Out-Null
+    [IO.File]::WriteAllText($nullServers, '{ "keep": "me", "mcpServers": null }')
+    $run = Invoke-Installer @('-ConfigPath', $nullServers, '-Uninstall')
+    Assert ($run.Code -eq 0 -and $run.Output -match 'UNCHANGED') "uninstall with mcpServers null: $($run.Output)"
+    $run = Invoke-Installer (@('-ConfigPath', $nullServers) + $toolArgs)
+    Assert ($run.Code -eq 0) "install with mcpServers null exit $($run.Code): $($run.Output)"
+    if ($run.Code -eq 0) {
+        $after = Read-Node $nullServers
+        Assert ((Compact (Get-Prop $after 'keep')) -eq '"me"' -and $null -ne (Get-Prop (Get-Prop $after 'mcpServers') 'bim-agentic-os')) "install with mcpServers null: $(Compact $after)"
+        Assert ((Get-Backups $nullServers).Count -eq 1) 'install with mcpServers null must back up first'
+    }
+
+    # --- A symlinked config is refused (file and target untouched); must run on Linux ---
+    $linkDirectory = Join-Path $work 'Claude Config/symlink'
+    New-Item -ItemType Directory -Force $linkDirectory | Out-Null
+    $target = Join-Path $linkDirectory 'real target.json'
+    [IO.File]::WriteAllText($target, '{ "mcpServers": {} }')
+    $link = Join-Path $linkDirectory 'claude_desktop_config.json'
+    $linked = $false
+    try { [void][IO.File]::CreateSymbolicLink($link, $target); $linked = $true }
+    catch { if (!$IsWindows) { $failures.Add("symlink creation failed on a non-Windows host: $($_.Exception.Message)") } else { 'SKIP symlink case: creation not permitted on this Windows host' } }
+    if ($linked) {
+        $targetBytes = Get-Bytes $target
+        foreach ($mode in @(@(), @('-Uninstall'), @('-DryRun'))) {
+            $run = Invoke-Installer (@('-ConfigPath', $link) + $toolArgs + $mode)
+            Assert ($run.Code -ne 0 -and $run.Output -match '(?i)symbolic link|symlink') "symlinked config $mode accepted: $($run.Output)"
+            Assert ([IO.FileInfo]::new($link).LinkTarget -and (Get-Bytes $target) -eq $targetBytes) "symlinked config $mode changed the link or its target"
+            Assert ((Get-Backups $link).Count -eq 0 -and (Get-Leftovers $link).Count -eq 0) "symlinked config $mode left a backup or temp file"
+        }
+        Remove-Item -LiteralPath $link -Force
+        [void][IO.File]::CreateSymbolicLink($link, (Join-Path $linkDirectory 'missing.json'))
+        $run = Invoke-Installer (@('-ConfigPath', $link) + $toolArgs)
+        Assert ($run.Code -ne 0 -and !(Test-Path -LiteralPath (Join-Path $linkDirectory 'missing.json'))) "dangling symlinked config accepted: $($run.Output)"
+    }
+
+    # --- Windows default location: classic %APPDATA% vs MSIX %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming ---
+    if ($IsWindows) {
+        $caseIndex = 0
+        function New-WindowsRoots([string[]]$PackageNames, [switch]$ClassicConfig) {
+            $script:caseIndex++
+            $base = Join-Path $work "win roots $script:caseIndex"
+            Set-FakeRoots $base
+            $classic = Join-Path $env:APPDATA 'Claude/claude_desktop_config.json'
+            if ($ClassicConfig) { [void][IO.Directory]::CreateDirectory((Split-Path $classic)); [IO.File]::WriteAllText($classic, '{}') }
+            $packaged = @(foreach ($name in $PackageNames) { $dir = Join-Path $env:LOCALAPPDATA "Packages/$name/LocalCache/Roaming/Claude"; [void][IO.Directory]::CreateDirectory($dir); Join-Path $dir 'claude_desktop_config.json' })
+            return [pscustomobject]@{ Classic = [IO.Path]::GetFullPath($classic); Packaged = @($packaged | ForEach-Object { [IO.Path]::GetFullPath($_) }) }
+        }
+        $roots = New-WindowsRoots @()
+        $run = Invoke-Installer $toolArgs
+        Assert ($run.Code -eq 0 -and (Test-Path -LiteralPath $roots.Classic) -and $run.Output -match [regex]::Escape("CONFIG $($roots.Classic)")) "classic default: $($run.Output)"
+        $roots = New-WindowsRoots @('Claude_pzs8sxrjxfjjc')
+        $run = Invoke-Installer $toolArgs
+        Assert ($run.Code -eq 0 -and (Test-Path -LiteralPath $roots.Packaged[0]) -and !(Test-Path -LiteralPath $roots.Classic) -and $run.Output -match [regex]::Escape("CONFIG $($roots.Packaged[0])")) "MSIX default: $($run.Output)"
+        $roots = New-WindowsRoots @('Claude_pzs8sxrjxfjjc') -ClassicConfig
+        $run = Invoke-Installer $toolArgs
+        Assert ($run.Code -ne 0 -and $run.Output.Contains($roots.Classic) -and $run.Output.Contains($roots.Packaged[0]) -and !(Test-Path -LiteralPath $roots.Packaged[0]) -and [IO.File]::ReadAllText($roots.Classic) -eq '{}') "classic + MSIX must be refused listing both: $($run.Output)"
+        $roots = New-WindowsRoots @('Claude_aaaa', 'Claude_bbbb')
+        $run = Invoke-Installer $toolArgs
+        Assert ($run.Code -ne 0 -and $run.Output.Contains($roots.Packaged[0]) -and $run.Output.Contains($roots.Packaged[1]) -and !(Test-Path -LiteralPath $roots.Packaged[0]) -and !(Test-Path -LiteralPath $roots.Packaged[1])) "two MSIX packages must be refused: $($run.Output)"
+        Set-FakeRoots $fakeRoots
+    }
+
     # --- Optional: the registered command/args launch the real server ---
     if ($Dotnet -and $McpDll) {
         $real = Join-Path $work 'Claude Config/real/claude_desktop_config.json'
@@ -196,8 +273,9 @@ try {
         } finally { $process.Dispose() }
     }
 } finally {
+    foreach ($variable in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($variable, $savedEnvironment[$variable], 'Process') }
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 }
 if ($failures.Count) { throw ("install-mcp checks failed:`n" + ($failures -join "`n")) }
 $scope = if ($Dotnet -and $McpDll) { ' and the registered command launched the real server (initialize answered)' } else { '' }
-"PASS install-mcp on temp configs: fresh, preserve, replace, idempotent, backup bytes, refusals, dry run, uninstall, spaces$scope"
+"PASS install-mcp on temp configs: fresh, preserve, replace, idempotent, backup bytes, refusals, null mcpServers, symlink refusal, Windows classic/MSIX default, dry run, uninstall, spaces$scope"
