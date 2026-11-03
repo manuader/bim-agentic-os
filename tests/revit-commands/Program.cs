@@ -399,6 +399,8 @@ try
     CatalogueMaterialsChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- Family commands: family.load, family_instance.place, family symbol categories, wood structure ----
     CatalogueFamiliesChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- Site commands: toposolid types, toposolids and toposolid subdivisions ----
+    CatalogueSiteChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
