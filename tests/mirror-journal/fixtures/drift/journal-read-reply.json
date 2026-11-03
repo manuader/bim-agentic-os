@@ -1,0 +1,112 @@
+{
+  "status": "succeeded",
+  "verification": "unverified",
+  "attached": true,
+  "dropped": 0,
+  "skipped_add_in": 3,
+  "failures": 0,
+  "unidentified": 0,
+  "report": {
+    "journal_version": 1,
+    "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+    "document_path": "C:\\Repo\\.bim\\native-runs\\run-1\\BIM-Agentic-Test.rvt",
+    "baseline_sequence": 4,
+    "current_sequence": 8,
+    "after_sequence": 4,
+    "baseline_existed": true,
+    "peek": true,
+    "journal_complete": true,
+    "failures_since_baseline": 0,
+    "has_more": false,
+    "next_after_sequence": 8,
+    "entries": [
+      {
+        "sequence": 5,
+        "recorded_at": "2026-11-03T12:00:05.000Z",
+        "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+        "document_path": "",
+        "operation": "TransactionCommitted",
+        "origin": "external",
+        "transaction_names": [
+          "Wall"
+        ],
+        "added": [
+          "60f91daf-3dd7-4283-a86d-24137b73f3da-00001003"
+        ],
+        "modified": [],
+        "deleted_element_ids": [],
+        "added_total": 1,
+        "modified_total": 0,
+        "deleted_total": 0,
+        "truncated": false
+      },
+      {
+        "sequence": 6,
+        "recorded_at": "2026-11-03T12:00:06.000Z",
+        "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+        "document_path": "",
+        "operation": "TransactionCommitted",
+        "origin": "add-in",
+        "transaction_names": [
+          "BIM Agentic OS wall.axis.update"
+        ],
+        "added": [],
+        "modified": [
+          "60f91daf-3dd7-4283-a86d-24137b73f3da-00001002"
+        ],
+        "deleted_element_ids": [],
+        "added_total": 0,
+        "modified_total": 1,
+        "deleted_total": 0,
+        "truncated": false
+      },
+      {
+        "sequence": 7,
+        "recorded_at": "2026-11-03T12:00:07.000Z",
+        "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+        "document_path": "",
+        "operation": "TransactionCommitted",
+        "origin": "external",
+        "transaction_names": [
+          "Delete"
+        ],
+        "added": [],
+        "modified": [],
+        "deleted_element_ids": [
+          8193
+        ],
+        "added_total": 0,
+        "modified_total": 0,
+        "deleted_total": 1,
+        "truncated": false
+      },
+      {
+        "sequence": 8,
+        "recorded_at": "2026-11-03T12:00:08.000Z",
+        "document_unique_id": "11111111-2222-3333-4444-555555555555-00000001",
+        "document_path": "",
+        "operation": "TransactionCommitted",
+        "origin": "external",
+        "transaction_names": [
+          "Move"
+        ],
+        "added": [],
+        "modified": [
+          "60f91daf-3dd7-4283-a86d-24137b73f3da-00001002"
+        ],
+        "deleted_element_ids": [],
+        "added_total": 0,
+        "modified_total": 1,
+        "deleted_total": 0,
+        "truncated": false
+      }
+    ],
+    "diff": {
+      "diff_version": 1,
+      "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+      "added": [],
+      "removed": [],
+      "changed": []
+    }
+  }
+}

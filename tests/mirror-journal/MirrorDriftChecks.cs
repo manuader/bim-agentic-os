@@ -48,7 +48,7 @@ static class MirrorDriftChecks
         var committed = MirrorCommittedModel.Parse(Read("committed.json"));
         var journal = MirrorDrift.ParseJournalEntries(Read("journal.json"));
         Check(observation.DocumentUid == Doc && observation.Elements.Count == 4 && observation.Levels.Count == 1, "observation fixture loads", observation.Elements.Count.ToString());
-        Check(committed.DocumentUid == Doc && committed.Project.Revision == 3 && committed.Project.Elements.Length == 4 && committed.NativeIds.Count == 4, "committed fixture loads");
+        Check(committed.DocumentUid == Doc && committed.Project.Revision == 3 && committed.Project.Elements.Length == 4 && committed.NativeIds.Count == 4 && committed.IgnoredMapKeys.SequenceEqual(new[] { "door-symbol" }), "committed fixture loads; a non-Guid map key is ignored and listed");
         Check(journal.Count == 5 && journal[2].Origin == MirrorJournalOrigins.AddIn && journal[3].DeletedIds.SequenceEqual(new long[] { 0x2001 }), "journal fixture loads", journal.Count.ToString());
         MirrorSnapshot Snap(params MirrorObservedElement[] elements) => MirrorSnapshotMapper.Map(observation with { Elements = elements });
         var wall1 = observation.Elements.Single(element => element.UniqueId == W1);
@@ -98,7 +98,7 @@ static class MirrorDriftChecks
             "a door deleted in Revit is missing", deleted.ToJson());
         var deletedWithJournal = MirrorDrift.Compare(Snap(wall1, wall2, floor), committed, journal, new MirrorDriftOptions(JournalAfterSequence: 4));
         var d1j = deletedWithJournal.Findings.SingleOrDefault();
-        Check(d1j is { Classification: MirrorDriftClasses.ExternalEdit } && d1j.Evidence.SequenceEqual(new[] { "journal:7:external:deleted" }),
+        Check(d1j is { Classification: MirrorDriftClasses.ExternalEdit } && d1j.Evidence.SequenceEqual(new[] { "journal:7:external:deleted_id_match" }),
             "an external journal deletion of the door's element id classifies it external_edit", deletedWithJournal.ToJson());
         Check(MirrorDrift.NativeElementId(D1) == 0x2001 && MirrorDrift.NativeElementId("not-a-unique-id") is null && MirrorDrift.NativeElementId(Doc) == 0x1fd0b, "the element id is read from the UniqueId suffix");
 
@@ -163,6 +163,8 @@ static class MirrorDriftChecks
         Check(unrealized.Findings.SingleOrDefault() is { Kind: MirrorDriftKinds.Missing, UniqueId: "", Classification: MirrorDriftClasses.Unknown } u && u.CoreId == CoreD1 && u.Evidence.SequenceEqual(new[] { "map:missing" }),
             "a committed element with no native id is missing with map evidence", unrealized.ToJson());
 
+        ReviewChecks(observation, committed, journal, Read);
+
         // ---- Bounded report ----
         var capped = MirrorDrift.Compare(drifted, committed, journal, new MirrorDriftOptions(JournalAfterSequence: 4, MaxFindings: 1));
         Check(capped.Truncated && capped.Findings.Count == 1 && capped.Findings[0].UniqueId == W2 && capped.Summary.Drift == 3, "MaxFindings caps the findings, keeps true totals and says truncated", capped.ToJson());
@@ -190,5 +192,149 @@ static class MirrorDriftChecks
             "report JSON header is canonical with fixed number formatting", first);
         Check(first.Contains("{\"kind\":\"changed\",\"unique_id\":\"" + W2 + "\",\"core_id\":\"c0000000-0000-4000-8000-000000000003\",\"snapshot_id\":\"" + MirrorSnapshotMapper.Id(Doc, W2).ToString("D") + "\",\"element_kind\":\"wall\",\"classification\":\"addin_pending\",\"evidence\":[\"journal:6:add-in\"],\"fields\":[{\"field\":\"ax\",\"core\":\"5.000000\",\"revit\":\"5.050000\",\"delta\":\"50.000\"}", StringComparison.Ordinal),
             "a changed finding serializes canonically", first);
+    }
+    // Review fixes: wrapped journal.read replies, role-based dependency sets, non-exported kinds, evidence completeness.
+    static void ReviewChecks(MirrorObservation observation, MirrorCommittedModel committed, IReadOnlyList<MirrorJournalEntry> journal, Func<string, string> read)
+    {
+        const string P = "60f91daf-3dd7-4283-a86d-24137b73f3da-";
+        const string L1 = P + "00000137";
+        const string N1 = P + "00003001";
+        var coreL = Guid.Parse("c0000000-0000-4000-8000-000000000001");
+        var coreW1 = Guid.Parse("c0000000-0000-4000-8000-000000000002");
+        var coreN1 = Guid.Parse("c0000000-0000-4000-8000-000000000005");
+        var wall1 = observation.Elements.Single(element => element.UniqueId == W1);
+        var wall2 = observation.Elements.Single(element => element.UniqueId == W2);
+        var door = observation.Elements.Single(element => element.UniqueId == D1);
+        var floor = observation.Elements.Single(element => element.UniqueId == F1);
+        MirrorSnapshot Snap(params MirrorObservedElement[] elements) => MirrorSnapshotMapper.Map(observation with { Elements = elements });
+        MirrorCommittedModel With(params Element[] replace)
+        {
+            var byId = replace.ToDictionary(element => element.Id);
+            var kept = committed.Project.Elements.Select(element => byId.TryGetValue(element.Id, out var next) ? next : element);
+            var added = replace.Where(element => committed.Project.Elements.All(existing => existing.Id != element.Id));
+            return committed with { Project = committed.Project with { Elements = kept.Concat(added).ToArray() } };
+        }
+        Element CoreElement(Guid id) => committed.Project.Elements.Single(element => element.Id == id);
+
+        // (1) The real journal.read pipe reply is accepted; status and peek are checked.
+        var replyJson = read("journal-read-reply.json");
+        var reply = MirrorDrift.ParseJournal(replyJson);
+        Check(reply.Entries.Select(entry => entry.Sequence).SequenceEqual(new long[] { 5, 6, 7, 8 }) && reply.Complete && !reply.HasMore && reply.CurrentSequence == 8,
+            "the wrapped journal.read reply fixture parses with its completeness", string.Join(",", reply.Entries.Select(entry => entry.Sequence)));
+        Check(MirrorDrift.ParseJournalEntries(replyJson).Count == 4, "ParseJournalEntries accepts the wrapped journal.read reply");
+        var drifted = Snap(wall1, Wall(wall2, W2, 5050, 0, 5050, 4000), Wall(wall1, W3, 0, 0, 0, 4000), floor);
+        var fromReply = MirrorDrift.Compare(drifted, committed, reply, new MirrorDriftOptions(JournalAfterSequence: 4));
+        Check(fromReply.ToJson() == MirrorDrift.Compare(drifted, committed, journal, new MirrorDriftOptions(JournalAfterSequence: 4)).ToJson() && !fromReply.EvidenceIncomplete,
+            "the wrapped reply classifies like the raw journal and is complete", fromReply.ToJson());
+        Check(Code(() => MirrorDrift.ParseJournal(replyJson.Replace("\"status\": \"succeeded\"", "\"status\": \"failed\"", StringComparison.Ordinal))) == MirrorDrift.JournalInvalidCode,
+            "a journal.read reply whose status is not succeeded is refused");
+        Check(Code(() => MirrorDrift.ParseJournal(replyJson.Replace("\"peek\": true", "\"peek\": false", StringComparison.Ordinal))) == MirrorDrift.JournalInvalidCode,
+            "a journal.read reply read without peek is refused");
+        // (6) Completeness travels into the report.
+        var partial = MirrorDrift.ParseJournal(replyJson.Replace("\"journal_complete\": true", "\"journal_complete\": false", StringComparison.Ordinal).Replace("\"has_more\": false", "\"has_more\": true", StringComparison.Ordinal)
+            .Replace("\"truncated\": false", "\"truncated\": true", StringComparison.Ordinal));
+        var partialReport = MirrorDrift.Compare(drifted, committed, partial, new MirrorDriftOptions(JournalAfterSequence: 4));
+        Check(partialReport.EvidenceIncomplete && partialReport.EvidenceNotes.SequenceEqual(new[] { "journal_incomplete", "journal_has_more", "entry_truncated:5", "entry_truncated:6", "entry_truncated:7" }),
+            "journal_complete false, has_more and truncated entries mark the evidence incomplete", string.Join(",", partialReport.EvidenceNotes));
+        using (var parsed = JsonDocument.Parse(partialReport.ToJson()))
+            Check(parsed.RootElement.GetProperty("evidence").GetProperty("incomplete").GetBoolean() && parsed.RootElement.GetProperty("evidence").GetProperty("notes").GetArrayLength() == 5, "evidence completeness is in the JSON");
+        var rawDropped = MirrorDrift.ParseJournal(read("journal.json").Replace("\"dropped\": 0", "\"dropped\": 2", StringComparison.Ordinal));
+        Check(!rawDropped.Complete && MirrorDrift.ParseJournal(read("journal.json")).Complete, "a raw journal with dropped entries is incomplete");
+        // (9) A commit point beyond the reply's current sequence belongs to another add-in session: no journal evidence.
+        var otherSession = MirrorDrift.Compare(drifted, committed, reply, new MirrorDriftOptions(JournalAfterSequence: 20));
+        Check(otherSession.EvidenceNotes.SequenceEqual(new[] { "journal_session_mismatch" }) && otherSession.Findings.All(finding => finding.Evidence.Count == 0),
+            "a journal_after_sequence past the reply's current sequence is a session mismatch and its entries are not evidence", otherSession.ToJson());
+        // (5) Unknown origins are refused.
+        Check(Code(() => MirrorDrift.ParseJournal(replyJson.Replace("\"origin\": \"add-in\"", "\"origin\": \"robot\"", StringComparison.Ordinal))) == MirrorDrift.JournalInvalidCode, "a reply entry with an unknown origin is refused");
+        Check(Code(() => MirrorDrift.Compare(drifted, committed, new[] { journal[1] with { Origin = "robot" } })) == MirrorDrift.JournalInvalidCode, "an entry with an unknown origin is refused by Compare");
+        // (4) Deletion evidence applies only to missing elements.
+        var deletesW2 = journal.Append(new MirrorJournalEntry(9, DateTimeOffset.UnixEpoch, Doc, "TransactionCommitted", MirrorJournalOrigins.External, new[] { "Delete" },
+            Array.Empty<string>(), Array.Empty<string>(), new long[] { 0x1002 }, 0, 0, 1)).ToArray();
+        var w2 = MirrorDrift.Compare(drifted, committed, deletesW2, new MirrorDriftOptions(JournalAfterSequence: 4)).Findings.Single(finding => finding.UniqueId == W2);
+        Check(w2.Classification == MirrorDriftClasses.AddInPending && w2.Evidence.SequenceEqual(new[] { "journal:6:add-in" }), "a deleted element id matching a changed element is not evidence for it", string.Join(",", w2.Evidence));
+
+        // (2) Dependencies by role: openings compare level and host, regardless of order.
+        var window = new MirrorObservedElement(MirrorCategories.Window, N1) { LevelUid = L1, HostUid = W2, Location = new MirrorPoint(5000, 2000), WidthMm = 1000, HeightMm = 1200, SillMm = 900 };
+        var coreWindow = new Element(coreN1, "window", new[] { 5, 1.5, 5, 2.5, 0.9, 1.2 }, new[] { CoreW2, coreL }, new Provenance("intent", "approved"));
+        var windowModel = With(coreWindow) with { NativeIds = committed.NativeIds.Append(new KeyValuePair<Guid, string>(coreN1, N1)).ToDictionary(pair => pair.Key, pair => pair.Value) };
+        var windowSame = MirrorDrift.Compare(Snap(wall1, wall2, door, floor, window), windowModel);
+        Check(!windowSame.HasDrift && windowSame.Summary.Unchanged == 5, "a window whose Core dependencies list host before level is unchanged", windowSame.ToJson());
+        var windowMoved = MirrorDrift.Compare(Snap(wall1, wall2, door, floor, window), windowModel with { Project = windowModel.Project with { Elements = windowModel.Project.Elements.Select(element => element.Id == coreN1 ? element with { Dependencies = new[] { coreL, coreW1 } } : element).ToArray() } });
+        var hostField = windowMoved.Findings.SingleOrDefault()?.Fields;
+        Check(hostField is not null && hostField.Count == 1 && hostField[0] == new MirrorDriftField("host", W1, W2, null), "a window on another host is changed in its host field", windowMoved.ToJson());
+        var doorRehosted = MirrorDrift.Compare(MirrorSnapshotMapper.Map(observation), With(CoreElement(CoreD1) with { Dependencies = new[] { CoreW2, coreL } }));
+        Check(doorRehosted.Findings.SingleOrDefault()?.Fields.Select(field => field.Field).SequenceEqual(new[] { "host" }) == true, "a door with another host in Core is changed only in host", doorRehosted.ToJson());
+        var otherLevel = Guid.Parse("c0000000-0000-4000-8000-0000000000ff");
+        var levelChanged = MirrorDrift.Compare(MirrorSnapshotMapper.Map(observation), With(CoreElement(coreW1) with { Dependencies = new[] { otherLevel } }));
+        Check(levelChanged.Findings.SingleOrDefault()?.Fields.Select(field => field.Field).SequenceEqual(new[] { "level", "dependencies" }) == true,
+            "a wall depending on an unknown element reports its level and dependencies", levelChanged.ToJson());
+
+        // (2)+(3) A pristine RoomCompiler model: spaces list only walls, plan/schedule/sheet are not comparable.
+        var roomId = Guid.Parse("d0000000-0000-4000-8000-000000000001");
+        var room = RoomCompiler.Compile(Guid.Parse("a0000000-0000-4000-8000-000000000001"), 2, new RoomIntent(roomId, 4, 3, 3, 0.2, 0, 0, "m", new Provenance("intent", "approved")));
+        var roles = new[] { "level", "south", "east", "north", "west", "space", "plan", "schedule", "sheet" };
+        var uids = roles.Select((role, i) => (role, uid: role == "level" ? L1 : P + (0xa001 + i).ToString("x8"))).ToDictionary(item => item.role, item => item.uid);
+        var roomModel = new MirrorCommittedModel(Doc, room, roles.ToDictionary(role => RoomCompiler.Id(roomId, role), role => uids[role]));
+        MirrorObservedElement RoomWall(string role, double ax, double ay, double bx, double by) => Wall(wall1, uids[role], ax, ay, bx, by);
+        MirrorObservedElement Room(params string[] bounding) => new(MirrorCategories.Room, uids["space"])
+        {
+            LevelUid = L1,
+            Loops = new[] { new MirrorLoop(new[] { new MirrorPoint(200, 200), new MirrorPoint(4200, 200), new MirrorPoint(4200, 3200), new MirrorPoint(200, 3200) }, false, bounding.Select(role => uids[role]).ToArray()) },
+        };
+        var roomWalls = new[] { RoomWall("south", 100, 100, 4300, 100), RoomWall("east", 4300, 100, 4300, 3300), RoomWall("north", 4300, 3300, 100, 3300), RoomWall("west", 100, 3300, 100, 100) };
+        var roomSnapshot = MirrorSnapshotMapper.Map(observation with { Elements = roomWalls.Append(Room("west", "north", "east", "south")).ToArray() });
+        var pristine = MirrorDrift.Compare(roomSnapshot, roomModel);
+        Check(!pristine.HasDrift && pristine.Summary.Unchanged == 6 && pristine.Summary.NotComparable == 3 && pristine.Summary.Drift == 0,
+            "a pristine RoomCompiler model has no drift: the wall-only space matches and plan, schedule and sheet are not comparable", pristine.ToJson());
+        Check(pristine.NotComparable.Select(entry => (entry.ElementKind, entry.UniqueId, entry.Reason)).SequenceEqual(new[] { ("plan", uids["plan"], MirrorDrift.KindNotExported), ("schedule", uids["schedule"], MirrorDrift.KindNotExported), ("sheet", uids["sheet"], MirrorDrift.KindNotExported) }),
+            "not comparable elements are listed by kind with their UniqueId", pristine.ToJson());
+        using (var parsed = JsonDocument.Parse(pristine.ToJson()))
+            Check(parsed.RootElement.GetProperty("not_comparable").EnumerateArray().All(entry => entry.GetProperty("classification").GetString() == MirrorDriftClasses.NotComparable), "not comparable entries are classified in JSON");
+        // An IntentCompiler-style space (level first, walls in layout order) matches too.
+        var spaceId = RoomCompiler.Id(roomId, "space");
+        var withLevel = roomModel with { Project = room with { Elements = room.Elements.Select(element => element.Id == spaceId ? element with { Dependencies = new[] { RoomCompiler.Id(roomId, "level") }.Concat(element.Dependencies.Reverse()).ToArray() } : element).ToArray() } };
+        Check(!MirrorDrift.Compare(roomSnapshot, withLevel).HasDrift, "a space listing its level and walls in another order is unchanged");
+        var openRoom = MirrorDrift.Compare(MirrorSnapshotMapper.Map(observation with { Elements = roomWalls.Append(Room("west", "north", "south")).ToArray() }), roomModel);
+        var spaceField = openRoom.Findings.SingleOrDefault()?.Fields;
+        Check(spaceField is not null && spaceField.Count == 1 && spaceField[0].Field == "bounding_walls", "a space missing one bounding wall is changed in bounding_walls", openRoom.ToJson());
+
+        // Angle wrap near +-180 and a reversed axis.
+        var nearPi = With(CoreElement(CoreW2) with { GeometryMetres = new[] { 5, 0, 0, 0.0001, 3, 0.2 } });
+        Check(!MirrorDrift.Compare(Snap(wall1, Wall(wall2, W2, 5000, 0, 0, -0.1), door, floor), nearPi).HasDrift, "axis directions either side of 180 degrees are compared across the wrap");
+        var reversed = MirrorDrift.Compare(Snap(wall1, Wall(wall2, W2, 5000, 4000, 5000, 0), door, floor), committed).Findings.Single();
+        Check(reversed.Fields.Select(field => field.Field).SequenceEqual(new[] { "ay", "by", "direction" }) && reversed.Fields[2].Delta == "180.0000", "a reversed wall axis is a 180 degree direction change", string.Join(";", reversed.Fields));
+
+        // (11) Case-duplicate UniqueIds in a snapshot reply are refused.
+        var baselineJson = MirrorSnapshotMapper.Map(observation).ToJson();
+        Check(Code(() => MirrorDrift.ParseSnapshot(baselineJson.Replace("\"unique_id\":\"" + W2 + "\"", "\"unique_id\":\"" + W1.ToUpperInvariant() + "\"", StringComparison.Ordinal))) == MirrorDrift.SnapshotInvalidCode,
+            "a snapshot reply with a UniqueId repeated ignoring case is refused");
+        // (10) Non-Guid map keys are reported.
+        Check(MirrorDrift.Compare(MirrorSnapshotMapper.Map(observation), committed).Summary.IgnoredMapKeys == 1 && Code(() => MirrorCommittedModel.Parse("{\"document_unique_id\":\"x\",\"project\":{},\"map\":{\"a\":1}}")) == MirrorDrift.ModelInvalidCode,
+            "ignored map keys are counted and non-string map values refused");
+
+        // Culture independence and more permutations.
+        var expected = MirrorDrift.Compare(drifted, committed, reply, new MirrorDriftOptions(LengthToleranceMm: 0.25, AngleToleranceDeg: 0.05, JournalAfterSequence: 4)).ToJson();
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            var german = MirrorDrift.Compare(drifted, committed, reply, new MirrorDriftOptions(LengthToleranceMm: 0.25, AngleToleranceDeg: 0.05, JournalAfterSequence: 4)).ToJson();
+            Check(german == expected && expected.Contains("\"length_tolerance_mm\":0.250,", StringComparison.Ordinal), "the report is byte-identical under de-DE", german);
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = culture; }
+        var random = new Random(1234);
+        var all = true;
+        for (var round = 0; round < 8; round++)
+        {
+            var shuffledModel = committed with
+            {
+                Project = committed.Project with { Elements = committed.Project.Elements.OrderBy(_ => random.Next()).ToArray() },
+                NativeIds = committed.NativeIds.OrderBy(_ => random.Next()).ToDictionary(pair => pair.Key, pair => pair.Value),
+            };
+            var shuffledReply = reply with { Entries = reply.Entries.OrderBy(_ => random.Next()).ToArray() };
+            var shuffledSnapshot = MirrorSnapshotMapper.Map(observation with { Elements = new[] { floor, Wall(wall1, W3, 0, 0, 0, 4000), Wall(wall2, W2, 5050, 0, 5050, 4000), wall1 }.OrderBy(_ => random.Next()).ToArray() });
+            all &= MirrorDrift.Compare(shuffledSnapshot, shuffledModel, shuffledReply, new MirrorDriftOptions(LengthToleranceMm: 0.25, AngleToleranceDeg: 0.05, JournalAfterSequence: 4)).ToJson() == expected;
+        }
+        Check(all, "eight random permutations of model, map, journal and snapshot give byte-identical reports");
     }
 }
