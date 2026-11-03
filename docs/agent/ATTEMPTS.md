@@ -101,3 +101,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 
 ## C04 catalogue owner session, headless gate (relay68)
 - Attempt1: hypothesis hashtable members read with dot syntax return $null under Set-StrictMode Latest → test-catalogue-session failed on core and core-windows ("property 'Replayed' cannot be found") → optional keys read by index (3c79048). Same oracle then passed on all 8 jobs. Job logs and artifacts are not reachable from the agent session (blob host 403); verify.ps1 now annotates the failing gate with its log tail.
+
+## Relay139 (cloud)
+- P1-02 Attempt1: hypothesis a core comment naming the add-in path trips the harness "Core dependency boundary" gate (`runtimes/` in core) → reworded comment (2b1ac32). Attempt2 (review round): spec id literals containing the vendor name trip the same gate → match spec ids by shape (4a51ca6). No test changed.
+- P3-02 Attempt1: hypothesis test locals named `args` clash with the implicit top-level-statements `args` (CS0136) → renamed to `values` (6198975). Golden output hash pinned from CI output (regression pin, 9e0884c).
+- P8-01: no failed attempts.

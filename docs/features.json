@@ -277,7 +277,7 @@
         "docs/architecture/adr/0007-cross-store-recovery.md"
       ],
       "blocker": null,
-      "scope": "ADR0007 option A: fail-closed IFC↔Core reconcile, replays only the latest one-revision gap; crash-injection tests at six points, zero-write hash snapshots, real IFC CLI tests on Ubuntu CI 40019034003. Not covered: native Revit path (C8/C9), Windows/OneDrive rename/fsync semantics, OneDrive conflict-copy and placeholder refusal (R03) fails closed in Core and IFC folders, CLI included; verified on Ubuntu/Windows/macOS CI 40033588216 with injected attributes, not against a real OneDrive client."
+      "scope": "ADR0007 option A: fail-closed IFC\u2194Core reconcile, replays only the latest one-revision gap; crash-injection tests at six points, zero-write hash snapshots, real IFC CLI tests on Ubuntu CI 40019034003. Not covered: native Revit path (C8/C9), Windows/OneDrive rename/fsync semantics, OneDrive conflict-copy and placeholder refusal (R03) fails closed in Core and IFC folders, CLI included; verified on Ubuntu/Windows/macOS CI 40033588216 with injected attributes, not against a real OneDrive client."
     },
     {
       "id": "ifc-incremental-vs-rebuild-baseline",
@@ -399,7 +399,7 @@
         "core/Bim.Core/IntentJson.cs",
         "tests/intent/Program.cs"
       ],
-      "blocker": "door/window have no GeometryCodec arity; not yet bridged to Revit catalogue commands (P3-02); shared walls need one wall type.",
+      "blocker": "door/window have no GeometryCodec arity; bridged to catalogue commands by P3-02 (plan-to-revit-commands); no plan runner yet (P3-03); shared walls need one wall type.",
       "scope": "P3-01: multi-room layout intent AST (levels, wall types, rectangular rooms, openings on sides or shared walls) compiled deterministically to existing BIM-IR records; shared walls emitted once, stable SHA ids from intent keys incl. neighbour-keyed stretches, thick-body wall clash checks, clear-span opening containment, minimal Compiler.Diff on one-room edits; strict canonical JSON. CI 41530804027."
     },
     {
@@ -448,7 +448,7 @@
         "requirements/rhino.txt"
       ],
       "blocker": "Never opened in real Rhino; no arcs/openings (not in the Core codec); documentation items are origin markers; .3dm bytes not reproducible; Linux CI only.",
-      "scope": "P8-02: BIM-IR JSON <-> .3dm via rhino3dm 8.17.0 (MIT) without Rhino: layers, ids as object ids, geometry read back from Rhino geometry, metres/millimetres, stable export→import→export, 26+ refusals (foreign, moved, precision, malformed). 60 tests on the real library, CI 41548519960."
+      "scope": "P8-02: BIM-IR JSON <-> .3dm via rhino3dm 8.17.0 (MIT) without Rhino: layers, ids as object ids, geometry read back from Rhino geometry, metres/millimetres, stable export\u2192import\u2192export, 26+ refusals (foreign, moved, precision, malformed). 60 tests on the real library, CI 41548519960."
     },
     {
       "id": "revit-catalogue-v2",
@@ -521,7 +521,7 @@
         "tests/skills/Program.cs"
       ],
       "blocker": "Several values are marked to-verify (heights, illumination/ventilation ratios, local classes) and need review by the owner against Ley 6.100 and its RT; BIM-IR rooms carry no names or openings, so light/ventilation rules are not evaluable on model data; clear height is approximated from wall height; not yet wired into the space planner.",
-      "scope": "P5-02: CABA Código de Edificación room rules (areas, minimum sides, heights, illumination/ventilation ratios) with article citations and cited/to-verify confidence, validator over BIM-IR rooms with pass/fail/not_evaluable findings, unmatched rooms block compliance, parameter overrides within bounds. CI 41576795164."
+      "scope": "P5-02: CABA C\u00f3digo de Edificaci\u00f3n room rules (areas, minimum sides, heights, illumination/ventilation ratios) with article citations and cited/to-verify confidence, validator over BIM-IR rooms with pass/fail/not_evaluable findings, unmatched rooms block compliance, parameter overrides within bounds. CI 41576795164."
     },
     {
       "id": "ifc-ids-checks",
@@ -534,6 +534,40 @@
       ],
       "blocker": "Subset of IDS 1.0 only (no partOf/material facets, quantities, bounds/length restrictions, subtype matching); not run against the official buildingSMART IDS test corpus or XSD; unsupported features fail closed.",
       "scope": "P10-01: IDS 1.0 subset (entity, attribute, property, classification facets; simpleValue/enumeration/pattern restrictions; cardinalities) checked against IFC exported by the IFC runtime, deterministic JSON report, exit 0/1/2, DOCTYPE refused, SI unit handling. CI 41575714191 (ifc job + 3-OS portable)."
+    },
+    {
+      "id": "revit-element-query",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsQuery.cs",
+        "runtimes/revit-native/CommandsExecutorQuery.cs",
+        "tests/revit-commands/ElementQuery.cs"
+      ],
+      "blocker": "Collector compiled only (native-build); never run in Revit \u2014 level resolution via LevelId vs level parameters, spec id shapes and display texts unverified; level-only queries scan all model elements; no pagination cursor.",
+      "scope": "P1-02: read-only query.elements (category friendly name or OST_ name and/or level, 1\u201316 parameters instance-then-type, limit 1\u20135000, ascending ids, truncated/truncated_reason, 4 MiB UTF-8 reply budget, model categories only for level-only queries) and query.inspect (all instance/type parameters with storage type, spec, flags, typed units mm/m2/m3/deg via version-insensitive core routing, element-id refs with UniqueId); read permission, no transactions, MCP tools. Contracts unit-tested, executor compiled, CI 41584475032."
+    },
+    {
+      "id": "plan-to-revit-commands",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/PlanToCommands.cs",
+        "tests/plan-to-commands/Program.cs",
+        "docs/contracts/module-contracts.md"
+      ],
+      "blocker": "Catalogue v1 cannot create levels (levels are preconditions checked against query.levels); host wall UniqueIds filled from created[0] (unverified against the executor); opening sizes come from the family type; openings on existing walls, updates, deletes and floors not translated; no runner (P3-03).",
+      "scope": "P3-02: ExecutionPlan/compiled Project \u2192 ordered catalogue v1 commands (query.levels, wall.create, opening.place, room.create) with SHA-256 operation ids over plan, document, canonical args and inputs; every command parsed by RevitCommandProtocol; explicit unsupported codes, every operation accounted; level precondition checker; Envelope placeholder substitution; byte-identical JSON pinned and culture-invariant. CI 41586824187."
+    },
+    {
+      "id": "ifc-import-roundtrip",
+      "status": "integration-tested (ifc)",
+      "evidence": [
+        "runtimes/ifc/ifc_import.py",
+        "runtimes/ifc/worker.py",
+        "tests/ifc/test_import.py",
+        "docs/ifc.md"
+      ],
+      "blocker": "Only own-exporter and worker-authored IFC tested (no third-party authoring-tool files); horizontally extruded openings (typical Revit/ArchiCAD exports), layered/clipped/curved walls and Brep bodies are unmapped; provenance is never carried through IFC (imports are observed).",
+      "scope": "P8-01: IFC storeys/walls/doors/windows (fill\u2192opening\u2192void to a mapped wall)/spaces read into existing BIM-IR with full placement composition and unit conversion, unmapped list with reasons and dependency cascade, range/precision/size refusals; deterministic validated IFC4 exporter; export\u2192import\u2192export stable (DATA section byte-identical). CI 41588411915 (ifc + ifc-portable on 3 OS)."
     }
   ]
 }

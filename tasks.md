@@ -73,9 +73,10 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
 | P1-01 | Pipe listener survives per-connection faults | 🟢 | — | runtimes/revit-native/App.cs | CI green; C04 re-run reaches 17 steps | target compiled |
-| P1-02 | Generic element query and inspect commands | ⏳ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | query.elements by category/level with parameters; contract tests; compiles | target unit-tested |
+| P1-02 | Generic element query and inspect commands | ✅ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | query.elements by category/level with parameters; contract tests; compiles | unit-tested contracts + compiled executor (relay139, CI 41584475032; 4 MiB reply budget; not run in Revit) |
 | P1-03 | MCP server setup for the Claude app | ✅ | — | docs/mcp-setup.md; scripts/install-mcp.ps1 | one-command install registers the MCP server in Claude Desktop config with a backup; tested on a temp config | unit-tested (relay136, CI 41550944034; not run on the owner's Claude Desktop) |
 | P1-04 | Catalogue smoke re-run in Revit | 🔒 | P1-01 | owner session (fix ed5c759 on main; owner re-runs -Catalogue) | owner runs -Catalogue; 17/17 | target verified-in-revit |
+| P1-05 | Modify and delete commands under the copies guard | ⏳ | P1-02 | core/Bim.Core/RevitCommandsModify*; runtimes/revit-native/CommandsExecutorModify* | element.set_parameter and element.delete with UniqueId targets, typed units, refused on non-copy documents, receipts and dry-run change report; contract tests; compiles | target compiled |
 
 ### Phase 2 — semantic state and mirror
 
@@ -90,7 +91,9 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
 | P3-01 | Intent AST beyond one room | ✅ | — | core/Bim.Core/Intent* | multi-room layout intents with wall types and openings compile to BIM-IR deterministically; tests | unit-tested (relay135, CI 41530804027) |
-| P3-02 | Compiler to catalogue bridge | ⏳ | P3-01 | core/Bim.Core/PlanToCommands* | an ExecutionPlan becomes ordered catalogue v1 commands with operation ids; tests | target unit-tested |
+| P3-02 | Compiler to catalogue bridge | ✅ | P3-01 | core/Bim.Core/PlanToCommands* | an ExecutionPlan becomes ordered catalogue v1 commands with operation ids; tests | unit-tested (relay139, CI 41586824187; levels are preconditions, not created) |
+| P3-03 | Plan runner with step envelopes | ⏳ | P3-02 | core/Bim.Core/PlanRunner*; tests/plan-to-commands | runs a RevitCommandPlan step by step through an injected transport, fills host placeholders from created[0], checks level preconditions against query.levels, stops on first failure with a resumable report; fake-transport tests | target unit-tested |
+| P3-04 | Localized validation of plan changes | ⏳ | P3-02 | core/Bim.Core/LocalValidation*; tests/plan-to-commands | after a Compiler.Diff, only elements in the affected closure (graph neighbours) are revalidated; result equals full validation on a corpus; tests | target unit-tested |
 
 ### Phase 4 — documentation engine
 
@@ -126,7 +129,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P8-01 | IFC import to BIM-IR and roundtrip | ⏳ | — | runtimes/ifc; adapters/ifc | IFC walls/openings/spaces read to BIM-IR; export→import→export stable; CI on 3 OS | target integration-tested (ifc) |
+| P8-01 | IFC import to BIM-IR and roundtrip | ✅ | — | runtimes/ifc; adapters/ifc | IFC walls/openings/spaces read to BIM-IR; export→import→export stable; CI on 3 OS | integration-tested (ifc) on ubuntu/windows/macos (relay139, CI 41588411915; own exporter output only, no third-party IFC) |
 | P8-02 | Rhino .3dm adapter without Rhino | ✅ | — | adapters/rhino (new) | rhino3dm (MIT) write/read of BIM-IR geometry; tests | unit-tested against real rhino3dm 8.17.0 on Linux (relay136, CI 41548519960; never opened in Rhino) |
 | P8-03 | Blender adapter | 🔒 | — | adapters/blender | bpy exporter script; execution needs Blender installed | target described |
 
@@ -151,22 +154,22 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 36/54 done (66.7 %)
+Progress: 39/57 done (68.4 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
 - Relay7 batch — platform coverage, rebuild baseline, recovery guard: 3/3
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
 - Revit command surface — catalogue v1 (architecture): 3/5
-- Phase 1 — native kernel: 1/4
+- Phase 1 — native kernel: 2/5
 - Phase 2 — semantic state and mirror: 2/3
-- Phase 3 — incremental compiler: 1/2
+- Phase 3 — incremental compiler: 2/4
 - Phase 4 — documentation engine: 1/2
 - Phase 5 — skills and design systems: 2/3
 - Phase 6 — CAD and requirements: 2/3
 - Phase 7 — generative kernels: 1/2
-- Phase 8 — Rhino, Blender and IFC: 1/3
+- Phase 8 — Rhino, Blender and IFC: 2/3
 - Phase 9 — Revit parity: 2/5
 - Phase 10 — global production: 2/3
-Next ready: P1-02, P2-03, P3-02, P4-02, P5-03, P6-02, P7-02, P8-01
+Next ready: P1-05, P2-03, P3-03, P3-04, P4-02, P5-03, P6-02, P7-02
 
