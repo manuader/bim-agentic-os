@@ -130,17 +130,17 @@ static class CatalogueWallAttachChecks
             "roofs, floors, ceilings and toposolids are attachment targets");
         Check(CommandRulesWallAttach.TargetKind("OST_Walls") is null && CommandRulesWallAttach.TargetKind("OST_Doors") is null && CommandRulesWallAttach.TargetKind(null) is null, "walls, doors and uncategorized elements are not targets");
         Check(Thrown(() => CommandRulesWallAttach.CheckTarget("OST_Roofs")) is null && CommandRulesWallAttach.CheckTarget("OST_Roofs") == "roof", "CheckTarget returns the kind of a roof");
-        Check(Thrown(() => CommandRulesWallAttach.CheckTarget("OST_Doors")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.target_uid" } door && door.Detail.Contains("roof", StringComparison.Ordinal), "a door target is args_invalid naming the accepted kinds");
+        Check(Thrown(() => CommandRulesWallAttach.CheckTarget("OST_Doors")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.target_uid" } door && door.Detail!.Contains("roof", StringComparison.Ordinal), "a door target is args_invalid naming the accepted kinds");
         Check(Thrown(() => CommandRulesWallAttach.CheckTarget(null)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.target_uid" }, "a target without category is args_invalid");
         Check(Thrown(() => CommandRulesWallAttach.CheckApi(true)) is null, "an available attachment API passes");
-        Check(Thrown(() => CommandRulesWallAttach.CheckApi(false)) is { Code: RevitCommandCodes.TransactionFailed } api && api.Detail.Contains("2025.3", StringComparison.Ordinal), "a Revit without Wall.AddAttachment fails closed naming Revit 2025.3");
+        Check(Thrown(() => CommandRulesWallAttach.CheckApi(false)) is { Code: RevitCommandCodes.TransactionFailed } api && api.Detail!.Contains("2025.3", StringComparison.Ordinal), "a Revit without Wall.AddAttachment fails closed naming Revit 2025.3");
         Check(Thrown(() => CommandRulesWallAttach.CheckValidTarget(null)) is null && Thrown(() => CommandRulesWallAttach.CheckValidTarget(true)) is null, "a valid (or unchecked) target passes");
         Check(Thrown(() => CommandRulesWallAttach.CheckValidTarget(false)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.target_uid" }, "a target Revit's IsValidTargetAttachment refuses is args_invalid");
         Check(CommandRulesWallAttach.AttachedParameter("top") == "WALL_TOP_IS_ATTACHED" && CommandRulesWallAttach.AttachedParameter("base") == "WALL_BOTTOM_IS_ATTACHED", "attachment flags are WALL_TOP_IS_ATTACHED and WALL_BOTTOM_IS_ATTACHED");
         Check(CommandRulesWallAttach.ApiLocation("top") == "Top" && CommandRulesWallAttach.ApiLocation("base") == "Base", "locations map to AttachmentLocation.Top and AttachmentLocation.Base");
         Check(!CommandRulesWallAttach.AlreadyAttached(Array.Empty<string>(), RoofUid, "top"), "a wall with no attachment at the location is attached");
         Check(CommandRulesWallAttach.AlreadyAttached(new[] { RoofUid.ToUpperInvariant() }, RoofUid, "top"), "a wall already attached to the target is a no-op (UniqueIds ignore hex case)");
-        Check(Thrown(() => CommandRulesWallAttach.AlreadyAttached(new[] { OtherUid }, RoofUid, "top")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.target_uid" } other && other.Detail.Contains(OtherUid, StringComparison.Ordinal) && other.Detail.Contains("top", StringComparison.Ordinal),
+        Check(Thrown(() => CommandRulesWallAttach.AlreadyAttached(new[] { OtherUid }, RoofUid, "top")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.target_uid" } other && other.Detail!.Contains(OtherUid, StringComparison.Ordinal) && other.Detail!.Contains("top", StringComparison.Ordinal),
             "a wall whose top is attached to another element is refused naming it (Revit allows one attachment per location)");
     }
 
