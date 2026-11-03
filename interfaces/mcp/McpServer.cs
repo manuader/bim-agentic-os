@@ -40,7 +40,7 @@ public sealed class McpServer
     const int InternalError = -32603;
 
     sealed record ParameterSpec(string Name, string Type, string Description);
-    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null, PermissionLevel? Permission = null);
+    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null, PermissionLevel? Permission = null, bool Destructive = false);
 
     static readonly ToolSpec[] CoreTools =
     [
@@ -118,7 +118,8 @@ public sealed class McpServer
         [new ParameterSpec("pipe_name", "string", ""), new ParameterSpec("operation_id", "string", ""), new ParameterSpec("document", "object", ""), new ParameterSpec("args", "object", "")],
         arguments => RevitCall(spec, arguments),
         RevitInputSchema(spec),
-        LevelOnCopy(spec));
+        LevelOnCopy(spec),
+        RevitCommandCatalogue.IsDestructive(spec.Name));
 
     public const string PermissionMetaKey = "bim-agentic-os/permission_level";
 
@@ -305,11 +306,12 @@ public sealed class McpServer
         if (tool.Permission is { } level)
         {
             // Tool annotations and _meta postdate the advertised 2024-11-05 protocol: best-effort hints that clients
-            // may ignore. Writes are additive and replay by operation_id, hence not destructive and idempotent.
+            // may ignore. Writes replay by operation_id, hence idempotent; they are additive (not destructive) except the
+            // P1-05 commands that change or delete existing elements (RevitCommandCatalogue.IsDestructive).
             var annotations = new JsonObject { ["readOnlyHint"] = level == PermissionLevel.Read };
             if (level != PermissionLevel.Read)
             {
-                annotations["destructiveHint"] = false;
+                annotations["destructiveHint"] = tool.Destructive;
                 annotations["idempotentHint"] = true;
             }
             listed["annotations"] = annotations;
