@@ -82,18 +82,22 @@ public static class RevitParameterUnits
     // id) and anything else as Revit's raw number without a unit.
     public const string Display = "display";
 
-    // Routes a parameter data type id (ForgeTypeId text, e.g. autodesk.spec.aec:length-2.0.0) to its typed unit,
-    // ignoring the trailing schema version; null for no spec (empty or null id).
+    // Routes a parameter data type id (ForgeTypeId text: <vendor>.spec.aec:<name>-<version>) to its typed unit. The
+    // trailing schema version is ignored; any other schema (sub-discipline specs such as spec.aec.structural, string
+    // specs) or name is Display. Null for no spec (empty or null id). Core names no vendor, so the one-word vendor
+    // namespace is matched by shape.
+    static readonly System.Text.RegularExpressions.Regex AecSpec = new(@"\A[a-z]+\.spec\.aec:(?<name>[A-Za-z]+)(-[0-9]+(\.[0-9]+)*)?\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
     public static string? ForSpec(string? specTypeId)
     {
         if (string.IsNullOrEmpty(specTypeId)) return null;
-        var unversioned = System.Text.RegularExpressions.Regex.Replace(specTypeId, @"-[0-9]+(\.[0-9]+)*\z", "", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-        return unversioned switch
+        var match = AecSpec.Match(specTypeId);
+        return !match.Success ? Display : match.Groups["name"].Value switch
         {
-            "autodesk.spec.aec:length" => Millimetres,
-            "autodesk.spec.aec:area" => SquareMetres,
-            "autodesk.spec.aec:volume" => CubicMetres,
-            "autodesk.spec.aec:angle" => Degrees,
+            "length" => Millimetres,
+            "area" => SquareMetres,
+            "volume" => CubicMetres,
+            "angle" => Degrees,
             _ => Display,
         };
     }
