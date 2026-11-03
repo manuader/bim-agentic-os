@@ -1074,3 +1074,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 22:17Z integration a996f81 CI 41726704067 success (9/9) → main fast-forwarded. P1-04/C04, P1-01 ✅ (owner 17/17); P1-06, P5-06, P2-04, P10-05 ✅; new P1-07 command.batch, P1-08 document.save_copy ⏳ (Phase 1 batch). Progress 58/77 (75.3 - 22:17Z integration a996f81 CI 41726704067 success (9/9) → main fast-forwarded. P1-04/C04, P1-01 ✅ (owner 17/17); P1-06, P5-06, P2-04, P10-05 ✅; new P1-07 command.batch, P1-08 document.save_copy ⏳ (Phase 1 batch). Progress 58/77 (75.3 %). Worktrees retired (branches on origin).
 - CLOSE a) 4 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-03T22:17:32Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P9-03 guarded free path or P9-04 parity census (Phase 9), P8-05/P8-06/P8-07 (Phase 8), P3-04 localized validation (Phase 3); then P4-03, P6-05, P7-04/P7-05, P1-07/P1-08, P2-05, P5-04/P5-05, P10-04. Do not overlap the owner chat's roof/family/toposolid command work. Owner: one -Catalogue run (81 steps) on a test copy; CABA escritorio/estudio/biblioteca class; Uniclass licence; N21 run 3.
+
+## Relay147 — 2026-11-03T22:53:12Z (Claude, cloud scheduled)
+- 22:53Z LOCK taken (was FREE since relay145 2026-11-03T22:17:32Z).
