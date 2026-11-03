@@ -369,6 +369,9 @@ try
         }
         finally { CultureInfo.CurrentCulture = original; CultureInfo.CurrentUICulture = original; }
     }
+
+    // ---- P3-03 plan runner (PlanRunnerTests.cs) ----
+    PlanRunnerTests.Run(result, (condition, name, detail) => Check(condition, name, detail));
 }
 catch (Exception error)
 {
