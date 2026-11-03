@@ -23,7 +23,7 @@ try {
         }
         if (!$Dotnet) { throw 'net8 SDK missing. Install .NET 8 SDK or explicitly use -HostOnly; target build remains unverified.' }
         Invoke-EvidenceCommand sdk $Dotnet @('--info') $evidence
-        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/typed-geometry','tests/evaluation','tests/Bim.Tests','tests/reconcile','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/integration/NativeReconcileGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp','tests/cli','tests/revit-commands','tests/integration/RevitCommandGuard.Tests','tests/graph','tests/brief','tests/audit','tests/bcf','tests/intent','tests/plan-to-commands','tests/skills','core/Bim.Generative','tests/generative','adapters/cad/Bim.Cad','tests/cad','tests/mirror-journal','adapters/gltf/Bim.Gltf','tests/gltf')) {
+        foreach ($project in @('core/Bim.Core','evaluation/Bim.Evaluation','adapters/ifc/Bim.Ifc.Compiler','interfaces/cli','tests/ifc-compiler','tests/typed-geometry','tests/evaluation','tests/Bim.Tests','tests/reconcile','tests/harness/Benchmark','tests/integration/FixtureGuard.Tests','tests/integration/CheckpointGuard.Tests','tests/integration/NativeRoomGuard.Tests','tests/integration/NativeReconcileGuard.Tests','tests/native-room','interfaces/mcp','tests/mcp','tests/cli','tests/revit-commands','tests/integration/RevitCommandGuard.Tests','tests/graph','tests/brief','tests/audit','tests/bcf','tests/intent','tests/plan-to-commands','tests/skills','core/Bim.Generative','tests/generative','adapters/cad/Bim.Cad','tests/cad','tests/mirror-journal','adapters/gltf/Bim.Gltf','tests/gltf','tests/classification')) {
             Invoke-EvidenceCommand ('build-' + ($project -replace '/', '-')) $Dotnet @('build',"$root/$project",'--configuration','Release','--warnaserror') $evidence
         }
         Invoke-EvidenceCommand evaluator-unit-health $Dotnet @('run','--project',"$root/tests/evaluation",'--configuration','Release','--no-build') $evidence
@@ -56,6 +56,7 @@ try {
         Invoke-EvidenceCommand bcf-tests $Dotnet @('run','--project',"$root/tests/bcf",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand mirror-journal-tests $Dotnet @('run','--project',"$root/tests/mirror-journal",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand gltf-tests $Dotnet @('run','--project',"$root/tests/gltf",'--configuration','Release','--no-build') $evidence
+        Invoke-EvidenceCommand classification-tests $Dotnet @('run','--project',"$root/tests/classification",'--configuration','Release','--no-build') $evidence
     }
     'Native acceptance is not executed by this engineering gate. Run tests/integration/native-room-ab.ps1 against a newly opted-in isolated licensed Revit fixture; require its actual report for any native acceptance claim.' | Tee-Object -FilePath "$evidence/native-status.log"
     "PASS available gates; evidence: $evidence"
