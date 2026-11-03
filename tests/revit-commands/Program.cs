@@ -401,6 +401,8 @@ try
     CatalogueFamiliesChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- Site commands: toposolid types, toposolids and toposolid subdivisions ----
     CatalogueSiteChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- Material and layered type creation (P9-06): material.create, wall_type.create, floor_type.create ----
+    CatalogueTypesChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- Owner project mode: which real .rvt may be opened with the command pipe (scripts/owner-open-project.ps1) ----
     OwnerProjectChecks.Run((condition, name, detail) => Check(condition, name, detail));
 

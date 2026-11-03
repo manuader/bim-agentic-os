@@ -188,6 +188,9 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["query.toposolid_types"]=()=>new JsonObject(),
     ["toposolid.create"]=()=>new JsonObject{["level"]="Level 1",["type"]="Toposolid 2000mm",["points"]=new JsonArray(new JsonArray(0,0,0),new JsonArray(30000,0,500),new JsonArray(30000,20000,4500),new JsonArray(0,20000,4000)),["comment"]="site"},
     ["toposolid.create_subdivision"]=()=>new JsonObject{["host_uid"]=McpUid,["outline"]=new JsonArray(new JsonArray(0,9000),new JsonArray(30000,9000),new JsonArray(30000,10500),new JsonArray(0,10500)),["material"]="Gravel"},
+    ["material.create"]=()=>new JsonObject{["name"]="Stone - Patagonian slate",["color"]=new JsonObject{["r"]=96,["g"]=92,["b"]=88},["transparency"]=0,["material_class"]="Stone"},
+    ["wall_type.create"]=()=>new JsonObject{["name"]="Cabin wall",["base_type"]="Generic - 200mm",["layers"]=new JsonArray(new JsonObject{["function"]="finish1",["material"]="Stone - Patagonian slate",["thickness_mm"]=30},new JsonObject{["function"]="structure",["material"]="Concrete Masonry Units",["thickness_mm"]=190})},
+    ["floor_type.create"]=()=>new JsonObject{["name"]="Cabin floor",["base_type"]="Generic 150mm",["layers"]=new JsonArray(new JsonObject{["function"]="finish1",["material"]="Wood - Flooring",["thickness_mm"]=20},new JsonObject{["function"]="structure",["material"]="Concrete - Cast-in-Place",["thickness_mm"]=150})},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
@@ -276,6 +279,24 @@ foreach(var (tool,readOnly) in new[]{("revit_query_toposolid_types",true),("revi
     var onReal=Guarded(tool,sampleArgs[spec.Name](),McpReal);
     if(readOnly) Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,tool+" is read-only: forwarded to the pipe even on a real project");
     else Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+}
+// P9-06: material and layered type creation are generated write-copies tools, additive (destructiveHint false), refused on a real project before the pipe.
+Check(RevitCommandCatalogue.TypeCommands.Select(spec=>spec.Name).SequenceEqual(new[]{"material.create","wall_type.create","floor_type.create"}) && RevitCommandCatalogue.TypeCommands.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the P9-06 type commands, all in the catalogue enumeration");
+foreach(var tool in new[]{"revit_material_create","revit_wall_type_create","revit_floor_type_create"}) {
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && listed?["annotations"]?["destructiveHint"]?.GetValue<bool>()==false && listed?["annotations"]?["idempotentHint"]?.GetValue<bool>()==true && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies","type tool "+tool+" is listed write-copies, additive (destructiveHint false), idempotent");
+    var spec=RevitCommandCatalogue.All.SingleOrDefault(c=>c.ToolName==tool);
+    if(spec is null) continue;
+    var before=forwardedLines.Count;
+    var onReal=Guarded(tool,sampleArgs[spec.Name](),McpReal);
+    Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+}
+{
+    var before=forwardedLines.Count;
+    var badColor=Guarded("revit_material_create",new JsonObject{["name"]="Stone",["color"]=new JsonObject{["r"]=300,["g"]=0,["b"]=0}},McpCopy);
+    Check(IsError(badColor) && FailureCode(badColor)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before,"revit_material_create with a colour channel above 255 is args_invalid before the pipe");
+    var noCore=Guarded("revit_wall_type_create",new JsonObject{["name"]="Cladding only",["base_type"]="Generic - 200mm",["layers"]=new JsonArray(new JsonObject{["function"]="finish1",["material"]="Stone",["thickness_mm"]=30})},McpCopy);
+    Check(IsError(noCore) && FailureCode(noCore)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before,"revit_wall_type_create without a structure layer is args_invalid before the pipe");
 }
 foreach(var tool in new[]{"revit_query_elements","revit_query_inspect"}) {
     var listed=tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!;
