@@ -35,6 +35,8 @@ public static partial class OwnerProjectGuard
         return null;
     }
 
-    [GeneratedRegex(@"\.[0-9]{4}\.rvt\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex BackupName();
+    // A plain static Regex, not [GeneratedRegex]: scripts/check-native-source.ps1 compiles Core with Add-Type, which runs
+    // no source generators (CS8795 on the owner's machine, 2026-11-03).
+    static readonly Regex BackupNameRegex = new(@"\.[0-9]{4}\.rvt\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    static Regex BackupName() => BackupNameRegex;
 }
