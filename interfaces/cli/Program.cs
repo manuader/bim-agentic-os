@@ -59,6 +59,15 @@ try {
             catch(IOException e) { Console.WriteLine(RevitCommandResponse.Failure(RevitCommandCodes.EnvelopeInvalid,"envelope",e.Message).ToJson()); Environment.ExitCode=1; break; }
             var revitResult=RevitCommandService.Run(revitPipe!,revitEnvelope,revitPolicy,RevitCommandService.PipeTransport);
             Console.WriteLine(revitResult.Line); if(revitResult.IsError)Environment.ExitCode=1; break;
-        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | native request.json process-pipe-name | revit-command envelope.json process-pipe-name");
+        case "open-project-check":
+            // Owner project mode preflight (scripts/owner-open-project.ps1): may this .rvt be opened in a new child Revit
+            // with the command pipe? Same enabled roots as revit-command writes, read from this binary's repository; no pipe.
+            if(args.Length!=2) throw new ArgumentException("usage: open-project-check absolute-path.rvt");
+            RevitCommandPolicy projectPolicy;
+            try { projectPolicy=RevitCommandPolicy.ForRepository(AppContext.BaseDirectory); }
+            catch(RevitCommandException e) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Code,detail=e.Field+": "+e.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
+            if(OwnerProjectGuard.Check(args[1],projectPolicy,RevitFileSystemProbe.Real) is {} projectRefusal) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=projectRefusal.Code,detail=projectRefusal.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
+            Console.WriteLine(JsonSerializer.Serialize(new {status="succeeded",document_path=args[1],enabled_root=RevitCopiesGuard.MatchingRoot(args[1],projectPolicy)})); break;
+        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | native request.json process-pipe-name | revit-command envelope.json process-pipe-name | open-project-check absolute-path.rvt");
     }
 } catch(Exception e) {Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Message}));Environment.ExitCode=1;}

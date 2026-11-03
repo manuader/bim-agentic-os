@@ -12,6 +12,27 @@ public static class AddInGate
     // the opt-in variable validated it and completed. Otherwise a Revit that loads the manifest exposes nothing.
     public static bool PipeAllowed(string? configVariable, bool bootstrapCompleted) => !string.IsNullOrWhiteSpace(configVariable) && bootstrapCompleted;
 
+    // Owner project mode (scripts/owner-open-project.ps1): its own opt-in variable, read by ProjectBootstrap, which opens
+    // an existing enabled document instead of creating a fixture. Exactly one variable selects a bootstrap; none or both
+    // select nothing, so an ambiguous environment exposes no ExternalEvent and no pipe.
+    public const string ProjectConfigVariable = "BIM_AGENTIC_PROJECT_CONFIG";
+    public const string FixtureMode = "fixture";
+    public const string ProjectMode = "project";
+
+    public static string? StartupMode(string? testConfig, string? projectConfig)
+    {
+        bool test = !string.IsNullOrWhiteSpace(testConfig), project = !string.IsNullOrWhiteSpace(projectConfig);
+        return test == project ? null : test ? FixtureMode : ProjectMode;
+    }
+
+    // The config path of the selected mode (what PipeAllowed checks), else null.
+    public static string? ActiveConfig(string? testConfig, string? projectConfig) => StartupMode(testConfig, projectConfig) switch
+    {
+        FixtureMode => testConfig,
+        ProjectMode => projectConfig,
+        _ => null,
+    };
+
     // Of the pre-ADR0009 primitive operations only "inspect" reads; every other one (level.create, wall.create,
     // wall.axis.update, element.delete, batch, and anything unknown) is guarded as a write before it can run.
     public static bool IsLegacyRead(string? operation) => operation == "inspect";

@@ -401,6 +401,8 @@ try
     CatalogueFamiliesChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- Site commands: toposolid types, toposolids and toposolid subdivisions ----
     CatalogueSiteChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- Owner project mode: which real .rvt may be opened with the command pipe (scripts/owner-open-project.ps1) ----
+    OwnerProjectChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
@@ -656,6 +658,22 @@ try
     var badOwnerCli = CopyCli(FakeRepo("cli-bad-repo", "C:\\\n"));
     var (badAllowExit, badAllowOut) = CliAt(badOwnerCli, "revit-command", outsideWall, pipeName);
     Check(badAllowExit == 1 && FailureCode(badAllowOut) == RevitCommandCodes.AllowlistInvalid && JsonNode.Parse(badAllowOut)!["created"] is JsonArray && addIn.Received.Count == 3, "CLI with a too-broad owner file entry fails closed with the response shape", badAllowOut);
+    // open-project-check: the preflight scripts/owner-open-project.ps1 runs before it launches a child Revit. It reads the
+    // enabled roots of the repository the CLI binary lives in, like revit-command, and never touches a pipe.
+    var projectRoot = Directory.CreateDirectory(Path.Combine(work, "owner-projects")).FullName;
+    var ownedProject = Path.Combine(projectRoot, "BIM-Agentic-Test.rvt"); File.WriteAllText(ownedProject, "rvt");
+    var projectCli = CopyCli(FakeRepo("cli-project-repo", "# owner project\n" + projectRoot + "\n"));
+    var (projectExit, projectOut) = CliAt(projectCli, "open-project-check", ownedProject);
+    var projectJson = projectExit == 0 ? JsonNode.Parse(projectOut) : null;
+    Check(projectJson is not null && (string?)projectJson["status"] == "succeeded" && (string?)projectJson["document_path"] == ownedProject && (string?)projectJson["enabled_root"] == projectRoot && addIn.Received.Count == 3, "CLI open-project-check accepts a .rvt under a root of the owner file and names that root", projectExit + " " + projectOut);
+    var (projectDeniedExit, projectDeniedOut) = CliAt(projectCli, "open-project-check", Write("elsewhere.rvt", "rvt"));
+    Check(projectDeniedExit == 1 && FailureCode(projectDeniedOut) == RevitCommandCodes.DocumentNotEnabled, "CLI open-project-check refuses a .rvt outside the enabled roots", projectDeniedOut);
+    var (projectBadExit, projectBadOut) = CliAt(badOwnerCli, "open-project-check", ownedProject);
+    Check(projectBadExit == 1 && FailureCode(projectBadOut) == RevitCommandCodes.AllowlistInvalid, "CLI open-project-check fails closed on a too-broad owner file", projectBadOut);
+    var (projectRfaExit, projectRfaOut) = CliAt(projectCli, "open-project-check", Path.Combine(projectRoot, "Door.rfa"));
+    Check(projectRfaExit == 1 && FailureCode(projectRfaOut) == OwnerProjectGuard.NotRvt, "CLI open-project-check refuses anything but a .rvt", projectRfaOut);
+    var (projectUsageExit, projectUsageOut) = CliAt(projectCli, "open-project-check");
+    Check(projectUsageExit == 1 && (string?)JsonNode.Parse(projectUsageOut)!["status"] == "failed", "CLI open-project-check without a path fails", projectUsageOut);
     var invalidEnvelope = Envelope("wall.create", Wall(Arc3(0, 0, 2000, 0, 1000, 0)), repoFixture);
     var (invalidExit, invalidOut) = Cli("revit-command", Write("invalid.json", invalidEnvelope.ToJsonString()), pipeName);
     Check(invalidExit == 1 && FailureCode(invalidOut) == RevitCommandCodes.ArcCollinear && addIn.Received.Count == 3, "CLI refuses a collinear arc before the pipe", invalidOut);
