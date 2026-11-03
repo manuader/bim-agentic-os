@@ -176,7 +176,7 @@ $faces = @($full.steps | Where-Object { $_.key -like 'doc-dim-walls-*' })
 Assert ($faces.Count -eq 2 -and @($faces | Where-Object { $_.passed }).Count -eq 2 -and $faces[0].request.args.wall_face -eq 'interior' -and $faces[1].request.args.wall_face -eq 'exterior') 'wall dimensions on both faces'
 Assert (@($faces[1].comparisons | Where-Object { $_.check -like '*2 x espesor*' -and $_.ok -and $_.requested -eq 400 }).Count -eq 1) 'exterior and interior differ by twice the wall width'
 $section = @($full.steps | Where-Object { $_.key -eq 'views-section' })[0]
-Assert (@($section.comparisons | Where-Object { $_.check -like 'recorte*' -or $_.check -like 'origen*' }).Count -eq 3) 'section checks crop x/z spans and origin y'
+Assert (@($section.comparisons | Where-Object { $_.check -like 'recorte:*' -or $_.check -like 'origen:*' }).Count -eq 3) 'section checks crop x/z spans and origin y'
 Assert (@($full.steps | Where-Object { $_.key -eq 'm-comments' })[0].request.args.parameter.built_in -eq 'ALL_MODEL_INSTANCE_COMMENTS') 'Comments set by built-in id'
 Assert (@(@($full.steps | Where-Object { $_.key -eq 'q-params' })[0].request.args.parameters) -notcontains 'Comments') 'no localized parameter name in q-params'
 foreach ($key in @('m-readonly', 'm-delete-unconfirmed')) { $refusal = @($full.steps | Where-Object { $_.key -eq $key })[0]; Assert ($refusal.passed -and @($refusal.comparisons | Where-Object { $_.ok }).Count -eq 2) "$key checks field and detail" }
