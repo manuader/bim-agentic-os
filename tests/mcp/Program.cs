@@ -172,6 +172,12 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["structural_beam.create"]=()=>new JsonObject{["level"]="Level 2",["type"]="W12x26",["line"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(6000,0)}},
     ["foundation.create_isolated"]=()=>new JsonObject{["level"]="Level 1",["type"]="1800 x 1200 x 450mm",["point"]=new JsonArray(6000,4000)},
     ["foundation.create_wall"]=()=>new JsonObject{["host_wall_uid"]=McpUid,["type"]="Bearing Footing - 900 x 300"},
+    ["query.title_blocks"]=()=>new JsonObject(),
+    ["dimension.create_linear"]=()=>new JsonObject{["view_uid"]=McpUid,["first_uid"]="60f91daf-3dd7-4283-a86d-24137b73f3da-00000e01",["second_uid"]="60f91daf-3dd7-4283-a86d-24137b73f3da-00000e02"},
+    ["tag.create"]=()=>new JsonObject{["view_uid"]=McpUid,["element_uid"]="60f91daf-3dd7-4283-a86d-24137b73f3da-00000e01",["head"]=new JsonArray(3000,500),["leader"]=true},
+    ["schedule.create"]=()=>new JsonObject{["category"]="door",["fields"]=new JsonArray("Mark","Type"),["sort_by"]="Mark"},
+    ["sheet.create"]=()=>new JsonObject{["number"]="A101",["name"]="Ground Floor"},
+    ["sheet.place_view"]=()=>new JsonObject{["sheet_uid"]=McpUid,["view_uid"]="60f91daf-3dd7-4283-a86d-24137b73f3da-00000e01",["center"]=new JsonArray(420,297)},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
@@ -181,6 +187,18 @@ Check(RevitCommandCatalogue.Structure.Select(spec=>spec.Name).SequenceEqual(new[
 foreach(var (tool,readOnly) in new[]{("revit_query_grids",true),("revit_query_structural_types",true),("revit_grid_create",false),("revit_structural_column_create",false),("revit_structural_beam_create",false),("revit_foundation_create_isolated",false),("revit_foundation_create_wall",false)}) {
     var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
     Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==readOnly && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()==(readOnly?"read":"write-copies"),"structure tool "+tool+" is listed with readOnlyHint "+readOnly);
+    var spec=RevitCommandCatalogue.All.SingleOrDefault(c=>c.ToolName==tool);
+    if(spec is null) continue;
+    var before=forwardedLines.Count;
+    var onReal=Guarded(tool,sampleArgs[spec.Name](),McpReal);
+    if(readOnly) Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,tool+" is read-only: forwarded to the pipe even on a real project");
+    else Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+}
+// P4-02: the documentation commands are generated tools with the same read/write split and guards.
+Check(RevitCommandCatalogue.Documentation.Select(spec=>spec.Name).SequenceEqual(new[]{"query.title_blocks","dimension.create_linear","tag.create","schedule.create","sheet.create","sheet.place_view"}) && RevitCommandCatalogue.Documentation.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the P4-02 documentation commands, all in the catalogue enumeration");
+foreach(var (tool,readOnly) in new[]{("revit_query_title_blocks",true),("revit_dimension_create_linear",false),("revit_tag_create",false),("revit_schedule_create",false),("revit_sheet_create",false),("revit_sheet_place_view",false)}) {
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==readOnly && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()==(readOnly?"read":"write-copies"),"documentation tool "+tool+" is listed with readOnlyHint "+readOnly);
     var spec=RevitCommandCatalogue.All.SingleOrDefault(c=>c.ToolName==tool);
     if(spec is null) continue;
     var before=forwardedLines.Count;

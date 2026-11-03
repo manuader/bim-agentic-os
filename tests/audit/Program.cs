@@ -125,6 +125,17 @@ try
         else
             Check(structurePolicy.Evaluate("reader", command, RealPath) is { Allowed: true, Reason: PermissionCodes.ReadAllowed }, "structure read " + command + " is allowed for a reader on a real project");
     }
+    // P4-02: the documentation commands keep the read/write split: the title block query reads anywhere, creators write copies only.
+    foreach (var (command, writes) in new[] { ("query.title_blocks", false), ("dimension.create_linear", true), ("tag.create", true), ("schedule.create", true), ("sheet.create", true), ("sheet.place_view", true) })
+    {
+        Check(RevitCommandCatalogue.Documentation.Any(spec => spec.Name == command && spec.Writes == writes), "documentation catalogue has " + (writes ? "write " : "read-only ") + command);
+        var documentationPolicy = PermissionPolicy.Create(grants, Array.Empty<string>(), copies);
+        if (writes)
+            Check(!documentationPolicy.Evaluate("reader", command, FixturePath).Allowed && documentationPolicy.Evaluate("copier", command, FixturePath).Allowed
+                && documentationPolicy.Evaluate("copier", command, RealPath) is { Allowed: false, Reason: PermissionCodes.RealProjectNotEnabled }, "documentation write " + command + ": reader denied, write-copies allowed on a copy, real project not enabled");
+        else
+            Check(documentationPolicy.Evaluate("reader", command, RealPath) is { Allowed: true, Reason: PermissionCodes.ReadAllowed }, "documentation read " + command + " is allowed for a reader on a real project");
+    }
     Check(PermissionPolicy.RequiredLevel("bogus.command", FixturePath, copies) is null, "an unknown command has no required level");
     var forged = realWrite with { Spec = RevitCommandCatalogue.Find("query.levels")! };
     Check(policy.Classify(forged) == PermissionLevel.WriteRealProject, "classification follows the catalogue entry of the command name, not a forged spec");

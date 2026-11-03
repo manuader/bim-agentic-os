@@ -96,8 +96,8 @@ static class CatalogueStructureChecks
     {
         var names = RevitCommandCatalogue.Structure.Select(spec => spec.Name).ToArray();
         Check(names.SequenceEqual(StructureCommands), "structure catalogue lists the two queries and five creators in order", string.Join(",", names));
-        Check(RevitCommandCatalogue.All.SequenceEqual(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror).Concat(RevitCommandCatalogue.Elements).Concat(RevitCommandCatalogue.Structure)),
-            "All is v1, v2, views, snapshot, element queries, then the structure commands");
+        var throughStructure = RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror).Concat(RevitCommandCatalogue.Elements).Concat(RevitCommandCatalogue.Structure).ToArray();
+        Check(RevitCommandCatalogue.All.Take(throughStructure.Length).SequenceEqual(throughStructure), "All is v1, v2, views, snapshot, element queries, then the structure commands (later catalogue parts follow)");
         Check(RevitCommandCatalogue.All.Select(spec => spec.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(spec => spec.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct with the structure commands");
         Check(RevitCommandCatalogue.Structure.All(spec => spec.ToolName == "revit_" + spec.Name.Replace('.', '_') && System.Text.RegularExpressions.Regex.IsMatch(spec.ToolName, @"\Arevit_[a-z0-9_]{1,58}\z")), "structure tool names are revit_<command with . replaced by _> within 64 characters");
         Check(RevitCommandCatalogue.Structure.Where(spec => spec.Writes).Select(spec => spec.Name).SequenceEqual(Writers), "the five structure creators write; the two queries are read-only");
