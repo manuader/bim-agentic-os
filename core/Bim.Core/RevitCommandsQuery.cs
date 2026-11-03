@@ -6,7 +6,7 @@ namespace Bim.Core;
 // P1-02 generic element queries: query.elements (filter by category and/or level) and query.inspect (every readable
 // parameter of one element). Read-only catalogue entries with the same envelope (protocol_version 1), schema subset
 // and guards as the rest of the catalogue; no transaction and no receipt. Vendor-free like every RevitCommands*.cs
-// file: the add-in collector (runtimes/revit-native/CommandsExecutorQuery.cs) reads Revit facts into the neutral
+// file: the add-in collector (CommandsExecutorQuery.cs in the native add-in) reads Revit facts into the neutral
 // records below, and RevitElementQueryJson (unit-tested) decides ordering, bounds, truncation and the reply JSON.
 
 // Category: the text the caller gave (a friendly name or an OST_ name); BuiltInCategory: the Revit BuiltInCategory
