@@ -50,7 +50,6 @@ Project Build(int rooms)
     }
     return new(projectId, 0, elements.ToArray());
 }
-Element Of(Project project, Guid id) => project.Elements.Single(element => element.Id == id);
 Project Replace(Project project, Guid id, Func<Element, Element> change) => project with { Elements = project.Elements.Select(element => element.Id == id ? change(element) : element).ToArray() };
 Project Remove(Project project, params Guid[] ids) => project with { Elements = project.Elements.Where(element => !ids.Contains(element.Id)).ToArray() };
 Project Add(Project project, Element element) => project with { Elements = project.Elements.Append(element).ToArray() };
