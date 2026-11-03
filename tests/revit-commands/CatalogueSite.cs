@@ -128,6 +128,8 @@ static class CatalogueSiteChecks
         foreach (var spec in RevitCommandCatalogue.Site)
             Check(PermissionPolicy.RequiredLevel(spec.Name, FixturePath, copies) == (spec.Writes ? PermissionLevel.WriteCopies : PermissionLevel.Read)
                 && PermissionPolicy.RequiredLevel(spec.Name, RealPath, copies) == (spec.Writes ? PermissionLevel.WriteRealProject : PermissionLevel.Read), "permission level of " + spec.Name + " follows its catalogue entry");
+        Check(RevitCommandCatalogue.Find("toposolid.create")!.Description.Contains("points lower than the level minus the type thickness are not supported (Revit keeps a flat bottom there)", StringComparison.Ordinal),
+            "toposolid.create states that points below the level minus the type thickness are not supported");
         Check(RevitSiteRules.MinToposolidPoints == 3 && RevitSiteRules.MaxToposolidPoints == 2000, "toposolid point caps are 3 to 2000");
         Check(Accepts("query.toposolid_types with {} accepted", Envelope("query.toposolid_types", new JsonObject()))?.Args is EmptyQueryArgs, "query.toposolid_types binds empty arguments");
         Rejects("query.toposolid_types with an argument", Envelope("query.toposolid_types", new JsonObject { ["x"] = 1 }), RevitCommandCodes.ArgsInvalid, "args.x");
@@ -236,6 +238,16 @@ static class CatalogueSiteChecks
     {
         var extents = CommandRulesSite.Extents(new[] { (0.0, 0.0, 0.0), (30000.0, 0.0, 500.0), (30000.0, 20000.0, 4500.0), (15000.0, 10000.0, 2600.0) });
         Check(extents == Box(0, 0, 0, 30000, 20000, 4500), "requested extents are the min and max of the points in x, y and z", extents.ToString());
+        // Points below the flat bottom (level project elevation minus type thickness) are refused up front.
+        var zs = new[] { 0.0, 500.0, -1999.0, 4500.0 };
+        Check(Thrown(() => CommandRulesSite.CheckAboveBottom(zs, levelElevationMm: 0, thicknessMm: 2000)) is null, "points above the level minus the type thickness are accepted");
+        Check(Thrown(() => CommandRulesSite.CheckAboveBottom(new[] { 0.0, -2000.0, 100.0 }, levelElevationMm: 0, thicknessMm: 2000)) is null, "a point exactly at the level minus the type thickness is accepted");
+        var low = Thrown(() => CommandRulesSite.CheckAboveBottom(new[] { 0.0, 500.0, -2500.0, -3000.0 }, levelElevationMm: 0, thicknessMm: 2000));
+        Check(low is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.points[2][2]" } && low.Detail!.Contains("-2000", StringComparison.Ordinal) && low.Detail.Contains("thickness", StringComparison.Ordinal),
+            "the first point below the level minus the type thickness is args_invalid at its z, naming the -2000 mm limit", low?.Detail ?? "accepted");
+        var high = Thrown(() => CommandRulesSite.CheckAboveBottom(new[] { 2000.0, 1200.0, 3000.0 }, levelElevationMm: 3000, thicknessMm: 1500));
+        Check(high is { Field: "args.points[1][2]" } && high.Detail!.Contains("1500", StringComparison.Ordinal), "the limit follows the level project elevation (3000 - 1500 = 1500 mm)", high?.Detail ?? "accepted");
+        Check(Thrown(() => CommandRulesSite.CheckAboveBottom(new[] { -90000.0, 0.0, 10.0 }, levelElevationMm: 0, thicknessMm: null)) is null, "a type without layer thickness is not checked up front");
         Check(Thrown(() => CommandRulesSite.CheckSubdivisionHost(isSubdivision: false)) is null, "a toposolid that is not a subdivision can host one");
         Check(Thrown(() => CommandRulesSite.CheckSubdivisionHost(isSubdivision: true)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.host_uid" }, "a subdivision cannot host another subdivision");
         Check(Thrown(() => CommandRulesSite.MaterialParameterIndex(1, "args.material")) is null && CommandRulesSite.MaterialParameterIndex(1, "args.material") == 0, "exactly one writable material parameter is the subdivision material");
@@ -257,7 +269,10 @@ static class CatalogueSiteChecks
         Check(CommandReadbackSite.Toposolid(LevelUid, TypeUid, requested, null, good with { Box = null }) is { } noBox && noBox.Contains("bounding box", StringComparison.Ordinal), "no bounding box is a mismatch");
         Check(CommandReadbackSite.Toposolid(LevelUid, TypeUid, requested, null, good with { Box = Box(0, 0, -2000, 28000, 20000, 4500) }) is { } narrow && narrow.Contains("plan", StringComparison.Ordinal), "plan extents more than 1 mm off are a mismatch");
         Check(CommandReadbackSite.Toposolid(LevelUid, TypeUid, requested, null, good with { Box = Box(0, 0, 1000, 30000, 20000, 7500) }) is { } top && top.Contains("top", StringComparison.Ordinal), "a top more than 1 mm off the highest point (for example shifted by the level elevation) is a mismatch");
-        Check(CommandReadbackSite.Toposolid(LevelUid, TypeUid, requested, null, good with { Box = Box(0, 0, 4500, 30000, 20000, 4500) }) is { } flat && flat.Contains("bottom", StringComparison.Ordinal), "a bottom not below the lowest point (no thickness) is a mismatch");
+        // Revit 2025 keeps the toposolid bottom flat at the level elevation minus the type thickness, so the bottom may
+        // lie above the lowest point (found in real Revit): only a box without height is a mismatch.
+        Check(CommandReadbackSite.Toposolid(LevelUid, TypeUid, Box(0, 0, -2500, 30000, 20000, 4500), null, good) is null, "a flat bottom above the lowest point (level minus type thickness) matches");
+        Check(CommandReadbackSite.Toposolid(LevelUid, TypeUid, requested, null, good with { Box = Box(0, 0, 4500, 30000, 20000, 4500) }) is { } flat && flat.Contains("bottom", StringComparison.Ordinal), "a bottom at the top (no thickness) is a mismatch");
         Check(CommandReadbackSite.Toposolid(LevelUid, TypeUid, requested, "site: cabin slope", good with { Comment = "other" }) is { } comment && comment.Contains("Comments", StringComparison.Ordinal), "a different Comments value is a mismatch");
         Check(CommandReadbackSite.Toposolid(LevelUid, TypeUid, requested, "site: cabin slope", good with { Comment = null }) is not null, "an unreadable Comments value is a mismatch when one was requested");
 

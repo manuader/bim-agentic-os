@@ -401,6 +401,8 @@ try
     CatalogueFamiliesChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- Site commands: toposolid types, toposolids and toposolid subdivisions ----
     CatalogueSiteChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- wall.set_profile: replace a straight wall's elevation profile (gable end walls) ----
+    CatalogueWallProfileChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
