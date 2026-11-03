@@ -731,7 +731,7 @@
       "evidence": [
         "core/Bim.Core/MirrorDrift.cs",
         "tests/mirror-journal/MirrorDriftChecks.cs",
-        "tests/mirror-journal/fixtures/drift"
+        "tests/mirror-journal/fixtures/drift/journal-read-reply.json"
       ],
       "blocker": "Not wired to CLI/MCP/catalogue; journal_version 1 has no session id; caller supplies the native map, receipts and journal cutoff; unmapped-in-Revit elements are reported as unmapped, not drift.",
       "scope": "P2-04: MirrorDrift.Compare(query.snapshot, committed BIM-IR + native map, journal.read reply, receipts) -> deterministic drift_version 1 report: missing/extra/changed (dependency roles as sets, 1 mm / 0.1 deg tolerances), classified external_edit/addin_pending/unknown, not_comparable for non-exported kinds and non-BIM-IR map keys, map_only scope for template elements, evidence completeness notes; document identity, bounds and culture invariance tested. CI 41714702286."
