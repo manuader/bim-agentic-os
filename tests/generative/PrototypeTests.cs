@@ -21,7 +21,7 @@ static class PrototypeTests
     // Lot width below which the CABA corridor minimum drops to the pack parameter's lower bound.
     const double NarrowParcelWidth = 8.66;
     // Canonical JSON of the 2-bedroom prototype on the 8.66 x 20 m lot, 6 alternatives, seed 0 (regression pin).
-    const string PinnedSha256 = "PENDING";
+    const string PinnedSha256 = "eb6da9ef00b170918354c2823fa5d5490e4eb0ac564bd1944e0ece4fff2c8c70";
     // CABA corridor minimum side from the pack parameter corredor_lado_min_m: default and narrow-parcel bound.
     static (double Default, double Narrow) corridor;
 
