@@ -22,7 +22,8 @@ public static class GltfExporter
     public const string Generator = "bim-agentic-os Bim.Gltf";
     // Bounded input: more elements are refused before any other work.
     public const int MaxElements = 10_000;
-    // float32 positions: beyond 1e4 m the spacing of representable values exceeds 1 mm.
+    // float32 positions: adjacent representable values are 2^-10 m (about 0.98 mm) apart from 8192 m up to 16384 m,
+    // so every vertex within +/-1e4 m keeps sub-millimetre placement.
     public const double MaxCoordinate = 1e4;
     public const double MinLength = 1e-3;
 
@@ -72,8 +73,21 @@ public static class GltfExporter
         var bytes = ExportGlb(project);
         FileStream file;
         try { file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None); }
-        catch (IOException) when (File.Exists(path) || Directory.Exists(path)) { throw new GltfExportException("output_exists", path); }
-        using (file) { var stream = wrap(file); stream.Write(bytes); stream.Flush(); file.Flush(true); }
+        // Windows reports an existing directory as UnauthorizedAccessException, Unix as IOException.
+        catch (Exception error) when ((error is IOException or UnauthorizedAccessException) && (File.Exists(path) || Directory.Exists(path)))
+        {
+            throw new GltfExportException("output_exists", path);
+        }
+        try
+        {
+            using (file) { var stream = wrap(file); stream.Write(bytes); stream.Flush(); file.Flush(true); }
+        }
+        catch
+        {
+            // This call created the file, so a failed write removes it instead of leaving a truncated .glb.
+            try { File.Delete(path); } catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException) { }
+            throw;
+        }
     }
 
     static int Pad4(int length) => (length + 3) & ~3;
@@ -195,6 +209,10 @@ public static class GltfExporter
                     LengthOk(Math.Sqrt((g[2] - g[0]) * (g[2] - g[0]) + (g[3] - g[1]) * (g[3] - g[1])), "axis length", e);
                     LengthOk(g[4], "height", e); LengthOk(g[5], "thickness", e);
                     Coordinate(z0 + g[4], "top elevation", e);
+                    // The faces sit thickness/2 either side of the axis, so their corners are checked too.
+                    double dx = g[2] - g[0], dy = g[3] - g[1], len = Math.Sqrt(dx * dx + dy * dy), ox = -dy / len * (g[5] / 2), oy = dx / len * (g[5] / 2);
+                    Coordinate(g[0] + ox, "start face corner.x", e); Coordinate(g[1] + oy, "start face corner.y", e); Coordinate(g[0] - ox, "start face corner.x", e); Coordinate(g[1] - oy, "start face corner.y", e);
+                    Coordinate(g[2] + ox, "end face corner.x", e); Coordinate(g[3] + oy, "end face corner.y", e); Coordinate(g[2] - ox, "end face corner.x", e); Coordinate(g[3] - oy, "end face corner.y", e);
                     meshes.Add(Wall(i, e, z0));
                     break;
                 }
