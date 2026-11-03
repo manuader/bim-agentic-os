@@ -314,8 +314,9 @@ try
     SkillCatalog? samples = null;
     try { samples = SkillLoader.LoadDirectory(skillsRoot); }
     catch (SkillException error) { Check(false, "skills/ loads", error.Code + " " + error.File + " at " + error.Field + " (" + error.Detail + ")"); }
-    Check(samples is { Skills.Count: 3 } && samples.Skills[0].Id == "ar.caba.codigo-edificacion" && samples.Skills[1].Id == "bim.qa.room-basics" && samples.Skills[2].Id == "bim.typology.dwelling",
-        "skills/ holds the CABA code pack and the qa and typology samples in ordinal order",
+    Check(samples is { Skills.Count: 5 } && samples.Skills[0].Id == "ar.caba.codigo-edificacion" && samples.Skills[1].Id == "bim.qa.room-basics" && samples.Skills[2].Id == "bim.style.compact-modern"
+        && samples.Skills[3].Id == "bim.style.warm-masonry" && samples.Skills[4].Id == "bim.typology.dwelling",
+        "skills/ holds the CABA code pack, the qa sample, the two style packs and the typology sample in ordinal order",
         samples is null ? "" : string.Join(",", samples.Skills.Select(skill => skill.Id)));
     Check(samples?.Find("bim.qa.room-basics") is { Kind: SkillKind.Qa, Priority: 50 } qa && qa.Rules.Select(rule => rule.Check.Op).Distinct().Count() == 4
         && samples.Find("bim.typology.dwelling") is { Kind: SkillKind.Typology, Priority: 20 } dwelling && dwelling.Rules.Any(rule => rule.Check.Op == SkillCheckOp.RatioMin),
@@ -918,6 +919,9 @@ try
     Check(Pattern("range") == "^" + SkillParser.RangePatternBody + "$", "schema range pattern is the parser range pattern");
     var typed = Def("parameter").GetProperty("allOf").EnumerateArray().Select(branch => branch.GetProperty("if").GetProperty("properties").GetProperty("type").GetProperty("const").GetString()!).ToArray();
     Check(typed.SequenceEqual(SkillParser.ParameterTypes), "schema types each parameter default and range by its declared type", string.Join(",", typed));
+
+    // ---- P5-03 contrasting style packs (tests/skills/StyleSkillTests.cs) ----
+    StyleSkillTests.Run(root, Check);
 
     // ---- Scale: 20000-skill chain and cycle built in code (no recursion) ----
     const int Scale = 20000;
