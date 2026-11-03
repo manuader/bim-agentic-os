@@ -328,7 +328,7 @@ try
         var resolved = SkillResolver.Resolve(samples, Requests("bim.typology.dwelling", "bim.qa.room-basics"));
         Check(resolved.Succeeded && resolved.Skills.Select(skill => skill.Id).SequenceEqual(new[] { "bim.qa.room-basics", "bim.typology.dwelling" }), "samples resolve together", Issues(resolved));
         Check(resolved.Setting("room.min_clear_height_m") is { Decision: SkillDecision.Priority, Source: { SkillId: "bim.qa.room-basics", Origin: "default", Key: "room.min_clear_height_m" }, Overridden.Count: 1 } clear
-            && clear.Value == SkillValue.Of(2.5) && clear.Overridden[0] == new SkillTrace("bim.typology.dwelling", SkillTrace.DefaultOrigin, "room.min_clear_height_m"),
+            && clear.Value == SkillValue.Of(2.6) && clear.Overridden[0] == new SkillTrace("bim.typology.dwelling", SkillTrace.DefaultOrigin, "room.min_clear_height_m"),
             "overlapping sample default: qa priority 50 beats typology priority 20 and the loser is recorded", Render(resolved));
         Check(resolved.Setting("wall.exterior.thickness_m") is { Decision: SkillDecision.Only, Overridden.Count: 0, Source.SkillId: "bim.typology.dwelling" } wall && wall.Value == SkillValue.Of(0.3),
             "single-source sample default traces to its skill and key");

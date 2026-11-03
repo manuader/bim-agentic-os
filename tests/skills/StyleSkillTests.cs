@@ -11,6 +11,7 @@ static class StyleSkillTests
     public const string Masonry = "bim.style.warm-masonry";
     const string Caba = "ar.caba.codigo-edificacion";
     const string Dwelling = "bim.typology.dwelling";
+    const string Qa = "bim.qa.room-basics";
 
     // The specification of each style's defaults: dotted key to value.
     static readonly (string Key, SkillValue Value)[] CompactDefaults =
@@ -25,7 +26,7 @@ static class StyleSkillTests
         ("wall.exterior.thickness_m", SkillValue.Of(0.2)),
         ("wall.exterior.type", SkillValue.Of("reinforced-concrete-150-etics-50")),
         ("wall.interior.thickness_m", SkillValue.Of(0.1)),
-        ("window.head_height_m", SkillValue.Of(2.6)),
+        ("window.head_height_m", SkillValue.Of(2.5)),
         ("window.sill_height_m", SkillValue.Of(0.3)),
         ("window.wall_ratio", SkillValue.Of(0.4)),
     };
@@ -50,14 +51,20 @@ static class StyleSkillTests
     // Stable rule ids and resolved thresholds of each style.
     static readonly (string Id, double Threshold)[] CompactRules =
     {
-        ("bedroom-height-min", 2.6), ("dormitorio-height-min", 2.6), ("estar-glazing-min", 0.25), ("estar-height-min", 2.6),
-        ("living-glazing-min", 0.25), ("living-height-min", 2.6), ("wall-thickness-max", 0.25),
+        ("bedroom-height-min", 2.6), ("biblioteca-height-min", 2.6), ("cocina-comedor-guion-height-min", 2.6), ("cocina-comedor-height-min", 2.6),
+        ("comedor-height-min", 2.6), ("corredor-height-min", 2.6), ("corridor-height-min", 2.6), ("dining-height-min", 2.6), ("dormitorio-height-min", 2.6), ("escritorio-height-min", 2.6),
+        ("estar-glazing-min", 0.25), ("estar-height-min", 2.6), ("estudio-height-min", 2.6), ("living-glazing-min", 0.25),
+        ("living-height-min", 2.6), ("local-unico-height-min", 2.6), ("monoambiente-height-min", 2.6), ("pasillo-height-min", 2.6), ("studio-height-min", 2.6),
+        ("wall-thickness-max", 0.25),
     };
 
     static readonly (string Id, double Threshold)[] MasonryRules =
     {
-        ("bedroom-height-min", 3.0), ("dormitorio-height-min", 3.0), ("estar-glazing-min", 0.125), ("estar-height-min", 3.0),
-        ("living-glazing-min", 0.125), ("living-height-min", 3.0), ("wall-thickness-min", 0.15),
+        ("bedroom-height-min", 3.0), ("biblioteca-height-min", 3.0), ("cocina-comedor-guion-height-min", 3.0), ("cocina-comedor-height-min", 3.0),
+        ("comedor-height-min", 3.0), ("corredor-height-min", 3.0), ("corridor-height-min", 3.0), ("dining-height-min", 3.0), ("dormitorio-height-min", 3.0), ("escritorio-height-min", 3.0),
+        ("estar-glazing-min", 0.125), ("estar-height-min", 3.0), ("estudio-height-min", 3.0), ("living-glazing-min", 0.125),
+        ("living-height-min", 3.0), ("local-unico-height-min", 3.0), ("monoambiente-height-min", 3.0), ("pasillo-height-min", 3.0), ("studio-height-min", 3.0),
+        ("wall-thickness-min", 0.15),
     };
 
     static SkillRequest[] Requests(params string[] ids) => ids.Select(id => new SkillRequest(id)).ToArray();
@@ -94,6 +101,16 @@ static class StyleSkillTests
                 "style: " + style.Id + " states it is illustrative, not a building code, and cites every rule as not normative");
         }
 
+        // Vertical consistency of the effective defaults: sill < head <= clear height < level height.
+        void ConsistentHeights(SkillResolution resolution, string label)
+        {
+            double Of(string key) => resolution.Setting(key)?.Value.Number ?? double.NaN;
+            var (sill, head, clearHeight, level) = (Of("window.sill_height_m"), Of("window.head_height_m"), Of("room.min_clear_height_m"), Of("level.height_m"));
+            check(sill < head && head <= clearHeight && clearHeight < level,
+                "style: " + label + " keeps window sill < window head <= clear height < level height",
+                string.Create(CultureInfo.InvariantCulture, $"sill={sill} head={head} clear={clearHeight} level={level}"));
+        }
+
         // ---- Each style alone: specific, traced defaults and rules ----
         SkillResolution Alone(SkillManifest style, (string Key, SkillValue Value)[] expected, (string Id, double Threshold)[] rules)
         {
@@ -108,8 +125,9 @@ static class StyleSkillTests
                     && resolution.Rules.All(rule => rule.Source == new SkillTrace(style.Id, SkillTrace.RuleOrigin, rule.Rule.Id) && rule.QualifiedId == style.Id + "/" + rule.Rule.Id),
                 "style: " + style.Id + " rules carry the specified stable ids and thresholds, each traced to <skill>/<rule id>", Render(resolution));
             check(resolution.Rules.Where(rule => rule.Rule.Check.Parameter is not null).All(rule => rule.ThresholdSource == new SkillTrace(style.Id, SkillTrace.ParameterOrigin, rule.Rule.Check.Parameter!))
-                    && resolution.Rules.Count(rule => rule.ThresholdSource is not null) == 6,
+                    && resolution.Rules.Count(rule => rule.ThresholdSource is not null) == 19,
                 "style: " + style.Id + " parameter thresholds trace to <skill>:parameter:<name>", Render(resolution));
+            ConsistentHeights(resolution, style.Id + " alone");
             var clear = resolution.Setting("room.min_clear_height_m")?.Value.Number;
             check(style.Parameters.FirstOrDefault(parameter => parameter.Name == "clear_height_min_m")?.Default.Number == clear && clear is not null,
                 "style: " + style.Id + " clear height parameter equals its room.min_clear_height_m default");
@@ -154,6 +172,12 @@ static class StyleSkillTests
             var composed = SkillResolver.Resolve(catalog, Requests(Caba, Dwelling, style.Id));
             check(composed.Succeeded && composed.Rules.Count == caba.Rules.Count + 2 + style.Rules.Count,
                 "style: " + style.Id + " composes with the CABA code pack and the typology without conflicts; code rules are all kept", Render(composed));
+            ConsistentHeights(composed, style.Id + " with CABA and the typology");
+            var withQa = SkillResolver.Resolve(catalog, Requests(Caba, Qa, Dwelling, style.Id));
+            check(withQa.Succeeded && withQa.Setting("room.min_clear_height_m") is { Value.Number: >= 2.6 } && withQa.Setting("window.head_height_m") is { } head
+                    && head.Value.Number <= withQa.Setting("room.min_clear_height_m")!.Value.Number,
+                "style: with CABA, qa and the typology the effective clear height of " + style.Id + " stays at or above the CABA 2.60 m and above the window head", Render(withQa));
+            ConsistentHeights(withQa, style.Id + " with CABA, qa and the typology");
             check(cabaHeights.Length > 0 && composed.Setting("room.min_clear_height_m")?.Value.Number >= cabaHeights.Max(),
                 "style: " + style.Id + " default clear height meets the highest CABA clear-height minimum", string.Join(",", cabaHeights));
             // Every style room rule that shares a CABA rule's room glob, op and properties is at least as strict.
@@ -162,7 +186,10 @@ static class StyleSkillTests
                          where code.Rule.Target.RoomPattern == mine.Rule.Target.RoomPattern && code.Rule.Check.Op == mine.Rule.Check.Op
                              && code.Rule.Check.Property == mine.Rule.Check.Property && code.Rule.Check.Over == mine.Rule.Check.Over
                          select (mine, code)).ToArray();
-            check(pairs.Length >= 6 && pairs.All(pair => pair.mine.Threshold!.Number >= pair.code.Threshold!.Number - 1e-12),
+            check(caba.Rules.Where(rule => rule.Check.Property == RoomFacts.ClearHeightKey).All(code => pairs.Any(pair => pair.code.Rule.Id == code.Id)),
+                "style: " + style.Id + " has a clear-height rule for every room glob the CABA pack sets a clear height for",
+                string.Join(",", caba.Rules.Where(rule => rule.Check.Property == RoomFacts.ClearHeightKey && !pairs.Any(pair => pair.code.Rule.Id == rule.Id)).Select(rule => rule.Id)));
+            check(pairs.Length >= 19 && pairs.All(pair => pair.mine.Threshold!.Number >= pair.code.Threshold!.Number - 1e-12),
                 "style: every " + style.Id + " room rule is at least as strict as the matching CABA minimum",
                 string.Join("; ", pairs.Select(pair => pair.mine.QualifiedId + "=" + pair.mine.Threshold + " vs " + pair.code.QualifiedId + "=" + pair.code.Threshold)));
             // Parameter bounds sit at the code floor, so a run-time override cannot go below it.
@@ -173,19 +200,22 @@ static class StyleSkillTests
             bool Refused(string parameter, double value)
             {
                 try { SkillRoomValidator.Validate(composed, styleRooms, new Dictionary<string, double> { [style.Id + "/" + parameter] = value }); return false; }
-                catch (ArgumentException) { return true; }
+                catch (ArgumentException error) { return error.Message.Contains(style.Id + "/" + parameter, StringComparison.Ordinal); }
             }
             check(Refused("living_glazing_ratio_min", 0.09) && Refused("clear_height_min_m", 2.5) && !Refused("living_glazing_ratio_min", 0.1) && !Refused("clear_height_min_m", 2.6),
-                "style: overriding a " + style.Id + " parameter below the code floor is refused; the floor itself is accepted");
+                "style: overriding a " + style.Id + " parameter below the code floor is refused naming the parameter; the floor itself is accepted");
 
             // A room built exactly to the style's defaults complies with code, typology and style.
             var clear = composed.Setting("room.min_clear_height_m")!.Value.Number;
             var glazing = composed.Rules.First(rule => rule.QualifiedId == style.Id + "/living-glazing-min").Threshold!.Number;
             var living = new RoomFacts("a-living", "Living", 16, 4, clear, glazing * 16, glazing * 8);
-            var bedroom = new RoomFacts("b-bed", "Dormitorio 1", 9.6, 3, clear, 1.2, 0.4);
-            var report = SkillRoomValidator.Validate(composed, new[] { living, bedroom });
-            check(report.Compliant && report.Failures.Count == 0 && report.Findings.Count(finding => finding.RuleId.StartsWith(Caba + "/", StringComparison.Ordinal)) == 10
-                    && report.Findings.Count(finding => finding.RuleId.StartsWith(style.Id + "/", StringComparison.Ordinal)) == 3,
+            var dormitorio = new RoomFacts("b-dormitorio", "Dormitorio 1", 9.6, 3, clear, 1.2, 0.4);
+            var bedroom = new RoomFacts("c-bedroom", "Bedroom 2", 9.6, 3, clear, 1.2, 0.4);
+            var report = SkillRoomValidator.Validate(composed, new[] { living, dormitorio, bedroom });
+            check(report.Compliant && report.Failures.Count == 0 && report.Findings.Count(finding => finding.RuleId.StartsWith(Caba + "/", StringComparison.Ordinal)) == 15
+                    && report.Findings.Count(finding => finding.RuleId.StartsWith(style.Id + "/", StringComparison.Ordinal)) == 4
+                    && report.Findings.Where(finding => finding.RuleId.StartsWith(Dwelling + "/", StringComparison.Ordinal)).Select(finding => finding.RuleId).OrderBy(id => id, StringComparer.Ordinal)
+                        .SequenceEqual(new[] { Dwelling + "/bedroom-min-area", Dwelling + "/living-daylight" }),
                 "style: rooms built to " + style.Id + " defaults pass every CABA, typology and style rule", Show(report));
 
             // Rules are additive: the style cannot remove or relax a code rule.
