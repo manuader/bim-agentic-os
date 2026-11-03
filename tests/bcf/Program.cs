@@ -155,7 +155,7 @@ var options = new BcfExportOptions("tower-project", "Tower & Annex <A>", "bim-ag
 const ushort DosTime = 20480;
 const ushort DosDate = 23906;
 // SHA-256 of WriteZip(issues, options) below; must be identical on Linux and Windows CI.
-const string GoldenSha256 = "pending";
+const string GoldenSha256 = "f787db0d5858cee76066d8e537e2fa6fe4a28227d5938e2a0bb7fe3c5c4cf7e8";
 var wallGuid = new Guid("0f3c1d2e-4b5a-6978-8a9b-0c1d2e3f4a5b");
 const string IfcCompressed = "1hZ8Hk$JfB$Ru5lYGCvzV8";
 var issues = new List<BcfIssue>
