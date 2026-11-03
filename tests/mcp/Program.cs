@@ -164,9 +164,21 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["floor.create"]=()=>new JsonObject{["level"]="Level 1",["type"]="Generic 150mm",["boundary"]=Outline()},
     ["room.create"]=()=>new JsonObject{["level"]="Level 1",["point"]=new JsonArray(1000,1000)},
     ["query.roof_types"]=()=>new JsonObject(),
+    ["query.elements"]=()=>new JsonObject{["category"]="wall",["level"]="Level 1",["parameters"]=new JsonArray("Mark"),["limit"]=50},
+    ["query.inspect"]=()=>new JsonObject{["unique_id"]=McpUid},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
+Check(RevitCommandCatalogue.Elements.Select(spec=>spec.Name).SequenceEqual(new[]{"query.elements","query.inspect"}) && RevitCommandCatalogue.Elements.All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover the P1-02 element queries");
+foreach(var tool in new[]{"revit_query_elements","revit_query_inspect"}) {
+    var listed=tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!;
+    Check(listed["annotations"]?["readOnlyHint"]?.GetValue<bool>()==true && listed["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="read",tool+" is listed read-only with permission level read");
+}
+foreach(var (tool,toolArgs) in new (string,Func<JsonNode>)[]{("revit_query_elements",sampleArgs["query.elements"]),("revit_query_inspect",sampleArgs["query.inspect"])}) {
+    var before=forwardedLines.Count;
+    var onReal=Guarded(tool,toolArgs(),McpReal);
+    Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,tool+" is read-only: forwarded to the pipe even on a real project");
+}
 foreach(var spec in RevitCommandCatalogue.All.Where(spec=>sampleArgs.ContainsKey(spec.Name))) {
     var before=forwardedLines.Count;
     var forwarded=Guarded(spec.ToolName,sampleArgs[spec.Name](),McpCopy);

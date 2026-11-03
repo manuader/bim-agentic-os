@@ -73,7 +73,8 @@ static class MirrorSnapshotChecks
     static void Catalogue()
     {
         Check(RevitCommandCatalogue.Mirror.Select(spec => spec.Name).SequenceEqual(new[] { "query.snapshot" }), "mirror catalogue part lists query.snapshot only");
-        Check(RevitCommandCatalogue.All.SequenceEqual(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror)), "All is v1, v2, views, then the snapshot query");
+        var throughMirror = RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror).ToArray();
+        Check(RevitCommandCatalogue.All.Take(throughMirror.Length).SequenceEqual(throughMirror), "All is v1, v2, views, then the snapshot query (later catalogue parts follow)");
         var spec = RevitCommandCatalogue.Find("query.snapshot");
         Check(spec is { Writes: false, ToolName: "revit_query_snapshot" }, "query.snapshot is read-only with tool revit_query_snapshot");
         Check(spec is not null && spec.Description.EndsWith('.') && spec.Description.Contains("Read-only", StringComparison.Ordinal) && spec.Description.Contains("unmapped", StringComparison.Ordinal), "query.snapshot description states read-only and the unmapped section", spec?.Description ?? "");

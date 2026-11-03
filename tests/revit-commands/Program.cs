@@ -383,6 +383,9 @@ try
     // ---- Revit -> BIM-IR snapshot (P2-01): query.snapshot and the mirror mapper ----
     MirrorSnapshotChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
+    // ---- Generic element queries (P1-02): query.elements and query.inspect ----
+    ElementQueryChecks.Run((condition, name, detail) => Check(condition, name, detail));
+
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
     RevitFileSystemProbe Probe(Func<string, bool> isLink, Func<string, int?> links) => new(path => { probed.Add(path); return isLink(path); }, links);
