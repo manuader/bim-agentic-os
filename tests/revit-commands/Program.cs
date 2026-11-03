@@ -405,6 +405,8 @@ try
     OwnerProjectChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- wall.set_profile: replace a straight wall's elevation profile (gable end walls) ----
     CatalogueWallProfileChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- Materials, layered wall/floor types and type changes (chat-materials-types) ----
+    CatalogueMaterialTypesChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
