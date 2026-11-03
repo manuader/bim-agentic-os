@@ -4,8 +4,10 @@ These XSDs are **project-authored**, not the official buildingSMART BCF-XML 3.0 
 The official XSDs could not be fetched from this build environment (network policy), so their
 licence could not be checked and nothing was vendored.
 
-Each file is a strict *subset* of the corresponding BCF 3.0 document, written from the BCF 3.0
-specification structure (no target namespace, element order as in BCF-XML 3.0):
+Each file is a project-authored subset of the corresponding BCF 3.0 document, written from the BCF 3.0
+specification structure as recalled without access to the official files (no target namespace). Validity
+against the official XSDs is unverified. `Topic/Index` and `ViewPoint/Index` (deprecated in BCF 2.1) are
+not modelled, on the understanding that BCF 3.0 dropped them:
 
 | File | Document | Covered |
 | --- | --- | --- |
@@ -17,6 +19,6 @@ specification structure (no target namespace, element order as in BCF-XML 3.0):
 
 Known gaps against the official schemas: `BimSnippet`, `DocumentReferences`, `RelatedTopics`,
 `Comments`, `ViewSetupHints`, `Coloring`, visibility `Exceptions`, `Lines`, `ClippingPlanes` and
-`Bitmaps` are not modelled, so a document using them is rejected here even though BCF 3.0 allows it.
+`Bitmaps` are not modelled, so a document using them is rejected here even though BCF 3.0 allows them.
 The exporter emits none of them. Replace these files with the official XSDs once they can be
 fetched and their licence is confirmed permissive.

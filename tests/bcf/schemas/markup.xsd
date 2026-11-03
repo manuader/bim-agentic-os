@@ -56,7 +56,6 @@
       </xs:element>
       <xs:element name="Title" type="NonEmptyString" />
       <xs:element name="Priority" type="NonEmptyString" minOccurs="0" />
-      <xs:element name="Index" type="xs:int" minOccurs="0" />
       <xs:element name="Labels" minOccurs="0">
         <xs:complexType><xs:sequence><xs:element name="Label" type="NonEmptyString" minOccurs="0" maxOccurs="unbounded" /></xs:sequence></xs:complexType>
       </xs:element>
@@ -76,7 +75,6 @@
                 <xs:sequence>
                   <xs:element name="Viewpoint" type="xs:string" minOccurs="0" />
                   <xs:element name="Snapshot" type="xs:string" minOccurs="0" />
-                  <xs:element name="Index" type="xs:int" minOccurs="0" />
                 </xs:sequence>
                 <xs:attribute name="Guid" type="Guid" use="required" />
               </xs:complexType>
