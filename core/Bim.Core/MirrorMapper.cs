@@ -62,9 +62,21 @@ public static class MirrorSnapshotMapper
     public static readonly Provenance Provenance = new("revit-snapshot", "observed");
     // Points closer than this (millimetres) are the same; edges whose cross-axis drift stays within it are axis-aligned.
     public const double ToleranceMm = 1e-3;
+    // At most this many observed records (levels included) per snapshot; more fails instead of an unbounded reply.
+    public const int MaxElements = 20000;
+    public const string TooLargeCode = "snapshot_too_large";
+
+    public static void CheckSize(int observed)
+    {
+        if (observed > MaxElements)
+            throw new RevitCommandException(TooLargeCode, null, "the document has more than " + MaxElements + " levels, walls, doors, windows, floors and rooms; query.snapshot refuses instead of sending an unbounded reply");
+    }
 
     // Stable logical id: the first 16 bytes of SHA-256 over the namespace, the document UniqueId and the element
     // UniqueId (both lower-cased), the same derivation style RoomCompiler.Id uses.
+    // Caveat: documents created from the same template (or copies of one file) share the ProjectInformation UniqueId
+    // and the UniqueIds of every element they inherited, so those elements get the same id in both documents. The id
+    // is stable per element lineage, not globally unique across unrelated copies.
     public static Guid Id(string documentUid, string uniqueId) =>
         new(SHA256.HashData(Encoding.UTF8.GetBytes(IdNamespace + "\n" + documentUid.ToLowerInvariant() + "\n" + uniqueId.ToLowerInvariant())).Take(16).ToArray());
 
@@ -89,6 +101,7 @@ public static class MirrorSnapshotMapper
     {
         ArgumentNullException.ThrowIfNull(observation);
         if (string.IsNullOrWhiteSpace(observation.DocumentUid)) throw new ArgumentException("document_unique_id_required");
+        CheckSize(observation.Levels.Count + observation.Elements.Count);
         var b = new Builder(observation.DocumentUid);
 
         // Identity first: no UniqueId, or a UniqueId seen twice (ignoring case), cannot give a stable id.
@@ -114,6 +127,9 @@ public static class MirrorSnapshotMapper
         Guid? LevelOf(MirrorObservedElement element) => element.LevelUid is { } uid && levels.TryGetValue(uid, out var id) ? id : null;
 
         var identified = observation.Elements.Where(element => Identified(element.Category ?? "", element.UniqueId)).ToArray();
+        foreach (var element in identified.Where(element => element.Demolished))
+            b.Skip(element.Category ?? "", element.UniqueId, MirrorReasons.Demolished, "element is demolished in a phase; the snapshot reflects standing elements only");
+        identified = identified.Where(element => !element.Demolished).ToArray();
         // Straight mapped walls by UniqueId, for openings (host axis) and rooms (bounding walls).
         var walls = new Dictionary<string, (Guid Id, MirrorPoint Start, MirrorPoint End)>(StringComparer.OrdinalIgnoreCase);
         foreach (var wall in identified.Where(element => element.Category == MirrorCategories.Wall)) MapWall(b, wall, LevelOf(wall), walls);
@@ -139,7 +155,14 @@ public static class MirrorSnapshotMapper
     static void MapWall(Builder b, MirrorObservedElement wall, Guid? level, Dictionary<string, (Guid, MirrorPoint, MirrorPoint)> walls)
     {
         const string C = MirrorCategories.Wall;
+        if (wall.WallKind is not { } kind) { b.Skip(C, wall.UniqueId, MirrorReasons.MissingData, "wall type kind could not be read"); return; }
+        if (kind == "Curtain") { b.Skip(C, wall.UniqueId, MirrorReasons.CurtainWall, "curtain wall: BIM-IR walls are solid layered axes with a thickness"); return; }
+        if (kind == "Stacked") { b.Skip(C, wall.UniqueId, MirrorReasons.StackedWall, "stacked wall: its members have different types and widths, which one BIM-IR wall cannot carry"); return; }
         if (wall.Curved) { b.Skip(C, wall.UniqueId, MirrorReasons.CurvedWall, "curved wall: BIM-IR walls are straight axes"); return; }
+        if (wall.LocationLineIsCenterline is not { } centerline) { b.Skip(C, wall.UniqueId, MirrorReasons.MissingData, "wall location line could not be read"); return; }
+        if (!centerline) { b.Skip(C, wall.UniqueId, MirrorReasons.WallLocationLineNotCenterline, "wall location line is not the wall centerline, so its location curve is not the BIM-IR wall axis"); return; }
+        if (wall.BaseOffsetMm is not { } baseOffset) { b.Skip(C, wall.UniqueId, MirrorReasons.MissingData, "wall base offset could not be read"); return; }
+        if (!double.IsFinite(baseOffset) || Math.Abs(baseOffset) > ToleranceMm) { b.Skip(C, wall.UniqueId, MirrorReasons.WallBaseOffset, "wall has a base offset from its level; BIM-IR walls start at their level"); return; }
         if (wall.Start is not { } start || wall.End is not { } end) { b.Skip(C, wall.UniqueId, MirrorReasons.MissingData, "wall has no straight location line"); return; }
         if (wall.HeightMm is not { } height) { b.Skip(C, wall.UniqueId, MirrorReasons.MissingData, "wall unconnected height could not be read"); return; }
         if (wall.ThicknessMm is not { } thickness) { b.Skip(C, wall.UniqueId, MirrorReasons.MissingData, "wall width could not be read"); return; }
@@ -161,6 +184,7 @@ public static class MirrorSnapshotMapper
         // A door without a readable sill sits on its level; a window needs its sill.
         double? sillOrNull = opening.SillMm ?? (isDoor ? 0 : null);
         if (sillOrNull is not { } sill) { b.Skip(c, opening.UniqueId, MirrorReasons.MissingData, "window sill height could not be read"); return; }
+        if (isDoor && Math.Abs(sill) > ToleranceMm) { b.Skip(c, opening.UniqueId, MirrorReasons.InvalidGeometry, "door sill is not 0; BIM-IR doors sit on their level"); return; }
         if (!Finite(location) || !Finite(width, height, sill) || width <= 0 || height <= 0 || sill < 0) { b.Skip(c, opening.UniqueId, MirrorReasons.InvalidGeometry, c + " point, width, height or sill is non-finite, or width/height not positive, or sill negative"); return; }
         if (level is not { } levelId) { b.Skip(c, opening.UniqueId, MirrorReasons.LevelUnknown, c + " level is missing or not mapped in this snapshot"); return; }
         if (opening.HostUid is not { } hostUid || !walls.TryGetValue(hostUid, out var host)) { b.Skip(c, opening.UniqueId, MirrorReasons.HostUnknown, c + " host is missing or is not a straight wall mapped in this snapshot"); return; }
@@ -179,7 +203,7 @@ public static class MirrorSnapshotMapper
     {
         const string C = MirrorCategories.Room;
         if (room.Loops is not { Count: > 0 } loops) { b.Skip(C, room.UniqueId, MirrorReasons.RoomUnplaced, "room is not placed or not enclosed (no boundary)"); return; }
-        if (loops.Count != 1 || loops[0].HasCurves || Rectangle(loops[0].Vertices) is not { } box) { b.Skip(C, room.UniqueId, MirrorReasons.RoomNotRectangular, "room boundary is not one axis-aligned rectangle with straight edges"); return; }
+        if (loops.Count != 1 || loops[0].HasCurves || Rectangle(loops[0].Vertices) is not { } box) { b.Skip(C, room.UniqueId, MirrorReasons.RoomNotRectangular, "room boundary is not one axis-aligned rectangle with straight edges (a rotated rectangle is refused too)"); return; }
         if (level is not { } levelId) { b.Skip(C, room.UniqueId, MirrorReasons.LevelUnknown, "room level is missing or not mapped in this snapshot"); return; }
         var bounding = loops[0].BoundingUids.Where(uid => !string.IsNullOrEmpty(uid) && walls.ContainsKey(uid)).Select(uid => walls[uid].Id).Distinct().Order();
         b.Add("space", C, room.UniqueId, new[] { M(box.MinX), M(box.MinY), M(box.MaxX - box.MinX), M(box.MaxY - box.MinY) }, new[] { levelId }.Concat(bounding).ToArray());

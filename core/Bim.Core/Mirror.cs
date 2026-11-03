@@ -12,13 +12,15 @@ public sealed record MirrorPoint(double XMm, double YMm);
 // segment is curved, and the UniqueIds of the elements that bound it ("" when a segment has no element).
 public sealed record MirrorLoop(IReadOnlyList<MirrorPoint> Vertices, bool HasCurves, IReadOnlyList<string> BoundingUids);
 
-// A level: UniqueId, name and elevation relative to the project origin (Level.ProjectElevation), in millimetres.
+// A level: UniqueId, name and elevation (Level.Elevation, the convention the batch executor uses), in millimetres.
 public sealed record MirrorObservedLevel(string UniqueId, string? Name, double? ElevationMm);
 
 // One observed model element. Category is one of MirrorCategories (anything else is reported unsupported). Members
 // that do not apply to the category stay null; a null member that does apply is missing data.
 //   wall:   LevelUid, Start/End (straight location line; null when curved), Curved, HeightMm (unconnected height),
-//           ThicknessMm (wall width)
+//           ThicknessMm (wall width), WallKind (WallType.Kind text: Basic, Curtain or Stacked),
+//           LocationLineIsCenterline (WALL_KEY_REF_PARAM is Wall Centerline), BaseOffsetMm (WALL_BASE_OFFSET)
+//   any:    Demolished (the element has a demolished phase)
 //   door / window: LevelUid, HostUid (host wall), Location (insertion point), WidthMm, HeightMm, SillMm
 //   room:   LevelUid, Loops (null or empty when the room is not placed or not enclosed)
 //   floor:  LevelUid (no BIM-IR kind exists; always unmapped)
@@ -35,6 +37,10 @@ public sealed record MirrorObservedElement(string Category, string UniqueId)
     public double? WidthMm { get; init; }
     public double? SillMm { get; init; }
     public IReadOnlyList<MirrorLoop>? Loops { get; init; }
+    public string? WallKind { get; init; }
+    public bool? LocationLineIsCenterline { get; init; }
+    public double? BaseOffsetMm { get; init; }
+    public bool Demolished { get; init; }
 }
 
 // Everything one query.snapshot call observed. DocumentUid is the ProjectInformation UniqueId of the document.
@@ -60,6 +66,13 @@ public static class MirrorReasons
     public const string CategoryUnsupported = "category_unsupported";
     // BIM-IR walls are straight axes [ax,ay,bx,by,height,thickness].
     public const string CurvedWall = "curved_wall_unsupported";
+    public const string CurtainWall = "curtain_wall_unsupported";
+    public const string StackedWall = "stacked_wall_unsupported";
+    // The location curve is the wall axis only when the location line is the wall centerline.
+    public const string WallLocationLineNotCenterline = "wall_location_line_not_centerline";
+    // BIM-IR walls start at their level.
+    public const string WallBaseOffset = "wall_base_offset_unsupported";
+    public const string Demolished = "demolished";
     public const string UniqueIdMissing = "unique_id_missing";
     public const string DuplicateUniqueId = "duplicate_unique_id";
     public const string MissingData = "missing_data";
