@@ -75,10 +75,38 @@ try
     Check(policy.Classify(query) == PermissionLevel.Read, "a catalogue query is classified read, even on a real project");
     Check(policy.Classify(copyWrite) == PermissionLevel.WriteCopies, "a write under an enabled test root is write-copies");
     Check(policy.Classify(realWrite) == PermissionLevel.WriteRealProject, "a write outside every test root is write-real-project");
-    foreach (var spec in RevitCommandCatalogue.V1)
+    // Every catalogue command (RevitCommandCatalogue.All: v1, v2 and later additions), not a fixed list.
+    foreach (var spec in RevitCommandCatalogue.All)
     {
         var expected = spec.Writes ? PermissionLevel.WriteCopies : PermissionLevel.Read;
         Check(PermissionPolicy.RequiredLevel(spec.Name, FixturePath, copies) == expected, "catalogue " + spec.Name + " on a copy requires " + expected);
+        var onReal = spec.Writes ? PermissionLevel.WriteRealProject : PermissionLevel.Read;
+        Check(PermissionPolicy.RequiredLevel(spec.Name, RealPath, copies) == onReal, "catalogue " + spec.Name + " on a real project requires " + onReal);
+    }
+    // P9-05: the five catalogue v2 commands keep the v1 read/write split.
+    var v2Levels = new (string Command, PermissionLevel Copy, PermissionLevel Real)[]
+    {
+        ("query.roof_types", PermissionLevel.Read, PermissionLevel.Read),
+        ("roof.create_footprint", PermissionLevel.WriteCopies, PermissionLevel.WriteRealProject),
+        ("stair.create", PermissionLevel.WriteCopies, PermissionLevel.WriteRealProject),
+        ("curtain_wall.create", PermissionLevel.WriteCopies, PermissionLevel.WriteRealProject),
+        ("floor.create_opening", PermissionLevel.WriteCopies, PermissionLevel.WriteRealProject),
+    };
+    foreach (var (command, onCopy, onReal) in v2Levels)
+    {
+        Check(RevitCommandCatalogue.V2.Any(spec => spec.Name == command), "catalogue v2 has " + command);
+        Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == onCopy && PermissionPolicy.RequiredLevel(command, RealPath, copies) == onReal, "v2 " + command + " requires " + onCopy + " on a copy and " + onReal + " on a real project");
+        var v2Policy = PermissionPolicy.Create(grants, Array.Empty<string>(), copies);
+        var onCopyByReader = v2Policy.Evaluate("reader", command, FixturePath);
+        var onRealByCopier = v2Policy.Evaluate("copier", command, RealPath);
+        var onCopyByCopier = v2Policy.Evaluate("copier", command, FixturePath);
+        if (onCopy == PermissionLevel.Read)
+            Check(onCopyByReader.Allowed && onRealByCopier.Allowed && onRealByCopier.Reason == PermissionCodes.ReadAllowed, "v2 read " + command + " is allowed for a reader on any document", Describe(onRealByCopier));
+        else
+            Check(!onCopyByReader.Allowed && onCopyByReader.Reason == PermissionCodes.LevelInsufficient
+                && onCopyByCopier.Allowed && onCopyByCopier.Reason == PermissionCodes.WriteCopiesAllowed
+                && !onRealByCopier.Allowed && onRealByCopier.Reason == PermissionCodes.RealProjectNotEnabled,
+                "v2 write " + command + ": reader denied, write-copies allowed on a copy, real project not enabled", Describe(onCopyByReader) + " / " + Describe(onRealByCopier));
     }
     Check(PermissionPolicy.RequiredLevel("bogus.command", FixturePath, copies) is null, "an unknown command has no required level");
     var forged = realWrite with { Spec = RevitCommandCatalogue.Find("query.levels")! };
