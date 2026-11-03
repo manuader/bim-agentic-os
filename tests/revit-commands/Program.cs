@@ -374,6 +374,9 @@ try
     Check(RevitCommandCodes.ClientSide.Concat(RevitCommandCodes.ExecutorReserved).Distinct().Count() == RevitCommandCodes.ClientSide.Count + RevitCommandCodes.ExecutorReserved.Count
         && RevitCommandCodes.ClientSide.Concat(RevitCommandCodes.ExecutorReserved).All(code => System.Text.RegularExpressions.Regex.IsMatch(code, @"\A[a-z]+(_[a-z0-9]+)*\z")), "error codes are distinct snake_case");
 
+    // ---- Catalogue v2 (P9-01): roofs, stairs, curtain walls, floor openings ----
+    CatalogueV2Checks.Run((condition, name, detail) => Check(condition, name, detail));
+
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
     RevitFileSystemProbe Probe(Func<string, bool> isLink, Func<string, int?> links) => new(path => { probed.Add(path); return isLink(path); }, links);

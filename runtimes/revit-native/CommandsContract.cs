@@ -58,7 +58,7 @@ public static class CommandAdmission
             throw new RevitCommandException(linked, "document.path", linked == RevitCommandCodes.DocumentLinkRefused ? "a symlink, junction or hard link between the enabled root and the opened document" : null);
         if (document.IsReadOnly) throw new RevitCommandException(RevitCommandCodes.DocumentNotEnabled, "document.path", "the document is read-only");
         if (document.IsFamilyDocument) throw new RevitCommandException(RevitCommandCodes.DocumentNotEnabled, "document.path", "family documents are not enabled");
-        if (document.IsWorkshared) throw new RevitCommandException(RevitCommandCodes.DocumentNotEnabled, "document.path", "workshared documents are not enabled in catalogue v1");
+        if (document.IsWorkshared) throw new RevitCommandException(RevitCommandCodes.DocumentNotEnabled, "document.path", "workshared documents are not enabled for catalogue commands");
         if (document.IsModifiable) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "the document already has an open transaction");
     }
 

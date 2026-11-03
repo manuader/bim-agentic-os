@@ -10,7 +10,8 @@ public sealed record RevitCommandSpec(string Name, bool Writes, string Descripti
     public string ToolName => ToolPrefix + Name.Replace('.', '_');
 }
 
-public static class RevitCommandCatalogue
+// Partial: catalogue v2 (P9-01) lives in RevitCommandsCatalogueV2.cs.
+public static partial class RevitCommandCatalogue
 {
     public const int Version = 1;
     public const int MaxBoundaryPoints = 1000;
@@ -61,7 +62,12 @@ public static class RevitCommandCatalogue
         new RevitCommandSpec("room.create", true, "Place a room on a level at a plan point inside an enclosed area, with optional name and number. Allowed only on enabled test copies.", RoomSchema, BindRoom),
     };
 
-    public static RevitCommandSpec? Find(string name) => V1.FirstOrDefault(spec => spec.Name == name);
+    // Every command the protocol accepts: v1, then v2. Lazy because the v2 entries live in another part of this
+    // partial class, whose static initializers may run in either order.
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).ToArray());
+    public static IReadOnlyList<RevitCommandSpec> All => AllSpecs.Value;
+
+    public static RevitCommandSpec? Find(string name) => All.FirstOrDefault(spec => spec.Name == name);
 
     static RevitCommandArgs BindFamilySymbols(JsonElement args) => new FamilySymbolQueryArgs(args.GetProperty("category").GetString()!);
 
@@ -69,6 +75,14 @@ public static class RevitCommandCatalogue
     {
         var level = args.GetProperty("level").GetString()!;
         var type = args.GetProperty("type").GetString()!;
+        var (baseOffset, height) = BindHeights(args);
+        var structural = args.TryGetProperty("structural", out var structuralElement) && structuralElement.GetBoolean();
+        return new WallCreateArgs(level, type, baseOffset, height, structural, BindCurve(args.GetProperty("curve")));
+    }
+
+    // base_offset_mm (default 0) and height_mm with the wall rules; shared by wall.create and curtain_wall.create.
+    static (Length BaseOffset, Length Height) BindHeights(JsonElement args)
+    {
         var baseOffset = args.TryGetProperty("base_offset_mm", out var offset)
             ? RevitUnits.Millimetres(Number(offset), "args.base_offset_mm", allowNegative: true, allowZero: true)
             : Length.FromMetres(0);
@@ -76,8 +90,12 @@ public static class RevitCommandCatalogue
         if (height.Millimetres < RevitCommandGeometry.MinSegmentMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, "args.height_mm", "height under 1.2 mm");
         if (height.Millimetres > RevitCommandGeometry.MaxRevitLengthMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, "args.height_mm", "height above 9144000 mm (Revit's 30000 ft limit)");
         if (Math.Abs(baseOffset.Millimetres) > RevitCommandGeometry.MaxRevitLengthMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, "args.base_offset_mm", "base offset beyond 9144000 mm (Revit's 30000 ft limit)");
-        var structural = args.TryGetProperty("structural", out var structuralElement) && structuralElement.GetBoolean();
-        var curve = args.GetProperty("curve");
+        return (baseOffset, height);
+    }
+
+    // The wall location curve (line, three-point arc or centre arc) at args.curve.
+    static WallCurve BindCurve(JsonElement curve)
+    {
         WallCurve typed;
         if (curve.GetProperty("kind").GetString() == "line")
         {
@@ -104,7 +122,7 @@ public static class RevitCommandCatalogue
             RevitCommandGeometry.CheckArcCenter(center.X, center.Y, radius, startAngle, endAngle, "args.curve");
             typed = new ArcCenterWallCurve(ToPoint(center), Length.FromMillimetres(radius), Angle.FromDegrees(startAngle), Angle.FromDegrees(endAngle));
         }
-        return new WallCreateArgs(level, type, baseOffset, height, structural, typed);
+        return typed;
     }
 
     static RevitCommandArgs BindOpening(JsonElement args)
