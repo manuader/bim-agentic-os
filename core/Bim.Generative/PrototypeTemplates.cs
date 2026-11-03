@@ -21,6 +21,29 @@ public static class PrototypeTemplates
         new PlannerRule(NamePattern: "bath*", MinAreaSquareMetres: 1.4, MinSideMetres: 0.9, Reference: Pack + " bathroom-area-min bathroom-side-min"),
     });
 
+    // CABA corridor minimum side (pack rule corredor-side-min, parameter corredor_lado_min_m): 1.00 m, 0.95 m on parcels
+    // narrower than 8.66 m. The template hall is the dwelling's circulation, so it gets this minimum.
+    public const double CorridorMinSideMetres = 1.0;
+    public const double NarrowParcelCorridorMinSideMetres = 0.95;
+    public const double NarrowParcelWidthMetres = 8.66;
+    // Template minimum side of the laundry, so a washing machine and a person fit; a programme choice, not a CABA rule.
+    public const double LaundryMinSideMetres = 1.2;
+
+    // Every planner rule of a prototype on the lot: CabaRules, the CABA corridor minimum side for the hall (by room id,
+    // narrow-parcel value when the lot is narrower than 8.66 m) and the template laundry minimum side.
+    public static PlannerRules Rules(PrototypeLot lot)
+    {
+        ArgumentNullException.ThrowIfNull(lot);
+        var narrow = lot.WidthMetres < NarrowParcelWidthMetres;
+        var rules = new List<PlannerRule>(CabaRules.Rules)
+        {
+            new(RoomId: "hall", MinSideMetres: narrow ? NarrowParcelCorridorMinSideMetres : CorridorMinSideMetres,
+                Reference: Pack + " corredor-side-min (corredor_lado_min_m " + (narrow ? "0.95 m, parcel narrower than 8.66 m" : "1.00 m") + ")"),
+            new(RoomId: "laundry", MinSideMetres: LaundryMinSideMetres, Reference: "prototype template laundry minimum side (not a CABA rule)"),
+        };
+        return new PlannerRules(rules);
+    }
+
     public static string Code(ApartmentTypology typology) => typology switch
     {
         ApartmentTypology.OneBedroom => "1br",

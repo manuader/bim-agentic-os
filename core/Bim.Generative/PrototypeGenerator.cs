@@ -7,8 +7,11 @@ namespace Bim.Generative;
 //    MinLotSideMetres..MaxLotSideMetres (or non-finite), alternatives outside MinAlternatives..MaxAlternatives, door
 //    width not positive and finite, invalid weights, and approvals that cannot hold: an approved room that is not a
 //    template room, approved twice, off the 1/8192 m grid or not positive and finite, outside the lot, overlapping
-//    another approved room, or below the brief range or the CABA minimums (PrototypeTemplates.CabaRules); an approved
-//    wall that is unnamed, duplicated, diagonal, zero-length, off-grid or outside the lot, or more than MaxFixedWalls.
+//    another approved room, or below the brief range or the prototype minimums (PrototypeTemplates.Rules: CABA rooms,
+//    CABA corridor side for the hall, template laundry side); an approved wall that is unnamed, duplicated, diagonal,
+//    zero-length, off-grid or outside the lot, or more than MaxFixedWalls; and approval sets no layout can satisfy
+//    (approved forbidden pair touching, approved required pair below the door width, approved area above the budget,
+//    approved wall through an approved room).
 // 2. Build the template brief on the lot and plan Alternatives whole_lot candidates with SpacePlanner (seeds
 //    Seed + i, CABA rules, the brief site as footprint). A whole-lot plan knows nothing of the approvals; a feasible one
 //    is then checked against them: an approved room whose rectangle differs in any bit (fixed_room_moved) or an
@@ -64,16 +67,18 @@ public static class PrototypeGenerator
         if (!(double.IsFinite(door) && door > 0)) refusals.Add(Refusal(PrototypeCodes.OptionsInvalid, "door_width_m", "positive finite door width required"));
         refusals.AddRange(AlternativeRanker.Refusals(AlternativeGenerator.MinCount, weights));
         var brief = typologyValid && lotValid && lot is not null ? PrototypeTemplates.Brief(request.Typology, lot) : null;
-        var rules = PrototypeTemplates.CabaRules.Rules;
-        CheckFixedRooms(brief, lot, fixedRooms, rules, refusals);
-        CheckFixedWalls(lot, fixedWalls, refusals);
+        var plannerRules = lot is not null ? PrototypeTemplates.Rules(lot) : PrototypeTemplates.CabaRules;
+        var rules = plannerRules.Rules;
+        var validRooms = CheckFixedRooms(brief, lot, fixedRooms, rules, refusals);
+        var validWalls = CheckFixedWalls(lot, fixedWalls, refusals);
+        if (brief is not null) CheckApprovalSet(brief, door, validRooms, validWalls, refusals);
         if (refusals.Count > 0 || brief is null || lot is null)
             return new PrototypeResult(PrototypeStatus.Refused, request, brief, refusals, Array.Empty<PrototypeCandidate>(), null);
 
         var count = request.Alternatives;
         var plans = new List<SpacePlan>();
         var candidates = new List<PrototypeCandidate>();
-        var wholeLot = new PlannerOptions(door, null, PrototypeTemplates.CabaRules);
+        var wholeLot = new PlannerOptions(door, null, plannerRules);
         for (var index = 0; index < count; index++)
         {
             var seed = unchecked(request.Seed + index);
@@ -98,7 +103,7 @@ public static class PrototypeGenerator
             {
                 var seed = unchecked(request.Seed + count + index);
                 var region = regions.Count == 0 ? null : regions[index % regions.Count];
-                var (plan, variant) = AroundFixed(brief, sub, free.Length, region, freeMinimum, seed, lot, door, fixedRooms, fixedWalls, rules);
+                var (plan, variant) = AroundFixed(brief, sub, free.Length, region, freeMinimum, seed, lot, door, fixedRooms, fixedWalls, plannerRules);
                 plans.Add(plan);
                 candidates.Add(new PrototypeCandidate(count + index, PrototypeStrategies.AroundFixed, seed, free.Length == 0 ? null : region, variant));
             }
@@ -110,12 +115,13 @@ public static class PrototypeGenerator
 
     // ---- request checks ----
 
-    static void CheckFixedRooms(ProjectBrief? brief, PrototypeLot? lot, IReadOnlyList<FixedRoom> fixedRooms, IReadOnlyList<PlannerRule> rules, List<PlanConstraint> refusals)
+    // Returns the approved rooms that passed the per-room checks (template rooms only when the brief is known).
+    static List<FixedRoom> CheckFixedRooms(ProjectBrief? brief, PrototypeLot? lot, IReadOnlyList<FixedRoom> fixedRooms, IReadOnlyList<PlannerRule> rules, List<PlanConstraint> refusals)
     {
         if (fixedRooms.Count > MaxFixedRooms)
         {
             refusals.Add(Refusal(PrototypeCodes.FixedRoomInvalid, "fixed_rooms", Text(fixedRooms.Count) + " approved rooms; at most " + Text(MaxFixedRooms) + " are accepted"));
-            return;
+            return new List<FixedRoom>();
         }
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var valid = new List<FixedRoom>();
@@ -166,14 +172,17 @@ public static class PrototypeGenerator
             for (var j = i + 1; j < valid.Count; j++)
                 if (Overlap(valid[i].Rect, valid[j].Rect))
                     refusals.Add(Refusal(PrototypeCodes.FixedRoomOverlap, valid[i].RoomId + "/" + valid[j].RoomId, "approved rectangles " + Describe(valid[i].Rect) + " and " + Describe(valid[j].Rect) + " overlap"));
+        return valid;
     }
 
-    static void CheckFixedWalls(PrototypeLot? lot, IReadOnlyList<FixedWall> walls, List<PlanConstraint> refusals)
+    // Returns the approved walls that passed the per-wall checks.
+    static List<FixedWall> CheckFixedWalls(PrototypeLot? lot, IReadOnlyList<FixedWall> walls, List<PlanConstraint> refusals)
     {
+        var valid = new List<FixedWall>();
         if (walls.Count > MaxFixedWalls)
         {
             refusals.Add(Refusal(PrototypeCodes.FixedWallInvalid, "fixed_walls", Text(walls.Count) + " approved walls; at most " + Text(MaxFixedWalls) + " are accepted"));
-            return;
+            return valid;
         }
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var index = 0; index < walls.Count; index++)
@@ -201,8 +210,51 @@ public static class PrototypeGenerator
             }
             if (lot is not null && double.IsFinite(lot.WidthMetres) && double.IsFinite(lot.DepthMetres)
                 && (Math.Max(wall.X0, wall.X1) > lot.WidthMetres || Math.Max(wall.Y0, wall.Y1) > lot.DepthMetres))
+            {
                 refusals.Add(Refusal(PrototypeCodes.FixedWallInvalid, subject, "wall exceeds lot " + Format(lot.WidthMetres) + " x " + Format(lot.DepthMetres) + " m"));
+                continue;
+            }
+            valid.Add(wall);
         }
+        return valid;
+    }
+
+    // Approval sets no layout can satisfy, refused before planning: two approved rooms of a forbidden pair touching, two
+    // approved rooms of a required pair sharing less than the door width, approved area above the brief budget, and an
+    // approved wall running through the interior of an approved room.
+    static void CheckApprovalSet(ProjectBrief brief, double door, List<FixedRoom> rooms, List<FixedWall> walls, List<PlanConstraint> refusals)
+    {
+        var placed = new Dictionary<string, PlanRect>(StringComparer.Ordinal);
+        foreach (var room in rooms) placed.TryAdd(room.RoomId, room.Rect);
+        var seen = new HashSet<(string, string, BriefAdjacencyKind)>();
+        foreach (var adjacency in brief.Adjacencies)
+        {
+            var key = string.CompareOrdinal(adjacency.A, adjacency.B) < 0 ? (adjacency.A, adjacency.B, adjacency.Kind) : (adjacency.B, adjacency.A, adjacency.Kind);
+            if (!seen.Add(key) || !placed.TryGetValue(adjacency.A, out var a) || !placed.TryGetValue(adjacency.B, out var b)) continue;
+            var shared = Shared(a, b);
+            var subject = adjacency.A + "/" + adjacency.B;
+            if (adjacency.Kind == BriefAdjacencyKind.Forbidden && shared > Epsilon)
+                refusals.Add(Refusal(PrototypeCodes.FixedAdjacencyForbidden, subject, "approved rooms of a forbidden pair share " + Format(shared) + " m of wall"));
+            if (adjacency.Kind == BriefAdjacencyKind.Required && double.IsFinite(door) && door > 0 && shared < door)
+                refusals.Add(Refusal(PrototypeCodes.FixedAdjacencyRequired, subject, "approved rooms of a required pair share " + Format(shared) + " m of wall, below the " + Format(door) + " m door width"));
+        }
+        if (brief.Constraints.TotalAreaBudgetSquareMetres is { } budget)
+        {
+            double area = 0;
+            foreach (var room in rooms) area += room.Rect.Area;
+            if (area > budget.Value + SpacePlanner.AreaToleranceSquareMetres)
+                refusals.Add(Refusal(PrototypeCodes.FixedAreaOverBudget, "fixed_rooms", "approved rooms total " + Format(area) + " m2, above the " + Format(budget.Value) + " m2 budget"));
+        }
+        foreach (var wall in walls)
+            foreach (var room in rooms)
+            {
+                var r = room.Rect;
+                var horizontal = wall.Y0 == wall.Y1;
+                var crosses = horizontal
+                    ? wall.Y0 > r.Y + Epsilon && wall.Y0 < r.Top - Epsilon && Math.Min(Math.Max(wall.X0, wall.X1), r.Right) - Math.Max(Math.Min(wall.X0, wall.X1), r.X) > Epsilon
+                    : wall.X0 > r.X + Epsilon && wall.X0 < r.Right - Epsilon && Math.Min(Math.Max(wall.Y0, wall.Y1), r.Top) - Math.Max(Math.Min(wall.Y0, wall.Y1), r.Y) > Epsilon;
+                if (crosses) refusals.Add(Refusal(PrototypeCodes.FixedWallCrossesRoom, wall.Id + "/" + room.RoomId, "approved wall runs through the interior of approved room " + room.RoomId + " " + Describe(r)));
+            }
     }
 
     static ApartmentTypology PrototypeTypology(ProjectBrief brief) => (ApartmentTypology)brief.Rooms.Count(room => room.Id.StartsWith("bedroom_", StringComparison.Ordinal));
@@ -210,19 +262,20 @@ public static class PrototypeGenerator
     // ---- around approved rooms ----
 
     static (SpacePlan Plan, string? Variant) AroundFixed(ProjectBrief brief, ProjectBrief? sub, int freeCount, PlanRect? region, double freeMinimum, int seed, PrototypeLot lot,
-        double door, IReadOnlyList<FixedRoom> fixedRooms, IReadOnlyList<FixedWall> walls, IReadOnlyList<PlannerRule> rules)
+        double door, IReadOnlyList<FixedRoom> fixedRooms, IReadOnlyList<FixedWall> walls, PlannerRules plannerRules)
     {
+        var rules = plannerRules.Rules;
         var fixedPlaced = fixedRooms.ToDictionary(room => room.RoomId, room => room.Rect, StringComparer.Ordinal);
         if (freeCount == 0 || sub is null)
         {
             var only = Compose(brief, fixedPlaced, new Dictionary<string, PlanRect>(StringComparer.Ordinal));
             var checks = Assess(brief, only, lot, door, rules).Concat(Approvals(only, fixedRooms, walls)).ToArray();
-            return (Result(brief, seed, lot, door, only, checks, 0), "fixed_only");
+            return (Result(brief, seed, lot, door, only, checks, Score(brief, only, door)), "fixed_only");
         }
         if (region is null)
             return (Infeasible(brief, seed, lot, door, new[] { Refusal(PrototypeCodes.FixedRegionMissing, "plan", "no free rectangle of the lot next to the approved rooms holds the other rooms' minimum area of "
                 + Format(freeMinimum) + " m2") }), null);
-        var subPlan = SpacePlanner.Plan(sub, seed, new PlannerOptions(door, new PlanFootprint(region.Width, region.Depth), PrototypeTemplates.CabaRules));
+        var subPlan = SpacePlanner.Plan(sub, seed, new PlannerOptions(door, new PlanFootprint(region.Width, region.Depth), plannerRules));
         if (!subPlan.IsFeasible) return (Infeasible(brief, seed, lot, door, subPlan.Violations), null);
         var x0 = subPlan.Rooms.Min(room => room.Rect.X);
         var y0 = subPlan.Rooms.Min(room => room.Rect.Y);
@@ -254,7 +307,7 @@ public static class PrototypeGenerator
                 var violations = checks.Count(check => check.Hard && !check.Satisfied);
                 var variant = "corner " + Corners[corner] + " mirror " + Mirrors[mirror];
                 if (violations == 0)
-                    return (new SpacePlan(SpacePlanStatus.Feasible, brief.Name, seed, 1, new PlanFootprint(lot.WidthMetres, lot.DepthMetres), door, rooms, checks, subPlan.Score), variant);
+                    return (new SpacePlan(SpacePlanStatus.Feasible, brief.Name, seed, 1, new PlanFootprint(lot.WidthMetres, lot.DepthMetres), door, rooms, checks, Score(brief, rooms, door)), variant);
                 if (violations < bestCount) { bestCount = violations; bestChecks = checks; bestVariant = variant; }
             }
         }
@@ -471,7 +524,38 @@ public static class PrototypeGenerator
 
     static long Bits(double value) => BitConverter.DoubleToInt64Bits(value == 0 ? 0 : value);
 
-    static bool OnGrid(double value) => double.IsFinite(value) && Math.Floor(value * GridScale) == value * GridScale;
+    // Bounded by the largest lot side, so value * GridScale stays exact and huge values are refused as invalid.
+    static bool OnGrid(double value) => double.IsFinite(value) && Math.Abs(value) <= MaxLotSideMetres && Math.Floor(value * GridScale) == value * GridScale;
+
+    // The planner's soft score (SpacePlanner.Score) over a composed layout in brief order: 0.5 preferred adjacency (met
+    // fraction over the brief's preferred pairs, door-width wall; 1 without pairs) + 0.3 mean aspect quality
+    // min(1, short / long / 0.5) + 0.2 mean target fit max(0, 1 - |area - target| / target) (1 without a target),
+    // rounded to 6 decimals.
+    static double Score(ProjectBrief brief, IReadOnlyList<PlannedRoom> rooms, double door)
+    {
+        double aspect = 0, fit = 0, preferred = 0;
+        var pairs = 0;
+        foreach (var room in rooms)
+        {
+            var longSide = Math.Max(room.Rect.Width, room.Rect.Depth);
+            aspect += longSide > 0 ? Math.Min(1, Math.Min(room.Rect.Width, room.Rect.Depth) / longSide / 0.5) : 0;
+            var target = brief.Rooms.First(spec => spec.Id == room.RoomId).TargetAreaSquareMetres?.Value;
+            fit += target is { } t ? Math.Max(0, 1 - Math.Abs(room.AreaSquareMetres - t) / t) : 1;
+        }
+        var seen = new HashSet<(string, string)>();
+        foreach (var adjacency in brief.Adjacencies)
+        {
+            if (adjacency.Kind != BriefAdjacencyKind.Preferred) continue;
+            var key = string.CompareOrdinal(adjacency.A, adjacency.B) < 0 ? (adjacency.A, adjacency.B) : (adjacency.B, adjacency.A);
+            if (!seen.Add(key)) continue;
+            var a = rooms.FirstOrDefault(room => room.RoomId == adjacency.A);
+            var b = rooms.FirstOrDefault(room => room.RoomId == adjacency.B);
+            pairs++;
+            if (a is not null && b is not null && Shared(a.Rect, b.Rect) >= door) preferred++;
+        }
+        var count = Math.Max(1, rooms.Count);
+        return Math.Round(0.5 * (pairs == 0 ? 1 : preferred / pairs) + 0.3 * (aspect / count) + 0.2 * (fit / count), 6, MidpointRounding.ToEven);
+    }
 
     static double FloorGrid(double value) => Math.Floor(value * GridScale) / GridScale;
 

@@ -38,13 +38,12 @@ public static class PrototypeSerializer
                 if (room is null) { writer.WriteNullValue(); continue; }
                 writer.WriteStartObject();
                 Text(writer, "room", room.RoomId);
-                if (room.Rect is { } rect)
-                {
-                    Number(writer, "x_m", rect.X);
-                    Number(writer, "y_m", rect.Y);
-                    Number(writer, "width_m", rect.Width);
-                    Number(writer, "depth_m", rect.Depth);
-                }
+                // A missing rectangle (refused as fixed_room_invalid) writes null coordinates.
+                var rect = room.Rect;
+                Number(writer, "x_m", rect?.X ?? double.NaN);
+                Number(writer, "y_m", rect?.Y ?? double.NaN);
+                Number(writer, "width_m", rect?.Width ?? double.NaN);
+                Number(writer, "depth_m", rect?.Depth ?? double.NaN);
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();

@@ -62,6 +62,11 @@ public static class PrototypeCodes
     public const string FixedRoomOverlap = "fixed_room_overlap";
     public const string FixedRoomNoncompliant = "fixed_room_noncompliant";
     public const string FixedWallInvalid = "fixed_wall_invalid";
+    // Approval sets no layout can satisfy.
+    public const string FixedAdjacencyForbidden = "fixed_adjacency_forbidden";
+    public const string FixedAdjacencyRequired = "fixed_adjacency_required";
+    public const string FixedAreaOverBudget = "fixed_area_over_budget";
+    public const string FixedWallCrossesRoom = "fixed_wall_crosses_room";
     // Checks of each candidate layout (rejection reasons when unsatisfied).
     public const string FixedRoomMoved = "fixed_room_moved";
     public const string FixedWallMissing = "fixed_wall_missing";
