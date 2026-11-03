@@ -26,8 +26,6 @@ internal static partial class CommandExecutor
 {
     static ToposolidType[] ToposolidTypes(Document d) => new FilteredElementCollector(d).OfClass(typeof(ToposolidType)).Cast<ToposolidType>().ToArray();
 
-    static Material[] Materials(Document d) => new FilteredElementCollector(d).OfClass(typeof(Material)).Cast<Material>().ToArray();
-
     static string QuerySite(Document d) =>
         CommandReadbackSite.ToposolidTypesJson(ToposolidTypes(d).Select(type => new ToposolidTypeRow(type.Name, type.UniqueId, type.GetCompoundStructure() is { } layers ? Mm(layers.GetWidth()) : null)));
 

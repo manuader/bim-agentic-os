@@ -21,7 +21,8 @@ public sealed record ObservedSubdivision(string UniqueId, string? HostUid, bool 
 public static class CommandRulesSite
 {
     // Bounding boxes are compared with a coarser tolerance than curves: Revit computes them from tessellated geometry.
-    public const double BoxToleranceMm = 1.0;
+    // Revit pads element bounding boxes; 25 mm keeps the check meaningful for terrain without rolling back valid results.
+    public const double BoxToleranceMm = 25.0;
 
     public static BoxMm Extents(IEnumerable<(double X, double Y, double Z)> points)
     {

@@ -176,8 +176,10 @@ public static class CommandReadbackV2
             else if (!edge.DefinesSlope) return name + " does not define slope";
             else if (edge.SlopeDeg is not { } actual || !(Math.Abs(actual - slope) <= SlopeToleranceDeg)) return name + " slope is " + (edge.SlopeDeg is { } s ? F(s) : "unreadable") + " degrees, expected " + F(slope);
         }
-        if (slopeDeg is { } requested && (observed.SlopeParameterDeg is not { } parameter || !(Math.Abs(parameter - requested) <= SlopeToleranceDeg)))
-            return "roof Slope parameter is " + (observed.SlopeParameterDeg is { } p ? F(p) : "unreadable") + " degrees, expected " + F(requested);
+        // The roof-wide Slope parameter is compared only when Revit fills it (it may be empty when only some edges slope);
+        // the per-edge slopes above are the authoritative check.
+        if (slopeDeg is { } requested && observed.SlopeParameterDeg is { } parameter && !(Math.Abs(parameter - requested) <= SlopeToleranceDeg))
+            return "roof Slope parameter is " + F(parameter) + " degrees, expected " + F(requested);
         return null;
     }
 

@@ -76,6 +76,16 @@ internal static partial class CommandExecutor
                     layers.Add(new CompoundStructureLayer(U(args.Layers[i].Thickness.Millimetres), function, resolved[i].Id));
                 }
                 var structure = CompoundStructure.CreateSimpleCompoundStructure(layers);
+                // CreateSimpleCompoundStructure puts every layer in the core, and Revit refuses a core holding a membrane
+                // (CoreTooThin): the core is the run of structure layers, everything outside it is shell.
+                var firstStructure = layers.FindIndex(layer => layer.Function == MaterialFunctionAssignment.Structure);
+                var lastStructure = layers.FindLastIndex(layer => layer.Function == MaterialFunctionAssignment.Structure);
+                if (firstStructure < 0) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.layers", "a layered roof type needs at least one structure layer");
+                for (var i = firstStructure; i <= lastStructure; i++)
+                    if (layers[i].Function == MaterialFunctionAssignment.Membrane) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.layers[" + i + "]", "a membrane cannot lie between structure layers");
+                structure.SetNumberOfShellLayers(ShellLayerType.Exterior, firstStructure);
+                structure.SetNumberOfShellLayers(ShellLayerType.Interior, layers.Count - 1 - lastStructure);
+                structure.StructuralMaterialIndex = firstStructure;
                 if (!structure.IsValid(d, out var errors, out var pairErrors))
                 {
                     var details = errors.Select(error => "layer " + error.Key + ": " + error.Value).Concat(pairErrors.Select(pair => "layers " + pair.Key + " and " + pair.Value)).ToArray();
