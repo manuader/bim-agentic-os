@@ -20,6 +20,12 @@ public sealed record DxfProvenance(string SourceFile, string? Handle, string Lay
 {
     public DxfProvenance(string sourceFile, string? handle, string layer, string entityType, int line)
         : this(sourceFile, handle, layer, entityType, line, Array.Empty<string>()) { }
+
+    // Group 67 = 1: the entity is in paper space (for exploded entities, also when any enclosing INSERT is).
+    public bool PaperSpace { get; init; }
+
+    // Group 60 = 1: the entity is invisible (for exploded entities, also when any enclosing INSERT is).
+    public bool Invisible { get; init; }
 }
 
 public abstract record DxfEntity(DxfProvenance Provenance);
@@ -87,7 +93,8 @@ public sealed record DxfDrawing(
     public DxfExplodedDrawing Explode(DxfExplodeOptions? options = null) => DxfExploder.Explode(this, options ?? new DxfExplodeOptions());
 }
 
-public sealed record DxfExplodeOptions(int MaxDepth = 32, int MaxEntities = 1_000_000, int ArcTessellationSegments = 32);
+// MaxWork bounds the total work of one explode: emitted entities, visited INSERTs and warnings all count.
+public sealed record DxfExplodeOptions(int MaxDepth = 32, int MaxEntities = 1_000_000, int ArcTessellationSegments = 32, int MaxWork = 2_000_000);
 
 // Model-space entities with every INSERT replaced, recursively, by its block's entities in world coordinates.
 public sealed record DxfExplodedDrawing(IReadOnlyList<DxfEntity> Entities, IReadOnlyList<DxfWarning> Warnings);

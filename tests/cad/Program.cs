@@ -324,5 +324,137 @@ catch (Exception error)
     failed++;
 }
 
+// ---------- review hardening: explode/detect budgets, paper space, transforms, OCS, layer case, text ----------
+// G("0 LINE|8 A|10 0") turns "code value" items separated by '|' into DXF group lines.
+string G(string spec) => string.Concat(spec.Split('|').Select(item => { var space = item.IndexOf(' ', StringComparison.Ordinal); return item[..space] + "\n" + item[(space + 1)..] + "\n"; }));
+string Doc(string entities, string blocks = "", string tables = "") =>
+    (tables.Length > 0 ? G("0 SECTION|2 TABLES") + tables + G("0 ENDSEC") : "")
+    + (blocks.Length > 0 ? G("0 SECTION|2 BLOCKS") + blocks + G("0 ENDSEC") : "")
+    + G("0 SECTION|2 ENTITIES") + entities + G("0 ENDSEC|0 EOF");
+string Bomb(string leaf)
+{
+    var blocks = new StringBuilder();
+    for (var level = 0; level < 10; level++)
+    {
+        blocks.Append(G("0 BLOCK|2 B" + level.ToString(CultureInfo.InvariantCulture) + "|10 0|20 0"));
+        for (var k = 0; k < 10; k++) blocks.Append(level < 9 ? G("0 INSERT|2 B" + (level + 1).ToString(CultureInfo.InvariantCulture) + "|10 " + k.ToString(CultureInfo.InvariantCulture) + "|20 0") : leaf);
+        blocks.Append(G("0 ENDBLK"));
+    }
+    return Doc(G("0 INSERT|2 B0|10 0|20 0"), blocks.ToString());
+}
+try
+{
+    // Blocker 1: work budget counts insert visits and warnings, not only emitted entities.
+    // Each call runs on a worker with a hard wait, so a regression fails instead of hanging; after one timeout the
+    // remaining bombs are not started (a runaway missing-block bomb would otherwise grow warnings without bound).
+    string Timed(Func<object?> action, int waitMs, out long elapsedMs)
+    {
+        var timer = Stopwatch.StartNew();
+        var task = Task.Run(() => CodeOf(action));
+        var done = task.Wait(waitMs);
+        elapsedMs = timer.ElapsedMilliseconds;
+        return done ? task.Result ?? "no error" : "timeout";
+    }
+    var timedOut = false;
+    foreach (var (label, leaf) in new[] { ("empty leaf", ""), ("unsupported-only leaf", G("0 POINT|10 0|20 0")), ("missing-block leaf", G("0 INSERT|2 NOPE|10 0|20 0")) })
+    {
+        if (timedOut) { Check(false, "review insert bomb with " + label, "not run after an earlier timeout"); continue; }
+        var bomb = DxfReader.Parse(Bomb(leaf), "bomb.dxf");
+        var code = Timed(() => bomb.Explode(new DxfExplodeOptions(MaxWork: 100_000)), 5000, out var ms);
+        Check(code == "explode-limit" && ms < 1000, "review insert bomb with " + label + " stopped by the work budget within 1 s", code + " " + ms + " ms");
+        if (code == "timeout") { timedOut = true; continue; }
+        code = Timed(() => bomb.Explode(), 10_000, out ms);
+        Check(code == "explode-limit", "review insert bomb with " + label + " stopped by the default budget", code + " " + ms + " ms");
+        if (code == "timeout") { timedOut = true; continue; }
+        code = Timed(() => WallPairDetector.Detect(bomb, new WallPairOptions(0.1, 0.5, 0.3)), 10_000, out ms);
+        Check(code == "explode-limit", "review wall detection on the " + label + " bomb fails closed", code + " " + ms + " ms");
+        if (code == "timeout") timedOut = true;
+    }
+
+    // Should-fix 2: axis-aligned plans are not quadratic; explicit limits.
+    var stack = new List<DxfEntity>();
+    for (var i = 0; i < 20_000; i++) stack.Add(new DxfLine(new DxfProvenance("gen", null, "WALLS", "LINE", i + 1), new Point2(0, i * 10.0), new Point2(100, i * 10.0)));
+    var watch = Stopwatch.StartNew();
+    var none = WallPairDetector.Detect(stack, new WallPairOptions(0.1, 0.5, 0.3));
+    watch.Stop();
+    Check(none.Count == 0 && watch.ElapsedMilliseconds < 2000, "review 20k parallel lines 10 apart give no pairs quickly", none.Count + " pairs, " + watch.ElapsedMilliseconds + " ms");
+    stack.Add(new DxfLine(new DxfProvenance("gen", "X", "WALLS", "LINE", 99_999), new Point2(10, 50_000.2), new Point2(90, 50_000.2)));
+    var one = WallPairDetector.Detect(stack, new WallPairOptions(0.1, 0.5, 0.3));
+    Check(one.Count == 1 && one[0].B.Source.Handle == "X" && Near(one[0].Thickness, 0.2, 1e-6) && Near(one[0].Overlap, 80, 1e-9), "review a real pair among 20k lines is still found", string.Join(";", one.Select(p => p.A.Source.Line + "/" + p.B.Source.Handle)));
+    var dense = new List<DxfEntity>();
+    for (var i = 0; i < 100; i++)
+    {
+        dense.Add(new DxfLine(new DxfProvenance("gen", "a" + i.ToString(CultureInfo.InvariantCulture), "W", "LINE", i + 1), new Point2(0, 0), new Point2(10, 0)));
+        dense.Add(new DxfLine(new DxfProvenance("gen", "b" + i.ToString(CultureInfo.InvariantCulture), "W", "LINE", i + 101), new Point2(0, 0.2), new Point2(10, 0.2)));
+    }
+    Check(CodeOf(() => WallPairDetector.Detect(dense, new WallPairOptions(0.1, 0.5, 0.3) { MaxPairs = 500 })) == "detect-limit", "review MaxPairs exceeded raises detect-limit");
+    Check(CodeOf(() => WallPairDetector.Detect(dense, new WallPairOptions(0.1, 0.5, 0.3) { MaxSegments = 50 })) == "detect-limit", "review MaxSegments exceeded raises detect-limit");
+    Check(CodeOf(() => WallPairDetector.Detect(dense, new WallPairOptions(0.1, 0.5, 0.3) { MaxComparisons = 1000 })) == "detect-limit", "review MaxComparisons exceeded raises detect-limit");
+    Check(WallPairDetector.Detect(dense, new WallPairOptions(0.1, 0.5, 0.3)).Count == 10_000, "review dense pairs within default limits all reported");
+
+    // 3: paper space (67), invisible (60) and optionally frozen/off layers are not walls by default.
+    var paper = DxfReader.Parse(Doc(G("0 LINE|5 P1|67 1|8 W|10 0|20 0|11 4|21 0|0 LINE|5 P2|67 1|8 W|10 0|20 0.2|11 4|21 0.2")), "paper.dxf");
+    Check(paper.Entities.All(e => e.Provenance.PaperSpace && !e.Provenance.Invisible), "review group 67 read into provenance");
+    Check(WallPairDetector.Detect(paper, new WallPairOptions(0.1, 0.5, 0.3)).Count == 0 && WallPairDetector.Detect(paper, new WallPairOptions(0.1, 0.5, 0.3) { IncludePaperSpace = true }).Count == 1,
+        "review paper-space lines skipped unless IncludePaperSpace");
+    var hidden = DxfReader.Parse(Doc(G("0 LINE|5 V1|60 1|8 W|10 0|20 0|11 4|21 0|0 LINE|5 V2|8 W|10 0|20 0.2|11 4|21 0.2")), "hidden.dxf");
+    Check(hidden.Entities[0].Provenance.Invisible && !hidden.Entities[1].Provenance.Invisible && !hidden.Entities[0].Provenance.PaperSpace, "review group 60 read into provenance");
+    Check(WallPairDetector.Detect(hidden, new WallPairOptions(0.1, 0.5, 0.3)).Count == 0 && WallPairDetector.Detect(hidden, new WallPairOptions(0.1, 0.5, 0.3) { IncludeInvisible = true }).Count == 1,
+        "review invisible lines skipped unless IncludeInvisible");
+    var layerTable = G("0 TABLE|2 LAYER|0 LAYER|2 WALLS|70 0|62 1|6 CONTINUOUS|0 LAYER|2 HID|70 1|62 5|6 CONTINUOUS|0 LAYER|2 OFFL|70 0|62 -2|6 CONTINUOUS|0 ENDTAB");
+    var layered = DxfReader.Parse(Doc(G("0 LINE|8 walls|10 0|20 0|11 4|21 0|0 LINE|8 Walls|10 0|20 0.2|11 4|21 0.2|0 LINE|8 hid|10 0|20 5|11 4|21 5|0 LINE|8 HID|10 0|20 5.2|11 4|21 5.2|0 LINE|8 offl|10 0|20 9|11 4|21 9|0 LINE|8 OFFL|10 0|20 9.2|11 4|21 9.2"), tables: layerTable), "layers.dxf");
+    Check(layered.Layers.Count == 3 && layered.Layers.All(l => l.Declared) && layered.Layers.Count(l => string.Equals(l.Name, "WALLS", StringComparison.OrdinalIgnoreCase)) == 1,
+        "review layer names are case-insensitive: table WALLS and entity walls are one declared layer", string.Join(",", layered.Layers.Select(l => l.Name + ":" + l.Declared)));
+    Check(WallPairDetector.Detect(layered, new WallPairOptions(0.1, 0.5, 0.3)).Count == 3 && WallPairDetector.Detect(layered, new WallPairOptions(0.1, 0.5, 0.3) { SkipHiddenLayers = true }).Count == 1,
+        "review frozen and off layers skipped when SkipHiddenLayers", WallPairDetector.Detect(layered, new WallPairOptions(0.1, 0.5, 0.3) { SkipHiddenLayers = true }).Count.ToString(CultureInfo.InvariantCulture));
+    var paperInsert = DxfReader.Parse(Doc(G("0 INSERT|5 PI|67 1|2 L|10 0|20 0"), G("0 BLOCK|2 L|10 0|20 0|0 LINE|8 0|10 0|20 0|11 4|21 0|0 LINE|8 0|10 0|20 0.2|11 4|21 0.2|0 ENDBLK")), "paperinsert.dxf");
+    Check(paperInsert.Explode().Entities.All(e => e.Provenance.PaperSpace) && WallPairDetector.Detect(paperInsert, new WallPairOptions(0.1, 0.5, 0.3)).Count == 0, "review entities exploded from a paper-space insert stay in paper space");
+
+    // 4a: INSERT rotation 30, scale (2, 0.5), block base (3, 4); hand-computed world coordinates.
+    var rotated = DxfReader.Parse(Doc(G("0 INSERT|5 R1|8 A|2 RB|10 10|20 20|41 2|42 0.5|50 30"), G("0 BLOCK|2 RB|10 3|20 4|0 LINE|5 RL|8 0|10 4|20 5|11 6|21 4|0 ENDBLK")), "rotated.dxf").Explode();
+    var rl = rotated.Entities.OfType<DxfLine>().SingleOrDefault();
+    // (4,5)-(3,4)=(1,1) -> scale (2,0.5) -> rotate 30: (2cos30-0.5sin30, 2sin30+0.5cos30) = (1.4820508075688772, 1.4330127018922193) -> +(10,20)
+    // (6,4)-(3,4)=(3,0) -> (6,0) -> (6cos30, 6sin30) = (5.196152422706632, 3) -> +(10,20)
+    Check(rl is not null && NearP(rl.Start, 11.482050807568877, 21.433012701892219, 1e-9) && NearP(rl.End, 15.196152422706632, 23, 1e-9) && rl.Provenance.Layer == "A" && Path0(rl.Provenance) == "R1",
+        "review INSERT rotation 30, scale (2,0.5), base (3,4) world line", rl is null ? "null" : P(rl.Start) + " " + P(rl.End));
+
+    // 4b: bulges 0.5 and -0.25.
+    var bulged = DxfReader.Parse(Doc(G("0 LWPOLYLINE|5 BP|90 3|70 0|10 0|20 0|42 0.5|10 4|20 0|42 -0.25|10 4|20 4")), "bulge.dxf").Entities.OfType<DxfPolyline>().Single().Segments();
+    // b=0.5, chord (0,0)-(4,0): r = 4(1+0.25)/2 = 2.5, centre (2, 1.5), sagitta 1 below the chord -> midpoint (2,-1).
+    Check(bulged[0].Center is { } c05 && NearP(c05, 2, 1.5, 1e-12) && Near(bulged[0].Radius, 2.5, 1e-12) && NearP(bulged[0].Midpoint, 2, -1, 1e-12), "review bulge 0.5 centre, radius, midpoint", bulged[0].ToString());
+    // b=-0.25, chord (4,0)-(4,4): r = 4(1+0.0625)/1 = 4.25, centre (4,2) + (-1,0)*(-3.75) = (7.75, 2), clockwise -> midpoint (3.5, 2).
+    Check(bulged[1].Center is { } c25 && NearP(c25, 7.75, 2, 1e-12) && Near(bulged[1].Radius, 4.25, 1e-12) && NearP(bulged[1].Midpoint, 3.5, 2, 1e-12), "review bulge -0.25 centre, radius, midpoint", bulged[1].ToString());
+
+    // 4c: extrusion (0,0,-1) for INSERT, LWPOLYLINE and TEXT (OCS x is world -x).
+    var ocs = DxfReader.Parse(Doc(G("0 LWPOLYLINE|5 OP|90 2|70 0|10 1|20 2|42 0.5|10 3|20 2|210 0|220 0|230 -1")
+        + G("0 TEXT|5 OT|10 5|20 1|40 1|50 30|1 T|210 0|220 0|230 -1")
+        + G("0 INSERT|5 OI|2 OB|10 2|20 3|50 30|210 0|220 0|230 -1"), G("0 BLOCK|2 OB|10 0|20 0|0 LINE|5 OL|10 0|20 0|11 1|21 0|0 ENDBLK")), "ocs.dxf");
+    var op = ocs.Entities.OfType<DxfPolyline>().Single();
+    // OCS arc (1,2)->(3,2), b 0.5: centre (2, 2.75), r 1.25, midpoint (2, 1.5); mirrored: (-1,2)->(-3,2), b -0.5, midpoint (-2, 1.5).
+    Check(NearP(op.Vertices[0].Point, -1, 2) && NearP(op.Vertices[1].Point, -3, 2) && op.Vertices[0].Bulge == -0.5 && op.Segments()[0].Center is { } oc && NearP(oc, -2, 2.75, 1e-12) && NearP(op.Segments()[0].Midpoint, -2, 1.5, 1e-12),
+        "review LWPOLYLINE in OCS (0,0,-1)", op.ToString());
+    var ot = ocs.Entities.OfType<DxfText>().Single();
+    Check(NearP(ot.Insertion, -5, 1) && Near(ot.RotationDegrees, 150, 1e-12), "review TEXT in OCS (0,0,-1) mirrored with rotation 180-30", ot.ToString());
+    var oi = ocs.Entities.OfType<DxfInsert>().Single();
+    Check(NearP(oi.Insertion, -2, 3) && oi.ScaleX == -1 && oi.ScaleY == 1 && Near(oi.RotationDegrees, 330, 1e-12), "review INSERT in OCS (0,0,-1) as mirrored insert", oi.ToString());
+    // OCS line (2,3)->(2+cos30, 3+sin30) mirrored in x: (-2,3)->(-2.866025403784439, 3.5).
+    var ol = ocs.Explode().Entities.OfType<DxfLine>().Single();
+    Check(NearP(ol.Start, -2, 3, 1e-12) && NearP(ol.End, -2.866025403784439, 3.5, 1e-12), "review INSERT in OCS (0,0,-1) explodes to the mirrored world line", P(ol.Start) + " " + P(ol.End));
+
+    // Nits: a lone surrogate from \U+D800 and absurd bulges.
+    var surrogate = DxfReader.Parse(Doc(G("0 MTEXT|5 S1|10 0|20 0|40 1|1 A\\U+D800B")), "surrogate.dxf");
+    var plain = surrogate.Entities.OfType<DxfText>().Single().PlainText;
+    Check(plain == "A�B" && surrogate.Warnings.Any(w => w.Code == "invalid-text") && CodeOf(() => DxfJson.Serialize(surrogate)) is null, "review lone surrogate replaced with U+FFFD and warned", plain);
+    var loneInput = DxfReader.Parse(Doc(G("0 TEXT|5 S2|10 0|20 0|40 1|1 X\uD800Y")), "lone.dxf");
+    Check(loneInput.Entities.OfType<DxfText>().Single().Value == "X�Y" && loneInput.Warnings.Any(w => w.Code == "invalid-text") && CodeOf(() => DxfJson.Serialize(loneInput)) is null, "review lone surrogate in string input replaced");
+    var huge = DxfReader.Parse(Doc(G("0 LWPOLYLINE|5 HB|90 2|70 0|10 0|20 0|42 1e300|10 1|20 0")), "huge.dxf");
+    Check(huge.Entities.Count == 0 && huge.Warnings.Any(w => w.Code == "entity-invalid"), "review absurd bulge rejected with a warning", string.Join(";", huge.Warnings));
+}
+catch (Exception error)
+{
+    Console.WriteLine("::error::cad FAIL review unexpected " + error.GetType().Name + ": " + error.Message);
+    failed++;
+}
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
