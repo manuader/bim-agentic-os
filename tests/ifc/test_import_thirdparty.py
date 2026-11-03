@@ -258,14 +258,16 @@ class ThirdParty(Annotated):
         m.contain(storey, typed_wall)
         m.place(typed_wall, (10.0, 0.0, 0.0), x_axis=(0.0, 1.0, 0.0))
         ifcopenshell.api.type.assign_type(f, related_objects=[typed_wall], relating_type=wall_type)
-        # 4. Hand-mapped item with a non-identity MappingOrigin and a rotated MappingTarget.
+        # 4. Hand-mapped item with a rotated MappingTarget; 4b. the same map with a non-identity MappingOrigin, which
+        # ISO 10303-43 and the IfcOpenShell kernel read differently: reported unsupported, not guessed.
         source = m.representation([m.extrusion(m.rectangle((3.0, 0.1), 4.0, 0.2), 2.8)])
-        rep_map = f.create_entity('IfcRepresentationMap', MappingOrigin=m.placement3((1, 0, 0)), MappedRepresentation=source)
-        target = f.create_entity('IfcCartesianTransformationOperator3D', Axis1=m.direction(0, 1, 0), Axis3=m.direction(0, 0, 1), LocalOrigin=m.pt(20, 5, 0), Scale=1.0)
-        mapped_wall = m.create('IfcWall', 'mapped wall')
-        m.contain(storey, mapped_wall)
-        m.place(mapped_wall)
-        m.assign(mapped_wall, m.representation([f.create_entity('IfcMappedItem', MappingSource=rep_map, MappingTarget=target)], kind='MappedRepresentation'))
+        mapped_wall, origin_wall = m.create('IfcWall', 'mapped wall'), m.create('IfcWall', 'mapped wall with origin')
+        for product, origin in ((mapped_wall, (0, 0, 0)), (origin_wall, (1, 0, 0))):
+            rep_map = f.create_entity('IfcRepresentationMap', MappingOrigin=m.placement3(origin), MappedRepresentation=source)
+            target = f.create_entity('IfcCartesianTransformationOperator3D', Axis1=m.direction(0, 1, 0), Axis3=m.direction(0, 0, 1), LocalOrigin=m.pt(20, 5, 0), Scale=1.0)
+            m.contain(storey, product)
+            m.place(product)
+            m.assign(product, m.representation([f.create_entity('IfcMappedItem', MappingSource=rep_map, MappingTarget=target)], kind='MappedRepresentation'))
         # 5. Boolean-clipped (sloped top) wall with an Axis: approximated by its unclipped extrusion.
         clipped_wall = m.create('IfcWall', 'clipped wall')
         m.contain(storey, clipped_wall)
@@ -315,15 +317,15 @@ class ThirdParty(Annotated):
         self.assertReportConsistent(report)
         rows = self.rows(report)
         status = {name: (rows[p.GlobalId]['status'], rows[p.GlobalId]['reasons']) for name, p in (
-            ('storey', storey), ('api', api_wall), ('poly', poly_wall), ('typed', typed_wall), ('mapped', mapped_wall), ('clipped', clipped_wall),
+            ('storey', storey), ('api', api_wall), ('poly', poly_wall), ('typed', typed_wall), ('mapped', mapped_wall), ('origin', origin_wall), ('clipped', clipped_wall),
             ('mitred', mitred_wall), ('room', room), ('flat', flat), ('ell', ell), ('slab', slab), ('column', column))}
         self.assertEqual({
-            'storey': ('imported', []), 'api': ('imported', []), 'poly': ('imported', []), 'typed': ('imported', []), 'mapped': ('imported', []),
+            'storey': ('imported', []), 'api': ('imported', []), 'poly': ('imported', []), 'typed': ('imported', []), 'mapped': ('imported', []), 'origin': ('unsupported', ['unsupported_representation']),
             'clipped': ('approximated', ['boolean_clipping_ignored']), 'mitred': ('approximated', ['profile_bounding_rectangle']),
             'room': ('imported', []), 'flat': ('imported', []), 'ell': ('unsupported', ['room_not_rectangular']),
             'slab': ('unsupported', ['no_bim_ir_kind']), 'column': ('unsupported', ['category_unsupported']),
         }, status)
-        self.assertEqual({'imported': 7, 'approximated': 2, 'unsupported': 3}, report['summary'])
+        self.assertEqual({'imported': 7, 'approximated': 2, 'unsupported': 4}, report['summary'])
         self.assertNotIn(m.site.GlobalId, rows, 'spatial structure above storeys is not listed')
 
         pg = m.project.GlobalId
@@ -332,7 +334,7 @@ class ThirdParty(Annotated):
             ('poly', poly_wall), ('mapped', mapped_wall), ('clipped', clipped_wall), ('mitred', mitred_wall), ('room', room), ('flat', flat))}
         self.assertEqual({
             'poly': [0, 8, 5, 8, 2.7, 0.3],
-            'mapped': [19.9, 5, 19.9, 9, 2.8, 0.2],
+            'mapped': [19.9, 6, 19.9, 10, 2.8, 0.2],
             'clipped': [0, 30, 6, 30, 3.5, 0.2],
             'mitred': [0, 20, 4, 20, 3, 0.2],
             'room': [0.1, 0.1, 5.8, 4],
@@ -350,6 +352,7 @@ class ThirdParty(Annotated):
         _, _, clipped_volume = world_box(clipped_wall)
         self.assertLess(clipped_volume, 6 * 3.5 * 0.2 - 0.2)
         self.assertIn('unclipped', rows[clipped_wall.GlobalId]['detail'])
+        self.assertIn('MappingOrigin', rows[origin_wall.GlobalId]['detail'])
         self.assertTrue(all(e['Provenance'] == OBSERVED for e in report['project']['Elements']))
         self.assertEqual(report, self.ifc.import_ifc(path), 'import must be deterministic')
         self.assertRoundtrips(report, 'reexport.ifc')

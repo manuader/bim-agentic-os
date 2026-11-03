@@ -6,7 +6,7 @@ IfcOpeningElement that voids a wall, and IfcSpace into the existing BIM-IR eleme
   wall   [ax,ay,bx,by,height,thickness]               [level]
   door / window [ax,ay,bx,by,sill,height]             [level, host wall]
   space  [corner x, corner y, width, depth]           [level, bounding walls in id order]
-Bodies are read through rigid IfcMappedItem chains and rectangular IfcArbitraryClosedProfileDef polylines
+Bodies are read through rigid IfcMappedItem chains (identity MappingOrigin) and rectangular IfcArbitraryClosedProfileDef polylines
 (IfcPolyline or straight IfcIndexedPolyCurve); a space without Body may give its FootPrint curve. Those are exact.
 Walls alone may be approximated, with the loss stated: a half-space IfcBooleanClippingResult is read as its
 unclipped extrusion (boolean_clipping_ignored) and a non-rectangular polygon profile as its bounding rectangle
@@ -238,8 +238,12 @@ class Reader:
         if item.is_a('IfcMappedItem'):
             source = item.MappingSource
             target = self.operator(item.MappingTarget, what)
-            origin = _inverse(self.axis_placement(source.MappingOrigin))
-            return self._solid(source.MappedRepresentation.Items, _compose(_compose(frame, target), origin), what, approximate, depth + 1)
+            origin = self.axis_placement(source.MappingOrigin)
+            if any(abs(origin[i][j] - IDENTITY[i][j]) > 1e-12 for i in range(4) for j in range(3)):
+                # ISO 10303-43 maps the origin onto the target (target * origin^-1); IfcOpenShell's kernel composes
+                # target * origin. The readings disagree, so a non-identity origin is refused instead of guessed.
+                raise Unmappable(UNSUPPORTED_REPRESENTATION, f'{what} mapped item has a non-identity MappingOrigin, whose reading differs between ISO 10303-43 and common kernels')
+            return self._solid(source.MappedRepresentation.Items, _compose(frame, target), what, approximate, depth + 1)
         if item.is_a('IfcBooleanClippingResult'):
             clips = 0
             while item.is_a('IfcBooleanClippingResult'):
@@ -352,11 +356,6 @@ class Reader:
             raise Unmappable(UNSUPPORTED_REPRESENTATION, 'wall Axis representation is not one straight 2-point IfcPolyline')
         frame = self.placement(product.ObjectPlacement)
         return [_apply(frame, self.point(p)) for p in axes[0].Items[0].Points]
-
-
-def _inverse(frame):
-    x, y, z, t = frame
-    return ((x[0], y[0], z[0]), (x[1], y[1], z[1]), (x[2], y[2], z[2]), (-_dot(x, t), -_dot(y, t), -_dot(z, t)))
 
 
 def _area(points):
