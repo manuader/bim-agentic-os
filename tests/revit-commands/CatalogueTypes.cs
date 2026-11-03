@@ -143,6 +143,8 @@ static class CatalogueTypesChecks
         Rejects("empty material name", Envelope("material.create", With(Stone(), "name", "")), RevitCommandCodes.ArgsInvalid, "args.name");
         Rejects("colour channel above 255", Envelope("material.create", With(Stone(), "color", new JsonObject { ["r"] = 256, ["g"] = 0, ["b"] = 0 })), RevitCommandCodes.ArgsInvalid, "args.color.r");
         Rejects("negative colour channel", Envelope("material.create", With(Stone(), "color", new JsonObject { ["r"] = 0, ["g"] = -1, ["b"] = 0 })), RevitCommandCodes.ArgsInvalid, "args.color.g");
+        Rejects("negative red channel", Envelope("material.create", With(Stone(), "color", new JsonObject { ["r"] = -255, ["g"] = 0, ["b"] = 0 })), RevitCommandCodes.ArgsInvalid, "args.color.r");
+        Rejects("negative blue channel", Envelope("material.create", With(Stone(), "color", new JsonObject { ["r"] = 0, ["g"] = 0, ["b"] = -1 })), RevitCommandCodes.ArgsInvalid, "args.color.b");
         Rejects("fractional colour channel", Envelope("material.create", With(Stone(), "color", new JsonObject { ["r"] = 0, ["g"] = 0, ["b"] = 12.5 })), RevitCommandCodes.ArgsInvalid, "args.color.b");
         Rejects("colour without blue", Envelope("material.create", With(Stone(), "color", new JsonObject { ["r"] = 0, ["g"] = 0 })), RevitCommandCodes.ArgsInvalid, "args.color.b");
         Rejects("colour with alpha", Envelope("material.create", With(Stone(), "color", new JsonObject { ["r"] = 0, ["g"] = 0, ["b"] = 0, ["a"] = 1 })), RevitCommandCodes.ArgsInvalid, "args.color.a");
@@ -178,6 +180,9 @@ static class CatalogueTypesChecks
         Rejects(what + " with 33 layers", Envelope(command, With(sample(), "layers", Layers(Enumerable.Range(0, 33).Select(_ => Layer("structure", "Wood", 10)).ToArray()))), RevitCommandCodes.ArgsInvalid, "args.layers");
         Rejects(what + " unknown layer function", Envelope(command, With(sample(), "layers", Layers(Layer("core", "Wood", 10)))), RevitCommandCodes.ArgsInvalid, "args.layers[0].function");
         Rejects(what + " membrane with a thickness", Envelope(command, With(sample(), "layers", Layers(Layer("structure", "Wood", 100), Layer("membrane", "Membrane", 5)))), RevitCommandCodes.LengthInvalid, "args.layers[1].thickness_mm");
+        Rejects(what + " layer thinner than Revit's minimum (0.1 mm)", Envelope(command, With(sample(), "layers", Layers(Layer("structure", "Wood", 100), Layer("finish2", "Paint", 0.1)))), RevitCommandCodes.LengthInvalid, "args.layers[1].thickness_mm");
+        Rejects(what + " structure layer of 1 mm (under the minimum)", Envelope(command, With(sample(), "layers", Layers(Layer("structure", "Wood", 1)))), RevitCommandCodes.LengthInvalid, "args.layers[0].thickness_mm");
+        Accepts(what + " layer at the minimum thickness accepted", Envelope(command, With(sample(), "layers", Layers(Layer("structure", "Wood", 100), Layer("finish2", "Paint", RevitTypeRules.MinLayerThicknessMm)))));
         Rejects(what + " structure layer of zero thickness", Envelope(command, With(sample(), "layers", Layers(Layer("finish1", "Tile", 20), Layer("structure", "Wood", 0)))), RevitCommandCodes.LengthInvalid, "args.layers[1].thickness_mm");
         Rejects(what + " negative layer thickness", Envelope(command, With(sample(), "layers", Layers(Layer("structure", "Wood", -10)))), RevitCommandCodes.LengthInvalid, "args.layers[0].thickness_mm");
         Rejects(what + " layer thicker than the Revit limit", Envelope(command, With(sample(), "layers", Layers(Layer("structure", "Wood", 9_144_001)))), RevitCommandCodes.LengthInvalid, "args.layers[0].thickness_mm");
@@ -205,6 +210,8 @@ static class CatalogueTypesChecks
         var floor = Accepts("cabin floor type accepted", Envelope("floor_type.create", Floor()));
         Check(floor?.Args is FloorTypeCreateArgs { Name: FloorName, BaseType: "Generic 150mm", Layers.Count: 3 } f && f.Layers[2] is { Function: "structure" } slab && Near(slab.Thickness.Millimetres, 150),
             "floor_type.create binds name, base type and the layers top to bottom");
+        Check(RevitTypeRules.MinLayerThicknessMm == 1.2 && RevitTypeRules.MinLayerThicknessMm > 304.8 / 256, "the minimum layer thickness is 1.2 mm, above Revit's 1/256 ft (1.190625 mm) minimum");
+        Rejects("roof type layer thinner than Revit's minimum (0.1 mm)", Envelope("roof_type.create", new JsonObject { ["name"] = "Cabin roof", ["base_type"] = "Basic Roof - Generic 300mm", ["layers"] = Layers(Layer("finish1", "Tile", 0.1), Layer("structure", "Wood", 150)) }), RevitCommandCodes.LengthInvalid, "args.layers[0].thickness_mm");
         var cmd = Envelope("wall_type.create", Wall());
         cmd["command"] = "floor_type.create";
         Check(Accepts("a wall request body is a valid floor request body", cmd)?.Args is FloorTypeCreateArgs, "wall and floor type commands share one argument shape but bind to distinct types");
@@ -231,6 +238,12 @@ static class CatalogueTypesChecks
         Check(RevitTypeRules.CoreRange(new[] { "structure", "insulation", "structure", "finish2" }, "args.layers") == (0, 2), "the core spans from the first to the last structure layer");
         Check(Thrown(() => RevitTypeRules.CoreRange(new[] { "finish1", "insulation" }, "args.layers")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.layers" } none && none.Detail!.Contains("structure", StringComparison.Ordinal), "no structure layer is refused");
         Check(Thrown(() => RevitTypeRules.CoreRange(new[] { "structure", "finish2", "membrane", "structure" }, "args.layers")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.layers[2]" }, "a membrane inside the core is refused at its index");
+        Check(CommandRulesTypes.PickExisting(new[] { "stone", "Stone" }, "Stone") == 1 && CommandRulesTypes.PickExisting(new[] { "stone", "Stone" }, "stone") == 0, "an existing name is picked by ordinal match first, even when another differs only in case");
+        Check(CommandRulesTypes.PickExisting(new[] { "Brick", "stone" }, "STONE") == 1, "without an ordinal match the case-insensitive match is picked");
+        Check(CommandRulesTypes.PickExisting(new[] { "Brick", "stone" }, "Slate") is null && CommandRulesTypes.PickExisting(Array.Empty<string>(), "Slate") is null, "no match picks nothing (a new element is created)");
+        var walls = new[] { ("Cabin wall", "Curtain"), ("cabin wall", "Basic") };
+        Check(CommandRulesTypes.PickExisting(walls.Select(wall => wall.Item1).ToArray(), "cabin wall") is { } basic && walls[basic].Item2 == "Basic", "a basic \"cabin wall\" is picked by ordinal match over a curtain \"Cabin wall\"");
+        Check(CommandRulesTypes.PickExisting(walls.Select(wall => wall.Item1).ToArray(), "Cabin wall") is { } curtainPick && CommandRulesTypes.WallKindProblem(walls[curtainPick].Item2) is not null, "requesting \"Cabin wall\" picks the curtain type, which is then refused");
         Check(CommandRulesTypes.WallKindProblem("Basic") is null, "a basic wall type can be duplicated with layers");
         Check(CommandRulesTypes.WallKindProblem("Curtain") is { } curtain && curtain.Contains("curtain", StringComparison.Ordinal), "a curtain wall type is refused, naming curtain");
         Check(CommandRulesTypes.WallKindProblem("Stacked") is { } stacked && stacked.Contains("stacked", StringComparison.Ordinal), "a stacked wall type is refused, naming stacked");
@@ -245,7 +258,7 @@ static class CatalogueTypesChecks
     {
         new ObservedTypeLayer("finish1", StoneUid, StoneName, 30), new ObservedTypeLayer("membrane", InsulationUid, "Membrane", 0),
         new ObservedTypeLayer("structure", BlockUid, "Concrete Masonry Units", 190.00004), new ObservedTypeLayer("finish2", PlasterUid, "Plaster", 15),
-    }, 235);
+    }, 235, 2, 1, 2);
     static ObservedLayeredType Replace(int index, ObservedTypeLayer layer)
     {
         var observed = Observed();
@@ -266,6 +279,10 @@ static class CatalogueTypesChecks
         Check(CommandReadbackTypes.LayeredType("wall type", WallName, Expected(), Replace(2, new ObservedTypeLayer("structure", BlockUid.ToUpperInvariant(), "Concrete Masonry Units", 190))) is null, "material UniqueIds compare ignoring hex case");
         Check(CommandReadbackTypes.LayeredType("wall type", WallName, Expected(), Replace(2, new ObservedTypeLayer("structure", null, null, 190))) is not null, "a layer without a material is a mismatch");
         Check(CommandReadbackTypes.LayeredType("wall type", WallName, Expected(), Replace(3, new ObservedTypeLayer("finish2", PlasterUid, "Plaster", 15.01))) is { } thickness && thickness.Contains("thickness", StringComparison.Ordinal), "a layer of another thickness is a mismatch");
+        Check(CommandReadbackTypes.LayeredType("wall type", WallName, Expected(), observed with { ExteriorShellLayers = 0, InteriorShellLayers = 0 }) is { } core && core.Contains("core", StringComparison.Ordinal), "the same layers with every layer in the core (shell counts 0/0) are a mismatch naming the core");
+        Check(CommandReadbackTypes.LayeredType("wall type", WallName, Expected(), observed with { InteriorShellLayers = 0 }) is { } interior && interior.Contains("core", StringComparison.Ordinal), "another interior shell count is a core mismatch");
+        Check(CommandReadbackTypes.LayeredType("wall type", WallName, Expected(), observed with { ExteriorShellLayers = null, InteriorShellLayers = null }) is not null, "unknown shell counts are a mismatch");
+        Check(CommandReadbackTypes.LayeredType("wall type", WallName, Expected(), observed with { StructuralMaterialIndex = 3 }) is { } structural && structural.Contains("structural material", StringComparison.Ordinal), "another structural material layer is a mismatch");
         Check(CommandReadbackTypes.LayeredType("wall type", WallName, Expected().Reverse().ToArray(), observed) is not null, "the requested order is the order read back (exterior to interior)");
     }
 
@@ -299,9 +316,10 @@ static class CatalogueTypesChecks
         var layers = created["layers"]!.AsArray();
         Check(layers.Count == 4 && layers[0]!["function"]!.GetValue<string>() == "finish1" && layers[0]!["material_unique_id"]!.GetValue<string>() == StoneUid && layers[0]!["material_name"]!.GetValue<string>() == StoneName
             && layers[1]!["thickness_mm"]!.GetValue<double>() == 0 && layers[2]!["function"]!.GetValue<string>() == "structure", "layered type readback JSON lists the layers in order with function, material and thickness", created.ToJsonString());
+        Check(created["core"]!["first"]!.GetValue<int>() == 2 && created["core"]!["last"]!.GetValue<int>() == 2 && created["structural_material_index"]!.GetValue<int>() == 2, "layered type readback JSON reports the core (first and last core layer, from the shell counts) and the structural material layer", created.ToJsonString());
         Check(JsonNode.Parse(CommandReadbackTypes.LayeredTypeJson("floor_type", Observed(FloorName), existing: true))!["floor_type"]!["existing"]!.GetValue<bool>(), "an identical existing floor type is reported under floor_type with existing true");
-        var bareType = JsonNode.Parse(CommandReadbackTypes.LayeredTypeJson("floor_type", Observed() with { Layers = null, WidthMm = null }, existing: false))!["floor_type"]!;
-        Check(bareType["layers"]!.AsArray().Count == 0 && bareType["width_mm"] is null, "a type without layers reads back an empty layer list and null width", bareType.ToJsonString());
+        var bareType = JsonNode.Parse(CommandReadbackTypes.LayeredTypeJson("floor_type", Observed() with { Layers = null, WidthMm = null, ExteriorShellLayers = null, InteriorShellLayers = null, StructuralMaterialIndex = null }, existing: false))!["floor_type"]!;
+        Check(bareType["layers"]!.AsArray().Count == 0 && bareType["width_mm"] is null && bareType["core"] is null, "a type without layers reads back an empty layer list and null width", bareType.ToJsonString());
 
         var material = JsonNode.Parse(CommandReadbackTypes.MaterialJson(Slate(), existing: false))!["material"]!;
         Check(material["unique_id"]!.GetValue<string>() == MaterialUid && material["name"]!.GetValue<string>() == StoneName && material["existing"]!.GetValue<bool>() == false
@@ -311,6 +329,8 @@ static class CatalogueTypesChecks
             && material["appearance_asset"]!["unique_id"]!.GetValue<string>() == AssetUid && material["appearance_asset"]!["name"]!.GetValue<string>() == "Stone - Slate",
             "material readback JSON reports UniqueId, name, existing, colour, transparency, shininess, smoothness, class, category and appearance asset", material.ToJsonString());
         var plain = JsonNode.Parse(CommandReadbackTypes.MaterialJson(Slate() with { Color = null, MaterialClass = null, MaterialCategory = null, AppearanceAssetUid = null, AppearanceAssetName = null }, existing: true))!["material"]!;
+        var unnamed = JsonNode.Parse(CommandReadbackTypes.MaterialJson(Slate() with { AppearanceAssetName = null }, existing: false))!["material"]!;
+        Check(unnamed["appearance_asset"]!["unique_id"]!.GetValue<string>() == AssetUid && unnamed["appearance_asset"]!["name"] is null, "an appearance asset without a name reads back its UniqueId and a null name", unnamed.ToJsonString());
         Check(plain["existing"]!.GetValue<bool>() && plain["color"] is null && plain["class"] is null && plain["category"] is null && plain["appearance_asset"] is null, "absent colour, class, category and appearance asset read back as null", plain.ToJsonString());
     }
 }
