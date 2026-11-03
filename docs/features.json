@@ -483,7 +483,7 @@
         "adapters/cad/Bim.Cad/DxfExploder.cs",
         "adapters/cad/Bim.Cad/WallPairDetector.cs",
         "tests/cad/Program.cs",
-        "tests/cad/fixtures"
+        "tests/cad/fixtures/walls.dxf"
       ],
       "blocker": "Hand-written fixtures only (no real-world DXF corpus); binary DXF/DWG, POLYLINE/VERTEX, SPLINE, ELLIPSE, HATCH, DIMENSION not read; arc walls and collinear merge not detected; not yet connected to BIM-IR.",
       "scope": "P6-01: BCL-only ASCII DXF reader with provenance (file, handle, layer, type, line, insert chain, paper space/invisible), $INSUNITS, layers, LINE/ARC/CIRCLE/LWPOLYLINE/TEXT/MTEXT/INSERT, bounded explode and wall-pair detection with confidence and work limits, canonical JSON. CI 41559877398 (Ubuntu + Windows)."
