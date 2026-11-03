@@ -45,6 +45,8 @@ TOLERANCE = 1e-6
 # nanometre grid. Export refuses values off that grid (ifc_precision), so the roundtrip is exact.
 DECIMALS = 9
 MAX_COORDINATE = 1e5
+# At most this many IfcProduct instances per import, like Mirror's MaxElements; more is refused, not truncated.
+MAX_ELEMENTS = 20000
 # Exported openings are slightly deeper than their host wall so the void cut has no coplanar faces.
 OPENING_CLEARANCE = 0.005
 # BIM-IR spaces have no height; export extrudes them to their tallest bounding wall, or this without walls.
@@ -74,6 +76,9 @@ OPENING_DIMENSION_CONFLICT = 'opening_dimension_conflict'
 LEVEL_ELEVATION_CONFLICT = 'level_elevation_conflict'
 SPACE_BASE_OFFSET = 'space_base_offset_unsupported'
 IDENTITY_MISMATCH = 'identity_mismatch'
+HOST_LEVEL_MISMATCH = 'host_level_mismatch'
+OPENING_MULTIPLE_FILLS = 'opening_multiple_fills'
+COORDINATE_OUT_OF_RANGE = 'coordinate_out_of_range'
 
 
 class IfcAdapterError(ValueError):
@@ -221,20 +226,22 @@ def _length_unit(f):
     """(divisor, factor): metres = value / divisor when the unit is an exact SI submultiple, else value * factor."""
     projects = f.by_type('IfcProject')
     assignment = projects[0].UnitsInContext if projects else None
-    units = [u for u in (assignment.Units if assignment else ()) if getattr(u, 'UnitType', None) == 'LENGTHUNIT']
+    units = [u for u in (getattr(assignment, 'Units', None) or ()) if getattr(u, 'UnitType', None) == 'LENGTHUNIT']
     if not units:
         return 1, 1.0  # Like ids_check: a model without a length unit is treated as SI.
     unit = units[0]
-    if unit.is_a('IfcSIUnit') and unit.Name == 'METRE':
+    if unit.is_a('IfcSIUnit') and getattr(unit, 'Name', None) == 'METRE':
         if unit.Prefix in SI_PREFIX:
             return SI_PREFIX[unit.Prefix], 1.0
         if unit.Prefix in SI_MULTIPLE:
             return None, SI_MULTIPLE[unit.Prefix]
     if unit.is_a('IfcConversionBasedUnit'):
-        component = unit.ConversionFactor.UnitComponent
-        value = float(unit.ConversionFactor.ValueComponent.wrappedValue)
-        if component.is_a('IfcSIUnit') and component.Name == 'METRE' and component.Prefix in SI_PREFIX and math.isfinite(value) and value > 0:
-            return None, value / SI_PREFIX[component.Prefix]
+        factor = getattr(unit, 'ConversionFactor', None)
+        component = getattr(factor, 'UnitComponent', None)
+        value = getattr(getattr(factor, 'ValueComponent', None), 'wrappedValue', None)
+        if (component is not None and component.is_a('IfcSIUnit') and getattr(component, 'Name', None) == 'METRE' and getattr(component, 'Prefix', None) in SI_PREFIX
+                and type(value) in (int, float) and math.isfinite(value) and value > 0):
+            return None, float(value) / SI_PREFIX[component.Prefix]
     raise IfcAdapterError('ifc_units_unsupported', f'length unit {unit.is_a()} {getattr(unit, "Prefix", None)} {getattr(unit, "Name", None)} is not read')
 
 
@@ -242,6 +249,8 @@ def _snap(value):
     snapped = round(value, DECIMALS) + 0.0
     if not math.isfinite(snapped):
         raise Unmappable(INVALID_GEOMETRY, 'non-finite value')
+    if abs(snapped) > MAX_COORDINATE:
+        raise Unmappable(COORDINATE_OUT_OF_RANGE, f'value {snapped} m is beyond +/-{MAX_COORDINATE} m, where the nanometre grid is no longer exact')
     return snapped
 
 
@@ -277,16 +286,15 @@ def _pset(entity, name):
 
 
 def _identity(product, project_gid):
-    """(BIM-IR id, provenance) of a product: its own BIM-IR identity when it carries one, else a derived id."""
+    """(BIM-IR id, provenance) of a product: its own BIM-IR id when it carries one, else a derived id.
+    Provenance is always ifc-import/observed: an unsigned IFC property cannot carry an approval, so any
+    Source/Approval found in a property set is ignored rather than honoured."""
     owned = _pset(product, ELEMENT_PSET)
     if 'Id' not in owned:
         return derived_id(project_gid, product.GlobalId), dict(OBSERVED)
     if owned['Id'] != _expand(product.GlobalId):
         raise Unmappable(IDENTITY_MISMATCH, f'{ELEMENT_PSET}.Id {owned["Id"]} does not match the GlobalId (a copied element keeps another element\'s BIM-IR identity)')
-    source, approval = owned.get('Source'), owned.get('Approval')
-    if not isinstance(source, str) or not isinstance(approval, str):
-        raise Unmappable(MISSING_DATA, f'{ELEMENT_PSET} has no Source/Approval text')
-    return owned['Id'], {'Source': source, 'Approval': approval}
+    return owned['Id'], dict(OBSERVED)
 
 
 # ---------------------------------------------------------------- import
@@ -323,9 +331,18 @@ def import_ifc(path):
     if not isinstance(project_gid, str) or not project_gid:
         raise IfcAdapterError('ifc_project_identity', 'IfcProject has no GlobalId')
     reader = Reader(f)
-    owned = _pset(project, PROJECT_PSET)
-    if owned.get('Id') is not None and owned.get('Id') == _expand(project_gid) and type(owned.get('Revision')) is int:
-        project_id, revision = owned['Id'], owned['Revision']
+    products = sorted(f.by_type('IfcProduct'), key=lambda p: p.id())
+    if len(products) > MAX_ELEMENTS:
+        raise IfcAdapterError('ifc_too_large', f'{len(products)} products; at most {MAX_ELEMENTS} are imported, the file is refused instead of truncated')
+    try:
+        owned = _pset(project, PROJECT_PSET)
+    except Exception as error:
+        raise IfcAdapterError('ifc_project_revision', f'{PROJECT_PSET} is unreadable: {type(error).__name__}: {error}') from None
+    if owned.get('Id') is not None and owned.get('Id') == _expand(project_gid):
+        revision = owned.get('Revision')
+        if type(revision) is not int or not -2**31 <= revision < 2**31:
+            raise IfcAdapterError('ifc_project_revision', f'{PROJECT_PSET}.Revision {revision!r} is not a 32-bit integer')
+        project_id = owned['Id']
     else:
         project_id, revision = derived_id(project_gid, project_gid), 0
 
@@ -334,7 +351,6 @@ def import_ifc(path):
     def skip(product, reason, detail):
         unmapped.append({'category': _category(product), 'global_id': product.GlobalId or '', 'ifc_class': product.is_a(), 'reason': reason, 'detail': detail})
 
-    products = sorted(f.by_type('IfcProduct'), key=lambda p: p.id())
     counts = {}
     for p in products:
         counts[p.GlobalId] = counts.get(p.GlobalId, 0) + 1
@@ -431,7 +447,7 @@ def import_ifc(path):
         geometry = [_snap(ends[0][0]), _snap(ends[0][1]), _snap(ends[1][0]), _snap(ends[1][1]), _snap(body['depth']), _snap(thickness)]
         if geometry[4] <= 0 or geometry[5] <= 0 or (geometry[0] == geometry[2] and geometry[1] == geometry[3]):
             raise Unmappable(INVALID_GEOMETRY, 'wall axis has zero length or height or thickness is not positive')
-        extra = dict(a=ends[0], b=ends[1], thickness=thickness, base=c[2], top=c[2] + body['depth'])
+        extra = dict(a=ends[0], b=ends[1], thickness=thickness, base=c[2], top=c[2] + body['depth'], level=level)
         return geometry, [level], extra
 
     for wall in candidates['wall']:
@@ -447,10 +463,14 @@ def import_ifc(path):
         if len(fills) != 1:
             raise Unmappable(HOST_UNKNOWN, f'{kind} does not fill exactly one opening (IfcRelFillsElement)')
         opening = fills[0].RelatingOpeningElement
+        if len(opening.HasFillings or ()) != 1:
+            raise Unmappable(OPENING_MULTIPLE_FILLS, f'its opening is filled by {len(opening.HasFillings)} elements; one BIM-IR {kind} per opening cannot say which one is real')
         voids = opening.VoidsElements or ()
         if len(voids) != 1 or voids[0].RelatingBuildingElement.id() not in walls:
             raise Unmappable(HOST_UNKNOWN, f'{kind} opening does not void exactly one mapped wall')
         host_id, host = walls[voids[0].RelatingBuildingElement.id()]
+        if host['level'] != level:
+            raise Unmappable(HOST_LEVEL_MISMATCH, f'{kind} is contained in another storey than its host wall; BIM-IR openings share their host level')
         body = reader.body(opening, f'{kind} opening')
         x, y, c = body['x'], body['y'], body['origin']
         if not _horizontal(x) or not _horizontal(y):
@@ -591,6 +611,7 @@ def validate_project(project):
             walls = deps[1:]
             _require(len(deps) >= 1 and kind(deps[0]) == 'level' and all(kind(w) == 'wall' for w in walls) and walls == sorted(set(walls)), 'ifc_dependency_shape', f"space {e['Id']} must depend on [level, bounding walls in id order]")
             _require(g[2] > 0 and g[3] > 0, 'ifc_space_geometry', f"space {e['Id']} width and depth must be positive")
+            _require(abs(g[0] + g[2]) <= MAX_COORDINATE and abs(g[1] + g[3]) <= MAX_COORDINATE, 'ifc_precision', f"space {e['Id']} far corner is beyond {MAX_COORDINATE} m")
     return supported, unexported
 
 
@@ -708,7 +729,7 @@ def build_model(project):
             w.root('IfcRelAggregates', w.gid('spaces:' + level), 'Storey spaces', RelatingObject=entity[level], RelatedObjects=spaces[level])
     w.props(ifc_project, PROJECT_PSET, {'Id': project['Id'], 'Revision': project['Revision']})
     for e in supported:
-        w.props(entity[e['Id']], ELEMENT_PSET, {'Id': e['Id'], 'Source': e['Provenance']['Source'], 'Approval': e['Provenance']['Approval']})
+        w.props(entity[e['Id']], ELEMENT_PSET, {'Id': e['Id']})  # Provenance is never written: import cannot trust it.
     return f, supported, unexported
 
 
@@ -735,10 +756,13 @@ def export_project(project, output_path):
     try:
         f.write(str(pending))
         back = import_ifc(pending)
-        expected = {'Id': project['Id'], 'Revision': project['Revision'], 'Elements': supported}
+        expected = {'Id': project['Id'], 'Revision': project['Revision'], 'Elements': [dict(e, Provenance=dict(OBSERVED)) for e in supported]}
         if back['unmapped'] or _shaped(back['project']) != _shaped(expected):
             raise IfcAdapterError('ifc_roundtrip_mismatch', 'the written IFC does not read back to the same BIM-IR; nothing was published')
-        os.link(pending, output)  # Fails instead of replacing a file that appeared meanwhile.
+        try:
+            os.link(pending, output)  # Fails instead of replacing a file that appeared meanwhile.
+        except FileExistsError:
+            raise IfcAdapterError('output_exists', f'{output} appeared during export; it was not replaced') from None
     finally:
         if pending.exists():
             pending.unlink()
