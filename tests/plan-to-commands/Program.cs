@@ -66,10 +66,16 @@ Dictionary<string, string> Created(RevitCommandPlan result) => result.Steps.Sele
 try
 {
     // ---- Operation id scheme ----
-    Check(PlanToCommands.OperationId(projectId, 5, "ABCDEF", Guid.Parse("254784a6-edd3-3254-203a-b0172d136dd3"), "wall.create") == "op.452976a9c6d33ce68b59edae152ae048",
-        "golden operation id pins op. + SHA-256(\"plan-to-commands/1\\n<project:D>\\n<revision>\\n<after hash>\\n<element:D>\\n<command>\")[0..16] hex");
-    Check(PlanToCommands.OperationId(projectId, 5, "ABCDEF", null, "query.levels") == "op.0eb148f620fe3d09726167772bf752eb", "golden operation id of a step without element uses an empty element id");
-    Check(RevitCommandProtocol.IsOperationId(PlanToCommands.OperationId(projectId, 5, "ABCDEF", null, "query.levels")), "operation ids satisfy the protocol pattern");
+    var noInputs = Array.Empty<string>();
+    Check(PlanToCommands.OperationId(projectId, 5, "ABCDEF", Guid.Parse("254784a6-edd3-3254-203a-b0172d136dd3"), "wall.create", document, "{\"height_mm\":2800,\"level\":\"L1\"}", noInputs) == "op.5e6044ee66db56fc55c2f44f9f2464ed",
+        "golden operation id pins op. + SHA-256(\"plan-to-commands/2\\n<project:D>\\n<revision>\\n<after hash>\\n<element:D>\\n<command>\\n<document uid>\\n<document path>\\n<canonical args>\\n<input operations>\")[0..16] hex");
+    Check(PlanToCommands.OperationId(projectId, 5, "ABCDEF", null, "query.levels", document, "{}", noInputs) == "op.b5e73eb2d22e2bc47d4974d800189d11", "golden operation id of a step without element uses an empty element id");
+    Check(PlanToCommands.OperationId(projectId, 5, "ABCDEF", Guid.Parse("254784a6-edd3-3254-203a-b0172d136dd3"), "opening.place", document,
+            "{\"category\":\"door\",\"host_wall_uid\":\"" + PlanToCommands.PlaceholderUniqueId + "\",\"position_along_mm\":1450,\"symbol\":\"S\"}", new[] { "op.0123456789abcdef0123456789abcdef" })
+        == "op.fc7fe4a63ae7838bd0bdf9b767d4997a", "golden operation id of an opening: the host placeholder is left out, the host step id is hashed");
+    Check(PlanToCommands.OperationId(projectId, 5, "ABCDEF", null, "query.levels", document, "{ }", noInputs) == PlanToCommands.OperationId(projectId, 5, "ABCDEF", null, "query.levels", document, "{}", noInputs),
+        "args are canonicalized before hashing");
+    Check(RevitCommandProtocol.IsOperationId(PlanToCommands.OperationId(projectId, 5, "ABCDEF", null, "query.levels", document, "{}", noInputs)), "operation ids satisfy the protocol pattern");
 
     // ---- Valid multi-room translation ----
     var result = PlanToCommands.Translate(plan, bindings);
@@ -90,8 +96,10 @@ try
     Check(Accounted(plan, result), "every plan operation is a step, a precondition or unsupported, exactly once");
     Check(result.Steps.Select(step => step.OperationId).Distinct(StringComparer.Ordinal).Count() == result.Steps.Count && result.Steps.All(step => RevitCommandProtocol.IsOperationId(step.OperationId)),
         "operation ids are unique and protocol-valid");
-    Check(result.Steps.All(step => step.OperationId == PlanToCommands.OperationId(projectId, 5, plan.AfterHash, step.ElementId, step.Command)),
-        "each operation id is derived from project, revision, plan after-hash, element id and command");
+    Check(result.Steps.All(step => step.OperationId == PlanToCommands.OperationId(projectId, 5, plan.AfterHash, step.ElementId, step.Command, document, step.ArgsJson,
+            step.Inputs.Select(input => input.FromOperation).ToArray())),
+        "each operation id is derived from project, revision, plan after-hash, element id, command, document, binding-derived args and input steps");
+    Check(result.Preconditions.All(item => item.CheckOperation == result.Steps[0].OperationId), "preconditions name the query.levels step that checks them");
     var seen = new HashSet<string>(StringComparer.Ordinal);
     var ordered = true;
     foreach (var step in result.Steps) { ordered &= step.DependsOn.All(seen.Contains); seen.Add(step.OperationId); }
@@ -267,6 +275,100 @@ try
         "an invalid target document is refused up front");
     Check(Code(() => PlanToCommands.Translate(plan, bindings with { WallTypes = new[] { new RevitWallTypeBinding(0.2, "A"), new RevitWallTypeBinding(0.2, "B") } })) == "argument:wall_type_binding_duplicate",
         "duplicate wall type thickness bindings are refused");
+
+    // ---- Review follow-ups: ids follow bindings ----
+    var otherDoor = PlanToCommands.Translate(plan, bindings with { DoorSymbol = "Double-Flush: 1830 x 2134mm" });
+    Check(StepOf(otherDoor, "opening:d1")?.OperationId != StepOf(result, "opening:d1")?.OperationId && StepOf(otherDoor, "opening:w1")?.OperationId == StepOf(result, "opening:w1")?.OperationId
+        && StepOf(otherDoor, "wall:a|b")?.OperationId == StepOf(result, "wall:a|b")?.OperationId,
+        "another door symbol gives the door a new operation id, and nothing else");
+    var otherType = PlanToCommands.Translate(plan, bindings with { WallTypes = new[] { new RevitWallTypeBinding(0.2, "Basic 200") } });
+    Check(StepOf(otherType, "wall:a|b")?.OperationId != StepOf(result, "wall:a|b")?.OperationId && StepOf(otherType, "opening:d1")?.OperationId != StepOf(result, "opening:d1")?.OperationId
+        && result.Steps[0].OperationId == otherType.Steps[0].OperationId,
+        "another wall type gives walls, and the openings they host, new operation ids");
+    var otherDocument = PlanToCommands.Translate(plan, bindings with { Document = document with { Path = @"C:\Repo\.bim\native-runs\p3-02\other.rvt" } });
+    Check(otherDocument.Steps.Zip(result.Steps).All(pair => pair.First.OperationId != pair.Second.OperationId), "another document gives every step a new operation id");
+    Check(PlanToCommands.Translate(plan, RevitBindings.FromIntent(projectId, intent, document, "Single-Flush: 0915 x 2134mm", "Fixed: 0915 x 1220mm")).Steps.Select(step => step.OperationId)
+        .SequenceEqual(result.Steps.Select(step => step.OperationId)), "the same bindings give the same operation ids");
+
+    // ---- Review follow-ups: preconditions against the query.levels readback ----
+    string Levels(params (string Name, string Uid, double Elevation)[] rows) => JsonSerializer.Serialize(new { levels = rows.Select(row => new { name = row.Name, unique_id = row.Uid, elevation_mm = row.Elevation, project_elevation_mm = row.Elevation }).ToArray() });
+    const string uidL1 = "60f91daf-3dd7-4283-a86d-24137b73f3da-00000311";
+    const string uidL2 = "60f91daf-3dd7-4283-a86d-24137b73f3da-00000312";
+    var matching = PlanToCommands.CheckPreconditions(result, Levels(("L1", uidL1, 0), ("L2", uidL2, 3000.0004)));
+    Check(matching.Count == 0, "levels that exist at the BIM-IR elevation (within " + PlanToCommands.ElevationToleranceMm.ToString("R", inv) + " mm) pass", string.Join(";", matching));
+    var high = PlanToCommands.CheckPreconditions(result, Levels(("L1", uidL1, 0), ("L2", uidL2, 4000)));
+    Check(high.Count == 1 && high[0].ElementId == Id("level:l2") && high[0].Code == PlanToCommandsCodes.LevelElevationMismatch, "a bound level at 4000 mm for a BIM-IR level at 3000 mm is refused", string.Join(";", high));
+    var missing = PlanToCommands.CheckPreconditions(result, Levels(("L1", uidL1, 0)));
+    Check(missing.Count == 1 && missing[0].ElementId == Id("level:l2") && missing[0].Code == PlanToCommandsCodes.LevelMissing, "a bound level absent from the document is refused", string.Join(";", missing));
+    var twice = PlanToCommands.CheckPreconditions(result, Levels(("L1", uidL1, 0), ("L2", uidL2, 3000), ("L2", "60f91daf-3dd7-4283-a86d-24137b73f3da-00000313", 3000)));
+    Check(twice.Count == 1 && twice[0].Code == PlanToCommandsCodes.LevelAmbiguous, "a level name matching two document levels is refused", string.Join(";", twice));
+    var byUid = PlanToCommands.Translate(plan, bindings with { Levels = new Dictionary<Guid, string> { [Id("level:l1")] = uidL1.ToUpperInvariant(), [Id("level:l2")] = uidL2 } });
+    Check(PlanToCommands.CheckPreconditions(byUid, Levels(("Level 1", uidL1, 0), ("Level 2", uidL2, 3000))).Count == 0, "a UniqueId binding matches the level UniqueId case-insensitively, like the executor");
+    Check(Code(() => PlanToCommands.CheckPreconditions(result, "{\"levels\":3}")) == RevitCommandCodes.ResponseInvalid, "a malformed readback is refused");
+
+    // Referenced-only levels: the plan creates walls on levels that already exist.
+    var levelsOnly = new Project(projectId, 5, compiled.Elements.Where(element => element.Kind == "level").ToArray());
+    var onExisting = Compiler.Diff(levelsOnly, compiled);
+    var referenced = PlanToCommands.Translate(onExisting, bindings);
+    Check(referenced.Preconditions.Count == 2 && referenced.Preconditions.All(item => item.Action is null && item.ElevationMm is null && item.CheckOperation == referenced.Steps[0].OperationId)
+        && referenced.Steps.Count == 18 && Accounted(onExisting, referenced),
+        "levels referenced but not in the plan are preconditions with action and elevation null", string.Join(",", referenced.Preconditions));
+    Check(PlanToCommands.CheckPreconditions(referenced, Levels(("L1", uidL1, 0), ("L2", uidL2, 9999))).Count == 0, "a referenced-only level is checked for existence, not elevation");
+    Check(PlanToCommands.CheckPreconditions(referenced, Levels(("L1", uidL1, 0))).Single().Code == PlanToCommandsCodes.LevelMissing, "a referenced-only level must exist");
+    using (var preconditionJson = JsonDocument.Parse(referenced.ToJson()))
+    {
+        var item = preconditionJson.RootElement.GetProperty("preconditions")[0];
+        Check(string.Join(",", item.EnumerateObject().Select(property => property.Name)) == "element_id,action,level,elevation_mm,check_operation"
+            && item.GetProperty("action").ValueKind == JsonValueKind.Null && item.GetProperty("elevation_mm").ValueKind == JsonValueKind.Null,
+            "JSON precondition members in fixed order, nulls written", item.GetRawText());
+    }
+
+    // ---- Review follow-ups: opening geometry ----
+    RevitCommandPlan WithWindow(double[] g, Element? host = null)
+    {
+        var wall = host ?? wallX;
+        var window = new Element(Guid.Parse("00000000-0000-0000-0000-0000000000e1"), "window", g, new[] { level.Id, wall.Id }, provenance);
+        return PlanToCommands.Translate(Compiler.Diff(empty, new Project(projectId, 5, new[] { level, wall, window })), bindings);
+    }
+    var offAxis = WithWindow(new[] { 1.0, 0.01, 2, 0.01, 0.9, 1.2 });
+    Check(offAxis.Unsupported.Count == 1 && offAxis.Unsupported[0].Code == PlanToCommandsCodes.GeometryInvalid, "an opening 0.01 m off its host axis is geometry_invalid", Show(offAxis));
+    var zeroWidth = WithWindow(new[] { 1.0, 0, 1, 0, 0.9, 1.2 });
+    Check(zeroWidth.Unsupported.Count == 1 && zeroWidth.Unsupported[0].Code == PlanToCommandsCodes.GeometryInvalid, "a zero-width opening is geometry_invalid", Show(zeroWidth));
+    var diagonal = new Element(Id("wall:diagonal"), "wall", new[] { 0.0, 0, 3, 4, 2.8, 0.2 }, new[] { level.Id }, provenance);
+    var onDiagonal = WithWindow(new[] { 0.6, 0.8, 1.2, 1.6, 0.9, 1.2 }, diagonal);
+    var diagonalStep = onDiagonal.Steps.FirstOrDefault(step => step.Command == "opening.place");
+    Check(onDiagonal.Unsupported.Count == 0 && diagonalStep is not null && Math.Abs(Num(ArgsOf(diagonalStep), "position_along_mm") - 1500) <= 1e-6,
+        "on a 3-4-5 diagonal host the centre (0.9, 1.2) is 1500 mm along the wall", Show(onDiagonal) + " " + diagonalStep?.ArgsJson);
+
+    // ---- Review follow-ups: Envelope input checks ----
+    if (door is not null && shared is not null)
+    {
+        string? Bad(RevitCommandStep step) => Code(() => PlanToCommands.Envelope(result, step, created));
+        Check(Bad(door with { Inputs = new[] { door.Inputs[0] with { Select = "created[1]" } } }) == "argument:input_select_unsupported", "Envelope refuses a select other than created[0]");
+        Check(Bad(door with { DependsOn = Array.Empty<string>() }) == "argument:input_not_dependency", "Envelope refuses an input from a step the step does not depend on");
+        Check(Bad(door with { Inputs = new[] { door.Inputs[0] with { Field = "args." } } }) == "argument:input_field_unsupported", "Envelope refuses an empty field after args.");
+    }
+    var floating = new Element(Guid.Parse("00000000-0000-0000-0000-0000000000b1"), "wall", new[] { 0.0, 0, 4, 0, 2.8, 0.2 }, Array.Empty<Guid>(), provenance);
+    var floatingResult = PlanToCommands.Translate(Compiler.Diff(empty, new Project(projectId, 5, new[] { floating })), bindings);
+    Check(floatingResult.Unsupported.Count == 1 && floatingResult.Unsupported[0].Code == PlanToCommandsCodes.LevelUnbound && floatingResult.Unsupported[0].Detail.StartsWith("level unbound", StringComparison.Ordinal),
+        "an element without a level dependency says level unbound");
+
+    // ---- Review follow-ups: pinned output and culture independence ----
+    const string goldenJsonSha256 = "PENDING";
+    var jsonSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+    Check(jsonSha == goldenJsonSha256, "pinned SHA-256 of the base layout ToJson()", jsonSha);
+    var original = CultureInfo.CurrentCulture;
+    foreach (var name in new[] { "de-DE", "tr-TR" })
+    {
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(name);
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo(name);
+            var local = PlanToCommands.Translate(IntentCompiler.Compile(projectId, 5, intent), RevitBindings.FromIntent(projectId, intent, document, "Single-Flush: 0915 x 2134mm", "Fixed: 0915 x 1220mm")).ToJson();
+            Check(local == json, "same output under " + name);
+        }
+        finally { CultureInfo.CurrentCulture = original; CultureInfo.CurrentUICulture = original; }
+    }
 }
 catch (Exception error)
 {
