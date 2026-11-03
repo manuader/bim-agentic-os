@@ -970,3 +970,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 22:52Z LOCK taken (was FREE since relay135 22:31:47Z).
 - 23:31Z dispatched 3 workers (untouched phases 1, 8, 9): P1-03 MCP installer, P8-02 rhino3dm adapter, P9-01 catalogue v2.
 - 23:31Z workers green: P1-03 a3fb41c (red 41541565035, green 41542251137), P8-02 7ec5a99 (red 41542946788, green 41543506209; rhino3dm 8.17.0 MIT), P9-01 57aaf3b (red 41542251813, green 41544796057; 2 attempts: static-gate comment, test JsonObject reuse). Next: independent reviews.
+- 00:18Z reviews: no blockers on any; should-fix closed with tests. Green heads: P1-03 a6a9c78 (red 41549610510, 1 attempt: wrapped paths in Windows message, green 41550944034), P8-02 f820d8d (red 41548352211, green 41548519960; 60 tests), P9-01 06b7413 (red 41546933276, green 41547173763). Integrating.
