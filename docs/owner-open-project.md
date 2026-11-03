@@ -50,5 +50,5 @@ Quita el manifiesto de prueba si quedó instalado y le dice si el Revit del proy
 
 - El hijo recibe `BIM_AGENTIC_PROJECT_CONFIG` (nunca `BIM_AGENTIC_TEST_CONFIG`); con ninguna o con las dos variables el complemento no abre canal (`AddInGate.StartupMode`).
 - `ProjectBootstrap` valida la configuración (`ProjectConfig`), vuelve a aplicar `OwnerProjectGuard` con las carpetas habilitadas del repositorio donde está el complemento copiado (`.bim/open-project/sessions/<utc>/addin`), abre el documento, comprueba ruta, que no sea de solo lectura, familia ni compartido, y recién entonces abre el canal y publica `project-result.json`.
-- El manifiesto se instala sólo hasta que el hijo cargó el complemento y se quita enseguida.
+- El manifiesto queda instalado hasta que el Revit nuevo termina de abrir el proyecto (cuando aparece LISTO). No abra otro Revit mientras tanto.
 - El servidor MCP que use Claude tiene que ser el de este repositorio (`scripts/install-mcp.ps1`): sólo así lee el mismo `.bim/revit-enabled-roots.txt`.

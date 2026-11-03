@@ -5,7 +5,7 @@
 # Safety: the document must pass `Bim.Cli open-project-check` (repository .bim/native-runs or a root listed in the
 # owner file .bim/revit-enabled-roots.txt, no links, an existing non-backup .rvt) and the add-in checks it again
 # (ProjectConfig / OwnerProjectGuard). Revit processes already running are recorded and never touched; the script never
-# kills or closes a Revit. The staged manifest is installed only until the child has loaded the add-in, then removed.
+# kills or closes a Revit. The staged manifest stays installed until the child reports its result, exits or times out; do not start another Revit until LISTO.
 # The child gets BIM_AGENTIC_PROJECT_CONFIG and never BIM_AGENTIC_TEST_CONFIG. Evidence and the connection record:
 # .bim/open-project/sessions/<utc>/ and .bim/open-project/latest.json. Owner guide: docs/owner-open-project.md.
 [CmdletBinding(DefaultParameterSetName = 'Open')]
@@ -79,9 +79,9 @@ try {
  # ---- 3. Enabled roots: the same decision the add-in and every write command apply ----
  $checkText = (& $dotnet $cli open-project-check $Path | Out-String).Trim()
  $check = $checkText | ConvertFrom-Json
- if ($LASTEXITCODE -ne 0 -or $check.status -ne 'succeeded') {
-  if ($check.code -eq 'document_not_enabled') { throw "El proyecto no está en una carpeta habilitada. Agregue la carpeta (una ruta completa por línea) a $(Join-Path $root '.bim/revit-enabled-roots.txt') y vuelva a intentar. Detalle: $($check.detail)" }
-  throw "El proyecto no se puede abrir en modo proyecto: $($check.code) ($($check.detail))"
+ if ($LASTEXITCODE -ne 0 -or !$check.PSObject.Properties['status'] -or $check.status -ne 'succeeded') {
+  if ($check.code -eq 'document_not_enabled') { throw "El proyecto no está en una carpeta habilitada. Agregue la carpeta (una ruta completa por línea) a $(Join-Path $root '.bim/revit-enabled-roots.txt') y vuelva a intentar. Detalle: $(if ($check.PSObject.Properties['detail']) { $check.detail })" }
+  throw "El proyecto no se puede abrir en modo proyecto: $(if ($check.PSObject.Properties['code']) { $check.code }) ($(if ($check.PSObject.Properties['detail']) { $check.detail } else { $checkText }))"
  }
  Say "Proyecto habilitado por la carpeta $($check.enabled_root)"
 
@@ -92,6 +92,10 @@ try {
  if ((Get-OwnerSha (Join-Path $session.Directory 'addin/Bim.Revit.dll')) -ne (Get-OwnerSha $assembly)) { throw 'El complemento copiado difiere del compilado' }
  Copy-Item -LiteralPath $log -Destination (Join-Path $session.Directory 'open-project.log')
  $log = Join-Path $session.Directory 'open-project.log'
+ # Re-check just before launching: the builds take minutes and the owner may have opened the file meanwhile.
+ $showingNow = @(Find-OwnerRevitShowingDocument -Processes @(Get-Process -Name Revit -ErrorAction SilentlyContinue) -DocumentPath $Path)
+ if ($showingNow.Count) { throw ("El proyecto se abrió en otro Revit mientras compilaba (PID " + (($showingNow | ForEach-Object Id) -join ', ') + "). Ciérrelo allí y vuelva a intentar.") }
+ if (Test-OwnerFileInUse -DocumentPath $Path) { throw 'Otro programa abrió el archivo mientras compilaba. Ciérrelo y vuelva a intentar.' }
  if (Test-Path -LiteralPath $manifest) { throw "Apareció un manifiesto en $manifest durante la preparación; me detengo" }
  New-Item -ItemType Directory -Force (Split-Path $manifest) | Out-Null
  Copy-Item -LiteralPath $session.Manifest -Destination $manifest
@@ -115,7 +119,7 @@ try {
  finally {
   # Revit reads manifests at startup only: once the child loaded the add-in (or failed) the manifest is removed, so a
   # Revit opened later never sees it.
-  if (Remove-OwnerManifestIfOwned -Manifest $manifest -Staged $session.Manifest) { Say 'Manifiesto de prueba quitado (el Revit nuevo ya cargó el complemento).' }
+  if (Remove-OwnerManifestIfOwned -Manifest $manifest -Staged $session.Manifest) { Say 'Manifiesto de prueba quitado.' }
  }
  if (!(Test-Path -LiteralPath $session.Result)) {
   if ($child.HasExited) { throw 'El Revit nuevo se cerró antes de abrir el proyecto.' }
