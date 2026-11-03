@@ -547,10 +547,28 @@ try
         Check(SkillRoomValidator.ConfidenceOwnerConfirmed == "owner-confirmed" && ownerForward == ownerBackward
             && ownerForward is { Article: "Art. 9", Confidence: "owner-confirmed", ConfirmedBy: "architect (owner)", ConfirmedOn: "2026-11-03", Source: "https://x.org/a;b", AppliesIf: null },
             "an owner-confirmed citation parses with confirmed_by and confirmed_on in either member order", ownerForward + " / " + ownerBackward);
-        Check(SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-approved; confirmed_by=someone") is { Confidence: "to-verify", ConfirmedBy: "someone" }
-            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=Owner-Confirmed") is { Confidence: "to-verify" }
+        Check(SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-approved; confirmed_by=someone; confirmed_on=2026-11-03") is { Confidence: "to-verify", ConfirmedBy: null, ConfirmedOn: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-confirmd; confirmed_by=someone; confirmed_on=2026-11-03") is { Confidence: "to-verify", ConfirmedBy: null, ConfirmedOn: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=Owner-Confirmed; confirmed_by=someone; confirmed_on=2026-11-03") is { Confidence: "to-verify", ConfirmedBy: null }
             && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=cited") is { Confidence: "cited", ConfirmedBy: null, ConfirmedOn: null },
-            "an unknown or differently cased confidence is still to-verify; absent confirmation members are null");
+            "an unknown, misspelt or differently cased confidence is still to-verify and carries no confirmation members");
+        // S1 (P5-06 review): confirmation members belong to owner-confirmed only, and owner-confirmed needs both who and when.
+        Check(SkillRoomValidator.ParseCitation("Art. 9; source_confidence=cited; confirmed_by=someone; confirmed_on=2026-11-03; source=https://x.org") is { Confidence: "cited", ConfirmedBy: null, ConfirmedOn: null, Source: "https://x.org" }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=to-verify; confirmed_by=someone") is { Confidence: "to-verify", ConfirmedBy: null, ConfirmedOn: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-confirmed; confirmed_on=2026-11-03") is { Confidence: "to-verify", ConfirmedBy: null, ConfirmedOn: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-confirmed; confirmed_by=architect (owner)") is { Confidence: "to-verify", ConfirmedBy: null, ConfirmedOn: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-confirmed; confirmed_by=; confirmed_on=2026-11-03") is { Confidence: "to-verify", ConfirmedBy: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-confirmed; confirmd_by=architect (owner); confirmed_on=2026-11-03") is { Confidence: "to-verify", ConfirmedBy: null, ConfirmedOn: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-confirmed; Confirmed_By=architect (owner); confirmed_on=2026-11-03") is { Confidence: "to-verify", ConfirmedBy: null },
+            "confirmation members are null unless the confidence is owner-confirmed; owner-confirmed without confirmed_by or confirmed_on (missing, empty, misspelt or miscased member) is to-verify");
+        // N2 (P5-06 review): a repeated member makes the citation ambiguous, so its confidence is to-verify.
+        Check(SkillRoomValidator.ParseCitation("Art. 9; source_confidence=cited; source_confidence=cited; source=https://x.org") is { Confidence: "to-verify", ConfirmedBy: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=to-verify; source=https://x.org; source_confidence=cited") is { Confidence: "to-verify" }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-confirmed; confirmed_by=a; confirmed_by=b; confirmed_on=2026-11-03") is { Confidence: "to-verify", ConfirmedBy: null, ConfirmedOn: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=owner-confirmed; confirmed_by=a; confirmed_on=2026-11-03; confirmed_on=2026-11-04") is { Confidence: "to-verify", ConfirmedOn: null }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=cited; source=https://x.org; source=https://y.org") is { Confidence: "to-verify" }
+            && SkillRoomValidator.ParseCitation("Art. 9; source_confidence=cited; applies_if=area_m2<=16; applies_if=area_m2<=20") is { Confidence: "to-verify" },
+            "a citation repeating any member (source_confidence, confirmed_by, confirmed_on, source, applies_if) is to-verify");
 
         // ---- Review fixes (P5-02 review B1, S1-S6) ----
         // B1: compliance needs every room classified and every applicable rule evaluated.
@@ -619,7 +637,8 @@ try
         Check(caba.Rules.Where(rule => rule.Id.StartsWith("dormitorio", StringComparison.Ordinal)).All(rule => !rule.Message.Contains("6.25", StringComparison.Ordinal) && !rule.Message.Contains("flexib", StringComparison.OrdinalIgnoreCase))
             && caba.Rules.First(rule => rule.Id == "dormitorio-height-min").Citation!.Contains("tercera clase taken from the RT-030809-020309-01 sec. 2 table, confirmed by the owner", StringComparison.Ordinal)
             && caba.Rules.First(rule => rule.Id == "bedroom-height-min").Citation!.Contains("confirmed by the owner", StringComparison.Ordinal)
-            && new[] { "escritorio-height-min", "estudio-height-min", "biblioteca-height-min" }.All(id => caba.Rules.First(rule => rule.Id == id).Citation!.Contains("to confirm", StringComparison.Ordinal)),
+            && new[] { "escritorio", "estudio", "biblioteca" }.SelectMany(room => new[] { "-height-min", "-illumination-ratio", "-ventilation-ratio" }.Select(suffix => room + suffix))
+                .All(id => caba.Rules.First(rule => rule.Id == id).Citation!.Contains("(class assignment tercera clase taken from the RT-030809-020309-01 sec. 2 table, to confirm)", StringComparison.Ordinal)),
             "dormitorio rules make no flexibility claim; the dormitorio class assignment is owner-confirmed and the other third-class assignments stay flagged to confirm");
 
         // S6: tolerance edges and citation member order.
