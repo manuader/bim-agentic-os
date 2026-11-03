@@ -1004,3 +1004,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay140 — 2026-11-03T06:53:28Z (Claude, cloud scheduled)
 - 06:53Z LOCK taken (was FREE since relay139 2026-11-03T06:29:42Z).
+- 06:54Z dispatching 3 workers (phases 6, 7, 10 — oldest-touched): P6-02 PDF vector reader, P7-02 alternatives scoring, P10-02 BCF export.
