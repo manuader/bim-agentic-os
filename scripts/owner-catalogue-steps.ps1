@@ -1155,13 +1155,34 @@ function Invoke-CatalogueWire {
         while ($Exception -is [Management.Automation.MethodInvocationException] -and $null -ne $Exception.InnerException) { $Exception = $Exception.InnerException }
         return $Exception
     }
-    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
+    # Windows (the owner session): the named pipe. Elsewhere (headless tests only) .NET pipes are Unix sockets named
+    # <temp>/CoreFxPipe_<name>; pwsh caches that prefix at startup, so the socket is opened at the current temp path,
+    # where the test's fake add-in pipe (a child process) listens, retrying until the connect timeout like the CLI.
+    $pipe = $null
     try {
-        try { $pipe.Connect($ConnectTimeoutMs) }
+        try {
+            if ($IsWindows) {
+                $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
+                $pipe.Connect($ConnectTimeoutMs)
+            }
+            else {
+                $endpoint = [Net.Sockets.UnixDomainSocketEndPoint]::new([IO.Path]::Combine([IO.Path]::GetTempPath(), "CoreFxPipe_$PipeName"))
+                $deadline = [DateTime]::UtcNow.AddMilliseconds($ConnectTimeoutMs)
+                while ($null -eq $pipe) {
+                    $socket = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::Unix, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Unspecified)
+                    try { $socket.Connect($endpoint); $pipe = [Net.Sockets.NetworkStream]::new($socket, $true) }
+                    catch {
+                        $socket.Dispose()
+                        if ([DateTime]::UtcNow -ge $deadline) { throw [TimeoutException]::new('no listener on ' + $endpoint.ToString()) }
+                        Start-Sleep -Milliseconds 50
+                    }
+                }
+            }
+        }
         catch {
             $error0 = Inner $_.Exception
             if ($error0 -is [TimeoutException]) { return Failure 'pipe_connect_timeout' 'no add-in listening on this process pipe' }
-            return Failure 'pipe_io_error' $error0.GetType().Name
+            return Failure 'pipe_io_error' ($error0.GetType().Name + ': ' + $error0.Message)
         }
         $utf8 = [Text.UTF8Encoding]::new($false)
         $writer = [IO.StreamWriter]::new($pipe, $utf8, 4096, $true)
@@ -1173,12 +1194,12 @@ function Invoke-CatalogueWire {
             if (!$read.Wait($TimeoutSeconds * 1000)) { return @{ output = ''; exit_code = $null; timed_out = $true } }
             $response = $read.GetAwaiter().GetResult()
         }
-        catch { return Failure 'pipe_io_error' (Inner $_.Exception).GetType().Name }
+        catch { $error1 = Inner $_.Exception; return Failure 'pipe_io_error' ($error1.GetType().Name + ': ' + $error1.Message) }
         finally { try { $reader.Dispose(); $writer.Dispose() } catch { $null = $_ } }
         if ($null -eq $response) { return Failure 'no_response' 'pipe closed without a response line' }
         $status = $null
         try { $status = ($response | ConvertFrom-Json -ErrorAction Stop).status } catch { $status = $null }
         return @{ output = $response; exit_code = $(if ($status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false }
     }
-    finally { $pipe.Dispose() }
+    finally { if ($null -ne $pipe) { $pipe.Dispose() } }
 }
