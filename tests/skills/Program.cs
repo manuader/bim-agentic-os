@@ -614,9 +614,13 @@ try
             && Find(SkillRoomValidator.Validate(cabaResolution, brokenFacts), spaceId.ToString("D"), "dormitorio-height-min")?.Outcome == RoomCheckOutcome.NotEvaluable,
             "one undecodable bounding wall makes the model clear height unknown");
 
-        // S5: no unverified flexibility claims; the third-class assignment is marked to confirm.
+        // S5: no unverified flexibility claims. P5-06: the owner confirmed the dormitorio third-class assignment; the other third-class
+        // rooms keep their assignment marked to confirm.
         Check(caba.Rules.Where(rule => rule.Id.StartsWith("dormitorio", StringComparison.Ordinal)).All(rule => !rule.Message.Contains("6.25", StringComparison.Ordinal) && !rule.Message.Contains("flexib", StringComparison.OrdinalIgnoreCase))
-            && caba.Rules.First(rule => rule.Id == "dormitorio-height-min").Citation!.Contains("to confirm", StringComparison.Ordinal), "dormitorio rules make no flexibility claim and flag the class assignment");
+            && caba.Rules.First(rule => rule.Id == "dormitorio-height-min").Citation!.Contains("tercera clase taken from the RT-030809-020309-01 sec. 2 table, confirmed by the owner", StringComparison.Ordinal)
+            && caba.Rules.First(rule => rule.Id == "bedroom-height-min").Citation!.Contains("confirmed by the owner", StringComparison.Ordinal)
+            && new[] { "escritorio-height-min", "estudio-height-min", "biblioteca-height-min" }.All(id => caba.Rules.First(rule => rule.Id == id).Citation!.Contains("to confirm", StringComparison.Ordinal)),
+            "dormitorio rules make no flexibility claim; the dormitorio class assignment is owner-confirmed and the other third-class assignments stay flagged to confirm");
 
         // S6: tolerance edges and citation member order.
         Check(Find(Run(new RoomFacts("t1", "Dormitorio", 7.5 - 5e-9, 3)), "t1", "dormitorio-area-min")?.Outcome == RoomCheckOutcome.Pass
