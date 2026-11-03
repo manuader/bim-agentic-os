@@ -413,7 +413,7 @@
         "tests/skills/Program.cs",
         "tests/skills/check_schema.py"
       ],
-      "blocker": "Rules are resolved but not yet evaluated against a model; no CABA or style packs yet (P5-02, P5-03).",
+      "blocker": "Style packs not yet written (P5-03); rule evaluation exists only for room rules via SkillRoomValidator (P5-02).",
       "scope": "P5-01: versioned domain-skill manifest (kind, priority, semver requires, conflicts, typed parameters, dotted defaults, rules with closed check ops), strict bounded parser, link-refusing directory loader with typed codes, iterative resolver with dependency/version/conflict/cycle refusals and traceable priority/precedence default resolution; schema agreement checked by a jsonschema corpus in CI. CI 41533653759."
     },
     {
@@ -499,6 +499,41 @@
       ],
       "blocker": "MCP labels permission levels but does not enforce per-actor grants or audit; writes allowed under any enabled root directory; not run against the owner's Claude Desktop.",
       "scope": "P9-05: MCP tools/list built from RevitCommandCatalogue.All (v1, v2, views) with fail-closed name checks, _meta permission level from PermissionPolicy, readOnly/destructive/idempotent hints; copies guard unchanged. CI 41562897314."
+    },
+    {
+      "id": "revit-query-snapshot",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Mirror.cs",
+        "core/Bim.Core/MirrorMapper.cs",
+        "runtimes/revit-native/Mirror.cs",
+        "tests/revit-commands/MirrorSnapshot.cs"
+      ],
+      "blocker": "Collector never run in Revit (owner session needed); floors have no BIM-IR kind (reported unmapped); non-centerline, curtain, stacked, base-offset walls and non-rectangular rooms are reported unmapped, not mapped; no linked models; element cap instead of pagination.",
+      "scope": "P2-01: read-only query.snapshot maps Revit levels, straight walls, doors, windows and rectangular rooms to existing BIM-IR elements with SHA-derived ids from document+element UniqueId, deterministic canonical JSON, non-persisted unmapped section with reasons; no schema change; source-scan guard for no document writes. Mapper unit-tested, collector compiled in native-build, CI 41573858213."
+    },
+    {
+      "id": "caba-code-rule-pack",
+      "status": "unit-tested",
+      "evidence": [
+        "skills/ar.caba.codigo-edificacion/skill.json",
+        "core/Bim.Core/SkillRoomValidator.cs",
+        "tests/skills/Program.cs"
+      ],
+      "blocker": "Several values are marked to-verify (heights, illumination/ventilation ratios, local classes) and need review by the owner against Ley 6.100 and its RT; BIM-IR rooms carry no names or openings, so light/ventilation rules are not evaluable on model data; clear height is approximated from wall height; not yet wired into the space planner.",
+      "scope": "P5-02: CABA Código de Edificación room rules (areas, minimum sides, heights, illumination/ventilation ratios) with article citations and cited/to-verify confidence, validator over BIM-IR rooms with pass/fail/not_evaluable findings, unmatched rooms block compliance, parameter overrides within bounds. CI 41576795164."
+    },
+    {
+      "id": "ifc-ids-checks",
+      "status": "integration-tested (ifc)",
+      "evidence": [
+        "runtimes/ifc/ids_check.py",
+        "tests/ifc/test_ids.py",
+        "tests/ifc/fixtures/ids/passing.ids",
+        "docs/ifc.md"
+      ],
+      "blocker": "Subset of IDS 1.0 only (no partOf/material facets, quantities, bounds/length restrictions, subtype matching); not run against the official buildingSMART IDS test corpus or XSD; unsupported features fail closed.",
+      "scope": "P10-01: IDS 1.0 subset (entity, attribute, property, classification facets; simpleValue/enumeration/pattern restrictions; cardinalities) checked against IFC exported by the IFC runtime, deterministic JSON report, exit 0/1/2, DOCTYPE refused, SI unit handling. CI 41575714191 (ifc job + 3-OS portable)."
     }
   ]
 }

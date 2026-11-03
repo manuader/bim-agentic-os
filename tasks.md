@@ -81,9 +81,9 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P2-01 | Revit to BIM-IR snapshot export | ⏳ | — | core/Bim.Core/Mirror*; runtimes/revit-native/Mirror* | query.snapshot returns walls/doors/windows/floors/rooms as BIM-IR elements with stable ids; contract tests | target unit-tested |
+| P2-01 | Revit to BIM-IR snapshot export | ✅ | — | core/Bim.Core/Mirror*; runtimes/revit-native/Mirror* | query.snapshot returns walls/doors/windows/floors/rooms as BIM-IR elements with stable ids; contract tests | unit-tested (relay138, CI 41573858213; mapper unit-tested, collector compiled; not run in Revit) |
 | P2-02 | Semantic graph relations | ✅ | — | core/Bim.Core/Graph* | hosted-by, bounds, on-level edges with queries and closure; tests | unit-tested (relay134, CI 41511322582) |
-| P2-03 | External edit journal (DocumentChanged) | ⛔ | P2-01 | runtimes/revit-native/Journal* | events recorded with element ids and diff against last snapshot; compiles | target compiled |
+| P2-03 | External edit journal (DocumentChanged) | ⏳ | P2-01 | runtimes/revit-native/Journal* | events recorded with element ids and diff against last snapshot; compiles | target compiled |
 
 ### Phase 3 — incremental compiler
 
@@ -104,7 +104,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
 | P5-01 | Skill manifest and loader | ✅ | — | core/Bim.Skills (new); skills/ | versioned skill manifest (rules, defaults, parameters), loader with validation and conflict resolution by priority; tests | unit-tested (relay135, CI 41533653759) |
-| P5-02 | CABA building code rule pack | ⏳ | — | skills/caba-codigo-edificacion; core/Bim.Skills | minimum areas, heights, sides, ventilation/illumination ratios with cited articles; validator over BIM-IR rooms; tests | target unit-tested |
+| P5-02 | CABA building code rule pack | ✅ | — | skills/ar.caba.codigo-edificacion; core/Bim.Core/SkillRoomValidator.cs | minimum areas, heights, sides, ventilation/illumination ratios with cited articles; validator over BIM-IR rooms; tests | unit-tested (relay138, CI 41576795164; 95 rules, to-verify values flagged for owner review) |
 | P5-03 | Two contrasting style skills | ⏳ | P5-01 | skills/style-* | two style packs change defaults visibly with traceable rule ids; tests | target unit-tested |
 
 ### Phase 6 — CAD and requirements
@@ -144,14 +144,14 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 
 | ID | Task | Status | Dependencies | Owned files | Done when | Verification |
 |---|---|---|---|---|---|---|
-| P10-01 | IDS checks | ⏳ | — | runtimes/ifc; tests/ifc | IDS file validation of exported IFC with report; CI | target integration-tested (ifc) |
+| P10-01 | IDS checks | ✅ | — | runtimes/ifc/ids_check.py; tests/ifc | IDS file validation of exported IFC with report; CI | integration-tested (ifc) (relay138, CI 41575714191; IDS 1.0 subset) |
 | P10-02 | BCF export | ⏳ | — | core/Bim.Core/Bcf* | validation issues exported as BCF 3.0 zip; schema-valid; tests | target unit-tested |
 | P10-03 | Audit log and permissions | ✅ | — | core/Bim.Core/Audit* | append-only audit of commands with actor and decision; permission policy (read/write/real-project); tests | unit-tested (relay134, CI 41517584141) |
 
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 33/54 done (61.1 %)
+Progress: 36/54 done (66.7 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
@@ -159,14 +159,14 @@ Progress: 33/54 done (61.1 %)
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
 - Revit command surface — catalogue v1 (architecture): 3/5
 - Phase 1 — native kernel: 1/4
-- Phase 2 — semantic state and mirror: 1/3
+- Phase 2 — semantic state and mirror: 2/3
 - Phase 3 — incremental compiler: 1/2
 - Phase 4 — documentation engine: 1/2
-- Phase 5 — skills and design systems: 1/3
+- Phase 5 — skills and design systems: 2/3
 - Phase 6 — CAD and requirements: 2/3
 - Phase 7 — generative kernels: 1/2
 - Phase 8 — Rhino, Blender and IFC: 1/3
 - Phase 9 — Revit parity: 2/5
-- Phase 10 — global production: 1/3
-Next ready: P1-02, P2-01, P3-02, P4-02, P5-02, P5-03, P6-02, P7-02
+- Phase 10 — global production: 2/3
+Next ready: P1-02, P2-03, P3-02, P4-02, P5-03, P6-02, P7-02, P8-01
 

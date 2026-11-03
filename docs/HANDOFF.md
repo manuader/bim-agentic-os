@@ -18,6 +18,7 @@ Core C#/.NET8 compiles room intents into unchanged persisted records and compute
 
 ## 4. Sessions, newest first
 
+- Relay138 (Claude, cloud scheduled): P2-01 read-only query.snapshot Revit→BIM-IR mirror (lossy cases reported unmapped), P5-02 CABA Código de Edificación room rule pack + SkillRoomValidator (to-verify values flagged for the owner), P10-01 IDS 1.0 subset checker over exported IFC; reviewed (blockers in all three fixed with tests), green. P2-03 unblocked. [Session](SESSION-2026-11-03-relay138-snapshot-caba-ids.md).
 - Relay137 (Claude, cloud scheduled): P4-01 Revit view commands (plan, section, 3D, view type/template queries), P6-01 BCL-only DXF reader with provenance and bounded wall-pair detection, P9-05 MCP tools/list from the full catalogue with policy-derived levels; reviewed (one DXF blocker fixed), green. P4-02 unblocked. [Session](SESSION-2026-11-03-relay137-views-dxf-mcp-v2.md).
 - Relay136 (Claude, cloud scheduled): P1-03 Claude Desktop MCP installer, P8-02 rhino3dm .3dm adapter, P9-01 Revit catalogue v2 (roofs, stairs, curtain walls, floor openings); reviewed, should-fix closed with tests, green. New P9-05 (expose v2 through MCP). [Session](SESSION-2026-11-03-relay136-mcp-rhino-catalogue-v2.md).
 - Relay135 (Claude, cloud scheduled): P3-01 multi-room layout intent compiler, P5-01 skill manifest/loader/resolver, P7-01 seeded space planner on the project brief; reviewed (one planner blocker fixed twice) and green. P3-02, P5-03, P7-02 unblocked. [Session](SESSION-2026-11-02-relay135-intent-skills-planner.md).
