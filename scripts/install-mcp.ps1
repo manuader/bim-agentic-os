@@ -46,7 +46,8 @@ function Get-DefaultConfigPath {
         if ($packaged.Count -eq 0) { $script:ConfigReason = 'classic install location'; return $classic }
         $candidates = @($packaged)
         if (Test-Path -LiteralPath $classic) { $candidates = @($classic) + $candidates }
-        if ($candidates.Count -gt 1) { throw ("Several Claude Desktop config locations exist; pass -ConfigPath with the one your Claude Desktop uses (Settings > Developer > Edit Config shows it). Candidates:`n  " + ($candidates -join "`n  ")) }
+        # Candidates also go to the host one per line: error records wrap long paths in the console view.
+        if ($candidates.Count -gt 1) { foreach ($candidate in $candidates) { Write-Host "CANDIDATE $candidate" }; throw ("Several Claude Desktop config locations exist; pass -ConfigPath with the one your Claude Desktop uses (Settings > Developer > Edit Config shows it). Candidates:`n  " + ($candidates -join "`n  ")) }
         $script:ConfigReason = 'MSIX install location'
         return $packaged[0]
     }

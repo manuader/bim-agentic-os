@@ -241,10 +241,10 @@ try {
         Assert ($run.Code -eq 0 -and (Test-Path -LiteralPath $roots.Packaged[0]) -and !(Test-Path -LiteralPath $roots.Classic) -and $run.Output -match [regex]::Escape("CONFIG $($roots.Packaged[0])")) "MSIX default: $($run.Output)"
         $roots = New-WindowsRoots @('Claude_pzs8sxrjxfjjc') -ClassicConfig
         $run = Invoke-Installer $toolArgs
-        Assert ($run.Code -ne 0 -and $run.Output.Contains($roots.Classic) -and $run.Output.Contains($roots.Packaged[0]) -and !(Test-Path -LiteralPath $roots.Packaged[0]) -and [IO.File]::ReadAllText($roots.Classic) -eq '{}') "classic + MSIX must be refused listing both: $($run.Output)"
+        Assert ($run.Code -ne 0 -and $run.Output.Contains("CANDIDATE $($roots.Classic)") -and $run.Output.Contains("CANDIDATE $($roots.Packaged[0])") -and !(Test-Path -LiteralPath $roots.Packaged[0]) -and [IO.File]::ReadAllText($roots.Classic) -eq '{}') "classic + MSIX must be refused listing both: $($run.Output)"
         $roots = New-WindowsRoots @('Claude_aaaa', 'Claude_bbbb')
         $run = Invoke-Installer $toolArgs
-        Assert ($run.Code -ne 0 -and $run.Output.Contains($roots.Packaged[0]) -and $run.Output.Contains($roots.Packaged[1]) -and !(Test-Path -LiteralPath $roots.Packaged[0]) -and !(Test-Path -LiteralPath $roots.Packaged[1])) "two MSIX packages must be refused: $($run.Output)"
+        Assert ($run.Code -ne 0 -and $run.Output.Contains("CANDIDATE $($roots.Packaged[0])") -and $run.Output.Contains("CANDIDATE $($roots.Packaged[1])") -and !(Test-Path -LiteralPath $roots.Packaged[0]) -and !(Test-Path -LiteralPath $roots.Packaged[1])) "two MSIX packages must be refused: $($run.Output)"
         Set-FakeRoots $fakeRoots
     }
 
