@@ -7,7 +7,8 @@ using System.Text.RegularExpressions;
 // P7-01 constraint space planner oracle: the checked-in apartment-2br brief, every constraint type (area range,
 // minimum side, required/forbidden/preferred adjacency, footprint, levels, counts, budget, planner rules), canonical
 // output determinism across runs, seeds and cultures, typed infeasible results, non-overlap and in-site invariants
-// over many seeds and generated briefs, and a 30-room performance bound. Unit-tested evidence only.
+// over many seeds and generated briefs, and a 30-room performance bound; P7-02 alternatives in AlternativeTests.cs.
+// Unit-tested evidence only.
 int passed = 0, failed = 0;
 
 void Check(bool condition, string name, string detail = "")
@@ -505,6 +506,9 @@ try
     Check(bigPlan.Rooms.Where((_, i) => i % 3 == 0).All(r => ShortSide(r) >= 1.5 - 1e-9), "30-room plan honours rule minimum sides");
     Check(watch.Elapsed.TotalSeconds < 10, "30-room brief plans in under 10 s", watch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms");
     Check(SpacePlanSerializer.Serialize(Attempt(big, 3, bigOptions)) == SpacePlanSerializer.Serialize(bigPlan), "30-room plan is deterministic");
+
+    // ---- P7-02 alternatives with scoring (AlternativeTests.cs) ----
+    AlternativeTests.Run(Check, root);
 }
 catch (Exception error)
 {
