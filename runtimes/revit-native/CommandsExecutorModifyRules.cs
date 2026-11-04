@@ -16,7 +16,8 @@ public sealed record ParameterTarget(ObservedParameter Parameter, bool YesNo, bo
 // OwnerUid (dependents only): the element that owns this one as a sub-element Revit deletes with it (a curtain grid
 // line, panel or mullion of a curtain wall or roof, a sketch of its owner, a sketch's plane or lines, an internal element
 // without a category), null for an independent element.
-public sealed record DeleteTargetFacts(string UniqueId, bool CanDelete, bool Pinned, bool InGroup, bool ProjectInformation, bool ReceiptStore, bool ActiveView, string? OwnerUid = null);
+// GridMember (dependents only): a curtain grid line, panel or mullion of a curtain wall or roof (OwnerUid is that host).
+public sealed record DeleteTargetFacts(string UniqueId, bool CanDelete, bool Pinned, bool InGroup, bool ProjectInformation, bool ReceiptStore, bool ActiveView, string? OwnerUid = null, bool GridMember = false);
 // What a delete removes besides its targets: the dependents' UniqueIds (sorted and distinct, hex case ignored) and how many deleted ids
 // had no element to name them.
 public sealed record DeleteCascade(IReadOnlyList<string> Dependents, int Unidentified);

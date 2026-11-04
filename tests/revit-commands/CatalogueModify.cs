@@ -438,7 +438,25 @@ static class CatalogueModifyChecks
         Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(SketchLineUid) with { CanDelete = false, OwnerUid = SketchUid }, Target(SketchUid) with { CanDelete = false, OwnerUid = SketchLineUid } }, curtainTargets)) is { Code: RevitCommandCodes.ArgsInvalid },
             "an ownership cycle that never reaches a target does not exempt anything");
         Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(PanelUid) with { CanDelete = false, Pinned = true, OwnerUid = CurtainUid } }, curtainTargets)) is { } pinnedOwned && pinnedOwned.Detail!.Contains("pinned", StringComparison.Ordinal),
-            "an owned sub-element that is pinned still refuses (only CanDeleteElement is waived)");
+            "an owned sub-element that is not a curtain grid member (a sketch, an internal element) and is pinned still refuses");
+
+        // Owner, Revit 2025.2, 2026-11-04: deleting curtain wall ...00034a49 was refused because its own panel ...00034a4c is
+        // pinned (Revit pins the panels and mullions its type's grid layout places). Pinned grid members of a target do
+        // not block deleting their host; foreign pinned elements and pinned targets still do.
+        const string OwnerCurtainUid = "a57edd83-0a99-43c4-bfa9-1235079356a0-00034a49";
+        const string OwnerPanelUid = "a57edd83-0a99-43c4-bfa9-1235079356a0-00034a4c";
+        const string OwnerMullionUid = "a57edd83-0a99-43c4-bfa9-1235079356a0-00034a4d";
+        var ownerCurtain = new[] { OwnerCurtainUid };
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(OwnerPanelUid) with { Pinned = true, OwnerUid = OwnerCurtainUid, GridMember = true }, Target(OwnerMullionUid) with { Pinned = true, CanDelete = false, OwnerUid = OwnerCurtainUid, GridMember = true } }, ownerCurtain)) is null,
+            "a curtain wall's own pinned grid panels and mullions do not refuse deleting the wall");
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(OwnerPanelUid) with { Pinned = true, OwnerUid = ForeignUid, GridMember = true } }, ownerCurtain)) is { Code: RevitCommandCodes.ArgsInvalid } foreignGrid && foreignGrid.Detail!.Contains("pinned", StringComparison.Ordinal),
+            "a pinned grid member of another curtain wall (not a delete target) still refuses");
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(ForeignUid) with { Pinned = true } }, ownerCurtain)) is { Code: RevitCommandCodes.ArgsInvalid } foreignPinned && foreignPinned.Detail!.Contains(ForeignUid, StringComparison.Ordinal) && foreignPinned.Detail.Contains("pinned", StringComparison.Ordinal),
+            "a foreign pinned dependent still refuses the delete");
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(OwnerPanelUid) with { Pinned = true, InGroup = true, OwnerUid = OwnerCurtainUid, GridMember = true } }, ownerCurtain)) is { } groupedGrid && groupedGrid.Detail!.Contains("group", StringComparison.Ordinal),
+            "a grid member that is in a group still refuses (only pinned and CanDeleteElement are waived for grid members)");
+        Check(Thrown(() => CommandRulesModify.CheckDeletable(Target(OwnerCurtainUid) with { Pinned = true }, "args.element_uids[0]")) is { Field: "args.element_uids[0]" } pinnedHost && pinnedHost.Detail!.Contains("pinned", StringComparison.Ordinal),
+            "a curtain wall the user pinned is still refused as a target");
         Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(GridUid) with { CanDelete = false, OwnerUid = CurtainUid.ToUpperInvariant() } }, curtainTargets)) is null, "owner UniqueIds compare ignoring hex case");
         var ownedCascade = CommandRulesModify.Cascade(curtainTargets, new string?[] { CurtainUid, GridUid, PanelUid });
         Check(ownedCascade.Dependents.SequenceEqual(new[] { GridUid, PanelUid }), "owned sub-elements are still listed as dependents (dry run and confirm_dependents)");
