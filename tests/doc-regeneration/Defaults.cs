@@ -10,6 +10,8 @@ using System.Text.Json.Nodes;
 // bound to the BIM-IR plan, schedule and sheet elements when present; its P4-03 full regeneration emits only commands
 // the Revit catalogue accepts; keys are stable across unrelated edits; output is byte-identical for the same input;
 // malformed projects are refused with typed codes.
+delegate void Checker(bool condition, string name, string detail = "");
+
 static class DefaultsTests
 {
     static readonly Provenance provenance = new("doc-defaults-tests", "unit");
@@ -90,7 +92,7 @@ static class DefaultsTests
         return "";
     }
 
-    public static void Run(Action<bool, string, string> check)
+    public static void Run(Checker check)
     {
         // ---- Shape of the default set ----
         var basis = Build(0, 3, 6);
