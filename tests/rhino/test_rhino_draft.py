@@ -646,31 +646,71 @@ class ReviewNonFinite(Base):
         self.assertAccounted(model, rd.draft_model(model, 'short.3dm', project_id=sid(9)), 'degenerate')
 
 
+# Builds .3dm files holding a block (instance) definition, in a child process. InstanceDefinitions.Add in
+# rhino3dm 8.17 can leave the native model pointing at the Python-owned member geometry and attributes, so tearing
+# them down in the test process crashed intermittently (SIGSEGV at frame exit). The child keeps every object alive
+# and leaves with os._exit after writing, so no native destructor runs; the test process only reads the file.
+BLOCK_BUILDER = r"""
+import os, sys, uuid
+import rhino3dm
+P3 = rhino3dm.Point3d
+keep = []
+for out in sys.argv[1:]:
+    model = rhino3dm.File3dm()
+    model.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
+    spaces, walls = rhino3dm.Layer(), rhino3dm.Layer()
+    spaces.Name, walls.Name = 'Spaces', 'Walls'
+    spaces_index, walls_index = model.Layers.Add(spaces), model.Layers.Add(walls)
+    room = rhino3dm.PolylineCurve([P3(0, 0, 0), P3(4, 0, 0), P3(4, 3, 0), P3(0, 3, 0), P3(0, 0, 0)])
+    room_attributes = rhino3dm.ObjectAttributes()
+    room_attributes.LayerIndex = spaces_index
+    room_attributes.Id = uuid.UUID(int=0x1001)
+    model.Objects.Add(room, room_attributes)
+    member = rhino3dm.LineCurve(P3(0, 0, 0), P3(1, 0, 0))
+    member_attributes = rhino3dm.ObjectAttributes()
+    member_attributes.LayerIndex = walls_index
+    geometry, attributes = (member,), (member_attributes,)
+    keep.append((model, spaces, walls, room, room_attributes, member, member_attributes, geometry, attributes))
+    index = model.InstanceDefinitions.Add('door', '', '', '', P3(0, 0, 0), geometry, attributes)
+    if index < 0 or not model.Write(out, 7):
+        sys.stdout.write('build failed for ' + out + '\n')
+        sys.stdout.flush()
+        os._exit(3)
+sys.stdout.flush()
+os._exit(0)
+"""
+
+
 class ReviewBlocks(Base):
-    def test_block_definition_members_are_not_proposed(self):
-        model = self.build([(rectangle(0, 0, 4, 3), 'Spaces', oid(1))])
-        layer = rhino3dm.Layer()
-        layer.Name = 'Walls'
-        walls = model.Layers.Add(layer)
-        attributes = rhino3dm.ObjectAttributes()
-        attributes.LayerIndex = walls
-        member = rhino3dm.LineCurve(P3(0, 0, 0), P3(1, 0, 0))
-        index, errors = None, []
-        for pack in (tuple, list):
-            try:
-                index = model.InstanceDefinitions.Add('door', '', '', '', P3(0, 0, 0), pack([member]), pack([attributes]))
-                break
-            except TypeError as error:
-                errors.append(str(error)[-400:])
-        if index is None:
-            self.skipTest(f'rhino3dm cannot build an instance definition here: {errors}')
+    def block_files(self, count):
+        paths = [self.path(f'block{n}/block.3dm') for n in range(count)]
+        built = subprocess.run([sys.executable, '-I', '-c', BLOCK_BUILDER, *map(str, paths)], capture_output=True, text=True, timeout=300)
+        self.assertEqual(0, built.returncode, built.stdout + built.stderr)
+        return paths
+
+    def members(self, path):
+        model = rhino3dm.File3dm.Read(str(path))
+        self.assertIsNotNone(model)
         members = [str(o.Attributes.Id) for o in model.Objects if o.Attributes.IsInstanceDefinitionObject]
-        if index < 0 or not members:
-            self.skipTest('rhino3dm keeps no instance definition objects in the object table')
-        result = rd.draft_model(model, 'block.3dm', project_id=sid(9))
+        self.assertEqual(1, len(members), f'{path}: instance definition members after a write/read round trip')
+        return members
+
+    def assertBlockSkipped(self, path):
+        members = self.members(path)
+        result = rd.draft(path, project_id=sid(9))
         self.assertEqual([sid(1)], [p['key'] for p in result['proposals']])
         for member in members:
             self.assertEqual(['block_definition_member'], [u['reason'] for u in result['unmapped'] if u['object_id'] == member])
+        self.assertEqual({'block_definition_member': 1}, result['summary']['unmapped_by_reason'])
+
+    def test_block_definition_members_are_not_proposed(self):
+        self.assertBlockSkipped(self.block_files(1)[0])
+
+    def test_block_definition_construction_and_reading_are_stable(self):
+        # Stability guard for the intermittent crash: 50 constructions, each read and drafted in this process.
+        for path in self.block_files(50):
+            with self.subTest(path.parent.name):
+                self.assertBlockSkipped(path)
 
 
 class ReviewCaps(Base):
