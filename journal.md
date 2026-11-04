@@ -1149,3 +1149,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay153 — 2026-11-04T13:53:23Z (Claude, cloud scheduled)
 - 13:53Z LOCK taken (was FREE since relay152 2026-11-04T13:43:06Z).
 - 14:36Z workers green (dispatched 13:58Z; phases 1, 8, 9): P1-08 8843c95 (red 41843728108, green 41845412339; 0 attempts, 1 harness slip), P8-06 355e318 (red 41843469222, green 41847657825; 1 attempt: rhino3dm stores arcs as rational NURBS), P9-07 7b832cf (red 41845762559, green 41847684744; 0 attempts, compile/test slips). Next: independent reviews.
+
+## Relay154 — 2026-11-04T15:53:15Z (Claude, cloud scheduled)
+- 15:53Z LOCK taken over from relay153 (stale: last_heartbeat 14:36:42Z, >45 min, never released). Continuing relay153 branches (P1-08, P8-06, P9-07 green, reviews pending).
