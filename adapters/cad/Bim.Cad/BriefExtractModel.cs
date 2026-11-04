@@ -7,16 +7,20 @@ namespace Bim.Cad;
 // closed region came from, and notes on what was assumed; the uncertainty report lists what could not be resolved.
 
 // Where a fact came from. Format is "dxf" or "pdf". DXF: Handle (null when the file has none), effective Layer,
-// EntityType (TEXT, MTEXT, LWPOLYLINE), Line = the 1-based DXF line of the entity's "0" group, InsertPath = enclosing
+// EntityType (TEXT, MTEXT, ATTRIB, ATTDEF, LWPOLYLINE), Line = the 1-based DXF line of the entity's "0" group, InsertPath = enclosing
 // INSERT handles (outermost first). PDF: Page, Handle "p{page}:o{object}:i{operator}" (see PdfPage.ToDxfEntities),
 // Layer "PDF-P{page}", EntityType PDF-TEXT or PDF-PATH, Line = operator index + 1. At is the text insertion point, or
 // the centre of a region's vertex bounding box, in drawing units (PDF: calibrated millimetres when a calibration was
 // given). Text is the plain text (whitespace collapsed, at most MaxTextLength) for text sources and null for regions.
-public sealed record BriefTextSource(string SourceFile, string Format, string? Handle, string Layer, string EntityType, int Line, int? Page, IReadOnlyList<string> InsertPath, Point2 At, string? Text);
+public sealed record BriefTextSource(string SourceFile, string Format, string? Handle, string Layer, string EntityType, int Line, int? Page, IReadOnlyList<string> InsertPath, Point2 At, string? Text)
+{
+    // The attribute tag for ATTRIB/ATTDEF sources (null otherwise).
+    public string? Tag { get; init; }
+}
 
 // One proposed room. Id and Name are the brief room's; StatedAreaSquareMetres is the area written on the drawing (null
 // when none was found); RegionAreaSquareMetres the area of the closed region that holds the label and no other label
-// (null without such a region or without a drawing scale). Notes: area-same-text, area-nearby, area-from-region,
+// (null without such a region or without a drawing scale). Notes: room-tag, area-same-text, area-attribute, area-unitless, area-square-feet, area-nearby, area-from-region,
 // area-ambiguous, area-missing, area-mismatch, no-region, shared-region, outer-region, label-outside-vocabulary,
 // duplicate-label.
 public sealed record BriefRoomProposal(string Id, string Name, double? StatedAreaSquareMetres, double? RegionAreaSquareMetres, double Confidence,

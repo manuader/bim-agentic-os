@@ -177,6 +177,21 @@ public static class DxfJson
                 Number(writer, "scale_x", insert.ScaleX);
                 Number(writer, "scale_y", insert.ScaleY);
                 Number(writer, "rotation_deg", insert.RotationDegrees);
+                writer.WriteStartArray("attributes");
+                foreach (var attribute in insert.Attributes) Entity(writer, attribute);
+                writer.WriteEndArray();
+                break;
+            case DxfAttribute attribute:
+                writer.WriteString("kind", attribute.IsDefinition ? "attdef" : "attrib");
+                writer.WriteString("tag", attribute.Tag);
+                Point(writer, "insertion", attribute.Insertion);
+                Number(writer, "height", attribute.Height);
+                Number(writer, "rotation_deg", attribute.RotationDegrees);
+                writer.WriteString("value", attribute.Value);
+                writer.WriteString("plain_text", attribute.PlainText);
+                writer.WriteNumber("flags", attribute.Flags);
+                if (attribute.Prompt is { } prompt) writer.WriteString("prompt", prompt);
+                writer.WriteString("insert_handle", attribute.InsertHandle);
                 break;
             default:
                 writer.WriteString("kind", "other");

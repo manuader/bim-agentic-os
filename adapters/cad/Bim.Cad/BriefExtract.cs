@@ -47,8 +47,15 @@ namespace Bim.Cad;
 // region vertex, containment edge test and pairing candidate counts against MaxWork. Limit entries (explode-limit,
 // pair-limit, region-limit, text-limit, work-limit) and uncalibrated are always reported, outside the
 // MaxUncertainties cap. Malformed text never throws.
+// P6-06: attributes placed through an INSERT (ATTRIB, or a constant ATTDEF) are texts too, with their tag. A name-tag
+// value (NameTags) is a room label even outside the vocabulary (room-tag) when its insert has an area tag or a room-like
+// block name (RoomBlockWords); an area-tag value (AreaTags) is only an area, a bare number there being square metres
+// (area-unitless 0.9), or square feet in an imperial drawing (area-square-feet 0.9), and pairs first with the name
+// attribute of the same insert at any distance (area-attribute, no nearby penalty); a name stating its own area
+// consumes it. Other tags are read as ordinary texts.
 public static class BriefExtract
 {
+    private const double Unitless = 0.9;
     private const double OutsideVocabulary = 0.7, Nearby = 0.95, Ambiguous = 0.7, NoRegion = 0.9, Shared = 0.9, Outer = 0.9, FromRegion = 0.8, Missing = 0.6, Mismatch = 0.6, Duplicate = 0.8;
     private const int MaxReadLength = 4096;
     private const int ArcSteps = 16;
@@ -61,6 +68,25 @@ public static class BriefExtract
         @"(?<!\p{L})(?:sup(?:erficie)?\.?|surface|[aá]rea|s(?=\s*[:=]))\s*[:=]?\s*\z",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
     private static readonly Regex AmbiguousPattern = new(@"\A[1-9]\d{0,2}[.,]\d{3}\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
+    private static readonly Regex BareNumberPattern = new(
+        @"\A(?:\d{1,3}(?:\.\d{3})+,\d{1,4}|\d{1,3}(?:,\d{3})+\.\d{1,4}|\d{1,7}(?:[.,]\d{1,4})?)\z",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
+    // Attribute tags (folded, letters and digits only) naming a room-tag block's room name and room area.
+    private static readonly HashSet<string> NameTags = new(StringComparer.Ordinal)
+    {
+        "name", "roomname", "spacename", "nombre", "nombrelocal", "local", "ambiente", "espacio", "nombreambiente", "nombreespacio",
+    };
+    private static readonly HashSet<string> AreaTags = new(StringComparer.Ordinal)
+    {
+        "area", "roomarea", "spacearea", "sup", "superficie", "surface", "m2", "sqm", "areaambiente", "superficielocal",
+    };
+    // Block-name tokens that mark a room-tag block (a name tag there is a room tag even without an area tag). The folded
+    // block name is split at every non-letter (_ - space digits); a token matches as the word itself or the word joined
+    // with "tag" (ROOMTAG, TAGROOM). Whole tokens only, so BATHROOM_SINK or LOCALIZACION do not match ("rotulo" is a
+    // title block in es-AR drawings and is not a room word).
+    private static readonly HashSet<string> RoomBlockWords = new(StringComparer.Ordinal) { "room", "space", "local", "ambiente", "espacio", "recinto", "habitacion" };
+    private const double SquareFoot = 0.09290304;
+    private const double SquareFeet = 0.9;
     private static readonly HashSet<string> UnitWords = new(StringComparer.Ordinal)
     {
         "m", "mm", "cm", "dm", "km", "m2", "mt", "mts", "mt2", "mts2", "sq", "sqm", "ft", "sqft", "in", "yd", "x", "ha", "metro", "metros", "cuadrado", "cuadrados", "square", "feet", "foot",
@@ -99,7 +125,27 @@ public static class BriefExtract
         catch (DxfFormatException error)
         {
             report.Add("explode-limit", "block explosion stopped (" + error.Code + ": " + error.Message + "); only top-level entities were read", null, null);
-            entities = drawing.Entities;
+            // Top-level inserts keep their own ATTRIBs, already in world coordinates.
+            var fallback = new List<DxfEntity>();
+            foreach (var entity in drawing.Entities)
+            {
+                fallback.Add(entity);
+                if (entity is DxfInsert insert)
+                    foreach (var attribute in insert.Attributes)
+                    {
+                        // As when exploded: layer 0 takes the insert's layer; paper space and invisibility are inherited.
+                        var own = attribute.Provenance;
+                        var provenance = own with
+                        {
+                            Layer = own.Layer == "0" ? insert.Provenance.Layer : own.Layer,
+                            InsertPath = attribute.InsertHandle is { } key ? new[] { key } : own.InsertPath,
+                            PaperSpace = own.PaperSpace || insert.Provenance.PaperSpace,
+                            Invisible = own.Invisible || insert.Provenance.Invisible,
+                        };
+                        fallback.Add(attribute with { Provenance = provenance });
+                    }
+            }
+            entities = fallback;
         }
         return Extract(entities, drawing.SourceFile, "dxf", options.MetresPerUnit ?? drawing.MetresPerUnit, null, options, report);
     }
@@ -167,38 +213,62 @@ public static class BriefExtract
         var texts = new List<TextItem>();
         var seen = new Dictionary<(string Text, long Cell, long X, long Y), TextItem>();
         var textCount = 0;
+        // A name tag counts as a room tag only in an insert that also has an area tag or whose block name is room-like.
+        var roomGroups = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entity in entities)
         {
-            if (entity is not DxfText text || !Visible(text.Provenance) || (textLayers is not null && !textLayers.Contains(text.Provenance.Layer))) continue;
+            if (entity is not DxfAttribute { InsertHandle: not null } tagged) continue;
+            var groupKey = string.Join(">", tagged.Provenance.InsertPath);
+            if (AreaTags.Contains(TagKey(tagged.Tag)) || (tagged.BlockName is { } block && IsRoomBlock(block))) roomGroups.Add(groupKey);
+        }
+        var imperial = scale is { } unit && (unit == 0.0254 || unit == 0.3048 || unit == 1200.0 / 3937.0 || unit == 0.9144);
+        foreach (var entity in entities)
+        {
+            // TEXT/MTEXT, or an attribute placed through an INSERT (ATTRIB, or the ATTDEF default for a tag it lacks).
+            string? tag = null, group = null;
+            var role = TagRole.None;
+            if (entity is DxfAttribute { InsertHandle: not null } attribute)
+            {
+                tag = attribute.Tag;
+                group = string.Join(">", attribute.Provenance.InsertPath);
+                var key = TagKey(tag);
+                role = NameTags.Contains(key) && roomGroups.Contains(group) ? TagRole.Name : AreaTags.Contains(key) ? TagRole.Area : TagRole.None;
+            }
+            else if (entity is not DxfText) continue;
+            var text = entity as DxfText;
+            var provenance = text?.Provenance ?? entity.Provenance;
+            var insertion = text?.Insertion ?? ((DxfAttribute)entity).Insertion;
+            var rawHeight = text?.Height ?? ((DxfAttribute)entity).Height;
+            if (!Visible(provenance) || (textLayers is not null && !textLayers.Contains(provenance.Layer))) continue;
             if (!budget.Spend()) break;
             if (++textCount > options.MaxTexts)
             {
                 report.Add("text-limit", "more than " + I(options.MaxTexts) + " texts; the rest were not read", null, null);
                 break;
             }
-            if (!Finite(text.Insertion)) continue;
-            var plain = text.PlainText ?? "";
+            if (!Finite(insertion)) continue;
+            var plain = (text?.PlainText ?? ((DxfAttribute)entity).PlainText) ?? "";
             if (plain.Length > options.MaxTextLength)
             {
-                report.Add("text-too-long", "text of " + I(plain.Length) + " characters exceeds MaxTextLength", null, null, Source(text.Provenance, text.Insertion, Display(plain[..options.MaxTextLength])));
+                report.Add("text-too-long", "text of " + I(plain.Length) + " characters exceeds MaxTextLength", null, null, Source(provenance, insertion, Display(plain[..options.MaxTextLength])) with { Tag = tag });
                 continue;
             }
             var display = Display(plain);
             if (display.Length == 0) continue;
-            var height = double.IsFinite(text.Height) ? Math.Abs(text.Height) : 0;
-            var source = Source(text.Provenance, text.Insertion, display);
+            var height = double.IsFinite(rawHeight) ? Math.Abs(rawHeight) : 0;
+            var source = Source(provenance, insertion, display) with { Tag = tag };
             // Same text and height, insertion within 1 % of the height: looked up in the 3x3 neighbouring grid cells.
             var cell = Math.Max(0.01 * height, 1e-6);
             var cellBits = BitConverter.DoubleToInt64Bits(cell);
-            var qx = Math.Floor(text.Insertion.X / cell);
-            var qy = Math.Floor(text.Insertion.Y / cell);
+            var qx = Math.Floor(insertion.X / cell);
+            var qy = Math.Floor(insertion.Y / cell);
             var quantised = Math.Abs(qx) < 4e18 && Math.Abs(qy) < 4e18;
             TextItem? copy = null;
             if (quantised)
                 for (var dx = -1L; dx <= 1 && copy is null; dx++)
                     for (var dy = -1L; dy <= 1 && copy is null; dy++)
                         if (seen.TryGetValue((display, cellBits, (long)qx + dx, (long)qy + dy), out var earlier)
-                            && Math.Abs(earlier.Source.At.X - text.Insertion.X) <= cell && Math.Abs(earlier.Source.At.Y - text.Insertion.Y) <= cell) copy = earlier;
+                            && Math.Abs(earlier.Source.At.X - insertion.X) <= cell && Math.Abs(earlier.Source.At.Y - insertion.Y) <= cell) copy = earlier;
             if (copy is not null)
             {
                 report.Add("duplicate-text", "text '" + display + "' repeats an earlier text at the same point; the copy is ignored", null, null, source, copy.Source);
@@ -206,12 +276,37 @@ public static class BriefExtract
             }
             var reading = ReadText(plain, options.MaxLabelLength, options.MaxLabelWords);
             var area = reading.AreaSquareMetres;
+            var label = reading.Label;
+            var ambiguous = reading.AreaAmbiguous;
+            var unitless = false;
+            if (role == TagRole.Area)
+            {
+                // The value of an area tag is an area only; a bare number there is read as square metres.
+                label = null;
+                var bare = display.Trim();
+                bool isBare;
+                try { isBare = area is null && BareNumberPattern.IsMatch(bare); }
+                catch (RegexMatchTimeoutException) { isBare = false; }
+                if (isBare && TryNumber(bare, out var number))
+                {
+                    area = imperial ? number * SquareFoot : number;
+                    unitless = true;
+                    try { ambiguous = AmbiguousPattern.IsMatch(bare); }
+                    catch (RegexMatchTimeoutException) { ambiguous = true; }
+                }
+            }
             if (area is { } stated && !(stated > 0 && stated <= options.MaxAreaSquareMetres))
             {
                 report.Add("area-invalid", "area " + F(stated) + " m2 is outside (0, " + F(options.MaxAreaSquareMetres) + "]", null, stated, source);
                 area = null;
             }
-            var item = new TextItem(texts.Count, source, height, reading.Label, area, area is not null && reading.AreaAmbiguous);
+            var item = new TextItem(texts.Count, source, height, label, area, area is not null && ambiguous)
+            {
+                Group = group,
+                Role = role,
+                Unitless = area is not null && unitless,
+                SquareFeet = area is not null && unitless && imperial,
+            };
             if (quantised) seen.TryAdd((display, cellBits, (long)qx, (long)qy), item);
             if (item.Label is not null || item.Area is not null) texts.Add(item);
         }
@@ -252,7 +347,8 @@ public static class BriefExtract
         }
 
         // 3. Labels.
-        foreach (var item in texts) item.InVocabulary = item.Label is not null && HasRoomWord(item.Label, words, phrases);
+        // The NAME-like attribute of a room-tag block counts as a room word.
+        foreach (var item in texts) item.InVocabulary = item.Label is not null && (item.Role == TagRole.Name || HasRoomWord(item.Label, words, phrases));
         // A label without a room word is kept only in a region that holds no room-word label and encloses no region
         // holding a label (a frame or building outline around labelled rooms).
         static IEnumerable<int> Around(TextItem t) => t.Containing.Where(r => !ReferenceEquals(r, t.Smallest)).Select(r => r.Index);
@@ -264,15 +360,28 @@ public static class BriefExtract
         var outer = new HashSet<int>(texts.Where(t => t.Kept).SelectMany(Around));
         var labels = texts.Where(t => t.Kept).ToList();
 
-        // 4. Areas: own token first, then greedy nearest free area text.
+        // 4. Areas: own token first, then the area attribute of the same insert, then greedy nearest free area text.
         var free = texts.Where(t => t.Area is not null && !(t.Kept)).ToList();
+        var tagAreas = new Dictionary<string, TextItem>(StringComparer.Ordinal);
+        foreach (var area in free)
+            if (area.Role == TagRole.Area && area.Group is { } key) tagAreas.TryAdd(key, area);
+        foreach (var label in labels)
+        {
+            if (label.Role != TagRole.Name || label.Group is not { } key || !tagAreas.TryGetValue(key, out var area) || area.PairedTo is not null) continue;
+            // A name that states its own area consumes the insert's area attribute, so it cannot pair elsewhere.
+            area.PairedTo = label;
+            if (label.Area is not null) continue;
+            label.PairedArea = area;
+            label.AttributeArea = true;
+        }
         var candidates = new List<(double Distance, TextItem Label, TextItem Area)>();
         var pairLimit = false;
         foreach (var label in labels)
         {
-            if (label.Area is not null || budget.Exhausted || pairLimit) continue;
+            if (label.Area is not null || label.PairedArea is not null || budget.Exhausted || pairLimit) continue;
             foreach (var area in free)
             {
+                if (area.PairedTo is not null) continue;
                 if (!budget.Spend()) break;
                 var distance = (label.Source.At - area.Source.At).Length;
                 var reach = options.PairDistanceTextHeights * Math.Max(label.Height, area.Height);
@@ -321,9 +430,13 @@ public static class BriefExtract
             var draft = new Draft(id, name, label);
             drafts.Add(draft);
 
+            if (label.Role == TagRole.Name) draft.Notes.Add("room-tag");
             if (!label.InVocabulary) { draft.Confidence *= OutsideVocabulary; draft.Notes.Add("label-outside-vocabulary"); }
             if (label.Area is { } own) { draft.Stated = own; draft.AreaSource = label.Source; draft.Notes.Add("area-same-text"); }
+            else if (label.AttributeArea && label.PairedArea is { } tagged) { draft.Stated = tagged.Area; draft.AreaSource = tagged.Source; draft.Notes.Add("area-attribute"); }
             else if (label.PairedArea is { } near) { draft.Stated = near.Area; draft.AreaSource = near.Source; draft.Confidence *= Nearby; draft.Notes.Add("area-nearby"); }
+            if (label.Area is null && label.PairedArea is { Unitless: true }) { draft.Confidence *= Unitless; draft.Notes.Add("area-unitless"); }
+            if (label.Area is null && label.PairedArea is { SquareFeet: true }) { draft.Confidence *= SquareFeet; draft.Notes.Add("area-square-feet"); }
             if ((label.Area is not null ? label.Ambiguous : label.PairedArea?.Ambiguous == true) && draft.Stated is { } doubtful)
             {
                 draft.Confidence *= Ambiguous;
@@ -474,6 +587,23 @@ public static class BriefExtract
         return string.Join(' ', builder.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
+    private static bool IsRoomBlock(string name)
+    {
+        foreach (var token in Fold(name).Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            foreach (var part in token.Split(Digits, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var word = part.Length > 3 && part.EndsWith("tag", StringComparison.Ordinal) ? part[..^3] : part.Length > 3 && part.StartsWith("tag", StringComparison.Ordinal) ? part[3..] : part;
+                if (RoomBlockWords.Contains(word)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static readonly char[] Digits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+
+    private static string TagKey(string tag) => Fold(tag).Replace(" ", "", StringComparison.Ordinal);
+
     private static string Slug(string name)
     {
         var slug = Fold(name).Replace(' ', '-');
@@ -536,6 +666,7 @@ public static class BriefExtract
         else builder.Append(" line ").Append(I(source.Line));
         if (source.Handle is { } handle) builder.Append(" handle ").Append(handle);
         builder.Append(' ').Append(source.EntityType);
+        if (source.Tag is { } tag) builder.Append(" tag ").Append(tag);
         if (source.Text is { } text) builder.Append(" \"").Append(text).Append('"');
         return Truncate(builder.ToString(), BriefParser.MaxStringChars);
     }
@@ -588,7 +719,14 @@ public static class BriefExtract
         public bool Kept { get; set; }
         public TextItem? PairedArea { get; set; }
         public TextItem? PairedTo { get; set; }
+        public string? Group { get; init; }
+        public TagRole Role { get; init; }
+        public bool Unitless { get; init; }
+        public bool SquareFeet { get; init; }
+        public bool AttributeArea { get; set; }
     }
+
+    private enum TagRole { None, Name, Area }
 
     private sealed record Region(int Index, BriefTextSource Source, IReadOnlyList<Point2> Points, double MinX, double MinY, double MaxX, double MaxY, double AreaUnits, double? SquareMetres);
 

@@ -84,11 +84,43 @@ public static class DxfExploder
                 var world = transform.Compose(local);
                 var childPath = path.Append(source.Handle ?? "@" + source.Line.ToString(CultureInfo.InvariantCulture)).ToArray();
                 stack.Add(block.Name);
-                foreach (var child in block.Entities) Emit(child, world, childPath, layer, paper, invisible, depth + 1);
+                foreach (var child in block.Entities)
+                {
+                    if (child is DxfAttribute { IsDefinition: true }) continue;
+                    Emit(child, world, childPath, layer, paper, invisible, depth + 1);
+                }
                 stack.RemoveAt(stack.Count - 1);
+                // ATTRIBs are already placed in the coordinates the INSERT itself lives in. Of the block's ATTDEFs only
+                // constant ones are drawn (placed through the insert); AutoCAD never draws a non-constant ATTDEF.
+                var key = childPath[^1];
+                HashSet<string>? tags = insert.Attributes.Count > 0 ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) : null;
+                foreach (var attribute in insert.Attributes)
+                {
+                    tags!.Add(attribute.Tag);
+                    EmitAttribute(attribute with { InsertHandle = key, BlockName = block.Name }, transform, childPath, layer, paper, invisible);
+                }
+                foreach (var child in block.Entities)
+                {
+                    if (child is not DxfAttribute { IsDefinition: true, IsConstant: true } definition || (tags is not null && tags.Contains(definition.Tag))) continue;
+                    EmitAttribute(definition with { InsertHandle = key, BlockName = block.Name }, world, childPath, layer, paper, invisible);
+                }
                 return;
             }
             Add(transform.IsIdentity ? Relabel(entity, provenance) : Transform(entity, transform, provenance));
+        }
+
+        private void EmitAttribute(DxfAttribute attribute, Affine transform, IReadOnlyList<string> path, string layer, bool paper, bool invisible)
+        {
+            var source = attribute.Provenance;
+            Spend(source.Line);
+            var provenance = source with
+            {
+                Layer = source.Layer == "0" ? layer : source.Layer,
+                InsertPath = path,
+                PaperSpace = source.PaperSpace || paper,
+                Invisible = source.Invisible || invisible,
+            };
+            Add(Transform(attribute, transform, provenance));
         }
 
         private void Add(DxfEntity? entity)
@@ -126,13 +158,25 @@ public static class DxfExploder
                     return TessellatePolyline(p, m, polyline);
                 case DxfText text:
                     {
-                        var direction = m.ApplyVector(new Point2(Math.Cos(text.RotationDegrees * Math.PI / 180), Math.Sin(text.RotationDegrees * Math.PI / 180)));
-                        var up = m.ApplyVector(new Point2(-Math.Sin(text.RotationDegrees * Math.PI / 180), Math.Cos(text.RotationDegrees * Math.PI / 180)));
-                        return text with { Provenance = p, Insertion = m.Apply(text.Insertion), Height = text.Height * up.Length, RotationDegrees = DxfGeometry.Degrees(direction) };
+                        var (insertion, height, rotation) = Place(m, text.Insertion, text.Height, text.RotationDegrees);
+                        return text with { Provenance = p, Insertion = insertion, Height = height, RotationDegrees = rotation };
+                    }
+                case DxfAttribute attribute:
+                    {
+                        var (insertion, height, rotation) = Place(m, attribute.Insertion, attribute.Height, attribute.RotationDegrees);
+                        return attribute with { Provenance = p, Insertion = insertion, Height = height, RotationDegrees = rotation };
                     }
                 default:
                     return entity with { Provenance = p };
             }
+        }
+
+        private static (Point2 Insertion, double Height, double RotationDegrees) Place(Affine m, Point2 insertion, double height, double rotationDegrees)
+        {
+            if (m.IsIdentity) return (insertion, height, rotationDegrees);
+            var direction = m.ApplyVector(new Point2(Math.Cos(rotationDegrees * Math.PI / 180), Math.Sin(rotationDegrees * Math.PI / 180)));
+            var up = m.ApplyVector(new Point2(-Math.Sin(rotationDegrees * Math.PI / 180), Math.Cos(rotationDegrees * Math.PI / 180)));
+            return (m.Apply(insertion), height * up.Length, DxfGeometry.Degrees(direction));
         }
 
         private DxfPolyline Tessellate(DxfProvenance p, Affine m, Point2 center, double radius, double startDegrees, double spanDegrees, bool closed)
