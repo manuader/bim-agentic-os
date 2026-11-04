@@ -28,7 +28,7 @@ $commit = Get-PackageCommit $root
 if (!$commit) { Stop-Package 'source must be a git checkout so the package can record its source commit' }
 
 $projects = [ordered]@{ cli = 'interfaces/cli/Bim.Cli.csproj'; mcp = 'interfaces/mcp/Bim.Mcp.csproj' }
-$sourceDirectories = @('core/Bim.Core', 'evaluation/Bim.Evaluation', 'adapters/ifc/Bim.Ifc.Compiler', 'interfaces/cli', 'interfaces/mcp')
+$sourceDirectories = @('core/Bim.Core', 'evaluation/Bim.Evaluation', 'adapters/ifc/Bim.Ifc.Compiler', 'adapters/gltf/Bim.Gltf', 'interfaces/cli', 'interfaces/mcp')
 $rootFiles = @('Directory.Build.props', 'global.json', '.editorconfig')
 $addinTemplate = 'runtimes/revit-native/Bim.addin.template'
 
