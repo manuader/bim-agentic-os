@@ -51,7 +51,7 @@ static class CatalogueBatchChecks
         return args;
     }
     static JsonObject Step(string operationId, string command, JsonNode args) => new() { ["operation_id"] = operationId, ["command"] = command, ["args"] = args.DeepClone() };
-    static JsonObject Steps(params JsonObject[] steps) => new() { ["steps"] = new JsonArray(steps.Select(step => (JsonNode?)step).ToArray()) };
+    static JsonObject Steps(params JsonObject[] steps) => new() { ["steps"] = new JsonArray(steps.Select(step => step.DeepClone()).ToArray()) };
     static JsonObject Three() => Steps(Step("s-0", "wall.create", Wall()), Step("s-1", "room.create", Room()), Step("s-2", "element.delete", Delete()));
     static string Hex(int i) => "60f91daf-3dd7-4283-a86d-24137b73f3da-" + i.ToString("x8");
 
