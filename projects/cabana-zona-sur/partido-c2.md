@@ -36,3 +36,11 @@ Pendiente: materiales reales (piedra/lenga/chapa negra), puertas antecámara, se
 - Salamandra DOMOFOCUS en (85500,13500) centro (z 0; falta subir a +400).
 - Pendiente: vidriado norte, puerta(s) antecámara, núcleo de piedra al sur (baño+roca), piso, ventanas laterales.
 - Lecciones: elevación "East" del proyecto corta DENTRO de C3 (marcador x≈87750); vista 3D por defecto mira desde el NO.
+
+## 2026-11-04 — C3 descartada por "casita de nene"; owner pidió análisis del PDF + discurso + prompt ANTES de modelar.
+Doc Claude Docs "Cabaña Zona Sur — Análisis de referencias, discurso y prompt de modelado" (https://claude.ai/artifact/FyURVSor2xB23mHjB6eLj7) = fuente de verdad del diseño C4.
+## C4 "Piedra y piel" modelada y guardada (19:11 UTC)
+- Eje SO→NE alineado al viento; trapecio negro 9 m, 5→7 m; techo 50° faldones SE/NO + limatesa SO; proa NE en voladizo 1,5 m; raja vidriada 2 m.
+- Bloque de piedra (C4 Muro piedra 500) al SO con boca excavada en embudo en cara SE, puerta en muro de lenga; cubierta pesada plana +2700; muro térmico de piedra.
+- Salamandra a556 a57edd83-...-00034a91 en (86500,14700) +400. Techo piel a57edd83-...-00034a65; techo piedra ...-00034a7c.
+- Pendiente: puertas (exterior/interior), ventanas laterales angostas, piso, interior lenga, roca, vista 3D desde SE/SO (falta view_from).
