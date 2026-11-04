@@ -85,24 +85,39 @@ public static class DocReplace
         var keptUids = new HashSet<string>(realized.Where(pair => !staleSources.Contains(pair.Key)).Select(pair => pair.Value), StringComparer.OrdinalIgnoreCase);
         if (staleUids.Count != stale.Count || staleUids.Overlaps(keptUids)) throw new ArgumentException(DocReplaceCodes.StaleShared);
 
+        // Delete order first: a dependent may name the stale instance of a key deleted earlier (an honest dry run of a
+        // view lists its tags, dimensions and viewports); it is gone by then, so it is dropped from confirm_dependents.
+        var deleteOrder = stale.Keys.OrderBy(key => Array.IndexOf(DeleteOrder, kinds[key])).ThenBy(key => key, StringComparer.Ordinal).ToArray();
+        var deletePosition = deleteOrder.Select((key, index) => (key, index)).ToDictionary(pair => pair.key, pair => pair.index, StringComparer.Ordinal);
+        var staleOwner = stale.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+        var confirmedByKey = new Dictionary<string, string[]>(StringComparer.Ordinal);
         foreach (var pair in dependents)
         {
             if (pair.Key is null || !regenerated.Contains(pair.Key)) throw new ArgumentException(DocReplaceCodes.DependentsUnknownKey);
             if (!stale.ContainsKey(pair.Key)) throw new ArgumentException(DocReplaceCodes.DependentsWithoutStale);
-            if (pair.Value is null || pair.Value.Any(uid => uid is null)) throw new ArgumentException(DocReplaceCodes.DependentsInvalid);
+            if (pair.Value is null || pair.Value.Count > RevitModifyRules.MaxConfirmedDependents || pair.Value.Any(uid => !RevitCommandProtocol.IsUniqueId(uid))
+                || pair.Value.Distinct(StringComparer.OrdinalIgnoreCase).Count() != pair.Value.Count) throw new ArgumentException(DocReplaceCodes.DependentsInvalid);
+            var kept = new List<string>();
             foreach (var uid in pair.Value)
             {
                 if (keptUids.Contains(uid)) throw new ArgumentException(DocReplaceCodes.DependentKept);
-                if (staleUids.Contains(uid) && !string.Equals(uid, stale[pair.Key], StringComparison.OrdinalIgnoreCase)) throw new ArgumentException(DocReplaceCodes.DependentPlanned);
+                if (staleOwner.TryGetValue(uid, out var owner))
+                {
+                    if (owner == pair.Key) throw new ArgumentException(DocReplaceCodes.DependentIsTarget);
+                    if (deletePosition[owner] > deletePosition[pair.Key]) throw new ArgumentException(DocReplaceCodes.DependentPlanned);
+                    continue;
+                }
+                kept.Add(uid);
             }
+            confirmedByKey[pair.Key] = kept.OrderBy(uid => uid, StringComparer.Ordinal).ToArray();
         }
 
         var document = regeneration.Document;
         var steps = new List<RevitCommandStep>();
         var deleteOps = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var key in stale.Keys.OrderBy(key => Array.IndexOf(DeleteOrder, kinds[key])).ThenBy(key => key, StringComparer.Ordinal))
+        foreach (var key in deleteOrder)
         {
-            var confirmed = dependents.TryGetValue(key, out var list) ? list.OrderBy(uid => uid, StringComparer.Ordinal).ToArray() : Array.Empty<string>();
+            var confirmed = confirmedByKey.TryGetValue(key, out var list) ? list : Array.Empty<string>();
             var args = Json(writer =>
             {
                 writer.WriteStartArray("element_uids");
@@ -115,7 +130,6 @@ public static class DocReplace
                     writer.WriteEndArray();
                 }
             });
-            // Refuses a dependent that is the target itself, duplicates, malformed UniqueIds and too many dependents.
             var canonical = CanonicalArgs(Parse(document, PendingOperationId, DeleteCommand, args));
             var operationId = "docdel." + Hash(regeneration.ProjectId.ToString("D") + "\n" + regeneration.Revision.ToString(CultureInfo.InvariantCulture) + "\n" + regeneration.AfterHash
                 + "\n" + key + "\n" + document.UniqueId + "\n" + document.Path + "\n" + canonical);
@@ -131,12 +145,14 @@ public static class DocReplace
             try { args = JsonNode.Parse(step.ArgsJson) as JsonObject ?? throw new ArgumentException(DocReplaceCodes.RegenerationInvalid); }
             catch (JsonException) { throw new ArgumentException(DocReplaceCodes.RegenerationInvalid); }
             var inputs = new List<RevitStepInput>();
+            var fields = new HashSet<string>(StringComparer.Ordinal);
             var depends = new List<string>();
             if (deleteOps.TryGetValue(step.Key, out var deleteOp)) depends.Add(deleteOp);
             foreach (var input in step.Inputs)
             {
                 if (input?.Field is null || !input.Field.StartsWith("args.", StringComparison.Ordinal) || input.Field.Length == "args.".Length || input.Field.IndexOf('.', "args.".Length) >= 0)
                     throw new ArgumentException(DocReplaceCodes.InputFieldUnsupported);
+                if (!fields.Add(input.Field)) throw new ArgumentException(DocReplaceCodes.InputFieldDuplicate);
                 if (input.Source is null) throw new ArgumentException(DocReplaceCodes.InputUnresolved);
                 var member = input.Field["args.".Length..];
                 if (input.Source.StartsWith("doc:", StringComparison.Ordinal) && regenerated.Contains(input.Source["doc:".Length..]))
@@ -150,8 +166,11 @@ public static class DocReplace
                 else throw new ArgumentException(DocReplaceCodes.InputUnresolved);
             }
             var canonical = CanonicalArgs(Parse(document, PendingOperationId, step.Command, args.ToJsonString()));
-            // The regeneration's operation id plus what was filled in: another realization of the inputs is another request.
-            var operationId = "docnew." + Hash(step.OperationId + "\n" + canonical + "\n" + string.Join(",", inputs.Select(input => input.Field + "=" + input.FromOperation)));
+            // The regeneration's operation id plus what was filled in and the delete it follows (which names the stale
+            // instance): another realization of the inputs, or replacing another instance, is another request, so a
+            // re-plan on the realized map never replays a create whose result it has just deleted.
+            var operationId = "docnew." + Hash(step.OperationId + "\n" + canonical + "\n" + string.Join(",", inputs.Select(input => input.Field + "=" + input.FromOperation))
+                + "\n" + (deleteOp ?? "-"));
             createOps[step.Key] = operationId;
             steps.Add(new RevitCommandStep(operationId, step.Command, null, step.ItemKind, depends.ToArray(), canonical, inputs.ToArray(), Array.Empty<string>()));
         }
