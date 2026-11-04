@@ -18,7 +18,12 @@ namespace Bim.Core;
 //            refuses makes that restore unsupported (command_invalid), never a half replace.
 // Unsupported proposals carry a typed code (MirrorDriftResolveCodes). The recommendation is adopt for external_edit and
 // addin_pending findings and restore for unknown ones, falling back to the other proposal when the preferred one is
-// unsupported, or none. Nothing is applied: the resolution is a proposal for review (applied false, requires approval);
+// unsupported, or none. A delete or replace that would make Revit delete kept elements with it (a level's elements, a
+// wall's hosted openings that are not themselves deleted first) is refused (dependents_remain); a changed finding
+// without fields is refused (fields_missing); adopt refuses snapshot geometry that is not the kind's BIM-IR layout.
+// Operation ids hash Core's committed state (after_hash: elements in id order, whatever their stored order), the target
+// document, a digest of the whole observed snapshot, the finding's evidence and the step itself, so a re-plan against
+// another observed state never replays an earlier run; an identical re-plan keeps its ids. Nothing is applied: the resolution is a proposal for review (applied false, requires approval);
 // the restore plan runs only through PlanRunner when someone chooses to. Pure and deterministic (resolution_version 1,
 // never persisted); vendor-free; no BIM-IR or persisted format change.
 
@@ -248,6 +253,10 @@ public static class MirrorDriftResolve
         bool SourceIs(Guid snapshotId, string uid) => snapshot.Sources.TryGetValue(snapshotId, out var source) && Same(source, uid);
         if (findings.Select(Key).Distinct(StringComparer.OrdinalIgnoreCase).Count() != findings.Length) throw new ArgumentException(MirrorDriftResolveCodes.ReportInvalid);
 
+        // One finding per committed element and per snapshot element.
+        var coreIds = findings.Where(finding => finding.CoreId is not null).Select(finding => finding.CoreId!.Value).ToArray();
+        var snapshotIds = findings.Where(finding => finding.SnapshotId is not null).Select(finding => finding.SnapshotId!.Value).ToArray();
+        if (coreIds.Distinct().Count() != coreIds.Length || snapshotIds.Distinct().Count() != snapshotIds.Length) throw new ArgumentException(MirrorDriftResolveCodes.ReportInvalid);
         var keyByCore = findings.Where(finding => finding.CoreId is not null).ToDictionary(finding => finding.CoreId!.Value, Key);
         var missing = findings.Where(finding => finding.Kind == MirrorDriftKinds.Missing).Select(finding => finding.CoreId!.Value).ToHashSet();
         var extraByUid = new Dictionary<string, MirrorDriftFinding>(StringComparer.OrdinalIgnoreCase);
@@ -266,6 +275,7 @@ public static class MirrorDriftResolve
                 var element = core[finding.CoreId!.Value];
                 adopts[i] = !string.Equals(element.Kind, revit.Kind, StringComparison.Ordinal)
                     ? AdoptRefused(MirrorDriftResolveCodes.KindChanged, "Revit reports a " + revit.Kind + " for the BIM-IR " + element.Kind)
+                    : GeometryProblem(revit) is { } problem ? AdoptRefused(problem.Code, problem.Detail)
                     : MapDependencies(revit) is ({ } dependencies, var requires, null)
                         ? new MirrorDriftAdopt(MirrorDriftResolveStatus.Proposed, MirrorDriftAdoptActions.Update,
                             element with { GeometryMetres = (revit.GeometryMetres ?? Array.Empty<double>()).ToArray(), Dependencies = dependencies, Provenance = AdoptProvenance }, null, requires, null, null)
@@ -276,6 +286,7 @@ public static class MirrorDriftResolve
             {
                 adopts[i] = core.ContainsKey(revit.Id)
                     ? AdoptRefused(MirrorDriftResolveCodes.IdConflict, "the snapshot id " + revit.Id.ToString("D") + " is already a committed element")
+                    : GeometryProblem(revit) is { } problem ? AdoptRefused(problem.Code, problem.Detail)
                     : MapDependencies(revit) is ({ } dependencies, var requires, null)
                         ? new MirrorDriftAdopt(MirrorDriftResolveStatus.Proposed, MirrorDriftAdoptActions.Create,
                             new Element(revit.Id, revit.Kind, (revit.GeometryMetres ?? Array.Empty<double>()).ToArray(), dependencies, AdoptProvenance), snapshot.Sources[revit.Id], requires, null, null)
@@ -322,10 +333,15 @@ public static class MirrorDriftResolve
         var projectId = committed.Project.Id;
         var revision = committed.Project.Revision;
         var afterHash = Compiler.Hash(committed.Project with { Elements = elements.OrderBy(element => element.Id.ToString("D"), StringComparer.Ordinal).ToArray() });
-        string OperationId(string key, string command, string canonical, IEnumerable<string> inputs, IEnumerable<string> dependsOn)
+        // The observed Revit state is part of every id: Core's revision does not move when a restore runs, so a later
+        // drift at the same revision (another observed value, an element deleted again) must not replay an earlier run.
+        var observedDigest = SnapshotDigest(snapshot);
+        var journalAfter = (report.Options?.JournalAfterSequence ?? 0).ToString(CultureInfo.InvariantCulture);
+        string OperationId(MirrorDriftFinding finding, string key, string command, string canonical, IEnumerable<string> inputs, IEnumerable<string> dependsOn)
         {
             var text = "mirror-drift-resolve/" + MirrorDriftResolution.Version.ToString(CultureInfo.InvariantCulture) + "\n" + projectId.ToString("D") + "\n" + revision.ToString(CultureInfo.InvariantCulture)
-                + "\n" + afterHash + "\n" + document.UniqueId + "\n" + document.Path + "\n" + key.ToLowerInvariant() + "\n" + command + "\n" + canonical + "\n" + string.Join(",", inputs) + "\n" + string.Join(",", dependsOn);
+                + "\n" + afterHash + "\n" + document.UniqueId + "\n" + document.Path + "\n" + observedDigest + "\n" + journalAfter + "\n" + string.Join(",", finding.Evidence ?? Array.Empty<string>())
+                + "\n" + key.ToLowerInvariant() + "\n" + command + "\n" + canonical + "\n" + string.Join(",", inputs) + "\n" + string.Join(",", dependsOn);
             return OperationPrefix + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)), 0, 16).ToLowerInvariant();
         }
         string Canonical(string command, string args)
@@ -350,27 +366,58 @@ public static class MirrorDriftResolve
                 writer.WriteEndArray();
             });
             var canonical = Canonical(RevitCommandCatalogueNames.Delete, args);
-            return new RevitCommandStep(OperationId(Key(finding), RevitCommandCatalogueNames.Delete, canonical, Array.Empty<string>(), Array.Empty<string>()),
+            return new RevitCommandStep(OperationId(finding, Key(finding), RevitCommandCatalogueNames.Delete, canonical, Array.Empty<string>(), Array.Empty<string>()),
                 RevitCommandCatalogueNames.Delete, finding.CoreId ?? finding.SnapshotId, finding.ElementKind, Array.Empty<string>(), canonical, Array.Empty<RevitStepInput>(), Array.Empty<string>());
         }
 
-        // Extra elements: delete; changed: set_parameter, or a later replace.
-        var replace = new List<int>();
-        for (var i = 0; i < findings.Length; i++)
+        // What Revit deletes with an element: the openings a wall hosts and everything on a level (snapshot relations).
+        var dependentsOf = new Dictionary<Guid, List<Element>>();
+        foreach (var element in snapshot.Elements.OrderBy(element => element.Id.ToString("D"), StringComparer.Ordinal))
+            foreach (var dependency in (element.Dependencies ?? Array.Empty<Guid>()).Distinct())
+            {
+                if (!dependentsOf.TryGetValue(dependency, out var list)) dependentsOf[dependency] = list = new List<Element>();
+                list.Add(element);
+            }
+        var deletedSnapshot = new HashSet<Guid>();
+        // Kept Revit elements Revit would delete with the snapshot element: its dependents unless already deleted earlier.
+        string[] Blocking(Element revit)
+        {
+            if (!dependentsOf.TryGetValue(revit.Id, out var list)) return Array.Empty<string>();
+            return list.Where(dependent => revit.Kind == "level" || (revit.Kind == "wall" && dependent.Kind is "door" or "window"))
+                .Where(dependent => !deletedSnapshot.Contains(dependent.Id))
+                .Select(dependent => snapshot.Sources.TryGetValue(dependent.Id, out var uid) ? uid : dependent.Id.ToString("D")).Order(StringComparer.Ordinal).ToArray();
+        }
+
+        // Extra elements: delete, children first; one that kept elements depend on is refused.
+        foreach (var i in Enumerable.Range(0, findings.Length).Where(index => findings[index].Kind == MirrorDriftKinds.Extra)
+            .OrderBy(index => Rank(findings[index].ElementKind)).ThenBy(index => findings[index].UniqueId.ToLowerInvariant(), StringComparer.Ordinal))
         {
             var finding = findings[i];
             try
             {
-                if (finding.Kind == MirrorDriftKinds.Extra)
-                {
-                    var step = DeleteStep(finding);
-                    deletes.Add((Rank(finding.ElementKind), finding.UniqueId, step));
-                    restores[i] = new MirrorDriftRestore(MirrorDriftResolveStatus.Proposed, MirrorDriftRestoreModes.Delete, new[] { step.OperationId }, Array.Empty<string>(), null, null);
-                }
-                else if (finding.Kind == MirrorDriftKinds.Changed)
+                var blocking = Blocking(observed[finding.SnapshotId!.Value]);
+                if (blocking.Length > 0) throw new Refusal(MirrorDriftResolveCodes.DependentsRemain, "Revit would delete kept elements with it: " + string.Join(",", blocking));
+                var step = DeleteStep(finding);
+                deletes.Add((Rank(finding.ElementKind), finding.UniqueId, step));
+                deletedSnapshot.Add(finding.SnapshotId!.Value);
+                restores[i] = new MirrorDriftRestore(MirrorDriftResolveStatus.Proposed, MirrorDriftRestoreModes.Delete, new[] { step.OperationId }, Array.Empty<string>(), null, null);
+            }
+            catch (Refusal refusal) { restores[i] = RestoreRefused(refusal.Code, refusal.Message); }
+        }
+
+        // Changed: set_parameter, or a later replace; missing: a later create.
+        var replace = new List<int>();
+        for (var i = 0; i < findings.Length; i++)
+        {
+            var finding = findings[i];
+            if (finding.Kind == MirrorDriftKinds.Extra) continue;
+            try
+            {
+                if (finding.Kind == MirrorDriftKinds.Changed)
                 {
                     var element = core[finding.CoreId!.Value];
                     var fields = (finding.Fields ?? Array.Empty<MirrorDriftField>()).Select(field => field.Field).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+                    if (fields.Length == 0) throw new Refusal(MirrorDriftResolveCodes.FieldsMissing, "a changed finding must name its changed fields");
                     if (fields.Contains("kind")) throw new Refusal(MirrorDriftResolveCodes.KindChanged, "Revit reports another kind; the catalogue cannot change an element's kind");
                     if (fields.Contains("geometry")) throw new Refusal(MirrorDriftResolveCodes.GeometryInvalid, "the geometry layout differs from the BIM-IR kind's");
                     if (fields.Length > 0 && fields.All(field => Parameters.ContainsKey((element.Kind, field))))
@@ -393,7 +440,7 @@ public static class MirrorDriftResolve
                                 writer.WriteEndObject();
                             });
                             var canonical = Canonical(RevitCommandCatalogueNames.SetParameter, args);
-                            steps.Add(new RevitCommandStep(OperationId(Key(finding) + "#" + field, RevitCommandCatalogueNames.SetParameter, canonical, Array.Empty<string>(), Array.Empty<string>()),
+                            steps.Add(new RevitCommandStep(OperationId(finding, Key(finding) + "#" + field, RevitCommandCatalogueNames.SetParameter, canonical, Array.Empty<string>(), Array.Empty<string>()),
                                 RevitCommandCatalogueNames.SetParameter, element.Id, element.Kind, Array.Empty<string>(), canonical, Array.Empty<RevitStepInput>(), Array.Empty<string>()));
                         }
                         for (var f = 0; f < fields.Length; f++) parameters.Add((finding.UniqueId, fields[f], steps[f]));
@@ -425,6 +472,8 @@ public static class MirrorDriftResolve
                 var canonical = Canonical(built.Command, built.Args);
                 var steps = new List<RevitCommandStep>();
                 var dependsOn = built.DependsOn.ToList();
+                if (replacing && Blocking(observed[finding.SnapshotId!.Value]) is { Length: > 0 } hosted)
+                    throw new Refusal(MirrorDriftResolveCodes.DependentsRemain, "replacing it would delete kept hosted elements: " + string.Join(",", hosted));
                 if (replacing)
                 {
                     var delete = DeleteStep(finding);
@@ -432,7 +481,7 @@ public static class MirrorDriftResolve
                     steps.Add(delete);
                     dependsOn.Insert(0, delete.OperationId);
                 }
-                var operationId = OperationId(Key(finding), built.Command, canonical, built.Inputs.Select(input => input.FromOperation), dependsOn);
+                var operationId = OperationId(finding, Key(finding), built.Command, canonical, built.Inputs.Select(input => input.FromOperation), dependsOn);
                 var create = new RevitCommandStep(operationId, built.Command, element.Id, element.Kind, dependsOn.ToArray(), canonical, built.Inputs, Array.Empty<string>());
                 steps.Add(create);
                 creates.Add((CreateRank(element.Kind), element.Id.ToString("D"), create));
@@ -554,6 +603,31 @@ public static class MirrorDriftResolve
         var plan = new RevitCommandPlan(PlanToCommands.Version, projectId, revision, afterHash, document, Array.Empty<RevitLevelPrecondition>(), ordered,
             unsupported.OrderBy(item => item.ElementId.ToString("D"), StringComparer.Ordinal).ThenBy(item => item.Code, StringComparer.Ordinal).ToArray());
         return new MirrorDriftResolution(report.DocumentUid ?? "", report.CoreProjectId, report.CoreRevision, report.EvidenceIncomplete, proposals, plan);
+    }
+
+    // Why a snapshot element cannot become a BIM-IR element as it is, or null.
+    static (string Code, string Detail)? GeometryProblem(Element revit) => revit.Kind switch
+    {
+        "level" => Finite(revit, 1) ? null : (MirrorDriftResolveCodes.GeometryInvalid, "level geometry must be [elevation]"),
+        "wall" => Finite(revit, 6) && GeometryCodec.IsValidWall(revit.GeometryMetres) ? null : (MirrorDriftResolveCodes.GeometryInvalid, "wall geometry must be [ax,ay,bx,by,height,thickness]"),
+        "door" or "window" => Finite(revit, 6) ? null : (MirrorDriftResolveCodes.GeometryInvalid, "opening geometry must be [ax,ay,bx,by,sill,height]"),
+        "space" => Finite(revit, 4) && revit.GeometryMetres[2] > 0 && revit.GeometryMetres[3] > 0 ? null : (MirrorDriftResolveCodes.GeometryInvalid, "space geometry must be [x,y,width,depth]"),
+        _ => (MirrorDriftResolveCodes.KindUnsupported, "BIM-IR has no " + revit.Kind + " layout"),
+    };
+
+    // SHA-256 over the snapshot's elements (id, UniqueId, kind, geometry, dependencies) and unmapped entries, in a
+    // fixed order, so the same observed state in any order gives the same digest.
+    static string SnapshotDigest(MirrorSnapshot snapshot)
+    {
+        var text = new StringBuilder();
+        foreach (var element in snapshot.Elements.OrderBy(element => element.Id.ToString("D"), StringComparer.Ordinal))
+            text.Append(element.Id.ToString("D")).Append('|').Append(snapshot.Sources.TryGetValue(element.Id, out var uid) ? uid.ToLowerInvariant() : "").Append('|').Append(element.Kind).Append('|')
+                .Append(string.Join(",", (element.GeometryMetres ?? Array.Empty<double>()).Select(value => value.ToString("R", CultureInfo.InvariantCulture)))).Append('|')
+                .Append(string.Join(",", (element.Dependencies ?? Array.Empty<Guid>()).Select(id => id.ToString("D")))).Append('\n');
+        foreach (var line in (snapshot.Unmapped ?? Array.Empty<MirrorUnmapped>()).Where(entry => entry is not null)
+            .Select(entry => (entry.UniqueId ?? "").ToLowerInvariant() + "|" + entry.Category + "|" + entry.Reason + "|" + entry.Detail).Order(StringComparer.Ordinal))
+            text.Append(line).Append('\n');
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString()))).ToLowerInvariant();
     }
 
     static MirrorDriftAdopt AdoptRefused(string code, string detail) => new(MirrorDriftResolveStatus.Unsupported, null, null, null, Array.Empty<string>(), code, detail);
