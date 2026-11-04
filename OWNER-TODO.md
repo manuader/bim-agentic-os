@@ -106,3 +106,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] Decide P9-06: should a scheduled relay independently review and merge the chat branch `chat-materials-types` (material.create/set, wall_type.create, floor_type.create, query.fill_patterns, element.change_type) and port the relay147 hardening, or will the owner chat merge it? Answer in OWNER.md.
 - Optional: send a real DXF/PDF floor plan with room labels (no client data) into `.bim/` so a relay can test P6-05 brief extraction beyond synthetic fixtures.
 - Still open: 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` on a test copy (Load Once), escritorio/estudio/biblioteca class, Uniclass CC BY-ND excerpt, 🔒 N21 `... -Runs 1`.
+
+## Relay149 (2026-11-04, cloud)
+- No new owner action. New on main (bb0ccc2): `pwsh -File scripts/package.ps1 -OutputDirectory <new folder>` builds a release package (CLI + MCP + add-in manifest template) and `scripts/package-verify.ps1 -PackageDirectory <folder>` checks it; `query.journal` (read-only) is compiled but not yet in the owner -Catalogue steps.
+- Still open: 🔒 ONE `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` on a test copy (Load Once); 🔒 N21 `... -Runs 1`; escritorio/estudio/biblioteca class; Uniclass licence.
