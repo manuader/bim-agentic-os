@@ -317,6 +317,7 @@ public static class RevitCommandProtocol
             if (RevitCommandSchema.Validate(args, schema.RootElement, "args") is { } failure) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, failure.Field, failure.Detail);
         }
         var typed = spec.Bind(args);
+        if (typed is CommandBatchArgs batch) RevitCommandBatch.CheckOperationIds(operation.GetString()!, batch);
         var canonical = CanonicalEnvelope(protocolVersion, operation.GetString()!, documentRef, command, args);
         return new RevitCommandEnvelope(protocolVersion, operation.GetString()!, documentRef, command, spec, typed, canonical);
     }
