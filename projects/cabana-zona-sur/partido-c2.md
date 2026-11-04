@@ -53,3 +53,12 @@ Doc Claude Docs "Cabaña Zona Sur — Análisis de referencias, discurso y promp
 - Ventana vertical 406x1830 en muro oeste cerca del frente. Salamandra en (72400,13900) +600.
 - Vistas: "C5 Garibaldi 3D", "C5 Garibaldi 3D sudeste". C4 sigue en el sitio (x 78-93k) hasta que el owner la borre.
 - view.create_section falla en TODA dirección (no solo diagonal) — fix en chat-section-profile-fixes.
+
+## 2026-11-04 20:06 UTC — C5 corregida (pipe 76860, add-in nuevo) y guardada
+- Basamento piedra L (C5 Basamento piedra 600): sur -800..+1500, oeste -800..+600. Norte/este hormigón.
+- Antecámara: muro lenga y=15100 (x 72400..74800) + puerta interior → doble puerta con la del semicubierto.
+- Techo: módulo sur (y 11500..13900) faldón a tres aguas 60° desde +1500 (cae sobre la piedra) + techos 50° desde +2800 en el resto; pliegues triangulares negros en y=13900 cierran el quiebre. Faldón norte solo sobre mitad oeste (nieve al costado del acceso).
+- Muros O/E con perfil escalonado 1500/2800 en y=13900. Ventana oeste sill 850.
+- Platea: piso "Wood Joist 220mm - Wood Finish" creado a nivel 0; FALTA subir a +600 (set_parameter rechazado por borrado interno) y tipo propio (floor_type.create falla EndCap).
+- Verificado en Revit real: view_from ne/sw OK (eye_direction coincide), element.delete con dependientes de sketch OK.
+- Vistas: "C5 Garibaldi 3D noreste", "C5 Garibaldi 3D sudoeste".
