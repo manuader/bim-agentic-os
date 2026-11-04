@@ -21,8 +21,26 @@ public static class RevitJournalQuery
     public const string Command = "query.journal";
     public const string ReadbackInvalidCode = "journal_readback_invalid";
 
-    // P2-05 stub (red).
-    public static string AsJournalReadReply(string readback) => throw new NotImplementedException("AsJournalReadReply");
+    const string RawPrefix = "{\"status\":\"succeeded\",\"verification\":\"unverified\",";
+
+    // The journal.read reply for a query.journal readback (status and verification put back in front), for consumers
+    // of the raw reply such as MirrorDrift.ParseJournal, which refuses the bare readback (drift_journal_invalid). A
+    // string that is not a readback object (not JSON, not an object, a status member, no report object) is refused
+    // journal_readback_invalid.
+    public static string AsJournalReadReply(string readback)
+    {
+        if (string.IsNullOrEmpty(readback) || readback[0] != '{') throw new ArgumentException(ReadbackInvalidCode + " object required");
+        try
+        {
+            using var document = JsonDocument.Parse(readback);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) throw new ArgumentException(ReadbackInvalidCode + " object required");
+            if (root.TryGetProperty("status", out _)) throw new ArgumentException(ReadbackInvalidCode + " already a reply (status member)");
+            if (!root.TryGetProperty("report", out var report) || report.ValueKind != JsonValueKind.Object) throw new ArgumentException(ReadbackInvalidCode + " report object required");
+        }
+        catch (JsonException) { throw new ArgumentException(ReadbackInvalidCode + " not JSON"); }
+        return RawPrefix + readback[1..];
+    }
 
     // {"attached","dropped","skipped_add_in","failures","unidentified","report":{MirrorJournalReport}}
     public static string Body(bool attached, MirrorJournal journal, MirrorJournalReport report)
@@ -42,7 +60,7 @@ public static class RevitJournalQuery
     {
         ArgumentNullException.ThrowIfNull(tracker);
         var report = tracker.Report(snapshot, documentPath, options);
-        return "{\"status\":\"succeeded\",\"verification\":\"unverified\"," + Body(attached, tracker.Journal, report)[1..];
+        return RawPrefix + Body(attached, tracker.Journal, report)[1..];
     }
 
     // The query.journal readback. An after_sequence past the journal's last sequence (only knowable against the live
@@ -78,7 +96,7 @@ public static partial class RevitCommandCatalogue
         var schema = Fill("""{"type":"object","description":"All optional; pass {} for every external edit since the last read.","properties":{"peek":{"type":"boolean","description":"true answers without moving the baseline, so a retried or paged read sees the same diff; default false"},"after_sequence":{"type":"integer","description":"Return the entries recorded after this journal sequence, 0 or more and at most the journal's last sequence (continue a capped reply with its next_after_sequence); default: the baseline of the last read"},"max_entries":{"type":"integer","description":"At most this many entries in one reply, 1 to @0@; default @0@"}},"additionalProperties":false}""", max);
         return new[]
         {
-            new RevitCommandSpec(RevitJournalQuery.Command, false, "Read the external edit journal of the open document (the same reply as the pipe operation journal.read): the edits made outside this add-in (by the user, other add-ins, undo or redo) since the last read, as added and modified UniqueIds and deleted element ids per transaction, plus the BIM-IR snapshot diff against the last read; journal_complete false means entries were lost. Arguments: peek (keep the baseline), after_sequence (page or re-read from a sequence) and max_entries (1 to " + max + " per reply; has_more and next_after_sequence continue). A read without peek moves the in-memory baseline; nothing is written to the document. Read-only.", schema, BindJournal),
+            new RevitCommandSpec(RevitJournalQuery.Command, false, "Read the external edit journal of the open document (the same reply as the pipe operation journal.read): the edits made outside this add-in (by the user, other add-ins, undo or redo) since the last read, as added and modified UniqueIds and deleted element ids per transaction, plus the BIM-IR snapshot diff against the last read; journal_complete false means entries were lost. A read without peek consumes the baseline shared with journal.read and every other client; pass peek: true unless you own that baseline. Arguments: peek (keep the baseline), after_sequence (page or re-read from a sequence) and max_entries (1 to " + max + " per reply; has_more and next_after_sequence continue). Nothing is written to the document. Read-only.", schema, BindJournal),
         };
     }
 
