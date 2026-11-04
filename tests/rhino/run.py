@@ -4,7 +4,7 @@ import sys
 import unittest
 
 # Guards against a discovery change silently running fewer regressions. Raise it when tests are added.
-MINIMUM_TESTS = 60
+MINIMUM_TESTS = 116
 
 
 def one_line(text, limit=900):
