@@ -1126,3 +1126,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 08:47Z integration 3731622 CI 41800972940 success (9/9) → main fast-forwarded (bb0ccc2..3731622). First integration CI 41799448917 failed only on parity-census (the new modify.batch.one_undo census entry needed a cited feature + coverage); fixed 3731622. P1-07, P9-04, P8-07 ✅; Phase 1 7/8, Phase 8 5/7, Phase 9 4/9. Progress 69/90 (76.7 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released.
 **NEXT STEP:** next relay: oldest-touched phases first — Phase 2 P2-06/P2-07, Phase 10 P10-06/P10-07, Phase 4 P4-04/P4-05, Phase 6 P6-06/P6-07; then P1-08 document.save_copy, P9-06 hardening port / P9-07 / P9-09 / P9-03, P8-06, P3-05, P7-05, P5-04. Check origin chat-* branches before any Revit command file (chat-wall-attach unmerged, needs Revit 2025.3+).
+
+## Relay151 — 2026-11-04T08:53:44Z (Claude, cloud scheduled)
+- 08:53Z LOCK taken (was FREE since relay150 2026-11-04T08:47Z).
