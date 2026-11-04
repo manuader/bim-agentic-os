@@ -95,6 +95,9 @@ public static class RevitSaveCopyGuard
         return null;
     }
 
+    // STUB (red): post-SaveAs location check.
+    public static string? CheckWritten(string target, string? repositoryDirectory, string? fullPath, string? finalPath, RevitFileSystemProbe links) => null;
+
     // Lowercase hex SHA-256 of a file, streamed.
     public static string Sha256File(string path)
     {
@@ -157,6 +160,9 @@ public static class RevitSaveCopyRules
         }
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
+
+    // STUB (red).
+    public static string WrittenElsewhereDetail(string problem, string documentPath) => "";
 
     // The reply warning: later requests must name the copy (Revit re-points the open document on SaveAs).
     public static string DocumentNowCopyWarning(string target, string sourcePath) =>

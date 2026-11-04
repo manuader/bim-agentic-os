@@ -60,6 +60,7 @@ static class CatalogueSaveCopyChecks
         ClientPath();
         AddInAdmission();
         Rules();
+        ReviewFixes();
     }
 
     static void Catalogue()
@@ -269,5 +270,72 @@ static class CatalogueSaveCopyChecks
             Check(RevitSaveCopyGuard.Sha256File(file) == Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), "Sha256File is the lowercase hex SHA-256 of the written file");
         }
         finally { File.Delete(file); }
+    }
+
+    // Review of P1-08: hashing a copy Revit still holds open, the post-SaveAs location check, backup names, Windows
+    // segment normalisation and the stated retry rule.
+    static void ReviewFixes()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "bim-save-copy-held-" + Guid.NewGuid().ToString("N") + ".rvt");
+        try
+        {
+            var bytes = Enumerable.Range(0, 70_000).Select(i => (byte)(i * 13)).ToArray();
+            File.WriteAllBytes(file, bytes);
+            string? hash = null;
+            string? error = null;
+            using (var held = new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+            {
+                try { hash = RevitSaveCopyGuard.Sha256File(file); }
+                catch (IOException failure) { error = failure.GetType().Name + ": " + failure.Message; }
+            }
+            Check(hash == Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), "Sha256File reads a copy that another handle (Revit) still holds open for read and write", error ?? hash ?? "");
+        }
+        finally { File.Delete(file); }
+
+        // After SaveAs: the written file must resolve to the requested path inside the copies root, with no link on the way.
+        var linksNone = new RevitFileSystemProbe(_ => false, _ => null);
+        Check(RevitSaveCopyGuard.CheckWritten(Target, Repo, Target, Target, linksNone) is null, "post-save: a copy that resolves to itself inside the copies root passes");
+        Check(RevitSaveCopyGuard.CheckWritten(Target, Repo, Target.ToLowerInvariant(), Target, linksNone) is null, "post-save: drive paths compare case-insensitively");
+        Check(RevitSaveCopyGuard.CheckWritten(Target, null, Target, Target, linksNone) is { } noRepo && noRepo.Contains(Target, StringComparison.Ordinal), "post-save: without a repository the check fails naming the copy");
+        Check(RevitSaveCopyGuard.CheckWritten(Target, Repo, null, null, linksNone) is { Length: > 0 }, "post-save: a path that cannot be resolved fails");
+        Check(RevitSaveCopyGuard.CheckWritten(Target, Repo, @"C:\Repo\.bim\BIM-Agentic-Test-copy-1.rvt", @"C:\Repo\.bim\BIM-Agentic-Test-copy-1.rvt", linksNone) is { } moved && moved.Contains(@"C:\Repo\.bim\BIM-Agentic-Test-copy-1.rvt", StringComparison.Ordinal),
+            "post-save: a full path that differs from the request fails naming where the file actually is");
+        Check(RevitSaveCopyGuard.CheckWritten(Target, Repo, Target, @"D:\Production\Tower-copy.rvt", linksNone) is { } escaped && escaped.Contains(@"D:\Production\Tower-copy.rvt", StringComparison.Ordinal),
+            "post-save: a final link target outside the copies root fails naming it");
+        var linkedNow = new RevitFileSystemProbe(path => path.EndsWith("run-1", StringComparison.Ordinal), _ => null);
+        Check(RevitSaveCopyGuard.CheckWritten(Target, Repo, Target, Target, linkedNow) is { } swapped && swapped.Contains("link", StringComparison.Ordinal) && swapped.Contains(Target, StringComparison.Ordinal),
+            "post-save: a folder swapped for a junction after the check fails (TOCTOU) naming the copy");
+        Check(RevitSaveCopyGuard.CheckWritten(Target, Repo, Target, Target, new RevitFileSystemProbe(_ => false, _ => 2)) is { Length: > 0 }, "post-save: a hard-linked copy fails");
+        var warning = RevitSaveCopyRules.WrittenElsewhereDetail("the copy resolves to X", @"C:\Repo\.bim\native-runs\run-1\BIM-Agentic-Test-copy-1.rvt");
+        Check(warning.Contains("X", StringComparison.Ordinal) && warning.Contains("document.path", StringComparison.Ordinal) && warning.Contains(@"BIM-Agentic-Test-copy-1.rvt", StringComparison.Ordinal),
+            "post-save failure detail names the problem and the path the open document now points to");
+
+        RevitSaveCopyRefusal? Guarded(string target, string source = FixturePath) =>
+            RevitSaveCopyGuard.Check(target, source, Repo, linksNone, Files(directory: path => !path.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase)));
+        foreach (var name in new[] { "BIM-Agentic-Test.0001.rvt", "BIM-Agentic-Test-copy.0042.RVT" })
+            Check(Guarded(Root + @"\run-1\" + name) is { Reason: RevitSaveCopyGuard.NameInvalid }, "a Revit backup name " + name + " is name_invalid");
+        Check(Guarded(Root + @"\run-1\BIM-Agentic-Test-copy.001.rvt") is null && Guarded(Root + @"\run-1\BIM-Agentic-Test-2026.rvt") is null, "names that are not the backup .NNNN.rvt pattern stay allowed");
+        Check(Guarded(@"\\server\share\Repo\.bim\native-runs\BIM-Agentic-Test-x.rvt") is { Reason: RevitSaveCopyGuard.OutsideCopiesRoot }, "a UNC target with a drive repository is outside_copies_root");
+        foreach (var (label, path) in new[]
+        {
+            ("a root segment with a trailing dot", @"C:\Repo\.bim\native-runs.\BIM-Agentic-Test-x.rvt"),
+            ("a root segment with a trailing space", @"C:\Repo\.bim\native-runs \BIM-Agentic-Test-x.rvt"),
+            ("a '.. ' segment (Windows reads it as ..)", @"C:\Repo\.bim\native-runs\run-1\.. \BIM-Agentic-Test-x.rvt"),
+            ("a '...' segment", @"C:\Repo\.bim\native-runs\...\BIM-Agentic-Test-x.rvt"),
+        })
+        {
+            Check(Guarded(path) is { Reason: RevitSaveCopyGuard.PathInvalid }, "a target with " + label + " is path_invalid");
+            Check(Refusal(Envelope(Args(path)).ToJsonString()) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.path" }, "the binder refuses a target with " + label);
+        }
+        Check(Guarded(FixturePath, @"C:\REPO\.BIM\NATIVE-RUNS\RUN-1\BIM-Agentic-Test.rvt") is { Reason: RevitSaveCopyGuard.SameAsSource }, "a source that differs only in folder case is the same file (same_as_source)");
+        Check(Guarded(@"C:\Repo/.bim\native-runs/run-1\BIM-Agentic-Test-mixed.rvt") is null, "mixed separators inside the copies root are allowed");
+        Check(Guarded(@"C:\Repo/.bim/exports\BIM-Agentic-Test-mixed.rvt") is { Reason: RevitSaveCopyGuard.OutsideCopiesRoot }, "mixed separators outside the copies root are outside_copies_root");
+
+        var description = RevitCommandCatalogue.Find("document.save_copy")?.Description ?? "";
+        Check(description.Contains("retry", StringComparison.Ordinal) && description.Contains("target_exists", StringComparison.Ordinal) && description.Contains("not replayed", StringComparison.Ordinal),
+            "document.save_copy states that a retry after success is refused target_exists, not replayed");
+        var batch = RevitCommandCatalogue.Find("command.batch");
+        Check(batch is not null && batch.Description.Contains("document.save_copy", StringComparison.Ordinal) && batch.ArgsSchemaJson.Contains("document.save_copy", StringComparison.Ordinal),
+            "command.batch description and step schema name document.save_copy among the excluded commands");
     }
 }
