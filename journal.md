@@ -1166,3 +1166,11 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 19:06Z integration 0316b33 CI 41892028438 success (9/9) → main fast-forwarded (a1f2206..0316b33). P1-08, P8-06, P9-07 ✅; new P1-09, P1-10, P1-11 ⏳ (Phase 1 batch). Progress 78/97 (80.4 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-04T19:06:40Z.
 **NEXT STEP:** next relay: oldest-touched phases first — Phase 4 P4-05, Phase 6 P6-07, Phase 7 P7-06 (relay151); then P2-07, P5-07, P5-08, P10-07 (relay152), P3-05, P1-09/P1-10/P1-11, P9-06 hardening port / P9-09 / P9-03, Phase 8 next batch (check origin chat-* branches before any Revit command file; chat-wall-attach still unmerged).
+
+## 2026-11-04 chat — merged chat-section-profile-fixes (main = f16cc3f)
+- Review MERGE (findings low: curtain panels may be pinned → delete still refused; profile tolerance could be capped). CI all green except macOS ifc-portable never got a runner (infra).
+- New REAL-REVIT findings to fix next:
+  * floor_type.create fails: "Input compound structure has wrong EndCap condition" (needs EndCap/opening wrap settings for floors).
+  * element.set_parameter FLOOR_HEIGHTABOVELEVEL_PARAM refused because Revit would delete an internal no-category element (id 215987, likely a join/warning helper) → allow confirming internal no-category deletions.
+  * element.delete of a plain wall refused because footprint roof sketch lines depend on it (roof picked from walls?) — investigate dependents 34aee.. when deleting plinth walls.
+- Owner corrections C5 (pending): stone L base S+W (done via change_type), antechamber (done), roof with south steeper half-hip "quiebre" + north facet to the side (needs delete of roofs/south gable → after deploy), floor platea (created at level 0; offset blocked).
