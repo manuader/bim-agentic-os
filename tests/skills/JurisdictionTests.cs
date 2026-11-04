@@ -43,8 +43,9 @@ static class JurisdictionTests
         return node.ToJsonString();
     }
 
-    public static void Run(string root, Action<bool, string, string> check, Func<string> tempRoot)
+    public static void Run(string root, Action<bool, string, string> report, Func<string> tempRoot)
     {
+        void check(bool condition, string name, string detail = "") => report(condition, name, detail);
         // ---- Checked-in registry ----
         var skillsRoot = Path.Combine(root, "skills");
         var load = JurisdictionRegistry.Load(skillsRoot);
@@ -126,7 +127,7 @@ static class JurisdictionTests
         check(ambiguousCode.Refusal?.Detail == "claimed by ar.caba.alpha, ar.caba.beta", "jurisdiction: an ambiguous refusal names the competing packs in ordinal order", Show(ambiguousCode));
         var spring = ambiguous.Select(new ProjectJurisdiction(null, "Fictionland", "Springfield"));
         check(spring.Refusal?.Detail == "matches xx.spring-a (xx.spring-a.code), xx.spring-b (xx.spring-b.code)", "jurisdiction: metadata ambiguity names every matching jurisdiction", Show(spring));
-        Selects2(ambiguous, new ProjectJurisdiction("xx.spring-b"), "xx.spring-b", check);
+        Selects2(ambiguous, new ProjectJurisdiction("xx.spring-b"), "xx.spring-b", report);
 
         // ---- Determinism ----
         var reversed = new JurisdictionRegistry(duplicateCatalog, Enumerable.Reverse(claims));
