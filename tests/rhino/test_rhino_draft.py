@@ -50,6 +50,15 @@ def polyline(points, z=0.0):
     return rhino3dm.PolylineCurve([P3(x, y, z) for x, y in points])
 
 
+def arc_curve(shape):
+    """An ArcCurve (rhino3dm 8 has no ArcCurve(Arc) constructor; the object table makes one)."""
+    scratch = rhino3dm.File3dm()
+    (scratch.Objects.AddCircle if isinstance(shape, rhino3dm.Circle) else scratch.Objects.AddArc)(shape)
+    geometry = list(scratch.Objects)[0].Geometry
+    assert isinstance(geometry, rhino3dm.ArcCurve), type(geometry).__name__
+    return geometry.Duplicate()
+
+
 def rectangle(x0, y0, x1, y1, z=0.0):
     return polyline([(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)], z)
 
@@ -301,7 +310,7 @@ class Walls(Base):
         self.assertUnmapped('curve_not_horizontal', result, sid(1), 2)
 
     def test_arc_is_unmapped_unless_approximation_is_asked(self):
-        arc = rhino3dm.ArcCurve(rhino3dm.Arc(P3(0, 0, 0), 2.0, math.pi / 2))
+        arc = arc_curve(rhino3dm.Arc(P3(0, 0, 0), 2.0, math.pi / 2))
         source = self.model([(arc, 'Walls', oid(1))])
         self.assertUnmapped('arc_not_approximated', self.draft(source), sid(1))
         result = self.draft(source, arc_segments=4)
@@ -355,7 +364,7 @@ class Spaces(Base):
         self.assertUnmapped('curve_not_horizontal', self.draft(self.model([(curve, 'Spaces', oid(1))])), sid(1))
 
     def test_circle_is_not_a_rectangle(self):
-        circle = rhino3dm.ArcCurve(rhino3dm.Circle(P3(0, 0, 0), 2.0))
+        circle = arc_curve(rhino3dm.Circle(P3(0, 0, 0), 2.0))
         self.assertUnmapped('space_not_rectangle', self.draft(self.model([(circle, 'Spaces', oid(1))]), arc_segments=8), sid(1))
 
     def test_room_solid_extrusion_drops_its_height(self):
