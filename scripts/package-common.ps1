@@ -63,7 +63,8 @@ function Find-PackageForbidden([string]$Directory) {
     return $array
 }
 
-function ConvertTo-PackageJsonString([string]$Value) { return [Text.Json.JsonSerializer]::Serialize($Value) }
+# ConvertTo-Json on a single string yields its quoted, escaped JSON form (generic JsonSerializer overloads do not bind).
+function ConvertTo-PackageJsonString([string]$Value) { return (ConvertTo-Json -InputObject $Value -Compress) }
 
 # Canonical manifest text: fixed key order, LF endings, ordinal path order, lowercase hex, trailing LF.
 function New-PackageManifestText([string]$Directory, [string]$Version, [string]$Commit, [bool]$Dirty) {
