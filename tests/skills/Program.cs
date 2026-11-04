@@ -7,7 +7,7 @@ using System.Text.Json.Nodes;
 // P5-01 domain skill manifest oracle: strict parser refusals with JSON paths, semver ranges, the safe directory loader
 // (temp fixtures, symlinks), the resolver (closure, version ranges, conflicts, cycles, priority and precedence of
 // defaults, traceability, determinism, 20k-skill scale), the checked-in sample skills, the JSON Schema document and the
-// agreement corpus shared with tests/skills/check_schema.py, and (P5-02) the CABA code rule pack with the room validator, (P5-05) the element QA pack with the element validator. Unit-tested only.
+// agreement corpus shared with tests/skills/check_schema.py, and (P5-02) the CABA code rule pack with the room validator, (P5-05) the element QA pack with the element validator, (P10-06) the jurisdiction rule-pack registry. Unit-tested only.
 int passed = 0, failed = 0, skipped = 0;
 // Platform fixtures (symlinks, junctions) may only be skipped on a developer's Windows machine; on CI and on every other
 // platform an unavailable fixture is a failure. Skips that are inherent (running as root, FIFOs on Windows) pass allowed.
@@ -314,9 +314,10 @@ try
     SkillCatalog? samples = null;
     try { samples = SkillLoader.LoadDirectory(skillsRoot); }
     catch (SkillException error) { Check(false, "skills/ loads", error.Code + " " + error.File + " at " + error.Field + " (" + error.Detail + ")"); }
-    Check(samples is { Skills.Count: 6 } && samples.Skills[0].Id == "ar.caba.codigo-edificacion" && samples.Skills[1].Id == "bim.qa.element-basics" && samples.Skills[2].Id == "bim.qa.room-basics"
-        && samples.Skills[3].Id == "bim.style.compact-modern" && samples.Skills[4].Id == "bim.style.warm-masonry" && samples.Skills[5].Id == "bim.typology.dwelling",
-        "skills/ holds the CABA code pack, the element and room qa packs, the two style packs and the typology sample in ordinal order",
+    Check(samples is { Skills.Count: 7 } && samples.Skills[0].Id == "ar.caba.codigo-edificacion" && samples.Skills[1].Id == "bim.qa.element-basics" && samples.Skills[2].Id == "bim.qa.room-basics"
+        && samples.Skills[3].Id == "bim.style.compact-modern" && samples.Skills[4].Id == "bim.style.warm-masonry" && samples.Skills[5].Id == "bim.typology.dwelling"
+        && samples.Skills[6].Id == "xx.example.codigo-ejemplo",
+        "skills/ holds the CABA code pack, the element and room qa packs, the two style packs, the typology sample and the P10-06 stub jurisdiction pack in ordinal order",
         samples is null ? "" : string.Join(",", samples.Skills.Select(skill => skill.Id)));
     Check(samples?.Find("bim.qa.room-basics") is { Kind: SkillKind.Qa, Priority: 50 } qa && qa.Rules.Select(rule => rule.Check.Op).Distinct().Count() == 4
         && samples.Find("bim.typology.dwelling") is { Kind: SkillKind.Typology, Priority: 20 } dwelling && dwelling.Rules.Any(rule => rule.Check.Op == SkillCheckOp.RatioMin),
@@ -988,6 +989,9 @@ try
 
     // ---- P5-05 element QA recipe pack and element validator (tests/skills/ElementSkillTests.cs) ----
     ElementSkillTests.Run(root, Check);
+
+    // ---- P10-06 jurisdiction rule-pack registry (tests/skills/JurisdictionTests.cs) ----
+    JurisdictionTests.Run(root, Check, TempRoot);
 
     // ---- Scale: 20000-skill chain and cycle built in code (no recursion) ----
     const int Scale = 20000;

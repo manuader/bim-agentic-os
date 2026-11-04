@@ -1,0 +1,9 @@
+{
+  "jurisdiction_version": 1,
+  "code": "ar.caba",
+  "pack": "ar.caba.codigo-edificacion",
+  "country_names": ["Argentina", "Republica Argentina"],
+  "municipality_names": ["CABA", "Ciudad Autonoma de Buenos Aires", "Ciudad de Buenos Aires"],
+  "stub": false,
+  "note": "Codigo de Edificacion de la Ciudad Autonoma de Buenos Aires; per-rule source_confidence is in each citation."
+}
