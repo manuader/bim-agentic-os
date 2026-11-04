@@ -71,7 +71,7 @@ public static class RevitRoofExtrusionRules
                     RoofProfileArc arc when arc.Start == previous => arc,
                     // The arc is rebuilt through its snapped start, its end and its old midpoint, so centre, radius,
                     // sweep and midpoint stay consistent with the curve the executor draws.
-                    RoofProfileArc arc => arc with { Start = previous },
+                    RoofProfileArc arc => Through(previous, arc.End, arc.Mid, field + "[" + i + "]"),
                     _ => new RoofProfileLine(previous, segment.End),
                 };
             }
@@ -112,8 +112,6 @@ public static class RevitRoofExtrusionRules
     // segment otherwise.
     public static void CheckExtent(RoofProfileArc arc, string field)
     {
-        // Red stub (review): only the centre is bounded yet.
-        if (arc.Radius.Millimetres > -1) return;
         foreach (var (u, z) in Extremes(arc))
         {
             if (!(Math.Abs(u) <= RevitCommandGeometry.MaxRevitLengthMm) || !(Math.Abs(z) <= RevitCommandGeometry.MaxRevitLengthMm))
@@ -139,8 +137,6 @@ public static class RevitRoofExtrusionRules
 
     static bool Cusp(Seg a, Seg b)
     {
-        // Red stub (review): cusps not refused yet.
-        if (CuspCosine > -2) return false;
         var (ax, az) = Tangent(a, true);
         var (bx, bz) = Tangent(b, false);
         return ax * bx + az * bz < -CuspCosine;
