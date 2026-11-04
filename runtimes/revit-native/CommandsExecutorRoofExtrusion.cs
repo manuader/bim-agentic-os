@@ -22,7 +22,8 @@ namespace Bim.Revit;
 //   (the executor mirrors them when that normal points opposite the request's left normal; the readback checks the
 //   bounding box holds the profile swept to the requested side and is not nearer the other side, so a wrong sign
 //   rolls back as transaction_failed; the extents read back through the same normal flag, so they alone cannot show
-//   it); which
+//   it; when the roof's box holds the profile swept to both sides (near-symmetric extents, thickness padding) the
+//   wrong side cannot be detected at all, and a box nearer the other side by at most 2 x 25 mm is accepted); which
 //   view NewReferencePlane needs for a vertical plane (a non-template plan view of the reference level, else the
 //   active view); that an extrusion roof carries EXTRUSION_START_PARAM / EXTRUSION_END_PARAM (without them the
 //   readback reports null extents and rolls back); whether Revit keeps the profile curves exactly (an arc split in two reads back as a mismatch); how

@@ -154,6 +154,8 @@ static class CatalogueRoofExtrusionChecks
         Rejects("segments out of order", Envelope(WithProfile(L(3000, 4000, 6300, 2600), L(-300, 2600, 3000, 4000))), RevitCommandCodes.ArgsInvalid, "args.profile[1]");
         // A centre arc whose computed start (6300, 2700) is not where the line ends (6000, 2700).
         Rejects("centre arc not connected", Envelope(WithProfile(L(7000, 2000, 6000, 2700), AC(3000, -1700, 5500, Math.Atan2(4400, 3300) * 180 / Math.PI, 180 - Math.Atan2(4400, 3300) * 180 / Math.PI))), RevitCommandCodes.ArgsInvalid, "args.profile[1]");
+        // A line whose start is snapped 0.45 mm toward its end: 1.25 mm long as written, 0.8 mm once snapped.
+        Rejects("line shorter than 1.2 mm after snapping", Envelope(WithProfile(L(0, 0, 1000, 0), L(999.55, 0, 1000.8, 0))), RevitCommandCodes.CurveTooShort, "args.profile[1]");
         Rejects("closed triangle", Envelope(WithProfile(L(0, 0, 6000, 0), L(6000, 0, 3000, 2000), L(3000, 2000, 0, 0))), RevitCommandCodes.ArgsInvalid, "args.profile");
         Rejects("closed within 1 mm", Envelope(WithProfile(L(0, 0, 6000, 0), L(6000, 0, 3000, 2000), L(3000, 2000, 0.6, 0.8))), RevitCommandCodes.ArgsInvalid, "args.profile");
         Check(Accepts("open by 1.5 mm accepted", Envelope(WithProfile(L(0, 0, 6000, 0), L(6000, 0, 3000, 2000), L(3000, 2000, 0, 1.5))))?.Profile.Count == 3, "an end 1.5 mm from the start (and from the first segment) is open");
@@ -348,6 +350,24 @@ static class CatalogueRoofExtrusionChecks
         // requested box against 690 + 0 + 0 + 690 = 1380 to the mirrored one (z equal).
         Check(CommandReadbackRoofExtrusion.Roof(LevelUid, TypeUid, diagonal, right with { BoxMin = new double[] { -690, -707.1068, 3000 }, BoxMax = new double[] { 6707.1068, 6690, 3000 } }) is { } nearer && nearer.Contains("other side", StringComparison.Ordinal),
             "a box nearer the profile swept to the other side is a mismatch");
+        // Near-symmetric extents -500..600 on a plane along +x: the requested sweep is y -500..600, the other side
+        // y -600..500. A correct roof whose box holds both sweeps (padded 300 mm in u and down to z 2400) ties: gaps
+        // 300 + 300 + 100 + 0 + 300 + 0 = 1000 either way; with its top edge at y 590 it is 20 mm nearer the other side
+        // (110 against 90 in y), within the 2 x 25 mm margin, so both are accepted.
+        var symmetric = Parsed(new JsonObject
+        {
+            ["level"] = "Level 1",
+            ["type"] = "Chapa curva",
+            ["plane"] = new JsonObject { ["start"] = Pair(0, 0), ["end"] = Pair(8000, 0) },
+            ["profile"] = Profile(L(0, 2700, 8000, 3800)),
+            ["extrusion_start_mm"] = -500,
+            ["extrusion_end_mm"] = 600,
+        });
+        var sloped = new ObservedProfileEdge(Pt(0, 2700), Pt(8000, 3800), Pt(4000, 3250), false, 0);
+        var padded = new ObservedRoofExtrusion(RoofUid, LevelUid, TypeUid, PlaneUid, -500, 600, new[] { sloped }, true, new double[] { -300, -600, 2400 }, new double[] { 8300, 600, 3800 });
+        Check(CommandReadbackRoofExtrusion.Roof(LevelUid, TypeUid, symmetric, padded) is null, "a correct roof whose box holds both sweeps (a tie) is accepted", CommandReadbackRoofExtrusion.Roof(LevelUid, TypeUid, symmetric, padded) ?? "");
+        var slightly = padded with { BoxMax = new double[] { 8300, 590, 3800 } };
+        Check(CommandReadbackRoofExtrusion.Roof(LevelUid, TypeUid, symmetric, slightly) is null, "a box only 20 mm nearer the other side is within the margin and accepted", CommandReadbackRoofExtrusion.Roof(LevelUid, TypeUid, symmetric, slightly) ?? "");
         // The level elevation lifts the expected box: a profile at z 2700..3800 above a level at 3000 is at 5700..6800.
         Check(Check1(Observed(BarrelEdge()) with { LevelElevationMm = 3000 }) is not null && Check1(Observed(BarrelEdge()) with { LevelElevationMm = 3000, BoxMin = new double[] { -300, -300, 5600 }, BoxMax = new double[] { 6300, 10300, 6900 } }) is null,
             "the expected box is measured from the level's elevation");
