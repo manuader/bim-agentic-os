@@ -12,13 +12,19 @@ namespace Bim.Generative;
 //    geometry, non-finite scores keep their status and reasons) and computes the six criteria. When the six given
 //    weights are all zero it runs with unit weights only to obtain the criteria; their effective weights are recomputed.
 // 3. For every alternative it ranked, CirculationAnalyzer builds the circulation model. With RequireValid a model that
-//    is not valid (failed checks, or a plan-specific refusal such as an entrance room missing from that plan) makes the
-//    alternative infeasible with reasons "<code>@<subject>: <detail>". A duplicate keeps pointing at its original even
-//    when the original fails circulation: identical room geometry fails identically.
-// 4. circulation criterion: raw = mean route length (m) from the entrance door to the room centres over the rooms
-//    with a valid route (reachable; for a bedroom, without passing through another bedroom); normalized =
-//    (valid rooms / rooms) * L / (L + raw) with L = sqrt(total area of the level-0 rooms), the side of an equal-area
-//    square, so 1 means every room at the door and a mean route as long as L scores 0.5; 0 when no route is valid.
+//    is not valid (failed hard checks, or a plan-specific refusal such as an entrance room missing from that plan)
+//    makes the alternative infeasible with reasons "<code>@<subject>: <detail>". Rooms off level 0 are soft
+//    circulation_unsupported outcomes and never reject a plan. A duplicate keeps pointing at its original even when the
+//    original fails circulation: identical room geometry fails identically.
+// 4. circulation criterion over the level-0 rooms (only level 0 is analysed): a room has a valid route when it fails no
+//    hard check (reachable; bedroom or dry room without passing through a bedroom). raw = mean route length (m) from
+//    the entrance door to the room centres, where every room without a valid route counts the penalty length
+//    P = sum over level-0 rooms of (width + depth), an upper bound of any shortest route (a shortest route never
+//    re-enters a room and crosses each room in at most its width plus depth); normalized = (valid rooms / rooms) *
+//    L / (L + raw) with L = sqrt(total level-0 room area), the side of an equal-area square, so 1 means every room at
+//    the door and a mean route as long as L scores 0.5; 0 without an entrance or when the model was refused (the
+//    detail then names the failed check or refusal codes). Losing a valid route therefore never raises the score for
+//    the same geometry. The detail also records the circulation weight and RequireValid.
 // 5. Effective weight = given weight / sum of the seven given weights; contribution = weight * normalized; total = sum
 //    of the contributions in criterion order, at most 1. Rank by total descending, ties by generation index; then the
 //    unranked alternatives in generation order. With CirculationWeight 0 and RequireValid false the six base
@@ -54,7 +60,7 @@ public static class CirculationRanker
             var model = CirculationAnalyzer.Analyze(brief, alternative.Plan, options);
             if (scoring.RequireValid && !model.IsValid)
             {
-                var reasons = model.Checks.Where(check => !check.Satisfied).Select(check => check.Code + "@" + check.Subject + ": " + check.Detail).ToArray();
+                var reasons = model.Checks.Where(check => check.Hard && !check.Satisfied).Select(check => check.Code + "@" + check.Subject + ": " + check.Detail).ToArray();
                 rejected.Add(alternative with { Status = AlternativeStatus.Infeasible, Rank = 0, Total = 0, Criteria = Array.Empty<CriterionScore>(), Reasons = reasons, DuplicateOfIndex = null });
                 continue;
             }
@@ -65,7 +71,7 @@ public static class CirculationRanker
                 var weight = given[k] / sum;
                 criteria.Add(criterion with { Weight = weight, Contribution = weight * criterion.Normalized });
             }
-            var circulation = Criterion(alternative.Plan, model, circulationWeight);
+            var circulation = Criterion(alternative.Plan, model, circulationWeight, scoring.CirculationWeight, scoring.RequireValid);
             if (!double.IsFinite(circulation.Raw) || !double.IsFinite(circulation.Normalized))
             {
                 rejected.Add(alternative with { Status = AlternativeStatus.Infeasible, Rank = 0, Total = 0, Criteria = Array.Empty<CriterionScore>(),
@@ -100,29 +106,48 @@ public static class CirculationRanker
         return Rank(brief, plans, scoring);
     }
 
-    // The circulation criterion of one analysed plan (see step 4).
-    public static CriterionScore Criterion(SpacePlan plan, CirculationModel model, double weight)
+    // The circulation criterion of one analysed plan (see step 4). The detail records the given and effective circulation
+    // weight and the RequireValid setting, so sets ranked with different settings serialize differently.
+    internal static CriterionScore Criterion(SpacePlan plan, CirculationModel model, double weight, double givenWeight, bool requireValid)
     {
-        ArgumentNullException.ThrowIfNull(plan);
-        ArgumentNullException.ThrowIfNull(model);
-        var scale = Math.Sqrt(plan.Rooms.Where(room => room.Level == 0).Sum(room => room.AreaSquareMetres));
-        var valid = model.Routes.Where(route => route.Reachable && (!route.IsBedroom || route.AvoidsBedrooms)).ToArray();
-        var total = model.Routes.Count;
+        var ground = plan.Rooms.Where(room => room.Level == 0).ToArray();
+        var scale = Math.Sqrt(ground.Sum(room => room.AreaSquareMetres));
+        double penalty = 0;
+        foreach (var room in ground) penalty += room.Rect.Width + room.Rect.Depth;
+        var upper = plan.Rooms.Count - ground.Length;
+        var provenance = "; only level 0 is scored" + (upper > 0 ? " (" + Text(upper) + " rooms off level 0 reported circulation_unsupported)" : "")
+            + "; circulation weight " + CirculationAnalyzer.Format(givenWeight) + " given (effective " + CirculationAnalyzer.Format(weight) + "), require_valid " + (requireValid ? "true" : "false");
         double raw = 0, normalized = 0;
         string detail;
-        if (valid.Length > 0 && total > 0)
+        var failed = model.Checks.Where(check => check.Hard && !check.Satisfied).ToArray();
+        if (model.Status == CirculationStatus.Refused)
+            detail = "circulation refused: " + string.Join(", ", failed.Select(check => check.Code + "@" + check.Subject));
+        else
         {
-            double length = 0;
-            foreach (var route in valid) length += route.LengthMetres;
-            raw = length / valid.Length;
-            normalized = (double)valid.Length / total * (scale / (scale + raw));
-            detail = "mean route " + CirculationAnalyzer.Format(raw) + " m from the entrance door (" + (model.Entrance?.To ?? "") + ", "
-                + (model.EntranceEdge is { } edge ? CirculationAnalyzer.EdgeName(edge) : "") + " lot edge) to the room centres over " + Text(valid.Length) + " of " + Text(total)
-                + " rooms with a valid route; normalized (valid / rooms) * L / (L + mean), L = sqrt(level-0 room area) = " + CirculationAnalyzer.Format(scale) + " m";
+            var ids = new HashSet<string>(ground.Select(room => room.InstanceId), StringComparer.Ordinal);
+            var routes = model.Routes.Where(route => ids.Contains(route.Instance)).ToArray();
+            var valid = routes.Where(route => route.Reachable && !failed.Any(check => check.Subject == route.Instance)).ToArray();
+            var invalid = routes.Length - valid.Length;
+            if (routes.Length == 0) detail = "no level-0 rooms to score";
+            else if (valid.Length == 0 || model.Entrance is null)
+            {
+                raw = penalty;
+                detail = "0 of " + Text(routes.Length) + " level-0 rooms have a valid route; failed checks: " + string.Join(", ", failed.Select(check => check.Code + "@" + check.Subject));
+            }
+            else
+            {
+                double length = 0;
+                foreach (var route in valid) length += route.LengthMetres;
+                raw = (length + invalid * penalty) / routes.Length;
+                normalized = (double)valid.Length / routes.Length * (scale / (scale + raw));
+                detail = "mean route " + CirculationAnalyzer.Format(raw) + " m from the entrance door (" + model.Entrance.To + ", "
+                    + (model.EntranceEdge is { } edge ? CirculationAnalyzer.EdgeName(edge) : "") + " lot edge) to the room centres; " + Text(valid.Length) + " of " + Text(routes.Length)
+                    + " level-0 rooms with a valid route" + (invalid > 0 ? ", each of the " + Text(invalid) + " others counted at the penalty sum(width + depth) = " + CirculationAnalyzer.Format(penalty) + " m" : "")
+                    + "; normalized (valid / rooms) * L / (L + mean), L = sqrt(level-0 room area) = " + CirculationAnalyzer.Format(scale) + " m";
+            }
         }
-        else detail = model.Entrance is null ? "no entrance on the lot edge, so no room has a valid route" : "0 of " + Text(total) + " rooms have a valid route";
         var bounded = double.IsFinite(normalized) ? Math.Clamp(normalized, 0, 1) : normalized;
-        return new CriterionScore(CirculationCodes.Criterion, raw, bounded, weight, weight * bounded, detail);
+        return new CriterionScore(CirculationCodes.Criterion, raw, bounded, weight, weight * bounded, detail + provenance);
     }
 
     static List<PlanConstraint> Refusals(int count, ScoringWeights weights, double circulationWeight, CirculationOptions options)

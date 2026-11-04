@@ -5,22 +5,28 @@ namespace Bim.Generative;
 // Builds the circulation model of a feasible space plan. Steps:
 // 1. Refuse the options (door width not positive and finite, an empty or undefined entrance edge list, a blank pattern,
 //    an entrance room that is neither a room id nor an instance id of the plan) and the plan (infeasible, without
-//    rooms, a room rectangle not positive and finite, an instance id given twice, no lot) as a Refused model.
+//    rooms, a room rectangle not positive and finite, an instance id given twice, two rooms of one level overlapping by
+//    more than 1e-7 m in both directions, no lot) as a Refused model.
 // 2. Lot: the brief site when it is positive and finite, else the plan footprint; its south-west corner is (0, 0).
 // 3. Doors: for every pair of rooms on one level whose common edge is at least the door width long (1e-7 m tolerance,
-//    as the planner), one door of the door width centred on that common edge. Doors are ordered by level, then the
-//    instance ids of their rooms (ordinal), and named "door:<from>/<to>".
+//    as the planner), one candidate door of the door width centred on that common edge. Every qualifying wall gets
+//    one, so reachability is connectivity of the room adjacency graph. Doors are ordered by level, then the instance
+//    ids of their rooms (ordinal), and named "door:<from>/<to>".
 // 4. Entrance (level 0 only, the lot edge being at ground level): candidates are the EntranceRoomId room(s) when given;
-//    otherwise the non-bedroom rooms matching EntrancePatterns, then the other non-bedroom rooms, each group by area
-//    descending and instance id; the first candidate with a side of at least the door width on one of EntranceEdges
-//    (in the given order) gets the entrance door centred on that side. No candidate fails circulation_entrance.
+//    otherwise the non-bedroom rooms matching EntrancePatterns, then the other rooms that are neither bedrooms nor wet
+//    rooms, each group by area descending and instance id; the first candidate with a side of at least the door width
+//    on one of EntranceEdges (the allowed street edges, in the given order) gets the entrance door centred on that
+//    side. No candidate fails circulation_entrance.
 // 5. Routes: a shortest-path search over door midpoints (states: a door crossed into a room; from a state every other
 //    door of that room is reachable in a straight line, rooms being convex rectangles), ties broken by state order, so
 //    the result is deterministic. It runs twice: through any room, and never passing through a bedroom (a bedroom may
 //    only end a route). Each room takes its bedroom-free route when one exists, else its shortest route at all; the
-//    length ends at the room centre. Rooms off level 0 are unreachable: no stairs are modelled.
-// 6. Checks: circulation_entrance (plan), circulation_reachable for every room and circulation_bedroom_access for every
-//    bedroom (a bedroom-free route exists). Valid when all hold.
+//    length ends at the room centre. Equal lengths keep the lower search state, i.e. the earlier door in door order.
+// 6. Checks: circulation_entrance (plan); for every level-0 room circulation_reachable, and a bedroom-free route as
+//    circulation_bedroom_access (bedrooms) or circulation_passage (dry rooms; wet rooms matching PassThroughPatterns,
+//    such as an ensuite bathroom or a dressing room, may sit behind a bedroom). Rooms off level 0 get the soft
+//    circulation_unsupported outcome instead: no stairs are modelled, so they are reported, not counted as defects.
+//    Valid when every hard check holds.
 // Rooms are processed in instance id order, so the model does not depend on the order of the plan's rooms.
 public static class CirculationAnalyzer
 {
@@ -50,6 +56,16 @@ public static class CirculationAnalyzer
             }
             foreach (var duplicate in plan.Rooms.GroupBy(room => room.InstanceId ?? "", StringComparer.Ordinal).Where(group => group.Count() > 1).OrderBy(group => group.Key, StringComparer.Ordinal))
                 refusals.Add(Refusal(CirculationCodes.PlanInvalid, duplicate.Key, "instance id given " + Text(duplicate.Count()) + " times"));
+            var ordered = plan.Rooms.Where(room => room.Rect is not null).OrderBy(room => room.InstanceId, StringComparer.Ordinal).ToArray();
+            for (var i = 0; i < ordered.Length; i++)
+                for (var j = i + 1; j < ordered.Length; j++)
+                {
+                    var (a, b) = (ordered[i].Rect, ordered[j].Rect);
+                    var width = Math.Min(a.Right, b.Right) - Math.Max(a.X, b.X);
+                    var depth = Math.Min(a.Top, b.Top) - Math.Max(a.Y, b.Y);
+                    if (ordered[i].Level == ordered[j].Level && width > Epsilon && depth > Epsilon)
+                        refusals.Add(Refusal(CirculationCodes.PlanInvalid, ordered[i].InstanceId + "/" + ordered[j].InstanceId, "rooms overlap by " + Format(width) + " x " + Format(depth) + " m"));
+                }
             if (options.EntranceRoomId is { } wanted && !string.IsNullOrWhiteSpace(wanted)
                 && !plan.Rooms.Any(room => string.Equals(room.RoomId, wanted, StringComparison.Ordinal) || string.Equals(room.InstanceId, wanted, StringComparison.Ordinal)))
                 refusals.Add(Refusal(CirculationCodes.OptionsInvalid, "entrance_room", "'" + wanted + "' is neither a room id nor an instance id of the plan"));
@@ -65,6 +81,7 @@ public static class CirculationAnalyzer
         var edges = options.EntranceEdges ?? CirculationOptions.DefaultEntranceEdges;
         var rooms = plan.Rooms.OrderBy(room => room.InstanceId, StringComparer.Ordinal).ToArray();
         var bedroom = rooms.Select(room => MatchesAny(bedroomPatterns, room)).ToArray();
+        var wet = rooms.Select((room, k) => !bedroom[k] && MatchesAny(options.PassThroughPatterns ?? CirculationOptions.DefaultPassThroughPatterns, room)).ToArray();
 
         // Doors between rooms.
         var built = new List<Door>();
@@ -87,7 +104,7 @@ public static class CirculationAnalyzer
             var groundRooms = Enumerable.Range(0, rooms.Length).Where(k => rooms[k].Level == EntranceLevel && !bedroom[k]).ToArray();
             var named = groundRooms.Where(k => MatchesAny(entrancePatterns, rooms[k])).ToArray();
             candidates.AddRange(BySize(named, rooms));
-            candidates.AddRange(BySize(groundRooms.Except(named).ToArray(), rooms));
+            candidates.AddRange(BySize(groundRooms.Except(named).Where(k => !wet[k]).ToArray(), rooms));
         }
         var entranceRoom = -1;
         LotEdge? entranceEdge = null;
@@ -114,11 +131,18 @@ public static class CirculationAnalyzer
             checks.Add(new PlanConstraint(CirculationCodes.Entrance, "plan", true, true, "entrance door of " + Format(door) + " m on the " + EdgeName(placedEdge) + " lot edge of "
                 + rooms[entranceRoom].InstanceId + " at (" + Format(entrance.MidX) + ", " + Format(entrance.MidY) + ")"));
         else
-            checks.Add(new PlanConstraint(CirculationCodes.Entrance, "plan", true, false, (options.EntranceRoomId is { } given ? "entrance room '" + given + "'" : "no non-bedroom room")
+            checks.Add(new PlanConstraint(CirculationCodes.Entrance, "plan", true, false, (options.EntranceRoomId is { } given ? "entrance room '" + given + "'" : "no non-bedroom, non-wet room")
                 + " on level 0 has a side of at least " + Format(door) + " m on the lot edges " + string.Join(", ", edges.Select(EdgeName))));
         for (var k = 0; k < rooms.Length; k++)
         {
             var room = rooms[k];
+            if (room.Level != EntranceLevel)
+            {
+                routes.Add(new CirculationRoute(room.InstanceId, bedroom[k], false, false, double.PositiveInfinity, Array.Empty<string>(), Array.Empty<string>()));
+                checks.Add(new PlanConstraint(CirculationCodes.Unsupported, room.InstanceId, false, false, "on level " + Text(room.Level)
+                    + "; no stairs are modelled, so only level 0 is analysed (reported, not a plan defect)"));
+                continue;
+            }
             var free = clear?.Best(k);
             var found = free ?? any?.Best(k);
             if (found is not null)
@@ -132,21 +156,22 @@ public static class CirculationAnalyzer
             else
             {
                 routes.Add(new CirculationRoute(room.InstanceId, bedroom[k], false, false, double.PositiveInfinity, Array.Empty<string>(), Array.Empty<string>()));
-                var why = room.Level != EntranceLevel ? "on level " + Text(room.Level) + "; no stairs are modelled, so only level 0 rooms are reachable from the entrance"
-                    : entrance is null ? "there is no entrance on the lot edge"
+                var why = entrance is null ? "there is no entrance on the lot edge"
                     : "no chain of shared walls of at least " + Format(door) + " m joins it to the entrance room " + rooms[entranceRoom].InstanceId;
                 checks.Add(new PlanConstraint(CirculationCodes.Reachable, room.InstanceId, true, false, why));
             }
-            if (!bedroom[k]) continue;
-            if (free is not null) checks.Add(new PlanConstraint(CirculationCodes.BedroomAccess, room.InstanceId, true, true, "reached without passing through another bedroom"));
+            if (wet[k]) continue;
+            var code = bedroom[k] ? CirculationCodes.BedroomAccess : CirculationCodes.Passage;
+            if (free is not null) checks.Add(new PlanConstraint(code, room.InstanceId, true, true, bedroom[k] ? "reached without passing through another bedroom" : "reached without passing through a bedroom"));
             else if (found is not null)
-                checks.Add(new PlanConstraint(CirculationCodes.BedroomAccess, room.InstanceId, true, false, "reachable only through bedroom "
-                    + string.Join(", ", found.Rooms.Take(found.Rooms.Count - 1).Where(r => bedroom[r]).Select(r => rooms[r].InstanceId))));
-            else checks.Add(new PlanConstraint(CirculationCodes.BedroomAccess, room.InstanceId, true, false, "the bedroom is not reachable from the entrance"));
+                checks.Add(new PlanConstraint(code, room.InstanceId, true, false, "reachable only through bedroom "
+                    + string.Join(", ", found.Rooms.Take(found.Rooms.Count - 1).Where(r => bedroom[r]).Select(r => rooms[r].InstanceId))
+                    + (bedroom[k] ? "" : "; only wet rooms (pass-through patterns) may sit behind a bedroom")));
+            else checks.Add(new PlanConstraint(code, room.InstanceId, true, false, "not reachable from the entrance"));
         }
         var doorRecords = doors.Select((d, index) => Record(rooms, d, DoorId(rooms, d), used.Contains(index))).ToArray();
         var entranceRecord = entrance is null ? null : Record(rooms, entrance, CirculationModel.EntranceDoorId, used.Contains(-1));
-        var status = checks.All(check => check.Satisfied) ? CirculationStatus.Valid : CirculationStatus.Invalid;
+        var status = checks.Where(check => check.Hard).All(check => check.Satisfied) ? CirculationStatus.Valid : CirculationStatus.Invalid;
         return new CirculationModel(status, name, plan.Seed, door, entranceRecord, entranceEdge, doorRecords, routes, checks);
     }
 
@@ -162,7 +187,8 @@ public static class CirculationAnalyzer
             for (var i = 0; i < edges.Count; i++)
                 if (!Enum.IsDefined(edges[i])) refusals.Add(Refusal(CirculationCodes.OptionsInvalid, "entrance_edges[" + Text(i) + "]", "undefined lot edge " + Text((int)edges[i])));
         }
-        foreach (var (field, patterns) in new[] { ("bedroom_patterns", options.BedroomPatterns), ("entrance_patterns", options.EntrancePatterns) })
+        foreach (var (field, patterns) in new[] { ("bedroom_patterns", options.BedroomPatterns), ("entrance_patterns", options.EntrancePatterns),
+            ("pass_through_patterns", options.PassThroughPatterns) })
             if (patterns is not null)
                 for (var i = 0; i < patterns.Count; i++)
                     if (string.IsNullOrWhiteSpace(patterns[i])) refusals.Add(Refusal(CirculationCodes.OptionsInvalid, field + "[" + Text(i) + "]", "pattern must not be blank"));
