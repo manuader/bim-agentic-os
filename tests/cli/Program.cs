@@ -237,7 +237,8 @@ try {
     ExpectFailure("export-gltf refuses a missing input","input_not_found","export-gltf",missing,gNoOut);
     ExpectFailure("export-gltf refuses a directory input","input_not_regular_file","export-gltf",directory,gNoOut);
     ExpectFailure("export-gltf refuses malformed JSON","bim_ir_json_invalid","export-gltf",Input("gltf-bad.json","{\"Id\":"),gNoOut);
-    ExpectFailure("export-gltf refuses a null project","bim_ir_invalid","export-gltf",Input("gltf-null.json","null"),gNoOut);
+    var gNull=Cli("export-gltf",Input("gltf-null.json","null"),gNoOut);
+    Check(gNull.Exit==1 && GEnvelope(gNull.Out) is {} gNullEnv && gNullEnv.GetProperty("status").GetString()=="failed" && gNullEnv.GetProperty("code").GetString()=="bim_ir_invalid","export-gltf refuses a null project",gNull.Out);
     var gOverlap=gProject with {Elements=[..gProject.Elements,new Element(Guid.Parse("0e000000-0000-4000-8000-000000000003"),"window",[1.5,0,3,0,1,1],[gLevel,gWall],gProv)]};
     var gRefused=Cli("export-gltf",Input("gltf-overlap.json",JsonSerializer.Serialize(gOverlap)),gNoOut);
     Check(gRefused.Exit==1 && GEnvelope(gRefused.Out) is {} gEnv && gEnv.GetProperty("status").GetString()=="failed" && gEnv.GetProperty("code").GetString()=="gltf_opening_overlap" && gEnv.GetProperty("detail").GetString()!.Length>0,
