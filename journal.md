@@ -1162,3 +1162,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - VERIFIED in real Revit: view.export_image (with visual_style, model_changed false), document.save (is_modified false), command.batch, wall.set_profile, roof footprint sloped_edges on rotated quads.
 - BUG view.create_section: diagonal lines fail readback (right direction flipped). BUG wall.set_profile readback too strict on joined walls (miter extends sloped top). GAP view.create_3d has no orientation. Worker on branch chat-section-profile-fixes.
 - Note: operation_ids are remembered per document forever (c2-stove from an older session collided) → use dated ids.
+- 18:56Z integration CI 41882159923: all .NET jobs green; rhino job hit a rhino3dm native segfault in a P8-06 test construction; fixed on relay153-P8-06 f545bb1 (green twice 41889889497) and merged into integration; waiting CI.
