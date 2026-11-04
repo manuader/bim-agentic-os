@@ -118,7 +118,7 @@ static class ElementSkillTests
         var orderKeys = good.Findings.Select(finding => (finding.ElementId, finding.RuleId)).ToArray();
         check(orderKeys.SequenceEqual(orderKeys.OrderBy(key => key.ElementId, StringComparer.Ordinal).ThenBy(key => key.RuleId, StringComparer.Ordinal)),
             "findings are ordered by element id then qualified rule id", Show(good));
-        check(Find(good, WallId, "wall-thickness-min") is { RuleId: Pack + "/wall-thickness-min", SkillId: Pack, SkillVersion: "1.0.0", ElementKind: "wall", Op: "min",
+        check(Find(good, WallId, "wall-thickness-min") is { RuleId: Pack + "/wall-thickness-min", SkillId: Pack, SkillVersion: "1.1.0", ElementKind: "wall", Op: "min",
                 Property: "thickness_mm", Unit: "mm", Measured: 200, Bound: 75, BoundSource: Pack + ":parameter:wall_thickness_min_mm", Outcome: ElementCheckOutcome.Pass, Reason: null, HostId: null } wallFinding
             && wallFinding.Detail.Contains("thickness_mm 200 >= 75 mm", StringComparison.Ordinal),
             "a finding traces rule id, skill id and version, element, measured vs bound in millimetres and the parameter the bound came from", Show(good));
