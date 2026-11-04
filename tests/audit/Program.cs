@@ -105,6 +105,10 @@ try
         Check(RevitCommandCatalogue.MaterialTypes.Any(spec => spec.Name == command && spec.Writes == writes) && RevitCommandCatalogue.IsDestructive(command) == destructive, "material type catalogue has " + command + (writes ? " (write" + (destructive ? ", destructive)" : ")") : " (read-only)"));
         Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == (writes ? PermissionLevel.WriteCopies : PermissionLevel.Read) && PermissionPolicy.RequiredLevel(command, RealPath, copies) == (writes ? PermissionLevel.WriteRealProject : PermissionLevel.Read), command + " permission levels follow read/write");
     }
+    // P2-05: query.journal reads the in-memory edit journal: read on a copy and on a real project, allowed for a reader.
+    Check(RevitCommandCatalogue.Journal.Any(spec => spec.Name == "query.journal" && !spec.Writes) && !RevitCommandCatalogue.IsDestructive("query.journal"), "journal catalogue has read-only query.journal");
+    Check(PermissionPolicy.RequiredLevel("query.journal", FixturePath, copies) == PermissionLevel.Read && PermissionPolicy.RequiredLevel("query.journal", RealPath, copies) == PermissionLevel.Read, "query.journal requires read on a copy and on a real project");
+    Check(PermissionPolicy.Create(grants, Array.Empty<string>(), copies).Evaluate("reader", "query.journal", RealPath) is { Allowed: true, Reason: PermissionCodes.ReadAllowed }, "a reader may run query.journal on a real project");
     // P9-05: the five catalogue v2 commands keep the v1 read/write split.
     var v2Levels = new (string Command, PermissionLevel Copy, PermissionLevel Real)[]
     {

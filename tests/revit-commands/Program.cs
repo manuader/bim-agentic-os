@@ -407,6 +407,8 @@ try
     CatalogueWallProfileChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- Materials, layered wall/floor types and type changes (chat-materials-types) ----
     CatalogueMaterialTypesChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- query.journal (P2-05): the external edit journal as a read-only catalogue query mirroring journal.read ----
+    CatalogueJournalChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
