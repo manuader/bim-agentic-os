@@ -16,13 +16,14 @@ namespace Bim.Revit;
 //     double extrusionStart, double extrusionEnd); the profile curves (Line.CreateBound, Arc.Create(end0, end1,
 //     pointOnArc)) lie in the reference plane
 //   ExtrusionRoof.GetProfile() (ModelCurveArray; GeometryCurve, SketchPlane) for the independent readback,
-//     ExtrusionRoof.ExtrusionStart / ExtrusionEnd, BuiltInParameter.ROOF_CONSTRAINT_LEVEL_PARAM (Reference Level),
+//     BuiltInParameter.EXTRUSION_START_PARAM / EXTRUSION_END_PARAM, ROOF_CONSTRAINT_LEVEL_PARAM (Reference Level),
 //     Element.get_BoundingBox(null)
 // Unverified in Revit (owner session required): that the extents are measured along the reference plane's normal
 //   (the executor mirrors them when that normal points opposite the request's left normal, and the readback checks
 //   the bounding box spans the requested extents along it, so a wrong sign rolls back as transaction_failed); which
 //   view NewReferencePlane needs for a vertical plane (a non-template plan view of the reference level, else the
-//   active view); whether Revit keeps the profile curves exactly (an arc split in two reads back as a mismatch); how
+//   active view); that an extrusion roof carries EXTRUSION_START_PARAM / EXTRUSION_END_PARAM (without them the
+//   readback reports null extents and rolls back); whether Revit keeps the profile curves exactly (an arc split in two reads back as a mismatch); how
 //   the roof type's thickness sits relative to the profile line.
 internal static partial class CommandExecutor
 {
@@ -62,7 +63,10 @@ internal static partial class CommandExecutor
                 var normal = curve.SketchPlane?.GetPlane().Normal;
                 if (normal is null || Math.Abs(Math.Abs(normal.X * frame.Nx + normal.Y * frame.Ny) - 1) > 1e-6) parallel = false;
             }
-            var (start, end) = CommandRulesRoofExtrusion.ContractExtents(Mm(created.ExtrusionStart), Mm(created.ExtrusionEnd), agrees);
+            // The instance parameters Extrusion Start / Extrusion End; the 2025 API has no ExtrusionRoof properties for them.
+            double? start = null, end = null;
+            if (LengthParameter(created, BuiltInParameter.EXTRUSION_START_PARAM) is { } revitStart && LengthParameter(created, BuiltInParameter.EXTRUSION_END_PARAM) is { } revitEnd)
+                (start, end) = CommandRulesRoofExtrusion.ContractExtents(revitStart, revitEnd, agrees);
             var box = created.get_BoundingBox(null);
             return new ObservedRoofExtrusion(created.UniqueId,
                 LevelParameterUid(d, created, BuiltInParameter.ROOF_CONSTRAINT_LEVEL_PARAM) ?? UniqueIdOf(d, created.LevelId), UniqueIdOf(d, created.GetTypeId()),

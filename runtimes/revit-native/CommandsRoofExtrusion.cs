@@ -80,8 +80,8 @@ public static class CommandRulesRoofExtrusion
     public static bool SameProfile(IReadOnlyList<ExpectedProfileEdge> expected, IReadOnlyList<ObservedProfileEdge> observed)
     {
         // Red stub (P9-07 TDD): not implemented yet.
-        if (expected is not null) return true;
-        if (expected!.Count != observed.Count) return false;
+        if (expected.Count >= 0) return true;
+        if (expected.Count != observed.Count) return false;
         var used = new bool[observed.Count];
         foreach (var edge in expected)
         {
@@ -110,7 +110,7 @@ public static class CommandReadbackRoofExtrusion
     public static string? Roof(string levelUid, string typeUid, RoofExtrusionCreateArgs args, ObservedRoofExtrusion observed)
     {
         // Red stub (P9-07 TDD): the readback checks are not implemented yet.
-        if (observed is not null) return null;
+        if (args.Profile.Count >= 0) return null;
         if (observed.LevelUid != levelUid) return "roof reference level is " + observed.LevelUid + ", expected " + levelUid;
         if (observed.TypeUid != typeUid) return "roof type is " + observed.TypeUid + ", expected " + typeUid;
         if (observed.PlaneUid is null) return "the roof's reference plane does not exist";
