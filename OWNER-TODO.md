@@ -96,3 +96,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] Decide: are escritorio, estudio and biblioteca third class like dormitorio? (9 CABA rules stay to-verify until you say so.)
 - [ ] Decide: OK to keep the 4-code Uniclass 2015 excerpt (CC BY-ND 4.0, attributed, unmodified) in the repo? (core/Bim.Core/Classification/README.md)
 - Still open: 🔒 N21 run 3 (`... -Runs 1`); optional Blender .glb check.
+
+## Relay147 (2026-11-04, cloud)
+- [ ] Materials/types overlap: your chat branch `chat-materials-types` and the relay branch `relay147-P9-06` implement the same commands (material.create, wall_type.create, floor_type.create). The relay did NOT merge its version. Tell a relay (OWNER.md) whether to independently review and merge `chat-materials-types` (porting relay147-P9-06's hardening: core/shell readback, ordinal-first name pick, 1.2 mm minimum layer, Revit name errors → args_invalid), or merge it from the chat yourself.
+- No Revit action new this relay (P8-05 IFC import and P3-04 local validation are headless, CI-tested). Still open: 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (81 steps) on a test copy, 🔒 N21 `... -Runs 1`, escritorio/estudio/biblioteca class, Uniclass CC BY-ND excerpt OK?
