@@ -60,6 +60,8 @@ public static class SkillTypology
     public const string FamilySizeSubject = "family_size";
     // Confidence of the inferred provenance on brief rooms and adjacencies: programme values are illustrative defaults.
     public const double ProvenanceConfidence = 0.6;
+    // At most this many rooms of one kind (a fixed count or ceil(family size / persons_per_room)).
+    public const int MaxRoomCount = 50;
 
     static readonly string[] Kinds = { "living", "dining", "kitchen", "hall", "bedroom", "bathroom", "toilet", "laundry", "study", "garage", "storage" };
     static readonly string[] Names = { "Living", "Dining", "Kitchen", "Hall", "Bedroom", "Bathroom", "Toilet", "Laundry", "Study", "Garage", "Storage" };
