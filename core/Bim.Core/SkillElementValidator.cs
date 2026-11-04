@@ -40,6 +40,9 @@ public static class ElementReasons
     public const string HostShapeUnsupported = "host_shape_unsupported";
     public const string HostDegenerate = "host_degenerate";
     public const string RatioUndefined = "ratio_undefined";
+    public const string UnitMismatch = "unit_mismatch";
+    public const string HostedLayout = "hosted_layout";
+    public const string LevelMissing = "level_missing";
 }
 
 // Measured quantities of one wall, door or window in metres. Problem (with ProblemDetail) is set when the element's own

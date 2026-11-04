@@ -64,25 +64,28 @@ static class ElementSkillTests
         var packPath = Path.Combine(root, "skills", Pack, "skill.json");
 
         // ---- Manifest shape ----
-        check(pack.Kind == SkillKind.Qa && pack.Version == new SkillVersion(1, 0, 0) && pack.Priority == 50 && pack.Requires.Count == 0 && pack.Defaults.Count == 0,
-            "the pack is a qa skill 1.0.0 with priority 50, no requirements and no defaults", pack.Kind + " " + pack.Version + " " + pack.Priority);
-        check(pack.Rules.Count == 20 && pack.Rules.All(rule => rule.Target.ElementKind is "wall" or "door" or "window")
-            && pack.Rules.All(rule => rule.Check.Property.EndsWith("_mm", StringComparison.Ordinal) && ElementFacts.IsProperty(rule.Target.ElementKind!, rule.Check.Property)),
-            "20 element rules over walls, doors and windows, every property an explicit millimetre quantity of its kind",
+        check(pack.Kind == SkillKind.Qa && pack.Version == new SkillVersion(1, 1, 0) && pack.Priority == 50 && pack.Requires.Count == 0 && pack.Defaults.Count == 0,
+            "the pack is a qa skill 1.1.0 with priority 50, no requirements and no defaults", pack.Kind + " " + pack.Version + " " + pack.Priority);
+        check(pack.Rules.Count == 23 && pack.Rules.All(rule => rule.Target.ElementKind is "wall" or "door" or "window")
+            && pack.Rules.All(rule => (rule.Check.Property.EndsWith("_mm", StringComparison.Ordinal) || rule.Check.Property == "host_level_mismatch") && ElementFacts.IsProperty(rule.Target.ElementKind!, rule.Check.Property)),
+            "23 element rules over walls, doors and windows, every property an explicit millimetre quantity (or the host level count) of its kind",
             string.Join(",", pack.Rules.Select(rule => rule.Target.ElementKind + "." + rule.Check.Property)));
         var expectedRules = new[] { "wall-thickness-min", "wall-thickness-max" }
-            .Concat(new[] { "door", "window" }.SelectMany(kind => new[] { "width-min", "width-max", "height-min", "height-max", "inside-host-start", "inside-host-end", "inside-host-bottom", "inside-host-top", "on-host-axis" }
-                .Select(suffix => kind + "-" + suffix))).ToArray();
+            .Concat(new[] { "door", "window" }.SelectMany(kind => new[] { "width-min", "width-max", "height-min", "height-max", "inside-host-start", "inside-host-end", "inside-host-bottom", "inside-host-top", "on-host-axis", "on-host-level" }
+                .Concat(kind == "door" ? new[] { "sill-at-level" } : Array.Empty<string>()).Select(suffix => kind + "-" + suffix))).ToArray();
         check(pack.Rules.Select(rule => rule.Id).SequenceEqual(expectedRules), "the pack covers thickness bounds, size bounds and inside-host checks for doors and windows",
             string.Join(",", pack.Rules.Select(rule => rule.Id)));
         check(pack.Description.Contains("not a building code", StringComparison.OrdinalIgnoreCase) && pack.Description.Contains("millimetres", StringComparison.Ordinal),
             "the pack states it is illustrative and that lengths are millimetres");
         check(pack.Parameters.FirstOrDefault(parameter => parameter.Name == "wall_thickness_min_mm") is { Default.Number: 75 }
             && pack.Parameters.FirstOrDefault(parameter => parameter.Name == "door_width_min_mm") is { Default.Number: 700 }
-            && pack.Parameters.FirstOrDefault(parameter => parameter.Name == "opening_axis_tolerance_mm") is { Default.Number: 1 },
-            "pack bounds are parameters (wall 75 mm, door 700 mm, axis tolerance 1 mm)");
+            && pack.Parameters.FirstOrDefault(parameter => parameter.Name == "opening_axis_tolerance_mm") is { Default.Number: 1 }
+            && pack.Parameters.FirstOrDefault(parameter => parameter.Name == "opening_clearance_min_mm") is { Default.Number: -0.001 }
+            && pack.Parameters.FirstOrDefault(parameter => parameter.Name == "door_sill_max_mm") is { Default.Number: 0.001 }
+            && pack.Rules.Where(rule => rule.Id.Contains("inside-host", StringComparison.Ordinal)).All(rule => rule.Check.Parameter == "opening_clearance_min_mm"),
+            "pack bounds are parameters (wall 75 mm, door 700 mm, axis tolerance 1 mm, clearances -0.001 mm, door sill 0.001 mm)");
         var together = SkillResolver.Resolve(catalog, new[] { new SkillRequest(Caba), new SkillRequest(Pack), new SkillRequest(RoomBasics) });
-        check(together.Succeeded && together.Rules.Count(rule => rule.SkillId == Pack) == 20, "the pack composes with the CABA and room QA packs without conflicts",
+        check(together.Succeeded && together.Rules.Count(rule => rule.SkillId == Pack) == 23, "the pack composes with the CABA and room QA packs without conflicts",
             string.Join("; ", together.Issues.Select(issue => issue.Code + "@" + issue.Subject)));
 
         // ---- Duplicate rule ids are refused at load ----
@@ -91,14 +94,14 @@ static class ElementSkillTests
         var rules = node["rules"]!.AsArray();
         rules.Add(rules[0]!.DeepClone());
         var duplicated = node.ToJsonString();
-        check(Code(() => SkillParser.Parse(duplicated)) == SkillCodes.EntryDuplicate + "@rules[20].id", "a duplicate rule id in the pack is refused by the parser",
+        check(Code(() => SkillParser.Parse(duplicated)) == SkillCodes.EntryDuplicate + "@rules[23].id", "a duplicate rule id in the pack is refused by the parser",
             Code(() => SkillParser.Parse(duplicated)) ?? "accepted");
         var temp = Path.Combine(Path.GetTempPath(), "bim-element-skill-" + Guid.NewGuid().ToString("N"));
         try
         {
             Directory.CreateDirectory(Path.Combine(temp, Pack));
             File.WriteAllText(Path.Combine(temp, Pack, "skill.json"), duplicated);
-            check(Code(() => SkillLoader.LoadDirectory(temp)) == SkillCodes.EntryDuplicate + "@rules[20].id#" + Pack + "/skill.json",
+            check(Code(() => SkillLoader.LoadDirectory(temp)) == SkillCodes.EntryDuplicate + "@rules[23].id#" + Pack + "/skill.json",
                 "a duplicate rule id is refused at load with the manifest path", Code(() => SkillLoader.LoadDirectory(temp)) ?? "loaded");
         }
         finally
@@ -110,7 +113,7 @@ static class ElementSkillTests
 
         // ---- A compliant model ----
         var good = SkillElementValidator.Validate(pack, Model(Good()));
-        check(good.Findings.Count == 20 && good.Compliant && good.Complete && good.Failures.Count == 0 && good.UnusedRuleIds.Count == 0,
+        check(good.Findings.Count == 23 && good.Compliant && good.Complete && good.Failures.Count == 0 && good.UnusedRuleIds.Count == 0,
             "a compliant wall, door and window pass every rule", Show(good));
         var orderKeys = good.Findings.Select(finding => (finding.ElementId, finding.RuleId)).ToArray();
         check(orderKeys.SequenceEqual(orderKeys.OrderBy(key => key.ElementId, StringComparer.Ordinal).ThenBy(key => key.RuleId, StringComparer.Ordinal)),
@@ -119,15 +122,16 @@ static class ElementSkillTests
                 Property: "thickness_mm", Unit: "mm", Measured: 200, Bound: 75, BoundSource: Pack + ":parameter:wall_thickness_min_mm", Outcome: ElementCheckOutcome.Pass, Reason: null, HostId: null } wallFinding
             && wallFinding.Detail.Contains("thickness_mm 200 >= 75 mm", StringComparison.Ordinal),
             "a finding traces rule id, skill id and version, element, measured vs bound in millimetres and the parameter the bound came from", Show(good));
-        check(Find(good, DoorId, "door-inside-host-start") is { Measured: 500, Bound: 0, BoundSource: Pack + ":rule:door-inside-host-start", HostId: var host } && host == WallId.ToString("D")
+        check(Find(good, DoorId, "door-inside-host-start") is { Measured: 500, Bound: -0.001, BoundSource: Pack + ":parameter:opening_clearance_min_mm", HostId: var host } && host == WallId.ToString("D")
             && Find(good, DoorId, "door-inside-host-end") is { Measured: 2600 } && Find(good, WindowId, "window-inside-host-top") is { Measured: 600 }
-            && Find(good, DoorId, "door-width-min") is { Measured: 900 } && Find(good, WindowId, "window-on-host-axis") is { Measured: 0, Bound: 1 },
+            && Find(good, DoorId, "door-width-min") is { Measured: 900 } && Find(good, WindowId, "window-on-host-axis") is { Measured: 0, Bound: 1 }
+            && Find(good, DoorId, "door-on-host-level") is { Measured: 0, Bound: 0, Unit: "count" } && Find(good, DoorId, "door-sill-at-level") is { Measured: 0, Bound: 0.001 },
             "opening findings carry the host wall and measured clearances (500, 2600, head 600) and widths in millimetres", Show(good));
 
         // ---- Boundary equality and openings exactly at wall ends ----
         var edge = SkillElementValidator.Validate(pack, Model(Level(), Wall(WallId, 0, 0, 4, 0, 2.7, 0.075), Wall(G(11), 0, 5, 4, 5, 2.7, 0.6),
             Opening("door", DoorId, 0, 0, 0.7, 0, 0, 2.0), Opening("window", WindowId, 2.8, 0, 4, 0, 1.5, 1.2)));
-        check(edge.Compliant && edge.Findings.Count == 22, "walls exactly 75 and 600 mm, a door exactly 700 x 2000 and openings flush with the wall ends and top pass", Show(edge));
+        check(edge.Compliant && edge.Findings.Count == 25, "walls exactly 75 and 600 mm, a door exactly 700 x 2000 and openings flush with the wall ends and top pass", Show(edge));
         check(Find(edge, WallId, "wall-thickness-min") is { Measured: 75, Bound: 75 } && Find(edge, G(11), "wall-thickness-max") is { Measured: 600, Bound: 600 }
             && Find(edge, DoorId, "door-inside-host-start") is { Measured: 0, Outcome: ElementCheckOutcome.Pass }
             && Find(edge, WindowId, "window-inside-host-end") is { Measured: 0, Outcome: ElementCheckOutcome.Pass }
@@ -164,14 +168,14 @@ static class ElementSkillTests
         // ---- Missing data is not_evaluable with a typed reason ----
         var orphan = Guid.Parse("00000000-0000-4000-8000-0000000000aa");
         var orphaned = SkillElementValidator.Validate(pack, Model(Level(), Wall(WallId, 0, 0, 4, 0), Opening("door", DoorId, 0.5, 0, 1.4, 0, 0, 2.1, LevelId, orphan)));
-        var hostRules = new[] { "door-inside-host-start", "door-inside-host-end", "door-inside-host-top", "door-on-host-axis" };
+        var hostRules = new[] { "door-inside-host-start", "door-inside-host-end", "door-inside-host-top", "door-on-host-axis", "door-on-host-level" };
         check(hostRules.All(rule => Find(orphaned, DoorId, rule) is { Outcome: ElementCheckOutcome.NotEvaluable, Reason: ElementReasons.HostOrphan, Measured: null, HostId: null } finding
                 && finding.Detail.Contains(orphan.ToString("D"), StringComparison.Ordinal))
             && Find(orphaned, DoorId, "door-width-min") is { Outcome: ElementCheckOutcome.Pass } && Find(orphaned, DoorId, "door-inside-host-bottom") is { Outcome: ElementCheckOutcome.Pass }
-            && orphaned.NotEvaluable.Count == 4 && !orphaned.Complete && !orphaned.Compliant && orphaned.Failures.Count == 0,
+            && orphaned.NotEvaluable.Count == 5 && !orphaned.Complete && !orphaned.Compliant && orphaned.Failures.Count == 0,
             "an orphan host id makes the host checks not_evaluable (host_orphan, naming the id) while size checks still run; the report is not compliant", Show(orphaned));
         var noHost = SkillElementValidator.Validate(pack, Model(Level(), Opening("window", WindowId, 0, 0, 1, 0, 1, 1, LevelId)));
-        check(Find(noHost, WindowId, "window-inside-host-end") is { Outcome: ElementCheckOutcome.NotEvaluable, Reason: ElementReasons.HostMissing } && noHost.NotEvaluable.Count == 4,
+        check(Find(noHost, WindowId, "window-inside-host-end") is { Outcome: ElementCheckOutcome.NotEvaluable, Reason: ElementReasons.HostMissing } && noHost.NotEvaluable.Count == 5,
             "an opening with no wall dependency is host_missing", Show(noHost));
         var twoHosts = SkillElementValidator.Validate(pack, Model(Level(), Wall(WallId, 0, 0, 4, 0), Wall(G(11), 0, 0, 0, 4), Opening("door", DoorId, 0.5, 0, 1.4, 0, 0, 2.1, LevelId, WallId, G(11))));
         check(Find(twoHosts, DoorId, "door-inside-host-start") is { Reason: ElementReasons.HostAmbiguous, Outcome: ElementCheckOutcome.NotEvaluable }, "an opening depending on two walls is host_ambiguous", Show(twoHosts));
@@ -183,7 +187,7 @@ static class ElementSkillTests
             new Element(DoorId, "door", new[] { 0.5, 0, 1.4, 0, 0 }, new[] { LevelId, WallId }, Origin),
             new Element(WindowId, "window", new[] { 2, 0, 3.2, 0, 0.9, double.NaN }, new[] { LevelId, WallId }, Origin)));
         check(broken.Findings.Where(finding => finding.ElementKind is "door" or "window").All(finding => finding is { Outcome: ElementCheckOutcome.NotEvaluable, Reason: ElementReasons.GeometryInvalid, Measured: null })
-            && broken.NotEvaluable.Count == 18 && !broken.Compliant,
+            && broken.NotEvaluable.Count == 21 && !broken.Compliant,
             "a door with five values and a window with a non-finite height are geometry_invalid on every rule", Show(broken));
 
         // ---- Curved walls are a typed unsupported shape ----
@@ -236,6 +240,8 @@ static class ElementSkillTests
               {"id":"ratio","severity":"info","target":{"element":"door"},"check":{"op":"ratio_min","property":"height_mm","over":"width_mm","value":2},"message":"Door proportion."},
               {"id":"space","severity":"info","target":{"element":"space"},"check":{"op":"min","property":"width_mm","value":1},"message":"Space."},
               {"id":"stair","severity":"info","target":{"element":"stair"},"check":{"op":"min","property":"width_mm","value":1},"message":"Stair."},
+              {"id":"ratio-mixed","severity":"info","target":{"element":"door"},"check":{"op":"ratio_min","property":"height_mm","over":"width_m","value":2},"message":"Mixed units."},
+              {"id":"ratio-m","severity":"info","target":{"element":"door"},"check":{"op":"ratio_min","property":"height_m","over":"width_m","value":2},"message":"Metre ratio."},
               {"id":"metres","severity":"info","target":{"element":"wall"},"check":{"op":"max","property":"thickness_m","value":0.2},"message":"Metres."}
              ]}
             """);
@@ -248,9 +254,55 @@ static class ElementSkillTests
             && Find(ops, DoorId, "in") is { Outcome: ElementCheckOutcome.Pass, Bound: null, BoundSource: null }
             && Find(ops, WindowId, "in-miss") is { Outcome: ElementCheckOutcome.Fail, Measured: 1200 }
             && Find(ops, DoorId, "ratio") is { Outcome: ElementCheckOutcome.Pass, Unit: "ratio" } ratio && Math.Abs(ratio.Measured!.Value - 2100.0 / 900) < 1e-12
+            && Find(ops, DoorId, "ratio-mixed") is { Outcome: ElementCheckOutcome.NotEvaluable, Reason: ElementReasons.UnitMismatch, Measured: null } mixed
+            && mixed.Detail.Contains("mm", StringComparison.Ordinal) && Find(ops, DoorId, "ratio-m") is { Outcome: ElementCheckOutcome.Pass, Unit: "ratio" }
             && Find(ops, G(40), "space") is { Outcome: ElementCheckOutcome.NotEvaluable, Reason: ElementReasons.PropertyUnknown, ElementKind: "space" }
             && ops.UnusedRuleIds.SequenceEqual(new[] { "bim.test.elements/stair" }),
-            "only _mm and _m suffixes are units; equals, in and ratio_min evaluate; a text threshold, a non-element quantity and an unused rule are reported", Show(ops));
+            "only _mm and _m suffixes are units; equals, in and ratio_min evaluate, a ratio of mm over m is unit_mismatch; a text threshold, a non-element quantity and an unused rule are reported", Show(ops));
+
+
+        // ---- Hosted [offset, width] openings (the layout LocalValidation and DocRegeneration accept) ----
+        var hosted = SkillElementValidator.Validate(pack, Model(Level(), Wall(WallId, 0, 0, 4, 0),
+            new Element(DoorId, "door", new[] { 0.5, 0.9 }, new[] { LevelId, WallId }, Origin),
+            new Element(WindowId, "window", new[] { 3.5, 0.9 }, new[] { LevelId, WallId }, Origin),
+            new Element(G(22), "door", new[] { 0.5, 0.9, 2.1 }, new[] { LevelId, WallId }, Origin)));
+        check(Find(hosted, DoorId, "door-width-min") is { Outcome: ElementCheckOutcome.Pass, Measured: 900 }
+            && Find(hosted, DoorId, "door-inside-host-start") is { Outcome: ElementCheckOutcome.Pass, Measured: 500 }
+            && Find(hosted, DoorId, "door-inside-host-end") is { Outcome: ElementCheckOutcome.Pass, Measured: 2600 }
+            && Find(hosted, DoorId, "door-on-host-axis") is { Outcome: ElementCheckOutcome.Pass, Measured: 0 }
+            && Find(hosted, DoorId, "door-on-host-level") is { Outcome: ElementCheckOutcome.Pass }
+            && new[] { "door-height-min", "door-height-max", "door-inside-host-bottom", "door-inside-host-top", "door-sill-at-level" }
+                .All(rule => Find(hosted, DoorId, rule) is { Outcome: ElementCheckOutcome.NotEvaluable, Reason: ElementReasons.HostedLayout } finding && finding.Detail.Contains("[offset, width]", StringComparison.Ordinal))
+            && Find(hosted, WindowId, "window-inside-host-end") is { Outcome: ElementCheckOutcome.Fail, Measured: -400 }
+            && Find(hosted, G(22), "door-width-min") is { Outcome: ElementCheckOutcome.NotEvaluable, Reason: ElementReasons.GeometryInvalid }
+            && !hosted.Compliant,
+            "a hosted door [0.5, 0.9] measures width 900 and clearances 500/2600 along its host; sill, height and head are hosted_layout; three values are geometry_invalid", Show(hosted));
+
+        // ---- Opening level against host level, and the door sill ----
+        var level2 = Guid.Parse("00000000-0000-4000-8000-000000000002");
+        var levels = SkillElementValidator.Validate(pack, Model(Level(), new Element(level2, "level", new[] { 3.0 }, Array.Empty<Guid>(), Origin), Wall(WallId, 0, 0, 4, 0),
+            Opening("door", DoorId, 0.5, 0, 1.4, 0, 0, 2.1, level2, WallId), Opening("window", WindowId, 2, 0, 3.2, 0, 0.9, 1.2, WallId),
+            Opening("door", G(23), 2, 0, 2.9, 0, 0.3, 2.1)));
+        check(Find(levels, DoorId, "door-on-host-level") is { Outcome: ElementCheckOutcome.Fail, Measured: 1 }
+            && Find(levels, WindowId, "window-on-host-level") is { Outcome: ElementCheckOutcome.NotEvaluable, Reason: ElementReasons.LevelMissing }
+            && Find(levels, WindowId, "window-inside-host-start") is { Outcome: ElementCheckOutcome.Pass }
+            && Find(levels, G(23), "door-sill-at-level") is { Outcome: ElementCheckOutcome.Fail, Measured: 300, Bound: 0.001 }
+            && Find(levels, G(23), "door-on-host-level") is { Outcome: ElementCheckOutcome.Pass },
+            "a door on another level than its host fails, an opening without a level is level_missing, a door with a 300 mm sill fails door-sill-at-level", Show(levels));
+
+        // ---- Producer tolerance: within 0.001 mm passes, 0.01 mm past fails ----
+        var tolerance = SkillElementValidator.Validate(pack, Model(Level(), Wall(WallId, 0, 0, 4, 0),
+            Opening("door", DoorId, 3.1, 0, 4.0000005, 0, 0, 2.1), Opening("window", WindowId, 1, 0, 2, 0, 0.9, 1.80001), Opening("door", G(24), 0.5, 0, 1.4, 0, 0.0000005, 2.1)));
+        check(Find(tolerance, DoorId, "door-inside-host-end") is { Outcome: ElementCheckOutcome.Pass, Measured: -0.0005 }
+            && Find(tolerance, WindowId, "window-inside-host-top") is { Outcome: ElementCheckOutcome.Fail, Measured: -0.01, Bound: -0.001 }
+            && Find(tolerance, G(24), "door-sill-at-level") is { Outcome: ElementCheckOutcome.Pass, Measured: 0.0005 },
+            "an end 0.0005 mm past the wall and a 0.0005 mm door sill pass; a head 0.01 mm above the wall fails", Show(tolerance));
+
+        // ---- Overrides that invert a min/max pair are refused ----
+        check(Code(() => SkillElementValidator.Validate(pack, Model(Good()), new Dictionary<string, double> { [Pack + "/wall_thickness_min_mm"] = 700 })) == nameof(ArgumentException)
+            && Code(() => SkillElementValidator.Validate(pack, Model(Good()), new Dictionary<string, double> { [Pack + "/door_height_max_mm"] = 1900 })) == nameof(ArgumentException)
+            && Code(() => SkillElementValidator.Validate(pack, Model(Good()), new Dictionary<string, double> { [Pack + "/wall_thickness_min_mm"] = 700, [Pack + "/wall_thickness_max_mm"] = 800 })) is null,
+            "an override that makes a *_min_* parameter exceed its *_max_* pair is refused; a consistent pair is accepted");
 
         // ---- End to end: a compiled layout intent ----
         var intent = new LayoutIntent(LayoutIntent.CurrentVersion, Origin, new[] { new IntentLevel("l1", "L1", 0) }, new[] { new IntentWallType("std", "Std", 0.2, 2.7) },
@@ -258,7 +310,7 @@ static class ElementSkillTests
             new[]
             {
                 new IntentOpening("d1", IntentOpeningKind.Door, new IntentRoomSide("a", IntentSide.South), 0.5, 0.9, 2.1, 0),
-                new IntentOpening("w1", IntentOpeningKind.Window, new IntentRoomSide("a", IntentSide.North), 1, 1.2, 1.2, 0.9),
+                new IntentOpening("w1", IntentOpeningKind.Window, new IntentRoomSide("a", IntentSide.North), 1, 1.2, 1.8000005, 0.9),
             });
         Project? compiled = null;
         try { compiled = IntentCompiler.Compile(Guid.Parse("00000000-0000-4000-8000-0000000000ee"), 0, intent); }
@@ -267,9 +319,11 @@ static class ElementSkillTests
         {
             var e2e = SkillElementValidator.Validate(pack, compiled);
             var compiledDoor = IntentCompiler.Id(compiled.Id, IntentCompiler.OpeningKey("d1")).ToString("D");
-            check(e2e.Compliant && e2e.Findings.Count == 4 * 2 + 9 * 2 && e2e.UnusedRuleIds.Count == 0
-                && e2e.Findings.Any(finding => finding.ElementId == compiledDoor && finding.LocalRuleId == "door-inside-host-start" && finding.Measured == 500),
-                "a compiled one-room layout with a door and a window passes the pack, measured on the compiled host walls", Show(e2e));
+            var compiledWindow = IntentCompiler.Id(compiled.Id, IntentCompiler.OpeningKey("w1")).ToString("D");
+            check(e2e.Compliant && e2e.Findings.Count == 4 * 2 + 11 + 10 && e2e.UnusedRuleIds.Count == 0
+                && e2e.Findings.Any(finding => finding.ElementId == compiledDoor && finding.LocalRuleId == "door-inside-host-start" && finding.Measured == 500)
+                && e2e.Findings.Any(finding => finding.ElementId == compiledWindow && finding.LocalRuleId == "window-inside-host-top" && finding.Measured == -0.0005),
+                "a compiled one-room layout passes the pack, including a window whose sill + height is 5e-7 m above the wall (accepted by IntentCompiler)", Show(e2e));
         }
     }
 }

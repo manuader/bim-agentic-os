@@ -1,9 +1,9 @@
 {
   "manifest_version": 1,
   "id": "bim.qa.element-basics",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "kind": "qa",
-  "description": "Element QA recipe pack (P5-05): wall thickness bounds, door and window width and height bounds, and openings fully inside their host wall (start and end clearance along the axis, sill and head within the wall height, ends on the axis), evaluated over BIM-IR walls, doors and windows by SkillElementValidator. Lengths are millimetres (properties end in _mm). Illustrative QA thresholds, not a building code.",
+  "description": "Element QA recipe pack (P5-05): wall thickness bounds, door and window width and height bounds, and openings fully inside their host wall (start and end clearance along the axis, sill and head within the wall height, ends on the axis, on the host level; door sill at the level), evaluated over BIM-IR walls, doors and windows by SkillElementValidator. Lengths are millimetres (properties end in _mm); clearances are measured along the host wall axis, not its clear span, with a -0.001 mm producer tolerance. Illustrative QA thresholds, not a building code.",
   "priority": 50,
   "parameters": [
     {
@@ -93,6 +93,22 @@
       "min": 0,
       "max": 50,
       "description": "Largest distance of an opening end from its host wall axis line."
+    },
+    {
+      "name": "opening_clearance_min_mm",
+      "type": "number",
+      "default": -0.001,
+      "min": -50,
+      "max": 0,
+      "description": "Smallest clearance accepted between an opening and the ends, base and top of its host wall; -0.001 mm matches producer tolerances (IntentCompiler 1e-6 m, MirrorMapper 1e-3 mm)."
+    },
+    {
+      "name": "door_sill_max_mm",
+      "type": "number",
+      "default": 0.001,
+      "min": 0,
+      "max": 50,
+      "description": "Largest door sill accepted: BIM-IR doors sit on their level (sill 0), within producer tolerance."
     }
   ],
   "rules": [
@@ -183,7 +199,7 @@
       "check": {
         "op": "min",
         "property": "start_clearance_mm",
-        "value": 0
+        "parameter": "opening_clearance_min_mm"
       },
       "message": "Door starts before the start of its host wall."
     },
@@ -196,7 +212,7 @@
       "check": {
         "op": "min",
         "property": "end_clearance_mm",
-        "value": 0
+        "parameter": "opening_clearance_min_mm"
       },
       "message": "Door runs past the end of its host wall."
     },
@@ -209,7 +225,7 @@
       "check": {
         "op": "min",
         "property": "sill_mm",
-        "value": 0
+        "parameter": "opening_clearance_min_mm"
       },
       "message": "Door starts below the base of its host wall."
     },
@@ -222,7 +238,7 @@
       "check": {
         "op": "min",
         "property": "head_clearance_mm",
-        "value": 0
+        "parameter": "opening_clearance_min_mm"
       },
       "message": "Door head is above the top of its host wall."
     },
@@ -238,6 +254,32 @@
         "parameter": "opening_axis_tolerance_mm"
       },
       "message": "Door does not lie on its host wall axis."
+    },
+    {
+      "id": "door-on-host-level",
+      "severity": "error",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "max",
+        "property": "host_level_mismatch",
+        "value": 0
+      },
+      "message": "Door is not on the level of its host wall."
+    },
+    {
+      "id": "door-sill-at-level",
+      "severity": "error",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "max",
+        "property": "sill_mm",
+        "parameter": "door_sill_max_mm"
+      },
+      "message": "Door sill is above its level; BIM-IR doors sit on their level."
     },
     {
       "id": "window-width-min",
@@ -300,7 +342,7 @@
       "check": {
         "op": "min",
         "property": "start_clearance_mm",
-        "value": 0
+        "parameter": "opening_clearance_min_mm"
       },
       "message": "Window starts before the start of its host wall."
     },
@@ -313,7 +355,7 @@
       "check": {
         "op": "min",
         "property": "end_clearance_mm",
-        "value": 0
+        "parameter": "opening_clearance_min_mm"
       },
       "message": "Window runs past the end of its host wall."
     },
@@ -326,7 +368,7 @@
       "check": {
         "op": "min",
         "property": "sill_mm",
-        "value": 0
+        "parameter": "opening_clearance_min_mm"
       },
       "message": "Window starts below the base of its host wall."
     },
@@ -339,7 +381,7 @@
       "check": {
         "op": "min",
         "property": "head_clearance_mm",
-        "value": 0
+        "parameter": "opening_clearance_min_mm"
       },
       "message": "Window head is above the top of its host wall."
     },
@@ -355,6 +397,19 @@
         "parameter": "opening_axis_tolerance_mm"
       },
       "message": "Window does not lie on its host wall axis."
+    },
+    {
+      "id": "window-on-host-level",
+      "severity": "error",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "max",
+        "property": "host_level_mismatch",
+        "value": 0
+      },
+      "message": "Window is not on the level of its host wall."
     }
   ]
 }
