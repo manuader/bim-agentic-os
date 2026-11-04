@@ -46,10 +46,19 @@ public static class ProvenanceLedgerFormat
     public static string ComputeHash(ProvenanceEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer)) WriteEntry(writer, entry, includeHash: false);
-        return Convert.ToHexString(SHA256.HashData(buffer.ToArray())).ToLowerInvariant();
+        return Convert.ToHexString(SHA256.HashData(EntryBytes(entry, includeHash: false))).ToLowerInvariant();
     }
+
+    // The canonical text of one entry (as it appears inside the entries array).
+    internal static byte[] EntryBytes(ProvenanceEntry entry, bool includeHash)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer)) WriteEntry(writer, entry, includeHash);
+        return buffer.ToArray();
+    }
+
+    // Length of an empty ledger's text; each entry adds its own length plus one comma after the first.
+    internal static readonly int EmptyLength = Write(Array.Empty<ProvenanceEntry>()).Length;
 
     // Writes entries as given, without validating them (Load is the validator).
     public static string Write(IEnumerable<ProvenanceEntry> entries)
@@ -70,6 +79,11 @@ public static class ProvenanceLedgerFormat
 
     static void WriteEntry(Utf8JsonWriter writer, ProvenanceEntry entry, bool includeHash)
     {
+        // Utf8JsonWriter would write a null string as JSON null: refuse instead of producing an unloadable entry.
+        if (entry is null) throw new ArgumentException(ProvenanceCodes.RecordInvalid + ": null entry", nameof(entry));
+        if (entry.Source is null) throw new ArgumentException(ProvenanceCodes.RecordInvalid + ": null source", nameof(entry));
+        if (entry.PrevHash is null) throw new ArgumentException(ProvenanceCodes.RecordInvalid + ": null prev_hash", nameof(entry));
+        if (includeHash && entry.Hash is null) throw new ArgumentException(ProvenanceCodes.RecordInvalid + ": null hash", nameof(entry));
         writer.WriteStartObject();
         writer.WriteNumber("seq", entry.Sequence);
         writer.WriteString("element_id", entry.ElementId.ToString("D"));
@@ -95,43 +109,58 @@ public sealed record ProvenanceLimits(int MaxEntries = ProvenanceLimits.DefaultM
 
 public sealed class ProvenanceLedger
 {
-    public ProvenanceLedger(ProvenanceLimits? limits = null) { Limits = limits ?? ProvenanceLimits.Default; }
+    public ProvenanceLedger(ProvenanceLimits? limits = null)
+    {
+        Limits = limits ?? ProvenanceLimits.Default;
+        serializedChars = ProvenanceLedgerFormat.EmptyLength;
+    }
+
     public ProvenanceLimits Limits { get; }
     readonly List<ProvenanceEntry> entries = new();
     readonly Dictionary<string, ProvenanceEntry> byKey = new(StringComparer.Ordinal);
     readonly Dictionary<Guid, List<ProvenanceEntry>> byElement = new();
+    long serializedChars;
 
     public int Count => entries.Count;
     public string HeadHash => entries.Count == 0 ? ProvenanceLedgerFormat.GenesisHash : entries[^1].Hash;
 
+    // A copy: changing it never changes the ledger.
     public IReadOnlyList<ProvenanceEntry> Entries() => entries.ToArray();
 
     static string Key(Guid elementId, ProvenanceSource source) => elementId.ToString("D") + "\n" + source.Kind + "\n" + source.KeyPart;
 
-    // Null when valid, else the offending member.
-    static string? Invalid(Guid elementId, ProvenanceSource? source) =>
-        elementId == Guid.Empty ? "element_id" : source is null ? "source" : source.InvalidField(elementId);
+    // Null when valid, else the offending member. Append checks catalogue membership (strict); Load checks only the
+    // command name syntax, so a stored record of a command later removed from the catalogue still loads.
+    static string? Invalid(Guid elementId, ProvenanceSource? source, bool strict) =>
+        elementId == Guid.Empty ? "element_id" : source is null ? "source" : source.InvalidField(elementId, strict);
 
     public ProvenanceAppendResult Append(Guid elementId, ProvenanceSource? source)
     {
-        if (Invalid(elementId, source) is { } field) return new(ProvenanceCodes.RecordInvalid, null, field);
+        if (Invalid(elementId, source, strict: true) is { } field) return new(ProvenanceCodes.RecordInvalid, null, field);
         var key = Key(elementId, source!);
         if (byKey.TryGetValue(key, out var existing))
             return existing.Source == source
                 ? new(ProvenanceCodes.Replayed, existing, null)
                 : new(ProvenanceCodes.Conflict, existing, "seq " + existing.Sequence.ToString(CultureInfo.InvariantCulture));
+        if (entries.Count >= Limits.MaxEntries) return new(ProvenanceCodes.TooLarge, null, "max_entries");
         var entry = new ProvenanceEntry(entries.Count + 1, elementId, source!, HeadHash, "");
         entry = entry with { Hash = ProvenanceLedgerFormat.ComputeHash(entry) };
-        Add(key, entry);
+        var length = EntryLength(entry);
+        if (serializedChars + length > Limits.MaxJsonChars) return new(ProvenanceCodes.TooLarge, null, "max_json_chars");
+        Add(key, entry, length);
         return new(ProvenanceCodes.Appended, entry, null);
     }
 
-    void Add(string key, ProvenanceEntry entry)
+    // Characters the entry adds to the serialized ledger (the writer escapes all non-ASCII, so bytes = chars).
+    long EntryLength(ProvenanceEntry entry) => ProvenanceLedgerFormat.EntryBytes(entry, includeHash: true).Length + (entries.Count > 0 ? 1 : 0);
+
+    void Add(string key, ProvenanceEntry entry, long length)
     {
         entries.Add(entry);
         byKey.Add(key, entry);
         if (!byElement.TryGetValue(entry.ElementId, out var list)) byElement.Add(entry.ElementId, list = new List<ProvenanceEntry>());
         list.Add(entry);
+        serializedChars += length;
     }
 
     public IReadOnlyList<ProvenanceEntry> ByElement(Guid elementId) =>
@@ -147,31 +176,38 @@ public sealed class ProvenanceLedger
 
     public string Serialize() => ProvenanceLedgerFormat.Write(entries);
 
+    // Never throws on bad input: every problem is a typed code (details are fixed tokens or member names).
     public static ProvenanceLoadResult Load(string? json, ProvenanceLimits? limits = null)
     {
+        limits ??= ProvenanceLimits.Default;
         if (json is null) return Fail(ProvenanceCodes.JsonInvalid, null, "input");
+        if (json.Length > limits.MaxJsonChars) return Fail(ProvenanceCodes.TooLarge, null, "max_json_chars");
+        if (!ProvenanceSource.IsWellFormedUtf16(json)) return Fail(ProvenanceCodes.JsonInvalid, null, "json_text");
         JsonDocument document;
         try { document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 16 }); }
-        catch (JsonException error) { return Fail(ProvenanceCodes.JsonInvalid, null, error.Message); }
+        catch (JsonException) { return Fail(ProvenanceCodes.JsonInvalid, null, "json_syntax"); }
+        catch (ArgumentException) { return Fail(ProvenanceCodes.JsonInvalid, null, "json_text"); }
+        catch (InvalidOperationException) { return Fail(ProvenanceCodes.JsonInvalid, null, "json_text"); }
         using (document)
         {
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return Fail(ProvenanceCodes.JsonInvalid, null, "root");
-            if (Members(root, new[] { "provenance_ledger_version", "entries" }) is { } bad) return Fail(ProvenanceCodes.JsonInvalid, null, bad);
+            if (Members(root, new[] { "provenance_ledger_version", "entries" }, "member") is { } bad) return Fail(ProvenanceCodes.JsonInvalid, null, bad);
             var version = root.GetProperty("provenance_ledger_version");
             if (version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var number) || number != ProvenanceLedgerFormat.Version)
-                return Fail(ProvenanceCodes.VersionUnsupported, null, version.GetRawText());
+                return Fail(ProvenanceCodes.VersionUnsupported, null, "provenance_ledger_version");
             var list = root.GetProperty("entries");
             if (list.ValueKind != JsonValueKind.Array) return Fail(ProvenanceCodes.JsonInvalid, null, "entries");
-            var ledger = new ProvenanceLedger();
+            var ledger = new ProvenanceLedger(limits);
             long index = 0;
             foreach (var item in list.EnumerateArray())
             {
                 index++;
+                if (index > limits.MaxEntries) return Fail(ProvenanceCodes.TooLarge, index, "max_entries");
                 var parsed = ParseEntry(item);
                 if (parsed.Code is not null) return Fail(parsed.Code, index, parsed.Detail);
                 var entry = parsed.Entry!;
-                if (Invalid(entry.ElementId, entry.Source) is { } field) return Fail(ProvenanceCodes.RecordInvalid, index, field);
+                if (Invalid(entry.ElementId, entry.Source, strict: false) is { } field) return Fail(ProvenanceCodes.RecordInvalid, index, field);
                 if (entry.Sequence != index) return Fail(ProvenanceCodes.SequenceBroken, index, "seq " + entry.Sequence.ToString(CultureInfo.InvariantCulture));
                 if (entry.PrevHash != ledger.HeadHash) return Fail(ProvenanceCodes.ChainBroken, index, "prev_hash");
                 if (entry.Hash != ProvenanceLedgerFormat.ComputeHash(entry)) return Fail(ProvenanceCodes.HashMismatch, index, "hash");
@@ -179,7 +215,7 @@ public sealed class ProvenanceLedger
                 if (ledger.byKey.TryGetValue(key, out var existing))
                     return Fail(existing.Source == entry.Source ? ProvenanceCodes.DuplicateEntry : ProvenanceCodes.Conflict, index,
                         "seq " + existing.Sequence.ToString(CultureInfo.InvariantCulture));
-                ledger.Add(key, entry);
+                ledger.Add(key, entry, ledger.EntryLength(entry));
             }
             if (!string.Equals(ledger.Serialize(), json, StringComparison.Ordinal)) return Fail(ProvenanceCodes.NotCanonical, null, null);
             return new(ProvenanceCodes.Ok, ledger, null, null);
@@ -188,12 +224,31 @@ public sealed class ProvenanceLedger
 
     static ProvenanceLoadResult Fail(string code, long? index, string? detail) => new(code, null, index, detail);
 
-    // Null when the object has exactly these members, each once; else the first unknown, repeated or missing name.
-    static string? Members(JsonElement element, IReadOnlyList<string> names)
+    // Property names and string values with an escaped lone surrogate cannot be read as UTF-16 text.
+    static bool TryName(JsonProperty property, out string name)
+    {
+        try { name = property.Name; return ProvenanceSource.IsWellFormedUtf16(name); }
+        catch (InvalidOperationException) { name = ""; return false; }
+    }
+
+    static bool TryString(JsonElement element, out string? value)
+    {
+        value = null;
+        if (element.ValueKind != JsonValueKind.String) return false;
+        try { value = element.GetString(); return value is not null && ProvenanceSource.IsWellFormedUtf16(value); }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    // Null when the object has exactly these members, each once; else the first unknown, repeated or missing name,
+    // or unreadable when a name is not readable text.
+    static string? Members(JsonElement element, IReadOnlyList<string> names, string unreadable)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var property in element.EnumerateObject())
-            if (!names.Contains(property.Name, StringComparer.Ordinal) || !seen.Add(property.Name)) return property.Name;
+        {
+            if (!TryName(property, out var name)) return unreadable;
+            if (!names.Contains(name, StringComparer.Ordinal) || !seen.Add(name)) return name;
+        }
         foreach (var name in names) if (!seen.Contains(name)) return name;
         return null;
     }
@@ -204,40 +259,39 @@ public sealed class ProvenanceLedger
     {
         static (string?, ProvenanceEntry?, string?) Bad(string detail) => (ProvenanceCodes.RecordInvalid, null, detail);
         if (item.ValueKind != JsonValueKind.Object) return Bad("entry");
-        if (Members(item, EntryMembers) is { } bad) return Bad(bad);
+        if (Members(item, EntryMembers, "entry") is { } bad) return Bad(bad);
         var seq = item.GetProperty("seq");
         if (seq.ValueKind != JsonValueKind.Number || !seq.TryGetInt64(out var sequence)) return Bad("seq");
-        var element = item.GetProperty("element_id");
-        if (element.ValueKind != JsonValueKind.String || !Guid.TryParseExact(element.GetString(), "D", out var elementId)) return Bad("element_id");
+        if (!TryString(item.GetProperty("element_id"), out var elementText) || !Guid.TryParseExact(elementText, "D", out var elementId)) return Bad("element_id");
         var source = item.GetProperty("source");
         if (source.ValueKind != JsonValueKind.Object) return Bad("source");
         string? kind = null;
         var fields = new Dictionary<string, string?>(StringComparer.Ordinal);
         foreach (var property in source.EnumerateObject())
         {
-            if (property.Name == "kind")
+            if (!TryName(property, out var name)) return Bad("source");
+            if (name == "kind")
             {
-                if (kind is not null || property.Value.ValueKind != JsonValueKind.String) return Bad("kind");
-                kind = property.Value.GetString();
+                if (kind is not null || !TryString(property.Value, out var kindText)) return Bad("kind");
+                kind = kindText;
                 continue;
             }
-            if (fields.ContainsKey(property.Name)) return Bad(property.Name);
-            fields[property.Name] = property.Value.ValueKind switch
+            if (fields.ContainsKey(name)) return Bad(name);
+            string? text = null;
+            if (name == "journal_sequence")
             {
-                JsonValueKind.String when property.Name != "journal_sequence" => property.Value.GetString(),
-                JsonValueKind.Number when property.Name == "journal_sequence" && property.Value.TryGetInt64(out var value) && value >= 0 => value.ToString(CultureInfo.InvariantCulture),
-                _ => null,
-            };
+                if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt64(out var value) && value >= 0) text = value.ToString(CultureInfo.InvariantCulture);
+            }
+            else if (TryString(property.Value, out var stringValue)) text = stringValue;
+            fields[name] = text;
         }
         if (kind is null) return Bad("kind");
         if (!ProvenanceKinds.IsKnown(kind)) return (ProvenanceCodes.KindUnknown, null, "kind");
-        // A mistyped member is kept as null, so Create reports it by name (an extra member is reported first).
+        // A mistyped or unreadable member is kept as null, so Create reports it by name (an extra member first).
         var created = ProvenanceSource.Create(kind, fields);
         if (!created.Ok) return (created.Code, null, created.Detail);
-        var prev = item.GetProperty("prev_hash");
-        if (prev.ValueKind != JsonValueKind.String || !ProvenanceLedgerFormat.IsHash(prev.GetString())) return Bad("prev_hash");
-        var hash = item.GetProperty("hash");
-        if (hash.ValueKind != JsonValueKind.String || !ProvenanceLedgerFormat.IsHash(hash.GetString())) return Bad("hash");
-        return (null, new ProvenanceEntry(sequence, elementId, created.Source!, prev.GetString()!, hash.GetString()!), null);
+        if (!TryString(item.GetProperty("prev_hash"), out var prev) || !ProvenanceLedgerFormat.IsHash(prev)) return Bad("prev_hash");
+        if (!TryString(item.GetProperty("hash"), out var hash) || !ProvenanceLedgerFormat.IsHash(hash)) return Bad("hash");
+        return (null, new ProvenanceEntry(sequence, elementId, created.Source!, prev!, hash!), null);
     }
 }

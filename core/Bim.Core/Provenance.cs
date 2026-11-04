@@ -60,10 +60,12 @@ public abstract record ProvenanceSource
     public abstract string SourceId { get; }
     internal abstract void WriteFields(Utf8JsonWriter writer);
     // Null when valid, else the offending member name.
-    internal abstract string? InvalidField(Guid elementId);
+    // strict (Append) also requires a catalogue command to be in today's catalogue; Load checks its syntax only.
+    internal abstract string? InvalidField(Guid elementId, bool strict);
 
     static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
     static readonly Regex Sha256 = new(@"\A[0-9a-f]{64}\z", RegexOptions.CultureInvariant, RegexTimeout);
+    static readonly Regex CommandName = new(@"\A[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\z", RegexOptions.CultureInvariant, RegexTimeout);
     static readonly Regex Handle = new(@"\A[0-9A-F]{1,16}\z", RegexOptions.CultureInvariant, RegexTimeout);
     static readonly Regex LowerUniqueId = new(@"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9a-f]{8}\z", RegexOptions.CultureInvariant, RegexTimeout);
     public const int MaxIdChars = 256;
@@ -71,6 +73,17 @@ public abstract record ProvenanceSource
 
     internal static bool IsId(string? value) =>
         !string.IsNullOrEmpty(value) && value.Length <= MaxIdChars && value.Trim().Length == value.Length && PermissionPolicy.IsPlainText(value);
+    // Every surrogate is half of a pair (UTF-16 that UTF-8 can encode).
+    internal static bool IsWellFormedUtf16(string text)
+    {
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1])) { i++; continue; }
+            if (char.IsSurrogate(text[i])) return false;
+        }
+        return true;
+    }
+    internal static bool IsCommandName(string? value) => value is { Length: <= 128 } && CommandName.IsMatch(value);
     internal static bool IsSha256(string? value) => value is not null && Sha256.IsMatch(value);
     internal static bool IsHandle(string? value) => value is not null && Handle.IsMatch(value);
     internal static bool IsLowerUniqueId(string? value) => value is not null && LowerUniqueId.IsMatch(value);
@@ -112,12 +125,15 @@ public abstract record ProvenanceSource
 
     // The external-edit sources of one journal entry: one per added and per modified UniqueId (element id = the
     // mirror's logical id for that UniqueId). Add-in entries are not external edits and give nothing; deleted
-    // elements carry no UniqueId in the journal and give nothing. Ids are lower-cased; an id listed as both added and
+    // elements carry no UniqueId in the journal and give nothing. When the entry's added or modified list was capped
+    // the code is provenance_journal_truncated and Sources holds only the ids still listed. Ids are lower-cased; an id listed as both added and
     // modified gives one added source.
     public static ProvenanceJournalSources FromJournal(MirrorJournalEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
         if (entry.Origin != MirrorJournalOrigins.External) return new(ProvenanceCodes.Ok, Array.Empty<(Guid, ExternalEditProvenance)>());
+        // Capped added / modified lists hold fewer UniqueIds than changed: those elements get no source here.
+        var truncated = entry.AddedTotal > entry.AddedUids.Count || entry.ModifiedTotal > entry.ModifiedUids.Count;
         var document = entry.DocumentUid.ToLowerInvariant();
         var time = entry.RecordedAt.ToUniversalTime().ToString(TimeFormat, CultureInfo.InvariantCulture);
         var result = new List<(Guid, ExternalEditProvenance)>();
@@ -129,7 +145,7 @@ public abstract record ProvenanceSource
                 if (!seen.Add(lower)) continue; // an id both added and modified in one entry is added
                 result.Add((MirrorSnapshotMapper.Id(document, lower), new ExternalEditProvenance(document, entry.Sequence, time, lower, change)));
             }
-        return new(ProvenanceCodes.Ok, result);
+        return new(truncated ? ProvenanceCodes.JournalTruncated : ProvenanceCodes.Ok, result);
     }
 }
 
@@ -151,7 +167,7 @@ public sealed record IntentProvenance(string IntentId, string RuleId) : Provenan
     internal override string KeyPart => IntentId;
     public override string SourceId => IntentId;
     internal override void WriteFields(Utf8JsonWriter writer) { writer.WriteString("intent_id", IntentId); writer.WriteString("rule_id", RuleId); }
-    internal override string? InvalidField(Guid elementId) => !IsId(IntentId) ? "intent_id" : !IsId(RuleId) ? "rule_id" : null;
+    internal override string? InvalidField(Guid elementId, bool strict) => !IsId(IntentId) ? "intent_id" : !IsId(RuleId) ? "rule_id" : null;
 }
 
 public sealed record CatalogueCommandProvenance(string Command, string OperationId) : ProvenanceSource
@@ -162,8 +178,8 @@ public sealed record CatalogueCommandProvenance(string Command, string Operation
     internal override string KeyPart => OperationId;
     public override string SourceId => OperationId;
     internal override void WriteFields(Utf8JsonWriter writer) { writer.WriteString("command", Command); writer.WriteString("operation_id", OperationId); }
-    internal override string? InvalidField(Guid elementId) =>
-        Command is null || RevitCommandCatalogue.Find(Command) is null ? "command" : !RevitCommandProtocol.IsOperationId(OperationId) ? "operation_id" : null;
+    internal override string? InvalidField(Guid elementId, bool strict) =>
+        !IsCommandName(Command) || (strict && RevitCommandCatalogue.Find(Command) is null) ? "command" : !RevitCommandProtocol.IsOperationId(OperationId) ? "operation_id" : null;
 }
 
 public sealed record ExternalEditProvenance(string DocumentUid, long JournalSequence, string RecordedAt, string UniqueId, string Change) : ProvenanceSource
@@ -182,7 +198,7 @@ public sealed record ExternalEditProvenance(string DocumentUid, long JournalSequ
         writer.WriteString("unique_id", UniqueId);
         writer.WriteString("change", Change);
     }
-    internal override string? InvalidField(Guid elementId) =>
+    internal override string? InvalidField(Guid elementId, bool strict) =>
         !IsLowerUniqueId(DocumentUid) ? "document_unique_id"
         : JournalSequence < 1 ? "journal_sequence"
         : !IsTime(RecordedAt) ? "recorded_at"
@@ -200,5 +216,5 @@ public sealed record CadImportProvenance(string FileSha256, string EntityHandle)
     internal override string KeyPart => FileSha256 + "\n" + EntityHandle;
     public override string SourceId => FileSha256;
     internal override void WriteFields(Utf8JsonWriter writer) { writer.WriteString("file_sha256", FileSha256); writer.WriteString("entity_handle", EntityHandle); }
-    internal override string? InvalidField(Guid elementId) => !IsSha256(FileSha256) ? "file_sha256" : !IsHandle(EntityHandle) ? "entity_handle" : null;
+    internal override string? InvalidField(Guid elementId, bool strict) => !IsSha256(FileSha256) ? "file_sha256" : !IsHandle(EntityHandle) ? "entity_handle" : null;
 }
