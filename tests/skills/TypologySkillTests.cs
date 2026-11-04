@@ -136,7 +136,7 @@ static class TypologySkillTests
             var living = brief.Rooms.FirstOrDefault(room => room.Id == "living");
             check(living is { Name: "Living", MaxAreaSquareMetres: null } && living.Name.StartsWith("Living", StringComparison.Ordinal), "an open-ended room has no maximum and a CABA-matching name");
             check(brief.Rooms.Select(room => room.Name).SequenceEqual(new[] { "Living", "Dining", "Kitchen", "Hall", "Bedroom", "Bathroom", "Toilet", "Laundry", "Estudio", "Garage" }),
-                "brief room names are English and match the CABA name patterns", string.Join(",", brief.Rooms.Select(room => room.Name)));
+                "brief room names match the CABA name patterns (the study is Estudio)", string.Join(",", brief.Rooms.Select(room => room.Name)));
         }
         check(Adjacencies(four.Adjacencies) == "bathroom-bedroom:preferred,bedroom-kitchen:forbidden,dining-kitchen:required,dining-living:required,hall-living:required,hall-toilet:preferred,kitchen-laundry:preferred"
             && four.Brief is not null && Adjacencies(four.Brief.Adjacencies) == Adjacencies(four.Adjacencies),

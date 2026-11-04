@@ -3,7 +3,7 @@
   "id": "bim.typology.vivienda-unifamiliar",
   "version": "1.0.0",
   "kind": "typology",
-  "description": "Sample vivienda unifamiliar (single-family house) typology pack: a room programme of required and optional rooms with minimum, target and maximum floor areas and adjacency wishes, stored as programme.* defaults and turned into a project brief for a given family size by SkillTypology.Resolve. Bedrooms are one per two persons and bathrooms one per four; the toilet and laundry join from three persons; the study and garage only on request. Every value is illustrative (programme.source_confidence) and not a building code; the minimum areas are never below the cited ar.caba.codigo-edificacion minimums they overlap (living, dining, kitchen, bedroom, bathroom, study), and the bedroom minimum agrees with bim.typology.dwelling.",
+  "description": "Sample vivienda unifamiliar (single-family house) typology pack: a room programme of required and optional rooms with minimum, target and maximum floor areas and adjacency wishes, stored as programme.* defaults and turned into a project brief for a given family size by SkillTypology.Resolve. Bedrooms are one per two persons and bathrooms one per four; the toilet and laundry join from three persons; the study and garage only on request. Every value is illustrative (programme.source_confidence) and not a building code; the minimum areas are never below the cited ar.caba.codigo-edificacion minimums they overlap (living, dining, kitchen, bedroom, bathroom, and the study, whose brief room is named Estudio to match the CABA estudio* pattern), and the bedroom minimum agrees with bim.typology.dwelling.",
   "priority": 20,
   "defaults": {
     "programme.adjacency.bathroom.bedroom": "preferred",

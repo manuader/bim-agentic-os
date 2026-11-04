@@ -17,9 +17,13 @@ namespace Bim.Core;
 // programme, for a family size, into a TypologyProgramme whose Brief is a project brief v1 (Bim.Core.ProjectBrief) that
 // BriefValidator accepts and the space planner and prototype code consume: room ids are the kinds, names are English
 // and match the CABA pack name patterns (living*, kitchen*, bedroom*, bath*), counts are BriefRoom counts, areas are
-// per room, and adjacency wishes become brief adjacencies between rooms that are in the programme. Settings outside
+// per room (the study is named Estudio so the CABA estudio* rule applies), and adjacency wishes become brief adjacencies
+// between rooms that are in the programme. At most MaxRoomCount rooms of one kind are allowed. Settings outside
 // programme.* are ignored except room.<kind>.min_area_m2 (for example from bim.typology.dwelling or a composed pack),
-// which must not exceed the programme minimum of that kind. Every refusal is a typed SkillIssue (SkillTypologyCodes);
+// which must be a number not above the programme minimum of that kind. Only the effective (winning) value of that
+// setting is checked: a lower-priority pack's overridden room.<kind>.min_area_m2 is not. When resolving from a
+// SkillResolution, every effective rule "min area_m2" whose room glob matches a programme room name (literal or
+// parameter threshold, for example bim.typology.dwelling bedroom_min_area_m2) must not exceed that room's minimum either. Every refusal is a typed SkillIssue (SkillTypologyCodes);
 // on any issue the programme has no rooms, adjacencies or brief. The result depends only on the settings, the family
 // size and the set of requested rooms: not on their order, the culture or the catalog order.
 public sealed record TypologyRoom(string Kind, bool Required, int Count, double MinAreaSquareMetres, double TargetAreaSquareMetres,
@@ -64,7 +68,7 @@ public static class SkillTypology
     public const int MaxRoomCount = 50;
 
     static readonly string[] Kinds = { "living", "dining", "kitchen", "hall", "bedroom", "bathroom", "toilet", "laundry", "study", "garage", "storage" };
-    static readonly string[] Names = { "Living", "Dining", "Kitchen", "Hall", "Bedroom", "Bathroom", "Toilet", "Laundry", "Study", "Garage", "Storage" };
+    static readonly string[] Names = { "Living", "Dining", "Kitchen", "Hall", "Bedroom", "Bathroom", "Toilet", "Laundry", "Estudio", "Garage", "Storage" };
     static readonly string[] Attributes = { "required", "min_area_m2", "target_area_m2", "max_area_m2", "count", "persons_per_room", "include_from_persons" };
     static readonly string[] Relations = { "required", "preferred", "forbidden" };
 
@@ -77,7 +81,7 @@ public static class SkillTypology
         if (pack.Kind != SkillKind.Typology)
             return Refused(pack.Id, familySize, new[] { new SkillIssue(SkillTypologyCodes.KindMismatch, pack.Id, "skill kind " + SkillParser.KindName(pack.Kind) + ", typology required") });
         var settings = pack.Defaults.Select(entry => new Entry(entry.Key, entry.Value, new SkillTrace(pack.Id, SkillTrace.DefaultOrigin, entry.Key))).ToList();
-        return Build(pack.Id, familySize, include, settings);
+        return Build(pack.Id, familySize, include, settings, Array.Empty<SkillEffectiveRule>());
     }
 
     public static TypologyProgramme Resolve(SkillResolution resolution, int familySize, IReadOnlyCollection<string>? include = null)
@@ -87,7 +91,7 @@ public static class SkillTypology
             return Refused("", familySize, new[] { new SkillIssue(SkillTypologyCodes.ResolutionFailed, "", string.Join(",", resolution.Issues.Select(issue => issue.Code + "@" + issue.Subject))) });
         var packId = string.Join("+", resolution.Skills.Where(skill => skill.Kind == SkillKind.Typology).Select(skill => skill.Id).OrderBy(id => id, StringComparer.Ordinal));
         var settings = resolution.Settings.Select(setting => new Entry(setting.Key, setting.Value, setting.Source)).ToList();
-        return Build(packId, familySize, include, settings);
+        return Build(packId, familySize, include, settings, resolution.Rules);
     }
 
     readonly record struct Entry(string Key, SkillValue Value, SkillTrace Source);
@@ -103,7 +107,7 @@ public static class SkillTypology
 
     static bool IsCount(SkillValue value) => IsPositive(value) && value.Number >= 1 && value.Number <= int.MaxValue && Math.Floor(value.Number) == value.Number;
 
-    static TypologyProgramme Build(string packId, int familySize, IReadOnlyCollection<string>? include, List<Entry> settings)
+    static TypologyProgramme Build(string packId, int familySize, IReadOnlyCollection<string>? include, List<Entry> settings, IReadOnlyList<SkillEffectiveRule> rules)
     {
         // Issues carry the setting key (or room prefix) they come from so they are reported in setting key order.
         var issues = new List<(string Order, int Sequence, SkillIssue Issue)>();
@@ -124,9 +128,10 @@ public static class SkillTypology
         foreach (var entry in settings)
         {
             var parts = entry.Key.Split('.');
-            if (parts.Length == 3 && parts[0] == "room" && parts[2] == "min_area_m2" && Array.IndexOf(Kinds, parts[1]) >= 0 && entry.Value.Kind == SkillValueKind.Number)
+            if (parts.Length == 3 && parts[0] == "room" && parts[2] == "min_area_m2" && Array.IndexOf(Kinds, parts[1]) >= 0)
             {
-                composedMinimums[parts[1]] = entry;
+                if (IsPositive(entry.Value)) composedMinimums[parts[1]] = entry;
+                else Issue(entry.Key, SkillTypologyCodes.SettingInvalid, entry.Key, "positive finite number required, got " + entry.Value + " (" + entry.Source + ")");
                 continue;
             }
             if (!entry.Key.StartsWith(Prefix, StringComparison.Ordinal)) continue;
@@ -194,6 +199,11 @@ public static class SkillTypology
             var persons = Get("persons_per_room");
             var threshold = Get("include_from_persons");
             if (count is not null && persons is not null) Invalid("count", "a fixed count and persons_per_room are exclusive");
+            if (count is { } fixedEntry && IsCount(fixedEntry.Value) && fixedEntry.Value.Number > MaxRoomCount)
+                Invalid("count", "at most " + MaxRoomCount.ToString(CultureInfo.InvariantCulture) + " rooms of one kind, got " + fixedEntry.Value);
+            if (persons is { } shareEntry && IsPositive(shareEntry.Value) && familySize >= 1 && Math.Ceiling(familySize / shareEntry.Value.Number) > MaxRoomCount)
+                Invalid("persons_per_room", "a family of " + familySize.ToString(CultureInfo.InvariantCulture) + " at " + shareEntry.Value + " persons per room needs more than "
+                    + MaxRoomCount.ToString(CultureInfo.InvariantCulture) + " rooms");
             if (threshold is not null && required is { Value.Kind: SkillValueKind.Boolean } flag && flag.Value.Boolean) Invalid("include_from_persons", "only optional rooms take an inclusion threshold");
             if (!valid || required is null || minimum is null) continue;
 
@@ -206,6 +216,13 @@ public static class SkillTypology
             if (max is { } ceiling && target > ceiling) conflicts.Add("target " + Number(target) + " above maximum " + Number(ceiling));
             if (composedMinimums.TryGetValue(kind, out var composed) && composed.Value.Number > min)
                 conflicts.Add(composed.Source + " minimum " + Number(composed.Value.Number) + " above programme minimum " + Number(min));
+            var roomName = Names[Array.IndexOf(Kinds, kind)];
+            foreach (var rule in rules)
+            {
+                if (rule.Rule.Check is not { Op: SkillCheckOp.Min, Property: "area_m2" } || rule.Threshold is not { Kind: SkillValueKind.Number } floor || !rule.Rule.Target.MatchesRoom(roomName)) continue;
+                if (floor.Number > min)
+                    conflicts.Add("rule " + rule.QualifiedId + (rule.ThresholdSource is { } source ? " (" + source + ")" : "") + " minimum " + Number(floor.Number) + " above programme minimum " + Number(min));
+            }
             if (conflicts.Count > 0)
             {
                 Issue(prefix, SkillTypologyCodes.MinimumConflict, kind, string.Join("; ", conflicts));
@@ -285,7 +302,7 @@ public static class SkillTypology
                 room.MaxAreaSquareMetres is { } top ? new BriefValue<double>(top) : null, null,
                 new BriefProvenance(BriefSource.Inferred, ProvenanceConfidence, "typology " + room.Source.SkillId + " " + Prefix + "room." + room.Kind + " for a family of " + family)))
             .ToArray();
-        var brief = new ProjectBrief(ProjectBrief.CurrentVersion, packId + " programme for a family of " + family, new BriefConstraints(), briefRooms, briefAdjacencies);
+        var brief = new ProjectBrief(ProjectBrief.CurrentVersion, (packId.Length == 0 ? "typology" : packId) + " programme for a family of " + family, new BriefConstraints(), briefRooms, briefAdjacencies);
         return new TypologyProgramme(packId, familySize, programmeRooms.ToArray(), briefAdjacencies, brief, Array.Empty<SkillIssue>());
     }
 }
