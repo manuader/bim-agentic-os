@@ -273,6 +273,27 @@ internal static class AttributeTests
             C(Codes(fallback).Contains("explode-limit", StringComparison.Ordinal) && fallback.Rooms.Count == 1 && Near(fallback.Rooms[0].StatedAreaSquareMetres, 7)
                 && fallback.Rooms[0].Label.InsertPath.SequenceEqual(new[] { "I1" }) && fallback.Rooms[0].Notes.Contains("area-attribute"), "review explode-limit fallback reads top-level insert attributes", Rooms(fallback) + " " + Codes(fallback));
 
+            // Re-review: block names match whole tokens (roomtag-style compounds allowed); ROTULO is a title block.
+            string Named(string name) => G("0 BLOCK|5 NB|8 0|2 " + name + "|70 2|10 0|20 0|30 0|0 ENDBLK|5 NX|8 0");
+            int RoomsFor(string block, string tag = "NOMBRE", string value = "Quirófano") =>
+                BriefExtract.FromDxf(Read(Insert("I1", block, 0, 0) + Attrib("A1", tag, value, 0, 0) + Seqend("S1"), Named(block))).Rooms.Count;
+            C(RoomsFor("ROTULO", value: "Vivienda García") == 0, "review2 ROTULO (title block) NOMBRE is not a room");
+            foreach (var negative in new[] { "BATHROOM_SINK", "SHOWROOM_LOGO", "WORKSPACE_DESK", "LOCALIZACION", "ROTULO_A3" })
+                C(RoomsFor(negative) == 0, "review2 block " + negative + " is not a room-tag block by substring");
+            foreach (var positive in new[] { "ROOMTAG", "ROOM_TAG", "TAG-ROOM", "Room1", "TAG_LOCAL", "ESPACIO 2", "spacetag" })
+                C(RoomsFor(positive) == 1, "review2 block " + positive + " is a room-tag block by token");
+
+            // Re-review: fallback attributes inherit layer 0 and visibility from their insert.
+            var layered = BriefExtract.FromDxf(Read(Insert("I1", "BARE", 0, 0) + Attrib("A1", "NAME", "Cocina", 0, 0, layer: "0") + Attrib("A2", "AREA", "7 m²", 0, -300, layer: "0") + Seqend("S1"), Tag() + Bare()),
+                new BriefExtractOptions { ExplodeOptions = new DxfExplodeOptions(MaxEntities: 1), TextLayers = new[] { "TAGS" } });
+            C(layered.Rooms.Count == 1 && layered.Rooms[0].Label.Layer == "TAGS" && layered.Rooms[0].Area?.Layer == "TAGS", "review2 fallback ATTRIB on layer 0 takes the insert layer", Rooms(layered));
+            var hiddenInsert = BriefExtract.FromDxf(Read(Insert("I1", "BARE", 0, 0, extra: "60 1") + Attrib("A1", "NAME", "Cocina", 0, 0) + Attrib("A2", "AREA", "7 m²", 0, -300) + Seqend("S1"), Tag() + Bare()),
+                new BriefExtractOptions { ExplodeOptions = new DxfExplodeOptions(MaxEntities: 1) });
+            C(hiddenInsert.Rooms.Count == 0 && Codes(hiddenInsert).Contains("explode-limit", StringComparison.Ordinal), "review2 fallback ATTRIBs of an invisible insert are invisible", Rooms(hiddenInsert));
+            var paperInsert = BriefExtract.FromDxf(Read(Insert("I1", "BARE", 0, 0, extra: "67 1") + Attrib("A1", "NAME", "Cocina", 0, 0) + Attrib("A2", "AREA", "7 m²", 0, -300) + Seqend("S1"), Tag() + Bare()),
+                new BriefExtractOptions { ExplodeOptions = new DxfExplodeOptions(MaxEntities: 1) });
+            C(paperInsert.Rooms.Count == 0, "review2 fallback ATTRIBs of a paper-space insert are in paper space", Rooms(paperInsert));
+
             // Fuzz the fixture: reading, exploding and brief extraction raise only DxfFormatException.
             var lines = File.ReadAllText(path).Split('\n');
             var random = new Random(6061);
