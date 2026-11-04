@@ -1,0 +1,9 @@
+{
+  "jurisdiction_version": 1,
+  "code": "xx.example",
+  "pack": "xx.example.codigo-ejemplo",
+  "country_names": ["Example Country"],
+  "municipality_names": ["Example City"],
+  "stub": true,
+  "note": "Fictitious example jurisdiction for registry tests; not real law."
+}

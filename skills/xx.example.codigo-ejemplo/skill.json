@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "id": "xx.example.codigo-ejemplo",
+  "version": "0.0.1",
+  "kind": "code",
+  "description": "STUB / EXAMPLE ONLY: a fictitious building code for the fictitious jurisdiction xx.example (country code xx is not assigned to any country). It exists to prove that the jurisdiction registry selects between several code packs. Its numbers are invented, every rule is source_confidence=to-verify, and it is not the law of any real place: not legal advice and never to be used for a real project.",
+  "priority": 100,
+  "rules": [
+    {"id": "living-area-min", "severity": "error", "target": {"room": "living*"}, "check": {"op": "min", "property": "area_m2", "value": 10}, "message": "STUB example rule: living room floor area below the invented minimum of 10 m2.", "citation": "Example Code (fictitious) art. 1.1; source_confidence=to-verify; source=none (stub example pack, invented value)"},
+    {"id": "living-height-min", "severity": "error", "target": {"room": "living*"}, "check": {"op": "min", "property": "clear_height_m", "value": 2.5}, "message": "STUB example rule: living room clear height below the invented minimum of 2.5 m.", "citation": "Example Code (fictitious) art. 1.2; source_confidence=to-verify; source=none (stub example pack, invented value)"},
+    {"id": "bedroom-area-min", "severity": "error", "target": {"room": "bedroom*"}, "check": {"op": "min", "property": "area_m2", "value": 7}, "message": "STUB example rule: bedroom floor area below the invented minimum of 7 m2.", "citation": "Example Code (fictitious) art. 2.1; source_confidence=to-verify; source=none (stub example pack, invented value)"}
+  ]
+}
