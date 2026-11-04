@@ -38,12 +38,12 @@ public sealed record BriefDraft(string SourceFile, string Format, double? Metres
 
 // What one text says: Label (letters remaining once the area and its prefix are removed; null when none, or when its
 // only letters are units) and the area in square metres (null when the text has no area token; negative when the token
-// has a leading minus sign). AreaToken is the matched token. AreaAmbiguous is true when the number has a single
-// separator followed by exactly three digits ("1.234", "1,234"): read as a decimal, but it may be a thousands group.
+// has a minus sign touching the number at the start of the text or after ':' / '='). AreaToken is the matched token. AreaAmbiguous is true when the number has a single
+// separator after a non-zero integer part of 1-3 digits followed by exactly three digits ("1.234", "1,234"): read as a decimal, but it may be a thousands group.
 public sealed record BriefTextReading(string? Label, double? AreaSquareMetres, string? AreaToken, bool AreaAmbiguous = false);
 
 // Options. MetresPerUnit overrides the drawing scale (DXF $INSUNITS; for PDF the raw page unit when no calibration is
-// given). ExplodeOptions bound the DXF block explosion. Closed polylines drawn through a block insert or Form XObject
+// given; with a calibration the page is read in calibrated millimetres and MetresPerUnit is ignored). ExplodeOptions bound the DXF block explosion. Closed polylines drawn through a block insert or Form XObject
 // (furniture, symbols) are regions only when IncludeBlockRegions; block texts are always read. Name defaults to "Brief draft from {source file}". TextLayers/RegionLayers restrict the layers read
 // (case-insensitive; null = all). A label is at most MaxLabelLength characters and MaxLabelWords words. An area text
 // pairs with a label when both lie in the same smallest closed region, or, both outside every region, when they are at

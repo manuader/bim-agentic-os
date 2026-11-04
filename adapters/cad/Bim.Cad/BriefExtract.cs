@@ -12,9 +12,11 @@ namespace Bim.Cad;
 //    filtered by TextLayers, paper space and visibility, in drawing order. A text longer than MaxTextLength is
 //    text-too-long; a text equal (after whitespace collapsing) to an earlier one of the same height whose insertion is
 //    within 1 % of that height is duplicate-text and dropped (grid lookup, linear time).
-//    ReadText splits each text into an area token (optional leading minus, number with decimal comma or point,
+//    ReadText splits each text into an area token (a minus sign touching the number at the start of the text or after
+//    ':' / '=' makes it negative; a spaced dash as in "Cocina - 12 m2" is a separator; number with decimal comma or point,
 //    optional thousands separators "1.234,5" / "1,234.5", unit m², m2, m^2, mt2, mts2, sq m, sqm; a single separator is
-//    always decimal, and "1.234" / "1,234" with exactly three fraction digits is area-ambiguous) and a label (the rest,
+//    always decimal, and "1.234" / "1,234" (non-zero integer part, exactly three fraction digits) is area-ambiguous) and
+//    a label (the rest,
 //    minus an area prefix Sup., Superficie, Surface, Área/Area or S:, that has a letter other than units, at most
 //    MaxLabelLength characters and MaxLabelWords words). Areas outside (0, MaxAreaSquareMetres] are area-invalid.
 // 2. Regions. Closed LWPOLYLINEs (DXF) or closed subpaths (PDF), filtered by RegionLayers, paper space and visibility,
@@ -22,11 +24,13 @@ namespace Bim.Cad;
 //    containment and integrated exactly for area (gross: holes are not subtracted). Without a scale (MetresPerUnit
 //    option, DXF units or PDF calibration) the report starts with uncalibrated and region areas are unknown; with one,
 //    regions smaller than MinRegionAreaSquareMetres are ignored. A text belongs to the smallest region holding its
-//    insertion point. A region holding a smaller region (bounding box inside, centre inside) is an outer region.
+//    insertion point. A region that also holds a label whose smallest region is another one encloses a labelled region.
 // 3. Labels. A label is kept when it has a room word (built-in es/en vocabulary plus RoomWords, case- and
-//    accent-insensitive, plural -s/-es accepted, multi-word RoomWords matched as phrases), or when it lies in a region
-//    that neither holds a room-word label nor encloses a region that does (label-outside-vocabulary). Dropped labels
-//    free their area token, if any.
+//    accent-insensitive, plural -s/-es accepted, multi-word RoomWords matched as phrases, common es abbreviations dorm,
+//    hab, coc, lav, dep, est, circ, liv, com), or when it lies in a region that holds no room-word label and encloses no
+//    labelled region (label-outside-vocabulary; frames and outlines are thus never rooms). Dropped labels free their
+//    area token, if any. An outer region is one enclosing the smallest region of a kept label (a plain unlabelled
+//    polyline such as furniture inside a room does not make the room outer).
 // 4. Areas. A kept label with its own area token uses it (area-same-text). The other labels take free area texts
 //    greedily by distance (then label and area order): candidates share the smallest region (an outer region also
 //    needs the distance cut), or both lie outside every region, within PairDistanceTextHeights x the larger text height
@@ -51,12 +55,12 @@ public static class BriefExtract
     private const int MaxSlugLength = 56;
 
     private static readonly Regex AreaPattern = new(
-        @"(?<sign>(?<![\p{L}\d.,])[-\u2212]\s?)?(?<!\d)(?<!\d[.,])(?<num>\d{1,3}(?:\.\d{3})+,\d{1,4}|\d{1,3}(?:,\d{3})+\.\d{1,4}|\d{1,7}(?:[.,]\d{1,4})?)\s*(?:m²|m2|m\^2|mts?\.?\s?2|mts?²|sq\.?\s?m|sqm)(?![\p{L}\d])\.?",
+        @"(?<sign>(?<=(?:\A|[:=])\s*)[-\u2212])?(?<!\d)(?<!\d[.,])(?<num>\d{1,3}(?:\.\d{3})+,\d{1,4}|\d{1,3}(?:,\d{3})+\.\d{1,4}|\d{1,7}(?:[.,]\d{1,4})?)\s*(?:m²|m2|m\^2|mts?\.?\s?2|mts?²|sq\.?\s?m|sqm)(?![\p{L}\d])\.?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
     private static readonly Regex PrefixPattern = new(
         @"(?<!\p{L})(?:sup(?:erficie)?\.?|surface|[aá]rea|s(?=\s*[:=]))\s*[:=]?\s*\z",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
-    private static readonly Regex AmbiguousPattern = new(@"\A\d{1,3}[.,]\d{3}\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
+    private static readonly Regex AmbiguousPattern = new(@"\A[1-9]\d{0,2}[.,]\d{3}\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
     private static readonly HashSet<string> UnitWords = new(StringComparer.Ordinal)
     {
         "m", "mm", "cm", "dm", "km", "m2", "mt", "mts", "mt2", "mts2", "sq", "sqm", "ft", "sqft", "in", "yd", "x", "ha", "metro", "metros", "cuadrado", "cuadrados", "square", "feet", "foot",
@@ -71,6 +75,8 @@ public static class BriefExtract
         "lavadero", "lavanderia", "garaje", "cochera", "hall", "recibidor", "vestibulo", "pasillo", "circulacion", "estudio", "oficina",
         "escritorio", "deposito", "baulera", "vestidor", "placard", "balcon", "terraza", "patio", "galeria", "quincho", "dependencia", "palier",
         "despensa", "biblioteca", "escalera",
+        // common plan abbreviations (es)
+        "dorm", "hab", "coc", "lav", "dep", "est", "circ", "liv", "com",
         // en
         "bedroom", "bed", "kitchen", "bathroom", "bath", "toilet", "wc", "lavatory", "lounge", "dining", "family", "laundry", "utility", "garage",
         "hallway", "corridor", "entrance", "entry", "foyer", "study", "office", "den", "storage", "store", "closet", "wardrobe", "pantry", "balcony",
@@ -182,11 +188,11 @@ public static class BriefExtract
             var height = double.IsFinite(text.Height) ? Math.Abs(text.Height) : 0;
             var source = Source(text.Provenance, text.Insertion, display);
             // Same text and height, insertion within 1 % of the height: looked up in the 3x3 neighbouring grid cells.
-            var cell = Math.Max(0.01 * height, 1e-9);
+            var cell = Math.Max(0.01 * height, 1e-6);
             var cellBits = BitConverter.DoubleToInt64Bits(cell);
             var qx = Math.Floor(text.Insertion.X / cell);
             var qy = Math.Floor(text.Insertion.Y / cell);
-            var quantised = Math.Abs(qx) < 1e15 && Math.Abs(qy) < 1e15;
+            var quantised = Math.Abs(qx) < 4e18 && Math.Abs(qy) < 4e18;
             TextItem? copy = null;
             if (quantised)
                 for (var dx = -1L; dx <= 1 && copy is null; dx++)
@@ -233,16 +239,6 @@ public static class BriefExtract
             regions.Add(new Region(regions.Count, Source(polyline.Provenance, new Point2((minX + maxX) / 2, (minY + maxY) / 2), null), points, minX, minY, maxX, maxY, areaUnits, squareMetres));
         }
 
-        // Outer regions: those holding a smaller region (its bounding box inside, its centre inside the outline).
-        var outer = new HashSet<int>();
-        foreach (var region in regions)
-            foreach (var inner in regions)
-            {
-                if (budget.Exhausted) break;
-                if (ReferenceEquals(region, inner) || !(inner.AreaUnits < region.AreaUnits) || inner.MinX < region.MinX || inner.MaxX > region.MaxX || inner.MinY < region.MinY || inner.MaxY > region.MaxY) continue;
-                if (Contains(region, inner.Source.At, budget)) { outer.Add(region.Index); break; }
-            }
-
         // Containment of every text: the smallest region holding its insertion point.
         foreach (var item in texts)
         {
@@ -257,10 +253,15 @@ public static class BriefExtract
 
         // 3. Labels.
         foreach (var item in texts) item.InVocabulary = item.Label is not null && HasRoomWord(item.Label, words, phrases);
-        // Every region holding a room-word label, directly or around the region that does.
+        // A label without a room word is kept only in a region that holds no room-word label and encloses no region
+        // holding a label (a frame or building outline around labelled rooms).
+        static IEnumerable<int> Around(TextItem t) => t.Containing.Where(r => !ReferenceEquals(r, t.Smallest)).Select(r => r.Index);
         var vocabularyRegions = new HashSet<int>(texts.Where(t => t.InVocabulary).SelectMany(t => t.Containing.Select(r => r.Index)));
+        var framing = new HashSet<int>(texts.Where(t => t.Label is not null).SelectMany(Around));
         foreach (var item in texts)
-            item.Kept = item.Label is not null && (item.InVocabulary || (item.Smallest is { } region && !vocabularyRegions.Contains(region.Index)));
+            item.Kept = item.Label is not null && (item.InVocabulary || (item.Smallest is { } region && !vocabularyRegions.Contains(region.Index) && !framing.Contains(region.Index)));
+        // Outer regions enclose the smallest region of a kept label.
+        var outer = new HashSet<int>(texts.Where(t => t.Kept).SelectMany(Around));
         var labels = texts.Where(t => t.Kept).ToList();
 
         // 4. Areas: own token first, then greedy nearest free area text.
