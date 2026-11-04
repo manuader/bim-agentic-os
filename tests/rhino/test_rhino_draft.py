@@ -87,7 +87,14 @@ class Base(unittest.TestCase):
         return path
 
     def model(self, objects, units=rhino3dm.UnitSystem.Meters, name='model.3dm'):
-        """objects: (geometry, layer full path, object uuid or None). Parent layers are created as needed."""
+        """objects: (geometry, layer full path, object uuid or None[, user strings]). Parent layers are created as needed."""
+        model = self.build(objects, units)
+        out = self.path(name)
+        self.assertTrue(model.Write(str(out), 7))
+        return out
+
+    def build(self, objects, units=rhino3dm.UnitSystem.Meters):
+        """The in-memory model behind model(); no file is written."""
         model = rhino3dm.File3dm()
         model.Settings.ModelUnitSystem = units
         index = {}
@@ -103,15 +110,27 @@ class Base(unittest.TestCase):
             index[path] = model.Layers.Add(new)
             return index[path]
 
-        for geometry, layer_path, object_id in objects:
+        for geometry, layer_path, object_id, *strings in objects:
             attributes = rhino3dm.ObjectAttributes()
             attributes.LayerIndex = layer(layer_path)
             if object_id is not None:
                 attributes.Id = object_id
+            for key, value in sorted((strings[0] if strings else {}).items()):
+                attributes.SetUserString(key, value)
             model.Objects.Add(geometry, attributes)
-        out = self.path(name)
-        self.assertTrue(model.Write(str(out), 7))
-        return out
+        return model
+
+    def copied(self, source, edit=None, units=None, name='copy.3dm'):
+        """Objects of a .3dm (with their user strings) copied into a new model.
+
+        edit(geometry, strings, layer, id) returns (geometry, layer, id, strings)."""
+        old = rhino3dm.File3dm.Read(str(source))
+        objects = []
+        for obj in old.Objects:
+            geometry, strings = obj.Geometry, dict(obj.Attributes.GetUserStrings())
+            layer, object_id = old.Layers[obj.Attributes.LayerIndex].FullPath, obj.Attributes.Id
+            objects.append(edit(geometry, strings, layer, object_id) if edit is not None else (geometry, layer, object_id, strings))
+        return self.model(objects, units=units if units is not None else old.Settings.ModelUnitSystem, name=name)
 
     def exported(self, project=FIXTURE, name='model.3dm'):
         out = self.path(name)
@@ -145,6 +164,24 @@ class Base(unittest.TestCase):
     def assertEndpoints(self, expected, g, tol=1e-9):
         got = sorted([(g[0], g[1]), (g[2], g[3])])
         self.assertClose([v for point in sorted(expected) for v in point], [v for point in got for v in point], tol)
+
+    def assertChain(self, result, start, end, tol=1e-9):
+        """Wall proposals ordered by part form one connected chain from start to end."""
+        walls = sorted((p for p in result['proposals'] if p['kind'] == 'wall'), key=lambda p: p['source']['part'])
+        self.assertEqual(list(range(len(walls))), [p['source']['part'] for p in walls])
+        g = [p['element']['GeometryMetres'] for p in walls]
+        self.assertClose(start, g[0][:2], tol)
+        self.assertClose(end, g[-1][2:4], tol)
+        for a, b in zip(g, g[1:]):
+            self.assertClose(a[2:4], b[:2], tol)
+
+    def assertAccounted(self, model, result, reason):
+        """Every object rhino3dm kept in the model is unmapped with reason, and none is proposed."""
+        ids = [str(o.Attributes.Id) for o in model.Objects]
+        self.assertEqual([], result['proposals'])
+        for object_id in ids:
+            self.assertIn(reason, [u['reason'] for u in result['unmapped'] if u['object_id'] == object_id], result['unmapped'])
+        return ids
 
     def assertClose(self, expected, actual, tol=1e-9):
         self.assertEqual(len(expected), len(actual), (expected, actual))
@@ -315,6 +352,7 @@ class Walls(Base):
         self.assertUnmapped('arc_not_approximated', self.draft(source), sid(1))
         result = self.draft(source, arc_segments=4)
         self.assertEqual(4, len(result['proposals']))
+        self.assertChain(result, (2, 0), (0, 2))
         for proposal in result['proposals']:
             g = proposal['element']['GeometryMetres']
             self.assertAlmostEqual(2.0, math.hypot(g[0], g[1]), places=9)
@@ -508,8 +546,8 @@ class Roundtrip(Base):
         for want, have in zip(expected, got):
             self.assertClose(want['GeometryMetres'], have['GeometryMetres'])
             self.assertEqual(json.dumps(exact[want['Id']]), json.dumps(have['GeometryMetres']), want['Id'])
-            levels = [d for d in want['Dependencies'] if d == '00000000-0000-0000-0000-000000000010']
-            self.assertEqual(levels, have['Dependencies'], want['Id'])
+            # The writer's bim.dependencies are kept (they agree with the geometry), space -> wall links included.
+            self.assertEqual(want['Dependencies'], have['Dependencies'], want['Id'])
         self.assertEqual(sorted(e['Id'] for e in FIXTURE['Elements'] if e['Kind'] in ('plan', 'schedule', 'sheet')),
                          [u['object_id'] for u in result['unmapped']])
 
@@ -571,6 +609,240 @@ class Cli(Base):
                 self.assertEqual('', result.stdout)
                 self.assertEqual(1, len(result.stderr.strip().splitlines()), result.stderr)
                 self.assertEqual(code, json.loads(result.stderr)['error'])
+
+
+class ReviewNonFinite(Base):
+    def test_converter_refuses_non_finite_values_as_degenerate(self):
+        for mode, value in (('div', 1000.0), ('div', 1.0), ('mul', 0.3048)):
+            for bad in (math.nan, math.inf, -math.inf):
+                with self.subTest((mode, bad)):
+                    with self.assertRaises(rd._Unmapped) as ctx:
+                        rd._Converter(mode, value).m(bad)
+                    self.assertEqual('degenerate', ctx.exception.reason)
+
+    def test_nan_and_inf_points_in_a_millimetre_model_are_degenerate(self):
+        nan, inf = math.nan, math.inf
+        objects = [(rhino3dm.Point(P3(0, 0, nan)), 'Levels', oid(1)), (rhino3dm.Point(P3(0, 0, inf)), 'Levels', oid(2)),
+                   (rhino3dm.LineCurve(P3(0, 0, 0), P3(nan, 0, 0)), 'Walls', oid(3)), (rhino3dm.LineCurve(P3(inf, 0, 0), P3(1, 0, 0)), 'Walls', oid(4)),
+                   (rectangle(0, 0, 4000, nan), 'Spaces', oid(5)), (rectangle(0, 0, inf, 3000), 'Spaces', oid(6))]
+        model = self.build(objects, units=rhino3dm.UnitSystem.Millimeters)
+        result = rd.draft_model(model, 'nan.3dm', project_id=sid(9))
+        self.assertAccounted(model, result, 'degenerate')
+
+    def test_arc_detection_rejects_overflowing_samples(self):
+        class Domain:
+            T0, T1 = 0.0, 1.0
+
+        class Huge:
+            Domain = Domain()
+
+            def PointAt(self, t):
+                return P3(1e300 * math.cos(t), 1e300 * math.sin(t), 0)
+        self.assertIsNone(rd._circular(Huge(), rd._Converter('div', 1.0)))
+
+    def test_curves_with_fewer_than_two_points_are_degenerate(self):
+        objects = [(rhino3dm.PolylineCurve([P3(1, 1, 0)]), 'Walls', oid(1)), (rhino3dm.PolylineCurve([P3(1, 1, 0)]), 'Spaces', oid(2))]
+        model = self.build(objects)
+        self.assertAccounted(model, rd.draft_model(model, 'short.3dm', project_id=sid(9)), 'degenerate')
+
+
+class ReviewBlocks(Base):
+    def test_block_definition_members_are_not_proposed(self):
+        model = self.build([(rectangle(0, 0, 4, 3), 'Spaces', oid(1))])
+        layer = rhino3dm.Layer()
+        layer.Name = 'Walls'
+        walls = model.Layers.Add(layer)
+        attributes = rhino3dm.ObjectAttributes()
+        attributes.LayerIndex = walls
+        try:
+            index = model.InstanceDefinitions.Add('door', '', '', '', P3(0, 0, 0), [rhino3dm.LineCurve(P3(0, 0, 0), P3(1, 0, 0))], [attributes])
+        except TypeError as error:
+            self.skipTest(f'rhino3dm cannot build an instance definition here: {error}')
+        members = [str(o.Attributes.Id) for o in model.Objects if o.Attributes.IsInstanceDefinitionObject]
+        if index < 0 or not members:
+            self.skipTest('rhino3dm keeps no instance definition objects in the object table')
+        result = rd.draft_model(model, 'block.3dm', project_id=sid(9))
+        self.assertEqual([sid(1)], [p['key'] for p in result['proposals']])
+        for member in members:
+            self.assertEqual(['block_definition_member'], [u['reason'] for u in result['unmapped'] if u['object_id'] == member])
+
+
+class ReviewCaps(Base):
+    def test_max_proposals_stops_while_reading(self):
+        source = self.model([(polyline([(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)]), 'Walls', oid(1))])
+        with self.assertRaises(br.RhinoAdapterError) as ctx:
+            rd.draft(source, max_proposals=3)
+        self.assertEqual('draft_limit', ctx.exception.code)
+        self.assertIn('while reading', ctx.exception.detail)
+
+    def test_unmapped_list_stays_bounded_and_keeps_the_smallest_entries(self):
+        state = rd._Draft('x.3dm', rd._Converter('div', 1.0), rd._options({'max_unmapped': 3}))
+        ids = [str(uuid.UUID(int=(n * 7919) % 1000)) for n in range(1, 101)]
+        for object_id in ids:
+            state.skip({'object_id': object_id, 'part': None, 'layer': 'Other', 'geometry_type': 'Point'}, 'layer_unmapped', '')
+            self.assertLess(len(state.unmapped), 6)
+        report = state.report()
+        self.assertEqual(sorted(ids)[:3], [u['object_id'] for u in report[:3]])
+        self.assertEqual('unmapped_limit', report[3]['reason'])
+        self.assertIn('97 more', report[3]['detail'])
+        self.assertEqual(100, state.unmapped_total)
+
+    def test_capped_report_does_not_depend_on_object_order(self):
+        objects = [(rhino3dm.Point(P3(n, 0, 0)), 'Other', oid(n)) for n in range(1, 12)]
+        a = rd.dumps(rd.draft(self.model(objects, name='a/m.3dm'), max_unmapped=2, project_id=sid(9)))
+        b = rd.dumps(rd.draft(self.model(list(reversed(objects)), name='b/m.3dm'), max_unmapped=2, project_id=sid(9)))
+        self.assertEqual(a, b)
+
+
+class ReviewOutlines(Base):
+    def edges(self, corners, n, rotate):
+        points = []
+        for i in range(4):
+            (ax, ay), (bx, by) = corners[i], corners[(i + 1) % 4]
+            points += [(ax + (bx - ax) * k / n, ay + (by - ay) * k / n, 0.0) for k in range(n)]
+        points = points[rotate:] + points[:rotate]
+        return points + [points[0]]
+
+    def test_collinear_vertex_removal_is_linear(self):
+        import time
+        points = self.edges([(0, 0), (4, 0), (4, 3), (0, 3)], 50000, 25000)
+        started = time.perf_counter()
+        corners = rd._corners(points)
+        elapsed = time.perf_counter() - started
+        self.assertEqual(sorted([(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)]), sorted(corners))
+        self.assertLess(elapsed, 1.0, f'{len(points)} vertices took {elapsed:.2f} s')
+
+    def test_many_collinear_vertices_give_the_same_space(self):
+        points = self.edges([(0, 0), (4, 0), (4, 3), (0, 3)], 500, 250)
+        curve = rhino3dm.PolylineCurve([P3(x, y, z) for x, y, z in points])
+        result = self.draft(self.model([(curve, 'Spaces', oid(1))]), max_vertices=5000)
+        self.assertClose([0, 0, 4, 3], self.proposal(result, sid(1))['element']['GeometryMetres'])
+
+    def test_crossed_outline_is_not_a_rectangle(self):
+        with self.assertRaises(rd._Unmapped) as ctx:
+            rd._rectangle([(0, 0, 0), (4, 3, 0), (4, 0, 0), (0, 3, 0), (0, 0, 0)])
+        self.assertEqual('space_not_rectangle', ctx.exception.reason)
+        self.assertUnmapped('space_not_rectangle', self.draft(self.model([(polyline([(0, 0), (4, 3), (4, 0), (0, 3), (0, 0)]), 'Spaces', oid(1))])), sid(1))
+
+    def test_crossed_footprint_extrusion_is_not_a_wall(self):
+        extrusion = rhino3dm.Extrusion()
+        self.assertTrue(extrusion.SetPathAndUp(P3(0, 0, 0), P3(0, 0, 3), rhino3dm.Vector3d(0, 1, 0)))
+        bowtie = rhino3dm.PolylineCurve([P3(-2, -0.1, 0), P3(2, 0.1, 0), P3(2, -0.1, 0), P3(-2, 0.1, 0), P3(-2, -0.1, 0)])
+        if not extrusion.SetOuterProfile(bowtie, True):
+            self.skipTest('rhino3dm refuses a crossed extrusion profile')
+        self.assertUnmapped('wall_extrusion_unsupported', self.draft(self.model([(extrusion, 'Walls', oid(1))])), sid(1))
+
+    def test_space_whose_snapped_size_crosses_the_writer_range_is_unmapped(self):
+        source = self.model([(rectangle(99996.00000000001, 0, 1e5, 3), 'Spaces', oid(1))])
+        self.assertUnmapped('out_of_range', self.draft(source), sid(1))
+
+
+class ReviewArcs(Base):
+    def test_circle_on_a_wall_layer_is_a_closed_chord_loop(self):
+        result = self.draft(self.model([(arc_curve(rhino3dm.Circle(P3(1, 1, 0), 2.0)), 'Walls', oid(1))]), arc_segments=8)
+        self.assertEqual(8, len(result['proposals']))
+        walls = sorted(result['proposals'], key=lambda p: p['source']['part'])
+        first = walls[0]['element']['GeometryMetres']
+        self.assertChain(result, first[:2], first[:2])
+        for proposal in walls:
+            g = proposal['element']['GeometryMetres']
+            self.assertAlmostEqual(2 * 2.0 * math.sin(math.pi / 8), math.hypot(g[2] - g[0], g[3] - g[1]), places=9)
+
+    def test_clockwise_arc_keeps_its_direction(self):
+        try:
+            arc = rhino3dm.Arc(P3(2, 0, 0), P3(math.sqrt(2), -math.sqrt(2), 0), P3(0, -2, 0))
+        except TypeError as error:
+            self.skipTest(f'no three-point Arc constructor: {error}')
+        result = self.draft(self.model([(arc_curve(arc), 'Walls', oid(1))]), arc_segments=3)
+        self.assertEqual(3, len(result['proposals']))
+        self.assertChain(result, (2, 0), (0, -2))
+        for proposal in result['proposals']:
+            g = proposal['element']['GeometryMetres']
+            self.assertAlmostEqual(2.0, math.hypot(g[0], g[1]), places=9)
+
+    def test_non_rational_quadratic_is_not_an_arc(self):
+        curve = rhino3dm.NurbsCurve.Create(False, 2, [P3(2, 0, 0), P3(2, 2, 0), P3(0, 2, 0)])
+        self.assertUnmapped('curve_unsupported', self.draft(self.model([(curve, 'Walls', oid(1))]), arc_segments=4), sid(1))
+
+    def test_near_circular_ellipse_is_not_an_arc(self):
+        try:
+            curve = rhino3dm.Ellipse(rhino3dm.Plane.WorldXY(), 2.0, 2.00001).ToNurbsCurve()
+        except (AttributeError, TypeError) as error:
+            self.skipTest(f'no Ellipse in this rhino3dm: {error}')
+        self.assertUnmapped('curve_unsupported', self.draft(self.model([(curve, 'Walls', oid(1))]), arc_segments=4), sid(1))
+
+
+class ReviewIdentity(Base):
+    def test_repeated_object_ids_are_all_unmapped(self):
+        model = self.build([(rectangle(0, 0, 4, 3), 'Spaces', oid(1)), (rectangle(5, 0, 8, 3), 'Spaces', oid(1))])
+        ids = [str(o.Attributes.Id) for o in model.Objects]
+        if ids != [sid(1), sid(1)]:
+            self.skipTest(f'rhino3dm re-identified the copy: {ids}')
+        result = rd.draft_model(model, 'dup.3dm', project_id=sid(9))
+        self.assertEqual([], result['proposals'])
+        self.assertEqual(['duplicate_object_id'] * 2, [u['reason'] for u in result['unmapped']])
+
+    def test_derived_segment_id_equal_to_an_object_id_unmaps_both(self):
+        derived = uuid.UUID(rd._derived_id(sid(1), '0'))
+        result = self.draft(self.model([(rhino3dm.LineCurve(P3(0, 0, 0), P3(4, 0, 0)), 'Walls', oid(1)), (rectangle(0, 0, 4, 3), 'Spaces', derived)]))
+        self.assertEqual([], result['proposals'])
+        self.assertEqual(['duplicate_id'], [u['reason'] for u in self.unmapped(result, sid(1), 0)])
+        self.assertEqual(['duplicate_id'], [u['reason'] for u in self.unmapped(result, str(derived))])
+
+    def test_synthesized_level_avoids_an_existing_id(self):
+        project_id = sid(9)
+        taken = uuid.UUID(rd._derived_id(project_id, 'level', repr(6.0)))
+        result = self.draft(self.model([(rhino3dm.Point(P3(0, 0, 9.0)), 'Levels', taken), (rectangle(0, 0, 4, 3, 6.0), 'Spaces', oid(1))]), project_id=project_id)
+        levels = {p['element']['Id']: p for p in result['proposals'] if p['kind'] == 'level'}
+        self.assertEqual(2, len(levels))
+        self.assertEqual([9.0], levels[str(taken)]['element']['GeometryMetres'])
+        synthesized = [p for p in levels.values() if 'level-synthesized' in p['notes']]
+        self.assertEqual([[6.0]], [p['element']['GeometryMetres'] for p in synthesized])
+        self.assertEqual([synthesized[0]['element']['Id']], self.proposal(result, sid(1))['element']['Dependencies'])
+
+
+class ReviewDependencies(Base):
+    def two_levels(self):
+        project = copy.deepcopy(FIXTURE)
+        second = '00000000-0000-0000-0000-000000000015'
+        project['Elements'].insert(1, {'Id': second, 'Kind': 'level', 'GeometryMetres': [3.5], 'Dependencies': [],
+                                       'Provenance': {'Source': 'second level, same elevation', 'Approval': 'proposed'}})
+        project['Elements'][3]['Dependencies'] = [second]  # wall ...12
+        return project, second
+
+    def test_writer_dependencies_choose_between_levels_at_one_elevation(self):
+        project, second = self.two_levels()
+        result = self.draft(self.exported(project))
+        wall = self.proposal(result, '00000000-0000-0000-0000-000000000012')
+        self.assertEqual([second], wall['element']['Dependencies'])
+        self.assertIn('dependencies-declared', wall['notes'])
+
+    def test_without_writer_strings_the_smallest_level_id_is_taken_and_noted(self):
+        project, _ = self.two_levels()
+        plain = self.copied(self.exported(project), lambda g, s, l, i: (g, l, i, {}))
+        wall = self.proposal(self.draft(plain), '00000000-0000-0000-0000-000000000012')
+        self.assertEqual(['00000000-0000-0000-0000-000000000010'], wall['element']['Dependencies'])
+        self.assertIn('level-ambiguous', wall['notes'])
+
+    def test_declared_dependencies_that_disagree_with_the_geometry_are_ignored(self):
+        def lift(geometry, strings, layer, object_id):
+            if str(object_id) == '00000000-0000-0000-0000-000000000011':
+                self.assertTrue(geometry.Translate(rhino3dm.Vector3d(0, 0, 1.0)))
+            return geometry, layer, object_id, strings
+        result = self.draft(self.copied(self.exported(), lift), project_id=FIXTURE['Id'])
+        wall = self.proposal(result, '00000000-0000-0000-0000-000000000011')
+        self.assertIn('declared-dependencies-ignored', wall['notes'])
+        level = [p for p in result['proposals'] if p['element']['Id'] == wall['element']['Dependencies'][0]][0]
+        self.assertEqual([4.5], level['element']['GeometryMetres'])
+        self.assertIn('level-synthesized', level['notes'])
+
+    def test_roundtrip_bytes_depend_on_the_file_name_only_through_provenance(self):
+        one = self.draft(self.exported(name='a/one.3dm'))['project']
+        two = self.draft(self.exported(name='b/two.3dm'))['project']
+        self.assertEqual({'rhino:one.3dm'}, {e['Provenance']['Source'] for e in one['Elements']})
+        self.assertEqual({'rhino:two.3dm'}, {e['Provenance']['Source'] for e in two['Elements']})
+        strip = lambda p: json.dumps([{k: v for k, v in e.items() if k != 'Provenance'} for e in p['Elements']])
+        self.assertEqual(strip(one), strip(two))
 
 
 if __name__ == '__main__':
