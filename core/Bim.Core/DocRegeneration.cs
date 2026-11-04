@@ -48,7 +48,7 @@ public sealed record DocUnsupported(string Key, string ItemKind, string Code, st
 // Regenerated: every item key this plan regenerates (sorted ordinally); each has exactly one step or one unsupported
 // entry. The caller retires the prior realization of every regenerated key (re-tag, re-dimension, schedule refresh)
 // and runs the steps in order. TotalItems counts the whole set.
-public sealed record DocRegenerationPlan(int Version, Guid ProjectId, int Revision, string AfterHash, RevitDocumentRef Document,
+public sealed record DocRegenerationPlan(int Version, Guid ProjectId, int Revision, string AfterHash, RevitDocumentRef Document, string InputDigest,
     IReadOnlyList<string> Regenerated, IReadOnlyList<DocCommandStep> Steps, IReadOnlyList<DocUnsupported> Unsupported, int TotalItems)
 {
     public int RegeneratedCount => Regenerated.Count;
@@ -62,6 +62,7 @@ public static class DocRegenerationCodes
     public const string LevelUnbound = "level_unbound";
     public const string ReferencesNotParallel = "references_not_parallel";
     public const string HostMissing = "host_missing";
+    public const string HostAmbiguous = "host_ambiguous";
     public const string DependencyUnsupported = "dependency_unsupported";
     public const string CommandInvalid = "command_invalid";
 }
@@ -592,7 +593,7 @@ public static class DocRegeneration
             if (step is not null) steps.Add(step);
             if (refused is not null) unsupported.Add(refused);
         }
-        return new DocRegenerationPlan(Version, project.Id, project.Revision, hash, bindings.Document, ordered,
+        return new DocRegenerationPlan(Version, project.Id, project.Revision, hash, bindings.Document, "", ordered,
             Order(steps), unsupported.ToArray(), items.Count);
     }
 
