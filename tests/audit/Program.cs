@@ -105,6 +105,12 @@ try
         Check(RevitCommandCatalogue.MaterialTypes.Any(spec => spec.Name == command && spec.Writes == writes) && RevitCommandCatalogue.IsDestructive(command) == destructive, "material type catalogue has " + command + (writes ? " (write" + (destructive ? ", destructive)" : ")") : " (read-only)"));
         Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == (writes ? PermissionLevel.WriteCopies : PermissionLevel.Read) && PermissionPolicy.RequiredLevel(command, RealPath, copies) == (writes ? PermissionLevel.WriteRealProject : PermissionLevel.Read), command + " permission levels follow read/write");
     }
+    // chat-export-save: view.export_image is read anywhere (it does not change the model); document.save is a
+    // destructive write (it overwrites the saved file), copies or owner-enabled folders only.
+    Check(RevitCommandCatalogue.ExportSave.Any(spec => spec.Name == "view.export_image" && !spec.Writes) && !RevitCommandCatalogue.IsDestructive("view.export_image"), "export catalogue has read-only view.export_image");
+    Check(PermissionPolicy.RequiredLevel("view.export_image", FixturePath, copies) == PermissionLevel.Read && PermissionPolicy.RequiredLevel("view.export_image", RealPath, copies) == PermissionLevel.Read, "view.export_image requires read on a copy and on a real project");
+    Check(RevitCommandCatalogue.ExportSave.Any(spec => spec.Name == "document.save" && spec.Writes) && RevitCommandCatalogue.IsDestructive("document.save"), "save catalogue has destructive write document.save");
+    Check(PermissionPolicy.RequiredLevel("document.save", FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel("document.save", RealPath, copies) == PermissionLevel.WriteRealProject, "document.save requires write-copies on a copy and write-real-project on a real project");
     // P9-05: the five catalogue v2 commands keep the v1 read/write split.
     var v2Levels = new (string Command, PermissionLevel Copy, PermissionLevel Real)[]
     {

@@ -94,7 +94,7 @@ static class CatalogueMaterialTypesChecks
         var earlier = RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror).Concat(RevitCommandCatalogue.Elements)
             .Concat(RevitCommandCatalogue.Structure).Concat(RevitCommandCatalogue.Documentation).Concat(RevitCommandCatalogue.Modify).Concat(RevitCommandCatalogue.Materials)
             .Concat(RevitCommandCatalogue.Families).Concat(RevitCommandCatalogue.Site).Concat(RevitCommandCatalogue.WallProfile).ToArray();
-        Check(RevitCommandCatalogue.All.Take(earlier.Length).SequenceEqual(earlier) && RevitCommandCatalogue.All.Skip(earlier.Length).SequenceEqual(RevitCommandCatalogue.MaterialTypes),
+        Check(RevitCommandCatalogue.All.Take(earlier.Length).SequenceEqual(earlier) && RevitCommandCatalogue.All.Skip(earlier.Length).Take(RevitCommandCatalogue.MaterialTypes.Count).SequenceEqual(RevitCommandCatalogue.MaterialTypes),
             "All is every earlier part through wall.set_profile, then the material type commands");
         Check(RevitCommandCatalogue.All.Select(spec => spec.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(spec => spec.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct with the material type commands");
         Check(RevitCommandCatalogue.MaterialTypes.Select(spec => spec.ToolName).SequenceEqual(new[] { "revit_query_fill_patterns", "revit_material_create", "revit_material_set", "revit_wall_type_create", "revit_floor_type_create", "revit_element_change_type" }), "material type tool names follow revit_<command>");

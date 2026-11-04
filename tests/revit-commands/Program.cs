@@ -407,6 +407,10 @@ try
     CatalogueWallProfileChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- Materials, layered wall/floor types and type changes (chat-materials-types) ----
     CatalogueMaterialTypesChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- View image export and document save (chat-export-save) ----
+    CatalogueExportSaveChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- Policy reload: enabled roots and content libraries re-read when the files change (chat-export-save) ----
+    PolicyReloadChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();

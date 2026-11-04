@@ -102,9 +102,10 @@ static class CatalogueModifyChecks
         foreach (var spec in RevitCommandCatalogue.Modify)
             Check(PermissionPolicy.RequiredLevel(spec.Name, FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel(spec.Name, RealPath, copies) == PermissionLevel.WriteRealProject,
                 "permission level of " + spec.Name + " is write-copies on a copy and write-real-project elsewhere");
-        var changing = RevitCommandCatalogue.Modify.Concat(RevitCommandCatalogue.WallProfile).Concat(RevitCommandCatalogue.MaterialTypes.Where(spec => spec.Name is "material.set" or "element.change_type")).ToArray();
+        var changing = RevitCommandCatalogue.Modify.Concat(RevitCommandCatalogue.WallProfile).Concat(RevitCommandCatalogue.MaterialTypes.Where(spec => spec.Name is "material.set" or "element.change_type"))
+            .Concat(RevitCommandCatalogue.ExportSave.Where(spec => spec.Name == "document.save")).ToArray();
         Check(changing.All(spec => RevitCommandCatalogue.IsDestructive(spec.Name)) && RevitCommandCatalogue.All.Except(changing).All(spec => !RevitCommandCatalogue.IsDestructive(spec.Name))
-            && !RevitCommandCatalogue.IsDestructive(null) && !RevitCommandCatalogue.IsDestructive("element.purge"), "exactly the modify commands, wall.set_profile, material.set and element.change_type are destructive; additive writes and queries are not");
+            && !RevitCommandCatalogue.IsDestructive(null) && !RevitCommandCatalogue.IsDestructive("element.purge"), "exactly the modify commands, wall.set_profile, material.set, element.change_type and document.save are destructive; additive writes and queries are not");
     }
 
     static void SetParameterBinding()
