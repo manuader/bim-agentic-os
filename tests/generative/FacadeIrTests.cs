@@ -11,7 +11,8 @@ using Bim.Generative;
 // SkillRoomValidator on room facts read back from the BIM-IR (illumination/ventilation passing with windows, failing
 // without); the P7-04 entrance door: windows moved clear of it (nearest side, ties to the lower coordinate) or a typed
 // facade_ir_entrance_overlap failure; typed failures (no host, outside the wall, overlapping windows), refusals, ranked
-// 1/2/3-bedroom prototypes with real circulation models, and determinism across runs, room orders and cultures.
+// 1/2/3-bedroom prototypes with real circulation models (a plan staggered by less than the wall thickness is a typed
+// IntentCompiler wall_clash refusal, checked by an independent stagger finder), and determinism across runs, room orders and cultures.
 // Unit-tested evidence only.
 static class FacadeIrTests
 {
@@ -219,6 +220,7 @@ static class FacadeIrTests
 
         // ---- ranked 1/2/3-bedroom prototypes with their real circulation models ----
         int complete = 0, overlaps = 0, incomplete = 0, windows = 0, shifted = 0;
+        var clashes = new List<string>();
         string? problem = null;
         foreach (var (typology, lot) in new[] { (ApartmentTypology.OneBedroom, new PrototypeLot(8.66, 20)), (ApartmentTypology.TwoBedroom, new PrototypeLot(8.66, 20)),
             (ApartmentTypology.ThreeBedroom, new PrototypeLot(8, 20)), (ApartmentTypology.TwoBedroom, new PrototypeLot(12, 30)) })
@@ -231,6 +233,16 @@ static class FacadeIrTests
                 var plan = alternative.Plan;
                 var refusal = IntentCompiler.Validate(FacadeIrBuilder.Intent(plan));
                 var proto = Safe(() => FacadeIrBuilder.Prototype(ProjectId, 0, plan));
+                // A plan with a stagger thinner than the wall (two parallel room edges closer than 0.15 m meeting at a
+                // common point) has no 0.15 m wall prototype: IntentCompiler refuses it with typed wall_clash issues only.
+                if (proto is null && refusal.Length > 0 && refusal.All(i => i.Code == IntentCodes.WallClash) && Stagger(plan, defaults.WallThicknessMetres) is { } stagger)
+                {
+                    var thrown = "";
+                    try { FacadeIrBuilder.Prototype(ProjectId, 0, plan); } catch (IntentException error) { thrown = error.Code; }
+                    if (thrown != IntentCodes.WallClash) problem ??= label + "a staggered plan must throw IntentException wall_clash, got '" + thrown + "'";
+                    clashes.Add(label + stagger);
+                    continue;
+                }
                 if (proto is null || Compiler.Validate(proto).Length > 0)
                 {
                     problem ??= label + "prototype does not compile clean: " + string.Join("; ", refusal.Select(i => i.Code + "@" + i.Key + " " + i.Detail))
@@ -262,7 +274,30 @@ static class FacadeIrTests
             }
         }
         Check(problem is null && complete >= 1 && windows >= 2 * complete, "ranked prototype layouts get hosted windows: Compiler.Validate clean, P5-02 ratios pass, entrance clear, oracle agrees",
-            (problem ?? "") + " complete " + Text(complete) + " entrance-blocked " + Text(overlaps) + " incomplete " + Text(incomplete) + " windows " + Text(windows) + " moved " + Text(shifted));
+            (problem ?? "") + " complete " + Text(complete) + " entrance-blocked " + Text(overlaps) + " incomplete " + Text(incomplete) + " windows " + Text(windows) + " moved " + Text(shifted)
+            + " wall-clash plans " + Text(clashes.Count) + " [" + string.Join("; ", clashes) + "]");
+        Check(clashes.Count <= complete, "staggered (wall_clash) prototype plans stay a minority", Text(clashes.Count) + " vs " + Text(complete));
+    }
+
+    // Independent stagger finder: two room edges of one level, parallel, on lines closer than the wall thickness but not
+    // equal, whose spans meet (touch or overlap within 1e-7 m), so their wall bodies would overlap off an exact join.
+    static string? Stagger(SpacePlan plan, double thickness)
+    {
+        var edges = plan.Rooms.SelectMany(r => new (string InstanceId, int Level, bool Horizontal, double Line, double Low, double High)[]
+        {
+            (r.InstanceId, r.Level, true, r.Rect.Y, r.Rect.X, r.Rect.Right), (r.InstanceId, r.Level, true, r.Rect.Top, r.Rect.X, r.Rect.Right),
+            (r.InstanceId, r.Level, false, r.Rect.X, r.Rect.Y, r.Rect.Top), (r.InstanceId, r.Level, false, r.Rect.Right, r.Rect.Y, r.Rect.Top),
+        }).ToArray();
+        for (var i = 0; i < edges.Length; i++)
+            for (var j = i + 1; j < edges.Length; j++)
+            {
+                var (a, b) = (edges[i], edges[j]);
+                if (a.Level != b.Level || a.Horizontal != b.Horizontal || a.InstanceId == b.InstanceId) continue;
+                var gap = Math.Abs(a.Line - b.Line);
+                if (gap > 1e-7 && gap < thickness && Math.Min(a.High, b.High) - Math.Max(a.Low, b.Low) >= -1e-7)
+                    return a.InstanceId + "/" + b.InstanceId + " edges " + F(gap) + " m apart";
+            }
+        return null;
     }
 
     // Independent oracle: the same windows compiled by IntentCompiler as intent openings on their room sides (offset from
