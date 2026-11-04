@@ -31,11 +31,12 @@ internal static class AttributeTests
         + G("0 SECTION|2 ENTITIES") + entities + G("0 ENDSEC|0 EOF");
     private static DxfDrawing Read(string entities, string blocks = "") => DxfReader.Parse(Doc(entities, blocks), "gen.dxf");
     private static string Attrib(string handle, string tag, string value, double x, double y, string extra = "", string layer = "TAGS", double height = 200) =>
-        G("0 ATTRIB|5 " + handle + "|8 " + layer + "|10 " + F(x) + "|20 " + F(y) + "|30 0|40 " + F(height) + "|1 " + value + "|2 " + tag + "|70 0" + (extra.Length > 0 ? "|" + extra : ""));
+        G("0 ATTRIB|5 " + handle + "|8 " + layer + "|10 " + F(x) + "|20 " + F(y) + "|30 0|40 " + F(height) + "|1 " + value + "|2 " + tag + (extra.Length > 0 ? "|" + extra : ""));
     private static string Insert(string handle, string block, double x, double y, bool follows = true, string extra = "") =>
         G("0 INSERT|5 " + handle + "|8 TAGS" + (follows ? "|66 1" : "") + "|2 " + block + "|10 " + F(x) + "|20 " + F(y) + "|30 0" + (extra.Length > 0 ? "|" + extra : ""));
     private static string Seqend(string handle) => G("0 SEQEND|5 " + handle + "|8 TAGS");
     private static string Tag(string name = "TAG") => G("0 BLOCK|5 TB|8 0|2 " + name + "|70 2|10 0|20 0|30 0") + G("0 ATTDEF|5 TD1|8 0|10 0|20 0|30 0|40 200|1 X|3 Name|2 NAME|70 0") + G("0 ENDBLK|5 TE|8 0");
+    private static string Bare() => G("0 BLOCK|5 BB|8 0|2 BARE|70 0|10 0|20 0|30 0|0 ENDBLK|5 BE|8 0");
     private static string Plain(string mtext) => Read(G("0 MTEXT|5 M|8 0|10 0|20 0|40 1|1 " + mtext)).Entities.OfType<DxfText>().Single().PlainText;
     private static string PlainTextEntity(string text) => Read(G("0 TEXT|5 T|8 0|10 0|20 0|40 1|1 " + text)).Entities.OfType<DxfText>().Single().PlainText;
     private static string Rect(string handle, double x0, double y0, double x1, double y1) =>
@@ -208,24 +209,24 @@ internal static class AttributeTests
         // ---------- generated briefs from attributes ----------
         try
         {
-            BriefDraft Brief(string entities, BriefExtractOptions? options = null) => BriefExtract.FromDxf(Read(entities, Tag()), options);
+            BriefDraft Brief(string entities, BriefExtractOptions? options = null) => BriefExtract.FromDxf(Read(entities, Tag() + Bare()), options);
             var far = Brief(Insert("I1", "TAG", 0, 0) + Attrib("A1", "NAME", "Cocina", 0, 0) + Attrib("A2", "AREA", "7,5 m²", 0, -50000) + Seqend("S1"));
             C(far.Rooms.Count == 1 && Near(far.Rooms[0].StatedAreaSquareMetres, 7.5) && far.Rooms[0].Notes.SequenceEqual(new[] { "room-tag", "area-attribute", "no-region" }) && Near(far.Rooms[0].Confidence, 0.9) && Codes(far) == "",
                 "gen NAME and AREA attributes of one insert pair at any distance", Rooms(far) + " " + Codes(far));
-            var spanish = Brief(Insert("I1", "TAG", 0, 0) + Attrib("A1", "nombre", "Comedor", 0, 0) + Attrib("A2", "SUPERFICIE", "15,5 m2", 0, -300) + Seqend("S1"));
+            var spanish = Brief(Insert("I1", "BARE", 0, 0) + Attrib("A1", "nombre", "Comedor", 0, 0) + Attrib("A2", "SUPERFICIE", "15,5 m2", 0, -300) + Seqend("S1"));
             C(spanish.Rooms.Count == 1 && spanish.Rooms[0].Id == "comedor" && Near(spanish.Rooms[0].StatedAreaSquareMetres, 15.5) && spanish.Rooms[0].Notes.Contains("area-attribute"), "gen es tags NOMBRE/SUPERFICIE (case-insensitive)", Rooms(spanish));
             var proximity = Brief(Insert("X1", "TAG", 0, 0) + Attrib("A1", "NAME", "Cocina", 0, 0) + Attrib("A2", "AREA", "5 m²", 0, -700) + Seqend("S1")
                 + Insert("X2", "TAG", 0, -900) + Attrib("A3", "NAME", "Comedor", 0, -900) + Attrib("A4", "AREA", "8 m²", 0, -1600) + Seqend("S2"));
             C(proximity.Rooms.Count == 2 && Near(proximity.Rooms[0].StatedAreaSquareMetres, 5) && Near(proximity.Rooms[1].StatedAreaSquareMetres, 8) && proximity.Rooms[1].Area?.Handle == "A4",
                 "gen each tag pairs its own AREA even when another insert's AREA is nearer", Rooms(proximity));
-            var note = Brief(Insert("I1", "TAG", 0, 0) + Attrib("A1", "NOTE", "Cocina 7 m²", 0, 0) + Seqend("S1"));
+            var note = Brief(Insert("I1", "BARE", 0, 0) + Attrib("A1", "NOTE", "Cocina 7 m²", 0, 0) + Seqend("S1"));
             C(note.Rooms.Count == 1 && note.Rooms[0].Notes.SequenceEqual(new[] { "area-same-text", "no-region" }) && note.Rooms[0].Label.Tag == "NOTE" && note.Rooms[0].Label.EntityType == "ATTRIB",
                 "gen attribute with another tag is read as ordinary text", Rooms(note));
             var invisible = Insert("I1", "TAG", 0, 0) + Attrib("A1", "NAME", "Cocina", 0, 0, extra: "70 1") + Seqend("S1");
             C(Brief(invisible).Rooms.Count == 0 && Brief(invisible, new BriefExtractOptions { IncludeInvisible = true }).Rooms.Count == 1, "gen invisible attributes need IncludeInvisible");
             var definition = Brief(G("0 ATTDEF|5 D1|8 0|10 0|20 0|40 200|1 Garage|3 Name|2 NAME|70 0"));
             C(definition.Rooms.Count == 0, "gen model-space ATTDEF (not through an insert) is not a room", Rooms(definition));
-            var tagged = Brief(Rect("R1", 0, 0, 3000, 3000) + Insert("I1", "TAG", 1500, 1500) + Attrib("A1", "ROOM_NAME", "Oficina", 1500, 1500) + Attrib("A2", "ROOM_AREA", "9.00", 1500, 1200) + Seqend("S1"));
+            var tagged = Brief(Rect("R1", 0, 0, 3000, 3000) + Insert("I1", "BARE", 1500, 1500) + Attrib("A1", "ROOM_NAME", "Oficina", 1500, 1500) + Attrib("A2", "ROOM_AREA", "9.00", 1500, 1200) + Seqend("S1"));
             C(tagged.Rooms.Count == 1 && Near(tagged.Rooms[0].StatedAreaSquareMetres, 9) && Near(tagged.Rooms[0].RegionAreaSquareMetres, 9) && tagged.Rooms[0].Notes.SequenceEqual(new[] { "room-tag", "area-attribute", "area-unitless" }) && Codes(tagged) == "",
                 "gen ROOM_NAME/ROOM_AREA tags in a region", Rooms(tagged) + " " + Codes(tagged));
 

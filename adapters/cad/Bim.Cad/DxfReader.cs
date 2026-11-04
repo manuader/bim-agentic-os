@@ -207,8 +207,9 @@ public static class DxfReader
         public void ReadBlocks(List<DxfRecord> records)
         {
             BlockBuilder? current = null;
-            foreach (var record in records)
+            for (var i = 0; i < records.Count; i++)
             {
+                var record = records[i];
                 if (record.Type == "BLOCK")
                 {
                     if (current is not null) { Warn("block-unterminated", current.Line, "BLOCK " + current.Name + " has no ENDBLK"); Finish(current); }
@@ -223,7 +224,7 @@ public static class DxfReader
                     else { Finish(current); current = null; }
                 }
                 else if (current is null) Warn("entity-outside-block", record.Line, record.Type + " outside BLOCK/ENDBLK ignored");
-                else if (Build(record) is { } entity) current.Entities.Add(entity);
+                else if (Next(records, ref i) is { } entity) current.Entities.Add(entity);
             }
             if (current is not null) { Warn("block-unterminated", current.Line, "BLOCK " + current.Name + " has no ENDBLK"); Finish(current); }
         }
@@ -237,10 +238,38 @@ public static class DxfReader
 
         public void ReadEntities(List<DxfRecord> records)
         {
-            foreach (var record in records)
+            for (var i = 0; i < records.Count; i++)
             {
-                if (Build(record) is { } entity) entities.Add(entity);
+                if (Next(records, ref i) is { } entity) entities.Add(entity);
             }
+        }
+
+        // Builds records[i]; for an INSERT also the ATTRIBs that follow it up to SEQEND, leaving i on the last record
+        // consumed. Every record is visited once, so malformed sequences cannot loop.
+        private DxfEntity? Next(List<DxfRecord> records, ref int i)
+        {
+            var record = records[i];
+            if (record.Type == "ATTRIB")
+            {
+                Warn("attrib-orphan", record.Line, "ATTRIB not following an INSERT ignored");
+                return null;
+            }
+            var entity = Build(record);
+            if (record.Type != "INSERT") return entity;
+            var follows = record.First(66) is { } flag && DxfValues.Int(flag) == 1;
+            var key = record.First(5)?.Value.Trim() is { Length: > 0 } handle ? handle : "@" + record.Line.ToString(CultureInfo.InvariantCulture);
+            var attributes = new List<DxfAttribute>();
+            var j = i + 1;
+            for (; j < records.Count && records[j].Type == "ATTRIB"; j++)
+            {
+                if (Build(records[j]) is DxfAttribute attribute) attributes.Add(attribute with { InsertHandle = key });
+            }
+            var any = j > i + 1;
+            if (j < records.Count && records[j].Type == "SEQEND" && (follows || any)) j++;
+            else if (follows) Warn("attrib-unterminated", record.Line, "INSERT attribute sequence has no SEQEND; it ends at the next entity");
+            if (any && !follows) Warn("attributes-flag-missing", record.Line, "ATTRIBs follow an INSERT without the attributes-follow flag (66 = 1); attached");
+            i = j - 1;
+            return entity is DxfInsert insert && attributes.Count > 0 ? insert with { Attributes = attributes.ToArray() } : entity;
         }
 
         private DxfEntity? Build(DxfRecord record)
@@ -298,7 +327,7 @@ public static class DxfReader
 
     private static class DxfEntityBuilder
     {
-        public static bool IsModelled(string type) => type is "LINE" or "ARC" or "CIRCLE" or "LWPOLYLINE" or "TEXT" or "MTEXT" or "INSERT";
+        public static bool IsModelled(string type) => type is "LINE" or "ARC" or "CIRCLE" or "LWPOLYLINE" or "TEXT" or "MTEXT" or "INSERT" or "ATTRIB" or "ATTDEF";
 
         public static DxfEntity? Build(DxfRecord r, DxfProvenance p, ParseState state)
         {
@@ -381,6 +410,38 @@ public static class DxfReader
                             if (invalid) state.Warn("invalid-text", r.Line, "MTEXT \\U+ escape of a lone surrogate replaced with U+FFFD");
                         }
                         return new DxfText(p, insertion, height, DxfValues.NormaliseDegrees(rotation), value, plain, mtext);
+                    }
+                case "ATTRIB":
+                case "ATTDEF":
+                    {
+                        var definition = r.Type == "ATTDEF";
+                        var tag = r.First(2)?.Value.Trim() ?? "";
+                        if (tag.Length == 0) return Invalid(r, state, r.Type + " without a tag");
+                        if (r.First(10) is not { } ax || r.First(20) is not { } ay) return Invalid(r, state, r.Type + " without insertion point");
+                        var insertion = new Point2(DxfValues.Number(ax), DxfValues.Number(ay));
+                        var horizontal = r.First(72) is { } h72 ? DxfValues.Int(h72) : 0;
+                        var vertical = r.First(74) is { } v74 ? DxfValues.Int(v74) : 0;
+                        if ((horizontal is 1 or 2 or 4 || vertical != 0) && r.First(11) is { } jx && r.First(21) is { } jy)
+                            insertion = new Point2(DxfValues.Number(jx), DxfValues.Number(jy));
+                        var height = r.First(40) is { } ah ? DxfValues.Number(ah) : 0;
+                        var rotation = r.First(50) is { } ar ? DxfValues.Number(ar) : 0;
+                        var flags = r.First(70) is { } af ? DxfValues.Int(af) : 0;
+                        var value = r.First(1)?.Value ?? "";
+                        if (Ocs(r, p, state)) { insertion = Flip(insertion); rotation = 180 - rotation; }
+                        string plain;
+                        // A multi-line attribute (embedded MTEXT after group 101) keeps MTEXT codes in its value.
+                        if (r.First(101) is not null)
+                        {
+                            plain = DxfTextFormat.PlainMText(value, out var invalid);
+                            if (invalid) state.Warn("invalid-text", r.Line, "MTEXT \\U+ escape of a lone surrogate replaced with U+FFFD");
+                        }
+                        else plain = DxfTextFormat.PlainText(value);
+                        var provenance = (flags & 1) != 0 ? p with { Invisible = true } : p;
+                        return new DxfAttribute(provenance, tag, insertion, height, DxfValues.NormaliseDegrees(rotation), value, plain, definition)
+                        {
+                            Prompt = definition ? r.First(3)?.Value ?? "" : null,
+                            Flags = flags,
+                        };
                     }
                 case "INSERT":
                     {
@@ -495,12 +556,42 @@ internal static class DxfValues
 // Plain-text forms of TEXT (%%d, %%p, %%c control codes) and MTEXT (inline formatting codes) values.
 internal static class DxfTextFormat
 {
-    public static string PlainText(string value) => value
-        .Replace("%%d", "°", StringComparison.OrdinalIgnoreCase)
-        .Replace("%%p", "±", StringComparison.OrdinalIgnoreCase)
-        .Replace("%%c", "Ø", StringComparison.OrdinalIgnoreCase)
-        .Replace("%%%", "%", StringComparison.Ordinal);
+    // TEXT/ATTRIB control codes: %%d degree, %%p plus-minus, %%c diameter, %%% percent, %%nnn the character with that
+    // (Latin-1) code, %%u/%%o/%%k underline/overline/strike toggles removed; any other %% is kept as written.
+    public static string PlainText(string value)
+    {
+        if (!value.Contains("%%", StringComparison.Ordinal)) return value;
+        var builder = new StringBuilder(value.Length);
+        for (var i = 0; i < value.Length; i++)
+        {
+            var consumed = Percent(value, i, builder);
+            if (consumed > 0) i += consumed - 1;
+            else builder.Append(value[i]);
+        }
+        return builder.ToString();
+    }
 
+    // Appends the meaning of a %% code at value[i] and returns its length, or 0 (nothing appended) when there is none.
+    private static int Percent(string value, int i, StringBuilder builder)
+    {
+        if (value[i] != '%' || i + 2 >= value.Length || value[i + 1] != '%') return 0;
+        var code = value[i + 2];
+        switch (code)
+        {
+            case 'd': case 'D': builder.Append('°'); return 3;
+            case 'p': case 'P': builder.Append('±'); return 3;
+            case 'c': case 'C': builder.Append('Ø'); return 3;
+            case '%': builder.Append('%'); return 3;
+            case 'u': case 'U': case 'o': case 'O': case 'k': case 'K': return 3;
+            default:
+                if (i + 4 < value.Length && char.IsAsciiDigit(value[i + 2]) && char.IsAsciiDigit(value[i + 3]) && char.IsAsciiDigit(value[i + 4]))
+                {
+                    var number = (value[i + 2] - '0') * 100 + (value[i + 3] - '0') * 10 + (value[i + 4] - '0');
+                    if (number is >= 32 and <= 255) { builder.Append((char)number); return 5; }
+                }
+                return 0;
+        }
+    }
     // Replaces unpaired UTF-16 surrogates (which no JSON or UTF-8 writer accepts) with U+FFFD; true when any was found.
     public static bool ReplaceLoneSurrogates(ref string text)
     {
@@ -523,6 +614,10 @@ internal static class DxfTextFormat
         return true;
     }
 
+    // MTEXT inline codes: \P (and \X) newline, \~ space, \\ \{ \} literal, {} grouping dropped, \L \l \O \o \K \k \N
+    // dropped, \S a^b; / a/b; / a#b; stacking as "a/b" (or the non-empty side alone: m\S2^; is m2), \U+XXXX, value
+    // codes (\A \C \c \F \f \H \h \Q \q \T \t \W \w \p) skipped to their ';' (to the end when unterminated), %% codes
+    // as in PlainText, caret codes ^J/^M newline, ^I space, "^ " a caret. Single pass, linear in the value.
     public static string PlainMText(string value, out bool invalid)
     {
         invalid = false;
@@ -531,11 +626,23 @@ internal static class DxfTextFormat
         {
             var ch = value[i];
             if (ch == '{' || ch == '}') continue;
+            if (ch == '%')
+            {
+                var consumed = Percent(value, i, builder);
+                if (consumed > 0) { i += consumed - 1; continue; }
+            }
+            if (ch == '^' && i + 1 < value.Length)
+            {
+                var next = value[i + 1];
+                if (next is 'J' or 'M') { builder.Append('\n'); i++; continue; }
+                if (next == 'I') { builder.Append(' '); i++; continue; }
+                if (next == ' ') { builder.Append('^'); i++; continue; }
+            }
             if (ch != '\\' || i + 1 >= value.Length) { builder.Append(ch); continue; }
             var code = value[++i];
             switch (code)
             {
-                case 'P': builder.Append('\n'); break;
+                case 'P': case 'X': builder.Append('\n'); break;
                 case '~': builder.Append(' '); break;
                 case '\\': case '{': case '}': builder.Append(code); break;
                 case 'L': case 'l': case 'O': case 'o': case 'K': case 'k': case 'N': break;
@@ -543,7 +650,14 @@ internal static class DxfTextFormat
                     {
                         var end = value.IndexOf(';', i + 1);
                         var stacked = end < 0 ? value[(i + 1)..] : value[(i + 1)..end];
-                        builder.Append(stacked.Replace('^', '/').Replace('#', '/'));
+                        var split = stacked.IndexOfAny(StackSeparators);
+                        if (split < 0) builder.Append(stacked);
+                        else
+                        {
+                            var top = stacked[..split];
+                            var bottom = stacked[(split + 1)..];
+                            builder.Append(top.Length == 0 ? bottom : bottom.Length == 0 ? top : top + "/" + bottom);
+                        }
                         i = end < 0 ? value.Length - 1 : end;
                         break;
                     }
@@ -563,4 +677,6 @@ internal static class DxfTextFormat
         }
         return builder.ToString();
     }
+
+    private static readonly char[] StackSeparators = { '^', '/', '#' };
 }
