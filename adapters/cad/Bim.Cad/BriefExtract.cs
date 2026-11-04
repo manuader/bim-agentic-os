@@ -80,8 +80,11 @@ public static class BriefExtract
     {
         "area", "roomarea", "spacearea", "sup", "superficie", "surface", "m2", "sqm", "areaambiente", "superficielocal",
     };
-    // Folded block-name fragments that mark a room-tag block (a name tag there is a room tag even without an area tag).
-    private static readonly string[] RoomBlockWords = { "room", "space", "local", "ambiente", "espacio", "recinto", "rotulo", "habitacion" };
+    // Block-name tokens that mark a room-tag block (a name tag there is a room tag even without an area tag). The folded
+    // block name is split at every non-letter (_ - space digits); a token matches as the word itself or the word joined
+    // with "tag" (ROOMTAG, TAGROOM). Whole tokens only, so BATHROOM_SINK or LOCALIZACION do not match ("rotulo" is a
+    // title block in es-AR drawings and is not a room word).
+    private static readonly HashSet<string> RoomBlockWords = new(StringComparer.Ordinal) { "room", "space", "local", "ambiente", "espacio", "recinto", "habitacion" };
     private const double SquareFoot = 0.09290304;
     private const double SquareFeet = 0.9;
     private static readonly HashSet<string> UnitWords = new(StringComparer.Ordinal)
@@ -129,7 +132,18 @@ public static class BriefExtract
                 fallback.Add(entity);
                 if (entity is DxfInsert insert)
                     foreach (var attribute in insert.Attributes)
-                        fallback.Add(attribute.InsertHandle is { } key ? attribute with { Provenance = attribute.Provenance with { InsertPath = new[] { key } } } : attribute);
+                    {
+                        // As when exploded: layer 0 takes the insert's layer; paper space and invisibility are inherited.
+                        var own = attribute.Provenance;
+                        var provenance = own with
+                        {
+                            Layer = own.Layer == "0" ? insert.Provenance.Layer : own.Layer,
+                            InsertPath = attribute.InsertHandle is { } key ? new[] { key } : own.InsertPath,
+                            PaperSpace = own.PaperSpace || insert.Provenance.PaperSpace,
+                            Invisible = own.Invisible || insert.Provenance.Invisible,
+                        };
+                        fallback.Add(attribute with { Provenance = provenance });
+                    }
             }
             entities = fallback;
         }
@@ -205,7 +219,7 @@ public static class BriefExtract
         {
             if (entity is not DxfAttribute { InsertHandle: not null } tagged) continue;
             var groupKey = string.Join(">", tagged.Provenance.InsertPath);
-            if (AreaTags.Contains(TagKey(tagged.Tag)) || (tagged.BlockName is { } block && RoomBlockWords.Any(w => TagKey(block).Contains(w, StringComparison.Ordinal)))) roomGroups.Add(groupKey);
+            if (AreaTags.Contains(TagKey(tagged.Tag)) || (tagged.BlockName is { } block && IsRoomBlock(block))) roomGroups.Add(groupKey);
         }
         var imperial = scale is { } unit && (unit == 0.0254 || unit == 0.3048 || unit == 1200.0 / 3937.0 || unit == 0.9144);
         foreach (var entity in entities)
@@ -572,6 +586,21 @@ public static class BriefExtract
         }
         return string.Join(' ', builder.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
+
+    private static bool IsRoomBlock(string name)
+    {
+        foreach (var token in Fold(name).Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            foreach (var part in token.Split(Digits, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var word = part.Length > 3 && part.EndsWith("tag", StringComparison.Ordinal) ? part[..^3] : part.Length > 3 && part.StartsWith("tag", StringComparison.Ordinal) ? part[3..] : part;
+                if (RoomBlockWords.Contains(word)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static readonly char[] Digits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
 
     private static string TagKey(string tag) => Fold(tag).Replace(" ", "", StringComparison.Ordinal);
 
