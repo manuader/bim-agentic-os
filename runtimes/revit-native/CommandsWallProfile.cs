@@ -17,7 +17,7 @@ public sealed record WallInsertExtent(string UniqueId, string Kind, double UMin,
 // What Revit reports after the edit. SketchUid: the wall's profile Sketch (null without one); Edges: every curve of
 // Sketch.Profile; LoopCount: the number of curve loops; Start/End: the location line; TopMm: bounding box max z above
 // the base level (null without a box); BaseOffsetMm/HeightMm: WALL_BASE_OFFSET / WALL_USER_HEIGHT_PARAM.
-public sealed record ObservedWallProfile(string UniqueId, string? SketchUid, IReadOnlyList<ProfileEdgeMm> Edges, int LoopCount, PlanPoint Start, PlanPoint End, double? TopMm, double? BaseOffsetMm, double? HeightMm);
+public sealed record ObservedWallProfile(string UniqueId, string? SketchUid, IReadOnlyList<ProfileEdgeMm> Edges, int LoopCount, PlanPoint Start, PlanPoint End, double? TopMm, double? BaseOffsetMm, double? HeightMm, double WidthMm = 0);
 
 public static class CommandRulesWallProfile
 {
@@ -27,6 +27,8 @@ public static class CommandRulesWallProfile
     public const double BoxToleranceMm = 25.0;
 
     static string F(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+
+    public static double JoinAllowanceMm(IReadOnlyList<ProfilePointMm> profile, double wallWidthMm) => 0;
 
     public static ProfilePointMm[] Requested(WallSetProfileArgs args) => args.Profile.Select(v => new ProfilePointMm(v.U.Millimetres, v.Z.Millimetres)).ToArray();
 

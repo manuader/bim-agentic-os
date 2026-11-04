@@ -256,13 +256,135 @@ static class CatalogueViewsChecks
 
         var args = (ViewSectionCreateArgs)RevitCommandProtocol.Parse(Envelope("view.create_section", Section()).ToJsonString()).Args;
         var frame = CommandRulesViews.Section(args);
-        Check(NearV(frame.Origin, new Vec3(3000, 0, 0)) && NearV(frame.BasisX, new Vec3(1, 0, 0)) && NearV(frame.BasisY, new Vec3(0, 0, 1)) && NearV(frame.BasisZ, new Vec3(0, -1, 0)),
-            "section frame: origin at the line midpoint, X along the line, Y up, Z toward the viewer (X cross Y)");
-        Check(NearV(frame.Min, new Vec3(-3000, -500, -3000)) && NearV(frame.Max, new Vec3(3000, 4000, 0)), "section box: half the line either side, bottom to top elevation, far clip depth behind the cut plane");
+        Check(NearV(frame.Origin, new Vec3(3000, 0, 0)) && NearV(frame.BasisX, new Vec3(-1, 0, 0)) && NearV(frame.BasisY, new Vec3(0, 0, 1)) && NearV(frame.BasisZ, new Vec3(0, 1, 0)),
+            "section box frame: origin at the line midpoint, Y up, Z the looking direction (left of the line; Revit takes the view direction from BasisZ), X = Y cross Z (against the line)");
+        Check(NearV(frame.Min, new Vec3(-3000, -500, 0)) && NearV(frame.Max, new Vec3(3000, 4000, 3000)), "section box: half the line either side, bottom to top elevation, cut plane at z 0 and the far clip depth ahead of it");
         Check(NearV(CommandRulesViews.LookingDirection(args), new Vec3(0, 1, 0)), "a section drawn from start to end looks to the left of the line (+Y for a line along +X)");
         var diagonal = (ViewSectionCreateArgs)RevitCommandProtocol.Parse(Envelope("view.create_section", With(Section(), "line", new JsonObject { ["start"] = Pair(1000, 1000), ["end"] = Pair(4000, 5000) })).ToJsonString()).Args;
         var tilted = CommandRulesViews.Section(diagonal);
-        Check(NearV(tilted.BasisX, new Vec3(0.6, 0.8, 0)) && NearV(tilted.BasisZ, new Vec3(0.8, -0.6, 0)) && NearV(tilted.Origin, new Vec3(2500, 3000, 0)) && Near(tilted.Max.X, 2500) && NearV(CommandRulesViews.LookingDirection(diagonal), new Vec3(-0.8, 0.6, 0)), "a diagonal section frame is orthonormal and centred on its line");
+        Check(NearV(tilted.BasisX, new Vec3(-0.6, -0.8, 0)) && NearV(tilted.BasisZ, new Vec3(-0.8, 0.6, 0)) && NearV(tilted.Origin, new Vec3(2500, 3000, 0)) && Near(tilted.Max.X, 2500) && NearV(CommandRulesViews.LookingDirection(diagonal), new Vec3(-0.8, 0.6, 0)), "a diagonal section frame is orthonormal and centred on its line");
+        SectionOrientations();
+        ThreeDOrientations();
+    }
+
+    static Vec3 Cross(Vec3 a, Vec3 b) => new(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z, a.X * b.Y - a.Y * b.X);
+    static double Dot(Vec3 a, Vec3 b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+    static Vec3 Plus(Vec3 a, Vec3 b) => new(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
+    static Vec3 Times(Vec3 a, double k) => new(a.X * k, a.Y * k, a.Z * k);
+    static Vec3 Neg(Vec3 a) => Times(a, -1);
+    static Vec3 UnitV(double x, double y, double z) { var n = Math.Sqrt(x * x + y * y + z * z); return new Vec3(x / n, y / n, z / n); }
+    static string Num(double value) => value.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+    static string Show(Vec3 v) => "(" + Num(v.X) + ", " + Num(v.Y) + ", " + Num(v.Z) + ")";
+
+    // What Revit 2025 makes of the BoundingBoxXYZ handed to ViewSection.CreateSection. API reference: "The view
+    // direction of the resulting section will be sectionBox.Transform.BasisZ and the up direction will be
+    // sectionBox.Transform.BasisY. The right hand direction will be computed so that (right, up, view direction) form a
+    // left handed coordinate system", i.e. right = BasisZ x BasisY (BasisX is not used), and "the far clip distance will
+    // be equal to the difference of the z-coordinates of Min and Max". View.ViewDirection points toward the viewer
+    // (right x up = -BasisZ). Observed on the owner's Revit 2025.2 (2026-11-04): BasisZ (0.707, -0.707, 0) gave
+    // RightDirection (-0.707, -0.707, 0), exactly this model.
+    static ObservedSection RevitCreatesSection(SectionFrame f)
+    {
+        var right = Cross(f.BasisZ, f.BasisY);
+        Vec3 Project(Vec3 local) => Plus(Plus(Plus(f.Origin, Times(f.BasisX, local.X)), Times(f.BasisY, local.Y)), Times(f.BasisZ, local.Z));
+        return new ObservedSection(right, f.BasisY, Cross(right, f.BasisY), f.Origin, Project(f.Min), Project(f.Max), Math.Abs(f.Max.Z - f.Min.Z), true);
+    }
+
+    static ViewSectionCreateArgs SectionAlong(double x0, double y0, double x1, double y1) =>
+        (ViewSectionCreateArgs)RevitCommandProtocol.Parse(Envelope("view.create_section", With(Section(), "line", new JsonObject { ["start"] = Pair(x0, y0), ["end"] = Pair(x1, y1) })).ToJsonString()).Args;
+
+    // Every compass direction, the diagonals and two oblique lines: the box Revit receives must give a section whose
+    // right direction runs start -> end and that looks to the left of the line, and the readback must accept it.
+    static void SectionOrientations()
+    {
+        var directions = new (string Name, double X, double Y)[]
+        {
+            ("east", 1, 0), ("north-east", 1, 1), ("north", 0, 1), ("north-west", -1, 1), ("west", -1, 0), ("south-west", -1, -1), ("south", 0, -1), ("south-east", 1, -1),
+            ("3:4 oblique", 3, 4), ("-8:3 oblique", -8, 3),
+        };
+        foreach (var (name, dx, dy) in directions)
+        {
+            var d = UnitV(dx, dy, 0);
+            var args = SectionAlong(1000, 2000, 1000 + 7000 * d.X, 2000 + 7000 * d.Y);
+            var frame = CommandRulesViews.Section(args);
+            var orthonormal = Near(Dot(frame.BasisX, frame.BasisX), 1) && Near(Dot(frame.BasisY, frame.BasisY), 1) && Near(Dot(frame.BasisZ, frame.BasisZ), 1)
+                && Near(Dot(frame.BasisX, frame.BasisY), 0) && Near(Dot(frame.BasisY, frame.BasisZ), 0) && Near(Dot(frame.BasisX, frame.BasisZ), 0);
+            Check(orthonormal && NearV(Cross(frame.BasisX, frame.BasisY), frame.BasisZ) && NearV(frame.BasisY, new Vec3(0, 0, 1)),
+                "section box frame for a line to the " + name + " is an orthonormal right-handed transform with Y up", Show(frame.BasisX) + " " + Show(frame.BasisY) + " " + Show(frame.BasisZ));
+            var revit = RevitCreatesSection(frame);
+            var left = new Vec3(-d.Y, d.X, 0);
+            Check(NearV(revit.Right, d) && NearV(Neg(revit.ViewDirection), left) && NearV(CommandRulesViews.LookingDirection(args), left),
+                "a section drawn to the " + name + " has Revit's right direction along start -> end and looks to the left of the line",
+                "right " + Show(revit.Right) + ", toward viewer " + Show(revit.ViewDirection) + ", line " + Show(d));
+            var mismatch = CommandReadbackViews.Section(args, revit);
+            Check(mismatch is null, "the section Revit creates for a line to the " + name + " passes the readback", mismatch ?? "");
+            var reversed = SectionAlong(1000 + 7000 * d.X, 2000 + 7000 * d.Y, 1000, 2000);
+            var back = RevitCreatesSection(CommandRulesViews.Section(reversed));
+            Check(NearV(back.Right, Neg(d)) && NearV(back.ViewDirection, Neg(revit.ViewDirection)) && CommandReadbackViews.Section(reversed, back) is null,
+                "reversing the " + name + " line mirrors the section (right and looking direction flip) and still passes the readback", Show(back.Right) + " " + Show(back.ViewDirection));
+        }
+        // Owner report (Revit 2025.2, 2026-11-04): line [80550,8550] -> [90450,18450] failed as "section right direction
+        // is (-0.707,-0.707,0), expected (0.707,0.707,0)" with the previous frame (BasisZ toward the viewer).
+        var owner = SectionAlong(80550, 8550, 90450, 18450);
+        var created = RevitCreatesSection(CommandRulesViews.Section(owner));
+        var ownerMismatch = CommandReadbackViews.Section(owner, created);
+        Check(ownerMismatch is null && NearV(created.Right, UnitV(1, 1, 0)) && NearV(created.ViewDirection, UnitV(1, -1, 0)), "the owner's diagonal section line gives right (0.707, 0.707, 0), looks north-west and passes the readback", ownerMismatch ?? Show(created.Right));
+        var flipped = created with { Right = Neg(created.Right), ViewDirection = Neg(created.ViewDirection) };
+        Check(CommandReadbackViews.Section(owner, flipped) is { } refused && refused.Contains("right direction", StringComparison.Ordinal), "a section Revit flipped (looking to the right of the line) is still refused");
+    }
+
+    static JsonObject ThreeDWith(string member, JsonNode value) => With(ThreeD(false), member, value);
+
+    // view.create_3d orientation: view_from presets and eye_direction, the frame handed to View3D.SetOrientation and the
+    // readback of forward/up.
+    static void ThreeDOrientations()
+    {
+        var c = 1 / Math.Sqrt(3);
+        var s2 = Math.Sqrt(2.0 / 3);
+        var presets = new (string Name, Vec3 Eye)[]
+        {
+            ("ne", new(c, c, c)), ("nw", new(-c, c, c)), ("se", new(c, -c, c)), ("sw", new(-c, -c, c)),
+            ("n", new(0, s2, c)), ("s", new(0, -s2, c)), ("e", new(s2, 0, c)), ("w", new(-s2, 0, c)), ("top", new(0, 0, 1)),
+        };
+        var schema = JsonNode.Parse(RevitCommandCatalogue.Find("view.create_3d")!.ArgsSchemaJson)!;
+        var listed = schema["properties"]?["view_from"]?["enum"]?.AsArray().Select(value => value!.GetValue<string>()).ToArray() ?? Array.Empty<string>();
+        Check(listed.SequenceEqual(presets.Select(p => p.Name)), "view.create_3d schema lists the view_from presets ne, nw, se, sw, n, s, e, w, top", string.Join(",", listed));
+        Check(schema["properties"]?["eye_direction"]?["type"]?.GetValue<string>() == "array", "view.create_3d schema offers eye_direction as an [x, y, z] array");
+        foreach (var (name, eye) in presets)
+        {
+            var bound = Accepts("3D view from " + name + " accepted", Envelope("view.create_3d", ThreeDWith("view_from", name)))?.Args as View3DCreateArgs;
+            Check(bound?.Eye is { } e && NearV(new Vec3(e.X, e.Y, e.Z), eye), "view_from " + name + " binds the unit eye direction " + Show(eye), bound?.Eye is { } got ? Show(new Vec3(got.X, got.Y, got.Z)) : "none");
+            var frame = CommandRulesViews.Orientation(new ViewDirection3(eye.X, eye.Y, eye.Z), new Vec3(4000, 3000, 1500), 20000);
+            var vertical = name == "top";
+            var upOk = Near(Dot(frame.Up, frame.Up), 1) && Near(Dot(frame.Up, frame.Forward), 0)
+                && (vertical ? NearV(frame.Up, new Vec3(0, 1, 0)) : frame.Up.Z > 0 && Near(Dot(frame.Up, Cross(new Vec3(0, 0, 1), frame.Forward)), 0));
+            Check(NearV(frame.Forward, Neg(eye)) && upOk && NearV(frame.Eye, Plus(new Vec3(4000, 3000, 1500), Times(eye, 20000)), 1e-6),
+                "orientation from " + name + ": forward looks from the eye toward the target, up is the vertical tilted toward the view (project north for top), the eye sits on the eye direction",
+                "eye " + Show(frame.Eye) + " up " + Show(frame.Up) + " forward " + Show(frame.Forward));
+        }
+        var se = CommandRulesViews.Orientation(new ViewDirection3(c, -c, c), new Vec3(0, 0, 0), 1000);
+        Check(NearV(se.Forward, new Vec3(-c, c, -c)) && NearV(se.Up, UnitV(-1, 1, 2)), "view_from se reproduces Revit's default isometric (forward (-0.577, 0.577, -0.577), up (-0.408, 0.408, 0.816))", Show(se.Up));
+        var explicitEye = Accepts("3D view with eye_direction accepted", Envelope("view.create_3d", ThreeDWith("eye_direction", Triple(0, -3, 4))))?.Args as View3DCreateArgs;
+        Check(explicitEye?.Eye is { } x && NearV(new Vec3(x.X, x.Y, x.Z), new Vec3(0, -0.6, 0.8)), "eye_direction is normalised to a unit direction from the target toward the eye");
+        var below = CommandRulesViews.Orientation(new ViewDirection3(0, 0, -1), new Vec3(0, 0, 0), 1000);
+        Check(NearV(below.Forward, new Vec3(0, 0, 1)) && NearV(below.Up, new Vec3(0, 1, 0)), "an eye straight below looks up with project north up");
+        Check(Accepts("3D view with a section box and a view_from accepted", Envelope("view.create_3d", With(ThreeD(), "view_from", "nw")))?.Args is View3DCreateArgs { SectionBox: not null, Eye: not null }, "view_from combines with a section box");
+        Check(Accepts("3D view without orientation accepted", Envelope("view.create_3d", ThreeD(false)))?.Args is View3DCreateArgs { Eye: null }, "no view_from or eye_direction keeps Revit's default orientation");
+        Rejects("3D view_from and eye_direction together", Envelope("view.create_3d", With(ThreeDWith("view_from", "ne"), "eye_direction", Triple(1, 1, 1))), RevitCommandCodes.ArgsInvalid, "args.eye_direction");
+        Rejects("3D view_from unknown preset", Envelope("view.create_3d", ThreeDWith("view_from", "bottom")), RevitCommandCodes.ArgsInvalid, "args.view_from");
+        Rejects("3D eye_direction zero", Envelope("view.create_3d", ThreeDWith("eye_direction", Triple(0, 0, 0))), RevitCommandCodes.ArgsInvalid, "args.eye_direction");
+        Rejects("3D eye_direction too short to normalise", Envelope("view.create_3d", ThreeDWith("eye_direction", Triple(1e-12, 0, 0))), RevitCommandCodes.ArgsInvalid, "args.eye_direction");
+        Rejects("3D eye_direction with two values", Envelope("view.create_3d", ThreeDWith("eye_direction", Pair(1, 1))), RevitCommandCodes.ArgsInvalid, "args.eye_direction");
+        RejectsText("3D eye_direction overflowing to infinity", Envelope("view.create_3d", ThreeDWith("eye_direction", Triple(1, 2, 3))).ToJsonString().Replace("[1,2,3]", "[1e400,2,3]"), RevitCommandCodes.ArgsInvalid, "args.eye_direction[0]");
+
+        Vec3 X = new(1, 0, 0), Y = new(0, 1, 0), Z = new(0, 0, 1);
+        var nw = new ViewDirection3(-c, c, c);
+        var nwFrame = CommandRulesViews.Orientation(nw, new Vec3(0, 0, 0), 1000);
+        var observed = new Observed3D(false, false, X, Y, Z, null, null, nwFrame.Forward, nwFrame.Up);
+        Check(CommandReadbackViews.ThreeD(null, observed, nw) is null, "a 3D view oriented as requested passes the readback");
+        Check(CommandReadbackViews.ThreeD(null, observed with { Forward = new Vec3(-c, c, -c) }, nw) is { } forward && forward.Contains("forward direction", StringComparison.Ordinal), "a 3D view looking from another side is a mismatch naming the forward direction");
+        Check(CommandReadbackViews.ThreeD(null, observed with { Up = Neg(nwFrame.Up) }, nw) is { } up && up.Contains("up direction", StringComparison.Ordinal), "a 3D view upside down is a mismatch naming the up direction");
+        Check(CommandReadbackViews.ThreeD(null, observed with { Forward = new Vec3(-c, c, -c) }) is null, "without a requested orientation the default orientation is not checked");
     }
 
     static void Readbacks()

@@ -23,6 +23,8 @@ public sealed record SectionFrame(Vec3 Origin, Vec3 BasisX, Vec3 BasisY, Vec3 Ba
 public sealed record ObservedSection(Vec3 Right, Vec3 Up, Vec3 ViewDirection, Vec3 Origin, Vec3 CropMin, Vec3 CropMax, double? FarClipMm, bool CropActive);
 // A created 3D view: View3D.IsPerspective, IsSectionBoxActive, the GetSectionBox transform basis and its Min/Max
 // corners in project coordinates (null when no box can be read), and the view orientation.
+// A 3D view orientation for View3D.SetOrientation: eye position (mm), up and forward unit directions.
+public sealed record ViewFrame3D(Vec3 Eye, Vec3 Up, Vec3 Forward);
 public sealed record Observed3D(bool IsPerspective, bool SectionBoxActive, Vec3? BoxBasisX, Vec3? BoxBasisY, Vec3? BoxBasisZ, Vec3? BoxMin, Vec3? BoxMax, Vec3 Forward, Vec3 Up);
 
 public static class CommandRulesViews
@@ -102,6 +104,8 @@ public static class CommandRulesViews
         return new Vec3(-y, x, 0);
     }
 
+    public static ViewFrame3D Orientation(ViewDirection3 eye, Vec3 target, double distanceMm) => new(target, new Vec3(0, 0, 0), new Vec3(0, 0, 0));
+
     // Origin at the line midpoint (z 0, so frame Y is the project elevation), X along the line, Y up, Z = X cross Y
     // toward the viewer. The box spans the line, bottom to top elevation, from the far clip (-depth) to the cut plane (0).
     public static SectionFrame Section(ViewSectionCreateArgs args)
@@ -161,7 +165,7 @@ public static class CommandReadbackViews
         return null;
     }
 
-    public static string? ThreeD(ViewBox? box, Observed3D observed)
+    public static string? ThreeD(ViewBox? box, Observed3D observed, ViewDirection3? eye = null)
     {
         if (observed.IsPerspective) return "the 3D view is a perspective view, expected isometric";
         if (box is null) return observed.SectionBoxActive ? "the 3D view has an active section box; none was requested" : null;

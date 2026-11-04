@@ -205,6 +205,45 @@ static class CatalogueWallProfileChecks
         Check(CommandReadbackWallProfile.Profile(requested, new PlanPoint(0, 0), new PlanPoint(6000, 0), Observed(Edges(requested)) with { TopMm = 2700 }) is { } top && top.Contains("bounding box", StringComparison.Ordinal), "a bounding box top at the eaves instead of the ridge is a mismatch");
         Check(CommandReadbackWallProfile.Profile(requested, new PlanPoint(0, 0), new PlanPoint(6000, 0), Observed(Edges(requested)) with { TopMm = 5220 }) is null, "the bounding box top is compared within 25 mm (Revit pads boxes)");
         Check(CommandReadbackWallProfile.Profile(requested, new PlanPoint(0, 0), new PlanPoint(6000, 0), Observed(Edges(requested)) with { TopMm = null }) is not null, "no bounding box is a mismatch");
+        JoinedCorners();
+    }
+
+    // Owner report (Revit 2025.2, 2026-11-04): the triangle [[0,3000],[4570.66,3000],[0,6151]] on a wall joined to its
+    // neighbours read back with a bounding box top of 6233.28 mm: the corner join extends the wall past u 0 along the
+    // sloped top. The sketch itself matched. The box may rise above the profile by at most the wall width times the
+    // slope of a top edge that reaches a wall end; anything else stays a mismatch.
+    static void JoinedCorners()
+    {
+        var start = new PlanPoint(0, 0);
+        var end = new PlanPoint(4570.66, 0);
+        var triangle = Pts(P(0, 3000), P(4570.66, 3000), P(0, 6151));
+        ObservedWallProfile Joined(IReadOnlyList<ProfilePointMm> outline, double top, double width) =>
+            new(WallUid, SketchUid, Edges(outline), 1, start, end, top, 3000, 3151, width);
+        var slope = 3151 / 4570.66;
+        Check(CommandReadbackWallProfile.Profile(triangle, start, end, Joined(triangle, 6233.28, 200)) is null,
+            "a corner join extending the sloped top past the wall end (owner's 6233.28 mm on a 6151 mm triangle) is accepted within wall width x slope");
+        Check(CommandReadbackWallProfile.Profile(triangle, start, end, Joined(triangle, 6151, 200)) is null, "the same wall without a join extension still matches");
+        Check(CommandReadbackWallProfile.Profile(triangle, start, end, Joined(triangle, 6233.28, 0)) is { } unknownWidth && unknownWidth.Contains("bounding box", StringComparison.Ordinal),
+            "without a wall width no join extension is allowed");
+        Check(CommandReadbackWallProfile.Profile(triangle, start, end, Joined(triangle, 6151 + 200 * slope + CommandRulesWallProfile.BoxToleranceMm + 5, 200)) is { } beyond && beyond.Contains("bounding box", StringComparison.Ordinal),
+            "a box top beyond wall width x slope (plus the box tolerance) is still a mismatch");
+        Check(CommandReadbackWallProfile.Profile(triangle, start, end, Joined(triangle, 3000, 200)) is { } low && low.Contains("bounding box", StringComparison.Ordinal),
+            "a box top that stayed at the eaves is still a mismatch");
+        var mirrored = Pts(P(0, 3000), P(4570.66, 3000), P(4570.66, 6151));
+        Check(CommandReadbackWallProfile.Profile(mirrored, start, end, Joined(mirrored, 6233.28, 200)) is null, "the allowance also applies at the far end (u = wall length)");
+        var flat = Pts(P(0, 3000), P(4570.66, 3000), P(300, 6151), P(0, 6151));
+        Check(CommandReadbackWallProfile.Profile(flat, start, end, Joined(flat, 6151, 200)) is null, "the owner's workaround (a 300 mm flat at the high end) matches at the profile's highest z");
+        Check(CommandReadbackWallProfile.Profile(flat, start, end, Joined(flat, 6233.28, 200)) is { } flatTop && flatTop.Contains("bounding box", StringComparison.Ordinal),
+            "a flat top at the wall end allows no join extension");
+        var gable = GablePts();
+        ObservedWallProfile Gable(double top) => new(WallUid, SketchUid, Edges(gable), 1, new PlanPoint(0, 0), new PlanPoint(6000, 0), top, 0, 5200, 300);
+        Check(CommandReadbackWallProfile.Profile(gable, new PlanPoint(0, 0), new PlanPoint(6000, 0), Gable(5300)) is { } ridge && ridge.Contains("bounding box", StringComparison.Ordinal),
+            "a gable with its ridge mid-wall allows no join extension above the ridge (its ends slope down)");
+        var allowance = CommandRulesWallProfile.JoinAllowanceMm(triangle, 200);
+        Check(Math.Abs(allowance - 200 * slope) < 1e-6, "the join allowance is the wall width times the slope of the top edge at the high end", allowance.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Check(CommandRulesWallProfile.JoinAllowanceMm(Pts(P(0, 0), P(6000, 0), P(6000, 2700), P(0, 2700)), 300) == 0, "a rectangle has no join allowance");
+        var json = JsonNode.Parse(CommandReadbackWallProfile.ProfileJson(Joined(triangle, 6233.28, 200)))!["wall_profile"]!;
+        Check(json["width_mm"]?.GetValue<double>() == 200, "wall profile readback reports the wall width", json.ToJsonString());
     }
 
     static void ReadbackJson()

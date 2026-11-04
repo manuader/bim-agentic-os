@@ -20,8 +20,11 @@ public sealed record ViewPlanCreateArgs(string Level, string Kind, ViewOptions O
 public sealed record ViewSectionCreateArgs(Point2 Start, Point2 End, Length Depth, Length Bottom, Length Top, ViewOptions Options) : RevitCommandArgs;
 // An axis-aligned box in project coordinates.
 public sealed record ViewBox(Length MinX, Length MinY, Length MinZ, Length MaxX, Length MaxY, Length MaxZ);
-// An isometric (never perspective) 3D view, optionally limited by a section box.
-public sealed record View3DCreateArgs(ViewBox? SectionBox, ViewOptions Options) : RevitCommandArgs;
+// A unit direction in project coordinates (dimensionless).
+public sealed record ViewDirection3(double X, double Y, double Z);
+// An isometric (never perspective) 3D view, optionally limited by a section box. Eye: unit direction from the model
+// toward the eye (view_from preset or eye_direction); null keeps Revit's default orientation (eye to the south-east).
+public sealed record View3DCreateArgs(ViewBox? SectionBox, ViewOptions Options, ViewDirection3? Eye = null) : RevitCommandArgs;
 
 public static class RevitViewRules
 {
