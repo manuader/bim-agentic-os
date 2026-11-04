@@ -62,3 +62,11 @@ Doc Claude Docs "Cabaña Zona Sur — Análisis de referencias, discurso y promp
 - Platea: piso "Wood Joist 220mm - Wood Finish" creado a nivel 0; FALTA subir a +600 (set_parameter rechazado por borrado interno) y tipo propio (floor_type.create falla EndCap).
 - Verificado en Revit real: view_from ne/sw OK (eye_direction coincide), element.delete con dependientes de sketch OK.
 - Vistas: "C5 Garibaldi 3D noreste", "C5 Garibaldi 3D sudoeste".
+
+## 2026-11-04 20:18 UTC — Owner: C5 "demasiado compleja, puntas filosas". Borradas C4 y C5 (queda solo la raja vidriada de C4, panel fijado/pinned). C6 "Refugio" desde cero, guardado.
+Reglas del owner (repetidas): forma pura con centro recorrible; salamandra = corazón en el centro; sustracción en la cara NORTE con la antecámara DENTRO de la sustracción (que se lea que a la pieza se le sacó un pedazo, como lámina 6); cara SUR protegida al viento con servicios agrupados y piedra; piel de chapa continua muros+cubierta; muros con espesor; programa mínimo (caminantes, transitorio); foco en cubierta para nieve, antecámara, centro.
+C6: cuadrado 7,2x7,2 (cuadrícula 3x3 de 2,4) x 69800..77000, y 11500..18700. Dos aguas 50° cumbrera N-S sobre el fuego (hastiales N y S no tiran nieve sobre el acceso), alero +2400, cumbrera +6690.
+- Sustracción: módulo central norte (x 72200..74600, y 16300..18700), abierta hasta el techo, revestida en lenga; semicubierto 1,2 + antecámara 1,2 (frente lenga con puerta 915 + 2 ventanas verticales, fondo con puerta al corazón).
+- Sur: hastial de piedra 600 completo (-600..cumbrera); servicios = cajas de piedra 300 en módulos SO y SE (baño/depósito, puertas 762), módulo central sur libre (nicho/banco frente al fuego).
+- Muros "C6 Envolvente chapa 400" (chapa/aislación/lenga), "C6 Muro lenga 400"; zócalo hormigón -600..0 N/E/O; piso Wood Joist a 0; salamandra (73400,15100).
+- Vistas: "C6 Refugio 3D norte", "C6 Refugio 3D sur", "C6 Refugio corte por el fuego".
