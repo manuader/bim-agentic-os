@@ -3,6 +3,7 @@
 # Builds the release layout twice from clean, separate temp build trees and requires byte-identical manifests and
 # files; checks layout, version stamp (single source scripts/package.version, git fallback), forbidden content
 # (Revit/Autodesk assemblies, Revit models, credentials), never-overwrite and manifest tamper detection.
+# P10-07: runs tests/packaging/test-install-addin.ps1 against the built package (temp Addins folders only).
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -25,7 +26,7 @@ function Complete {
         Write-Error "packaging checks failed: $($failures.Count) failure(s); first: $($failures[0])"
         exit 1
     }
-    'PASS packaging: reproducible rebuild (byte-identical manifest and files), layout, version stamp, forbidden-content refusal, never-overwrite, tamper detection'
+    'PASS packaging: reproducible rebuild (byte-identical manifest and files), layout, version stamp, forbidden-content refusal, never-overwrite, tamper detection, add-in install/uninstall'
     exit 0
 }
 function Invoke-Script([string]$Script, [string[]]$Arguments) {
@@ -165,6 +166,13 @@ try {
     # --- Verifier: clean package passes; tamper, missing, extra and forbidden files are detected ---
     $ok = Invoke-Script $verifier @('-PackageDirectory', $outA)
     Assert ($ok.Code -eq 0) "package-verify rejected a clean package: $(Get-Tail $ok.Output)"
+
+    # --- P10-07 add-in install/uninstall (temp Addins folders only), including this real package ---
+    $install = Invoke-Script (Join-Path $PSScriptRoot 'test-install-addin.ps1') @('-PackageDirectory', $outA)
+    $installFailures = @($install.Output -split "`n" | Where-Object { $_ -like 'FAIL *' })
+    foreach ($line in $installFailures) { $failures.Add('install-addin: ' + $line.Substring(5)) }
+    if ($install.Code -ne 0 -and $installFailures.Count -eq 0) { $failures.Add("install-addin tests exit $($install.Code): $(Get-Tail $install.Output)") }
+    Assert ($install.Code -ne 0 -or $install.Output -match 'PASS install-addin') "install-addin tests did not report PASS: $(Get-Tail $install.Output)"
     $cases = @(
         @{ Name = 'tamper'; Expect = 'sha256 mismatch'; Act = { param($d) $f = Join-Path $d 'cli/Bim.Cli.runtimeconfig.json'; $b = [IO.File]::ReadAllBytes($f); $b[0] = $b[0] -bxor 1; [IO.File]::WriteAllBytes($f, $b) } },
         @{ Name = 'missing'; Expect = 'missing file'; Act = { param($d) Remove-Item -LiteralPath (Join-Path $d 'mcp/Bim.Mcp.dll') } },
