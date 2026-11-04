@@ -462,6 +462,8 @@ class _Draft:
                 self.propose('wall', _derived_id(source['object_id'], str(part)), key, values, a[2], mapping, notes, part_source, inherited)
             except _Unmapped as error:
                 self.skip(part_source, error.reason, error.detail)
+            except ArithmeticError as error:
+                self.skip(part_source, 'degenerate', f'{type(error).__name__}: {error}')
 
     @staticmethod
     def check_wall(values, base):
@@ -530,17 +532,26 @@ class _Draft:
             base = record['base']
             record['dependencies'] = None
             if record['declared'] is not None:
-                # The writer's own dependencies, kept when they still agree with the geometry: only proposed
-                # elements of a lower kind rank (level < wall < space, so no cycle), and the first declared level
-                # (where the writer placed it) at the element's base, or none at z = 0.
-                kept = [d for d in record['declared'] if d in kind_of and RANK[kind_of[d]] < RANK[record['kind']]]
+                # The writer's own dependencies (each once, in order), kept when they still agree with the geometry:
+                # only proposed elements of a lower kind rank (level < wall < space, so no cycle), and every declared
+                # level at the element's base, or none at z = 0. Dropping some is noted declared-dependencies-filtered
+                # (all dropped: the geometry decides); a level off the base drops them all (declared-dependencies-ignored).
+                declared = list(dict.fromkeys(record['declared']))
+                kept = [d for d in declared if d in kind_of and RANK[kind_of[d]] < RANK[record['kind']]]
                 hosts_declared = [d for d in kept if kind_of[d] == 'level']
-                agrees = abs(elevation_of[hosts_declared[0]] - base) <= TOL if hosts_declared else abs(base) <= TOL
-                if agrees:
+                if hosts_declared:
+                    agrees = all(abs(elevation_of[d] - base) <= TOL for d in hosts_declared)
+                else:
+                    agrees = abs(base) <= TOL
+                if not agrees:
+                    record['notes'].append('declared-dependencies-ignored')
+                elif len(kept) == len(declared):
                     record['dependencies'] = kept
                     record['notes'].append('dependencies-declared')
                 else:
-                    record['notes'].append('declared-dependencies-ignored')
+                    record['notes'].append('declared-dependencies-filtered')
+                    if kept:
+                        record['dependencies'] = kept
             if record['dependencies'] is not None:
                 continue
             match = [i for elevation, i in hosts if abs(elevation - base) <= TOL]
@@ -654,16 +665,20 @@ def _draft(model, source_name, fingerprint, options):
             continue
         kind, inherited = _layer_kind(layer)
         state.declared = _declared(attributes, object_id)
+        proposed = (len(state.levels), len(state.candidates))
         try:
             if kind is None:
                 raise _Unmapped('layer_unmapped', f'layer {layer!r} is not a wall, space or level layer')
             getattr(state, kind)(geometry, source, inherited)
-        except RhinoAdapterError:
-            raise
-        except _Unmapped as error:
-            state.skip(source, error.reason, error.detail)
-        except (ArithmeticError, ValueError) as error:
-            state.skip(source, 'degenerate', f'{type(error).__name__}: {error}')
+        except (_Unmapped, ArithmeticError) as error:
+            # Only typed geometry refusals and floating-point arithmetic failures unmap the object; anything else
+            # (a ValueError, TypeError, ...) is a bug and propagates. A failed object proposes nothing.
+            del state.levels[proposed[0]:]
+            del state.candidates[proposed[1]:]
+            if isinstance(error, _Unmapped):
+                state.skip(source, error.reason, error.detail)
+            else:
+                state.skip(source, 'degenerate', f'{type(error).__name__}: {error}')
     records = state.assemble(project_id)
     proposals = [{'key': r['key'], 'kind': r['kind'], 'element': _element(r, source_name), 'confidence': r['confidence'],
                   'notes': r['notes'], 'source': r['source']} for r in records]
