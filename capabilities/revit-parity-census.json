@@ -119,6 +119,11 @@
       "commands": [
         "query.journal"
       ]
+    },
+    "revit-command-batch": {
+      "commands": [
+        "command.batch"
+      ]
     }
   },
   "entries": [
@@ -1247,7 +1252,10 @@
         "tests/revit-commands/CatalogueBatch.cs",
         "runtimes/revit-native/CommandsExecutorBatch.cs"
       ],
-      "notes": "Contract and batch runner unit-tested in core; the executor is compiled only and has not run in Revit (nested edit scopes and the single undo entry unverified)."
+      "notes": "Contract and batch runner unit-tested in core; the executor is compiled only and has not run in Revit (nested edit scopes and the single undo entry unverified).",
+      "features": [
+        "revit-command-batch"
+      ]
     },
     {
       "id": "modify.move_copy_rotate",
