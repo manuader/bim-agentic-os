@@ -34,7 +34,9 @@ public static class RevitCommandBatch
 
     // A step reply's field under the batch: the step's own members (args..., operation_id, command, or none) move under
     // args.steps[i]; anything else (document.*, receipt, pipe_name) names the batch request itself and is kept.
-    public static string? StepReplyField(int index, string? field) => StepField(index, field);
+    public static string? StepReplyField(int index, string? field) =>
+        string.IsNullOrEmpty(field) || field == "args" || field.StartsWith("args.", StringComparison.Ordinal) || field.StartsWith("args[", StringComparison.Ordinal)
+            || field == "operation_id" || field == "command" ? StepField(index, field) : field;
 
     // Called by the protocol after binding: step operation_ids are distinct (ordinal, like the receipt store keys) and
     // differ from the batch's own, so every receipt the batch stores has its own key.
@@ -111,24 +113,74 @@ public static class RevitCommandBatch
     }
 
     // Before any step runs: room in the receipt store for every step receipt plus the batch receipt.
-    public static void CheckRoom(CommandBatchArgs batch, int receiptCount, int maxReceipts) { }
+    public static void CheckRoom(CommandBatchArgs batch, int receiptCount, int maxReceipts)
+    {
+        if (receiptCount + batch.Steps.Count + 1 > maxReceipts)
+            throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "receipt store full: " + receiptCount.ToString(CultureInfo.InvariantCulture) + " receipts + "
+                + batch.Steps.Count.ToString(CultureInfo.InvariantCulture) + " steps + 1 batch receipt exceed " + maxReceipts.ToString(CultureInfo.InvariantCulture) + "; nothing was written");
+    }
 
-    public static RevitCommandResponse? CheckSurvivors(CommandBatchArgs batch, IReadOnlyList<RevitCommandResponse> replies, RevitCommandResponse success, Func<string, bool> exists) => null;
+    // After the last step, before the batch receipt: every element the batch reports as created or modified must still
+    // exist (later steps or Revit's failure processing may have removed it). Null, or the refusal naming the first step
+    // that reported the missing element.
+    public static RevitCommandResponse? CheckSurvivors(CommandBatchArgs batch, IReadOnlyList<RevitCommandResponse> replies, RevitCommandResponse success, Func<string, bool> exists)
+    {
+        foreach (var (uid, created) in success.Created.Select(uid => (uid, true)).Concat(success.Modified.Select(uid => (uid, false))))
+        {
+            if (exists(uid)) continue;
+            var index = Enumerable.Range(0, replies.Count).First(i => (created ? replies[i].Created : replies[i].Modified).Contains(uid, StringComparer.OrdinalIgnoreCase));
+            return StepFailure(batch.Steps[index], RevitCommandCodes.TransactionFailed, null, "element " + uid + (created ? " created" : " modified") + " by this step no longer exists after the batch");
+        }
+        return null;
+    }
 
-    // Stub (tests first): runs every step and persists, without stopping or rolling back.
+    // The whole batch, without Revit: the caller has opened the outer transaction group. Pre-checks (fresh step
+    // operation_ids, receipt store room), then each step in order through runStep (its stand-alone envelope); a refusal,
+    // a thrown exception or a reply that does not answer the step stops the batch, rollBack is called once and no later
+    // step runs; after the last step the survivors are checked, then persist stores the batch receipt and assimilates the
+    // group. If persist throws, rollBack is called and the exception propagates. Returns the reply line.
     public static string Run(RevitCommandEnvelope batch, string batchRequestSha256, Func<string, bool> alreadyUsed, int receiptCount, int maxReceipts,
         Func<RevitCommandEnvelope, RevitCommandResponse> runStep, Func<string, bool> exists, Action rollBack, Func<RevitCommandResponse, string> persist)
     {
-        var args = (CommandBatchArgs)batch.Args;
+        if (batch.Args is not CommandBatchArgs args) throw new ArgumentException("not a command.batch envelope", nameof(batch));
+        try
+        {
+            CheckFreshSteps(args, alreadyUsed);
+            CheckRoom(args, receiptCount, maxReceipts);
+        }
+        catch (RevitCommandException error)
+        {
+            rollBack();
+            return RevitCommandResponse.Failure(error.Code, error.Field, error.Detail).ToJson();
+        }
         var replies = new List<RevitCommandResponse>();
         foreach (var step in args.Steps)
         {
             var stepEnvelope = StepEnvelope(batch, step.Index);
-            try { replies.Add(runStep(stepEnvelope)); }
-            catch (Exception error) { replies.Add(RevitCommandResponse.Failure(RevitCommandCodes.TransactionFailed, null, error.Message)); }
+            RevitCommandResponse reply;
+            try { reply = runStep(stepEnvelope); }
+            catch (RevitCommandException error) { reply = RevitCommandResponse.Failure(error.Code, error.Field, error.Detail); }
+            catch (Exception error) { reply = RevitCommandResponse.Failure(RevitCommandCodes.TransactionFailed, null, error.Message); }
+            if (CheckStepReply(step, stepEnvelope, stepEnvelope.RequestSha256, reply) is { } refused)
+            {
+                rollBack();
+                return refused.ToJson();
+            }
+            replies.Add(reply);
         }
         var receipt = new RevitCommandReceipt(batch.OperationId, batch.Command, batch.Document.UniqueId, batchRequestSha256, false);
-        return persist(RevitCommandResponse.Success(receipt, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), null, Array.Empty<string>()));
+        var success = Success(receipt, args, replies);
+        if (CheckSurvivors(args, replies, success, exists) is { } missing)
+        {
+            rollBack();
+            return missing.ToJson();
+        }
+        try { return persist(success); }
+        catch
+        {
+            rollBack();
+            throw;
+        }
     }
 
     // The batch success: the batch receipt; created/modified/deleted as the net change of all steps in step order
@@ -242,6 +294,8 @@ public static partial class RevitCommandCatalogue
             if (!RevitCommandBatch.IsStepCommand(spec)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "command", command + " cannot be a batch step");
             var stepArgs = item.GetProperty("args");
             // Generic: whatever command offers dry_run, a step never runs as one.
+            if (stepArgs.ValueKind == JsonValueKind.Object && stepArgs.TryGetProperty("dry_run", out var dryRun) && dryRun.ValueKind == JsonValueKind.True)
+                throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.dry_run", "a batch step cannot be a dry run");
             using (var stepSchema = JsonDocument.Parse(spec.ArgsSchemaJson))
             {
                 if (RevitCommandSchema.Validate(stepArgs, stepSchema.RootElement, "args") is { } failure)
@@ -249,9 +303,10 @@ public static partial class RevitCommandCatalogue
             }
             var typed = spec.Bind(stepArgs);
             var canonical = RevitCommandProtocol.Canonical(stepArgs);
-            if (typed is ElementSetParameterArgs { DryRun: true } or ElementDeleteArgs { DryRun: true }) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.dry_run", "a batch step cannot be a dry run");
             return new RevitBatchStep(index, item.GetProperty("operation_id").GetString()!, command, typed, canonical);
         }
         catch (RevitCommandException error) { throw new RevitCommandException(error.Code, RevitCommandBatch.StepField(index, error.Field), error.Detail); }
+        catch (InvalidOperationException error) { throw new RevitCommandException(RevitCommandCodes.EnvelopeInvalid, RevitCommandBatch.StepField(index, null), error.Message); }
+        catch (ArgumentException error) { throw new RevitCommandException(RevitCommandCodes.EnvelopeInvalid, RevitCommandBatch.StepField(index, null), error.Message); }
     }
 }
