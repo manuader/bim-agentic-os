@@ -74,8 +74,11 @@ static class CatalogueJournalChecks
         Arguments();
         OptionsMirror();
         ReplyMirror();
+        Golden();
         Semantics();
+        DriftInput();
         ClientPath();
+        ReadOnlySource();
     }
 
     static void Catalogue()
@@ -89,6 +92,10 @@ static class CatalogueJournalChecks
         Check(spec is not null && spec.Description.EndsWith('.') && spec.Description.Contains("Read-only", StringComparison.Ordinal) && spec.Description.Contains("journal.read", StringComparison.Ordinal)
             && spec.Description.Contains("peek", StringComparison.Ordinal) && spec.Description.Contains("after_sequence", StringComparison.Ordinal) && spec.Description.Contains("max_entries", StringComparison.Ordinal),
             "query.journal description says Read-only, names journal.read and explains peek, after_sequence and max_entries", spec?.Description ?? "");
+        // The baseline is shared with journal.read and every other client: say so first, and recommend peek.
+        Check(spec is not null && spec.Description.Contains("A read without peek consumes the baseline shared with journal.read and every other client; pass peek: true unless you own that baseline.", StringComparison.Ordinal)
+            && spec.Description.IndexOf("consumes the baseline", StringComparison.Ordinal) < spec.Description.IndexOf("Arguments:", StringComparison.Ordinal),
+            "query.journal description warns, before the arguments, that a read without peek consumes the baseline shared with journal.read and recommends peek: true", spec?.Description ?? "");
         string? problem = null;
         try
         {
@@ -177,6 +184,89 @@ static class CatalogueJournalChecks
             Check(rawReply is not null && body is not null && body.StartsWith('{') && rawReply == RawPrefix + body[1..], "reply mirror " + name + ": query.journal readback is the journal.read reply after status and verification", rawReply + " | " + body);
             step++;
         }
+    }
+
+    // Independent oracle for the journal.read reply bytes: a hand-written literal for a fixed tracker and clock (one
+    // external edit, a peek after a baseline read of the same snapshot, empty document path so nothing is escaped), and
+    // the member order of the P2-04 fixture tests/mirror-journal/fixtures/drift/journal-read-reply.json.
+    const string GoldenReply = "{\"status\":\"succeeded\",\"verification\":\"unverified\",\"attached\":true,\"dropped\":0,\"skipped_add_in\":0,\"failures\":0,\"unidentified\":0,"
+        + "\"report\":{\"journal_version\":1,\"document_unique_id\":\"60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b\",\"document_path\":\"\",\"baseline_sequence\":0,\"current_sequence\":1,\"after_sequence\":0,"
+        + "\"baseline_existed\":true,\"peek\":true,\"journal_complete\":true,\"failures_since_baseline\":0,\"has_more\":false,\"next_after_sequence\":1,"
+        + "\"entries\":[{\"sequence\":1,\"recorded_at\":\"2026-11-04T12:00:00.000Z\",\"document_unique_id\":\"60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b\",\"document_path\":\"\",\"operation\":\"TransactionCommitted\",\"origin\":\"external\","
+        + "\"transaction_names\":[\"Wall\"],\"added\":[\"60f91daf-3dd7-4283-a86d-24137b73f3da-00001002\"],\"modified\":[],\"deleted_element_ids\":[],\"added_total\":1,\"modified_total\":0,\"deleted_total\":0,\"truncated\":false}],"
+        + "\"diff\":{\"diff_version\":1,\"document_unique_id\":\"60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b\",\"added\":[],\"removed\":[],\"changed\":[]}}}";
+
+    static (string? Raw, string? Body) GoldenReads()
+    {
+        string? ReadOnce(bool raw)
+        {
+            var tracker = Tracker();
+            var snapshot = Snapshot();
+            tracker.Report(snapshot, "");
+            tracker.Journal.Record(new MirrorJournalChange(Doc, "TransactionCommitted", new[] { "Wall" }, new[] { W2 }, Array.Empty<string>(), Array.Empty<long>()));
+            return raw ? RevitJournalQuery.RawRead(tracker, true, snapshot, "", new MirrorJournalReadOptions(Peek: true))
+                : RevitJournalQuery.Read(tracker, true, snapshot, "", new JournalQueryArgs(null, true, MirrorJournalReadOptions.DefaultMaxEntries));
+        }
+        try { return (ReadOnce(true), ReadOnce(false)); }
+        catch (Exception error) { Check(false, "golden reads", error.GetType().Name + " " + error.Message); return (null, null); }
+    }
+
+    static string Keys(JsonNode? node) => node is JsonObject obj ? string.Join(",", obj.Select(member => member.Key)) : "not an object";
+
+    static void Golden()
+    {
+        var (raw, body) = GoldenReads();
+        Check(raw == GoldenReply, "the journal.read reply equals the hand-written golden byte for byte", raw ?? "null");
+        Check(body is not null && body == "{" + GoldenReply[RawPrefix.Length..], "the query.journal readback equals the golden after status and verification", body ?? "null");
+        var root = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory);
+        var path = root is null ? null : Path.Combine(root, "tests", "mirror-journal", "fixtures", "drift", "journal-read-reply.json");
+        var fixture = path is not null && File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path)) : null;
+        var golden = JsonNode.Parse(GoldenReply);
+        Check(fixture is not null && Keys(golden) == Keys(fixture), "golden reply members are in the P2-04 journal-read-reply.json fixture order", Keys(golden) + " vs " + Keys(fixture));
+        Check(fixture is not null && Keys(golden?["report"]) == Keys(fixture["report"]), "golden report members are in the fixture order", Keys(golden?["report"]) + " vs " + Keys(fixture?["report"]));
+        var fixtureEntry = fixture?["report"]?["entries"]?.AsArray().FirstOrDefault();
+        Check(fixtureEntry is not null && Keys(golden?["report"]?["entries"]?[0]) == Keys(fixtureEntry), "golden entry members are in the fixture order", Keys(golden?["report"]?["entries"]?[0]) + " vs " + Keys(fixtureEntry));
+        Check(fixture is not null && Keys(golden?["report"]?["diff"]) == Keys(fixture["report"]?["diff"]), "golden diff members are in the fixture order", Keys(golden?["report"]?["diff"]) + " vs " + Keys(fixture?["report"]?["diff"]));
+    }
+
+    // P2-04 drift input: MirrorDrift.ParseJournal takes the journal.read reply (or a bare report). The query.journal
+    // readback has neither status nor top-level entries, so on its own it is refused drift_journal_invalid; wrapped by
+    // RevitJournalQuery.AsJournalReadReply it parses exactly like the journal.read reply (attached, dropped and failures kept).
+    static void DriftInput()
+    {
+        var (raw, body) = GoldenReads();
+        if (raw is null || body is null) { Check(false, "drift input needs the golden reads"); return; }
+        string? refused = null;
+        try { MirrorDrift.ParseJournal(body); } catch (ArgumentException error) { refused = error.Message.Split(' ')[0]; }
+        Check(refused == MirrorDrift.JournalInvalidCode, "MirrorDrift.ParseJournal refuses the bare query.journal readback with drift_journal_invalid", refused ?? "accepted");
+        string? wrapped = null;
+        try { wrapped = RevitJournalQuery.AsJournalReadReply(body); } catch (Exception error) { Check(false, "AsJournalReadReply", error.GetType().Name + " " + error.Message); }
+        Check(wrapped == raw, "AsJournalReadReply turns the readback back into the journal.read reply bytes", wrapped ?? "null");
+        try
+        {
+            var fromRaw = MirrorDrift.ParseJournal(raw);
+            var fromQuery = MirrorDrift.ParseJournal(wrapped ?? "");
+            Check(fromQuery.Entries.Select(entry => entry.Sequence).SequenceEqual(fromRaw.Entries.Select(entry => entry.Sequence)) && fromQuery.Entries.Count == 1 && fromQuery.Complete == fromRaw.Complete && fromQuery.HasMore == fromRaw.HasMore,
+                "MirrorDrift.ParseJournal reads the wrapped query.journal readback like the journal.read reply");
+        }
+        catch (Exception error) { Check(false, "MirrorDrift.ParseJournal reads the wrapped query.journal readback like the journal.read reply", error.GetType().Name + " " + error.Message); }
+        foreach (var bad in new[] { "", "[]", "{\"status\":\"succeeded\"}", "{" })
+        {
+            string? code = null;
+            try { RevitJournalQuery.AsJournalReadReply(bad); } catch (ArgumentException error) { code = error.Message.Split(' ')[0]; } catch (Exception error) { code = "unexpected " + error.GetType().Name; }
+            Check(code == RevitJournalQuery.ReadbackInvalidCode, "AsJournalReadReply refuses " + (bad.Length == 0 ? "an empty string" : bad) + " with journal_readback_invalid", code ?? "accepted");
+        }
+    }
+
+    // Like the query.snapshot collector scan (MirrorSnapshot.cs): the executor source opens no transaction and writes nothing.
+    static void ReadOnlySource()
+    {
+        var root = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory);
+        var source = root is null ? null : Path.Combine(root, "runtimes", "revit-native", "CommandsExecutorJournal.cs");
+        var text = source is not null && File.Exists(source) ? File.ReadAllText(source) : null;
+        var write = text is null ? null : System.Text.RegularExpressions.Regex.Match(text, @"\b(Transaction|TransactionGroup|SubTransaction)\b|\.Set\(|Regenerate|\.Delete\(|\.Create\.|DataStorage|Persist\(|ReadReceipts");
+        Check(text is not null && !write!.Success, "the query.journal executor source has no Transaction, TransactionGroup, SubTransaction, .Set(, Regenerate, .Delete(, document creation or receipt store call", text is null ? "source not found" : write!.Value);
+        Check(text is not null && text.Contains("RevitJournalQuery.Read(JournalRecorder.Tracker", StringComparison.Ordinal), "the executor reads the recorder's own tracker through RevitJournalQuery.Read", text is null ? "source not found" : "");
     }
 
     static JsonObject Body(MirrorJournalTracker tracker, MirrorSnapshot snapshot, JsonNode args) =>

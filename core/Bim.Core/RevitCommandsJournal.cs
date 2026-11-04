@@ -19,6 +19,10 @@ public sealed record JournalQueryArgs(long? AfterSequence, bool Peek, int MaxEnt
 public static class RevitJournalQuery
 {
     public const string Command = "query.journal";
+    public const string ReadbackInvalidCode = "journal_readback_invalid";
+
+    // P2-05 stub (red).
+    public static string AsJournalReadReply(string readback) => throw new NotImplementedException("AsJournalReadReply");
 
     // {"attached","dropped","skipped_add_in","failures","unidentified","report":{MirrorJournalReport}}
     public static string Body(bool attached, MirrorJournal journal, MirrorJournalReport report)
