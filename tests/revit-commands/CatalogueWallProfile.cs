@@ -76,6 +76,47 @@ static class CatalogueWallProfileChecks
         InsertRules();
         Readback();
         ReadbackJson();
+        WallFlip();
+    }
+
+    // chat-section-profile-fixes (owner, Revit 2025.2, 2026-11-04): a basic wall drawn start -> end has its exterior face
+    // on the LEFT of the direction of travel; wall.create takes an optional flip (Wall.Flip after creation) and reads
+    // back Wall.Flipped and the exterior side (Wall.Orientation, the exterior normal, against start -> end).
+    static void WallFlip()
+    {
+        const string LevelUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-00000137";
+        const string TypeUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-00000801";
+        JsonObject Wall(bool? flip)
+        {
+            var args = new JsonObject { ["level"] = "Level 1", ["type"] = "Generic - 200mm", ["height_mm"] = 3000, ["curve"] = new JsonObject { ["kind"] = "line", ["start"] = new JsonArray(0, 0), ["end"] = new JsonArray(5000, 0) } };
+            if (flip is { } value) args["flip"] = value;
+            return args;
+        }
+        JsonObject WallEnvelope(JsonNode args) => new() { ["protocol_version"] = 1, ["operation_id"] = "op-wall-flip", ["document"] = new JsonObject { ["path"] = FixturePath, ["unique_id"] = Uid }, ["command"] = "wall.create", ["args"] = args.DeepClone() };
+        WallCreateArgs? Parse(JsonObject args) { try { return RevitCommandProtocol.Parse(WallEnvelope(args).ToJsonString()).Args as WallCreateArgs; } catch (RevitCommandException) { return null; } }
+
+        var schema = JsonNode.Parse(RevitCommandCatalogue.Find("wall.create")!.ArgsSchemaJson)!;
+        Check(schema["properties"]?["flip"]?["type"]?.GetValue<string>() == "boolean", "wall.create schema offers an optional flip boolean");
+        Check(Parse(Wall(true)) is { Flip: true }, "wall.create binds flip true");
+        Check(Parse(Wall(null)) is { Flip: false } && Parse(Wall(false)) is { Flip: false }, "wall.create flip defaults to false");
+        var textFlip = Wall(null);
+        textFlip["flip"] = "yes";
+        Check(Refusal(WallEnvelope(textFlip).ToJsonString()) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.flip" }, "flip as a string is args_invalid at args.flip");
+
+        Check(CommandReadback.ExteriorSide(new PlanPoint(0, 0), new PlanPoint(5000, 0), 0, 1) == "left", "an exterior normal to the left of start -> end is the left side");
+        Check(CommandReadback.ExteriorSide(new PlanPoint(0, 0), new PlanPoint(5000, 0), 0, -1) == "right", "an exterior normal to the right of start -> end is the right side");
+        Check(CommandReadback.ExteriorSide(new PlanPoint(1000, 1000), new PlanPoint(0, 2000), 0.7071, 0.7071) == "right" && CommandReadback.ExteriorSide(new PlanPoint(1000, 1000), new PlanPoint(0, 2000), -0.7071, -0.7071) == "left",
+            "exterior side of a diagonal wall follows the cross product of travel and the exterior normal");
+
+        var expected = CommandGeometry.Wall(Parse(Wall(true))!.Curve);
+        var observed = new ObservedWall(WallUid, LevelUid, TypeUid, false, new PlanPoint(0, 0), new PlanPoint(5000, 0), 5000, null, null, 3000, 0, false, true, "right");
+        Check(CommandReadback.Wall(expected, LevelUid, TypeUid, 3000, 0, false, observed, flip: true) is null, "a flipped wall read back as flipped matches");
+        Check(CommandReadback.Wall(expected, LevelUid, TypeUid, 3000, 0, false, observed, flip: false) is { } notFlipped && notFlipped.Contains("flipped", StringComparison.Ordinal), "a wall flipped without being asked is a mismatch");
+        Check(CommandReadback.Wall(expected, LevelUid, TypeUid, 3000, 0, false, observed with { Flipped = false, ExteriorSide = "left" }, flip: true) is { } stayed && stayed.Contains("flipped", StringComparison.Ordinal), "a flip that did not take is a mismatch");
+        Check(CommandReadback.Wall(expected, LevelUid, TypeUid, 3000, 0, false, observed with { Flipped = null }, flip: true) is not null, "an unreadable flip state is a mismatch when a flip was requested");
+        Check(CommandReadback.Wall(expected, LevelUid, TypeUid, 3000, 0, false, observed with { Flipped = false, ExteriorSide = "left" }) is null, "an unflipped wall matches a request without flip");
+        var json = JsonNode.Parse(CommandReadback.WallJson(observed))!["wall"]!;
+        Check(json["flipped"]?.GetValue<bool>() == true && json["exterior_side"]?.GetValue<string>() == "right", "wall readback JSON reports flipped and the exterior side of start -> end", json.ToJsonString());
     }
 
     static void Catalogue()

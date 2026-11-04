@@ -93,7 +93,8 @@ public sealed record ArcCenterWallCurve(Point2 Center, Length Radius, Angle Star
     public Angle Sweep => Angle.FromRadians(EndAngle.Radians - StartAngle.Radians);
 }
 
-public sealed record WallCreateArgs(string Level, string Type, Length BaseOffset, Length Height, bool Structural, WallCurve Curve) : RevitCommandArgs;
+// Flip: Wall.Flip after creation (Revit 2025.2 puts a new basic wall's exterior face on the left of start -> end).
+public sealed record WallCreateArgs(string Level, string Type, Length BaseOffset, Length Height, bool Structural, WallCurve Curve, bool Flip = false) : RevitCommandArgs;
 public sealed record OpeningPlaceArgs(string Category, string Symbol, string HostWallUid, Length PositionAlong, Length? Sill) : RevitCommandArgs;
 public sealed record FloorCreateArgs(string Level, string Type, IReadOnlyList<Point2> Boundary) : RevitCommandArgs;
 public sealed record RoomCreateArgs(string Level, Point2 Point, string? Name, string? Number) : RevitCommandArgs;

@@ -12,7 +12,9 @@ public sealed record PlanPoint(double X, double Y);
 // What the wall location curve must be after Wall.Create, from the typed arguments.
 public sealed record ExpectedWall(bool IsArc, PlanPoint Start, PlanPoint End, double LengthMm, double? RadiusMm, PlanPoint? Center);
 // What Revit reports back. Nullable values are parameters that could not be read.
-public sealed record ObservedWall(string UniqueId, string LevelUid, string TypeUid, bool IsArc, PlanPoint Start, PlanPoint End, double LengthMm, double? RadiusMm, PlanPoint? Center, double? HeightMm, double? BaseOffsetMm, bool? Structural);
+// Flipped: Wall.Flipped (null when unread); ExteriorSide: "left" or "right" of start -> end from Wall.Orientation (the
+// exterior face normal), null for arcs or when unread.
+public sealed record ObservedWall(string UniqueId, string LevelUid, string TypeUid, bool IsArc, PlanPoint Start, PlanPoint End, double LengthMm, double? RadiusMm, PlanPoint? Center, double? HeightMm, double? BaseOffsetMm, bool? Structural, bool? Flipped = null, string? ExteriorSide = null);
 public sealed record ObservedOpening(string UniqueId, string? HostUid, string SymbolUid, PlanPoint? Point, double? SillMm);
 public sealed record ObservedFloor(string UniqueId, string LevelUid, string TypeUid, double? AreaMm2);
 public sealed record ObservedRoom(string UniqueId, string LevelUid, string? Name, string? Number, double AreaMm2);
@@ -83,7 +85,9 @@ public static class CommandReadback
     static string F(double value) => value.ToString("R", CultureInfo.InvariantCulture);
     static string F(PlanPoint point) => "(" + F(point.X) + ", " + F(point.Y) + ")";
 
-    public static string? Wall(ExpectedWall expected, string levelUid, string typeUid, double heightMm, double baseOffsetMm, bool structural, ObservedWall observed)
+    public static string ExteriorSide(PlanPoint start, PlanPoint end, double normalX, double normalY) => "left";
+
+    public static string? Wall(ExpectedWall expected, string levelUid, string typeUid, double heightMm, double baseOffsetMm, bool structural, ObservedWall observed, bool flip = false)
     {
         if (observed.LevelUid != levelUid) return "wall base level is " + observed.LevelUid + ", expected " + levelUid;
         if (observed.TypeUid != typeUid) return "wall type is " + observed.TypeUid + ", expected " + typeUid;

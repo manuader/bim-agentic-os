@@ -385,6 +385,18 @@ static class CatalogueViewsChecks
         Check(CommandReadbackViews.ThreeD(null, observed with { Forward = new Vec3(-c, c, -c) }, nw) is { } forward && forward.Contains("forward direction", StringComparison.Ordinal), "a 3D view looking from another side is a mismatch naming the forward direction");
         Check(CommandReadbackViews.ThreeD(null, observed with { Up = Neg(nwFrame.Up) }, nw) is { } up && up.Contains("up direction", StringComparison.Ordinal), "a 3D view upside down is a mismatch naming the up direction");
         Check(CommandReadbackViews.ThreeD(null, observed with { Forward = new Vec3(-c, c, -c) }) is null, "without a requested orientation the default orientation is not checked");
+        // Sign convention (Revit 2025 API: ViewOrientation3D.ForwardDirection is the direction the view looks, from the
+        // eye toward the target). "ne" puts the eye at +X +Y above the model, so the view looks south-west and down and
+        // shows the north and east faces; Revit's default isometric forward (-0.577, 0.577, -0.577) is an eye at the
+        // south-east (+X -Y), looking north-west.
+        var target = new Vec3(4000, 3000, 1500);
+        var ne = CommandRulesViews.Orientation(new ViewDirection3(c, c, c), target, 20000);
+        var toTarget = Plus(target, Neg(ne.Eye));
+        Check(ne.Eye.X > target.X && ne.Eye.Y > target.Y && ne.Eye.Z > target.Z && NearV(Times(toTarget, 1 / Math.Sqrt(Dot(toTarget, toTarget))), ne.Forward, 1e-9) && ne.Forward.X < 0 && ne.Forward.Y < 0,
+            "view_from ne places the eye north-east of and above the target and forward points from the eye toward the target", "eye " + Show(ne.Eye) + " forward " + Show(ne.Forward));
+        var json = JsonNode.Parse(CommandReadbackViews.ThreeDJson(new ObservedView(ViewUid, "ThreeD", ThreeDTypeUid, "{3D}", 100, null, false, null), observed with { Forward = new Vec3(-c, c, -c) }))!["view"]!["three_d"]!;
+        Check(json["eye_direction"]?.AsArray().Select(value => value!.GetValue<double>()).Zip(new[] { c, -c, c }, (a, b) => Math.Abs(a - b) < 1e-9).All(ok => ok) == true,
+            "3D readback JSON reports eye_direction = -forward (Revit's default isometric reads back as an eye at the south-east)", json.ToJsonString());
     }
 
     static void Readbacks()
