@@ -199,6 +199,23 @@ static class CatalogueMaterialTypesChecks
         Check(RevitMaterialTypeRules.Shells(new[] { "finish1", "membrane", "structure" }, "args.layers") == (2, 0), "a finish and a membrane above the slab are two exterior shell layers");
         Check(RevitMaterialTypeRules.Shells(new[] { "finish1", "structure", "insulation", "structure", "finish2" }, "args.layers") == (1, 1), "the core spans from the first to the last structure layer");
         Check(Thrown(() => RevitMaterialTypeRules.Shells(new[] { "finish1" }, "args.layers")) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.layers" }, "no structure layer is args_invalid");
+        // Owner, Revit 2025.2, 2026-11-04: floor_type.create [finish1 lenga 25, substrate plywood 20, structure concrete 150,
+        // membrane 0, insulation rigid 100] from "Generic Floor - 400mm" was refused by SetCompoundStructure: "Input compound
+        // structure has wrong EndCap condition for this element type. Parameter name: srcStructure".
+        Check(RevitMaterialTypeRules.Shells(new[] { "finish1", "substrate", "structure", "membrane", "insulation" }, "args.layers") == (2, 2), "the owner's floor build-up has two shell layers above and two below the slab");
+        foreach (var (kind, baseEndCap) in new[] { ("floor", "NoEndCap"), ("floor", "None"), ("floor", null), ("floor", "Exterior"), ("roof", "NoEndCap"), ("roof", "Interior"), ("roof", null) })
+            Check(CommandRulesMaterialTypes.Wrapping(kind, baseEndCap, "None").EndCap == "NoEndCap", "a " + kind + " structure always ends NoEndCap (Revit: floors and roofs must use it), base end cap " + (baseEndCap ?? "unread"));
+        Check(CommandRulesMaterialTypes.Wrapping("floor", "NoEndCap", null).OpeningWrapping == "None" && CommandRulesMaterialTypes.Wrapping("roof", null, "None").OpeningWrapping == "None", "floors and roofs do not wrap at openings when the base type does not say otherwise");
+        Check(CommandRulesMaterialTypes.Wrapping("floor", "NoEndCap", "Exterior").OpeningWrapping == "Exterior", "a floor keeps the base floor type's opening wrapping");
+        Check(CommandRulesMaterialTypes.Wrapping("wall", "Exterior", "ExteriorAndInterior") == ("Exterior", "ExteriorAndInterior") && CommandRulesMaterialTypes.Wrapping("wall", "None", "None") == ("None", "None"), "a wall keeps its base wall type's end cap and opening wrapping");
+        Check(CommandRulesMaterialTypes.Wrapping("wall", "NoEndCap", null) == ("None", "None") && CommandRulesMaterialTypes.Wrapping("wall", null, null) == ("None", "None"), "a wall never gets the floor/roof NoEndCap; unread conditions mean no wrapping");
+        Check(Throws(() => CommandRulesMaterialTypes.Wrapping("ceiling", "None", "None")), "an unknown host kind is a programming error, not a guess");
+    }
+
+    static bool Throws(Action action)
+    {
+        try { action(); return false; }
+        catch (ArgumentOutOfRangeException) { return true; }
     }
 
     static void ChangeTypeBinding()

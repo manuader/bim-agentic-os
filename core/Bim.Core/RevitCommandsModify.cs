@@ -41,8 +41,10 @@ public sealed record YesNoValueArg(bool Value) : RevitParameterValue { public ov
 // An element id parameter set to the element with this UniqueId.
 public sealed record ElementValueArg(string UniqueId) : RevitParameterValue { public override string Kind => RevitParameterValueKinds.Element; }
 
-// Sets one parameter of one element (instance or type, by its own UniqueId).
-public sealed record ElementSetParameterArgs(string ElementUid, RevitParameterRef Parameter, RevitParameterValue Value, bool DryRun) : RevitCommandArgs;
+// Sets one parameter of one element (instance or type, by its own UniqueId). ConfirmDeletions: the UniqueIds of the
+// elements Revit deletes because of the change (for example an internal join helper), as a dry run reported them; a
+// real change that deletes anything is refused unless this set equals what Revit would delete.
+public sealed record ElementSetParameterArgs(string ElementUid, RevitParameterRef Parameter, RevitParameterValue Value, bool DryRun, IReadOnlyList<string> ConfirmDeletions) : RevitCommandArgs;
 // Deletes the target elements. ConfirmDependents: the UniqueIds of every other element Revit deletes with them, as a
 // dry run reported; a real delete is refused unless this set equals what Revit would delete.
 public sealed record ElementDeleteArgs(IReadOnlyList<string> ElementUids, IReadOnlyList<string> ConfirmDependents, bool DryRun) : RevitCommandArgs;
@@ -113,7 +115,7 @@ public static partial class RevitCommandCatalogue
         RevitParameterRef parameter = parameterElement.TryGetProperty("name", out var name) ? new ParameterByName(name.GetString()!)
             : parameterElement.TryGetProperty("built_in", out var builtIn) ? new ParameterByBuiltIn(builtIn.GetString()!)
             : new ParameterByGuid(Guid.ParseExact(parameterElement.GetProperty("guid").GetString()!, "D"));
-        return new ElementSetParameterArgs(args.GetProperty("element_uid").GetString()!, parameter, BindValue(args.GetProperty("value")), DryRun(args));
+        return new ElementSetParameterArgs(args.GetProperty("element_uid").GetString()!, parameter, BindValue(args.GetProperty("value")), DryRun(args), Array.Empty<string>());
     }
 
     static RevitParameterValue BindValue(JsonElement value)

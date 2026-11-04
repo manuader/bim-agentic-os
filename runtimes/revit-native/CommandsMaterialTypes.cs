@@ -59,6 +59,15 @@ public static class CommandRulesMaterialTypes
     public static RevitCommandException Incompatible(string typeName, string? typeCategory, string? elementCategory) =>
         new(RevitCommandCodes.ArgsInvalid, "args.type", "type '" + typeName + "' (" + (typeCategory ?? "no category") + ") cannot be assigned to this element (" + (elementCategory ?? "no category") + "); pick a type of the same category");
 
+    public const string NoEndCap = "NoEndCap";
+    public const string NoWrapping = "None";
+
+    // The end and opening wrapping of a new layered type's CompoundStructure, as Revit EndCapCondition and
+    // OpeningWrappingCondition member names. hostKind: "wall", "floor" or "roof"; baseEndCap / baseOpeningWrapping: the
+    // base type's own structure conditions (null when unread).
+    public static (string EndCap, string OpeningWrapping) Wrapping(string hostKind, string? baseEndCap, string? baseOpeningWrapping) =>
+        (baseEndCap ?? NoWrapping, baseOpeningWrapping ?? NoWrapping);
+
     // wall_type.create duplicates a basic wall type (curtain and stacked types have no simple layer structure).
     public static void CheckBaseWallKind(string kind)
     {

@@ -155,6 +155,25 @@ static class CatalogueModifyChecks
         Rejects("set_parameter blank parameter name", Envelope("element.set_parameter", Set(Value("text", "text", "x"), new JsonObject { ["name"] = "" })), RevitCommandCodes.ArgsInvalid, "args.parameter.name");
         Rejects("set_parameter dry_run not a boolean", Envelope("element.set_parameter", With(Set(Value("length", "mm", 1)), "dry_run", "yes")), RevitCommandCodes.ArgsInvalid, "args.dry_run");
         Rejects("set_parameter with an extra member", Envelope("element.set_parameter", With(Set(Value("length", "mm", 1)), "force", true)), RevitCommandCodes.ArgsInvalid, "args.force");
+
+        // Owner, Revit 2025.2, 2026-11-04: FLOOR_HEIGHTABOVELEVEL_PARAM 600 on a new floor was refused because Revit deleted
+        // internal element 215987 (no category; a join helper with the toposolid). confirm_deletions accepts named deletions.
+        Check(length?.Args is ElementSetParameterArgs { ConfirmDeletions.Count: 0 }, "set_parameter confirms no deletions by default");
+        var confirmedDeletion = Accepts("set_parameter with confirmed deletions accepted", Envelope("element.set_parameter", With(Set(Value("length", "mm", 600)), "confirm_deletions", new JsonArray(DoorUid, WindowUid.ToUpperInvariant()))));
+        Check(confirmedDeletion?.Args is ElementSetParameterArgs { ConfirmDeletions: [DoorUid, var upper] } && upper == WindowUid.ToUpperInvariant(), "set_parameter binds confirm_deletions in order, as given");
+        var setSchema = RevitCommandCatalogue.Find("element.set_parameter")!.ArgsSchemaJson;
+        using (var schema = JsonDocument.Parse(setSchema))
+            Check(schema.RootElement.GetProperty("properties").TryGetProperty("confirm_deletions", out var confirmDeletions) && confirmDeletions.GetProperty("type").GetString() == "array"
+                && confirmDeletions.GetProperty("maxItems").GetInt32() == RevitModifyRules.MaxConfirmedDependents && confirmDeletions.GetProperty("description").GetString()!.Contains("dry run", StringComparison.Ordinal)
+                && !schema.RootElement.GetProperty("required").EnumerateArray().Any(item => item.GetString() == "confirm_deletions"), "set_parameter schema offers an optional confirm_deletions array of at most 1000 UniqueIds, described as a dry run reports them", setSchema);
+        Check(RevitCommandCatalogue.Find("element.set_parameter")!.Description.Contains("confirm_deletions", StringComparison.Ordinal), "the set_parameter description names confirm_deletions");
+        Rejects("set_parameter deletion listed twice", Envelope("element.set_parameter", With(Set(Value("length", "mm", 600)), "confirm_deletions", new JsonArray(DoorUid, DoorUid.ToUpperInvariant()))), RevitCommandCodes.ArgsInvalid, "args.confirm_deletions[1]");
+        Rejects("set_parameter deletion that is the element itself", Envelope("element.set_parameter", With(Set(Value("length", "mm", 600)), "confirm_deletions", new JsonArray(WallUid.ToUpperInvariant()))), RevitCommandCodes.ArgsInvalid, "args.confirm_deletions[0]");
+        Rejects("set_parameter deletion that is not a UniqueId", Envelope("element.set_parameter", With(Set(Value("length", "mm", 600)), "confirm_deletions", new JsonArray("215987"))), RevitCommandCodes.ArgsInvalid, "args.confirm_deletions[0]");
+        Rejects("set_parameter over 1000 confirmed deletions", Envelope("element.set_parameter", With(Set(Value("length", "mm", 600)), "confirm_deletions", new JsonArray(Enumerable.Range(1, 1001).Select(i => (JsonNode?)Hex(i)).ToArray()))), RevitCommandCodes.ArgsInvalid, "args.confirm_deletions");
+        var plain = RevitCommandProtocol.Parse(Envelope("element.set_parameter", Set(Value("length", "mm", 600))).ToJsonString());
+        var withDeletions = RevitCommandProtocol.Parse(Envelope("element.set_parameter", With(Set(Value("length", "mm", 600)), "confirm_deletions", new JsonArray(DoorUid))).ToJsonString());
+        Check(plain.RequestSha256 != withDeletions.RequestSha256, "a set_parameter with confirmed deletions hashes differently from one without");
     }
 
     static void DeleteBinding()
@@ -352,6 +371,13 @@ static class CatalogueModifyChecks
             var value = JsonNode.Parse(CommandReadbackModify.ParameterJson(false, WallUid, kind, observed, observed, false, Array.Empty<string>()))!["set_parameter"]!["after"]!;
             Check(value["kind"]!.GetValue<string>() == kind && value[member] is { } node && holds(node) && value.AsObject().Count == 2, kind + " values are reported in the request shape {kind, " + member + "}", value.ToJsonString());
         }
+        Check(report["deleted"]!.AsArray().Count == 0 && report["deleted_count"]!.GetValue<int>() == 0 && !report["deletions_confirmed"]!.GetValue<bool>(), "a set_parameter report without deletions has an empty deleted list", report.ToJsonString());
+        var withDeleted = JsonNode.Parse(CommandReadbackModify.ParameterJson(true, WallUid, "length", before, before with { Number = 600 }, true, Array.Empty<string>(), new[] { new DeletedElement(DoorUid, 215987, null, "Element") }, false))!["set_parameter"]!;
+        var gone = withDeleted["deleted"]!.AsArray();
+        Check(gone.Count == 1 && gone[0]!["unique_id"]!.GetValue<string>() == DoorUid && gone[0]!["id"]!.GetValue<long>() == 215987 && gone[0]!["category"] is null && gone[0]!["class"]!.GetValue<string>() == "Element"
+            && withDeleted["deleted_count"]!.GetValue<int>() == 1 && !withDeleted["deletions_confirmed"]!.GetValue<bool>(), "a set_parameter dry run reports each deleted element with UniqueId, id, category and class", withDeleted.ToJsonString());
+        var confirmedReport = JsonNode.Parse(CommandReadbackModify.ParameterJson(false, WallUid, "length", before, before with { Number = 600 }, true, Array.Empty<string>(), new[] { new DeletedElement(DoorUid, 215987, "Floors", "Floor") }, true))!["set_parameter"]!;
+        Check(confirmedReport["deletions_confirmed"]!.GetValue<bool>() && confirmedReport["deleted"]![0]!["category"]!.GetValue<string>() == "Floors", "a confirmed run reports its deletions as confirmed", confirmedReport.ToJsonString());
         var delete = JsonNode.Parse(CommandReadbackModify.DeleteJson(true, new[] { WallUid }, new[] { DoorUid, WindowUid }, false))!["delete"]!;
         Check(delete["dry_run"]!.GetValue<bool>() && delete["targets"]!.AsArray().Select(uid => uid!.GetValue<string>()).SequenceEqual(new[] { WallUid }) && delete["dependents"]!.AsArray().Select(uid => uid!.GetValue<string>()).SequenceEqual(new[] { DoorUid, WindowUid })
             && delete["deleted_count"]!.GetValue<int>() == 3 && !delete["confirmed"]!.GetValue<bool>(), "delete change report: dry run flag, targets, dependents, total count and whether the dependents were confirmed", delete.ToJsonString());
@@ -430,6 +456,36 @@ static class CatalogueModifyChecks
         var deletes = Thrown(() => CommandRulesModify.SetParameterEffects(100, new long[] { 77 }, Array.Empty<long>()));
         Check(deletes is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.value" } && deletes.Detail!.Contains("77", StringComparison.Ordinal) && deletes.Detail.Contains("delete", StringComparison.Ordinal), "a parameter change that deletes elements is refused naming them", deletes?.Detail ?? "");
 
+        // confirm_deletions (owner, 2026-11-04: element 215987 without a category deleted by a floor offset change).
+        DeletedElement Gone(string uid, long id) => new(uid, id, null, "Element");
+        var helper = Gone(DoorUid, 215987);
+        var protectedUids = new[] { Uid, StoreUid };
+        Check(CommandRulesModify.SetParameterDeletions(true, new[] { helper }, Array.Empty<string>(), protectedUids).SequenceEqual(new[] { helper }), "a dry run reports the elements the change deletes without needing a confirmation");
+        var unconfirmedDeletion = Thrown(() => CommandRulesModify.SetParameterDeletions(false, new[] { helper }, Array.Empty<string>(), protectedUids));
+        Check(unconfirmedDeletion is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.confirm_deletions" } && unconfirmedDeletion.Detail!.Contains(DoorUid, StringComparison.Ordinal) && unconfirmedDeletion.Detail.Contains("215987", StringComparison.Ordinal)
+            && unconfirmedDeletion.Detail.Contains("dry run", StringComparison.Ordinal) && unconfirmedDeletion.Detail.Contains("would delete", StringComparison.Ordinal),
+            "a real change that deletes an unconfirmed element is still refused, naming its UniqueId and id and asking for a dry run", unconfirmedDeletion?.Detail ?? "");
+        Check(Thrown(() => CommandRulesModify.SetParameterDeletions(false, new[] { helper }, new[] { DoorUid.ToUpperInvariant() }, protectedUids)) is null
+            && CommandRulesModify.SetParameterDeletions(false, new[] { helper }, new[] { DoorUid }, protectedUids).SequenceEqual(new[] { helper }), "a real change whose deletions are confirmed exactly (any hex case) goes ahead");
+        var partlyConfirmed = Thrown(() => CommandRulesModify.SetParameterDeletions(false, new[] { helper, Gone(WindowUid, 215990) }, new[] { DoorUid }, protectedUids));
+        Check(partlyConfirmed is { Field: "args.confirm_deletions" } && partlyConfirmed.Detail!.Contains(WindowUid, StringComparison.Ordinal), "a partly confirmed set of deletions is refused naming the unconfirmed one", partlyConfirmed?.Detail ?? "");
+        var staleDeletion = Thrown(() => CommandRulesModify.SetParameterDeletions(false, Array.Empty<DeletedElement>(), new[] { LevelUid }, protectedUids));
+        Check(staleDeletion is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.confirm_deletions" } && staleDeletion.Detail!.Contains(LevelUid, StringComparison.Ordinal), "a confirmed deletion Revit would no longer make is refused (the model changed since the dry run)", staleDeletion?.Detail ?? "");
+        Check(CommandRulesModify.SetParameterDeletions(false, Array.Empty<DeletedElement>(), Array.Empty<string>(), protectedUids).Count == 0 && CommandRulesModify.SetParameterDeletions(true, Array.Empty<DeletedElement>(), new[] { LevelUid }, protectedUids).Count == 0,
+            "a change that deletes nothing needs no confirmation; a dry run never refuses for confirmations");
+        var sortedDeletions = CommandRulesModify.SetParameterDeletions(true, new[] { Gone(WindowUid, 2), helper, Gone(DoorUid.ToUpperInvariant(), 215987) }, Array.Empty<string>(), protectedUids);
+        Check(sortedDeletions.Select(element => element.UniqueId!.ToLowerInvariant()).SequenceEqual(new[] { DoorUid, WindowUid }), "deletions are reported once each, sorted by UniqueId", string.Join(",", sortedDeletions.Select(element => element.UniqueId)));
+        Check(Thrown(() => CommandRulesModify.SetParameterDeletions(true, new[] { new DeletedElement(null, 215987, null, "Element") }, Array.Empty<string>(), protectedUids)) is { Code: RevitCommandCodes.TransactionFailed } unnamed && unnamed.Detail!.Contains("215987", StringComparison.Ordinal),
+            "a deleted element that cannot be named by UniqueId refuses the change, dry run or not");
+        Check(Thrown(() => CommandRulesModify.SetParameterDeletions(true, new[] { Gone(StoreUid.ToUpperInvariant(), 5) }, Array.Empty<string>(), protectedUids)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.value" } reachesProtected && reachesProtected.Detail!.Contains("protected", StringComparison.Ordinal),
+            "a change that would delete the receipt store or Project Information is refused even when confirmed");
+        var manyDeleted = Enumerable.Range(1, RevitModifyRules.MaxConfirmedDependents + 1).Select(i => Gone(Hex(i), i)).ToArray();
+        Check(Thrown(() => CommandRulesModify.SetParameterDeletions(true, manyDeleted, Array.Empty<string>(), protectedUids)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.value" }, "a change deleting more than confirm_deletions can hold is refused");
+        var accepted = CommandRulesModify.SetParameterEffects(100, new long[] { 215987 }, new long[] { 300, 215987, 100 }, new long[] { 215987 });
+        Check(accepted.SequenceEqual(new long[] { 300 }), "confirmed deletions pass the side-effect check and are not reported as modified", string.Join(",", accepted));
+        Check(Thrown(() => CommandRulesModify.SetParameterEffects(100, new long[] { 215987, 215988 }, Array.Empty<long>(), new long[] { 215987 })) is { Code: RevitCommandCodes.TransactionFailed } && Thrown(() => CommandRulesModify.SetParameterEffects(100, Array.Empty<long>(), Array.Empty<long>(), new long[] { 215987 })) is { Code: RevitCommandCodes.TransactionFailed },
+            "a confirmed run that deletes more or fewer elements than were named rolls back");
+
         // NITs: group members are refused for set_parameter; Revit's own argument refusals become args_invalid.
         Check(Thrown(() => CommandRulesModify.CheckParameterElement(WallUid, false)) is null, "an element outside groups takes a parameter change");
         Check(Thrown(() => CommandRulesModify.CheckParameterElement(WallUid, true)) is { Code: RevitCommandCodes.ArgsInvalid, Field: "args.element_uid" } refusedGroup && refusedGroup.Detail!.Contains("group", StringComparison.Ordinal), "a group member is refused for a parameter change");
@@ -451,6 +507,10 @@ static class CatalogueModifyChecks
         var manyOthers = Enumerable.Range(1, 500).Select(Hex).ToArray();
         var bulkSet = CommandResponsesModify.SetParameter(setRequest, false, WallUid, true, manyOthers, report, Array.Empty<string>());
         Check(bulkSet.Response.Modified.SequenceEqual(new[] { WallUid }), "beyond 100 other modified elements the reply lists only the target (count in the report)");
+        var realWithDeletion = CommandResponsesModify.SetParameter(setRequest, false, WallUid, true, Array.Empty<string>(), report, Array.Empty<string>(), new[] { DoorUid });
+        Check(realWithDeletion.Persist && realWithDeletion.Response.Deleted.SequenceEqual(new[] { DoorUid }) && RevitCommandResponse.Parse(realWithDeletion.Response.ToJson()).Deleted.SequenceEqual(new[] { DoorUid }), "a confirmed real set_parameter reply lists the confirmed deletions as deleted");
+        Check(CommandResponsesModify.SetParameter(setRequest, true, WallUid, true, Array.Empty<string>(), report, Array.Empty<string>(), new[] { DoorUid }).Response.Deleted.Count == 0, "a dry run deletes nothing in its reply");
+        Check(CommandResponsesModify.SetParameter(setRequest, false, WallUid, true, Array.Empty<string>(), report, Array.Empty<string>(), manyOthers).Response.Deleted.Count == 0, "beyond 100 deletions the reply lists none (the report counts them)");
         var bulkReport = JsonNode.Parse(CommandReadbackModify.ParameterJson(false, WallUid, "length", Param("double", LengthSpec), Param("double", LengthSpec), true, manyOthers))!["set_parameter"]!;
         Check(bulkReport["also_modified_count"]!.GetValue<int>() == 500 && !bulkReport["also_modified_listed"]!.GetValue<bool>() && bulkReport["also_modified"]!.AsArray().Count == CommandRulesModify.MaxDependentsListed, "the report bounds the other modified elements to 100 and counts all of them");
 

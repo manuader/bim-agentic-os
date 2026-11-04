@@ -20,6 +20,9 @@ public sealed record DeleteTargetFacts(string UniqueId, bool CanDelete, bool Pin
 // What a delete removes besides its targets: the dependents' UniqueIds (sorted and distinct, hex case ignored) and how many deleted ids
 // had no element to name them.
 public sealed record DeleteCascade(IReadOnlyList<string> Dependents, int Unidentified);
+// An element a set_parameter change deletes, named after the rollback restored it: UniqueId null when it could not be
+// read, Category null for internal elements without one (join or warning helpers), ClassName its Revit class.
+public sealed record DeletedElement(string? UniqueId, long Id, string? Category, string ClassName);
 
 public static class CommandRulesModify
 {
@@ -129,11 +132,18 @@ public static class CommandRulesModify
 
     // set_parameter side effects (pre/post element id snapshot and the modified ids of the transaction): any deleted
     // element refuses the change; the other modified ids are returned, distinct and sorted.
-    public static IReadOnlyList<long> SetParameterEffects(long targetId, IReadOnlyCollection<long> deleted, IReadOnlyCollection<long> modified)
+    public static IReadOnlyList<long> SetParameterEffects(long targetId, IReadOnlyCollection<long> deleted, IReadOnlyCollection<long> modified, IReadOnlyCollection<long>? accepted = null)
     {
         if (deleted.Count > 0)
             throw ArgsInvalid("args.value", "the change would delete " + deleted.Count + " element(s) (ids " + string.Join(", ", deleted.OrderBy(id => id).Take(MaxListedInDetail)) + "); refused");
         return modified.Where(id => id != targetId).Distinct().OrderBy(id => id).ToArray();
+    }
+
+    public static IReadOnlyList<DeletedElement> SetParameterDeletions(bool dryRun, IReadOnlyList<DeletedElement> deleted, IReadOnlyList<string> confirmed, IReadOnlyList<string> protectedUids)
+    {
+        if (deleted.Count > 0)
+            throw ArgsInvalid("args.value", "the change would delete " + deleted.Count + " element(s) (ids " + string.Join(", ", deleted.Select(element => element.Id).OrderBy(id => id).Take(MaxListedInDetail)) + "); refused");
+        return Array.Empty<DeletedElement>();
     }
 
     // deletedUids: the UniqueId of every element id Revit's Document.Delete returned (null when none could be read).
@@ -249,7 +259,8 @@ public static class CommandReadbackModify
     // or null when the parameter has no value.
     // also_modified: other elements the change modified (at most MaxDependentsListed listed), also_modified_count and
     // also_modified_listed.
-    public static string ParameterJson(bool dryRun, string elementUid, string kind, ObservedParameter before, ObservedParameter after, bool changed, IReadOnlyList<string> alsoModified) => Wrapped("set_parameter", writer =>
+    public static string ParameterJson(bool dryRun, string elementUid, string kind, ObservedParameter before, ObservedParameter after, bool changed, IReadOnlyList<string> alsoModified,
+        IReadOnlyList<DeletedElement>? deleted = null, bool deletionsConfirmed = false) => Wrapped("set_parameter", writer =>
     {
         writer.WriteBoolean("dry_run", dryRun);
         writer.WriteString("element_unique_id", elementUid);
@@ -357,7 +368,7 @@ public static class CommandResponsesModify
 
     // modified: nothing for a dry run; else the target when its value changed, then the other modified elements when
     // there are at most MaxDependentsListed of them (the report counts them all).
-    public static ModifyReply SetParameter(CommandRequest request, bool dryRun, string elementUid, bool changed, IReadOnlyList<string> alsoModified, string readbackJson, IReadOnlyList<string> warnings)
+    public static ModifyReply SetParameter(CommandRequest request, bool dryRun, string elementUid, bool changed, IReadOnlyList<string> alsoModified, string readbackJson, IReadOnlyList<string> warnings, IReadOnlyList<string>? deleted = null)
     {
         var modified = new List<string>();
         if (!dryRun)
