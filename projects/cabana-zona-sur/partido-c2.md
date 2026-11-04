@@ -16,3 +16,5 @@ Coordenadas provisorias (mm, proyecto; salamandra existente en 64000,15000 = cen
 - Piedra: (62400,16600) (65600,13400) (64800,11000) (58400,10600) (58800,15400).
 - Semicubierto NO: (58800,15400) (62400,16600) (63200,18600) (57200,19600).
 - Vacío SE ingreso: (65600,13400) (69200,14600) (69200,11400) (64800,11000); antecámara ~2.4x2.4 m dentro, acceso desde sendero al S.
+
+- Owner (2026-11-04): modelar C2 AL LADO de la cabaña actual (no reemplazar); comparar y borrar después la que no quede. Desplazar todas las coordenadas (p.ej. +20000 en X) evitando árboles/rocas del sitio.
