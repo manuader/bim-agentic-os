@@ -44,3 +44,12 @@ Doc Claude Docs "Cabaña Zona Sur — Análisis de referencias, discurso y promp
 - Bloque de piedra (C4 Muro piedra 500) al SO con boca excavada en embudo en cara SE, puerta en muro de lenga; cubierta pesada plana +2700; muro térmico de piedra.
 - Salamandra a556 a57edd83-...-00034a91 en (86500,14700) +400. Techo piel a57edd83-...-00034a65; techo piedra ...-00034a7c.
 - Pendiente: puertas (exterior/interior), ventanas laterales angostas, piso, interior lenga, roca, vista 3D desde SE/SO (falta view_from).
+
+## 2026-11-04 19:23 UTC — C4 rechazada (trapecio sin sentido). Regla: planta ordenada en cuadrícula. C5 = recreación literal láminas 1-2 (Garibaldi).
+- Cuadrícula 2,4 m: rectángulo 4,8 x 7,2 en x 70000..74800, y 11500..18700; cumbrera N-S en x 72400; frente al norte.
+- Zócalo hormigón -400..+600; piso +600; alero +2800; techo 50°; cumbrera ~5660.
+- Mitad este: techo a un agua (borde este), cubre el semicubierto NE (x 72400..74800, y 16300..18700) abierto al norte y al este, fondo de lenga con puerta 915.
+- Mitad oeste: techo con faldón oeste + faldón triangular al norte (el pliegue diagonal del frente); muro lateral negro en x=72400 cierra el escalón.
+- Ventana vertical 406x1830 en muro oeste cerca del frente. Salamandra en (72400,13900) +600.
+- Vistas: "C5 Garibaldi 3D", "C5 Garibaldi 3D sudeste". C4 sigue en el sitio (x 78-93k) hasta que el owner la borre.
+- view.create_section falla en TODA dirección (no solo diagonal) — fix en chat-section-profile-fixes.
