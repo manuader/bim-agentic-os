@@ -76,6 +76,9 @@ LocalValidationResult Case(string name, Project before, Project after, IEnumerab
     Check(local.TotalElements == after.Elements.Length && local.RevalidatedCount == local.Revalidated.Length, name + ": counters report revalidated vs total elements", N(local.RevalidatedCount) + "/" + N(local.TotalElements));
     Check(LocalValidation.Agrees(before, after, plan), name + ": proof helper agrees");
     Check(JsonSerializer.Serialize(LocalValidation.Validate(before, after, plan)) == JsonSerializer.Serialize(local), name + ": localized validation is deterministic");
+    var permuted = after with { Elements = Enumerable.Reverse(after.Elements).ToArray() };
+    var permutedLocal = LocalValidation.Validate(before, permuted, Compiler.Diff(before, permuted));
+    Check(JsonSerializer.Serialize(permutedLocal) == JsonSerializer.Serialize(local) && LocalValidation.ValidateAll(permuted).SequenceEqual(full), name + ": result does not depend on element order");
     return local;
 }
 
@@ -146,6 +149,16 @@ try
     Check(Has(relevelled.Findings, "host_level", Door(0)) && Has(relevelled.Findings, "boundary_level", Role(0, "space")), "level change: door level differs from host, space walls on different levels", Show(relevelled.Findings));
     var raisedLevel = Case("room level elevation changed", basis, Replace(basis, levelA, level => level with { GeometryMetres = new[] { 0.5 } }), RoomIds(0));
     Check(raisedLevel.RevalidatedCount == 11 && raisedLevel.Findings.Length == 0, "level elevation change revalidates the 11 room elements only", N(raisedLevel.RevalidatedCount));
+    // A level's kind changes: findings two hops away (door via its host wall, space via its bounding wall) change.
+    var onUpper = Replace(basis, wallA, wall => wall with { Dependencies = new[] { upper } });
+    var datumUpper = Replace(onUpper, upper, level => level with { Kind = "datum" });
+    var twoHop = new[] { upper, wallA, Door(0), Role(0, "space"), Role(0, "plan"), Role(0, "schedule"), Role(0, "sheet") };
+    var priorUpper = LocalValidation.ValidateAll(onUpper);
+    var lost = Case("upper level kind changed to a non-level kind", onUpper, datumUpper, twoHop);
+    Check(Has(priorUpper, "host_level", Door(0)) && Has(priorUpper, "boundary_level", Role(0, "space")) && !Has(lost.Findings, "host_level", Door(0)) && !Has(lost.Findings, "boundary_level", Role(0, "space")),
+        "non-level kind: host_level and boundary_level disappear two hops away", Show(priorUpper) + " -> " + Show(lost.Findings));
+    var regained = Case("non-level kind changed back to level", datumUpper, onUpper, twoHop);
+    Check(Has(regained.Findings, "host_level", Door(0)) && Has(regained.Findings, "boundary_level", Role(0, "space")), "level kind restored: host_level and boundary_level reappear two hops away", Show(regained.Findings));
 
     // ---- Fix and create ----
     var repaired = Case("faulty door repaired", basis, Replace(basis, Door(1), door => door with { GeometryMetres = new[] { 1.0, 0.9 } }), new[] { Door(1) });
@@ -197,6 +210,122 @@ try
     }
     Check(agreed == 300, "300 seeded random edits: localized findings always equal full validation", N(agreed));
     Check(local1 == 300 && revalidatedSum < totalSum / 10, "every single-room edit revalidates at most that room's 11 elements", N(local1) + " " + revalidatedSum.ToString(invariant) + "/" + totalSum.ToString(invariant));
+
+    // ---- Seeded rich corpus: rehost, boundary rewiring, wall create/delete, upper level move/replace, level kind flips,
+    // one to three edits per step; plus per-step non-vacuity (dropping one revalidated id) and element-order independence ----
+    var rich = new Random(20261104);
+    var state = Build(6);
+    var upperId = upper;
+    var serial = 0;
+    var extraWalls = new List<(int Room, Guid Id)>();
+    var kindsSeen = new int[12];
+    bool Exists(Project project, Guid id) => project.Elements.Any(element => element.Id == id);
+    Guid[] RoomWalls(Project project, int room) =>
+        wallRoles.Select(role => Role(room, role)).Concat(extraWalls.Where(wall => wall.Room == room).Select(wall => wall.Id)).Where(id => Exists(project, id)).ToArray();
+    Guid? Pick(Guid[] ids) => ids.Length == 0 ? null : ids[rich.Next(ids.Length)];
+    Project Strip(Project project, Guid id) => project with { Elements = project.Elements.Where(element => element.Id != id)
+        .Select(element => element.Dependencies.Contains(id) ? element with { Dependencies = element.Dependencies.Where(d => d != id).ToArray() } : element).ToArray() };
+    Project Mutate(Project project, int room, int kind)
+    {
+        var level = Role(room, "level");
+        var walls = RoomWalls(project, room);
+        switch (kind)
+        {
+            case 0:
+                return Pick(walls) is Guid moving ? Replace(project, moving, wall => Move(wall, rich.Next(-2, 3) * 0.5, rich.Next(-2, 3) * 0.5)) : project;
+            case 1:
+                return Exists(project, Door(room)) ? Replace(project, Door(room), door => door with { GeometryMetres = new[] { rich.Next(0, 10) * 0.5, 0.9 } }) : project;
+            case 2:
+                return Pick(walls) is Guid relevel ? Replace(project, relevel, wall => wall with { Dependencies = new[] { wall.Dependencies[0] == upperId ? level : upperId } }) : project;
+            case 3:
+                return Replace(project, Role(room, "space"), space => { var g = space.GeometryMetres; return space with { GeometryMetres = new[] { g[0], g[1], 4 + rich.Next(-2, 3) * 0.5, g[3] } }; });
+            case 4:
+                return Replace(project, level, element => element with { GeometryMetres = new[] { (double)rich.Next(0, 4) } });
+            case 5:
+                if (Exists(project, Door(room))) return Remove(project, Door(room));
+                return Add(project, new Element(Door(room), "door", new[] { 1.0, 0.9 }, walls.Length > 0 ? new[] { walls[0], level } : new[] { level }, provenance));
+            case 6:
+            {
+                var hosted = new[] { Door(room), Window(room) }.Where(id => Exists(project, id)).ToArray();
+                if (hosted.Length == 0 || walls.Length == 0) return project;
+                var target = hosted[rich.Next(hosted.Length)]; var host = walls[rich.Next(walls.Length)];
+                return Replace(project, target, element => element with { Dependencies = new[] { host, level } });
+            }
+            case 7:
+            {
+                if (Pick(walls) is not Guid boundary) return project;
+                return Replace(project, Role(room, "space"), space => space.Dependencies.Contains(boundary)
+                    ? (space.Dependencies.Length > 1 ? space with { Dependencies = space.Dependencies.Where(d => d != boundary).ToArray() } : space)
+                    : space with { Dependencies = space.Dependencies.Append(boundary).ToArray() });
+            }
+            case 8:
+            {
+                var wallId = Id("extra-wall-" + N(serial)); var doorId = Id("extra-door-" + N(serial)); serial++;
+                extraWalls.Add((room, wallId));
+                var y = rich.Next(-2, 8) * 0.5;
+                project = Add(project, new Element(wallId, "wall", new[] { room * 10 + 0.1, y, room * 10 + 3.1, y, 2.8, 0.2 }, new[] { level }, provenance));
+                return Add(project, new Element(doorId, "door", new[] { rich.Next(0, 6) * 0.5, 0.9 }, new[] { wallId, level }, provenance));
+            }
+            case 9:
+                return Pick(walls) is Guid doomed ? Strip(project, doomed) : project;
+            case 10:
+            {
+                if (rich.Next(2) == 0) return Replace(project, upperId, element => element with { GeometryMetres = new[] { 3.0 + rich.Next(0, 3) } });
+                var old = upperId; var replacement = Id("upper-" + N(serial)); serial++;
+                upperId = replacement;
+                return project with { Elements = project.Elements.Where(element => element.Id != old)
+                    .Select(element => element.Dependencies.Contains(old) ? element with { Dependencies = element.Dependencies.Select(d => d == old ? replacement : d).ToArray() } : element)
+                    .Append(new Element(replacement, "level", new[] { 3.0 }, Array.Empty<Guid>(), provenance)).ToArray() };
+            }
+            default:
+                return Replace(project, level, element => element with { Kind = element.Kind == "level" ? "datum" : "level" });
+        }
+    }
+    var richAgreed = 0; var dropChecks = 0; var dropDisagreed = 0; var dropNeutral = 0; var orderAgreed = 0;
+    long richRevalidated = 0, richTotal = 0;
+    const int richSteps = 400;
+    for (var step = 0; step < richSteps; step++)
+    {
+        var before = state;
+        var changes = 1 + rich.Next(3);
+        for (var change = 0; change < changes; change++)
+        {
+            var kind = rich.Next(12); kindsSeen[kind]++;
+            state = Mutate(state, rich.Next(6), kind);
+        }
+        var plan = Compiler.Diff(before, state);
+        var result = LocalValidation.Validate(before, state, plan);
+        var prior = LocalValidation.ValidateAll(before);
+        var full = LocalValidation.ValidateAll(state);
+        var merged = LocalValidation.Merge(prior, result);
+        if (merged.SequenceEqual(full) && LocalValidation.Agrees(before, state, plan)) richAgreed++;
+        else Check(false, "rich edit " + N(step) + " agrees with full validation", Show(merged) + " vs " + Show(full));
+        foreach (var dropped in result.Revalidated)
+        {
+            var keep = result.Revalidated.Where(id => id != dropped).ToArray();
+            var keepSet = keep.ToHashSet();
+            var skipped = new LocalValidationResult(full.Where(issue => issue.Id is Guid id && keepSet.Contains(id)).ToArray(), result.Affected.Where(id => id != dropped).ToArray(), keep, result.TotalElements);
+            var wrong = LocalValidation.Merge(prior, skipped);
+            if (!prior.Where(issue => issue.Id == dropped).SequenceEqual(full.Where(issue => issue.Id == dropped)))
+            {
+                dropChecks++;
+                if (!wrong.SequenceEqual(full)) dropDisagreed++;
+                else Check(false, "rich edit " + N(step) + ": skipping " + Short(dropped) + " should disagree with full validation");
+            }
+            else if (wrong.SequenceEqual(full)) dropNeutral++;
+            else Check(false, "rich edit " + N(step) + ": skipping " + Short(dropped) + " with unchanged findings should still agree");
+        }
+        var permuted = state with { Elements = Enumerable.Reverse(state.Elements).ToArray() };
+        if (JsonSerializer.Serialize(LocalValidation.Validate(before, permuted, Compiler.Diff(before, permuted))) == JsonSerializer.Serialize(result)) orderAgreed++;
+        else Check(false, "rich edit " + N(step) + ": result does not depend on element order");
+        richRevalidated += result.RevalidatedCount; richTotal += result.TotalElements;
+    }
+    Check(richAgreed == richSteps, "400 rich seeded steps (1-3 edits each): localized findings always equal full validation", N(richAgreed));
+    Check(kindsSeen.All(count => count > 0), "rich corpus exercised every edit type", string.Join(",", kindsSeen.Select(N)));
+    Check(dropChecks >= 25 && dropDisagreed == dropChecks, "non-vacuity: skipping any revalidated element whose findings changed disagrees with full validation", N(dropDisagreed) + "/" + N(dropChecks));
+    Check(orderAgreed == richSteps, "rich corpus: localized result does not depend on element order", N(orderAgreed));
+    Check(richRevalidated < richTotal / 2, "rich corpus stays local on average", richRevalidated.ToString(invariant) + "/" + richTotal.ToString(invariant));
+    Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "local_validation_rich", steps = richSteps, revalidated = richRevalidated, total = richTotal, drop_checks = dropChecks, drop_neutral = dropNeutral, kinds = kindsSeen }));
 
     // ---- Benchmark-ish deterministic counter ----
     var large = Build(50);
