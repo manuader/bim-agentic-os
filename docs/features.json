@@ -788,7 +788,7 @@
         "tests/cad/BriefExtractTests.cs",
         "tests/cad/fixtures/brief-plan.dxf"
       ],
-      "blocker": "Synthetic fixtures only, no real architectural plan; DXF ATTRIB block attributes and CID-font PDF text not read; confidence multipliers untuned; no adjacencies, levels or counts; region membership by text insertion point; gross region areas (holes not subtracted); not exposed through CLI/MCP.",
+      "blocker": "Synthetic fixtures only, no real architectural plan; CID-font PDF text not read (DXF ATTRIB room tags read since P6-06, see dxf-attributes-mtext); confidence multipliers untuned; no adjacencies, levels or counts; region membership by text insertion point; gross region areas (holes not subtracted); not exposed through CLI/MCP.",
       "scope": "P6-05: DXF/PDF room labels and es/en area texts (m\u00b2, m2, sqm\u2026, decimal comma/point, thousands groups, ambiguity flagged, signed areas invalid) become a P6-03 brief draft that passes the brief validator, with per-room confidence, file/handle/layer/block-path or page provenance and uncertainty codes (unlabelled-region, area-mismatch, duplicate-label/text, orphan-area, outer-region, uncalibrated, area-ambiguous, limit codes always reported); MetresPerUnit option, block furniture regions excluded by default, frame labels suppressed; bounded and culture-invariant, fuzzed. CI 41762098208."
     },
     {
@@ -873,6 +873,41 @@
       ],
       "blocker": "Never opened in Blender or the Khronos validator; rectangular cuts only (no frames/glass); sill measured from the host base; split walls are sets of closed boxes; wall joins unresolved; only the path and its immediate parent are link-checked.",
       "scope": "P8-07: export-gltf project.json output.glb|output.gltf (BoundedInput 8 MiB, exclusive create, never overwrite, refuses links, device paths and NTFS streams; JSON envelopes); BIM-IR door/window [ax,ay,bx,by,sill,height] cut into the host wall in the wall plane (transoms and stacked windows allowed); cross-OS goldens on Linux/Windows/macOS. CI 41797924226."
+    },
+    {
+      "id": "doc-defaults",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/DocDefaults.cs",
+        "tests/doc-regeneration/Defaults.cs"
+      ],
+      "blocker": "Never run against Revit; Revit level bindings still caller-owned (unbound level \u2192 P4-03 level_unbound); no dimensions, sections, 3D views or window tags; schedules on a separate sheet A900; plan names and sheet numbers follow elevation order (inserting a lower level renumbers, keys unchanged); first BIM-IR plan/schedule by id wins.",
+      "scope": "P4-04: DocDefaults.From(project) \u2192 deterministic DocumentationSet: one plan per level (scale 100), space and door tags in the plan of the host wall's level (hosted doors only with exactly one host wall), door and room schedules, one sheet per level with its plan placed plus A900 schedules sheet; bound to BIM-IR plan/sheet/schedule elements (each BIM-IR sheet bound once); keys from BIM-IR ids only; DocRegeneration.Full on it yields no unsupported entries and every step validates against the catalogue args schema; byte-identical under reorder and unrelated edits; typed InvalidOperationException refusals (invalid_ir, doc_defaults_level_invalid, doc_defaults_no_level). CI 41809487719."
+    },
+    {
+      "id": "dxf-attributes-mtext",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/cad/Bim.Cad/DxfReader.cs",
+        "adapters/cad/Bim.Cad/DxfExploder.cs",
+        "adapters/cad/Bim.Cad/BriefExtract.cs",
+        "tests/cad/AttributeTests.cs",
+        "tests/cad/fixtures/room-tags.dxf"
+      ],
+      "blocker": "Hand-written fixture only, no real CAD office drawing; MINSERT arrays, tilted OCS, MTEXT columns/fields, \\M+ escapes and non-Latin-1 %%nnn not handled; room-block words and NAME/AREA tag lists built in; imperial bare areas always assumed ft\u00b2; constant ATTDEFs lost in the explode-limit fallback; not exposed through CLI/MCP.",
+      "scope": "P6-06: ATTRIB/ATTDEF read with tag, raw/plain value, flags, prompt/default and provenance (handle, layer, insert path, line); INSERT 66\u2026SEQEND attachment with typed warnings, single linear pass; only constant ATTDEFs drawn through inserts; TEXT/ATTRIB/MTEXT decoding (\\P, \\f, {}, \\S, %% codes, caret codes) linear (100k-deep braces tested); room-tag blocks feed brief extraction (NAME tag needs a sibling AREA tag or a room-token block name; AREA consumed by its own insert; ft\u00b2 conversion on imperial drawings; top-level ATTRIBs kept in the explode-limit fallback with layer/visibility inheritance). CI 41815912317."
+    },
+    {
+      "id": "generative-facade",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/Facade.cs",
+        "core/Bim.Generative/FacadePlanner.cs",
+        "core/Bim.Generative/FacadeSerializer.cs",
+        "tests/generative/FacadeTests.cs"
+      ],
+      "blocker": "Produces a facade layout, not BIM-IR windows (P7-06); windows may coincide with the P7-04 entrance door; no wall thickness; patio/courtyard minimum size unchecked; windows above lower roofs unchecked; default OpeningEdges allows all four footprint edges (pass North/South for lots between party walls); prototypes do not call it yet; not exposed through CLI/MCP.",
+      "scope": "P7-05: FacadePlanner.Place(plan, pack, options, parameters) puts windows only on exterior room parts (not shared with a same-level room), sized to the smallest whole mm meeting the pack's window_area_m2 and ventilation_area_m2 ratio rules (CABA x=10, k=i/3, owner-confirmed), citing qualified rule ids; applies_if on area_m2/min_side_m evaluated like P5-02; sill 0.90/head 2.10/end clearance 0.30/openable 0.5/min width 0.60 defaults; OpeningEdges for party walls (facade_lot_line_only), FacesInternalVoid flag; typed failures (no_exterior_edge, edge_too_short, ratio_unmet, rule_unsupported) and refusals; bounded options; independent pack reader, side sampling and raster void oracle; byte-identical across order and culture. CI 41817395508."
     }
   ]
 }
