@@ -40,7 +40,7 @@ public sealed class McpServer
     const int InternalError = -32603;
 
     sealed record ParameterSpec(string Name, string Type, string Description);
-    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null, PermissionLevel? Permission = null, bool Destructive = false);
+    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null, PermissionLevel? Permission = null, bool Destructive = false, bool WritesFiles = false);
 
     static readonly ToolSpec[] CoreTools =
     [
@@ -117,12 +117,15 @@ public sealed class McpServer
     ToolSpec RevitTool(RevitCommandSpec spec) => new(spec.ToolName,
         spec.Description + " Forwards to the Revit add-in on the explicit process pipe; " + (spec.Writes
             ? "write: refused unless the document is under the repository .bim/native-runs or a directory root listed in .bim/revit-enabled-roots.txt (no per-document or per-actor check)."
-            : "read-only: allowed on any document."),
+            : RevitCommandCatalogue.WritesFiles(spec.Name)
+                ? "read-only for the model: allowed on any document, writing image files only under the repository .bim/exports; with visual_style it gets the write rule (document under .bim/native-runs or a directory root listed in .bim/revit-enabled-roots.txt)."
+                : "read-only: allowed on any document."),
         [new ParameterSpec("pipe_name", "string", ""), new ParameterSpec("operation_id", "string", ""), new ParameterSpec("document", "object", ""), new ParameterSpec("args", "object", "")],
         arguments => RevitCall(spec, arguments),
         RevitInputSchema(spec),
         LevelOnCopy(spec),
-        RevitCommandCatalogue.IsDestructive(spec.Name));
+        RevitCommandCatalogue.IsDestructive(spec.Name),
+        RevitCommandCatalogue.WritesFiles(spec.Name));
 
     public const string PermissionMetaKey = "bim-agentic-os/permission_level";
 
@@ -191,10 +194,11 @@ public sealed class McpServer
             arguments.GetProperty("args").WriteTo(writer);
             writer.WriteEndObject();
         }
-        // The policy matters only for writes (read-only commands are allowed on any document), so only writes stat the
-        // owner files. A malformed owner file refuses the write as allowlist_invalid.
+        // The policy matters only for requests with the write guard (writes and exports with a visual_style; other
+        // read-only commands are allowed on any document), so only those stat the owner files. A malformed owner file
+        // refuses them as allowlist_invalid.
         RevitCommandPolicy policy;
-        try { policy = spec.Writes ? revitPolicy() : RevitCommandPolicy.None; }
+        try { policy = RevitCommandCatalogue.NeedsWriteGuard(spec, arguments.GetProperty("args")) ? revitPolicy() : RevitCommandPolicy.None; }
         catch (RevitCommandException error) { return (RevitCommandResponse.Failure(error.Code, error.Field, error.Detail).ToJson(), true); }
         var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", Encoding.UTF8.GetString(buffer.ToArray()), policy, revitTransport, revitProbe);
         return (result.Line, result.IsError);
@@ -317,11 +321,18 @@ public sealed class McpServer
             // may ignore. Writes replay by operation_id, hence idempotent; they are additive (not destructive) except the
             // P1-05 commands, wall.set_profile, material.set and element.change_type, which change or delete existing elements,
             // and document.save, which overwrites the saved file (RevitCommandCatalogue.IsDestructive).
-            var annotations = new JsonObject { ["readOnlyHint"] = level == PermissionLevel.Read };
+            // view.export_image needs only read on the model but writes new image files on every call: readOnlyHint
+            // false, destructiveHint false, idempotentHint false.
+            var annotations = new JsonObject { ["readOnlyHint"] = level == PermissionLevel.Read && !tool.WritesFiles };
             if (level != PermissionLevel.Read)
             {
                 annotations["destructiveHint"] = tool.Destructive;
                 annotations["idempotentHint"] = true;
+            }
+            else if (tool.WritesFiles)
+            {
+                annotations["destructiveHint"] = false;
+                annotations["idempotentHint"] = false;
             }
             listed["annotations"] = annotations;
             listed["_meta"] = new JsonObject { [PermissionMetaKey] = PermissionLevelName(level) };

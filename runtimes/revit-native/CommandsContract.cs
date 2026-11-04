@@ -44,7 +44,8 @@ public static class CommandAdmission
             throw new RevitCommandException(RevitCommandCodes.DocumentConflict, "document.unique_id", "the active document's ProjectInformation UniqueId differs from the envelope");
         if (document.PathName is not { Length: > 0 } path || !SamePath(path, envelope.Document.Path))
             throw new RevitCommandException(RevitCommandCodes.DocumentConflict, "document.path", "the active document is not the saved document the envelope names");
-        if (envelope.Spec.Writes) CheckWrite(path, document, policy, probe);
+        // A styled view.export_image opens a transaction: same admission as a write (RevitCommandCatalogue.NeedsWriteGuard).
+        if (RevitCommandCatalogue.NeedsWriteGuard(envelope)) CheckWrite(path, document, policy, probe);
     }
 
     // The write half, shared with the legacy primitive operations (AddInGate.CheckLegacyWrite).

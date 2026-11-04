@@ -33,10 +33,11 @@ public static class RevitExportRules
     static readonly Regex DeviceName = new(@"\A(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])\z", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     // A plain file name without extension, usable on Windows: letters, digits, space, dot, underscore and hyphen,
-    // starting with a letter or digit, not ending with a dot or space, not a reserved device name (before the first dot).
+    // starting with a letter or digit, not ending with a dot or space, not a reserved device name (the part before the
+    // first dot, without trailing spaces, as Windows reads it: "CON .x" is CON).
     public static void CheckOutputName(string name, string field)
     {
-        if (name.Length == 0 || name.Length > MaxOutputNameChars || !OutputName.IsMatch(name) || name.EndsWith('.') || name.EndsWith(' ') || DeviceName.IsMatch(name.Split('.')[0]))
+        if (name.Length == 0 || name.Length > MaxOutputNameChars || !OutputName.IsMatch(name) || name.EndsWith('.') || name.EndsWith(' ') || DeviceName.IsMatch(name.Split('.')[0].TrimEnd(' ', '.')))
             throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, field, "output_name is a file name without folder or extension: 1 to 100 letters, digits, spaces, dots, underscores or hyphens, starting with a letter or digit, not ending with a dot or space, not a reserved Windows device name");
     }
 }
@@ -51,6 +52,19 @@ public static partial class RevitCommandCatalogue
     // document.save overwrites the saved file (MCP destructiveHint).
     static bool ExportSaveDestructive(string command) => command == "document.save";
 
+    // Read-only for the model but writes files (image exports under .bim/exports): MCP lists it readOnlyHint false.
+    public static bool WritesFiles(string? command) => command == "view.export_image";
+
+    // Whether a request gets the write admission (copies-only and link guards on the client; the same plus read-only,
+    // family, workshared and open-transaction checks in the add-in). Every write does, and so does view.export_image
+    // with a visual_style: that sets the style inside a transaction (rolled back), which must never be opened on a
+    // document outside the enabled roots, such as the owner's production model. A plain export stays allowed anywhere.
+    public static bool NeedsWriteGuard(RevitCommandEnvelope envelope) => envelope.Spec.Writes || envelope.Args is ViewExportImageArgs { VisualStyle: not null };
+
+    // The same decision on raw tool arguments, before the envelope is parsed (MCP loads the write policy only then).
+    public static bool NeedsWriteGuard(RevitCommandSpec spec, JsonElement args) =>
+        spec.Writes || (spec.Name == "view.export_image" && args.ValueKind == JsonValueKind.Object && args.TryGetProperty("visual_style", out _));
+
     static IReadOnlyList<RevitCommandSpec> BuildExportSave()
     {
         string Choices(IReadOnlyList<string> values) => string.Join(",", values.Select(value => "\"" + value + "\""));
@@ -62,7 +76,7 @@ public static partial class RevitCommandCatalogue
         return new[]
         {
             new RevitCommandSpec("view.export_image", false, "Export one view or sheet (3D, plan, section, elevation, detail or sheet) as a PNG or JPG image, fitted so its longest side is pixel_size pixels (256-4096, default 1600), into a new folder of the repository's .bim/exports (never anywhere else), "
-                + "optionally in another visual style (shaded, realistic, hidden_line, consistent_colors) that is set only for the export and rolled back, so the model is not changed. Reads back the absolute file path, size in bytes, pixel width and height read from the image header, and sha256. Read-only: allowed on any document.", export, BindExportImage),
+                + "optionally in another visual style (shaded, realistic, hidden_line, consistent_colors) that is set only for the export and rolled back, so the model is not changed; because that opens a transaction, an export with visual_style is allowed only on enabled test copies and owner-enabled project folders (not workshared or read-only). Reads back the absolute file path, size in bytes, pixel width and height read from the image header, and sha256. Read-only: allowed on any document.", export, BindExportImage),
             new RevitCommandSpec("document.save", true, "Save the open document to its own path (Revit Save; no save-as), then read back the path, file size, last-write time and that Revit reports no unsaved changes. Refused for workshared, cloud, family and read-only documents, for a document never saved, and for one whose path is not the request's document path. "
                 + "Allowed only on enabled test copies and owner-enabled project folders.", EmptySchema, _ => new DocumentSaveArgs()),
         };

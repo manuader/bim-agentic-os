@@ -23,9 +23,11 @@ public static class RevitCommandService
         RevitCommandEnvelope envelope;
         try { envelope = RevitCommandProtocol.Parse(envelopeJson); }
         catch (RevitCommandException error) { return Failure(error.Code, error.Field, error.Detail); }
-        if (RevitCopiesGuard.Check(envelope.Spec.Writes, envelope.Document.Path, policy) is { } refused)
+        // Writes and styled exports (RevitCommandCatalogue.NeedsWriteGuard) get the copies-only and link guards.
+        var guarded = RevitCommandCatalogue.NeedsWriteGuard(envelope);
+        if (RevitCopiesGuard.Check(guarded, envelope.Document.Path, policy) is { } refused)
             return Failure(refused, "document.path", refused == RevitCommandCodes.DocumentNotEnabled ? "write commands need a document under an enabled test root" : null);
-        if (envelope.Spec.Writes && RevitCopiesGuard.MatchingRoot(envelope.Document.Path, policy) is { } root
+        if (guarded && RevitCopiesGuard.MatchingRoot(envelope.Document.Path, policy) is { } root
             && RevitLinkGuard.Check(envelope.Document.Path, root, probe ?? RevitFileSystemProbe.Real) is { } linked)
             return Failure(linked, "document.path", linked == RevitCommandCodes.DocumentLinkRefused ? "a symlink, junction or hard link between the enabled root and the document" : null);
         if (envelope.Args is FamilyLoadArgs load && RevitFamilySourceGuard.Check(load.Path, policy.FamilySourceRoots, probe ?? RevitFileSystemProbe.Real) is { } source)
