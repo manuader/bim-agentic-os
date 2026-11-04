@@ -220,7 +220,8 @@ internal static class CadCommand
                     calibrate = numbers.Select(n => n!.Value).ToArray();
                     break;
                 case "--project-id":
-                    if (!Guid.TryParse(value, out var id)) throw new Refusal("cad_option_value_invalid", invalid + "a GUID");
+                    // The empty GUID is no project id (the library refuses it), so it is refused here before any I/O.
+                    if (!Guid.TryParse(value, out var id) || id == Guid.Empty) throw new Refusal("cad_option_value_invalid", invalid + "a non-empty GUID");
                     projectId = id;
                     break;
                 default:
