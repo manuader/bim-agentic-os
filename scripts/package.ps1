@@ -7,7 +7,11 @@
 #   manifest.json                relative path, size and SHA-256 of every other file, sorted ordinally
 # Reproducible: tracked sources are copied into a fresh temp tree (no stale bin/obj), compiled with
 # Deterministic=true, PathMap of that tree to /_/, no symbols, no platform apphost and an explicit SourceRevisionId.
-# Never overwrites: an existing output directory (even empty) is refused; output appears atomically by rename.
+# Hermetic: the temp parent is not trusted, so Directory.Build.targets, Directory.Packages.props and Directory.Build.rsp
+# above the tree are not imported and NuGet uses only a config written into the tree (the tree carries its own
+# Directory.Build.props, global.json and root .editorconfig, which stop those upward searches).
+# Existing output (even an empty directory) is refused before building; the staged layout is then moved into place by
+# one rename after re-checking the path, so only a directory created in that last instant could collide.
 param([Parameter(Mandatory)][string]$OutputDirectory, [string]$Dotnet, [string]$VersionFile)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/package-common.ps1"
@@ -29,11 +33,13 @@ $rootFiles = @('Directory.Build.props', 'global.json', '.editorconfig')
 $addinTemplate = 'runtimes/revit-native/Bim.addin.template'
 
 $ErrorActionPreference = 'Continue'
-$tracked = @(& git -C $root ls-files -- @($sourceDirectories + $rootFiles))
+$trackedRaw = (& git -C $root ls-files -z -- @($sourceDirectories + $rootFiles)) -join "`n"
 $trackedCode = $LASTEXITCODE
-$dirtyLines = @(& git -C $root status --porcelain --untracked-files=no -- @($sourceDirectories + $rootFiles + $addinTemplate))
+$dirtyLines = @(& git -C $root status --porcelain --untracked-files=no -- @($sourceDirectories + $rootFiles + $addinTemplate + 'scripts/package.version'))
 $ErrorActionPreference = 'Stop'
+$tracked = @($trackedRaw.Split([char]0) | Where-Object { $_ })
 if ($trackedCode -ne 0 -or $tracked.Count -eq 0) { Stop-Package 'git ls-files failed for the packaged sources' }
+foreach ($required in $rootFiles) { if ($tracked -cnotcontains $required) { Stop-Package "$required must be tracked; it bounds the build tree against inherited MSBuild files" } }
 $dirty = $dirtyLines.Count -gt 0
 
 $id = [Guid]::NewGuid().ToString('N')
@@ -47,9 +53,12 @@ try {
         [void][IO.Directory]::CreateDirectory((Split-Path $target))
         Copy-Item -LiteralPath (Join-Path $root $relative) -Destination $target
     }
+    $nugetConfig = Join-Path $build 'NuGet.Config'
+    Write-PackageText $nugetConfig "<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<configuration>`n  <packageSources>`n    <clear />`n    <add key=`"nuget.org`" value=`"https://api.nuget.org/v3/index.json`" />`n  </packageSources>`n</configuration>`n"
     [void][IO.Directory]::CreateDirectory($staging)
     foreach ($name in $projects.Keys) {
-        $arguments = @('publish', (Join-Path $build $projects[$name]), '--configuration', 'Release', '--output', (Join-Path $staging $name), '--nologo',
+        $arguments = @('publish', (Join-Path $build $projects[$name]), '--configuration', 'Release', '--output', (Join-Path $staging $name), '--nologo', '-noAutoResponse',
+            '-p:ImportDirectoryBuildTargets=false', '-p:ImportDirectoryPackagesProps=false', "-p:RestoreConfigFile=$nugetConfig",
             "-p:Version=$version", "-p:SourceRevisionId=$commit", '-p:Deterministic=true', "-p:PathMap=$build=/_/",
             '-p:UseAppHost=false', '-p:DebugType=none', '-p:DebugSymbols=false', '-p:GenerateDocumentationFile=false',
             '-p:EnableSourceLink=false', '-p:EnableSourceControlManagerQueries=false', '-p:SatelliteResourceLanguages=en')

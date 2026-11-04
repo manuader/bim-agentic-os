@@ -41,6 +41,21 @@ function Get-PackageFiles([string]$Directory) {
     return $array
 }
 
+# Symlinks, junctions and other reparse points (files or directories, including the root) are never packaged:
+# Get-ChildItem -Recurse neither descends into directory links nor distinguishes file links from their targets.
+function Find-PackageLinks([string]$Directory) {
+    $base = [IO.Path]::GetFullPath($Directory)
+    $hits = [Collections.Generic.List[string]]::new()
+    $rootItem = Get-Item -LiteralPath $base -Force
+    if ($rootItem.LinkType -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $hits.Add('.') }
+    foreach ($item in Get-ChildItem -LiteralPath $base -Recurse -Force) {
+        if ($item.LinkType -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $hits.Add((Get-PackageRelativePath $base $item.FullName)) }
+    }
+    $array = $hits.ToArray()
+    [Array]::Sort($array, [StringComparer]::Ordinal)
+    return $array
+}
+
 # Revit/Autodesk assemblies (including Nice3point reference packages), Revit models and credential material are
 # never packaged. Names are matched case-insensitively; small text files are also scanned for key material.
 function Find-PackageForbidden([string]$Directory) {
@@ -52,7 +67,8 @@ function Find-PackageForbidden([string]$Directory) {
             $name -match '(?i)^Nice3point' -or
             $name -match '(?i)\.(rvt|rfa|rte|rft|pfx|p12|pem|key|snk|jks|keystore)$' -or
             $name -match '(?i)^(\.env(\..*)?|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|\.npmrc|\.netrc|\.pypirc)$'
-        if (!$forbidden -and $file.Length -le 4MB -and $file.Extension -match '(?i)^\.(json|txt|xml|config|template|addin|md|ini|yml|yaml|props|targets)$') {
+        $isLink = $file.LinkType -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)
+        if (!$forbidden -and !$isLink -and $file.Length -le 4MB -and $file.Extension -match '(?i)^\.(json|txt|xml|config|template|addin|md|ini|yml|yaml|props|targets)$') {
             $text = [IO.File]::ReadAllText($file.FullName)
             $forbidden = $text -match '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|sk-proj-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}'
         }
@@ -97,6 +113,7 @@ function Write-PackageText([string]$Path, [string]$Text) {
 function Test-PackageManifest([string]$Directory) {
     $base = [IO.Path]::GetFullPath($Directory)
     $problems = [Collections.Generic.List[string]]::new()
+    foreach ($link in @(Find-PackageLinks $base)) { $problems.Add("symlink or reparse point in package: $link") }
     foreach ($hit in (Find-PackageForbidden $base)) { $problems.Add("forbidden file in package: $hit") }
     $manifestPath = Join-Path $base 'manifest.json'
     if (!(Test-Path -LiteralPath $manifestPath -PathType Leaf)) { $problems.Add('manifest.json missing'); return $problems.ToArray() }
@@ -104,14 +121,18 @@ function Test-PackageManifest([string]$Directory) {
     catch { $problems.Add("manifest.json unreadable: $($_.Exception.Message)"); return $problems.ToArray() }
     if ($manifest.schema -cne $script:PackageManifestSchema) { $problems.Add("manifest schema '$($manifest.schema)' is not $script:PackageManifestSchema") }
     if ([string]$manifest.version -notmatch $script:PackageVersionPattern) { $problems.Add("manifest version '$($manifest.version)' is invalid") }
+    if ([string]$manifest.source_commit -cnotmatch '\A[0-9a-f]{40}\z') { $problems.Add("manifest source_commit '$($manifest.source_commit)' is not a 40-hex git sha") }
+    if ($manifest.source_dirty -isnot [bool]) { $problems.Add("manifest source_dirty '$($manifest.source_dirty)' is not a boolean") }
     $versionPath = Join-Path $base 'VERSION'
     if (!(Test-Path -LiteralPath $versionPath -PathType Leaf) -or [IO.File]::ReadAllText($versionPath) -cne ([string]$manifest.version + "`n")) {
         $problems.Add("VERSION file does not match manifest version '$($manifest.version)'")
     }
     $listed = [Collections.Generic.List[string]]::new()
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($entry in @($manifest.files)) {
         $path = [string]$entry.path
         if (!$path -or $path -match '(^|/)\.\.(/|$)|^/|\\|^[A-Za-z]:' ) { $problems.Add("manifest path not relative: '$path'"); continue }
+        if (!$seen.Add($path)) { $problems.Add("duplicate manifest entry: $path"); continue }
         $listed.Add($path)
         $full = Join-Path $base $path
         if (!(Test-Path -LiteralPath $full -PathType Leaf)) { $problems.Add("missing file listed in manifest: $path"); continue }
