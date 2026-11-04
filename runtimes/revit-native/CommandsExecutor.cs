@@ -257,9 +257,11 @@ internal static partial class CommandExecutor
             {
                 // The base line lies in the level's plane; Base Offset is the separate offset argument.
                 wall = Wall.Create(d, WallCurveAt(args.Curve, level.ProjectElevation), type.Id, level.Id, U(args.Height.Millimetres), U(args.BaseOffset.Millimetres), false, args.Structural);
+                // Owner, Revit 2025.2: the exterior face lands on the left of start -> end; flip swaps it.
+                if (args.Flip) wall.Flip();
             },
             () => wall is { IsValidObject: true } created
-                ? CommandReadback.Wall(expected, level.UniqueId, type.UniqueId, args.Height.Millimetres, args.BaseOffset.Millimetres, args.Structural, Observe(created))
+                ? CommandReadback.Wall(expected, level.UniqueId, type.UniqueId, args.Height.Millimetres, args.BaseOffset.Millimetres, args.Structural, Observe(created), args.Flip)
                 : "the wall no longer exists",
             () => CommandReadback.WallJson(Observe(wall!)),
             () => new[] { wall!.UniqueId },
@@ -274,7 +276,8 @@ internal static partial class CommandExecutor
         return new ObservedWall(created.UniqueId, UniqueIdOf(d, created.LevelId), created.WallType.UniqueId, arc is not null,
             Plan(curve.GetEndPoint(0)), Plan(curve.GetEndPoint(1)), Mm(curve.Length), arc is null ? null : Mm(arc.Radius), arc is null ? null : Plan(arc.Center),
             LengthParameter(created, BuiltInParameter.WALL_USER_HEIGHT_PARAM), LengthParameter(created, BuiltInParameter.WALL_BASE_OFFSET),
-            created.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT) is { HasValue: true, StorageType: StorageType.Integer } flag ? flag.AsInteger() != 0 : null);
+            created.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT) is { HasValue: true, StorageType: StorageType.Integer } flag ? flag.AsInteger() != 0 : null,
+            created.Flipped, arc is null ? CommandReadback.ExteriorSide(Plan(curve.GetEndPoint(0)), Plan(curve.GetEndPoint(1)), created.Orientation.X, created.Orientation.Y) : null);
     }
 
     // The wall location curve in the plane z (internal units).

@@ -341,6 +341,9 @@ public static class CommandReadbackViews
         else writer.WriteNull("section_box");
         Vector(writer, "forward_direction", threeD.Forward);
         Vector(writer, "up_direction", threeD.Up);
+        // ForwardDirection points from the eye toward the target (Revit 2025 API), so the eye sits at -forward:
+        // the same convention as the view_from / eye_direction arguments.
+        Vector(writer, "eye_direction", new Vec3(-threeD.Forward.X, -threeD.Forward.Y, -threeD.Forward.Z));
         writer.WriteEndObject();
     });
 }

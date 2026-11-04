@@ -73,7 +73,15 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   sections had never run in Revit either.
 - **3D views from another side** (`view.create_3d`): the default isometric looks from the south-east, which shows a
   NW–SE ridge edge-on. Pass `view_from` (ne, nw, se, sw, n, s, e, w, top) or `eye_direction` [x, y, z] (from the model
-  toward the eye); readback checks forward and up.
+  toward the eye); readback checks forward and up and reports `eye_direction`. Convention: `ForwardDirection` points
+  from the eye toward the model, so `ne` = eye north-east and above, looking south-west (you see the N and E faces).
+  Presets use project north (+Y), not true north. Open: on the owner's model the default view (forward
+  (-0.577, 0.577, -0.577), i.e. eye at the SE in project coordinates) looked "from the NW"; check the first `view_from`
+  export there (suspect a rotated True North / plan orientation) before trusting the preset names.
+- **Wall exterior side** (`wall.create`): in Revit 2025.2 a basic wall drawn start → end puts its EXTERIOR face on the
+  LEFT of the direction of travel. A counter-clockwise loop therefore ends up with the exterior inside: draw outer
+  walls clockwise, pass `flip: true` (Wall.Flip after creation; readback reports `flipped` and `exterior_side`), or use a
+  type with mirrored layers.
 - **Deleting curtain walls and profiled walls/roofs** (`element.delete`): refused because the dependent check asked
   Revit's `CanDeleteElement` of the target's own sub-elements (curtain grid ...896, sketch ...904). Fixed in
   chat-section-profile-fixes: sub-elements a target owns (curtain grid lines, panels, mullions, its sketch with its plane

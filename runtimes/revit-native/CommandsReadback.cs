@@ -85,7 +85,13 @@ public static class CommandReadback
     static string F(double value) => value.ToString("R", CultureInfo.InvariantCulture);
     static string F(PlanPoint point) => "(" + F(point.X) + ", " + F(point.Y) + ")";
 
-    public static string ExteriorSide(PlanPoint start, PlanPoint end, double normalX, double normalY) => "left";
+    // Which side of start -> end the exterior normal (Wall.Orientation, plan components) points to: "left" when travel x
+    // normal is positive (counter-clockwise turn), else "right".
+    public static string ExteriorSide(PlanPoint start, PlanPoint end, double normalX, double normalY)
+    {
+        double dx = end.X - start.X, dy = end.Y - start.Y;
+        return dx * normalY - dy * normalX > 0 ? "left" : "right";
+    }
 
     public static string? Wall(ExpectedWall expected, string levelUid, string typeUid, double heightMm, double baseOffsetMm, bool structural, ObservedWall observed, bool flip = false)
     {
@@ -104,6 +110,8 @@ public static class CommandReadback
         if (observed.HeightMm is not { } height || !Near(height, heightMm)) return "wall unconnected height is " + (observed.HeightMm is { } h ? F(h) : "unreadable") + ", expected " + F(heightMm);
         if (observed.BaseOffsetMm is not { } offset || !Near(offset, baseOffsetMm)) return "wall base offset is " + (observed.BaseOffsetMm is { } o ? F(o) : "unreadable") + ", expected " + F(baseOffsetMm);
         if (observed.Structural is { } isStructural && isStructural != structural) return "wall structural flag is " + isStructural + ", expected " + structural;
+        if (flip && observed.Flipped is not true) return "wall flipped is " + (observed.Flipped is { } f ? f.ToString() : "unreadable") + ", expected True (flip requested)";
+        if (!flip && observed.Flipped is true) return "wall flipped is True, expected False (no flip requested)";
         return null;
     }
 
@@ -258,6 +266,10 @@ public static class CommandReadback
         Number(writer, "base_offset_mm", wall.BaseOffsetMm);
         if (wall.Structural is { } structural) writer.WriteBoolean("structural", structural);
         else writer.WriteNull("structural");
+        if (wall.Flipped is { } flipped) writer.WriteBoolean("flipped", flipped);
+        else writer.WriteNull("flipped");
+        if (wall.ExteriorSide is { } side) writer.WriteString("exterior_side", side);
+        else writer.WriteNull("exterior_side");
         writer.WriteEndObject();
         writer.WriteEndObject();
     });
