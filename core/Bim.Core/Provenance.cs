@@ -110,7 +110,8 @@ public abstract record ProvenanceSource
 
     // The external-edit sources of one journal entry: one per added and per modified UniqueId (element id = the
     // mirror's logical id for that UniqueId). Add-in entries are not external edits and give nothing; deleted
-    // elements carry no UniqueId in the journal and give nothing. Ids are lower-cased.
+    // elements carry no UniqueId in the journal and give nothing. Ids are lower-cased; an id listed as both added and
+    // modified gives one added source.
     public static IReadOnlyList<(Guid ElementId, ExternalEditProvenance Source)> FromJournal(MirrorJournalEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
@@ -118,10 +119,12 @@ public abstract record ProvenanceSource
         var document = entry.DocumentUid.ToLowerInvariant();
         var time = entry.RecordedAt.ToUniversalTime().ToString(TimeFormat, CultureInfo.InvariantCulture);
         var result = new List<(Guid, ExternalEditProvenance)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (uids, change) in new[] { (entry.AddedUids, ProvenanceChanges.Added), (entry.ModifiedUids, ProvenanceChanges.Modified) })
             foreach (var uid in uids)
             {
                 var lower = uid.ToLowerInvariant();
+                if (!seen.Add(lower)) continue; // an id both added and modified in one entry is added
                 result.Add((MirrorSnapshotMapper.Id(document, lower), new ExternalEditProvenance(document, entry.Sequence, time, lower, change)));
             }
         return result;
