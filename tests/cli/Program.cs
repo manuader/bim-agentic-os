@@ -377,6 +377,21 @@ try {
     foreach(var bad in new[]{"0","-1","NaN","Infinity","abc","1e400","1,5"}) ExpectCad("cad-draft --metres-per-unit "+bad+" refused","cad_option_value_invalid","cad-draft",dxfDraftPath,Out(),"--metres-per-unit",bad);
     foreach(var bad in new[]{"0","-1","x","1.5","99999999999"}) ExpectCad("cad-draft --page "+bad+" refused","cad_option_value_invalid","cad-draft",pdfDraftPath,Out(),"--page",bad,"--metres-per-unit","0.02");
     ExpectCad("cad-draft bad --project-id refused","cad_option_value_invalid","cad-draft",dxfDraftPath,Out(),"--project-id","not-a-guid");
+    // The empty GUID is refused while parsing options, before any output check or input read (missing input, fresh output).
+    ExpectCad("cad-draft empty --project-id refused as an option value","cad_option_value_invalid","cad-draft",Path.Combine(work,"missing.dxf"),Out(),"--project-id",Guid.Empty.ToString());
+    ExpectCad("cad-draft --pdf-window-forms on a DXF refused","cad_option_not_applicable","cad-draft",dxfDraftPath,Out(),"--pdf-window-forms","5");
+    foreach(var bad in new[]{"0,0,10,0,Infinity","NaN,0,10,0,1000","0,0,1e400,0,1000"}) ExpectCad("cad-draft --calibrate "+bad+" refused","cad_option_value_invalid","cad-draft",pdfDraftPath,Out(),"--calibrate",bad);
+    ExpectCad("cad-brief --metres-per-unit 1001 refused","cad_option_value_invalid","cad-brief",pdfBriefPath,Out(),"--metres-per-unit","1001");
+    {
+        var o=Out(); var r=Cli("cad-brief",pdfBriefPath,o,"--metres-per-unit","1000");
+        Check(Ok(r,"cad-brief",o) && Doc(o) is {} d && d.GetProperty("source").GetProperty("metres_per_unit").GetDouble()==1000,"cad-brief --metres-per-unit 1000 (the upper bound) accepted",R(r));
+        // Byte-identical reruns for a PDF draft and for briefs (DXF and PDF).
+        foreach(var run in new[]{new[]{"cad-draft",pdfDraftPath,"--calibrate","100,100,400,100,6000","--pdf-door-forms","5"},new[]{"cad-brief",dxfBriefPath},new[]{"cad-brief",pdfBriefPath,"--calibrate","0,0,10,0,1000"}}) {
+            var first=Out(); var second=Out();
+            var rFirst=Cli([run[0],run[1],first,..run[2..]]); var rSecond=Cli([run[0],run[1],second,..run[2..]]);
+            Check(Ok(rFirst,run[0],first) && Ok(rSecond,run[0],second) && File.ReadAllBytes(first).SequenceEqual(File.ReadAllBytes(second)),run[0]+" "+Path.GetFileName(run[1])+" rerun is byte-identical",R(rFirst)+" | "+R(rSecond));
+        }
+    }
     ExpectCad("cad-draft --calibrate with four numbers refused","cad_option_value_invalid","cad-draft",pdfDraftPath,Out(),"--calibrate","1,2,3,4");
     ExpectCad("cad-draft --calibrate and --metres-per-unit together refused","cad_scale_conflict","cad-draft",pdfDraftPath,Out(),"--calibrate","100,100,400,100,6000","--metres-per-unit","0.02");
     ExpectCad("cad-draft --page on a DXF refused","cad_option_not_applicable","cad-draft",dxfDraftPath,Out(),"--page","1");
