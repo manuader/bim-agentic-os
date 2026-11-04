@@ -20,7 +20,7 @@ public sealed record BriefTextSource(string SourceFile, string Format, string? H
 
 // One proposed room. Id and Name are the brief room's; StatedAreaSquareMetres is the area written on the drawing (null
 // when none was found); RegionAreaSquareMetres the area of the closed region that holds the label and no other label
-// (null without such a region or without a drawing scale). Notes: room-tag, area-same-text, area-attribute, area-unitless, area-nearby, area-from-region,
+// (null without such a region or without a drawing scale). Notes: room-tag, area-same-text, area-attribute, area-unitless, area-square-feet, area-nearby, area-from-region,
 // area-ambiguous, area-missing, area-mismatch, no-region, shared-region, outer-region, label-outside-vocabulary,
 // duplicate-label.
 public sealed record BriefRoomProposal(string Id, string Name, double? StatedAreaSquareMetres, double? RegionAreaSquareMetres, double Confidence,

@@ -90,21 +90,19 @@ public static class DxfExploder
                     Emit(child, world, childPath, layer, paper, invisible, depth + 1);
                 }
                 stack.RemoveAt(stack.Count - 1);
-                // ATTRIBs are already placed in the coordinates the INSERT itself lives in; ATTDEFs of the block are
-                // placed through the insert, and are used only for tags without an ATTRIB (constant ones silently).
+                // ATTRIBs are already placed in the coordinates the INSERT itself lives in. Of the block's ATTDEFs only
+                // constant ones are drawn (placed through the insert); AutoCAD never draws a non-constant ATTDEF.
                 var key = childPath[^1];
                 HashSet<string>? tags = insert.Attributes.Count > 0 ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) : null;
                 foreach (var attribute in insert.Attributes)
                 {
                     tags!.Add(attribute.Tag);
-                    EmitAttribute(attribute with { InsertHandle = key }, transform, childPath, layer, paper, invisible);
+                    EmitAttribute(attribute with { InsertHandle = key, BlockName = block.Name }, transform, childPath, layer, paper, invisible);
                 }
                 foreach (var child in block.Entities)
                 {
-                    if (child is not DxfAttribute { IsDefinition: true } definition || (tags is not null && tags.Contains(definition.Tag))) continue;
-                    if (!definition.IsConstant)
-                        Warn("attribute-default", source.Line, "INSERT of block " + block.Name + " has no ATTRIB for tag " + definition.Tag + "; the ATTDEF default value is used");
-                    EmitAttribute(definition with { InsertHandle = key }, world, childPath, layer, paper, invisible);
+                    if (child is not DxfAttribute { IsDefinition: true, IsConstant: true } definition || (tags is not null && tags.Contains(definition.Tag))) continue;
+                    EmitAttribute(definition with { InsertHandle = key, BlockName = block.Name }, world, childPath, layer, paper, invisible);
                 }
                 return;
             }

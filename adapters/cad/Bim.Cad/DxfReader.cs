@@ -262,7 +262,7 @@ public static class DxfReader
             var j = i + 1;
             for (; j < records.Count && records[j].Type == "ATTRIB"; j++)
             {
-                if (Build(records[j]) is DxfAttribute attribute) attributes.Add(attribute with { InsertHandle = key });
+                if (Build(records[j]) is DxfAttribute attribute) attributes.Add(attribute with { InsertHandle = key, BlockName = record.First(2)?.Value.Trim() });
             }
             var any = j > i + 1;
             if (j < records.Count && records[j].Type == "SEQEND" && (follows || any)) j++;
@@ -558,17 +558,31 @@ internal static class DxfTextFormat
 {
     // TEXT/ATTRIB control codes: %%d degree, %%p plus-minus, %%c diameter, %%% percent, %%nnn the character with that
     // (Latin-1) code, %%u/%%o/%%k underline/overline/strike toggles removed; any other %% is kept as written.
+    // Caret codes as in MTEXT: ^J/^M newline, ^I space, "^ " a caret.
     public static string PlainText(string value)
     {
-        if (!value.Contains("%%", StringComparison.Ordinal)) return value;
+        if (!value.Contains("%%", StringComparison.Ordinal) && !value.Contains('^', StringComparison.Ordinal)) return value;
         var builder = new StringBuilder(value.Length);
         for (var i = 0; i < value.Length; i++)
         {
             var consumed = Percent(value, i, builder);
+            if (consumed == 0) consumed = Caret(value, i, builder);
             if (consumed > 0) i += consumed - 1;
             else builder.Append(value[i]);
         }
         return builder.ToString();
+    }
+
+    private static int Caret(string value, int i, StringBuilder builder)
+    {
+        if (value[i] != '^' || i + 1 >= value.Length) return 0;
+        switch (value[i + 1])
+        {
+            case 'J': case 'M': builder.Append('\n'); return 2;
+            case 'I': builder.Append(' '); return 2;
+            case ' ': builder.Append('^'); return 2;
+            default: return 0;
+        }
     }
 
     // Appends the meaning of a %% code at value[i] and returns its length, or 0 (nothing appended) when there is none.
@@ -631,13 +645,7 @@ internal static class DxfTextFormat
                 var consumed = Percent(value, i, builder);
                 if (consumed > 0) { i += consumed - 1; continue; }
             }
-            if (ch == '^' && i + 1 < value.Length)
-            {
-                var next = value[i + 1];
-                if (next is 'J' or 'M') { builder.Append('\n'); i++; continue; }
-                if (next == 'I') { builder.Append(' '); i++; continue; }
-                if (next == ' ') { builder.Append('^'); i++; continue; }
-            }
+            if (ch == '^' && Caret(value, i, builder) is > 0 and var caret) { i += caret - 1; continue; }
             if (ch != '\\' || i + 1 >= value.Length) { builder.Append(ch); continue; }
             var code = value[++i];
             switch (code)
