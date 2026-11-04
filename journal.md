@@ -1106,3 +1106,8 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 03:53Z LOCK taken (was FREE since relay148 2026-11-04T03:03:22Z).
 - 04:19Z dispatched 3 workers at 03:55Z (oldest-touched phases 10, 2, 5 — relay145): P10-04 packaging, P2-05 query.journal, P5-05 QA element skill pack. P9-06 chat-materials-types was merged to main by the owner chat (1f4f109, CI 41767838641 green) → P9-06 row reduced to porting relay147 hardening.
 - 04:19Z workers green: P10-04 37a5c77 (red 41770507469, green 41771650673; 1 attempt: pwsh generic JsonSerializer.Serialize overload), P2-05 b565086 (red 41770311749, green 41771382126; 1 attempt: core comment mentioned runtimes/ → harness boundary), P5-05 6f12586 (red 41770682412, green 41771404693; 0 attempts). Next: independent reviews.
+
+## 2026-11-04 chat — export/save/policy reload merged
+- main = d9a5439 (ff from chat-export-save; CI 41776030372 green; independent review MERGE, findings 1/3/4/5 fixed).
+- New: view.export_image (read-only; styled export needs write admission), document.save, MCP/CLI policy reload on owner-file change.
+- Unverified in real Revit: ExportImage inside rolled-back transaction, Save() behaviour. Verify tomorrow on Cabaña after actualizar-todo.ps1.
