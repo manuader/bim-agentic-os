@@ -26,7 +26,7 @@ static class SkillDefaultsTests
     // the shared wall with an explicit height and an open sill.
     static IntentDraft Draft(IntentDraftLevel[]? levels = null, IntentDraftWallType[]? types = null, IntentDraftOpening[]? openings = null) => new(
         LayoutIntent.CurrentVersion, Origin,
-        levels ?? new[] { new IntentDraftLevel("l1", "Ground"), new IntentDraftLevel("l2", "First", null, 1) },
+        levels ?? new[] { new IntentDraftLevel("l1", "Ground", null, 0), new IntentDraftLevel("l2", "First", null, 1) },
         types ?? new[] { new IntentDraftWallType("ext", null, IntentWallRole.Exterior), new IntentDraftWallType("int", "Partition", IntentWallRole.Interior) },
         new[]
         {
@@ -282,6 +282,67 @@ static class SkillDefaultsTests
         check(!both.Succeeded && conflicted.Intent is null && conflicted.Issues.Count == 1 && conflicted.Issues[0].Code == IntentDefaultCodes.ResolutionFailed
             && conflicted.Issues[0].Detail.Contains(SkillCodes.SkillConflict, StringComparison.Ordinal),
             "a failed resolution (conflicting styles) is defaults_resolution_failed, not a partial fill", Issues(conflicted));
+
+        // ---- Review fixes: storeys, duplicates, explicit height with open sill, strict validation, rounding ----
+        IntentDraftLevel L(string key, double? elevation, int? storey) => new(key, "Level " + key, elevation, storey);
+        string Keys(IntentDefaultsResult result) => string.Join(";", result.Issues.Select(issue => issue.Code + "@" + issue.Key));
+        var noStorey = Fill(Draft(levels: new[] { L("l1", null, null), L("l2", null, null) }), compact);
+        check(noStorey.Intent is null && Keys(noStorey) == IntentDefaultCodes.DefaultMissing + "@levels[l1].elevation_m;" + IntentDefaultCodes.DefaultMissing + "@levels[l2].elevation_m"
+            && noStorey.Issues.All(issue => issue.Detail.Contains("storey", StringComparison.Ordinal)),
+            "open elevations without a storey are default_missing naming each field (no silent 0 m)", Issues(noStorey));
+        var sameStorey = Fill(Draft(levels: new[] { L("l1", null, 0), L("l2", null, 1), L("l3", null, 1) }), compact);
+        check(sameStorey.Intent is null && Keys(sameStorey) == IntentDefaultCodes.StoreyDuplicate + "@levels[l2].storey" && sameStorey.Issues[0].Detail.Contains("l3", StringComparison.Ordinal),
+            "two levels on one storey are storey_duplicate on the smaller key, naming the other", Issues(sameStorey));
+        var negative = Fill(Draft(levels: new[] { L("b1", null, -1), L("l1", null, 0), L("l2", null, 1) }), compact);
+        check(negative.Intent is null && Keys(negative) == IntentDefaultCodes.StoreyInvalid + "@levels[b1].storey", "a negative storey is storey_invalid (basements take an explicit elevation without a storey)", Issues(negative));
+        var basement = Fill(Draft(levels: new[] { L("b1", -3, null), L("l1", null, 0), L("l2", null, 1) }), compact);
+        check(basement.Succeeded && Is(basement, "levels[b1].elevation_m", "-3", IntentFieldSource.ExplicitOrigin, IntentFieldSource.ExplicitRule),
+            "an explicit elevation needs no storey", Issues(basement));
+        var stacked = Fill(Draft(levels: new[] { L("l1", null, 0), L("l2", 3.1, 1), L("l3", null, 2), L("l4", null, 3) }), compact);
+        check(stacked.Succeeded && Is(stacked, "levels[l3].elevation_m", "6", IntentFieldSource.DerivedOrigin, "level-elevation-above-explicit", T(Compact, IntentSkillDefaults.LevelHeight))
+            && Is(stacked, "levels[l4].elevation_m", "8.9", IntentFieldSource.DerivedOrigin, "level-elevation-above-explicit", T(Compact, IntentSkillDefaults.LevelHeight)),
+            "open storeys above an explicit level stack from it: 3.1 + 2.9 = 6, 3.1 + 2 x 2.9 = 8.9", Issues(stacked) + " " + ShowSource(stacked.Source("levels[l3].elevation_m")) + " " + ShowSource(stacked.Source("levels[l4].elevation_m")));
+        var tall = Fill(Draft(levels: new[] { L("l1", null, 0), L("l2", null, 1), L("l4", null, 3) }), compact);
+        check(Is(tall, "levels[l4].elevation_m", "8.7", IntentFieldSource.DerivedOrigin, "level-elevation-from-storey", T(Compact, IntentSkillDefaults.LevelHeight)),
+            "storey 3 x 2.9 is exactly 8.7 (rounded to 1e-9)", ShowSource(tall.Source("levels[l4].elevation_m")));
+        var inverted = Fill(Draft(levels: new[] { L("l1", null, 0), L("l2", null, 1), L("l3", 2.5, 2) }), compact);
+        check(inverted.Intent is null && Keys(inverted) == IntentDefaultCodes.StoreyOrderInvalid + "@levels[l3].elevation_m",
+            "an explicit elevation below a lower storey's elevation is storey_order_invalid", Issues(inverted));
+        var explicitInverted = Fill(Draft(levels: new[] { L("l1", 4, 0), L("l2", 3, 1) }), compact);
+        check(Keys(explicitInverted) == IntentDefaultCodes.StoreyOrderInvalid + "@levels[l2].elevation_m", "explicit elevations must rise with their storeys", Issues(explicitInverted));
+        check(Fill(Draft(levels: new[] { L("l1", 0, 0), L("l2", 3.1, 1) }), compact).Succeeded, "explicit elevations rising with their storeys fill");
+        var warmFilled = Fill(draft, warm);
+        check(Is(warmFilled, "openings[w1].height_m", "1.5", IntentFieldSource.DerivedOrigin, "window-height-from-head", T(Warm, IntentSkillDefaults.WindowHead), T(Warm, IntentSkillDefaults.WindowSill))
+            && Is(warmFilled, "levels[l2].elevation_m", "3.3", IntentFieldSource.DerivedOrigin, "level-elevation-from-storey", T(Warm, IntentSkillDefaults.LevelHeight)),
+            "warm head 2.4 - sill 0.9 is exactly 1.5", ShowSource(warmFilled.Source("openings[w1].height_m")));
+        var dupTypes = Fill(Draft(types: new[] { new IntentDraftWallType("ext", null, IntentWallRole.Exterior), new IntentDraftWallType("ext", "Other", IntentWallRole.Interior), new IntentDraftWallType("int", "Partition", IntentWallRole.Interior) }), compact);
+        check(dupTypes.Intent is null && Keys(dupTypes) == IntentDefaultCodes.DraftKeyDuplicate + "@wall_types[ext]", "a duplicate wall type key is draft_key_duplicate", Issues(dupTypes));
+        var dupLevels = Fill(Draft(levels: new[] { L("l1", null, 0), L("l1", null, 1) }), compact);
+        check(Keys(dupLevels) == IntentDefaultCodes.DraftKeyDuplicate + "@levels[l1]", "a duplicate level key is draft_key_duplicate", Issues(dupLevels));
+        var dupOpenings = Fill(Draft(openings: new[]
+        {
+            new IntentDraftOpening("w1", IntentOpeningKind.Window, new IntentRoomSide("b", IntentSide.South), 0.5, 1.2),
+            new IntentDraftOpening("w1", IntentOpeningKind.Window, new IntentRoomSide("a", IntentSide.South), 0.5, 1.2),
+        }), compact);
+        check(Keys(dupOpenings) == IntentDefaultCodes.DraftKeyDuplicate + "@openings[w1]", "a duplicate opening key is draft_key_duplicate", Issues(dupOpenings));
+        IntentDraft WindowHeight(double height) => Draft(openings: new[] { new IntentDraftOpening("w1", IntentOpeningKind.Window, new IntentRoomSide("b", IntentSide.South), 0.5, 1.2, height) });
+        var fits = Fill(WindowHeight(2.0), compact);
+        check(fits.Succeeded && Is(fits, "openings[w1].sill_m", "0.3", IntentFieldSource.DefaultOrigin, "window-sill-from-style", T(Compact, IntentSkillDefaults.WindowSill))
+            && Is(fits, "openings[w1].height_m", "2", IntentFieldSource.ExplicitOrigin, IntentFieldSource.ExplicitRule),
+            "an explicit window height with an open sill takes the style sill", ShowSource(fits.Source("openings[w1].sill_m")));
+        check(Fill(WindowHeight(2.2), compact).Succeeded, "style sill + explicit height exactly at the style head fills");
+        var overHead = Fill(WindowHeight(2.3), compact);
+        check(overHead.Intent is null && Keys(overHead) == IntentDefaultCodes.DerivedValueInvalid + "@openings[w1].sill_m"
+            && overHead.Issues[0].Detail.Contains(IntentSkillDefaults.WindowHead, StringComparison.Ordinal),
+            "style sill + explicit height above the style head is derived_value_invalid on the sill", Issues(overHead));
+        var strict = Fill(explicitDraft, Custom(defaults => defaults[IntentSkillDefaults.ExteriorThickness] = SkillValue.Of(0)));
+        check(strict.Intent is null && Keys(strict) == IntentDefaultCodes.DefaultValueInvalid + "@" + IntentSkillDefaults.ExteriorThickness,
+            "strict: an invalid recognised default refuses even a fully explicit draft that would not read it", Issues(strict));
+        string? failedField = "unset";
+        try { IntentSkillDefaults.Compile(ProjectId, 1, draft, both); }
+        catch (IntentException error) { failedField = error.Field; }
+        check(conflicted.Issues.Count == 1 && conflicted.Issues[0].Key == "" && failedField is null,
+            "defaults_resolution_failed has key \"\" and Compile throws it with a null Field", failedField ?? "null");
 
         // ---- Invariant culture ----
         var previous = CultureInfo.CurrentCulture;

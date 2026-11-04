@@ -30,8 +30,8 @@ namespace Bim.Core;
 // Derived numbers are rounded to 1e-9 m so equal inputs give equal bytes.
 public enum IntentWallRole { Exterior, Interior }
 
-// Storey is only used when ElevationMetres is null.
-public sealed record IntentDraftLevel(string Key, string Name, double? ElevationMetres = null, int Storey = 0);
+// Storey (0 = ground, non-negative) places the level in the stack; it is required when ElevationMetres is null.
+public sealed record IntentDraftLevel(string Key, string Name, double? ElevationMetres = null, int? Storey = null);
 
 // A null Name takes the role's wall type default (display text only, it never reaches BIM-IR).
 public sealed record IntentDraftWallType(string Key, string? Name, IntentWallRole Role, double? ThicknessMetres = null, double? HeightMetres = null);
@@ -76,6 +76,10 @@ public static class IntentDefaultCodes
     public const string DefaultValueInvalid = "default_value_invalid";
     public const string DefaultInconsistent = "default_inconsistent";
     public const string DerivedValueInvalid = "derived_value_invalid";
+    public const string DraftKeyDuplicate = "draft_key_duplicate";
+    public const string StoreyInvalid = "storey_invalid";
+    public const string StoreyDuplicate = "storey_duplicate";
+    public const string StoreyOrderInvalid = "storey_order_invalid";
 }
 
 public static partial class IntentSkillDefaults
