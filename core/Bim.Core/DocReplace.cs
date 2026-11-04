@@ -40,8 +40,11 @@ public static class DocReplaceCodes
     public const string DependentKept = "dependent_kept";
     // A confirmed dependent that is the stale instance of another regenerated key (deleted at its own step).
     public const string DependentPlanned = "dependent_planned";
+    // A confirmed dependent that is the key's own stale instance (the delete target itself).
+    public const string DependentIsTarget = "dependent_is_target";
     public const string InputFieldUnsupported = "input_field_unsupported";
     public const string InputUnresolved = "input_unresolved";
+    public const string InputFieldDuplicate = "input_field_duplicate";
     public const string ReportIncomplete = "report_incomplete";
     public const string CreatedMissing = "created_missing";
 }

@@ -247,6 +247,19 @@ static class ReplaceTests
             Check(regeneration.Steps.All(step => ArgsOf(fake.Sent.First(envelope => envelope.OperationId == byKey[step.Key].CreateOperation).CanonicalJson)
                 == ArgsOf(DocRegeneration.Envelope(regeneration, step, next).CanonicalJson)), "each re-creation sends the regeneration's args with kept inputs from the map and new parents");
 
+        // ---- Re-planning on the updated map: a second replacement creates anew, never replays the first ----
+        if (next is not null)
+        {
+            var second = DocReplace.Plan(regeneration, next);
+            var secondReport = DocReplace.Run(second, fake);
+            IReadOnlyDictionary<string, string>? third = null;
+            if (secondReport.Status == RevitPlanRunStatus.Completed) third = DocReplace.Realized(second, next, secondReport);
+            Check(secondReport.Status == RevitPlanRunStatus.Completed && second.Replacements.All(item => item.CreateOperation != byKey[item.Key].CreateOperation)
+                && secondReport.Completed.All(step => !step.Replayed) && third is not null
+                && regenerated.All(key => third[DocRegeneration.ItemSource(key)] != next[DocRegeneration.ItemSource(key)] && fake.Existing.Contains(third[DocRegeneration.ItemSource(key)])),
+                "re-planning the same regeneration on the realized map deletes the new instances and creates fresh ones (no replay of the first run)", secondReport.ToJson());
+        }
+
         // ---- Determinism ----
         var again = DocReplace.Plan(regeneration, new Dictionary<string, string>(realized.Reverse(), StringComparer.Ordinal));
         Check(again.Commands.ToJson() == plan.Commands.ToJson(), "the same inputs give a byte-identical plan");
@@ -301,15 +314,40 @@ static class ReplaceTests
 
         // ---- Refusals ----
         var keptKey = "plan-0";
-        var otherStale = realized[DocRegeneration.ItemSource(pairs[0].child)];
+        var sectionChild = pairs.First(pair => pair.parent == sectionKey).child;
+        var childStale = realized[DocRegeneration.ItemSource(sectionChild)];
+        var sectionStale = realized[DocRegeneration.ItemSource(sectionKey)];
         Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [keptKey] = new[] { extra } })) == DocReplaceCodes.DependentsUnknownKey,
             "dependents for a key that is not regenerated are refused");
         Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionKey] = new[] { realized[DocRegeneration.ItemSource(keptKey)] } })) == DocReplaceCodes.DependentKept,
             "a dependent that is a kept item is refused");
         Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionKey] = new[] { realized[DocRegeneration.ElementSource(Role(0, "south"))] } })) == DocReplaceCodes.DependentKept,
             "a dependent that is a model element is refused");
-        Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionKey] = new[] { otherStale } })) == DocReplaceCodes.DependentPlanned,
-            "a dependent that is another regenerated key's stale instance is refused");
+        Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionChild] = new[] { sectionStale } })) == DocReplaceCodes.DependentPlanned,
+            "a dependent that is the stale instance of a key deleted later is refused");
+        // An honest dry run of a view's delete lists its tags and viewports; those are deleted earlier in the plan.
+        DocReplacementPlan? honest = null;
+        var honestError = Code(() => honest = DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionKey] = new[] { childStale } }));
+        var honestFake = new ReplaceFakeTransport(realized.Values);
+        honestFake.DependentsOf[sectionStale] = new[] { childStale };
+        Check(honestError is null && honest is not null && honest.Commands.ToJson() == plan.Commands.ToJson() && DocReplace.Run(honest, honestFake).Status == RevitPlanRunStatus.Completed,
+            "a dependent that is the stale instance of a key deleted earlier is dropped from confirm_dependents", honestError ?? "");
+        Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionKey] = new[] { sectionStale } })) == DocReplaceCodes.DependentIsTarget,
+            "a dependent that is the key's own stale instance is refused with a typed code");
+        Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionKey] = new[] { sectionStale.ToUpperInvariant() } })) == DocReplaceCodes.DependentIsTarget,
+            "a case variant of the key's own stale instance is refused with a typed code");
+        Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionKey] = new[] { "not-a-unique-id" } })) == DocReplaceCodes.DependentsInvalid,
+            "a malformed dependent UniqueId is refused with a typed code");
+        Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionKey] = new[] { extra, extra.ToUpperInvariant() } })) == DocReplaceCodes.DependentsInvalid,
+            "a case-variant duplicate dependent is refused with a typed code");
+        Check(Code(() => DocReplace.Plan(regeneration, realized, new Dictionary<string, IReadOnlyList<string>> { [sectionKey] = Enumerable.Range(0, RevitModifyRules.MaxConfirmedDependents + 1).Select(i => Fake("many:" + N(i))).ToArray() })) == DocReplaceCodes.DependentsInvalid,
+            "more dependents than element.delete confirms are refused with a typed code");
+        var dimStep = regeneration.Steps.First(step => step.Inputs.Count > 1);
+        DocRegenerationPlan WithInputs(IReadOnlyList<DocStepInput> inputs) => regeneration with { Steps = regeneration.Steps.Select(step => step.Key == dimStep.Key ? step with { Inputs = inputs } : step).ToArray() };
+        Check(Code(() => DocReplace.Plan(WithInputs(dimStep.Inputs.Select((input, i) => i == 0 ? input with { Field = "view_uid" } : input).ToArray()), realized)) == DocReplaceCodes.InputFieldUnsupported,
+            "an input field outside args.<member> is refused");
+        Check(Code(() => DocReplace.Plan(WithInputs(dimStep.Inputs.Append(dimStep.Inputs[^1]).ToArray()), realized)) == DocReplaceCodes.InputFieldDuplicate,
+            "two inputs for one field are refused");
         Check(Code(() => DocReplace.Plan(regeneration, new Dictionary<string, string>(realized) { [DocRegeneration.ItemSource(sectionKey)] = realized[DocRegeneration.ElementSource(Role(0, "south"))] })) == DocReplaceCodes.StaleShared,
             "a stale UniqueId shared with a kept source is refused");
         Check(Code(() => DocReplace.Plan(regeneration, new Dictionary<string, string>(realized) { [plan0] = "not-a-unique-id" })) == DocReplaceCodes.RealizedInvalid,
@@ -326,6 +364,8 @@ static class ReplaceTests
         fresh.Remove(DocRegeneration.ItemSource(neverKey));
         var freshPlan = DocReplace.Plan(regeneration, fresh);
         var freshItem = freshPlan.Replacements.First(item => item.Key == neverKey);
+        Check(Code(() => DocReplace.Plan(regeneration, fresh, new Dictionary<string, IReadOnlyList<string>> { [neverKey] = new[] { extra } })) == DocReplaceCodes.DependentsWithoutStale,
+            "dependents for a key without a stale instance are refused");
         Check(freshItem.StaleUniqueId is null && freshItem.DeleteOperation is null && freshItem.CreateOperation is not null && freshPlan.Commands.Steps.Count == steps.Count - 1
             && DocReplace.Run(freshPlan, new ReplaceFakeTransport(fresh.Values)).Status == RevitPlanRunStatus.Completed, "a regenerated key without a realization is only created", neverKey);
 
