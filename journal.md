@@ -1139,3 +1139,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay152 — 2026-11-04T11:53:09Z (Claude, cloud scheduled)
 - 11:53Z LOCK taken (was FREE since relay151 2026-11-04T11:21:11Z).
 - 11:53Z dispatching 3 workers (oldest-touched phases 2, 10, 5 — relay149): P2-06 provenance ledger, P10-06 jurisdiction registry, P5-04 style defaults into the intent compiler. All headless; no Revit command files.
+- 12:30Z workers green: P2-06 e9140b0 (red 41825378485, green 41828338507; 1 attempt: oracle helper detail suffix + digit-only GUID upper-case check), P10-06 d55a6b9 (red 41826892892, green 41828339068; 0 attempts, 1 compile slip), P5-04 8d58333 (red 41825281521, green 41826002911/41826982950; 0 attempts). Next: independent reviews.
