@@ -130,6 +130,11 @@ static class FacadeTests
         Check(bumped.IsComplete && bumped.Windows.Count == 2 && Near(bumped.Windows[0].WidthMetres, 2.4) && Near(bumped.Windows[1].WidthMetres, 0.7) && Near(bumped.Windows[1].X0, 2.15),
             "the 0.60 m remainder is raised to a 0.70 m minimum width", Describe(bumped));
         Check(Oracle(slot, bumped, wideMin, rules) is null, "bumped facade agrees with the oracle", Oracle(slot, bumped, wideMin, rules) ?? "");
+        var oddMin = defaults with { MinWindowWidthMetres = 2.007 };
+        var oddLayout = FacadePlanner.Place(flat, caba, oddMin);
+        Check(oddLayout.IsComplete && oddLayout.Windows.Count == 2 && oddLayout.Windows.All(w => Near(w.WidthMetres, 2.007)),
+            "a 2.007 m minimum width (2007.0000000000002 mm in binary) is 2007 mm, not 2008 mm", Describe(oddLayout));
+        Check(Oracle(flat, oddLayout, oddMin, rules) is null, "odd minimum width facade agrees with the oracle", Oracle(flat, oddLayout, oddMin, rules) ?? "");
 
         // ---- options: ventilation governs with a small openable fraction; sill and head change the height ----
         var vent = defaults with { OpenableFraction = 0.25 };
@@ -163,12 +168,9 @@ static class FacadeTests
             "a pack without room ratio rules requires no window", Describe(qaLayout));
         var conditional = caba with { Rules = caba.Rules.Select(r => r.Id == "living-illumination-ratio" ? r with { Citation = r.Citation + "; applies_if=area_m2<=5" } : r).ToArray() };
         var conditionalLayout = FacadePlanner.Place(flat, conditional);
-        Check(conditionalLayout.Status == FacadeStatus.Incomplete && Room(conditionalLayout, "living") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.RuleUnsupported }
-            && conditionalLayout.Windows.All(w => w.Instance != "living") && Room(conditionalLayout, "bedroom_1") is { Status: FacadeRoomStatus.Compliant },
-            "a matched ratio rule whose applies_if the room exceeds (area_m2<=5, 24 m2) is facade_rule_unsupported, never silently passed", Describe(conditionalLayout));
-        Check(Room(conditionalLayout, "living") is { IlluminationRatio: null, RequiredWindowAreaSquareMetres: null } partial && partial.VentilationRatio is { } pv && Near(pv, 1.0 / 30)
-            && Near(partial.RequiredVentilationAreaSquareMetres ?? -1, 0.8) && partial.WindowAreaSquareMetres == 0,
-            "an unsupported room reports the illumination ratio as unknown (null) and keeps only the supported ventilation ratio", Describe(conditionalLayout));
+        Check(conditionalLayout.IsComplete && Room(conditionalLayout, "living") is { Status: FacadeRoomStatus.Compliant, IlluminationRatio: null } cl && cl.RuleIds.SequenceEqual(new[] { PackId + "/living-ventilation-ratio" })
+            && conditionalLayout.Windows.FirstOrDefault(w => w.Instance == "living") is { } cw0 && Near(cw0.WidthMetres, 1.334) && cw0.RuleIds.SequenceEqual(new[] { PackId + "/living-ventilation-ratio" }),
+            "a rule whose evaluable applies_if the room exceeds (area_m2<=5, 24 m2) does not cover it: the living is sized by ventilation alone (0.8 / 0.6 = 1.334 m)", Describe(conditionalLayout));
         var applies = caba with { Rules = caba.Rules.Select(r => r.Id == "living-illumination-ratio" ? r with { Citation = r.Citation + "; applies_if=area_m2<=30" } : r).ToArray() };
         var appliesLayout = FacadePlanner.Place(flat, applies);
         Check(appliesLayout.IsComplete && FacadeSerializer.Serialize(appliesLayout) == FacadeSerializer.Serialize(layout),
@@ -177,8 +179,28 @@ static class FacadeTests
         Check(FacadePlanner.Place(flat, sideCondition) is { Status: FacadeStatus.Complete } sideLayout && Room(sideLayout, "living") is { Status: FacadeRoomStatus.Compliant },
             "applies_if=min_side_m<=4 holds for the 6 x 4 m living");
         var heightCondition = caba with { Rules = caba.Rules.Select(r => r.Id == "living-illumination-ratio" ? r with { Citation = r.Citation + "; applies_if=clear_height_m<=3" } : r).ToArray() };
-        Check(Room(FacadePlanner.Place(flat, heightCondition), "living") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.RuleUnsupported },
-            "applies_if on a property the plan does not carry (clear_height_m) is facade_rule_unsupported");
+        var heightLayout = FacadePlanner.Place(flat, heightCondition);
+        Check(heightLayout.Status == FacadeStatus.Incomplete && Room(heightLayout, "living") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.RuleUnsupported }
+            && heightLayout.Windows.All(w => w.Instance != "living") && Room(heightLayout, "bedroom_1") is { Status: FacadeRoomStatus.Compliant },
+            "applies_if on a property the plan does not carry (clear_height_m) cannot be evaluated: facade_rule_unsupported, never silently passed", Describe(heightLayout));
+        Check(Room(heightLayout, "living") is { IlluminationRatio: null, RequiredWindowAreaSquareMetres: null } partial && partial.VentilationRatio is { } pv && Near(pv, 1.0 / 30)
+            && Near(partial.RequiredVentilationAreaSquareMetres ?? -1, 0.8) && partial.WindowAreaSquareMetres == 0,
+            "an unsupported room reports the illumination ratio as unknown (null) and keeps only the supported ventilation ratio", Describe(heightLayout));
+        var general = caba.Rules.First(r => r.Id == "living-illumination-ratio");
+        var stricter = caba with
+        {
+            Rules = caba.Rules.Append(general with { Id = "living-illumination-small", Check = general.Check with { Value = SkillValue.Of(0.125) }, Citation = general.Citation + "; applies_if=area_m2<=10" }).ToArray(),
+        };
+        var stricterLayout = FacadePlanner.Place(flat, stricter);
+        Check(stricterLayout.IsComplete && Room(stricterLayout, "living") is { Status: FacadeRoomStatus.Compliant, IlluminationRatio: 0.1 }
+            && stricterLayout.Windows.FirstOrDefault(w => w.Instance == "living") is { } sw && Near(sw.WidthMetres, 2)
+            && sw.RuleIds.SequenceEqual(new[] { PackId + "/living-illumination-ratio", PackId + "/living-ventilation-ratio" }),
+            "a general 0.1 rule plus a stricter 0.125 rule with applies_if area_m2<=10: the 24 m2 living is sized at 0.1 (2.00 m)", Describe(stricterLayout));
+        var small = Plan("small", 1, 3, 3, P("living", "Living s", 0, 0, 3, 3));
+        var smallLayout = FacadePlanner.Place(small, stricter);
+        Check(smallLayout.IsComplete && Room(smallLayout, "living") is { IlluminationRatio: 0.125 } && smallLayout.Windows.FirstOrDefault(w => w.Instance == "living") is { } ssw
+            && Near(ssw.WidthMetres, 0.938) && ssw.RuleIds.SequenceEqual(new[] { PackId + "/living-illumination-ratio", PackId + "/living-illumination-small", PackId + "/living-ventilation-ratio" }),
+            "a 9 m2 living meets the condition and takes the stricter 0.125 (9 x 0.125 / 1.2 = 0.938 m)", Describe(smallLayout));
 
         // ---- thresholds from a pack parameter, and run-time parameter overrides ----
         var parameterised = caba with
@@ -331,6 +353,7 @@ static class FacadeTests
         var height = options.HeadHeightMetres - options.SillHeightMetres;
         var c = options.EndClearanceMetres;
         var byId = plan.Rooms.ToDictionary(r => r.InstanceId, StringComparer.Ordinal);
+        var rasters = new Dictionary<int, Func<double, double, bool>>();
         if (layout.Rooms.Count != plan.Rooms.Count) problems.Add("rooms " + Text(layout.Rooms.Count) + " != " + Text(plan.Rooms.Count));
         foreach (var window in layout.Windows)
         {
@@ -355,7 +378,7 @@ static class FacadeTests
                 if (OnPartition(plan, room, window.Side, t)) { problems.Add(window.Id + " touches another room's wall at " + R(t)); break; }
             }
             if (PartyWall(plan, window.Side, line, options)) problems.Add(window.Id + " is on a closed lot edge (party wall)");
-            var outward = 1e-3;
+            var outward = 0.1;
             var (px, py) = window.Side switch
             {
                 FacadeSide.South => ((window.X0 + window.X1) / 2, line - outward),
@@ -363,7 +386,8 @@ static class FacadeTests
                 FacadeSide.West => (line - outward, (window.Y0 + window.Y1) / 2),
                 _ => (line + outward, (window.Y0 + window.Y1) / 2),
             };
-            if (InVoid(plan, room.Level, px, py) != window.FacesInternalVoid) problems.Add(window.Id + " internal void flag " + window.FacesInternalVoid + " is wrong");
+            if (!rasters.TryGetValue(room.Level, out var inVoid)) rasters[room.Level] = inVoid = VoidRaster(plan, room.Level);
+            if (inVoid(px, py) != window.FacesInternalVoid) problems.Add(window.Id + " internal void flag " + window.FacesInternalVoid + " is wrong");
             var expected = Expected(rules, room.Name);
             if (!window.RuleIds.SequenceEqual(expected)) problems.Add(window.Id + " cites " + string.Join(",", window.RuleIds) + " not " + string.Join(",", expected));
         }
@@ -434,36 +458,40 @@ static class FacadeTests
         return Math.Abs(line - at) < 1e-7 && !open.Contains(edge);
     }
 
-    // Whether the point lies in a free region of the level that is enclosed by its rooms: flood fill over the cells of the
-    // grid made by the level's room coordinates plus a frame around them, starting from the frame.
-    static bool InVoid(SpacePlan plan, int level, double x, double y)
+    // Point-sampled raster of one level (2.5 cm cells over the rooms' bounding box plus 0.5 m): a cell is occupied when its
+    // centre lies inside a room; free cells reached by a flood fill from the raster border are outside, the other free cells
+    // are internal voids. The returned test tells whether a point lies in a void cell.
+    static Func<double, double, bool> VoidRaster(SpacePlan plan, int level)
     {
-        var rooms = plan.Rooms.Where(r => r.Level == level).ToArray();
-        var xs = rooms.SelectMany(r => new[] { r.Rect.X, r.Rect.Right }).Append(rooms.Min(r => r.Rect.X) - 1).Append(rooms.Max(r => r.Rect.Right) + 1).Distinct().OrderBy(v => v).ToArray();
-        var ys = rooms.SelectMany(r => new[] { r.Rect.Y, r.Rect.Top }).Append(rooms.Min(r => r.Rect.Y) - 1).Append(rooms.Max(r => r.Rect.Top) + 1).Distinct().OrderBy(v => v).ToArray();
-        int nx = xs.Length - 1, ny = ys.Length - 1;
+        const double cell = 0.025, frame = 0.5;
+        var rooms = plan.Rooms.Where(r => r.Level == level).Select(r => r.Rect).ToArray();
+        var (x0, y0) = (rooms.Min(r => r.X) - frame, rooms.Min(r => r.Y) - frame);
+        var nx = (int)Math.Ceiling((rooms.Max(r => r.Right) + frame - x0) / cell);
+        var ny = (int)Math.Ceiling((rooms.Max(r => r.Top) + frame - y0) / cell);
         var occupied = new bool[nx, ny];
-        for (var i = 0; i < nx; i++)
-            for (var j = 0; j < ny; j++)
-            {
-                var (cx, cy) = ((xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2);
-                occupied[i, j] = rooms.Any(r => r.Rect.X < cx && cx < r.Rect.Right && r.Rect.Y < cy && cy < r.Rect.Top);
-            }
+        foreach (var r in rooms)
+            for (var i = Math.Max(0, (int)((r.X - x0) / cell) - 1); i < Math.Min(nx, (int)((r.Right - x0) / cell) + 2); i++)
+                for (var j = Math.Max(0, (int)((r.Y - y0) / cell) - 1); j < Math.Min(ny, (int)((r.Top - y0) / cell) + 2); j++)
+                {
+                    var (cx, cy) = (x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell);
+                    if (r.X < cx && cx < r.Right && r.Y < cy && cy < r.Top) occupied[i, j] = true;
+                }
         var outside = new bool[nx, ny];
-        var queue = new Queue<(int, int)>();
+        var stack = new Stack<(int, int)>();
         for (var i = 0; i < nx; i++)
             for (var j = 0; j < ny; j++)
-                if ((i == 0 || j == 0 || i == nx - 1 || j == ny - 1) && !occupied[i, j]) { outside[i, j] = true; queue.Enqueue((i, j)); }
-        while (queue.Count > 0)
+                if ((i == 0 || j == 0 || i == nx - 1 || j == ny - 1) && !occupied[i, j]) { outside[i, j] = true; stack.Push((i, j)); }
+        while (stack.Count > 0)
         {
-            var (i, j) = queue.Dequeue();
+            var (i, j) = stack.Pop();
             foreach (var (a, b) in new[] { (i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1) })
-                if (a >= 0 && b >= 0 && a < nx && b < ny && !occupied[a, b] && !outside[a, b]) { outside[a, b] = true; queue.Enqueue((a, b)); }
+                if (a >= 0 && b >= 0 && a < nx && b < ny && !occupied[a, b] && !outside[a, b]) { outside[a, b] = true; stack.Push((a, b)); }
         }
-        var ci = Array.FindLastIndex(xs, v => v <= x);
-        var cj = Array.FindLastIndex(ys, v => v <= y);
-        if (ci < 0 || cj < 0 || ci >= nx || cj >= ny) return false;
-        return !occupied[ci, cj] && !outside[ci, cj];
+        return (x, y) =>
+        {
+            var (i, j) = ((int)Math.Floor((x - x0) / cell), (int)Math.Floor((y - y0) / cell));
+            return i >= 0 && j >= 0 && i < nx && j < ny && !occupied[i, j] && !outside[i, j];
+        };
     }
 
     // The maximal runs of a room's sides that touch no other room of the level, sampled at the midpoints of steps of at
