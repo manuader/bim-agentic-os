@@ -547,10 +547,10 @@ public static class MirrorDriftResolve
             if (restore.Status != MirrorDriftResolveStatus.Proposed)
                 unsupported.Add(new RevitUnsupportedElement(finding.CoreId ?? finding.SnapshotId ?? Guid.Empty, finding.ElementKind ?? "", MirrorDriftResolveActions.Restore, restore.Code ?? "", restore.Detail ?? ""));
         }
-        var steps = deletes.OrderBy(item => item.Rank).ThenBy(item => item.Uid.ToLowerInvariant(), StringComparer.Ordinal).ThenBy(item => item.Uid, StringComparer.Ordinal).Select(item => item.Step)
+        var ordered = deletes.OrderBy(item => item.Rank).ThenBy(item => item.Uid.ToLowerInvariant(), StringComparer.Ordinal).ThenBy(item => item.Uid, StringComparer.Ordinal).Select(item => item.Step)
             .Concat(parameters.OrderBy(item => item.Uid.ToLowerInvariant(), StringComparer.Ordinal).ThenBy(item => item.Uid, StringComparer.Ordinal).ThenBy(item => item.Field, StringComparer.Ordinal).Select(item => item.Step))
             .Concat(creates.OrderBy(item => item.Rank).ThenBy(item => item.Id, StringComparer.Ordinal).Select(item => item.Step)).ToArray();
-        var plan = new RevitCommandPlan(PlanToCommands.Version, projectId, revision, afterHash, document, Array.Empty<RevitLevelPrecondition>(), steps,
+        var plan = new RevitCommandPlan(PlanToCommands.Version, projectId, revision, afterHash, document, Array.Empty<RevitLevelPrecondition>(), ordered,
             unsupported.OrderBy(item => item.ElementId.ToString("D"), StringComparer.Ordinal).ThenBy(item => item.Code, StringComparer.Ordinal).ToArray());
         return new MirrorDriftResolution(report.DocumentUid ?? "", report.CoreProjectId, report.CoreRevision, report.EvidenceIncomplete, proposals, plan);
     }
