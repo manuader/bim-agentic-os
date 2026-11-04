@@ -7,8 +7,10 @@ namespace Bim.Core;
 // IntentCompiler.Compile on the filled intent.
 //
 // Defaultable fields, their fill rule and the dotted skill default keys each rule reads:
-//   levels[k].elevation_m     level-elevation-ground (storey 0 -> 0, no default) or
-//                             level-elevation-from-storey (storey x level.height_m)
+//   levels[k].elevation_m     level-elevation-ground (storey 0 -> 0, no default),
+//                             level-elevation-from-storey (storey x level.height_m) or, when an explicit level with a
+//                             lower storey exists, level-elevation-above-explicit (the highest such level's elevation +
+//                             (storey - its storey) x level.height_m)
 //   wall_types[k].name        wall-type-name-from-role       wall.<role>.type
 //   wall_types[k].thickness_m wall-thickness-from-role       wall.<role>.thickness_m
 //   wall_types[k].height_m    wall-height-from-level         level.height_m
@@ -16,17 +18,27 @@ namespace Bim.Core;
 //                             door-sill-on-level (always 0, no default)             (doors)
 //   openings[k].height_m      window-height-from-head        window.head_height_m - effective sill (windows)
 //                             door-height-from-style         door.height_m          (doors)
+// An explicit window height with an open sill takes the style sill; if style sill + height exceeds window.head_height_m
+// (when set) the sill is refused as derived_value_invalid.
+//
+// Levels: Storey is required for an open elevation (default_missing otherwise, never a silent 0); storeys are 0 or above
+// (storey_invalid; a level below ground takes an explicit elevation and no storey) and unique (storey_duplicate on the
+// smaller level key). An explicit level's Storey is kept as given: it anchors open storeys above it and joins the order
+// check: elevations of all levels with a storey must rise strictly with storey (storey_order_invalid on the higher one).
+// Draft keys must be unique per collection (levels, wall_types, openings): draft_key_duplicate on "collection[key]",
+// checked first. room.min_clear_height_m fills no field: it only takes part in the default consistency checks.
 // where <role> is exterior or interior. An explicit draft value always wins and is reported with origin "explicit" and
 // rule "explicit"; explicit values are passed to the compiler untouched (it validates them as usual).
 //
-// Every present recognised default is validated, whether or not the draft needs it: numbers must be numbers and text
+// Every present recognised default is validated, whether or not the draft needs it (deliberately strict: a broken style
+// refuses even a fully explicit draft): numbers must be numbers and text
 // non-blank text (default_type_invalid); thicknesses, level height, clear height and head height must be finite and
 // positive and the sill non-negative (default_value_invalid); and the style must be self-consistent:
 // window.sill_height_m < window.head_height_m, room.min_clear_height_m <= level.height_m and
 // window.head_height_m <= room.min_clear_height_m (default_inconsistent). A field the draft leaves open whose default is
 // absent is refused as default_missing naming the field (never a silent zero); a derived value that is not positive
 // (explicit sill at or above the default head) is derived_value_invalid. A resolution with issues is refused as
-// defaults_resolution_failed. Issues are sorted by code, key and detail (ordinal); field sources by field (ordinal).
+// defaults_resolution_failed with key "" (Compile then throws with a null Field). Issues are sorted by code, key and detail (ordinal); field sources by field (ordinal).
 // Derived numbers are rounded to 1e-9 m so equal inputs give equal bytes.
 public enum IntentWallRole { Exterior, Interior }
 
@@ -108,7 +120,7 @@ public static partial class IntentSkillDefaults
         if (!filled.Succeeded)
         {
             var first = filled.Issues[0];
-            throw new IntentException(first.Code, first.Key, first.Detail, filled.Issues);
+            throw new IntentException(first.Code, first.Key.Length == 0 ? null : first.Key, first.Detail, filled.Issues);
         }
         return new IntentDefaultsCompilation(IntentCompiler.Compile(projectId, revision, filled.Intent!), filled.Intent!, filled.Sources);
     }

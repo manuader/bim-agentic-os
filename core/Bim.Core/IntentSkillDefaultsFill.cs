@@ -32,6 +32,17 @@ public static partial class IntentSkillDefaults
             return Refused(new List<IntentIssue> { new(IntentDefaultCodes.ResolutionFailed, "", "skill resolution has issues: " + codes) });
         }
 
+        // ---- Draft keys are unique per collection ----
+        void Unique<T>(string collection, IEnumerable<T> items, Func<T, string> keyOf)
+        {
+            foreach (var group in items.GroupBy(item => keyOf(item) ?? "", StringComparer.Ordinal).Where(group => group.Count() > 1).OrderBy(group => group.Key, StringComparer.Ordinal))
+                issues.Add(new(IntentDefaultCodes.DraftKeyDuplicate, collection + "[" + group.Key + "]", collection + " key used " + group.Count().ToString(System.Globalization.CultureInfo.InvariantCulture) + " times"));
+        }
+        Unique("levels", draft.Levels, item => item.Key);
+        Unique("wall_types", draft.WallTypes, item => item.Key);
+        Unique("openings", draft.Openings, item => item.Key);
+        if (issues.Count > 0) return Refused(issues);
+
         // ---- Validate every present recognised default ----
         var numbers = new Dictionary<string, (double Value, SkillTrace Source)>(StringComparer.Ordinal);
         var texts = new Dictionary<string, (string Value, SkillTrace Source)>(StringComparer.Ordinal);
@@ -69,22 +80,7 @@ public static partial class IntentSkillDefaults
         void Missing(string field, string key, string rule) =>
             issues.Add(new(IntentDefaultCodes.DefaultMissing, field, key + " is not set by the resolved skills (needed by " + rule + ")"));
 
-        var levels = new List<IntentLevel>();
-        foreach (var level in draft.Levels)
-        {
-            var field = "levels[" + level.Key + "].elevation_m";
-            if (level.ElevationMetres is { } elevation) { Explicit(field, Number(elevation)); levels.Add(new(level.Key, level.Name, elevation)); continue; }
-            if ((level.Storey ?? 0) == 0)
-            {
-                sources.Add(new(field, "0", IntentFieldSource.RuleOrigin, "level-elevation-ground", Array.Empty<SkillTrace>()));
-                levels.Add(new(level.Key, level.Name, 0));
-                continue;
-            }
-            if (!numbers.TryGetValue(LevelHeight, out var height)) { Missing(field, LevelHeight, "level-elevation-from-storey"); continue; }
-            var value = Round((level.Storey ?? 0) * height.Value);
-            sources.Add(new(field, Number(value), IntentFieldSource.DerivedOrigin, "level-elevation-from-storey", new[] { height.Source }));
-            levels.Add(new(level.Key, level.Name, value));
-        }
+        var levels = FillLevels(draft.Levels, numbers, sources, issues, Explicit, Missing);
 
         var types = new List<IntentWallType>();
         foreach (var type in draft.WallTypes)
@@ -141,7 +137,19 @@ public static partial class IntentSkillDefaults
             else Missing(prefix + "sill_m", WindowSill, "window-sill-from-style");
 
             double? height = null;
-            if (opening.HeightMetres is { } explicitHeight) { Explicit(prefix + "height_m", Number(explicitHeight)); height = explicitHeight; }
+            if (opening.HeightMetres is { } explicitHeight)
+            {
+                Explicit(prefix + "height_m", Number(explicitHeight));
+                height = explicitHeight;
+                // A style sill under an explicit height must keep the window head at or below the style head.
+                if (sillTrace is not null && sill is { } styleSill && numbers.TryGetValue(WindowHead, out var styleHead) && double.IsFinite(explicitHeight)
+                    && Round(styleSill + explicitHeight) > styleHead.Value)
+                {
+                    issues.Add(new(IntentDefaultCodes.DerivedValueInvalid, prefix + "sill_m", "window.sill_height_m " + Number(styleSill) + " (" + sillTrace + ") plus explicit height "
+                        + Number(explicitHeight) + " exceeds window.head_height_m " + Number(styleHead.Value) + " (" + styleHead.Source + ")"));
+                    height = null;
+                }
+            }
             else if (opening.Kind == IntentOpeningKind.Door)
             {
                 if (numbers.TryGetValue(DoorHeight, out var fill))
@@ -173,6 +181,70 @@ public static partial class IntentSkillDefaults
         var intent = new LayoutIntent(draft.Version, draft.Provenance, levels.ToArray(), types.ToArray(), draft.Rooms.ToArray(), openings.ToArray());
         var sorted = sources.OrderBy(source => source.Field, StringComparer.Ordinal).ToArray();
         return new IntentDefaultsResult(intent, sorted, Array.Empty<IntentIssue>());
+    }
+
+    static List<IntentLevel> FillLevels(IReadOnlyList<IntentDraftLevel> draftLevels, Dictionary<string, (double Value, SkillTrace Source)> numbers,
+        List<IntentFieldSource> sources, List<IntentIssue> issues, Action<string, string> explicitSource, Action<string, string, string> missing)
+    {
+        static string Field(IntentDraftLevel level) => "levels[" + level.Key + "].elevation_m";
+        var before = issues.Count;
+        foreach (var level in draftLevels.OrderBy(item => item.Key, StringComparer.Ordinal))
+            if (level.Storey is < 0)
+                issues.Add(new(IntentDefaultCodes.StoreyInvalid, "levels[" + level.Key + "].storey", "storey must be 0 (ground) or above; give a level below ground an explicit elevation_m and no storey"));
+        foreach (var group in draftLevels.Where(item => item.Storey is not null).GroupBy(item => item.Storey!.Value).OrderBy(group => group.Key))
+        {
+            var keys = group.Select(item => item.Key).Order(StringComparer.Ordinal).ToArray();
+            if (keys.Length > 1)
+                issues.Add(new(IntentDefaultCodes.StoreyDuplicate, "levels[" + keys[0] + "].storey", "storey " + group.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) + " is also used by " + string.Join(", ", keys.Skip(1))));
+        }
+        if (issues.Count > before) return new List<IntentLevel>();
+
+        // Explicit levels with a storey anchor the open storeys above them.
+        var anchors = draftLevels.Where(item => item.ElevationMetres is not null && item.Storey is not null).OrderBy(item => item.Storey!.Value).ToArray();
+        var levels = new List<IntentLevel>();
+        var elevations = new Dictionary<string, double>(StringComparer.Ordinal);
+        foreach (var level in draftLevels)
+        {
+            var field = Field(level);
+            if (level.ElevationMetres is { } elevation)
+            {
+                explicitSource(field, Number(elevation));
+                levels.Add(new(level.Key, level.Name, elevation));
+                elevations[level.Key] = elevation;
+                continue;
+            }
+            if (level.Storey is not { } storey)
+            {
+                issues.Add(new(IntentDefaultCodes.DefaultMissing, field, "elevation_m is open and storey is not set; give a storey (0 = ground) or an explicit elevation_m"));
+                continue;
+            }
+            var anchor = anchors.LastOrDefault(item => item.Storey!.Value < storey);
+            if (storey == 0)
+            {
+                sources.Add(new(field, "0", IntentFieldSource.RuleOrigin, "level-elevation-ground", Array.Empty<SkillTrace>()));
+                levels.Add(new(level.Key, level.Name, 0));
+                elevations[level.Key] = 0;
+                continue;
+            }
+            var rule = anchor is null ? "level-elevation-from-storey" : "level-elevation-above-explicit";
+            if (!numbers.TryGetValue(LevelHeight, out var height)) { missing(field, LevelHeight, rule); continue; }
+            var value = anchor is null ? Round(storey * height.Value) : Round(anchor.ElevationMetres!.Value + (storey - anchor.Storey!.Value) * height.Value);
+            sources.Add(new(field, Number(value), IntentFieldSource.DerivedOrigin, rule, new[] { height.Source }));
+            levels.Add(new(level.Key, level.Name, value));
+            elevations[level.Key] = value;
+        }
+        if (issues.Count > before) return levels;
+
+        // Elevations must rise strictly with storey (explicit values are never moved, so a clash is refused).
+        var stack = draftLevels.Where(item => item.Storey is not null).OrderBy(item => item.Storey!.Value).ToArray();
+        for (var index = 1; index < stack.Length; index++)
+        {
+            double low = elevations[stack[index - 1].Key], high = elevations[stack[index].Key];
+            if (!(high > low))
+                issues.Add(new(IntentDefaultCodes.StoreyOrderInvalid, Field(stack[index]), "elevation " + Number(high) + " of storey " + stack[index].Storey!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " must be above " + Number(low) + " of " + stack[index - 1].Key + " (storey " + stack[index - 1].Storey!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")"));
+        }
+        return levels;
     }
 
     static IntentDefaultsResult Refused(List<IntentIssue> issues) => new(null, Array.Empty<IntentFieldSource>(), issues
