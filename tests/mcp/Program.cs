@@ -103,7 +103,10 @@ foreach(var spec in RevitCommandCatalogue.All) {
     Check(required==(spec.Writes?PermissionLevel.WriteCopies:PermissionLevel.Read),spec.Name+" policy level on a test copy follows read/write");
     Check(tool["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()==LevelName(required) && tool["permission_level"]==null,spec.ToolName+" lists _meta bim-agentic-os/permission_level "+LevelName(required)+" (P10-03 policy on a test copy) and no top-level field");
     var annotations=tool["annotations"]?.AsObject();
-    Check(annotations?["readOnlyHint"]?.GetValue<bool>()==!spec.Writes,spec.ToolName+" annotations.readOnlyHint is "+(!spec.Writes));
+    // view.export_image is read-only for the model (permission level read) but writes image files, so it is not
+    // listed readOnlyHint true (chat-export-save review).
+    var writesFiles=RevitCommandCatalogue.WritesFiles(spec.Name);
+    Check(annotations?["readOnlyHint"]?.GetValue<bool>()==!(spec.Writes || writesFiles),spec.ToolName+" annotations.readOnlyHint is "+!(spec.Writes || writesFiles));
     if(spec.Writes) {
         var destructive=new[]{"element.set_parameter","element.delete","wall.set_profile","material.set","element.change_type","document.save"}.Contains(spec.Name);
         Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter, element.delete, wall.set_profile, material.set and element.change_type change or remove existing elements, and document.save overwrites the saved file), idempotentHint true (operation_id replay)");
@@ -112,6 +115,7 @@ foreach(var spec in RevitCommandCatalogue.All) {
             && description.Contains(".bim/native-runs",StringComparison.Ordinal) && description.Contains(".bim/revit-enabled-roots.txt",StringComparison.Ordinal)
             && description.Contains("no per-document or per-actor check",StringComparison.Ordinal),spec.ToolName+" on a real project needs write-real-project; description states the directory-root write rule");
     }
+    else if(writesFiles) Check(annotations!.Count==3 && annotations["destructiveHint"]?.GetValue<bool>()==false && annotations["idempotentHint"]?.GetValue<bool>()==false,spec.ToolName+" writes new files on every call: destructiveHint false, idempotentHint false");
     else Check(annotations!.Count==1,spec.ToolName+" read annotations carry only readOnlyHint");
 }
 Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal)).All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools carry no Revit permission level or annotations");
@@ -195,7 +199,7 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["wall_type.create"]=()=>new JsonObject{["name"]="Muro piedra 600 + revestimiento lenga",["base_type"]="Generic - 200mm",["layers"]=new JsonArray(new JsonObject{["function"]="structure",["material"]="Piedra local",["thickness_mm"]=550},new JsonObject{["function"]="thermal_air",["material"]="Air",["thickness_mm"]=25},new JsonObject{["function"]="finish2",["material"]="Madera lenga",["thickness_mm"]=25})},
     ["floor_type.create"]=()=>new JsonObject{["name"]="Piso lenga sobre platea",["base_type"]="Generic 150mm",["layers"]=new JsonArray(new JsonObject{["function"]="finish1",["material"]="Madera lenga",["thickness_mm"]=22},new JsonObject{["function"]="structure",["material"]="Concrete",["thickness_mm"]=150})},
     ["element.change_type"]=()=>new JsonObject{["element_uid"]=McpUid,["type"]="Muro piedra 600 + revestimiento lenga"},
-    ["view.export_image"]=()=>new JsonObject{["view"]="{3D}",["pixel_size"]=1600,["format"]="png",["visual_style"]="realistic",["output_name"]="fachada-norte"},
+    ["view.export_image"]=()=>new JsonObject{["view"]="{3D}",["pixel_size"]=1600,["format"]="png",["output_name"]="fachada-norte"},
     ["document.save"]=()=>new JsonObject(),
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
@@ -324,7 +328,8 @@ foreach(var (tool,readOnly,destructive) in new[]{("revit_query_fill_patterns",tr
 Check(RevitCommandCatalogue.ExportSave.Select(spec=>spec.Name).SequenceEqual(new[]{"view.export_image","document.save"}) && RevitCommandCatalogue.ExportSave.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover view.export_image and document.save, in the catalogue enumeration");
 {
     var exportTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="revit_view_export_image");
-    Check(exportTool?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==true && exportTool?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="read","revit_view_export_image is listed read-only with permission level read");
+    Check(exportTool?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && exportTool?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="read","revit_view_export_image keeps permission level read but is not listed readOnlyHint (it writes image files)");
+    Check(RevitCommandCatalogue.WritesFiles("view.export_image") && !RevitCommandCatalogue.WritesFiles("document.save") && !RevitCommandCatalogue.WritesFiles("query.levels") && !RevitCommandCatalogue.WritesFiles(null),"only view.export_image writes files besides the model");
     var saveTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="revit_document_save");
     Check(saveTool?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && saveTool?["annotations"]?["destructiveHint"]?.GetValue<bool>()==true && saveTool?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies","revit_document_save is listed as a destructive write with permission level write-copies");
     var before=forwardedLines.Count;
@@ -334,8 +339,13 @@ Check(RevitCommandCatalogue.ExportSave.Select(spec=>spec.Name).SequenceEqual(new
     Check(IsError(saveReal) && FailureCode(saveReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before+1,"revit_document_save on a real project is refused document_not_enabled before the pipe");
     var badName=Guarded("revit_view_export_image",new JsonObject{["view"]="{3D}",["output_name"]="../fuera"},McpReal);
     Check(IsError(badName) && FailureCode(badName)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before+1,"an output name with a path is args_invalid before the pipe");
+    var styledReal=Guarded("revit_view_export_image",new JsonObject{["view"]="{3D}",["visual_style"]="realistic"},McpReal);
+    Check(IsError(styledReal) && FailureCode(styledReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before+1,"view.export_image with visual_style opens a transaction: refused document_not_enabled on a real project before the pipe");
+    var styledCopy=Guarded("revit_view_export_image",new JsonObject{["view"]="{3D}",["visual_style"]="realistic"},McpCopy);
+    Check(IsError(styledCopy) && FailureCode(styledCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+2,"view.export_image with visual_style on an enabled copy is forwarded");
+    before=forwardedLines.Count;
     var saveCopy=Guarded("revit_document_save",new JsonObject(),McpCopy);
-    Check(IsError(saveCopy) && FailureCode(saveCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+2,"revit_document_save on an enabled copy is forwarded");
+    Check(IsError(saveCopy) && FailureCode(saveCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,"revit_document_save on an enabled copy is forwarded");
 }
 // chat-export-save: the policy is re-read when .bim/revit-enabled-roots.txt changes, so a folder the owner enables
 // works without restarting the MCP server (and Claude).
@@ -361,6 +371,8 @@ Check(RevitCommandCatalogue.ExportSave.Select(spec=>spec.Name).SequenceEqual(new
         Check(IsError(malformedSave) && FailureCode(malformedSave)==RevitCommandCodes.AllowlistInvalid && reloadLines.Count==1,"a malformed owner file is reported as allowlist_invalid and enables no write");
         var read=Node(reloading.Handle(Request(13,"tools/call",new JsonObject{["name"]="revit_view_export_image",["arguments"]=new JsonObject{["pipe_name"]="bim-agentic-os-2025-4242",["operation_id"]="op-export-1",["document"]=new JsonObject{["path"]=ownerDocument,["unique_id"]=McpUid},["args"]=new JsonObject{["view"]="{3D}"}}}))!).AsObject();
         Check(IsError(read) && FailureCode(read)==RevitCommandCodes.NoResponse && reloadLines.Count==2,"read-only commands still work while the owner file is malformed");
+        var styled=Node(reloading.Handle(Request(14,"tools/call",new JsonObject{["name"]="revit_view_export_image",["arguments"]=new JsonObject{["pipe_name"]="bim-agentic-os-2025-4242",["operation_id"]="op-export-2",["document"]=new JsonObject{["path"]=ownerDocument,["unique_id"]=McpUid},["args"]=new JsonObject{["view"]="{3D}",["visual_style"]="shaded"}}}))!).AsObject();
+        Check(IsError(styled) && FailureCode(styled)==RevitCommandCodes.AllowlistInvalid && reloadLines.Count==2,"an export with visual_style needs the write policy: allowlist_invalid while the owner file is malformed");
         File.WriteAllText(ownerFile,"# fixed\n"+ownerFolder+"\n");
         var fixedSave=Save();
         Check(IsError(fixedSave) && FailureCode(fixedSave)==RevitCommandCodes.NoResponse && reloadLines.Count==3,"fixing the owner file enables the save again");

@@ -71,6 +71,26 @@ static class PolicyReloadChecks
             File.Delete(libraries);
             Check(source.Current().ContentLibraryRoots.Count == 0, "deleting the libraries file is picked up");
 
+            // An unexpected loader failure (not a refusal) must not record the stamp: the next call loads again and
+            // never returns a stale or null policy.
+            var attempts = 0;
+            var failNext = true;
+            var flaky = new RevitCommandPolicySource(bin, start => { attempts++; if (failNext) throw new InvalidOperationException("disk hiccup"); return RevitCommandPolicy.ForRepository(start); });
+            var hiccup = false;
+            try { flaky.Current(); } catch (InvalidOperationException) { hiccup = true; }
+            Check(hiccup && attempts == 1, "an unexpected loader exception propagates");
+            failNext = false;
+            var recovered = flaky.Current();
+            Check(attempts == 2 && recovered is not null && recovered.EnabledRoots.SequenceEqual(new[] { nativeRuns }), "after an unexpected failure the unchanged files are loaded again, not skipped", attempts.ToString());
+            File.WriteAllText(roots, project + "\n");
+            failNext = true;
+            hiccup = false;
+            try { flaky.Current(); } catch (InvalidOperationException) { hiccup = true; }
+            failNext = false;
+            var fresh = flaky.Current();
+            Check(hiccup && attempts == 4 && fresh.EnabledRoots.SequenceEqual(new[] { nativeRuns, project }), "a failure after a change does not leave the previous (stale) policy in place", string.Join(";", fresh.EnabledRoots));
+            File.Delete(roots);
+
             var outside = new RevitCommandPolicySource(Path.GetPathRoot(Path.GetTempPath())!);
             Check(outside.RepositoryDirectory is null && outside.Current().EnabledRoots.Count == 0, "outside a repository nothing is enabled");
         }

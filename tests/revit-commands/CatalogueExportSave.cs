@@ -80,6 +80,7 @@ static class CatalogueExportSaveChecks
         ExportBinding();
         SaveBinding();
         ClientPath();
+        AddInAdmission();
         Rules();
         Headers();
         ExportFolder();
@@ -137,7 +138,7 @@ static class CatalogueExportSaveChecks
         Rejects("format bmp refused", Envelope("view.export_image", With(Export(), "format", "bmp")), RevitCommandCodes.ArgsInvalid, "args.format");
         Rejects("visual style wireframe refused", Envelope("view.export_image", With(Export(), "visual_style", "wireframe")), RevitCommandCodes.ArgsInvalid, "args.visual_style");
         Rejects("unknown member refused", Envelope("view.export_image", With(Export(), "path", "C:/x.png")), RevitCommandCodes.ArgsInvalid);
-        foreach (var name in new[] { "../fuera", "a/b", @"a\b", "C:x", ".oculto", "nombre.", "nombre ", "CON", "nul.txt", "Com1", "LPT9", "a*b", "a?b", "a\"b", "", new string('a', 101) })
+        foreach (var name in new[] { "../fuera", "a/b", @"a\b", "C:x", ".oculto", "nombre.", "nombre ", "CON", "nul.txt", "Com1", "LPT9", "CON .x", "nul .", "aux  .tar.gz", "PRN. .png", "com1 ", "a*b", "a?b", "a\"b", "", new string('a', 101) })
             Rejects("output name '" + name + "' refused", Envelope("view.export_image", With(Export(), "output_name", name)), RevitCommandCodes.ArgsInvalid, "args.output_name");
         Accepts("output name of 100 characters accepted", Envelope("view.export_image", With(Export(), "output_name", new string('a', 100))));
         Accepts("output name CONSOLA accepted (only exact device names are reserved)", Envelope("view.export_image", With(Export(), "output_name", "CONSOLA")));
@@ -162,9 +163,48 @@ static class CatalogueExportSaveChecks
         Check(saveReal.IsError && !saveReal.Forwarded && JsonNode.Parse(saveReal.Line)!["code"]!.GetValue<string>() == RevitCommandCodes.DocumentNotEnabled && forwarded.Count == 1, "document.save outside the enabled roots is document_not_enabled and never forwarded", saveReal.Line);
         RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("document.save", new JsonObject()).ToJsonString(), policy, Transport, noLinks);
         Check(forwarded.Count == 2 && forwarded[1] == RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(Envelope("document.save", new JsonObject()).ToJsonString())), "document.save on an enabled copy is forwarded as the canonical wire line");
+        // A visual style is set in a (rolled back) transaction, so it gets the write guard: never on a real project.
+        var styled = RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("view.export_image", With(Export(), "visual_style", "realistic"), RealPath).ToJsonString(), policy, Transport, noLinks);
+        Check(styled.IsError && !styled.Forwarded && JsonNode.Parse(styled.Line)!["code"]!.GetValue<string>() == RevitCommandCodes.DocumentNotEnabled && forwarded.Count == 2, "view.export_image with visual_style on a real project is document_not_enabled and never forwarded", styled.Line);
+        RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("view.export_image", With(Export(), "visual_style", "realistic")).ToJsonString(), policy, Transport, noLinks);
+        Check(forwarded.Count == 3, "view.export_image with visual_style on an enabled copy is forwarded");
+        var linked = new RevitFileSystemProbe(path => path.EndsWith("run-1", StringComparison.Ordinal), _ => null);
+        var styledLinked = RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("view.export_image", With(Export(), "visual_style", "realistic")).ToJsonString(), policy, Transport, linked);
+        Check(JsonNode.Parse(styledLinked.Line)!["code"]!.GetValue<string>() == RevitCommandCodes.DocumentLinkRefused && forwarded.Count == 3, "view.export_image with visual_style passes the link guard too", styledLinked.Line);
+        var plainLinked = RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("view.export_image", Export()).ToJsonString(), policy, Transport, linked);
+        Check(plainLinked.Forwarded && forwarded.Count == 4, "a plain export stays read-only (no link guard)");
+        Check(!RevitCommandCatalogue.NeedsWriteGuard(RevitCommandProtocol.Parse(Envelope("view.export_image", Export()).ToJsonString()))
+            && RevitCommandCatalogue.NeedsWriteGuard(RevitCommandProtocol.Parse(Envelope("view.export_image", With(Export(), "visual_style", "shaded")).ToJsonString()))
+            && RevitCommandCatalogue.NeedsWriteGuard(RevitCommandProtocol.Parse(Envelope("document.save", new JsonObject()).ToJsonString()))
+            && !RevitCommandCatalogue.NeedsWriteGuard(RevitCommandProtocol.Parse(Envelope("query.levels", new JsonObject()).ToJsonString())), "NeedsWriteGuard: writes and styled exports, not plain exports or queries");
+        using (var styledArgs = JsonDocument.Parse("""{"view":"{3D}","visual_style":"shaded"}"""))
+        using (var plainArgs = JsonDocument.Parse("""{"view":"{3D}"}"""))
+        {
+            var exportSpec = RevitCommandCatalogue.Find("view.export_image")!;
+            Check(RevitCommandCatalogue.NeedsWriteGuard(exportSpec, styledArgs.RootElement) && !RevitCommandCatalogue.NeedsWriteGuard(exportSpec, plainArgs.RootElement)
+                && RevitCommandCatalogue.NeedsWriteGuard(RevitCommandCatalogue.Find("document.save")!, plainArgs.RootElement) && !RevitCommandCatalogue.NeedsWriteGuard(RevitCommandCatalogue.Find("query.levels")!, plainArgs.RootElement),
+                "NeedsWriteGuard on raw arguments (MCP): only a styled export among reads needs the policy");
+        }
         var owner = new RevitCommandPolicy(new[] { @"C:\Repo\.bim\native-runs", @"C:\Users\Owner\Documents\ARQ" });
         RevitCommandService.Run("bim-agentic-os-2025-4242", Envelope("document.save", new JsonObject(), @"C:\Users\Owner\Documents\ARQ\Cabana\Cabana.rvt").ToJsonString(), owner, Transport, noLinks);
-        Check(forwarded.Count == 3, "document.save on an owner-enabled project folder is forwarded");
+        Check(forwarded.Count == 5, "document.save on an owner-enabled project folder is forwarded");
+    }
+
+    // The add-in repeats the guard on the document it actually has open: a styled export needs the write admission
+    // (enabled root, no link, not read-only, family or workshared); a plain export is allowed on any document.
+    static void AddInAdmission()
+    {
+        var calls = 0;
+        RevitCommandPolicy Policy() { calls++; return new RevitCommandPolicy(new[] { @"C:\Repo\.bim\native-runs" }); }
+        var noLinks = new RevitFileSystemProbe(_ => false, _ => null);
+        RevitCommandEnvelope ExportAt(string path, bool styled) => RevitCommandProtocol.Parse(Envelope("view.export_image", styled ? With(Export(), "visual_style", "realistic") : Export(), path).ToJsonString());
+        CommandDocumentFacts Facts(string path, bool readOnly = false, bool workshared = false) => new(path, Uid, readOnly, false, workshared, false);
+        Check(Thrown(() => CommandAdmission.Check(ExportAt(RealPath, false), Facts(RealPath), Policy, noLinks)) is null && calls == 0, "add-in: a plain export is allowed on the owner's production model without loading the write policy");
+        Check(Thrown(() => CommandAdmission.Check(ExportAt(RealPath, true), Facts(RealPath), Policy, noLinks)) is { Code: RevitCommandCodes.DocumentNotEnabled } && calls == 1, "add-in: a styled export on a document outside the enabled roots is document_not_enabled");
+        Check(Thrown(() => CommandAdmission.Check(ExportAt(FixturePath, true), Facts(FixturePath), Policy, noLinks)) is null, "add-in: a styled export on an enabled copy is allowed");
+        Check(Thrown(() => CommandAdmission.Check(ExportAt(FixturePath, true), Facts(FixturePath, workshared: true), Policy, noLinks)) is { Code: RevitCommandCodes.DocumentNotEnabled } ws && ws.Detail!.Contains("workshared", StringComparison.Ordinal), "add-in: a styled export on a workshared document is refused");
+        Check(Thrown(() => CommandAdmission.Check(ExportAt(FixturePath, true), Facts(FixturePath, readOnly: true), Policy, noLinks)) is { Code: RevitCommandCodes.DocumentNotEnabled } ro && ro.Detail!.Contains("read-only", StringComparison.Ordinal), "add-in: a styled export on a read-only document is refused");
+        Check(Thrown(() => CommandAdmission.Check(ExportAt(FixturePath, false), Facts(FixturePath, readOnly: true, workshared: true), Policy, noLinks)) is null, "add-in: a plain export of a read-only, workshared document is allowed");
     }
 
     static void Rules()
