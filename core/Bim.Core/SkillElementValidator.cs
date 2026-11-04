@@ -9,11 +9,15 @@ namespace Bim.Core;
 //
 // Quantities (ElementFacts):
 //   wall [ax,ay,bx,by,height,thickness]: length (axis), thickness, height.
+//   hosted door/window [offset, width] (the layout LocalValidation and DocRegeneration accept): width, start_clearance
+//   (= offset), end_clearance and axis_offset (0 by construction); sill, height and head_clearance are hosted_layout.
+//   host_level_mismatch (unit "count", no suffix): 0 when the opening's first level dependency is its host wall's, 1
+//   otherwise, level_missing when either has none.
 //   door/window [ax,ay,bx,by,sill,height] with Dependencies [level, host wall]: width (distance between the two ends),
 //   height, sill, and, against the host wall, start_clearance (host axis start to the nearer opening end, along the axis),
 //   end_clearance (farther opening end to the host axis end), head_clearance (host height minus sill plus height) and
 //   axis_offset (largest perpendicular distance of an opening end from the host axis line). An opening lies inside its
-//   host when start_clearance >= 0, end_clearance >= 0, sill >= 0, head_clearance >= 0 and axis_offset <= tolerance, which
+//   host when start_clearance, end_clearance, sill and head_clearance are >= -tolerance and axis_offset <= tolerance, which
 //   the pack expresses as ordinary min/max rules; an opening exactly at a wall end has a clearance of exactly 0.
 //
 // Never a silent pass: a rule whose property is not a quantity of the targeted kind, whose threshold is not a number,
@@ -23,7 +27,9 @@ namespace Bim.Core;
 // six values; a curved wall cannot be expressed, so a wall (or host) of any other arity, for example an arc carrying a
 // bulge value, is shape_unsupported and no arc length is computed. Non-finite values are geometry_invalid; a host of zero
 // axis length is host_degenerate. Thickness, height or sill values that are zero or negative are measured as given and
-// fail the bound rules instead of being refused.
+// fail the bound rules instead of being refused. A ratio_min over two properties of different units is unit_mismatch.
+// Clearances are measured along the host wall axis (axis span), not the clear span between joined walls that
+// IntentCompiler enforces; the pack's -0.001 mm clearance bound matches producer tolerances.
 //
 // Findings are ordered by element id (Guid "D" text, ordinal) then qualified rule id (ordinal). Comparisons allow
 // SkillRoomValidator.RelativeTolerance times max(1, |bound|) of slack, so a value equal to its bound passes.
@@ -45,23 +51,33 @@ public static class ElementReasons
     public const string LevelMissing = "level_missing";
 }
 
-// Measured quantities of one wall, door or window in metres. Problem (with ProblemDetail) is set when the element's own
-// geometry cannot be read; HostProblem (with HostProblemDetail) when the host-derived quantities cannot be computed.
-public sealed record ElementFacts(string Id, string Kind, string? HostId, string? Problem, string? ProblemDetail, string? HostProblem, string? HostProblemDetail,
-    IReadOnlyDictionary<string, double> Metres)
+// Why one quantity of one element cannot be measured (Reason is an ElementReasons code).
+public sealed record ElementGap(string Reason, string Detail);
+
+// Measured quantities of one wall, door or window in metres (host_level_mismatch is a count), and the typed gap of every
+// quantity that cannot be measured. Layout is "wall", "axis" ([ax,ay,bx,by,sill,height] opening), "hosted" ([offset, width]
+// opening) or "" (invalid geometry or another kind).
+public sealed record ElementFacts(string Id, string Kind, string? HostId, string Layout, IReadOnlyDictionary<string, double> Metres, IReadOnlyDictionary<string, ElementGap> Gaps)
 {
     public const string Wall = "wall";
     public const string Door = "door";
     public const string Window = "window";
+    public const string AxisLayout = "axis";
+    public const string HostedLayout = "hosted";
     public const string MillimetreSuffix = "_mm";
     public const string MetreSuffix = "_m";
+    public const string CountUnit = "count";
+    public const string HostLevelMismatch = "host_level_mismatch";
     // Millimetre values are rounded to this many decimals (one nanometre), removing binary conversion noise so that
     // 0.0749 m reads exactly 74.9 mm and 0.1 m exactly 100 mm.
     public const int MillimetreDigits = 6;
 
     public static readonly IReadOnlyList<string> WallQuantities = new[] { "length", "thickness", "height" };
-    public static readonly IReadOnlyList<string> OpeningQuantities = new[] { "width", "height", "sill", "start_clearance", "end_clearance", "head_clearance", "axis_offset" };
-    public static readonly IReadOnlyList<string> HostQuantities = new[] { "start_clearance", "end_clearance", "head_clearance", "axis_offset" };
+    public static readonly IReadOnlyList<string> OpeningQuantities = new[] { "width", "height", "sill", "start_clearance", "end_clearance", "head_clearance", "axis_offset", HostLevelMismatch };
+    public static readonly IReadOnlyList<string> HostQuantities = new[] { "start_clearance", "end_clearance", "head_clearance", "axis_offset", HostLevelMismatch };
+    // Quantities named without a unit suffix: counts.
+    public static readonly IReadOnlyList<string> CountQuantities = new[] { HostLevelMismatch };
+    static readonly string[] HostedGaps = { "height", "sill", "head_clearance" };
 
     public static IReadOnlyList<string> Quantities(string kind) => kind switch
     {
@@ -70,10 +86,12 @@ public sealed record ElementFacts(string Id, string Kind, string? HostId, string
         _ => Array.Empty<string>(),
     };
 
-    // Splits "thickness_mm" into ("thickness", "mm"); null when the suffix is not an explicit length unit.
+    // Splits "thickness_mm" into ("thickness", "mm") and "thickness_m" into ("thickness", "m"); a count quantity is its
+    // own name with unit "count"; null when the property carries no explicit unit.
     public static (string Quantity, string Unit)? Split(string property)
     {
         ArgumentNullException.ThrowIfNull(property);
+        if (CountQuantities.Contains(property, StringComparer.Ordinal)) return (property, CountUnit);
         if (property.EndsWith(MillimetreSuffix, StringComparison.Ordinal) && property.Length > MillimetreSuffix.Length)
             return (property[..^MillimetreSuffix.Length], LengthUnits.Millimetres);
         if (property.EndsWith(MetreSuffix, StringComparison.Ordinal) && property.Length > MetreSuffix.Length)
@@ -91,16 +109,11 @@ public sealed record ElementFacts(string Id, string Kind, string? HostId, string
         if (Split(property) is not { } split || !Quantities(Kind).Contains(split.Quantity, StringComparer.Ordinal))
         {
             reason = ElementReasons.PropertyUnknown;
-            detail = "property " + property + " is not a " + (Kind.Length == 0 ? "?" : Kind) + " quantity (" + string.Join(", ", Quantities(Kind).Select(quantity => quantity + "_mm|_m")) + ")";
+            detail = "property " + property + " is not a " + (string.IsNullOrEmpty(Kind) ? "?" : Kind) + " quantity ("
+                + string.Join(", ", Quantities(Kind).Select(quantity => CountQuantities.Contains(quantity, StringComparer.Ordinal) ? quantity : quantity + "_mm|_m")) + ")";
             return null;
         }
-        if (Problem is not null) { reason = Problem; detail = ProblemDetail ?? Problem; return null; }
-        if (HostQuantities.Contains(split.Quantity, StringComparer.Ordinal) && Kind is Door or Window && HostProblem is not null)
-        {
-            reason = HostProblem;
-            detail = HostProblemDetail ?? HostProblem;
-            return null;
-        }
+        if (Gaps.TryGetValue(split.Quantity, out var gap)) { reason = gap.Reason; detail = gap.Detail; return null; }
         if (!Metres.TryGetValue(split.Quantity, out var metres)) { reason = ElementReasons.GeometryInvalid; detail = split.Quantity + " is not available"; return null; }
         return split.Unit == LengthUnits.Millimetres ? Zero(Math.Round(Length.FromMetres(metres).Millimetres, MillimetreDigits, MidpointRounding.ToEven)) : Zero(metres);
     }
@@ -128,64 +141,114 @@ public sealed record ElementFacts(string Id, string Kind, string? HostId, string
         var id = element.Id.ToString("D");
         var kind = element.Kind ?? "";
         var values = new Dictionary<string, double>(StringComparer.Ordinal);
+        var gaps = new Dictionary<string, ElementGap>(StringComparer.Ordinal);
+        void Gap(IEnumerable<string> quantities, string reason, string detail)
+        {
+            foreach (var quantity in quantities) gaps.TryAdd(quantity, new ElementGap(reason, detail));
+        }
+        ElementFacts Facts(string? hostId, string layout)
+        {
+            // A quantity that overflowed to infinity is not a measurement.
+            foreach (var (key, value) in values.ToArray())
+                if (!double.IsFinite(value)) { values.Remove(key); Gap(new[] { key }, ElementReasons.GeometryInvalid, key + " is not finite"); }
+            return new ElementFacts(id, kind, hostId, layout, values, gaps);
+        }
         var g = element.GeometryMetres ?? Array.Empty<double>();
         if (kind == Wall)
         {
-            if (WallShape(g, "wall") is { } wallProblem) return new ElementFacts(id, kind, null, wallProblem.Code, wallProblem.Detail, null, null, values);
+            if (WallShape(g, "wall") is { } wallProblem) { Gap(WallQuantities, wallProblem.Code, wallProblem.Detail); return Facts(null, ""); }
             values["length"] = Distance(g[0], g[1], g[2], g[3]);
             values["thickness"] = g[5];
             values["height"] = g[4];
-            return Finish(new ElementFacts(id, kind, null, null, null, null, null, values));
+            return Facts(null, Wall);
         }
-        if (kind is not (Door or Window)) return new ElementFacts(id, kind, null, null, null, null, null, values);
-        if (g.Length != 6) return new ElementFacts(id, kind, null, ElementReasons.GeometryInvalid, kind + " geometry has " + Count(g.Length) + " values, [ax,ay,bx,by,sill,height] expected", null, null, values);
-        if (g.Any(value => !double.IsFinite(value))) return new ElementFacts(id, kind, null, ElementReasons.GeometryInvalid, kind + " geometry has a non-finite value", null, null, values);
-        values["width"] = Distance(g[0], g[1], g[2], g[3]);
-        values["height"] = g[5];
-        values["sill"] = g[4];
+        if (kind is not (Door or Window)) return Facts(null, "");
+        if (g.Length is not (6 or 2))
+        {
+            Gap(OpeningQuantities, ElementReasons.GeometryInvalid, kind + " geometry has " + Count(g.Length) + " values; [ax,ay,bx,by,sill,height] or hosted [offset, width] expected");
+            return Facts(null, "");
+        }
+        if (g.Any(value => !double.IsFinite(value))) { Gap(OpeningQuantities, ElementReasons.GeometryInvalid, kind + " geometry has a non-finite value"); return Facts(null, ""); }
+        var hosted = g.Length == 2;
+        var layout = hosted ? HostedLayout : AxisLayout;
+        if (hosted)
+        {
+            values["width"] = g[1];
+            Gap(HostedGaps, ElementReasons.HostedLayout, "hosted [offset, width] layout carries no sill or height");
+        }
+        else
+        {
+            values["width"] = Distance(g[0], g[1], g[2], g[3]);
+            values["height"] = g[5];
+            values["sill"] = g[4];
+        }
 
         var dependencies = element.Dependencies ?? Array.Empty<Guid>();
         var walls = dependencies.Distinct().Where(dependency => project.TryGetValue(dependency, out var candidate) && candidate.Kind == Wall).ToArray();
         var dangling = dependencies.Distinct().Where(dependency => !project.ContainsKey(dependency)).Select(dependency => dependency.ToString("D")).OrderBy(text => text, StringComparer.Ordinal).ToArray();
         if (walls.Length > 1)
-            return Finish(new ElementFacts(id, kind, null, null, null, ElementReasons.HostAmbiguous,
-                "depends on " + Count(walls.Length) + " walls: " + string.Join(", ", walls.Select(wall => wall.ToString("D")).OrderBy(text => text, StringComparer.Ordinal)), values));
+        {
+            Gap(HostQuantities, ElementReasons.HostAmbiguous, "depends on " + Count(walls.Length) + " walls: " + string.Join(", ", walls.Select(wall => wall.ToString("D")).OrderBy(text => text, StringComparer.Ordinal)));
+            return Facts(null, layout);
+        }
         if (walls.Length == 0)
-            return dangling.Length > 0
-                ? Finish(new ElementFacts(id, kind, null, null, null, ElementReasons.HostOrphan, "no host wall; dangling dependency " + string.Join(", ", dangling), values))
-                : Finish(new ElementFacts(id, kind, null, null, null, ElementReasons.HostMissing, "no dependency is a wall of this project", values));
+        {
+            if (dangling.Length > 0) Gap(HostQuantities, ElementReasons.HostOrphan, "no host wall; dangling dependency " + string.Join(", ", dangling));
+            else Gap(HostQuantities, ElementReasons.HostMissing, "no dependency is a wall of this project");
+            return Facts(null, layout);
+        }
         var host = project[walls[0]];
         var hostId = host.Id.ToString("D");
         var h = host.GeometryMetres ?? Array.Empty<double>();
         if (WallShape(h, "host wall " + hostId) is { } hostProblem)
-            return Finish(new ElementFacts(id, kind, hostId, null, null,
-                hostProblem.Code == ElementReasons.ShapeUnsupported ? ElementReasons.HostShapeUnsupported : ElementReasons.HostGeometryInvalid, hostProblem.Detail, values));
+        {
+            Gap(HostQuantities, hostProblem.Code == ElementReasons.ShapeUnsupported ? ElementReasons.HostShapeUnsupported : ElementReasons.HostGeometryInvalid, hostProblem.Detail);
+            return Facts(hostId, layout);
+        }
         double dx = h[2] - h[0], dy = h[3] - h[1];
         var length = Math.Sqrt(dx * dx + dy * dy);
         if (!(length > 0) || !double.IsFinite(length))
-            return Finish(new ElementFacts(id, kind, hostId, null, null, ElementReasons.HostDegenerate, "host wall " + hostId + " has a zero-length axis", values));
-        double ux = dx / length, uy = dy / length;
-        double Along(double x, double y) => (x - h[0]) * ux + (y - h[1]) * uy;
-        double Across(double x, double y) => Math.Abs((x - h[0]) * uy - (y - h[1]) * ux);
-        double ta = Along(g[0], g[1]), tb = Along(g[2], g[3]);
-        // An end that coincides with the host end projects to the axis length exactly, whatever the rounding of ux, uy.
-        if (g[0] == h[2] && g[1] == h[3]) ta = length;
-        if (g[2] == h[2] && g[3] == h[3]) tb = length;
-        if (g[0] == h[0] && g[1] == h[1]) ta = 0;
-        if (g[2] == h[0] && g[3] == h[1]) tb = 0;
-        values["start_clearance"] = Math.Min(ta, tb);
-        values["end_clearance"] = length - Math.Max(ta, tb);
-        values["head_clearance"] = h[4] - (g[4] + g[5]);
-        values["axis_offset"] = Math.Max(Across(g[0], g[1]), Across(g[2], g[3]));
-        return Finish(new ElementFacts(id, kind, hostId, null, null, null, null, values));
+        {
+            Gap(HostQuantities, ElementReasons.HostDegenerate, "host wall " + hostId + " has a zero-length axis");
+            return Facts(hostId, layout);
+        }
+        if (hosted)
+        {
+            // [offset, width] lies on the host axis by construction, measured from the host start.
+            values["start_clearance"] = g[0];
+            values["end_clearance"] = length - (g[0] + g[1]);
+            values["axis_offset"] = 0;
+        }
+        else
+        {
+            double ux = dx / length, uy = dy / length;
+            double Along(double x, double y) => (x - h[0]) * ux + (y - h[1]) * uy;
+            double Across(double x, double y) => Math.Abs((x - h[0]) * uy - (y - h[1]) * ux);
+            double ta = Along(g[0], g[1]), tb = Along(g[2], g[3]);
+            // An end that coincides with a host end projects exactly onto it, whatever the rounding of ux, uy.
+            if (g[0] == h[2] && g[1] == h[3]) ta = length;
+            if (g[2] == h[2] && g[3] == h[3]) tb = length;
+            if (g[0] == h[0] && g[1] == h[1]) ta = 0;
+            if (g[2] == h[0] && g[3] == h[1]) tb = 0;
+            values["start_clearance"] = Math.Min(ta, tb);
+            values["end_clearance"] = length - Math.Max(ta, tb);
+            values["head_clearance"] = h[4] - (g[4] + g[5]);
+            values["axis_offset"] = Math.Max(Across(g[0], g[1]), Across(g[2], g[3]));
+        }
+        // The level is the first dependency that is a level of the project, for the opening and for its host wall.
+        var ownLevel = FirstLevel(dependencies, project);
+        var hostLevel = FirstLevel(host.Dependencies ?? Array.Empty<Guid>(), project);
+        if (ownLevel is null || hostLevel is null)
+            Gap(new[] { HostLevelMismatch }, ElementReasons.LevelMissing, ownLevel is null ? kind + " depends on no level" : "host wall " + hostId + " depends on no level");
+        else values[HostLevelMismatch] = ownLevel == hostLevel ? 0 : 1;
+        return Facts(hostId, layout);
     }
 
-    static ElementFacts Finish(ElementFacts facts)
+    static Guid? FirstLevel(IEnumerable<Guid> dependencies, IReadOnlyDictionary<Guid, Element> project)
     {
-        // A quantity that overflowed to infinity is not a measurement.
-        foreach (var (key, value) in facts.Metres.ToArray())
-            if (!double.IsFinite(value)) ((Dictionary<string, double>)facts.Metres).Remove(key);
-        return facts;
+        foreach (var dependency in dependencies)
+            if (project.TryGetValue(dependency, out var candidate) && candidate.Kind == "level") return dependency;
+        return null;
     }
 
     static (string Code, string Detail)? WallShape(double[] g, string subject)
@@ -243,7 +306,8 @@ public static class SkillElementValidator
     }
 
     // parameters overrides skill parameters at run time without changing the manifest: keys are "<skill id>/<parameter>",
-    // values must be finite, within the parameter's [min, max] and integral for integer parameters, else ArgumentException.
+    // values must be finite, within the parameter's [min, max] and integral for integer parameters, else ArgumentException;
+    // an override that leaves a "*_min*" parameter above its "*_max*" pair is refused with ArgumentException.
     public static ElementValidationReport Validate(SkillResolution resolution, Project project, IReadOnlyDictionary<string, double>? parameters = null)
     {
         ArgumentNullException.ThrowIfNull(resolution);
@@ -291,6 +355,25 @@ public static class SkillElementValidator
                 throw new ArgumentOutOfRangeException(nameof(parameters), "parameter " + key + " = " + Text(value) + " is outside its declared range");
             result[key] = value == 0 ? 0.0 : value;
         }
+        // A pair "<x>_min<y>" / "<x>_max<y>" of one skill is a lower and an upper bound; an override may not invert it.
+        foreach (var skill in resolution.Skills)
+        {
+            double? Effective(string name)
+            {
+                var declared = skill.Parameters.FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+                if (declared is null || declared.Type is not (SkillParameterType.Number or SkillParameterType.Integer)) return null;
+                return result.TryGetValue(skill.Id + "/" + name, out var overridden) ? overridden : declared.Default.Number;
+            }
+            foreach (var lower in skill.Parameters.Select(parameter => parameter.Name))
+            {
+                var at = lower.IndexOf("_min", StringComparison.Ordinal);
+                if (at < 0 || !(at + 4 == lower.Length || lower[at + 4] == '_')) continue;
+                var upper = lower[..at] + "_max" + lower[(at + 4)..];
+                if (!result.ContainsKey(skill.Id + "/" + lower) && !result.ContainsKey(skill.Id + "/" + upper)) continue;
+                if (Effective(lower) is { } low && Effective(upper) is { } high && low > high)
+                    throw new ArgumentException("parameter overrides invert " + skill.Id + "/" + lower + " = " + Text(low) + " and " + skill.Id + "/" + upper + " = " + Text(high), nameof(parameters));
+            }
+        }
         return result;
     }
 
@@ -320,6 +403,10 @@ public static class SkillElementValidator
             _ = element.Value(check.Over, out _, out var unknown);
             return Finding(ElementCheckOutcome.NotEvaluable, ElementReasons.PropertyUnknown, null, "denominator: " + unknown);
         }
+        if (check.Over is not null && ElementFacts.Split(check.Property)?.Unit is { } numeratorUnit && ElementFacts.Split(check.Over)?.Unit is { } denominatorUnit
+            && !string.Equals(numeratorUnit, denominatorUnit, StringComparison.Ordinal))
+            return Finding(ElementCheckOutcome.NotEvaluable, ElementReasons.UnitMismatch, null,
+                check.Property + " is in " + numeratorUnit + " but " + check.Over + " is in " + denominatorUnit + "; a ratio needs one unit");
         IReadOnlyList<double> allowed = Array.Empty<double>();
         double limit = 0;
         if (check.Op == SkillCheckOp.In)
