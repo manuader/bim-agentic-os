@@ -1,6 +1,7 @@
 using Bim.Core;
 using Bim.Cli;
 using Bim.Mcp;
+using Bim.Gltf;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -175,6 +176,101 @@ try {
     Check(offlineBig.Exit==1 && offlineBig.Out.Contains("evaluation_input_error: input_too_large",StringComparison.Ordinal),"oversized file rejected (evaluate offline) with typed reason","exit "+offlineBig.Exit);
     var plan=Cli("plan",storeDir,after);
     Check(plan.Exit==0 && plan.Out==JsonSerializer.Serialize(Compiler.Diff(new ProjectStore(storeDir).Read(),P(afterText))),"valid plan output unchanged","exit "+plan.Exit);
+
+
+    // P8-07 export-gltf project.json output.glb|output.gltf: bounded input, never-overwrite bounded output, JSON envelope.
+    var gProv=new Provenance("test","approved");
+    Guid gLevel=Guid.Parse("0a000000-0000-4000-8000-000000000001"), gWall=Guid.Parse("0b000000-0000-4000-8000-000000000001"), gDoor=Guid.Parse("0e000000-0000-4000-8000-000000000001"), gWindow=Guid.Parse("0e000000-0000-4000-8000-000000000002");
+    var gProject=new Project(Guid.Parse("3f0c1d2e-0000-4000-8000-0000000000c1"),4,[
+        new Element(gLevel,"level",[0],[],gProv),
+        new Element(gWall,"wall",[0,0,6,0,3,0.2],[gLevel],gProv),
+        new Element(gDoor,"door",[1,0,2,0,0,2.1],[gLevel,gWall],gProv),
+        new Element(gWindow,"window",[3.5,0,5,0,0.9,1.2],[gLevel,gWall],gProv)]);
+    var gInput=Input("gltf-project.json",JsonSerializer.Serialize(gProject));
+    var gExpectedGlb=GltfExporter.ExportGlb(gProject);
+    var gExpectedGltf=new UTF8Encoding(false).GetBytes(GltfExporter.ExportGltf(gProject));
+    string GHex(byte[] bytes)=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+    JsonElement? GEnvelope(string output) { try { return JsonDocument.Parse(output).RootElement; } catch(JsonException) { return null; } }
+    bool GSucceeded((int Exit,string Out,string Err) r,string path,string format,byte[] expected) =>
+        r.Exit==0 && GEnvelope(r.Out) is {} env && env.GetProperty("status").GetString()=="succeeded" && env.GetProperty("format").GetString()==format
+        && env.GetProperty("output").GetString()==path && env.GetProperty("bytes").GetInt64()==expected.Length && env.GetProperty("sha256").GetString()==GHex(expected)
+        && env.GetProperty("elements").GetInt32()==4 && env.GetProperty("openings").GetInt32()==2;
+    var gGlb=Path.Combine(work,"model.glb");
+    var gFirst=Cli("export-gltf",gInput,gGlb);
+    Check(GSucceeded(gFirst,gGlb,"glb",gExpectedGlb) && File.Exists(gGlb) && File.ReadAllBytes(gGlb).SequenceEqual(gExpectedGlb),"export-gltf writes the library GLB bytes and a succeeded envelope","exit "+gFirst.Exit+" "+gFirst.Out+" "+gFirst.Err);
+    var gGlb2=Path.Combine(work,"model-again.glb");
+    var gSecond=Cli("export-gltf",gInput,gGlb2);
+    Check(gSecond.Exit==0 && File.Exists(gGlb2) && File.Exists(gGlb) && File.ReadAllBytes(gGlb2).SequenceEqual(File.ReadAllBytes(gGlb)),"export-gltf rerun is byte-identical","exit "+gSecond.Exit+" "+gSecond.Out);
+    var gText=Path.Combine(work,"model.gltf");
+    var gThird=Cli("export-gltf",gInput,gText);
+    Check(GSucceeded(gThird,gText,"gltf",gExpectedGltf) && File.Exists(gText) && File.ReadAllBytes(gText).SequenceEqual(gExpectedGltf),"export-gltf .gltf is the library text as UTF-8 without BOM","exit "+gThird.Exit+" "+gThird.Out+" "+gThird.Err);
+    var gUpper=Path.Combine(work,"MODEL-UPPER.GLB");
+    var gFourth=Cli("export-gltf",gInput,gUpper);
+    Check(GSucceeded(gFourth,gUpper,"glb",gExpectedGlb),"export-gltf accepts an upper-case .GLB extension","exit "+gFourth.Exit+" "+gFourth.Out);
+    // Never overwrite: an existing file keeps its bytes, an existing directory stays.
+    if(File.Exists(gGlb)) File.WriteAllBytes(gGlb,[1,2,3]);
+    ExpectFailure("export-gltf refuses an existing output file","output_exists","export-gltf",gInput,gGlb);
+    Check(File.Exists(gGlb) && File.ReadAllBytes(gGlb).SequenceEqual(new byte[]{1,2,3}),"export-gltf leaves an existing output file untouched");
+    var gDirOut=Path.Combine(work,"exists-dir.glb"); Directory.CreateDirectory(gDirOut);
+    ExpectFailure("export-gltf refuses an existing directory as output","output_exists","export-gltf",gInput,gDirOut);
+    // Bounded output path.
+    var gObj=Path.Combine(work,"model.obj");
+    ExpectFailure("export-gltf refuses an unsupported output extension","output_extension_unsupported","export-gltf",gInput,gObj);
+    Check(!File.Exists(gObj),"refused extension creates no file");
+    ExpectFailure("export-gltf refuses an output without extension","output_extension_unsupported","export-gltf",gInput,Path.Combine(work,"model"));
+    ExpectFailure("export-gltf refuses an output in a missing directory","output_directory_not_found","export-gltf",gInput,Path.Combine(work,"no-such-dir","model.glb"));
+    ExpectFailure("export-gltf refuses an empty output path","output_path_invalid","export-gltf",gInput,"");
+    ExpectFailure("export-gltf refuses a trailing-separator output path","output_extension_unsupported","export-gltf",gInput,Path.Combine(work,"trail.glb")+Path.DirectorySeparatorChar);
+    // Cross-OS goldens (tests/cli also runs on macOS): the tests/gltf opening fixture exported through the CLI hashes to the
+    // golden SHA-256 values computed by the independent reimplementation (tests/gltf GoldenOpeningsGlb/Gltf).
+    Guid gOpeningWall=Guid.Parse("0b000000-0000-4000-8000-0000000000a1");
+    var gOpeningFixture=new Project(Guid.Parse("3f0c1d2e-0000-4000-8000-000000000001"),2,[
+        new Element(gLevel,"level",[0],[],gProv),
+        new Element(gOpeningWall,"wall",[0,0,6,0,3,0.2],[gLevel],gProv),
+        new Element(gDoor,"door",[1,0,2,0,0,2.1],[gLevel,gOpeningWall],gProv),
+        new Element(gWindow,"window",[3.5,0,5,0,0.9,1.2],[gLevel,gOpeningWall],gProv)]);
+    var gOpeningInput=Input("gltf-opening-fixture.json",JsonSerializer.Serialize(gOpeningFixture));
+    foreach(var (gExt,gGolden) in new[]{("glb","47A14D5CE34105E4145CBBD9207B7D7EEBFC472BAB8B23EBF9686AB677966D3F"),("gltf","039FC0A70FB5BEB58EDE15A3BC59816C0EE2A31CDA4BFBCC5B399F7C1FA79DBF")}) {
+        var gGoldenOut=Path.Combine(work,"golden-openings."+gExt);
+        var gGoldenRun=Cli("export-gltf",gOpeningInput,gGoldenOut);
+        Check(gGoldenRun.Exit==0 && File.Exists(gGoldenOut) && GHex(File.ReadAllBytes(gGoldenOut))==gGolden,"export-gltf opening fixture ."+gExt+" equals the cross-OS golden SHA-256","exit "+gGoldenRun.Exit+" "+gGoldenRun.Out);
+    }
+    // NTFS alternate data stream syntax: any ':' after the drive designator is refused on every OS; nothing is written.
+    var gHost=Path.Combine(work,"host.txt");
+    if(OperatingSystem.IsWindows()) File.WriteAllBytes(gHost,[7,7,7]);
+    var gAds=Path.Combine(work,"host.txt:model.glb");
+    ExpectFailure("export-gltf refuses an alternate-data-stream output (host.txt:model.glb)","output_path_invalid","export-gltf",gInput,gAds);
+    if(OperatingSystem.IsWindows()) Check(File.ReadAllBytes(gHost).SequenceEqual(new byte[]{7,7,7}) && new FileInfo(gHost).Length==3,"ADS refusal leaves host.txt untouched");
+    else Check(!File.Exists(gHost) && !File.Exists(gAds),"ADS refusal creates neither host.txt nor host.txt:model.glb");
+    ExpectFailure("export-gltf refuses a relative ':' output","output_path_invalid","export-gltf",gInput,"ab:c.glb");
+    var gUnknown=Cli("no-such-verb");
+    Check(gUnknown.Exit==1 && gUnknown.Out.Contains("export-gltf project.json output.glb|output.gltf",StringComparison.Ordinal),"default usage lists export-gltf",gUnknown.Out);
+    if(OperatingSystem.IsWindows()) {
+        ExpectFailure(@"export-gltf refuses a \\.\ device output","output_not_regular_file","export-gltf",gInput,@"\\.\pipe\bim-gltf-test.glb");
+    } else Skip("export-gltf device outputs","Windows-only device namespace fixtures");
+    if(linked) {
+        var gLinkOut=Path.Combine(work,"dangling-out.glb"); File.CreateSymbolicLink(gLinkOut,Path.Combine(work,"nowhere-out.glb"));
+        ExpectFailure("export-gltf refuses a dangling symlink output","output_link_rejected","export-gltf",gInput,gLinkOut);
+        Check(!File.Exists(Path.Combine(work,"nowhere-out.glb")),"dangling symlink output target is not created");
+        var gLinkedDir=Path.Combine(work,"linked-dir"); Directory.CreateSymbolicLink(gLinkedDir,directory);
+        ExpectFailure("export-gltf refuses an output inside a symlinked directory","output_link_rejected","export-gltf",gInput,Path.Combine(gLinkedDir,"model.glb"));
+    }
+    // Bounded input: every refusal leaves no output.
+    var gNoOut=Path.Combine(work,"never.glb");
+    ExpectFailure("export-gltf refuses an oversized input","input_too_large","export-gltf",overCapPath,gNoOut);
+    ExpectFailure("export-gltf refuses a missing input","input_not_found","export-gltf",missing,gNoOut);
+    ExpectFailure("export-gltf refuses a directory input","input_not_regular_file","export-gltf",directory,gNoOut);
+    ExpectFailure("export-gltf refuses malformed JSON","bim_ir_json_invalid","export-gltf",Input("gltf-bad.json","{\"Id\":"),gNoOut);
+    var gNull=Cli("export-gltf",Input("gltf-null.json","null"),gNoOut);
+    Check(gNull.Exit==1 && GEnvelope(gNull.Out) is {} gNullEnv && gNullEnv.GetProperty("status").GetString()=="failed" && gNullEnv.GetProperty("code").GetString()=="bim_ir_invalid","export-gltf refuses a null project",gNull.Out);
+    var gOverlap=gProject with {Elements=[..gProject.Elements,new Element(Guid.Parse("0e000000-0000-4000-8000-000000000003"),"window",[1.5,0,3,0,1,1],[gLevel,gWall],gProv)]};
+    var gRefused=Cli("export-gltf",Input("gltf-overlap.json",JsonSerializer.Serialize(gOverlap)),gNoOut);
+    Check(gRefused.Exit==1 && GEnvelope(gRefused.Out) is {} gEnv && gEnv.GetProperty("status").GetString()=="failed" && gEnv.GetProperty("code").GetString()=="gltf_opening_overlap" && gEnv.GetProperty("detail").GetString()!.Length>0,
+        "export-gltf reports exporter refusals as {status, code, detail}","exit "+gRefused.Exit+" "+gRefused.Out);
+    Check(!File.Exists(gNoOut),"refused exports create no output file");
+    var gUsage=Cli("export-gltf",gInput);
+    Check(gUsage.Exit==1 && GEnvelope(gUsage.Out) is {} gUsageEnv && gUsageEnv.GetProperty("status").GetString()=="failed" && gUsageEnv.GetProperty("code").GetString()!.StartsWith("usage: export-gltf",StringComparison.Ordinal),"export-gltf with a missing argument prints its usage as a failed envelope",gUsage.Out);
+    Check(File.ReadAllText(Path.Combine(root,"interfaces","cli","GltfExportCommand.cs")).Contains("BoundedInput.ReadText",StringComparison.Ordinal),"export-gltf reads its input through BoundedInput");
 
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;

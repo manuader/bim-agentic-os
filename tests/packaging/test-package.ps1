@@ -135,7 +135,7 @@ try {
     Assert ((@($onDisk) -join "`n") -ceq ($paths -join "`n")) "manifest file list differs from package contents: disk=[$($onDisk -join ', ')] manifest=[$($paths -join ', ')]"
 
     # --- Layout: CLI, MCP server, add-in manifest; no apphost, no symbols, no Revit assemblies ---
-    foreach ($required in 'VERSION', 'cli/Bim.Cli.dll', 'cli/Bim.Cli.runtimeconfig.json', 'cli/Bim.Cli.deps.json', 'cli/Bim.Core.dll', 'mcp/Bim.Mcp.dll', 'mcp/Bim.Mcp.runtimeconfig.json', 'revit/Bim.addin.template') {
+    foreach ($required in 'VERSION', 'cli/Bim.Cli.dll', 'cli/Bim.Cli.runtimeconfig.json', 'cli/Bim.Cli.deps.json', 'cli/Bim.Core.dll', 'cli/Bim.Gltf.dll', 'mcp/Bim.Mcp.dll', 'mcp/Bim.Mcp.runtimeconfig.json', 'revit/Bim.addin.template') {
         Assert ($paths -contains $required) "package layout missing $required"
     }
     Assert (([IO.File]::ReadAllText((Join-Path $outA 'VERSION'))) -ceq ($expectedVersion + "`n")) 'VERSION file must contain the version and one LF'

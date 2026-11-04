@@ -26,6 +26,10 @@ public static class GltfExporter
     // so every vertex within +/-1e4 m keeps sub-millimetre placement.
     public const double MaxCoordinate = 1e4;
     public const double MinLength = 1e-3;
+    // Openings: an end point within this distance of the host axis, its ends, a neighbour opening, the host base or the
+    // host top is on it; a pier, sill wall or lintel shorter than this is not emitted.
+    public const double OpeningTolerance = 1e-6;
+    public const string Door = "door", Window = "window";
 
     const int ArrayBuffer = 34962, ElementArrayBuffer = 34963, Float = 5126, UnsignedInt = 5125;
     static readonly string[] MaterialKinds = [GeometryCodec.Wall, GeometryCodec.Space];
@@ -36,6 +40,14 @@ public static class GltfExporter
     };
 
     sealed record MeshData(int ElementIndex, string Kind, float[] Positions, float[] Normals, uint[] Indices);
+    // One opening in its host wall's plane: T0 < T1 are distances along the host axis from its start, Bottom < Top the
+    // sill and head heights above the host base (snapped to 0, the axis length and the wall height within tolerance).
+    sealed record Cut(Guid Id, double T0, double T1, double Bottom, double Top);
+    // One solid box of a split wall: axis distances S..E and heights Bottom..Top above the host base.
+    sealed record Segment(double S, double E, double Bottom, double Top);
+
+    // Count of door/window elements the export cuts into host walls (all of them once validation passes).
+    public static int OpeningCount(Project project) => project?.Elements?.Count(e => e?.Kind is Door or Window) ?? 0;
 
     public static byte[] ExportGlb(Project project)
     {
@@ -67,10 +79,18 @@ public static class GltfExporter
     // Writes a new .glb; never replaces an existing file (output_exists).
     public static void WriteGlb(Project project, string path) => WriteGlb(project, path, stream => stream);
 
+    // Writes a new .gltf (UTF-8 without BOM); never replaces an existing file (output_exists).
+    public static void WriteGltf(Project project, string path) => WriteNew(new UTF8Encoding(false).GetBytes(ExportGltf(project)), path, stream => stream);
+
     // Test seam: wrap lets a test inject a stream that fails part-way.
-    internal static void WriteGlb(Project project, string path, Func<Stream, Stream> wrap)
+    internal static void WriteGlb(Project project, string path, Func<Stream, Stream> wrap) => WriteNew(ExportGlb(project), path, wrap);
+
+    // Creates path exclusively (FileMode.CreateNew) and writes bytes (output_exists when the path exists); on a failed
+    // write it removes the file it created and rethrows. Used by the CLI `export-gltf` verb with ExportGlb/ExportGltf bytes.
+    public static void WriteNew(byte[] bytes, string path) => WriteNew(bytes, path, stream => stream);
+
+    static void WriteNew(byte[] bytes, string path, Func<Stream, Stream> wrap)
     {
-        var bytes = ExportGlb(project);
         FileStream file;
         try { file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None); }
         // Windows reports an existing directory as UnauthorizedAccessException, Unix as IOException.
@@ -107,8 +127,110 @@ public static class GltfExporter
         if (issues.Length > 0) throw new GltfExportException(issues[0].Code, issues[0].Id?.ToString("D") ?? issues[0].Message);
         foreach (var e in project.Elements)
         {
+            // Door/window [ax,ay,bx,by,sill,height] (IntentCompiler) have no GeometryCodec arity; checked in Cuts.
+            if (e.Kind is Door or Window)
+            {
+                if (e.GeometryMetres.Length != 6) throw new GltfExportException("gltf_opening_geometry", e.Id.ToString("D") + " needs [ax,ay,bx,by,sill,height]");
+                continue;
+            }
             if (GeometryCodec.Problem(e) is string code) throw new GltfExportException(code, e.Id.ToString("D"));
         }
+    }
+
+    // The single wall a door/window is hosted by: exactly one of its dependencies is a wall.
+    static Element Host(Element opening, Dictionary<Guid, Element> byId)
+    {
+        var walls = opening.Dependencies.Distinct().Where(d => byId[d].Kind == GeometryCodec.Wall).ToArray();
+        if (walls.Length != 1) throw new GltfExportException("gltf_opening_host", opening.Id.ToString("D") + " needs exactly one wall dependency, has " + walls.Length.ToString(CultureInfo.InvariantCulture));
+        return byId[walls[0]];
+    }
+
+    // Openings per host wall, validated (on the axis, inside its span and height, no two overlapping in the wall plane)
+    // and turned into the solid boxes left over: the axis is split at every opening end (ends within OpeningTolerance
+    // are one break point), and each stretch keeps the height ranges no opening covers, bottom up. Every break-point
+    // gap and solid height range is either within OpeningTolerance (dropped) or at least MinLength (else gltf_precision).
+    static Dictionary<Guid, List<Segment>> Cuts(Project project, Dictionary<Guid, Element> byId)
+    {
+        const double Tol = OpeningTolerance;
+        var cuts = new Dictionary<Guid, List<Cut>>();
+        foreach (var o in project.Elements)
+        {
+            if (o.Kind is not (Door or Window)) continue;
+            var host = Host(o, byId);
+            var id = o.Id.ToString("D");
+            double[] g = o.GeometryMetres, w = host.GeometryMetres;
+            double ax = w[0], ay = w[1], dx = w[2] - w[0], dy = w[3] - w[1], len = Math.Sqrt(dx * dx + dy * dy), ux = dx / len, uy = dy / len;
+            double Along(double x, double y) => (x - ax) * ux + (y - ay) * uy;
+            double Across(double x, double y) => Math.Abs(-(x - ax) * uy + (y - ay) * ux);
+            double t0 = Along(g[0], g[1]), t1 = Along(g[2], g[3]), sill = g[4], height = g[5];
+            if (!(Math.Abs(t1 - t0) > 0) || !(height > 0)) throw new GltfExportException("gltf_opening_geometry", id + " width and height must be positive");
+            LengthOk(Math.Abs(t1 - t0), "opening width", o); LengthOk(height, "opening height", o);
+            if (Across(g[0], g[1]) > Tol || Across(g[2], g[3]) > Tol) throw new GltfExportException("gltf_opening_outside_wall", id + " end points are off the host axis");
+            if (t1 < t0) (t0, t1) = (t1, t0);
+            if (t0 < -Tol || t1 > len + Tol || sill < -Tol || sill + height > w[4] + Tol) throw new GltfExportException("gltf_opening_outside_wall", id + " is outside its host span or height");
+            // Snap to the host start, end, base and top.
+            if (t0 <= Tol) t0 = 0;
+            if (len - t1 <= Tol) t1 = len;
+            var bottom = sill <= Tol ? 0 : sill;
+            var top = w[4] - (sill + height) <= Tol ? w[4] : sill + height;
+            if (!cuts.TryGetValue(host.Id, out var list)) cuts[host.Id] = list = [];
+            list.Add(new Cut(o.Id, t0, t1, bottom, top));
+        }
+        var segments = new Dictionary<Guid, List<Segment>>();
+        foreach (var (hostId, list) in cuts)
+        {
+            var wall = byId[hostId];
+            double len = WallLength(wall), h = wall.GeometryMetres[4];
+            var hid = hostId.ToString("D");
+            list.Sort((a, b) => a.T0 != b.T0 ? a.T0.CompareTo(b.T0) : a.Id.CompareTo(b.Id));
+            // Overlap in the wall plane: along the axis and in height, each by more than the tolerance.
+            for (var i = 0; i < list.Count; i++)
+                for (var k = i + 1; k < list.Count && list[k].T0 < list[i].T1 - Tol; k++)
+                    if (Math.Min(list[i].Top, list[k].Top) - Math.Max(list[i].Bottom, list[k].Bottom) > Tol)
+                        throw new GltfExportException("gltf_opening_overlap", list[k].Id.ToString("D") + " overlaps " + list[i].Id.ToString("D"));
+            // Break points: 0, the axis length and every opening end, merged into the first of each run within Tol.
+            var values = new List<double> { 0, len };
+            foreach (var c in list) { values.Add(c.T0); values.Add(c.T1); }
+            values = values.Distinct().Order().ToList();
+            var breaks = new List<double>();
+            var mapped = new Dictionary<double, double>();
+            foreach (var v in values)
+            {
+                if (breaks.Count > 0 && v - breaks[^1] <= Tol) { mapped[v] = breaks[^1]; continue; }
+                if (breaks.Count > 0 && v - breaks[^1] < MinLength) throw new GltfExportException("gltf_precision", hid + " has a pier under 1 mm between openings or wall ends");
+                breaks.Add(v); mapped[v] = v;
+            }
+            var snapped = list.Select(c => c with { T0 = mapped[c.T0], T1 = mapped[c.T1] }).ToList();
+            var parts = new List<Segment>();
+            for (var n = 0; n + 1 < breaks.Count; n++)
+            {
+                double s0 = breaks[n], s1 = breaks[n + 1];
+                var cover = snapped.Where(c => c.T0 <= s0 && c.T1 >= s1).OrderBy(c => c.Bottom).ThenBy(c => c.Id).ToList();
+                double at = 0;
+                foreach (var c in cover)
+                {
+                    Solid(s0, s1, at, c.Bottom);
+                    at = Math.Max(at, c.Top);
+                }
+                Solid(s0, s1, at, h);
+            }
+            segments[hostId] = parts;
+
+            void Solid(double from, double to, double bottom, double top)
+            {
+                var gap = top - bottom;
+                if (gap <= Tol) return;
+                if (gap < MinLength) throw new GltfExportException("gltf_precision", hid + " has a sill wall, lintel or mullion under 1 mm");
+                parts.Add(new Segment(from, to, bottom, top));
+            }
+        }
+        return segments;
+    }
+
+    static double WallLength(Element wall)
+    {
+        var g = wall.GeometryMetres;
+        return Math.Sqrt((g[2] - g[0]) * (g[2] - g[0]) + (g[3] - g[1]) * (g[3] - g[1]));
     }
 
     static void Coordinate(double value, string what, Element e)
@@ -159,22 +281,32 @@ public static class GltfExporter
         indices.AddRange([b, b + 1, b + 2, b, b + 2, b + 3]);
     }
 
-    static MeshData Wall(int index, Element e, double z0)
+    // A wall without openings is one flat-shaded box from its start A to its end B. With openings it is the solid
+    // boxes Cuts left over, in axis order and bottom up within each stretch; a box's ends are A + s * u on the axis
+    // (exactly A at s = 0 and B at the axis length), so its faces sit exactly thickness/2 either side of the axis.
+    static MeshData Wall(int index, Element e, double z0, List<Segment>? segments)
     {
         var g = e.GeometryMetres;
         double ax = g[0], ay = g[1], bx = g[2], by = g[3], h = g[4], t = g[5];
         double dx = bx - ax, dy = by - ay, len = Math.Sqrt(dx * dx + dy * dy);
         double ux = dx / len, uy = dy / len, nx = -uy, ny = ux, ht = t / 2, z1 = z0 + h;
-        // Plan corners: left of the axis (+n) and right of it (-n), at start A and end B. The axis is the centre line.
-        double[] p0 = [ax + nx * ht, ay + ny * ht], p1 = [bx + nx * ht, by + ny * ht], p2 = [bx - nx * ht, by - ny * ht], p3 = [ax - nx * ht, ay - ny * ht];
-        double[] At(double[] p, double z) => [p[0], p[1], z];
-        var positions = new List<float>(72); var normals = new List<float>(72); var indices = new List<uint>(36);
-        Quad(positions, normals, indices, [At(p0, z0), At(p1, z0), At(p2, z0), At(p3, z0)], 0, 0, -1); // bottom
-        Quad(positions, normals, indices, [At(p3, z1), At(p2, z1), At(p1, z1), At(p0, z1)], 0, 0, 1);  // top
-        Quad(positions, normals, indices, [At(p3, z0), At(p2, z0), At(p2, z1), At(p3, z1)], -nx, -ny, 0); // right face
-        Quad(positions, normals, indices, [At(p2, z0), At(p1, z0), At(p1, z1), At(p2, z1)], ux, uy, 0);   // end face
-        Quad(positions, normals, indices, [At(p1, z0), At(p0, z0), At(p0, z1), At(p1, z1)], nx, ny, 0);   // left face
-        Quad(positions, normals, indices, [At(p0, z0), At(p3, z0), At(p3, z1), At(p0, z1)], -ux, -uy, 0); // start face
+        var boxes = segments?.Count ?? 1;
+        var positions = new List<float>(72 * boxes); var normals = new List<float>(72 * boxes); var indices = new List<uint>(36 * boxes);
+        void Box(double[] a, double[] b, double za, double zb)
+        {
+            // Plan corners: left of the axis (+n) and right of it (-n), at a and b. The axis is the centre line.
+            double[] p0 = [a[0] + nx * ht, a[1] + ny * ht], p1 = [b[0] + nx * ht, b[1] + ny * ht], p2 = [b[0] - nx * ht, b[1] - ny * ht], p3 = [a[0] - nx * ht, a[1] - ny * ht];
+            double[] At(double[] p, double z) => [p[0], p[1], z];
+            Quad(positions, normals, indices, [At(p0, za), At(p1, za), At(p2, za), At(p3, za)], 0, 0, -1); // bottom
+            Quad(positions, normals, indices, [At(p3, zb), At(p2, zb), At(p1, zb), At(p0, zb)], 0, 0, 1);  // top
+            Quad(positions, normals, indices, [At(p3, za), At(p2, za), At(p2, zb), At(p3, zb)], -nx, -ny, 0); // right face
+            Quad(positions, normals, indices, [At(p2, za), At(p1, za), At(p1, zb), At(p2, zb)], ux, uy, 0);   // end face
+            Quad(positions, normals, indices, [At(p1, za), At(p0, za), At(p0, zb), At(p1, zb)], nx, ny, 0);   // left face
+            Quad(positions, normals, indices, [At(p0, za), At(p3, za), At(p3, zb), At(p0, zb)], -ux, -uy, 0); // start face
+        }
+        double[] Station(double s) => s == 0 ? [ax, ay] : s == len ? [bx, by] : [ax + ux * s, ay + uy * s];
+        if (segments is null) Box([ax, ay], [bx, by], z0, z1);
+        else foreach (var p in segments) Box(Station(p.S), Station(p.E), z0 + p.Bottom, z0 + p.Top);
         return new(index, GeometryCodec.Wall, positions.ToArray(), normals.ToArray(), indices.ToArray());
     }
 
@@ -194,6 +326,7 @@ public static class GltfExporter
         var byId = project.Elements.ToDictionary(e => e.Id);
         var level = Levels(project);
         double Elevation(Guid id) => level[id] is Guid l ? byId[l].GeometryMetres[0] : 0;
+        var hostOf = new Dictionary<Guid, Guid>();
 
         var meshes = new List<MeshData>();
         for (var i = 0; i < project.Elements.Length; i++)
@@ -213,7 +346,7 @@ public static class GltfExporter
                     double dx = g[2] - g[0], dy = g[3] - g[1], len = Math.Sqrt(dx * dx + dy * dy), ox = -dy / len * (g[5] / 2), oy = dx / len * (g[5] / 2);
                     Coordinate(g[0] + ox, "start face corner.x", e); Coordinate(g[1] + oy, "start face corner.y", e); Coordinate(g[0] - ox, "start face corner.x", e); Coordinate(g[1] - oy, "start face corner.y", e);
                     Coordinate(g[2] + ox, "end face corner.x", e); Coordinate(g[3] + oy, "end face corner.y", e); Coordinate(g[2] - ox, "end face corner.x", e); Coordinate(g[3] - oy, "end face corner.y", e);
-                    meshes.Add(Wall(i, e, z0));
+                    meshes.Add(Wall(i, e, z0, null));
                     break;
                 }
                 case GeometryCodec.Space:
@@ -228,6 +361,15 @@ public static class GltfExporter
                     Coordinate(g[0], "elevation", e);
                     break;
             }
+        }
+
+        // Openings: validated once every wall is, then the host meshes are rebuilt with their cuts (same mesh slot).
+        var cuts = Cuts(project, byId);
+        foreach (var e in project.Elements) if (e.Kind is Door or Window) hostOf[e.Id] = Host(e, byId).Id;
+        for (var m = 0; m < meshes.Count; m++)
+        {
+            var e = project.Elements[meshes[m].ElementIndex];
+            if (e.Kind == GeometryCodec.Wall && cuts.TryGetValue(e.Id, out var wallParts)) meshes[m] = Wall(meshes[m].ElementIndex, e, Elevation(e.Id), wallParts);
         }
 
         var kinds = MaterialKinds.Where(k => meshes.Any(m => m.Kind == k)).ToList();
@@ -258,7 +400,9 @@ public static class GltfExporter
             if (meshOf.TryGetValue(i, out var mi)) j.Append(",\"mesh\":").Append(I(mi));
             if (e.Kind == GeometryCodec.Level) j.Append(",\"translation\":[0,").Append(N(F(e.GeometryMetres[0]))).Append(",0]");
             j.Append(",\"extras\":{\"bim_id\":").Append(Str(id)).Append(",\"kind\":").Append(Str(e.Kind))
-                .Append(",\"type\":null,\"level\":").Append(level[e.Id] is Guid l ? Str(l.ToString("D")) : "null").Append("}}");
+                .Append(",\"type\":null,\"level\":").Append(level[e.Id] is Guid l ? Str(l.ToString("D")) : "null");
+            if (hostOf.TryGetValue(e.Id, out var host)) j.Append(",\"host\":").Append(Str(host.ToString("D")));
+            j.Append("}}");
         }
         j.Append(']');
 

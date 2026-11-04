@@ -29,6 +29,10 @@ string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 const string GoldenGlb = "28495187A66863D0BFD5F9E4CF91B78249AEAA018875A44623A2CAE1F2062FF9";
 const string GoldenGltf = "D3AB72246F4435ACD6A1D66105993BC364BB0B16B4FECC08C0C6640AE21C9C0E";
 const string GoldenEmptyGlb = "5427747C5A9F2E47C77BDAAAE83421FAAEF8C780046E903FC956B8112C82152D";
+// P8-07 opening fixture (wall 6 m with a door and a window), from the same independent reimplementation extended with
+// the documented opening split; it reproduces the three goldens above before producing these.
+const string GoldenOpeningsGlb = "47A14D5CE34105E4145CBBD9207B7D7EEBFC472BAB8B23EBF9686AB677966D3F";
+const string GoldenOpeningsGltf = "039FC0A70FB5BEB58EDE15A3BC59816C0EE2A31CDA4BFBCC5B399F7C1FA79DBF";
 
 var prov = new Provenance("test", "approved");
 Guid G(string s) => Guid.Parse(s);
@@ -212,7 +216,7 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
                 }
             }
             // Closed meshes (every edge, by position, shared by exactly two triangles) must face outward: each
-            // triangle's geometric normal points away from the vertex centroid. Catches inside-out walls whose
+            // triangle's geometric normal points away from its connected piece's vertex centroid. Catches inside-out walls whose
             // winding and vertex normals were flipped together.
             if (indicesInRange && indexCount % 3 == 0)
             {
@@ -229,12 +233,27 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
                 }
                 if (edgeUse.Count > 0 && edgeUse.Values.All(u => u == 2))
                 {
-                    double mx = 0, my = 0, mz = 0;
-                    for (var k = 0; k < count; k++) { mx += ReadF(pos, k, 0); my += ReadF(pos, k, 1); mz += ReadF(pos, k, 2); }
-                    mx /= count; my /= count; mz /= count;
+                    // Each connected closed piece (triangles joined through shared positions) is judged against its own
+                    // vertex centroid, so a wall split by a full-height opening into separate boxes is checked per box.
+                    var parent = new Dictionary<(float, float, float), (float, float, float)>();
+                    (float, float, float) Find((float, float, float) p) { while (parent[p] != p) p = parent[p] = parent[parent[p]]; return p; }
+                    for (var k = 0; k < count; k++) parent.TryAdd(V(k), V(k));
+                    for (var i = 0; i < indexCount; i += 3)
+                    {
+                        var r0 = Find(V((int)ReadIndex(ind, i)));
+                        for (var corner = 1; corner < 3; corner++) { var rc = Find(V((int)ReadIndex(ind, i + corner))); if (rc != r0) parent[rc] = r0; }
+                    }
+                    var centroid = new Dictionary<(float, float, float), (double X, double Y, double Z, int N)>();
+                    for (var k = 0; k < count; k++)
+                    {
+                        var rk = Find(V(k)); var sum = centroid.GetValueOrDefault(rk);
+                        centroid[rk] = (sum.X + ReadF(pos, k, 0), sum.Y + ReadF(pos, k, 1), sum.Z + ReadF(pos, k, 2), sum.N + 1);
+                    }
                     for (var i = 0; i < indexCount; i += 3)
                     {
                         var a = V((int)ReadIndex(ind, i)); var b = V((int)ReadIndex(ind, i + 1)); var c = V((int)ReadIndex(ind, i + 2));
+                        var piece = centroid[Find(a)];
+                        double mx = piece.X / piece.N, my = piece.Y / piece.N, mz = piece.Z / piece.N;
                         double ux = b.Item1 - a.Item1, uy = b.Item2 - a.Item2, uz = b.Item3 - a.Item3, vx = c.Item1 - a.Item1, vy = c.Item2 - a.Item2, vz = c.Item3 - a.Item3;
                         double cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
                         double tx = (a.Item1 + b.Item1 + c.Item1) / 3 - mx, ty = (a.Item2 + b.Item2 + c.Item2) / 3 - my, tz = (a.Item3 + b.Item3 + c.Item3) / 3 - mz;
@@ -499,6 +518,195 @@ try
     Check(interleavedIssues.Count == 0, "interleaved byteStride 24 layout passes the validator (reads honour byteStride)", string.Join("; ", interleavedIssues));
     Check(new[] { w1, w3, sp }.All(n => Positions(interleavedRoot, interleavedBin, NodeNamed(interleavedRoot, n.GetProperty("name").GetString()!)).SequenceEqual(Positions(root, bin, n))),
         "Positions honours byteStride: interleaved layout reads the same vertices");
+
+    // ---------------- P8-07 wall openings (door/window [ax,ay,bx,by,sill,height], dependencies [level, host wall]) ----------------
+    var WO = G("0b000000-0000-4000-8000-0000000000a1"); var D1 = G("0e000000-0000-4000-8000-000000000001"); var N1 = G("0e000000-0000-4000-8000-000000000002");
+    // BIM box x0..x1, y0..y1, z0..z1 -> glTF (x, z, -y) min/max.
+    (double[] Min, double[] Max) Gl(double x0, double x1, double y0, double y1, double z0, double z1) => (new[] { x0, z0, -y1 }, new[] { x1, z1, -y0 });
+    // The wall mesh is a sequence of 24-vertex boxes; each group's bounding box, in emission order.
+    (double[] Min, double[] Max)[] Boxes(float[] p) => Enumerable.Range(0, p.Length / 72).Select(k => Box(p.Skip(72 * k).Take(72).ToArray())).ToArray();
+    bool Overlaps((double[] Min, double[] Max) a, (double[] Min, double[] Max) b) => Enumerable.Range(0, 3).All(c => a.Min[c] < b.Max[c] - 1e-6 && b.Min[c] < a.Max[c] - 1e-6);
+    double Volume((double[] Min, double[] Max) b) => (b.Max[0] - b.Min[0]) * (b.Max[1] - b.Min[1]) * (b.Max[2] - b.Min[2]);
+    string Bs((double[] Min, double[] Max)[] boxes) => string.Join(" ", boxes.Select(b => B(b)));
+    var openingFixture = new Project(PID, 2, [
+        E(L1, "level", [0]),
+        E(WO, "wall", [0, 0, 6, 0, 3, 0.2], L1),
+        E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO),
+        E(N1, "window", [3.5, 0, 5, 0, 0.9, 1.2], L1, WO)]);
+    var openingGlb = GltfExporter.ExportGlb(openingFixture);
+    var (openingIssues, openingRoot, openingBin) = Parse(openingGlb);
+    Check(openingIssues.Count == 0, "wall with a door and a window passes the glTF 2.0 structural validator", string.Join("; ", openingIssues));
+    var hostNode = NodeNamed(openingRoot, "wall " + WO.ToString("D"));
+    var hostPositions = Positions(openingRoot, openingBin, hostNode);
+    // Pier, door lintel, pier, window sill wall, window lintel, pier: 6 boxes of 24 vertices and 12 triangles.
+    Check(hostPositions.Length == 6 * 24 * 3 && IndexCount(openingRoot, hostNode) == 6 * 36, "host wall is split into 6 solid boxes (144 vertices, 72 triangles)", (hostPositions.Length / 3).ToString(CultureInfo.InvariantCulture) + " vertices");
+    var expectedBoxes = new[] {
+        Gl(0, 1, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 2.1, 3), Gl(2, 3.5, -0.1, 0.1, 0, 3),
+        Gl(3.5, 5, -0.1, 0.1, 0, 0.9), Gl(3.5, 5, -0.1, 0.1, 2.1, 3), Gl(5, 6, -0.1, 0.1, 0, 3) };
+    var hostBoxes = Boxes(hostPositions);
+    Check(hostBoxes.Length == expectedBoxes.Length && hostBoxes.Zip(expectedBoxes).All(p => BoxIs(p.First, p.Second.Min, p.Second.Max, 1e-6)),
+        "host wall boxes are the piers and the parts below/above each opening, in axis order", Bs(hostBoxes));
+    var doorHole = Gl(1, 2, -0.1, 0.1, 0, 2.1); var windowHole = Gl(3.5, 5, -0.1, 0.1, 0.9, 2.1);
+    Check(hostBoxes.All(b => !Overlaps(b, doorHole) && !Overlaps(b, windowHole)), "no solid box enters the door or window opening volume");
+    var solid = hostBoxes.Sum(b => Volume(b));
+    Check(Math.Abs(solid - (6 * 3 - 1 * 2.1 - 1.5 * 1.2) * 0.2) < 1e-5, "solid boxes fill the wall volume minus the openings exactly", solid.ToString(CultureInfo.InvariantCulture));
+    Check(BoxIs(Box(hostPositions), [0, 0, -0.1], [6, 3, 0.1], 1e-6), "host wall overall bounds are unchanged by its openings", B(Box(hostPositions)));
+    // Every box faces outward on its own: each face's normal points away from its box centroid.
+    var outward = true;
+    for (var k = 0; k < hostPositions.Length / 72 && outward; k++)
+    {
+        var group = hostPositions.Skip(72 * k).Take(72).ToArray();
+        double cx = 0, cy = 0, cz = 0;
+        for (var v = 0; v < 24; v++) { cx += group[3 * v] / 24.0; cy += group[3 * v + 1] / 24.0; cz += group[3 * v + 2] / 24.0; }
+        for (var q = 0; q < 6 && outward; q++)
+        {
+            // Each face is 4 consecutive vertices; triangles (0,1,2) (0,2,3).
+            double[] V(int i) => [group[3 * (4 * q + i)], group[3 * (4 * q + i) + 1], group[3 * (4 * q + i) + 2]];
+            var fa = V(0); var fb = V(1); var fc = V(2);
+            double ux = fb[0] - fa[0], uy = fb[1] - fa[1], uz = fb[2] - fa[2], vx = fc[0] - fa[0], vy = fc[1] - fa[1], vz = fc[2] - fa[2];
+            double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+            double tx = (fa[0] + fb[0] + fc[0]) / 3 - cx, ty = (fa[1] + fb[1] + fc[1]) / 3 - cy, tz = (fa[2] + fb[2] + fc[2]) / 3 - cz;
+            if (tx * nx + ty * ny + tz * nz <= 0) outward = false;
+        }
+    }
+    Check(outward, "every box of the split wall faces outward");
+    Check(Arr(openingRoot, "meshes").Length == 1, "doors and windows get no mesh of their own (only the cut in the host)");
+    foreach (var (openingId, openingKind) in new[] { (D1, "door"), (N1, "window") })
+    {
+        var openingNode = NodeNamed(openingRoot, openingKind + " " + openingId.ToString("D"));
+        var ox = openingNode.GetProperty("extras");
+        Check(!openingNode.TryGetProperty("mesh", out _) && ox.EnumerateObject().Select(p => p.Name).SequenceEqual(new[] { "bim_id", "kind", "type", "level", "host" })
+            && ox.GetProperty("kind").GetString() == openingKind && ox.GetProperty("level").GetString() == L1.ToString("D") && ox.GetProperty("host").GetString() == WO.ToString("D"),
+            openingKind + " node is empty and carries extras {bim_id, kind, type, level, host}", ox.ToString());
+    }
+    Check(GltfExporter.ExportGlb(openingFixture).SequenceEqual(openingGlb) && GltfExporter.ExportGltf(openingFixture) == GltfExporter.ExportGltf(openingFixture), "openings export is byte-identical on rerun");
+    var reversedOpening = openingFixture with { Elements = [openingFixture.Elements[0], openingFixture.Elements[1], E(D1, "door", [2, 0, 1, 0, 0, 2.1], L1, WO), openingFixture.Elements[3]] };
+    Check(GltfExporter.ExportGlb(reversedOpening).SequenceEqual(openingGlb), "opening end points given against the host direction give the same bytes");
+    var shuffledOpenings = openingFixture with { Elements = [openingFixture.Elements[0], openingFixture.Elements[1], openingFixture.Elements[3], openingFixture.Elements[2]] };
+    var shuffledParse = Parse(GltfExporter.ExportGlb(shuffledOpenings));
+    Check(Positions(shuffledParse.Root, shuffledParse.Bin, NodeNamed(shuffledParse.Root, "wall " + WO.ToString("D"))).SequenceEqual(hostPositions), "host mesh does not depend on opening element order");
+    var gltfOpenings = ValidateJson(JsonDocument.Parse(GltfExporter.ExportGltf(openingFixture)).RootElement, openingBin, glbMode: false);
+    Check(gltfOpenings.Count == 0, "openings .gltf passes the structural validator", string.Join("; ", gltfOpenings));
+    Check(GltfExporter.ExportGlb(fixture).SequenceEqual(glb) && Hex(glb) == GoldenGlb, "a project without openings keeps its golden bytes");
+
+    // A full-height door at the wall start leaves only the remaining pier.
+    var atStart = Parse(GltfExporter.ExportGlb(new Project(PID, 0, [E(L1, "level", [0]), E(WO, "wall", [0, 0, 4, 0, 3, 0.2], L1), E(D1, "door", [0, 0, 1, 0, 0, 3], L1, WO)])));
+    var atStartBoxes = Boxes(Positions(atStart.Root, atStart.Bin, NodeNamed(atStart.Root, "wall " + WO.ToString("D"))));
+    Check(atStart.Issues.Count == 0 && atStartBoxes.Length == 1 && BoxIs(atStartBoxes[0], [1, 0, -0.1], [4, 3, 0.1], 1e-6), "full-height opening at the wall start leaves one pier (no zero-length box)", Bs(atStartBoxes));
+    // Touching openings share a station: pier, door lintel, window sill wall, window lintel, pier.
+    var touching = Parse(GltfExporter.ExportGlb(new Project(PID, 0, [E(L1, "level", [0]), E(WO, "wall", [0, 0, 4, 0, 3, 0.2], L1),
+        E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [2, 0, 3, 0, 1, 1], L1, WO)])));
+    var touchingBoxes = Boxes(Positions(touching.Root, touching.Bin, NodeNamed(touching.Root, "wall " + WO.ToString("D"))));
+    Check(touching.Issues.Count == 0 && touchingBoxes.Length == 5 && BoxIs(touchingBoxes[2], [2, 0, -0.1], [3, 1, 0.1], 1e-6) && BoxIs(touchingBoxes[3], [2, 2, -0.1], [3, 3, 0.1], 1e-6),
+        "touching openings give 5 boxes and no pier between them", Bs(touchingBoxes));
+    // Diagonal host on an elevated level: axis (1,1)->(4,5), direction (0.6,0.8); opening s = 1..2 m, sill 0.5, height 1.
+    var diagonalOpening = Parse(GltfExporter.ExportGlb(new Project(PID, 0, [E(L1, "level", [1.5]), E(WO, "wall", [1, 1, 4, 5, 2, 0.3], L1),
+        E(N1, "window", [1.6, 1.8, 2.2, 2.6, 0.5, 1], L1, WO)])));
+    var diagonalBoxes = Boxes(Positions(diagonalOpening.Root, diagonalOpening.Bin, NodeNamed(diagonalOpening.Root, "wall " + WO.ToString("D"))));
+    Check(diagonalOpening.Issues.Count == 0 && diagonalBoxes.Length == 4, "diagonal host with a window gives 4 valid boxes", string.Join("; ", diagonalOpening.Issues) + " " + Bs(diagonalBoxes));
+    Check(diagonalBoxes.Length == 4 && Math.Abs(diagonalBoxes[1].Min[1] - 1.5) < 1e-6 && Math.Abs(diagonalBoxes[1].Max[1] - 2.0) < 1e-6 && Math.Abs(diagonalBoxes[2].Min[1] - 3.0) < 1e-6 && Math.Abs(diagonalBoxes[2].Max[1] - 3.5) < 1e-6,
+        "diagonal window sill wall spans level..sill and its lintel sill+height..top", Bs(diagonalBoxes));
+
+    // Compiled layout intent (IntentCompiler door/window elements) exports with its openings cut.
+    var intentPid = G("7e57c0de-0000-4000-8000-0000000000b7");
+    var layout = new LayoutIntent(LayoutIntent.CurrentVersion, prov, [new IntentLevel("l0", "Ground", 0)], [new IntentWallType("w", "Wall", 0.2, 3)],
+        [new IntentRoom("r", "Room", "l0", "w", 0, 0, 6, 4)],
+        [new IntentOpening("d", IntentOpeningKind.Door, new IntentRoomSide("r", IntentSide.South), 1, 1, 2.1, 0),
+         new IntentOpening("n", IntentOpeningKind.Window, new IntentRoomSide("r", IntentSide.North), 2, 1.5, 1.2, 0.9)]);
+    var compiled = IntentCompiler.Compile(intentPid, 1, layout);
+    var compiledParse = Parse(GltfExporter.ExportGlb(compiled));
+    Check(compiledParse.Issues.Count == 0, "compiled layout intent with a door and a window passes the structural validator", string.Join("; ", compiledParse.Issues));
+    (double[] Min, double[] Max)[] CompiledWall(IntentSide side) => Boxes(Positions(compiledParse.Root, compiledParse.Bin, NodeNamed(compiledParse.Root, "wall " + IntentCompiler.Id(intentPid, IntentCompiler.WallKey("r", side)).ToString("D"))));
+    var compiledSouth = CompiledWall(IntentSide.South); var compiledNorth = CompiledWall(IntentSide.North); var compiledEast = CompiledWall(IntentSide.East);
+    Check(compiledSouth.Length == 3 && compiledNorth.Length == 4 && compiledEast.Length == 1, "compiled door host has 3 boxes, window host 4, an unopened wall 1",
+        compiledSouth.Length.ToString(CultureInfo.InvariantCulture) + "/" + compiledNorth.Length.ToString(CultureInfo.InvariantCulture) + "/" + compiledEast.Length.ToString(CultureInfo.InvariantCulture));
+    var compiledDoor = compiled.Elements.Single(e => e.Kind == "door").GeometryMetres;
+    var compiledDoorHole = Gl(Math.Min(compiledDoor[0], compiledDoor[2]), Math.Max(compiledDoor[0], compiledDoor[2]), -0.1, 0.1, 0, 2.1);
+    Check(compiledSouth.All(b => !Overlaps(b, compiledDoorHole)), "compiled door opening is empty in the south wall mesh", Bs(compiledSouth));
+
+    // Opening refusals.
+    Project Host(params Element[] openings) => new(PID, 0, [E(L1, "level", [0]), E(WO, "wall", [0, 0, 4, 0, 3, 0.2], L1), E(SP, "space", [0, 0, 1, 1], L1), .. openings]);
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2], L1, WO), E(N1, "window", [1.5, 0, 3, 0, 1, 1], L1, WO)))) == "gltf_opening_overlap", "refuses overlapping openings on one host");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [3.5, 0, 4.5, 0, 0, 2], L1, WO)))) == "gltf_opening_outside_wall", "refuses an opening past the host axis end");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0.5, 2, 0.5, 0, 2], L1, WO)))) == "gltf_opening_outside_wall", "refuses an opening off the host axis");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3.5], L1, WO)))) == "gltf_opening_outside_wall", "refuses an opening taller than its host");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(N1, "window", [1, 0, 2, 0, -0.1, 1], L1, WO)))) == "gltf_opening_outside_wall", "refuses a negative sill");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2], L1)))) == "gltf_opening_host", "refuses an opening without a host wall dependency");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2], L1, SP)))) == "gltf_opening_host", "refuses an opening hosted by a non-wall");
+    Check(Code(() => GltfExporter.ExportGlb(new Project(PID, 0, [E(L1, "level", [0]), E(WO, "wall", [0, 0, 4, 0, 3, 0.2], L1), E(W2, "wall", [0, 1, 4, 1, 3, 0.2], L1), E(D1, "door", [1, 0, 2, 0, 0, 2], L1, WO, W2)]))) == "gltf_opening_host", "refuses an opening with two host walls");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 1], L1, WO)))) == "gltf_opening_geometry", "refuses a hosted [offset, width] opening (no sill or height in BIM-IR)");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 1, 0, 0, 2], L1, WO)))) == "gltf_opening_geometry", "refuses a zero-width opening");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 0], L1, WO)))) == "gltf_opening_geometry", "refuses a zero-height opening");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2], L1, WO), E(N1, "window", [2.0005, 0, 3, 0, 1, 1], L1, WO)))) == "gltf_precision", "refuses a sub-millimetre pier between openings");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(N1, "window", [1, 0, 2, 0, 0.0004, 1], L1, WO)))) == "gltf_precision", "refuses a sub-millimetre sill wall");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "opening", [1, 0, 2, 0, 0, 2], L1, WO)))) == "geometry_kind_unsupported", "kind opening stays unsupported");
+
+    // ---------------- P8-07 review: goldens, wall-plane overlap, host direction, snap band, plan corners ----------------
+    Check(Hex(openingGlb) == GoldenOpeningsGlb, "opening fixture GLB golden SHA-256", Hex(openingGlb) + " length " + openingGlb.Length.ToString(CultureInfo.InvariantCulture));
+    var openingGltfBytes = Encoding.UTF8.GetBytes(GltfExporter.ExportGltf(openingFixture));
+    Check(Hex(openingGltfBytes) == GoldenOpeningsGltf, "opening fixture .gltf golden SHA-256", Hex(openingGltfBytes) + " length " + openingGltfBytes.Length.ToString(CultureInfo.InvariantCulture));
+    (double[] Min, double[] Max)[] WallBoxes(params Element[] openings)
+    {
+        var parsed = Parse(GltfExporter.ExportGlb(Host(openings)));
+        Check(parsed.Issues.Count == 0, "split wall passes the structural validator", string.Join("; ", parsed.Issues));
+        return Boxes(Positions(parsed.Root, parsed.Bin, NodeNamed(parsed.Root, "wall " + WO.ToString("D"))));
+    }
+    bool BoxesAre((double[] Min, double[] Max)[] actual, params (double[] Min, double[] Max)[] expected) =>
+        actual.Length == expected.Length && actual.Zip(expected).All(p => BoxIs(p.First, p.Second.Min, p.Second.Max, 1e-6));
+    var N2 = G("0e000000-0000-4000-8000-000000000003");
+    // A transom window above a door (same stretch, disjoint heights) is accepted: pier, door-transom mullion, top, pier.
+    var transom = WallBoxes(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [1, 0, 2, 0, 2.3, 0.5], L1, WO));
+    Check(BoxesAre(transom, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 2.1, 2.3), Gl(1, 2, -0.1, 0.1, 2.8, 3), Gl(2, 4, -0.1, 0.1, 0, 3)),
+        "transom window above a door gives 4 boxes with the 2.1..2.3 m band kept", Bs(transom));
+    var stacked = WallBoxes(E(N1, "window", [1, 0, 2, 0, 0.5, 0.5], L1, WO), E(N2, "window", [1, 0, 2, 0, 1.5, 0.5], L1, WO));
+    Check(BoxesAre(stacked, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 0, 0.5), Gl(1, 2, -0.1, 0.1, 1, 1.5), Gl(1, 2, -0.1, 0.1, 2, 3), Gl(2, 4, -0.1, 0.1, 0, 3)),
+        "stacked windows give 5 boxes, bottom up within their stretch", Bs(stacked));
+    var staggered = WallBoxes(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [1.5, 0, 3, 0, 2.3, 0.5], L1, WO));
+    Check(staggered.Length == 7 && Math.Abs(staggered.Sum(b => Volume(b)) - (4 * 3 - 1 * 2.1 - 1.5 * 0.5) * 0.2) < 1e-5
+        && staggered.All(b => !Overlaps(b, Gl(1, 2, -0.1, 0.1, 0, 2.1)) && !Overlaps(b, Gl(1.5, 3, -0.1, 0.1, 2.3, 2.8))),
+        "partly overlapping stretches with disjoint heights split into 7 boxes that leave both openings empty", Bs(staggered));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [1, 0, 2, 0, 2.0, 0.5], L1, WO)))) == "gltf_opening_overlap", "refuses a window overlapping a door head by 0.1 m");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(N1, "window", [1, 0, 2, 0, 0.5, 1], L1, WO), E(N2, "window", [1.5, 0, 2.5, 0, 1, 1], L1, WO)))) == "gltf_opening_overlap", "refuses windows overlapping along and across");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [1, 0, 2, 0, 2.1, 0.5], L1, WO)))) is null, "a window sitting exactly on a door head is accepted (touching)");
+    // Reversed host: axis (6,0)->(0,0); a door at x 1..2 sits at t 4..5 from the host start.
+    var reversedHost = Parse(GltfExporter.ExportGlb(new Project(PID, 0, [E(L1, "level", [0]), E(WO, "wall", [6, 0, 0, 0, 3, 0.2], L1), E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO)])));
+    var reversedBoxes = Boxes(Positions(reversedHost.Root, reversedHost.Bin, NodeNamed(reversedHost.Root, "wall " + WO.ToString("D"))));
+    Check(reversedHost.Issues.Count == 0 && BoxesAre(reversedBoxes, Gl(2, 6, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 2.1, 3), Gl(0, 1, -0.1, 0.1, 0, 3)),
+        "reversed host wall: piers x 2..6 then 0..1 around the door lintel, in host axis order", Bs(reversedBoxes));
+    var flush = WallBoxes(E(D1, "door", [3, 0, 4, 0, 0, 2.1], L1, WO));
+    Check(BoxesAre(flush, Gl(0, 3, -0.1, 0.1, 0, 3), Gl(3, 4, -0.1, 0.1, 2.1, 3)) && flush[1].Max[0] == 4, "opening flush with the wall end leaves no end pier; the lintel ends exactly at B", Bs(flush));
+    // Snap band: within OpeningTolerance (1e-6 m) snaps; 2e-6 m is refused.
+    var gapIn = WallBoxes(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [2.0000005, 0, 3, 0, 1, 1], L1, WO));
+    Check(gapIn.Length == 5 && gapIn[2].Min[0] == 2 && gapIn[1].Max[0] == 2, "a 5e-7 m gap between openings snaps closed (no pier)", Bs(gapIn));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [2.000002, 0, 3, 0, 1, 1], L1, WO)))) == "gltf_precision", "a 2e-6 m gap between openings is a sub-millimetre pier");
+    var offIn = WallBoxes(E(D1, "door", [1, 5e-7, 2, 5e-7, 0, 2.1], L1, WO));
+    Check(offIn.Length == 3 && offIn.All(b => b.Min[2] == (double)(-0.1f) && b.Max[2] == (double)0.1f), "an end 5e-7 m off the axis is accepted and every face stays exactly thickness/2 from the axis", Bs(offIn));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 2e-6, 2, 2e-6, 0, 2.1], L1, WO)))) == "gltf_opening_outside_wall", "an end 2e-6 m off the axis is refused");
+    var sillIn = WallBoxes(E(N1, "window", [1, 0, 2, 0, 5e-7, 1], L1, WO));
+    Check(BoxesAre(sillIn, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 1.0000005, 3), Gl(2, 4, -0.1, 0.1, 0, 3)), "a 5e-7 m sill snaps to the base (no sill wall)", Bs(sillIn));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(N1, "window", [1, 0, 2, 0, 2e-6, 1], L1, WO)))) == "gltf_precision", "a 2e-6 m sill is a sub-millimetre sill wall");
+    // Validator per-piece check is not vacuous: two disjoint boxes with one face flipped inside out are still caught.
+    var twoPieces = Parse(GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3], L1, WO))));
+    var twoJson = Encoding.UTF8.GetString(GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3], L1, WO))), 20, (int)BinaryPrimitives.ReadUInt32LittleEndian(GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3], L1, WO))).AsSpan(12))).TrimEnd(' ');
+    var twoViews = Arr(twoPieces.Root, "bufferViews"); var twoAccessors = Arr(twoPieces.Root, "accessors");
+    int twoIndexAt = Int(twoViews[2], "byteOffset", 0) + Int(twoAccessors[2], "byteOffset", 0), twoNormalAt = Int(twoViews[1], "byteOffset", 0) + Int(twoAccessors[1], "byteOffset", 0);
+    var twoFlipped = (byte[])twoPieces.Bin.Clone();
+    // Second box (vertices 24..47), its bottom face: reverse both triangles and negate its four normals.
+    uint[] twoTris = [24, 26, 25, 24, 27, 26];
+    for (var i = 0; i < twoTris.Length; i++) BinaryPrimitives.WriteUInt32LittleEndian(twoFlipped.AsSpan(twoIndexAt + 4 * (36 + i)), twoTris[i]);
+    for (var i = 0; i < 12; i++) { var at = twoNormalAt + 4 * (72 + i); BinaryPrimitives.WriteSingleLittleEndian(twoFlipped.AsSpan(at), -BinaryPrimitives.ReadSingleLittleEndian(twoFlipped.AsSpan(at))); }
+    var twoIssues = Parse(Repack(twoJson, twoFlipped)).Issues;
+    Check(twoPieces.Issues.Count == 0 && twoIssues.Any(i => i.Contains("mesh 0 triangle 12 faces inward", StringComparison.Ordinal)), "validator checks each disjoint closed box of a split wall for outward faces", string.Join("; ", twoIssues));
+    var headIn = WallBoxes(E(D1, "door", [1, 0, 2, 0, 0, 3 - 5e-7], L1, WO));
+    Check(BoxesAre(headIn, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(2, 4, -0.1, 0.1, 0, 3)), "a head 5e-7 m below the top snaps to it (no lintel)", Bs(headIn));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3 - 2e-6], L1, WO)))) == "gltf_precision", "a head 2e-6 m below the top is a sub-millimetre lintel");
+    // Diagonal host plan corners: the first pier spans t 0..1 on axis (1,1)+(0.6,0.8)t with half thickness 0.15 along
+    // (-0.8,0.6): corners (0.88,1.09) (1.12,0.91) at A and (1.48,1.89) (1.72,1.71) at t = 1, mapped to glTF (x, -y).
+    var diagonalPier = Positions(diagonalOpening.Root, diagonalOpening.Bin, NodeNamed(diagonalOpening.Root, "wall " + WO.ToString("D"))).Take(72).ToArray();
+    double[][] corners = [[0.88, 1.09], [1.12, 0.91], [1.48, 1.89], [1.72, 1.71]];
+    var pierPlan = Enumerable.Range(0, 24).Select(v => (X: (double)diagonalPier[3 * v], Y: -(double)diagonalPier[3 * v + 2])).ToArray();
+    Check(pierPlan.All(p => corners.Any(c => Math.Abs(p.X - c[0]) < 1e-6 && Math.Abs(p.Y - c[1]) < 1e-6)) && corners.All(c => pierPlan.Any(p => Math.Abs(p.X - c[0]) < 1e-6 && Math.Abs(p.Y - c[1]) < 1e-6)),
+        "diagonal host pier plan corners are A and A + t u offset by thickness/2 along the normal", string.Join(" ", pierPlan.Distinct().Select(p => p.X.ToString(CultureInfo.InvariantCulture) + "," + p.Y.ToString(CultureInfo.InvariantCulture))));
 
     // ---------------- bounded input and refusals ----------------
     Project Levels(int n) => new(PID, 0, Enumerable.Range(0, n).Select(i => E(new Guid(i + 1, 0, 0, new byte[8]), "level", [i * 0.5])).ToArray());
