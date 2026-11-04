@@ -102,6 +102,10 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   would delete 1 element(s) (ids 215987)", an internal element with no category (probably a join/warning helper with
   the toposolid). Fixed in chat-floor-fixes: run a dry run, read `deleted` (UniqueId, id, category, class), and repeat
   the real change with `confirm_deletions` = those UniqueIds; unconfirmed deletions are still refused.
+- **Deleting a curtain wall with pinned panels** (`element.delete` ...00034a49): refused because its own panel ...00034a4c
+  is pinned (Revit pins the panels and mullions its type's grid layout places). Fixed in chat-floor-fixes: pinned grid
+  lines, panels and mullions of a delete target no longer refuse it; a pinned target, foreign pinned dependents and
+  grouped grid members still do. The API cannot tell a layout pin from a user's pin on a panel of the wall being deleted.
 
 ## Pending capabilities found in real use
 - `wall.set_profile` (gable walls on 2025.2) — in progress.

@@ -224,17 +224,19 @@ internal static partial class CommandExecutor
     // Host), a sketch among the dependents (Sketch.OwnerId) with its sketch plane and elements, and an element without a
     // category (not a type or view) among a target's GetDependentElements. Unverified in Revit: that the owner's curtain
     // grid ...00034896 and profiled wall/roof sketch ...00034904 fall under these rules.
-    static Dictionary<string, string> SubElementOwners(Document d, IReadOnlyList<RevitElement> targets, IReadOnlyList<string> dependentUids)
+    // gridMembers receives the UniqueIds of the curtain grid lines, panels and mullions among them (DeleteTargetFacts.GridMember).
+    static Dictionary<string, string> SubElementOwners(Document d, IReadOnlyList<RevitElement> targets, IReadOnlyList<string> dependentUids, HashSet<string> gridMembers)
     {
         var owners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        void Own(ElementId id, string ownerUid)
+        void Own(ElementId id, string ownerUid, bool gridMember = false)
         {
-            if (d.GetElement(id) is { } element && !string.Equals(element.UniqueId, ownerUid, StringComparison.OrdinalIgnoreCase)) owners.TryAdd(element.UniqueId, ownerUid);
+            if (d.GetElement(id) is not { } element || string.Equals(element.UniqueId, ownerUid, StringComparison.OrdinalIgnoreCase)) return;
+            if (owners.TryAdd(element.UniqueId, ownerUid) && gridMember) gridMembers.Add(element.UniqueId);
         }
         void Grid(CurtainGrid? grid, string ownerUid)
         {
             if (grid is null) return;
-            foreach (var id in grid.GetUGridLineIds().Concat(grid.GetVGridLineIds()).Concat(grid.GetPanelIds()).Concat(grid.GetMullionIds())) Own(id, ownerUid);
+            foreach (var id in grid.GetUGridLineIds().Concat(grid.GetVGridLineIds()).Concat(grid.GetPanelIds()).Concat(grid.GetMullionIds())) Own(id, ownerUid, gridMember: true);
         }
         foreach (var target in targets)
         {
@@ -252,7 +254,7 @@ internal static partial class CommandExecutor
                 if (sketch.SketchPlane is { } plane) Own(plane.Id, sketch.UniqueId);
                 foreach (var id in sketch.GetAllElements()) Own(id, sketch.UniqueId);
             }
-            else if (dependent is Panel or Mullion && ((FamilyInstance)dependent).Host is { } host) Own(dependent.Id, host.UniqueId);
+            else if (dependent is Panel or Mullion && ((FamilyInstance)dependent).Host is { } host) Own(dependent.Id, host.UniqueId, gridMember: true);
         }
         foreach (var target in targets)
             foreach (var id in target.GetDependentElements(null))
@@ -294,9 +296,10 @@ internal static partial class CommandExecutor
             }
             var cascade = CommandRulesModify.Cascade(targetUids, probeSet.Select(id => d.GetElement(new ElementId(id))?.UniqueId).ToArray());
             CommandRulesModify.CheckCascade(cascade, protectedUids);
-            var owners = SubElementOwners(d, targets, cascade.Dependents);
+            var gridMembers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var owners = SubElementOwners(d, targets, cascade.Dependents, gridMembers);
             CommandRulesModify.CheckDependents(cascade.Dependents.Select(uid => DeleteFacts(d, d.GetElement(uid), projectInformation?.Id, store.Storage?.Id, activeViewId)
-                with { OwnerUid = owners.TryGetValue(uid, out var owner) ? owner : null }).ToArray(), targetUids);
+                with { OwnerUid = owners.TryGetValue(uid, out var owner) ? owner : null, GridMember = gridMembers.Contains(uid) }).ToArray(), targetUids);
             if (!args.DryRun) CommandRulesModify.CheckConfirmed(cascade.Dependents, args.ConfirmDependents);
             ModifyTransaction(d, request, failures, () =>
             {

@@ -94,7 +94,8 @@ public static class CommandRulesModify
     // Every element the cascade would remove must be deletable on its own terms: a pinned, grouped or otherwise
     // protected dependent refuses the whole delete. A sub-element whose OwnerUid chain (through other dependents) reaches
     // a target is deleted by Revit with its owner and is refused by CanDeleteElement on its own (owner, 2026-11-04: a
-    // curtain wall's grid, a profiled wall's or roof's sketch), so only CanDeleteElement is waived for it.
+    // curtain wall's grid, a profiled wall's or roof's sketch), so CanDeleteElement is waived for it, and Pinned too
+    // when it is a curtain grid member (GridMember: a grid line, panel or mullion of that host).
     public static void CheckDependents(IReadOnlyList<DeleteTargetFacts> dependents, IReadOnlyCollection<string>? targets = null)
     {
         var targetSet = new HashSet<string>(targets ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
@@ -113,7 +114,11 @@ public static class CommandRulesModify
         }
         foreach (var dependent in dependents)
         {
-            var facts = !dependent.CanDelete && OwnedByTarget(dependent) ? dependent with { CanDelete = true } : dependent;
+            // Curtain grid members of a target are also waived Pinned (owner, 2026-11-04: Revit pins the panels and
+            // mullions its type's grid layout places, ...00034a4c refused deleting curtain wall ...00034a49); the API
+            // cannot tell a layout pin from a user's, and deleting the host removes them either way.
+            var owned = (!dependent.CanDelete || dependent.Pinned) && OwnedByTarget(dependent);
+            var facts = !owned ? dependent : dependent with { CanDelete = true, Pinned = dependent.Pinned && !dependent.GridMember };
             if (Undeletable(facts) is { } reason) throw ArgsInvalid("args.element_uids", "the delete would also remove dependent element " + dependent.UniqueId + ", which " + reason);
         }
     }
