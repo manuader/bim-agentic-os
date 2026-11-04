@@ -37,6 +37,19 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   wall types; creating materials / wall types with layers is a pending capability.
 - **Saving**: there is no save command yet; the owner saves with *Guardar como*. Pending capability.
 
+## Lessons (2026-11-04, cabin redesign on the real project)
+- **Change a wall/roof type** without a dedicated command: `element.set_parameter` `ELEM_TYPE_PARAM` = the new type's
+  UniqueId (works for walls and roofs; Revit keeps hosted openings).
+- **Curtain wall between two walls**: Revit snaps the new wall's ends to the joined walls' location lines, so ask for
+  the endpoints on those lines (not the inner faces) or the readback rolls back.
+- **Gable triangle above a glass wall**: create a basic wall with `base_offset_mm` = eave height, set its height so its
+  top equals the ridge (Revit keeps the bounding box until the height changes), then `wall.set_profile` with the
+  triangle `[[0,eave],[L,eave],[L/2,ridge]]`.
+- **Foundation wall types** ("Foundation - 300mm Concrete") are structural by definition: pass `structural: true`.
+- **Plinth (zócalo) of concrete**: 300 mm foundation walls just outside the stone walls, base −250, height 650.
+- **Porch carved into the mass (sustracción)**: delete the end wall (dry run → confirm dependents), set back a glass
+  wall under the existing roof overhang, keep the long stone walls as blind porch sides.
+
 ## Pending capabilities found in real use
 - `wall.set_profile` (gable walls on 2025.2) — in progress.
 - Open an owner project (not a fixture copy) with the command pipe — in progress (`scripts/owner-open-project.ps1`).
