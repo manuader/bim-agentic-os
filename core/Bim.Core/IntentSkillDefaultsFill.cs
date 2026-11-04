@@ -74,14 +74,14 @@ public static partial class IntentSkillDefaults
         {
             var field = "levels[" + level.Key + "].elevation_m";
             if (level.ElevationMetres is { } elevation) { Explicit(field, Number(elevation)); levels.Add(new(level.Key, level.Name, elevation)); continue; }
-            if (level.Storey == 0)
+            if ((level.Storey ?? 0) == 0)
             {
                 sources.Add(new(field, "0", IntentFieldSource.RuleOrigin, "level-elevation-ground", Array.Empty<SkillTrace>()));
                 levels.Add(new(level.Key, level.Name, 0));
                 continue;
             }
             if (!numbers.TryGetValue(LevelHeight, out var height)) { Missing(field, LevelHeight, "level-elevation-from-storey"); continue; }
-            var value = Round(level.Storey * height.Value);
+            var value = Round((level.Storey ?? 0) * height.Value);
             sources.Add(new(field, Number(value), IntentFieldSource.DerivedOrigin, "level-elevation-from-storey", new[] { height.Source }));
             levels.Add(new(level.Key, level.Name, value));
         }
