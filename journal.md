@@ -1091,3 +1091,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay148 — 2026-11-04T00:52:53Z (Claude, cloud scheduled)
 - 00:52Z LOCK taken (was FREE since relay147 2026-11-04T00:20:56Z).
+- 00:53Z dispatching 3 workers (oldest-touched phases 4, 6, 7; all headless, no Revit-command overlap with the owner chat): P4-03 affected-only doc regeneration, P6-05 brief extraction from drawing text, P7-04 circulation model. P9-06 left for the owner's answer on chat-materials-types (no OWNER.md entry yet).
