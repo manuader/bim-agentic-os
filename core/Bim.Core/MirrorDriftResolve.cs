@@ -69,6 +69,7 @@ public static class MirrorDriftResolveCodes
     public const string DependencyUnmapped = "dependency_unmapped";
     public const string DependentsRemain = "dependents_remain";
     public const string IdConflict = "id_conflict";
+    public const string FieldsMissing = "fields_missing";
 }
 
 // Element: the BIM-IR element the operation writes (for delete, the committed element removed). MapUniqueId: the map

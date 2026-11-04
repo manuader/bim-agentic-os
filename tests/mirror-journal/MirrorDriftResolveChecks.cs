@@ -258,8 +258,10 @@ static class MirrorDriftResolveChecks
         Check(Find(levelPlan, W1) is { Adopt: { Status: MirrorDriftResolveStatus.Unsupported, Code: MirrorDriftResolveCodes.DependencyUnmapped }, Restore: { Status: MirrorDriftResolveStatus.Unsupported, Code: MirrorDriftResolveCodes.LevelUnbound }, Recommended: MirrorDriftResolveActions.None },
             "a wall on an unowned Revit level cannot be adopted and without a level binding cannot be restored", levelPlan.ToJson());
         var boundLevel = MirrorDriftResolve.Plan(levelReport, baseline, remapped, Bindings() with { Levels = new Dictionary<Guid, string> { [CoreL] = "Level 1" } });
-        Check(Find(boundLevel, W1)?.Restore is { Status: MirrorDriftResolveStatus.Proposed, Mode: MirrorDriftRestoreModes.Replace } && StepsOf(boundLevel, Find(boundLevel, W1)).Last() is { Command: "wall.create" } create && Args(create).GetProperty("level").GetString() == "Level 1",
+        Check(Find(boundLevel, W2)?.Restore is { Status: MirrorDriftResolveStatus.Proposed, Mode: MirrorDriftRestoreModes.Replace } && StepsOf(boundLevel, Find(boundLevel, W2)).Last() is { Command: "wall.create" } create && Args(create).GetProperty("level").GetString() == "Level 1",
             "a level binding takes precedence over the map", boundLevel.ToJson());
+
+        ReviewChecks(observation, committed, journal, report, resolution, heightOnly, taller);
 
         // ---- Refusals ----
         Check(Code(() => MirrorDriftResolve.Plan(MirrorDrift.Compare(drifted, committed, journal, options with { MaxFindings = 1 }), drifted, committed, Bindings())) == MirrorDriftResolveCodes.ReportTruncated,
@@ -301,5 +303,90 @@ static class MirrorDriftResolveChecks
                 && root.GetProperty("proposals")[0].GetProperty("restore").GetProperty("operations").GetArrayLength() == 2,
                 "resolution JSON says it is not applied and carries proposals and the restore plan", json);
         }
+    }
+    // Independent review: operation ids follow the observed Revit state; replaces and deletes never take hosted or
+    // dependent elements with them silently; malformed snapshot geometry and malformed reports are refused typed.
+    static void ReviewChecks(MirrorObservation observation, MirrorCommittedModel committed, IReadOnlyList<MirrorJournalEntry> journal, MirrorDriftReport report,
+        MirrorDriftResolution resolution, MirrorDriftResolution heightOnly, MirrorSnapshot taller)
+    {
+        MirrorSnapshot Snap(MirrorObservation source, params MirrorObservedElement[] elements) => MirrorSnapshotMapper.Map(source with { Elements = elements });
+        var wall1 = observation.Elements.Single(element => element.UniqueId == W1);
+        var wall2 = observation.Elements.Single(element => element.UniqueId == W2);
+        var door = observation.Elements.Single(element => element.UniqueId == D1);
+        var floor = observation.Elements.Single(element => element.UniqueId == F1);
+
+        // (blocker) The same Core revision with another observed value is another request: new operation ids.
+        var higher = Snap(observation, wall1 with { HeightMm = 3400 }, wall2, door, floor);
+        var heightAgain = MirrorDriftResolve.Plan(MirrorDrift.Compare(higher, committed), higher, committed, Bindings());
+        var firstIds = heightOnly.RestorePlan.Steps.Select(step => step.OperationId).ToArray();
+        var againIds = heightAgain.RestorePlan.Steps.Select(step => step.OperationId).ToArray();
+        Check(firstIds.Length == 1 && againIds.Length == 1 && firstIds[0] != againIds[0] && heightAgain.RestorePlan.Steps[0].ArgsJson == heightOnly.RestorePlan.Steps[0].ArgsJson,
+            "the same restore command planned against another observed value (3.4 m instead of 3.2 m) gets another operation id", string.Join(",", firstIds) + " | " + string.Join(",", againIds));
+        var sameIds = MirrorDriftResolve.Plan(MirrorDrift.Compare(taller, committed), taller, committed, Bindings()).RestorePlan.Steps.Select(step => step.OperationId).ToArray();
+        Check(sameIds.SequenceEqual(firstIds), "identical inputs keep identical operation ids");
+        // An element deleted again after a restore realized it under a new UniqueId is another delete-and-create request.
+        var noDoor = Snap(observation, wall1, wall2, floor);
+        var deletedOnce = MirrorDriftResolve.Plan(MirrorDrift.Compare(noDoor, committed), noDoor, committed, Bindings());
+        const string D1Again = P + "00002002";
+        var realized = committed with { NativeIds = committed.NativeIds.ToDictionary(pair => pair.Key, pair => pair.Key == CoreD1 ? D1Again : pair.Value) };
+        var deletedTwice = MirrorDriftResolve.Plan(MirrorDrift.Compare(noDoor, realized), noDoor, realized, Bindings());
+        Check(deletedOnce.RestorePlan.Steps.Count == 1 && deletedTwice.RestorePlan.Steps.Count == 1 && deletedOnce.RestorePlan.Steps[0].OperationId != deletedTwice.RestorePlan.Steps[0].OperationId,
+            "a door deleted again after its restore was realized gets a new operation id", deletedOnce.ToJson() + " | " + deletedTwice.ToJson());
+        // A snapshot that differs elsewhere (another element moved) also changes the ids of the shared restore steps.
+        var elsewhere = Snap(observation, wall1 with { HeightMm = 3200 }, wall2 with { HeightMm = 3300 }, door, floor);
+        var elsewherePlan = MirrorDriftResolve.Plan(MirrorDrift.Compare(elsewhere, committed), elsewhere, committed, Bindings());
+        var w1Elsewhere = StepsOf(elsewherePlan, Find(elsewherePlan, W1));
+        Check(w1Elsewhere.Length == 1 && w1Elsewhere[0].OperationId != firstIds[0], "operation ids follow the whole observed snapshot", elsewherePlan.ToJson());
+
+        // (1) Replacing a host wall would delete its unchanged hosted door: refused, no half replace.
+        var longer = Snap(observation, Wall(wall1, W1, 0, 0, 6000, 0), wall2, door, floor);
+        var hostReport = MirrorDrift.Compare(longer, committed);
+        var hostPlan = MirrorDriftResolve.Plan(hostReport, longer, committed, Bindings());
+        Check(hostReport.Findings.Select(finding => finding.UniqueId).SequenceEqual(new[] { W1 }) && Find(hostPlan, W1)?.Restore is { Status: MirrorDriftResolveStatus.Unsupported, Code: MirrorDriftResolveCodes.DependentsRemain }
+            && hostPlan.RestorePlan.Steps.Count == 0, "a host wall with an unchanged hosted door in Revit is not replaced (dependents_remain)", hostPlan.ToJson());
+        Check(Find(hostPlan, W1)?.Adopt.Status == MirrorDriftResolveStatus.Proposed, "the lengthened host wall can still be adopted");
+
+        // (2) Adopt refuses malformed snapshot geometry like restore does.
+        var drifted = Snap(observation, wall1, Wall(wall2, W2, 5050, 0, 5050, 4000), Wall(wall1, W3, 0, 0, 0, 4000), floor);
+        var w2Snapshot = MirrorSnapshotMapper.Id(Doc, W2);
+        var w3Snapshot = MirrorSnapshotMapper.Id(Doc, W3);
+        var malformed = drifted with { Elements = drifted.Elements.Select(element => element.Id == w2Snapshot || element.Id == w3Snapshot ? element with { GeometryMetres = new[] { 5.05, 0, 5.05, 4, 3 } } : element).ToArray() };
+        var malformedReport = MirrorDrift.Compare(malformed, committed, options: new MirrorDriftOptions(Scope: MirrorDriftScopes.Document));
+        var malformedPlan = MirrorDriftResolve.Plan(malformedReport, malformed, committed, Bindings());
+        Check(Find(malformedPlan, W2)?.Adopt is { Status: MirrorDriftResolveStatus.Unsupported, Code: MirrorDriftResolveCodes.GeometryInvalid }
+            && Find(malformedPlan, W3)?.Adopt is { Status: MirrorDriftResolveStatus.Unsupported, Code: MirrorDriftResolveCodes.GeometryInvalid },
+            "a changed or extra wall whose snapshot geometry has five values cannot be adopted (geometry_invalid)", malformedPlan.ToJson());
+
+        // (3) Two findings on one committed element are a malformed report.
+        var missingD1 = MirrorDrift.Compare(noDoor, committed);
+        var duplicated = missingD1 with { Findings = missingD1.Findings.Append(missingD1.Findings[0] with { UniqueId = P + "00002999" }).ToArray() };
+        Check(Code(() => MirrorDriftResolve.Plan(duplicated, noDoor, committed, Bindings())) == MirrorDriftResolveCodes.ReportInvalid, "duplicate committed ids in a report are refused typed");
+
+        // (4) Deleting an extra level other Revit elements stand on is refused.
+        const string L2 = P + "00000138";
+        var withLevel2 = observation with { Levels = observation.Levels.Append(new MirrorObservedLevel(L2, "Level 2", 4000)).ToArray() };
+        var onLevel2 = Snap(withLevel2, wall1, wall2 with { LevelUid = L2 }, door, floor);
+        var levelExtra = MirrorDriftResolve.Plan(MirrorDrift.Compare(onLevel2, committed, options: new MirrorDriftOptions(Scope: MirrorDriftScopes.Document)), onLevel2, committed, Bindings());
+        Check(Find(levelExtra, L2) is { FindingKind: MirrorDriftKinds.Extra, Restore: { Status: MirrorDriftResolveStatus.Unsupported, Code: MirrorDriftResolveCodes.DependentsRemain } }
+            && levelExtra.RestorePlan.Steps.All(step => !step.ArgsJson.Contains(L2, StringComparison.OrdinalIgnoreCase)),
+            "an extra level a kept wall stands on is not deleted (dependents_remain)", levelExtra.ToJson());
+        // An extra wall and the extra door it hosts are both deleted, the door first.
+        const string D9 = P + "00002009";
+        var hostedExtra = Snap(observation, wall1, wall2, door, floor, Wall(wall1, W3, 0, 0, 0, 4000), door with { UniqueId = D9, HostUid = W3, Location = new MirrorPoint(0, 1000) });
+        var extraPlan = MirrorDriftResolve.Plan(MirrorDrift.Compare(hostedExtra, committed, options: new MirrorDriftOptions(Scope: MirrorDriftScopes.Document)), hostedExtra, committed, Bindings());
+        Check(Find(extraPlan, W3)?.Restore.Status == MirrorDriftResolveStatus.Proposed && Find(extraPlan, D9)?.Restore.Status == MirrorDriftResolveStatus.Proposed
+            && extraPlan.RestorePlan.Steps.Select(step => Strings(Args(step).GetProperty("element_uids"))).SequenceEqual(new[] { D9, W3 }),
+            "an extra wall whose hosted door is also extra is deleted after the door", extraPlan.ToJson());
+
+        // (5) A changed finding without fields is refused, not replaced.
+        var fieldless = report with { Findings = report.Findings.Select(finding => finding.UniqueId == W2 ? finding with { Fields = Array.Empty<MirrorDriftField>() } : finding).ToArray() };
+        var drifted2 = Snap(observation, wall1, Wall(wall2, W2, 5050, 0, 5050, 4000), Wall(wall1, W3, 0, 0, 0, 4000), floor);
+        Check(Find(MirrorDriftResolve.Plan(fieldless, drifted2, committed, Bindings()), W2)?.Restore is { Status: MirrorDriftResolveStatus.Unsupported, Code: MirrorDriftResolveCodes.FieldsMissing },
+            "a changed finding without fields is refused (fields_missing)");
+        // AfterHash is Core's committed state independent of element order.
+        var permuted = committed with { Project = committed.Project with { Elements = committed.Project.Elements.Reverse().ToArray() } };
+        var permutedPlan = MirrorDriftResolve.Plan(MirrorDrift.Compare(drifted2, permuted, journal, new MirrorDriftOptions(JournalAfterSequence: 4)), drifted2, permuted, Bindings());
+        Check(permutedPlan.RestorePlan.AfterHash == resolution.RestorePlan.AfterHash && permutedPlan.RestorePlan.AfterHash == Compiler.Hash(committed.Project)
+            && Compiler.Hash(permuted.Project) != Compiler.Hash(committed.Project), "after_hash hashes the committed elements in id order whatever their stored order");
     }
 }
