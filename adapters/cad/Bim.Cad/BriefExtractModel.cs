@@ -34,11 +34,15 @@ public sealed record BriefExtractUncertainty(string Code, string Message, string
 public sealed record BriefDraft(string SourceFile, string Format, double? MetresPerUnit, ProjectBrief Brief, IReadOnlyList<BriefRoomProposal> Rooms,
     IReadOnlyList<BriefExtractUncertainty> Uncertainties, IReadOnlyList<BriefIssue> Issues);
 
-// What one text says: Label (letters remaining once the area and its prefix are removed; null when none) and the area
-// in square metres (null when the text has no area token). AreaToken is the matched token.
-public sealed record BriefTextReading(string? Label, double? AreaSquareMetres, string? AreaToken);
+// What one text says: Label (letters remaining once the area and its prefix are removed; null when none, or when its
+// only letters are units) and the area in square metres (null when the text has no area token; negative when the token
+// has a leading minus sign). AreaToken is the matched token. AreaAmbiguous is true when the number has a single
+// separator followed by exactly three digits ("1.234", "1,234"): read as a decimal, but it may be a thousands group.
+public sealed record BriefTextReading(string? Label, double? AreaSquareMetres, string? AreaToken, bool AreaAmbiguous = false);
 
-// Options. Name defaults to "Brief draft from {source file}". TextLayers/RegionLayers restrict the layers read
+// Options. MetresPerUnit overrides the drawing scale (DXF $INSUNITS; for PDF the raw page unit when no calibration is
+// given). ExplodeOptions bound the DXF block explosion. Closed polylines drawn through a block insert or Form XObject
+// (furniture, symbols) are regions only when IncludeBlockRegions; block texts are always read. Name defaults to "Brief draft from {source file}". TextLayers/RegionLayers restrict the layers read
 // (case-insensitive; null = all). A label is at most MaxLabelLength characters and MaxLabelWords words. An area text
 // pairs with a label when both lie in the same smallest closed region, or, both outside every region, when they are at
 // most PairDistanceTextHeights times the larger text height apart. A region area differing from the stated area by more
@@ -54,6 +58,9 @@ public sealed record BriefExtractOptions
     public IReadOnlyCollection<string> RoomWords { get; init; } = Array.Empty<string>();
     public bool IncludePaperSpace { get; init; }
     public bool IncludeInvisible { get; init; }
+    public bool IncludeBlockRegions { get; init; }
+    public double? MetresPerUnit { get; init; }
+    public DxfExplodeOptions? ExplodeOptions { get; init; }
     public double PairDistanceTextHeights { get; init; } = 4;
     public double AreaMismatchTolerance { get; init; } = 0.10;
     public double MinRegionAreaSquareMetres { get; init; } = 1.0;
@@ -64,6 +71,7 @@ public sealed record BriefExtractOptions
     public int MaxLabelWords { get; init; } = 6;
     public int MaxRegions { get; init; } = 5_000;
     public int MaxRegionVertices { get; init; } = 200_000;
+    public int MaxPairCandidates { get; init; } = 100_000;
     public long MaxWork { get; init; } = 20_000_000;
     public int MaxUncertainties { get; init; } = 1_000;
 }

@@ -201,8 +201,11 @@ internal static class BriefExtractTests
 
             var raw = BriefExtract.FromPdf(document, 1);
             C(raw.MetresPerUnit is null && raw.Rooms.Count == 2 && raw.Rooms.All(r => r.RegionAreaSquareMetres is null && r.Region is not null) && Near(raw.Rooms[0].StatedAreaSquareMetres, 12)
-                && Codes(raw) == "orphan-area,unlabelled-region" && raw.Uncertainties[^1].ValueSquareMetres is null && raw.Issues.Count == 0,
-                "pdf uncalibrated: regions still hold labels but have no area, so no mismatch", Rooms(raw) + " " + Codes(raw));
+                && Codes(raw) == "orphan-area,uncalibrated,unlabelled-region" && raw.Uncertainties[^1].ValueSquareMetres is null && raw.Issues.Count == 0,
+                "pdf uncalibrated: regions still hold labels but have no area, so no mismatch; uncalibrated reported", Rooms(raw) + " " + Codes(raw));
+            var scaled = BriefExtract.FromPdf(document, 1, null, new BriefExtractOptions { MetresPerUnit = 0.05 });
+            C(Near(scaled.MetresPerUnit, 0.05) && scaled.Rooms.Count == 2 && Near(scaled.Rooms[0].RegionAreaSquareMetres, 12, 1e-6) && Codes(scaled) == "orphan-area,unlabelled-region",
+                "pdf MetresPerUnit option scales raw page units", Rooms(scaled) + " " + Codes(scaled));
             C(ErrorType(() => BriefExtract.FromPdf(document, 2)) == typeof(ArgumentOutOfRangeException), "pdf missing page refused");
         }
         catch (Exception error) { C(false, "pdf unexpected", error.GetType().Name + ": " + error.Message); }
@@ -297,5 +300,87 @@ internal static class BriefExtractTests
             C(fuzzFailures.Count == 0, "fuzz 200 random drawings never throw and always validate", string.Join(" | ", fuzzFailures.Take(3)));
         }
         catch (Exception error) { C(false, "bounds unexpected", error.GetType().Name + ": " + error.Message); }
+
+        // ---------- review fixes: outer regions, ambiguous areas, scale, block regions, limits, ids ----------
+        try
+        {
+            var framed = Dxf(Rect("1", 0, 0, 20000, 20000) + Rect("2", 1000, 1000, 4000, 4000) + Text("3", 2000, 2000, "Cocina 9 m²") + Text("4", 10000, 10000, "PLANTA BAJA"));
+            C(framed.Rooms.Select(r => r.Id).SequenceEqual(new[] { "cocina" }) && Near(framed.Rooms[0].RegionAreaSquareMetres, 9) && Codes(framed) == "",
+                "review a stray note in a frame around a labelled room is not a room", Rooms(framed) + " " + Codes(framed));
+            var outer = Dxf(Rect("1", 0, 0, 20000, 20000) + Rect("2", 1000, 1000, 4000, 4000) + Text("3", 2000, 2000, "Cocina") + Text("4", 15000, 15000, "Patio") + Text("5", 5000, 15000, "7 m²"));
+            C(outer.Rooms.Select(r => r.Id).SequenceEqual(new[] { "cocina", "patio" }) && outer.Rooms[1].StatedAreaSquareMetres is null && outer.Rooms[1].RegionAreaSquareMetres is null
+                && outer.Rooms[1].Notes.SequenceEqual(new[] { "outer-region", "area-missing" }) && Near(outer.Rooms[1].Confidence, 0.9 * 0.6) && Codes(outer) == "area-from-region,area-missing,orphan-area",
+                "review an outer region needs the distance cut for pairing and gives no region area", Rooms(outer) + " " + Codes(outer));
+
+            foreach (var (text, value) in new[] { ("1.234 m²", 1.234), ("1,234 m²", 1.234) })
+            {
+                var reading = BriefExtract.ReadText(text);
+                C(Near(reading.AreaSquareMetres, value) && reading.AreaAmbiguous, "review read '" + text + "' is flagged ambiguous", reading.ToString());
+            }
+            var grouped = BriefExtract.ReadText("1.250,00 m²");
+            var plainDecimal = BriefExtract.ReadText("12,50 m²");
+            C(Near(grouped.AreaSquareMetres, 1250) && !grouped.AreaAmbiguous && !plainDecimal.AreaAmbiguous, "review read '1.250,00 m²' is 1250 and unambiguous", grouped.ToString());
+            var negative = BriefExtract.ReadText("-12 m²");
+            C(Near(negative.AreaSquareMetres, -12), "review read '-12 m²' keeps the sign", negative.ToString());
+            var feet = BriefExtract.ReadText("120 sq ft");
+            var lengths = BriefExtract.ReadText("3 x 4 m");
+            C(feet.Label is null && feet.AreaSquareMetres is null && lengths.Label is null, "review read labels whose only letters are units are refused", feet + " " + lengths);
+            var ambiguous = Dxf(Text("1", 0, 0, "Cocina 1.234 m²") + Text("2", 20000, 0, "Comedor -12 m²"));
+            C(ambiguous.Rooms.Count == 2 && Near(ambiguous.Rooms[0].StatedAreaSquareMetres, 1.234) && Near(ambiguous.Rooms[0].Confidence, 0.7 * 0.9)
+                && ambiguous.Rooms[0].Notes.SequenceEqual(new[] { "area-same-text", "area-ambiguous", "no-region" }) && ambiguous.Rooms[1].StatedAreaSquareMetres is null
+                && Codes(ambiguous) == "area-ambiguous,area-invalid,area-missing" && ambiguous.Uncertainties[0].RoomId == "cocina",
+                "review ambiguous thousands-like area flagged and negative area invalid", Rooms(ambiguous) + " " + Codes(ambiguous));
+
+            var notes = new StringBuilder(Rect("R", 0, 0, 3000, 3000) + Text("C", 1000, 1000, "Cocina"));
+            for (var i = 0; i < 6500; i++) notes.Append(Text("N" + i.ToString(CultureInfo.InvariantCulture), i * 1000, -50000, "Nota"));
+            var crowded = Dxf(notes.ToString());
+            C(crowded.Rooms.Count == 1 && Near(crowded.Rooms[0].RegionAreaSquareMetres, 9) && !Codes(crowded).Contains("work-limit", StringComparison.Ordinal),
+                "review 6500 identical texts at distinct points do not exhaust the work budget", Codes(crowded));
+
+            var noUnits = DxfReader.Parse(G("0 SECTION|2 ENTITIES") + Rect("1", 0, 0, 2000, 2000) + Text("2", 500, 500, "Cocina") + G("0 ENDSEC|0 EOF"), "nounits.dxf");
+            var uncalibrated = BriefExtract.FromDxf(noUnits);
+            C(uncalibrated.MetresPerUnit is null && uncalibrated.Rooms[0].RegionAreaSquareMetres is null && Codes(uncalibrated) == "area-missing,uncalibrated", "review DXF without units reports uncalibrated", Codes(uncalibrated));
+            var calibrated = BriefExtract.FromDxf(noUnits, new BriefExtractOptions { MetresPerUnit = 0.001 });
+            C(Near(calibrated.MetresPerUnit, 0.001) && Near(calibrated.Rooms[0].RegionAreaSquareMetres, 4) && Codes(calibrated) == "area-from-region", "review MetresPerUnit option calibrates a DXF without units", Codes(calibrated));
+            C(ErrorType(() => BriefExtract.FromDxf(noUnits, new BriefExtractOptions { MetresPerUnit = -1 })) == typeof(ArgumentOutOfRangeException), "review non-positive MetresPerUnit refused");
+
+            var bed = G("0 BLOCK|5 B1|8 0|2 BED|70 0|10 0|20 0|30 0") + Rect("B2", 0, 0, 2000, 1500, layer: "0") + G("0 ENDBLK|5 B3|8 0");
+            var bedroom = Rect("1", 0, 0, 4000, 3000) + G("0 INSERT|5 I1|8 FURNITURE|2 BED|10 500|20 500|30 0") + Text("2", 1000, 1000, "Dormitorio 12 m²");
+            var furnished = Dxf(bedroom, blocks: bed);
+            C(furnished.Rooms.Count == 1 && Near(furnished.Rooms[0].RegionAreaSquareMetres, 12) && furnished.Rooms[0].Region?.Handle == "1" && Codes(furnished) == "",
+                "review closed polylines inside block inserts (furniture) are not regions by default", Rooms(furnished) + " " + Codes(furnished));
+            var withBlocks = Dxf(bedroom, new BriefExtractOptions { IncludeBlockRegions = true }, bed);
+            C(withBlocks.Rooms.Count == 1 && Near(withBlocks.Rooms[0].RegionAreaSquareMetres, 3) && Codes(withBlocks) == "area-mismatch", "review IncludeBlockRegions reads block polylines as regions", Rooms(withBlocks) + " " + Codes(withBlocks));
+
+            var capped = Dxf(string.Concat(Enumerable.Range(0, 5).Select(i => Text("A" + i.ToString(CultureInfo.InvariantCulture), i * 10000, 0, "5 m²"))), new BriefExtractOptions { MaxTexts = 2, MaxUncertainties = 1 });
+            C(Codes(capped) == "orphan-area,text-limit,uncertainty-limit", "review limit codes are kept when the uncertainty cap is reached", Codes(capped));
+            var pairs = Dxf(Rect("1", 0, 0, 6000, 4000) + Text("2", 1000, 2000, "Cocina") + Text("3", 4000, 2000, "Comedor") + Text("4", 1000, 1500, "9 m²") + Text("5", 4000, 1500, "8 m²"),
+                new BriefExtractOptions { MaxPairCandidates = 1 });
+            C(Codes(pairs).Contains("pair-limit", StringComparison.Ordinal), "review MaxPairCandidates caps pairing and reports pair-limit", Codes(pairs));
+
+            var inward = Dxf(G("0 LWPOLYLINE|5 1|8 ROOMS|90 4|70 1|10 0|20 0|42 -1|10 2000|20 0|10 2000|20 2000|10 0|20 2000") + Text("2", 1000, 1500, "Patio") + Text("3", 1000, 500, "Cocina"));
+            C(inward.Rooms.Count == 2 && Near(inward.Rooms[0].RegionAreaSquareMetres, 4 - Math.PI / 2) && inward.Rooms[1].Region is null,
+                "review inward bulge removes its half disc from area and containment", Rooms(inward));
+            var clockwise = Dxf(G("0 LWPOLYLINE|5 1|8 ROOMS|90 4|70 1|10 0|20 0|42 -1|10 0|20 2000|10 2000|20 2000|10 2000|20 0") + Text("2", -500, 1000, "Patio"));
+            C(clockwise.Rooms.Count == 1 && Near(clockwise.Rooms[0].RegionAreaSquareMetres, 4 + Math.PI / 2) && clockwise.Rooms[0].Region is not null,
+                "review clockwise polyline with an outward bulge", Rooms(clockwise));
+
+            var layered = Dxf(Text("1", 0, 0, "Cocina", layer: "A") + Text("2", 20000, 0, "Comedor", layer: "B"), new BriefExtractOptions { TextLayers = new[] { "a" } });
+            C(layered.Rooms.Select(r => r.Id).SequenceEqual(new[] { "cocina" }), "review TextLayers filter (case-insensitive)", Rooms(layered));
+
+            var tag = G("0 BLOCK|5 B1|8 0|2 TAG|70 0|10 0|20 0|30 0") + Text("B2", 0, 0, "Estudio", layer: "0") + Text("B3", 0, -400, "4 m²", layer: "0") + G("0 ENDBLK|5 B4|8 0");
+            var fallback = Dxf(G("0 INSERT|5 I1|8 0|2 TAG|10 0|20 0|30 0") + Text("2", 20000, 0, "Cocina"), new BriefExtractOptions { ExplodeOptions = new DxfExplodeOptions(MaxEntities: 1) }, tag);
+            C(fallback.Rooms.Select(r => r.Id).SequenceEqual(new[] { "cocina" }) && Codes(fallback).Contains("explode-limit", StringComparison.Ordinal), "review explode failure falls back to top-level entities", Rooms(fallback) + " " + Codes(fallback));
+            var missingBlock = Dxf(G("0 INSERT|5 I1|8 0|2 NOPE|10 0|20 0|30 0") + Text("2", 0, 0, "Cocina"));
+            C(Codes(missingBlock).Contains("explode-warning", StringComparison.Ordinal), "review explode warnings are reported", Codes(missingBlock));
+
+            var suffixes = Dxf(Text("1", 0, 0, "Baño") + Text("2", 20000, 0, "Baño") + Text("3", 40000, 0, "Baño 2"));
+            C(suffixes.Rooms.Select(r => r.Id).SequenceEqual(new[] { "bano", "bano-3", "bano-2" }) && suffixes.Issues.Count == 0, "review natural slugs are reserved before duplicate suffixes", Rooms(suffixes));
+
+            var phrase = new BriefExtractOptions { RoomWords = new[] { "Tablero general" } };
+            C(Dxf(Text("1", 0, 0, "Tablero general")).Rooms.Count == 0 && Dxf(Text("1", 0, 0, "Tablero general"), phrase).Rooms.Select(r => r.Id).SequenceEqual(new[] { "tablero-general" }),
+                "review multi-word RoomWords match as a phrase");
+        }
+        catch (Exception error) { C(false, "review unexpected", error.GetType().Name + ": " + error.Message); }
     }
 }
