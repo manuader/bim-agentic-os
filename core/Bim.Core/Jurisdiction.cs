@@ -28,8 +28,6 @@ public sealed record JurisdictionClaim(string Code, string Pack, IReadOnlyList<s
     static readonly Regex CodePattern = new("^[a-z]{2}\\.[a-z][a-z0-9-]{0,63}$", RegexOptions.CultureInvariant);
     static readonly string[] Members = { "jurisdiction_version", "code", "pack", "country_names", "municipality_names", "stub", "note" };
 
-    static readonly bool RedStub = true;
-
     public string Country => Code[..2];
     public string Locality => Code[3..];
 
@@ -42,7 +40,6 @@ public sealed record JurisdictionClaim(string Code, string Pack, IReadOnlyList<s
     {
         claim = null;
         issue = null;
-        if (RedStub) { issue = new JurisdictionIssue(JurisdictionCodes.JsonInvalid, "$", "red stub"); return false; }
         try
         {
             claim = Parse(text);
@@ -76,9 +73,9 @@ public sealed record JurisdictionClaim(string Code, string Pack, IReadOnlyList<s
             var version = Required("jurisdiction_version");
             if (version.ValueKind != JsonValueKind.Number) throw new JurisdictionParseException(JurisdictionCodes.TypeInvalid, "$.jurisdiction_version", "an integer is required");
             if (version.GetRawText() != "1") throw new JurisdictionParseException(JurisdictionCodes.VersionUnsupported, "$.jurisdiction_version", "only version 1 is supported");
-            var code = String(Required("code"), "$.code");
+            var code = TextOf(Required("code"), "$.code");
             if (!IsCode(code)) throw new JurisdictionParseException(JurisdictionCodes.CodeInvalid, "$.code", "jurisdiction code such as ar.caba: two lowercase letters, a dot and one [a-z][a-z0-9-]* label");
-            var pack = String(Required("pack"), "$.pack");
+            var pack = TextOf(Required("pack"), "$.pack");
             if (!SkillParser.IsId(pack)) throw new JurisdictionParseException(JurisdictionCodes.ValueInvalid, "$.pack", "a skill id is required");
             if (!pack.StartsWith(code + ".", StringComparison.Ordinal)) throw new JurisdictionParseException(JurisdictionCodes.PackMismatch, "$.pack", "pack id " + pack + " does not start with " + code + ".");
             var countries = Names(seen, "country_names");
@@ -88,17 +85,18 @@ public sealed record JurisdictionClaim(string Code, string Pack, IReadOnlyList<s
             string? note = null;
             if (seen.TryGetValue("note", out var noteElement))
             {
-                note = String(noteElement, "$.note");
+                note = TextOf(noteElement, "$.note");
                 if (note.Length > 2048 || string.IsNullOrWhiteSpace(note)) throw new JurisdictionParseException(JurisdictionCodes.ValueInvalid, "$.note", "non-blank text of at most 2048 characters");
             }
             return new JurisdictionClaim(code, pack, countries, municipalities, stubElement.ValueKind == JsonValueKind.True, note);
         }
     }
 
-    static string String(JsonElement element, string path)
+    static string TextOf(JsonElement element, string path)
     {
         if (element.ValueKind != JsonValueKind.String) throw new JurisdictionParseException(JurisdictionCodes.TypeInvalid, path, "a string is required");
-        return element.GetString()!;
+        try { return element.GetString()!; }
+        catch (InvalidOperationException error) { throw new JurisdictionParseException(JurisdictionCodes.ValueInvalid, path, "not well-formed text: " + error.Message); }
     }
 
     static IReadOnlyList<string> Names(Dictionary<string, JsonElement> seen, string member)
@@ -113,7 +111,7 @@ public sealed record JurisdictionClaim(string Code, string Pack, IReadOnlyList<s
         foreach (var item in array.EnumerateArray())
         {
             var at = path + "[" + (index++).ToString(System.Globalization.CultureInfo.InvariantCulture) + "]";
-            var name = String(item, at);
+            var name = TextOf(item, at);
             if (string.IsNullOrWhiteSpace(name) || name.Length > MaxNameChars) throw new JurisdictionParseException(JurisdictionCodes.ValueInvalid, at, "non-blank name of at most 128 characters");
             if (!normalized.Add(JurisdictionRegistry.Normalize(name))) throw new JurisdictionParseException(JurisdictionCodes.EntryDuplicate, at, "name repeats after normalisation");
             names.Add(name);

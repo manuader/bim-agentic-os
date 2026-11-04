@@ -235,6 +235,7 @@ static class JurisdictionTests
         ParseRefuses(Sidecar(node => node["municipality_names"] = new JsonArray("Sámple Town", "sample  town")), JurisdictionCodes.EntryDuplicate, "$.municipality_names[1]", "names equal after normalisation are entry_duplicate");
         ParseRefuses(Sidecar(node => node["municipality_names"] = new JsonArray(" ")), JurisdictionCodes.ValueInvalid, "$.municipality_names[0]", "a blank name is value_invalid");
         ParseRefuses(Sidecar(node => node["note"] = ""), JurisdictionCodes.ValueInvalid, "$.note", "a blank note is value_invalid");
+        ParseRefuses(Sidecar().Replace("\"stub\":true", "\"stub\":true,\"note\":\"\\ud800\"", StringComparison.Ordinal), JurisdictionCodes.ValueInvalid, "$.note", "a lone surrogate is value_invalid");
         ParseRefuses(new string(' ', JurisdictionClaim.MaxInputChars + 1), JurisdictionCodes.InputTooLarge, "$", "oversized text is input_too_large");
 
         // ---- Loading from a directory ----

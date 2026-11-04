@@ -46,8 +46,6 @@ public sealed class JurisdictionRegistry
         UnregisteredCodePacks = catalog.Skills.Where(skill => skill.Kind == SkillKind.Code && !claimed.Contains(skill.Id)).Select(skill => skill.Id).ToArray();
     }
 
-    static readonly bool RedStub = true;
-
     public SkillCatalog Catalog { get; }
     public IReadOnlyList<JurisdictionClaim> Claims { get; }
     public IReadOnlyList<JurisdictionIssue> Issues { get; }
@@ -90,7 +88,6 @@ public sealed class JurisdictionRegistry
     public JurisdictionSelection Select(ProjectJurisdiction project)
     {
         ArgumentNullException.ThrowIfNull(project);
-        if (RedStub) return Refuse(JurisdictionCodes.JurisdictionUnknown, "", "red stub: selection not implemented");
         var code = Blank(project.Code) ? null : project.Code!.Trim().ToLowerInvariant();
         var country = Blank(project.Country) ? null : Normalize(project.Country!);
         var municipality = Blank(project.Municipality) ? null : Normalize(project.Municipality!);
