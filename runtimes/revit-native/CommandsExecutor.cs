@@ -33,7 +33,8 @@ namespace Bim.Revit;
 // subdivisions) are in CommandsExecutorSite.cs; wall.set_profile is in CommandsExecutorWallProfile.cs; fill patterns,
 // materials, layered wall/floor types and element.change_type are in CommandsExecutorMaterialTypes.cs;
 // view.export_image and document.save are in CommandsExecutorExportSave.cs; document.save_copy is in
-// CommandsExecutorSaveCopy.cs; command.batch is in CommandsExecutorBatch.cs.
+// CommandsExecutorSaveCopy.cs; command.batch is in CommandsExecutorBatch.cs; roof.create_extrusion is in
+// CommandsExecutorRoofExtrusion.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -81,6 +82,7 @@ internal static partial class CommandExecutor
             FloorCreateArgs floor => FloorPlan(d, floor),
             RoomCreateArgs room => RoomPlan(d, room),
             RoofFootprintCreateArgs roof => RoofPlan(d, roof),
+            RoofExtrusionCreateArgs extrusion => RoofExtrusionPlan(d, extrusion),
             CurtainWallCreateArgs curtain => CurtainWallPlan(d, curtain),
             FloorOpeningCreateArgs opening => FloorOpeningPlan(d, opening),
             ViewPlanCreateArgs view => ViewPlanWrite(d, view),

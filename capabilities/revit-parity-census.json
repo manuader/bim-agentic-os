@@ -378,10 +378,16 @@
       "id": "arch.roof.extrusion",
       "area": "architecture",
       "revit_function": "Roof by Extrusion",
-      "commands": [],
-      "state": "unsupported",
+      "commands": [
+        "roof.create_extrusion"
+      ],
+      "state": "compiled",
       "features": [],
-      "evidence": []
+      "evidence": [
+        "tests/revit-commands/CatalogueRoofExtrusion.cs",
+        "runtimes/revit-native/CommandsExecutorRoofExtrusion.cs"
+      ],
+      "notes": "Barrel and curved sheet-metal roofs for the owner's cabin (docs/revit-playbook.md); contract and readback unit-tested, executor compiled only; not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "arch.roof.fascia_gutter_soffit",

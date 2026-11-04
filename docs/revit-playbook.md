@@ -69,7 +69,10 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
 - Open an owner project (not a fixture copy) with the command pipe — in progress (`scripts/owner-open-project.ps1`).
 - Materials (color, patterns, duplicate-for-appearance), wall/floor types with layers and element.change_type — added
   (chat-materials-types, unit-tested, executor compiled only); authoring appearance assets/textures is still pending.
-- Curved roofs (extrusion roofs) for barrel/curved sheet-metal roofs.
+- Curved roofs (extrusion roofs) for barrel/curved sheet-metal roofs: added as `roof.create_extrusion` (P9-07,
+  unit-tested, executor compiled only): plane = plan line, profile in [u, z] above the level, extruded to the line's
+  left. Barrel over 6000 x 10000 with 300 overhangs: plane [0,0]->[6000,0], arc [-300,2700]->[6300,2700] through
+  [3000,3800], extrusion -300 to 10300.
 - Document save: added (chat-export-save, unit-tested, executor compiled only). Save as a new test copy under
   `.bim/native-runs`: added (P1-08 `document.save_copy`, unit-tested, executor compiled only); general Save As of real
   projects is still pending.
