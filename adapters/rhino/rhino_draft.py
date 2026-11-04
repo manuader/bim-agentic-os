@@ -120,7 +120,12 @@ class _Converter:
         return 1.0 / self.value if self.mode == 'div' else self.value
 
     def m(self, v):
-        return br._metres(v, self.value) if self.mode == 'div' else v * self.value
+        if not math.isfinite(v):
+            raise _Unmapped('degenerate', f'coordinate {v} is not finite')
+        metres = br._metres(v, self.value) if self.mode == 'div' else v * self.value
+        if not math.isfinite(metres):
+            raise _Unmapped('degenerate', f'coordinate {v} is not finite in metres')
+        return metres
 
     def xyz(self, point):
         return self.m(point.X), self.m(point.Y), self.m(point.Z)
@@ -166,28 +171,38 @@ def _horizontal(points):
     return max(zs) - min(zs) <= TOL
 
 
+def _between(prev, cur, nxt):
+    """cur lies on the segment prev..nxt (within TOL), so it is not a corner."""
+    base = math.dist(prev, nxt)
+    if base <= TOL:
+        return False
+    cross = (nxt[0] - prev[0]) * (cur[1] - prev[1]) - (nxt[1] - prev[1]) * (cur[0] - prev[0])
+    dot = (cur[0] - prev[0]) * (nxt[0] - prev[0]) + (cur[1] - prev[1]) * (nxt[1] - prev[1])
+    return abs(cross) / base <= TOL and 0 <= dot <= base * base
+
+
 def _corners(points):
-    """Corners (x, y) of a closed outline (first == last) after dropping repeated and collinear vertices."""
-    ring = [p[:2] for p in points[:-1]]
+    """Corners (x, y) of a closed outline (first == last) after dropping repeated and collinear vertices.
+
+    One stack pass (linear), then the seam where the ring closes is cleaned from both ends."""
+    stack = []
+    for point in (p[:2] for p in points[:-1]):
+        if stack and math.dist(stack[-1], point) <= TOL:
+            continue
+        while len(stack) >= 2 and _between(stack[-2], stack[-1], point):
+            stack.pop()
+        stack.append(point)
+    start = 0
     changed = True
-    while changed and len(ring) >= 3:
+    while changed and len(stack) - start >= 3:
         changed = False
-        for i in range(len(ring)):
-            prev, cur, nxt = ring[i - 1], ring[i], ring[(i + 1) % len(ring)]
-            base = math.dist(prev, nxt)
-            if math.dist(prev, cur) <= TOL:
-                drop = True
-            elif base <= TOL:
-                drop = False
-            else:
-                cross = (nxt[0] - prev[0]) * (cur[1] - prev[1]) - (nxt[1] - prev[1]) * (cur[0] - prev[0])
-                dot = (cur[0] - prev[0]) * (nxt[0] - prev[0]) + (cur[1] - prev[1]) * (nxt[1] - prev[1])
-                drop = abs(cross) / base <= TOL and 0 <= dot <= base * base
-            if drop:
-                del ring[i]
-                changed = True
-                break
-    return ring
+        if math.dist(stack[-1], stack[start]) <= TOL:
+            stack.pop(); changed = True
+        elif _between(stack[-2], stack[-1], stack[start]):
+            stack.pop(); changed = True
+        elif _between(stack[-1], stack[start], stack[start + 1]):
+            start += 1; changed = True
+    return stack[start:]
 
 
 def _rectangle(points):
@@ -197,7 +212,11 @@ def _rectangle(points):
         raise _Unmapped('degenerate', f'outline collapses to {len(ring)} distinct corners')
     if len(ring) == 4:
         sides = [math.dist(ring[i], ring[(i + 1) % 4]) for i in range(4)]
-        if min(sides) > TOL and abs(sides[0] - sides[2]) <= TOL and abs(sides[1] - sides[3]) <= TOL \
+        turns = [(ring[(i + 1) % 4][0] - ring[i][0]) * (ring[(i + 2) % 4][1] - ring[(i + 1) % 4][1])
+                 - (ring[(i + 1) % 4][1] - ring[i][1]) * (ring[(i + 2) % 4][0] - ring[(i + 1) % 4][0]) for i in range(4)]
+        # Every corner must turn the same way, which rules out crossed (bow-tie) outlines with rectangle side lengths.
+        convex = all(t > 0 for t in turns) or all(t < 0 for t in turns)
+        if convex and min(sides) > TOL and abs(sides[0] - sides[2]) <= TOL and abs(sides[1] - sides[3]) <= TOL \
                 and abs(math.dist(ring[0], ring[2]) - math.dist(ring[1], ring[3])) <= TOL:
             return ring
     raise _Unmapped('space_not_rectangle', f'outline has {len(ring)} corners and is not a rectangle')
@@ -317,10 +336,15 @@ def _circular(curve, conv):
     det = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
     if abs(det) <= TOL * TOL:
         return None
+    if not math.isfinite(det):
+        return None
     ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / det
     uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / det
     radius = math.hypot(ax - ux, ay - uy)
-    if any(abs(math.hypot(p[0] - ux, p[1] - uy) - radius) > max(TOL, 1e-9 * radius) for p in points):
+    # NaN compares false, so finiteness is checked explicitly before the tolerance test.
+    if not (math.isfinite(ux) and math.isfinite(uy) and math.isfinite(radius) and radius > TOL):
+        return None
+    if any(not math.isfinite(math.hypot(p[0] - ux, p[1] - uy)) for p in points) or any(abs(math.hypot(p[0] - ux, p[1] - uy) - radius) > max(TOL, 1e-9 * radius) for p in points):
         return None
     angles = [math.atan2(p[1] - uy, p[0] - ux) for p in points]
     sweep = 0.0
@@ -344,19 +368,45 @@ def _arc_chords(arc, segments):
 class _Draft:
     def __init__(self, source_name, conv, options):
         self.source_name, self.conv, self.options = source_name, conv, options
-        self.candidates = []  # dict(kind, id, key, geometry, base, confidence, notes, source)
+        self.candidates = []  # dict(kind, id, key, geometry, base, confidence, notes, source, declared)
         self.levels = []
-        self.unmapped = []
+        self.unmapped = []  # bounded: only the max_unmapped smallest entries (by sort key) are kept
+        self.unmapped_total = 0
+        self.by_reason = {}
+        self.declared = None  # the writer's bim.dependencies of the object being read, when it carries them
+
+    @staticmethod
+    def _key(entry):
+        return (entry['object_id'] or '', -1 if entry['part'] is None else entry['part'], entry['reason'])
 
     def skip(self, source, reason, detail):
+        self.unmapped_total += 1
+        self.by_reason[reason] = self.by_reason.get(reason, 0) + 1
         self.unmapped.append({'object_id': source['object_id'], 'part': source['part'], 'layer': source['layer'],
                               'geometry_type': source['geometry_type'], 'reason': reason, 'detail': detail})
+        if len(self.unmapped) >= 2 * self.options['max_unmapped']:
+            self.unmapped = sorted(self.unmapped, key=self._key)[:self.options['max_unmapped']]
+
+    def report(self):
+        listed = sorted(self.unmapped, key=self._key)[:self.options['max_unmapped']]
+        if self.unmapped_total > len(listed):
+            listed.append({'object_id': None, 'part': None, 'layer': None, 'geometry_type': None, 'reason': 'unmapped_limit',
+                           'detail': f'{self.unmapped_total - len(listed)} more entries not listed'})
+        return listed
 
     def propose(self, kind, element_id, key, geometry, base, mapping, notes, source, inherited):
+        # What the P8-02 writer could not carry (beyond +/-1e5 m, under 1e-6 m) is unmapped here, not proposed.
+        try:
+            br.check_representable({'Elements': [{'Id': element_id, 'Kind': kind, 'GeometryMetres': geometry}]})
+        except RhinoAdapterError as error:
+            raise _Unmapped('degenerate' if 'below' in error.detail else 'out_of_range', error.detail) from None
+        if len(self.levels) + len(self.candidates) >= self.options['max_proposals']:
+            raise RhinoAdapterError('draft_limit', f'more than max_proposals {self.options["max_proposals"]} proposals while reading')
         confidence = CONFIDENCE[mapping] * (INHERITED_FACTOR if inherited else 1.0)
         notes = list(notes) + (['layer-inherited'] if inherited else [])
+        declared = self.declared if element_id == source['object_id'] else None
         record = {'kind': kind, 'id': element_id, 'key': key, 'geometry': geometry, 'base': base,
-                  'confidence': round(confidence, 6), 'notes': notes, 'source': source}
+                  'confidence': round(confidence, 6), 'notes': notes, 'source': source, 'declared': declared}
         (self.levels if kind == 'level' else self.candidates).append(record)
 
     # -------------------------------------------------------------- per kind
@@ -398,6 +448,8 @@ class _Draft:
             if raw is None:
                 raise _Unmapped('curve_unsupported', f'{type(geometry).__name__} is not a line, polyline or arc')
             points = [self.conv.xyz(p) for p in raw]
+        if len(points) < 2:
+            raise _Unmapped('degenerate', f'curve has {len(points)} point(s)')
         for part in range(len(points) - 1):
             a, b = points[part], points[part + 1]
             part_source = {**source, 'part': part}
@@ -406,11 +458,10 @@ class _Draft:
                     raise _Unmapped('curve_not_horizontal', f'segment rises {b[2] - a[2]} m')
                 values = [a[0], a[1], b[0], b[1], options['wall_height'], options['wall_thickness']]
                 self.check_wall(values, a[2])
+                key = f"{source['object_id']}:{part}"
+                self.propose('wall', _derived_id(source['object_id'], str(part)), key, values, a[2], mapping, notes, part_source, inherited)
             except _Unmapped as error:
                 self.skip(part_source, error.reason, error.detail)
-                continue
-            key = f"{source['object_id']}:{part}"
-            self.propose('wall', _derived_id(source['object_id'], str(part)), key, values, a[2], mapping, notes, part_source, inherited)
 
     @staticmethod
     def check_wall(values, base):
@@ -437,6 +488,8 @@ class _Draft:
             if raw is None:
                 raise _Unmapped('curve_unsupported', f'{type(geometry).__name__} is not a line or polyline')
             points = [self.conv.xyz(p) for p in raw]
+            if len(points) < 2:
+                raise _Unmapped('degenerate', f'curve has {len(points)} point(s)')
             if not _closed(points):
                 raise _Unmapped('open_curve', 'a space outline must be closed')
             if not _horizontal(points):
@@ -457,19 +510,52 @@ class _Draft:
     # -------------------------------------------------------------- assembly
 
     def assemble(self, project_id):
-        levels = sorted(self.levels, key=lambda r: r['id'])
+        # Ids proposed twice (copied objects with one id, or a derived segment id equal to an object id) are all
+        # unmapped, so the result does not depend on which one the file lists first.
+        records = self.levels + self.candidates
+        count = {}
+        for record in records:
+            count[record['id']] = count.get(record['id'], 0) + 1
+        for record in records:
+            if count[record['id']] > 1:
+                self.skip(record['source'], 'duplicate_id', f'{count[record["id"]]} objects propose id {record["id"]}')
+        records = [r for r in records if count[r['id']] == 1]
+        kind_of = {r['id']: r['kind'] for r in records}
+        elevation_of = {r['id']: r['geometry'][0] for r in records if r['kind'] == 'level'}
+        levels = sorted((r for r in records if r['kind'] == 'level'), key=lambda r: r['id'])
         hosts = [(r['geometry'][0], r['id']) for r in levels]
+        taken = set(kind_of)
         synthesized = []
-        for record in sorted(self.candidates, key=lambda r: (RANK[r['kind']], r['id'])):
+        for record in sorted((r for r in records if r['kind'] != 'level'), key=lambda r: (RANK[r['kind']], r['id'])):
             base = record['base']
+            record['dependencies'] = None
+            if record['declared'] is not None:
+                # The writer's own dependencies, kept when they still agree with the geometry: only proposed
+                # elements of a lower kind rank (level < wall < space, so no cycle), and the first declared level
+                # (where the writer placed it) at the element's base, or none at z = 0.
+                kept = [d for d in record['declared'] if d in kind_of and RANK[kind_of[d]] < RANK[record['kind']]]
+                hosts_declared = [d for d in kept if kind_of[d] == 'level']
+                agrees = abs(elevation_of[hosts_declared[0]] - base) <= TOL if hosts_declared else abs(base) <= TOL
+                if agrees:
+                    record['dependencies'] = kept
+                    record['notes'].append('dependencies-declared')
+                else:
+                    record['notes'].append('declared-dependencies-ignored')
+            if record['dependencies'] is not None:
+                continue
             match = [i for elevation, i in hosts if abs(elevation - base) <= TOL]
             if match:
                 record['dependencies'] = [match[0]]
+                if len(match) > 1:
+                    record['notes'].append('level-ambiguous')
             elif abs(base) <= TOL:
                 record['dependencies'] = []
             else:
                 elevation = br._snap(base)
                 level_id = _derived_id(project_id, 'level', repr(elevation))
+                while level_id in taken:
+                    level_id = _derived_id(level_id, 'level-collision')
+                taken.add(level_id)
                 hosts.append((elevation, level_id))
                 synthesized.append({'kind': 'level', 'id': level_id, 'key': f'level@{br._core_number(elevation)}', 'geometry': [elevation],
                                     'base': None, 'confidence': CONFIDENCE['level-synthesized'], 'notes': ['level-synthesized'],
@@ -477,14 +563,9 @@ class _Draft:
                 record['dependencies'] = [level_id]
         for record in levels:
             record['dependencies'] = []
-        records = sorted(levels + synthesized + self.candidates, key=lambda r: (RANK[r['kind']], r['id']))
+        records = sorted(records + synthesized, key=lambda r: (RANK[r['kind']], r['id']))
         if len(records) > self.options['max_proposals']:
             raise RhinoAdapterError('draft_limit', f'{len(records)} proposals > max_proposals {self.options["max_proposals"]}')
-        seen = set()
-        for record in records:
-            if record['id'] in seen:
-                raise RhinoAdapterError('internal_error', f'duplicate proposed id {record["id"]}')
-            seen.add(record['id'])
         return records
 
 
@@ -505,6 +586,33 @@ def draft(input_path, **given):
     model = rhino3dm.File3dm.Read(str(path))
     if model is None:
         raise RhinoAdapterError('rhino_read_failed', f'{path} is not a .3dm model rhino3dm can read')
+    return _draft(model, path.name, lambda: hashlib.sha256(path.read_bytes()).hexdigest(), options)
+
+
+def draft_model(model, source_name, **given):
+    """Draft an in-memory rhino3dm.File3dm (no file). Without project_id or a BIM root marker, the project id is
+    derived from source_name."""
+    return _draft(model, source_name, lambda: 'model:' + source_name, _options(given))
+
+
+def _declared(attributes, object_id):
+    """The writer's bim.dependencies when the object carries its own identity (bim.id == object id), else None."""
+    try:
+        strings = dict(attributes.GetUserStrings())
+    except Exception:
+        return None
+    if strings.get('bim.id') != object_id:
+        return None
+    try:
+        declared = json.loads(strings.get('bim.dependencies', ''))
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(declared, list) or not all(isinstance(d, str) and br.UUID_RE.match(d) for d in declared):
+        return None
+    return declared
+
+
+def _draft(model, source_name, fingerprint, options):
     units = model.Settings.ModelUnitSystem
     if options['metres_per_unit'] is not None:
         conv, units_name = _Converter('mul', options['metres_per_unit']), 'override'
@@ -520,50 +628,55 @@ def draft(input_path, **given):
     if project_id is None:
         roots = [layer for layer in layers if layer.FullPath == br.ROOT_LAYER]
         marked = roots[0].GetUserString('bim.project.id') if len(roots) == 1 else None
-        project_id = marked if marked is not None and br.UUID_RE.match(marked) else _derived_id('project', hashlib.sha256(path.read_bytes()).hexdigest())
-    state = _Draft(path.name, conv, options)
-    seen = set()
+        project_id = marked if marked is not None and br.UUID_RE.match(marked) else _derived_id('project', fingerprint())
+    state = _Draft(source_name, conv, options)
+    # First pass: object ids, so every copy of a repeated id is unmapped whatever the file order.
+    ids = {}
     count = 0
     for obj in model.Objects:
         count += 1
         if count > options['max_objects']:
             raise RhinoAdapterError('draft_limit', f'more than max_objects {options["max_objects"]} objects')
-        geometry = obj.Geometry
         object_id = str(obj.Attributes.Id)
-        layer = path_of.get(obj.Attributes.LayerIndex)
+        ids[object_id] = ids.get(object_id, 0) + 1
+    for obj in model.Objects:
+        geometry = obj.Geometry
+        attributes = obj.Attributes
+        object_id = str(attributes.Id)
+        layer = path_of.get(attributes.LayerIndex)
         source = {'object_id': object_id, 'part': None, 'layer': layer, 'geometry_type': type(geometry).__name__}
-        if object_id in seen:
-            state.skip(source, 'duplicate_object_id', 'another object has the same id')
+        if ids[object_id] > 1:
+            state.skip(source, 'duplicate_object_id', f'{ids[object_id]} objects share this id')
             continue
-        seen.add(object_id)
+        if getattr(attributes, 'IsInstanceDefinitionObject', False):
+            # Geometry inside a block definition is placed only through its references; it is not model geometry.
+            state.skip(source, 'block_definition_member', 'object belongs to a block (instance) definition')
+            continue
         kind, inherited = _layer_kind(layer)
+        state.declared = _declared(attributes, object_id)
         try:
             if kind is None:
                 raise _Unmapped('layer_unmapped', f'layer {layer!r} is not a wall, space or level layer')
             getattr(state, kind)(geometry, source, inherited)
+        except RhinoAdapterError:
+            raise
         except _Unmapped as error:
             state.skip(source, error.reason, error.detail)
+        except (ArithmeticError, ValueError) as error:
+            state.skip(source, 'degenerate', f'{type(error).__name__}: {error}')
     records = state.assemble(project_id)
-    proposals = [{'key': r['key'], 'kind': r['kind'], 'element': _element(r, path.name), 'confidence': r['confidence'],
+    proposals = [{'key': r['key'], 'kind': r['kind'], 'element': _element(r, source_name), 'confidence': r['confidence'],
                   'notes': r['notes'], 'source': r['source']} for r in records]
     project = {'Id': project_id, 'Revision': 0, 'Elements': [p['element'] for p in proposals]}
-    br.validate_project(json.loads(json.dumps(project)))
-    unmapped = sorted(state.unmapped, key=lambda u: (u['object_id'], -1 if u['part'] is None else u['part'], u['reason']))
-    by_reason = {}
-    for entry in unmapped:
-        by_reason[entry['reason']] = by_reason.get(entry['reason'], 0) + 1
-    total = len(unmapped)
-    if total > options['max_unmapped']:
-        unmapped = unmapped[:options['max_unmapped']] + [{'object_id': None, 'part': None, 'layer': None, 'geometry_type': None,
-                                                          'reason': 'unmapped_limit', 'detail': f'{total - options["max_unmapped"]} more entries not listed'}]
+    br.check_representable(br.validate_project(json.loads(json.dumps(project))))
     kinds = [r['kind'] for r in records]
     return {
         'draft_version': DRAFT_VERSION, 'status': 'proposal', 'persisted': False,
-        'source': {'file': path.name, 'units': units_name, 'metres_per_unit': br._core_number(conv.metres_per_unit), 'objects': count},
+        'source': {'file': source_name, 'units': units_name, 'metres_per_unit': br._core_number(conv.metres_per_unit), 'objects': count},
         'options': {k: options[k] for k in ('wall_height', 'wall_thickness', 'arc_segments')},
-        'project': project, 'proposals': proposals, 'unmapped': unmapped,
+        'project': project, 'proposals': proposals, 'unmapped': state.report(),
         'summary': {'levels': kinds.count('level'), 'walls': kinds.count('wall'), 'spaces': kinds.count('space'),
-                    'unmapped': total, 'unmapped_by_reason': dict(sorted(by_reason.items()))},
+                    'unmapped': state.unmapped_total, 'unmapped_by_reason': dict(sorted(state.by_reason.items()))},
     }
 
 
