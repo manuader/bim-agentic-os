@@ -87,11 +87,11 @@ public static class FacadeIrBuilder
         options ??= new FacadeIrOptions();
         var refusals = new List<PlanConstraint>();
         if (OptionProblem(options, walls: false) is { } optionProblem) refusals.Add(Refusal(FacadeIrCodes.OptionsInvalid, "options", optionProblem));
-        if (prototype.Elements is null || prototype.Elements.Any(element => element is null || element.GeometryMetres is null || element.Dependencies is null || element.Kind is null))
+        if (IsNull(prototype.Elements) || prototype.Elements.Any(element => element is null || element.GeometryMetres is null || element.Dependencies is null || element.Kind is null))
             refusals.Add(Refusal(FacadeIrCodes.ProjectInvalid, "project", "elements, kinds, geometry and dependencies are required"));
         else if (Compiler.Validate(prototype) is { Length: > 0 } issues)
             refusals.Add(Refusal(FacadeIrCodes.ProjectInvalid, "project", "Compiler.Validate: " + string.Join(", ", issues.Select(issue => issue.Code).Distinct().OrderBy(code => code, StringComparer.Ordinal))));
-        if (layout.Status != FacadeStatus.Complete || layout.Windows is null || layout.Options is null)
+        if (layout.Status != FacadeStatus.Complete || IsNull(layout.Windows) || IsNull(layout.Options))
         {
             var unmet = layout.Checks?.Where(check => check is not null && !check.Satisfied).Select(check => check.Code + "@" + check.Subject) ?? Array.Empty<string>();
             refusals.Add(Refusal(FacadeIrCodes.LayoutInvalid, "layout", "the facade layout is " + layout.Status.ToString().ToLowerInvariant() + ": " + string.Join(", ", unmet)));
@@ -298,6 +298,9 @@ public static class FacadeIrBuilder
         if (walls && !(double.IsFinite(options.WallHeightMetres) && options.WallHeightMetres > 0)) return "wall height must be finite and positive";
         return null;
     }
+
+    // A null check that does not change the nullable flow state (inputs are annotated non-null but may come from JSON).
+    static bool IsNull(object? value) => value is null;
 
     static PlanConstraint Refusal(string code, string subject, string detail) => new(code, subject, true, false, detail);
 
