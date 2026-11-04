@@ -462,5 +462,8 @@ PdfTests.Run(Check, fixtures);
 // P6-04 CAD drawing to BIM-IR draft with uncertainty (tests/cad/DraftTests.cs).
 DraftTests.Run(Check, fixtures);
 
+// P6-05 brief extraction from drawing text (tests/cad/BriefExtractTests.cs).
+BriefExtractTests.Run(Check, fixtures);
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
