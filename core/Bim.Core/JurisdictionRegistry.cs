@@ -5,6 +5,9 @@ namespace Bim.Core;
 // - A claim whose pack is not in the catalog is dropped (pack_missing); one whose pack is not of kind code is dropped
 //   (pack_not_code). Two claims for one code are both kept and reported (claim_duplicate); selecting that code, by code or
 //   by metadata, is refused as jurisdiction_ambiguous rather than picking one.
+// - A hand-built claim with a malformed code (code_invalid), a pack outside its code (pack_mismatch) or missing or
+//   malformed names (value_invalid) is dropped. Distinct codes whose country and municipality aliases coincide after
+//   normalisation are kept and reported (alias_overlap). Stub claims are only selected when the caller opts in.
 // - Claims are ordered by code then pack id (ordinal); issues by code, subject then detail; unregistered code packs (kind
 //   code without a claim) by id. Selection never depends on input order.
 public sealed record JurisdictionSelection(JurisdictionClaim? Claim, string MatchedBy, JurisdictionIssue? Refusal)
@@ -34,10 +37,10 @@ public sealed class JurisdictionRegistry
         {
             ArgumentNullException.ThrowIfNull(claim);
             // Hand-built claims get the same checks as parsed sidecars.
-            if (!JurisdictionRedStub.On && !JurisdictionClaim.IsCode(claim.Code)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.CodeInvalid, Printable(claim.Code), "claim on pack " + Printable(claim.Pack) + " has a malformed jurisdiction code")); continue; }
-            if (!JurisdictionRedStub.On && !SkillParser.IsId(claim.Pack) || !claim.Pack.StartsWith(claim.Code + ".", StringComparison.Ordinal)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.PackMismatch, Printable(claim.Pack), "pack is not a skill id under jurisdiction " + claim.Code)); continue; }
-            if (!JurisdictionRedStub.On && !NamesValid(claim.CountryNames) || !NamesValid(claim.MunicipalityNames)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.ValueInvalid, claim.Pack, "country and municipality name lists must be present and hold non-blank well-formed names")); continue; }
-            if (!JurisdictionRedStub.On && claim.Note is not null && !WellFormed(claim.Note)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.ValueInvalid, claim.Pack, "note is not well-formed text")); continue; }
+            if (!JurisdictionClaim.IsCode(claim.Code)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.CodeInvalid, Printable(claim.Code), "claim on pack " + Printable(claim.Pack) + " has a malformed jurisdiction code")); continue; }
+            if (!SkillParser.IsId(claim.Pack) || !claim.Pack.StartsWith(claim.Code + ".", StringComparison.Ordinal)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.PackMismatch, Printable(claim.Pack), "pack is not a skill id under jurisdiction " + claim.Code)); continue; }
+            if (!NamesValid(claim.CountryNames) || !NamesValid(claim.MunicipalityNames)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.ValueInvalid, claim.Pack, "country and municipality name lists must be present and hold non-blank well-formed names")); continue; }
+            if (claim.Note is not null && !WellFormed(claim.Note)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.ValueInvalid, claim.Pack, "note is not well-formed text")); continue; }
             var pack = catalog.Find(claim.Pack);
             if (pack is null) { issues.Add(new JurisdictionIssue(JurisdictionCodes.PackMissing, claim.Pack, "jurisdiction " + claim.Code + " names a pack that is not in the catalog")); continue; }
             if (pack.Kind != SkillKind.Code) { issues.Add(new JurisdictionIssue(JurisdictionCodes.PackNotCode, claim.Pack, "jurisdiction " + claim.Code + " names a " + SkillParser.KindName(pack.Kind) + " skill; only code packs serve a jurisdiction")); continue; }
@@ -48,7 +51,7 @@ public sealed class JurisdictionRegistry
             issues.Add(new JurisdictionIssue(JurisdictionCodes.ClaimDuplicate, group.Key, "claimed by " + string.Join(", ", group.Select(claim => claim.Pack))));
         // Two jurisdictions whose country and municipality aliases coincide after normalisation cannot be told apart by
         // metadata; they stay registered (metadata selection is refused as ambiguous) and the overlap is reported here.
-        for (var left = 0; !JurisdictionRedStub.On && left < Claims.Count; left++)
+        for (var left = 0; left < Claims.Count; left++)
             for (var right = left + 1; right < Claims.Count; right++)
             {
                 var a = Claims[left];
@@ -116,9 +119,9 @@ public sealed class JurisdictionRegistry
     {
         ArgumentNullException.ThrowIfNull(project);
         foreach (var (field, text) in new[] { ("code", project.Code), ("country", project.Country), ("municipality", project.Municipality) })
-            if (!JurisdictionRedStub.On && text is not null && !WellFormed(text)) return Refuse(JurisdictionCodes.JurisdictionInvalid, field, field + " is not well-formed text");
+            if (text is not null && !WellFormed(text)) return Refuse(JurisdictionCodes.JurisdictionInvalid, field, field + " is not well-formed text");
         var selection = SelectAny(project);
-        if (!JurisdictionRedStub.On && selection.Claim is { Stub: true } stub && !allowStub)
+        if (selection.Claim is { Stub: true } stub && !allowStub)
             return Refuse(JurisdictionCodes.JurisdictionStubRefused, stub.Code, "jurisdiction " + stub.Code + " is a stub example pack (" + stub.Pack + "), not real law; pass allowStub to use it");
         return selection;
     }

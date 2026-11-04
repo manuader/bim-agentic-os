@@ -159,14 +159,14 @@ public static class JurisdictionValidator
         if (!resolution.Succeeded)
             return Refused(selection, new JurisdictionIssue(JurisdictionCodes.PackUnresolved, claim.Pack, string.Join("; ", resolution.Issues.Select(issue => issue.Code + "@" + issue.Subject))));
         // Each resolved pack reports its own claim (a required pack may itself be a jurisdiction's code pack, stub or not).
-        var claims = resolution.Skills.Select(skill => skill.Id == claim.Pack ? claim : (JurisdictionRedStub.On ? null : registry.ClaimFor(skill.Id))).ToArray();
-        if (!JurisdictionRedStub.On && !allowStub && claims.FirstOrDefault(candidate => candidate is { Stub: true }) is { } stubRequirement)
+        var claims = resolution.Skills.Select(skill => skill.Id == claim.Pack ? claim : registry.ClaimFor(skill.Id)).ToArray();
+        if (!allowStub && claims.FirstOrDefault(candidate => candidate is { Stub: true }) is { } stubRequirement)
             return Refused(selection, new JurisdictionIssue(JurisdictionCodes.JurisdictionStubRefused, stubRequirement.Code, "pack " + claim.Pack + " requires the stub example pack " + stubRequirement.Pack + ", not real law; pass allowStub to use it"));
         var list = new List<RoomFacts>();
         foreach (var room in rooms)
         {
             if (room is null) return Refused(selection, new JurisdictionIssue(JurisdictionCodes.InputInvalid, claim.Pack, "a room is null"));
-            if (!JurisdictionRedStub.On && !JurisdictionRegistry.WellFormed(room.Id) || !JurisdictionRegistry.WellFormed(room.Name))
+            if (!JurisdictionRegistry.WellFormed(room.Id) || !JurisdictionRegistry.WellFormed(room.Name))
                 return Refused(selection, new JurisdictionIssue(JurisdictionCodes.InputInvalid, claim.Pack, "room id or name is not well-formed text (lone surrogate)"));
             list.Add(room);
         }

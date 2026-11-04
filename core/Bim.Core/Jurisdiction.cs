@@ -165,8 +165,6 @@ public static class JurisdictionCodes
     public const string InputInvalid = "input_invalid";
 }
 
-static class JurisdictionRedStub { public static readonly bool On = true; }
-
 sealed class JurisdictionParseException : Exception
 {
     public JurisdictionParseException(string code, string field, string detail) : base(detail)
@@ -196,7 +194,7 @@ static class JurisdictionSidecar
             var boundary = Path.TrimEndingDirectorySeparator(Path.GetFullPath(skillsRoot)) + Path.DirectorySeparatorChar;
             if (IsLink(directory) || IsLink(file)) return (null, new JurisdictionIssue(JurisdictionCodes.PathUnsafe, relative, "symbolic links and junctions are not followed"));
             if (!Inside(file.FullName, boundary)) return (null, new JurisdictionIssue(JurisdictionCodes.PathUnsafe, relative, "path leaves the skills root"));
-            if (!JurisdictionRedStub.On && Directory.Exists(file.FullName)) return (null, new JurisdictionIssue(JurisdictionCodes.NotRegularFile, relative, "a directory is not a sidecar"));
+            if (Directory.Exists(file.FullName)) return (null, new JurisdictionIssue(JurisdictionCodes.NotRegularFile, relative, "a directory is not a sidecar"));
             if (!file.Exists) return (null, null);
             if (file.Length == 0) return (null, new JurisdictionIssue(JurisdictionCodes.NotRegularFile, relative, "zero-length entry is not read"));
             if (file.Length > JurisdictionClaim.MaxInputChars * 4L) return (null, new JurisdictionIssue(JurisdictionCodes.InputTooLarge, relative, "sidecar too large"));
