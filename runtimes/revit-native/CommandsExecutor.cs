@@ -32,7 +32,7 @@ namespace Bim.Revit;
 // family.load and family_instance.place are in CommandsExecutorFamilies.cs; site commands (toposolids and
 // subdivisions) are in CommandsExecutorSite.cs; wall.set_profile is in CommandsExecutorWallProfile.cs; fill patterns,
 // materials, layered wall/floor types and element.change_type are in CommandsExecutorMaterialTypes.cs;
-// view.export_image and document.save are in CommandsExecutorExportSave.cs.
+// view.export_image and document.save are in CommandsExecutorExportSave.cs; command.batch is in CommandsExecutorBatch.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -49,6 +49,13 @@ internal static partial class CommandExecutor
         var envelope = request.Envelope;
         var d = app.ActiveUIDocument?.Document ?? throw new RevitCommandException(RevitCommandCodes.DocumentConflict, "document.path", "no active document");
         CommandAdmission.Check(envelope, Facts(d), Policy, RevitFileSystemProbe.Real);
+        return Dispatch(d, request);
+    }
+
+    // After admission. command.batch (CommandsExecutorBatch.cs) calls this once per step inside its transaction group.
+    static string Dispatch(Document d, CommandRequest request)
+    {
+        var envelope = request.Envelope;
         // Queries never read or write the receipt store.
         if (!envelope.Spec.Writes) return CommandResponses.Success(request, Array.Empty<string>(), Array.Empty<string>(), Query(d, envelope), Array.Empty<string>()).ToJson();
         var store = ReadReceipts(d);
@@ -60,6 +67,7 @@ internal static partial class CommandExecutor
         // document.save (CommandsExecutorExportSave.cs) saves without a transaction and stores no receipt: recording one
         // would leave the document modified again right after the save.
         if (envelope.Args is DocumentSaveArgs) return SaveExecute(d, request);
+        if (envelope.Args is CommandBatchArgs batch) return BatchExecute(d, request, store, batch);
         // Modify and delete (P1-05, CommandsExecutorModify.cs) run their own transactions: a dry run stores no receipt.
         if (envelope.Args is ElementSetParameterArgs or ElementDeleteArgs) return ModifyExecute(d, request, store);
         CommandReceiptStore.EnsureRoom(store.Receipts);

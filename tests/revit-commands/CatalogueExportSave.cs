@@ -96,7 +96,7 @@ static class CatalogueExportSaveChecks
         var earlier = RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror).Concat(RevitCommandCatalogue.Elements)
             .Concat(RevitCommandCatalogue.Structure).Concat(RevitCommandCatalogue.Documentation).Concat(RevitCommandCatalogue.Modify).Concat(RevitCommandCatalogue.Materials)
             .Concat(RevitCommandCatalogue.Families).Concat(RevitCommandCatalogue.Site).Concat(RevitCommandCatalogue.WallProfile).Concat(RevitCommandCatalogue.MaterialTypes).ToArray();
-        Check(RevitCommandCatalogue.All.Take(earlier.Length).SequenceEqual(earlier) && RevitCommandCatalogue.All.Skip(earlier.Length).SequenceEqual(RevitCommandCatalogue.ExportSave),
+        Check(RevitCommandCatalogue.All.Take(earlier.Length).SequenceEqual(earlier) && RevitCommandCatalogue.All.Skip(earlier.Length).Take(RevitCommandCatalogue.ExportSave.Count).SequenceEqual(RevitCommandCatalogue.ExportSave),
             "All is every earlier part through the material type commands, then view.export_image and document.save");
         Check(RevitCommandCatalogue.All.Select(spec => spec.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(spec => spec.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct with the export and save commands");
         Check(RevitCommandCatalogue.ExportSave.Select(spec => spec.ToolName).SequenceEqual(new[] { "revit_view_export_image", "revit_document_save" }), "export and save tool names follow revit_<command>");
