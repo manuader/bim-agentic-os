@@ -20,6 +20,8 @@ def main():
     problems = result.failures + result.errors
     for test, trace in problems[:40]:
         print(f'::error title=rhino {test.id()}::{one_line(trace)}')
+    for test, reason in result.skipped[:20]:
+        print(f'::notice title=rhino skipped {test.id()}::{one_line(reason, 300)}')
     print(f'::notice title=rhino tests::ran={result.testsRun} failures={len(result.failures)} errors={len(result.errors)} skipped={len(result.skipped)}')
     if result.testsRun < MINIMUM_TESTS:
         print(f'::error title=rhino tests::ran {result.testsRun} tests, expected at least {MINIMUM_TESTS}')

@@ -630,11 +630,11 @@ class ReviewNonFinite(Base):
         self.assertAccounted(model, result, 'degenerate')
 
     def test_arc_detection_rejects_overflowing_samples(self):
-        class Domain:
+        class Interval:
             T0, T1 = 0.0, 1.0
 
         class Huge:
-            Domain = Domain()
+            Domain = Interval
 
             def PointAt(self, t):
                 return P3(1e300 * math.cos(t), 1e300 * math.sin(t), 0)
