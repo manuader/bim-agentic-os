@@ -19,8 +19,10 @@ namespace Bim.Revit;
 //     BuiltInParameter.EXTRUSION_START_PARAM / EXTRUSION_END_PARAM, ROOF_CONSTRAINT_LEVEL_PARAM (Reference Level),
 //     Element.get_BoundingBox(null)
 // Unverified in Revit (owner session required): that the extents are measured along the reference plane's normal
-//   (the executor mirrors them when that normal points opposite the request's left normal, and the readback checks
-//   the bounding box spans the requested extents along it, so a wrong sign rolls back as transaction_failed); which
+//   (the executor mirrors them when that normal points opposite the request's left normal; the readback checks the
+//   bounding box holds the profile swept to the requested side and is not nearer the other side, so a wrong sign
+//   rolls back as transaction_failed; the extents read back through the same normal flag, so they alone cannot show
+//   it); which
 //   view NewReferencePlane needs for a vertical plane (a non-template plan view of the reference level, else the
 //   active view); that an extrusion roof carries EXTRUSION_START_PARAM / EXTRUSION_END_PARAM (without them the
 //   readback reports null extents and rolls back); whether Revit keeps the profile curves exactly (an arc split in two reads back as a mismatch); how
@@ -30,7 +32,7 @@ internal static partial class CommandExecutor
     static View? ReferencePlaneView(Document d, Level level) =>
         new FilteredElementCollector(d).OfClass(typeof(ViewPlan)).Cast<ViewPlan>()
             .Where(view => !view.IsTemplate && view.GenLevel is { } genLevel && genLevel.Id == level.Id)
-            .OrderBy(view => view.Name, StringComparer.Ordinal).FirstOrDefault()
+            .OrderBy(view => view.ViewType == ViewType.FloorPlan ? 0 : 1).ThenBy(view => view.Name, StringComparer.Ordinal).FirstOrDefault()
         ?? (d.ActiveView is { IsTemplate: false } active ? active : null);
 
     static WritePlan RoofExtrusionPlan(Document d, RoofExtrusionCreateArgs args)
@@ -71,7 +73,7 @@ internal static partial class CommandExecutor
             return new ObservedRoofExtrusion(created.UniqueId,
                 LevelParameterUid(d, created, BuiltInParameter.ROOF_CONSTRAINT_LEVEL_PARAM) ?? UniqueIdOf(d, created.LevelId), UniqueIdOf(d, created.GetTypeId()),
                 plane is { IsValidObject: true } live ? live.UniqueId : null, start, end, edges, parallel,
-                box is null ? null : new[] { Mm(box.Min.X), Mm(box.Min.Y), Mm(box.Min.Z) }, box is null ? null : new[] { Mm(box.Max.X), Mm(box.Max.Y), Mm(box.Max.Z) });
+                box is null ? null : new[] { Mm(box.Min.X), Mm(box.Min.Y), Mm(box.Min.Z) }, box is null ? null : new[] { Mm(box.Max.X), Mm(box.Max.Y), Mm(box.Max.Z) }, levelMm);
         }
 
         return new WritePlan(

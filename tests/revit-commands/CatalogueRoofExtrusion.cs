@@ -131,7 +131,7 @@ static class CatalogueRoofExtrusionChecks
             "a centre arc starts at its start angle, runs counter-clockwise and its midpoint is half its sweep", centred?.Profile[0].ToString() ?? "");
         var gable = Accepts("two-line gable profile accepted", Envelope(WithProfile(L(-300, 2600, 3000, 4000), L(3000, 4000, 6300, 2600))));
         Check(gable?.Profile is [RoofProfileLine first, RoofProfileLine second] && Near(first.End, 3000, 4000) && Near(second.Start, 3000, 4000) && Near(second.End, 6300, 2600), "a two-line gable binds two lines in order");
-        // Straight eaves tangent to the barrel: the line (0, 2700) -> (-300, 2700) ... drawn from the left eave in.
+        // Short straight eaves sloping into both ends of the barrel, drawn left to right.
         var eaves = Accepts("line, arc, line profile accepted", Envelope(WithProfile(L(-600, 2600, -300, 2700), A3(-300, 2700, 6300, 2700, 3000, 3800), L(6300, 2700, 6600, 2600))));
         Check(eaves?.Profile.Count == 3 && eaves.Profile[1] is RoofProfileArc, "mixed lines and arcs bind in order");
     }
@@ -142,7 +142,12 @@ static class CatalogueRoofExtrusionChecks
         var snapped = Accepts("start within 0.5 mm accepted", Envelope(WithProfile(L(-300, 2600, 3000, 4000), L(3000.18, 4000.24, 6300, 2600))));
         Check(snapped?.Profile[1].Start == snapped?.Profile[0].End && snapped is not null && Near(snapped.Profile[1].Start, 3000, 4000), "a start within 0.5 mm is snapped onto the previous end");
         var arcSnapped = Accepts("arc start within 0.5 mm accepted", Envelope(WithProfile(L(-600, 2600, -300.4, 2700), A3(-300, 2700, 6300, 2700, 3000, 3800))));
-        Check(arcSnapped?.Profile[1] is RoofProfileArc snappedArc && Near(snappedArc.Start, -300.4, 2700) && Near(snappedArc.Mid, 3000, 3800, 1e-6), "an arc start is snapped onto the previous end and keeps its midpoint");
+        // Rebuilt through (-300.4, 2700), (6300, 2700) and the old midpoint (3000, 3800): by symmetry the centre is at
+        // u 2999.8; 0.2^2 + (3800 - z)^2 = 3300.2^2 + (2700 - z)^2 gives z = -3741320 / 2200 = -1700.6, R^2 = 0.04 +
+        // 5500.6^2, and the new midpoint is the top of that circle, (2999.8, 3800.0000036).
+        Check(arcSnapped?.Profile[1] is RoofProfileArc snappedArc && snappedArc.Start == arcSnapped.Profile[0].End && Near(snappedArc.Start, -300.4, 2700)
+            && Near(snappedArc.Center, 2999.8, -1700.6, 1e-6) && Near(snappedArc.Radius.Millimetres, Math.Sqrt(0.04 + 5500.6 * 5500.6), 1e-6) && Near(snappedArc.Mid, 2999.8, 3800.0000036, 1e-5) && !snappedArc.CounterClockwise,
+            "a snapped arc is rebuilt through its new start, its end and its old midpoint (centre, radius and midpoint recomputed)", arcSnapped?.Profile[1].ToString() ?? "");
         // 0.6 mm gap (0.36, 0.48).
         Rejects("gap of 0.6 mm", Envelope(WithProfile(L(-300, 2600, 3000, 4000), L(3000.36, 4000.48, 6300, 2600))), RevitCommandCodes.ArgsInvalid, "args.profile[1]");
         Rejects("second segment drawn backwards", Envelope(WithProfile(L(-300, 2600, 3000, 4000), L(6300, 2600, 3000, 4000))), RevitCommandCodes.ArgsInvalid, "args.profile[1]");
@@ -158,14 +163,32 @@ static class CatalogueRoofExtrusionChecks
     {
         // Line 2 from (4000, 2000) to (2000, -1000) crosses line 0 (z = 0) at t = 2/3, u = 2666.7.
         Rejects("line crosses a non-adjacent line", Envelope(WithProfile(L(0, 0, 4000, 0), L(4000, 0, 4000, 2000), L(4000, 2000, 2000, -1000))), RevitCommandCodes.ArgsInvalid, "args.profile[2]");
-        // Semicircle centre (3000, 0) R 3000 over the top; line (6000, 4000) -> (2000, 1000) meets the circle where
-        // 25 t^2 - 48 t + 16 = 0, t = 0.4293, at (4282.7, 2712.1) on the upper half.
-        Rejects("line crosses a non-adjacent arc", Envelope(WithProfile(A3(0, 0, 6000, 0, 3000, 3000), L(6000, 0, 6000, 4000), L(6000, 4000, 2000, 1000))), RevitCommandCodes.ArgsInvalid, "args.profile[2]");
+        // Semicircle centre (3000, 0) R 3000 over the top (it arrives at (6000, 0) heading straight down), then a run
+        // to (7000, 0), up to (7000, 4000) and back to (2000, 1000): that last line meets the circle where
+        // 34 t^2 - 64 t + 23 = 0, t = 0.4837, at (4581.5, 2549) on the upper half.
+        Rejects("line crosses a non-adjacent arc", Envelope(WithProfile(A3(0, 0, 6000, 0, 3000, 3000), L(6000, 0, 7000, 0), L(7000, 0, 7000, 4000), L(7000, 4000, 2000, 1000))), RevitCommandCodes.ArgsInvalid, "args.profile[3]");
         // A horizontal line 0.5 mm above the semicircle's crown (3000, 3000): no crossing, but closer than 1.2 mm.
-        Rejects("line 0.5 mm above a non-adjacent arc", Envelope(WithProfile(A3(0, 0, 6000, 0, 3000, 3000), L(6000, 0, 6000, 3000.5), L(6000, 3000.5, -1000, 3000.5))), RevitCommandCodes.ArgsInvalid, "args.profile[2]");
-        // The same line 2 mm above the crown; the vertical line x = 6000 is tangent to the circle only at the shared end.
-        Check(Accepts("line 2 mm above a non-adjacent arc accepted", Envelope(WithProfile(A3(0, 0, 6000, 0, 3000, 3000), L(6000, 0, 6000, 3002), L(6000, 3002, -1000, 3002))))?.Profile.Count == 3,
-            "a line 2 mm from a non-adjacent arc and a tangent neighbour are accepted");
+        Rejects("line 0.5 mm above a non-adjacent arc", Envelope(WithProfile(A3(0, 0, 6000, 0, 3000, 3000), L(6000, 0, 7000, 0), L(7000, 0, 7000, 3000.5), L(7000, 3000.5, -1000, 3000.5))), RevitCommandCodes.ArgsInvalid, "args.profile[3]");
+        // Exactly tangent to the crown: one shared point.
+        Rejects("line tangent to a non-adjacent arc", Envelope(WithProfile(A3(0, 0, 6000, 0, 3000, 3000), L(6000, 0, 7000, 0), L(7000, 0, 7000, 3000), L(7000, 3000, -1000, 3000))), RevitCommandCodes.ArgsInvalid, "args.profile[3]");
+        // The same line 2 mm above the crown is accepted.
+        Check(Accepts("line 2 mm above a non-adjacent arc accepted", Envelope(WithProfile(A3(0, 0, 6000, 0, 3000, 3000), L(6000, 0, 7000, 0), L(7000, 0, 7000, 3002), L(7000, 3002, -1000, 3002))))?.Profile.Count == 4,
+            "a line 2 mm from a non-adjacent arc is accepted");
+        // Cusps: the semicircle arrives at (6000, 0) heading down and the next line leaves it heading up along the
+        // tangent x = 6000, folding back on the arc (closer than 1.2 mm for about 85 mm).
+        Rejects("line folds back along its neighbouring arc (cusp)", Envelope(WithProfile(A3(0, 0, 6000, 0, 3000, 3000), L(6000, 0, 6000, 3002))), RevitCommandCodes.ArgsInvalid, "args.profile[1]");
+        // Arc a: centre (0, 0) R 1000 from (1000, 0) counter-clockwise to (-1000, 0), arriving heading down; arc b: the
+        // circle centre (1, 0) R 1001 through (-1000, 0), (1, 1001), (1002, 0), leaving (-1000, 0) heading up. The
+        // circles touch only at (-1000, 0) (d = 1 = R difference) and stay 1 + cos(theta) mm apart: within 1.2 mm for
+        // half the arc, never crossing.
+        Rejects("arc folds back over its neighbouring arc (cusp)", Envelope(WithProfile(AC(0, 0, 1000, 0, 180), A3(-1000, 0, 1002, 0, 1, 1001))), RevitCommandCodes.ArgsInvalid, "args.profile[1]");
+        // Non-neighbour arcs on one circle (centre (0, 0) R 1000): 0 to 90 degrees, then up, down-left to (-1000, 0) and
+        // counter-clockwise from 180 to 405 degrees, overlapping the first arc between 0 and 45 degrees.
+        Rejects("non-neighbour arcs overlap on one circle", Envelope(WithProfile(AC(0, 0, 1000, 0, 90), L(0, 1000, 0, 3000), L(0, 3000, -1000, 0), AC(0, 0, 1000, 180, 405))), RevitCommandCodes.ArgsInvalid, "args.profile[3]");
+        // A clockwise three-point arc of more than 180 degrees: (0, 0) -> (1000, 0) through (500, 1500), centre
+        // (500, 666.7), R 833.3, sweep 286.3; the line (2000, 0) -> (1300, 800) enters its circle at t = 0.9614,
+        // (1327, 769.1), at 7.1 degrees, inside the sweep (from 233.1 down through 0 to -53.1).
+        Rejects("line crosses a large clockwise arc", Envelope(WithProfile(A3(0, 0, 1000, 0, 500, 1500), L(1000, 0, 2000, 0), L(2000, 0, 1300, 800))), RevitCommandCodes.ArgsInvalid, "args.profile[2]");
         // Circles centre (2000, 0) R 2000 and centre (3000, 0) R 2000 meet at u 2500, z +-1936.5; both arcs are upper halves.
         Rejects("arc crosses a non-adjacent arc", Envelope(WithProfile(A3(0, 0, 4000, 0, 2000, 2000), L(4000, 0, 5000, 0), A3(5000, 0, 1000, 0, 3000, 2000))), RevitCommandCodes.ArgsInvalid, "args.profile[2]");
         Rejects("line turns back along its neighbour", Envelope(WithProfile(L(0, 0, 4000, 0), L(4000, 0, 2000, 0))), RevitCommandCodes.ArgsInvalid, "args.profile[1]");
@@ -191,6 +214,11 @@ static class CatalogueRoofExtrusionChecks
         Rejects("centre arc sweeping 360", Envelope(WithProfile(AC(3000, 0, 3000, 0, 360))), RevitCommandCodes.ArcSweepInvalid, "args.profile[0]");
         Rejects("z beyond Revit's limit", Envelope(WithProfile(L(0, 0, 6000, 9_144_001))), RevitCommandCodes.LengthInvalid, "args.profile[0].end[1]");
         Rejects("u beyond Revit's limit", Envelope(WithProfile(L(-9_144_001, 0, 6000, 0))), RevitCommandCodes.LengthInvalid, "args.profile[0].start[0]");
+        // Centre (9000000, 0) R 500000 from -10 to 10 degrees ends at u 9000000 + 500000 cos 10 = 9492404.
+        Rejects("centre arc ending beyond Revit's limit", Envelope(WithProfile(AC(9_000_000, 0, 500_000, -10, 10))), RevitCommandCodes.LengthInvalid, "args.profile[0]");
+        // Centre (8700000, 0) R 500000 from -60 to 60 degrees: ends at u 8950000, but its extreme at 0 degrees is 9200000.
+        Rejects("centre arc bulging beyond Revit's limit", Envelope(WithProfile(AC(8_700_000, 0, 500_000, -60, 60))), RevitCommandCodes.LengthInvalid, "args.profile[0]");
+        Check(Accepts("centre arc within Revit's limit accepted", Envelope(WithProfile(AC(8_600_000, 0, 500_000, -60, 60)))) is not null, "a centre arc reaching 9100000 mm is accepted");
         Rejects("plane of zero length", Envelope(With(Barrel(), "plane", new JsonObject { ["start"] = Pair(100, 100), ["end"] = Pair(100.5, 100) })), RevitCommandCodes.CurveTooShort, "args.plane");
         Rejects("no plane", Envelope(With(Barrel(), "plane", null)), RevitCommandCodes.ArgsInvalid, "args.plane");
         Rejects("plane with extra member", Envelope(With(Barrel(), "plane", new JsonObject { ["start"] = Pair(0, 0), ["end"] = Pair(6000, 0), ["z"] = 0 })), RevitCommandCodes.ArgsInvalid, "args.plane.z");
@@ -231,6 +259,16 @@ static class CatalogueRoofExtrusionChecks
     }
 
     static RoofExtrusionCreateArgs Parsed(JsonObject args) => (RoofExtrusionCreateArgs)RevitCommandProtocol.Parse(Envelope(args).ToJsonString()).Args;
+    static readonly double DiagonalLength = 6000 * Math.Sqrt(2);
+    static RoofExtrusionCreateArgs Diagonal() => Parsed(new JsonObject
+    {
+        ["level"] = "Level 1",
+        ["type"] = "Chapa curva",
+        ["plane"] = new JsonObject { ["start"] = Pair(0, 0), ["end"] = Pair(6000, 6000) },
+        ["profile"] = Profile(L(0, 3000, DiagonalLength, 3000)),
+        ["extrusion_start_mm"] = 0,
+        ["extrusion_end_mm"] = 1000,
+    });
 
     static void Frame()
     {
@@ -249,9 +287,20 @@ static class CatalogueRoofExtrusionChecks
         Check(CommandRulesRoofExtrusion.RevitExtents(-300, 10300, true) == (-300, 10300) && CommandRulesRoofExtrusion.RevitExtents(-300, 10300, false) == (-10300, 300),
             "extents are passed as is when the reference plane normal agrees with the left normal and mirrored otherwise");
         Check(CommandRulesRoofExtrusion.ContractExtents(-10300, 300, false) == (-300, 10300) && CommandRulesRoofExtrusion.ContractExtents(0, 40, true) == (0, 40), "Revit's extents map back to the request's");
-        // Box x 0..6000, y -300..10300 seen from plane (0,0)->(6000,0) (normal +y): w from -300 to 10300.
-        var barrelFrame = CommandRulesRoofExtrusion.Frame(Parsed(Barrel()));
-        Check(CommandRulesRoofExtrusion.NormalRange(barrelFrame, new double[] { -300, -300, 2600 }, new double[] { 6300, 10300, 3900 }) == (-300, 10300), "the box spans w -300 to 10300 along +y");
+        // Barrel: u -300..6300 (ends; of the arc's axis points only the crown at 90 degrees is in its sweep), z 2700..3800
+        // above a level at 500, swept along +y from -300 to 10300 (mirrored: -10300 to 300).
+        var (barrelMin, barrelMax) = CommandRulesRoofExtrusion.ExpectedBox(Parsed(Barrel()), 500, mirrored: false);
+        Check(barrelMin.Zip(new double[] { -300, -300, 3200 }).All(p => Near(p.First, p.Second)) && barrelMax.Zip(new double[] { 6300, 10300, 4300 }).All(p => Near(p.First, p.Second)),
+            "the expected box is the profile's u and z extremes swept along the left normal", string.Join(",", barrelMin.Concat(barrelMax)));
+        var (mirrorMin, mirrorMax) = CommandRulesRoofExtrusion.ExpectedBox(Parsed(Barrel()), 500, mirrored: true);
+        Check(Near(mirrorMin[1], -10300) && Near(mirrorMax[1], 300) && Near(mirrorMin[0], -300) && Near(mirrorMax[0], 6300), "the mirrored box sweeps the profile to the other side");
+        // Diagonal plane (0, 0) -> (6000, 6000): U = (0.7071, 0.7071), N = (-0.7071, 0.7071); a flat profile u 0..8485.28
+        // (6000 sqrt 2) at z 3000, extruded 0..1000: corners (0, 0), (6000, 6000), (-707.1, 707.1), (5292.9, 6707.1).
+        var (diagonalMin, diagonalMax) = CommandRulesRoofExtrusion.ExpectedBox(Diagonal(), 0, mirrored: false);
+        Check(Near(diagonalMin[0], -707.1068, 1e-3) && Near(diagonalMin[1], 0, 1e-6) && Near(diagonalMax[0], 6000, 1e-6) && Near(diagonalMax[1], 6707.1068, 1e-3) && Near(diagonalMin[2], 3000) && Near(diagonalMax[2], 3000),
+            "the diagonal expected box spans x -707.1..6000, y 0..6707.1", string.Join(",", diagonalMin.Concat(diagonalMax)));
+        var (otherMin, otherMax) = CommandRulesRoofExtrusion.ExpectedBox(Diagonal(), 0, mirrored: true);
+        Check(Near(otherMin[0], 0, 1e-6) && Near(otherMin[1], -707.1068, 1e-3) && Near(otherMax[0], 6707.1068, 1e-3) && Near(otherMax[1], 6000, 1e-6), "the diagonal mirrored box spans x 0..6707.1, y -707.1..6000");
         var expected = CommandRulesRoofExtrusion.Expected(Parsed(WithProfile(L(-600, 2600, -300, 2700), A3(-300, 2700, 6300, 2700, 3000, 3800))));
         Check(expected.Length == 2 && !expected[0].Arc && Near(expected[0].Mid.U, -450) && Near(expected[0].Mid.Z, 2650) && expected[1].Arc && Near(expected[1].Mid.U, 3000, 1e-6) && Near(expected[1].Mid.Z, 3800, 1e-6)
             && Near(expected[1].A.U, -300) && Near(expected[1].B.U, 6300),
@@ -287,6 +336,21 @@ static class CatalogueRoofExtrusionChecks
             "a roof extruded to the other side of the plane is a mismatch");
         Check(Check1(Observed(BarrelEdge()) with { BoxMin = new double[] { -320, -320, 2580 }, BoxMax = new double[] { 6320, 10320, 3920 } }) is null, "a bounding box padded by 20 mm matches");
         Check(Check1(Observed()) is not null, "a roof without profile curves is a mismatch");
+        // Diagonal plane: the roof extruded to the wrong side has box x 0..6707, y -707..6000, whose projection on N
+        // (-5243..4243) still covers 0..1000; it must not pass. The right side is x -707..6000, y 0..6707.
+        var diagonal = Diagonal();
+        var flat = new ObservedProfileEdge(Pt(0, 3000), Pt(DiagonalLength, 3000), Pt(DiagonalLength / 2, 3000), false, 0);
+        var right = new ObservedRoofExtrusion(RoofUid, LevelUid, TypeUid, PlaneUid, 0, 1000, new[] { flat }, true, new double[] { -707, 0, 2900 }, new double[] { 6000, 6707, 3100 });
+        Check(CommandReadbackRoofExtrusion.Roof(LevelUid, TypeUid, diagonal, right) is null, "a diagonal roof extruded to the requested side matches", CommandReadbackRoofExtrusion.Roof(LevelUid, TypeUid, diagonal, right) ?? "");
+        Check(CommandReadbackRoofExtrusion.Roof(LevelUid, TypeUid, diagonal, right with { BoxMin = new double[] { 0, -707, 2900 }, BoxMax = new double[] { 6707, 6000, 3100 } }) is { } diagonalWrong && diagonalWrong.Contains("wrong way", StringComparison.Ordinal),
+            "a diagonal roof extruded to the other side of the plane is a mismatch");
+        // A box that holds the requested sweep but is nearer the other side: gaps 17 + 707 + 707 + 17 = 1448 to the
+        // requested box against 690 + 0 + 0 + 690 = 1380 to the mirrored one (z equal).
+        Check(CommandReadbackRoofExtrusion.Roof(LevelUid, TypeUid, diagonal, right with { BoxMin = new double[] { -690, -707.1068, 3000 }, BoxMax = new double[] { 6707.1068, 6690, 3000 } }) is { } nearer && nearer.Contains("other side", StringComparison.Ordinal),
+            "a box nearer the profile swept to the other side is a mismatch");
+        // The level elevation lifts the expected box: a profile at z 2700..3800 above a level at 3000 is at 5700..6800.
+        Check(Check1(Observed(BarrelEdge()) with { LevelElevationMm = 3000 }) is not null && Check1(Observed(BarrelEdge()) with { LevelElevationMm = 3000, BoxMin = new double[] { -300, -300, 5600 }, BoxMax = new double[] { 6300, 10300, 6900 } }) is null,
+            "the expected box is measured from the level's elevation");
     }
 
     static void ReadbackJson()

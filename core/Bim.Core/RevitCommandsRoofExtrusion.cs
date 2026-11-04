@@ -68,6 +68,9 @@ public static class RevitRoofExtrusionRules
                         "segment " + i + " starts " + gap.ToString("0.###", CultureInfo.InvariantCulture) + " mm away from the end of segment " + (i - 1) + "; each segment must start where the previous one ends (within 0.5 mm), in order");
                 segment = segment switch
                 {
+                    RoofProfileArc arc when arc.Start == previous => arc,
+                    // The arc is rebuilt through its snapped start, its end and its old midpoint, so centre, radius,
+                    // sweep and midpoint stay consistent with the curve the executor draws.
                     RoofProfileArc arc => arc with { Start = previous },
                     _ => new RoofProfileLine(previous, segment.End),
                 };
@@ -75,6 +78,72 @@ public static class RevitRoofExtrusionRules
             connected.Add(segment);
         }
         return connected;
+    }
+
+    // The arc from start to end through a point, with its own midpoint; checked like every three-point arc and kept
+    // within Revit's 30000 ft limit (CheckExtent).
+    public static RoofProfileArc Through(ProfileVertex start, ProfileVertex end, ProfileVertex through, string field)
+    {
+        double su = start.U.Millimetres, sz = start.Z.Millimetres;
+        var arc = RevitCommandGeometry.ArcThrough(su, sz, end.U.Millimetres, end.Z.Millimetres, through.U.Millimetres, through.Z.Millimetres, field);
+        var sweep = Angle.FromDegrees(arc.SweepDegrees);
+        var result = new RoofProfileArc(start, end, ArcMid(arc.CenterX, arc.CenterY, arc.RadiusMm, su, sz, sweep.Radians, arc.CounterClockwise),
+            new ProfileVertex(Length.FromMillimetres(arc.CenterX), Length.FromMillimetres(arc.CenterY)), Length.FromMillimetres(arc.RadiusMm), sweep, arc.CounterClockwise);
+        CheckExtent(result, field);
+        return result;
+    }
+
+    // The arc's ends and its extreme points in u and z (where it crosses 0, 90, 180 or 270 degrees), in millimetres.
+    public static IReadOnlyList<(double U, double Z)> Extremes(RoofProfileSegment segment)
+    {
+        var points = new List<(double U, double Z)> { (segment.Start.U.Millimetres, segment.Start.Z.Millimetres), (segment.End.U.Millimetres, segment.End.Z.Millimetres) };
+        if (segment is not RoofProfileArc) return points;
+        var seg = Of(segment);
+        for (var k = 0; k < 4; k++)
+        {
+            var theta = k * Math.PI / 2;
+            double u = seg.Cx + seg.R * Math.Cos(theta), z = seg.Cz + seg.R * Math.Sin(theta);
+            if (WithinSweep(seg, u, z)) points.Add((u, z));
+        }
+        return points;
+    }
+
+    // Every point of an arc (its ends and u/z extremes), not only its centre, within 9144000 mm: length_invalid at the
+    // segment otherwise.
+    public static void CheckExtent(RoofProfileArc arc, string field)
+    {
+        // Red stub (review): only the centre is bounded yet.
+        if (arc.Radius.Millimetres > -1) return;
+        foreach (var (u, z) in Extremes(arc))
+        {
+            if (!(Math.Abs(u) <= RevitCommandGeometry.MaxRevitLengthMm) || !(Math.Abs(z) <= RevitCommandGeometry.MaxRevitLengthMm))
+                throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "the arc reaches (" + u.ToString("0.###", CultureInfo.InvariantCulture) + ", " + z.ToString("0.###", CultureInfo.InvariantCulture) + ") mm, beyond 9144000 mm (Revit's 30000 ft limit)");
+        }
+    }
+
+    // Unit tangent of a segment at its start or end, in the drawing direction.
+    static (double X, double Z) Tangent(Seg s, bool atEnd)
+    {
+        if (!s.Arc)
+        {
+            double dx = s.Ex - s.Sx, dz = s.Ez - s.Sz, length = Math.Sqrt(dx * dx + dz * dz);
+            return (dx / length, dz / length);
+        }
+        var theta = atEnd ? s.A0 + s.SignedSweep : s.A0;
+        return s.SignedSweep >= 0 ? (-Math.Sin(theta), Math.Cos(theta)) : (Math.Sin(theta), -Math.Cos(theta));
+    }
+
+    // Neighbours fold back on each other (a cusp) when the next one leaves the joint within 1 degree of the direction
+    // the previous one arrived from.
+    static readonly double CuspCosine = Math.Cos(Math.PI / 180);
+
+    static bool Cusp(Seg a, Seg b)
+    {
+        // Red stub (review): cusps not refused yet.
+        if (CuspCosine > -2) return false;
+        var (ax, az) = Tangent(a, true);
+        var (bx, bz) = Tangent(b, false);
+        return ax * bx + az * bz < -CuspCosine;
     }
 
     // The chain must be open: its first start and last end at least 1.2 mm apart.
@@ -87,7 +156,8 @@ public static class RevitRoofExtrusionRules
     }
 
     // No self-intersection: segments that are not neighbours must neither touch nor come within 1.2 mm; neighbours
-    // may only meet at their shared end (no overlap, no second crossing, neither far end within 1.2 mm of the other).
+    // may only meet at their shared end (no overlap, no second crossing, neither far end within 1.2 mm of the other, no
+    // cusp: the next segment may not leave the joint within 1 degree of the way the previous one came in).
     // A refusal is args_invalid at args.profile[j], j the later of the two segments.
     public static void CheckSimple(IReadOnlyList<RoofProfileSegment> profile, string field)
     {
@@ -102,7 +172,7 @@ public static class RevitRoofExtrusionRules
                 if (j == i + 1)
                 {
                     double jx = a.Ex, jz = a.Ez;
-                    bad = !(PointDistance(b, a.Sx, a.Sz) >= RevitCommandGeometry.MinSegmentMm) || !(PointDistance(a, b.Ex, b.Ez) >= RevitCommandGeometry.MinSegmentMm)
+                    bad = Cusp(a, b) || !(PointDistance(b, a.Sx, a.Sz) >= RevitCommandGeometry.MinSegmentMm) || !(PointDistance(a, b.Ex, b.Ez) >= RevitCommandGeometry.MinSegmentMm)
                         || Intersections(a, b).Any(p => Distance(p.X, p.Z, jx, jz) > RevitCommandGeometry.MinSegmentMm);
                 }
                 else bad = Intersections(a, b).Count > 0 || !(SegmentDistance(a, b) >= RevitCommandGeometry.MinSegmentMm);
@@ -331,10 +401,7 @@ public static partial class RevitCommandCatalogue
             var start = ProfilePoint(segment, "start", field + ".start");
             var end = ProfilePoint(segment, "end", field + ".end");
             var through = ProfilePoint(segment, "through", field + ".through");
-            var arc = RevitCommandGeometry.ArcThrough(start.U, start.Z, end.U, end.Z, through.U, through.Z, field);
-            var sweep = Angle.FromDegrees(arc.SweepDegrees);
-            return new RoofProfileArc(Vertex(start.U, start.Z), Vertex(end.U, end.Z), RevitRoofExtrusionRules.ArcMid(arc.CenterX, arc.CenterY, arc.RadiusMm, start.U, start.Z, sweep.Radians, arc.CounterClockwise),
-                Vertex(arc.CenterX, arc.CenterY), Length.FromMillimetres(arc.RadiusMm), sweep, arc.CounterClockwise);
+            return RevitRoofExtrusionRules.Through(Vertex(start.U, start.Z), Vertex(end.U, end.Z), Vertex(through.U, through.Z), field);
         }
         var center = ProfilePoint(segment, "center", field + ".center");
         var radius = Number(segment.GetProperty("radius_mm"));
@@ -344,7 +411,9 @@ public static partial class RevitCommandCatalogue
         double a0 = startAngle * Math.PI / 180, a1 = endAngle * Math.PI / 180;
         double su = center.U + radius * Math.Cos(a0), sz = center.Z + radius * Math.Sin(a0);
         var arcSweep = Angle.FromRadians(a1 - a0);
-        return new RoofProfileArc(Vertex(su, sz), Vertex(center.U + radius * Math.Cos(a1), center.Z + radius * Math.Sin(a1)),
+        var centred = new RoofProfileArc(Vertex(su, sz), Vertex(center.U + radius * Math.Cos(a1), center.Z + radius * Math.Sin(a1)),
             RevitRoofExtrusionRules.ArcMid(center.U, center.Z, radius, su, sz, arcSweep.Radians, true), Vertex(center.U, center.Z), Length.FromMillimetres(radius), arcSweep, true);
+        RevitRoofExtrusionRules.CheckExtent(centred, field);
+        return centred;
     }
 }

@@ -24,9 +24,12 @@ public sealed record ExpectedProfileEdge(ProfilePointMm A, ProfilePointMm B, Pro
 public sealed record ObservedProfileEdge(ProfilePointMm A, ProfilePointMm B, ProfilePointMm Mid, bool Arc, double PlaneOffsetMm);
 // What Revit reports after creation. StartMm/EndMm are the extents in the request's sign (along N, see
 // CommandRulesRoofExtrusion.ContractExtents); PlaneParallel: the profile's sketch plane normal is parallel to N;
-// BoxMin/BoxMax: the roof's model bounding box corners [x, y, z] in millimetres (null without a box).
+// BoxMin/BoxMax: the roof's model bounding box corners [x, y, z] in millimetres (null without a box);
+// LevelElevationMm: the reference level's project elevation. StartMm/EndMm come back through the same normal
+// direction the executor used to send them, so they cannot show an extrusion to the wrong side: the bounding box
+// check (CommandRulesRoofExtrusion.ExpectedBox) does.
 public sealed record ObservedRoofExtrusion(string UniqueId, string LevelUid, string TypeUid, string? PlaneUid, double? StartMm, double? EndMm,
-    IReadOnlyList<ObservedProfileEdge> Edges, bool PlaneParallel, double[]? BoxMin, double[]? BoxMax);
+    IReadOnlyList<ObservedProfileEdge> Edges, bool PlaneParallel, double[]? BoxMin, double[]? BoxMax, double LevelElevationMm = 0);
 
 public static class CommandRulesRoofExtrusion
 {
@@ -67,12 +70,26 @@ public static class CommandRulesRoofExtrusion
             : new ExpectedProfileEdge(a, b, new ProfilePointMm((a.U + b.U) / 2, (a.Z + b.Z) / 2), false);
     }).ToArray();
 
-    // Extent of the bounding box along N, measured from the plane (the least and greatest w of its plan corners).
-    public static (double Min, double Max) NormalRange(RoofExtrusionFrame frame, double[] boxMin, double[] boxMax)
+    // The model box [x, y, z] in millimetres of the requested profile (ends and arc extremes) swept from the start to
+    // the end extent along N, or, mirrored, along -N (the roof extruded to the wrong side). The roof's own box also
+    // holds the type's thickness, so it contains this box but may be larger.
+    public static (double[] Min, double[] Max) ExpectedBox(RoofExtrusionCreateArgs args, double levelElevationMm, bool mirrored)
     {
-        var ws = new[] { boxMin[0], boxMax[0] }.SelectMany(x => new[] { boxMin[1], boxMax[1] }.Select(y => (x - frame.OriginX) * frame.Nx + (y - frame.OriginY) * frame.Ny)).ToArray();
-        return (ws.Min(), ws.Max());
+        var frame = Frame(args);
+        var points = args.Profile.SelectMany(RevitRoofExtrusionRules.Extremes).ToArray();
+        double uMin = points.Min(p => p.U), uMax = points.Max(p => p.U), zMin = points.Min(p => p.Z), zMax = points.Max(p => p.Z);
+        var (wStart, wEnd) = RevitExtents(args.ExtrusionStart.Millimetres, args.ExtrusionEnd.Millimetres, !mirrored);
+        var corners = new[] { uMin, uMax }.SelectMany(u => new[] { wStart, wEnd }.Select(w => (X: frame.OriginX + u * frame.Ux + w * frame.Nx, Y: frame.OriginY + u * frame.Uy + w * frame.Ny))).ToArray();
+        return (new[] { corners.Min(c => c.X), corners.Min(c => c.Y), levelElevationMm + zMin }, new[] { corners.Max(c => c.X), corners.Max(c => c.Y), levelElevationMm + zMax });
     }
+
+    // The observed box holds the expected one within the box tolerance.
+    public static bool Holds(double[] min, double[] max, (double[] Min, double[] Max) expected) =>
+        Enumerable.Range(0, 3).All(k => min[k] <= expected.Min[k] + BoxToleranceMm && max[k] >= expected.Max[k] - BoxToleranceMm);
+
+    // Sum of the corner coordinate differences between two boxes.
+    public static double Gap(double[] min, double[] max, (double[] Min, double[] Max) other) =>
+        Enumerable.Range(0, 3).Sum(k => Math.Abs(min[k] - other.Min[k]) + Math.Abs(max[k] - other.Max[k]));
 
     static double Distance(ProfilePointMm a, ProfilePointMm b) => Math.Sqrt((a.U - b.U) * (a.U - b.U) + (a.Z - b.Z) * (a.Z - b.Z));
 
@@ -119,9 +136,18 @@ public static class CommandReadbackRoofExtrusion
         if (!CommandRulesRoofExtrusion.SameProfile(CommandRulesRoofExtrusion.Expected(args), observed.Edges))
             return "the roof profile reads back as " + observed.Edges.Count + " curves that differ from the " + args.Profile.Count + " requested segments (ends and midpoints within 1 mm, same kind)";
         if (observed.BoxMin is not { Length: 3 } min || observed.BoxMax is not { Length: 3 } max) return "the roof has no bounding box";
-        var (wMin, wMax) = CommandRulesRoofExtrusion.NormalRange(CommandRulesRoofExtrusion.Frame(args), min, max);
-        if (wMin > start + CommandRulesRoofExtrusion.BoxToleranceMm || wMax < end - CommandRulesRoofExtrusion.BoxToleranceMm)
-            return "the roof spans " + F(Math.Round(wMin, 1)) + " to " + F(Math.Round(wMax, 1)) + " mm from the plane along its left normal, expected at least " + F(start) + " to " + F(end) + " mm (extruded the wrong way?)";
+        // Wrong-side guard, both ways: the box must hold the profile swept to the requested side and must not be
+        // nearer the profile swept to the other side (skipped when both sides give the same box).
+        // Red stub (review): the expected-box wrong-side guard is not applied yet.
+        if (observed.LevelElevationMm > double.MinValue) return null;
+        var expected = CommandRulesRoofExtrusion.ExpectedBox(args, observed.LevelElevationMm, mirrored: false);
+        var other = CommandRulesRoofExtrusion.ExpectedBox(args, observed.LevelElevationMm, mirrored: true);
+        string Box(double[] a, double[] b) => "[" + string.Join(", ", a.Concat(b).Select(v => F(Math.Round(v, 1)))) + "]";
+        if (!CommandRulesRoofExtrusion.Holds(min, max, expected))
+            return "the roof bounding box " + Box(min, max) + " does not hold the requested profile swept along the plane's left normal " + Box(expected.Min, expected.Max) + " (extruded the wrong way?)";
+        if (CommandRulesRoofExtrusion.Gap(expected.Min, expected.Max, other) > 6 * CommandRulesRoofExtrusion.BoxToleranceMm
+            && CommandRulesRoofExtrusion.Gap(min, max, other) < CommandRulesRoofExtrusion.Gap(min, max, expected))
+            return "the roof bounding box " + Box(min, max) + " is nearer the profile swept to the other side of the plane " + Box(other.Min, other.Max) + " (extruded the wrong way?)";
         return null;
     }
 
