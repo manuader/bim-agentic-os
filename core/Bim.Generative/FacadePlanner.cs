@@ -10,8 +10,10 @@ namespace Bim.Generative;
 // window (the CABA pack has none for baths, kitchens, laundries, halls or corridors). A matched rule is applied when it is
 // ratio_min over area_m2 with a numeric threshold (a parameter threshold takes the run-time override when given, keyed
 // "<skill id>/<parameter>" as in SkillRoomValidator). An applies_if condition on area_m2 or min_side_m (known from the
-// rectangle) is evaluated as P5-02 does: when it holds the rule applies, when the room exceeds it the rule is unsupported.
-// Any other rule (another op or denominator, another condition property, a non-numeric threshold) fails the room with
+// rectangle) is evaluated: when it holds the rule applies, when the room exceeds it the rule does not cover the room and is
+// dropped (P5-02 reports it not evaluable, never a pass); a room left with no rule is not required. A condition that
+// cannot be evaluated (another property, unparsable) and any other rule (another op or denominator, a non-numeric
+// threshold) fails the room with
 // facade_rule_unsupported; it never passes silently. Several matched rules of one kind take the largest threshold.
 //
 // Geometry: the exterior parts of a room side are the parts not covered by a coincident side (1e-7 m) of another room of
@@ -95,7 +97,7 @@ public static class FacadePlanner
         var area = rect.Width * rect.Depth;
         var minSide = Math.Min(rect.Width, rect.Depth);
         var normalized = SkillRoomValidator.NormalizeName(name);
-        var matched = context.RatioRules.Where(rule => rule.Rule.Target.MatchesRoom(normalized)).ToArray();
+        var matched = context.RatioRules.Where(rule => rule.Rule.Target.MatchesRoom(normalized) && !Excluded(rule, area, minSide)).ToArray();
         var illuminationRules = matched.Where(rule => rule.Rule.Check.Property == IlluminationProperty).OrderBy(rule => rule.QualifiedId, StringComparer.Ordinal).ToArray();
         var ventilationRules = matched.Where(rule => rule.Rule.Check.Property == VentilationProperty).OrderBy(rule => rule.QualifiedId, StringComparer.Ordinal).ToArray();
         var ruleIds = illuminationRules.Concat(ventilationRules).Select(rule => rule.QualifiedId).ToArray();
@@ -155,7 +157,7 @@ public static class FacadePlanner
             Fail(FacadeCodes.LotLineOnly, "every exterior side of the room (" + Format(exterior) + " m) lies on a closed lot edge (party wall); " + requirement);
             return;
         }
-        var minimumMm = (long)Math.Ceiling(options.MinWindowWidthMetres * 1000);
+        var minimumMm = CeilingMm(options.MinWindowWidthMetres);
         var candidates = open.Select(part => (Part: part, Usable: FloorMm(part.End - part.Start - 2 * options.EndClearanceMetres)))
             .OrderByDescending(candidate => candidate.Usable).ThenBy(candidate => (int)candidate.Part.Side).ThenBy(candidate => candidate.Part.Start).ToArray();
         var holdsMm = candidates.Where(candidate => candidate.Usable >= minimumMm).Sum(candidate => candidate.Usable);
@@ -324,6 +326,16 @@ public static class FacadePlanner
         }
     }
 
+    // Whether the rule's applies_if condition can be evaluated on the room rectangle (area_m2, min_side_m) and the room
+    // exceeds it, so the rule does not cover the room.
+    static bool Excluded(SkillEffectiveRule rule, double area, double minSide)
+    {
+        if (SkillRoomValidator.ParseCitation(rule.Rule.Citation).AppliesIf is not { } condition
+            || !SkillRoomValidator.TryParseCondition(condition, out var property, out var maximum)) return false;
+        double? value = property switch { AreaProperty => area, MinSideProperty => minSide, _ => null };
+        return value is { } known && known > maximum + SkillRoomValidator.RelativeTolerance * Math.Max(1, Math.Abs(maximum));
+    }
+
     // The ratio a rule requires for this room, or null when the rule cannot size a window for it.
     static double? Threshold(SkillEffectiveRule rule, double area, double minSide, IReadOnlyDictionary<string, double> overrides)
     {
@@ -340,6 +352,9 @@ public static class FacadePlanner
         if (rule.ThresholdSource is { Origin: SkillTrace.ParameterOrigin } source && overrides.TryGetValue(source.SkillId + "/" + source.Key, out var overridden)) limit = overridden;
         return double.IsFinite(limit) && limit >= 0 ? limit : null;
     }
+
+    // Whole millimetres rounded up with the ratio slack, so 2.007 m (2007.0000000000002 mm in binary) is 2007 mm.
+    static long CeilingMm(double metres) => (long)Math.Ceiling(metres * 1000 * (1 - RatioSlack));
 
     static long FloorMm(double metres) => metres <= 0 ? 0 : (long)Math.Floor(metres * 1000 + 1e-6);
 
