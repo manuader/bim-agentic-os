@@ -944,6 +944,40 @@
       ],
       "blocker": "IntentDraft is in-memory only (no JSON form); shipped style packs set neither door.height_m nor wall.interior.type, so those fields need explicit values; room.min_clear_height_m only validates; strict validation refuses a broken style even for a fully explicit draft (deliberate).",
       "scope": "P5-04: IntentSkillDefaults.Fill/Compile fill open intent fields (level elevation by storey, wall type/thickness/height by role, window sill/height from sill/head, door height) from a resolved style before the unchanged IntentCompiler, with per-field provenance (explicit/default/derived/rule + skill traces); explicit values win; typed refusals (default_missing, default_value_invalid, default_inconsistent, derived_value_invalid, storey_*, draft_key_duplicate); two styles give two byte-stable projects. CI 41837332397."
+    },
+    {
+      "id": "revit-document-save-copy",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsSaveCopy.cs",
+        "runtimes/revit-native/CommandsExecutorSaveCopy.cs",
+        "tests/revit-commands/CatalogueSaveCopy.cs"
+      ],
+      "blocker": "Executor never run in Revit: SaveAs re-pointing PathName/clearing IsModified, source file untouched, no upgrade dialog, OverwriteExistingFile=false behaviour and SHA-256 read while Revit holds the copy are unverified (owner session). General Save As of real projects stays unsupported.",
+      "scope": "P1-08: document.save_copy (MCP revit_document_save_copy, write-copies) saves the open BIM-Agentic-Test*.rvt as a new BIM-Agentic-Test*.rvt under .bim/native-runs only; binder + core guards before the pipe (path shape, 8.3/streams/devices/dotted segments, backup names, outside_copies_root, source_not_test_copy, same_as_source, target_linked, folder_missing, target_exists), repeated in the add-in; post-save location recheck (TOCTOU); reply path/bytes/sha256; the open document becomes the copy; excluded from command.batch. Guards/readback unit-tested; executor compiled. CI 41854608933."
+    },
+    {
+      "id": "rhino-3dm-draft-import",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/rhino/rhino_draft.py",
+        "tests/rhino/test_rhino_draft.py",
+        "tests/rhino/run.py"
+      ],
+      "blocker": "Poly curves, block references, meshes and Breps unsupported; wall openings and non-rectangular spaces not expressible; never run in Rhino itself (rhino3dm 8.17 on Linux CI only); rhino3dm segfaulted once intermittently under the suite (run.py now names the test).",
+      "scope": "P8-06: rhino_draft.py reads .3dm (rhino3dm 8.17, MIT) into a non-persisted BIM-IR draft proposal (levels, walls, spaces) with per-object confidence, notes and a typed unmapped report; layer mapping (writer BIM:: names, English/Spanish, sublayer inheritance), extrusions/lines/polylines/arcs, unit scaling, NaN/inf/overflow refusals, caps, deterministic bytes, writer dependencies honoured when consistent; roundtrip with the P8-02 writer. 148 tests on the real library, CI 41875504076."
+    },
+    {
+      "id": "revit-roof-extrusion",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsRoofExtrusion.cs",
+        "runtimes/revit-native/CommandsRoofExtrusion.cs",
+        "runtimes/revit-native/CommandsExecutorRoofExtrusion.cs",
+        "tests/revit-commands/CatalogueRoofExtrusion.cs"
+      ],
+      "blocker": "Executor never run in Revit: extents direction along the reference-plane normal, EXTRUSION_START/END_PARAM readback, NewReferencePlane view choice and unsplit profile curves are unverified (owner session); a roof box holding both sweeps cannot reveal the side.",
+      "scope": "P9-07: roof.create_extrusion (MCP revit_roof_create_extrusion, write-copies) from an open line/arc profile in [u,z] mm on the vertical plane through a plan line, extents, level and roof type; core validation before the pipe (connected within 0.5 mm with arc rebuild on snap, open, no self-intersection incl. arcs, no cusps, 1-100 segments, extents/limits); readback of level, type, plane, profile, extents and an expected-box wrong-side check; command.batch step. Rules unit-tested with hand-computed oracles; executor compiled. CI 41870326635."
     }
   ]
 }
