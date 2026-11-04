@@ -221,6 +221,20 @@ try {
     ExpectFailure("export-gltf refuses an output in a missing directory","output_directory_not_found","export-gltf",gInput,Path.Combine(work,"no-such-dir","model.glb"));
     ExpectFailure("export-gltf refuses an empty output path","output_path_invalid","export-gltf",gInput,"");
     ExpectFailure("export-gltf refuses a trailing-separator output path","output_extension_unsupported","export-gltf",gInput,Path.Combine(work,"trail.glb")+Path.DirectorySeparatorChar);
+    // Cross-OS goldens (tests/cli also runs on macOS): the tests/gltf opening fixture exported through the CLI hashes to the
+    // golden SHA-256 values computed by the independent reimplementation (tests/gltf GoldenOpeningsGlb/Gltf).
+    Guid gOpeningWall=Guid.Parse("0b000000-0000-4000-8000-0000000000a1");
+    var gOpeningFixture=new Project(Guid.Parse("3f0c1d2e-0000-4000-8000-000000000001"),2,[
+        new Element(gLevel,"level",[0],[],gProv),
+        new Element(gOpeningWall,"wall",[0,0,6,0,3,0.2],[gLevel],gProv),
+        new Element(gDoor,"door",[1,0,2,0,0,2.1],[gLevel,gOpeningWall],gProv),
+        new Element(gWindow,"window",[3.5,0,5,0,0.9,1.2],[gLevel,gOpeningWall],gProv)]);
+    var gOpeningInput=Input("gltf-opening-fixture.json",JsonSerializer.Serialize(gOpeningFixture));
+    foreach(var (gExt,gGolden) in new[]{("glb","47A14D5CE34105E4145CBBD9207B7D7EEBFC472BAB8B23EBF9686AB677966D3F"),("gltf","039FC0A70FB5BEB58EDE15A3BC59816C0EE2A31CDA4BFBCC5B399F7C1FA79DBF")}) {
+        var gGoldenOut=Path.Combine(work,"golden-openings."+gExt);
+        var gGoldenRun=Cli("export-gltf",gOpeningInput,gGoldenOut);
+        Check(gGoldenRun.Exit==0 && File.Exists(gGoldenOut) && GHex(File.ReadAllBytes(gGoldenOut))==gGolden,"export-gltf opening fixture ."+gExt+" equals the cross-OS golden SHA-256","exit "+gGoldenRun.Exit+" "+gGoldenRun.Out);
+    }
     // NTFS alternate data stream syntax: any ':' after the drive designator is refused on every OS; nothing is written.
     var gHost=Path.Combine(work,"host.txt");
     if(OperatingSystem.IsWindows()) File.WriteAllBytes(gHost,[7,7,7]);
