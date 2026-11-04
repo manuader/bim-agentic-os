@@ -100,3 +100,9 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay147 (2026-11-04, cloud)
 - [ ] Materials/types overlap: your chat branch `chat-materials-types` and the relay branch `relay147-P9-06` implement the same commands (material.create, wall_type.create, floor_type.create). The relay did NOT merge its version. Tell a relay (OWNER.md) whether to independently review and merge `chat-materials-types` (porting relay147-P9-06's hardening: core/shell readback, ordinal-first name pick, 1.2 mm minimum layer, Revit name errors → args_invalid), or merge it from the chat yourself.
 - No Revit action new this relay (P8-05 IFC import and P3-04 local validation are headless, CI-tested). Still open: 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (81 steps) on a test copy, 🔒 N21 `... -Runs 1`, escritorio/estudio/biblioteca class, Uniclass CC BY-ND excerpt OK?
+
+## Relay148 (2026-11-04, cloud)
+- No new owner action (P4-03 documentation regeneration, P6-05 brief extraction, P7-04 circulation are headless and unit-tested in CI).
+- [ ] Decide P9-06: should a scheduled relay independently review and merge the chat branch `chat-materials-types` (material.create/set, wall_type.create, floor_type.create, query.fill_patterns, element.change_type) and port the relay147 hardening, or will the owner chat merge it? Answer in OWNER.md.
+- Optional: send a real DXF/PDF floor plan with room labels (no client data) into `.bim/` so a relay can test P6-05 brief extraction beyond synthetic fixtures.
+- Still open: 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` on a test copy (Load Once), escritorio/estudio/biblioteca class, Uniclass CC BY-ND excerpt, 🔒 N21 `... -Runs 1`.
