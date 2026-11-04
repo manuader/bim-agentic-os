@@ -85,7 +85,8 @@ static class CirculationTests
         var storeModel = Analyze(storeBrief, store);
         Check(storeModel.Status == CirculationStatus.Invalid && Pairs(storeModel) == "hall|living" && Route(storeModel, "store") is { Reachable: false, AvoidsBedrooms: false } storeRoute
             && !double.IsFinite(storeRoute.LengthMetres) && storeRoute.Rooms.Count == 0 && storeRoute.Doors.Count == 0
-            && storeModel.Violations.Count == 1 && storeModel.Violations[0] is { Code: CirculationCodes.Reachable, Subject: "store" },
+            && storeModel.Violations.Count == 2 && storeModel.Violations[0] is { Code: CirculationCodes.Reachable, Subject: "store" }
+            && storeModel.Violations[1] is { Code: CirculationCodes.Passage, Subject: "store" },
             "a room sharing only 0.5 m of wall gets no door and fails circulation_reachable", Describe(storeModel));
         Check(Oracle(storeBrief, store, storeModel, 0.9, true) is null, "unreachable room agrees with the oracle", Oracle(storeBrief, store, storeModel, 0.9, true) ?? "");
         var json = CirculationSerializer.Serialize(storeModel);
@@ -104,9 +105,85 @@ static class CirculationTests
         var twoLevel = new SpacePlan(SpacePlanStatus.Feasible, "two levels", 6, 2, new PlanFootprint(6, 3), 0.9,
             new[] { P("hall", 0, 0, 3, 3), P("living", 3, 0, 3, 3), P("upper", 0, 0, 3, 3, level: 1) }, Array.Empty<PlanConstraint>(), 0);
         var twoLevelModel = Analyze(twoLevelBrief, twoLevel);
-        Check(twoLevelModel.Status == CirculationStatus.Invalid && Route(twoLevelModel, "upper") is { Reachable: false }
-            && twoLevelModel.Violations.Any(c => c.Code == CirculationCodes.Reachable && c.Subject == "upper" && c.Detail.Contains("stair", StringComparison.Ordinal))
-            && Pairs(twoLevelModel) == "hall|living", "a room on an upper level is unreachable because no stairs are modelled", Describe(twoLevelModel));
+        Check(twoLevelModel.Status == CirculationStatus.Valid && Route(twoLevelModel, "upper") is { Reachable: false, AvoidsBedrooms: false }
+            && twoLevelModel.Checks.Count(c => c.Code == CirculationCodes.Unsupported) == 1
+            && twoLevelModel.Checks.Any(c => c is { Code: CirculationCodes.Unsupported, Subject: "upper", Hard: false, Satisfied: false } && c.Detail.Contains("stair", StringComparison.Ordinal))
+            && !twoLevelModel.Checks.Any(c => c.Subject == "upper" && c.Code != CirculationCodes.Unsupported) && Pairs(twoLevelModel) == "hall|living",
+            "a room on an upper level is a soft circulation_unsupported outcome (no stairs are modelled), not a plan defect", Describe(twoLevelModel));
+        Check(Oracle(twoLevelBrief, twoLevel, twoLevelModel, 0.9, true) is null, "two-level model agrees with the oracle", Oracle(twoLevelBrief, twoLevel, twoLevelModel, 0.9, true) ?? "");
+
+        // ---- a dry room behind a bedroom fails; only wet rooms may sit behind one ----
+        var behindBrief = Lot("behind", 9, 3, "hall", "bedroom_a", "kitchen");
+        var behind = Plan(behindBrief, 7, P("hall", 0, 0, 3, 3), P("bedroom_a", 3, 0, 3, 3), P("kitchen", 6, 0, 3, 3));
+        var behindModel = Analyze(behindBrief, behind);
+        Check(behindModel.Status == CirculationStatus.Invalid && behindModel.Violations.Count == 1
+            && behindModel.Violations[0] is { Code: CirculationCodes.Passage, Subject: "kitchen", Hard: true } && behindModel.Violations[0].Detail.Contains("bedroom_a", StringComparison.Ordinal)
+            && Route(behindModel, "kitchen") is { Reachable: true, AvoidsBedrooms: false },
+            "a kitchen reachable only through a bedroom fails circulation_passage", Describe(behindModel));
+        var livingBehind = Plan(behindBrief, 8, P("hall", 0, 0, 3, 3), P("bedroom_a", 3, 0, 3, 3), new PlannedRoom("living", "living", "Living room", 1, 0, new PlanRect(6, 0, 3, 3)));
+        var livingBehindModel = Analyze(behindBrief, livingBehind);
+        Check(livingBehindModel.Status == CirculationStatus.Invalid && livingBehindModel.Violations.Any(c => c.Code == CirculationCodes.Passage && c.Subject == "living"),
+            "a living room behind a bedroom fails circulation_passage too", Describe(livingBehindModel));
+        Check(Oracle(behindBrief, behind, behindModel, 0.9, true) is null, "dry room behind a bedroom agrees with the oracle", Oracle(behindBrief, behind, behindModel, 0.9, true) ?? "");
+        foreach (var wet in new[] { "bath", "ensuite", "Vestidor", "walk-in closet", "WC", "dressing" })
+        {
+            var wetModel = Analyze(behindBrief, Plan(behindBrief, 9, P("hall", 0, 0, 3, 3), P("bedroom_a", 3, 0, 3, 3), new PlannedRoom("w", "w", wet, 1, 0, new PlanRect(6, 0, 3, 3))));
+            Check(wetModel.IsValid && !wetModel.Checks.Any(c => c.Subject == "w" && c.Code == CirculationCodes.Passage), "a '" + wet + "' behind a bedroom is a valid pass-through", Describe(wetModel));
+        }
+
+        // ---- independent minimality: symmetric tie, and more doors but shorter ----
+        var tieBrief = Lot("tie", 6, 6, "hall", "study_w", "study_e", "bedroom_a");
+        var tie = Plan(tieBrief, 13, P("hall", 0, 0, 6, 2), P("study_w", 0, 2, 3, 2), P("study_e", 3, 2, 3, 2), P("bedroom_a", 0, 4, 6, 2));
+        var tieModel = Analyze(tieBrief, tie);
+        Check(tieModel.IsValid && Route(tieModel, "bedroom_a") is { } tieRoute && tieRoute.Rooms.SequenceEqual(new[] { "hall", "study_e", "bedroom_a" })
+            && Near(tieRoute.LengthMetres, 4.5 + Math.Sqrt(3.25)),
+            "of two equal routes the one through the door listed first (door:bedroom_a/study_e) wins the tie", Describe(tieModel));
+        Check(CirculationSerializer.Serialize(Analyze(tieBrief, tie with { Rooms = tie.Rooms.Reverse().ToArray() })) == CirculationSerializer.Serialize(tieModel),
+            "the tie-break does not depend on room order");
+        Check(Oracle(tieBrief, tie, tieModel, 0.9, true) is null, "tie model agrees with the oracle", Oracle(tieBrief, tie, tieModel, 0.9, true) ?? "");
+        var detourBrief = Lot("detour", 8, 4, "hall", "gallery", "den", "study", "bedroom_a");
+        var detour = Plan(detourBrief, 14, P("hall", 0, 0, 2, 4), P("gallery", 2, 0, 4, 1), P("den", 2, 1, 2, 3), P("study", 4, 1, 2, 3), P("bedroom_a", 6, 0, 2, 4));
+        var detourModel = Analyze(detourBrief, detour, new CirculationOptions(EntranceEdges: new[] { LotEdge.North }));
+        Check(detourModel.IsValid && Route(detourModel, "bedroom_a") is { } detourRoute && detourRoute.Rooms.SequenceEqual(new[] { "hall", "den", "study", "bedroom_a" })
+            && detourRoute.Doors.Count == 4 && Near(detourRoute.LengthMetres, Math.Sqrt(3.25) + 4 + Math.Sqrt(1.25)),
+            "a route with more doors (4, sqrt(3.25) + 4 + sqrt(1.25) m) beats the 3-door route through the gallery", Describe(detourModel));
+        Check(Oracle(detourBrief, detour, detourModel, 0.9, true) is null, "detour model agrees with the oracle", Oracle(detourBrief, detour, detourModel, 0.9, true) ?? "");
+
+        // ---- partial walls, tolerances, overlaps ----
+        var partialBrief = Lot("partial", 6, 5, "hall", "living");
+        var partialModel = Analyze(partialBrief, Plan(partialBrief, 15, P("hall", 0, 0, 3, 3), P("living", 3, 1, 3, 4)));
+        Check(partialModel.Doors.Count == 1 && partialModel.Doors[0] is { X0: 3.0, X1: 3.0 } partialDoor && Near(partialDoor.MidY, 2) && Near(Length(partialDoor), 0.9),
+            "a door is centred on the overlapping part of a partial wall (y 1..3 gives y = 2)", Describe(partialModel));
+        var nearBrief = Lot("near", 7, 3, "hall", "living");
+        var nearModel = Analyze(nearBrief, Plan(nearBrief, 16, P("hall", 0, 0, 3, 3), P("living", 3.00000001, 0, 3, 3)));
+        Check(nearModel.Doors.Count == 1 && nearModel.IsValid, "edges 1e-8 m apart still coincide (1e-7 m tolerance)", Describe(nearModel));
+        var gapModel = Analyze(nearBrief, Plan(nearBrief, 17, P("hall", 0, 0, 3, 3), P("living", 3.000001, 0, 3, 3)));
+        Check(gapModel.Doors.Count == 0, "edges 1e-6 m apart do not coincide", Describe(gapModel));
+        var tallBrief = Lot("tall", 7, 6, "hall", "living");
+        var shortWallModel = Analyze(tallBrief, Plan(tallBrief, 18, P("hall", 0, 0, 3, 3), P("living", 3, 3 - (0.9 - 1e-8), 3, 3)));
+        Check(shortWallModel.Doors.Count == 1, "a shared wall 1e-8 m shorter than the door still takes it", Describe(shortWallModel));
+        var overlapModel = Analyze(nearBrief, Plan(nearBrief, 19, P("hall", 0, 0, 3, 3), P("living", 2, 0, 3, 3)));
+        Check(overlapModel.Status == CirculationStatus.Refused
+            && overlapModel.Checks.Any(c => c.Code == CirculationCodes.PlanInvalid && c.Subject == "hall/living" && c.Detail.Contains("overlap", StringComparison.Ordinal)),
+            "overlapping rooms are refused as circulation_plan_invalid naming the pair", Describe(overlapModel));
+        var touchingModel = Analyze(nearBrief, Plan(nearBrief, 20, P("hall", 0, 0, 3, 3), P("living", 3 - 1e-8, 0, 3, 3)));
+        Check(touchingModel.Status != CirculationStatus.Refused && touchingModel.Doors.Count == 1, "an overlap below the 1e-7 m tolerance is not refused", Describe(touchingModel));
+
+        // ---- entrance: street edges and no wet room as fallback ----
+        var wetFrontBrief = Lot("wet front", 6, 3, "bedroom_a", "bath", "kitchen");
+        var wetFrontModel = Analyze(wetFrontBrief, Plan(wetFrontBrief, 21, P("bedroom_a", 0, 0, 3, 3), P("bath", 3, 0, 3, 1.5), P("kitchen", 3, 1.5, 3, 1.5)),
+            new CirculationOptions(EntranceEdges: new[] { LotEdge.South }));
+        Check(wetFrontModel.Entrance is null && wetFrontModel.Violations.Any(c => c.Code == CirculationCodes.Entrance),
+            "a bathroom is never the fallback entrance: with only a bedroom and a bathroom on the south street edge there is no entrance", Describe(wetFrontModel));
+        var streetPlans = new[]
+        {
+            Plan(corridorBrief, 30, P("hall", 0, 0, 3, 3), P("living", 3, 0, 3, 3), P("bedroom_a", 6, 0, 3, 3)),
+            Plan(corridorBrief, 31, P("bedroom_a", 0, 0, 3, 3), P("living", 3, 0, 3, 3), P("hall", 6, 0, 3, 3)),
+        };
+        var eastStreet = CirculationRanker.Rank(corridorBrief, streetPlans, new CirculationScoring(Options: new CirculationOptions(EntranceEdges: new[] { LotEdge.East })));
+        Check(eastStreet.Ranked.Count == 1 && eastStreet.Ranked[0].Index == 1
+            && eastStreet.Alternatives.First(a => a.Index == 0).Reasons.Any(r => r.StartsWith(CirculationCodes.Entrance + "@plan", StringComparison.Ordinal)),
+            "with the street on the east edge only the plan with the hall there is ranked", Describe(eastStreet));
 
         // ---- entrance selection ----
         var west = Analyze(loopBrief, loop, new CirculationOptions(EntranceEdges: new[] { LotEdge.West }));
@@ -224,9 +301,79 @@ static class CirculationTests
         var chainScore = lenient.Alternatives.First(a => a.Index == 1).Criteria.LastOrDefault();
         var storeScore = lenient.Alternatives.First(a => a.Index == 2).Criteria.LastOrDefault();
         Check(lenient.Ranked.Count == 3 && chainScore is not null && storeScore is not null
-            && Near(chainScore.Normalized, 0.75 * 6 / (6 + (7.5 + 2 * s2) / 3)) && Near(chainScore.Raw, (7.5 + 2 * s2) / 3)
-            && Near(storeScore.Normalized, 2.0 / 3 * Math.Sqrt(19.5) / (Math.Sqrt(19.5) + (3 + s2) / 2)) && Near(storeScore.Raw, (3 + s2) / 2),
-            "without the gate, failed rooms scale the circulation score by the fraction of rooms with valid routes", Describe(lenient));
+            && Near(chainScore.Raw, (31.5 + 2 * s2) / 4) && Near(chainScore.Normalized, 0.75 * 6 / (6 + (31.5 + 2 * s2) / 4))
+            && Near(storeScore.Raw, (18.5 + s2) / 3) && Near(storeScore.Normalized, 2.0 / 3 * Math.Sqrt(19.5) / (Math.Sqrt(19.5) + (18.5 + s2) / 3)),
+            "without the gate, a room without a valid route counts the penalty length sum(width + depth) and scales the score by the valid fraction", Describe(lenient));
+        Check(chainScore is not null && chainScore.Detail.Contains("require_valid false", StringComparison.Ordinal) && chainScore.Detail.Contains("penalty", StringComparison.Ordinal),
+            "the lenient criterion detail records the gate setting and the penalty", chainScore?.Detail ?? "");
+
+        // ---- monotonicity: making a room unreachable never raises the score ----
+        var monoBrief = Lot("mono", 9, 3, "hall", "living", "store");
+        var mono = new[] { Plan(monoBrief, 40, P("hall", 0, 0, 3, 3), P("living", 3, 0, 3, 3), P("store", 6, 0, 3, 1)) };
+        double LenientScore(double width) => CirculationRanker.Rank(monoBrief, mono, new CirculationScoring(RequireValid: false, Options: new CirculationOptions(DoorWidthMetres: width)))
+            .Ranked.Single().Criteria.Last().Normalized;
+        var reachableScore = LenientScore(0.9);
+        var unreachableScore = LenientScore(1.2);
+        var monoScale = Math.Sqrt(21);
+        Check(Near(reachableScore, monoScale / (monoScale + (1.5 + 1.5 + s2 + s2 + Math.Sqrt(10) + 1.5) / 3))
+            && Near(unreachableScore, 2.0 / 3 * monoScale / (monoScale + (1.5 + 1.5 + s2 + 16) / 3)) && unreachableScore < reachableScore,
+            "a 1.2 m door that cuts the store off lowers the lenient score (same geometry, same routes otherwise)", R(reachableScore) + " -> " + R(unreachableScore));
+        string? monoProblem = null;
+        foreach (var plan in gatePlans)
+        {
+            var full = CirculationRanker.Rank(gateBrief, new[] { plan }, new CirculationScoring(RequireValid: false)).Ranked.Single().Criteria.Last().Normalized;
+            var fullModel = Analyze(gateBrief, plan);
+            foreach (var room in plan.Rooms.Where(r => r.InstanceId != "hall"))
+            {
+                // Only rooms with a valid route: shrink the room to a 0.5 m strip along its top side, so it loses every door.
+                if (fullModel.Checks.Any(c => c.Subject == room.InstanceId && !c.Satisfied)) continue;
+                var cut = plan with { Rooms = plan.Rooms.Select(r => r.InstanceId == room.InstanceId ? r with { Rect = r.Rect with { Y = r.Rect.Top - 0.5, Depth = 0.5 } } : r).ToArray() };
+                if (Route(Analyze(gateBrief, cut), room.InstanceId) is { Reachable: true }) continue;
+                var cutScore = CirculationRanker.Rank(gateBrief, new[] { cut }, new CirculationScoring(RequireValid: false)).Ranked.Single().Criteria.Last().Normalized;
+                if (cutScore > full) monoProblem ??= "plan " + Text(plan.Seed) + " cutting " + room.InstanceId + " raised " + R(full) + " to " + R(cutScore);
+            }
+        }
+        Check(monoProblem is null, "cutting any non-entrance room off never raises the lenient circulation score", monoProblem ?? "");
+
+        // ---- provenance and refused details ----
+        var strictJson = AlternativeSetSerializer.Serialize(CirculationRanker.Rank(corridorBrief, pair));
+        var lenientJson = AlternativeSetSerializer.Serialize(CirculationRanker.Rank(corridorBrief, pair, new CirculationScoring(RequireValid: false)));
+        Check(strictJson != lenientJson && strictJson.Contains("require_valid true", StringComparison.Ordinal) && strictJson.Contains("circulation weight 0.15", StringComparison.Ordinal),
+            "the serialized set records the circulation weight and the gate setting, so runs with different settings differ", strictJson.Length.ToString(CultureInfo.InvariantCulture));
+        var missingEntrance = CirculationRanker.Rank(gateBrief, new[] { gatePlans[0] }, new CirculationScoring(RequireValid: false, Options: new CirculationOptions(EntranceRoomId: "store")));
+        var missingScore = missingEntrance.Ranked.SingleOrDefault()?.Criteria.Last();
+        Check(missingScore is not null && missingScore.Normalized == 0 && missingScore.Detail.Contains(CirculationCodes.OptionsInvalid + "@entrance_room", StringComparison.Ordinal),
+            "a refused circulation model explains the score with its refusal codes", missingScore?.Detail ?? Describe(missingEntrance));
+        var noEntrance = CirculationRanker.Rank(corridorBrief, new[] { corridor }, new CirculationScoring(RequireValid: false, Options: new CirculationOptions(EntranceEdges: new[] { LotEdge.East })));
+        var noEntranceScore = noEntrance.Ranked.SingleOrDefault()?.Criteria.Last();
+        Check(noEntranceScore is not null && noEntranceScore.Normalized == 0 && noEntranceScore.Detail.Contains(CirculationCodes.Entrance + "@plan", StringComparison.Ordinal),
+            "a missing entrance explains the zero score with the failed check code", noEntranceScore?.Detail ?? Describe(noEntrance));
+
+        // ---- a two-level brief through Generate: upper levels never gate ----
+        var duplex = new ProjectBrief(1, "duplex", new BriefConstraints(null, new BriefSite(new BriefValue<double>(6), new BriefValue<double>(6)), new BriefValue<int>(2)),
+            new[]
+            {
+                new BriefRoom("hall", "Hall", null, new BriefValue<double>(8), new BriefValue<double>(6), null, new BriefValue<int>(0)),
+                new BriefRoom("living", "Living", null, new BriefValue<double>(16), new BriefValue<double>(12), null, new BriefValue<int>(0)),
+                new BriefRoom("bedroom_a", "Bedroom", null, new BriefValue<double>(12), new BriefValue<double>(9), null, new BriefValue<int>(1)),
+                new BriefRoom("bath", "Bath", null, new BriefValue<double>(5), new BriefValue<double>(3), null, new BriefValue<int>(1)),
+            },
+            new[] { new BriefAdjacency("hall", "living", BriefAdjacencyKind.Required) });
+        var duplexSet = CirculationRanker.Generate(duplex, new AlternativeOptions(6));
+        string? duplexProblem = null;
+        foreach (var alternative in duplexSet.Ranked)
+        {
+            var duplexModel = Analyze(duplex, alternative.Plan);
+            if (!duplexModel.IsValid || duplexModel.Checks.Count(c => c.Code == CirculationCodes.Unsupported && !c.Hard) != alternative.Plan.Rooms.Count(r => r.Level != 0))
+                duplexProblem ??= "index " + Text(alternative.Index) + ": " + Describe(duplexModel);
+            if (Oracle(duplex, alternative.Plan, duplexModel, alternative.Plan.DoorWidthMetres, true) is { } problem) duplexProblem ??= "index " + Text(alternative.Index) + ": " + problem;
+            if (!alternative.Criteria.Last().Detail.Contains("level 0", StringComparison.Ordinal)) duplexProblem ??= "criterion detail does not say only level 0 is scored";
+        }
+        foreach (var rejected in duplexSet.Alternatives.Where(a => a.Status == AlternativeStatus.Infeasible))
+            if (rejected.Reasons.Any(r => r.Contains("bedroom_a", StringComparison.Ordinal) || r.Contains("bath", StringComparison.Ordinal) || r.Contains(CirculationCodes.Unsupported, StringComparison.Ordinal)))
+                duplexProblem ??= "index " + Text(rejected.Index) + " rejected for an upper-level room: " + string.Join(", ", rejected.Reasons);
+        Check(duplexSet.Status == AlternativeSetStatus.Ranked && duplexSet.Ranked.Count >= 1 && duplexProblem is null,
+            "a two-level brief ranks through Generate; upper-level rooms are reported unsupported, never gating", (duplexProblem ?? "") + " " + Describe(duplexSet));
 
         // ---- weights ----
         foreach (var (label, weight) in new[] { ("negative", -0.1), ("NaN", double.NaN), ("infinite", double.PositiveInfinity) })
@@ -438,14 +585,73 @@ static class CirculationTests
         }
         foreach (var d in model.Doors) if (d.Used != used.Contains(d.Id)) problems.Add("door " + d.Id + " used flag");
         if (model.Entrance is { } usedEntrance && usedEntrance.Used != used.Contains(CirculationModel.EntranceDoorId)) problems.Add("entrance used flag");
-        var valid = start is not null && plan.Rooms.All(r => any.Contains(r.InstanceId)) && plan.Rooms.Where(Bedroom).All(r => clear.Contains(r.InstanceId));
-        if (valid != model.IsValid || model.IsValid != model.Checks.All(c => c.Satisfied)) problems.Add("status " + model.Status + " but oracle says valid=" + valid);
-        if (model.Checks.Count(c => c.Code == CirculationCodes.Reachable) != plan.Rooms.Count || model.Checks.Count(c => c.Code == CirculationCodes.BedroomAccess) != plan.Rooms.Count(Bedroom))
+        var ground = plan.Rooms.Where(r => r.Level == 0).ToArray();
+        var dry = ground.Where(r => !Bedroom(r) && !Wet(r)).ToArray();
+        var valid = start is not null && ground.All(r => any.Contains(r.InstanceId)) && ground.Where(Bedroom).All(r => clear.Contains(r.InstanceId)) && dry.All(r => clear.Contains(r.InstanceId));
+        if (valid != model.IsValid || model.IsValid != model.Checks.Where(c => c.Hard).All(c => c.Satisfied)) problems.Add("status " + model.Status + " but oracle says valid=" + valid);
+        if (model.Checks.Count(c => c.Code == CirculationCodes.Reachable) != ground.Length || model.Checks.Count(c => c.Code == CirculationCodes.BedroomAccess) != ground.Count(Bedroom)
+            || model.Checks.Count(c => c.Code == CirculationCodes.Passage) != dry.Length
+            || model.Checks.Count(c => c.Code == CirculationCodes.Unsupported && !c.Hard && !c.Satisfied) != plan.Rooms.Count - ground.Length
+            || model.Checks.Count(c => !c.Hard) != plan.Rooms.Count - ground.Length)
             problems.Add("check counts");
         foreach (var item in model.Checks.Where(c => c.Code == CirculationCodes.Reachable)) if (item.Satisfied != any.Contains(item.Subject)) problems.Add("reachable check " + item.Subject);
-        foreach (var item in model.Checks.Where(c => c.Code == CirculationCodes.BedroomAccess)) if (item.Satisfied != clear.Contains(item.Subject)) problems.Add("bedroom check " + item.Subject);
+        foreach (var item in model.Checks.Where(c => c.Code == CirculationCodes.BedroomAccess || c.Code == CirculationCodes.Passage))
+            if (item.Satisfied != clear.Contains(item.Subject)) problems.Add(item.Code + " check " + item.Subject);
+        if (defaultOptions && start is not null && rooms.TryGetValue(start, out var front) && Wet(front) && !EntranceNamed(front)) problems.Add("a wet room was chosen as fallback entrance");
+
+        // Independent minimality: Floyd-Warshall over the entrance, door midpoints and room centres. Inside a room every
+        // pair of its doors is joined in both directions and every door leads to the room centre (a sink, so a route
+        // ends there); in the bedroom-free graph a bedroom keeps only its door-to-centre edges.
+        if (model.Entrance is { } door0)
+        {
+            var nodes = new List<(double X, double Y)> { (door0.MidX, door0.MidY) };
+            var doorNode = new Dictionary<string, int>(StringComparer.Ordinal) { [CirculationModel.EntranceDoorId] = 0 };
+            foreach (var d in model.Doors) { doorNode[d.Id] = nodes.Count; nodes.Add((d.MidX, d.MidY)); }
+            var centreNode = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var r in plan.Rooms) { centreNode[r.InstanceId] = nodes.Count; nodes.Add((r.Rect.X + r.Rect.Width / 2, r.Rect.Y + r.Rect.Depth / 2)); }
+            double[,] Shortest(bool avoid)
+            {
+                var size = nodes.Count;
+                var w = new double[size, size];
+                for (var i = 0; i < size; i++) for (var j = 0; j < size; j++) w[i, j] = i == j ? 0 : double.PositiveInfinity;
+                foreach (var r in plan.Rooms)
+                {
+                    var own = model.Doors.Where(d => d.From == r.InstanceId || d.To == r.InstanceId).Select(d => doorNode[d.Id]).ToList();
+                    if (r.InstanceId == start) own.Add(0);
+                    var c = centreNode[r.InstanceId];
+                    foreach (var u in own)
+                    {
+                        w[u, c] = Math.Min(w[u, c], Distance(nodes[u].X, nodes[u].Y, nodes[c].X, nodes[c].Y));
+                        if (avoid && Bedroom(r)) continue;
+                        foreach (var v in own) if (u != v) w[u, v] = Math.Min(w[u, v], Distance(nodes[u].X, nodes[u].Y, nodes[v].X, nodes[v].Y));
+                    }
+                }
+                for (var k = 0; k < size; k++)
+                    for (var i = 0; i < size; i++)
+                        for (var j = 0; j < size; j++)
+                            if (w[i, k] + w[k, j] < w[i, j]) w[i, j] = w[i, k] + w[k, j];
+                return w;
+            }
+            var anyWalk = Shortest(false);
+            var clearWalk = Shortest(true);
+            foreach (var route in model.Routes.Where(r => r.Reachable))
+            {
+                var c = centreNode[route.Instance];
+                var best = route.AvoidsBedrooms ? clearWalk[0, c] : anyWalk[0, c];
+                if (!(Math.Abs(best - route.LengthMetres) <= 1e-9 * Math.Max(1, best))) problems.Add(route.Instance + " length " + R(route.LengthMetres) + " is not the shortest " + R(best));
+                if (!route.AvoidsBedrooms && double.IsFinite(clearWalk[0, c])) problems.Add(route.Instance + " has a bedroom-free walk but its route passes a bedroom");
+            }
+        }
         return problems.Count == 0 ? null : string.Join("; ", problems.Take(6));
     }
+
+    // Independent wet-room (pass-through) and entrance-name tests on room id or name, case-insensitive.
+    static bool Wet(PlannedRoom room) => new[] { room.RoomId, room.Name }.Any(text =>
+        new[] { "bath", "baño", "bano", "toilet", "ensuite", "en-suite", "vestidor", "closet", "dressing" }.Any(word => text.Contains(word, StringComparison.OrdinalIgnoreCase))
+        || text.StartsWith("wc", StringComparison.OrdinalIgnoreCase));
+
+    static bool EntranceNamed(PlannedRoom room) => new[] { room.RoomId, room.Name }.Any(text => text.StartsWith("hall", StringComparison.OrdinalIgnoreCase)
+        || new[] { "entrance", "entry", "foyer", "lobby", "vestibul", "palier" }.Any(word => text.Contains(word, StringComparison.OrdinalIgnoreCase)));
 
     // Base criteria of every ranked circulation alternative equal those of the same plan in the base set.
     static string? BaseAgrees(AlternativeSet scored, AlternativeSet baseSet)

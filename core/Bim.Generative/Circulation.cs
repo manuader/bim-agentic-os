@@ -74,6 +74,9 @@ public static class CirculationCodes
     public const string Entrance = "circulation_entrance";
     public const string Reachable = "circulation_reachable";
     public const string BedroomAccess = "circulation_bedroom_access";
+    public const string Passage = "circulation_passage";
+    // Soft outcome (not a plan defect): a room off level 0, which this model cannot reach (no stairs are modelled).
+    public const string Unsupported = "circulation_unsupported";
     // Ranking criterion name.
     public const string Criterion = "circulation";
 }
