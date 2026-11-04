@@ -177,9 +177,9 @@ static class CatalogueRoofExtrusionChecks
         // the first arc's circle (|(1414.2, 1414.2)| = 2000).
         Rejects("arc doubles back on its neighbour's circle", Envelope(WithProfile(A3(0, 0, 4000, 0, 2000, 2000), A3(4000, 0, 2000, 2000, 2000 + 2000 * Math.Cos(Math.PI / 4), 2000 * Math.Sin(Math.PI / 4)))), RevitCommandCodes.ArgsInvalid, "args.profile[1]");
         // A zig-zag of 100 lines, u increasing by 100 each: non-neighbours are at least 100 mm apart.
-        var zigzag = Enumerable.Range(0, 100).Select(i => L(i * 100, (i % 2) * 100, (i + 1) * 100, ((i + 1) % 2) * 100)).ToArray();
-        Check(Accepts("100 segments accepted", Envelope(WithProfile(zigzag)))?.Profile.Count == 100, "the 100-segment cap is accepted");
-        Rejects("101 segments", Envelope(WithProfile(zigzag.Append(L(10000, 0, 10100, 100)).ToArray())), RevitCommandCodes.ArgsInvalid, "args.profile");
+        JsonObject[] Zigzag(int count) => Enumerable.Range(0, count).Select(i => L(i * 100, (i % 2) * 100, (i + 1) * 100, ((i + 1) % 2) * 100)).ToArray();
+        Check(Accepts("100 segments accepted", Envelope(WithProfile(Zigzag(100))))?.Profile.Count == 100, "the 100-segment cap is accepted");
+        Rejects("101 segments", Envelope(WithProfile(Zigzag(101))), RevitCommandCodes.ArgsInvalid, "args.profile");
         Rejects("no segment", Envelope(WithProfile()), RevitCommandCodes.ArgsInvalid, "args.profile");
     }
 
