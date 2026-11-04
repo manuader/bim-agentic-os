@@ -1120,3 +1120,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay150 — 2026-11-04T05:53:43Z (Claude, cloud scheduled)
 - 05:53Z LOCK taken (was FREE since relay149 2026-11-04T05:27:26Z).
+- 06:42Z workers green (dispatched 05:55Z; phases 1, 8, 9): P1-07 5f83a5a (red 41783202390, green 41786172875; 0 attempts, 2 own compile/harness slips), P9-04 3425198 (red 41782777772, green 41783619497; 0 attempts), P8-07 2af3569 (red 41782803843, green 41785106385; 0 attempts, 1 staging slip). Next: independent reviews.
