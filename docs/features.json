@@ -768,6 +768,41 @@
       ],
       "blocker": "Fixtures are IfcOpenShell-authored only (no Revit/ArchiCAD exports in CI); non-identity MappingOrigin, scaled/2D maps, arcs, profiles with voids, non-rectangular or rotated spaces, horizontally extruded openings are unsupported; sloped/bounded clips and non-rectangular wall profiles (fill >= 0.9) are approximated, not exact.",
       "scope": "P8-05: per-entity import report (entities/summary, imported/approximated/unsupported with reasons, additive to bim.ifc-import/1) for IFC4 and IFC2X3: polyline/indexed-polycurve rectangular profiles, rigid identity-origin mapped items (Body and Axis), exact horizontal half-space clips, approximated sloped clips and bounding-rectangle profiles with fill-ratio limit, host_approximated on hosted openings, FootPrint space fallback; fixtures generated in CI with ifcopenshell.api and checked against kernel world bounds on ubuntu/windows/macos. CI 41742335649."
+    },
+    {
+      "id": "documentation-affected-regeneration",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/DocRegeneration.cs",
+        "tests/doc-regeneration/Program.cs"
+      ],
+      "blocker": "Fake transport only, never run against Revit; emits no delete commands (caller removes the earlier instance of each regenerated key); dimensions between walls only; tag heads from walls, spaces and openings; parent closure re-runs tags/dimensions/placements of a regenerated view/schedule/sheet even when their own content is unchanged.",
+      "scope": "P4-03: caller-owned DocumentationSet (plan/ceiling/section/3D views, tags, wall-to-wall dimensions, schedules by kind, sheets, placements; optional binding to BIM-IR plan/schedule/sheet elements) \u2192 Full regeneration as P4-01/P4-02 catalogue commands with typed unsupported entries; Affected(before, after, Compiler.Diff) keeps only items whose own result differs (candidates by what each item reads), plus parent closure; Merge(Full(before), Affected) == Full(after) on a 300-edit seeded corpus; strict minimality and soundness oracles; input digest refuses mismatched sets/bindings; 2/404 items regenerated for one wall move on a 50-room set. CI 41761011983."
+    },
+    {
+      "id": "cad-brief-extraction",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/cad/Bim.Cad/BriefExtract.cs",
+        "adapters/cad/Bim.Cad/BriefExtractModel.cs",
+        "tests/cad/BriefExtractTests.cs",
+        "tests/cad/fixtures/brief-plan.dxf"
+      ],
+      "blocker": "Synthetic fixtures only, no real architectural plan; DXF ATTRIB block attributes and CID-font PDF text not read; confidence multipliers untuned; no adjacencies, levels or counts; region membership by text insertion point; gross region areas (holes not subtracted); not exposed through CLI/MCP.",
+      "scope": "P6-05: DXF/PDF room labels and es/en area texts (m\u00b2, m2, sqm\u2026, decimal comma/point, thousands groups, ambiguity flagged, signed areas invalid) become a P6-03 brief draft that passes the brief validator, with per-room confidence, file/handle/layer/block-path or page provenance and uncertainty codes (unlabelled-region, area-mismatch, duplicate-label/text, orphan-area, outer-region, uncalibrated, area-ambiguous, limit codes always reported); MetresPerUnit option, block furniture regions excluded by default, frame labels suppressed; bounded and culture-invariant, fuzzed. CI 41762098208."
+    },
+    {
+      "id": "generative-circulation",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/Circulation.cs",
+        "core/Bim.Generative/CirculationAnalyzer.cs",
+        "core/Bim.Generative/CirculationRanker.cs",
+        "core/Bim.Generative/CirculationSerializer.cs",
+        "tests/generative/CirculationTests.cs"
+      ],
+      "blocker": "Doors are candidate openings on every qualifying shared wall (reachable = adjacency-graph connectivity); one entrance; level 0 only (upper levels reported circulation_unsupported, no stairs); no corridors, door swing or clearance; PrototypeGenerator does not apply the gate; not exposed through CLI/MCP.",
+      "scope": "P7-04: door/entrance reachability graph over planner layouts with deterministic shortest routes; hard checks circulation_entrance, circulation_reachable, circulation_bedroom_access, circulation_passage (only wet rooms behind a bedroom); opt-in CirculationRanker adds an explained 'circulation' criterion (mean route length vs \u221aarea, penalty for unreachable rooms, weight and require_valid recorded) on top of AlternativeRanker with existing outputs and digests unchanged; independent BFS + Floyd\u2013Warshall oracle on planner seeds and prototypes; byte-identical across order and culture. CI 41758872020."
     }
   ]
 }

@@ -99,6 +99,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P3-02 | Compiler to catalogue bridge | ✅ | P3-01 | core/Bim.Core/PlanToCommands* | an ExecutionPlan becomes ordered catalogue v1 commands with operation ids; tests | unit-tested (relay139, CI 41586824187; levels are preconditions, not created) |
 | P3-03 | Plan runner with step envelopes | ✅ | P3-02 | core/Bim.Core/PlanRunner*; tests/plan-to-commands | runs a RevitCommandPlan step by step through an injected transport, fills host placeholders from created[0], checks level preconditions against query.levels, stops on first failure with a resumable report; fake-transport tests | unit-tested (relay142, CI 41640877159; fake transport only, no concrete pipe adapter class) |
 | P3-04 | Localized validation of plan changes | ✅ | P3-02 | core/Bim.Core/LocalValidation*; tests/plan-to-commands | after a Compiler.Diff, only elements in the affected closure (graph neighbours) are revalidated; result equals full validation on a corpus; tests | unit-tested (relay147, CI 41743701205; rule evaluation only localized — Compiler.Diff and the graph still built whole; dirty set over-approximates with plan/schedule/sheet; work in tests/local-validation) |
+| P3-05 | Incremental diff from an edit set | ⏳ | P3-04 | core/Bim.Core/IncrementalDiff*; tests/local-validation | given a project and a bounded edit set (create/update/delete by id), the ExecutionPlan and DirtyIds are computed touching only edited elements and their dependents (no whole-project serialization), equal to Compiler.Diff(before, after) on the P3-04 seeded corpus; work counter shows locality; tests | target unit-tested |
 
 ### Phase 4 — documentation engine
 
@@ -106,7 +107,9 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 |---|---|---|---|---|---|---|
 | P4-01 | View commands (plan, section, 3D) | ✅ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | view.create plan/section/3d contracts and executor; compiles | compiled executor + unit-tested contracts (relay137, CI 41560983214; not verified-in-revit; owner probe tests/integration/native-views-probe.ps1) |
 | P4-02 | Dimensions, tags, schedules and sheets commands | ✅ | P4-01 | same | contracts and executor for dimension/tag/schedule/sheet; compiles | compiled executor + unit-tested contracts (relay142, CI 41647155908; query.title_blocks, dimension.create_linear, tag.create, schedule.create, sheet.create, sheet.place_view; not verified-in-revit; no schedule level filter) |
-| P4-03 | Affected-only documentation regeneration | ⏳ | P4-02, P3-02 | core/Bim.Core/DocRegeneration*; tests/plan-to-commands | a documentation set (views, tags, dimensions, schedules, sheets bound to BIM-IR ids) plus a Compiler.Diff yields only the documentation commands whose referenced elements changed (re-tag, re-dimension, schedule refresh), never untouched ones; equals full regeneration on a corpus; tests | target unit-tested |
+| P4-03 | Affected-only documentation regeneration | ✅ | P4-02, P3-02 | core/Bim.Core/DocRegeneration*; tests/doc-regeneration | a documentation set (views, tags, dimensions, schedules, sheets bound to BIM-IR ids) plus a Compiler.Diff yields only the documentation commands whose referenced elements changed (re-tag, re-dimension, schedule refresh), never untouched ones; equals full regeneration on a corpus; tests | unit-tested (relay148, CI 41761011983; caller-owned set with optional BIM-IR binding, candidates by what each item reads then kept only when its result differs, parent closure for tags/dims/placements, input digest; no delete commands emitted, wall-only dimensions; not run against Revit) |
+| P4-04 | Default documentation set from BIM-IR | ⏳ | P4-03 | core/Bim.Core/DocDefaults*; tests/doc-regeneration | a deterministic default DocumentationSet derived from a BIM-IR project (plan per level, room/door tags, door and room schedules, one sheet per level with placements, bound to BIM-IR plan/schedule/sheet elements when present); Full on it yields only valid catalogue commands; stable keys across unrelated edits; tests | target unit-tested |
+| P4-05 | Stale documentation replacement plan | ⏳ | P4-03, P1-05 | core/Bim.Core/DocReplace*; tests/doc-regeneration | from an Affected result and a key→Revit-UniqueId map, an ordered catalogue plan deletes the stale instance of every regenerated key (element.delete, dependents confirmed) before re-creating it, children before parents on delete and parents before children on create; runs through PlanRunner with a fake transport; resumable; tests | target unit-tested |
 
 ### Phase 5 — skills and design systems
 
@@ -127,7 +130,9 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P6-02 | PDF vector reader and scale calibration | ✅ | — | adapters/cad; tests/cad | vector paths and text from PDF, scale from a known dimension, alignment; fixtures; tests | unit-tested (relay140, CI 41605199617; BCL only, hand-written/generated fixtures, no real-world PDFs; no font metrics/CID text) |
 | P6-03 | Project brief schema and validated extraction | ✅ | — | core/Bim.Core/Brief* | brief JSON schema (rooms, areas, adjacencies, constraints) with validator and uncertainty fields; tests | unit-tested (relay134, CI 41514529827) |
 | P6-04 | CAD drawing to BIM-IR draft with uncertainty | ✅ | P6-01, P6-02 | adapters/cad/Bim.Cad/CadToBimIr*; tests/cad | calibrated DXF/PDF wall pairs and door/window blocks become a draft BIM-IR wall/opening proposal (not persisted) with per-element confidence, source provenance and an uncertainty report (unpaired lines, ambiguous thickness, gaps); fixtures; tests | unit-tested (relay144, CI 41672486856; generated fixtures only, no real architectural plan; heights/sills assumed; positional draft ids) |
-| P6-05 | Brief extraction from drawing text | ⏳ | P6-01, P6-02, P6-03 | adapters/cad/Bim.Cad/BriefExtract*; tests/cad | room labels and area texts (es/en, m², decimal comma) in DXF/PDF become a brief draft in the P6-03 schema with per-room confidence, source provenance and uncertainty (unlabelled closed regions, area/label mismatch, duplicates); validates with the brief validator; fixtures; tests | target unit-tested |
+| P6-05 | Brief extraction from drawing text | ✅ | P6-01, P6-02, P6-03 | adapters/cad/Bim.Cad/BriefExtract*; tests/cad | room labels and area texts (es/en, m², decimal comma) in DXF/PDF become a brief draft in the P6-03 schema with per-room confidence, source provenance and uncertainty (unlabelled closed regions, area/label mismatch, duplicates); validates with the brief validator; fixtures; tests | unit-tested (relay148, CI 41762098208; synthetic DXF/PDF fixtures only, no ATTRIB block attributes, no CID-font PDF text, confidence multipliers untuned, no adjacencies/levels) |
+| P6-06 | DXF block attributes and MTEXT room tags | ⏳ | P6-05 | adapters/cad/Bim.Cad/Dxf*; tests/cad | ATTRIB/ATTDEF values of inserted room-tag blocks and MTEXT inline formatting codes (\\P, \\f, {}, %%) are read as text with provenance (insert handle, tag name) and feed brief extraction; fixtures; tests | target unit-tested |
+| P6-07 | CAD draft and brief CLI verbs | ⏳ | P6-04, P6-05 | interfaces/cli; tests/cli | `cad-draft` and `cad-brief` CLI verbs read a DXF/PDF (bounded size, page, calibration or metres-per-unit) and write the BIM-IR draft / brief draft JSON plus uncertainty to a never-overwrite output path; JSON envelope errors; tests | target unit-tested |
 
 ### Phase 7 — generative kernels
 
@@ -136,7 +141,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P7-01 | Constraint space planner | ✅ | P6-03 | core/Bim.Generative (new) | rectangular space planning honoring areas, adjacency and CABA minimums; deterministic seeds; tests | unit-tested (relay135, CI 41535913478) |
 | P7-02 | Alternatives with scoring | ✅ | P7-01 | core/Bim.Generative | N alternatives scored and ranked with explanations; tests | unit-tested (relay140, CI 41600090447; mirrored layouts not deduplicated; no circulation model) |
 | P7-03 | Apartment prototype generator | ✅ | P7-02 | core/Bim.Generative/Prototype*; tests/generative | typology templates (1/2/3-bedroom) produce briefs and ranked layouts on a given lot that keep approved invariants (fixed rooms/walls) when reconfigured; deterministic; tests | unit-tested (relay144, CI 41675668145; 1/2/3-bedroom templates, fixed rooms/walls kept bit-identical, pinned canonical JSON digest; no corridors/doors as elements, level 0 only) |
-| P7-04 | Circulation model for layouts | ⏳ | P7-02 | core/Bim.Generative/Circulation*; tests/generative | doors between adjacent rooms and an entrance on the lot edge form a reachability graph; every room reachable from the entrance, bedrooms not only through other bedrooms, path length scored as a new explained criterion; deterministic; tests | target unit-tested |
+| P7-04 | Circulation model for layouts | ✅ | P7-02 | core/Bim.Generative/Circulation*; tests/generative | doors between adjacent rooms and an entrance on the lot edge form a reachability graph; every room reachable from the entrance, bedrooms not only through other bedrooms, path length scored as a new explained criterion; deterministic; tests | unit-tested (relay148, CI 41758872020; opt-in CirculationRanker over AlternativeRanker (existing digests unchanged), candidate doors on every shared wall, one entrance, level 0 only (upper levels circulation_unsupported), no corridors/swing/clearance; PrototypeGenerator not gated) |
 | P7-05 | Facade openings for illumination | ⏳ | P7-02, P5-02 | core/Bim.Generative/Facade*; tests/generative | windows placed on exterior room edges sized to the CABA illumination/ventilation ratios (cited rule ids) with sill/head defaults; rooms that cannot meet the ratio reported; deterministic; tests | target unit-tested |
 
 ### Phase 8 — Rhino, Blender and IFC
@@ -178,7 +183,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 60/81 done (74.1 %)
+Progress: 63/86 done (73.3 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
@@ -187,13 +192,13 @@ Progress: 60/81 done (74.1 %)
 - Revit command surface — catalogue v1 (architecture): 4/5
 - Phase 1 — native kernel: 6/8
 - Phase 2 — semantic state and mirror: 4/5
-- Phase 3 — incremental compiler: 4/4
-- Phase 4 — documentation engine: 2/3
+- Phase 3 — incremental compiler: 4/5
+- Phase 4 — documentation engine: 3/5
 - Phase 5 — skills and design systems: 4/6
-- Phase 6 — CAD and requirements: 4/5
-- Phase 7 — generative kernels: 3/5
+- Phase 6 — CAD and requirements: 5/7
+- Phase 7 — generative kernels: 4/5
 - Phase 8 — Rhino, Blender and IFC: 4/7
 - Phase 9 — Revit parity: 3/9
 - Phase 10 — global production: 4/5
-Next ready: P1-07, P1-08, P2-05, P4-03, P5-04, P5-05, P6-05, P7-04
+Next ready: P1-07, P1-08, P2-05, P3-05, P4-04, P4-05, P5-04, P5-05
 
