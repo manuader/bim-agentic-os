@@ -415,6 +415,10 @@ try
     CatalogueJournalChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- command.batch (P1-07): 1 to 50 write commands as one all-or-nothing change with one undo entry ----
     CatalogueBatchChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- document.save_copy (P1-08): save the open test copy as a new BIM-Agentic-Test*.rvt under .bim/native-runs ----
+    CatalogueSaveCopyChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- roof.create_extrusion (P9-07): extruded (barrel / curved) roofs from an open line/arc profile ----
+    CatalogueRoofExtrusionChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();

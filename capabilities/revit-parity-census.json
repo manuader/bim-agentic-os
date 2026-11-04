@@ -378,10 +378,16 @@
       "id": "arch.roof.extrusion",
       "area": "architecture",
       "revit_function": "Roof by Extrusion",
-      "commands": [],
-      "state": "unsupported",
+      "commands": [
+        "roof.create_extrusion"
+      ],
+      "state": "compiled",
       "features": [],
-      "evidence": []
+      "evidence": [
+        "tests/revit-commands/CatalogueRoofExtrusion.cs",
+        "runtimes/revit-native/CommandsExecutorRoofExtrusion.cs"
+      ],
+      "notes": "Barrel and curved sheet-metal roofs for the owner's cabin (docs/revit-playbook.md); contract and readback unit-tested, executor compiled only; not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "arch.roof.fascia_gutter_soffit",
@@ -1382,6 +1388,21 @@
         "runtimes/revit-native/CommandsExecutorExportSave.cs"
       ],
       "notes": "Save-close-reopen is verified only inside the Test A/B room fixture (test-a-native-room-delivery), not through document.save. Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "file.save_test_copy",
+      "area": "file",
+      "revit_function": "Save As a new test copy (BIM-Agentic-Test*.rvt under .bim/native-runs, no overwrite)",
+      "commands": [
+        "document.save_copy"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueSaveCopy.cs",
+        "runtimes/revit-native/CommandsExecutorSaveCopy.cs"
+      ],
+      "notes": "P1-08: target and source guards, readback and JSON unit-tested in core; the Document.SaveAs executor is compiled only (owner session pending). General Save As of real projects stays unsupported (file.save_as_central)."
     },
     {
       "id": "file.save_as_central",

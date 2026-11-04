@@ -32,7 +32,9 @@ namespace Bim.Revit;
 // family.load and family_instance.place are in CommandsExecutorFamilies.cs; site commands (toposolids and
 // subdivisions) are in CommandsExecutorSite.cs; wall.set_profile is in CommandsExecutorWallProfile.cs; fill patterns,
 // materials, layered wall/floor types and element.change_type are in CommandsExecutorMaterialTypes.cs;
-// view.export_image and document.save are in CommandsExecutorExportSave.cs; command.batch is in CommandsExecutorBatch.cs.
+// view.export_image and document.save are in CommandsExecutorExportSave.cs; document.save_copy is in
+// CommandsExecutorSaveCopy.cs; command.batch is in CommandsExecutorBatch.cs; roof.create_extrusion is in
+// CommandsExecutorRoofExtrusion.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -67,6 +69,8 @@ internal static partial class CommandExecutor
         // document.save (CommandsExecutorExportSave.cs) saves without a transaction and stores no receipt: recording one
         // would leave the document modified again right after the save.
         if (envelope.Args is DocumentSaveArgs) return SaveExecute(d, request);
+        // document.save_copy (P1-08, CommandsExecutorSaveCopy.cs): Save As to a new test copy, no transaction, no receipt.
+        if (envelope.Args is DocumentSaveCopyArgs saveCopy) return SaveCopyExecute(d, request, saveCopy);
         if (envelope.Args is CommandBatchArgs batch) return BatchExecute(d, request, store, batch);
         // Modify and delete (P1-05, CommandsExecutorModify.cs) run their own transactions: a dry run stores no receipt.
         if (envelope.Args is ElementSetParameterArgs or ElementDeleteArgs) return ModifyExecute(d, request, store);
@@ -78,6 +82,7 @@ internal static partial class CommandExecutor
             FloorCreateArgs floor => FloorPlan(d, floor),
             RoomCreateArgs room => RoomPlan(d, room),
             RoofFootprintCreateArgs roof => RoofPlan(d, roof),
+            RoofExtrusionCreateArgs extrusion => RoofExtrusionPlan(d, extrusion),
             CurtainWallCreateArgs curtain => CurtainWallPlan(d, curtain),
             FloorOpeningCreateArgs opening => FloorOpeningPlan(d, opening),
             ViewPlanCreateArgs view => ViewPlanWrite(d, view),

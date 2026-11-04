@@ -201,6 +201,7 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["element.change_type"]=()=>new JsonObject{["element_uid"]=McpUid,["type"]="Muro piedra 600 + revestimiento lenga"},
     ["view.export_image"]=()=>new JsonObject{["view"]="{3D}",["pixel_size"]=1600,["format"]="png",["output_name"]="fachada-norte"},
     ["document.save"]=()=>new JsonObject(),
+    ["roof.create_extrusion"]=()=>new JsonObject{["level"]="Level 1",["type"]="Chapa curva",["plane"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(6000,0)},["profile"]=new JsonArray(new JsonObject{["kind"]="arc",["start"]=new JsonArray(-300,2700),["end"]=new JsonArray(6300,2700),["through"]=new JsonArray(3000,3800)}),["extrusion_start_mm"]=-300,["extrusion_end_mm"]=10300},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
@@ -303,6 +304,20 @@ Check(RevitCommandCatalogue.WallProfile.Select(spec=>spec.Name).SequenceEqual(ne
     var bowTie=Guarded("revit_wall_set_profile",new JsonObject{["wall_uid"]=McpUid,["profile"]=new JsonArray(new JsonArray(0,0),new JsonArray(6000,2700),new JsonArray(6000,0),new JsonArray(0,2700))},McpCopy);
     Check(IsError(bowTie) && FailureCode(bowTie)==RevitCommandCodes.BoundarySelfIntersecting && forwardedLines.Count==before+1,"a self-intersecting wall profile is refused before the pipe");
 }
+// P9-07 roof.create_extrusion: a generated additive write tool (destructiveHint false), copies only; the profile rules
+// refuse a self-intersecting profile before the pipe.
+Check(RevitCommandCatalogue.RoofExtrusion.Select(spec=>spec.Name).SequenceEqual(new[]{"roof.create_extrusion"}) && RevitCommandCatalogue.RoofExtrusion.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover roof.create_extrusion, in the catalogue enumeration");
+{
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="revit_roof_create_extrusion");
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && listed?["annotations"]?["destructiveHint"]?.GetValue<bool>()==false && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies","revit_roof_create_extrusion is listed write-copies with destructiveHint false");
+    var before=forwardedLines.Count;
+    var onReal=Guarded("revit_roof_create_extrusion",sampleArgs["roof.create_extrusion"](),McpReal);
+    Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,"revit_roof_create_extrusion on a real project is refused document_not_enabled before the pipe");
+    var onCopy=Guarded("revit_roof_create_extrusion",sampleArgs["roof.create_extrusion"](),McpCopy);
+    Check(IsError(onCopy) && FailureCode(onCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["args"]?["profile"]?.AsArray().Count==1,"revit_roof_create_extrusion on an enabled copy forwards the profile");
+    var crossing=Guarded("revit_roof_create_extrusion",new JsonObject{["level"]="Level 1",["type"]="Chapa curva",["plane"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(6000,0)},["profile"]=new JsonArray(new JsonObject{["kind"]="line",["start"]=new JsonArray(0,0),["end"]=new JsonArray(4000,0)},new JsonObject{["kind"]="line",["start"]=new JsonArray(4000,0),["end"]=new JsonArray(4000,2000)},new JsonObject{["kind"]="line",["start"]=new JsonArray(4000,2000),["end"]=new JsonArray(2000,-1000)}),["extrusion_start_mm"]=0,["extrusion_end_mm"]=10000},McpCopy);
+    Check(IsError(crossing) && FailureCode(crossing)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before+1,"a self-intersecting extrusion roof profile is refused before the pipe");
+}
 // chat-materials-types: fill patterns, materials, layered wall/floor types and type changes are generated tools;
 // material.set and element.change_type change existing elements (destructiveHint true), the rest only add.
 Check(RevitCommandCatalogue.MaterialTypes.Select(spec=>spec.Name).SequenceEqual(new[]{"query.fill_patterns","material.create","material.set","wall_type.create","floor_type.create","element.change_type"}) && RevitCommandCatalogue.MaterialTypes.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the material type commands, all in the catalogue enumeration");
@@ -346,6 +361,17 @@ Check(RevitCommandCatalogue.ExportSave.Select(spec=>spec.Name).SequenceEqual(new
     before=forwardedLines.Count;
     var saveCopy=Guarded("revit_document_save",new JsonObject(),McpCopy);
     Check(IsError(saveCopy) && FailureCode(saveCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1,"revit_document_save on an enabled copy is forwarded");
+    // P1-08: document.save_copy is a non-destructive write (it never overwrites); its target guard runs before the pipe.
+    var copyTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="revit_document_save_copy");
+    Check(copyTool?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && copyTool?["annotations"]?["destructiveHint"]?.GetValue<bool>()==false && copyTool?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies","revit_document_save_copy is listed as a non-destructive write with permission level write-copies");
+    before=forwardedLines.Count;
+    var copyArgs=new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\run-1\BIM-Agentic-Test-copy.rvt"};
+    var copyReal=Guarded("revit_document_save_copy",copyArgs.DeepClone(),McpReal);
+    Check(IsError(copyReal) && FailureCode(copyReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,"revit_document_save_copy of a real project is refused document_not_enabled before the pipe");
+    var copyName=Guarded("revit_document_save_copy",new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\run-1\Copia.rvt"},McpCopy);
+    Check(IsError(copyName) && FailureCode(copyName)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before,"revit_document_save_copy to a name other than BIM-Agentic-Test*.rvt is args_invalid before the pipe");
+    var copyNoRepo=Guarded("revit_document_save_copy",copyArgs.DeepClone(),McpCopy);
+    Check(IsError(copyNoRepo) && FailureCode(copyNoRepo)==RevitCommandCodes.SaveCopyRefused && forwardedLines.Count==before,"revit_document_save_copy without a known repository is save_copy_refused before the pipe");
 }
 // chat-export-save: the policy is re-read when .bim/revit-enabled-roots.txt changes, so a folder the owner enables
 // works without restarting the MCP server (and Claude).

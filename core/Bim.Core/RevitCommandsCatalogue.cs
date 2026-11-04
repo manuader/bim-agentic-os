@@ -16,7 +16,8 @@ public sealed record RevitCommandSpec(string Name, bool Writes, string Descripti
 // modify and delete commands (P1-05) in RevitCommandsModify.cs and the materials and roof type commands in
 // RevitCommandsMaterials.cs, the family commands in RevitCommandsFamilies.cs, the site commands in RevitCommandsSite.cs,
 // wall.set_profile in RevitCommandsWallProfile.cs, the material, layered type and type change commands in
-// RevitCommandsMaterialTypes.cs and view.export_image / document.save in RevitCommandsExportSave.cs.
+// RevitCommandsMaterialTypes.cs, view.export_image / document.save in RevitCommandsExportSave.cs and roof.create_extrusion
+// in RevitCommandsRoofExtrusion.cs.
 public static partial class RevitCommandCatalogue
 {
     public const int Version = 1;
@@ -74,9 +75,9 @@ public static partial class RevitCommandCatalogue
     // Mirror.cs), then query.elements and query.inspect (P1-02, RevitCommandsQuery.cs), then the structure commands (P9-02,
     // RevitCommandsStructure.cs), then the documentation commands (P4-02, RevitCommandsDocumentation.cs), then the
     // modify and delete commands (P1-05, RevitCommandsModify.cs), then query.materials and roof_type.create
-    // (RevitCommandsMaterials.cs), then the family commands (RevitCommandsFamilies.cs), then the site commands (RevitCommandsSite.cs), then wall.set_profile (RevitCommandsWallProfile.cs), then the material type commands (RevitCommandsMaterialTypes.cs), then view.export_image and document.save (RevitCommandsExportSave.cs), then command.batch (P1-07, RevitCommandsBatch.cs). Lazy because those entries live in other parts of this partial class, whose static
+    // (RevitCommandsMaterials.cs), then the family commands (RevitCommandsFamilies.cs), then the site commands (RevitCommandsSite.cs), then wall.set_profile (RevitCommandsWallProfile.cs), then the material type commands (RevitCommandsMaterialTypes.cs), then view.export_image and document.save (RevitCommandsExportSave.cs), then document.save_copy (P1-08, RevitCommandsSaveCopy.cs), then roof.create_extrusion (P9-07, RevitCommandsRoofExtrusion.cs), then command.batch (P1-07, RevitCommandsBatch.cs). Lazy because those entries live in other parts of this partial class, whose static
     // initializers may run in any order.
-    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).Concat(Materials).Concat(Families).Concat(Site).Concat(WallProfile).Concat(MaterialTypes).Concat(ExportSave).Concat(Batch).ToArray());
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).Concat(Materials).Concat(Families).Concat(Site).Concat(WallProfile).Concat(MaterialTypes).Concat(ExportSave).Concat(SaveCopy).Concat(RoofExtrusion).Concat(Batch).ToArray());
     public static IReadOnlyList<RevitCommandSpec> All => AllSpecs.Value;
 
     public static RevitCommandSpec? Find(string name) => All.FirstOrDefault(spec => spec.Name == name);
