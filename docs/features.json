@@ -908,6 +908,42 @@
       ],
       "blocker": "Produces a facade layout, not BIM-IR windows (P7-06); windows may coincide with the P7-04 entrance door; no wall thickness; patio/courtyard minimum size unchecked; windows above lower roofs unchecked; default OpeningEdges allows all four footprint edges (pass North/South for lots between party walls); prototypes do not call it yet; not exposed through CLI/MCP.",
       "scope": "P7-05: FacadePlanner.Place(plan, pack, options, parameters) puts windows only on exterior room parts (not shared with a same-level room), sized to the smallest whole mm meeting the pack's window_area_m2 and ventilation_area_m2 ratio rules (CABA x=10, k=i/3, owner-confirmed), citing qualified rule ids; applies_if on area_m2/min_side_m evaluated like P5-02; sill 0.90/head 2.10/end clearance 0.30/openable 0.5/min width 0.60 defaults; OpeningEdges for party walls (facade_lot_line_only), FacesInternalVoid flag; typed failures (no_exterior_edge, edge_too_short, ratio_unmet, rule_unsupported) and refusals; bounded options; independent pack reader, side sampling and raster void oracle; byte-identical across order and culture. CI 41817395508."
+    },
+    {
+      "id": "provenance-ledger",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Provenance.cs",
+        "core/Bim.Core/ProvenanceLedger.cs",
+        "tests/provenance/Program.cs"
+      ],
+      "blocker": "In-memory only (no file persistence/locking); not called by CLI, MCP, intent compiler or CAD importer; unkeyed hash chain (whole-file rewrite or tail truncation undetectable without an external head hash/count); intent key excludes rule_id by policy.",
+      "scope": "P2-06: append-only, SHA-256 hash-chained ledger of element origins (intent id + rule, catalogue command + operation_id, external edit from the mirror journal, CAD import file hash + handle); query by element and by source; replay idempotent, conflicting replay refused; canonical culture-free JSON with independent golden hashes; typed load refusals (order, chain, hash, duplicates, version, surrogates, size caps); catalogue membership on Append only; FromJournal flags truncated journal entries. CI 41830824151."
+    },
+    {
+      "id": "jurisdiction-registry",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/Jurisdiction.cs",
+        "core/Bim.Core/JurisdictionRegistry.cs",
+        "core/Bim.Core/JurisdictionValidator.cs",
+        "skills/ar.caba.codigo-edificacion/jurisdiction.json",
+        "skills/xx.example.codigo-ejemplo/skill.json",
+        "tests/skills/JurisdictionTests.cs"
+      ],
+      "blocker": "Not wired to CLI/MCP or to the brief (constraints.jurisdiction free text not mapped); one pack per jurisdiction code; sidecar format has no JSON Schema yet; only CABA is a real jurisdiction (xx.example is a fictitious stub).",
+      "scope": "P10-06: jurisdiction.json sidecars (new format v1) claim a code for a code pack; registry selects by code or country+municipality (accent/case folded), refuses unspecified/incomplete/invalid/unknown/ambiguous/conflicting jurisdictions and stub packs without opt-in; registry issues for missing/mismatched packs, duplicate claims and alias overlap; validation envelope with pack ids, versions, stub flags and source_confidence counts around the unchanged SkillRoomValidator; deterministic JSON. CI 41833656639."
+    },
+    {
+      "id": "intent-skill-defaults",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/IntentSkillDefaults.cs",
+        "core/Bim.Core/IntentSkillDefaultsFill.cs",
+        "tests/intent/SkillDefaultsTests.cs"
+      ],
+      "blocker": "IntentDraft is in-memory only (no JSON form); shipped style packs set neither door.height_m nor wall.interior.type, so those fields need explicit values; room.min_clear_height_m only validates; strict validation refuses a broken style even for a fully explicit draft (deliberate).",
+      "scope": "P5-04: IntentSkillDefaults.Fill/Compile fill open intent fields (level elevation by storey, wall type/thickness/height by role, window sill/height from sill/head, door height) from a resolved style before the unchanged IntentCompiler, with per-field provenance (explicit/default/derived/rule + skill traces); explicit values win; typed refusals (default_missing, default_value_invalid, default_inconsistent, derived_value_invalid, storey_*, draft_key_duplicate); two styles give two byte-stable projects. CI 41837332397."
     }
   ]
 }
