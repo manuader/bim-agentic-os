@@ -351,11 +351,11 @@ Check(RevitCommandCatalogue.ExportSave.Select(spec=>spec.Name).SequenceEqual(new
     Check(copyTool?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && copyTool?["annotations"]?["destructiveHint"]?.GetValue<bool>()==false && copyTool?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies","revit_document_save_copy is listed as a non-destructive write with permission level write-copies");
     before=forwardedLines.Count;
     var copyArgs=new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\run-1\BIM-Agentic-Test-copy.rvt"};
-    var copyReal=Guarded("revit_document_save_copy",copyArgs,McpReal);
+    var copyReal=Guarded("revit_document_save_copy",copyArgs.DeepClone(),McpReal);
     Check(IsError(copyReal) && FailureCode(copyReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,"revit_document_save_copy of a real project is refused document_not_enabled before the pipe");
     var copyName=Guarded("revit_document_save_copy",new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\run-1\Copia.rvt"},McpCopy);
     Check(IsError(copyName) && FailureCode(copyName)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before,"revit_document_save_copy to a name other than BIM-Agentic-Test*.rvt is args_invalid before the pipe");
-    var copyNoRepo=Guarded("revit_document_save_copy",copyArgs,McpCopy);
+    var copyNoRepo=Guarded("revit_document_save_copy",copyArgs.DeepClone(),McpCopy);
     Check(IsError(copyNoRepo) && FailureCode(copyNoRepo)==RevitCommandCodes.SaveCopyRefused && forwardedLines.Count==before,"revit_document_save_copy without a known repository is save_copy_refused before the pipe");
 }
 // chat-export-save: the policy is re-read when .bim/revit-enabled-roots.txt changes, so a folder the owner enables
