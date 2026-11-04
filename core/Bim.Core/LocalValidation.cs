@@ -10,10 +10,14 @@ public sealed record LocalValidationResult(ValidationIssue[] Findings, Guid[] Af
     public int RevalidatedCount => Revalidated.Length;
 }
 
-// Element rules over a Compiler.Validate-clean project. Every finding names one element, and the rules of an
-// element read only that element, its prerequisites and their prerequisites (kinds, geometry, levels). A change
-// to any of those is a plan operation the element transitively depends on in after, so the element is in
-// plan.DirtyIds. Hence: Merge(ValidateAll(before), Validate(before, after, plan)) == ValidateAll(after).
+// Element rules over a Compiler.Validate-clean project. Every finding names one element.
+// INVARIANT (soundness of localization): the rules of an element may read only that element and its
+// Prerequisites closure in after (today: its prerequisites and their prerequisites: kinds, geometry, levels),
+// never its dependents (SemanticGraph.Hosts, Bounded, OnLevel, Affected or any Dependents traversal) and never
+// another unrelated element. A change to anything in the Prerequisites closure is a plan operation the element
+// transitively depends on in after, so the element is in plan.DirtyIds. Hence:
+// Merge(ValidateAll(before), Validate(before, after, plan)) == ValidateAll(after). A rule that reads dependents
+// (for example "a wall hosts at most N doors") would break this and must not be added here.
 //   geometry codes    wall/level/space/plan/schedule/sheet geometry that GeometryCodec cannot decode
 //   host_missing      door/window/opening with no hosting wall
 //   host_ambiguous    ... with more than one hosting wall
@@ -22,6 +26,8 @@ public sealed record LocalValidationResult(ValidationIssue[] Findings, Guid[] Af
 //   host_level        ... on a level other than its host wall's (when both declare one)
 //   boundary_detached a bounding wall's footprint (axis widened by half its thickness) misses the space rectangle
 //   boundary_level    a space/room and its bounding walls declare different levels
+// Levels compare as sets: an element's level key is all levels it depends on (Guid order, joined), so an element on
+// several levels matches only an element on exactly the same levels; an element on no level is not compared.
 public static class LocalValidation
 {
     public const string HostMissing = "host_missing";
@@ -58,12 +64,14 @@ public static class LocalValidation
     }
 
     // Prior findings of elements outside the affected closure, plus the localized findings, sorted like ValidateAll.
-    // Prior findings without an element id are dropped (a project Compiler.Diff accepts has none).
+    // previous must be ValidateAll(before) for the same before the local result came from; any other input gives a
+    // merged list with no guarantee (it is not checked here; Agrees recomputes it). Prior findings without an
+    // element id are dropped (a project Compiler.Diff accepts has none). Revalidated is a subset of Affected.
     public static ValidationIssue[] Merge(IEnumerable<ValidationIssue> previous, LocalValidationResult local)
     {
         ArgumentNullException.ThrowIfNull(previous);
         ArgumentNullException.ThrowIfNull(local);
-        var replaced = local.Affected.Concat(local.Revalidated).ToHashSet();
+        var replaced = local.Affected.ToHashSet();
         return Sort(previous.Where(issue => issue.Id is Guid id && !replaced.Contains(id)).Concat(local.Findings));
     }
 
