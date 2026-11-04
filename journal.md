@@ -1174,3 +1174,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
   * element.set_parameter FLOOR_HEIGHTABOVELEVEL_PARAM refused because Revit would delete an internal no-category element (id 215987, likely a join/warning helper) → allow confirming internal no-category deletions.
   * element.delete of a plain wall refused because footprint roof sketch lines depend on it (roof picked from walls?) — investigate dependents 34aee.. when deleting plinth walls.
 - Owner corrections C5 (pending): stone L base S+W (done via change_type), antechamber (done), roof with south steeper half-hip "quiebre" + north facet to the side (needs delete of roofs/south gable → after deploy), floor platea (created at level 0; offset blocked).
+
+## Relay155 — 2026-11-04T19:53:10Z (Claude, cloud scheduled)
+- 19:53Z LOCK taken (was FREE; relay153 released 19:06:40Z).
