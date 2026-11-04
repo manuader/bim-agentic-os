@@ -7,7 +7,7 @@ namespace Bim.Core;
 // permission level (read) and audit as every other query instead of the raw pipe Operation journal.read. Same tracker,
 // same baselines, same options and the same reply: the readback body is byte-identical to the journal.read reply after
 // its "status" and "verification" members (RevitJournalQuery.Body is the one serializer both use). Vendor-free; the
-// add-in executor is runtimes/revit-native/CommandsExecutorJournal.cs. Nothing is written to the document, the receipt
+// add-in executor is CommandsExecutorJournal.cs in the native runtime. Nothing is written to the document, the receipt
 // store or any persisted format; a read without peek moves the in-memory baseline, exactly as journal.read does.
 
 // The journal.read options as catalogue arguments. AfterSequence null means "from the baseline".
