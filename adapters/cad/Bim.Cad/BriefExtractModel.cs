@@ -17,14 +17,16 @@ public sealed record BriefTextSource(string SourceFile, string Format, string? H
 // One proposed room. Id and Name are the brief room's; StatedAreaSquareMetres is the area written on the drawing (null
 // when none was found); RegionAreaSquareMetres the area of the closed region that holds the label and no other label
 // (null without such a region or without a drawing scale). Notes: area-same-text, area-nearby, area-from-region,
-// area-missing, area-mismatch, no-region, shared-region, label-outside-vocabulary, duplicate-label.
+// area-ambiguous, area-missing, area-mismatch, no-region, shared-region, outer-region, label-outside-vocabulary,
+// duplicate-label.
 public sealed record BriefRoomProposal(string Id, string Name, double? StatedAreaSquareMetres, double? RegionAreaSquareMetres, double Confidence,
     BriefTextSource Label, BriefTextSource? Area, BriefTextSource? Region, IReadOnlyList<string> Notes);
 
-// One entry of the uncertainty report. Codes: area-from-region, area-invalid, area-mismatch, area-missing,
-// duplicate-label, duplicate-text, orphan-area, region-limit, shared-region, text-limit, text-too-long,
-// unlabelled-region, work-limit, and uncertainty-limit (last, when the report was capped). RoomId names the affected
-// proposal; ValueSquareMetres is the region area (area-mismatch, area-from-region, unlabelled-region, shared-region) or
+// One entry of the uncertainty report. Codes (ordinal order): area-ambiguous, area-from-region, area-invalid,
+// area-mismatch, area-missing, duplicate-label, duplicate-text, explode-limit, explode-warning, orphan-area, pair-limit,
+// region-limit, shared-region, text-limit, text-too-long, uncalibrated, unlabelled-region, work-limit, and
+// uncertainty-limit (last, when the report was capped). RoomId names the affected proposal; ValueSquareMetres is the
+// region area (area-mismatch, area-from-region, unlabelled-region, shared-region), the stated area (area-ambiguous) or
 // the rejected value (area-invalid, orphan-area) when applicable.
 public sealed record BriefExtractUncertainty(string Code, string Message, string? RoomId, double? ValueSquareMetres, IReadOnlyList<BriefTextSource> Sources);
 

@@ -7,44 +7,61 @@ namespace Bim.Cad;
 // P6-05: room labels and area texts of a DXF drawing or PDF page to a draft project brief (see BriefDraft). Nothing is
 // persisted and neither the BIM-IR nor the brief schema changes; the result is a proposal with an uncertainty report.
 //
-// 1. Texts. TEXT/MTEXT plain text (DXF, after exploding INSERTs) or shown PDF strings (PdfPage.ToDxfEntities), filtered by
-//    TextLayers, paper space and visibility, in drawing order. A text longer than MaxTextLength is text-too-long; a text
-//    equal (after whitespace collapsing) to an earlier one within 1 % of the text height is duplicate-text and dropped.
-//    ReadText splits each text into an area token (number with decimal comma or point, optional thousands separators
-//    "1.234,5" / "1,234.5", unit m², m2, m^2, mt2, mts2, sq m, sqm; a single separator is always decimal) and a label
-//    (the rest, minus an area prefix Sup., Superficie, Surface, Área/Area or S:, that has a letter, at most
+// 1. Texts. TEXT/MTEXT plain text (DXF, after exploding INSERTs; explosion warnings are explode-warning, a failed
+//    explosion is explode-limit and falls back to top-level entities) or shown PDF strings (PdfPage.ToDxfEntities),
+//    filtered by TextLayers, paper space and visibility, in drawing order. A text longer than MaxTextLength is
+//    text-too-long; a text equal (after whitespace collapsing) to an earlier one of the same height whose insertion is
+//    within 1 % of that height is duplicate-text and dropped (grid lookup, linear time).
+//    ReadText splits each text into an area token (optional leading minus, number with decimal comma or point,
+//    optional thousands separators "1.234,5" / "1,234.5", unit m², m2, m^2, mt2, mts2, sq m, sqm; a single separator is
+//    always decimal, and "1.234" / "1,234" with exactly three fraction digits is area-ambiguous) and a label (the rest,
+//    minus an area prefix Sup., Superficie, Surface, Área/Area or S:, that has a letter other than units, at most
 //    MaxLabelLength characters and MaxLabelWords words). Areas outside (0, MaxAreaSquareMetres] are area-invalid.
 // 2. Regions. Closed LWPOLYLINEs (DXF) or closed subpaths (PDF), filtered by RegionLayers, paper space and visibility,
-//    bulges tessellated for containment and integrated exactly for area. With a drawing scale, regions smaller than
-//    MinRegionAreaSquareMetres are ignored. A text belongs to the smallest region holding its insertion point.
+//    and, unless IncludeBlockRegions, not drawn through a block insert or Form XObject; bulges tessellated for
+//    containment and integrated exactly for area (gross: holes are not subtracted). Without a scale (MetresPerUnit
+//    option, DXF units or PDF calibration) the report starts with uncalibrated and region areas are unknown; with one,
+//    regions smaller than MinRegionAreaSquareMetres are ignored. A text belongs to the smallest region holding its
+//    insertion point. A region holding a smaller region (bounding box inside, centre inside) is an outer region.
 // 3. Labels. A label is kept when it has a room word (built-in es/en vocabulary plus RoomWords, case- and
-//    accent-insensitive, plural -s/-es accepted), or when it lies in a region that holds no room-word label
-//    (label-outside-vocabulary). Dropped labels free their area token, if any.
+//    accent-insensitive, plural -s/-es accepted, multi-word RoomWords matched as phrases), or when it lies in a region
+//    that neither holds a room-word label nor encloses a region that does (label-outside-vocabulary). Dropped labels
+//    free their area token, if any.
 // 4. Areas. A kept label with its own area token uses it (area-same-text). The other labels take free area texts
-//    greedily by distance (then label and area order): candidates share the smallest region, or both lie outside every
-//    region within PairDistanceTextHeights x the larger text height (area-nearby). Unused area texts are orphan-area.
-// 5. Rooms. A region holding exactly one kept label (as smallest region) is that room's region; otherwise
-//    shared-region. Without a stated area the room takes its region area as an inferred target (area-from-region) or
-//    has none (area-missing). A stated area off the region area by more than AreaMismatchTolerance is area-mismatch;
-//    the stated area stays the target. Labels whose slug repeats an earlier one are duplicate-label (both kept, the
-//    later with a -2, -3 suffix). Regions holding no kept label are unlabelled-region.
-// Confidence starts at 1 and is multiplied by: label-outside-vocabulary 0.7, area-nearby 0.95, no-region 0.9,
-// shared-region 0.9, area-from-region 0.8, area-missing 0.6, area-mismatch 0.6, duplicate-label 0.8.
-// Ids are slugs of the label (lowercase, accents removed, other characters to '-'), unique by suffix. Every text, region
-// vertex, containment edge test and pairing candidate counts against MaxWork. Malformed text never throws.
+//    greedily by distance (then label and area order): candidates share the smallest region (an outer region also
+//    needs the distance cut), or both lie outside every region, within PairDistanceTextHeights x the larger text height
+//    (area-nearby). At most MaxPairCandidates candidates are considered (pair-limit). Unused area texts are orphan-area.
+// 5. Rooms. A region holding exactly one kept label (as smallest region) that is not an outer region is that room's
+//    region; otherwise shared-region or outer-region (no region area). Without a stated area the room takes its region
+//    area as an inferred target (area-from-region) or has none (area-missing). A stated area off the region area by more
+//    than AreaMismatchTolerance is area-mismatch; the stated area stays the target. Labels whose slug repeats an earlier
+//    one are duplicate-label (both kept; the later gets the first free -2, -3 suffix that is not another label's own
+//    slug). Regions holding no kept label are unlabelled-region.
+// Confidence starts at 1 and is multiplied by: label-outside-vocabulary 0.7, area-nearby 0.95, area-ambiguous 0.7,
+// no-region 0.9, shared-region 0.9, outer-region 0.9, area-from-region 0.8, area-missing 0.6, area-mismatch 0.6,
+// duplicate-label 0.8. Ids are slugs of the label (lowercase, accents removed, other characters to '-'). Every text,
+// region vertex, containment edge test and pairing candidate counts against MaxWork. Limit entries (explode-limit,
+// pair-limit, region-limit, text-limit, work-limit) and uncalibrated are always reported, outside the
+// MaxUncertainties cap. Malformed text never throws.
 public static class BriefExtract
 {
-    private const double OutsideVocabulary = 0.7, Nearby = 0.95, NoRegion = 0.9, Shared = 0.9, FromRegion = 0.8, Missing = 0.6, Mismatch = 0.6, Duplicate = 0.8;
+    private const double OutsideVocabulary = 0.7, Nearby = 0.95, Ambiguous = 0.7, NoRegion = 0.9, Shared = 0.9, Outer = 0.9, FromRegion = 0.8, Missing = 0.6, Mismatch = 0.6, Duplicate = 0.8;
     private const int MaxReadLength = 4096;
     private const int ArcSteps = 16;
     private const int MaxSlugLength = 56;
 
     private static readonly Regex AreaPattern = new(
-        @"(?<!\d)(?<!\d[.,])(?<num>\d{1,3}(?:\.\d{3})+,\d{1,4}|\d{1,3}(?:,\d{3})+\.\d{1,4}|\d{1,7}(?:[.,]\d{1,4})?)\s*(?:m²|m2|m\^2|mts?\.?\s?2|mts?²|sq\.?\s?m|sqm)(?![\p{L}\d])\.?",
+        @"(?<sign>(?<![\p{L}\d.,])[-\u2212]\s?)?(?<!\d)(?<!\d[.,])(?<num>\d{1,3}(?:\.\d{3})+,\d{1,4}|\d{1,3}(?:,\d{3})+\.\d{1,4}|\d{1,7}(?:[.,]\d{1,4})?)\s*(?:m²|m2|m\^2|mts?\.?\s?2|mts?²|sq\.?\s?m|sqm)(?![\p{L}\d])\.?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
     private static readonly Regex PrefixPattern = new(
         @"(?<!\p{L})(?:sup(?:erficie)?\.?|surface|[aá]rea|s(?=\s*[:=]))\s*[:=]?\s*\z",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
+    private static readonly Regex AmbiguousPattern = new(@"\A\d{1,3}[.,]\d{3}\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
+    private static readonly HashSet<string> UnitWords = new(StringComparer.Ordinal)
+    {
+        "m", "mm", "cm", "dm", "km", "m2", "mt", "mts", "mt2", "mts2", "sq", "sqm", "ft", "sqft", "in", "yd", "x", "ha", "metro", "metros", "cuadrado", "cuadrados", "square", "feet", "foot",
+    };
+    private static readonly HashSet<string> AlwaysReported = new(StringComparer.Ordinal) { "explode-limit", "pair-limit", "region-limit", "text-limit", "uncalibrated", "work-limit" };
     private static readonly char[] LabelTrim = { ' ', '-', '–', ':', ';', ',', '.', '=', '(', ')', '[', ']', '/', '*', '+', '_' };
 
     private static readonly string[] Vocabulary =
@@ -67,13 +84,18 @@ public static class BriefExtract
         Validate(options);
         var report = new Report(options.MaxUncertainties);
         IReadOnlyList<DxfEntity> entities;
-        try { entities = drawing.Explode().Entities; }
+        try
+        {
+            var exploded = drawing.Explode(options.ExplodeOptions);
+            entities = exploded.Entities;
+            foreach (var warning in exploded.Warnings) report.Add("explode-warning", warning.Code + " at line " + I(warning.Line) + ": " + warning.Message, null, null);
+        }
         catch (DxfFormatException error)
         {
-            report.Add("work-limit", "block explosion stopped (" + error.Code + "); only top-level entities were read", null, null);
+            report.Add("explode-limit", "block explosion stopped (" + error.Code + ": " + error.Message + "); only top-level entities were read", null, null);
             entities = drawing.Entities;
         }
-        return Extract(entities, drawing.SourceFile, "dxf", drawing.MetresPerUnit, null, options, report);
+        return Extract(entities, drawing.SourceFile, "dxf", options.MetresPerUnit ?? drawing.MetresPerUnit, null, options, report);
     }
 
     // Calibrated pages are read in millimetres (MetresPerUnit 0.001); without a calibration region areas are unknown.
@@ -84,7 +106,7 @@ public static class BriefExtract
         Validate(options);
         var page = document.Pages.FirstOrDefault(p => p.Number == pageNumber) ?? throw new ArgumentOutOfRangeException(nameof(pageNumber), "the document has no page " + I(pageNumber));
         var entities = page.ToDxfEntities(calibration);
-        return Extract(entities, document.SourceFile, "pdf", calibration is null ? null : 0.001, pageNumber, options, new Report(options.MaxUncertainties));
+        return Extract(entities, document.SourceFile, "pdf", calibration is null ? options.MetresPerUnit : 0.001, pageNumber, options, new Report(options.MaxUncertainties));
     }
 
     // Splits one text into a label and an area (see the class comment). Null, blank or over-long (more than 4096 UTF-16
@@ -92,6 +114,7 @@ public static class BriefExtract
     public static BriefTextReading ReadText(string? text, int maxLabelLength = 64, int maxLabelWords = 6)
     {
         if (text is null || text.Length > MaxReadLength || maxLabelLength < 1 || maxLabelWords < 1) return new BriefTextReading(null, null, null);
+        var ambiguous = false;
         var clean = Sanitize(text);
         var rest = clean;
         double? area = null;
@@ -101,14 +124,17 @@ public static class BriefExtract
         catch (RegexMatchTimeoutException) { match = null; }
         if (match is { Success: true } && TryNumber(match.Groups["num"].Value, out var value))
         {
-            area = value;
+            var number = match.Groups["num"].Value;
+            area = match.Groups["sign"].Success ? -value : value;
             token = match.Value.Trim();
+            try { ambiguous = AmbiguousPattern.IsMatch(number); }
+            catch (RegexMatchTimeoutException) { ambiguous = true; }
             var before = clean[..match.Index];
             try { before = PrefixPattern.Replace(before, ""); }
             catch (RegexMatchTimeoutException) { }
             rest = before + " " + clean[(match.Index + match.Length)..];
         }
-        return new BriefTextReading(Label(rest, maxLabelLength, maxLabelWords), area, token);
+        return new BriefTextReading(Label(rest, maxLabelLength, maxLabelWords), area, token, ambiguous);
     }
 
     private static BriefDraft Extract(IReadOnlyList<DxfEntity> entities, string sourceFile, string format, double? metresPerUnit, int? page, BriefExtractOptions options, Report report)
@@ -116,17 +142,24 @@ public static class BriefExtract
         var budget = new Budget(options.MaxWork, report);
         var file = BriefParser.IsText(sourceFile) ? sourceFile : "drawing";
         var scale = metresPerUnit is { } mpu && mpu > 0 && double.IsFinite(mpu) ? mpu : (double?)null;
+        if (scale is null) report.Add("uncalibrated", "the drawing has no length scale (no DXF units, no PDF calibration, no MetresPerUnit); region areas are unknown", null, null);
         HashSet<string>? textLayers = options.TextLayers is null ? null : new HashSet<string>(options.TextLayers.Where(l => l is not null), StringComparer.OrdinalIgnoreCase);
         HashSet<string>? regionLayers = options.RegionLayers is null ? null : new HashSet<string>(options.RegionLayers.Where(l => l is not null), StringComparer.OrdinalIgnoreCase);
         var words = new HashSet<string>(Vocabulary, StringComparer.Ordinal);
-        foreach (var word in options.RoomWords) if (word is not null && Fold(word) is { Length: > 0 } folded) words.Add(folded);
+        var phrases = new List<string>();
+        foreach (var word in options.RoomWords)
+            if (word is not null && Fold(word) is { Length: > 0 } folded)
+            {
+                if (folded.Contains(' ', StringComparison.Ordinal)) phrases.Add(folded);
+                else words.Add(folded);
+            }
         bool Visible(DxfProvenance p) => !(p.PaperSpace && !options.IncludePaperSpace) && !(p.Invisible && !options.IncludeInvisible);
         BriefTextSource Source(DxfProvenance p, Point2 at, string? text) =>
             new(file, format, p.Handle, p.Layer, p.EntityType, p.Line, page, p.InsertPath, at, text);
 
         // 1. Texts.
         var texts = new List<TextItem>();
-        var seen = new Dictionary<string, List<TextItem>>(StringComparer.Ordinal);
+        var seen = new Dictionary<(string Text, long Cell, long X, long Y), TextItem>();
         var textCount = 0;
         foreach (var entity in entities)
         {
@@ -148,23 +181,23 @@ public static class BriefExtract
             if (display.Length == 0) continue;
             var height = double.IsFinite(text.Height) ? Math.Abs(text.Height) : 0;
             var source = Source(text.Provenance, text.Insertion, display);
-            if (seen.TryGetValue(display, out var same))
+            // Same text and height, insertion within 1 % of the height: looked up in the 3x3 neighbouring grid cells.
+            var cell = Math.Max(0.01 * height, 1e-9);
+            var cellBits = BitConverter.DoubleToInt64Bits(cell);
+            var qx = Math.Floor(text.Insertion.X / cell);
+            var qy = Math.Floor(text.Insertion.Y / cell);
+            var quantised = Math.Abs(qx) < 1e15 && Math.Abs(qy) < 1e15;
+            TextItem? copy = null;
+            if (quantised)
+                for (var dx = -1L; dx <= 1 && copy is null; dx++)
+                    for (var dy = -1L; dy <= 1 && copy is null; dy++)
+                        if (seen.TryGetValue((display, cellBits, (long)qx + dx, (long)qy + dy), out var earlier)
+                            && Math.Abs(earlier.Source.At.X - text.Insertion.X) <= cell && Math.Abs(earlier.Source.At.Y - text.Insertion.Y) <= cell) copy = earlier;
+            if (copy is not null)
             {
-                TextItem? copy = null;
-                foreach (var earlier in same)
-                {
-                    if (!budget.Spend()) break;
-                    var tolerance = Math.Max(0.01 * Math.Max(height, earlier.Height), 1e-9);
-                    if (Math.Abs(earlier.Source.At.X - text.Insertion.X) <= tolerance && Math.Abs(earlier.Source.At.Y - text.Insertion.Y) <= tolerance) { copy = earlier; break; }
-                }
-                if (budget.Exhausted) break;
-                if (copy is not null)
-                {
-                    report.Add("duplicate-text", "text '" + display + "' repeats an earlier text at the same point; the copy is ignored", null, null, source, copy.Source);
-                    continue;
-                }
+                report.Add("duplicate-text", "text '" + display + "' repeats an earlier text at the same point; the copy is ignored", null, null, source, copy.Source);
+                continue;
             }
-            else seen[display] = same = new List<TextItem>();
             var reading = ReadText(plain, options.MaxLabelLength, options.MaxLabelWords);
             var area = reading.AreaSquareMetres;
             if (area is { } stated && !(stated > 0 && stated <= options.MaxAreaSquareMetres))
@@ -172,8 +205,8 @@ public static class BriefExtract
                 report.Add("area-invalid", "area " + F(stated) + " m2 is outside (0, " + F(options.MaxAreaSquareMetres) + "]", null, stated, source);
                 area = null;
             }
-            var item = new TextItem(texts.Count, source, height, reading.Label, area);
-            same.Add(item);
+            var item = new TextItem(texts.Count, source, height, reading.Label, area, area is not null && reading.AreaAmbiguous);
+            if (quantised) seen.TryAdd((display, cellBits, (long)qx, (long)qy), item);
             if (item.Label is not null || item.Area is not null) texts.Add(item);
         }
 
@@ -184,6 +217,7 @@ public static class BriefExtract
         {
             if (budget.Exhausted) break;
             if (entity is not DxfPolyline { Closed: true } polyline || !Visible(polyline.Provenance) || (regionLayers is not null && !regionLayers.Contains(polyline.Provenance.Layer))) continue;
+            if (polyline.Provenance.InsertPath.Count > 0 && !options.IncludeBlockRegions) continue;
             if (polyline.Vertices.Count < 2) continue;
             if (regions.Count >= options.MaxRegions || vertexCount + polyline.Vertices.Count > options.MaxRegionVertices)
             {
@@ -199,6 +233,16 @@ public static class BriefExtract
             regions.Add(new Region(regions.Count, Source(polyline.Provenance, new Point2((minX + maxX) / 2, (minY + maxY) / 2), null), points, minX, minY, maxX, maxY, areaUnits, squareMetres));
         }
 
+        // Outer regions: those holding a smaller region (its bounding box inside, its centre inside the outline).
+        var outer = new HashSet<int>();
+        foreach (var region in regions)
+            foreach (var inner in regions)
+            {
+                if (budget.Exhausted) break;
+                if (ReferenceEquals(region, inner) || !(inner.AreaUnits < region.AreaUnits) || inner.MinX < region.MinX || inner.MaxX > region.MaxX || inner.MinY < region.MinY || inner.MaxY > region.MaxY) continue;
+                if (Contains(region, inner.Source.At, budget)) { outer.Add(region.Index); break; }
+            }
+
         // Containment of every text: the smallest region holding its insertion point.
         foreach (var item in texts)
         {
@@ -212,8 +256,9 @@ public static class BriefExtract
         }
 
         // 3. Labels.
-        foreach (var item in texts) item.InVocabulary = item.Label is not null && HasRoomWord(item.Label, words);
-        var vocabularyRegions = new HashSet<int>(texts.Where(t => t.InVocabulary && t.Smallest is not null).Select(t => t.Smallest!.Index));
+        foreach (var item in texts) item.InVocabulary = item.Label is not null && HasRoomWord(item.Label, words, phrases);
+        // Every region holding a room-word label, directly or around the region that does.
+        var vocabularyRegions = new HashSet<int>(texts.Where(t => t.InVocabulary).SelectMany(t => t.Containing.Select(r => r.Index)));
         foreach (var item in texts)
             item.Kept = item.Label is not null && (item.InVocabulary || (item.Smallest is { } region && !vocabularyRegions.Contains(region.Index)));
         var labels = texts.Where(t => t.Kept).ToList();
@@ -221,18 +266,28 @@ public static class BriefExtract
         // 4. Areas: own token first, then greedy nearest free area text.
         var free = texts.Where(t => t.Area is not null && !(t.Kept)).ToList();
         var candidates = new List<(double Distance, TextItem Label, TextItem Area)>();
+        var pairLimit = false;
         foreach (var label in labels)
         {
-            if (label.Area is not null || budget.Exhausted) continue;
+            if (label.Area is not null || budget.Exhausted || pairLimit) continue;
             foreach (var area in free)
             {
                 if (!budget.Spend()) break;
                 var distance = (label.Source.At - area.Source.At).Length;
                 var reach = options.PairDistanceTextHeights * Math.Max(label.Height, area.Height);
+                var near = reach > 0 && distance <= reach;
+                // In a room region any distance pairs; in an outer region or outside every region the distance cut applies.
                 var paired = label.Smallest is not null
-                    ? ReferenceEquals(label.Smallest, area.Smallest)
-                    : area.Smallest is null && reach > 0 && distance <= reach;
-                if (paired && double.IsFinite(distance)) candidates.Add((distance, label, area));
+                    ? ReferenceEquals(label.Smallest, area.Smallest) && (!outer.Contains(label.Smallest.Index) || near)
+                    : area.Smallest is null && near;
+                if (!paired || !double.IsFinite(distance)) continue;
+                if (candidates.Count >= options.MaxPairCandidates)
+                {
+                    report.Add("pair-limit", "more than " + I(options.MaxPairCandidates) + " label/area pairing candidates; pairing used the first ones only", null, null);
+                    pairLimit = true;
+                    break;
+                }
+                candidates.Add((distance, label, area));
             }
         }
         foreach (var (_, label, area) in candidates.OrderBy(c => c.Distance).ThenBy(c => c.Label.Order).ThenBy(c => c.Area.Order))
@@ -246,6 +301,8 @@ public static class BriefExtract
         var perRegion = labels.Where(l => l.Smallest is not null).GroupBy(l => l.Smallest!.Index).ToDictionary(g => g.Key, g => g.Count());
         var labelled = new HashSet<int>(labels.SelectMany(l => l.Containing.Select(r => r.Index)));
         var usedIds = new HashSet<string>(StringComparer.Ordinal);
+        // Natural slugs are reserved first, so a later "Baño 2" keeps bano-2 even after two "Baño" labels.
+        var natural = new HashSet<string>(labels.Select(l => Slug(Truncate(l.Label!, 2048))), StringComparer.Ordinal);
         var firstBySlug = new Dictionary<string, Draft>(StringComparer.Ordinal);
         var reportedShared = new HashSet<int>();
         var drafts = new List<Draft>();
@@ -254,7 +311,11 @@ public static class BriefExtract
             var name = Truncate(label.Label!, 2048);
             var slug = Slug(name);
             var id = slug;
-            for (var n = 2; usedIds.Contains(id); n++) id = slug + "-" + I(n);
+            if (usedIds.Contains(id))
+            {
+                var n = 2;
+                do id = slug + "-" + I(n++); while (usedIds.Contains(id) || natural.Contains(id));
+            }
             usedIds.Add(id);
             var draft = new Draft(id, name, label);
             drafts.Add(draft);
@@ -262,6 +323,12 @@ public static class BriefExtract
             if (!label.InVocabulary) { draft.Confidence *= OutsideVocabulary; draft.Notes.Add("label-outside-vocabulary"); }
             if (label.Area is { } own) { draft.Stated = own; draft.AreaSource = label.Source; draft.Notes.Add("area-same-text"); }
             else if (label.PairedArea is { } near) { draft.Stated = near.Area; draft.AreaSource = near.Source; draft.Confidence *= Nearby; draft.Notes.Add("area-nearby"); }
+            if ((label.Area is not null ? label.Ambiguous : label.PairedArea?.Ambiguous == true) && draft.Stated is { } doubtful)
+            {
+                draft.Confidence *= Ambiguous;
+                draft.Notes.Add("area-ambiguous");
+                report.Add("area-ambiguous", "area " + F(doubtful) + " m2 was read with a decimal separator but may be a thousands group", id, doubtful, draft.AreaSource!);
+            }
 
             Region? region = null;
             if (label.Smallest is not { } smallest) { draft.Confidence *= NoRegion; draft.Notes.Add("no-region"); }
@@ -276,6 +343,7 @@ public static class BriefExtract
                     report.Add("shared-region", "region holds " + I(perRegion[smallest.Index]) + " labels; its area is not attributed to any of them", null, smallest.SquareMetres, sources.ToArray());
                 }
             }
+            else if (outer.Contains(smallest.Index)) { draft.Confidence *= Outer; draft.Notes.Add("outer-region"); }
             else region = smallest;
             draft.Region = region;
             draft.RegionArea = region?.SquareMetres;
@@ -378,9 +446,12 @@ public static class BriefExtract
         return inside;
     }
 
-    private static bool HasRoomWord(string label, HashSet<string> words)
+    private static bool HasRoomWord(string label, HashSet<string> words, List<string> phrases)
     {
-        foreach (var token in Fold(label).Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        var folded = Fold(label);
+        foreach (var phrase in phrases)
+            if ((" " + folded + " ").Contains(" " + phrase + " ", StringComparison.Ordinal)) return true;
+        foreach (var token in folded.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
             if (words.Contains(token)) return true;
             if (token.Length > 3 && token.EndsWith('s') && words.Contains(token[..^1])) return true;
@@ -414,6 +485,8 @@ public static class BriefExtract
         var label = Collapse(rest).Trim(LabelTrim);
         if (label.Length == 0 || label.Length > maxLength || !label.Any(char.IsLetter)) return null;
         if (label.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > maxWords) return null;
+        // Letters that are only units ("120 sq ft", "3 x 4 m") do not make a label.
+        if (Fold(label).Split(' ', StringSplitOptions.RemoveEmptyEntries).All(t => UnitWords.Contains(t) || t.All(char.IsAsciiDigit))) return null;
         return label;
     }
 
@@ -481,6 +554,8 @@ public static class BriefExtract
         Require(options.MaxRegionVertices >= 0, nameof(options.MaxRegionVertices), "non-negative");
         Require(options.MaxWork >= 1, nameof(options.MaxWork), "at least 1");
         Require(options.MaxUncertainties >= 1, nameof(options.MaxUncertainties), "at least 1");
+        Require(options.MaxPairCandidates >= 0, nameof(options.MaxPairCandidates), "non-negative");
+        Require(options.MetresPerUnit is null || (double.IsFinite(options.MetresPerUnit.Value) && options.MetresPerUnit.Value > 0), nameof(options.MetresPerUnit), "null or finite and positive");
         ArgumentNullException.ThrowIfNull(options.RoomWords);
     }
 
@@ -490,8 +565,9 @@ public static class BriefExtract
 
     private sealed class TextItem
     {
-        public TextItem(int order, BriefTextSource source, double height, string? label, double? area)
+        public TextItem(int order, BriefTextSource source, double height, string? label, double? area, bool ambiguous)
         {
+            Ambiguous = ambiguous;
             Order = order;
             Source = source;
             Height = height;
@@ -504,6 +580,7 @@ public static class BriefExtract
         public double Height { get; }
         public string? Label { get; }
         public double? Area { get; }
+        public bool Ambiguous { get; }
         public List<Region> Containing { get; } = new();
         public Region? Smallest { get; set; }
         public bool InVocabulary { get; set; }
@@ -563,12 +640,16 @@ public static class BriefExtract
         private readonly int _max;
         private readonly List<BriefExtractUncertainty> _items = new();
         private bool _capped;
+        private int _counted;
 
         public Report(int max) => _max = max;
 
         public void Add(string code, string message, string? roomId, double? value, params BriefTextSource[] sources)
         {
-            if (_items.Count >= _max) { _capped = true; return; }
+            // Limit and scale entries are always kept and do not count against the cap.
+            var always = AlwaysReported.Contains(code);
+            if (!always && _counted >= _max) { _capped = true; return; }
+            if (!always) _counted++;
             _items.Add(new BriefExtractUncertainty(code, message, roomId, value, sources));
         }
 
