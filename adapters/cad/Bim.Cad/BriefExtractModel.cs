@@ -12,7 +12,11 @@ namespace Bim.Cad;
 // Layer "PDF-P{page}", EntityType PDF-TEXT or PDF-PATH, Line = operator index + 1. At is the text insertion point, or
 // the centre of a region's vertex bounding box, in drawing units (PDF: calibrated millimetres when a calibration was
 // given). Text is the plain text (whitespace collapsed, at most MaxTextLength) for text sources and null for regions.
-public sealed record BriefTextSource(string SourceFile, string Format, string? Handle, string Layer, string EntityType, int Line, int? Page, IReadOnlyList<string> InsertPath, Point2 At, string? Text);
+public sealed record BriefTextSource(string SourceFile, string Format, string? Handle, string Layer, string EntityType, int Line, int? Page, IReadOnlyList<string> InsertPath, Point2 At, string? Text)
+{
+    // The attribute tag for ATTRIB/ATTDEF sources (null otherwise).
+    public string? Tag { get; init; }
+}
 
 // One proposed room. Id and Name are the brief room's; StatedAreaSquareMetres is the area written on the drawing (null
 // when none was found); RegionAreaSquareMetres the area of the closed region that holds the label and no other label

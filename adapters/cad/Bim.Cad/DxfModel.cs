@@ -57,7 +57,24 @@ public sealed record DxfPolylineSegment(int Index, Point2 Start, Point2 End, dou
 // inline formatting (\P becomes a newline). Insertion is group 10/20.
 public sealed record DxfText(DxfProvenance Provenance, Point2 Insertion, double Height, double RotationDegrees, string Value, string PlainText, bool IsMText) : DxfEntity(Provenance);
 
-public sealed record DxfInsert(DxfProvenance Provenance, string BlockName, Point2 Insertion, double ScaleX, double ScaleY, double RotationDegrees) : DxfEntity(Provenance);
+public sealed record DxfInsert(DxfProvenance Provenance, string BlockName, Point2 Insertion, double ScaleX, double ScaleY, double RotationDegrees) : DxfEntity(Provenance)
+{
+    // The ATTRIBs that follow the INSERT (group 66 = 1) up to its SEQEND, in file order.
+    public IReadOnlyList<DxfAttribute> Attributes { get; init; } = Array.Empty<DxfAttribute>();
+}
+
+// ATTRIB (an attribute value of an INSERT) or ATTDEF (IsDefinition: an attribute definition in a block, with its
+// Prompt and default Value). Tag is group 2; Value the raw group 1 and PlainText its plain form; Flags group 70
+// (1 invisible, 2 constant, 4 verify, 8 preset). Insertion is the alignment point 11/21 when the text is justified,
+// else 10/20. InsertHandle is the handle of the INSERT the attribute belongs to (null for an ATTDEF in a block or
+// in model space).
+public sealed record DxfAttribute(DxfProvenance Provenance, string Tag, Point2 Insertion, double Height, double RotationDegrees, string Value, string PlainText, bool IsDefinition) : DxfEntity(Provenance)
+{
+    public string? Prompt { get; init; }
+    public int Flags { get; init; }
+    public string? InsertHandle { get; init; }
+    public bool IsConstant => (Flags & 2) != 0;
+}
 
 public sealed record DxfLayer(string Name, int Color, string LineType, bool Frozen, bool Off, bool Declared);
 
