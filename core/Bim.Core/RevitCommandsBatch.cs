@@ -23,8 +23,9 @@ public static class RevitCommandBatch
     public const string Command = "command.batch";
     public const int MinSteps = 1;
     public const int MaxSteps = 50;
-    // Writes that cannot be a step: the batch itself and document.save (no transaction group may be open during a save).
-    public static IReadOnlyList<string> ExcludedWrites { get; } = new[] { Command, "document.save" };
+    // Writes that cannot be a step: the batch itself, document.save and document.save_copy (no transaction group may be
+    // open during a save).
+    public static IReadOnlyList<string> ExcludedWrites { get; } = new[] { Command, "document.save", RevitSaveCopyGuard.Command };
 
     public static bool IsStepCommand([NotNullWhen(true)] RevitCommandSpec? spec) => spec is { Writes: true } && !ExcludedWrites.Contains(spec.Name, StringComparer.Ordinal);
 

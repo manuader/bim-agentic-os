@@ -30,6 +30,10 @@ public static class RevitCommandService
         if (guarded && RevitCopiesGuard.MatchingRoot(envelope.Document.Path, policy) is { } root
             && RevitLinkGuard.Check(envelope.Document.Path, root, probe ?? RevitFileSystemProbe.Real) is { } linked)
             return Failure(linked, "document.path", linked == RevitCommandCodes.DocumentLinkRefused ? "a symlink, junction or hard link between the enabled root and the document" : null);
+        // document.save_copy (P1-08): target folder, name, links and existence, and that the open document is a test copy.
+        if (envelope.Args is DocumentSaveCopyArgs copy
+            && RevitSaveCopyGuard.Check(copy.Path, envelope.Document.Path, policy.RepositoryDirectory, probe ?? RevitFileSystemProbe.Real, RevitSaveCopyProbe.Real) is { } copyRefused)
+            return Failure(RevitCommandCodes.SaveCopyRefused, copyRefused.Field, copyRefused.Detail);
         // command.batch: every family.load step is checked too (field args.steps[i].args.path).
         foreach (var (prefix, args) in RevitCommandBatch.GuardedArgs(envelope))
             if (args is FamilyLoadArgs load && RevitFamilySourceGuard.Check(load.Path, policy.FamilySourceRoots, probe ?? RevitFileSystemProbe.Real) is { } source)
