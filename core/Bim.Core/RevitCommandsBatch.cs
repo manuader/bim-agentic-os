@@ -175,9 +175,11 @@ public static partial class RevitCommandCatalogue
     // and is still being built when this runs). A test pins this to All minus queries and ExcludedWrites, so a new
     // catalogue part must be listed here deliberately.
     public static IReadOnlyList<RevitCommandSpec> BatchStepCommands => BatchStepSpecs.Value;
-    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> BatchStepSpecs = new(() =>
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> BatchStepSpecs = new(BuildBatchSteps);
+
+    static IReadOnlyList<RevitCommandSpec> BuildBatchSteps() =>
         V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).Concat(Materials)
-            .Concat(Families).Concat(Site).Concat(WallProfile).Concat(MaterialTypes).Concat(ExportSave).Where(RevitCommandBatch.IsStepCommand).ToArray());
+            .Concat(Families).Concat(Site).Concat(WallProfile).Concat(MaterialTypes).Concat(ExportSave).Where(RevitCommandBatch.IsStepCommand).ToArray();
 
     static IReadOnlyList<RevitCommandSpec> BuildBatch()
     {
