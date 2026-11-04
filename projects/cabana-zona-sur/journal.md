@@ -1,2 +1,3 @@
 
 - 2026-11-04: main fast-forwarded to 8b34daa (chat-floor-fixes: NoEndCap compound builder, set_parameter confirm_deletions, pinned curtain grid exemption). Independent review MERGE, CI green. Low follow-ups: check group.RollBack() result before second set_parameter run; changes whose failure processing deletes extra ids can't be confirmed. Pending owner restart (abrir-cabana.ps1) to apply C6 platea + delete C4 curtain slit.
+- 2026-11-04: verified in Revit (pipe 63464): delete of C4 curtain with pinned panel OK; floor_type.create NoEndCap OK -> 'C6 Platea aislada con piso de lenga' (lenga 25 / listones 45 / H°A° 150 / barrera / aislación 120), C6 floor switched, saved. BadShellOrder rule: below core, function priority can't decrease outward.
