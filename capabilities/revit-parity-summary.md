@@ -13,8 +13,8 @@ Generated from [revit-parity-census.json](revit-parity-census.json) by `dotnet r
 | content | 0 | 9 | 0 | 0 | 1 | 0 | 3 | 0 | 13 |
 | modify | 0 | 3 | 0 | 0 | 0 | 0 | 3 | 0 | 6 |
 | query | 0 | 1 | 3 | 0 | 1 | 0 | 0 | 0 | 5 |
-| file | 0 | 2 | 0 | 0 | 0 | 0 | 3 | 0 | 5 |
+| file | 0 | 3 | 0 | 0 | 0 | 0 | 3 | 0 | 6 |
 | collaboration | 0 | 0 | 0 | 0 | 0 | 0 | 3 | 0 | 3 |
-| all | 0 | 37 | 4 | 0 | 10 | 0 | 52 | 0 | 103 |
+| all | 0 | 38 | 4 | 0 | 10 | 0 | 52 | 0 | 104 |
 
-Entries: 103. Catalogue commands referenced: 54 of 54.
+Entries: 104. Catalogue commands referenced: 55 of 55.

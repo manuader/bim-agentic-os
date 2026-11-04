@@ -23,8 +23,9 @@ public static class RevitCommandBatch
     public const string Command = "command.batch";
     public const int MinSteps = 1;
     public const int MaxSteps = 50;
-    // Writes that cannot be a step: the batch itself and document.save (no transaction group may be open during a save).
-    public static IReadOnlyList<string> ExcludedWrites { get; } = new[] { Command, "document.save" };
+    // Writes that cannot be a step: the batch itself, document.save and document.save_copy (no transaction group may be
+    // open during a save).
+    public static IReadOnlyList<string> ExcludedWrites { get; } = new[] { Command, "document.save", RevitSaveCopyGuard.Command };
 
     public static bool IsStepCommand([NotNullWhen(true)] RevitCommandSpec? spec) => spec is { Writes: true } && !ExcludedWrites.Contains(spec.Name, StringComparer.Ordinal);
 
@@ -261,12 +262,12 @@ public static partial class RevitCommandCatalogue
     static IReadOnlyList<RevitCommandSpec> BuildBatch()
     {
         var commands = string.Join(",", BatchStepCommands.Select(spec => "\"" + spec.Name + "\""));
-        var schema = Fill("""{"type":"object","properties":{"steps":{"type":"array","description":"The write commands to apply in order, @0@ to @1@; all succeed or none is kept","minItems":@0@,"maxItems":@1@,"items":{"type":"object","properties":{"operation_id":{"type":"string","description":"This step's own operation_id: distinct within the batch, different from the batch operation_id and never used before in the document","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]*$"},"command":{"type":"string","description":"A catalogue write command (no query, no nested command.batch, no document.save)","enum":[@2@]},"args":{"description":"The step command's own args object, validated with that command's schema (see its revit_* tool); dry_run is not allowed"}},"required":["operation_id","command","args"],"additionalProperties":false}}},"required":["steps"],"additionalProperties":false}""",
+        var schema = Fill("""{"type":"object","properties":{"steps":{"type":"array","description":"The write commands to apply in order, @0@ to @1@; all succeed or none is kept","minItems":@0@,"maxItems":@1@,"items":{"type":"object","properties":{"operation_id":{"type":"string","description":"This step's own operation_id: distinct within the batch, different from the batch operation_id and never used before in the document","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]*$"},"command":{"type":"string","description":"A catalogue write command (no query, no nested command.batch, no document.save or document.save_copy)","enum":[@2@]},"args":{"description":"The step command's own args object, validated with that command's schema (see its revit_* tool); dry_run is not allowed"}},"required":["operation_id","command","args"],"additionalProperties":false}}},"required":["steps"],"additionalProperties":false}""",
             RevitCommandBatch.MinSteps.ToString(CultureInfo.InvariantCulture), RevitCommandBatch.MaxSteps.ToString(CultureInfo.InvariantCulture), commands);
         return new[]
         {
             new RevitCommandSpec(RevitCommandBatch.Command, true, "Apply 1 to 50 catalogue write commands (each step with its own operation_id, command and args) in order as one all-or-nothing change with a single undo entry: if any step is refused or fails, every step is rolled back and the refusal names the failed step index and command; the reply carries each step's readback and receipt. "
-                + "Replaying the same batch operation_id returns the stored reply without writing again. Queries, nested batches, document.save and dry runs are not steps. Allowed only on enabled test copies.", schema, BindBatch),
+                + "Replaying the same batch operation_id returns the stored reply without writing again. Queries, nested batches, document.save, document.save_copy and dry runs are not steps. Allowed only on enabled test copies.", schema, BindBatch),
         };
     }
 

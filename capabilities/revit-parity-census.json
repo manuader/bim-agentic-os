@@ -1384,6 +1384,21 @@
       "notes": "Save-close-reopen is verified only inside the Test A/B room fixture (test-a-native-room-delivery), not through document.save. Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
+      "id": "file.save_test_copy",
+      "area": "file",
+      "revit_function": "Save As a new test copy (BIM-Agentic-Test*.rvt under .bim/native-runs, no overwrite)",
+      "commands": [
+        "document.save_copy"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueSaveCopy.cs",
+        "runtimes/revit-native/CommandsExecutorSaveCopy.cs"
+      ],
+      "notes": "P1-08: target and source guards, readback and JSON unit-tested in core; the Document.SaveAs executor is compiled only (owner session pending). General Save As of real projects stays unsupported (file.save_as_central)."
+    },
+    {
       "id": "file.save_as_central",
       "area": "file",
       "revit_function": "Save As, Save to Central, Synchronize",
