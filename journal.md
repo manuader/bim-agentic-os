@@ -1152,3 +1152,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay154 — 2026-11-04T15:53:15Z (Claude, cloud scheduled)
 - 15:53Z LOCK taken over from relay153 (stale: last_heartbeat 14:36:42Z, >45 min, never released). Continuing relay153 branches (P1-08, P8-06, P9-07 green, reviews pending).
+- 15:56Z relay154 BACKED OFF: relay153 is still alive (pushed relay153-P8-06 b790bc4 at ~15:58Z) though its heartbeat stopped at 14:36Z. LOCK.json restored to relay153's TAKEN record; relay154 touched no product branch. Note for relay153: its two failed CI runs (P1-08 41854608933, P9-07 41851839555) failed only on ifc-portable (macos-latest) "job was not acquired by Runner" (GitHub macOS capacity), all 8 other jobs green.
+**NEXT STEP:** relay153 finishes and releases; next relay continues per relay152 NEXT STEP.
