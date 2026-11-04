@@ -60,6 +60,7 @@ try {
         Invoke-EvidenceCommand classification-tests $Dotnet @('run','--project',"$root/tests/classification",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand local-validation-tests $Dotnet @('run','--project',"$root/tests/local-validation",'--configuration','Release','--no-build') $evidence
         Invoke-EvidenceCommand doc-regeneration-tests $Dotnet @('run','--project',"$root/tests/doc-regeneration",'--configuration','Release','--no-build') $evidence
+        Invoke-EvidenceCommand packaging-reproducible $pwsh @('-NoProfile','-File',"$root/tests/packaging/test-package.ps1",'-Dotnet',$Dotnet) $evidence
     }
     'Native acceptance is not executed by this engineering gate. Run tests/integration/native-room-ab.ps1 against a newly opted-in isolated licensed Revit fixture; require its actual report for any native acceptance claim.' | Tee-Object -FilePath "$evidence/native-status.log"
     "PASS available gates; evidence: $evidence"
