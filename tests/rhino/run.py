@@ -1,5 +1,7 @@
 """Run the rhino3dm regressions; report each failure as a GitHub ::error annotation (logs are not always readable)."""
+import os
 import pathlib
+import subprocess
 import sys
 import unittest
 
@@ -29,5 +31,21 @@ def main():
     return 0 if result.wasSuccessful() else 1
 
 
+def supervise():
+    """Run main() in a child with faulthandler, so a native crash in rhino3dm still names the test that died."""
+    child = subprocess.run([sys.executable, '-I', '-X', 'faulthandler', __file__], env={**os.environ, 'BIM_RHINO_TESTS_CHILD': '1'},
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
+    sys.stdout.write(child.stdout)
+    sys.stderr.write(child.stderr)
+    if child.returncode < 0 or child.returncode > 128:
+        # unittest verbosity=2 writes "test_x (module.Class...) ... " to stderr before running each test.
+        started = [line for line in child.stderr.splitlines() if ' ... ' in line or line.startswith('test_')]
+        last = started[-1] if started else '(no test started)'
+        fault = [line.strip() for line in child.stderr.splitlines() if line.strip().startswith('File ')]
+        print(f'::error title=rhino crashed::exit {child.returncode} during {one_line(last, 300)} | {one_line(chr(10).join(fault[:6]), 600)}')
+        return 1
+    return child.returncode
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(main() if os.environ.get('BIM_RHINO_TESTS_CHILD') == '1' else supervise())
