@@ -33,6 +33,14 @@ function Invoke-Script([string]$Script, [string[]]$Arguments) {
     $output = & $pwsh -NoProfile -File $Script @Arguments 2>&1 | ForEach-Object { "$_" }
     return [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($output -join "`n") }
 }
+# Runs a script with TEMP/TMP/TMPDIR pointing at $TempDirectory (the child inherits them), then restores them.
+function Invoke-ScriptWithTemp([string]$TempDirectory, [string]$Script, [string[]]$Arguments) {
+    $saved = @{}
+    foreach ($name in 'TEMP', 'TMP', 'TMPDIR') { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process'); [Environment]::SetEnvironmentVariable($name, $TempDirectory, 'Process') }
+    try { return Invoke-Script $Script $Arguments }
+    finally { foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') } }
+}
+function Get-BuildTrees([string]$Directory) { @(Get-ChildItem -LiteralPath $Directory -Force -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'bim-package-src-*' }) }
 function Get-Tail([string]$Text) { $t = $Text -replace '[\r\n]+', ' | '; if ($t.Length -gt 600) { $t.Substring($t.Length - 600) } else { $t } }
 function Get-Inventory([string]$Directory) {
     $base = [IO.Path]::GetFullPath($Directory)
@@ -139,10 +147,12 @@ try {
     Assert (@(Find-PackageForbidden -Directory $outA).Count -eq 0) "package contains forbidden content: $(@(Find-PackageForbidden -Directory $outA) -join ', ')"
     $addin = [IO.File]::ReadAllText((Join-Path $outA 'revit/Bim.addin.template'))
     Assert ($addin.Contains('<FullClassName>Bim.Revit.App</FullClassName>') -and !$addin.Contains("`r")) 'add-in manifest template must be the repository template with LF line endings'
-    $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $outA 'cli/Bim.Cli.dll')).ProductVersion
-    Assert ([string]$productVersion -like "$expectedVersion*") "cli/Bim.Cli.dll product version '$productVersion' is not stamped with '$expectedVersion'"
-    $mcpProduct = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $outA 'mcp/Bim.Mcp.dll')).ProductVersion
-    Assert ([string]$mcpProduct -like "$expectedVersion*") "mcp/Bim.Mcp.dll product version '$mcpProduct' is not stamped with '$expectedVersion'"
+    $headCommit = [string](& git -C $root rev-parse HEAD)
+    Assert ([string]$manifest.source_commit -ceq $headCommit) "manifest source_commit '$($manifest.source_commit)' != HEAD '$headCommit'"
+    foreach ($dll in 'cli/Bim.Cli.dll', 'mcp/Bim.Mcp.dll') {
+        $productVersion = [string][Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $outA $dll)).ProductVersion
+        Assert ($productVersion -ceq "$expectedVersion+$headCommit") "$dll product version '$productVersion' != '$expectedVersion+$headCommit'"
+    }
 
     # --- The packaged CLI runs from the release layout ---
     $ErrorActionPreference = 'Continue'
@@ -160,7 +170,10 @@ try {
         @{ Name = 'missing'; Expect = 'missing file'; Act = { param($d) Remove-Item -LiteralPath (Join-Path $d 'mcp/Bim.Mcp.dll') } },
         @{ Name = 'extra'; Expect = 'unlisted file'; Act = { param($d) [IO.File]::WriteAllText((Join-Path $d 'cli/extra.txt'), 'x') } },
         @{ Name = 'forbidden'; Expect = 'forbidden'; Act = { param($d) [IO.File]::WriteAllText((Join-Path $d 'revit/RevitAPI.dll'), 'x') } },
-        @{ Name = 'version'; Expect = 'VERSION'; Act = { param($d) [IO.File]::WriteAllText((Join-Path $d 'VERSION'), "9.9.9`n") } }
+        @{ Name = 'version'; Expect = 'VERSION'; Act = { param($d) [IO.File]::WriteAllText((Join-Path $d 'VERSION'), "9.9.9`n") } },
+        @{ Name = 'duplicate'; Expect = 'duplicate'; Act = { param($d) $f = Join-Path $d 'manifest.json'; $lines = [Collections.Generic.List[string]]([IO.File]::ReadAllText($f).Split("`n")); $i = $lines.FindIndex({ param($l) $l.Contains('"path": "VERSION"') }); $lines.Insert($i, $lines[$i]); [IO.File]::WriteAllText($f, ($lines -join "`n")) } },
+        @{ Name = 'commit'; Expect = 'source_commit'; Act = { param($d) $f = Join-Path $d 'manifest.json'; [IO.File]::WriteAllText($f, ([IO.File]::ReadAllText($f) -replace '"source_commit": "[0-9a-f]{40}"', '"source_commit": "abc"')) } },
+        @{ Name = 'dirty'; Expect = 'source_dirty'; Act = { param($d) $f = Join-Path $d 'manifest.json'; [IO.File]::WriteAllText($f, ([IO.File]::ReadAllText($f) -replace '"source_dirty": (true|false)', '"source_dirty": "no"')) } }
     )
     foreach ($case in $cases) {
         $copy = Join-Path $work ('case ' + $case.Name)
@@ -170,6 +183,75 @@ try {
         Assert ($run.Code -ne 0) "package-verify accepted a $($case.Name) package"
         Assert ($run.Output -match [regex]::Escape($case.Expect)) "package-verify $($case.Name) must report '$($case.Expect)': $(Get-Tail $run.Output)"
     }
+
+    # --- Symlinks/reparse points anywhere in the tree are refused (never followed or hashed through) ---
+    $linkTargets = Join-Path $work 'link targets'
+    New-Item -ItemType Directory -Force (Join-Path $linkTargets 'dir') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $linkTargets 'dir/inner.txt'), 'x')
+    [IO.File]::WriteAllText((Join-Path $linkTargets 'RevitAPI.dll'), 'x')
+    Copy-Item -LiteralPath (Join-Path $outA 'cli/Bim.Cli.runtimeconfig.json') -Destination (Join-Path $linkTargets 'same.json')
+    $linkCases = @(
+        @{ Name = 'directory symlink'; Path = 'cli/linked'; Target = (Join-Path $linkTargets 'dir') },
+        @{ Name = 'file symlink to RevitAPI.dll'; Path = 'cli/ok.dll'; Target = (Join-Path $linkTargets 'RevitAPI.dll') },
+        @{ Name = 'listed file replaced by identical symlink'; Path = 'cli/Bim.Cli.runtimeconfig.json'; Target = (Join-Path $linkTargets 'same.json') }
+    )
+    foreach ($case in $linkCases) {
+        $copy = Join-Path $work ('link ' + [Guid]::NewGuid().ToString('N'))
+        Copy-Item -LiteralPath $outA -Destination $copy -Recurse
+        $linkPath = Join-Path $copy $case.Path
+        if (Test-Path -LiteralPath $linkPath) { Remove-Item -LiteralPath $linkPath }
+        try { New-Item -ItemType SymbolicLink -Path $linkPath -Target $case.Target -ErrorAction Stop | Out-Null }
+        catch { Write-Host "SKIP symlink case '$($case.Name)': symlinks cannot be created here: $($_.Exception.Message)"; continue }
+        $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
+        Assert ($run.Code -ne 0) "package-verify accepted a package containing a $($case.Name)"
+        Assert ($run.Output -match 'symlink') "package-verify must report the $($case.Name) as a symlink: $(Get-Tail $run.Output)"
+    }
+
+    # --- Failure paths clean up: no output, no staging sibling, no build tree left in temp ---
+    $fakes = Join-Path $work 'fake dotnet'
+    New-Item -ItemType Directory -Force $fakes | Out-Null
+    $fakeFail = Join-Path $fakes 'fail.ps1'
+    [IO.File]::WriteAllText($fakeFail, "[IO.File]::WriteAllText((Join-Path `$PSScriptRoot 'fail.invoked'), 'x')`nexit 1`n")
+    $fakeLeak = Join-Path $fakes 'leak.ps1'
+    [IO.File]::WriteAllText($fakeLeak, @'
+$all = @($args | ForEach-Object { "$_" })
+$out = $null
+for ($i = 0; $i -lt $all.Count; $i++) {
+    if ($all[$i] -match '^--?output:?$' -and $i + 1 -lt $all.Count) { $out = $all[$i + 1] }
+    elseif ($all[$i] -match '^--?output:(.+)$') { $out = $Matches[1] }
+}
+if (!$out) { [Console]::Error.WriteLine('fake dotnet: no --output in ' + ($all -join ' ')); exit 3 }
+New-Item -ItemType Directory -Force $out | Out-Null
+[IO.File]::WriteAllText((Join-Path $out 'RevitAPI.dll'), 'x')
+exit 0
+'@)
+    foreach ($case in @(@{ Name = 'exit'; Fake = $fakeFail }, @{ Name = 'leak'; Fake = $fakeLeak })) {
+        $temp = Join-Path $work ('temp ' + $case.Name)
+        New-Item -ItemType Directory -Force $temp | Out-Null
+        $failOut = Join-Path $work ('failed ' + $case.Name)
+        $run = Invoke-ScriptWithTemp $temp $packager @('-OutputDirectory', $failOut, '-Dotnet', $case.Fake)
+        Assert ($run.Code -ne 0) "package.ps1 succeeded with failing fake dotnet ($($case.Name))"
+        if ($case.Name -eq 'exit') { Assert (Test-Path -LiteralPath (Join-Path $fakes 'fail.invoked')) 'fake dotnet (exit) was never invoked' }
+        else { Assert ($run.Output -match 'forbidden') "leaked RevitAPI.dll must be refused as forbidden: $(Get-Tail $run.Output)" }
+        Assert (!(Test-Path -LiteralPath $failOut)) "failed package ($($case.Name)) left its output directory"
+        Assert (@(Get-ChildItem -LiteralPath $work -Force -Directory | Where-Object { $_.Name -like "failed $($case.Name).partial-*" }).Count -eq 0) "failed package ($($case.Name)) left a .partial staging directory"
+        Assert ((Get-BuildTrees $temp).Count -eq 0) "failed package ($($case.Name)) left a bim-package-src-* build tree in temp"
+    }
+
+    # --- Build files inherited from the temp parent (Directory.Build.targets/.rsp, Directory.Packages.props) are ignored ---
+    $evil = Join-Path $work 'hostile temp'
+    New-Item -ItemType Directory -Force $evil | Out-Null
+    [IO.File]::WriteAllText((Join-Path $evil 'Directory.Build.targets'), '<Project><Target Name="BimInjected" AfterTargets="Publish"><WriteLinesToFile File="$(PublishDir)INJECTED.txt" Lines="injected" /></Target></Project>')
+    [IO.File]::WriteAllText((Join-Path $evil 'Directory.Packages.props'), '<Project><PropertyGroup><Company>INJECTED</Company></PropertyGroup></Project>')
+    [IO.File]::WriteAllText((Join-Path $evil 'Directory.Build.rsp'), '-p:Product=INJECTED')
+    $outC = Join-Path $work 'release C'
+    $runC = Invoke-ScriptWithTemp $evil $packager @('-OutputDirectory', $outC, '-Dotnet', $Dotnet)
+    Assert ($runC.Code -eq 0) "package build under a hostile temp parent exit $($runC.Code): $(Get-Tail $runC.Output)"
+    if ($runC.Code -eq 0) {
+        Assert (@(Get-ChildItem -LiteralPath $outC -Recurse -File -Filter 'INJECTED.txt').Count -eq 0) 'Directory.Build.targets from the temp parent was imported (INJECTED.txt in package)'
+        Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $outC 'manifest.json'))) -eq [Convert]::ToBase64String($bytesA)) 'build files inherited from the temp parent changed the package (manifest differs from clean build)'
+    }
+    Assert ((Get-BuildTrees $evil).Count -eq 0) 'successful package left a bim-package-src-* build tree in temp'
 
     # --- Never overwrite: an existing output (non-empty or empty) is refused before any build and left intact ---
     $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($manifestA))
