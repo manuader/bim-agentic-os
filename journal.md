@@ -1177,3 +1177,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay155 — 2026-11-04T19:53:10Z (Claude, cloud scheduled)
 - 19:53Z LOCK taken (was FREE; relay153 released 19:06:40Z).
+- 21:02Z workers green (dispatched 19:58Z; phases 4, 6, 7): P4-05 4d9e183 (red 41902544798, green 41904414374; 0 attempts), P6-07 5bdad8e (red 41902308368, green 41905973151; 1 attempt: package.ps1 lacked adapters/cad), P7-06 aff2f2b (red 41902978285, green 41910638575; 1 attempt: staggered plans refuse wall_clash). Next: independent reviews.
