@@ -8,7 +8,7 @@ using System.Text.RegularExpressions;
 // minimum side, required/forbidden/preferred adjacency, footprint, levels, counts, budget, planner rules), canonical
 // output determinism across runs, seeds and cultures, typed infeasible results, non-overlap and in-site invariants
 // over many seeds and generated briefs, and a 30-room performance bound; P7-02 alternatives in AlternativeTests.cs, P7-03
-// apartment prototypes in PrototypeTests.cs.
+// apartment prototypes in PrototypeTests.cs, P7-04 circulation in CirculationTests.cs.
 // Unit-tested evidence only.
 int passed = 0, failed = 0;
 
@@ -513,6 +513,9 @@ try
 
     // ---- P7-03 apartment prototype generator (PrototypeTests.cs) ----
     PrototypeTests.Run(Check, root);
+
+    // ---- P7-04 circulation model (CirculationTests.cs) ----
+    CirculationTests.Run(Check, root);
 }
 catch (Exception error)
 {
