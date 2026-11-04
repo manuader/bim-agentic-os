@@ -216,7 +216,7 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
                 }
             }
             // Closed meshes (every edge, by position, shared by exactly two triangles) must face outward: each
-            // triangle's geometric normal points away from the vertex centroid. Catches inside-out walls whose
+            // triangle's geometric normal points away from its connected piece's vertex centroid. Catches inside-out walls whose
             // winding and vertex normals were flipped together.
             if (indicesInRange && indexCount % 3 == 0)
             {
@@ -233,12 +233,27 @@ List<string> ValidateJson(JsonElement root, byte[] bin, bool glbMode)
                 }
                 if (edgeUse.Count > 0 && edgeUse.Values.All(u => u == 2))
                 {
-                    double mx = 0, my = 0, mz = 0;
-                    for (var k = 0; k < count; k++) { mx += ReadF(pos, k, 0); my += ReadF(pos, k, 1); mz += ReadF(pos, k, 2); }
-                    mx /= count; my /= count; mz /= count;
+                    // Each connected closed piece (triangles joined through shared positions) is judged against its own
+                    // vertex centroid, so a wall split by a full-height opening into separate boxes is checked per box.
+                    var parent = new Dictionary<(float, float, float), (float, float, float)>();
+                    (float, float, float) Find((float, float, float) p) { while (parent[p] != p) p = parent[p] = parent[parent[p]]; return p; }
+                    for (var k = 0; k < count; k++) parent.TryAdd(V(k), V(k));
+                    for (var i = 0; i < indexCount; i += 3)
+                    {
+                        var r0 = Find(V((int)ReadIndex(ind, i)));
+                        for (var corner = 1; corner < 3; corner++) { var rc = Find(V((int)ReadIndex(ind, i + corner))); if (rc != r0) parent[rc] = r0; }
+                    }
+                    var centroid = new Dictionary<(float, float, float), (double X, double Y, double Z, int N)>();
+                    for (var k = 0; k < count; k++)
+                    {
+                        var rk = Find(V(k)); var sum = centroid.GetValueOrDefault(rk);
+                        centroid[rk] = (sum.X + ReadF(pos, k, 0), sum.Y + ReadF(pos, k, 1), sum.Z + ReadF(pos, k, 2), sum.N + 1);
+                    }
                     for (var i = 0; i < indexCount; i += 3)
                     {
                         var a = V((int)ReadIndex(ind, i)); var b = V((int)ReadIndex(ind, i + 1)); var c = V((int)ReadIndex(ind, i + 2));
+                        var piece = centroid[Find(a)];
+                        double mx = piece.X / piece.N, my = piece.Y / piece.N, mz = piece.Z / piece.N;
                         double ux = b.Item1 - a.Item1, uy = b.Item2 - a.Item2, uz = b.Item3 - a.Item3, vx = c.Item1 - a.Item1, vy = c.Item2 - a.Item2, vz = c.Item3 - a.Item3;
                         double cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
                         double tx = (a.Item1 + b.Item1 + c.Item1) / 3 - mx, ty = (a.Item2 + b.Item2 + c.Item2) / 3 - my, tz = (a.Item3 + b.Item3 + c.Item3) / 3 - mz;
@@ -670,6 +685,18 @@ try
     var sillIn = WallBoxes(E(N1, "window", [1, 0, 2, 0, 5e-7, 1], L1, WO));
     Check(BoxesAre(sillIn, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 1.0000005, 3), Gl(2, 4, -0.1, 0.1, 0, 3)), "a 5e-7 m sill snaps to the base (no sill wall)", Bs(sillIn));
     Check(Code(() => GltfExporter.ExportGlb(Host(E(N1, "window", [1, 0, 2, 0, 2e-6, 1], L1, WO)))) == "gltf_precision", "a 2e-6 m sill is a sub-millimetre sill wall");
+    // Validator per-piece check is not vacuous: two disjoint boxes with one face flipped inside out are still caught.
+    var twoPieces = Parse(GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3], L1, WO))));
+    var twoJson = Encoding.UTF8.GetString(GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3], L1, WO))), 20, (int)BinaryPrimitives.ReadUInt32LittleEndian(GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3], L1, WO))).AsSpan(12))).TrimEnd(' ');
+    var twoViews = Arr(twoPieces.Root, "bufferViews"); var twoAccessors = Arr(twoPieces.Root, "accessors");
+    int twoIndexAt = Int(twoViews[2], "byteOffset", 0) + Int(twoAccessors[2], "byteOffset", 0), twoNormalAt = Int(twoViews[1], "byteOffset", 0) + Int(twoAccessors[1], "byteOffset", 0);
+    var twoFlipped = (byte[])twoPieces.Bin.Clone();
+    // Second box (vertices 24..47), its bottom face: reverse both triangles and negate its four normals.
+    uint[] twoTris = [24, 26, 25, 24, 27, 26];
+    for (var i = 0; i < twoTris.Length; i++) BinaryPrimitives.WriteUInt32LittleEndian(twoFlipped.AsSpan(twoIndexAt + 4 * (36 + i)), twoTris[i]);
+    for (var i = 0; i < 12; i++) { var at = twoNormalAt + 4 * (72 + i); BinaryPrimitives.WriteSingleLittleEndian(twoFlipped.AsSpan(at), -BinaryPrimitives.ReadSingleLittleEndian(twoFlipped.AsSpan(at))); }
+    var twoIssues = Parse(Repack(twoJson, twoFlipped)).Issues;
+    Check(twoPieces.Issues.Count == 0 && twoIssues.Any(i => i.Contains("mesh 0 triangle 12 faces inward", StringComparison.Ordinal)), "validator checks each disjoint closed box of a split wall for outward faces", string.Join("; ", twoIssues));
     var headIn = WallBoxes(E(D1, "door", [1, 0, 2, 0, 0, 3 - 5e-7], L1, WO));
     Check(BoxesAre(headIn, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(2, 4, -0.1, 0.1, 0, 3)), "a head 5e-7 m below the top snaps to it (no lintel)", Bs(headIn));
     Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3 - 2e-6], L1, WO)))) == "gltf_precision", "a head 2e-6 m below the top is a sub-millimetre lintel");
