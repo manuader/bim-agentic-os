@@ -1,0 +1,360 @@
+{
+  "manifest_version": 1,
+  "id": "bim.qa.element-basics",
+  "version": "1.0.0",
+  "kind": "qa",
+  "description": "Element QA recipe pack (P5-05): wall thickness bounds, door and window width and height bounds, and openings fully inside their host wall (start and end clearance along the axis, sill and head within the wall height, ends on the axis), evaluated over BIM-IR walls, doors and windows by SkillElementValidator. Lengths are millimetres (properties end in _mm). Illustrative QA thresholds, not a building code.",
+  "priority": 50,
+  "parameters": [
+    {
+      "name": "wall_thickness_min_mm",
+      "type": "number",
+      "default": 75,
+      "min": 10,
+      "max": 1000,
+      "description": "Thinnest wall accepted (illustrative QA value)."
+    },
+    {
+      "name": "wall_thickness_max_mm",
+      "type": "number",
+      "default": 600,
+      "min": 10,
+      "max": 2000,
+      "description": "Thickest wall accepted (illustrative QA value)."
+    },
+    {
+      "name": "door_width_min_mm",
+      "type": "number",
+      "default": 700,
+      "min": 300,
+      "max": 2000,
+      "description": "Narrowest door leaf opening accepted."
+    },
+    {
+      "name": "door_width_max_mm",
+      "type": "number",
+      "default": 2400,
+      "min": 300,
+      "max": 6000,
+      "description": "Widest door opening accepted."
+    },
+    {
+      "name": "door_height_min_mm",
+      "type": "number",
+      "default": 2000,
+      "min": 1500,
+      "max": 3000,
+      "description": "Lowest door opening accepted."
+    },
+    {
+      "name": "door_height_max_mm",
+      "type": "number",
+      "default": 3000,
+      "min": 1500,
+      "max": 6000,
+      "description": "Tallest door opening accepted."
+    },
+    {
+      "name": "window_width_min_mm",
+      "type": "number",
+      "default": 300,
+      "min": 100,
+      "max": 2000,
+      "description": "Narrowest window accepted."
+    },
+    {
+      "name": "window_width_max_mm",
+      "type": "number",
+      "default": 6000,
+      "min": 300,
+      "max": 20000,
+      "description": "Widest window accepted."
+    },
+    {
+      "name": "window_height_min_mm",
+      "type": "number",
+      "default": 300,
+      "min": 100,
+      "max": 2000,
+      "description": "Lowest window accepted."
+    },
+    {
+      "name": "window_height_max_mm",
+      "type": "number",
+      "default": 3000,
+      "min": 300,
+      "max": 10000,
+      "description": "Tallest window accepted."
+    },
+    {
+      "name": "opening_axis_tolerance_mm",
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 50,
+      "description": "Largest distance of an opening end from its host wall axis line."
+    }
+  ],
+  "rules": [
+    {
+      "id": "wall-thickness-min",
+      "severity": "error",
+      "target": {
+        "element": "wall"
+      },
+      "check": {
+        "op": "min",
+        "property": "thickness_mm",
+        "parameter": "wall_thickness_min_mm"
+      },
+      "message": "Wall is thinner than the QA minimum."
+    },
+    {
+      "id": "wall-thickness-max",
+      "severity": "warning",
+      "target": {
+        "element": "wall"
+      },
+      "check": {
+        "op": "max",
+        "property": "thickness_mm",
+        "parameter": "wall_thickness_max_mm"
+      },
+      "message": "Wall is thicker than the QA maximum."
+    },
+    {
+      "id": "door-width-min",
+      "severity": "error",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "min",
+        "property": "width_mm",
+        "parameter": "door_width_min_mm"
+      },
+      "message": "Door is narrower than the QA minimum."
+    },
+    {
+      "id": "door-width-max",
+      "severity": "warning",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "max",
+        "property": "width_mm",
+        "parameter": "door_width_max_mm"
+      },
+      "message": "Door is wider than the QA maximum."
+    },
+    {
+      "id": "door-height-min",
+      "severity": "error",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "min",
+        "property": "height_mm",
+        "parameter": "door_height_min_mm"
+      },
+      "message": "Door is lower than the QA minimum."
+    },
+    {
+      "id": "door-height-max",
+      "severity": "warning",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "max",
+        "property": "height_mm",
+        "parameter": "door_height_max_mm"
+      },
+      "message": "Door is taller than the QA maximum."
+    },
+    {
+      "id": "door-inside-host-start",
+      "severity": "error",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "min",
+        "property": "start_clearance_mm",
+        "value": 0
+      },
+      "message": "Door starts before the start of its host wall."
+    },
+    {
+      "id": "door-inside-host-end",
+      "severity": "error",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "min",
+        "property": "end_clearance_mm",
+        "value": 0
+      },
+      "message": "Door runs past the end of its host wall."
+    },
+    {
+      "id": "door-inside-host-bottom",
+      "severity": "error",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "min",
+        "property": "sill_mm",
+        "value": 0
+      },
+      "message": "Door starts below the base of its host wall."
+    },
+    {
+      "id": "door-inside-host-top",
+      "severity": "error",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "min",
+        "property": "head_clearance_mm",
+        "value": 0
+      },
+      "message": "Door head is above the top of its host wall."
+    },
+    {
+      "id": "door-on-host-axis",
+      "severity": "error",
+      "target": {
+        "element": "door"
+      },
+      "check": {
+        "op": "max",
+        "property": "axis_offset_mm",
+        "parameter": "opening_axis_tolerance_mm"
+      },
+      "message": "Door does not lie on its host wall axis."
+    },
+    {
+      "id": "window-width-min",
+      "severity": "error",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "min",
+        "property": "width_mm",
+        "parameter": "window_width_min_mm"
+      },
+      "message": "Window is narrower than the QA minimum."
+    },
+    {
+      "id": "window-width-max",
+      "severity": "warning",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "max",
+        "property": "width_mm",
+        "parameter": "window_width_max_mm"
+      },
+      "message": "Window is wider than the QA maximum."
+    },
+    {
+      "id": "window-height-min",
+      "severity": "error",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "min",
+        "property": "height_mm",
+        "parameter": "window_height_min_mm"
+      },
+      "message": "Window is lower than the QA minimum."
+    },
+    {
+      "id": "window-height-max",
+      "severity": "warning",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "max",
+        "property": "height_mm",
+        "parameter": "window_height_max_mm"
+      },
+      "message": "Window is taller than the QA maximum."
+    },
+    {
+      "id": "window-inside-host-start",
+      "severity": "error",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "min",
+        "property": "start_clearance_mm",
+        "value": 0
+      },
+      "message": "Window starts before the start of its host wall."
+    },
+    {
+      "id": "window-inside-host-end",
+      "severity": "error",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "min",
+        "property": "end_clearance_mm",
+        "value": 0
+      },
+      "message": "Window runs past the end of its host wall."
+    },
+    {
+      "id": "window-inside-host-bottom",
+      "severity": "error",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "min",
+        "property": "sill_mm",
+        "value": 0
+      },
+      "message": "Window starts below the base of its host wall."
+    },
+    {
+      "id": "window-inside-host-top",
+      "severity": "error",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "min",
+        "property": "head_clearance_mm",
+        "value": 0
+      },
+      "message": "Window head is above the top of its host wall."
+    },
+    {
+      "id": "window-on-host-axis",
+      "severity": "error",
+      "target": {
+        "element": "window"
+      },
+      "check": {
+        "op": "max",
+        "property": "axis_offset_mm",
+        "parameter": "opening_axis_tolerance_mm"
+      },
+      "message": "Window does not lie on its host wall axis."
+    }
+  ]
+}
