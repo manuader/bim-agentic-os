@@ -357,8 +357,8 @@ Check(RevitCommandCatalogue.ExportSave.Select(spec=>spec.Name).SequenceEqual(new
         var allowed=Save();
         Check(IsError(allowed) && FailureCode(allowed)==RevitCommandCodes.NoResponse && reloadLines.Count==1,"after the owner adds the folder to .bim/revit-enabled-roots.txt the same server forwards the save, without a restart");
         File.WriteAllText(ownerFile,"not/absolute\n");
-        var malformed=Save();
-        Check(IsError(malformed) && FailureCode(malformed)==RevitCommandCodes.AllowlistInvalid && reloadLines.Count==1,"a malformed owner file is reported as allowlist_invalid and enables no write");
+        var malformedSave=Save();
+        Check(IsError(malformedSave) && FailureCode(malformedSave)==RevitCommandCodes.AllowlistInvalid && reloadLines.Count==1,"a malformed owner file is reported as allowlist_invalid and enables no write");
         var read=Node(reloading.Handle(Request(13,"tools/call",new JsonObject{["name"]="revit_view_export_image",["arguments"]=new JsonObject{["pipe_name"]="bim-agentic-os-2025-4242",["operation_id"]="op-export-1",["document"]=new JsonObject{["path"]=ownerDocument,["unique_id"]=McpUid},["args"]=new JsonObject{["view"]="{3D}"}}}))!).AsObject();
         Check(IsError(read) && FailureCode(read)==RevitCommandCodes.NoResponse && reloadLines.Count==2,"read-only commands still work while the owner file is malformed");
         File.WriteAllText(ownerFile,"# fixed\n"+ownerFolder+"\n");
