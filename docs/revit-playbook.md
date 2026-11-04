@@ -59,6 +59,27 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
 - **Porch carved into the mass (sustracción)**: delete the end wall (dry run → confirm dependents), set back a glass
   wall under the existing roof overhang, keep the long stone walls as blind porch sides.
 
+- **Profiled wall joined at corners** (`wall.set_profile`): a triangle `[[0,3000],[4570.66,3000],[0,6151]]` whose high
+  point sits at a wall end was refused ("bounding box top is 6233.28 mm above the base level, expected 6151"): the corner
+  join extends the wall past u 0 along the sloped top. Workaround that worked: a 300 mm flat at the high end
+  (`[[0,3000],[4570.66,3000],[300,6151],[0,6151]]`). Fixed in chat-section-profile-fixes: the readback still compares the
+  sketch outline within 1 mm, and the box top may now exceed the profile by at most wall width × slope of a top edge
+  that reaches a wall end (plus 25 mm); flat ends and gables with a mid-wall ridge get no allowance.
+- **Diagonal sections** (`view.create_section`): every section was created looking to the RIGHT of start → end, so the
+  readback refused it ("section right direction is (-0.707,-0.707,0), expected (0.707,0.707,0)"; reversing the line gave
+  the mirror). Revit takes the view direction from the section box `Transform.BasisZ` (the looking direction, into the
+  model) and computes right = BasisZ × BasisY; `View.ViewDirection` then points toward the viewer. Fixed in
+  chat-section-profile-fixes (BasisZ = left of the line, cut plane at Min.Z 0, far clip at Max.Z = depth); axis-aligned
+  sections had never run in Revit either.
+- **3D views from another side** (`view.create_3d`): the default isometric looks from the south-east, which shows a
+  NW–SE ridge edge-on. Pass `view_from` (ne, nw, se, sw, n, s, e, w, top) or `eye_direction` [x, y, z] (from the model
+  toward the eye); readback checks forward and up.
+- **Deleting curtain walls and profiled walls/roofs** (`element.delete`): refused because the dependent check asked
+  Revit's `CanDeleteElement` of the target's own sub-elements (curtain grid ...896, sketch ...904). Fixed in
+  chat-section-profile-fixes: sub-elements a target owns (curtain grid lines, panels, mullions, its sketch with its plane
+  and lines, internal elements without a category) are still listed in the dry run but skip `CanDeleteElement`; foreign
+  dependents that cannot be deleted still refuse.
+
 ## Pending capabilities found in real use
 - `wall.set_profile` (gable walls on 2025.2) — in progress.
 - Open an owner project (not a fixture copy) with the command pipe — in progress (`scripts/owner-open-project.ps1`).

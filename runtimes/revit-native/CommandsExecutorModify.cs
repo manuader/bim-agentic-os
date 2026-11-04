@@ -17,6 +17,9 @@ namespace Bim.Revit;
 //   SquareMeters / Degrees
 //   Document.Delete(ICollection<ElementId>) (returns every deleted id), DocumentValidation.CanDeleteElement,
 //   Element.Pinned / GroupId, Document.ActiveView, Document.ProjectInformation
+//   Wall.CurtainGrid, RoofBase.CurtainGrids, CurtainGrid.GetUGridLineIds / GetVGridLineIds / GetPanelIds /
+//     GetMullionIds, Sketch.OwnerId / SketchPlane / GetAllElements, FamilyInstance.Host, Element.GetDependentElements
+//     (owned sub-elements of a delete target, SubElementOwners)
 // element.delete first deletes inside a probe transaction that is always rolled back, to name every element Revit
 // would delete (the ids exist again after the rollback); the kept delete must remove exactly the same ids.
 // Side effects: element.delete compares a pre/post snapshot of every element id (FilteredElementCollector with
@@ -158,6 +161,47 @@ internal static partial class CommandExecutor
             storeId is not null && element.Id == storeId,
             activeViewId is not null && element.Id == activeViewId);
 
+    // Owners of the sub-elements Revit deletes with their owner and refuses to delete on their own
+    // (DeleteTargetFacts.OwnerUid; CommandRulesModify.CheckDependents waives CanDeleteElement when the chain reaches a
+    // target): the grid lines, panels and mullions of a target curtain wall or roof (CurtainGrid ids, or Panel/Mullion
+    // Host), a sketch among the dependents (Sketch.OwnerId) with its sketch plane and elements, and an element without a
+    // category (not a type or view) among a target's GetDependentElements. Unverified in Revit: that the owner's curtain
+    // grid ...00034896 and profiled wall/roof sketch ...00034904 fall under these rules.
+    static Dictionary<string, string> SubElementOwners(Document d, IReadOnlyList<RevitElement> targets, IReadOnlyList<string> dependentUids)
+    {
+        var owners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        void Own(ElementId id, string ownerUid)
+        {
+            if (d.GetElement(id) is { } element && !string.Equals(element.UniqueId, ownerUid, StringComparison.OrdinalIgnoreCase)) owners.TryAdd(element.UniqueId, ownerUid);
+        }
+        void Grid(CurtainGrid? grid, string ownerUid)
+        {
+            if (grid is null) return;
+            foreach (var id in grid.GetUGridLineIds().Concat(grid.GetVGridLineIds()).Concat(grid.GetPanelIds()).Concat(grid.GetMullionIds())) Own(id, ownerUid);
+        }
+        foreach (var target in targets)
+        {
+            if (target is Wall wall) Grid(wall.CurtainGrid, target.UniqueId);
+            if (target is RoofBase roof && roof.CurtainGrids is { } grids)
+                foreach (CurtainGrid grid in grids) Grid(grid, target.UniqueId);
+        }
+        foreach (var uid in dependentUids)
+        {
+            var dependent = d.GetElement(uid);
+            if (dependent is Sketch sketch)
+            {
+                if (d.GetElement(sketch.OwnerId) is { } owner) Own(sketch.Id, owner.UniqueId);
+                if (sketch.SketchPlane is { } plane) Own(plane.Id, sketch.UniqueId);
+                foreach (var id in sketch.GetAllElements()) Own(id, sketch.UniqueId);
+            }
+            else if (dependent is Panel or Mullion && ((FamilyInstance)dependent).Host is { } host) Own(dependent.Id, host.UniqueId);
+        }
+        foreach (var target in targets)
+            foreach (var id in target.GetDependentElements(null))
+                if (d.GetElement(id) is { Category: null } element && element is not ElementType && element is not View) Own(id, target.UniqueId);
+        return owners;
+    }
+
     static string DeleteRun(Document d, CommandRequest request, ReceiptStore store, ElementDeleteArgs args)
     {
         var targets = args.ElementUids.Select((uid, i) => ElementByUid(d, uid, "args.element_uids[" + i + "]")).ToArray();
@@ -192,7 +236,9 @@ internal static partial class CommandExecutor
             }
             var cascade = CommandRulesModify.Cascade(targetUids, probeSet.Select(id => d.GetElement(new ElementId(id))?.UniqueId).ToArray());
             CommandRulesModify.CheckCascade(cascade, protectedUids);
-            CommandRulesModify.CheckDependents(cascade.Dependents.Select(uid => DeleteFacts(d, d.GetElement(uid), projectInformation?.Id, store.Storage?.Id, activeViewId)).ToArray());
+            var owners = SubElementOwners(d, targets, cascade.Dependents);
+            CommandRulesModify.CheckDependents(cascade.Dependents.Select(uid => DeleteFacts(d, d.GetElement(uid), projectInformation?.Id, store.Storage?.Id, activeViewId)
+                with { OwnerUid = owners.TryGetValue(uid, out var owner) ? owner : null }).ToArray(), targetUids);
             if (!args.DryRun) CommandRulesModify.CheckConfirmed(cascade.Dependents, args.ConfirmDependents);
             ModifyTransaction(d, request, failures, () =>
             {

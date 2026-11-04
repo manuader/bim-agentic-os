@@ -88,12 +88,29 @@ public static class CommandRulesModify
     }
 
     // Every element the cascade would remove must be deletable on its own terms: a pinned, grouped or otherwise
-    // protected dependent refuses the whole delete.
+    // protected dependent refuses the whole delete. A sub-element whose OwnerUid chain (through other dependents) reaches
+    // a target is deleted by Revit with its owner and is refused by CanDeleteElement on its own (owner, 2026-11-04: a
+    // curtain wall's grid, a profiled wall's or roof's sketch), so only CanDeleteElement is waived for it.
     public static void CheckDependents(IReadOnlyList<DeleteTargetFacts> dependents, IReadOnlyCollection<string>? targets = null)
     {
+        var targetSet = new HashSet<string>(targets ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        var owners = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dependent in dependents) owners.TryAdd(dependent.UniqueId, dependent.OwnerUid);
+        bool OwnedByTarget(DeleteTargetFacts dependent)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var owner = dependent.OwnerUid;
+            while (owner is not null && seen.Add(owner))
+            {
+                if (targetSet.Contains(owner)) return true;
+                owner = owners.TryGetValue(owner, out var next) ? next : null;
+            }
+            return false;
+        }
         foreach (var dependent in dependents)
         {
-            if (Undeletable(dependent) is { } reason) throw ArgsInvalid("args.element_uids", "the delete would also remove dependent element " + dependent.UniqueId + ", which " + reason);
+            var facts = !dependent.CanDelete && OwnedByTarget(dependent) ? dependent with { CanDelete = true } : dependent;
+            if (Undeletable(facts) is { } reason) throw ArgsInvalid("args.element_uids", "the delete would also remove dependent element " + dependent.UniqueId + ", which " + reason);
         }
     }
 
