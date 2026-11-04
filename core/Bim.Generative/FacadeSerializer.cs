@@ -41,8 +41,8 @@ public static class FacadeSerializer
                 Number(writer, "area_m2", room.AreaSquareMetres);
                 Optional(writer, "illumination_ratio", room.IlluminationRatio);
                 Optional(writer, "ventilation_ratio", room.VentilationRatio);
-                Number(writer, "required_window_area_m2", room.RequiredWindowAreaSquareMetres);
-                Number(writer, "required_ventilation_area_m2", room.RequiredVentilationAreaSquareMetres);
+                Optional(writer, "required_window_area_m2", room.RequiredWindowAreaSquareMetres);
+                Optional(writer, "required_ventilation_area_m2", room.RequiredVentilationAreaSquareMetres);
                 Number(writer, "window_area_m2", room.WindowAreaSquareMetres);
                 Number(writer, "ventilation_area_m2", room.VentilationAreaSquareMetres);
                 Number(writer, "exterior_length_m", room.ExteriorLengthMetres);

@@ -29,7 +29,7 @@ public static class FacadePlanner
     // Slack (millimetres) of the whole-millimetre rounding, so 2.0000000000000004 m is 2000 mm, not 2001 mm.
     const double MillimetreSlack = 1e-6;
 
-    public static FacadeLayout Place(SpacePlan plan, SkillManifest pack, FacadeOptions? options = null)
+    public static FacadeLayout Place(SpacePlan plan, SkillManifest pack, FacadeOptions? options = null, IReadOnlyDictionary<string, double>? parameters = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(pack);
@@ -86,7 +86,7 @@ public static class FacadePlanner
         var exterior = parts.Sum(part => part.End - part.Start);
 
         FacadeRoom Record(FacadeRoomStatus status, string? reason, double? illumination, double? ventilation, double litArea, double openArea, string detail) =>
-            new(room.InstanceId, name, room.Level, status, reason, area, illumination, ventilation, (illumination ?? 0) * area, (ventilation ?? 0) * area,
+            new(room.InstanceId, name, room.Level, status, reason, area, illumination, ventilation, illumination * area, ventilation * area,
                 litArea, openArea, exterior, ruleIds, detail);
 
         if (matched.Length == 0)

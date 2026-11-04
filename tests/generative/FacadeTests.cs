@@ -70,7 +70,7 @@ static class FacadeTests
             && r.WindowAreaSquareMetres == 0) && layout.Checks.Count(c => c.Code == FacadeCodes.NotRequired && !c.Hard && c.Satisfied) == 3,
             "bathroom (wet), hall and kitchen have no pack ratio rule: no window, soft facade_not_required", Describe(layout));
         Check(Room(layout, "living") is { Status: FacadeRoomStatus.Compliant, Reason: null } lr && lr.IlluminationRatio == 0.1 && Near(lr.VentilationRatio ?? 0, 1.0 / 30)
-            && Near(lr.RequiredWindowAreaSquareMetres, 2.4) && Near(lr.RequiredVentilationAreaSquareMetres, 0.8) && Near(lr.WindowAreaSquareMetres, 2.4)
+            && Near(lr.RequiredWindowAreaSquareMetres ?? -1, 2.4) && Near(lr.RequiredVentilationAreaSquareMetres ?? -1, 0.8) && Near(lr.WindowAreaSquareMetres, 2.4)
             && Near(lr.VentilationAreaSquareMetres, 1.2) && Near(lr.ExteriorLengthMetres, 10) && lr.AreaSquareMetres == 24,
             "living room record: ratios, required and achieved areas, 10 m of exterior sides (south and west)", Describe(layout));
         Check(layout.Checks.Any(c => c.Code == FacadeCodes.Illumination && c.Subject == "living" && c.Hard && c.Satisfied && c.Detail.Length > 0)
@@ -111,7 +111,7 @@ static class FacadeTests
             P("hall_n", "Hall n", 3, 8, 3, 1), P("hall_s", "Hall s", 4, 0, 2, 1));
         var notchLayout = FacadePlanner.Place(notch, caba);
         Check(notchLayout.Status == FacadeStatus.Incomplete && Room(notchLayout, "bedroom_t") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.EdgeTooShort } t
-            && Near(t.ExteriorLengthMetres, 1) && Near(t.RequiredWindowAreaSquareMetres, 2.1) && t.WindowAreaSquareMetres == 0 && notchLayout.Windows.Count == 0
+            && Near(t.ExteriorLengthMetres, 1) && Near(t.RequiredWindowAreaSquareMetres ?? -1, 2.1) && t.WindowAreaSquareMetres == 0 && notchLayout.Windows.Count == 0
             && notchLayout.Violations.Any(c => c.Code == FacadeCodes.EdgeTooShort && c.Subject == "bedroom_t" && c.Hard && c.Detail.Length > 0),
             "a bedroom whose only exterior part is 1 m (0.4 m usable) is facade_edge_too_short with no window", Describe(notchLayout));
         Check(Oracle(notch, notchLayout, defaults, rules) is null, "notch facade agrees with the oracle", Oracle(notch, notchLayout, defaults, rules) ?? "");
@@ -165,7 +165,84 @@ static class FacadeTests
         var conditionalLayout = FacadePlanner.Place(flat, conditional);
         Check(conditionalLayout.Status == FacadeStatus.Incomplete && Room(conditionalLayout, "living") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.RuleUnsupported }
             && conditionalLayout.Windows.All(w => w.Instance != "living") && Room(conditionalLayout, "bedroom_1") is { Status: FacadeRoomStatus.Compliant },
-            "a matched ratio rule with an applies_if condition is facade_rule_unsupported, never silently passed", Describe(conditionalLayout));
+            "a matched ratio rule whose applies_if the room exceeds (area_m2<=5, 24 m2) is facade_rule_unsupported, never silently passed", Describe(conditionalLayout));
+        Check(Room(conditionalLayout, "living") is { IlluminationRatio: null, RequiredWindowAreaSquareMetres: null } partial && partial.VentilationRatio is { } pv && Near(pv, 1.0 / 30)
+            && Near(partial.RequiredVentilationAreaSquareMetres ?? -1, 0.8) && partial.WindowAreaSquareMetres == 0,
+            "an unsupported room reports the illumination ratio as unknown (null) and keeps only the supported ventilation ratio", Describe(conditionalLayout));
+        var applies = caba with { Rules = caba.Rules.Select(r => r.Id == "living-illumination-ratio" ? r with { Citation = r.Citation + "; applies_if=area_m2<=30" } : r).ToArray() };
+        var appliesLayout = FacadePlanner.Place(flat, applies);
+        Check(appliesLayout.IsComplete && FacadeSerializer.Serialize(appliesLayout) == FacadeSerializer.Serialize(layout),
+            "applies_if=area_m2<=30 holds for the 24 m2 living (evaluated as P5-02 does): the same windows as without the condition", Describe(appliesLayout));
+        var sideCondition = caba with { Rules = caba.Rules.Select(r => r.Id == "living-illumination-ratio" ? r with { Citation = r.Citation + "; applies_if=min_side_m<=4" } : r).ToArray() };
+        Check(FacadePlanner.Place(flat, sideCondition) is { Status: FacadeStatus.Complete } sideLayout && Room(sideLayout, "living") is { Status: FacadeRoomStatus.Compliant },
+            "applies_if=min_side_m<=4 holds for the 6 x 4 m living");
+        var heightCondition = caba with { Rules = caba.Rules.Select(r => r.Id == "living-illumination-ratio" ? r with { Citation = r.Citation + "; applies_if=clear_height_m<=3" } : r).ToArray() };
+        Check(Room(FacadePlanner.Place(flat, heightCondition), "living") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.RuleUnsupported },
+            "applies_if on a property the plan does not carry (clear_height_m) is facade_rule_unsupported");
+
+        // ---- thresholds from a pack parameter, and run-time parameter overrides ----
+        var parameterised = caba with
+        {
+            Parameters = caba.Parameters.Append(new SkillParameter("living_ilum_ratio", SkillParameterType.Number, SkillValue.Of(0.125), 0, 1, "test parameter")).ToArray(),
+            Rules = caba.Rules.Select(r => r.Id == "living-illumination-ratio" ? r with { Check = r.Check with { Value = null, Parameter = "living_ilum_ratio" } } : r).ToArray(),
+        };
+        var paramLayout = FacadePlanner.Place(flat, parameterised);
+        Check(paramLayout.IsComplete && Room(paramLayout, "living") is { IlluminationRatio: 0.125 } && paramLayout.Windows.FirstOrDefault(w => w.Instance == "living") is { } pw
+            && Near(pw.WidthMetres, 2.5) && Near(pw.X0, 1.75), "a parameter threshold 0.125 (not the manifest literal 0.1): 24 x 0.125 / 1.2 = 2.50 m", Describe(paramLayout));
+        var overridden = FacadePlanner.Place(flat, parameterised, null, new Dictionary<string, double> { [PackId + "/living_ilum_ratio"] = 0.2 });
+        Check(overridden.IsComplete && Room(overridden, "living") is { IlluminationRatio: 0.2 } && overridden.Windows.FirstOrDefault(w => w.Instance == "living") is { } ow
+            && Near(ow.WidthMetres, 4) && Near(ow.X0, 1), "a run-time override 0.2 of the parameter: 4.00 m", Describe(overridden));
+        Refused("an override naming no pack parameter", FacadePlanner.Place(flat, parameterised, null, new Dictionary<string, double> { [PackId + "/nope"] = 0.2 }), FacadeCodes.OptionsInvalid);
+        Refused("an override outside the parameter range", FacadePlanner.Place(flat, parameterised, null, new Dictionary<string, double> { [PackId + "/living_ilum_ratio"] = 2 }), FacadeCodes.OptionsInvalid);
+        Refused("an override without a skill prefix", FacadePlanner.Place(flat, parameterised, null, new Dictionary<string, double> { ["living_ilum_ratio"] = 0.2 }), FacadeCodes.OptionsInvalid);
+
+        // ---- party walls (medianeras): only listed footprint edges take openings ----
+        var northOnly = defaults with { OpeningEdges = new[] { LotEdge.North } };
+        var party = FacadePlanner.Place(flat, caba, northOnly);
+        Check(party.Status == FacadeStatus.Incomplete && party.Windows.Count == 0 && Room(party, "living") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.LotLineOnly } pl
+            && Near(pl.ExteriorLengthMetres, 10) && Room(party, "bedroom_1") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.LotLineOnly }
+            && party.Violations.Any(c => c.Code == FacadeCodes.LotLineOnly && c.Subject == "living" && c.Hard && c.Detail.Length > 0),
+            "with only the north lot edge open, the south/west/east lot-line sides are party walls: facade_lot_line_only", Describe(party));
+        Check(Oracle(flat, party, northOnly, rules) is null, "party-wall facade agrees with the oracle", Oracle(flat, party, northOnly, rules) ?? "");
+        var sides = defaults with { OpeningEdges = new[] { LotEdge.West, LotEdge.East } };
+        var sideLots = FacadePlanner.Place(flat, caba, sides);
+        Check(sideLots.IsComplete && sideLots.Windows.FirstOrDefault(w => w.Instance == "living") is { Side: FacadeSide.West, X0: 0, X1: 0 } lw && Near(lw.Y0, 1) && Near(lw.Y1, 3)
+            && sideLots.Windows.FirstOrDefault(w => w.Instance == "bedroom_1") is { Side: FacadeSide.East, X0: 10 } bw && Near(bw.Y0, 1.333),
+            "with the south lot edge closed, living opens west and the bedroom east", Describe(sideLots));
+        Check(Oracle(flat, sideLots, sides, rules) is null, "west/east facade agrees with the oracle", Oracle(flat, sideLots, sides, rules) ?? "");
+        Refused("an undefined opening edge", FacadePlanner.Place(flat, caba, defaults with { OpeningEdges = new[] { (LotEdge)9 } }), FacadeCodes.OptionsInvalid);
+        Refused("a repeated opening edge", FacadePlanner.Place(flat, caba, defaults with { OpeningEdges = new[] { LotEdge.North, LotEdge.North } }), FacadeCodes.OptionsInvalid);
+
+        // ---- an internal void (courtyard) enclosed by the level's rooms ----
+        var court = Plan("court", 1, 9, 9, P("hall_s", "Hall s", 0, 0, 9, 3), P("hall_n", "Hall n", 0, 6, 9, 3), P("bedroom_w", "Bedroom w", 0, 3, 3, 3), P("living_e", "Living e", 6, 3, 3, 3));
+        var courtLayout = FacadePlanner.Place(court, caba);
+        Check(courtLayout.IsComplete && courtLayout.Windows.FirstOrDefault(w => w.Instance == "bedroom_w") is { Side: FacadeSide.East, X0: 3, FacesInternalVoid: true } cw && Near(cw.WidthMetres, 0.75)
+            && courtLayout.Windows.FirstOrDefault(w => w.Instance == "living_e") is { Side: FacadeSide.East, X0: 9, FacesInternalVoid: false },
+            "the west bedroom's east window opens on the courtyard (internal void), the living's east window on the outer boundary", Describe(courtLayout));
+        Check(Oracle(court, courtLayout, defaults, rules) is null, "courtyard facade agrees with the oracle", Oracle(court, courtLayout, defaults, rules) ?? "");
+        var closed = defaults with { OpeningEdges = Array.Empty<LotEdge>() };
+        var courtOnly = FacadePlanner.Place(court, caba, closed);
+        Check(courtOnly.IsComplete && courtOnly.Windows.Count == 2 && courtOnly.Windows.All(w => w.FacesInternalVoid)
+            && courtOnly.Windows.FirstOrDefault(w => w.Instance == "living_e") is { Side: FacadeSide.West, X0: 6 },
+            "with every lot edge closed, both rooms open on the courtyard, which is not a lot line", Describe(courtOnly));
+        Check(Oracle(court, courtOnly, closed, rules) is null, "courtyard-only facade agrees with the oracle", Oracle(court, courtOnly, closed, rules) ?? "");
+        Check(FacadeSerializer.Serialize(courtLayout).Contains("\"faces_internal_void\":true", StringComparison.Ordinal)
+            && FacadeSerializer.Serialize(courtOnly).Contains("\"opening_edges\":[]", StringComparison.Ordinal)
+            && FacadeSerializer.Serialize(layout).Contains("\"opening_edges\":[\"south\",\"east\",\"north\",\"west\"]", StringComparison.Ordinal),
+            "canonical JSON carries the void flag and the opening edges");
+
+        // ---- bounded sizing: degenerate options are refused, a huge requirement is too short, never an overflow ----
+        var huge = Plan("huge", 1, 1000, 1000, P("living", "Living", 0, 0, 1000, 1000));
+        var hugeLayout = FacadePlanner.Place(huge, caba);
+        Check(Room(hugeLayout, "living") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.EdgeTooShort } && hugeLayout.Windows.Count == 0,
+            "a 1000 x 1000 m living needs 83 km of window: facade_edge_too_short, no window", Describe(hugeLayout));
+        var extreme = new FacadeOptions(0, FacadeOptions.MinWindowHeightMetres, 0, FacadeOptions.MinOpenableFraction, 0.001);
+        var widest = Plan("widest", 1, 10000, 10000, P("living", "Living", 0, 0, 10000, 10000));
+        var widestLayout = FacadePlanner.Place(widest, caba, extreme);
+        Check(widestLayout.Status == FacadeStatus.Incomplete && Room(widestLayout, "living") is { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.EdgeTooShort } && widestLayout.Windows.Count == 0,
+            "the largest plan with the smallest allowed window height and openable fraction is facade_edge_too_short", Describe(widestLayout));
+        Check(layout.Checks.Concat(slotLayout.Checks).Where(c => c.Code is FacadeCodes.Illumination or FacadeCodes.Ventilation).All(c => c.Satisfied && c.Hard),
+            "illumination and ventilation checks of compliant rooms are satisfied by the placed windows");
         SkillParser.TryParseRange("*", out var anyRange);
         var dependent = caba with { Requires = new[] { new SkillRequirement("ar.missing.pack", anyRange) } };
         Refused("a pack that does not resolve on its own", FacadePlanner.Place(flat, dependent), FacadeCodes.PackInvalid);
@@ -183,6 +260,8 @@ static class FacadeTests
             ("negative clearance", defaults with { EndClearanceMetres = -0.01 }), ("infinite clearance", defaults with { EndClearanceMetres = double.PositiveInfinity }),
             ("openable fraction 0", defaults with { OpenableFraction = 0 }), ("openable fraction 1.5", defaults with { OpenableFraction = 1.5 }),
             ("minimum width 0", defaults with { MinWindowWidthMetres = 0 }), ("NaN minimum width", defaults with { MinWindowWidthMetres = double.NaN }),
+            ("openable fraction 1e-20", defaults with { OpenableFraction = 1e-20 }), ("openable fraction below 0.01", defaults with { OpenableFraction = 0.009 }),
+            ("head one ulp above the sill", defaults with { HeadHeightMetres = Math.BitIncrement(0.9) }), ("window 0.05 m tall", defaults with { HeadHeightMetres = 0.95 }),
         })
             Refused("options: " + label, FacadePlanner.Place(flat, caba, bad), FacadeCodes.OptionsInvalid);
 
@@ -224,6 +303,12 @@ static class FacadeTests
                 windows += placed.Windows.Count;
                 var problem = Oracle(alternative.Plan, placed, defaults, rules);
                 Check(placed.Status != FacadeStatus.Refused && problem is null, "prototype " + typology + " alternative " + Text(alternative.Index) + " agrees with the oracle", problem ?? Describe(placed));
+                var habitable = alternative.Plan.Rooms.Where(r => rules.Any(rule => Glob(rule.Pattern, Normalize(r.Name)))).ToArray();
+                var unexplained = habitable.Where(r => ExteriorRuns(alternative.Plan, r).Count > 0 && Room(placed, r.InstanceId) is not ({ Status: FacadeRoomStatus.Compliant }
+                    or { Status: FacadeRoomStatus.Failed, Reason: FacadeCodes.EdgeTooShort or FacadeCodes.LotLineOnly })).Select(r => r.InstanceId).ToArray();
+                Check(habitable.Length >= 2 && unexplained.Length == 0 && habitable.All(r => Room(placed, r.InstanceId) is { Status: not FacadeRoomStatus.NotRequired, Detail.Length: > 0 }),
+                    "prototype " + typology + " alternative " + Text(alternative.Index) + ": every habitable room with an exterior side is compliant or too short, with a detail",
+                    string.Join(",", unexplained) + " | " + Describe(placed));
                 Check(FacadeSerializer.Serialize(FacadePlanner.Place(alternative.Plan with { Rooms = Enumerable.Reverse(alternative.Plan.Rooms).ToArray() }, caba)) == FacadeSerializer.Serialize(placed),
                     "prototype " + typology + " alternative " + Text(alternative.Index) + " is deterministic under room reordering");
             }
@@ -269,6 +354,16 @@ static class FacadeTests
                 var t = first + (last - first) * k / samples;
                 if (OnPartition(plan, room, window.Side, t)) { problems.Add(window.Id + " touches another room's wall at " + R(t)); break; }
             }
+            if (PartyWall(plan, window.Side, line, options)) problems.Add(window.Id + " is on a closed lot edge (party wall)");
+            var outward = 1e-3;
+            var (px, py) = window.Side switch
+            {
+                FacadeSide.South => ((window.X0 + window.X1) / 2, line - outward),
+                FacadeSide.North => ((window.X0 + window.X1) / 2, line + outward),
+                FacadeSide.West => (line - outward, (window.Y0 + window.Y1) / 2),
+                _ => (line + outward, (window.Y0 + window.Y1) / 2),
+            };
+            if (InVoid(plan, room.Level, px, py) != window.FacesInternalVoid) problems.Add(window.Id + " internal void flag " + window.FacesInternalVoid + " is wrong");
             var expected = Expected(rules, room.Name);
             if (!window.RuleIds.SequenceEqual(expected)) problems.Add(window.Id + " cites " + string.Join(",", window.RuleIds) + " not " + string.Join(",", expected));
         }
@@ -296,22 +391,24 @@ static class FacadeTests
             var ventilation = matched.Where(r => r.Property == "ventilation_area_m2").Select(r => r.Value).DefaultIfEmpty(0).Max();
             var lit = mine.Sum(w => (horizontalOf(w) ? w.X1 - w.X0 : w.Y1 - w.Y0) * height);
             var needWidth = Math.Max(options.MinWindowWidthMetres, Math.Max(illumination * area / height, ventilation * area / (height * options.OpenableFraction)));
-            var runs = ExteriorRuns(plan, room);
+            var allRuns = ExteriorRuns(plan, room, options);
+            var runs = allRuns.Where(run => !run.PartyWall).Select(run => run.Length).ToList();
             // Lenient (any run that might hold the minimum width) and strict (runs that surely hold it) usable lengths.
             var lenient = runs.Select(run => run - 2 * c).Where(u => u >= options.MinWindowWidthMetres - Margin).Sum();
             var strict = runs.Select(run => run - 2 * c).Where(u => u >= options.MinWindowWidthMetres + Margin).Select(u => u - Margin).Sum();
             if (record.Status == FacadeRoomStatus.Compliant)
             {
                 if (mine.Length == 0) problems.Add(room.InstanceId + " compliant without a window");
-                if (lit / area < illumination - Tolerance) problems.Add(room.InstanceId + " illumination " + R(lit / area) + " < " + R(illumination));
-                if (lit * options.OpenableFraction / area < ventilation - Tolerance) problems.Add(room.InstanceId + " ventilation " + R(lit * options.OpenableFraction / area) + " < " + R(ventilation));
+                if (lit / area < illumination * (1 - 1e-12)) problems.Add(room.InstanceId + " illumination " + R(lit / area) + " < " + R(illumination));
+                if (lit * options.OpenableFraction / area < ventilation * (1 - 1e-12)) problems.Add(room.InstanceId + " ventilation " + R(lit * options.OpenableFraction / area) + " < " + R(ventilation));
             }
             else if (record.Status == FacadeRoomStatus.Failed)
             {
                 if (mine.Length > 0) problems.Add(room.InstanceId + " failed but has windows");
-                if (record.Reason == FacadeCodes.NoExteriorEdge && runs.Count > 0) problems.Add(room.InstanceId + " has exterior runs " + string.Join(",", runs.Select(R)) + " but no_exterior_edge");
+                if (record.Reason == FacadeCodes.NoExteriorEdge && allRuns.Count > 0) problems.Add(room.InstanceId + " has exterior runs " + string.Join(",", allRuns.Select(run => R(run.Length))) + " but no_exterior_edge");
+                else if (record.Reason == FacadeCodes.LotLineOnly && (allRuns.Count == 0 || runs.Count > 0)) problems.Add(room.InstanceId + " lot_line_only but has " + Text(runs.Count) + " open runs of " + Text(allRuns.Count));
                 else if (record.Reason == FacadeCodes.EdgeTooShort && (runs.Count == 0 || lenient > needWidth + Margin * (runs.Count + 1))) problems.Add(room.InstanceId + " usable " + R(lenient) + " > " + R(needWidth) + " but edge_too_short");
-                else if (record.Reason is not (FacadeCodes.NoExteriorEdge or FacadeCodes.EdgeTooShort or FacadeCodes.RuleUnsupported)) problems.Add(room.InstanceId + " reason " + record.Reason);
+                else if (record.Reason is not (FacadeCodes.NoExteriorEdge or FacadeCodes.EdgeTooShort or FacadeCodes.RuleUnsupported or FacadeCodes.LotLineOnly)) problems.Add(room.InstanceId + " reason " + record.Reason);
             }
             else problems.Add(room.InstanceId + " has pack rules but is " + record.Status);
             if (record.Status != FacadeRoomStatus.Compliant && record.Reason != FacadeCodes.RuleUnsupported && strict >= needWidth + Margin)
@@ -322,25 +419,75 @@ static class FacadeTests
         static bool horizontalOf(FacadeWindow w) => w.Side is FacadeSide.South or FacadeSide.North;
     }
 
-    // Lengths of the maximal runs of a room's sides that touch no other room of the level, sampled at the midpoints of
-    // steps of at most 0.5 mm, so each run is within 1 mm of its true length.
-    static List<double> ExteriorRuns(SpacePlan plan, PlannedRoom room)
+    // Whether a room side on this line lies on a footprint edge the options close (a party wall).
+    static bool PartyWall(SpacePlan plan, FacadeSide side, double line, FacadeOptions options)
     {
-        var runs = new List<double>();
+        var open = options.OpeningEdges ?? new[] { LotEdge.South, LotEdge.East, LotEdge.North, LotEdge.West };
+        var footprint = plan.Footprint!;
+        var (edge, at) = side switch
+        {
+            FacadeSide.South => (LotEdge.South, 0.0),
+            FacadeSide.North => (LotEdge.North, footprint.DepthMetres),
+            FacadeSide.West => (LotEdge.West, 0.0),
+            _ => (LotEdge.East, footprint.WidthMetres),
+        };
+        return Math.Abs(line - at) < 1e-7 && !open.Contains(edge);
+    }
+
+    // Whether the point lies in a free region of the level that is enclosed by its rooms: flood fill over the cells of the
+    // grid made by the level's room coordinates plus a frame around them, starting from the frame.
+    static bool InVoid(SpacePlan plan, int level, double x, double y)
+    {
+        var rooms = plan.Rooms.Where(r => r.Level == level).ToArray();
+        var xs = rooms.SelectMany(r => new[] { r.Rect.X, r.Rect.Right }).Append(rooms.Min(r => r.Rect.X) - 1).Append(rooms.Max(r => r.Rect.Right) + 1).Distinct().OrderBy(v => v).ToArray();
+        var ys = rooms.SelectMany(r => new[] { r.Rect.Y, r.Rect.Top }).Append(rooms.Min(r => r.Rect.Y) - 1).Append(rooms.Max(r => r.Rect.Top) + 1).Distinct().OrderBy(v => v).ToArray();
+        int nx = xs.Length - 1, ny = ys.Length - 1;
+        var occupied = new bool[nx, ny];
+        for (var i = 0; i < nx; i++)
+            for (var j = 0; j < ny; j++)
+            {
+                var (cx, cy) = ((xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2);
+                occupied[i, j] = rooms.Any(r => r.Rect.X < cx && cx < r.Rect.Right && r.Rect.Y < cy && cy < r.Rect.Top);
+            }
+        var outside = new bool[nx, ny];
+        var queue = new Queue<(int, int)>();
+        for (var i = 0; i < nx; i++)
+            for (var j = 0; j < ny; j++)
+                if ((i == 0 || j == 0 || i == nx - 1 || j == ny - 1) && !occupied[i, j]) { outside[i, j] = true; queue.Enqueue((i, j)); }
+        while (queue.Count > 0)
+        {
+            var (i, j) = queue.Dequeue();
+            foreach (var (a, b) in new[] { (i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1) })
+                if (a >= 0 && b >= 0 && a < nx && b < ny && !occupied[a, b] && !outside[a, b]) { outside[a, b] = true; queue.Enqueue((a, b)); }
+        }
+        var ci = Array.FindLastIndex(xs, v => v <= x);
+        var cj = Array.FindLastIndex(ys, v => v <= y);
+        if (ci < 0 || cj < 0 || ci >= nx || cj >= ny) return false;
+        return !occupied[ci, cj] && !outside[ci, cj];
+    }
+
+    // The maximal runs of a room's sides that touch no other room of the level, sampled at the midpoints of steps of at
+    // most 0.5 mm, so each run is within 1 mm of its true length; PartyWall marks runs on a closed footprint edge.
+    static List<(double Length, bool PartyWall)> ExteriorRuns(SpacePlan plan, PlannedRoom room, FacadeOptions? options = null)
+    {
+        options ??= new FacadeOptions();
+        var runs = new List<(double Length, bool PartyWall)>();
         foreach (var side in new[] { FacadeSide.South, FacadeSide.East, FacadeSide.North, FacadeSide.West })
         {
             var horizontal = side is FacadeSide.South or FacadeSide.North;
             var (lo, hi) = horizontal ? (room.Rect.X, room.Rect.Right) : (room.Rect.Y, room.Rect.Top);
             var n = (int)Math.Ceiling((hi - lo) / 0.0005);
             var step = (hi - lo) / n;
+            var line = side switch { FacadeSide.South => room.Rect.Y, FacadeSide.North => room.Rect.Top, FacadeSide.West => room.Rect.X, _ => room.Rect.Right };
+            var party = PartyWall(plan, side, line, options);
             var run = 0;
             for (var k = 0; k < n; k++)
             {
                 if (!OnPartition(plan, room, side, lo + (k + 0.5) * step)) { run++; continue; }
-                if (run > 0) runs.Add(run * step);
+                if (run > 0) runs.Add((run * step, party));
                 run = 0;
             }
-            if (run > 0) runs.Add(run * step);
+            if (run > 0) runs.Add((run * step, party));
         }
         return runs;
     }
