@@ -13,6 +13,7 @@ try {
             var ifcPlan=JsonSerializer.Deserialize<ExecutionPlan>(BoundedInput.ReadText(args[3]))!;
             Console.WriteLine(JsonSerializer.Serialize(IfcCompiler.Export(ifcBefore,ifcAfter,ifcPlan,Guid.Parse(args[4]),args[5])));break;
         case "export-gltf": GltfExportCommand.Run(args); break;
+        case "cad-draft": case "cad-brief": CadCommand.Run(args); break;
         case "evaluate":
             EvaluationReport evaluation;
             try {
