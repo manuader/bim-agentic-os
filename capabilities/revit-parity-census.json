@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Revit 2025 desktop functions by area with the catalogue commands that cover them. state uses the repository's eight capability states and describes the agent path (catalogue command, or via) for that function; evidence lists repository files and features names docs/features.json ids that bound the claim. Checked by tests/parity-census.",
+  "description": "Revit 2025 desktop functions by area with the catalogue commands that cover them. state uses the repository's eight capability states and describes the agent path (catalogue command, or via) for that function; evidence lists repository files and features names docs/features.json ids that bound the claim. feature_coverage maps each cited feature to the commands (and via paths) its ledger entry covers: a state is bounded per command by the cited features covering it, else compiled. Checked by tests/parity-census.",
   "states": [
     "described",
     "compiled",
@@ -24,13 +24,110 @@
     "file",
     "collaboration"
   ],
+  "feature_coverage": {
+    "native-execution-primitives": {
+      "paths": [
+        "typed-batch"
+      ]
+    },
+    "native-typed-batch": {
+      "paths": [
+        "typed-batch"
+      ]
+    },
+    "revit-command-protocol-v1": {
+      "commands": [
+        "query.levels",
+        "query.wall_types",
+        "query.floor_types",
+        "query.family_symbols",
+        "wall.create",
+        "opening.place",
+        "floor.create",
+        "room.create"
+      ]
+    },
+    "revit-command-executor-v1": {
+      "commands": [
+        "query.levels",
+        "query.wall_types",
+        "query.floor_types",
+        "query.family_symbols",
+        "wall.create",
+        "opening.place",
+        "floor.create",
+        "room.create"
+      ]
+    },
+    "revit-catalogue-v2": {
+      "commands": [
+        "query.roof_types",
+        "roof.create_footprint",
+        "stair.create",
+        "curtain_wall.create",
+        "floor.create_opening"
+      ]
+    },
+    "revit-view-commands": {
+      "commands": [
+        "query.view_family_types",
+        "query.view_templates",
+        "view.create_plan",
+        "view.create_section",
+        "view.create_3d"
+      ]
+    },
+    "revit-query-snapshot": {
+      "commands": [
+        "query.snapshot"
+      ]
+    },
+    "revit-element-query": {
+      "commands": [
+        "query.elements",
+        "query.inspect"
+      ]
+    },
+    "revit-structure-commands": {
+      "commands": [
+        "query.grids",
+        "query.structural_types",
+        "grid.create",
+        "structural_column.create",
+        "structural_beam.create",
+        "foundation.create_isolated",
+        "foundation.create_wall"
+      ]
+    },
+    "revit-documentation-commands": {
+      "commands": [
+        "query.title_blocks",
+        "dimension.create_linear",
+        "tag.create",
+        "schedule.create",
+        "sheet.create",
+        "sheet.place_view"
+      ]
+    },
+    "revit-modify-delete-commands": {
+      "commands": [
+        "element.set_parameter",
+        "element.delete"
+      ]
+    },
+    "revit-query-journal": {
+      "commands": [
+        "query.journal"
+      ]
+    }
+  },
   "entries": [
     {
       "id": "arch.level.create",
       "area": "architecture",
       "revit_function": "Level (Architecture > Datum > Level)",
       "commands": [],
-      "via": "typed level/wall batch pipe (BatchExecutor), not the command catalogue",
+      "via": "typed-batch",
       "state": "verified-in-revit",
       "verified_scope": "Level/wall create, retry, resize, identity/readback and rollback only",
       "features": [
@@ -87,7 +184,7 @@
       "area": "architecture",
       "revit_function": "Wall location line and height change (drag / Properties)",
       "commands": [],
-      "via": "typed level/wall batch pipe (BatchExecutor), not the command catalogue",
+      "via": "typed-batch",
       "state": "verified-in-revit",
       "verified_scope": "Level/wall create, retry, resize, identity/readback and rollback only",
       "features": [
@@ -113,7 +210,7 @@
         "tests/revit-commands/CatalogueWallProfile.cs",
         "runtimes/revit-native/CommandsExecutorWallProfile.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "arch.wall.attach_top_base",
@@ -269,7 +366,8 @@
       "evidence": [
         "tests/revit-commands/CatalogueV2.cs",
         "runtimes/revit-native/CommandsExecutorV2.cs"
-      ]
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); the cited feature records compiled only, so not claimed beyond it."
     },
     {
       "id": "arch.roof.extrusion",
@@ -515,7 +613,8 @@
       "evidence": [
         "tests/revit-commands/CatalogueStructure.cs",
         "runtimes/revit-native/CommandsExecutorStructure.cs"
-      ]
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); the cited feature records compiled only, so not claimed beyond it."
     },
     {
       "id": "struct.beam.system_brace_truss",
@@ -655,7 +754,7 @@
         "tests/revit-commands/CatalogueFamilies.cs",
         "runtimes/revit-native/CommandsExecutorFamilies.cs"
       ],
-      "notes": "Placement only; connectors, systems and hosted fixtures are not covered. No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Placement only; connectors, systems and hosted fixtures are not covered. Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "site.toposolid.create",
@@ -671,7 +770,7 @@
         "tests/revit-commands/CatalogueSite.cs",
         "runtimes/revit-native/CommandsExecutorSite.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "site.toposolid.subdivision",
@@ -686,7 +785,7 @@
         "tests/revit-commands/CatalogueSite.cs",
         "runtimes/revit-native/CommandsExecutorSite.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "site.component.place",
@@ -701,7 +800,7 @@
         "tests/revit-commands/CatalogueFamilies.cs",
         "runtimes/revit-native/CommandsExecutorFamilies.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "site.grading_pad_property",
@@ -931,7 +1030,7 @@
         "tests/revit-commands/CatalogueFamilies.cs",
         "runtimes/revit-native/CommandsExecutorFamilies.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "content.family.query_door_window",
@@ -965,7 +1064,7 @@
         "tests/revit-commands/CatalogueFamilies.cs",
         "runtimes/revit-native/CommandsExecutorFamilies.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Not recorded in docs/features.json, so not claimed beyond compiled (contract tests in the evidence test file, executor compiled in the native-build job)."
     },
     {
       "id": "content.component.place",
@@ -980,7 +1079,7 @@
         "tests/revit-commands/CatalogueFamilies.cs",
         "runtimes/revit-native/CommandsExecutorFamilies.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "content.component.hosted",
@@ -1015,7 +1114,7 @@
         "tests/revit-commands/CatalogueMaterialTypes.cs",
         "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "content.material.edit",
@@ -1030,7 +1129,7 @@
         "tests/revit-commands/CatalogueMaterialTypes.cs",
         "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "content.type.wall_layers",
@@ -1046,7 +1145,7 @@
         "tests/revit-commands/CatalogueMaterialTypes.cs",
         "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "content.type.floor_layers",
@@ -1061,7 +1160,7 @@
         "tests/revit-commands/CatalogueMaterialTypes.cs",
         "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "content.type.roof_layers",
@@ -1077,7 +1176,7 @@
         "tests/revit-commands/CatalogueMaterials.cs",
         "runtimes/revit-native/CommandsExecutorMaterials.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "content.type.change",
@@ -1092,7 +1191,7 @@
         "tests/revit-commands/CatalogueMaterialTypes.cs",
         "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "content.parameters.project_shared",
@@ -1117,7 +1216,8 @@
       "evidence": [
         "tests/revit-commands/CatalogueModify.cs",
         "runtimes/revit-native/CommandsExecutorModify.cs"
-      ]
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); the cited feature records compiled only, so not claimed beyond it."
     },
     {
       "id": "modify.delete",
@@ -1259,7 +1359,7 @@
         "tests/revit-commands/CatalogueExportSave.cs",
         "runtimes/revit-native/CommandsExecutorExportSave.cs"
       ],
-      "notes": "Save-close-reopen is verified only inside the Test A/B room fixture (test-a-native-room-delivery), not through document.save. No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Save-close-reopen is verified only inside the Test A/B room fixture (test-a-native-room-delivery), not through document.save. Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "file.save_as_central",
@@ -1283,7 +1383,7 @@
         "tests/revit-commands/CatalogueExportSave.cs",
         "runtimes/revit-native/CommandsExecutorExportSave.cs"
       ],
-      "notes": "No docs/features.json entry yet; contract unit-tested in the evidence test file, executor compiled in the native-build job, never run in Revit."
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
       "id": "file.export_cad_pdf",
