@@ -116,3 +116,9 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - Optional decision: for lots between party walls (medianeras), confirm that illumination windows may go only on the front and back (contrafrente) footprint edges; P7-05 currently takes the allowed edges as an option (default all four).
 - Optional: if you have a real CAD plan with room-tag blocks (ATTRIB NAME/AREA), drop a copy in the repo's tests/cad/fixtures via a relay request to replace the hand-written fixture.
 - Still open: 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run on a test copy (Load Once), 🔒 N21 `... -Runs 1`, escritorio/estudio/biblioteca class, Uniclass licence.
+
+## Relay152 (2026-11-04, cloud)
+- No new required owner action (P2-06 provenance ledger, P10-06 jurisdiction registry, P5-04 style defaults into the intent compiler are headless and unit-tested in CI).
+- FYI: skills/ now contains a clearly fictitious stub jurisdiction pack `xx.example.codigo-ejemplo` (every rule marked STUB, refused unless a caller opts in) used only to prove multi-jurisdiction selection. Say in OWNER.md if you'd rather it lived under tests/.
+- Optional: the style packs don't define a door height or an interior wall type name; if you want defaults (e.g. door 2.05 m, interior "Tabique 10"), tell a relay the values.
+- Still open: 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run on a test copy (Load Once), 🔒 N21 `... -Runs 1`, escritorio/estudio/biblioteca class, Uniclass licence, party-wall facade edges (P7-05).
