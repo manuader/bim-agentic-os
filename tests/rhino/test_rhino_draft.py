@@ -646,16 +646,18 @@ class ReviewNonFinite(Base):
         self.assertAccounted(model, rd.draft_model(model, 'short.3dm', project_id=sid(9)), 'degenerate')
 
 
-# Builds .3dm files holding a block (instance) definition, in a child process. InstanceDefinitions.Add in
-# rhino3dm 8.17 can leave the native model pointing at the Python-owned member geometry and attributes, so tearing
-# them down in the test process crashed intermittently (SIGSEGV at frame exit). The child keeps every object alive
-# and leaves with os._exit after writing, so no native destructor runs; the test process only reads the file.
+# Builds one .3dm holding a block (instance) definition, in a fresh child process. rhino3dm 8.17 crashes (SIGSEGV)
+# in InstanceDefinitions.Add once a model with a block definition has been written in the same process (CI probe:
+# the 2nd or 3rd Add after a Write died in every variant; 40 Adds without Write, and 40 written models without
+# blocks, did not). Building in the test process therefore crashed the suite intermittently. Each child does one
+# Add and one Write, keeps every object alive and leaves with os._exit, so no native destructor runs either. The
+# test process only reads the written files, through the adapter's normal path.
 BLOCK_BUILDER = r"""
 import os, sys, uuid
 import rhino3dm
 P3 = rhino3dm.Point3d
 keep = []
-for out in sys.argv[1:]:
+for out in sys.argv[1:2]:
     model = rhino3dm.File3dm()
     model.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
     spaces, walls = rhino3dm.Layer(), rhino3dm.Layer()
@@ -684,8 +686,9 @@ os._exit(0)
 class ReviewBlocks(Base):
     def block_files(self, count):
         paths = [self.path(f'block{n}/block.3dm') for n in range(count)]
-        built = subprocess.run([sys.executable, '-I', '-c', BLOCK_BUILDER, *map(str, paths)], capture_output=True, text=True, timeout=300)
-        self.assertEqual(0, built.returncode, built.stdout + built.stderr)
+        for path in paths:
+            built = subprocess.run([sys.executable, '-I', '-c', BLOCK_BUILDER, str(path)], capture_output=True, text=True, timeout=120)
+            self.assertEqual(0, built.returncode, f'{path}: {built.stdout} {built.stderr}')
         return paths
 
     def members(self, path):
@@ -707,7 +710,7 @@ class ReviewBlocks(Base):
         self.assertBlockSkipped(self.block_files(1)[0])
 
     def test_block_definition_construction_and_reading_are_stable(self):
-        # Stability guard for the intermittent crash: 50 constructions, each read and drafted in this process.
+        # Stability guard for the intermittent crash: 50 constructions (one per child), all read and drafted here.
         for path in self.block_files(50):
             with self.subTest(path.parent.name):
                 self.assertBlockSkipped(path)
