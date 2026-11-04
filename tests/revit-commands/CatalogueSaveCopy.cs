@@ -70,7 +70,7 @@ static class CatalogueSaveCopyChecks
             "document.save_copy is a write catalogue command with tool revit_document_save_copy that Find resolves");
         var all = RevitCommandCatalogue.All.ToList();
         var at = spec is null ? -1 : all.IndexOf(spec);
-        Check(at > 0 && at + 1 < all.Count && all[at - 1].Name == "document.save" && all[at + 1].Name == "command.batch", "document.save_copy follows document.save and precedes command.batch in the catalogue");
+        Check(at > 0 && at + 1 < all.Count && all[at - 1].Name == "document.save" && all[at + 1].Name == "roof.create_extrusion", "document.save_copy follows document.save and precedes roof.create_extrusion (then command.batch) in the catalogue");
         Check(RevitCommandCatalogue.All.Select(s => s.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(s => s.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct with document.save_copy");
         Check(!RevitCommandCatalogue.IsDestructive("document.save_copy") && !RevitCommandCatalogue.WritesFiles("document.save_copy"), "document.save_copy never overwrites a file: not destructive");
         Check(!RevitCommandBatch.IsStepCommand(spec), "document.save_copy is not a command.batch step (no save inside a transaction group)");
