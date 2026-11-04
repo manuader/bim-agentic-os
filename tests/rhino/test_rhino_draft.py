@@ -853,5 +853,88 @@ class ReviewDependencies(Base):
         self.assertEqual(strip(one), strip(two))
 
 
+class ReReviewErrors(Base):
+    def patched(self, name, replacement):
+        original = rd._Draft.__dict__[name]
+        setattr(rd._Draft, name, replacement)
+        self.addCleanup(setattr, rd._Draft, name, original)
+        return original
+
+    def test_programming_errors_propagate(self):
+        def broken(self, geometry, source, inherited):
+            a, b = (1, 2, 3)  # an unpack mismatch is a bug, not degenerate geometry
+        self.patched('space', broken)
+        with self.assertRaises(ValueError):
+            rd.draft(self.model([(rectangle(0, 0, 4, 3), 'Spaces', oid(1))]))
+
+    def test_arithmetic_errors_unmap_the_object(self):
+        def overflow(self, geometry, source, inherited):
+            raise OverflowError('math range error')
+        self.patched('space', overflow)
+        self.assertUnmapped('degenerate', rd.draft(self.model([(rectangle(0, 0, 4, 3), 'Spaces', oid(1))])), sid(1))
+
+    def test_arithmetic_error_in_one_segment_unmaps_only_that_segment(self):
+        original = rd._Draft.__dict__['check_wall'].__func__
+        calls = []
+        def flaky(values, base):
+            calls.append(values)
+            if len(calls) == 2:
+                raise OverflowError('math range error')
+            return original(values, base)
+        self.patched('check_wall', staticmethod(flaky))
+        result = rd.draft(self.model([(polyline([(0, 0), (1, 0), (2, 0), (3, 0)]), 'Walls', oid(1))]))
+        self.assertEqual([0, 2], sorted(p['source']['part'] for p in result['proposals']))
+        self.assertEqual([(1, 'degenerate')], [(u['part'], u['reason']) for u in result['unmapped']])
+
+    def test_object_level_failure_rolls_back_its_proposals(self):
+        original = rd._Draft.__dict__['wall']
+        def fails_after_proposing(self, geometry, source, inherited):
+            original(self, geometry, source, inherited)
+            raise OverflowError('math range error')
+        self.patched('wall', fails_after_proposing)
+        result = rd.draft(self.model([(polyline([(0, 0), (1, 0), (2, 0)]), 'Walls', oid(1)), (rectangle(0, 0, 4, 3), 'Spaces', oid(2))]))
+        self.assertEqual([sid(2)], [p['key'] for p in result['proposals']])
+        self.assertUnmapped('degenerate', result, sid(1))
+
+
+class ReReviewDeclared(Base):
+    def variant(self, edit):
+        project = copy.deepcopy(FIXTURE)
+        edit({e['Id'][-2:]: e for e in project['Elements']}, project)
+        return self.draft(self.exported(project))
+
+    def test_repeated_declared_dependencies_are_kept_once(self):
+        result = self.variant(lambda e, p: e['11'].update(Dependencies=[e['10']['Id'], e['10']['Id']]))
+        wall = self.proposal(result, '00000000-0000-0000-0000-000000000011')
+        self.assertEqual(['00000000-0000-0000-0000-000000000010'], wall['element']['Dependencies'])
+        self.assertIn('dependencies-declared', wall['notes'])
+
+    def test_filtered_declared_dependencies_are_not_noted_as_declared(self):
+        result = self.variant(lambda e, p: e['12'].update(Dependencies=[e['10']['Id'], e['11']['Id']]))
+        wall = self.proposal(result, '00000000-0000-0000-0000-000000000012')
+        self.assertEqual(['00000000-0000-0000-0000-000000000010'], wall['element']['Dependencies'])
+        self.assertNotIn('dependencies-declared', wall['notes'])
+        self.assertIn('declared-dependencies-filtered', wall['notes'])
+
+    def test_all_declared_dependencies_dropped_falls_back_to_geometry(self):
+        result = self.variant(lambda e, p: e['14'].update(Dependencies=[e['11']['Id']]))
+        wall = self.proposal(result, '00000000-0000-0000-0000-000000000014')
+        self.assertEqual([], wall['element']['Dependencies'])
+        self.assertNotIn('dependencies-declared', wall['notes'])
+        self.assertIn('declared-dependencies-filtered', wall['notes'])
+
+    def test_every_declared_level_must_match_the_base(self):
+        upper = '00000000-0000-0000-0000-000000000015'
+        def edit(e, p):
+            p['Elements'].insert(1, {'Id': upper, 'Kind': 'level', 'GeometryMetres': [5.0], 'Dependencies': [],
+                                     'Provenance': {'Source': 'upper level', 'Approval': 'proposed'}})
+            e['12'].update(Dependencies=[e['10']['Id'], upper])
+        result = self.variant(edit)
+        wall = self.proposal(result, '00000000-0000-0000-0000-000000000012')
+        self.assertEqual(['00000000-0000-0000-0000-000000000010'], wall['element']['Dependencies'])
+        self.assertIn('declared-dependencies-ignored', wall['notes'])
+        self.assertNotIn('dependencies-declared', wall['notes'])
+
+
 if __name__ == '__main__':
     unittest.main()
