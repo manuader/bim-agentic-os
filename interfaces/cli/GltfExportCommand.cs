@@ -9,7 +9,8 @@ namespace Bim.Cli;
 
 // P8-07 `export-gltf project.json output.glb|output.gltf`: BIM-IR (bounded input, BoundedInput) to a new glTF 2.0
 // file. The output path is bounded too: extension .glb or .gltf, an existing parent directory that is not a link, no
-// link at the path itself, no Windows device namespace, and never an existing file or directory (the exporter creates
+// link at the path itself, no Windows device namespace, no ':' after a drive designator (NTFS alternate data streams),
+// and never an existing file or directory (the exporter creates
 // it exclusively). Every refusal prints one JSON envelope and writes nothing. Contract: adapters/gltf/README.md.
 internal static class GltfExportCommand
 {
@@ -57,6 +58,9 @@ internal static class GltfExportCommand
         try { full = Path.GetFullPath(path); }
         catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return "output_path_invalid"; }
         if (OperatingSystem.IsWindows() && (DeviceNamespace(path) || DeviceNamespace(full))) return "output_not_regular_file";
+        // No ':' after a drive designator, on every OS: on Windows "host.txt:model.glb" names an NTFS alternate data
+        // stream of host.txt, not a new file, so it is never a valid output.
+        if (HasStreamColon(path) || HasStreamColon(full)) return "output_path_invalid";
         var extension = Path.GetExtension(path).ToLowerInvariant();
         if (extension is not (".glb" or ".gltf")) return "output_extension_unsupported";
         format = extension[1..];
@@ -71,6 +75,13 @@ internal static class GltfExportCommand
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return "output_path_invalid"; }
         if (File.Exists(full) || Directory.Exists(full)) return "output_exists";
         return null;
+    }
+
+    // True when path holds a ':' other than a Windows drive designator ("C:" at the start, Windows only).
+    internal static bool HasStreamColon(string path)
+    {
+        var start = OperatingSystem.IsWindows() && path.Length >= 2 && char.IsAsciiLetter(path[0]) && path[1] == ':' ? 2 : 0;
+        return path.IndexOf(':', start) >= 0;
     }
 
     static bool DeviceNamespace(string path)

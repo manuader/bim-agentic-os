@@ -40,9 +40,11 @@ public static class GltfExporter
     };
 
     sealed record MeshData(int ElementIndex, string Kind, float[] Positions, float[] Normals, uint[] Indices);
-    // One opening cut in its host wall: T0 < T1 are distances along the host axis from its start; P0/P1 the axis
-    // points where the cut starts and ends; Bottom/Top the cut's sill and head heights above the host base.
-    sealed record Cut(Guid Id, double T0, double T1, double[] P0, double[] P1, double Bottom, double Top);
+    // One opening in its host wall's plane: T0 < T1 are distances along the host axis from its start, Bottom < Top the
+    // sill and head heights above the host base (snapped to 0, the axis length and the wall height within tolerance).
+    sealed record Cut(Guid Id, double T0, double T1, double Bottom, double Top);
+    // One solid box of a split wall: axis distances S..E and heights Bottom..Top above the host base.
+    sealed record Segment(double S, double E, double Bottom, double Top);
 
     // Count of door/window elements the export cuts into host walls (all of them once validation passes).
     public static int OpeningCount(Project project) => project?.Elements?.Count(e => e?.Kind is Door or Window) ?? 0;
@@ -143,9 +145,11 @@ public static class GltfExporter
         return byId[walls[0]];
     }
 
-    // Openings per host wall, sorted along the axis and validated: on the axis, inside the span and height, no
-    // overlap, and every remaining pier, sill wall and lintel either absent (within OpeningTolerance) or >= MinLength.
-    static Dictionary<Guid, List<Cut>> Cuts(Project project, Dictionary<Guid, Element> byId)
+    // Openings per host wall, validated (on the axis, inside its span and height, no two overlapping in the wall plane)
+    // and turned into the solid boxes left over: the axis is split at every opening end (ends within OpeningTolerance
+    // are one break point), and each stretch keeps the height ranges no opening covers, bottom up. Every break-point
+    // gap and solid height range is either within OpeningTolerance (dropped) or at least MinLength (else gltf_precision).
+    static Dictionary<Guid, List<Segment>> Cuts(Project project, Dictionary<Guid, Element> byId)
     {
         const double Tol = OpeningTolerance;
         var cuts = new Dictionary<Guid, List<Cut>>();
@@ -162,37 +166,65 @@ public static class GltfExporter
             if (!(Math.Abs(t1 - t0) > 0) || !(height > 0)) throw new GltfExportException("gltf_opening_geometry", id + " width and height must be positive");
             LengthOk(Math.Abs(t1 - t0), "opening width", o); LengthOk(height, "opening height", o);
             if (Across(g[0], g[1]) > Tol || Across(g[2], g[3]) > Tol) throw new GltfExportException("gltf_opening_outside_wall", id + " end points are off the host axis");
-            double[] p0 = [g[0], g[1]], p1 = [g[2], g[3]];
-            if (t1 < t0) { (t0, t1) = (t1, t0); (p0, p1) = (p1, p0); }
+            if (t1 < t0) (t0, t1) = (t1, t0);
             if (t0 < -Tol || t1 > len + Tol || sill < -Tol || sill + height > w[4] + Tol) throw new GltfExportException("gltf_opening_outside_wall", id + " is outside its host span or height");
             // Snap to the host start, end, base and top.
-            if (t0 <= Tol) { t0 = 0; p0 = [w[0], w[1]]; }
-            if (len - t1 <= Tol) { t1 = len; p1 = [w[2], w[3]]; }
+            if (t0 <= Tol) t0 = 0;
+            if (len - t1 <= Tol) t1 = len;
             var bottom = sill <= Tol ? 0 : sill;
             var top = w[4] - (sill + height) <= Tol ? w[4] : sill + height;
-            if (bottom > 0 && bottom < MinLength) throw new GltfExportException("gltf_precision", id + " sill wall under 1 mm");
-            if (top < w[4] && w[4] - top < MinLength) throw new GltfExportException("gltf_precision", id + " lintel under 1 mm");
             if (!cuts.TryGetValue(host.Id, out var list)) cuts[host.Id] = list = [];
-            list.Add(new Cut(o.Id, t0, t1, p0, p1, bottom, top));
+            list.Add(new Cut(o.Id, t0, t1, bottom, top));
         }
+        var segments = new Dictionary<Guid, List<Segment>>();
         foreach (var (hostId, list) in cuts)
         {
+            var wall = byId[hostId];
+            double len = WallLength(wall), h = wall.GeometryMetres[4];
+            var hid = hostId.ToString("D");
             list.Sort((a, b) => a.T0 != b.T0 ? a.T0.CompareTo(b.T0) : a.Id.CompareTo(b.Id));
-            var len = WallLength(byId[hostId]);
-            double previous = 0;
+            // Overlap in the wall plane: along the axis and in height, each by more than the tolerance.
             for (var i = 0; i < list.Count; i++)
+                for (var k = i + 1; k < list.Count && list[k].T0 < list[i].T1 - Tol; k++)
+                    if (Math.Min(list[i].Top, list[k].Top) - Math.Max(list[i].Bottom, list[k].Bottom) > Tol)
+                        throw new GltfExportException("gltf_opening_overlap", list[k].Id.ToString("D") + " overlaps " + list[i].Id.ToString("D"));
+            // Break points: 0, the axis length and every opening end, merged into the first of each run within Tol.
+            var values = new List<double> { 0, len };
+            foreach (var c in list) { values.Add(c.T0); values.Add(c.T1); }
+            values = values.Distinct().Order().ToList();
+            var breaks = new List<double>();
+            var mapped = new Dictionary<double, double>();
+            foreach (var v in values)
             {
-                var c = list[i];
-                var gap = c.T0 - previous;
-                if (gap < -Tol) throw new GltfExportException("gltf_opening_overlap", c.Id.ToString("D") + " overlaps " + list[i - 1].Id.ToString("D"));
-                if (i > 0 && gap <= Tol) list[i] = c = c with { T0 = list[i - 1].T1, P0 = list[i - 1].P1 };
-                else if (gap > Tol && gap < MinLength) throw new GltfExportException("gltf_precision", c.Id.ToString("D") + " pier before it under 1 mm");
-                previous = c.T1;
+                if (breaks.Count > 0 && v - breaks[^1] <= Tol) { mapped[v] = breaks[^1]; continue; }
+                if (breaks.Count > 0 && v - breaks[^1] < MinLength) throw new GltfExportException("gltf_precision", hid + " has a pier under 1 mm between openings or wall ends");
+                breaks.Add(v); mapped[v] = v;
             }
-            var tail = len - previous;
-            if (tail > Tol && tail < MinLength) throw new GltfExportException("gltf_precision", list[^1].Id.ToString("D") + " pier after it under 1 mm");
+            var snapped = list.Select(c => c with { T0 = mapped[c.T0], T1 = mapped[c.T1] }).ToList();
+            var parts = new List<Segment>();
+            for (var n = 0; n + 1 < breaks.Count; n++)
+            {
+                double s0 = breaks[n], s1 = breaks[n + 1];
+                var cover = snapped.Where(c => c.T0 <= s0 && c.T1 >= s1).OrderBy(c => c.Bottom).ThenBy(c => c.Id).ToList();
+                double at = 0;
+                foreach (var c in cover)
+                {
+                    Solid(s0, s1, at, c.Bottom);
+                    at = Math.Max(at, c.Top);
+                }
+                Solid(s0, s1, at, h);
+            }
+            segments[hostId] = parts;
+
+            void Solid(double from, double to, double bottom, double top)
+            {
+                var gap = top - bottom;
+                if (gap <= Tol) return;
+                if (gap < MinLength) throw new GltfExportException("gltf_precision", hid + " has a sill wall, lintel or mullion under 1 mm");
+                parts.Add(new Segment(from, to, bottom, top));
+            }
         }
-        return cuts;
+        return segments;
     }
 
     static double WallLength(Element wall)
@@ -249,16 +281,16 @@ public static class GltfExporter
         indices.AddRange([b, b + 1, b + 2, b, b + 2, b + 3]);
     }
 
-    // A wall without openings is one flat-shaded box from its start A to its end B. With openings it is split into boxes
-    // in axis order: the pier before each opening, then the part below it (sill wall, when sill > 0) and above it
-    // (lintel, when its head is below the top), and the final pier. Zero-length parts are not emitted.
-    static MeshData Wall(int index, Element e, double z0, List<Cut>? cuts)
+    // A wall without openings is one flat-shaded box from its start A to its end B. With openings it is the solid
+    // boxes Cuts left over, in axis order and bottom up within each stretch; a box's ends are A + s * u on the axis
+    // (exactly A at s = 0 and B at the axis length), so its faces sit exactly thickness/2 either side of the axis.
+    static MeshData Wall(int index, Element e, double z0, List<Segment>? segments)
     {
         var g = e.GeometryMetres;
         double ax = g[0], ay = g[1], bx = g[2], by = g[3], h = g[4], t = g[5];
         double dx = bx - ax, dy = by - ay, len = Math.Sqrt(dx * dx + dy * dy);
         double ux = dx / len, uy = dy / len, nx = -uy, ny = ux, ht = t / 2, z1 = z0 + h;
-        var boxes = 1 + 3 * (cuts?.Count ?? 0);
+        var boxes = segments?.Count ?? 1;
         var positions = new List<float>(72 * boxes); var normals = new List<float>(72 * boxes); var indices = new List<uint>(36 * boxes);
         void Box(double[] a, double[] b, double za, double zb)
         {
@@ -272,16 +304,9 @@ public static class GltfExporter
             Quad(positions, normals, indices, [At(p1, za), At(p0, za), At(p0, zb), At(p1, zb)], nx, ny, 0);   // left face
             Quad(positions, normals, indices, [At(p0, za), At(p3, za), At(p3, zb), At(p0, zb)], -ux, -uy, 0); // start face
         }
-        double[] cursor = [ax, ay];
-        double at = 0;
-        foreach (var c in cuts ?? new List<Cut>())
-        {
-            if (c.T0 > at) Box(cursor, c.P0, z0, z1);
-            if (c.Bottom > 0) Box(c.P0, c.P1, z0, z0 + c.Bottom);
-            if (c.Top < h) Box(c.P0, c.P1, z0 + c.Top, z1);
-            cursor = c.P1; at = c.T1;
-        }
-        if (at < len) Box(cursor, [bx, by], z0, z1);
+        double[] Station(double s) => s == 0 ? [ax, ay] : s == len ? [bx, by] : [ax + ux * s, ay + uy * s];
+        if (segments is null) Box([ax, ay], [bx, by], z0, z1);
+        else foreach (var p in segments) Box(Station(p.S), Station(p.E), z0 + p.Bottom, z0 + p.Top);
         return new(index, GeometryCodec.Wall, positions.ToArray(), normals.ToArray(), indices.ToArray());
     }
 
@@ -344,7 +369,7 @@ public static class GltfExporter
         for (var m = 0; m < meshes.Count; m++)
         {
             var e = project.Elements[meshes[m].ElementIndex];
-            if (e.Kind == GeometryCodec.Wall && cuts.TryGetValue(e.Id, out var wallCuts)) meshes[m] = Wall(meshes[m].ElementIndex, e, Elevation(e.Id), wallCuts);
+            if (e.Kind == GeometryCodec.Wall && cuts.TryGetValue(e.Id, out var wallParts)) meshes[m] = Wall(meshes[m].ElementIndex, e, Elevation(e.Id), wallParts);
         }
 
         var kinds = MaterialKinds.Where(k => meshes.Any(m => m.Kind == k)).ToList();
