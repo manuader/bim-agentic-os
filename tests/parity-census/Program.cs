@@ -5,7 +5,8 @@ using System.Text.Json.Nodes;
 // P9-04 oracle: capabilities/revit-parity-census.json lists Revit desktop functions by area, each with the catalogue
 // commands that cover it (every name must be in RevitCommandCatalogue.All and every catalogue command must appear),
 // one of the eight capability states, evidence files that exist and docs/features.json ids whose status bounds the
-// claim (verified-in-revit needs a verified feature whose scope quotes verified_scope). The per-area summary
+// claim through feature_coverage (each command of a verified-in-revit entry must be covered by a cited verified
+// feature whose scope quotes verified_scope) and notes that docs/revit-playbook.md does not contradict. The per-area summary
 // capabilities/revit-parity-summary.md must equal the one generated here. The rules are first checked against
 // small in-memory censuses so each refusal is shown to fire.
 int passed = 0, failed = 0;
@@ -36,7 +37,8 @@ var fakeLedger = new Dictionary<string, LedgerFeature>(StringComparer.Ordinal)
     ["feat-compiled"] = new("feat-compiled", "compiled", "Executor compiled only."),
     ["feat-ifc"] = new("feat-ifc", "integration-tested (ifc)", "IFC round trip."),
 };
-bool FakeExists(string path) => path is "AGENTS.md" or "tests/x/Program.cs";
+const string FakePlaybook = "Lessons: query the levels first with `query.levels`; curtain_wall.create snaps to joined walls.";
+bool FakeExists(string path) => path is "AGENTS.md" or "tests/x/Program.cs" or "runtimes/x/Executor.cs" or "tests/golden/README.md";
 JsonObject Entry(string id, string area, string state, string[] commands, string[] features, string[] evidence) => new()
 {
     ["id"] = id, ["area"] = area, ["revit_function"] = "Function " + id, ["commands"] = Arr(commands), ["state"] = state,
@@ -45,29 +47,44 @@ JsonObject Entry(string id, string area, string state, string[] commands, string
 JsonObject Base()
 {
     var wall = Entry("arch.wall", "architecture", "verified-in-revit", new[] { "wall.create" }, new[] { "feat-verified" }, new[] { "AGENTS.md" });
-    wall["verified_scope"] = "wall create 4/4 OK";
+    wall["verified_scope"] = "wall create 4/4 OK on a test copy";
     return new JsonObject
     {
         ["schema_version"] = 1,
         ["states"] = Arr(ParityCensus.States),
         ["areas"] = Arr("architecture", "mep"),
+        ["feature_coverage"] = new JsonObject
+        {
+            ["feat-verified"] = new JsonObject { ["commands"] = Arr("wall.create"), ["paths"] = Arr("typed-batch") },
+            ["feat-compiled"] = new JsonObject { ["commands"] = Arr("query.levels") },
+        },
         ["entries"] = new JsonArray(
             wall,
-            Entry("query.levels", "architecture", "compiled", new[] { "query.levels" }, new[] { "feat-compiled" }, new[] { "AGENTS.md" }),
+            Entry("query.levels", "architecture", "compiled", new[] { "query.levels" }, new[] { "feat-compiled" }, new[] { "runtimes/x/Executor.cs" }),
             Entry("mep.duct", "mep", "unsupported", Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>())),
     };
 }
 JsonObject At(JsonObject census, int index) => (JsonObject)census["entries"]![index]!;
-List<string> Run(JsonObject census) => ParityCensus.Validate(census, fakeCatalogue, fakeLedger, FakeExists);
+JsonObject Coverage(JsonObject census) => (JsonObject)census["feature_coverage"]!;
+List<string> Run(JsonObject census) => ParityCensus.Validate(census, fakeCatalogue, fakeLedger, FakeExists, FakePlaybook);
+JsonObject WithVia()
+{
+    var census = Base();
+    var level = Entry("arch.level", "architecture", "verified-in-revit", Array.Empty<string>(), new[] { "feat-verified" }, new[] { "tests/x/Program.cs" });
+    level["via"] = "typed-batch";
+    level["verified_scope"] = "wall create 4/4 OK on a test";
+    ((JsonArray)census["entries"]!).Add(level);
+    return census;
+}
 
 var baseErrors = Run(Base());
 Check(baseErrors.Count == 0, "a well-formed census passes", string.Join("; ", baseErrors));
-var withVia = Base();
-var level = Entry("arch.level", "architecture", "verified-in-revit", Array.Empty<string>(), new[] { "feat-verified" }, new[] { "tests/x/Program.cs" });
-level["via"] = "typed batch pipe";
-level["verified_scope"] = "wall create 4/4";
-((JsonArray)withVia["entries"]!).Add(level);
-Check(Run(withVia).Count == 0, "a non-catalogue path (via) with a verified feature passes", string.Join("; ", Run(withVia)));
+Check(Run(WithVia()).Count == 0, "a non-catalogue path (via) covered by a verified feature passes", string.Join("; ", Run(WithVia())));
+var neverRunElsewhere = Base();
+At(neverRunElsewhere, 2)["notes"] = "Ducts were never run in Revit.";
+Check(Run(neverRunElsewhere).Count == 0, "a 'never run in Revit' note passes when the playbook names none of its commands", string.Join("; ", Run(neverRunElsewhere)));
+Check(ParityCensus.MentionsCommand(FakePlaybook, "query.levels") && !ParityCensus.MentionsCommand(FakePlaybook, "wall.create") && !ParityCensus.MentionsCommand("Use curtain_wall.creates", "curtain_wall.create"),
+    "playbook command matching is by whole command name (curtain_wall.create does not mention wall.create)");
 
 var mutations = new (string Name, Action<JsonObject> Mutate, string Code)[]
 {
@@ -86,20 +103,32 @@ var mutations = new (string Name, Action<JsonObject> Mutate, string Code)[]
     ("evidence path escapes the repository", c => At(c, 1)["evidence"] = Arr("../AGENTS.md"), "evidence_not_found:query.levels:../AGENTS.md"),
     ("absolute evidence path", c => At(c, 1)["evidence"] = Arr("/AGENTS.md"), "evidence_not_found:query.levels:/AGENTS.md"),
     ("claimed state without evidence", c => At(c, 1)["evidence"] = Arr(), "evidence_empty:query.levels"),
+    ("compiled without a core/runtimes/adapters/interfaces file", c => At(c, 1)["evidence"] = Arr("AGENTS.md"), "compiled_without_source:query.levels"),
     ("unknown feature id", c => At(c, 1)["features"] = Arr("nope"), "feature_unknown:query.levels:nope"),
-    ("verified-in-revit without a verified feature", c => At(c, 0)["features"] = Arr("feat-compiled"), "verified_without_feature:arch.wall"),
-    ("verified-in-revit with no features", c => At(c, 1)["state"] = "verified-in-revit", "verified_without_feature:query.levels"),
-    ("verified scope not quoted by the feature", c => At(c, 0)["verified_scope"] = "wall create 5/5 OK", "verified_scope_mismatch:arch.wall"),
+    ("cited feature that covers none of the entry's commands", c => At(c, 1)["features"] = Arr("feat-compiled", "feat-ifc"), "feature_not_covering:query.levels:feat-ifc"),
+    ("verified-in-revit citing only a compiled feature", c => At(c, 0)["features"] = Arr("feat-compiled"), "verified_without_feature:arch.wall"),
+    ("verified-in-revit with features = []", c => { At(c, 1)["state"] = "verified-in-revit"; At(c, 1)["features"] = Arr(); }, "verified_without_feature:query.levels"),
+    ("query.levels verified with a feature mapped only to wall.create", c => { At(c, 1)["state"] = "verified-in-revit"; At(c, 1)["features"] = Arr("feat-verified"); At(c, 1)["verified_scope"] = "wall create 4/4 OK on a test copy"; }, "verified_command_uncovered:query.levels:query.levels"),
+    ("verified scope not quoted by the feature", c => At(c, 0)["verified_scope"] = "wall create 5/5 OK on a test copy", "verified_scope_mismatch:arch.wall"),
     ("verified scope missing", c => At(c, 0).Remove("verified_scope"), "verified_scope_mismatch:arch.wall"),
-    ("verified scope on an unverified entry", c => At(c, 1)["verified_scope"] = "Executor", "verified_scope_unexpected:query.levels"),
-    ("state above its features", c => { At(c, 1)["state"] = "unit-tested"; At(c, 1)["evidence"] = Arr("tests/x/Program.cs"); }, "state_exceeds_features:query.levels"),
+    ("verified scope shorter than 20 characters", c => At(c, 0)["verified_scope"] = "wall create", "verified_scope_too_short:arch.wall"),
+    ("verified scope on an unverified entry", c => At(c, 1)["verified_scope"] = "Executor compiled only", "verified_scope_unexpected:query.levels"),
+    ("state above the cited feature covering the command", c => { At(c, 1)["state"] = "unit-tested"; At(c, 1)["evidence"] = Arr("tests/x/Program.cs"); }, "state_exceeds_coverage:query.levels:query.levels"),
+    ("state above compiled with no covering feature", c => { At(c, 1)["state"] = "unit-tested"; At(c, 1)["features"] = Arr(); At(c, 1)["evidence"] = Arr("tests/x/Program.cs"); }, "state_exceeds_coverage:query.levels:query.levels"),
     ("unit-tested without a test file", c => { At(c, 1)["state"] = "unit-tested"; At(c, 1)["features"] = Arr(); }, "unit_tested_without_test:query.levels"),
+    ("unit-tested with only tests/golden evidence", c => { At(c, 1)["state"] = "unit-tested"; At(c, 1)["evidence"] = Arr("tests/golden/README.md"); }, "unit_tested_without_test:query.levels"),
     ("integration-tested without an ifc feature", c => { At(c, 1)["state"] = "integration-tested (ifc)"; At(c, 1)["features"] = Arr(); }, "integration_without_feature:query.levels"),
     ("unsupported but naming a command", c => { At(c, 2)["commands"] = Arr("query.levels"); }, "unsupported_with_path:mep.duct"),
-    ("claimed state with no command or path", c => { At(c, 2)["state"] = "compiled"; At(c, 2)["evidence"] = Arr("AGENTS.md"); }, "state_without_path:mep.duct"),
-    ("via next to commands", c => { At(c, 1)["via"] = "typed batch"; }, "via_with_commands:query.levels"),
-    ("via without a feature", c => { At(c, 2)["state"] = "compiled"; At(c, 2)["evidence"] = Arr("AGENTS.md"); At(c, 2)["via"] = "manual pipe"; }, "via_without_feature:mep.duct"),
+    ("claimed state with no command or path", c => { At(c, 2)["state"] = "compiled"; At(c, 2)["evidence"] = Arr("runtimes/x/Executor.cs"); }, "state_without_path:mep.duct"),
+    ("via next to commands", c => { At(c, 1)["via"] = "typed-batch"; }, "via_with_commands:query.levels"),
+    ("via without a feature", c => { At(c, 2)["state"] = "compiled"; At(c, 2)["evidence"] = Arr("runtimes/x/Executor.cs"); At(c, 2)["via"] = "manual pipe"; }, "via_without_feature:mep.duct"),
     ("empty via", c => { At(c, 2)["via"] = ""; }, "via_invalid:mep.duct"),
+    ("'never run in Revit' note on a command the playbook used", c => At(c, 1)["notes"] = "Executor never run in Revit.", "notes_contradict_playbook:query.levels:query.levels"),
+    ("empty notes", c => At(c, 1)["notes"] = " ", "notes_invalid:query.levels"),
+    ("feature coverage missing", c => c.Remove("feature_coverage"), "feature_coverage_missing"),
+    ("coverage for an unknown feature", c => Coverage(c)["nope"] = new JsonObject { ["commands"] = Arr("wall.create") }, "coverage_feature_unknown:nope"),
+    ("coverage naming an unknown command", c => Coverage(c)["feat-compiled"] = new JsonObject { ["commands"] = Arr("query.levels", "wall.delete") }, "coverage_command_unknown:feat-compiled:wall.delete"),
+    ("coverage that covers nothing", c => Coverage(c)["feat-ifc"] = new JsonObject { ["commands"] = Arr() }, "coverage_invalid:feat-ifc"),
     ("wrong schema version", c => c["schema_version"] = 2, "schema_version"),
 };
 foreach (var (name, mutate, code) in mutations)
@@ -109,9 +138,20 @@ foreach (var (name, mutate, code) in mutations)
     var errors = Run(census);
     Check(errors.Contains(code), "refused: " + name + " (" + code + ")", string.Join("; ", errors));
 }
+var viaUncovered = WithVia();
+At(viaUncovered, 3)["via"] = "other-path";
+Check(Run(viaUncovered).Contains("verified_command_uncovered:arch.level:via:other-path"), "refused: verified via path no cited verified feature covers", string.Join("; ", Run(viaUncovered)));
 
+// Summary: counts per area and state; independent of entry order, rows follow the "areas" order.
 var summary = ParityCensus.Summary(Base(), fakeCatalogue.Length);
-Check(summary == ParityCensus.Summary(Base(), fakeCatalogue.Length), "summary is deterministic");
+var reordered = Base();
+var reversedEntries = reordered["entries"]!.AsArray().Select(node => node!.DeepClone()).Reverse().ToArray();
+reordered["entries"] = new JsonArray(reversedEntries);
+Check(ParityCensus.Summary(reordered, fakeCatalogue.Length) == summary, "summary does not depend on entry order");
+var areasSwapped = Base();
+areasSwapped["areas"] = Arr("mep", "architecture");
+var swapped = ParityCensus.Summary(areasSwapped, fakeCatalogue.Length);
+Check(swapped != summary && swapped.IndexOf("| mep |", StringComparison.Ordinal) < swapped.IndexOf("| architecture |", StringComparison.Ordinal), "summary rows follow the areas order");
 Check(summary.Contains("| architecture | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 2 |\n", StringComparison.Ordinal)
     && summary.Contains("| mep | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 1 |\n", StringComparison.Ordinal)
     && summary.Contains("| all | 0 | 1 | 0 | 0 | 1 | 0 | 1 | 0 | 3 |\n", StringComparison.Ordinal)
@@ -138,7 +178,8 @@ catch (Exception error) when (error is IOException or JsonException) { Console.W
 Check(real is JsonObject, "capabilities/revit-parity-census.json exists and is a JSON object");
 if (real is JsonObject checkedIn)
 {
-    var errors = ParityCensus.Validate(checkedIn, catalogue, ledger, path => File.Exists(Path.Combine(root, path)));
+    var playbook = File.ReadAllText(Path.Combine(root, "docs", "revit-playbook.md"));
+    var errors = ParityCensus.Validate(checkedIn, catalogue, ledger, path => File.Exists(Path.Combine(root, path)), playbook);
     Check(errors.Count == 0, "census matches the catalogue (" + catalogue.Length + " commands), the feature ledger and the evidence files", string.Join("; ", errors.Take(40)));
 
     // Revit functions the board requires the census to name (MEP ones stay listed even while unsupported).

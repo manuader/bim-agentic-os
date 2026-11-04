@@ -27,7 +27,11 @@ public static class ParityCensus
         return index <= 4 ? index : -1;
     }
 
-    public static List<string> Validate(JsonNode? census, IReadOnlyCollection<string> catalogue, IReadOnlyDictionary<string, LedgerFeature> ledger, Func<string, bool> evidenceExists)
+    public const int MinVerifiedScopeLength = 20;
+
+    // census: the parsed census; catalogue: RevitCommandCatalogue.All names; ledger: docs/features.json; playbook: the
+    // text of docs/revit-playbook.md (owner chat lessons), used to refuse "never run in Revit" notes it contradicts.
+    public static List<string> Validate(JsonNode? census, IReadOnlyCollection<string> catalogue, IReadOnlyDictionary<string, LedgerFeature> ledger, Func<string, bool> evidenceExists, string playbook)
     {
         var errors = new List<string>();
         if (census is not JsonObject root) { errors.Add("census_not_object"); return errors; }
@@ -36,9 +40,36 @@ public static class ParityCensus
         if (states is null || !states.SequenceEqual(States, StringComparer.Ordinal)) errors.Add("states_list");
         var areas = Strings(root["areas"]) ?? new List<string>();
         if (areas.Count == 0 || areas.Distinct(StringComparer.Ordinal).Count() != areas.Count) errors.Add("areas_list");
+        var catalogueSet = new HashSet<string>(catalogue, StringComparer.Ordinal);
+
+        // feature id -> what it covers: catalogue command names and "via:<path>" for non-catalogue paths.
+        var coverage = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        if (root["feature_coverage"] is not JsonObject coverageMap) errors.Add("feature_coverage_missing");
+        else
+        {
+            foreach (var (featureId, node) in coverageMap)
+            {
+                if (!ledger.ContainsKey(featureId)) errors.Add("coverage_feature_unknown:" + featureId);
+                var covers = new HashSet<string>(StringComparer.Ordinal);
+                var mapped = node as JsonObject;
+                var commands = mapped is null ? null : Strings(mapped["commands"]) ?? (mapped.ContainsKey("commands") ? null : new List<string>());
+                var paths = mapped is null ? null : Strings(mapped["paths"]) ?? (mapped.ContainsKey("paths") ? null : new List<string>());
+                if (commands is null || paths is null || commands.Count + paths.Count == 0) { errors.Add("coverage_invalid:" + featureId); continue; }
+                foreach (var command in commands)
+                {
+                    if (!catalogueSet.Contains(command)) errors.Add("coverage_command_unknown:" + featureId + ":" + command);
+                    covers.Add(command);
+                }
+                foreach (var path in paths)
+                {
+                    if (string.IsNullOrWhiteSpace(path)) errors.Add("coverage_invalid:" + featureId);
+                    covers.Add("via:" + path);
+                }
+                coverage[featureId] = covers;
+            }
+        }
         if (root["entries"] is not JsonArray entries || entries.Count == 0) { errors.Add("entries_missing"); return errors; }
 
-        var catalogueSet = new HashSet<string>(catalogue, StringComparer.Ordinal);
         var ids = new HashSet<string>(StringComparer.Ordinal);
         var covered = new HashSet<string>(StringComparer.Ordinal);
         for (var index = 0; index < entries.Count; index++)
@@ -88,6 +119,16 @@ public static class ParityCensus
             string? scope = null;
             var hasScope = entry.ContainsKey("verified_scope");
             if (hasScope) scope = Str(entry["verified_scope"]);
+            string? notes = null;
+            if (entry.ContainsKey("notes"))
+            {
+                notes = Str(entry["notes"]);
+                if (string.IsNullOrWhiteSpace(notes)) errors.Add("notes_invalid:" + name);
+            }
+            if (notes is not null && notes.Contains("never run in Revit", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var command in commands.Where(candidate => MentionsCommand(playbook, candidate))) errors.Add("notes_contradict_playbook:" + name + ":" + command);
+            }
 
             var state = Str(entry["state"]);
             if (state is null || Array.IndexOf(States, state) < 0) { errors.Add("state_invalid:" + name); continue; }
@@ -101,18 +142,37 @@ public static class ParityCensus
             if (via is not null && commands.Count > 0) errors.Add("via_with_commands:" + name);
             if (via is not null && features.Count == 0) errors.Add("via_without_feature:" + name);
 
+            // What this entry claims: its commands, or its via path.
+            var items = commands.Concat(via is null ? Array.Empty<string>() : new[] { "via:" + via }).ToList();
+            foreach (var feature in features)
+            {
+                if (!coverage.TryGetValue(feature.Id, out var covers) || !items.Any(covers.Contains)) errors.Add("feature_not_covering:" + name + ":" + feature.Id);
+            }
+            // Each item is bounded by the best cited feature that covers it; with none it is at most compiled.
             var rank = Rank(state);
-            var ranks = features.Select(feature => Rank(feature.Status)).Where(value => value >= 0).ToList();
-            if (rank > 0 && ranks.Count > 0 && rank > ranks.Max()) errors.Add("state_exceeds_features:" + name);
+            if (rank > 0)
+            {
+                foreach (var item in items)
+                {
+                    var bound = features.Where(feature => coverage.TryGetValue(feature.Id, out var covers) && covers.Contains(item)).Select(feature => Rank(feature.Status)).DefaultIfEmpty(Rank("compiled")).Max();
+                    if (rank > bound) errors.Add("state_exceeds_coverage:" + name + ":" + item);
+                }
+            }
             if (state == "verified-in-revit")
             {
                 var verified = features.Where(feature => feature.Status == "verified-in-revit").ToList();
                 if (verified.Count == 0) errors.Add("verified_without_feature:" + name);
-                else if (string.IsNullOrWhiteSpace(scope) || !verified.Any(feature => feature.Scope.Contains(scope, StringComparison.Ordinal))) errors.Add("verified_scope_mismatch:" + name);
+                else
+                {
+                    foreach (var item in items.Where(candidate => !verified.Any(feature => coverage.TryGetValue(feature.Id, out var covers) && covers.Contains(candidate)))) errors.Add("verified_command_uncovered:" + name + ":" + item);
+                    if (string.IsNullOrWhiteSpace(scope) || !verified.Any(feature => feature.Scope.Contains(scope, StringComparison.Ordinal))) errors.Add("verified_scope_mismatch:" + name);
+                    else if (scope.Trim().Length < MinVerifiedScopeLength) errors.Add("verified_scope_too_short:" + name);
+                }
             }
             else if (hasScope) errors.Add("verified_scope_unexpected:" + name);
             if (state == "integration-tested (ifc)" && !features.Any(feature => feature.Status == state)) errors.Add("integration_without_feature:" + name);
-            if (state == "unit-tested" && !evidence.Any(path => path.StartsWith("tests/", StringComparison.Ordinal))) errors.Add("unit_tested_without_test:" + name);
+            if (state == "unit-tested" && !evidence.Any(path => path.StartsWith("tests/", StringComparison.Ordinal) && !path.StartsWith("tests/golden/", StringComparison.Ordinal))) errors.Add("unit_tested_without_test:" + name);
+            if (state == "compiled" && !evidence.Any(path => SourceRoots.Any(prefix => path.StartsWith(prefix, StringComparison.Ordinal)))) errors.Add("compiled_without_source:" + name);
         }
         foreach (var command in catalogue)
         {
@@ -120,6 +180,12 @@ public static class ParityCensus
         }
         return errors;
     }
+
+    static readonly string[] SourceRoots = { "core/", "runtimes/", "adapters/", "interfaces/" };
+
+    // A catalogue command name as its own token (not part of a longer name such as curtain_wall.create).
+    public static bool MentionsCommand(string text, string command) =>
+        Regex.IsMatch(text, "(?<![A-Za-z0-9_.])" + Regex.Escape(command) + "(?![A-Za-z0-9_])", RegexOptions.CultureInvariant);
 
     // Per-area counts of entries in each state, in the census "areas" order, then all areas; LF line endings.
     public static string Summary(JsonObject census, int catalogueCount)
