@@ -72,7 +72,7 @@ static class MirrorSnapshotChecks
 
     static void Catalogue()
     {
-        Check(RevitCommandCatalogue.Mirror.Select(spec => spec.Name).SequenceEqual(new[] { "query.snapshot" }), "mirror catalogue part lists query.snapshot only");
+        Check(RevitCommandCatalogue.Mirror.Select(spec => spec.Name).SequenceEqual(new[] { "query.snapshot", "query.journal" }), "mirror catalogue part lists query.snapshot then query.journal (P2-05)");
         var throughMirror = RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).Concat(RevitCommandCatalogue.Views).Concat(RevitCommandCatalogue.Mirror).ToArray();
         Check(RevitCommandCatalogue.All.Take(throughMirror.Length).SequenceEqual(throughMirror), "All is v1, v2, views, then the snapshot query (later catalogue parts follow)");
         var spec = RevitCommandCatalogue.Find("query.snapshot");

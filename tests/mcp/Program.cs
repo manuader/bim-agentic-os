@@ -378,6 +378,21 @@ Check(RevitCommandCatalogue.ExportSave.Select(spec=>spec.Name).SequenceEqual(new
         Check(IsError(fixedSave) && FailureCode(fixedSave)==RevitCommandCodes.NoResponse && reloadLines.Count==3,"fixing the owner file enables the save again");
     } finally { if(Directory.Exists(reloadRepo)) Directory.Delete(reloadRepo,true); }
 }
+// P2-05: query.journal (the external edit journal, journal.read through the catalogue) is a read-only generated tool:
+// readOnlyHint true, permission level read, forwarded on a real project; bad paging arguments are refused before the pipe.
+{
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="revit_query_journal");
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==true && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="read","revit_query_journal is listed with readOnlyHint true and permission level read");
+    if(listed is not null) {
+    var before=forwardedLines.Count;
+    var onReal=Guarded("revit_query_journal",new JsonObject{["peek"]=true,["max_entries"]=10},McpReal);
+    Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["args"]?["max_entries"]?.GetValue<int>()==10,"revit_query_journal is read-only: forwarded to the pipe even on a real project with its arguments");
+    foreach(var bad in new[]{new JsonObject{["max_entries"]=0},new JsonObject{["max_entries"]=257},new JsonObject{["after_sequence"]=-1}}) {
+        var refused=Guarded("revit_query_journal",bad,McpCopy);
+        Check(IsError(refused) && FailureCode(refused)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before+1,"revit_query_journal "+bad.ToJsonString()+" is args_invalid before the pipe");
+    }
+    }
+}
 foreach(var tool in new[]{"revit_query_elements","revit_query_inspect"}) {
     var listed=tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!;
     Check(listed["annotations"]?["readOnlyHint"]?.GetValue<bool>()==true && listed["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="read",tool+" is listed read-only with permission level read");

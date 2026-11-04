@@ -411,6 +411,8 @@ try
     CatalogueExportSaveChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- Policy reload: enabled roots and content libraries re-read when the files change (chat-export-save) ----
     PolicyReloadChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- query.journal (P2-05): the external edit journal as a read-only catalogue query mirroring journal.read ----
+    CatalogueJournalChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();

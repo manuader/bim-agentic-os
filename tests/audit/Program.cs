@@ -111,6 +111,10 @@ try
     Check(PermissionPolicy.RequiredLevel("view.export_image", FixturePath, copies) == PermissionLevel.Read && PermissionPolicy.RequiredLevel("view.export_image", RealPath, copies) == PermissionLevel.Read, "view.export_image requires read on a copy and on a real project");
     Check(RevitCommandCatalogue.ExportSave.Any(spec => spec.Name == "document.save" && spec.Writes) && RevitCommandCatalogue.IsDestructive("document.save"), "save catalogue has destructive write document.save");
     Check(PermissionPolicy.RequiredLevel("document.save", FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel("document.save", RealPath, copies) == PermissionLevel.WriteRealProject, "document.save requires write-copies on a copy and write-real-project on a real project");
+    // P2-05: query.journal reads the in-memory edit journal: read on a copy and on a real project, allowed for a reader.
+    Check(RevitCommandCatalogue.Journal.Any(spec => spec.Name == "query.journal" && !spec.Writes) && !RevitCommandCatalogue.IsDestructive("query.journal"), "journal catalogue has read-only query.journal");
+    Check(PermissionPolicy.RequiredLevel("query.journal", FixturePath, copies) == PermissionLevel.Read && PermissionPolicy.RequiredLevel("query.journal", RealPath, copies) == PermissionLevel.Read, "query.journal requires read on a copy and on a real project");
+    Check(PermissionPolicy.Create(grants, Array.Empty<string>(), copies).Evaluate("reader", "query.journal", RealPath) is { Allowed: true, Reason: PermissionCodes.ReadAllowed }, "a reader may run query.journal on a real project");
     // P9-05: the five catalogue v2 commands keep the v1 read/write split.
     var v2Levels = new (string Command, PermissionLevel Copy, PermissionLevel Real)[]
     {

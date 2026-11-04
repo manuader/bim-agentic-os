@@ -28,11 +28,13 @@ namespace Bim.Revit;
 internal static class JournalRecorder
 {
     public const string ReadOperation = "journal.read";
-    static readonly MirrorJournalTracker Tracker = new(new MirrorJournal(() => DateTimeOffset.UtcNow));
+    // Shared with the P2-05 catalogue query query.journal (CommandsExecutorJournal.cs): one journal, one set of baselines.
+    internal static readonly MirrorJournalTracker Tracker = new(new MirrorJournal(() => DateTimeOffset.UtcNow));
     // > 0 while App.Execute runs a request. DocumentChanged fires synchronously on Revit's main thread, the same
     // thread that runs the ExternalEvent handler, so a plain counter is enough.
     static int dispatching;
     static bool attached;
+    internal static bool Attached => attached;
 
     public static void Attach(ControlledApplication application)
     {
@@ -90,11 +92,8 @@ internal static class JournalRecorder
         var d = app.ActiveUIDocument?.Document ?? throw new InvalidOperationException("no_document");
         if (string.IsNullOrWhiteSpace(r.DocumentPath) || !string.Equals(d.PathName, r.DocumentPath, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("document_conflict");
         var options = MirrorJournalReadOptions.Parse(r.Journal is { } journalOptions ? journalOptions.GetRawText() : null);
-        var report = Tracker.Report(CommandExecutor.JournalSnapshot(d), d.PathName ?? "", options);
-        var journal = Tracker.Journal;
-        return "{\"status\":\"succeeded\",\"verification\":\"unverified\",\"attached\":" + (attached ? "true" : "false")
-            + ",\"dropped\":" + journal.Dropped + ",\"skipped_add_in\":" + journal.SkippedAddIn + ",\"failures\":" + journal.Failures + ",\"unidentified\":" + journal.Unidentified
-            + ",\"report\":" + report.ToJson() + "}";
+        // The same serializer as query.journal (core RevitJournalQuery): the reply bytes are unchanged.
+        return RevitJournalQuery.RawRead(Tracker, attached, CommandExecutor.JournalSnapshot(d), d.PathName ?? "", options);
     }
 }
 

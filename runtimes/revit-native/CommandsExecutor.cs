@@ -154,6 +154,7 @@ internal static partial class CommandExecutor
         FillPatternQueryArgs patterns => QueryFillPatterns(d, patterns),
         // Read-only: writes image files under .bim/exports only; a visual style change is rolled back.
         ViewExportImageArgs export => ExportImage(d, export),
+        JournalQueryArgs journal => QueryJournal(d, journal),
         _ => QueryV2(d, envelope),
     };
 

@@ -92,6 +92,8 @@ public static partial class RevitCommandCatalogue
         new RevitCommandSpec("query.snapshot", false, "Export the open document's walls, doors, windows and rooms (with their levels) as BIM-IR elements in metres with stable ids derived from Revit UniqueIds; straight walls, hosted doors and windows and rectangular rooms are mapped, and everything BIM-IR cannot represent (floors, curved walls, non-rectangular rooms) is listed under unmapped with a reason. Read-only.", EmptySchema, _ => new EmptyQueryArgs()),
     });
 
-    // P2-01: the snapshot query, after v1, v2 and the view commands.
-    public static IReadOnlyList<RevitCommandSpec> Mirror => MirrorSpecs.Value;
+    // P2-01: the snapshot query, after v1, v2 and the view commands; P2-05 appends query.journal
+    // (RevitCommandsJournal.cs), so the mirror part is query.snapshot then query.journal.
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> MirrorPart = new(() => MirrorSpecs.Value.Concat(Journal).ToArray());
+    public static IReadOnlyList<RevitCommandSpec> Mirror => MirrorPart.Value;
 }
