@@ -978,6 +978,38 @@
       ],
       "blocker": "Executor never run in Revit: extents direction along the reference-plane normal, EXTRUSION_START/END_PARAM readback, NewReferencePlane view choice and unsplit profile curves are unverified (owner session); a roof box holding both sweeps cannot reveal the side.",
       "scope": "P9-07: roof.create_extrusion (MCP revit_roof_create_extrusion, write-copies) from an open line/arc profile in [u,z] mm on the vertical plane through a plan line, extents, level and roof type; core validation before the pipe (connected within 0.5 mm with arc rebuild on snap, open, no self-intersection incl. arcs, no cusps, 1-100 segments, extents/limits); readback of level, type, plane, profile, extents and an expected-box wrong-side check; command.batch step. Rules unit-tested with hand-computed oracles; executor compiled. CI 41870326635."
+    },
+    {
+      "id": "documentation-stale-replacement",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/DocReplace.cs",
+        "tests/doc-regeneration/Replace.cs"
+      ],
+      "blocker": "Never run in Revit; assumes created[0] of each documentation command is the realized item; dependents come from a caller dry run; one element.delete per key (no single undo).",
+      "scope": "P4-05: DocReplace.Plan/Run/Resume/Realized turn an Affected/Full regeneration plus a key\u2192UniqueId map into one RevitCommandPlan: children-first element.delete with confirmed dependents, then parents-first re-creation through PlanRunner; create ids hash the replaced delete so re-plans never replay deleted elements; typed refusals. Fake executor only. CI 41917253830."
+    },
+    {
+      "id": "cli-cad-draft-brief",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/CadCommand.cs",
+        "tests/cli/Program.cs",
+        "tests/packaging/test-package.ps1"
+      ],
+      "blocker": "Synthetic fixtures only; --calibrate sets scale only (no rotation/origin); many Bim.Cad options not exposed; format by extension.",
+      "scope": "P6-07: cad-draft and cad-brief CLI verbs read DXF/PDF (32 MiB bounded, --page, --metres-per-unit or --calibrate) and write a never-overwrite .json with source SHA-256, BIM-IR draft or P6-03 brief plus uncertainties; typed JSON failure envelopes, exit 1, no file on failure; deterministic default project id. CI 41920420097."
+    },
+    {
+      "id": "generative-facade-bim-ir",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/FacadeIr.cs",
+        "core/Bim.Generative/FacadeIrBuilder.cs",
+        "tests/generative/FacadeIrTests.cs"
+      ],
+      "blocker": "Windows use IntentCompiler's existing 6-value axis geometry (hosted [offset,width] form cannot carry sill/head without a schema change); only projects built by FacadeIrBuilder.Prototype; plans staggered thinner than a wall refuse wall_clash; Compiler.Validate does not itself check window-on-host (independent oracle does).",
+      "scope": "P7-06: FacadeIrBuilder.Prototype compiles a feasible plan to BIM-IR; AddWindows hosts each P7-05 window on its single axis-aligned exterior wall with offset/width/sill/head, keeps a 0.30 m entrance-door clearance by the smallest move or fails facade_ir_entrance_overlap; Compiler.Validate clean and P5-02 illumination/ventilation pass. CI 41910638575."
     }
   ]
 }
