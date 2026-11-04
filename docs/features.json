@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-03",
+  "updated": "2026-11-04",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -747,6 +747,27 @@
       ],
       "blocker": "Per-kind rules only (BIM-IR has no types); spaces and levels unmapped; no real OmniClass data; not written into IFC output, no CLI/MCP; CC BY-ND 4.0 redistribution of the excerpt to be reviewed by the owner.",
       "scope": "P10-05: strict versioned offline dictionary format bim.classification-dictionary/1 (embedded resource + file loader, size/UTF-8/duplicate-key/regex bounds), Uniclass 2015 EF v1.16 subset (walls, doors, windows, floors), IFC4 IfcClassificationReference/IfcClassification fields, explicit unmapped with reasons, multi-dictionary catalog. CI 41710780183."
+    },
+    {
+      "id": "local-validation",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/LocalValidation.cs",
+        "tests/local-validation/Program.cs"
+      ],
+      "blocker": "Only rule evaluation is localized: Compiler.Diff and SemanticGraph.Build still run over the whole model; DirtyIds over-approximates (plan/schedule/sheet); rules are project-local (hosted openings, space boundaries, levels), not BriefValidator/SkillRoomValidator.",
+      "scope": "P3-04: LocalValidation.Validate(before, after, plan) revalidates only plan.DirtyIds; Merge(ValidateAll(before), local) == ValidateAll(after) proved on fixed cases, 300 single-edit and 400 multi-edit seeded steps (12 edit kinds incl. rehost, rewire, create/delete walls, level kind flips), per-id non-vacuity, permuted-order determinism; 6/551 elements revalidated for one wall move on a 50-room model. CI 41743701205."
+    },
+    {
+      "id": "ifc-import-third-party",
+      "status": "integration-tested (ifc)",
+      "evidence": [
+        "runtimes/ifc/ifc_import.py",
+        "tests/ifc/test_import_thirdparty.py",
+        "docs/ifc.md"
+      ],
+      "blocker": "Fixtures are IfcOpenShell-authored only (no Revit/ArchiCAD exports in CI); non-identity MappingOrigin, scaled/2D maps, arcs, profiles with voids, non-rectangular or rotated spaces, horizontally extruded openings are unsupported; sloped/bounded clips and non-rectangular wall profiles (fill >= 0.9) are approximated, not exact.",
+      "scope": "P8-05: per-entity import report (entities/summary, imported/approximated/unsupported with reasons, additive to bim.ifc-import/1) for IFC4 and IFC2X3: polyline/indexed-polycurve rectangular profiles, rigid identity-origin mapped items (Body and Axis), exact horizontal half-space clips, approximated sloped clips and bounding-rectangle profiles with fill-ratio limit, host_approximated on hosted openings, FootPrint space fallback; fixtures generated in CI with ifcopenshell.api and checked against kernel world bounds on ubuntu/windows/macos. CI 41742335649."
     }
   ]
 }

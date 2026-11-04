@@ -98,7 +98,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P3-01 | Intent AST beyond one room | ✅ | — | core/Bim.Core/Intent* | multi-room layout intents with wall types and openings compile to BIM-IR deterministically; tests | unit-tested (relay135, CI 41530804027) |
 | P3-02 | Compiler to catalogue bridge | ✅ | P3-01 | core/Bim.Core/PlanToCommands* | an ExecutionPlan becomes ordered catalogue v1 commands with operation ids; tests | unit-tested (relay139, CI 41586824187; levels are preconditions, not created) |
 | P3-03 | Plan runner with step envelopes | ✅ | P3-02 | core/Bim.Core/PlanRunner*; tests/plan-to-commands | runs a RevitCommandPlan step by step through an injected transport, fills host placeholders from created[0], checks level preconditions against query.levels, stops on first failure with a resumable report; fake-transport tests | unit-tested (relay142, CI 41640877159; fake transport only, no concrete pipe adapter class) |
-| P3-04 | Localized validation of plan changes | ⏳ | P3-02 | core/Bim.Core/LocalValidation*; tests/plan-to-commands | after a Compiler.Diff, only elements in the affected closure (graph neighbours) are revalidated; result equals full validation on a corpus; tests | target unit-tested |
+| P3-04 | Localized validation of plan changes | ✅ | P3-02 | core/Bim.Core/LocalValidation*; tests/plan-to-commands | after a Compiler.Diff, only elements in the affected closure (graph neighbours) are revalidated; result equals full validation on a corpus; tests | unit-tested (relay147, CI 41743701205; rule evaluation only localized — Compiler.Diff and the graph still built whole; dirty set over-approximates with plan/schedule/sheet; work in tests/local-validation) |
 
 ### Phase 4 — documentation engine
 
@@ -147,7 +147,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P8-02 | Rhino .3dm adapter without Rhino | ✅ | — | adapters/rhino (new) | rhino3dm (MIT) write/read of BIM-IR geometry; tests | unit-tested against real rhino3dm 8.17.0 on Linux (relay136, CI 41548519960; never opened in Rhino) |
 | P8-03 | Blender adapter | 🔒 | — | adapters/blender | bpy exporter script; execution needs Blender installed | target described |
 | P8-04 | BIM-IR to glTF 2.0 export for Blender interchange | ✅ | — | adapters/gltf (new); tests/gltf | deterministic .glb/.gltf of walls/spaces/levels with extras, Y-up, golden SHA-256 equal on Linux/Windows, in-test spec validator; tests | unit-tested (relay142, CI 41644141785; never opened in Blender nor the Khronos validator; no wall joins) |
-| P8-05 | Third-party IFC import robustness | ⏳ | P8-01 | runtimes/ifc; tests/ifc | IFC files not written by our exporter (IfcOpenShell-authored IFC4 with IfcWall + IfcExtrudedAreaSolid/IfcPolyline, mapped/boolean-clipped walls, IfcSpace with footprint, IFC2X3) import to BIM-IR with an explicit unsupported/approximated report instead of failure; fixtures generated in CI with IfcOpenShell; tests | target integration-tested (ifc) |
+| P8-05 | Third-party IFC import robustness | ✅ | P8-01 | runtimes/ifc; tests/ifc | IFC files not written by our exporter (IfcOpenShell-authored IFC4 with IfcWall + IfcExtrudedAreaSolid/IfcPolyline, mapped/boolean-clipped walls, IfcSpace with footprint, IFC2X3) import to BIM-IR with an explicit unsupported/approximated report instead of failure; fixtures generated in CI with IfcOpenShell; tests | integration-tested (ifc) on ubuntu/windows/macos (relay147, CI 41742335649; IfcOpenShell-authored fixtures only, no Revit/ArchiCAD exports; non-identity MappingOrigin, scaled maps, arcs, voids, rotated spaces unsupported) |
 | P8-06 | Rhino .3dm to BIM-IR draft import | ⏳ | P8-02 | adapters/rhino; tests/rhino | .3dm curves/extrusions on named layers (walls/spaces) read via rhino3dm into a non-persisted BIM-IR draft proposal with per-object confidence and an unmapped report; roundtrip with the P8-02 writer; tests | target unit-tested |
 | P8-07 | glTF export CLI verb and openings | ⏳ | P8-04 | interfaces/cli; adapters/gltf | `export-gltf` CLI verb with bounded output path; wall openings from door/window elements when BIM-IR carries them, else documented absent; tests | target unit-tested |
 
@@ -160,6 +160,10 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P9-03 | Guarded free path (ADR + implementation) | ⏳ | — | docs/architecture/adr; runtimes/revit-native | ADR accepted by owner rules; compiled C# runs in rolled-back group with change report; compiles | target compiled |
 | P9-04 | Revit parity census registry | ⏳ | — | capabilities/ | machine-readable census of Revit functions with coverage state and tests linking | target described |
 | P9-05 | Expose catalogue v2 as MCP tools | ✅ | P9-01 | interfaces/mcp/McpServer.cs; tests/mcp; tests/audit; docs/contracts/module-contracts.md | MCP tools/list built from RevitCommandCatalogue.All; v2 permission levels asserted; contract doc lists v2 | unit-tested (relay137, CI 41562897314; labels only, no per-actor enforcement in MCP) |
+| P9-06 | Materials and layered wall/floor types | ⏳ | — | core/Bim.Core/RevitCommandsMaterialTypes.cs; runtimes/revit-native/*MaterialTypes*; tests/revit-commands | owner chat branch chat-materials-types (material.create/set, wall_type.create, floor_type.create, query.fill_patterns, element.change_type) independently reviewed and merged with CI green; the relay147-P9-06 hardening ported as tests: core/shell + structural index readback, ordinal-first name pick, 1.2 mm minimum layer (also roof_type.create), Revit ArgumentException → args_invalid at args.name | target compiled + unit-tested contracts (relay147 built the same commands on relay147-P9-06 771cca4, CI 41740133186, not merged: duplicate of the owner chat's branch) |
+| P9-07 | roof.create_extrusion (curved / barrel roofs) | ⏳ | — | core/Bim.Core/RevitCommandsRoofExtrusion*; runtimes/revit-native/*RoofExtrusion*; tests/revit-commands | contract + executor for an extruded roof from an open profile (lines/arcs) on a reference plane with extents, roof type and level; profile validation (open, planar, no self-intersection) before the pipe; readback of type/extents; MCP tool; compiles | target compiled + unit-tested contracts |
+| P9-08 | document.save / save_as into enabled roots | ⏳ | P1-08 | core/Bim.Core/RevitCommandsDocument*; runtimes/revit-native/*Document*; tests/revit-commands | save/save_as only for documents under an owner-enabled root (.bim/revit-enabled-roots.txt), path normalisation and traversal refusal, never overwrite production, refusal codes tested before the pipe; compiles | target compiled + unit-tested contracts |
+| P9-09 | DirectShape site elements | ⏳ | — | core/Bim.Core/RevitCommandsDirectShape*; runtimes/revit-native/*DirectShape*; tests/revit-commands | direct_shape.create for site/landscape solids (extruded polygon or box, category from an allowed list, material) with bounded vertex counts and readback of bounding box; compiles | target compiled + unit-tested contracts |
 
 ### Phase 10 — global production
 
@@ -174,7 +178,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 58/77 done (75.3 %)
+Progress: 60/81 done (74.1 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
@@ -183,13 +187,13 @@ Progress: 58/77 done (75.3 %)
 - Revit command surface — catalogue v1 (architecture): 4/5
 - Phase 1 — native kernel: 6/8
 - Phase 2 — semantic state and mirror: 4/5
-- Phase 3 — incremental compiler: 3/4
+- Phase 3 — incremental compiler: 4/4
 - Phase 4 — documentation engine: 2/3
 - Phase 5 — skills and design systems: 4/6
 - Phase 6 — CAD and requirements: 4/5
 - Phase 7 — generative kernels: 3/5
-- Phase 8 — Rhino, Blender and IFC: 3/7
-- Phase 9 — Revit parity: 3/5
+- Phase 8 — Rhino, Blender and IFC: 4/7
+- Phase 9 — Revit parity: 3/9
 - Phase 10 — global production: 4/5
-Next ready: P1-07, P1-08, P2-05, P3-04, P4-03, P5-04, P5-05, P6-05
+Next ready: P1-07, P1-08, P2-05, P4-03, P5-04, P5-05, P6-05, P7-04
 
