@@ -8,16 +8,16 @@ namespace Bim.Core;
 // P4-03 affected-only documentation regeneration. A documentation set names views, tags, dimensions, schedules,
 // sheets and sheet placements by stable keys and binds them to BIM-IR element ids. Full regeneration turns every item
 // into one catalogue documentation command (P4-01/P4-02) computed from the project; affected-only regeneration, given
-// a Compiler.Diff, emits only the items one of whose read elements really changed (added, removed, or another kind,
-// geometry or dependency list) or whose view, schedule or sheet is regenerated with them, each step byte-identical to
-// the same item's step in full regeneration of after. The set is caller-owned: the BIM-IR plan, schedule and sheet
+// a Compiler.Diff, emits only the items whose result (command, args, inputs, elements, or unsupported entry) differs
+// between before and after, plus the tags, dimensions and placements whose view, schedule or sheet is regenerated with
+// them, each step byte-identical to the same item's step in full regeneration of after. The set is caller-owned: the BIM-IR plan, schedule and sheet
 // elements (RoomCompiler emits them) are read only by items that name one in Bound. Vendor-free and BCL only; no BIM-IR or
 // persisted format change. Contract: docs/contracts/module-contracts.md, "Affected-only documentation regeneration".
 
 // Kind: floor_plan or ceiling_plan (Elements: exactly the BIM-IR level), section (Elements: exactly the BIM-IR wall
 // it cuts along; DepthMetres: far clip depth) or three_d (Elements: walls framed by its section box; none for an
 // unbounded view). Name and Scale pass through to the view command. Bound: optionally the BIM-IR "plan" element this
-// view realizes; the view is then regenerated when that element changes and unsupported while it is missing.
+// view realizes; the view is unsupported while that element is missing or another kind.
 public sealed record DocView(string Key, string Kind, IReadOnlyList<Guid> Elements, string? Name = null, int? Scale = null, double DepthMetres = 0, Guid? Bound = null);
 // A tag of one BIM-IR element in a plan view of the set; its head is the element's plan centre plus the offset: wall
 // axis midpoint, space centre, the midpoint of an absolute opening [ax, ay, bx, by, sill, height], or for a hosted
@@ -45,7 +45,8 @@ public sealed record DocStepInput(string Field, string Source);
 // entry lists the same.
 public sealed record DocCommandStep(string Key, string ItemKind, string OperationId, string Command, string ArgsJson, IReadOnlyList<DocStepInput> Inputs, IReadOnlyList<Guid> Elements);
 public sealed record DocUnsupported(string Key, string ItemKind, string Code, string Detail, IReadOnlyList<Guid> Elements);
-// Regenerated: every item key this plan regenerates (sorted ordinally); each has exactly one step or one unsupported
+// InputDigest: SHA-256 of the set and bindings; Merge refuses plans with different digests (Affected and Agrees assume
+// the prior Full(before) was made with the same set and bindings). Regenerated: every item key this plan regenerates (sorted ordinally); each has exactly one step or one unsupported
 // entry. The caller retires the prior realization of every regenerated key (re-tag, re-dimension, schedule refresh)
 // and runs the steps in order. TotalItems counts the whole set.
 public sealed record DocRegenerationPlan(int Version, Guid ProjectId, int Revision, string AfterHash, RevitDocumentRef Document, string InputDigest,
@@ -70,13 +71,13 @@ public static class DocRegenerationCodes
 // INVARIANT (soundness and minimality of affected-only regeneration): an item's result is a function of the bindings,
 // the status of its own view, schedule or sheet, and the kind, geometry and dependency list of exactly the elements
 // Reads(item, project) lists (also its Elements): view elements and the level each wall resolves to (its first
-// dependency that is a level with [elevation]), the tagged element and the host wall a hosted opening resolves to (its
-// first wall dependency), the two dimensioned walls, every element of a schedule's kind, and Bound. An item is
-// regenerated when an element in Reads(before) or Reads(after) changed, or its view, schedule or sheet is regenerated.
-// A resolution can only move when the element it starts from changed or when an element it lands on in before or after
-// changed, so nothing outside those reads can change a result: Merge(Full(before), Affected(...)) has the content of
-// Full(after) (Agrees). Conversely a regenerated item either has a parent regenerated or lists an element that changed.
-// A provenance-only update changes no result and regenerates nothing.
+// dependency that is a level with [elevation]), the tagged element and every wall dependency of a hosted opening, the
+// two dimensioned walls, every element of a schedule's kind, and Bound. A resolution can only move when the element it
+// starts from changed or when an element it lands on in before or after changed, so an item none of whose reads in
+// before or after changed has the same result in both. Affected computes the remaining candidates in before and in
+// after and keeps those whose content (everything but the operation id) differs, then adds the tags, dimensions and
+// placements of a kept view, schedule or sheet. Hence Merge(Full(before), Affected(...)) has the content of
+// Full(after) (Agrees), and an item regenerated on its own always has a different full result.
 public static class DocRegeneration
 {
     public const int Version = 1;
@@ -119,7 +120,7 @@ public static class DocRegeneration
         var items = Index(set);
         CheckBindings(bindings);
         if (Compiler.Validate(project).Length > 0) throw new InvalidOperationException("invalid_ir");
-        return Generate(project, items, items.Keys.ToHashSet(StringComparer.Ordinal), bindings);
+        return Assemble(project, items, items.Keys, bindings, Generator(project, items, bindings));
     }
 
     // Only the affected items, computed from after. The plan must be Compiler.Diff(before, after) (plan_mismatch).
@@ -136,20 +137,28 @@ public static class DocRegeneration
         // Real changes only: an update of provenance alone is an operation no documentation command can show.
         var changed = plan.Operations.Select(operation => operation.Element.Id).Where(id => !prior.TryGetValue(id, out var a) || !next.TryGetValue(id, out var b)
             || a.Kind != b.Kind || !a.GeometryMetres.SequenceEqual(b.GeometryMetres) || !a.Dependencies.SequenceEqual(b.Dependencies)).ToHashSet();
-        var direct = items.Values.Where(item => Reads(item, prior).Concat(Reads(item, next)).Any(changed.Contains)).Select(item => item.Key).ToHashSet(StringComparer.Ordinal);
-        // Parents are views, schedules and sheets, which have no parents themselves: one pass closes the set.
+        // Candidates: an element the item reads in before or after really changed; nothing else can change a result.
+        // Each candidate is computed in both states and kept only when its content (all but the operation id) differs.
+        var resultBefore = Generator(before, items, bindings);
+        var resultAfter = Generator(after, items, bindings);
+        var direct = items.Values.Where(item => Reads(item, prior).Concat(Reads(item, next)).Any(changed.Contains))
+            .Where(item => Content(resultBefore(item)) != Content(resultAfter(item))).Select(item => item.Key).ToHashSet(StringComparer.Ordinal);
+        // A tag, dimension or placement re-runs with its regenerated view, schedule or sheet (the realized parent is
+        // new). Parents have no parents themselves: one pass closes the set.
         var affected = new HashSet<string>(direct, StringComparer.Ordinal);
         foreach (var item in items.Values) if (item.Parents.Any(direct.Contains)) affected.Add(item.Key);
-        return Generate(after, items, affected, bindings);
+        return Assemble(after, items, affected, bindings, resultAfter);
     }
 
     // previous's results for keys update does not regenerate, plus update's, under update's header. previous should be
-    // a full regeneration (or an earlier merge) of the before that update came from; that is not checked here.
+    // a full regeneration (or an earlier merge) of the before that update came from; the model is not checked here, but
+    // a different project (project_mismatch) or another set or bindings (input_mismatch, by InputDigest) is refused.
     public static DocRegenerationPlan Merge(DocRegenerationPlan previous, DocRegenerationPlan update)
     {
         ArgumentNullException.ThrowIfNull(previous);
         ArgumentNullException.ThrowIfNull(update);
         if (previous.ProjectId != update.ProjectId) throw new ArgumentException("project_mismatch");
+        if (previous.InputDigest != update.InputDigest) throw new ArgumentException("input_mismatch");
         var replaced = update.Regenerated.ToHashSet(StringComparer.Ordinal);
         return update with
         {
@@ -183,6 +192,8 @@ public static class DocRegeneration
         var args = JsonNode.Parse(step.ArgsJson) as JsonObject ?? throw new ArgumentException("args_not_object");
         foreach (var input in step.Inputs)
         {
+            if (input?.Field is null) throw new ArgumentException("input_field_unsupported");
+            if (input.Source is null) throw new ArgumentException("input_unresolved");
             if (!input.Field.StartsWith("args.", StringComparison.Ordinal) || input.Field.Length == "args.".Length || input.Field.IndexOf('.', "args.".Length) >= 0)
                 throw new ArgumentException("input_field_unsupported");
             if (!uniqueIds.TryGetValue(input.Source, out var uniqueId)) throw new ArgumentException("input_unresolved");
@@ -323,13 +334,10 @@ public static class DocRegeneration
 
     static bool IsHosted(Element element) => element.Kind is "door" or "window" or "opening" && element.GeometryMetres.Length == 2;
 
-    // The wall a hosted opening [offset, width] stands in: its first dependency that is a wall (null for none).
-    static Element? HostOf(Element opening, IReadOnlyDictionary<Guid, Element> elements)
-    {
-        foreach (var dependency in opening.Dependencies)
-            if (elements.TryGetValue(dependency, out var wall) && wall.Kind == "wall") return wall;
-        return null;
-    }
+    // The walls a hosted opening [offset, width] may stand in: its dependencies that are walls, in order. Exactly one
+    // is its host (none: host_missing, several: host_ambiguous, as in LocalValidation).
+    static Element[] HostsOf(Element opening, IReadOnlyDictionary<Guid, Element> elements) =>
+        opening.Dependencies.Distinct().Where(dependency => elements.TryGetValue(dependency, out var wall) && wall.Kind == "wall").Select(dependency => elements[dependency]).ToArray();
 
     // Every element an item's result reads in this project, in the documented order, without repeats.
     static Guid[] Reads(Item item, IReadOnlyDictionary<Guid, Element> elements)
@@ -351,7 +359,7 @@ public static class DocRegeneration
                 break;
             case DocTag tag:
                 Read(tag.Element);
-                if (elements.TryGetValue(tag.Element, out var tagged) && IsHosted(tagged) && HostOf(tagged, elements) is { } host) Read(host.Id);
+                if (elements.TryGetValue(tag.Element, out var tagged) && IsHosted(tagged)) foreach (var host in HostsOf(tagged, elements)) Read(host.Id);
                 break;
             case DocDimension dimension:
                 Read(dimension.First);
@@ -371,7 +379,8 @@ public static class DocRegeneration
     static DocCommandStep[] Order(IEnumerable<DocCommandStep> steps) =>
         steps.OrderBy(step => Array.IndexOf(KindOrder, step.ItemKind)).ThenBy(step => step.Key, StringComparer.Ordinal).ToArray();
 
-    static DocRegenerationPlan Generate(Project project, Dictionary<string, Item> items, HashSet<string> keys, RevitBindings bindings)
+    // Item results for one project, computed on first use and memoized (a child reads its parent's status).
+    static Func<Item, (DocCommandStep? Step, DocUnsupported? Unsupported)> Generator(Project project, Dictionary<string, Item> items, RevitBindings bindings)
     {
         var elements = project.Elements.ToDictionary(element => element.Id);
         var hash = Compiler.Hash(project);
@@ -505,7 +514,10 @@ public static class DocRegeneration
                     var centre = Centre(tagged);
                     if (IsHosted(tagged))
                     {
-                        var host = HostOf(tagged, elements) ?? throw new Refusal(DocRegenerationCodes.HostMissing, "hosted " + tagged.Kind + " " + tagged.Id.ToString("D") + " has no host wall");
+                        var hosts = HostsOf(tagged, elements);
+                        if (hosts.Length == 0) throw new Refusal(DocRegenerationCodes.HostMissing, "hosted " + tagged.Kind + " " + tagged.Id.ToString("D") + " has no host wall");
+                        if (hosts.Length > 1) throw new Refusal(DocRegenerationCodes.HostAmbiguous, "hosted " + tagged.Kind + " " + tagged.Id.ToString("D") + " depends on more than one wall");
+                        var host = hosts[0];
                         var h = Wall(host.Id);
                         double hx = h[2] - h[0], hy = h[3] - h[1], length = Math.Sqrt(hx * hx + hy * hy);
                         var g = tagged.GeometryMetres;
@@ -584,17 +596,43 @@ public static class DocRegeneration
             }
         }
 
+        return Result;
+    }
+
+    static DocRegenerationPlan Assemble(Project project, Dictionary<string, Item> items, IEnumerable<string> keys, RevitBindings bindings,
+        Func<Item, (DocCommandStep? Step, DocUnsupported? Unsupported)> result)
+    {
         var steps = new List<DocCommandStep>();
         var unsupported = new List<DocUnsupported>();
         var ordered = keys.OrderBy(k => k, StringComparer.Ordinal).ToArray();
         foreach (var key in ordered)
         {
-            var (step, refused) = Result(items[key]);
+            var (step, refused) = result(items[key]);
             if (step is not null) steps.Add(step);
             if (refused is not null) unsupported.Add(refused);
         }
-        return new DocRegenerationPlan(Version, project.Id, project.Revision, hash, bindings.Document, "", ordered,
+        return new DocRegenerationPlan(Version, project.Id, project.Revision, Compiler.Hash(project), bindings.Document, Digest(items, bindings), ordered,
             Order(steps), unsupported.ToArray(), items.Count);
+    }
+
+    // An item's result without its operation id (which changes with every model state).
+    static string Content((DocCommandStep? Step, DocUnsupported? Unsupported) result) =>
+        result.Step is { } step ? JsonSerializer.Serialize(step with { OperationId = "" }) : JsonSerializer.Serialize(result.Unsupported);
+
+    // Lowercase hex SHA-256 of the set (items by key, ordinal) and the bindings (levels by id), so a merge can refuse an
+    // update computed with another set or other bindings than the prior regeneration.
+    static string Digest(Dictionary<string, Item> items, RevitBindings bindings)
+    {
+        var text = JsonSerializer.Serialize(new
+        {
+            items = items.Values.OrderBy(item => item.Key, StringComparer.Ordinal).Select(item => new { kind = item.Kind, spec = JsonSerializer.Serialize(item.Spec, item.Spec.GetType()) }).ToArray(),
+            document = bindings.Document,
+            levels = bindings.Levels.OrderBy(pair => pair.Key).Select(pair => new { id = pair.Key.ToString("D"), reference = pair.Value }).ToArray(),
+            wall_types = bindings.WallTypes?.OrderBy(type => type.ThicknessMetres).ToArray(),
+            door = bindings.DoorSymbol,
+            window = bindings.WindowSymbol,
+        });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
     }
 
     // Plan centre of an element: wall axis midpoint, space rectangle centre, opening axis midpoint (absolute
