@@ -29,7 +29,7 @@ internal static class AttributeTests
         G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
         + (blocks.Length > 0 ? G("0 SECTION|2 BLOCKS") + blocks + G("0 ENDSEC") : "")
         + G("0 SECTION|2 ENTITIES") + entities + G("0 ENDSEC|0 EOF");
-    private static DxfDrawing Read(string entities, string blocks = "") => DxfReader.Parse(Doc(entities, blocks), "gen.dxf");
+    private static DxfDrawing Read(string entities, string blocks = "", int units = 4) => DxfReader.Parse(Doc(entities, blocks).Replace("$INSUNITS\n70\n4\n", "$INSUNITS\n70\n" + units.ToString(CultureInfo.InvariantCulture) + "\n", StringComparison.Ordinal), "gen.dxf");
     private static string Attrib(string handle, string tag, string value, double x, double y, string extra = "", string layer = "TAGS", double height = 200) =>
         G("0 ATTRIB|5 " + handle + "|8 " + layer + "|10 " + F(x) + "|20 " + F(y) + "|30 0|40 " + F(height) + "|1 " + value + "|2 " + tag + (extra.Length > 0 ? "|" + extra : ""));
     private static string Insert(string handle, string block, double x, double y, bool follows = true, string extra = "") =>
@@ -39,6 +39,8 @@ internal static class AttributeTests
     private static string Bare() => G("0 BLOCK|5 BB|8 0|2 BARE|70 0|10 0|20 0|30 0|0 ENDBLK|5 BE|8 0");
     private static string Plain(string mtext) => Read(G("0 MTEXT|5 M|8 0|10 0|20 0|40 1|1 " + mtext)).Entities.OfType<DxfText>().Single().PlainText;
     private static string PlainTextEntity(string text) => Read(G("0 TEXT|5 T|8 0|10 0|20 0|40 1|1 " + text)).Entities.OfType<DxfText>().Single().PlainText;
+    private static string Text(string handle, double x, double y, string value, double height = 200) =>
+        G("0 TEXT|5 " + handle + "|8 ROOM-TEXT|10 " + F(x) + "|20 " + F(y) + "|40 " + F(height) + "|1 " + value);
     private static string Rect(string handle, double x0, double y0, double x1, double y1) =>
         G("0 LWPOLYLINE|5 " + handle + "|8 ROOMS|90 4|70 1|10 " + F(x0) + "|20 " + F(y0) + "|10 " + F(x1) + "|20 " + F(y0) + "|10 " + F(x1) + "|20 " + F(y1) + "|10 " + F(x0) + "|20 " + F(y1));
 
@@ -95,21 +97,23 @@ internal static class AttributeTests
             C(mtexts.Count == 2 && mtexts[0].PlainText == "Sala de\nestar\n9,00 m2", "fixture MTEXT font group, paragraph, height and stacked superscript", mtexts.Count > 0 ? mtexts[0].PlainText.Replace("\n", "\\n", StringComparison.Ordinal) : "none");
             C(mtexts.Count == 2 && mtexts[1].PlainText == "Ø50 {x} 100% a b \\ 30° ±1", "fixture MTEXT %%c %%% %%d %%p, \\~, \\\\ and escaped braces", mtexts.Count > 1 ? mtexts[1].PlainText : "none");
 
-            // Explosion: ATTRIBs keep their own (world) placement, missing ATTRIBs fall back to ATTDEF defaults.
+            // Explosion: ATTRIBs keep their own (world) placement. Review correction (P6-06 review blocker): AutoCAD never
+            // draws a non-constant ATTDEF, so an insert lacking an ATTRIB shows nothing for that tag (no default fallback);
+            // only constant ATTDEFs are placed through the insert.
             var exploded = d.Explode();
             var attributes = exploded.Entities.OfType<DxfAttribute>().ToList();
-            C(string.Join(",", attributes.Select(a => a.Provenance.Handle)) == "201,202,211,212,221,B13,B22", "explode attribute order: ATTRIBs then defaults, per insert", string.Join(" | ", attributes.Select(Attr)));
-            if (attributes.Count == 7)
+            C(string.Join(",", attributes.Select(a => a.Provenance.Handle)) == "201,202,211,212,221,B22", "explode attribute order: ATTRIBs then constant ATTDEFs, per insert; no non-constant default", string.Join(" | ", attributes.Select(Attr)));
+            if (attributes.Count == 6)
             {
                 C(attributes[0].Provenance.InsertPath.SequenceEqual(new[] { "200" }) && attributes[0].InsertHandle == "200" && NearP(attributes[0].Insertion, 2000, 1500), "explode ATTRIB insert path and untransformed own point", Attr(attributes[0]));
                 C(Near(attributes[3].RotationDegrees, 90) && NearP(attributes[3].Insertion, 6800, 1500), "explode ATTRIB of a rotated insert is not rotated twice", Attr(attributes[3]));
                 C(attributes[4].Provenance.Layer == "TAGS", "explode ATTRIB on layer 0 takes the insert layer", Attr(attributes[4]));
-                C(attributes[5].IsDefinition && attributes[5].Tag == "AREA" && attributes[5].InsertHandle == "220" && attributes[5].Provenance.InsertPath.SequenceEqual(new[] { "220" }) && NearP(attributes[5].Insertion, 1500, 4700) && attributes[5].Provenance.Layer == "TAGS",
-                    "explode missing ATTRIB uses the ATTDEF default transformed by the insert", Attr(attributes[5]));
-                C(attributes[6].IsDefinition && attributes[6].IsConstant && attributes[6].PlainText == "Escalera" && NearP(attributes[6].Insertion, 6500, 5000) && attributes[6].InsertHandle == "230",
-                    "explode constant ATTDEF placed through the insert (base point 100,100)", Attr(attributes[6]));
+                C(attributes[5].IsDefinition && attributes[5].IsConstant && attributes[5].PlainText == "Escalera" && NearP(attributes[5].Insertion, 6500, 5000) && attributes[5].InsertHandle == "230" && attributes[5].BlockName == "STAIRTAG"
+                    && attributes[5].Provenance.Layer == "TAGS" && attributes[5].Provenance.InsertPath.SequenceEqual(new[] { "230" }),
+                    "explode constant ATTDEF placed through the insert (base point 100,100)", Attr(attributes[5]));
+                C(attributes[0].BlockName == "ROOMTAG", "explode attribute carries the inserted block name", attributes[0].BlockName ?? "null");
             }
-            C(Warnings(exploded.Warnings) == "attribute-default" && exploded.Warnings[0].Line == 479, "explode warns once for the default-valued attribute", Warnings(exploded.Warnings));
+            C(exploded.Warnings.Count == 0, "explode emits no default for the ATTRIB-less AREA tag and warns nothing", Warnings(exploded.Warnings));
 
             // Brief extraction from the room tags.
             var brief = BriefExtract.FromDxf(d);
@@ -129,13 +133,13 @@ internal static class AttributeTests
                 C(theatre.Name == "Quirófano" && theatre.StatedAreaSquareMetres is null && Near(theatre.RegionAreaSquareMetres, 6) && Near(theatre.Confidence, 0.8) && theatre.Notes.SequenceEqual(new[] { "room-tag", "area-from-region" }),
                     "brief NAME tag outside the vocabulary is a room; area from its region", Room(theatre));
                 var stair = brief.Rooms[3];
-                C(stair.Label.EntityType == "ATTDEF" && stair.Label.Handle == "B22" && stair.Label.InsertPath.SequenceEqual(new[] { "230" }) && Near(stair.RegionAreaSquareMetres, 6) && stair.Notes.SequenceEqual(new[] { "room-tag", "area-from-region" }),
-                    "brief constant ATTDEF NAME names the room", Room(stair) + " " + stair.Label);
+                C(stair.Label.EntityType == "ATTDEF" && stair.Label.Handle == "B22" && stair.Label.InsertPath.SequenceEqual(new[] { "230" }) && stair.Label.Tag == "NAME" && Near(stair.RegionAreaSquareMetres, 6) && stair.Notes.SequenceEqual(new[] { "area-from-region" }),
+                    "brief constant ATTDEF NAME of a non-room block (no AREA tag) is ordinary text, kept by its room word", Room(stair) + " " + stair.Label);
                 var lounge = brief.Rooms[4];
                 C(lounge.Name == "Sala de estar" && Near(lounge.StatedAreaSquareMetres, 9) && Near(lounge.RegionAreaSquareMetres, 9) && lounge.Notes.SequenceEqual(new[] { "area-same-text" }) && lounge.Label.Tag is null,
                     "brief formatted MTEXT label and stacked m2 area", Room(lounge));
             }
-            C(Codes(brief) == "area-from-region,area-from-region,explode-warning" && brief.Issues.Count == 0, "brief uncertainties and valid brief", Codes(brief) + " " + string.Join(",", brief.Issues.Select(i => i.Code)));
+            C(Codes(brief) == "area-from-region,area-from-region" && brief.Issues.Count == 0, "brief uncertainties and valid brief", Codes(brief) + " " + string.Join(",", brief.Issues.Select(i => i.Code)));
             var again = BriefExtract.FromDxf(DxfReader.Parse(File.ReadAllText(path).Replace("\n", "\r\n", StringComparison.Ordinal), "room-tags.dxf"));
             C(Rooms(again) == Rooms(brief) && Codes(again) == Codes(brief) && DxfJson.Serialize(DxfReader.ReadFile(path)) == DxfJson.Serialize(d), "deterministic across runs and CRLF");
             var json = DxfJson.Serialize(d);
@@ -179,7 +183,7 @@ internal static class AttributeTests
             var big = Read(many.ToString(), Tag());
             var bigExploded = big.Explode();
             clock.Stop();
-            C(((DxfInsert)big.Entities.Single()).Attributes.Count == 20000 && bigExploded.Entities.OfType<DxfAttribute>().Count() == 20001 && clock.ElapsedMilliseconds < 10_000,
+            C(((DxfInsert)big.Entities.Single()).Attributes.Count == 20000 && bigExploded.Entities.OfType<DxfAttribute>().Count() == 20000 && clock.ElapsedMilliseconds < 10_000,
                 "gen 20000 attributes read and exploded in linear time", clock.ElapsedMilliseconds + " ms");
             C(CodeOf(() => big.Explode(new DxfExplodeOptions(MaxWork: 1000))) == "explode-limit", "gen attributes count against explode MaxWork");
 
@@ -202,6 +206,7 @@ internal static class AttributeTests
             var deep = new string('{', 100000) + "x" + new string('}', 100000);
             var deepClock = Stopwatch.StartNew();
             C(Plain(deep) == "x" && deepClock.ElapsedMilliseconds < 5000, "mtext 100000 nested groups in linear time", deepClock.ElapsedMilliseconds + " ms");
+            C(PlainTextEntity("A^IB^ C") == "A B^C", "text caret codes ^I and '^ ' as in MTEXT", PlainTextEntity("A^IB^ C"));
             C(PlainTextEntity("%%uUnder%%u 50%%%") == "Under 50%" && PlainTextEntity("Quir%%243fano") == "Quirófano" && PlainTextEntity("%%c10 %%d") == "Ø10 °", "text %%u, %%%, %%nnn, %%c, %%d codes", PlainTextEntity("%%uUnder%%u 50%%%"));
         }
         catch (Exception error) { C(false, "gen unexpected", error.GetType().Name + ": " + error.Message + " " + error.StackTrace); }
@@ -229,6 +234,44 @@ internal static class AttributeTests
             var tagged = Brief(Rect("R1", 0, 0, 3000, 3000) + Insert("I1", "BARE", 1500, 1500) + Attrib("A1", "ROOM_NAME", "Oficina", 1500, 1500) + Attrib("A2", "ROOM_AREA", "9.00", 1500, 1200) + Seqend("S1"));
             C(tagged.Rooms.Count == 1 && Near(tagged.Rooms[0].StatedAreaSquareMetres, 9) && Near(tagged.Rooms[0].RegionAreaSquareMetres, 9) && tagged.Rooms[0].Notes.SequenceEqual(new[] { "room-tag", "area-attribute", "area-unitless" }) && Codes(tagged) == "",
                 "gen ROOM_NAME/ROOM_AREA tags in a region", Rooms(tagged) + " " + Codes(tagged));
+
+            // Review: non-constant ATTDEF defaults are never drawn.
+            var roomTag = G("0 BLOCK|5 RB|8 0|2 ROOMTAG|70 2|10 0|20 0|30 0") + G("0 ATTDEF|5 RD1|8 0|10 0|20 0|30 0|40 200|1 ROOM|3 Name|2 NAME|70 0")
+                + G("0 ATTDEF|5 RD2|8 0|10 0|20 -300|30 0|40 200|1 10|3 Area|2 AREA|70 0") + G("0 ENDBLK|5 RE|8 0");
+            var bareInsert = BriefExtract.FromDxf(Read(Rect("R1", 0, 0, 3000, 3000) + Insert("I1", "ROOMTAG", 1500, 1500, follows: false), roomTag));
+            C(bareInsert.Rooms.Count == 0 && Codes(bareInsert) == "unlabelled-region", "review an ATTRIB-less room-tag insert is not room 'ROOM'", Rooms(bareInsert) + " " + Codes(bareInsert));
+            var noArea = BriefExtract.FromDxf(Read(Rect("R1", 0, 0, 3000, 3000) + Insert("I1", "ROOMTAG", 1500, 1500) + Attrib("A1", "NAME", "Cocina", 1500, 1500) + Seqend("S1"), roomTag));
+            C(noArea.Rooms.Count == 1 && noArea.Rooms[0].StatedAreaSquareMetres is null && Near(noArea.Rooms[0].RegionAreaSquareMetres, 9) && noArea.Rooms[0].Notes.SequenceEqual(new[] { "room-tag", "area-from-region" }),
+                "review a missing AREA ATTRIB does not take the ATTDEF default 10", Rooms(noArea));
+
+            // Review: generic NAME tags need an AREA sibling or a room-like block name.
+            var title = G("0 BLOCK|5 TT|8 0|2 TITLE|70 2|10 0|20 0|30 0|0 ENDBLK|5 TX|8 0") + G("0 BLOCK|5 SB|8 0|2 SOFA|70 2|10 0|20 0|30 0|0 ENDBLK|5 SX|8 0");
+            var generic = BriefExtract.FromDxf(Read(Rect("R1", 0, 0, 5000, 4000) + Text("T1", 1000, 1000, "Living")
+                + Insert("I1", "SOFA", 3000, 2000) + Attrib("A1", "NAME", "SOFA", 3000, 2000) + Seqend("S1")
+                + Insert("I2", "TITLE", 50000, 0) + Attrib("A2", "NAME", "J. Pérez", 50000, 0) + Seqend("S2"), title));
+            C(generic.Rooms.Select(r => r.Id).SequenceEqual(new[] { "living" }), "review furniture and title-block NAME attributes are not rooms", Rooms(generic));
+            var roomish = BriefExtract.FromDxf(Read(Insert("I1", "ROOMTAG", 0, 0) + Attrib("A1", "NAME", "Quirófano", 0, 0) + Seqend("S1"), roomTag));
+            C(roomish.Rooms.Count == 1 && roomish.Rooms[0].Notes.SequenceEqual(new[] { "room-tag", "no-region", "area-missing" }), "review NAME in a room-like block (ROOMTAG) stays a room tag", Rooms(roomish));
+            var number = BriefExtract.FromDxf(Read(Insert("I1", "ROOMTAG", 0, 0) + Attrib("A1", "ROOM", "A-101", 0, 0) + Attrib("A2", "AREA", "12 m²", 0, -300) + Seqend("S1"), roomTag));
+            C(number.Rooms.Count == 0, "review ROOM tag (often a room number) is not a name tag", Rooms(number));
+
+            // Review: an area carried by the NAME value consumes the insert's AREA attribute.
+            var consumed = Brief(Insert("I1", "BARE", 0, 0) + Attrib("A1", "NAME", "Cocina 7 m²", 0, 0) + Attrib("A2", "AREA", "9 m²", 0, -300) + Seqend("S1") + Text("T1", 0, -600, "Comedor"));
+            C(consumed.Rooms.Count == 2 && Near(consumed.Rooms[0].StatedAreaSquareMetres, 7) && consumed.Rooms[1].StatedAreaSquareMetres is null && !Codes(consumed).Contains("orphan-area", StringComparison.Ordinal),
+                "review the AREA attribute of a NAME with its own area cannot pair to another room", Rooms(consumed) + " " + Codes(consumed));
+
+            // Review: bare AREA numbers in imperial drawings are square feet.
+            var feet = BriefExtract.FromDxf(Read(Insert("I1", "BARE", 0, 0) + Attrib("A1", "NAME", "Kitchen", 0, 0, height: 8) + Attrib("A2", "AREA", "120", 0, -12, height: 6) + Seqend("S1"), Tag() + Bare(), units: 2));
+            C(feet.Rooms.Count == 1 && Near(feet.Rooms[0].StatedAreaSquareMetres, 120 * 0.09290304, 1e-12) && feet.Rooms[0].Notes.SequenceEqual(new[] { "room-tag", "area-attribute", "area-unitless", "area-square-feet", "no-region" })
+                && Near(feet.Rooms[0].Confidence, 0.9 * 0.9 * 0.9), "review unitless AREA on $INSUNITS feet read as square feet and flagged", Rooms(feet));
+            var inches = BriefExtract.FromDxf(Read(Insert("I1", "BARE", 0, 0) + Attrib("A1", "NAME", "Kitchen", 0, 0) + Attrib("A2", "AREA", "120", 0, -300) + Seqend("S1"), Tag() + Bare(), units: 1));
+            C(inches.Rooms.Count == 1 && inches.Rooms[0].Notes.Contains("area-square-feet"), "review unitless AREA on $INSUNITS inches read as square feet", Rooms(inches));
+
+            // Review: explode-limit fallback still reads top-level insert attributes.
+            var fallback = BriefExtract.FromDxf(Read(Insert("I1", "BARE", 0, 0) + Attrib("A1", "NAME", "Cocina", 0, 0) + Attrib("A2", "AREA", "7 m²", 0, -300) + Seqend("S1"), Tag() + Bare()),
+                new BriefExtractOptions { ExplodeOptions = new DxfExplodeOptions(MaxEntities: 1) });
+            C(Codes(fallback).Contains("explode-limit", StringComparison.Ordinal) && fallback.Rooms.Count == 1 && Near(fallback.Rooms[0].StatedAreaSquareMetres, 7)
+                && fallback.Rooms[0].Label.InsertPath.SequenceEqual(new[] { "I1" }) && fallback.Rooms[0].Notes.Contains("area-attribute"), "review explode-limit fallback reads top-level insert attributes", Rooms(fallback) + " " + Codes(fallback));
 
             // Fuzz the fixture: reading, exploding and brief extraction raise only DxfFormatException.
             var lines = File.ReadAllText(path).Split('\n');

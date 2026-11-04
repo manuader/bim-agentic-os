@@ -73,6 +73,8 @@ public sealed record DxfAttribute(DxfProvenance Provenance, string Tag, Point2 I
     public string? Prompt { get; init; }
     public int Flags { get; init; }
     public string? InsertHandle { get; init; }
+    // Name of the block the owning INSERT places (null like InsertHandle).
+    public string? BlockName { get; init; }
     public bool IsConstant => (Flags & 2) != 0;
 }
 
