@@ -89,7 +89,9 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P2-02 | Semantic graph relations | ✅ | — | core/Bim.Core/Graph* | hosted-by, bounds, on-level edges with queries and closure; tests | unit-tested (relay134, CI 41511322582) |
 | P2-03 | External edit journal (DocumentChanged) | ✅ | P2-01 | runtimes/revit-native/Journal* | events recorded with element ids and diff against last snapshot; compiles | compiled recorder + unit-tested journal/diff (relay141, CI 41624965893; raw pipe journal.read, not in catalogue/MCP; not verified-in-revit) |
 | P2-04 | Drift detection between mirror and Core | ✅ | P2-01, P2-03 | core/Bim.Core/MirrorDrift*; tests/mirror-journal | compares a query.snapshot against the Core store's committed BIM-IR for the same document: missing/extra/changed elements classified (external edit, add-in pending, unmapped) with a stable drift report; fixtures; tests | unit-tested (relay145, CI 41714702286; MirrorDrift.Compare: missing/extra/changed by role sets with mm/deg tolerances, external_edit/addin_pending/unknown, not_comparable kinds and native fixture keys, map_only scope, journal.read reply with completeness notes; not wired to CLI/MCP) |
-| P2-05 | Journal and snapshot exposure as catalogue query | ⏳ | P2-03 | core/Bim.Core/RevitCommandsJournal*; runtimes/revit-native/CommandsExecutorJournal*; tests/revit-commands | query.journal catalogue command (peek/after_sequence/max_entries) mirroring the raw journal.read, read-only level in MCP/audit tables; contract tests; compiles | target compiled |
+| P2-05 | Journal and snapshot exposure as catalogue query | ✅ | P2-03 | core/Bim.Core/RevitCommandsJournal*; runtimes/revit-native/CommandsExecutorJournal*; tests/revit-commands | query.journal catalogue command (peek/after_sequence/max_entries) mirroring the raw journal.read, read-only level in MCP/audit tables; contract tests; compiles | compiled + unit-tested contracts (relay149, CI 41775145810; executor never run in Revit; no steps in owner-catalogue-steps yet) |
+| P2-06 | Element provenance ledger | ⏳ | P2-01 | core/Bim.Core/Provenance*; tests/provenance | per BIM-IR element id, an append-only record of origin (intent id + compiler rule, catalogue command + operation_id, external edit from the journal, CAD import) with query by element and by source; deterministic JSON; refuses unknown sources; survives replay idempotently; tests | target unit-tested |
+| P2-07 | Drift resolution plan | ⏳ | P2-04 | core/Bim.Core/MirrorDriftResolve*; tests/mirror-journal | from a P2-04 drift report, a proposal per drifted element: adopt (BIM-IR update from the mirror) or restore (catalogue commands back to Core state), never applied automatically; unsupported kinds typed; plan validates against the catalogue schema; tests | target unit-tested |
 
 ### Phase 3 — incremental compiler
 
@@ -119,7 +121,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P5-02 | CABA building code rule pack | ✅ | — | skills/ar.caba.codigo-edificacion; core/Bim.Core/SkillRoomValidator.cs | minimum areas, heights, sides, ventilation/illumination ratios with cited articles; validator over BIM-IR rooms; tests | unit-tested (relay138, CI 41576795164; 95 rules, to-verify values flagged for owner review) |
 | P5-03 | Two contrasting style skills | ✅ | P5-01 | skills/style-* | two style packs change defaults visibly with traceable rule ids; tests | unit-tested (relay141, CI 41623346293; bim.style.compact-modern and bim.style.warm-masonry; qa clear height raised to CABA 2.6) |
 | P5-04 | Style defaults feed the intent compiler | ⏳ | P5-03, P3-01 | core/Bim.Core/IntentSkillDefaults*; tests/intent | resolved skill defaults (wall thickness/type, level and clear height, sill/head) fill unspecified intent fields before compile with per-field provenance (rule id); explicit intent values win; same intent + two styles → two different deterministic BIM-IR outputs; tests | target unit-tested |
-| P5-05 | QA recipe skill pack over BIM-IR | ⏳ | P5-01 | skills/bim.qa.*; core/Bim.Core/SkillElementValidator*; tests/skills | element-targeted rules (wall thickness bounds, door/window size, openings inside host) evaluated over BIM-IR elements with traceable findings; closes the "element rules carried but not evaluated" gap; tests | target unit-tested |
+| P5-05 | QA recipe skill pack over BIM-IR | ✅ | P5-01 | skills/bim.qa.*; core/Bim.Core/SkillElementValidator*; tests/skills | element-targeted rules (wall thickness bounds, door/window size, openings inside host) evaluated over BIM-IR elements with traceable findings; closes the "element rules carried but not evaluated" gap; tests | unit-tested (relay149, CI 41777099861; pack bim.qa.element-basics 1.1.0, illustrative bounds; axis-span clearances) |
 | P5-06 | CABA values confirmed by the owner | ✅ | P5-02 | skills/ar.caba.codigo-edificacion/skill.json; core/Bim.Core/SkillRoomValidator.cs; tests/skills | owner-confirmed confidence with confirmed_by/confirmed_on; the values the owner confirmed (2.60/2.40/2.10 m heights, x = 10, k = i/3, dormitorio third class) flipped; tests | unit-tested (relay145, CI 41707994544; 49 cited, 36 owner-confirmed, 9 to-verify: escritorio/estudio/biblioteca class assignment) |
 
 ### Phase 6 — CAD and requirements
@@ -165,9 +167,9 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P9-03 | Guarded free path (ADR + implementation) | ⏳ | — | docs/architecture/adr; runtimes/revit-native | ADR accepted by owner rules; compiled C# runs in rolled-back group with change report; compiles | target compiled |
 | P9-04 | Revit parity census registry | ⏳ | — | capabilities/ | machine-readable census of Revit functions with coverage state and tests linking | target described |
 | P9-05 | Expose catalogue v2 as MCP tools | ✅ | P9-01 | interfaces/mcp/McpServer.cs; tests/mcp; tests/audit; docs/contracts/module-contracts.md | MCP tools/list built from RevitCommandCatalogue.All; v2 permission levels asserted; contract doc lists v2 | unit-tested (relay137, CI 41562897314; labels only, no per-actor enforcement in MCP) |
-| P9-06 | Materials and layered wall/floor types | ⏳ | — | core/Bim.Core/RevitCommandsMaterialTypes.cs; runtimes/revit-native/*MaterialTypes*; tests/revit-commands | owner chat branch chat-materials-types (material.create/set, wall_type.create, floor_type.create, query.fill_patterns, element.change_type) independently reviewed and merged with CI green; the relay147-P9-06 hardening ported as tests: core/shell + structural index readback, ordinal-first name pick, 1.2 mm minimum layer (also roof_type.create), Revit ArgumentException → args_invalid at args.name | target compiled + unit-tested contracts (relay147 built the same commands on relay147-P9-06 771cca4, CI 41740133186, not merged: duplicate of the owner chat's branch) |
+| P9-06 | Materials and layered wall/floor types | ⏳ | — | core/Bim.Core/RevitCommandsMaterialTypes.cs; runtimes/revit-native/*MaterialTypes*; tests/revit-commands | owner chat branch chat-materials-types (material.create/set, wall_type.create, floor_type.create, query.fill_patterns, element.change_type) independently reviewed and merged with CI green; the relay147-P9-06 hardening ported as tests: core/shell + structural index readback, ordinal-first name pick, 1.2 mm minimum layer (also roof_type.create), Revit ArgumentException → args_invalid at args.name | owner chat merged chat-materials-types to main (1f4f109, CI 41767838641) — remaining: port relay147-P9-06 (771cca4) hardening as tests (core/shell + structural index readback, ordinal-first name pick, 1.2 mm min layer incl. roof_type.create, ArgumentException → args_invalid at args.name); target compiled + unit-tested contracts |
 | P9-07 | roof.create_extrusion (curved / barrel roofs) | ⏳ | — | core/Bim.Core/RevitCommandsRoofExtrusion*; runtimes/revit-native/*RoofExtrusion*; tests/revit-commands | contract + executor for an extruded roof from an open profile (lines/arcs) on a reference plane with extents, roof type and level; profile validation (open, planar, no self-intersection) before the pipe; readback of type/extents; MCP tool; compiles | target compiled + unit-tested contracts |
-| P9-08 | document.save / save_as into enabled roots | ⏳ | P1-08 | core/Bim.Core/RevitCommandsDocument*; runtimes/revit-native/*Document*; tests/revit-commands | save/save_as only for documents under an owner-enabled root (.bim/revit-enabled-roots.txt), path normalisation and traversal refusal, never overwrite production, refusal codes tested before the pipe; compiles | target compiled + unit-tested contracts |
+| P9-08 | document.save / save_as into enabled roots | ⏳ | P1-08 | core/Bim.Core/RevitCommandsDocument*; runtimes/revit-native/*Document*; tests/revit-commands | save/save_as only for documents under an owner-enabled root (.bim/revit-enabled-roots.txt), path normalisation and traversal refusal, never overwrite production, refusal codes tested before the pipe; compiles | owner chat merged document.save + policy reload (f8bc4c2/d9a5439 on main); remaining: save_as into enabled roots with normalisation/traversal refusal tests; target compiled + unit-tested contracts |
 | P9-09 | DirectShape site elements | ⏳ | — | core/Bim.Core/RevitCommandsDirectShape*; runtimes/revit-native/*DirectShape*; tests/revit-commands | direct_shape.create for site/landscape solids (extruded polygon or box, category from an allowed list, material) with bounded vertex counts and readback of bounding box; compiles | target compiled + unit-tested contracts |
 
 ### Phase 10 — global production
@@ -177,13 +179,15 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P10-01 | IDS checks | ✅ | — | runtimes/ifc/ids_check.py; tests/ifc | IDS file validation of exported IFC with report; CI | integration-tested (ifc) (relay138, CI 41575714191; IDS 1.0 subset) |
 | P10-02 | BCF export | ✅ | — | core/Bim.Core/Bcf* | validation issues exported as BCF 3.0 zip; schema-valid; tests | unit-tested (relay140, CI 41603185340; valid against project-authored subset XSDs only, official buildingSMART XSDs not fetched; golden zip hash equal on Linux/Windows) |
 | P10-03 | Audit log and permissions | ✅ | — | core/Bim.Core/Audit* | append-only audit of commands with actor and decision; permission policy (read/write/real-project); tests | unit-tested (relay134, CI 41517584141) |
-| P10-04 | Installer and packaging manifest | ⏳ | — | scripts/package*.ps1; tests/packaging | release layout (CLI, MCP server, add-in manifest without Revit assemblies) with SHA-256 manifest and version stamp, reproducible on CI, verified by a test that rebuilds and compares | target unit-tested |
+| P10-04 | Installer and packaging manifest | ✅ | — | scripts/package*.ps1; tests/packaging | release layout (CLI, MCP server, add-in manifest without Revit assemblies) with SHA-256 manifest and version stamp, reproducible on CI, verified by a test that rebuilds and compares | unit-tested (relay149, CI 41773791843 branch, integration CI on main; reproducible within one OS on ubuntu+windows core jobs; no Bim.Revit.dll, installer, archive or signing) |
 | P10-05 | Offline classification mapping (bSDD-style) | ✅ | — | core/Bim.Core/Classification*; tests/classification | versioned offline dictionary (e.g. Uniclass/OmniClass subset with licence notes) maps BIM-IR kinds/types to classification codes and IFC classification references; unknown → explicit unmapped; tests | unit-tested (relay145, CI 41710780183; embedded Uniclass 2015 EF subset (4 codes, CC BY-ND 4.0 attribution, redistribution to review), strict loader, IFC4 IfcClassificationReference fields, explicit unmapped; not written to IFC yet) |
+| P10-06 | Jurisdiction rule-pack registry | ⏳ | P5-02 | core/Bim.Core/Jurisdiction*; skills/; tests/skills | registry selects rule packs by jurisdiction code (e.g. ar.caba) and project metadata, refuses unknown/ambiguous jurisdictions, reports pack versions and source_confidence in validation output; second stub jurisdiction pack proves multi-jurisdiction selection; tests | target unit-tested |
+| P10-07 | Add-in install/uninstall from the release package | ⏳ | P10-04 | scripts/install-addin*.ps1; tests/packaging | installs Bim.addin from the P10-04 package into a given Addins folder (temp dir in tests) with the assembly path filled, backup and uninstall restore, refuses an unverified package (package-verify), never touches a real Revit folder in tests; tests | target unit-tested |
 
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 63/86 done (73.3 %)
+Progress: 66/90 done (73.3 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
@@ -191,14 +195,14 @@ Progress: 63/86 done (73.3 %)
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
 - Revit command surface — catalogue v1 (architecture): 4/5
 - Phase 1 — native kernel: 6/8
-- Phase 2 — semantic state and mirror: 4/5
+- Phase 2 — semantic state and mirror: 5/7
 - Phase 3 — incremental compiler: 4/5
 - Phase 4 — documentation engine: 3/5
-- Phase 5 — skills and design systems: 4/6
+- Phase 5 — skills and design systems: 5/6
 - Phase 6 — CAD and requirements: 5/7
 - Phase 7 — generative kernels: 4/5
 - Phase 8 — Rhino, Blender and IFC: 4/7
 - Phase 9 — Revit parity: 3/9
-- Phase 10 — global production: 4/5
-Next ready: P1-07, P1-08, P2-05, P3-05, P4-04, P4-05, P5-04, P5-05
+- Phase 10 — global production: 5/7
+Next ready: P1-07, P1-08, P2-06, P2-07, P3-05, P4-04, P4-05, P5-04
 

@@ -626,7 +626,7 @@
         "skills/bim.style.warm-masonry/skill.json",
         "tests/skills/StyleSkillTests.cs"
       ],
-      "blocker": "Defaults have no per-default rule id (traced as <skill>:default:<key>); element-targeted rules carried but not evaluated; window ratio/sill/head/doors/finishes are not checked by any validator; not yet consumed by the intent compiler.",
+      "blocker": "Defaults have no per-default rule id (traced as <skill>:default:<key>); element-targeted rules now evaluated by SkillElementValidator (P5-05), though room-basics room_bounding/door operation are not BIM-IR quantities (property_unknown); window ratio/sill/head/doors/finishes are not checked by any validator; not yet consumed by the intent compiler.",
       "scope": "P5-03: two contrasting style packs (compact modern vs warm masonry) at priority 30 that differ on all 13 shared defaults, with 20 traceable rules each covering every CABA clear-height room at least as strictly as CABA; composition with CABA, qa and dwelling typology resolved deterministically by priority; qa clear-height default raised to the CABA 2.6 m minimum. CI 41623346293."
     },
     {
@@ -638,7 +638,7 @@
         "runtimes/revit-native/JournalRecorder.cs",
         "tests/mirror-journal/Program.cs"
       ],
-      "blocker": "Native DocumentChanged recorder compiled only, never run in Revit; only attached in validated fixture sessions; reachable through the raw pipe operation journal.read, not the catalogue/MCP; deleted elements are numeric ids only; snapshot diff includes add-in changes.",
+      "blocker": "Native DocumentChanged recorder compiled only, never run in Revit; only attached in validated fixture sessions; reachable through journal.read and, since P2-05, the read-only catalogue/MCP query query.journal (shared baseline: non-peek reads consume it); deleted elements are numeric ids only; snapshot diff includes add-in changes.",
       "scope": "P2-03: Revit-free bounded append-only journal (entry capacity and total id budget, per-reply caps with after_sequence paging, peek mode, per-copy baselines keyed by UniqueId+path, failure-aware journal_complete, add-in vs external origin) and a mirror snapshot differ (added/removed/changed with named fields, 1e-6 m tolerance) unit-tested; DocumentChanged recorder compiled against Revit 2025 reference assemblies. CI 41624965893."
     },
     {
@@ -803,6 +803,41 @@
       ],
       "blocker": "Doors are candidate openings on every qualifying shared wall (reachable = adjacency-graph connectivity); one entrance; level 0 only (upper levels reported circulation_unsupported, no stairs); no corridors, door swing or clearance; PrototypeGenerator does not apply the gate; not exposed through CLI/MCP.",
       "scope": "P7-04: door/entrance reachability graph over planner layouts with deterministic shortest routes; hard checks circulation_entrance, circulation_reachable, circulation_bedroom_access, circulation_passage (only wet rooms behind a bedroom); opt-in CirculationRanker adds an explained 'circulation' criterion (mean route length vs \u221aarea, penalty for unreachable rooms, weight and require_valid recorded) on top of AlternativeRanker with existing outputs and digests unchanged; independent BFS + Floyd\u2013Warshall oracle on planner seeds and prototypes; byte-identical across order and culture. CI 41758872020."
+    },
+    {
+      "id": "release-packaging",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/package.ps1",
+        "scripts/package-common.ps1",
+        "scripts/package-verify.ps1",
+        "scripts/package.version",
+        "tests/packaging/test-package.ps1"
+      ],
+      "blocker": "No Bim.Revit.dll in the package (built only on the Windows native-build job); no installer, archive or signing; reproducible within one OS only; macOS CI does not run packaging.",
+      "scope": "P10-04: deterministic framework-dependent release layout (VERSION, cli/, mcp/, revit/Bim.addin.template) with manifest.json (SHA-256 per file, ordinal order, version + source commit), two clean builds byte-identical, forbidden-file and symlink scan, hermetic build tree against inherited MSBuild/NuGet files, never-overwrite output with failure-path cleanup, package-verify tamper detection. CI 41773791843 (ubuntu + windows core jobs)."
+    },
+    {
+      "id": "revit-query-journal",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsJournal.cs",
+        "runtimes/revit-native/CommandsExecutorJournal.cs",
+        "tests/revit-commands/CatalogueJournal.cs"
+      ],
+      "blocker": "Executor compiled only, never run in Revit; no step in scripts/owner-catalogue-steps.ps1; no reply-size cap beyond journal.read caps.",
+      "scope": "P2-05: query.journal read-only catalogue/MCP command (peek, after_sequence, max_entries 1-256) mirroring journal.read: shared tracker, byte-identical readback (golden literal), args refused before the pipe, read permission on copies and real projects, shared-baseline warning in the tool description, AsJournalReadReply wrapper for MirrorDrift. Contracts unit-tested, CI 41775145810."
+    },
+    {
+      "id": "element-qa-skill-pack",
+      "status": "unit-tested",
+      "evidence": [
+        "skills/bim.qa.element-basics/skill.json",
+        "core/Bim.Core/SkillElementValidator.cs",
+        "tests/skills/ElementSkillTests.cs"
+      ],
+      "blocker": "Illustrative QA bounds, not a building code; clearances measured on the wall axis span, not the clear span; overlapping openings and door swing not checked; hosted [offset,width] openings have no sill/height.",
+      "scope": "P5-05: bim.qa.element-basics 1.1.0 (23 rules) evaluated by SkillElementValidator over BIM-IR walls/doors/windows: thickness, opening size, inside-host clearances with producer tolerance, door sill at level, opening/host level match; typed not_evaluable reasons (no silent pass), unit suffixes _mm/_m, unit_mismatch for ratios, deterministic ordering, override inversion refused. CI 41777099861."
     }
   ]
 }
