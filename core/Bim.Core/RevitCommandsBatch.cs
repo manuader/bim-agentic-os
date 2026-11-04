@@ -256,7 +256,7 @@ public static partial class RevitCommandCatalogue
 
     static IReadOnlyList<RevitCommandSpec> BuildBatchSteps() =>
         V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).Concat(Materials)
-            .Concat(Families).Concat(Site).Concat(WallProfile).Concat(MaterialTypes).Concat(ExportSave).Where(RevitCommandBatch.IsStepCommand).ToArray();
+            .Concat(Families).Concat(Site).Concat(WallProfile).Concat(MaterialTypes).Concat(ExportSave).Concat(RoofExtrusion).Where(RevitCommandBatch.IsStepCommand).ToArray();
 
     static IReadOnlyList<RevitCommandSpec> BuildBatch()
     {
