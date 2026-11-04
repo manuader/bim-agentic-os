@@ -101,7 +101,10 @@ public static class DocRegeneration
     public static DocRegenerationPlan Full(Project project, DocumentationSet set, RevitBindings bindings)
     {
         ArgumentNullException.ThrowIfNull(project);
-        throw new NotImplementedException("P4-03 red: full regeneration not implemented");
+        var items = Index(set);
+        CheckBindings(bindings);
+        if (Compiler.Validate(project).Length > 0) throw new InvalidOperationException("invalid_ir");
+        return Generate(project, items, items.Keys.ToHashSet(StringComparer.Ordinal), bindings);
     }
 
     // Only the affected items, computed from after. The plan must be Compiler.Diff(before, after) (plan_mismatch).
@@ -110,7 +113,16 @@ public static class DocRegeneration
         ArgumentNullException.ThrowIfNull(before);
         ArgumentNullException.ThrowIfNull(after);
         ArgumentNullException.ThrowIfNull(plan);
-        throw new NotImplementedException("P4-03 red: affected regeneration not implemented");
+        var items = Index(set);
+        CheckBindings(bindings);
+        if (JsonSerializer.Serialize(Compiler.Diff(before, after)) != JsonSerializer.Serialize(plan)) throw new InvalidOperationException("plan_mismatch");
+        var dirty = plan.DirtyIds.ToHashSet();
+        var all = before.Elements.Concat(after.Elements).ToArray();
+        var direct = items.Values.Where(item => References(item, all).Any(dirty.Contains)).Select(item => item.Key).ToHashSet(StringComparer.Ordinal);
+        // Parents are views, schedules and sheets, which have no parents themselves: one pass closes the set.
+        var affected = new HashSet<string>(direct, StringComparer.Ordinal);
+        foreach (var item in items.Values) if (item.Parents.Any(direct.Contains)) affected.Add(item.Key);
+        return Generate(after, items, affected, bindings);
     }
 
     // previous's results for keys update does not regenerate, plus update's, under update's header. previous should be
