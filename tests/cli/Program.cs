@@ -221,6 +221,16 @@ try {
     ExpectFailure("export-gltf refuses an output in a missing directory","output_directory_not_found","export-gltf",gInput,Path.Combine(work,"no-such-dir","model.glb"));
     ExpectFailure("export-gltf refuses an empty output path","output_path_invalid","export-gltf",gInput,"");
     ExpectFailure("export-gltf refuses a trailing-separator output path","output_extension_unsupported","export-gltf",gInput,Path.Combine(work,"trail.glb")+Path.DirectorySeparatorChar);
+    // NTFS alternate data stream syntax: any ':' after the drive designator is refused on every OS; nothing is written.
+    var gHost=Path.Combine(work,"host.txt");
+    if(OperatingSystem.IsWindows()) File.WriteAllBytes(gHost,[7,7,7]);
+    var gAds=Path.Combine(work,"host.txt:model.glb");
+    ExpectFailure("export-gltf refuses an alternate-data-stream output (host.txt:model.glb)","output_path_invalid","export-gltf",gInput,gAds);
+    if(OperatingSystem.IsWindows()) Check(File.ReadAllBytes(gHost).SequenceEqual(new byte[]{7,7,7}) && new FileInfo(gHost).Length==3,"ADS refusal leaves host.txt untouched");
+    else Check(!File.Exists(gHost) && !File.Exists(gAds),"ADS refusal creates neither host.txt nor host.txt:model.glb");
+    ExpectFailure("export-gltf refuses a relative ':' output","output_path_invalid","export-gltf",gInput,"ab:c.glb");
+    var gUnknown=Cli("no-such-verb");
+    Check(gUnknown.Exit==1 && gUnknown.Out.Contains("export-gltf project.json output.glb|output.gltf",StringComparison.Ordinal),"default usage lists export-gltf",gUnknown.Out);
     if(OperatingSystem.IsWindows()) {
         ExpectFailure(@"export-gltf refuses a \\.\ device output","output_not_regular_file","export-gltf",gInput,@"\\.\pipe\bim-gltf-test.glb");
     } else Skip("export-gltf device outputs","Windows-only device namespace fixtures");

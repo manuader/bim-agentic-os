@@ -29,6 +29,10 @@ string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 const string GoldenGlb = "28495187A66863D0BFD5F9E4CF91B78249AEAA018875A44623A2CAE1F2062FF9";
 const string GoldenGltf = "D3AB72246F4435ACD6A1D66105993BC364BB0B16B4FECC08C0C6640AE21C9C0E";
 const string GoldenEmptyGlb = "5427747C5A9F2E47C77BDAAAE83421FAAEF8C780046E903FC956B8112C82152D";
+// P8-07 opening fixture (wall 6 m with a door and a window), from the same independent reimplementation extended with
+// the documented opening split; it reproduces the three goldens above before producing these.
+const string GoldenOpeningsGlb = "47A14D5CE34105E4145CBBD9207B7D7EEBFC472BAB8B23EBF9686AB677966D3F";
+const string GoldenOpeningsGltf = "039FC0A70FB5BEB58EDE15A3BC59816C0EE2A31CDA4BFBCC5B399F7C1FA79DBF";
 
 var prov = new Provenance("test", "approved");
 Guid G(string s) => Guid.Parse(s);
@@ -621,6 +625,61 @@ try
     Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2], L1, WO), E(N1, "window", [2.0005, 0, 3, 0, 1, 1], L1, WO)))) == "gltf_precision", "refuses a sub-millimetre pier between openings");
     Check(Code(() => GltfExporter.ExportGlb(Host(E(N1, "window", [1, 0, 2, 0, 0.0004, 1], L1, WO)))) == "gltf_precision", "refuses a sub-millimetre sill wall");
     Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "opening", [1, 0, 2, 0, 0, 2], L1, WO)))) == "geometry_kind_unsupported", "kind opening stays unsupported");
+
+    // ---------------- P8-07 review: goldens, wall-plane overlap, host direction, snap band, plan corners ----------------
+    Check(Hex(openingGlb) == GoldenOpeningsGlb, "opening fixture GLB golden SHA-256", Hex(openingGlb) + " length " + openingGlb.Length.ToString(CultureInfo.InvariantCulture));
+    var openingGltfBytes = Encoding.UTF8.GetBytes(GltfExporter.ExportGltf(openingFixture));
+    Check(Hex(openingGltfBytes) == GoldenOpeningsGltf, "opening fixture .gltf golden SHA-256", Hex(openingGltfBytes) + " length " + openingGltfBytes.Length.ToString(CultureInfo.InvariantCulture));
+    (double[] Min, double[] Max)[] WallBoxes(params Element[] openings)
+    {
+        var parsed = Parse(GltfExporter.ExportGlb(Host(openings)));
+        Check(parsed.Issues.Count == 0, "split wall passes the structural validator", string.Join("; ", parsed.Issues));
+        return Boxes(Positions(parsed.Root, parsed.Bin, NodeNamed(parsed.Root, "wall " + WO.ToString("D"))));
+    }
+    bool BoxesAre((double[] Min, double[] Max)[] actual, params (double[] Min, double[] Max)[] expected) =>
+        actual.Length == expected.Length && actual.Zip(expected).All(p => BoxIs(p.First, p.Second.Min, p.Second.Max, 1e-6));
+    var N2 = G("0e000000-0000-4000-8000-000000000003");
+    // A transom window above a door (same stretch, disjoint heights) is accepted: pier, door-transom mullion, top, pier.
+    var transom = WallBoxes(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [1, 0, 2, 0, 2.3, 0.5], L1, WO));
+    Check(BoxesAre(transom, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 2.1, 2.3), Gl(1, 2, -0.1, 0.1, 2.8, 3), Gl(2, 4, -0.1, 0.1, 0, 3)),
+        "transom window above a door gives 4 boxes with the 2.1..2.3 m band kept", Bs(transom));
+    var stacked = WallBoxes(E(N1, "window", [1, 0, 2, 0, 0.5, 0.5], L1, WO), E(N2, "window", [1, 0, 2, 0, 1.5, 0.5], L1, WO));
+    Check(BoxesAre(stacked, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 0, 0.5), Gl(1, 2, -0.1, 0.1, 1, 1.5), Gl(1, 2, -0.1, 0.1, 2, 3), Gl(2, 4, -0.1, 0.1, 0, 3)),
+        "stacked windows give 5 boxes, bottom up within their stretch", Bs(stacked));
+    var staggered = WallBoxes(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [1.5, 0, 3, 0, 2.3, 0.5], L1, WO));
+    Check(staggered.Length == 7 && Math.Abs(staggered.Sum(b => Volume(b)) - (4 * 3 - 1 * 2.1 - 1.5 * 0.5) * 0.2) < 1e-5
+        && staggered.All(b => !Overlaps(b, Gl(1, 2, -0.1, 0.1, 0, 2.1)) && !Overlaps(b, Gl(1.5, 3, -0.1, 0.1, 2.3, 2.8))),
+        "partly overlapping stretches with disjoint heights split into 7 boxes that leave both openings empty", Bs(staggered));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [1, 0, 2, 0, 2.0, 0.5], L1, WO)))) == "gltf_opening_overlap", "refuses a window overlapping a door head by 0.1 m");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(N1, "window", [1, 0, 2, 0, 0.5, 1], L1, WO), E(N2, "window", [1.5, 0, 2.5, 0, 1, 1], L1, WO)))) == "gltf_opening_overlap", "refuses windows overlapping along and across");
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [1, 0, 2, 0, 2.1, 0.5], L1, WO)))) is null, "a window sitting exactly on a door head is accepted (touching)");
+    // Reversed host: axis (6,0)->(0,0); a door at x 1..2 sits at t 4..5 from the host start.
+    var reversedHost = Parse(GltfExporter.ExportGlb(new Project(PID, 0, [E(L1, "level", [0]), E(WO, "wall", [6, 0, 0, 0, 3, 0.2], L1), E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO)])));
+    var reversedBoxes = Boxes(Positions(reversedHost.Root, reversedHost.Bin, NodeNamed(reversedHost.Root, "wall " + WO.ToString("D"))));
+    Check(reversedHost.Issues.Count == 0 && BoxesAre(reversedBoxes, Gl(2, 6, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 2.1, 3), Gl(0, 1, -0.1, 0.1, 0, 3)),
+        "reversed host wall: piers x 2..6 then 0..1 around the door lintel, in host axis order", Bs(reversedBoxes));
+    var flush = WallBoxes(E(D1, "door", [3, 0, 4, 0, 0, 2.1], L1, WO));
+    Check(BoxesAre(flush, Gl(0, 3, -0.1, 0.1, 0, 3), Gl(3, 4, -0.1, 0.1, 2.1, 3)) && flush[1].Max[0] == 4, "opening flush with the wall end leaves no end pier; the lintel ends exactly at B", Bs(flush));
+    // Snap band: within OpeningTolerance (1e-6 m) snaps; 2e-6 m is refused.
+    var gapIn = WallBoxes(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [2.0000005, 0, 3, 0, 1, 1], L1, WO));
+    Check(gapIn.Length == 5 && gapIn[2].Min[0] == 2 && gapIn[1].Max[0] == 2, "a 5e-7 m gap between openings snaps closed (no pier)", Bs(gapIn));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 2.1], L1, WO), E(N1, "window", [2.000002, 0, 3, 0, 1, 1], L1, WO)))) == "gltf_precision", "a 2e-6 m gap between openings is a sub-millimetre pier");
+    var offIn = WallBoxes(E(D1, "door", [1, 5e-7, 2, 5e-7, 0, 2.1], L1, WO));
+    Check(offIn.Length == 3 && offIn.All(b => b.Min[2] == (double)(-0.1f) && b.Max[2] == (double)0.1f), "an end 5e-7 m off the axis is accepted and every face stays exactly thickness/2 from the axis", Bs(offIn));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 2e-6, 2, 2e-6, 0, 2.1], L1, WO)))) == "gltf_opening_outside_wall", "an end 2e-6 m off the axis is refused");
+    var sillIn = WallBoxes(E(N1, "window", [1, 0, 2, 0, 5e-7, 1], L1, WO));
+    Check(BoxesAre(sillIn, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(1, 2, -0.1, 0.1, 1.0000005, 3), Gl(2, 4, -0.1, 0.1, 0, 3)), "a 5e-7 m sill snaps to the base (no sill wall)", Bs(sillIn));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(N1, "window", [1, 0, 2, 0, 2e-6, 1], L1, WO)))) == "gltf_precision", "a 2e-6 m sill is a sub-millimetre sill wall");
+    var headIn = WallBoxes(E(D1, "door", [1, 0, 2, 0, 0, 3 - 5e-7], L1, WO));
+    Check(BoxesAre(headIn, Gl(0, 1, -0.1, 0.1, 0, 3), Gl(2, 4, -0.1, 0.1, 0, 3)), "a head 5e-7 m below the top snaps to it (no lintel)", Bs(headIn));
+    Check(Code(() => GltfExporter.ExportGlb(Host(E(D1, "door", [1, 0, 2, 0, 0, 3 - 2e-6], L1, WO)))) == "gltf_precision", "a head 2e-6 m below the top is a sub-millimetre lintel");
+    // Diagonal host plan corners: the first pier spans t 0..1 on axis (1,1)+(0.6,0.8)t with half thickness 0.15 along
+    // (-0.8,0.6): corners (0.88,1.09) (1.12,0.91) at A and (1.48,1.89) (1.72,1.71) at t = 1, mapped to glTF (x, -y).
+    var diagonalPier = Positions(diagonalOpening.Root, diagonalOpening.Bin, NodeNamed(diagonalOpening.Root, "wall " + WO.ToString("D"))).Take(72).ToArray();
+    double[][] corners = [[0.88, 1.09], [1.12, 0.91], [1.48, 1.89], [1.72, 1.71]];
+    var pierPlan = Enumerable.Range(0, 24).Select(v => (X: (double)diagonalPier[3 * v], Y: -(double)diagonalPier[3 * v + 2])).ToArray();
+    Check(pierPlan.All(p => corners.Any(c => Math.Abs(p.X - c[0]) < 1e-6 && Math.Abs(p.Y - c[1]) < 1e-6)) && corners.All(c => pierPlan.Any(p => Math.Abs(p.X - c[0]) < 1e-6 && Math.Abs(p.Y - c[1]) < 1e-6)),
+        "diagonal host pier plan corners are A and A + t u offset by thickness/2 along the normal", string.Join(" ", pierPlan.Distinct().Select(p => p.X.ToString(CultureInfo.InvariantCulture) + "," + p.Y.ToString(CultureInfo.InvariantCulture))));
 
     // ---------------- bounded input and refusals ----------------
     Project Levels(int n) => new(PID, 0, Enumerable.Range(0, n).Select(i => E(new Guid(i + 1, 0, 0, new byte[8]), "level", [i * 0.5])).ToArray());
