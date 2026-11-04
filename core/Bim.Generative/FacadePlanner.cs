@@ -24,7 +24,7 @@ namespace Bim.Generative;
 // facade_edge_too_short without further sizing, so no width ever overflows. Parts are used in order of usable length
 // (longest first), then side (south, east, north, west), then lower start coordinate; each holds one window centred on
 // the part, of the width still missing (at most its usable length and at least the minimum width), until the required
-// width is placed. The placed windows are then checked against both ratios (relative slack 1e-12); a room passes only
+// width is placed. The width test and the check of the placed windows against both ratios use a relative slack of 1e-12; a room passes only
 // when they meet them. Rooms are processed in ordinal instance id order, so the result does not depend on room order.
 public static class FacadePlanner
 {
@@ -167,7 +167,9 @@ public static class FacadePlanner
             Fail(FacadeCodes.EdgeTooShort, TooShort());
             return;
         }
-        bool Meets(long millimetres) => millimetres / 1000.0 * height >= lightNeed && millimetres / 1000.0 * height * fraction >= airNeed;
+        // Same relative slack as the after-placement check, so a decimal threshold stored as a double (0.1 is 0.1000000000000000055)
+        // does not add a millimetre to an exact width (24 m2 / 10 with a 1.0 m window is 2.400 m, not 2.401 m).
+        bool Meets(long millimetres) => millimetres / 1000.0 * height >= lightNeed * (1 - RatioSlack) && millimetres / 1000.0 * height * fraction >= airNeed * (1 - RatioSlack);
         var neededMm = Math.Max(minimumMm, (long)Math.Ceiling(needed * 1000));
         while (neededMm > minimumMm && Meets(neededMm - 1)) neededMm--;
         while (!Meets(neededMm)) neededMm++;
