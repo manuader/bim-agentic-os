@@ -325,7 +325,7 @@ internal static class BriefExtractTests
             var feet = BriefExtract.ReadText("120 sq ft");
             var lengths = BriefExtract.ReadText("3 x 4 m");
             C(feet.Label is null && feet.AreaSquareMetres is null && lengths.Label is null, "review read labels whose only letters are units are refused", feet + " " + lengths);
-            var ambiguous = Dxf(Text("1", 0, 0, "Cocina 1.234 m²") + Text("2", 20000, 0, "Comedor -12 m²"));
+            var ambiguous = Dxf(Text("1", 0, 0, "Cocina 1.234 m²") + Text("2", 20000, 0, "Comedor: -12 m²"));
             C(ambiguous.Rooms.Count == 2 && Near(ambiguous.Rooms[0].StatedAreaSquareMetres, 1.234) && Near(ambiguous.Rooms[0].Confidence, 0.7 * 0.9)
                 && ambiguous.Rooms[0].Notes.SequenceEqual(new[] { "area-same-text", "area-ambiguous", "no-region" }) && ambiguous.Rooms[1].StatedAreaSquareMetres is null
                 && Codes(ambiguous) == "area-ambiguous,area-invalid,area-missing" && ambiguous.Uncertainties[0].RoomId == "cocina",
@@ -380,6 +380,36 @@ internal static class BriefExtractTests
             var phrase = new BriefExtractOptions { RoomWords = new[] { "Tablero general" } };
             C(Dxf(Text("1", 0, 0, "Tablero general")).Rooms.Count == 0 && Dxf(Text("1", 0, 0, "Tablero general"), phrase).Rooms.Select(r => r.Id).SequenceEqual(new[] { "tablero-general" }),
                 "review multi-word RoomWords match as a phrase");
+
+            // Second review: minus signs, label-aware outer regions, abbreviations, nits.
+            foreach (var (text, value, label) in new[] { ("Cocina - 12 m2", 12.0, "Cocina"), ("Cocina – 12 m²", 12.0, "Cocina"), ("Baño 2 - 3,5 m²", 3.5, "Baño 2"), ("Cocina: -12 m2", -12.0, "Cocina"), ("-12 m²", -12.0, null) })
+            {
+                var reading = BriefExtract.ReadText(text);
+                C(Near(reading.AreaSquareMetres, value) && reading.Label == label, "review2 read '" + text + "' minus is a sign only after start, ':' or '='", reading.ToString());
+            }
+            var dashes = Dxf(Text("1", 0, 0, "Cocina - 12 m2") + Text("2", 20000, 0, "Comedor: -12 m2") + Text("3", 40000, 0, "-12 m²"));
+            C(dashes.Rooms.Count == 2 && Near(dashes.Rooms[0].StatedAreaSquareMetres, 12) && dashes.Rooms[1].StatedAreaSquareMetres is null
+                && dashes.Uncertainties.Count(u => u.Code == "area-invalid") == 2, "review2 dash separator keeps the area; signed areas are area-invalid", Rooms(dashes) + " " + Codes(dashes));
+
+            var furniture = Dxf(Rect("1", 0, 0, 4000, 3000) + Rect("2", 2500, 500, 3500, 2000, layer: "FURNITURE") + Text("3", 1000, 1000, "Dormitorio 12 m²"));
+            C(furniture.Rooms.Count == 1 && Near(furniture.Rooms[0].RegionAreaSquareMetres, 12) && furniture.Rooms[0].Notes.SequenceEqual(new[] { "area-same-text" }) && Codes(furniture) == "unlabelled-region",
+                "review2 a plain unlabelled polyline inside a room does not make it an outer region", Rooms(furniture) + " " + Codes(furniture));
+
+            var plan = Rect("F", 0, 0, 20000, 20000) + Text("T", 10000, 15000, "PLANTA BAJA")
+                + Rect("1", 1000, 1000, 4000, 4000) + Text("2", 2000, 2000, "Dorm. 1")
+                + Rect("3", 5000, 1000, 8000, 4000) + Text("4", 6000, 2000, "Hab. 2")
+                + Rect("5", 9000, 1000, 12000, 4000) + Text("6", 10000, 2000, "Coc.")
+                + Rect("7", 13000, 1000, 16000, 4000) + Text("8", 14000, 2000, "Lav.");
+            var abbreviated = Dxf(plan);
+            C(abbreviated.Rooms.Select(r => r.Id).SequenceEqual(new[] { "dorm-1", "hab-2", "coc", "lav" }) && abbreviated.Rooms.All(r => !r.Notes.Contains("label-outside-vocabulary") && Near(r.RegionAreaSquareMetres, 9)),
+                "review2 frame note around abbreviated room labels is not a room; abbreviations are room words", Rooms(abbreviated));
+            var unknownWords = Dxf(Rect("F", 0, 0, 20000, 20000) + Text("T", 10000, 15000, "PLANTA BAJA") + Rect("1", 1000, 1000, 4000, 4000) + Text("2", 2000, 2000, "Taller X"));
+            C(unknownWords.Rooms.Select(r => r.Id).SequenceEqual(new[] { "taller-x" }), "review2 frame suppressed by any enclosed labelled region", Rooms(unknownWords));
+
+            var small = BriefExtract.ReadText("0.125 m²");
+            C(Near(small.AreaSquareMetres, 0.125) && !small.AreaAmbiguous, "review2 '0.125 m²' is not ambiguous", small.ToString());
+            var far = Dxf(Text("1", 2_000_000, 2_000_000, "Cocina", 0) + Text("2", 2_000_000, 2_000_000, "Cocina", 0));
+            C(far.Rooms.Count == 1 && Codes(far).Contains("duplicate-text", StringComparison.Ordinal), "review2 zero-height duplicates far from the origin are detected", Rooms(far) + " " + Codes(far));
         }
         catch (Exception error) { C(false, "review unexpected", error.GetType().Name + ": " + error.Message); }
     }
