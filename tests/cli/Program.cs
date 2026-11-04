@@ -272,6 +272,173 @@ try {
     Check(gUsage.Exit==1 && GEnvelope(gUsage.Out) is {} gUsageEnv && gUsageEnv.GetProperty("status").GetString()=="failed" && gUsageEnv.GetProperty("code").GetString()!.StartsWith("usage: export-gltf",StringComparison.Ordinal),"export-gltf with a missing argument prints its usage as a failed envelope",gUsage.Out);
     Check(File.ReadAllText(Path.Combine(root,"interfaces","cli","GltfExportCommand.cs")).Contains("BoundedInput.ReadText",StringComparison.Ordinal),"export-gltf reads its input through BoundedInput");
 
+    // P6-07 cad-draft / cad-brief input.dxf|input.pdf output.json [options]: bounded CAD input, never-overwrite .json output,
+    // JSON envelope. Oracle: the Bim.Cad library called in-process on the same bytes (tests/cad fixtures).
+    var fixtures=Path.Combine(root,"tests","cad","fixtures");
+    string Fixture(string name)=>Path.Combine(fixtures,name);
+    var cadOut=Path.Combine(work,"cad"); Directory.CreateDirectory(cadOut);
+    int cadN=0;
+    string Out(string ext=".json")=>Path.Combine(cadOut,"out-"+(++cadN).ToString(System.Globalization.CultureInfo.InvariantCulture)+ext);
+    JsonElement? Doc(string path) { try { return JsonDocument.Parse(File.ReadAllBytes(path)).RootElement; } catch(Exception e) when(e is JsonException or IOException) { return null; } }
+    string Sha(byte[] bytes)=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+    Guid DefaultId(byte[] bytes)=>new Guid(System.Security.Cryptography.SHA256.HashData(bytes).AsSpan(0,16));
+    bool Ok((int Exit,string Out,string Err) r,string kind,string output)=>r.Exit==0 && GEnvelope(r.Out) is {} e && e.GetProperty("status").GetString()=="succeeded" && e.GetProperty("kind").GetString()==kind && e.GetProperty("output").GetString()==output && File.Exists(output)
+        && e.GetProperty("bytes").GetInt64()==new FileInfo(output).Length && e.GetProperty("sha256").GetString()==Sha(File.ReadAllBytes(output)) && !e.GetProperty("persisted").GetBoolean();
+    string R((int Exit,string Out,string Err) r)=>"exit "+r.Exit+" "+r.Out+(r.Err.Length>0?" stderr "+r.Err:"");
+    void ExpectCad(string name,string code,params string[] arguments) {
+        var output=arguments.Length>2 ? arguments[2] : null;
+        var existed=output is not null && (File.Exists(output) || Directory.Exists(output));
+        var r=Cli(arguments);
+        Check(r.Exit==1 && GEnvelope(r.Out) is {} e && e.GetProperty("status").GetString()=="failed" && e.GetProperty("code").GetString()==code && (existed || output is null || !File.Exists(output)),name,R(r));
+    }
+    var dxfDraftPath=Fixture("draft-plan.dxf"); var dxfDraftBytes=File.ReadAllBytes(dxfDraftPath);
+    var pdfDraftPath=Fixture("draft-plan.pdf"); var pdfDraftBytes=File.ReadAllBytes(pdfDraftPath);
+    var dxfBriefPath=Fixture("brief-plan.dxf"); var dxfBriefBytes=File.ReadAllBytes(dxfBriefPath);
+    var pdfBriefPath=Fixture("simple-plan.pdf"); var pdfBriefBytes=File.ReadAllBytes(pdfBriefPath);
+    var cadId=Guid.Parse("6c0d0000-0000-4000-8000-000000000607");
+
+    // cad-draft DXF with an explicit project id: project/walls/openings/uncertainties equal the library's serialization.
+    {
+        var lib=Bim.Cad.CadToBimIr.FromDxf(Bim.Cad.DxfReader.Parse(dxfDraftBytes,"draft-plan.dxf"),new Bim.Cad.CadToBimIrOptions(cadId));
+        var o=Out(); var r=Cli("cad-draft",dxfDraftPath,o,"--project-id",cadId.ToString());
+        Check(Ok(r,"cad-draft",o) && GEnvelope(r.Out) is {} e && e.GetProperty("format").GetString()=="dxf" && e.GetProperty("walls").GetInt32()==lib.Walls.Count && e.GetProperty("openings").GetInt32()==lib.Openings.Count && e.GetProperty("uncertainties").GetInt32()==lib.Uncertainties.Count,
+            "cad-draft dxf writes a draft and a succeeded envelope with counts",R(r));
+        Check(lib.Walls.Count==8 && lib.Openings.Count==2,"cad-draft dxf library oracle has 8 walls and 2 openings");
+        if(Doc(o) is {} d) {
+            Check(d.GetProperty("kind").GetString()=="cad-draft" && d.GetProperty("version").GetInt32()==1 && !d.GetProperty("persisted").GetBoolean(),"cad-draft document header");
+            var s=d.GetProperty("source");
+            Check(s.GetProperty("file").GetString()=="draft-plan.dxf" && s.GetProperty("format").GetString()=="dxf" && s.GetProperty("bytes").GetInt64()==dxfDraftBytes.Length && s.GetProperty("sha256").GetString()==Sha(dxfDraftBytes)
+                && s.GetProperty("page").ValueKind==JsonValueKind.Null && s.GetProperty("millimetres_per_unit").GetDouble()==1 && s.GetProperty("scale").GetString()=="insunits","cad-draft dxf source block",s.GetRawText());
+            Check(d.GetProperty("project").GetRawText()==JsonSerializer.Serialize(lib.ToProject()),"cad-draft project equals the library BIM-IR draft");
+            Check(JsonSerializer.Deserialize<Project>(d.GetProperty("project").GetRawText()) is {} p && p.Id==cadId && p.Elements.Length==1+8+2,"cad-draft project deserializes as BIM-IR with level, walls and openings");
+            Check(d.GetProperty("walls").GetRawText()==JsonSerializer.Serialize(lib.Walls) && d.GetProperty("openings").GetRawText()==JsonSerializer.Serialize(lib.Openings),"cad-draft walls and openings equal the library proposals");
+            Check(d.GetProperty("uncertainties").GetRawText()==JsonSerializer.Serialize(lib.Uncertainties),"cad-draft uncertainties equal the library report");
+        } else Check(false,"cad-draft dxf output is JSON");
+        // Default project id: the first 16 bytes of the input SHA-256; reruns are byte-identical.
+        var o1=Out(); var o2=Out(); var r1=Cli("cad-draft",dxfDraftPath,o1); var r2=Cli("cad-draft",dxfDraftPath,o2);
+        Check(Ok(r1,"cad-draft",o1) && Ok(r2,"cad-draft",o2) && File.ReadAllBytes(o1).SequenceEqual(File.ReadAllBytes(o2)),"cad-draft rerun is byte-identical",R(r1)+" | "+R(r2));
+        var libDefault=Bim.Cad.CadToBimIr.FromDxf(Bim.Cad.DxfReader.Parse(dxfDraftBytes,"draft-plan.dxf"),new Bim.Cad.CadToBimIrOptions(DefaultId(dxfDraftBytes)));
+        Check(Doc(o1) is {} d1 && d1.GetProperty("project").GetRawText()==JsonSerializer.Serialize(libDefault.ToProject()),"cad-draft default project id is derived from the input SHA-256");
+        // --metres-per-unit overrides $INSUNITS.
+        var libScaled=Bim.Cad.CadToBimIr.FromDxf(Bim.Cad.DxfReader.Parse(dxfDraftBytes,"draft-plan.dxf"),new Bim.Cad.CadToBimIrOptions(cadId){MillimetresPerUnit=10});
+        var o3=Out(); var r3=Cli("cad-draft",dxfDraftPath,o3,"--project-id",cadId.ToString(),"--metres-per-unit","0.01");
+        Check(Ok(r3,"cad-draft",o3) && Doc(o3) is {} d3 && d3.GetProperty("source").GetProperty("millimetres_per_unit").GetDouble()==10 && d3.GetProperty("source").GetProperty("scale").GetString()=="metres-per-unit"
+            && d3.GetProperty("project").GetRawText()==JsonSerializer.Serialize(libScaled.ToProject()) && d3.GetProperty("uncertainties").GetRawText()==JsonSerializer.Serialize(libScaled.Uncertainties),"cad-draft --metres-per-unit overrides the DXF units",R(r3));
+    }
+    // cad-draft PDF: calibration from a known dimension, page, door forms.
+    {
+        var cal=Bim.Cad.PdfCalibration.FromKnownDimension(new Bim.Cad.Point2(100,100),new Bim.Cad.Point2(400,100),6000);
+        var lib=Bim.Cad.CadToBimIr.FromPdf(Bim.Cad.PdfReader.Parse(pdfDraftBytes,"draft-plan.pdf"),1,cal,new Bim.Cad.CadToBimIrOptions(cadId){PdfDoorForms=new[]{5}});
+        var o=Out(); var r=Cli("cad-draft",pdfDraftPath,o,"--project-id",cadId.ToString(),"--page","1","--calibrate","100,100,400,100,6000","--pdf-door-forms","5");
+        Check(Ok(r,"cad-draft",o) && lib.Walls.Count==4 && Doc(o) is {} d && d.GetProperty("source").GetProperty("format").GetString()=="pdf" && d.GetProperty("source").GetProperty("page").GetInt32()==1
+            && d.GetProperty("source").GetProperty("scale").GetString()=="known-dimension" && d.GetProperty("source").GetProperty("millimetres_per_unit").GetDouble()==20
+            && d.GetProperty("project").GetRawText()==JsonSerializer.Serialize(lib.ToProject()) && d.GetProperty("openings").GetRawText()==JsonSerializer.Serialize(lib.Openings) && d.GetProperty("uncertainties").GetRawText()==JsonSerializer.Serialize(lib.Uncertainties),
+            "cad-draft pdf with --calibrate and --pdf-door-forms equals the library draft",R(r));
+        // --metres-per-unit on a PDF is a uniform calibration (0.02 m per point = 20 mm).
+        var libMpu=Bim.Cad.CadToBimIr.FromPdf(Bim.Cad.PdfReader.Parse(pdfDraftBytes,"draft-plan.pdf"),1,new Bim.Cad.PdfCalibration(20,Bim.Cad.PdfMatrix.Scaling(20)),new Bim.Cad.CadToBimIrOptions(cadId));
+        var o2=Out(); var r2=Cli("cad-draft",pdfDraftPath,o2,"--project-id",cadId.ToString(),"--metres-per-unit","0.02");
+        Check(Ok(r2,"cad-draft",o2) && Doc(o2) is {} d2 && d2.GetProperty("source").GetProperty("page").GetInt32()==1 && d2.GetProperty("project").GetRawText()==JsonSerializer.Serialize(libMpu.ToProject()),"cad-draft pdf --metres-per-unit, default page 1",R(r2));
+        ExpectCad("cad-draft pdf without a scale is cad_uncalibrated","cad_uncalibrated","cad-draft",pdfDraftPath,Out());
+        ExpectCad("cad-draft pdf missing page is cad_page_missing","cad_page_missing","cad-draft",pdfDraftPath,Out(),"--page","2","--metres-per-unit","0.02");
+        ExpectCad("cad-draft pdf degenerate calibration refused","cad_option_value_invalid","cad-draft",pdfDraftPath,Out(),"--calibrate","100,100,100,100,6000");
+    }
+    // cad-brief DXF and PDF.
+    {
+        var lib=Bim.Cad.BriefExtract.FromDxf(Bim.Cad.DxfReader.Parse(dxfBriefBytes,"brief-plan.dxf"));
+        var o=Out(); var r=Cli("cad-brief",dxfBriefPath,o);
+        Check(Ok(r,"cad-brief",o) && GEnvelope(r.Out) is {} e && e.GetProperty("format").GetString()=="dxf" && e.GetProperty("rooms").GetInt32()==lib.Rooms.Count && e.GetProperty("uncertainties").GetInt32()==lib.Uncertainties.Count && e.GetProperty("issues").GetInt32()==lib.Issues.Count,
+            "cad-brief dxf writes a brief draft and a succeeded envelope with counts",R(r));
+        Check(lib.Rooms.Count==7,"cad-brief dxf library oracle has 7 rooms");
+        if(Doc(o) is {} d) {
+            Check(d.GetProperty("kind").GetString()=="cad-brief" && d.GetProperty("version").GetInt32()==1 && !d.GetProperty("persisted").GetBoolean() && d.GetProperty("source").GetProperty("metres_per_unit").GetDouble()==0.001 && d.GetProperty("source").GetProperty("sha256").GetString()==Sha(dxfBriefBytes),"cad-brief document header and source");
+            var briefRaw=d.GetProperty("brief").GetRawText();
+            Check(System.Text.Json.Nodes.JsonNode.DeepEquals(System.Text.Json.Nodes.JsonNode.Parse(briefRaw),System.Text.Json.Nodes.JsonNode.Parse(BriefSerializer.Serialize(lib.Brief))),"cad-brief brief equals the P6-03 serialization of the library brief");
+            Check(BriefParser.Parse(briefRaw).Rooms.Count==7,"cad-brief brief parses with the P6-03 parser");
+            Check(d.GetProperty("rooms").GetRawText()==JsonSerializer.Serialize(lib.Rooms) && d.GetProperty("uncertainties").GetRawText()==JsonSerializer.Serialize(lib.Uncertainties),"cad-brief rooms and uncertainties equal the library");
+            Check(d.GetProperty("issues").GetArrayLength()==lib.Issues.Count && (lib.Issues.Count==0 || d.GetProperty("issues")[0].GetProperty("Severity").ValueKind==JsonValueKind.String),"cad-brief issues are listed with string severities");
+        } else Check(false,"cad-brief dxf output is JSON");
+        var libPdf=Bim.Cad.BriefExtract.FromPdf(Bim.Cad.PdfReader.Parse(pdfBriefBytes,"simple-plan.pdf"),1);
+        var o2=Out(); var r2=Cli("cad-brief",pdfBriefPath,o2);
+        Check(Ok(r2,"cad-brief",o2) && Doc(o2) is {} d2 && d2.GetProperty("source").GetProperty("metres_per_unit").ValueKind==JsonValueKind.Null && d2.GetProperty("source").GetProperty("scale").GetString()=="none"
+            && d2.GetProperty("rooms").GetRawText()==JsonSerializer.Serialize(libPdf.Rooms) && d2.GetProperty("uncertainties").GetRawText()==JsonSerializer.Serialize(libPdf.Uncertainties),"cad-brief uncalibrated pdf is allowed and reports its uncertainty",R(r2));
+        var calB=Bim.Cad.PdfCalibration.FromKnownDimension(new Bim.Cad.Point2(0,0),new Bim.Cad.Point2(10,0),1000);
+        var libCal=Bim.Cad.BriefExtract.FromPdf(Bim.Cad.PdfReader.Parse(pdfBriefBytes,"simple-plan.pdf"),1,calB);
+        var o3=Out(); var r3=Cli("cad-brief",pdfBriefPath,o3,"--calibrate","0,0,10,0,1000","--page","1");
+        Check(Ok(r3,"cad-brief",o3) && Doc(o3) is {} d3 && d3.GetProperty("source").GetProperty("metres_per_unit").GetDouble()==0.001 && d3.GetProperty("rooms").GetRawText()==JsonSerializer.Serialize(libCal.Rooms) && d3.GetProperty("uncertainties").GetRawText()==JsonSerializer.Serialize(libCal.Uncertainties),"cad-brief calibrated pdf equals the library",R(r3));
+        var libMpu=Bim.Cad.BriefExtract.FromPdf(Bim.Cad.PdfReader.Parse(pdfBriefBytes,"simple-plan.pdf"),1,null,new Bim.Cad.BriefExtractOptions{MetresPerUnit=0.05});
+        var o4=Out(); var r4=Cli("cad-brief",pdfBriefPath,o4,"--metres-per-unit","0.05");
+        Check(Ok(r4,"cad-brief",o4) && Doc(o4) is {} d4 && d4.GetProperty("source").GetProperty("metres_per_unit").GetDouble()==0.05 && d4.GetProperty("rooms").GetRawText()==JsonSerializer.Serialize(libMpu.Rooms),"cad-brief pdf --metres-per-unit equals the library",R(r4));
+        ExpectCad("cad-brief pdf missing page is cad_page_missing","cad_page_missing","cad-brief",pdfBriefPath,Out(),"--page","3");
+    }
+    // Option, input and output refusals: one failed envelope, exit 1, no output file.
+    ExpectCad("cad-draft unknown option","cad_option_unknown","cad-draft",dxfDraftPath,Out(),"--bogus","1");
+    ExpectCad("cad-draft option without value","cad_option_value_missing","cad-draft",dxfDraftPath,Out(),"--metres-per-unit");
+    ExpectCad("cad-draft duplicate option","cad_option_duplicate","cad-draft",dxfDraftPath,Out(),"--metres-per-unit","1","--metres-per-unit","1");
+    foreach(var bad in new[]{"0","-1","NaN","Infinity","abc","1e400","1,5"}) ExpectCad("cad-draft --metres-per-unit "+bad+" refused","cad_option_value_invalid","cad-draft",dxfDraftPath,Out(),"--metres-per-unit",bad);
+    foreach(var bad in new[]{"0","-1","x","1.5","99999999999"}) ExpectCad("cad-draft --page "+bad+" refused","cad_option_value_invalid","cad-draft",pdfDraftPath,Out(),"--page",bad,"--metres-per-unit","0.02");
+    ExpectCad("cad-draft bad --project-id refused","cad_option_value_invalid","cad-draft",dxfDraftPath,Out(),"--project-id","not-a-guid");
+    // The empty GUID is refused while parsing options, before any output check or input read (missing input, fresh output).
+    ExpectCad("cad-draft empty --project-id refused as an option value","cad_option_value_invalid","cad-draft",Path.Combine(work,"missing.dxf"),Out(),"--project-id",Guid.Empty.ToString());
+    ExpectCad("cad-draft --pdf-window-forms on a DXF refused","cad_option_not_applicable","cad-draft",dxfDraftPath,Out(),"--pdf-window-forms","5");
+    foreach(var bad in new[]{"0,0,10,0,Infinity","NaN,0,10,0,1000","0,0,1e400,0,1000"}) ExpectCad("cad-draft --calibrate "+bad+" refused","cad_option_value_invalid","cad-draft",pdfDraftPath,Out(),"--calibrate",bad);
+    ExpectCad("cad-brief --metres-per-unit 1001 refused","cad_option_value_invalid","cad-brief",pdfBriefPath,Out(),"--metres-per-unit","1001");
+    {
+        var o=Out(); var r=Cli("cad-brief",pdfBriefPath,o,"--metres-per-unit","1000");
+        Check(Ok(r,"cad-brief",o) && Doc(o) is {} d && d.GetProperty("source").GetProperty("metres_per_unit").GetDouble()==1000,"cad-brief --metres-per-unit 1000 (the upper bound) accepted",R(r));
+        // Byte-identical reruns for a PDF draft and for briefs (DXF and PDF).
+        foreach(var run in new[]{new[]{"cad-draft",pdfDraftPath,"--calibrate","100,100,400,100,6000","--pdf-door-forms","5"},new[]{"cad-brief",dxfBriefPath},new[]{"cad-brief",pdfBriefPath,"--calibrate","0,0,10,0,1000"}}) {
+            var first=Out(); var second=Out();
+            var rFirst=Cli([run[0],run[1],first,..run[2..]]); var rSecond=Cli([run[0],run[1],second,..run[2..]]);
+            Check(Ok(rFirst,run[0],first) && Ok(rSecond,run[0],second) && File.ReadAllBytes(first).SequenceEqual(File.ReadAllBytes(second)),run[0]+" "+Path.GetFileName(run[1])+" rerun is byte-identical",R(rFirst)+" | "+R(rSecond));
+        }
+    }
+    ExpectCad("cad-draft --calibrate with four numbers refused","cad_option_value_invalid","cad-draft",pdfDraftPath,Out(),"--calibrate","1,2,3,4");
+    ExpectCad("cad-draft --calibrate and --metres-per-unit together refused","cad_scale_conflict","cad-draft",pdfDraftPath,Out(),"--calibrate","100,100,400,100,6000","--metres-per-unit","0.02");
+    ExpectCad("cad-draft --page on a DXF refused","cad_option_not_applicable","cad-draft",dxfDraftPath,Out(),"--page","1");
+    ExpectCad("cad-draft --calibrate on a DXF refused","cad_option_not_applicable","cad-draft",dxfDraftPath,Out(),"--calibrate","0,0,1,0,1");
+    ExpectCad("cad-brief --pdf-door-forms refused","cad_option_unknown","cad-brief",pdfBriefPath,Out(),"--pdf-door-forms","5");
+    ExpectCad("cad-brief --project-id refused","cad_option_unknown","cad-brief",dxfBriefPath,Out(),"--project-id",cadId.ToString());
+    ExpectCad("cad-draft unsupported input extension","cad_input_format_unsupported","cad-draft",Input("plan.txt","0\nEOF\n"),Out());
+    ExpectCad("cad-draft missing input","input_not_found","cad-draft",Path.Combine(work,"missing.dxf"),Out());
+    ExpectCad("cad-brief directory input","input_not_regular_file","cad-brief",Directory.CreateDirectory(Path.Combine(work,"dir.dxf")).FullName,Out());
+    var cadBig=Path.Combine(work,"big.dxf");
+    using(var big=new FileStream(cadBig,FileMode.CreateNew)) { big.SetLength(32L*1024*1024+1); }
+    ExpectCad("cad-draft input over 32 MiB is input_too_large","input_too_large","cad-draft",cadBig,Out());
+    File.Delete(cadBig);
+    var noUnits=Input("no-units.dxf",File.ReadAllText(dxfDraftPath).Replace("$INSUNITS","$NOTUNITS",StringComparison.Ordinal));
+    Check(File.ReadAllText(noUnits)!=File.ReadAllText(dxfDraftPath),"no-units DXF fixture differs from draft-plan.dxf");
+    ExpectCad("cad-draft DXF without units is cad_uncalibrated","cad_uncalibrated","cad-draft",noUnits,Out());
+    {
+        var r=Cli("cad-draft",Input("garbage.dxf","not a dxf\n"),Out());
+        Check(r.Exit==1 && GEnvelope(r.Out) is {} e && e.GetProperty("status").GetString()=="failed" && e.GetProperty("code").GetString()!.StartsWith("dxf_",StringComparison.Ordinal) && e.GetProperty("detail").GetString()!.Length>0,"cad-draft malformed DXF is a dxf_* refusal with detail",R(r));
+        var r2=Cli("cad-brief",Input("garbage.pdf","not a pdf"),Out());
+        Check(r2.Exit==1 && GEnvelope(r2.Out) is {} e2 && e2.GetProperty("code").GetString()=="pdf_not_pdf" && e2.GetProperty("detail").GetString()!.Length>0,"cad-brief non-PDF bytes are pdf_not_pdf with detail",R(r2));
+    }
+    {
+        var existing=Out(); File.WriteAllBytes(existing,[9,9]);
+        ExpectCad("cad-draft refuses an existing output","output_exists","cad-draft",dxfDraftPath,existing);
+        ExpectCad("cad-brief refuses an existing output","output_exists","cad-brief",dxfBriefPath,existing);
+        Check(File.ReadAllBytes(existing).SequenceEqual(new byte[]{9,9}),"cad verbs leave an existing output untouched");
+        ExpectCad("cad-draft refuses a non-.json output","output_extension_unsupported","cad-draft",dxfDraftPath,Out(".glb"));
+        ExpectCad("cad-brief refuses an output in a missing directory","output_directory_not_found","cad-brief",dxfBriefPath,Path.Combine(work,"no-dir","b.json"));
+        ExpectCad("cad-draft refuses a ':' output","output_path_invalid","cad-draft",dxfDraftPath,"ab:c.json");
+        if(linked) {
+            var cadLink=Path.Combine(cadOut,"dangling.json"); File.CreateSymbolicLink(cadLink,Path.Combine(cadOut,"nowhere.json"));
+            ExpectCad("cad-draft refuses a dangling symlink output","output_link_rejected","cad-draft",dxfDraftPath,cadLink);
+            Check(!File.Exists(Path.Combine(cadOut,"nowhere.json")),"cad dangling symlink output target is not created");
+        }
+        // Output is checked before the input is read: a bad output wins over a missing input.
+        ExpectCad("cad-draft checks the output before reading the input","output_exists","cad-draft",Path.Combine(work,"missing.dxf"),existing);
+    }
+    foreach(var verb in new[]{"cad-draft","cad-brief"}) {
+        var r=Cli(verb,dxfDraftPath);
+        Check(r.Exit==1 && GEnvelope(r.Out) is {} e && e.GetProperty("status").GetString()=="failed" && e.GetProperty("code").GetString()!.StartsWith("usage: "+verb,StringComparison.Ordinal),verb+" with a missing argument prints its usage",R(r));
+    }
+    var cadUsage=Cli("no-such-verb");
+    Check(cadUsage.Out.Contains("cad-draft input.dxf|input.pdf output.json",StringComparison.Ordinal) && cadUsage.Out.Contains("cad-brief input.dxf|input.pdf output.json",StringComparison.Ordinal),"default usage lists cad-draft and cad-brief",cadUsage.Out);
+    var cadSource=File.ReadAllText(Path.Combine(root,"interfaces","cli","CadCommand.cs"));
+    Check(cadSource.Contains("BoundedInput.ReadBytes",StringComparison.Ordinal) && !cadSource.Contains("File.ReadAll",StringComparison.Ordinal) && !cadSource.Contains("ReadFile(",StringComparison.Ordinal) && !cadSource.Contains("File.OpenRead",StringComparison.Ordinal),"cad verbs read their input only through BoundedInput");
+
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
 } catch(Exception exception) {

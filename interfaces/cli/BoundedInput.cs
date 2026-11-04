@@ -28,14 +28,24 @@ internal static class BoundedInput
 
     public static string ReadText(string path)
     {
+        var bytes = ReadBytes(path, MaxBytes);
+        // Exactly File.ReadAllText(path): UTF-8 by default, byte order marks detected and stripped.
+        using var reader = new StreamReader(new MemoryStream(bytes, writable: false), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return reader.ReadToEnd();
+    }
+
+    // The same checks as ReadText with a caller-chosen cap (binary inputs such as PDF, or the larger CAD cap).
+    public static byte[] ReadBytes(string path, int maxBytes)
+    {
         ArgumentException.ThrowIfNullOrEmpty(path);
-        try { return ReadChecked(path); }
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+        try { return ReadChecked(path, maxBytes); }
         catch (InputRejectedException) { throw; }
         catch (UnauthorizedAccessException e) { throw new InputRejectedException(AccessDenied, e); }
         catch (IOException e) { throw new InputRejectedException(IoError, e); }
     }
 
-    static string ReadChecked(string path)
+    static byte[] ReadChecked(string path, int maxBytes)
     {
         // Windows device and pipe namespaces (\\.\, \\?\, including NUL/CON which resolve to \\.\) are never inputs.
         if (OperatingSystem.IsWindows() && (DeviceNamespace(path) || DeviceNamespace(Path.GetFullPath(path)))) throw new InputRejectedException(NotRegularFile);
@@ -69,13 +79,10 @@ internal static class BoundedInput
             int read;
             while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
             {
-                if (bytes.Length + read > MaxBytes) throw new InputRejectedException(TooLarge);
+                if (bytes.Length + read > maxBytes) throw new InputRejectedException(TooLarge);
                 bytes.Write(buffer, 0, read);
             }
-            bytes.Position = 0;
-            // Exactly File.ReadAllText(path): UTF-8 by default, byte order marks detected and stripped.
-            using var reader = new StreamReader(bytes, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-            return reader.ReadToEnd();
+            return bytes.ToArray();
         }
     }
 

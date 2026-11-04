@@ -50,7 +50,11 @@ internal static class GltfExportCommand
     }
 
     // Stable refusal code for an output path, or null; format is "glb" or "gltf" when accepted.
-    internal static string? OutputProblem(string path, out string format)
+    internal static string? OutputProblem(string path, out string format) => OutputProblem(path, [".glb", ".gltf"], out format);
+
+    // The same bounded output rules for any verb that writes one new file; extensions are lower-case with the dot, and
+    // format is the accepted extension without it.
+    internal static string? OutputProblem(string path, IReadOnlyCollection<string> extensions, out string format)
     {
         format = "";
         if (string.IsNullOrEmpty(path) || path.IndexOf('\0') >= 0) return "output_path_invalid";
@@ -62,7 +66,7 @@ internal static class GltfExportCommand
         // stream of host.txt, not a new file, so it is never a valid output.
         if (HasStreamColon(path) || HasStreamColon(full)) return "output_path_invalid";
         var extension = Path.GetExtension(path).ToLowerInvariant();
-        if (extension is not (".glb" or ".gltf")) return "output_extension_unsupported";
+        if (!extensions.Contains(extension)) return "output_extension_unsupported";
         format = extension[1..];
         try
         {
