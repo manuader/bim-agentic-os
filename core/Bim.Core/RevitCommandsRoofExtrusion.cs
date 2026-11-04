@@ -275,8 +275,6 @@ public static partial class RevitCommandCatalogue
 
     static RevitCommandArgs BindRoofExtrusion(JsonElement args)
     {
-        // Red stub (P9-07 TDD): the binder and its profile rules are not implemented yet.
-        if (args.ValueKind == JsonValueKind.Object) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args", "roof.create_extrusion is not implemented yet");
         var planeElement = args.GetProperty("plane");
         var planeStart = Coordinates(planeElement, "start", "args.plane.start");
         var planeEnd = Coordinates(planeElement, "end", "args.plane.end");
