@@ -148,6 +148,7 @@ internal static partial class CommandExecutor
             CommandReadback.SymbolsJson(symbols.Category, Symbols(d, symbols.Category).Select(symbol => new SymbolRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive, WallHosted(symbol), symbol.Family.FamilyPlacementType.ToString()))),
         EmptyQueryArgs when envelope.Command == "query.toposolid_types" => QuerySite(d),
         FillPatternQueryArgs patterns => QueryFillPatterns(d, patterns),
+        JournalQueryArgs journal => QueryJournal(d, journal),
         _ => QueryV2(d, envelope),
     };
 
