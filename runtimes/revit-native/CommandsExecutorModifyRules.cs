@@ -130,21 +130,61 @@ public static class CommandRulesModify
     // Real runs store a receipt (and need room for one first); dry runs never store anything.
     public static bool StoresReceipt(bool dryRun) => !dryRun;
 
-    // set_parameter side effects (pre/post element id snapshot and the modified ids of the transaction): any deleted
-    // element refuses the change; the other modified ids are returned, distinct and sorted.
+    // set_parameter side effects (pre/post element id snapshot and the modified ids of the transaction). accepted: the
+    // ids of the deletions SetParameterDeletions allowed for this run (a dry run's report or confirm_deletions), named on
+    // a first run that was rolled back. Without accepted ids any deleted element refuses the change; with them the run
+    // must delete exactly those ids, else it is rolled back (the model changed between the two runs). The other modified
+    // ids (not the target, not a deleted one) are returned, distinct and sorted.
     public static IReadOnlyList<long> SetParameterEffects(long targetId, IReadOnlyCollection<long> deleted, IReadOnlyCollection<long> modified, IReadOnlyCollection<long>? accepted = null)
     {
-        if (deleted.Count > 0)
-            throw ArgsInvalid("args.value", "the change would delete " + deleted.Count + " element(s) (ids " + string.Join(", ", deleted.OrderBy(id => id).Take(MaxListedInDetail)) + "); refused");
-        return modified.Where(id => id != targetId).Distinct().OrderBy(id => id).ToArray();
+        if (accepted is not { Count: > 0 })
+        {
+            if (deleted.Count > 0)
+                throw ArgsInvalid("args.value", "the change would delete " + deleted.Count + " element(s) (ids " + string.Join(", ", deleted.OrderBy(id => id).Take(MaxListedInDetail)) + "); refused");
+        }
+        else if (!new HashSet<long>(accepted).SetEquals(deleted))
+        {
+            throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.value", "the change deleted " + deleted.Distinct().Count() + " element(s) where " + accepted.Distinct().Count() + " were named and accepted (ids "
+                + string.Join(", ", deleted.Distinct().OrderBy(id => id).Take(MaxListedInDetail)) + "); rolled back");
+        }
+        var gone = new HashSet<long>(deleted);
+        return modified.Where(id => id != targetId && !gone.Contains(id)).Distinct().OrderBy(id => id).ToArray();
     }
 
+    // The elements a set_parameter change deletes (owner, Revit 2025.2, 2026-11-04: a floor's height offset deleted an
+    // internal element without a category, a join helper with the toposolid), named after the first run was rolled
+    // back. Every one must have a UniqueId (transaction_failed), there may be at most MaxConfirmedDependents and none may
+    // be protected (Project Information, the receipt store), dry run or not (args_invalid at args.value). A dry run then
+    // reports them; a real change needs confirm_deletions to equal them as a set (hex case ignored), else args_invalid
+    // at args.confirm_deletions naming the unconfirmed and stale UniqueIds, as element.delete's confirm_dependents.
+    // Returns the deletions distinct by UniqueId, sorted.
     public static IReadOnlyList<DeletedElement> SetParameterDeletions(bool dryRun, IReadOnlyList<DeletedElement> deleted, IReadOnlyList<string> confirmed, IReadOnlyList<string> protectedUids)
     {
-        if (deleted.Count > 0)
-            throw ArgsInvalid("args.value", "the change would delete " + deleted.Count + " element(s) (ids " + string.Join(", ", deleted.Select(element => element.Id).OrderBy(id => id).Take(MaxListedInDetail)) + "); refused");
-        return Array.Empty<DeletedElement>();
+        var unnamed = deleted.Where(element => element.UniqueId is null).Select(element => element.Id).OrderBy(id => id).ToArray();
+        if (unnamed.Length > 0)
+            throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.value", "the change would delete " + unnamed.Length + " element(s) that cannot be named by UniqueId (ids " + string.Join(", ", unnamed.Take(MaxListedInDetail)) + "); refused");
+        var named = deleted.GroupBy(element => element.UniqueId!, StringComparer.OrdinalIgnoreCase).Select(group => group.First())
+            .OrderBy(element => element.UniqueId, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (named.Length > RevitModifyRules.MaxConfirmedDependents)
+            throw ArgsInvalid("args.value", "the change would delete " + named.Length + " elements, more than the " + RevitModifyRules.MaxConfirmedDependents + " confirm_deletions can hold; refused");
+        var reached = named.Where(element => protectedUids.Contains(element.UniqueId!, StringComparer.OrdinalIgnoreCase)).Select(element => element.UniqueId!).ToArray();
+        if (reached.Length > 0) throw ArgsInvalid("args.value", "the change would delete protected element " + string.Join(", ", reached) + "; refused");
+        if (dryRun) return named;
+        var uids = named.Select(element => element.UniqueId!).ToArray();
+        if (Confirmed(uids, confirmed)) return named;
+        var unconfirmed = named.Where(element => !confirmed.Contains(element.UniqueId!, StringComparer.OrdinalIgnoreCase)).ToArray();
+        var stale = confirmed.Where(uid => !uids.Contains(uid, StringComparer.OrdinalIgnoreCase)).ToArray();
+        var detail = new StringBuilder();
+        if (unconfirmed.Length > 0)
+            detail.Append("the change would delete " + unconfirmed.Length + " unconfirmed element(s): " + string.Join(", ", unconfirmed.Take(MaxListedInDetail).Select(Described))
+                + (unconfirmed.Length > MaxListedInDetail ? " and " + (unconfirmed.Length - MaxListedInDetail) + " more" : ""));
+        if (stale.Length > 0) detail.Append((detail.Length > 0 ? "; " : "") + stale.Length + " confirmed element(s) would not be deleted: " + Listed(stale));
+        detail.Append("; run a dry run and confirm exactly its deleted elements in confirm_deletions");
+        throw ArgsInvalid("args.confirm_deletions", detail.ToString());
     }
+
+    static string Described(DeletedElement element) =>
+        element.UniqueId + " (id " + element.Id + ", " + (element.Category ?? "no category") + ", " + element.ClassName + ")";
 
     // deletedUids: the UniqueId of every element id Revit's Document.Delete returned (null when none could be read).
     // Every target must be among them; the rest are the dependents.
@@ -280,6 +320,26 @@ public static class CommandReadbackModify
         Strings(writer, "also_modified", alsoModified.Take(CommandRulesModify.MaxDependentsListed));
         writer.WriteNumber("also_modified_count", alsoModified.Count);
         writer.WriteBoolean("also_modified_listed", listed);
+        // deleted: the elements Revit deletes because of the change (a dry run lists them for confirm_deletions; a real
+        // run only when they were confirmed), at most MaxConfirmedDependents, each {unique_id, id, category, class}; a real
+        // run's report (stored as the receipt) lists them only up to MaxDependentsListed, else deleted is null.
+        var gone = deleted ?? Array.Empty<DeletedElement>();
+        var deletedListed = CommandReadbackModify.DependentsListed(dryRun, gone.Count);
+        writer.WriteBoolean("deleted_listed", deletedListed);
+        if (!deletedListed) writer.WriteNull("deleted");
+        else writer.WriteStartArray("deleted");
+        foreach (var element in deletedListed ? gone : Array.Empty<DeletedElement>())
+        {
+            writer.WriteStartObject();
+            if (element.UniqueId is { } uid) writer.WriteString("unique_id", uid); else writer.WriteNull("unique_id");
+            writer.WriteNumber("id", element.Id);
+            if (element.Category is { } category) writer.WriteString("category", category); else writer.WriteNull("category");
+            writer.WriteString("class", element.ClassName);
+            writer.WriteEndObject();
+        }
+        if (deletedListed) writer.WriteEndArray();
+        writer.WriteNumber("deleted_count", gone.Count);
+        writer.WriteBoolean("deletions_confirmed", deletionsConfirmed);
     });
 
     static void Value(Utf8JsonWriter writer, string name, string kind, ObservedParameter observed)
@@ -376,7 +436,10 @@ public static class CommandResponsesModify
             if (changed) modified.Add(elementUid);
             if (alsoModified.Count <= CommandRulesModify.MaxDependentsListed) modified.AddRange(alsoModified);
         }
-        return new ModifyReply(RevitCommandResponse.Success(Receipt(request), Array.Empty<string>(), modified, Array.Empty<string>(), readbackJson, warnings), CommandRulesModify.StoresReceipt(dryRun));
+        // deleted: the confirmed deletions of a real run, listed when there are at most MaxDependentsListed (the report
+        // has them all), so a stored receipt stays small.
+        var removed = !dryRun && deleted is { Count: > 0 and <= CommandRulesModify.MaxDependentsListed } ? deleted.ToArray() : Array.Empty<string>();
+        return new ModifyReply(RevitCommandResponse.Success(Receipt(request), Array.Empty<string>(), modified, removed, readbackJson, warnings), CommandRulesModify.StoresReceipt(dryRun));
     }
 
     // deleted: nothing for a dry run; else the targets, then the dependents when they are listed in the report.

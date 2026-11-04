@@ -456,7 +456,7 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
             $beforeValue = $null
             if ($null -ne $before) { $beforeValue = if ($kind -eq 'length') { [ordered]@{ kind = 'length'; mm = $before } } else { [ordered]@{ kind = 'text'; text = $before } } }
             $afterValue = if ($kind -eq 'length') { [ordered]@{ kind = 'length'; mm = $after } } else { [ordered]@{ kind = 'text'; text = $after } }
-            [ordered]@{ set_parameter = [ordered]@{ dry_run = $dry; element_unique_id = $uid; parameter = [ordered]@{ name = $label; id = -1; built_in = $builtIn; storage = $storage; spec = $null; shared = $false }; kind = $kind; before = $beforeValue; after = $afterValue; changed = $changed; also_modified = @(); also_modified_count = 0; also_modified_listed = $true } }
+            [ordered]@{ set_parameter = [ordered]@{ dry_run = $dry; element_unique_id = $uid; parameter = [ordered]@{ name = $label; id = -1; built_in = $builtIn; storage = $storage; spec = $null; shared = $false }; kind = $kind; before = $beforeValue; after = $afterValue; changed = $changed; also_modified = @(); also_modified_count = 0; also_modified_listed = $true; deleted_listed = $true; deleted = @(); deleted_count = 0; deletions_confirmed = $false } }
         }
         'element.delete' {
             $targets = @($a.element_uids | ForEach-Object { [string]$_ })

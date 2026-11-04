@@ -13,6 +13,8 @@ namespace Bim.Revit;
 //   CompoundStructure.CreateSimpleCompoundStructure(IList<CompoundStructureLayer>) (layers exterior to interior),
 //   new CompoundStructureLayer(double width, MaterialFunctionAssignment, ElementId material),
 //   CompoundStructure.IsValid(Document, out errors, out two-layer errors), GetLayers, GetWidth
+// The structure is built by HostStructure (CommandsExecutorMaterialTypes.cs), shared with wall_type.create and
+// floor_type.create, with EndCap NoEndCap (chat-floor-fixes, 2026-11-04).
 // Unverified in Revit (owner session required): whether CreateSimpleCompoundStructure's core boundaries suit every
 // roof build-up (IsValid is checked first and a refusal is transaction_failed), and that a type duplicated from a
 // roof type with a variable-thickness layer keeps no variable layer once the new structure is set.
@@ -49,6 +51,9 @@ internal static partial class CommandExecutor
         var materials = Materials(d);
         var resolved = args.Layers.Select((layer, i) => Resolve(materials, material => new CommandCandidate(material.UniqueId, material.Name), layer.Material, "args.layers[" + i + "].material", "material")).ToArray();
         var expected = args.Layers.Select((layer, i) => new ExpectedRoofLayer(layer.Function, resolved[i].UniqueId, layer.Thickness.Millimetres)).ToArray();
+        // Roof functions are a subset of the host type functions, so the shared shell rule and builder apply.
+        var hostLayers = args.Layers.Select(layer => new HostTypeLayerArg(layer.Function, layer.Material, layer.Thickness)).ToArray();
+        var shells = RevitMaterialTypeRules.Shells(hostLayers.Select(layer => layer.Function).ToArray(), "args.layers");
 
         // A roof type of that name (Revit type names ignore case): returned unchanged when identical, else refused.
         if (roofTypes.FirstOrDefault(roofType => string.Equals(roofType.Name, args.Name, StringComparison.OrdinalIgnoreCase)) is { } existing)
@@ -69,29 +74,11 @@ internal static partial class CommandExecutor
             {
                 var duplicate = baseType.Duplicate(args.Name) as RoofType ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.base_type", "Revit did not duplicate the roof type");
                 created = duplicate;
-                var layers = new List<CompoundStructureLayer>();
-                for (var i = 0; i < args.Layers.Count; i++)
-                {
-                    var function = Enum.Parse<MaterialFunctionAssignment>(CommandRulesMaterials.RevitFunction(args.Layers[i].Function));
-                    layers.Add(new CompoundStructureLayer(U(args.Layers[i].Thickness.Millimetres), function, resolved[i].Id));
-                }
-                var structure = CompoundStructure.CreateSimpleCompoundStructure(layers);
-                // CreateSimpleCompoundStructure puts every layer in the core, and Revit refuses a core holding a membrane
-                // (CoreTooThin): the core is the run of structure layers, everything outside it is shell.
-                var firstStructure = layers.FindIndex(layer => layer.Function == MaterialFunctionAssignment.Structure);
-                var lastStructure = layers.FindLastIndex(layer => layer.Function == MaterialFunctionAssignment.Structure);
-                if (firstStructure < 0) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.layers", "a layered roof type needs at least one structure layer");
-                for (var i = firstStructure; i <= lastStructure; i++)
-                    if (layers[i].Function == MaterialFunctionAssignment.Membrane) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.layers[" + i + "]", "a membrane cannot lie between structure layers");
-                structure.SetNumberOfShellLayers(ShellLayerType.Exterior, firstStructure);
-                structure.SetNumberOfShellLayers(ShellLayerType.Interior, layers.Count - 1 - lastStructure);
-                structure.StructuralMaterialIndex = firstStructure;
-                if (!structure.IsValid(d, out var errors, out var pairErrors))
-                {
-                    var details = errors.Select(error => "layer " + error.Key + ": " + error.Value).Concat(pairErrors.Select(pair => "layers " + pair.Key + " and " + pair.Value)).ToArray();
-                    throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.layers", "Revit refused the layer build-up" + (details.Length > 0 ? ": " + string.Join("; ", details) : ""));
-                }
-                duplicate.SetCompoundStructure(structure);
+                // Same builder as wall_type.create / floor_type.create (CommandsExecutorMaterialTypes.cs): CreateSimpleCompoundStructure
+                // puts every layer in the core and Revit refuses a core holding a membrane (CoreTooThin), so the core is the
+                // run of structure layers and everything outside it is shell; the end cap is NoEndCap, as Revit requires
+                // for roofs (CommandRulesMaterialTypes.Wrapping).
+                SetStructure(duplicate, HostStructure(d, "roof", baseType.GetCompoundStructure(), hostLayers, resolved, shells));
             },
             () => created is { IsValidObject: true } type ? CommandReadbackMaterials.RoofType(args.Name, expected, ObserveRoofType(d, type)) : "the new roof type no longer exists",
             () => CommandReadbackMaterials.RoofTypeJson(ObserveRoofType(d, created!), existing: false),

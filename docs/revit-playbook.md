@@ -92,6 +92,16 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   chat-section-profile-fixes: sub-elements a target owns (curtain grid lines, panels, mullions, its sketch with its plane
   and lines, internal elements without a category) are still listed in the dry run but skip `CanDeleteElement`; foreign
   dependents that cannot be deleted still refuse.
+- **Layered floor types** (`floor_type.create`): a build-up [finish1 lenga 25, substrate plywood 20, structure concrete
+  150, membrane 0, insulation rigid 100] from "Generic Floor - 400mm" was refused by `SetCompoundStructure`: "Input
+  compound structure has wrong EndCap condition for this element type" (`CreateSimpleCompoundStructure` starts with a
+  wall end cap; the API says floors and roofs must use `EndCapCondition.NoEndCap`). Fixed in chat-floor-fixes: wall,
+  floor and roof types share one builder; floors and roofs get NoEndCap and keep the base type's opening wrapping, walls
+  keep the base wall type's conditions. Insulation above the substrate is refused by Revit as BadShellOrder (correct).
+- **Floor offset over a toposolid** (`element.set_parameter` FLOOR_HEIGHTABOVELEVEL_PARAM 600) was refused: "the change
+  would delete 1 element(s) (ids 215987)", an internal element with no category (probably a join/warning helper with
+  the toposolid). Fixed in chat-floor-fixes: run a dry run, read `deleted` (UniqueId, id, category, class), and repeat
+  the real change with `confirm_deletions` = those UniqueIds; unconfirmed deletions are still refused.
 
 ## Pending capabilities found in real use
 - `wall.set_profile` (gable walls on 2025.2) — in progress.

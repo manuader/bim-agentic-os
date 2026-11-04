@@ -24,11 +24,16 @@ namespace Bim.Revit;
 // would delete (the ids exist again after the rollback); the kept delete must remove exactly the same ids.
 // Side effects: element.delete compares a pre/post snapshot of every element id (FilteredElementCollector with
 // ElementIsElementTypeFilter both ways) so the kept delete removes nothing beyond its probe; element.set_parameter
-// refuses a change that deletes any element and reports the other ids Application.DocumentChanged lists as modified.
+// refuses a change that deletes any element unless confirm_deletions names exactly those elements (chat-floor-fixes,
+// owner 2026-11-04: a floor's FLOOR_HEIGHTABOVELEVEL_PARAM deleted internal element 215987, no category): the first run
+// is rolled back so the deleted elements exist again and are named by UniqueId, then a dry run reports them and a
+// confirmed real run repeats the change, which must delete exactly the same ids; it reports the other ids
+// Application.DocumentChanged lists as modified.
 // Revit ArgumentException / InvalidOperationException from Parameter.Set or Document.Delete become args_invalid.
 // Unverified in Revit (owner session required): that Document.Delete returns the same ids in the probe and the kept
 // transaction; that DocumentChanged fires for a transaction committed inside an open transaction group; that elements deleted with a target (hosted doors, sketches, tags) all have a readable UniqueId after
-// the probe rollback; that UnitUtils round trips of areas and angles stay within 1e-6 m2 and 1e-6 degrees.
+// the probe rollback; that an element a parameter change deletes exists again, with the same id and UniqueId, after
+// the first run's transaction group is rolled back, and that the repeated change deletes the same ids; that UnitUtils round trips of areas and angles stay within 1e-6 m2 and 1e-6 degrees.
 internal static partial class CommandExecutor
 {
     static string ModifyExecute(Document d, CommandRequest request, ReceiptStore store) => request.Envelope.Args switch
@@ -114,8 +119,39 @@ internal static partial class CommandExecutor
         var elementValue = args.Value is ElementValueArg value ? ElementByUid(d, value.UniqueId, "args.value.uid").Id : null;
         var before = target.Parameter;
         if (CommandRulesModify.StoresReceipt(args.DryRun)) CommandReceiptStore.EnsureRoom(store.Receipts);
-        var failures = new CommandFailures();
         var snapshot = ElementIds(d);
+        var protectedUids = new[] { d.ProjectInformation?.UniqueId, store.Storage?.UniqueId }.Where(uid => uid is not null).Select(uid => uid!).ToArray();
+
+        // First run with no deletion accepted. When the change deletes elements (inside the transaction or during failure
+        // processing) that run is rolled back, which restores them, so they can be named by UniqueId; the deletions are
+        // then checked (SetParameterDeletions: reported by a dry run, confirmed by confirm_deletions on a real run, else
+        // refused) and the change runs again accepting exactly those ids.
+        var outcome = SetParameterPass(d, request, store, args, element, elementValue, before, kind, snapshot, Array.Empty<long>(), Array.Empty<DeletedElement>(), protectedUids);
+        if (outcome.Reply is { } reply) return reply;
+        var named = outcome.Deleted.Select(id => d.GetElement(new ElementId(id)) is { } gone ? new DeletedElement(gone.UniqueId, id, gone.Category?.Name, gone.GetType().Name) : new DeletedElement(null, id, null, "unknown")).ToArray();
+        var accepted = CommandRulesModify.SetParameterDeletions(args.DryRun, named, args.ConfirmDeletions, protectedUids);
+        var second = SetParameterPass(d, request, store, args, element, elementValue, before, kind, snapshot, outcome.Deleted, accepted, protectedUids);
+        return second.Reply ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.value", "the change deleted different elements on its second run; rolled back");
+    }
+
+    // A deletion found inside the set transaction: thrown so the transaction rolls back, caught by SetParameterPass.
+    sealed class SetParameterDeletionsFound : Exception
+    {
+        public SetParameterDeletionsFound(long[] ids) : base("the parameter change deletes elements") => Ids = ids;
+        public long[] Ids { get; }
+    }
+
+    // One run of the change in its own transaction group. Reply: the finished reply (persisted or rolled back as a dry
+    // run). Deleted: when the run deleted ids other than acceptedIds, the group is rolled back and those ids are returned
+    // (Reply null). acceptedIds empty is the first run; non-empty, the run must delete exactly them.
+    static (string? Reply, long[] Deleted) SetParameterPass(Document d, CommandRequest request, ReceiptStore store, ElementSetParameterArgs args, RevitElement element,
+        ElementId? elementValue, ObservedParameter before, string kind, HashSet<long> snapshot, IReadOnlyCollection<long> acceptedIds, IReadOnlyList<DeletedElement> accepted, IReadOnlyList<string> protectedUids)
+    {
+        // Resolved again on each run: an earlier run's rollback may have invalidated the Parameter wrapper.
+        var parameter = ResolveParameter(element, args.Parameter);
+        var acceptedSet = acceptedIds.ToHashSet();
+        bool Unaccepted(long[] removed) => !acceptedSet.SetEquals(removed);
+        var failures = new CommandFailures();
         // DocumentChanged reports the ids each committed transaction modified (unverified inside a transaction group).
         var modifiedIds = new List<long>();
         void OnChanged(object? sender, Autodesk.Revit.DB.Events.DocumentChangedEventArgs changed)
@@ -133,19 +169,40 @@ internal static partial class CommandExecutor
                     if (!Refusing("args.value", () => SetValue(parameter, args.Value, elementValue)))
                         throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.value", "Revit refused the value for parameter " + before.Name);
                     d.Regenerate();
+                    var removedInside = Removed(snapshot, d);
+                    if (acceptedSet.Count == 0 && removedInside.Length > 0) throw new SetParameterDeletionsFound(removedInside);
                     if (CommandReadbackModify.Parameter(args.Value, ObserveParameter(d, parameter, RevitParameterSources.Instance)) is { } mismatch) throw Mismatch(mismatch);
                 });
             }
             finally { d.Application.DocumentChanged -= OnChanged; }
+            var removed = Removed(snapshot, d);
+            // Failure processing deleted elements on a first run: roll back so they exist again and can be named.
+            if (acceptedSet.Count == 0 && removed.Length > 0)
+            {
+                group.RollBack();
+                return (null, removed);
+            }
+            if (acceptedSet.Count > 0 && Unaccepted(removed)) throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.value", "the change deleted " + removed.Length + " element(s) on its second run where " + acceptedSet.Count + " were named; rolled back");
             // Failure processing may change the element: resolve the parameter again and read back before any receipt.
             if (!element.IsValidObject) throw Mismatch("the element no longer exists");
-            var others = CommandRulesModify.SetParameterEffects(element.Id.Value, Removed(snapshot, d), modifiedIds);
+            var others = CommandRulesModify.SetParameterEffects(element.Id.Value, removed, modifiedIds, acceptedSet);
             var alsoModified = others.Select(id => d.GetElement(new ElementId(id))?.UniqueId).Where(uid => uid is not null).Select(uid => uid!).ToArray();
             var after = ObserveParameter(d, ResolveParameter(element, args.Parameter), RevitParameterSources.Instance);
             if (CommandReadbackModify.Parameter(args.Value, after) is { } afterMismatch) throw Mismatch(afterMismatch);
+            // No deletion: confirmations a real run named are stale (refused); with deletions they were checked already.
+            var deletions = accepted.Count > 0 ? accepted : CommandRulesModify.SetParameterDeletions(args.DryRun, Array.Empty<DeletedElement>(), args.ConfirmDeletions, protectedUids);
+            if (deletions.Select(gone => gone.UniqueId).Any(uid => uid is not null && d.GetElement(uid) is { IsValidObject: true }))
+                throw Mismatch("an element the change deleted still exists");
+            var confirmed = !args.DryRun && deletions.Count > 0;
             var changed = !CommandRulesModify.SameValue(kind, before, after);
-            var readback = CommandReadbackModify.ParameterJson(args.DryRun, element.UniqueId, kind, before, after, changed, alsoModified);
-            return Finish(d, request, store, group, CommandResponsesModify.SetParameter(request, args.DryRun, element.UniqueId, changed, alsoModified, readback, failures.Warnings.ToArray()));
+            var readback = CommandReadbackModify.ParameterJson(args.DryRun, element.UniqueId, kind, before, after, changed, alsoModified, deletions, confirmed);
+            return (Finish(d, request, store, group, CommandResponsesModify.SetParameter(request, args.DryRun, element.UniqueId, changed, alsoModified, readback, failures.Warnings.ToArray(),
+                deletions.Select(gone => gone.UniqueId!).ToArray())), Array.Empty<long>());
+        }
+        catch (SetParameterDeletionsFound found)
+        {
+            if (group.GetStatus() == TransactionStatus.Started) group.RollBack();
+            return (null, found.Ids);
         }
         catch
         {

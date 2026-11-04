@@ -94,15 +94,15 @@ public static partial class RevitCommandCatalogue
             Branch(RevitParameterValueKinds.YesNo, "yes_no", """{"type":"boolean","description":"Yes (true) or No (false)"}""", "A Yes/No parameter"),
             Branch(RevitParameterValueKinds.Element, "uid", UniqueIdSchema, "An element id parameter, set to the element with this UniqueId"));
 
-        var setParameter = Fill("""{"type":"object","properties":{"element_uid":@0@,"parameter":@1@,"value":@2@,"dry_run":@3@},"required":["element_uid","parameter","value"],"additionalProperties":false}""",
-            UniqueIdSchema, parameter, value, DryRunSchema);
+        var setParameter = Fill("""{"type":"object","properties":{"element_uid":@0@,"parameter":@1@,"value":@2@,"confirm_deletions":{"type":"array","description":"UniqueIds of the elements Revit deletes because of the change (for example an internal join helper), exactly as a dry run reported them in deleted; a change whose deletions differ is refused; default none","items":@0@,"maxItems":@4@},"dry_run":@3@},"required":["element_uid","parameter","value"],"additionalProperties":false}""",
+            UniqueIdSchema, parameter, value, DryRunSchema, RevitModifyRules.MaxConfirmedDependents.ToString(CultureInfo.InvariantCulture));
 
         var delete = Fill("""{"type":"object","properties":{"element_uids":{"type":"array","description":"Elements to delete, by UniqueId, distinct, 1 to 100","items":@0@,"minItems":1,"maxItems":@1@},"confirm_dependents":{"type":"array","description":"UniqueIds of every other element Revit deletes with the targets, exactly as a dry run reported them; a delete whose dependents differ is refused; default none","items":@0@,"maxItems":@2@},"dry_run":@3@},"required":["element_uids"],"additionalProperties":false}""",
             UniqueIdSchema, RevitModifyRules.MaxDeleteTargets.ToString(CultureInfo.InvariantCulture), RevitModifyRules.MaxConfirmedDependents.ToString(CultureInfo.InvariantCulture), DryRunSchema);
 
         return new[]
         {
-            new RevitCommandSpec("element.set_parameter", true, "Set one writable parameter of an element (by UniqueId) to a typed value: length in millimetres, area in square metres, angle in degrees, text, integer, yes/no or element; read-only parameters are refused; the before and after values are read back; dry_run reports the change and rolls it back. Allowed only on enabled test copies.", setParameter, BindSetParameter),
+            new RevitCommandSpec("element.set_parameter", true, "Set one writable parameter of an element (by UniqueId) to a typed value: length in millimetres, area in square metres, angle in degrees, text, integer, yes/no or element; read-only parameters are refused; the before and after values are read back; dry_run reports the change, including any element Revit deletes because of it, and rolls it back; a change that deletes elements is refused unless confirm_deletions names exactly those UniqueIds. Allowed only on enabled test copies.", setParameter, BindSetParameter),
             new RevitCommandSpec("element.delete", true, "Delete elements by UniqueId; every other element Revit would delete with them is reported by a dry run and must be confirmed in confirm_dependents, else the delete is refused; pinned, grouped and protected elements are refused. Allowed only on enabled test copies.", delete, BindDelete),
         };
     }
@@ -115,7 +115,11 @@ public static partial class RevitCommandCatalogue
         RevitParameterRef parameter = parameterElement.TryGetProperty("name", out var name) ? new ParameterByName(name.GetString()!)
             : parameterElement.TryGetProperty("built_in", out var builtIn) ? new ParameterByBuiltIn(builtIn.GetString()!)
             : new ParameterByGuid(Guid.ParseExact(parameterElement.GetProperty("guid").GetString()!, "D"));
-        return new ElementSetParameterArgs(args.GetProperty("element_uid").GetString()!, parameter, BindValue(args.GetProperty("value")), DryRun(args), Array.Empty<string>());
+        var elementUid = args.GetProperty("element_uid").GetString()!;
+        var deletions = args.TryGetProperty("confirm_deletions", out var confirm)
+            ? DistinctUniqueIds(confirm, "args.confirm_deletions", new[] { elementUid }, "is the element being changed, not a deletion")
+            : Array.Empty<string>();
+        return new ElementSetParameterArgs(elementUid, parameter, BindValue(args.GetProperty("value")), DryRun(args), deletions);
     }
 
     static RevitParameterValue BindValue(JsonElement value)
@@ -158,14 +162,14 @@ public static partial class RevitCommandCatalogue
     }
 
     // UniqueIds compare hex case-insensitively, as Document.GetElement(string) does.
-    static string[] DistinctUniqueIds(JsonElement array, string field, IReadOnlyList<string>? targets)
+    static string[] DistinctUniqueIds(JsonElement array, string field, IReadOnlyList<string>? targets, string targetDetail = "is a delete target, not a dependent")
     {
         var values = new List<string>();
         var index = 0;
         foreach (var uid in array.EnumerateArray().Select(item => item.GetString()!))
         {
             if (values.Contains(uid, StringComparer.OrdinalIgnoreCase)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, field + "[" + index + "]", uid + " is listed twice");
-            if (targets is not null && targets.Contains(uid, StringComparer.OrdinalIgnoreCase)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, field + "[" + index + "]", uid + " is a delete target, not a dependent");
+            if (targets is not null && targets.Contains(uid, StringComparer.OrdinalIgnoreCase)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, field + "[" + index + "]", uid + " " + targetDetail);
             values.Add(uid);
             index++;
         }

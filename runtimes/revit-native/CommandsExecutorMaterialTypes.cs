@@ -18,7 +18,8 @@ namespace Bim.Revit;
 //     CutForegroundPatternId / AppearanceAssetId, AppearanceAssetElement (Name, UniqueId)
 //   ElementType.Duplicate(string) on a WallType (WallKind.Basic) or FloorType, CompoundStructure.CreateSimpleCompoundStructure,
 //     SetNumberOfShellLayers(ShellLayerType, int), GetNumberOfShellLayers, StructuralMaterialIndex,
-//     IsValid(Document, out, out), HostObjAttributes.SetCompoundStructure
+//     IsValid(Document, out, out), EndCap (EndCapCondition) / OpeningWrapping (OpeningWrappingCondition),
+//     HostObjAttributes.SetCompoundStructure
 //   Element.GetValidTypes(), Element.ChangeTypeId(ElementId), FamilySymbol.IsActive / Activate()
 // Unverified in Revit (owner session required): that Material.Duplicate keeps the base material's render appearance
 //   asset (it is reported, not checked) and whether that asset is shared with the base material (editing it would then
@@ -132,8 +133,10 @@ internal static partial class CommandExecutor
             structure?.GetNumberOfShellLayers(ShellLayerType.Exterior) ?? 0, structure?.GetNumberOfShellLayers(ShellLayerType.Interior) ?? 0);
     }
 
-    // The layered structure in request order (exterior/top first): the core is the run of structure layers.
-    static CompoundStructure HostStructure(Document d, IReadOnlyList<HostTypeLayerArg> layers, Material[] materials, (int Exterior, int Interior) shells)
+    // The layered structure in request order (exterior/top first): the core is the run of structure layers. hostKind
+    // "wall", "floor" or "roof" picks the end cap and opening wrapping (CommandRulesMaterialTypes.Wrapping) from the
+    // base type's own structure; wall_type.create, floor_type.create and roof_type.create all build through here.
+    static CompoundStructure HostStructure(Document d, string hostKind, CompoundStructure? baseStructure, IReadOnlyList<HostTypeLayerArg> layers, Material[] materials, (int Exterior, int Interior) shells)
     {
         var built = new List<CompoundStructureLayer>();
         for (var i = 0; i < layers.Count; i++)
@@ -145,6 +148,9 @@ internal static partial class CommandExecutor
         structure.SetNumberOfShellLayers(ShellLayerType.Exterior, shells.Exterior);
         structure.SetNumberOfShellLayers(ShellLayerType.Interior, shells.Interior);
         structure.StructuralMaterialIndex = shells.Exterior;
+        var wrapping = CommandRulesMaterialTypes.Wrapping(hostKind, baseStructure?.EndCap.ToString(), baseStructure?.OpeningWrapping.ToString());
+        structure.EndCap = Enum.Parse<EndCapCondition>(wrapping.EndCap);
+        structure.OpeningWrapping = Enum.Parse<OpeningWrappingCondition>(wrapping.OpeningWrapping);
         if (!structure.IsValid(d, out var errors, out var pairErrors))
         {
             var details = errors.Select(error => "layer " + error.Key + ": " + error.Value).Concat(pairErrors.Select(pair => "layers " + pair.Key + " and " + pair.Value)).ToArray();
@@ -153,8 +159,20 @@ internal static partial class CommandExecutor
         return structure;
     }
 
-    // kind: "wall type" / "floor type"; member: "wall_type" / "floor_type". existingTypes: every type of that class.
-    static WritePlan HostTypeWrite<T>(Document d, string kind, string member, string name, IReadOnlyList<HostTypeLayerArg> layers, T baseType, T[] existingTypes) where T : HostObjAttributes
+    // SetCompoundStructure's ArgumentException (for example a wrong end cap for the element type, which IsValid does not
+    // check) becomes a typed refusal instead of an unexpected executor error.
+    static void SetStructure(HostObjAttributes type, CompoundStructure structure)
+    {
+        try { type.SetCompoundStructure(structure); }
+        catch (Autodesk.Revit.Exceptions.ArgumentException error)
+        {
+            throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.layers", "Revit refused the layer build-up: " + error.Message);
+        }
+    }
+
+    // hostKind: "wall" / "floor"; kind: "wall type" / "floor type"; member: "wall_type" / "floor_type". existingTypes:
+    // every type of that class.
+    static WritePlan HostTypeWrite<T>(Document d, string hostKind, string kind, string member, string name, IReadOnlyList<HostTypeLayerArg> layers, T baseType, T[] existingTypes) where T : HostObjAttributes
     {
         var materials = Materials(d);
         var resolved = layers.Select((layer, i) => Resolve(materials, material => new CommandCandidate(material.UniqueId, material.Name), layer.Material, "args.layers[" + i + "].material", "material")).ToArray();
@@ -179,7 +197,7 @@ internal static partial class CommandExecutor
             {
                 var duplicate = baseType.Duplicate(name) as T ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.base_type", "Revit did not duplicate the " + kind);
                 created = duplicate;
-                duplicate.SetCompoundStructure(HostStructure(d, layers, resolved, shells));
+                SetStructure(duplicate, HostStructure(d, hostKind, baseType.GetCompoundStructure(), layers, resolved, shells));
             },
             () => created is { IsValidObject: true } type ? CommandReadbackMaterialTypes.HostType(kind, name, expected, shells, ObserveHostType(d, type)) : "the new " + kind + " no longer exists",
             () => CommandReadbackMaterialTypes.HostTypeJson(member, ObserveHostType(d, created!), existing: false),
@@ -192,7 +210,7 @@ internal static partial class CommandExecutor
         var wallTypes = WallTypes(d);
         var baseType = Resolve(wallTypes, type => new CommandCandidate(type.UniqueId, type.Name), args.BaseType, "args.base_type", "wall type");
         CommandRulesMaterialTypes.CheckBaseWallKind(baseType.Kind.ToString());
-        return HostTypeWrite(d, "wall type", "wall_type", args.Name, args.Layers, baseType, wallTypes);
+        return HostTypeWrite(d, "wall", "wall type", "wall_type", args.Name, args.Layers, baseType, wallTypes);
     }
 
     static WritePlan FloorTypeWrite(Document d, FloorTypeCreateArgs args)
@@ -201,7 +219,7 @@ internal static partial class CommandExecutor
         if (baseType.GetCompoundStructure() is null)
             throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.base_type", "floor type '" + baseType.Name + "' has no layers; pick a layered floor type from revit_query_floor_types");
         var allFloorTypes = new FilteredElementCollector(d).OfClass(typeof(FloorType)).Cast<FloorType>().ToArray();
-        return HostTypeWrite(d, "floor type", "floor_type", args.Name, args.Layers, baseType, allFloorTypes);
+        return HostTypeWrite(d, "floor", "floor type", "floor_type", args.Name, args.Layers, baseType, allFloorTypes);
     }
 
     static ObservedTypeRef TypeRefOf(ElementType type) => new(type.UniqueId, type.Name, Blank(type.FamilyName));

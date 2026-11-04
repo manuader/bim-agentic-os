@@ -65,8 +65,17 @@ public static class CommandRulesMaterialTypes
     // The end and opening wrapping of a new layered type's CompoundStructure, as Revit EndCapCondition and
     // OpeningWrappingCondition member names. hostKind: "wall", "floor" or "roof"; baseEndCap / baseOpeningWrapping: the
     // base type's own structure conditions (null when unread).
-    public static (string EndCap, string OpeningWrapping) Wrapping(string hostKind, string? baseEndCap, string? baseOpeningWrapping) =>
-        (baseEndCap ?? NoWrapping, baseOpeningWrapping ?? NoWrapping);
+    // CompoundStructure.CreateSimpleCompoundStructure starts with a wall end cap, and SetCompoundStructure on a floor type
+    // refused it in Revit 2025.2 (owner, 2026-11-04: "Input compound structure has wrong EndCap condition for this element
+    // type"); the Revit API says floors and roofs must use EndCapCondition.NoEndCap. A floor or roof therefore always gets
+    // NoEndCap and keeps the base type's opening wrapping (None when unread); a wall keeps both of its base wall type's
+    // conditions, except NoEndCap (not a wall condition) or an unread one, which become None (no wrapping).
+    public static (string EndCap, string OpeningWrapping) Wrapping(string hostKind, string? baseEndCap, string? baseOpeningWrapping) => hostKind switch
+    {
+        "floor" or "roof" => (NoEndCap, baseOpeningWrapping ?? NoWrapping),
+        "wall" => (baseEndCap is null or NoEndCap ? NoWrapping : baseEndCap, baseOpeningWrapping ?? NoWrapping),
+        _ => throw new ArgumentOutOfRangeException(nameof(hostKind), hostKind, "host kind is wall, floor or roof"),
+    };
 
     // wall_type.create duplicates a basic wall type (curtain and stacked types have no simple layer structure).
     public static void CheckBaseWallKind(string kind)
