@@ -28,8 +28,10 @@ def _load(name, path):
     return module
 
 
-br = _load('bim_rhino', WRITER)
 rd = _load('rhino_draft', DRAFT)
+# The draft module loads the writer itself; share that instance so RhinoAdapterError is one class.
+br = rd.br
+assert pathlib.Path(br.__file__).resolve() == WRITER
 
 FIXTURE = json.loads((ROOT / 'tests/rhino/fixtures/room.json').read_text(encoding='utf-8'))
 EXAMPLE = json.loads((ROOT / 'examples/after.json').read_text(encoding='utf-8'))
