@@ -89,6 +89,10 @@ static class CatalogueBatchChecks
         ExecutorDecisions();
         Replies();
         Receipts();
+        Runner();
+        Survivors();
+        StepGuards();
+        ReceiptGrowth();
     }
 
     static void Catalogue()
@@ -325,5 +329,117 @@ static class CatalogueBatchChecks
         Check(replay.Receipt == receipt with { Replayed = true } && replay.Created.SequenceEqual(response.Created) && replay.ReadbackJson == response.ReadbackJson, "the replay returns the stored batch reply (per-step readback included) with replayed true");
         Check(Thrown(() => RevitCommandBatch.CheckFreshSteps(args, reread.ContainsKey)) is { Code: RevitCommandCodes.OperationIdConflict, Field: "args.steps[0].operation_id" },
             "after a stored batch its step operation_ids cannot run again in a new batch");
+    }
+
+    // A fake step runner and transaction group around RevitCommandBatch.Run: counts calls, roll backs and persists.
+    sealed class Fake
+    {
+        public List<string> Ran { get; } = new();
+        public int RollBacks;
+        public int Persists;
+        public RevitCommandResponse? Persisted;
+    }
+
+    static string RunFake(RevitCommandEnvelope batch, Fake fake, Func<RevitCommandEnvelope, RevitCommandResponse> reply, Func<string, bool>? exists = null,
+        Func<string, bool>? used = null, int receiptCount = 0, Func<RevitCommandResponse, string>? persist = null) =>
+        RevitCommandBatch.Run(batch, batch.RequestSha256, used ?? (_ => false), receiptCount, 2000,
+            step => { fake.Ran.Add(step.OperationId); return reply(step); },
+            exists ?? (_ => true),
+            () => fake.RollBacks++,
+            persist ?? (response => { fake.Persists++; fake.Persisted = response; return "persisted"; }));
+
+    static RevitCommandResponse Ok(RevitCommandEnvelope step) => StepReply(step, new[] { Hex(20 + int.Parse(step.OperationId[2..])) }, Array.Empty<string>(), Array.Empty<string>(), "{}");
+
+    static void Runner()
+    {
+        var (batch, args, _) = Parsed();
+        var fake = new Fake();
+        var line = RunFake(batch, fake, Ok);
+        Check(line == "persisted" && fake.Ran.SequenceEqual(new[] { "s-0", "s-1", "s-2" }) && fake.RollBacks == 0 && fake.Persists == 1 && fake.Persisted?.Receipt == new RevitCommandReceipt("op-batch", "command.batch", Uid, batch.RequestSha256, false),
+            "every step runs in order, nothing is rolled back and the batch success is persisted once with the batch receipt");
+        fake = new Fake();
+        line = RunFake(batch, fake, step => step.OperationId == "s-1" ? throw new RevitCommandException(RevitCommandCodes.ReferenceNotFound, "args.level", "no level named Level 9") : Ok(step));
+        Check(fake.Ran.SequenceEqual(new[] { "s-0", "s-1" }) && fake.RollBacks == 1 && fake.Persists == 0 && Code(line) == RevitCommandCodes.ReferenceNotFound && Field(line) == "args.steps[1].args.level",
+            "a step that throws stops the batch: the next step never runs, the group is rolled back once, nothing is persisted, the field is args.steps[1].args.level", line);
+        fake = new Fake();
+        line = RunFake(batch, fake, step => step.OperationId == "s-0" ? throw new InvalidOperationException("Revit said no") : Ok(step));
+        Check(fake.Ran.Count == 1 && fake.RollBacks == 1 && fake.Persists == 0 && Code(line) == RevitCommandCodes.TransactionFailed && Field(line) == "args.steps[0]" && line.Contains("Revit said no", StringComparison.Ordinal),
+            "any other exception from a step is transaction_failed at args.steps[i] with its message", line);
+        fake = new Fake();
+        line = RunFake(batch, fake, step => step.OperationId == "s-2" ? RevitCommandResponse.Failure(RevitCommandCodes.ArgsInvalid, "args.confirm_dependents", "unconfirmed") : Ok(step));
+        Check(fake.Ran.Count == 3 && fake.RollBacks == 1 && fake.Persists == 0 && Field(line) == "args.steps[2].args.confirm_dependents", "a failure reply from the last step rolls everything back", line);
+        fake = new Fake();
+        line = RunFake(batch, fake, step => StepReply(RevitCommandBatch.StepEnvelope(batch, 0), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), "{}"));
+        Check(fake.Ran.SequenceEqual(new[] { "s-0", "s-1" }) && fake.RollBacks == 1 && Code(line) == RevitCommandCodes.TransactionFailed && Field(line) == "args.steps[1]", "a reply answering another step stops the batch at that step", line);
+        fake = new Fake();
+        var thrown = false;
+        try { RunFake(batch, fake, Ok, persist: _ => throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "receipt store full")); }
+        catch (RevitCommandException error) { thrown = error.Detail == "receipt store full"; }
+        Check(thrown && fake.Ran.Count == 3 && fake.RollBacks == 1, "a persist that throws rolls the group back once and the error propagates");
+        fake = new Fake();
+        line = RunFake(batch, fake, Ok, used: id => id == "s-2");
+        Check(fake.Ran.Count == 0 && fake.RollBacks == 1 && fake.Persists == 0 && Code(line) == RevitCommandCodes.OperationIdConflict && Field(line) == "args.steps[2].operation_id", "a used step operation_id refuses the batch before any step runs", line);
+        var twenty = RevitCommandProtocol.Parse(Envelope(Steps(Enumerable.Range(0, 20).Select(i => Step("s-" + i, "wall.create", Wall(3000, 1000 + i))).ToArray())).ToJsonString());
+        fake = new Fake();
+        line = RunFake(twenty, fake, Ok, receiptCount: 1990);
+        Check(fake.Ran.Count == 0 && fake.RollBacks == 1 && fake.Persists == 0 && Code(line) == RevitCommandCodes.TransactionFailed && line.Contains("receipt store full", StringComparison.Ordinal),
+            "1990 stored receipts + a 20-step batch + its receipt exceed 2000: refused before any step runs", line);
+        fake = new Fake();
+        RunFake(twenty, fake, Ok, receiptCount: 1979);
+        Check(fake.Ran.Count == 20 && fake.Persists == 1, "1979 stored receipts + 20 steps + 1 exactly fill 2000: the batch runs");
+        Check(Thrown(() => RevitCommandBatch.CheckRoom((CommandBatchArgs)twenty.Args, 1980, 2000)) is { Code: RevitCommandCodes.TransactionFailed } && Thrown(() => RevitCommandBatch.CheckRoom(args, 1996, 2000)) is null,
+            "CheckRoom counts every step receipt plus the batch receipt");
+        Check(RevitCommandBatch.StepReplyField(2, "operation_id") == "args.steps[2].operation_id" && RevitCommandBatch.StepReplyField(2, "command") == "args.steps[2].command"
+            && RevitCommandBatch.StepReplyField(2, "args") == "args.steps[2].args" && RevitCommandBatch.StepReplyField(2, null) == "args.steps[2]"
+            && RevitCommandBatch.StepReplyField(2, "document.unique_id") == "document.unique_id" && RevitCommandBatch.StepReplyField(2, "receipt") == "receipt",
+            "only the step's own fields (args..., operation_id, command) move under args.steps[i]; batch-level fields are kept");
+        fake = new Fake();
+        line = RunFake(batch, fake, step => step.OperationId == "s-1" ? RevitCommandResponse.Failure(RevitCommandCodes.DocumentConflict, "document.path", "moved") : Ok(step));
+        Check(Field(line) == "document.path" && line.Contains("step 1 (room.create", StringComparison.Ordinal), "a document-level step failure keeps its field and still names the step", line);
+    }
+
+    static void Survivors()
+    {
+        var (batch, _, _) = Parsed();
+        var fake = new Fake();
+        var line = RunFake(batch, fake, Ok, exists: uid => uid != Hex(21));
+        Check(fake.Ran.Count == 3 && fake.RollBacks == 1 && fake.Persists == 0 && Code(line) == RevitCommandCodes.TransactionFailed && Field(line) == "args.steps[1]" && line.Contains(Hex(21) + " created", StringComparison.Ordinal),
+            "an element a step created that no longer exists after the batch refuses it, naming the step that created it", line);
+        fake = new Fake();
+        line = RunFake(batch, fake, step => step.OperationId == "s-2" ? StepReply(step, Array.Empty<string>(), new[] { Hex(99) }, Array.Empty<string>(), "{}") : Ok(step), exists: uid => uid != Hex(99));
+        Check(fake.RollBacks == 1 && fake.Persists == 0 && Field(line) == "args.steps[2]" && line.Contains(Hex(99) + " modified", StringComparison.Ordinal), "a modified element that no longer exists names the step that modified it", line);
+        fake = new Fake();
+        RunFake(batch, fake, step => step.OperationId == "s-2" ? StepReply(step, Array.Empty<string>(), Array.Empty<string>(), new[] { Hex(20) }, "{}") : Ok(step), exists: uid => uid != Hex(20));
+        Check(fake.RollBacks == 0 && fake.Persists == 1, "an element created then deleted inside the batch is not required to exist");
+    }
+
+    static void StepGuards()
+    {
+        var withDryRun = RevitCommandCatalogue.BatchStepCommands.Where(spec => JsonNode.Parse(spec.ArgsSchemaJson)!["properties"]?["dry_run"] is not null).ToArray();
+        Check(withDryRun.Select(spec => spec.Name).Contains("element.set_parameter") && withDryRun.Select(spec => spec.Name).Contains("element.delete"), "the step commands offering dry_run include the modify commands", string.Join(",", withDryRun.Select(spec => spec.Name)));
+        foreach (var spec in withDryRun)
+            Rejects(spec.Name + " with dry_run true is not a step", Envelope(Steps(Step("s-0", "room.create", Room()), Step("s-1", spec.Name, new JsonObject { ["dry_run"] = true }))), RevitCommandCodes.ArgsInvalid, "args.steps[1].args.dry_run");
+        var surrogate = Envelope(Steps(Step("s-0", "room.create", Room()), Step("s-1", "wall.create", Wall()))).ToJsonString().Replace("Generic - 200mm", "\\ud800", StringComparison.Ordinal);
+        var error = Refusal(surrogate);
+        Check(error is { Code: RevitCommandCodes.EnvelopeInvalid, Field: "args.steps[1]" }, "unreadable text in a step is envelope_invalid at that step", error is null ? "accepted" : error.Code + " at " + error.Field);
+    }
+
+    static void ReceiptGrowth()
+    {
+        var batch = RevitCommandProtocol.Parse(Envelope(Steps(Enumerable.Range(0, 50).Select(i => Step("s-" + i, "family.load", new JsonObject { ["path"] = RepoStove })).ToArray())).ToJsonString());
+        var args = (CommandBatchArgs)batch.Args;
+        var steps = args.Steps.Select(step => RevitCommandBatch.StepEnvelope(batch, step.Index)).ToArray();
+        string Readback(int i) => new JsonObject { ["family"] = new JsonObject { ["name"] = "Family " + i.ToString("00"), ["types"] = new JsonArray(Enumerable.Range(0, 48).Select(j => (JsonNode?)new JsonObject { ["name"] = "Type " + j.ToString("000"), ["unique_id"] = Hex(1000 * i + j) }).ToArray()) } }.ToJsonString();
+        var replies = steps.Select((step, i) => StepReply(step, new[] { Hex(i + 1) }, Array.Empty<string>(), Array.Empty<string>(), Readback(i))).ToArray();
+        var request = new CommandRequest(batch, batch.RequestSha256);
+        var response = RevitCommandBatch.Success(new RevitCommandReceipt(batch.OperationId, batch.Command, batch.Document.UniqueId, request.RequestSha256, false), args, replies);
+        var stepsOnly = new Dictionary<string, StoredCommandReceipt>(StringComparer.Ordinal);
+        for (var i = 0; i < steps.Length; i++) stepsOnly[steps[i].OperationId] = CommandReceiptStore.Record(new CommandRequest(steps[i], steps[i].RequestSha256), replies[i]);
+        var all = new Dictionary<string, StoredCommandReceipt>(stepsOnly, StringComparer.Ordinal) { [batch.OperationId] = CommandReceiptStore.Record(request, response) };
+        var stepBytes = System.Text.Encoding.UTF8.GetByteCount(CommandReceiptStore.Serialize(stepsOnly));
+        var totalBytes = System.Text.Encoding.UTF8.GetByteCount(CommandReceiptStore.SerializeBounded(all));
+        Check(Readback(0).Length is > 3500 and < 4500, "each step readback is family.load sized (about 4 KB)", Readback(0).Length.ToString());
+        Check(totalBytes < 800_000 && totalBytes - stepBytes < 400_000 && totalBytes > 2 * 50 * 3500,
+            "a 50-step batch of 4 KB replies stores under 0.8 MB (step receipts plus a batch receipt of about the same size; the 4 MB store holds about six)", totalBytes + " bytes, batch receipt " + (totalBytes - stepBytes));
     }
 }

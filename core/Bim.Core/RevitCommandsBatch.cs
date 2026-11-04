@@ -32,6 +32,10 @@ public static class RevitCommandBatch
     public static string StepField(int index, string? field) =>
         "args.steps[" + index.ToString(CultureInfo.InvariantCulture) + "]" + (string.IsNullOrEmpty(field) ? "" : "." + field);
 
+    // A step reply's field under the batch: the step's own members (args..., operation_id, command, or none) move under
+    // args.steps[i]; anything else (document.*, receipt, pipe_name) names the batch request itself and is kept.
+    public static string? StepReplyField(int index, string? field) => StepField(index, field);
+
     // Called by the protocol after binding: step operation_ids are distinct (ordinal, like the receipt store keys) and
     // differ from the batch's own, so every receipt the batch stores has its own key.
     public static void CheckOperationIds(string batchOperationId, CommandBatchArgs batch)
@@ -93,7 +97,7 @@ public static class RevitCommandBatch
     // The batch refusal for a failed step: the step's code, its field under args.steps[i], and a detail naming the step
     // index, command and operation_id and stating that the whole batch was rolled back.
     public static RevitCommandResponse StepFailure(RevitBatchStep step, string code, string? field, string? detail) =>
-        RevitCommandResponse.Failure(code, StepField(step.Index, field),
+        RevitCommandResponse.Failure(code, StepReplyField(step.Index, field),
             "step " + step.Index.ToString(CultureInfo.InvariantCulture) + " (" + step.Command + ", operation_id " + step.OperationId + ") failed: "
             + (string.IsNullOrEmpty(detail) ? code : detail) + "; the whole batch was rolled back and nothing was written");
 
@@ -104,6 +108,27 @@ public static class RevitCommandBatch
         var expected = new RevitCommandReceipt(stepEnvelope.OperationId, stepEnvelope.Command, stepEnvelope.Document.UniqueId, stepRequestSha256, false);
         if (reply.Receipt != expected) return StepFailure(step, RevitCommandCodes.TransactionFailed, null, "the step reply does not answer this step (receipt mismatch)");
         return null;
+    }
+
+    // Before any step runs: room in the receipt store for every step receipt plus the batch receipt.
+    public static void CheckRoom(CommandBatchArgs batch, int receiptCount, int maxReceipts) { }
+
+    public static RevitCommandResponse? CheckSurvivors(CommandBatchArgs batch, IReadOnlyList<RevitCommandResponse> replies, RevitCommandResponse success, Func<string, bool> exists) => null;
+
+    // Stub (tests first): runs every step and persists, without stopping or rolling back.
+    public static string Run(RevitCommandEnvelope batch, string batchRequestSha256, Func<string, bool> alreadyUsed, int receiptCount, int maxReceipts,
+        Func<RevitCommandEnvelope, RevitCommandResponse> runStep, Func<string, bool> exists, Action rollBack, Func<RevitCommandResponse, string> persist)
+    {
+        var args = (CommandBatchArgs)batch.Args;
+        var replies = new List<RevitCommandResponse>();
+        foreach (var step in args.Steps)
+        {
+            var stepEnvelope = StepEnvelope(batch, step.Index);
+            try { replies.Add(runStep(stepEnvelope)); }
+            catch (Exception error) { replies.Add(RevitCommandResponse.Failure(RevitCommandCodes.TransactionFailed, null, error.Message)); }
+        }
+        var receipt = new RevitCommandReceipt(batch.OperationId, batch.Command, batch.Document.UniqueId, batchRequestSha256, false);
+        return persist(RevitCommandResponse.Success(receipt, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), null, Array.Empty<string>()));
     }
 
     // The batch success: the batch receipt; created/modified/deleted as the net change of all steps in step order
@@ -199,28 +224,34 @@ public static partial class RevitCommandCatalogue
         var index = 0;
         foreach (var item in args.GetProperty("steps").EnumerateArray())
         {
-            var command = item.GetProperty("command").GetString()!;
-            var spec = Find(command);
-            if (!RevitCommandBatch.IsStepCommand(spec)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, RevitCommandBatch.StepField(index, "command"), command + " cannot be a batch step");
-            var stepArgs = item.GetProperty("args");
-            using (var stepSchema = JsonDocument.Parse(spec.ArgsSchemaJson))
-            {
-                if (RevitCommandSchema.Validate(stepArgs, stepSchema.RootElement, "args") is { } failure)
-                    throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, RevitCommandBatch.StepField(index, failure.Field), failure.Detail);
-            }
-            RevitCommandArgs typed;
-            string canonical;
-            try
-            {
-                typed = spec.Bind(stepArgs);
-                canonical = RevitCommandProtocol.Canonical(stepArgs);
-            }
-            catch (RevitCommandException error) { throw new RevitCommandException(error.Code, RevitCommandBatch.StepField(index, error.Field), error.Detail); }
-            if (typed is ElementSetParameterArgs { DryRun: true } or ElementDeleteArgs { DryRun: true })
-                throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, RevitCommandBatch.StepField(index, "args.dry_run"), "a batch step cannot be a dry run");
-            steps.Add(new RevitBatchStep(index, item.GetProperty("operation_id").GetString()!, command, typed, canonical));
+            steps.Add(BindStep(item, index));
             index++;
         }
         return new CommandBatchArgs(steps);
+    }
+
+    // One step. Any refusal is reported under args.steps[index]: a typed refusal keeps its code with its path rewritten;
+    // text that cannot be read (a lone surrogate escape) is envelope_invalid at the step, as the protocol reports it
+    // for a single command.
+    static RevitBatchStep BindStep(JsonElement item, int index)
+    {
+        try
+        {
+            var command = item.GetProperty("command").GetString()!;
+            var spec = Find(command);
+            if (!RevitCommandBatch.IsStepCommand(spec)) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "command", command + " cannot be a batch step");
+            var stepArgs = item.GetProperty("args");
+            // Generic: whatever command offers dry_run, a step never runs as one.
+            using (var stepSchema = JsonDocument.Parse(spec.ArgsSchemaJson))
+            {
+                if (RevitCommandSchema.Validate(stepArgs, stepSchema.RootElement, "args") is { } failure)
+                    throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, failure.Field, failure.Detail);
+            }
+            var typed = spec.Bind(stepArgs);
+            var canonical = RevitCommandProtocol.Canonical(stepArgs);
+            if (typed is ElementSetParameterArgs { DryRun: true } or ElementDeleteArgs { DryRun: true }) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.dry_run", "a batch step cannot be a dry run");
+            return new RevitBatchStep(index, item.GetProperty("operation_id").GetString()!, command, typed, canonical);
+        }
+        catch (RevitCommandException error) { throw new RevitCommandException(error.Code, RevitCommandBatch.StepField(index, error.Field), error.Detail); }
     }
 }
