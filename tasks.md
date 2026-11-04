@@ -78,7 +78,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P1-04 | Catalogue smoke re-run in Revit | ✅ | P1-01 | owner session (fix ed5c759 on main; owner re-runs -Catalogue) | owner runs -Catalogue; 17/17 | verified-in-revit (owner session 20261103T174908Z, head a31af61, Revit 25.2.0.38: 17/17; production PID untouched) |
 | P1-05 | Modify and delete commands under the copies guard | ✅ | P1-02 | core/Bim.Core/RevitCommandsModify*; runtimes/revit-native/CommandsExecutorModify* | element.set_parameter and element.delete with UniqueId targets, typed units, refused on non-copy documents, receipts and dry-run change report; contract tests; compiles | compiled executor + unit-tested contracts (relay144, CI 41668015221; element.set_parameter typed values, element.delete with dependents probe + confirm_dependents, dry-run rolled back, compact receipts; not verified-in-revit) |
 | P1-06 | One-run owner verification session | ✅ | P1-04 | scripts/owner-catalogue-steps.ps1; scripts/owner-native-session.ps1; tests/integration/test-catalogue-session.ps1; docs/owner-verification-session.md | one -Catalogue run continues after v1 17/17 with groups v2, views, snapshot, queries, structure, documentation, journal, modify (destructive last), requested vs observed per step, blocked preconditions, -CatalogueV1Only; fake-pipe and real-CLI tests | unit-tested (relay145, CI 41704794976; 81 steps; groups become verified-in-revit only after the owner run) |
-| P1-07 | Multi-command batch with one undo | ⏳ | P1-05 | core/Bim.Core/RevitCommandsBatch*; runtimes/revit-native/CommandsExecutorBatch*; tests/revit-commands | `command.batch` runs 1–50 catalogue write commands in one TransactionGroup (all-or-nothing, one undo entry), per-step readback and receipts, refusal names the failed step and rolls back everything, replay idempotent; copies guard; contract tests; compiles | target compiled |
+| P1-07 | Multi-command batch with one undo | ✅ | P1-05 | core/Bim.Core/RevitCommandsBatch*; runtimes/revit-native/CommandsExecutorBatch*; tests/revit-commands | `command.batch` runs 1–50 catalogue write commands in one TransactionGroup (all-or-nothing, one undo entry), per-step readback and receipts, refusal names the failed step and rolls back everything, replay idempotent; copies guard; contract tests; compiles | relay150: core contract + Autodesk-free batch runner (stop/rollback, survivor and receipt-room checks, generic dry-run refusal, receipt growth bound) unit-tested, executor compiled; red 41783202390/41788320098, green 41786172875/41789389908; review no blockers, should-fix closed; never run in Revit (nested edit scopes, single undo unverified) — compiled + unit-tested contracts |
 | P1-08 | Save a test copy command | ⏳ | P1-05 | core/Bim.Core/RevitCommandsSave*; runtimes/revit-native/CommandsExecutorSave*; tests/revit-commands | `document.save_copy` saves the open fixture document as a new BIM-Agentic-Test*.rvt under the copies root only (refuses overwrite, other folders, links, real projects), returns path and SHA-256; contract tests; compiles | target compiled |
 
 ### Phase 2 — semantic state and mirror
@@ -156,7 +156,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P8-04 | BIM-IR to glTF 2.0 export for Blender interchange | ✅ | — | adapters/gltf (new); tests/gltf | deterministic .glb/.gltf of walls/spaces/levels with extras, Y-up, golden SHA-256 equal on Linux/Windows, in-test spec validator; tests | unit-tested (relay142, CI 41644141785; never opened in Blender nor the Khronos validator; no wall joins) |
 | P8-05 | Third-party IFC import robustness | ✅ | P8-01 | runtimes/ifc; tests/ifc | IFC files not written by our exporter (IfcOpenShell-authored IFC4 with IfcWall + IfcExtrudedAreaSolid/IfcPolyline, mapped/boolean-clipped walls, IfcSpace with footprint, IFC2X3) import to BIM-IR with an explicit unsupported/approximated report instead of failure; fixtures generated in CI with IfcOpenShell; tests | integration-tested (ifc) on ubuntu/windows/macos (relay147, CI 41742335649; IfcOpenShell-authored fixtures only, no Revit/ArchiCAD exports; non-identity MappingOrigin, scaled maps, arcs, voids, rotated spaces unsupported) |
 | P8-06 | Rhino .3dm to BIM-IR draft import | ⏳ | P8-02 | adapters/rhino; tests/rhino | .3dm curves/extrusions on named layers (walls/spaces) read via rhino3dm into a non-persisted BIM-IR draft proposal with per-object confidence and an unmapped report; roundtrip with the P8-02 writer; tests | target unit-tested |
-| P8-07 | glTF export CLI verb and openings | ⏳ | P8-04 | interfaces/cli; adapters/gltf | `export-gltf` CLI verb with bounded output path; wall openings from door/window elements when BIM-IR carries them, else documented absent; tests | target unit-tested |
+| P8-07 | glTF export CLI verb and openings | ✅ | P8-04 | interfaces/cli; adapters/gltf | `export-gltf` CLI verb with bounded output path; wall openings from door/window elements when BIM-IR carries them, else documented absent; tests | relay150: export-gltf CLI verb (bounded input, never-overwrite exclusive create, ADS/device/link refusals) + door/window cuts in the wall plane (transoms, stacked windows) with cross-OS goldens; red 41782803843/41794045481, green 41785106385/41797924226; review no blockers, should-fix closed; 1 attempt — unit-tested; never opened in Blender |
 
 ### Phase 9 — Revit parity
 
@@ -165,7 +165,7 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 | P9-01 | Catalogue v2: roofs, stairs, curtain walls, slab openings | ✅ | — | core/Bim.Core/RevitCommands*; runtimes/revit-native/Commands* | contracts, validators, executor; compiles | compiled executor + unit-tested contracts (relay136, CI 41547173763; not verified-in-revit) |
 | P9-02 | Structure: grids, columns, beams, foundations | ✅ | — | same | contracts, validators, executor; compiles | compiled executor + unit-tested contracts (relay141, CI 41621106554; grids/columns/beams/isolated+wall foundations; not verified-in-revit) |
 | P9-03 | Guarded free path (ADR + implementation) | ⏳ | — | docs/architecture/adr; runtimes/revit-native | ADR accepted by owner rules; compiled C# runs in rolled-back group with change report; compiles | target compiled |
-| P9-04 | Revit parity census registry | ⏳ | — | capabilities/ | machine-readable census of Revit functions with coverage state and tests linking | target described |
+| P9-04 | Revit parity census registry | ✅ | — | capabilities/ | machine-readable census of Revit functions with coverage state and tests linking | relay150: capabilities/revit-parity-census.json (103 functions, 11 areas, all 54 catalogue commands, feature_coverage map) + revit-parity-summary.md checked by tests/parity-census (gate parity-census-tests); red 41782777772/41790838549, green 41783619497/41792117807; review no blockers, should-fix closed — unit-tested registry; counts 10 verified-in-revit, 4 unit-tested, 37 compiled, 52 unsupported |
 | P9-05 | Expose catalogue v2 as MCP tools | ✅ | P9-01 | interfaces/mcp/McpServer.cs; tests/mcp; tests/audit; docs/contracts/module-contracts.md | MCP tools/list built from RevitCommandCatalogue.All; v2 permission levels asserted; contract doc lists v2 | unit-tested (relay137, CI 41562897314; labels only, no per-actor enforcement in MCP) |
 | P9-06 | Materials and layered wall/floor types | ⏳ | — | core/Bim.Core/RevitCommandsMaterialTypes.cs; runtimes/revit-native/*MaterialTypes*; tests/revit-commands | owner chat branch chat-materials-types (material.create/set, wall_type.create, floor_type.create, query.fill_patterns, element.change_type) independently reviewed and merged with CI green; the relay147-P9-06 hardening ported as tests: core/shell + structural index readback, ordinal-first name pick, 1.2 mm minimum layer (also roof_type.create), Revit ArgumentException → args_invalid at args.name | owner chat merged chat-materials-types to main (1f4f109, CI 41767838641) — remaining: port relay147-P9-06 (771cca4) hardening as tests (core/shell + structural index readback, ordinal-first name pick, 1.2 mm min layer incl. roof_type.create, ArgumentException → args_invalid at args.name); target compiled + unit-tested contracts |
 | P9-07 | roof.create_extrusion (curved / barrel roofs) | ⏳ | — | core/Bim.Core/RevitCommandsRoofExtrusion*; runtimes/revit-native/*RoofExtrusion*; tests/revit-commands | contract + executor for an extruded roof from an open profile (lines/arcs) on a reference plane with extents, roof type and level; profile validation (open, planar, no self-intersection) before the pipe; readback of type/extents; MCP tool; compiles | target compiled + unit-tested contracts |
@@ -187,22 +187,22 @@ Owner directive 2026-11-02: advance every master-spec phase in parallel. [Roadma
 ## Progress
 
 <!-- computed by baton.ps1; do not edit by hand -->
-Progress: 66/90 done (73.3 %)
+Progress: 69/90 done (76.7 %)
 - Harness and compiler IFC: 4/4
 - Next native slice: 3/3
 - Relay3 batch — MCP, recovery and typed contracts: 5/6
 - Relay7 batch — platform coverage, rebuild baseline, recovery guard: 3/3
 - Relay14 batch — durability, native reconcile contract, bounded inputs: 3/3
 - Revit command surface — catalogue v1 (architecture): 4/5
-- Phase 1 — native kernel: 6/8
+- Phase 1 — native kernel: 7/8
 - Phase 2 — semantic state and mirror: 5/7
 - Phase 3 — incremental compiler: 4/5
 - Phase 4 — documentation engine: 3/5
 - Phase 5 — skills and design systems: 5/6
 - Phase 6 — CAD and requirements: 5/7
 - Phase 7 — generative kernels: 4/5
-- Phase 8 — Rhino, Blender and IFC: 4/7
-- Phase 9 — Revit parity: 3/9
+- Phase 8 — Rhino, Blender and IFC: 5/7
+- Phase 9 — Revit parity: 4/9
 - Phase 10 — global production: 5/7
-Next ready: P1-07, P1-08, P2-06, P2-07, P3-05, P4-04, P4-05, P5-04
+Next ready: P1-08, P2-06, P2-07, P3-05, P4-04, P4-05, P5-04, P6-06
 

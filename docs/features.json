@@ -838,6 +838,41 @@
       ],
       "blocker": "Illustrative QA bounds, not a building code; clearances measured on the wall axis span, not the clear span; overlapping openings and door swing not checked; hosted [offset,width] openings have no sill/height.",
       "scope": "P5-05: bim.qa.element-basics 1.1.0 (23 rules) evaluated by SkillElementValidator over BIM-IR walls/doors/windows: thickness, opening size, inside-host clearances with producer tolerance, door sill at level, opening/host level match; typed not_evaluable reasons (no silent pass), unit suffixes _mm/_m, unit_mismatch for ratios, deterministic ordering, override inversion refused. CI 41777099861."
+    },
+    {
+      "id": "revit-command-batch",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsBatch.cs",
+        "runtimes/revit-native/CommandsExecutorBatch.cs",
+        "tests/revit-commands/CatalogueBatch.cs"
+      ],
+      "blocker": "Never run in Revit: StairsEditScope/SketchEditScope steps inside nested transaction groups and the single undo entry are unverified; batch receipt repeats step replies (about 6 maximal batches per 4 MB store).",
+      "scope": "P1-07: command.batch (MCP revit_command_batch, write-copies, destructive) runs 1-50 catalogue write steps (not command.batch/document.save, no dry runs) in one TransactionGroup assimilated to one undo entry; per-step schema validation with args.steps[i] paths; Autodesk-free RevitCommandBatch.Run (stop at first failure, total rollback, survivor and receipt-room checks) and replay/conflict rules unit-tested; executor compiled only. CI 41789389908."
+    },
+    {
+      "id": "revit-parity-census",
+      "status": "unit-tested",
+      "evidence": [
+        "capabilities/revit-parity-census.json",
+        "capabilities/revit-parity-summary.md",
+        "tests/parity-census/Census.cs",
+        "tests/parity-census/Program.cs"
+      ],
+      "blocker": "Bookkeeping only: proves nothing beyond the cited features; owner-chat Revit use (docs/revit-playbook.md) is noted, not claimed, until recorded here.",
+      "scope": "P9-04: machine-readable census of 103 Revit 2025 desktop functions in 11 areas mapped to all catalogue commands with one of the eight states, evidence and a feature_coverage map; tests/parity-census (verify gate parity-census-tests) refuses unknown/uncovered commands, states outside the eight, missing evidence, states above the covering features and stale summaries. Counts: 10 verified-in-revit, 4 unit-tested, 37 compiled, 52 unsupported. CI 41792117807 (+ integration)."
+    },
+    {
+      "id": "gltf-export-cli-openings",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/GltfExportCommand.cs",
+        "adapters/gltf/Bim.Gltf/GltfExporter.cs",
+        "tests/gltf/Program.cs",
+        "tests/cli/Program.cs"
+      ],
+      "blocker": "Never opened in Blender or the Khronos validator; rectangular cuts only (no frames/glass); sill measured from the host base; split walls are sets of closed boxes; wall joins unresolved; only the path and its immediate parent are link-checked.",
+      "scope": "P8-07: export-gltf project.json output.glb|output.gltf (BoundedInput 8 MiB, exclusive create, never overwrite, refuses links, device paths and NTFS streams; JSON envelopes); BIM-IR door/window [ax,ay,bx,by,sill,height] cut into the host wall in the wall plane (transoms and stacked windows allowed); cross-OS goldens on Linux/Windows/macOS. CI 41797924226."
     }
   ]
 }

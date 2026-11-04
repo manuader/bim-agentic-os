@@ -1236,6 +1236,20 @@
       ]
     },
     {
+      "id": "modify.batch.one_undo",
+      "area": "modify",
+      "revit_function": "Several edits as one undoable operation (transaction group)",
+      "commands": [
+        "command.batch"
+      ],
+      "state": "compiled",
+      "evidence": [
+        "tests/revit-commands/CatalogueBatch.cs",
+        "runtimes/revit-native/CommandsExecutorBatch.cs"
+      ],
+      "notes": "Contract and batch runner unit-tested in core; the executor is compiled only and has not run in Revit (nested edit scopes and the single undo entry unverified)."
+    },
+    {
       "id": "modify.move_copy_rotate",
       "area": "modify",
       "revit_function": "Move, Copy, Rotate, Mirror, Array",
