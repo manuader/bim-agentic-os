@@ -27,6 +27,9 @@ public static class FacadeSerializer
             Number(writer, "end_clearance_m", layout.Options.EndClearanceMetres);
             Number(writer, "openable_fraction", layout.Options.OpenableFraction);
             Number(writer, "min_window_width_m", layout.Options.MinWindowWidthMetres);
+            writer.WriteStartArray("opening_edges");
+            foreach (var edge in layout.Options.OpeningEdges ?? FacadeOptions.DefaultOpeningEdges) writer.WriteStringValue(CirculationAnalyzer.EdgeName(edge));
+            writer.WriteEndArray();
             writer.WriteEndObject();
             writer.WriteStartArray("rooms");
             foreach (var room in layout.Rooms)
@@ -69,6 +72,7 @@ public static class FacadeSerializer
                 Number(writer, "area_m2", window.AreaSquareMetres);
                 Number(writer, "ventilation_area_m2", window.VentilationAreaSquareMetres);
                 Strings(writer, "rules", window.RuleIds);
+                writer.WriteBoolean("faces_internal_void", window.FacesInternalVoid);
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
