@@ -1,0 +1,1435 @@
+{
+  "schema_version": 1,
+  "description": "Revit 2025 desktop functions by area with the catalogue commands that cover them. state uses the repository's eight capability states and describes the agent path (catalogue command, or via) for that function; evidence lists repository files and features names docs/features.json ids that bound the claim. feature_coverage maps each cited feature to the commands (and via paths) its ledger entry covers: a state is bounded per command by the cited features covering it, else compiled. Checked by tests/parity-census.",
+  "states": [
+    "described",
+    "compiled",
+    "unit-tested",
+    "integration-tested (ifc)",
+    "verified-in-revit",
+    "blocked",
+    "unsupported",
+    "manual-only"
+  ],
+  "areas": [
+    "architecture",
+    "structure",
+    "mep",
+    "site",
+    "views",
+    "documentation",
+    "content",
+    "modify",
+    "query",
+    "file",
+    "collaboration"
+  ],
+  "feature_coverage": {
+    "native-execution-primitives": {
+      "paths": [
+        "typed-batch"
+      ]
+    },
+    "native-typed-batch": {
+      "paths": [
+        "typed-batch"
+      ]
+    },
+    "revit-command-protocol-v1": {
+      "commands": [
+        "query.levels",
+        "query.wall_types",
+        "query.floor_types",
+        "query.family_symbols",
+        "wall.create",
+        "opening.place",
+        "floor.create",
+        "room.create"
+      ]
+    },
+    "revit-command-executor-v1": {
+      "commands": [
+        "query.levels",
+        "query.wall_types",
+        "query.floor_types",
+        "query.family_symbols",
+        "wall.create",
+        "opening.place",
+        "floor.create",
+        "room.create"
+      ]
+    },
+    "revit-catalogue-v2": {
+      "commands": [
+        "query.roof_types",
+        "roof.create_footprint",
+        "stair.create",
+        "curtain_wall.create",
+        "floor.create_opening"
+      ]
+    },
+    "revit-view-commands": {
+      "commands": [
+        "query.view_family_types",
+        "query.view_templates",
+        "view.create_plan",
+        "view.create_section",
+        "view.create_3d"
+      ]
+    },
+    "revit-query-snapshot": {
+      "commands": [
+        "query.snapshot"
+      ]
+    },
+    "revit-element-query": {
+      "commands": [
+        "query.elements",
+        "query.inspect"
+      ]
+    },
+    "revit-structure-commands": {
+      "commands": [
+        "query.grids",
+        "query.structural_types",
+        "grid.create",
+        "structural_column.create",
+        "structural_beam.create",
+        "foundation.create_isolated",
+        "foundation.create_wall"
+      ]
+    },
+    "revit-documentation-commands": {
+      "commands": [
+        "query.title_blocks",
+        "dimension.create_linear",
+        "tag.create",
+        "schedule.create",
+        "sheet.create",
+        "sheet.place_view"
+      ]
+    },
+    "revit-modify-delete-commands": {
+      "commands": [
+        "element.set_parameter",
+        "element.delete"
+      ]
+    },
+    "revit-query-journal": {
+      "commands": [
+        "query.journal"
+      ]
+    }
+  },
+  "entries": [
+    {
+      "id": "arch.level.create",
+      "area": "architecture",
+      "revit_function": "Level (Architecture > Datum > Level)",
+      "commands": [],
+      "via": "typed-batch",
+      "state": "verified-in-revit",
+      "verified_scope": "Level/wall create, retry, resize, identity/readback and rollback only",
+      "features": [
+        "native-execution-primitives",
+        "native-typed-batch"
+      ],
+      "evidence": [
+        "tests/integration/native-batch-smoke.ps1",
+        "runtimes/revit-native/BatchExecutor.cs"
+      ],
+      "notes": "Created through the typed level/wall batch, not a catalogue command; query.levels reads them."
+    },
+    {
+      "id": "arch.wall.straight",
+      "area": "architecture",
+      "revit_function": "Wall: Architectural, straight (Line)",
+      "commands": [
+        "wall.create",
+        "query.wall_types"
+      ],
+      "state": "verified-in-revit",
+      "verified_scope": "catalogue v1 17/17 OK on a test copy",
+      "features": [
+        "revit-command-protocol-v1",
+        "revit-command-executor-v1"
+      ],
+      "evidence": [
+        "tests/integration/RevitCommandGuard.Tests/Program.cs",
+        "tests/revit-commands/Program.cs",
+        "runtimes/revit-native/CommandsExecutor.cs"
+      ]
+    },
+    {
+      "id": "arch.wall.curved",
+      "area": "architecture",
+      "revit_function": "Wall: Architectural, curved (Start-End-Radius / Center-ends arc)",
+      "commands": [
+        "wall.create"
+      ],
+      "state": "verified-in-revit",
+      "verified_scope": "catalogue v1 17/17 OK on a test copy",
+      "features": [
+        "revit-command-protocol-v1",
+        "revit-command-executor-v1"
+      ],
+      "evidence": [
+        "tests/integration/RevitCommandGuard.Tests/Program.cs",
+        "tests/revit-commands/Program.cs",
+        "runtimes/revit-native/CommandsExecutor.cs"
+      ]
+    },
+    {
+      "id": "arch.wall.resize",
+      "area": "architecture",
+      "revit_function": "Wall location line and height change (drag / Properties)",
+      "commands": [],
+      "via": "typed-batch",
+      "state": "verified-in-revit",
+      "verified_scope": "Level/wall create, retry, resize, identity/readback and rollback only",
+      "features": [
+        "native-execution-primitives",
+        "native-typed-batch"
+      ],
+      "evidence": [
+        "tests/integration/native-batch-smoke.ps1",
+        "runtimes/revit-native/BatchExecutor.cs"
+      ],
+      "notes": "Resize is verified through the typed batch; general parameter edits use element.set_parameter (modify.parameter.set)."
+    },
+    {
+      "id": "arch.wall.edit_profile",
+      "area": "architecture",
+      "revit_function": "Wall Edit Profile",
+      "commands": [
+        "wall.set_profile"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueWallProfile.cs",
+        "runtimes/revit-native/CommandsExecutorWallProfile.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "arch.wall.attach_top_base",
+      "area": "architecture",
+      "revit_function": "Wall Attach Top/Base (to roof, floor, ceiling)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.wall.sweep_reveal",
+      "area": "architecture",
+      "revit_function": "Wall Sweep / Wall Reveal",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.wall.by_face",
+      "area": "architecture",
+      "revit_function": "Wall by Face (massing)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.wall.stacked",
+      "area": "architecture",
+      "revit_function": "Stacked wall",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.wall.opening",
+      "area": "architecture",
+      "revit_function": "Wall Opening (Opening panel, rectangular)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.door.place",
+      "area": "architecture",
+      "revit_function": "Door (hosted in wall)",
+      "commands": [
+        "opening.place",
+        "query.family_symbols"
+      ],
+      "state": "verified-in-revit",
+      "verified_scope": "catalogue v1 17/17 OK on a test copy",
+      "features": [
+        "revit-command-protocol-v1",
+        "revit-command-executor-v1"
+      ],
+      "evidence": [
+        "tests/integration/RevitCommandGuard.Tests/Program.cs",
+        "tests/revit-commands/Program.cs",
+        "runtimes/revit-native/CommandsExecutor.cs"
+      ]
+    },
+    {
+      "id": "arch.window.place",
+      "area": "architecture",
+      "revit_function": "Window (hosted in wall, sill height)",
+      "commands": [
+        "opening.place",
+        "query.family_symbols"
+      ],
+      "state": "verified-in-revit",
+      "verified_scope": "catalogue v1 17/17 OK on a test copy",
+      "features": [
+        "revit-command-protocol-v1",
+        "revit-command-executor-v1"
+      ],
+      "evidence": [
+        "tests/integration/RevitCommandGuard.Tests/Program.cs",
+        "tests/revit-commands/Program.cs",
+        "runtimes/revit-native/CommandsExecutor.cs"
+      ]
+    },
+    {
+      "id": "arch.floor.sketch",
+      "area": "architecture",
+      "revit_function": "Floor: Architectural (boundary sketch)",
+      "commands": [
+        "floor.create",
+        "query.floor_types"
+      ],
+      "state": "verified-in-revit",
+      "verified_scope": "catalogue v1 17/17 OK on a test copy",
+      "features": [
+        "revit-command-protocol-v1",
+        "revit-command-executor-v1"
+      ],
+      "evidence": [
+        "tests/integration/RevitCommandGuard.Tests/Program.cs",
+        "tests/revit-commands/Program.cs",
+        "runtimes/revit-native/CommandsExecutor.cs"
+      ]
+    },
+    {
+      "id": "arch.floor.opening",
+      "area": "architecture",
+      "revit_function": "Floor opening (Opening by Face / sketch hole)",
+      "commands": [
+        "floor.create_opening"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-catalogue-v2"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueV2.cs",
+        "runtimes/revit-native/CommandsExecutorV2.cs"
+      ]
+    },
+    {
+      "id": "arch.floor.slab_edge",
+      "area": "architecture",
+      "revit_function": "Floor: Slab Edge",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.floor.shape_edit",
+      "area": "architecture",
+      "revit_function": "Floor shape editing (Modify Sub Elements, slope arrow)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.roof.footprint",
+      "area": "architecture",
+      "revit_function": "Roof by Footprint (flat, hip, gable, shed slopes)",
+      "commands": [
+        "roof.create_footprint",
+        "query.roof_types"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-catalogue-v2"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueV2.cs",
+        "runtimes/revit-native/CommandsExecutorV2.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); the cited feature records compiled only, so not claimed beyond it."
+    },
+    {
+      "id": "arch.roof.extrusion",
+      "area": "architecture",
+      "revit_function": "Roof by Extrusion",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.roof.fascia_gutter_soffit",
+      "area": "architecture",
+      "revit_function": "Roof Fascia / Gutter / Soffit",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.ceiling.create",
+      "area": "architecture",
+      "revit_function": "Ceiling (Automatic / Sketch)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.stair.straight_run",
+      "area": "architecture",
+      "revit_function": "Stair by Component, one straight run",
+      "commands": [
+        "stair.create"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-catalogue-v2"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueV2.cs",
+        "runtimes/revit-native/CommandsExecutorV2.cs"
+      ]
+    },
+    {
+      "id": "arch.stair.complex_runs",
+      "area": "architecture",
+      "revit_function": "Stair: L/U-shaped, spiral, winder runs and landings",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.railing.sketch",
+      "area": "architecture",
+      "revit_function": "Railing: Sketch Path / Place on Host",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": [],
+      "notes": "Railings created by stair.create with the stair are read back only; no standalone railing command."
+    },
+    {
+      "id": "arch.ramp.create",
+      "area": "architecture",
+      "revit_function": "Ramp",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.curtain_wall.create",
+      "area": "architecture",
+      "revit_function": "Curtain Wall (straight or curved) with uniform grid lines",
+      "commands": [
+        "curtain_wall.create"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-catalogue-v2"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueV2.cs",
+        "runtimes/revit-native/CommandsExecutorV2.cs"
+      ]
+    },
+    {
+      "id": "arch.curtain_wall.edit",
+      "area": "architecture",
+      "revit_function": "Curtain grid / mullion / panel editing, Curtain System by Face",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.room.place",
+      "area": "architecture",
+      "revit_function": "Room (place in enclosed area, name and number)",
+      "commands": [
+        "room.create"
+      ],
+      "state": "verified-in-revit",
+      "verified_scope": "catalogue v1 17/17 OK on a test copy",
+      "features": [
+        "revit-command-protocol-v1",
+        "revit-command-executor-v1"
+      ],
+      "evidence": [
+        "tests/integration/RevitCommandGuard.Tests/Program.cs",
+        "tests/revit-commands/Program.cs",
+        "runtimes/revit-native/CommandsExecutor.cs"
+      ]
+    },
+    {
+      "id": "arch.room.separator",
+      "area": "architecture",
+      "revit_function": "Room Separator line",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.area.plan",
+      "area": "architecture",
+      "revit_function": "Area plan, Area and Area Boundary",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.opening.shaft",
+      "area": "architecture",
+      "revit_function": "Shaft / Vertical / Dormer / By Face openings",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "arch.column.architectural",
+      "area": "architecture",
+      "revit_function": "Column: Architectural",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": [],
+      "notes": "family_instance.place does not list the architectural column category."
+    },
+    {
+      "id": "arch.model.text_lines_groups",
+      "area": "architecture",
+      "revit_function": "Model Text, Model Line, Model Group",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "struct.grid.create",
+      "area": "structure",
+      "revit_function": "Grid (straight)",
+      "commands": [
+        "grid.create",
+        "query.grids"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-structure-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueStructure.cs",
+        "runtimes/revit-native/CommandsExecutorStructure.cs"
+      ]
+    },
+    {
+      "id": "struct.grid.curved",
+      "area": "structure",
+      "revit_function": "Grid (arc / multi-segment)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "struct.wall.structural",
+      "area": "structure",
+      "revit_function": "Wall: Structural (structural flag)",
+      "commands": [
+        "wall.create"
+      ],
+      "state": "unit-tested",
+      "features": [
+        "revit-command-protocol-v1"
+      ],
+      "evidence": [
+        "tests/revit-commands/Program.cs"
+      ],
+      "notes": "The structural flag is bound and unit-tested; the verified owner session did not exercise it."
+    },
+    {
+      "id": "struct.column.vertical",
+      "area": "structure",
+      "revit_function": "Structural Column (vertical, base and top level)",
+      "commands": [
+        "structural_column.create",
+        "query.structural_types"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-structure-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueStructure.cs",
+        "runtimes/revit-native/CommandsExecutorStructure.cs"
+      ]
+    },
+    {
+      "id": "struct.column.slanted",
+      "area": "structure",
+      "revit_function": "Structural Column (slanted)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "struct.beam.straight",
+      "area": "structure",
+      "revit_function": "Beam (straight, on a reference level)",
+      "commands": [
+        "structural_beam.create",
+        "query.structural_types"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-structure-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueStructure.cs",
+        "runtimes/revit-native/CommandsExecutorStructure.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); the cited feature records compiled only, so not claimed beyond it."
+    },
+    {
+      "id": "struct.beam.system_brace_truss",
+      "area": "structure",
+      "revit_function": "Beam System, Brace, Truss",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "struct.foundation.isolated",
+      "area": "structure",
+      "revit_function": "Foundation: Isolated",
+      "commands": [
+        "foundation.create_isolated",
+        "query.structural_types"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-structure-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueStructure.cs",
+        "runtimes/revit-native/CommandsExecutorStructure.cs"
+      ]
+    },
+    {
+      "id": "struct.foundation.wall",
+      "area": "structure",
+      "revit_function": "Foundation: Wall",
+      "commands": [
+        "foundation.create_wall",
+        "query.structural_types"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-structure-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueStructure.cs",
+        "runtimes/revit-native/CommandsExecutorStructure.cs"
+      ]
+    },
+    {
+      "id": "struct.foundation.slab",
+      "area": "structure",
+      "revit_function": "Foundation: Slab",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "struct.floor.structural",
+      "area": "structure",
+      "revit_function": "Floor: Structural",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "struct.rebar",
+      "area": "structure",
+      "revit_function": "Rebar, Area and Path Reinforcement",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "struct.analytical",
+      "area": "structure",
+      "revit_function": "Analytical model, loads and boundary conditions",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "mep.duct.create",
+      "area": "mep",
+      "revit_function": "Duct, Duct Fitting, Air Terminal",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "mep.pipe.create",
+      "area": "mep",
+      "revit_function": "Pipe, Pipe Fitting, Pipe Accessory",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "mep.cable_tray_conduit",
+      "area": "mep",
+      "revit_function": "Cable Tray, Conduit, Wire",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "mep.systems.create",
+      "area": "mep",
+      "revit_function": "Mechanical / Piping systems and Electrical circuits",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "mep.spaces_zones",
+      "area": "mep",
+      "revit_function": "Spaces, Zones, heating and cooling loads",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "mep.equipment.place",
+      "area": "mep",
+      "revit_function": "Mechanical Equipment, Plumbing Fixture, Lighting Fixture (non-hosted, no connectors)",
+      "commands": [
+        "family_instance.place",
+        "query.family_symbols"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueFamilies.cs",
+        "runtimes/revit-native/CommandsExecutorFamilies.cs"
+      ],
+      "notes": "Placement only; connectors, systems and hosted fixtures are not covered. Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "site.toposolid.create",
+      "area": "site",
+      "revit_function": "Toposolid from points",
+      "commands": [
+        "toposolid.create",
+        "query.toposolid_types"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueSite.cs",
+        "runtimes/revit-native/CommandsExecutorSite.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "site.toposolid.subdivision",
+      "area": "site",
+      "revit_function": "Toposolid Sub-Divide",
+      "commands": [
+        "toposolid.create_subdivision"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueSite.cs",
+        "runtimes/revit-native/CommandsExecutorSite.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "site.component.place",
+      "area": "site",
+      "revit_function": "Site Component, Planting, Entourage",
+      "commands": [
+        "family_instance.place"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueFamilies.cs",
+        "runtimes/revit-native/CommandsExecutorFamilies.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "site.grading_pad_property",
+      "area": "site",
+      "revit_function": "Graded region, Building Pad, Property Line",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "views.plan.create",
+      "area": "views",
+      "revit_function": "Floor Plan / Reflected Ceiling Plan (type, template, scale)",
+      "commands": [
+        "view.create_plan",
+        "query.view_family_types",
+        "query.view_templates"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-view-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueViews.cs",
+        "runtimes/revit-native/CommandsExecutorViews.cs"
+      ]
+    },
+    {
+      "id": "views.section.create",
+      "area": "views",
+      "revit_function": "Section",
+      "commands": [
+        "view.create_section",
+        "query.view_family_types",
+        "query.view_templates"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-view-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueViews.cs",
+        "runtimes/revit-native/CommandsExecutorViews.cs"
+      ]
+    },
+    {
+      "id": "views.3d.create",
+      "area": "views",
+      "revit_function": "Default 3D View with section box",
+      "commands": [
+        "view.create_3d",
+        "query.view_family_types"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-view-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueViews.cs",
+        "runtimes/revit-native/CommandsExecutorViews.cs"
+      ]
+    },
+    {
+      "id": "views.elevation.create",
+      "area": "views",
+      "revit_function": "Elevation",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "views.callout_drafting_legend",
+      "area": "views",
+      "revit_function": "Callout, Drafting View, Legend",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "views.visibility_filters",
+      "area": "views",
+      "revit_function": "Visibility/Graphics overrides and view filters",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "views.duplicate",
+      "area": "views",
+      "revit_function": "Duplicate View (with detailing / as dependent)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "doc.dimension.linear",
+      "area": "documentation",
+      "revit_function": "Aligned / Linear Dimension between parallel walls or grids",
+      "commands": [
+        "dimension.create_linear"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-documentation-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueDocumentation.cs",
+        "runtimes/revit-native/CommandsExecutorDocumentation.cs"
+      ]
+    },
+    {
+      "id": "doc.dimension.other",
+      "area": "documentation",
+      "revit_function": "Angular, Radial, Arc Length dimensions, Spot Elevation",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "doc.tag.category",
+      "area": "documentation",
+      "revit_function": "Tag by Category",
+      "commands": [
+        "tag.create"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-documentation-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueDocumentation.cs",
+        "runtimes/revit-native/CommandsExecutorDocumentation.cs"
+      ]
+    },
+    {
+      "id": "doc.tag.all",
+      "area": "documentation",
+      "revit_function": "Tag All Not Tagged, Multi-Category Tag",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "doc.schedule.create",
+      "area": "documentation",
+      "revit_function": "Schedule/Quantities (fields, sort)",
+      "commands": [
+        "schedule.create"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-documentation-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueDocumentation.cs",
+        "runtimes/revit-native/CommandsExecutorDocumentation.cs"
+      ]
+    },
+    {
+      "id": "doc.sheet.create",
+      "area": "documentation",
+      "revit_function": "New Sheet with title block",
+      "commands": [
+        "sheet.create",
+        "query.title_blocks"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-documentation-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueDocumentation.cs",
+        "runtimes/revit-native/CommandsExecutorDocumentation.cs"
+      ]
+    },
+    {
+      "id": "doc.sheet.place_view",
+      "area": "documentation",
+      "revit_function": "Place View / schedule on sheet",
+      "commands": [
+        "sheet.place_view"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-documentation-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueDocumentation.cs",
+        "runtimes/revit-native/CommandsExecutorDocumentation.cs"
+      ]
+    },
+    {
+      "id": "doc.annotation.text_detail",
+      "area": "documentation",
+      "revit_function": "Text, Keynote, Detail Line, Filled Region",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "doc.revisions",
+      "area": "documentation",
+      "revit_function": "Revisions and revision clouds",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "content.family.load",
+      "area": "content",
+      "revit_function": "Load Family (.rfa)",
+      "commands": [
+        "family.load"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueFamilies.cs",
+        "runtimes/revit-native/CommandsExecutorFamilies.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "content.family.query_door_window",
+      "area": "content",
+      "revit_function": "Type Selector listing of door and window types",
+      "commands": [
+        "query.family_symbols"
+      ],
+      "state": "verified-in-revit",
+      "verified_scope": "catalogue v1 17/17 OK on a test copy",
+      "features": [
+        "revit-command-protocol-v1",
+        "revit-command-executor-v1"
+      ],
+      "evidence": [
+        "tests/integration/RevitCommandGuard.Tests/Program.cs",
+        "tests/revit-commands/Program.cs",
+        "runtimes/revit-native/CommandsExecutor.cs"
+      ]
+    },
+    {
+      "id": "content.family.query_other",
+      "area": "content",
+      "revit_function": "Type Selector listing of other loaded family categories",
+      "commands": [
+        "query.family_symbols"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueFamilies.cs",
+        "runtimes/revit-native/CommandsExecutorFamilies.cs"
+      ],
+      "notes": "Not recorded in docs/features.json, so not claimed beyond compiled (contract tests in the evidence test file, executor compiled in the native-build job)."
+    },
+    {
+      "id": "content.component.place",
+      "area": "content",
+      "revit_function": "Component: Place a Component (non-hosted, level-based)",
+      "commands": [
+        "family_instance.place"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueFamilies.cs",
+        "runtimes/revit-native/CommandsExecutorFamilies.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "content.component.hosted",
+      "area": "content",
+      "revit_function": "Hosted components (face/wall based, other than doors and windows)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "content.family.editor",
+      "area": "content",
+      "revit_function": "Family Editor (create or edit families)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "content.material.create",
+      "area": "content",
+      "revit_function": "Material Browser: new material (shaded color, fill patterns)",
+      "commands": [
+        "material.create",
+        "query.fill_patterns",
+        "query.materials"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueMaterialTypes.cs",
+        "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "content.material.edit",
+      "area": "content",
+      "revit_function": "Material Browser: edit material",
+      "commands": [
+        "material.set"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueMaterialTypes.cs",
+        "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "content.type.wall_layers",
+      "area": "content",
+      "revit_function": "Edit Type: wall structure layers (duplicate type)",
+      "commands": [
+        "wall_type.create",
+        "query.materials"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueMaterialTypes.cs",
+        "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "content.type.floor_layers",
+      "area": "content",
+      "revit_function": "Edit Type: floor structure layers (duplicate type)",
+      "commands": [
+        "floor_type.create"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueMaterialTypes.cs",
+        "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "content.type.roof_layers",
+      "area": "content",
+      "revit_function": "Edit Type: roof structure layers (duplicate type)",
+      "commands": [
+        "roof_type.create",
+        "query.materials"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueMaterials.cs",
+        "runtimes/revit-native/CommandsExecutorMaterials.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "content.type.change",
+      "area": "content",
+      "revit_function": "Type Selector: change element type",
+      "commands": [
+        "element.change_type"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueMaterialTypes.cs",
+        "runtimes/revit-native/CommandsExecutorMaterialTypes.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "content.parameters.project_shared",
+      "area": "content",
+      "revit_function": "Project Parameters / Shared Parameters",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "modify.parameter.set",
+      "area": "modify",
+      "revit_function": "Properties palette: set an instance parameter",
+      "commands": [
+        "element.set_parameter"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-modify-delete-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueModify.cs",
+        "runtimes/revit-native/CommandsExecutorModify.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); the cited feature records compiled only, so not claimed beyond it."
+    },
+    {
+      "id": "modify.delete",
+      "area": "modify",
+      "revit_function": "Delete (with dependent elements)",
+      "commands": [
+        "element.delete"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-modify-delete-commands"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueModify.cs",
+        "runtimes/revit-native/CommandsExecutorModify.cs"
+      ]
+    },
+    {
+      "id": "modify.move_copy_rotate",
+      "area": "modify",
+      "revit_function": "Move, Copy, Rotate, Mirror, Array",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "modify.align_trim_split",
+      "area": "modify",
+      "revit_function": "Align, Trim/Extend, Offset, Split, Join Geometry",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "modify.groups",
+      "area": "modify",
+      "revit_function": "Groups (create, place, edit)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "query.levels.list",
+      "area": "query",
+      "revit_function": "Project Browser: levels",
+      "commands": [
+        "query.levels"
+      ],
+      "state": "verified-in-revit",
+      "verified_scope": "catalogue v1 17/17 OK on a test copy",
+      "features": [
+        "revit-command-protocol-v1",
+        "revit-command-executor-v1"
+      ],
+      "evidence": [
+        "tests/integration/RevitCommandGuard.Tests/Program.cs",
+        "tests/revit-commands/Program.cs",
+        "runtimes/revit-native/CommandsExecutor.cs"
+      ]
+    },
+    {
+      "id": "query.elements.list",
+      "area": "query",
+      "revit_function": "Select All Instances / element listing by category and level",
+      "commands": [
+        "query.elements"
+      ],
+      "state": "unit-tested",
+      "features": [
+        "revit-element-query"
+      ],
+      "evidence": [
+        "tests/revit-commands/ElementQuery.cs",
+        "runtimes/revit-native/CommandsExecutorQuery.cs"
+      ]
+    },
+    {
+      "id": "query.element.properties",
+      "area": "query",
+      "revit_function": "Properties palette: read instance and type parameters",
+      "commands": [
+        "query.inspect"
+      ],
+      "state": "unit-tested",
+      "features": [
+        "revit-element-query"
+      ],
+      "evidence": [
+        "tests/revit-commands/ElementQuery.cs",
+        "runtimes/revit-native/CommandsExecutorQuery.cs"
+      ]
+    },
+    {
+      "id": "query.model.snapshot",
+      "area": "query",
+      "revit_function": "Model readback to BIM-IR (walls, doors, windows, rooms)",
+      "commands": [
+        "query.snapshot"
+      ],
+      "state": "unit-tested",
+      "features": [
+        "revit-query-snapshot"
+      ],
+      "evidence": [
+        "tests/revit-commands/MirrorSnapshot.cs",
+        "core/Bim.Core/Mirror.cs",
+        "runtimes/revit-native/Mirror.cs"
+      ]
+    },
+    {
+      "id": "query.edit.journal",
+      "area": "query",
+      "revit_function": "External edit tracking (user edits, undo and redo)",
+      "commands": [
+        "query.journal"
+      ],
+      "state": "compiled",
+      "features": [
+        "revit-query-journal"
+      ],
+      "evidence": [
+        "tests/revit-commands/CatalogueJournal.cs",
+        "runtimes/revit-native/CommandsExecutorJournal.cs"
+      ]
+    },
+    {
+      "id": "file.save",
+      "area": "file",
+      "revit_function": "Save",
+      "commands": [
+        "document.save"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueExportSave.cs",
+        "runtimes/revit-native/CommandsExecutorExportSave.cs"
+      ],
+      "notes": "Save-close-reopen is verified only inside the Test A/B room fixture (test-a-native-room-delivery), not through document.save. Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "file.save_as_central",
+      "area": "file",
+      "revit_function": "Save As, Save to Central, Synchronize",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "file.export_image",
+      "area": "file",
+      "revit_function": "Export Image (view or sheet to PNG/JPG)",
+      "commands": [
+        "view.export_image"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueExportSave.cs",
+        "runtimes/revit-native/CommandsExecutorExportSave.cs"
+      ],
+      "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
+      "id": "file.export_cad_pdf",
+      "area": "file",
+      "revit_function": "Export DWG/DXF/PDF, Print",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "file.export_ifc",
+      "area": "file",
+      "revit_function": "Export IFC (Revit exporter)",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": [],
+      "notes": "The repository's own IFC adapter works from BIM-IR, not from the Revit exporter."
+    },
+    {
+      "id": "collab.worksharing",
+      "area": "collaboration",
+      "revit_function": "Worksets, central model, element borrowing",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "collab.links",
+      "area": "collaboration",
+      "revit_function": "Link Revit / CAD / IFC",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    },
+    {
+      "id": "collab.phases_options",
+      "area": "collaboration",
+      "revit_function": "Phases and Design Options",
+      "commands": [],
+      "state": "unsupported",
+      "features": [],
+      "evidence": []
+    }
+  ]
+}
