@@ -16,15 +16,15 @@ namespace Bim.Core;
 // Kind: floor_plan or ceiling_plan (Elements: exactly the BIM-IR level), section (Elements: exactly the BIM-IR wall
 // it cuts along; DepthMetres: far clip depth) or three_d (Elements: walls framed by its section box; none for an
 // unbounded view). Name and Scale pass through to the view command.
-public sealed record DocView(string Key, string Kind, IReadOnlyList<Guid> Elements, string? Name = null, int? Scale = null, double DepthMetres = 0);
+public sealed record DocView(string Key, string Kind, IReadOnlyList<Guid> Elements, string? Name = null, int? Scale = null, double DepthMetres = 0, Guid? Bound = null);
 // A tag of one BIM-IR element in a plan view of the set; its head is the element's plan centre plus the offset.
 public sealed record DocTag(string Key, string View, Guid Element, double OffsetXMetres = 0, double OffsetYMetres = 0, bool Leader = false, string Orientation = "horizontal");
 // A linear dimension in a plan view of the set between two parallel BIM-IR walls; the line starts at the first wall's
 // axis midpoint moved OffsetMetres along that axis and runs perpendicular onto the second wall's axis.
 public sealed record DocDimension(string Key, string View, Guid First, Guid Second, double OffsetMetres = 0, string WallFace = "exterior");
 // A schedule of every BIM-IR element of ElementKind, as the Revit category Category (a catalogue category name).
-public sealed record DocSchedule(string Key, string ElementKind, string Category, IReadOnlyList<string> Fields, string? SortBy = null, string? Name = null);
-public sealed record DocSheet(string Key, string Number, string Name, string? TitleBlock = null);
+public sealed record DocSchedule(string Key, string ElementKind, string Category, IReadOnlyList<string> Fields, string? SortBy = null, string? Name = null, Guid? Bound = null);
+public sealed record DocSheet(string Key, string Number, string Name, string? TitleBlock = null, Guid? Bound = null);
 // Places the view or schedule with key View on the sheet with key Sheet, centred at sheet millimetres.
 public sealed record DocPlacement(string Key, string Sheet, string View, double CenterXMm, double CenterYMm);
 public sealed record DocumentationSet(IReadOnlyList<DocView> Views, IReadOnlyList<DocTag> Tags, IReadOnlyList<DocDimension> Dimensions,
@@ -36,7 +36,7 @@ public sealed record DocStepInput(string Field, string Source);
 // ArgsJson is canonical (RevitCommandProtocol.Canonical) with a placeholder UniqueId in every input field. Elements:
 // the BIM-IR elements the command was computed from (for a schedule, the scheduled elements of after).
 public sealed record DocCommandStep(string Key, string ItemKind, string OperationId, string Command, string ArgsJson, IReadOnlyList<DocStepInput> Inputs, IReadOnlyList<Guid> Elements);
-public sealed record DocUnsupported(string Key, string ItemKind, string Code, string Detail);
+public sealed record DocUnsupported(string Key, string ItemKind, string Code, string Detail, IReadOnlyList<Guid> Elements);
 // Regenerated: every item key this plan regenerates (sorted ordinally); each has exactly one step or one unsupported
 // entry. The caller retires the prior realization of every regenerated key (re-tag, re-dimension, schedule refresh)
 // and runs the steps in order. TotalItems counts the whole set.
@@ -53,6 +53,7 @@ public static class DocRegenerationCodes
     public const string GeometryInvalid = "geometry_invalid";
     public const string LevelUnbound = "level_unbound";
     public const string ReferencesNotParallel = "references_not_parallel";
+    public const string HostMissing = "host_missing";
     public const string DependencyUnsupported = "dependency_unsupported";
     public const string CommandInvalid = "command_invalid";
 }
@@ -324,10 +325,10 @@ public static class DocRegeneration
                 var operationId = OperationId(project.Id, project.Revision, hash, item.Key, command, bindings.Document, canonical, inputs.Select(input => input.Source).ToArray());
                 result = (new DocCommandStep(item.Key, item.Kind, operationId, command, canonical, inputs, referenced), null);
             }
-            catch (Refusal refusal) { result = (null, new DocUnsupported(item.Key, item.Kind, refusal.Code, refusal.Message)); }
-            catch (RevitCommandException error) { result = (null, new DocUnsupported(item.Key, item.Kind, DocRegenerationCodes.CommandInvalid, error.Code + "@" + (error.Field ?? "") + ": " + (error.Detail ?? ""))); }
+            catch (Refusal refusal) { result = (null, new DocUnsupported(item.Key, item.Kind, refusal.Code, refusal.Message, Array.Empty<Guid>())); }
+            catch (RevitCommandException error) { result = (null, new DocUnsupported(item.Key, item.Kind, DocRegenerationCodes.CommandInvalid, error.Code + "@" + (error.Field ?? "") + ": " + (error.Detail ?? ""), Array.Empty<Guid>())); }
             // A value too large to write as JSON (a millimetre overflow); the runtime message is not used, it may vary.
-            catch (ArgumentException) { result = (null, new DocUnsupported(item.Key, item.Kind, DocRegenerationCodes.GeometryInvalid, "a coordinate is out of range")); }
+            catch (ArgumentException) { result = (null, new DocUnsupported(item.Key, item.Kind, DocRegenerationCodes.GeometryInvalid, "a coordinate is out of range", Array.Empty<Guid>())); }
             results[item.Key] = result;
             return result;
         }

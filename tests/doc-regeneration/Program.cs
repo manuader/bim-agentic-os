@@ -105,23 +105,25 @@ Dictionary<string, string> Content(DocRegenerationPlan plan)
     var content = new Dictionary<string, string>(StringComparer.Ordinal);
     foreach (var step in plan.Steps)
         content.Add(step.Key, step.ItemKind + "|" + step.Command + "|" + step.ArgsJson + "|" + string.Join(",", step.Inputs.Select(input => input.Field + "=" + input.Source)) + "|" + string.Join(",", step.Elements));
-    foreach (var item in plan.Unsupported) content.Add(item.Key, "!" + item.ItemKind + "|" + item.Code + "|" + item.Detail);
+    foreach (var item in plan.Unsupported) content.Add(item.Key, "!" + item.ItemKind + "|" + item.Code + "|" + item.Detail + "|" + string.Join(",", item.Elements));
     return content;
 }
-// Independent statement of "touched": the item references an element in the dirty closure, or its view, schedule or
-// sheet is regenerated too.
-bool Touched(string key, DocumentationSet set, Project before, Project after, ExecutionPlan plan, HashSet<string> regenerated)
+Dictionary<string, IReadOnlyList<Guid>> ElementsOf(DocRegenerationPlan plan) =>
+    plan.Steps.Select(step => (step.Key, step.Elements)).Concat(plan.Unsupported.Select(item => (item.Key, item.Elements))).ToDictionary(pair => pair.Key, pair => pair.Elements, StringComparer.Ordinal);
+// Test-side real change of one element between before and after: added, removed, or another kind, geometry or
+// dependency list (provenance alone is not a change any documentation command can show).
+bool Changed(Project before, Project after, Guid id)
 {
-    var dirty = plan.DirtyIds.ToHashSet();
-    var refs = new List<Guid>();
-    var parents = new List<string>();
-    foreach (var view in set.Views) if (view.Key == key) refs.AddRange(view.Elements);
-    foreach (var tag in set.Tags) if (tag.Key == key) { refs.Add(tag.Element); parents.Add(tag.View); }
-    foreach (var dimension in set.Dimensions) if (dimension.Key == key) { refs.Add(dimension.First); refs.Add(dimension.Second); parents.Add(dimension.View); }
-    foreach (var schedule in set.Schedules) if (schedule.Key == key) refs.AddRange(before.Elements.Concat(after.Elements).Where(element => element.Kind == schedule.ElementKind).Select(element => element.Id));
-    foreach (var placement in set.Placements) if (placement.Key == key) { parents.Add(placement.Sheet); parents.Add(placement.View); }
-    return refs.Any(dirty.Contains) || parents.Any(regenerated.Contains);
+    var a = before.Elements.FirstOrDefault(element => element.Id == id);
+    var b = after.Elements.FirstOrDefault(element => element.Id == id);
+    if (a is null || b is null) return a is not null || b is not null;
+    return a.Kind != b.Kind || !a.GeometryMetres.SequenceEqual(b.GeometryMetres) || !a.Dependencies.SequenceEqual(b.Dependencies);
 }
+// The items of the set a tag, dimension or placement hangs from.
+string[] ParentsOf(string key, DocumentationSet set) =>
+    set.Tags.Where(tag => tag.Key == key).Select(tag => tag.View)
+        .Concat(set.Dimensions.Where(dimension => dimension.Key == key).Select(dimension => dimension.View))
+        .Concat(set.Placements.Where(placement => placement.Key == key).SelectMany(placement => new[] { placement.Sheet, placement.View })).ToArray();
 bool EnvelopesParse(DocRegenerationPlan plan, out string detail)
 {
     foreach (var step in plan.Steps)
@@ -157,8 +159,14 @@ var regexOperation = new Regex(@"\Adoc\.[0-9a-f]{32}\z", RegexOptions.CultureInv
     var after_ = Content(full);
     var missed = after_.Keys.Union(before_.Keys).Where(key => (!before_.TryGetValue(key, out var a) || !after_.TryGetValue(key, out var b) || a != b) && !keys.Contains(key)).ToArray();
     if (missed.Length > 0) problems.Add("items whose full regeneration changed but were not regenerated: " + Keys(missed));
-    var untouched = local.Regenerated.Where(key => !Touched(key, set, before, after, plan, keys)).ToArray();
-    if (untouched.Length > 0) problems.Add("untouched items regenerated: " + Keys(untouched));
+    // Minimality, from the two full regenerations only: an item regenerated on its own (not because its view, schedule or
+    // sheet is) must have a different result, or list an element that really changed.
+    var elementsBefore = ElementsOf(prior);
+    var elementsAfter = ElementsOf(full);
+    var untouched = local.Regenerated.Where(key => !ParentsOf(key, set).Any(keys.Contains)
+        && before_[key] == after_[key]
+        && !elementsBefore[key].Concat(elementsAfter[key]).Any(id => Changed(before, after, id))).ToArray();
+    if (untouched.Length > 0) problems.Add("untouched items regenerated (same result, no changed element): " + Keys(untouched));
     var merged = DocRegeneration.Merge(prior, local);
     if (!DocRegeneration.SameContent(merged, full)) problems.Add("prior full regeneration with the regenerated items replaced differs from full regeneration of after");
     if (Json(Content(merged).OrderBy(pair => pair.Key, StringComparer.Ordinal).ToArray()) != Json(after_.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToArray()))
@@ -267,6 +275,25 @@ try
     Check(Code(() => DocRegeneration.Full(basis, docs with { Views = docs.Views.Append(new DocView("elev-x", "elevation", new[] { Role(0, "level") })).ToArray() }, bindings)) == "doc_view_kind_invalid", "unknown view kinds are refused");
     Check(Code(() => DocRegeneration.Full(basis, docs with { Tags = docs.Tags.Append(new DocTag("tag-x", "plan-0", Door(0), double.NaN, 0)).ToArray() }, bindings)) == "doc_number_invalid", "non-finite offsets are refused");
     Check(Code(() => DocRegeneration.Full(basis, docs, bindings with { Document = new RevitDocumentRef("relative.rvt", document.UniqueId) })) == RevitCommandCodes.DocumentPathInvalid, "a relative document path is refused");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Sheets = docs.Sheets.Append(new DocSheet("a,b", "Z1", "Z")).ToArray() }, bindings)) == "doc_key_invalid", "keys containing ',' are refused (operation id sources stay unambiguous)");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Sheets = docs.Sheets.Append(new DocSheet("sheet-x", "Z\ud800", "Z")).ToArray() }, bindings)) == "doc_text_invalid", "a sheet number with a lone surrogate is doc_text_invalid");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Views = docs.Views.Append(new DocView("plan-x", "floor_plan", new[] { Role(0, "level") }, "\udc00 plan")).ToArray() }, bindings)) == "doc_text_invalid", "a view name with a lone surrogate is doc_text_invalid");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Tags = docs.Tags.Append(new DocTag("tag-x", "plan-0", Door(0), 0, 0, false, "\ud800")).ToArray() }, bindings)) == "doc_text_invalid", "a tag orientation with a lone surrogate is doc_text_invalid");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Schedules = docs.Schedules.Append(new DocSchedule("schedule-x", "door", "door", new[] { "Mark\ud800" })).ToArray() }, bindings)) == "doc_text_invalid", "a schedule field with a lone surrogate is doc_text_invalid");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Schedules = docs.Schedules.Append(new DocSchedule("schedule-x", "door", "door", new[] { "Mark", null! })).ToArray() }, bindings)) == "doc_text_invalid", "a null schedule field is doc_text_invalid");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Tags = docs.Tags.Append(new DocTag("tag-x", null!, Door(0))).ToArray() }, bindings)) == "doc_view_unknown", "a tag with a null view is doc_view_unknown");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Dimensions = docs.Dimensions.Append(new DocDimension("dim-x", null!, Role(0, "west"), Role(0, "east"))).ToArray() }, bindings)) == "doc_view_unknown", "a dimension with a null view is doc_view_unknown");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Placements = docs.Placements.Append(new DocPlacement("place-x", null!, "plan-0", 1, 1)).ToArray() }, bindings)) == "doc_sheet_unknown", "a placement with a null sheet is doc_sheet_unknown");
+    Check(Code(() => DocRegeneration.Full(basis, docs with { Placements = docs.Placements.Append(new DocPlacement("place-x", "sheet-0", null!, 1, 1)).ToArray() }, bindings)) == "doc_view_unknown", "a placement with a null view is doc_view_unknown");
+    var scheduleDoors = docs.Schedules.Single(schedule => schedule.Key == "schedule-doors");
+    var noDoors = Remove(basis, Door(0), Door(1), Door(2));
+    var windowSchedule = DocRegeneration.Full(noDoors, docs with { Schedules = new[] { scheduleDoors with { ElementKind = "window" } }, Placements = Array.Empty<DocPlacement>() }, bindings).Steps.Single(step => step.Key == "schedule-doors");
+    var doorSchedule = DocRegeneration.Full(noDoors, docs with { Schedules = new[] { scheduleDoors }, Placements = Array.Empty<DocPlacement>() }, bindings).Steps.Single(step => step.Key == "schedule-doors");
+    Check(windowSchedule.ArgsJson == doorSchedule.ArgsJson && windowSchedule.Elements.Count == 0 && doorSchedule.Elements.Count == 0 && windowSchedule.OperationId != doorSchedule.OperationId,
+        "the scheduled element kind is part of a schedule's operation id (same args, same empty element list)");
+    var tinyBasis = Add(basis, new Element(Id("tiny-wall"), "wall", new[] { 0.0, 0.0, 1e-200, 0.0, 2.8, 0.2 }, new[] { Role(0, "level") }, provenance));
+    Check(CodeOf(DocRegeneration.Full(tinyBasis, docs with { Dimensions = docs.Dimensions.Append(new DocDimension("dim-tiny", "plan-0", Id("tiny-wall"), Role(0, "west"))).ToArray() }, bindings), "dim-tiny") == DocRegenerationCodes.GeometryInvalid,
+        "a dimension to a wall whose length underflows to zero is geometry_invalid");
     Check(Code(() => DocRegeneration.Full(Add(basis, new Element(Id("dangling"), "door", new[] { 1.0, 0.9 }, new[] { Id("nowhere") }, provenance)), docs, bindings)) == "invalid_ir", "full regeneration refuses an IR Compiler.Validate rejects");
     var other = Replace(basis, Role(0, "south"), wall => Move(wall, 0, -1));
     Check(Code(() => DocRegeneration.Affected(basis, basis, Compiler.Diff(basis, other), docs, bindings)) == "plan_mismatch", "affected regeneration refuses a plan that is not the diff of before and after");
@@ -293,12 +320,12 @@ try
     Check(noop.Steps.Count == 0 && noop.Unsupported.Count == 0 && noop.TotalItems == 28, "no-op diff regenerates nothing");
 
     var south0 = Case("south wall of room 0 moved", basis, Replace(basis, Role(0, "south"), wall => Move(wall, 0, -0.5)),
-        new[] { "section-0", "3d-0", "tag-space-0", "tag-door-0", "schedule-doors", "schedule-rooms", "place-section-0", "place-doors" }, docs, bindings);
-    Check(!south0.Regenerated.Contains("plan-0") && !south0.Regenerated.Contains("dim-width-0") && !south0.Regenerated.Contains("sheet-0") && !south0.Regenerated.Any(key => key.EndsWith("-1", StringComparison.Ordinal) || key.EndsWith("-2", StringComparison.Ordinal)),
-        "moved wall: the plan, the width dimension, the sheet and other rooms are untouched");
+        new[] { "section-0", "3d-0", "place-section-0" }, docs, bindings);
+    Check(!south0.Regenerated.Contains("tag-door-0") && !south0.Regenerated.Contains("tag-space-0") && !south0.Regenerated.Contains("schedule-doors") && !south0.Regenerated.Contains("schedule-rooms") && !south0.Regenerated.Contains("place-doors"),
+        "moved wall: the door and space it bounds or hosts are unchanged, so their tags and schedules are untouched (no transitive dirty closure)", Keys(south0.Regenerated));
 
     var raised = Case("level of room 1 raised", basis, Replace(basis, Role(1, "level"), level => level with { GeometryMetres = new[] { 3.0 } }),
-        new[] { "plan-1", "section-1", "tag-space-1", "tag-door-1", "dim-width-1", "schedule-doors", "schedule-rooms", "place-plan-1", "place-section-1", "place-doors" }, docs, bindings);
+        new[] { "plan-1", "section-1", "tag-space-1", "tag-door-1", "dim-width-1", "place-plan-1", "place-section-1" }, docs, bindings);
     var raisedSection = JsonDocument.Parse(raised.Steps.Single(step => step.Key == "section-1").ArgsJson).RootElement;
     Check(Math.Abs(raisedSection.GetProperty("bottom_elevation_mm").GetDouble() - 3000) < 1e-6 && Math.Abs(raisedSection.GetProperty("top_elevation_mm").GetDouble() - 5800) < 1e-6,
         "raised level: the section is re-cut at the new elevation", raised.Steps.Single(step => step.Key == "section-1").ArgsJson);
@@ -308,7 +335,7 @@ try
         "deleted door: its tag is reported element_missing and the door schedule is refreshed without it", Json(deleted.Unsupported));
 
     var rotated = Case("east wall of room 0 rotated", basis, Replace(basis, Role(0, "east"), wall => { var g = wall.GeometryMetres; return wall with { GeometryMetres = new[] { g[0], g[1], g[2] + 0.3, g[3], g[4], g[5] } }; }),
-        new[] { "3d-0", "tag-space-0", "dim-width-0", "schedule-rooms" }, docs, bindings);
+        new[] { "3d-0", "dim-width-0" }, docs, bindings);
     Check(CodeOf(rotated, "dim-width-0") == DocRegenerationCodes.ReferencesNotParallel, "rotated wall: the width dimension is re-dimensioned and reported references_not_parallel", Json(rotated.Unsupported));
 
     Case("untagged door created in room 1", basis, Add(basis, new Element(Id("door-extra"), "door", new[] { 13.0, 0.1, 13.8, 0.1, 0, 2.1 }, new[] { Role(1, "south"), Role(1, "level") }, provenance)),
@@ -318,13 +345,50 @@ try
     Check(Near(Numbers(JsonDocument.Parse(narrowed.Steps.Single(step => step.Key == "tag-space-2").ArgsJson).RootElement.GetProperty("head")), 22450, 2200), "narrowed space: its tag is re-placed at the new centre");
     Case("BIM-IR sheet element provenance changed", basis, Replace(basis, Role(1, "sheet"), sheet => sheet with { Provenance = new Provenance("other", "unit") }), Array.Empty<string>(), docs, bindings);
     Case("raised level with that level unbound", basis, Replace(basis, Role(1, "level"), level => level with { GeometryMetres = new[] { 3.0 } }),
-        new[] { "plan-1", "section-1", "tag-space-1", "tag-door-1", "dim-width-1", "schedule-doors", "schedule-rooms", "place-plan-1", "place-section-1", "place-doors" }, docs, Bindings(3, 1));
+        new[] { "plan-1", "section-1", "tag-space-1", "tag-door-1", "dim-width-1", "place-plan-1", "place-section-1" }, docs, Bindings(3, 1));
     var flipped = Case("level of room 0 changed to another kind", basis, Replace(basis, Role(0, "level"), level => level with { Kind = "datum" }),
-        new[] { "plan-0", "section-0", "3d-0", "tag-space-0", "tag-door-0", "dim-width-0", "schedule-doors", "schedule-rooms", "place-plan-0", "place-section-0", "place-doors" }, docs, bindings);
+        new[] { "plan-0", "section-0", "3d-0", "tag-space-0", "tag-door-0", "dim-width-0", "place-plan-0", "place-section-0" }, docs, bindings);
     Check(CodeOf(flipped, "plan-0") == DocRegenerationCodes.KindMismatch && CodeOf(flipped, "tag-door-0") == DocRegenerationCodes.DependencyUnsupported, "level kind changed: the plan is kind_mismatch and its tags dependency_unsupported", Json(flipped.Unsupported));
     Case("extra items: deleted wall under a dimension and the 3D view", Build(3), Remove(Replace(Replace(Build(3), Role(0, "space"), space => space with { Dependencies = space.Dependencies.Where(id => id != Role(0, "west")).ToArray() }),
             Role(0, "plan"), plan => plan with { Dependencies = plan.Dependencies.Where(id => id != Role(0, "west")).ToArray() }), Role(0, "west")),
         new[] { "3d-0", "dim-width-0", "dim-space", "dim-across", "tag-space-0", "schedule-rooms" }, extra, bindings);
+    Case("door rehosted to the same wall list order (dependencies changed, geometry not)", basis, Replace(basis, Door(0), door => door with { Dependencies = new[] { Role(0, "level"), Role(0, "south") } }),
+        new[] { "tag-door-0", "schedule-doors", "place-doors" }, docs, bindings);
+    Check(Json(DocRegeneration.Full(basis, docs, bindings).Steps.Single(step => step.Key == "section-0").Elements) == Json(new[] { Role(0, "south"), Role(0, "level") }),
+        "a section lists the wall and the level it reads its elevation from");
+
+    // ---- Hosted openings ([offset, width] along the host wall) ----
+    var hostedWindow = new Element(Id("window-hosted"), "window", new[] { 0.5, 1.2 }, new[] { Role(0, "east"), Role(0, "level") }, provenance);
+    var orphanWindow = new Element(Id("window-orphan"), "window", new[] { 0.5, 1.2 }, new[] { Role(0, "level") }, provenance);
+    var hostedBasis = Add(Add(basis, hostedWindow), orphanWindow);
+    var hostedDocs = docs with { Tags = docs.Tags.Append(new DocTag("tag-window", "plan-0", hostedWindow.Id)).Append(new DocTag("tag-orphan", "plan-0", orphanWindow.Id)).ToArray() };
+    var hostedFull = DocRegeneration.Full(hostedBasis, hostedDocs, bindings);
+    var windowStep = hostedFull.Steps.Single(step => step.Key == "tag-window");
+    Check(Near(Numbers(JsonDocument.Parse(windowStep.ArgsJson).RootElement.GetProperty("head")), 4300, 1200) && windowStep.Elements.SequenceEqual(new[] { hostedWindow.Id, Role(0, "east") }),
+        "hosted window tag: head on the host wall axis at offset + width / 2, and the host is listed", windowStep.ArgsJson + " " + Json(windowStep.Elements));
+    Check(CodeOf(hostedFull, "tag-orphan") == DocRegenerationCodes.HostMissing, "a hosted opening without a host wall is host_missing", Json(hostedFull.Unsupported));
+    var movedHost = Case("host wall of a hosted window moved", hostedBasis, Replace(hostedBasis, Role(0, "east"), wall => Move(wall, 0.2, 0)),
+        new[] { "3d-0", "dim-width-0", "tag-window" }, hostedDocs, bindings);
+    Check(Near(Numbers(JsonDocument.Parse(movedHost.Steps.Single(step => step.Key == "tag-window").ArgsJson).RootElement.GetProperty("head")), 4500, 1200), "moved host: the hosted window tag follows the wall");
+
+    // ---- Optional binding to the BIM-IR plan, schedule and sheet elements ----
+    var boundDocs = docs with
+    {
+        Sheets = docs.Sheets.Select(sheet => sheet.Key == "sheet-0" ? sheet with { Bound = Role(0, "sheet") } : sheet).ToArray(),
+        Schedules = docs.Schedules.Select(schedule => schedule.Key == "schedule-rooms" ? schedule with { Bound = Role(1, "schedule") } : schedule).ToArray(),
+        Views = docs.Views.Select(view => view.Key == "plan-2" ? view with { Bound = Role(2, "plan") } : view).ToArray(),
+    };
+    Case("bound BIM-IR sheet element rewired", basis, Replace(basis, Role(0, "sheet"), sheet => sheet with { Dependencies = new[] { Role(0, "plan") } }),
+        new[] { "sheet-0", "place-plan-0", "place-section-0", "place-doors" }, boundDocs, bindings);
+    Case("bound BIM-IR schedule element rewired", basis, Replace(basis, Role(1, "schedule"), schedule => schedule with { Dependencies = Array.Empty<Guid>() }),
+        new[] { "schedule-rooms" }, boundDocs, bindings);
+    Case("bound BIM-IR plan element deleted", basis, Remove(Replace(basis, Role(2, "sheet"), sheet => sheet with { Dependencies = new[] { Role(2, "schedule") } }), Role(2, "plan")),
+        new[] { "plan-2", "tag-space-2", "tag-door-2", "dim-width-2", "place-plan-2" }, boundDocs, bindings);
+    Case("bound BIM-IR sheet element provenance only", basis, Replace(basis, Role(0, "sheet"), sheet => sheet with { Provenance = new Provenance("other", "unit") }), Array.Empty<string>(), boundDocs, bindings);
+    var boundFull = DocRegeneration.Full(basis, boundDocs, bindings);
+    Check(boundFull.Steps.Single(step => step.Key == "sheet-0").Elements.SequenceEqual(new[] { Role(0, "sheet") }), "a bound sheet lists its BIM-IR sheet element");
+    Check(CodeOf(DocRegeneration.Full(basis, docs with { Sheets = docs.Sheets.Select(sheet => sheet with { Bound = Role(0, "south") }).ToArray() }, bindings), "sheet-1") == DocRegenerationCodes.KindMismatch,
+        "a sheet bound to an element that is not a BIM-IR sheet is kind_mismatch");
 
     // ---- Seeded corpus of chained edits ----
     var random = new Random(4303);
@@ -373,7 +437,7 @@ try
     var largeDocs = Docs(50);
     var largeAfter = Replace(large, Role(17, "south"), wall => Move(wall, 0, -0.5));
     var largeResult = DocRegeneration.Affected(large, largeAfter, Compiler.Diff(large, largeAfter), largeDocs, Bindings(50));
-    Check(largeResult.RegeneratedCount == 7 && largeResult.TotalItems == 404, "50-room set: one wall move regenerates 7 of 404 documentation items", N(largeResult.RegeneratedCount) + "/" + N(largeResult.TotalItems) + " " + Keys(largeResult.Regenerated));
+    Check(largeResult.RegeneratedCount == 2 && largeResult.TotalItems == 404, "50-room set: one wall move regenerates 2 of 404 documentation items (its section and that section's placement)", N(largeResult.RegeneratedCount) + "/" + N(largeResult.TotalItems) + " " + Keys(largeResult.Regenerated));
     Check(DocRegeneration.Agrees(large, largeAfter, Compiler.Diff(large, largeAfter), largeDocs, Bindings(50)), "50-room set: affected-only regeneration merges to full regeneration");
     Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "doc_regeneration", regenerated = largeResult.RegeneratedCount, total = largeResult.TotalItems }));
 }
