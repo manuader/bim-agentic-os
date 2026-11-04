@@ -29,8 +29,8 @@ static class DefaultsTests
     {
         try { action(); return null; }
         catch (ArgumentNullException) { return "null"; }
-        catch (ArgumentException error) { return error.Message; }
-        catch (InvalidOperationException error) { return error.Message; }
+        catch (ArgumentException error) { return "argument:" + error.Message; }
+        catch (InvalidOperationException error) { return "state:" + error.Message; }
         catch (Exception error) { return "unexpected " + error.GetType().Name + ": " + error.Message; }
     }
 
@@ -175,15 +175,59 @@ static class DefaultsTests
         var bareFull = DocRegeneration.Full(bare, bareSet, Bindings(bare));
         check(bareFull.Unsupported.Count == 0 && CatalogueProblem(bareFull).Length == 0, "edge: the defaults of a bare level regenerate to valid catalogue commands", Json(bareFull.Unsupported));
 
-        // ---- Refusals ----
+        // ---- Hosted openings: tagged only when they have exactly one host wall, in that wall's plan ----
+        var orphan = new Element(Id("door-orphan"), "door", new[] { 1.0, 0.9 }, new[] { Role(0, "level") }, provenance);
+        var ambiguous = new Element(Id("door-ambiguous"), "door", new[] { 1.0, 0.9 }, new[] { Role(0, "east"), Role(0, "north"), Role(0, "level") }, provenance);
+        foreach (var (name, opening) in new[] { ("no host wall", orphan), ("two wall dependencies", ambiguous) })
+        {
+            var project = Add(basis, opening);
+            var openingSet = DocDefaults.From(project);
+            var openingFull = DocRegeneration.Full(project, openingSet, Bindings(project));
+            check(!openingSet.Tags.Any(tag => tag.Element == opening.Id) && openingFull.Unsupported.Count == 0 && CatalogueProblem(openingFull).Length == 0,
+                "hosted: a hosted door with " + name + " is not tagged and full regeneration has nothing unsupported", Json(openingFull.Unsupported));
+        }
+        var crossing = new Element(Id("door-crossing"), "door", new[] { 1.0, 0.9 }, new[] { Role(0, "level"), Role(1, "north") }, provenance);
+        var crossingProject = Add(basis, crossing);
+        var crossingSet = DocDefaults.From(crossingProject);
+        var crossingFull = DocRegeneration.Full(crossingProject, crossingSet, Bindings(crossingProject));
+        check(crossingSet.Tags.SingleOrDefault(tag => tag.Element == crossing.Id)?.View == "plan-" + K(levels[1]) && crossingFull.Unsupported.Count == 0,
+            "hosted: a hosted door is tagged in the plan of its host wall's level, not its own level dependency", Json(crossingSet.Tags.Where(tag => tag.Element == crossing.Id)));
+
+        // ---- Binding and numbering ties ----
+        var sharedSheet = new Element(Id("sheet-shared"), "sheet", Array.Empty<double>(), new[] { Role(0, "plan"), Role(1, "plan") }, provenance);
+        var sharedProject = Add(basis with { Elements = basis.Elements.Where(element => element.Kind != "sheet").ToArray() }, sharedSheet);
+        var sharedSet = DocDefaults.From(sharedProject);
+        var firstLevel = new[] { levels[0], levels[1] }.OrderBy(id => id.ToString("D"), StringComparer.Ordinal).First();
+        var boundSheets = sharedSet.Sheets.Where(sheet => sheet.Bound is not null).ToArray();
+        check(boundSheets.Length == 1 && boundSheets[0].Key == "sheet-" + K(firstLevel) && boundSheets[0].Bound == sharedSheet.Id
+            && DocRegeneration.Full(sharedProject, sharedSet, Bindings(sharedProject)).Unsupported.Count == 0,
+            "binding: a BIM-IR sheet depending on two plans is bound to one DocSheet only (levels by id)", Json(sharedSet.Sheets));
+        var extraPlan = new Element(Id("plan-extra"), "plan", Array.Empty<double>(), new[] { Role(0, "level") }, provenance);
+        var extraPlanProject = Add(basis, extraPlan);
+        var extraPlanSet = DocDefaults.From(extraPlanProject);
+        var chosenPlan = new[] { Role(0, "plan"), extraPlan.Id }.OrderBy(id => id.ToString("D"), StringComparer.Ordinal).First();
+        check(extraPlanSet.Views.Single(view => view.Key == "plan-" + K(levels[0])).Bound == chosenPlan
+            && extraPlanSet.Sheets.Single(sheet => sheet.Key == "sheet-" + K(levels[0])).Bound == (chosenPlan == Role(0, "plan") ? (Guid?)Role(0, "sheet") : null)
+            && DocRegeneration.Full(extraPlanProject, extraPlanSet, Bindings(extraPlanProject)).Unsupported.Count == 0,
+            "binding: with several BIM-IR plans on one level the first by id is bound", Json(extraPlanSet.Views));
+        var tied = DocDefaults.From(Build(0, 0, 6));
+        var tiedOrder = new[] { levels[0], levels[1] }.OrderBy(id => id.ToString("D"), StringComparer.Ordinal).ToArray();
+        check(tied.Views.Single(view => view.Key == "plan-" + K(tiedOrder[0])).Name == "Level 1 Plan" && tied.Views.Single(view => view.Key == "plan-" + K(tiedOrder[1])).Name == "Level 2 Plan"
+            && tied.Sheets.Single(sheet => sheet.Key == "sheet-" + K(tiedOrder[0])).Number == "A101" && tied.Views.Single(view => view.Key == "plan-" + K(levels[2])).Name == "Level 3 Plan",
+            "numbering: levels at equal elevation are numbered by id", Json(tied.Views));
+
+        // ---- Refusals: project state is InvalidOperationException (as DocRegeneration.Full's invalid_ir) ----
+        const string state = "state:";
         check(Code(() => DocDefaults.From(null!)) == "null", "refusal: a null project");
-        check(Code(() => DocDefaults.From(Add(basis, new Element(Id("dangling"), "door", new[] { 1.0, 0.9 }, new[] { Id("nowhere") }, provenance)))) == DocDefaultsCodes.InvalidIr,
+        check(Code(() => DocDefaults.From(Add(basis, new Element(Id("dangling"), "door", new[] { 1.0, 0.9 }, new[] { Id("nowhere") }, provenance)))) == state + DocDefaultsCodes.InvalidIr,
             "refusal: a project Compiler.Validate rejects is invalid_ir");
-        check(Code(() => DocDefaults.From(basis with { Elements = null! })) == DocDefaultsCodes.InvalidIr, "refusal: null elements are invalid_ir");
-        check(Code(() => DocDefaults.From(basis with { Elements = basis.Elements.Append(null!).ToArray() })) == DocDefaultsCodes.InvalidIr, "refusal: a null element is invalid_ir");
-        check(Code(() => DocDefaults.From(Add(basis, new Element(Id("bad-geometry"), "space", null!, Array.Empty<Guid>(), provenance)))) == DocDefaultsCodes.InvalidIr, "refusal: an element with null geometry is invalid_ir");
-        check(Code(() => DocDefaults.From(Replace(basis, Role(2, "level"), level => level with { GeometryMetres = Array.Empty<double>() }))) == DocDefaultsCodes.LevelInvalid,
+        check(Code(() => DocDefaults.From(basis with { Elements = null! })) == state + DocDefaultsCodes.InvalidIr, "refusal: null elements are invalid_ir");
+        check(Code(() => DocDefaults.From(basis with { Elements = basis.Elements.Append(null!).ToArray() })) == state + DocDefaultsCodes.InvalidIr, "refusal: a null element is invalid_ir");
+        check(Code(() => DocDefaults.From(Add(basis, new Element(Id("bad-geometry"), "space", null!, Array.Empty<Guid>(), provenance)))) == state + DocDefaultsCodes.InvalidIr, "refusal: an element with null geometry is invalid_ir");
+        check(Code(() => DocDefaults.From(Add(basis, new Element(Id("bad-kind"), null!, Array.Empty<double>(), Array.Empty<Guid>(), provenance)))) == state + DocDefaultsCodes.InvalidIr, "refusal: an element with a null kind is invalid_ir");
+        check(Code(() => DocDefaults.From(Add(basis, new Element(Id("bad-deps"), "space", Array.Empty<double>(), null!, provenance)))) == state + DocDefaultsCodes.InvalidIr, "refusal: an element with null dependencies is invalid_ir");
+        check(Code(() => DocDefaults.From(Replace(basis, Role(2, "level"), level => level with { GeometryMetres = Array.Empty<double>() }))) == state + DocDefaultsCodes.LevelInvalid,
             "refusal: a level without exactly one elevation is doc_defaults_level_invalid");
-        check(Code(() => DocDefaults.From(new Project(projectId, 0, Array.Empty<Element>()))) == DocDefaultsCodes.NoLevel, "refusal: a project without levels is doc_defaults_no_level");
+        check(Code(() => DocDefaults.From(new Project(projectId, 0, Array.Empty<Element>()))) == state + DocDefaultsCodes.NoLevel, "refusal: a project without levels is doc_defaults_no_level");
     }
 }
