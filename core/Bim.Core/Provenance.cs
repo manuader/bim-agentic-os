@@ -37,6 +37,8 @@ public static class ProvenanceCodes
     public const string HashMismatch = "provenance_hash_mismatch";
     public const string NotCanonical = "provenance_not_canonical";
     public const string DuplicateEntry = "provenance_duplicate_entry";
+    public const string TooLarge = "provenance_too_large";
+    public const string JournalTruncated = "provenance_journal_truncated";
 }
 
 public static class ProvenanceChanges
@@ -112,10 +114,10 @@ public abstract record ProvenanceSource
     // mirror's logical id for that UniqueId). Add-in entries are not external edits and give nothing; deleted
     // elements carry no UniqueId in the journal and give nothing. Ids are lower-cased; an id listed as both added and
     // modified gives one added source.
-    public static IReadOnlyList<(Guid ElementId, ExternalEditProvenance Source)> FromJournal(MirrorJournalEntry entry)
+    public static ProvenanceJournalSources FromJournal(MirrorJournalEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        if (entry.Origin != MirrorJournalOrigins.External) return Array.Empty<(Guid, ExternalEditProvenance)>();
+        if (entry.Origin != MirrorJournalOrigins.External) return new(ProvenanceCodes.Ok, Array.Empty<(Guid, ExternalEditProvenance)>());
         var document = entry.DocumentUid.ToLowerInvariant();
         var time = entry.RecordedAt.ToUniversalTime().ToString(TimeFormat, CultureInfo.InvariantCulture);
         var result = new List<(Guid, ExternalEditProvenance)>();
@@ -127,8 +129,13 @@ public abstract record ProvenanceSource
                 if (!seen.Add(lower)) continue; // an id both added and modified in one entry is added
                 result.Add((MirrorSnapshotMapper.Id(document, lower), new ExternalEditProvenance(document, entry.Sequence, time, lower, change)));
             }
-        return result;
+        return new(ProvenanceCodes.Ok, result);
     }
+}
+
+public sealed record ProvenanceJournalSources(string Code, IReadOnlyList<(Guid ElementId, ExternalEditProvenance Source)> Sources)
+{
+    public bool Ok => Code == ProvenanceCodes.Ok;
 }
 
 public sealed record ProvenanceSourceResult(string Code, ProvenanceSource? Source, string? Detail)

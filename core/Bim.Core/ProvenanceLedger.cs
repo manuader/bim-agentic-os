@@ -86,8 +86,17 @@ public static class ProvenanceLedgerFormat
         value is { Length: 64 } && value.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
 }
 
+public sealed record ProvenanceLimits(int MaxEntries = ProvenanceLimits.DefaultMaxEntries, int MaxJsonChars = ProvenanceLimits.DefaultMaxJsonChars)
+{
+    public const int DefaultMaxEntries = 100_000;
+    public const int DefaultMaxJsonChars = 64 * 1024 * 1024;
+    public static readonly ProvenanceLimits Default = new();
+}
+
 public sealed class ProvenanceLedger
 {
+    public ProvenanceLedger(ProvenanceLimits? limits = null) { Limits = limits ?? ProvenanceLimits.Default; }
+    public ProvenanceLimits Limits { get; }
     readonly List<ProvenanceEntry> entries = new();
     readonly Dictionary<string, ProvenanceEntry> byKey = new(StringComparer.Ordinal);
     readonly Dictionary<Guid, List<ProvenanceEntry>> byElement = new();
@@ -138,7 +147,7 @@ public sealed class ProvenanceLedger
 
     public string Serialize() => ProvenanceLedgerFormat.Write(entries);
 
-    public static ProvenanceLoadResult Load(string? json)
+    public static ProvenanceLoadResult Load(string? json, ProvenanceLimits? limits = null)
     {
         if (json is null) return Fail(ProvenanceCodes.JsonInvalid, null, "input");
         JsonDocument document;

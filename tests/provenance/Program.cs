@@ -56,13 +56,24 @@ try
     var external = journal.Record(new MirrorJournalChange(Doc.ToUpperInvariant(), "TransactionCommitted", new[] { "Move" }, new[] { W1.ToUpperInvariant() }, new[] { W2 }, new long[] { 77 }, false));
     var addIn = journal.Record(new MirrorJournalChange(Doc, "TransactionCommitted", new[] { "BIM Agentic OS wall.create" }, new[] { W2 }, Array.Empty<string>(), Array.Empty<long>(), false));
     Check(external is not null && addIn is { Origin: MirrorJournalOrigins.AddIn }, "journal fixtures recorded");
-    var fromJournal = ProvenanceSource.FromJournal(external!);
+    var journalSources = ProvenanceSource.FromJournal(external!);
+    Check(journalSources.Ok && journalSources.Code == ProvenanceCodes.Ok, "a complete journal entry maps completely", journalSources.Code);
+    var fromJournal = journalSources.Sources;
     Check(fromJournal.Count == 2
         && fromJournal[0].ElementId == MirrorSnapshotMapper.Id(Doc, W1) && fromJournal[0].Source == new ExternalEditProvenance(Doc, 1, "2026-11-04T09:30:00.123Z", W1, ProvenanceChanges.Added)
         && fromJournal[1].ElementId == MirrorSnapshotMapper.Id(Doc, W2) && fromJournal[1].Source == new ExternalEditProvenance(Doc, 1, "2026-11-04T09:30:00.123Z", W2, ProvenanceChanges.Modified),
         "FromJournal gives added then modified UniqueIds (lower-cased) with the mirror element id, sequence and time; deletions carry no UniqueId",
         string.Join("; ", fromJournal.Select(item => item.ElementId + " " + item.Source)));
-    Check(ProvenanceSource.FromJournal(addIn!).Count == 0, "add-in journal entries are not external edits");
+    Check(ProvenanceSource.FromJournal(addIn!) is { Ok: true, Sources.Count: 0 }, "add-in journal entries are not external edits");
+    // A journal entry whose id lists were capped cannot give every element its source: typed signal, partial list kept.
+    var capped = journal.Record(new MirrorJournalChange(Doc, "TransactionCommitted", new[] { "Paste" }, new[] { W1 }, Array.Empty<string>(), Array.Empty<long>(), false) { AddedTotal = 5 });
+    var cappedSources = ProvenanceSource.FromJournal(capped!);
+    Check(capped is { Truncated: true } && cappedSources.Code == ProvenanceCodes.JournalTruncated && !cappedSources.Ok && cappedSources.Sources.Count == 1,
+        "a truncated journal entry is reported provenance_journal_truncated with the ids it still holds", cappedSources.Code + " " + cappedSources.Sources.Count);
+    var cappedModified = journal.Record(new MirrorJournalChange(Doc, "TransactionCommitted", new[] { "Edit" }, Array.Empty<string>(), new[] { W2 }, Array.Empty<long>(), false) { ModifiedTotal = 3 });
+    Check(ProvenanceSource.FromJournal(cappedModified!).Code == ProvenanceCodes.JournalTruncated, "a truncated modified list is reported too");
+    var cappedDeleted = journal.Record(new MirrorJournalChange(Doc, "TransactionCommitted", new[] { "Delete" }, Array.Empty<string>(), new[] { W2 }, new long[] { 1 }, false) { DeletedTotal = 9 });
+    Check(ProvenanceSource.FromJournal(cappedDeleted!).Ok, "a truncated deleted list loses no source (deletions give none)");
     foreach (var (id, source) in fromJournal)
     {
         var appended = ledger.Append(id, source);
@@ -197,7 +208,11 @@ try
         "non-ASCII and HTML-sensitive characters use the fixed escapes and round-trip", escapedText);
 
     // ---- Load refusals: malformed, unknown kinds, tampering, reordering, non-canonical ----
-    string Load(string json) { var result = ProvenanceLedger.Load(json); return result.Code + (result.Sequence is null ? "" : "#" + result.Sequence.Value.ToString(CultureInfo.InvariantCulture)) + (result.Detail is null ? "" : "@" + result.Detail); }
+    string Load(string json)
+    {
+        ProvenanceLoadResult result;
+        try { result = ProvenanceLedger.Load(json); }
+        catch (Exception error) { return "threw " + error.GetType().Name; } return result.Code + (result.Sequence is null ? "" : "#" + result.Sequence.Value.ToString(CultureInfo.InvariantCulture)) + (result.Detail is null ? "" : "@" + result.Detail); }
     // Code and entry number only (the detail of chain and order refusals is informative text).
     string Located(string json) => Load(json).Split('@')[0];
     var entries = ledger.Entries();
@@ -256,8 +271,21 @@ try
     // Hand-made entry JSON: unknown kind, missing / extra / mistyped members, non-canonical values.
     string Entry(string source, string elementId = "11111111-2222-3333-4444-555555555555", string seq = "1", string tail = "")
         => "{\"provenance_ledger_version\":1,\"entries\":[{\"seq\":" + seq + ",\"element_id\":\"" + elementId + "\",\"source\":" + source + ",\"prev_hash\":\"" + Genesis + "\",\"hash\":\"" + Genesis + "\"" + tail + "}]}";
+    var lettersId = MirrorSnapshotMapper.Id(Doc, W1).ToString("D");
     var entryRefusals = new (string Name, string Json, string Expected)[]
     {
+        ("escaped lone surrogate in a field", Entry("{\"kind\":\"intent\",\"intent_id\":\"\\ud800\",\"rule_id\":\"r\"}"), ProvenanceCodes.RecordInvalid + "#1@intent_id"),
+        ("escaped lone surrogate in the kind", Entry("{\"kind\":\"\\udc00\",\"intent_id\":\"i\",\"rule_id\":\"r\"}"), ProvenanceCodes.RecordInvalid + "#1@kind"),
+        ("escaped lone surrogate in a source member name", Entry("{\"kind\":\"intent\",\"\\ud800\":\"i\",\"rule_id\":\"r\"}"), ProvenanceCodes.RecordInvalid + "#1@source"),
+        ("escaped lone surrogate in an entry member name", Entry("{\"kind\":\"intent\",\"intent_id\":\"i\",\"rule_id\":\"r\"}", tail: ",\"\\ud800\":1"), ProvenanceCodes.RecordInvalid + "#1@entry"),
+        ("escaped lone surrogate in the element id", Entry("{\"kind\":\"intent\",\"intent_id\":\"i\",\"rule_id\":\"r\"}", "\\ud800"), ProvenanceCodes.RecordInvalid + "#1@element_id"),
+        ("escaped lone surrogate in a top-level member name", "{\"provenance_ledger_version\":1,\"entries\":[],\"\\ud800\":1}", ProvenanceCodes.JsonInvalid + "@member"),
+        ("raw unpaired surrogate in the input", Entry("{\"kind\":\"intent\",\"intent_id\":\"\uD800\",\"rule_id\":\"r\"}"), ProvenanceCodes.JsonInvalid + "@json_text"),
+        ("duplicate kind member", Entry("{\"kind\":\"intent\",\"kind\":\"intent\",\"intent_id\":\"i\",\"rule_id\":\"r\"}"), ProvenanceCodes.RecordInvalid + "#1@kind"),
+        ("duplicate field member", Entry("{\"kind\":\"intent\",\"intent_id\":\"i\",\"intent_id\":\"i\",\"rule_id\":\"r\"}"), ProvenanceCodes.RecordInvalid + "#1@intent_id"),
+        ("negative journal sequence", Entry("{\"kind\":\"external_edit\",\"document_unique_id\":\"" + Doc + "\",\"journal_sequence\":-1,\"recorded_at\":\"2026-11-04T09:30:00.123Z\",\"unique_id\":\"" + W1 + "\",\"change\":\"added\"}", lettersId), ProvenanceCodes.RecordInvalid + "#1@journal_sequence"),
+        ("syntax error (fixed detail token)", "{\"provenance_ledger_version\":1,\"entries\":[", ProvenanceCodes.JsonInvalid + "@json_syntax"),
+        ("string version (fixed detail token)", "{\"provenance_ledger_version\":\"1\",\"entries\":[]}", ProvenanceCodes.VersionUnsupported + "@provenance_ledger_version"),
         ("unknown kind", Entry("{\"kind\":\"photo_survey\",\"image\":\"x\"}"), ProvenanceCodes.KindUnknown + "#1@kind"),
         ("missing kind", Entry("{\"intent_id\":\"i\",\"rule_id\":\"r\"}"), ProvenanceCodes.RecordInvalid + "#1@kind"),
         ("numeric kind", Entry("{\"kind\":1,\"intent_id\":\"i\",\"rule_id\":\"r\"}"), ProvenanceCodes.RecordInvalid + "#1@kind"),
@@ -281,11 +309,61 @@ try
 
     // ---- Append-only surface ----
     var mutators = typeof(ProvenanceLedger).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
-        .Select(method => method.Name).Where(name => name is not ("Append" or "ByElement" or "BySource" or "Entries" or "Serialize" or "Load" or "get_Count" or "get_HeadHash")).OrderBy(name => name, StringComparer.Ordinal).ToArray();
+        .Select(method => method.Name).Where(name => name is not ("Append" or "ByElement" or "BySource" or "Entries" or "Serialize" or "Load" or "get_Count" or "get_HeadHash" or "get_Limits")).OrderBy(name => name, StringComparer.Ordinal).ToArray();
     Check(mutators.Length == 0, "the ledger exposes no edit, delete, insert or clear member", string.Join(",", mutators));
     Check(typeof(ProvenanceLedger).GetProperties(BindingFlags.Public | BindingFlags.Instance).All(property => !property.CanWrite), "the ledger has no writable property");
-    var listed = ledger.Entries();
-    Check(listed is not ICollection<ProvenanceEntry> collection || collection.IsReadOnly, "Entries is read-only");
+    // Mutating what a query returned never reaches the ledger.
+    var serializedBefore = ledger.Serialize();
+    var firstEntry = ledger.Entries()[0];
+    var forged = firstEntry with { Source = new IntentProvenance("forged", "forged") };
+    if (ledger.Entries() is IList<ProvenanceEntry> { IsReadOnly: false } listed) listed[0] = forged;
+    if (ledger.ByElement(firstEntry.ElementId) is IList<ProvenanceEntry> { IsReadOnly: false } listedByElement) listedByElement[0] = forged;
+    if (ledger.BySource(firstEntry.Source.Kind).Entries is IList<ProvenanceEntry> { IsReadOnly: false } listedBySource) listedBySource[0] = forged;
+    Check(ledger.Entries()[0] == firstEntry && ledger.ByElement(firstEntry.ElementId)[0] == firstEntry && ledger.BySource(firstEntry.Source.Kind).Entries[0] == firstEntry && ledger.Serialize() == serializedBefore,
+        "overwriting an element of a returned list leaves the ledger unchanged");
+
+    // ---- Historical catalogue commands: membership on Append, syntax only on Load ----
+    var retired = Rechain(new[] { entries[0] with { Source = new CatalogueCommandProvenance("wall.retired_command", "op-legacy") } });
+    var retiredLoad = ProvenanceLedger.Load(ProvenanceLedgerFormat.Write(retired));
+    Check(retiredLoad.Ok, "a stored command no longer in the catalogue still loads", retiredLoad.Code + " " + retiredLoad.Detail);
+    Check(new ProvenanceLedger().Append(e1, new CatalogueCommandProvenance("wall.retired_command", "op-new")) is { Code: ProvenanceCodes.RecordInvalid, Detail: "command" }, "appending a command outside today's catalogue is refused");
+    foreach (var badCommand in new[] { "WALL.CREATE", "wall", "wall..create", "wall.create ", "", new string('a', 60) + "." + new string('b', 70) })
+    {
+        var badStored = Rechain(new[] { entries[0] with { Source = new CatalogueCommandProvenance(badCommand, "op-legacy") } });
+        Check(Load(ProvenanceLedgerFormat.Write(badStored)) == ProvenanceCodes.RecordInvalid + "#1@command", "load refuses a malformed command name '" + badCommand + "'", Load(ProvenanceLedgerFormat.Write(badStored)));
+    }
+
+    // ---- Size caps: provenance_too_large on Append and Load ----
+    var tiny = new ProvenanceLimits(MaxEntries: 2, MaxJsonChars: 100_000);
+    var capped2 = new ProvenanceLedger(tiny);
+    var a1 = capped2.Append(e1, new IntentProvenance("cap", "r"));
+    var a2 = capped2.Append(e2, new IntentProvenance("cap", "r"));
+    var a3 = capped2.Append(e3, new IntentProvenance("cap", "r"));
+    Check(a1.Code == ProvenanceCodes.Appended && a2.Code == ProvenanceCodes.Appended && a3.Code == ProvenanceCodes.TooLarge && a3.Entry is null && capped2.Count == 2, "Append past MaxEntries is provenance_too_large", Show(a3));
+    Check(capped2.Append(e1, new IntentProvenance("cap", "r")).Code == ProvenanceCodes.Replayed, "a replay is still answered at the cap");
+    var twoText = capped2.Serialize();
+    Check(ProvenanceLedger.Load(twoText, tiny).Ok, "a ledger at the entry cap loads");
+    var threeText = ProvenanceLedgerFormat.Write(Rechain(capped2.Entries().Append(capped2.Entries()[0] with { ElementId = e3 })));
+    Check(Located(threeText) == ProvenanceCodes.Ok && ProvenanceLedger.Load(threeText, tiny) is { Code: ProvenanceCodes.TooLarge, Sequence: 3 }, "Load past MaxEntries is provenance_too_large at the first extra entry",
+        ProvenanceLedger.Load(threeText, tiny).Code);
+    var charCap = new ProvenanceLimits(MaxEntries: 100, MaxJsonChars: twoText.Length);
+    Check(ProvenanceLedger.Load(twoText, charCap).Ok && ProvenanceLedger.Load(twoText + " ", charCap) is { Code: ProvenanceCodes.TooLarge, Sequence: null }, "Load refuses input longer than MaxJsonChars before parsing");
+    var byChars = new ProvenanceLedger(charCap);
+    Check(byChars.Append(e1, new IntentProvenance("cap", "r")).Ok && byChars.Append(e2, new IntentProvenance("cap", "r")).Ok, "appends that fit MaxJsonChars succeed");
+    var overChars = byChars.Append(e3, new IntentProvenance("cap", "r"));
+    Check(overChars.Code == ProvenanceCodes.TooLarge && byChars.Serialize().Length <= charCap.MaxJsonChars, "Append that would serialize past MaxJsonChars is provenance_too_large", Show(overChars));
+    Check(ProvenanceLimits.Default is { MaxEntries: > 0, MaxJsonChars: > 0 } && new ProvenanceLedger().Limits == ProvenanceLimits.Default, "default limits apply when none are given");
+    Check(new ProvenanceLimits(MaxEntries: 0, MaxJsonChars: 10) is var zero && new ProvenanceLedger(zero).Append(e1, new IntentProvenance("cap", "r")).Code == ProvenanceCodes.TooLarge, "a zero entry cap refuses every append");
+
+    // ---- Formatter guards ----
+    string Thrown(Action action) { try { action(); return "none"; } catch (Exception error) { return error.GetType().Name; } }
+    Check(Thrown(() => ProvenanceLedgerFormat.ComputeHash(null!)) == nameof(ArgumentNullException) && Thrown(() => ProvenanceLedgerFormat.Write(null!)) == nameof(ArgumentNullException),
+        "ComputeHash and Write refuse null arguments");
+    Check(Thrown(() => ProvenanceLedgerFormat.Write(new ProvenanceEntry[] { null! })) == nameof(ArgumentException)
+        && Thrown(() => ProvenanceLedgerFormat.ComputeHash(entries[0] with { Source = null! })) == nameof(ArgumentException)
+        && Thrown(() => ProvenanceLedgerFormat.ComputeHash(entries[0] with { PrevHash = null! })) == nameof(ArgumentException)
+        && Thrown(() => ProvenanceLedgerFormat.Write(new[] { entries[0] with { Hash = null! } })) == nameof(ArgumentException),
+        "Write and ComputeHash refuse a null entry, source or hash text");
 }
 catch (Exception error)
 {
