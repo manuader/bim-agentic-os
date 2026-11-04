@@ -3,6 +3,7 @@ using Bim.Core;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using Point2 = Bim.Cad.Point2;
 
 // P6-05 brief extraction oracle: the hand-written brief-plan.dxf (millimetres) and a generated PDF page (calibrated at
 // 50 mm per PDF unit, and uncalibrated) become a P6-03 brief draft whose rooms come from room labels and area texts
