@@ -654,10 +654,16 @@ class ReviewBlocks(Base):
         walls = model.Layers.Add(layer)
         attributes = rhino3dm.ObjectAttributes()
         attributes.LayerIndex = walls
-        try:
-            index = model.InstanceDefinitions.Add('door', '', '', '', P3(0, 0, 0), [rhino3dm.LineCurve(P3(0, 0, 0), P3(1, 0, 0))], [attributes])
-        except TypeError as error:
-            self.skipTest(f'rhino3dm cannot build an instance definition here: {error}')
+        member = rhino3dm.LineCurve(P3(0, 0, 0), P3(1, 0, 0))
+        index, errors = None, []
+        for pack in (tuple, list):
+            try:
+                index = model.InstanceDefinitions.Add('door', '', '', '', P3(0, 0, 0), pack([member]), pack([attributes]))
+                break
+            except TypeError as error:
+                errors.append(str(error)[-400:])
+        if index is None:
+            self.skipTest(f'rhino3dm cannot build an instance definition here: {errors}')
         members = [str(o.Attributes.Id) for o in model.Objects if o.Attributes.IsInstanceDefinitionObject]
         if index < 0 or not members:
             self.skipTest('rhino3dm keeps no instance definition objects in the object table')
@@ -765,10 +771,12 @@ class ReviewArcs(Base):
         self.assertUnmapped('curve_unsupported', self.draft(self.model([(curve, 'Walls', oid(1))]), arc_segments=4), sid(1))
 
     def test_near_circular_ellipse_is_not_an_arc(self):
-        try:
-            curve = rhino3dm.Ellipse(rhino3dm.Plane.WorldXY(), 2.0, 2.00001).ToNurbsCurve()
-        except (AttributeError, TypeError) as error:
-            self.skipTest(f'no Ellipse in this rhino3dm: {error}')
+        # A circle stretched by 5e-6 along x: a rational NURBS ellipse that a loose arc test would accept.
+        curve = arc_curve(rhino3dm.Circle(P3(0, 0, 0), 2.0))
+        stretch = rhino3dm.Transform(1.0)
+        stretch.M00 = 1.000005
+        self.assertTrue(curve.Transform(stretch))
+        self.assertAlmostEqual(2.00001, curve.PointAt(curve.Domain.T0).X, places=6)
         self.assertUnmapped('curve_unsupported', self.draft(self.model([(curve, 'Walls', oid(1))]), arc_segments=4), sid(1))
 
 
