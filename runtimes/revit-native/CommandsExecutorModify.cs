@@ -17,7 +17,7 @@ namespace Bim.Revit;
 //   SquareMeters / Degrees
 //   Document.Delete(ICollection<ElementId>) (returns every deleted id), DocumentValidation.CanDeleteElement,
 //   Element.Pinned / GroupId, Document.ActiveView, Document.ProjectInformation
-//   Wall.CurtainGrid, RoofBase.CurtainGrids, CurtainGrid.GetUGridLineIds / GetVGridLineIds / GetPanelIds /
+//   Wall.CurtainGrid, FootPrintRoof / ExtrusionRoof.CurtainGrids, CurtainGrid.GetUGridLineIds / GetVGridLineIds / GetPanelIds /
 //     GetMullionIds, Sketch.OwnerId / SketchPlane / GetAllElements, FamilyInstance.Host, Element.GetDependentElements
 //     (owned sub-elements of a delete target, SubElementOwners)
 // element.delete first deletes inside a probe transaction that is always rolled back, to name every element Revit
@@ -182,7 +182,8 @@ internal static partial class CommandExecutor
         foreach (var target in targets)
         {
             if (target is Wall wall) Grid(wall.CurtainGrid, target.UniqueId);
-            if (target is RoofBase roof && roof.CurtainGrids is { } grids)
+            var grids = target is FootPrintRoof footprint ? footprint.CurtainGrids : target is ExtrusionRoof extrusion ? extrusion.CurtainGrids : null;
+            if (grids is not null)
                 foreach (CurtainGrid grid in grids) Grid(grid, target.UniqueId);
         }
         foreach (var uid in dependentUids)
