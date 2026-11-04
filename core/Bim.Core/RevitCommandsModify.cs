@@ -65,9 +65,11 @@ public static partial class RevitCommandCatalogue
 
     public static IReadOnlyList<RevitCommandSpec> Modify => ModifySpecs.Value;
 
-    // Commands that change or remove existing elements (MCP destructiveHint): the modify commands and wall.set_profile
-    // (RevitCommandsWallProfile.cs); every other write only adds elements.
-    public static bool IsDestructive(string? command) => command is not null && (Modify.Any(spec => spec.Name == command) || WallProfile.Any(spec => spec.Name == command));
+    // Commands that change or remove existing elements (MCP destructiveHint): the modify commands, wall.set_profile
+    // (RevitCommandsWallProfile.cs) and material.set / element.change_type (RevitCommandsMaterialTypes.cs); every other
+    // write only adds elements.
+    public static bool IsDestructive(string? command) => command is not null && (Modify.Any(spec => spec.Name == command) || WallProfile.Any(spec => spec.Name == command)
+        || (MaterialTypeDestructive(command) && MaterialTypes.Any(spec => spec.Name == command)));
 
     const string DryRunSchema = """{"type":"boolean","description":"Run the change in a transaction, read it back, report it and roll it back; nothing is written and no receipt is stored; default false"}""";
 

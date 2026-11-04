@@ -98,6 +98,13 @@ try
     // wall.set_profile changes an existing wall: a destructive write, copies only.
     Check(RevitCommandCatalogue.WallProfile.Any(spec => spec.Name == "wall.set_profile" && spec.Writes) && RevitCommandCatalogue.IsDestructive("wall.set_profile"), "wall profile catalogue has destructive write wall.set_profile");
     Check(PermissionPolicy.RequiredLevel("wall.set_profile", FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel("wall.set_profile", RealPath, copies) == PermissionLevel.WriteRealProject, "wall.set_profile requires write-copies on a copy and write-real-project on a real project");
+    // chat-materials-types: query.fill_patterns is read anywhere; the material and type writes need copies, and
+    // material.set / element.change_type are destructive.
+    foreach (var (command, writes, destructive) in new[] { ("query.fill_patterns", false, false), ("material.create", true, false), ("material.set", true, true), ("wall_type.create", true, false), ("floor_type.create", true, false), ("element.change_type", true, true) })
+    {
+        Check(RevitCommandCatalogue.MaterialTypes.Any(spec => spec.Name == command && spec.Writes == writes) && RevitCommandCatalogue.IsDestructive(command) == destructive, "material type catalogue has " + command + (writes ? " (write" + (destructive ? ", destructive)" : ")") : " (read-only)"));
+        Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == (writes ? PermissionLevel.WriteCopies : PermissionLevel.Read) && PermissionPolicy.RequiredLevel(command, RealPath, copies) == (writes ? PermissionLevel.WriteRealProject : PermissionLevel.Read), command + " permission levels follow read/write");
+    }
     // P9-05: the five catalogue v2 commands keep the v1 read/write split.
     var v2Levels = new (string Command, PermissionLevel Copy, PermissionLevel Real)[]
     {

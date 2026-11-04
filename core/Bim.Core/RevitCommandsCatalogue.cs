@@ -14,8 +14,9 @@ public sealed record RevitCommandSpec(string Name, bool Writes, string Descripti
 // query.snapshot (P2-01) in Mirror.cs, the element queries (P1-02) in RevitCommandsQuery.cs, the structure commands
 // (P9-02) in RevitCommandsStructure.cs, the documentation commands (P4-02) in RevitCommandsDocumentation.cs, the
 // modify and delete commands (P1-05) in RevitCommandsModify.cs and the materials and roof type commands in
-// RevitCommandsMaterials.cs, the family commands in RevitCommandsFamilies.cs, the site commands in RevitCommandsSite.cs and
-// wall.set_profile in RevitCommandsWallProfile.cs.
+// RevitCommandsMaterials.cs, the family commands in RevitCommandsFamilies.cs, the site commands in RevitCommandsSite.cs,
+// wall.set_profile in RevitCommandsWallProfile.cs and the material, layered type and type change commands in
+// RevitCommandsMaterialTypes.cs.
 public static partial class RevitCommandCatalogue
 {
     public const int Version = 1;
@@ -73,9 +74,9 @@ public static partial class RevitCommandCatalogue
     // Mirror.cs), then query.elements and query.inspect (P1-02, RevitCommandsQuery.cs), then the structure commands (P9-02,
     // RevitCommandsStructure.cs), then the documentation commands (P4-02, RevitCommandsDocumentation.cs), then the
     // modify and delete commands (P1-05, RevitCommandsModify.cs), then query.materials and roof_type.create
-    // (RevitCommandsMaterials.cs), then the family commands (RevitCommandsFamilies.cs), then the site commands (RevitCommandsSite.cs), then wall.set_profile (RevitCommandsWallProfile.cs). Lazy because those entries live in other parts of this partial class, whose static
+    // (RevitCommandsMaterials.cs), then the family commands (RevitCommandsFamilies.cs), then the site commands (RevitCommandsSite.cs), then wall.set_profile (RevitCommandsWallProfile.cs), then the material type commands (RevitCommandsMaterialTypes.cs). Lazy because those entries live in other parts of this partial class, whose static
     // initializers may run in any order.
-    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).Concat(Materials).Concat(Families).Concat(Site).Concat(WallProfile).ToArray());
+    static readonly Lazy<IReadOnlyList<RevitCommandSpec>> AllSpecs = new(() => V1.Concat(V2).Concat(Views).Concat(Mirror).Concat(Elements).Concat(Structure).Concat(Documentation).Concat(Modify).Concat(Materials).Concat(Families).Concat(Site).Concat(WallProfile).Concat(MaterialTypes).ToArray());
     public static IReadOnlyList<RevitCommandSpec> All => AllSpecs.Value;
 
     public static RevitCommandSpec? Find(string name) => All.FirstOrDefault(spec => spec.Name == name);
