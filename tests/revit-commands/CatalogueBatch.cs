@@ -96,7 +96,7 @@ static class CatalogueBatchChecks
         var spec = RevitCommandCatalogue.Find("command.batch");
         Check(spec is { Writes: true, ToolName: "revit_command_batch" } && RevitCommandCatalogue.Batch.Count == 1 && ReferenceEquals(RevitCommandCatalogue.Batch.FirstOrDefault(), spec),
             "command.batch is a write catalogue command with tool revit_command_batch that Find resolves");
-        Check(spec is not null && ReferenceEquals(RevitCommandCatalogue.All[^1], spec), "command.batch is the last catalogue entry (after document.save)");
+        Check(spec is not null && ReferenceEquals(RevitCommandCatalogue.All.Last(), spec), "command.batch is the last catalogue entry (after document.save)");
         Check(RevitCommandCatalogue.All.Select(s => s.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(s => s.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct with command.batch");
         string? problem = null;
         try { using var schema = JsonDocument.Parse(spec?.ArgsSchemaJson ?? "null"); RevitCommandSchema.CheckSupported(schema.RootElement); }
@@ -192,7 +192,7 @@ static class CatalogueBatchChecks
         Check(notBatch, "StepEnvelope refuses an envelope that is not a batch");
         var guarded = RevitCommandBatch.GuardedArgs(batch).ToArray();
         Check(guarded.Length == 3 && guarded.Select(g => g.Prefix).SequenceEqual(new[] { "args.steps[0].", "args.steps[1].", "args.steps[2]." }) && guarded[1].Args is RoomCreateArgs, "guarded args of a batch are its steps with their field prefixes");
-        Check(RevitCommandBatch.GuardedArgs(alone).Single() is ("", RoomCreateArgs), "guarded args of a single command are its own args with no prefix");
+        Check(RevitCommandBatch.GuardedArgs(alone).Single() is { Prefix: "", Args: RoomCreateArgs }, "guarded args of a single command are its own args with no prefix");
         Check(RevitCommandBatch.StepField(3, null) == "args.steps[3]" && RevitCommandBatch.StepField(3, "") == "args.steps[3]" && RevitCommandBatch.StepField(12, "args.level") == "args.steps[12].args.level", "step refusal paths are args.steps[i] plus the step-relative path");
     }
 
