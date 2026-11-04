@@ -24,7 +24,7 @@ namespace Bim.Mcp;
 // command envelope from its arguments and runs RevitCommandService.Run, the same code as the CLI revit-command verb,
 // so its text equals that verb's stdout for the same envelope. Write commands pass the copies-only and link guards
 // first; the policy is the repository's .bim/native-runs plus every directory root listed in the owner file
-// .bim/revit-enabled-roots.txt, never a tool call. The MCP server does not apply the per-document enablement or the
+// .bim/revit-enabled-roots.txt (re-read when it changes, no restart needed), never a tool call. The MCP server does not apply the per-document enablement or the
 // per-actor grants of PermissionPolicy, and writes no audit log.
 public sealed class McpServer
 {
@@ -61,19 +61,26 @@ public sealed class McpServer
     static readonly JsonElement EmptyArguments = CreateEmptyArguments();
 
     readonly ToolSpec[] tools;
-    readonly RevitCommandPolicy revitPolicy;
+    readonly Func<RevitCommandPolicy> revitPolicy;
     readonly Func<string, string, string?> revitTransport;
     readonly RevitFileSystemProbe revitProbe;
 
-    // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), the real process pipe and file system.
-    // A malformed owner file enables no write at all.
+    // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), re-read whenever the owner files change
+    // (RevitCommandPolicySource: one stat per write call), the real process pipe and file system. A malformed owner
+    // file enables no write at all: writes answer allowlist_invalid until it is fixed; reads keep working.
     public McpServer(RevitCommandPolicy? revitPolicy = null, Func<string, string, string?>? revitTransport = null, RevitFileSystemProbe? revitProbe = null)
         : this(RevitCommandCatalogue.All, revitPolicy, revitTransport, revitProbe) { }
 
     // Tests inject a synthetic catalogue here; production always uses RevitCommandCatalogue.All.
     internal McpServer(IReadOnlyList<RevitCommandSpec> catalogue, RevitCommandPolicy? revitPolicy, Func<string, string, string?>? revitTransport, RevitFileSystemProbe? revitProbe)
+        : this(catalogue, revitPolicy is { } fixedPolicy ? () => fixedPolicy : DefaultPolicy(), revitTransport, revitProbe) { }
+
+    // Tests inject a policy source (for example a RevitCommandPolicySource on a temporary repository) here. The function
+    // is called once per write call and may throw RevitCommandException (allowlist_invalid).
+    internal McpServer(IReadOnlyList<RevitCommandSpec> catalogue, Func<RevitCommandPolicy> revitPolicy, Func<string, string, string?>? revitTransport, RevitFileSystemProbe? revitProbe)
     {
-        this.revitPolicy = revitPolicy ?? DefaultPolicy();
+        ArgumentNullException.ThrowIfNull(revitPolicy);
+        this.revitPolicy = revitPolicy;
         this.revitTransport = revitTransport ?? RevitCommandService.PipeTransport;
         this.revitProbe = revitProbe ?? RevitFileSystemProbe.Real;
         ArgumentNullException.ThrowIfNull(catalogue);
@@ -82,11 +89,7 @@ public sealed class McpServer
         tools = [.. CoreTools, .. catalogue.Select(RevitTool)];
     }
 
-    static RevitCommandPolicy DefaultPolicy()
-    {
-        try { return RevitCommandPolicy.ForRepository(AppContext.BaseDirectory); }
-        catch (RevitCommandException) { return RevitCommandPolicy.None; }
-    }
+    static Func<RevitCommandPolicy> DefaultPolicy() => new RevitCommandPolicySource(AppContext.BaseDirectory).Current;
 
     // MCP tool names: unique, 1-64 characters of [a-zA-Z0-9_-]. A collision (a.b_c and a_b.c both map to revit_a_b_c)
     // would make one command unreachable or shadow another, so the server refuses to start.
@@ -188,7 +191,12 @@ public sealed class McpServer
             arguments.GetProperty("args").WriteTo(writer);
             writer.WriteEndObject();
         }
-        var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", Encoding.UTF8.GetString(buffer.ToArray()), revitPolicy, revitTransport, revitProbe);
+        // The policy matters only for writes (read-only commands are allowed on any document), so only writes stat the
+        // owner files. A malformed owner file refuses the write as allowlist_invalid.
+        RevitCommandPolicy policy;
+        try { policy = spec.Writes ? revitPolicy() : RevitCommandPolicy.None; }
+        catch (RevitCommandException error) { return (RevitCommandResponse.Failure(error.Code, error.Field, error.Detail).ToJson(), true); }
+        var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", Encoding.UTF8.GetString(buffer.ToArray()), policy, revitTransport, revitProbe);
         return (result.Line, result.IsError);
     }
 
@@ -307,8 +315,8 @@ public sealed class McpServer
         {
             // Tool annotations and _meta postdate the advertised 2024-11-05 protocol: best-effort hints that clients
             // may ignore. Writes replay by operation_id, hence idempotent; they are additive (not destructive) except the
-            // P1-05 commands, wall.set_profile, material.set and element.change_type, which change or delete existing elements
-            // (RevitCommandCatalogue.IsDestructive).
+            // P1-05 commands, wall.set_profile, material.set and element.change_type, which change or delete existing elements,
+            // and document.save, which overwrites the saved file (RevitCommandCatalogue.IsDestructive).
             var annotations = new JsonObject { ["readOnlyHint"] = level == PermissionLevel.Read };
             if (level != PermissionLevel.Read)
             {

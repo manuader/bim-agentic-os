@@ -31,7 +31,8 @@ namespace Bim.Revit;
 // CommandsExecutorModify.cs; query.materials and roof_type.create are in CommandsExecutorMaterials.cs;
 // family.load and family_instance.place are in CommandsExecutorFamilies.cs; site commands (toposolids and
 // subdivisions) are in CommandsExecutorSite.cs; wall.set_profile is in CommandsExecutorWallProfile.cs; fill patterns,
-// materials, layered wall/floor types and element.change_type are in CommandsExecutorMaterialTypes.cs.
+// materials, layered wall/floor types and element.change_type are in CommandsExecutorMaterialTypes.cs;
+// view.export_image and document.save are in CommandsExecutorExportSave.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -56,6 +57,9 @@ internal static partial class CommandExecutor
             case CommandReceiptAction.Replay: return CommandReceiptStore.ReplayJson(store.Receipts[envelope.OperationId]);
             case CommandReceiptAction.Conflict: throw CommandReceiptStore.Conflict(envelope.OperationId);
         }
+        // document.save (CommandsExecutorExportSave.cs) saves without a transaction and stores no receipt: recording one
+        // would leave the document modified again right after the save.
+        if (envelope.Args is DocumentSaveArgs) return SaveExecute(d, request);
         // Modify and delete (P1-05, CommandsExecutorModify.cs) run their own transactions: a dry run stores no receipt.
         if (envelope.Args is ElementSetParameterArgs or ElementDeleteArgs) return ModifyExecute(d, request, store);
         CommandReceiptStore.EnsureRoom(store.Receipts);
@@ -148,6 +152,8 @@ internal static partial class CommandExecutor
             CommandReadback.SymbolsJson(symbols.Category, Symbols(d, symbols.Category).Select(symbol => new SymbolRow(symbol.Family.Name, symbol.Name, symbol.UniqueId, symbol.IsActive, WallHosted(symbol), symbol.Family.FamilyPlacementType.ToString()))),
         EmptyQueryArgs when envelope.Command == "query.toposolid_types" => QuerySite(d),
         FillPatternQueryArgs patterns => QueryFillPatterns(d, patterns),
+        // Read-only: writes image files under .bim/exports only; a visual style change is rolled back.
+        ViewExportImageArgs export => ExportImage(d, export),
         _ => QueryV2(d, envelope),
     };
 

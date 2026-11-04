@@ -48,11 +48,12 @@ try {
             } break;
         case "revit-command":
             // ADR0009 catalogue v1: same explicit-pipe rule as native, checked before any file or pipe I/O. Enabled write
-            // roots come only from the repository (.bim/native-runs and the owner file .bim/revit-enabled-roots.txt).
+            // roots come only from the repository (.bim/native-runs and the owner file .bim/revit-enabled-roots.txt), read
+            // fresh on every run through the same RevitCommandPolicySource the MCP server keeps current.
             var revitPipe=args.Length==3 ? args[2] : null;
             if(RevitCommandService.RejectPipe(revitPipe) is {} revitRejected) { Console.WriteLine(revitRejected.Line); Environment.ExitCode=1; break; }
             RevitCommandPolicy revitPolicy;
-            try { revitPolicy=RevitCommandPolicy.ForRepository(AppContext.BaseDirectory); }
+            try { revitPolicy=new RevitCommandPolicySource(AppContext.BaseDirectory).Current(); }
             catch(RevitCommandException e) { Console.WriteLine(RevitCommandResponse.Failure(e.Code,e.Field,e.Detail).ToJson()); Environment.ExitCode=1; break; }
             string revitEnvelope;
             try { revitEnvelope=BoundedInput.ReadText(args[1]); }
@@ -64,7 +65,7 @@ try {
             // with the command pipe? Same enabled roots as revit-command writes, read from this binary's repository; no pipe.
             if(args.Length!=2) throw new ArgumentException("usage: open-project-check absolute-path.rvt");
             RevitCommandPolicy projectPolicy;
-            try { projectPolicy=RevitCommandPolicy.ForRepository(AppContext.BaseDirectory); }
+            try { projectPolicy=new RevitCommandPolicySource(AppContext.BaseDirectory).Current(); }
             catch(RevitCommandException e) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Code,detail=e.Field+": "+e.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
             if(OwnerProjectGuard.Check(args[1],projectPolicy,RevitFileSystemProbe.Real) is {} projectRefusal) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=projectRefusal.Code,detail=projectRefusal.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
             Console.WriteLine(JsonSerializer.Serialize(new {status="succeeded",document_path=args[1],enabled_root=RevitCopiesGuard.MatchingRoot(args[1],projectPolicy)})); break;

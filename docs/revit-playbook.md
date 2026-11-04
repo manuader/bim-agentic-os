@@ -39,7 +39,12 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   `query.fill_patterns`), `material.set` to darken/adjust, then `wall_type.create` / `floor_type.create` (structure =
   core; `thermal_air` = Revit's Thermal/Air Layer) and `element.change_type` to switch existing walls/floors/roofs.
   Realistic views still show the base material's appearance asset (textures are not authored by the commands).
-- **Saving**: there is no save command yet; the owner saves with *Guardar como*. Pending capability.
+- **Saving**: `document.save` (2026-11-04, chat-export-save) saves the open document to its own path when it is under an
+  enabled folder (not workshared, cloud, read-only or never saved); the first save of a new project is still *Guardar
+  como* in Revit. Enabling a folder in `.bim/revit-enabled-roots.txt` no longer needs a Claude restart.
+- **Reviewing from the phone**: `view.export_image` (a 3D view, plan, section, elevation or sheet; `pixel_size` 1600 by
+  default; optional `visual_style` realistic/shaded/hidden_line/consistent_colors, rolled back after the export) writes a
+  PNG/JPG under `<repo>/.bim/exports/<utc>/` and returns its absolute path, size and sha256; nothing in the model changes.
 
 ## Lessons (2026-11-04, cabin redesign on the real project)
 - **Change a wall/roof type** without a dedicated command: `element.set_parameter` `ELEM_TYPE_PARAM` = the new type's
@@ -60,5 +65,6 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
 - Materials (color, patterns, duplicate-for-appearance), wall/floor types with layers and element.change_type — added
   (chat-materials-types, unit-tested, executor compiled only); authoring appearance assets/textures is still pending.
 - Curved roofs (extrusion roofs) for barrel/curved sheet-metal roofs.
-- Document save / save-as to an enabled folder.
+- Document save: added (chat-export-save, unit-tested, executor compiled only); save-as is still pending.
+- View image export for phone review: added (chat-export-save, unit-tested, executor compiled only).
 - Model in-place / direct shapes for site-specific elements (a boulder kept inside the building).
