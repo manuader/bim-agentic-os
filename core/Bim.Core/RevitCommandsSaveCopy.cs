@@ -63,14 +63,22 @@ public static class RevitSaveCopyGuard
     // The last path segment.
     public static string FileName(string path) => path.Split('/', '\\').Last();
 
+    // Revit's own backups are <name>.NNNN.rvt; a copy never takes that shape.
+    static readonly Regex BackupName = new(@"\.[0-9]{4}\.[rR][vV][tT]\z", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
     public static bool IsTestCopyName(string fileName) => fileName.Length <= MaxFileNameChars && TestCopyName.IsMatch(fileName) && !fileName.Contains("..", StringComparison.Ordinal);
+
+    // A target name: a test copy name that is not a Revit backup name.
+    public static bool IsCopyTargetName(string fileName) => IsTestCopyName(fileName) && !BackupName.IsMatch(fileName);
 
     // Text rules the binder applies too (args_invalid there); null when acceptable.
     public static RevitSaveCopyRefusal? PathProblem(string path)
     {
         if (!RevitCopiesGuard.IsAbsoluteNormalized(path)) return new(PathInvalid, "args.path", "an absolute path without . or .. segments, device prefixes or ':' streams is required");
+        // Windows drops trailing dots and spaces from a segment (".. " is "..", "native-runs." is "native-runs").
+        if (path.Split('/', '\\').Any(segment => segment.EndsWith('.') || segment.EndsWith(' '))) return new(PathInvalid, "args.path", "a folder or file name ending with a dot or space is not accepted (Windows would read another path)");
         if (path.Split('/', '\\').Any(segment => ShortName.IsMatch(segment))) return new(PathInvalid, "args.path", "8.3 short names (with ~ and a digit) are not accepted; give the long path");
-        if (!IsTestCopyName(FileName(path))) return new(NameInvalid, "args.path", "the file name must be " + FilePrefix + "*" + Extension + " (letters, digits, '.', '_' or '-' after the prefix, no '..', at most " + MaxFileNameChars.ToString(CultureInfo.InvariantCulture) + " characters)");
+        if (!IsCopyTargetName(FileName(path))) return new(NameInvalid, "args.path", "the file name must be " + FilePrefix + "*" + Extension + " (letters, digits, '.', '_' or '-' after the prefix, no '..', not a Revit backup name *.NNNN.rvt, at most " + MaxFileNameChars.ToString(CultureInfo.InvariantCulture) + " characters)");
         return null;
     }
 
@@ -95,13 +103,27 @@ public static class RevitSaveCopyGuard
         return null;
     }
 
-    // STUB (red): post-SaveAs location check.
-    public static string? CheckWritten(string target, string? repositoryDirectory, string? fullPath, string? finalPath, RevitFileSystemProbe links) => null;
+    // After Document.SaveAs (the folder could have been swapped for a junction after Check): null when the written
+    // file still lies inside the copies root under its requested spelling. fullPath is Path.GetFullPath(target) and
+    // finalPath the file's final link target (or fullPath when it is not a link), null when they could not be
+    // resolved. Otherwise the problem, naming where the file actually is.
+    public static string? CheckWritten(string target, string? repositoryDirectory, string? fullPath, string? finalPath, RevitFileSystemProbe links)
+    {
+        var root = CopiesRoot(repositoryDirectory);
+        if (root is null) return "no repository folder was found to check the copy " + target;
+        if (fullPath is null || finalPath is null) return "the copy " + target + " could not be resolved on disk";
+        if (!SamePath(fullPath, target)) return "the copy resolves to " + fullPath + ", not " + target;
+        if (!RevitCopiesGuard.IsUnder(finalPath, root)) return "the copy " + target + " is a link to " + finalPath + ", outside " + root;
+        if (RevitLinkGuard.Check(target, root, links) is not null) return "a symlink, junction or hard link now lies between " + root + " and the copy " + target + " (it resolves to " + finalPath + ")";
+        return null;
+    }
 
-    // Lowercase hex SHA-256 of a file, streamed.
+    static bool SamePath(string a, string b) => RevitCopiesGuard.IsUnder(a, b) && RevitCopiesGuard.IsUnder(b, a);
+
+    // Lowercase hex SHA-256 of a file, streamed. Revit keeps the saved document open, so the copy is shared for write.
     public static string Sha256File(string path)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16, FileOptions.SequentialScan);
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
 }
@@ -161,8 +183,9 @@ public static class RevitSaveCopyRules
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    // STUB (red).
-    public static string WrittenElsewhereDetail(string problem, string documentPath) => "";
+    // The failure detail when CheckWritten refuses a copy Revit already wrote: the document is re-pointed regardless.
+    public static string WrittenElsewhereDetail(string problem, string documentPath) =>
+        "Revit saved the copy, but its location check failed after the save: " + problem + "; the open document now points to " + documentPath + " (send later requests with that document.path, or close it in Revit)";
 
     // The reply warning: later requests must name the copy (Revit re-points the open document on SaveAs).
     public static string DocumentNowCopyWarning(string target, string sourcePath) =>
@@ -184,7 +207,7 @@ public static partial class RevitCommandCatalogue
         {
             new RevitCommandSpec(RevitSaveCopyGuard.Command, true, "Save the open " + RevitSaveCopyGuard.FilePrefix + "*.rvt test copy as a new " + RevitSaveCopyGuard.FilePrefix + "*.rvt file under the repository's " + RevitSaveCopyGuard.CopiesDirectory + " folder (Revit Save As, never overwriting); "
                 + "refused for another file name, a folder outside " + RevitSaveCopyGuard.CopiesDirectory + ", an existing file, a link on the way, a real project (even an owner-enabled one), and workshared, cloud, family or read-only documents. "
-                + "Reads back the copy's absolute path, size in bytes and sha256 and that the source file was not rewritten. Revit then keeps the copy open in place of the source: later requests must name the returned path.", schema, BindSaveCopy),
+                + "Reads back the copy's absolute path, size in bytes and sha256 and that the source file was not rewritten. Revit then keeps the copy open in place of the source: later requests must name the returned path. A retry after success is refused target_exists (not replayed); pick a new name.", schema, BindSaveCopy),
         };
     }
 

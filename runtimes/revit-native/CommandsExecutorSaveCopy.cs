@@ -19,6 +19,10 @@ namespace Bim.Revit;
 // ProjectInformation UniqueId (the envelope document identity) stays, unsaved changes are written to the copy only and
 // the source file keeps its last saved state. The readback requires exactly that, and the reply warns that later
 // requests must name the copy's path. There is no API to write a copy and keep the open document on the source.
+// After SaveAs the target is checked again (RevitSaveCopyGuard.CheckWritten: full path, final link target, link
+// guard from the copies root) because a folder could be swapped for a junction between the check and the save; a
+// failure is transaction_failed naming where the file is and the path the open document now points to. The SHA-256 is
+// read with FileShare.ReadWrite | Delete because Revit keeps the saved file open.
 // Unverified in Revit (owner session required): that SaveAs re-points PathName and clears IsModified as documented
 // for the UI Save As; that it leaves the source file's size and last-write time untouched; that it shows no dialog
 // for a file upgraded from an older release; that OverwriteExistingFile = false throws (rather than prompts) when a
@@ -40,6 +44,9 @@ internal static partial class CommandExecutor
         {
             throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.path", "Revit did not save the copy: " + error.Message);
         }
+        // The folder could have been swapped for a junction between the check and the save: check where the file landed.
+        if (RevitSaveCopyGuard.CheckWritten(args.Path, Policy().RepositoryDirectory, FullPath(args.Path), FinalPath(args.Path), RevitFileSystemProbe.Real) is { } elsewhere)
+            throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.path", RevitSaveCopyRules.WrittenElsewhereDetail(elsewhere, d.PathName));
         var copy = FileState(args.Path);
         string? sha = null;
         try { if (copy.Exists) sha = RevitSaveCopyGuard.Sha256File(args.Path); }
@@ -49,6 +56,17 @@ internal static partial class CommandExecutor
             throw new RevitCommandException(RevitCommandCodes.TransactionFailed, null, "Revit saved the copy, but the readback differs (the open document may now be the copy): " + mismatch);
         return CommandResponses.Success(request, Array.Empty<string>(), Array.Empty<string>(), RevitSaveCopyRules.Json(source, observed, hadUnsavedChanges),
             new[] { RevitSaveCopyRules.DocumentNowCopyWarning(observed.DocumentPath, source) }).ToJson();
+    }
+
+    // The file's final link target, or its full path when it is not a link; null when it cannot be resolved.
+    static string? FinalPath(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            return new FileInfo(full).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? full;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException) { return null; }
     }
 
     static SaveCopyFileState FileState(string path)
