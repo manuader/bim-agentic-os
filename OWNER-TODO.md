@@ -110,3 +110,9 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay149 (2026-11-04, cloud)
 - No new owner action. New on main (bb0ccc2): `pwsh -File scripts/package.ps1 -OutputDirectory <new folder>` builds a release package (CLI + MCP + add-in manifest template) and `scripts/package-verify.ps1 -PackageDirectory <folder>` checks it; `query.journal` (read-only) is compiled but not yet in the owner -Catalogue steps.
 - Still open: 🔒 ONE `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` on a test copy (Load Once); 🔒 N21 `... -Runs 1`; escritorio/estudio/biblioteca class; Uniclass licence.
+
+## Relay151 (2026-11-04, cloud)
+- No new required owner action (P4-04 default documentation set, P6-06 DXF attributes/MTEXT, P7-05 facade openings are headless and unit-tested in CI).
+- Optional decision: for lots between party walls (medianeras), confirm that illumination windows may go only on the front and back (contrafrente) footprint edges; P7-05 currently takes the allowed edges as an option (default all four).
+- Optional: if you have a real CAD plan with room-tag blocks (ATTRIB NAME/AREA), drop a copy in the repo's tests/cad/fixtures via a relay request to replace the hand-written fixture.
+- Still open: 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run on a test copy (Load Once), 🔒 N21 `... -Runs 1`, escritorio/estudio/biblioteca class, Uniclass licence.
