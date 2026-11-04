@@ -227,10 +227,16 @@ static class FacadeIrTests
             if (generated.Brief is null || generated.Alternatives is null) { problem ??= typology + " not generated"; continue; }
             foreach (var alternative in generated.Alternatives.Ranked)
             {
-                var label = typology + " alternative " + Text(alternative.Index) + ": ";
+                var label = typology + " " + F(lot.WidthMetres) + "x" + F(lot.DepthMetres) + " alternative " + Text(alternative.Index) + ": ";
                 var plan = alternative.Plan;
+                var refusal = IntentCompiler.Validate(FacadeIrBuilder.Intent(plan));
                 var proto = Safe(() => FacadeIrBuilder.Prototype(ProjectId, 0, plan));
-                if (proto is null || Compiler.Validate(proto).Length > 0) { problem ??= label + "prototype does not compile clean"; continue; }
+                if (proto is null || Compiler.Validate(proto).Length > 0)
+                {
+                    problem ??= label + "prototype does not compile clean: " + string.Join("; ", refusal.Select(i => i.Code + "@" + i.Key + " " + i.Detail))
+                        + " rooms " + string.Join(" ", plan.Rooms.Select(r => r.InstanceId + "(" + F(r.Rect.X) + "," + F(r.Rect.Y) + "," + F(r.Rect.Width) + "," + F(r.Rect.Depth) + ")"));
+                    continue;
+                }
                 var placed = FacadePlanner.Place(plan, caba);
                 if (!placed.IsComplete) { incomplete++; continue; }
                 var circulation = CirculationAnalyzer.Analyze(generated.Brief, plan);
