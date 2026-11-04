@@ -18,3 +18,12 @@ Coordenadas provisorias (mm, proyecto; salamandra existente en 64000,15000 = cen
 - Vacío SE ingreso: (65600,13400) (69200,14600) (69200,11400) (64800,11000); antecámara ~2.4x2.4 m dentro, acceso desde sendero al S.
 
 - Owner (2026-11-04): modelar C2 AL LADO de la cabaña actual (no reemplazar); comparar y borrar después la que no quede. Desplazar todas las coordenadas (p.ej. +20000 en X) evitando árboles/rocas del sitio.
+
+## Modelado 2026-11-04 (real Revit, pipe 3888) — guardado con document.save
+Fuego F=(85500,13500); d=(0.707,-0.707) bisagra hacia SE; m=(0.707,0.707) hacia NE.
+- Madera: WA(82106,16894) WB(86631,12369) WC(90379,14985) WD(84722,20642); techo 1 agua cae a NE, base 3000, 35°, alto 6151 en bisagra.
+- Piedra: SA(84369,14631) SB(88894,10106) SC(85712,6924) SD(81187,11449); techo cae a SO, base 2400, 35°, alto 5551.
+- Vidrio: WA-WD y WD-WC (h3000), SA-WA (h3000 + madera arriba); lucernario SA-WB base 5551 h600.
+- Muros piedra provisorios "Exterior - Brick on CMU" 490; madera "Generic - 200mm". Techos "Cabaña - chapa, aislación y machimbre".
+- Salamandra DOMOFOCUS b171c7aa-...-00034968 en F. Vista "C2 3D".
+Pendiente: materiales reales (piedra/lenga/chapa negra), puertas antecámara, semicubierto (techo), piso, tabiques baño.
