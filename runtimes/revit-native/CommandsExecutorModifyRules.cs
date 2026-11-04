@@ -13,7 +13,10 @@ namespace Bim.Revit;
 public sealed record ParameterTarget(ObservedParameter Parameter, bool YesNo, bool IntegerSpec);
 // One delete target: DocumentValidation.CanDeleteElement, Element.Pinned, a group member (GroupId valid), the
 // document's ProjectInformation, the command receipt DataStorage, or the document's active view.
-public sealed record DeleteTargetFacts(string UniqueId, bool CanDelete, bool Pinned, bool InGroup, bool ProjectInformation, bool ReceiptStore, bool ActiveView);
+// OwnerUid (dependents only): the element that owns this one as a sub-element Revit deletes with it (a curtain grid
+// line, panel or mullion of a curtain wall or roof, a sketch of its owner, a sketch's plane or lines, an internal element
+// without a category), null for an independent element.
+public sealed record DeleteTargetFacts(string UniqueId, bool CanDelete, bool Pinned, bool InGroup, bool ProjectInformation, bool ReceiptStore, bool ActiveView, string? OwnerUid = null);
 // What a delete removes besides its targets: the dependents' UniqueIds (sorted and distinct, hex case ignored) and how many deleted ids
 // had no element to name them.
 public sealed record DeleteCascade(IReadOnlyList<string> Dependents, int Unidentified);
@@ -86,7 +89,7 @@ public static class CommandRulesModify
 
     // Every element the cascade would remove must be deletable on its own terms: a pinned, grouped or otherwise
     // protected dependent refuses the whole delete.
-    public static void CheckDependents(IReadOnlyList<DeleteTargetFacts> dependents)
+    public static void CheckDependents(IReadOnlyList<DeleteTargetFacts> dependents, IReadOnlyCollection<string>? targets = null)
     {
         foreach (var dependent in dependents)
         {

@@ -391,6 +391,32 @@ static class CatalogueModifyChecks
                 "a dependent that is " + word + " refuses the delete, naming it", refusal?.Detail ?? "");
         }
 
+        // chat-section-profile-fixes (owner, Revit 2025.2, 2026-11-04): deleting curtain wall ...00034895 was refused for
+        // its own curtain grid ...00034896, and a profiled wall/roof for its sketch ...00034904 ("cannot be deleted
+        // (DocumentValidation.CanDeleteElement)"). Sub-elements a target owns are deleted with it and skip CanDelete.
+        const string CurtainUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-00034895";
+        const string GridUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-00034896";
+        const string PanelUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-00034897";
+        const string SketchUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-00034904";
+        const string SketchLineUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-00034905";
+        const string ForeignUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-00034999";
+        var curtainTargets = new[] { CurtainUid };
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(GridUid) with { CanDelete = false, OwnerUid = CurtainUid }, Target(PanelUid) with { CanDelete = false, OwnerUid = CurtainUid } }, curtainTargets)) is null,
+            "a curtain wall's own grid and panels that CanDeleteElement refuses individually do not refuse deleting the wall");
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(SketchUid) with { CanDelete = false, OwnerUid = CurtainUid }, Target(SketchLineUid) with { CanDelete = false, OwnerUid = SketchUid } }, curtainTargets)) is null,
+            "a profiled wall or roof's sketch and the sketch's lines (owned through the sketch) do not refuse deleting it");
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(ForeignUid) with { CanDelete = false } }, curtainTargets)) is { Code: RevitCommandCodes.ArgsInvalid } foreign && foreign.Detail!.Contains(ForeignUid, StringComparison.Ordinal) && foreign.Detail.Contains("CanDeleteElement", StringComparison.Ordinal),
+            "a foreign dependent that cannot be deleted still refuses the delete");
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(GridUid) with { CanDelete = false, OwnerUid = ForeignUid } }, curtainTargets)) is { Code: RevitCommandCodes.ArgsInvalid },
+            "a sub-element owned by an element that is not deleted still refuses");
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(SketchLineUid) with { CanDelete = false, OwnerUid = SketchUid }, Target(SketchUid) with { CanDelete = false, OwnerUid = SketchLineUid } }, curtainTargets)) is { Code: RevitCommandCodes.ArgsInvalid },
+            "an ownership cycle that never reaches a target does not exempt anything");
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(PanelUid) with { CanDelete = false, Pinned = true, OwnerUid = CurtainUid } }, curtainTargets)) is { } pinnedOwned && pinnedOwned.Detail!.Contains("pinned", StringComparison.Ordinal),
+            "an owned sub-element that is pinned still refuses (only CanDeleteElement is waived)");
+        Check(Thrown(() => CommandRulesModify.CheckDependents(new[] { Target(GridUid) with { CanDelete = false, OwnerUid = CurtainUid.ToUpperInvariant() } }, curtainTargets)) is null, "owner UniqueIds compare ignoring hex case");
+        var ownedCascade = CommandRulesModify.Cascade(curtainTargets, new string?[] { CurtainUid, GridUid, PanelUid });
+        Check(ownedCascade.Dependents.SequenceEqual(new[] { GridUid, PanelUid }), "owned sub-elements are still listed as dependents (dry run and confirm_dependents)");
+
         // Review item 3: a cascade beyond what confirm_dependents can hold is refused, dry run or not.
         var tooMany = Enumerable.Range(1, RevitModifyRules.MaxConfirmedDependents + 1).Select(Hex).ToArray();
         Check(Thrown(() => CommandRulesModify.CheckCascade(new DeleteCascade(tooMany.Take(RevitModifyRules.MaxConfirmedDependents).ToArray(), 0), Array.Empty<string>())) is null, "a cascade of 1000 dependents can be confirmed");
