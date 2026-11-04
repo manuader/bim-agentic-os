@@ -198,6 +198,8 @@ try
 
     // ---- Load refusals: malformed, unknown kinds, tampering, reordering, non-canonical ----
     string Load(string json) { var result = ProvenanceLedger.Load(json); return result.Code + (result.Sequence is null ? "" : "#" + result.Sequence.Value.ToString(CultureInfo.InvariantCulture)) + (result.Detail is null ? "" : "@" + result.Detail); }
+    // Code and entry number only (the detail of chain and order refusals is informative text).
+    string Located(string json) => Load(json).Split('@')[0];
     var entries = ledger.Entries();
     ProvenanceEntry Rehash(ProvenanceEntry entry) => entry with { Hash = ProvenanceLedgerFormat.ComputeHash(entry) };
     IReadOnlyList<ProvenanceEntry> Rechain(IEnumerable<ProvenanceEntry> list)
@@ -231,21 +233,21 @@ try
         Check(code.Split('#', '@')[0] == expected, "load refuses " + name, code);
     }
     var swapped = new List<ProvenanceEntry>(entries); (swapped[1], swapped[2]) = (swapped[2], swapped[1]);
-    Check(Load(ProvenanceLedgerFormat.Write(swapped)) == ProvenanceCodes.SequenceBroken + "#2", "load refuses entries out of order", Load(ProvenanceLedgerFormat.Write(swapped)));
+    Check(Located(ProvenanceLedgerFormat.Write(swapped)) == ProvenanceCodes.SequenceBroken + "#2", "load refuses entries out of order", Load(ProvenanceLedgerFormat.Write(swapped)));
     var gap = entries.Where(entry => entry.Sequence != 3).ToList();
     Check(Load(ProvenanceLedgerFormat.Write(gap)).StartsWith(ProvenanceCodes.SequenceBroken + "#", StringComparison.Ordinal), "load refuses a removed middle entry", Load(ProvenanceLedgerFormat.Write(gap)));
     var edited = new List<ProvenanceEntry>(entries) { [2] = entries[2] with { Source = new CadImportProvenance(otherHash, "2A") } };
-    Check(Load(ProvenanceLedgerFormat.Write(edited)) == ProvenanceCodes.HashMismatch + "#3", "load refuses an edited entry whose hash was not recomputed", Load(ProvenanceLedgerFormat.Write(edited)));
+    Check(Located(ProvenanceLedgerFormat.Write(edited)) == ProvenanceCodes.HashMismatch + "#3", "load refuses an edited entry whose hash was not recomputed", Load(ProvenanceLedgerFormat.Write(edited)));
     var rehashed = new List<ProvenanceEntry>(entries) { [2] = Rehash(entries[2] with { Source = new CadImportProvenance(otherHash, "2A") }) };
-    Check(Load(ProvenanceLedgerFormat.Write(rehashed)) == ProvenanceCodes.ChainBroken + "#4", "load refuses an edited entry whose own hash was recomputed (the next prev_hash breaks)", Load(ProvenanceLedgerFormat.Write(rehashed)));
+    Check(Located(ProvenanceLedgerFormat.Write(rehashed)) == ProvenanceCodes.ChainBroken + "#4", "load refuses an edited entry whose own hash was recomputed (the next prev_hash breaks)", Load(ProvenanceLedgerFormat.Write(rehashed)));
     var forkedPrev = new List<ProvenanceEntry>(entries) { [1] = Rehash(entries[1] with { PrevHash = otherHash }) };
-    Check(Load(ProvenanceLedgerFormat.Write(forkedPrev)) == ProvenanceCodes.ChainBroken + "#2", "load refuses a prev_hash that is not the previous hash", Load(ProvenanceLedgerFormat.Write(forkedPrev)));
+    Check(Located(ProvenanceLedgerFormat.Write(forkedPrev)) == ProvenanceCodes.ChainBroken + "#2", "load refuses a prev_hash that is not the previous hash", Load(ProvenanceLedgerFormat.Write(forkedPrev)));
     var swappedRechained = Rechain(swapped);
     Check(Load(ProvenanceLedgerFormat.Write(swappedRechained)) == ProvenanceCodes.Ok, "a reordered but fully rechained ledger is a different valid ledger (the chain is unkeyed)");
     var duplicate = Rechain(entries.Append(entries[0]));
-    Check(Load(ProvenanceLedgerFormat.Write(duplicate)) == ProvenanceCodes.DuplicateEntry + "#" + duplicate.Count.ToString(CultureInfo.InvariantCulture), "load refuses a repeated record", Load(ProvenanceLedgerFormat.Write(duplicate)));
+    Check(Located(ProvenanceLedgerFormat.Write(duplicate)) == ProvenanceCodes.DuplicateEntry + "#" + duplicate.Count.ToString(CultureInfo.InvariantCulture), "load refuses a repeated record", Load(ProvenanceLedgerFormat.Write(duplicate)));
     var conflicting = Rechain(entries.Append(entries[0] with { Source = new IntentProvenance("intent-a", "rule.other") }));
-    Check(Load(ProvenanceLedgerFormat.Write(conflicting)) == ProvenanceCodes.Conflict + "#" + conflicting.Count.ToString(CultureInfo.InvariantCulture), "load refuses a conflicting record", Load(ProvenanceLedgerFormat.Write(conflicting)));
+    Check(Located(ProvenanceLedgerFormat.Write(conflicting)) == ProvenanceCodes.Conflict + "#" + conflicting.Count.ToString(CultureInfo.InvariantCulture), "load refuses a conflicting record", Load(ProvenanceLedgerFormat.Write(conflicting)));
     var invalidStored = Rechain(new[] { entries[0] with { Source = new CadImportProvenance(fileHash, "zz") } });
     Check(Load(ProvenanceLedgerFormat.Write(invalidStored)) == ProvenanceCodes.RecordInvalid + "#1@entity_handle", "load refuses a malformed stored record with its field", Load(ProvenanceLedgerFormat.Write(invalidStored)));
     var emptyElement = Rechain(new[] { entries[0] with { ElementId = Guid.Empty } });
@@ -273,11 +275,9 @@ try
     };
     foreach (var (name, json, expected) in entryRefusals)
         Check(Load(json) == expected, "load refuses " + name, Load(json));
-    var upperGuid = text.Replace(entries[0].ElementId.ToString("D"), entries[0].ElementId.ToString("D").ToUpperInvariant(), StringComparison.Ordinal);
-    Check(Load(upperGuid).StartsWith(ProvenanceCodes.NotCanonical, StringComparison.Ordinal) || Load(upperGuid).StartsWith(ProvenanceCodes.HashMismatch, StringComparison.Ordinal),
-        "an upper-case element id is refused (hash or canonical form)", Load(upperGuid));
-    var upperRehashed = text.Replace("\"element_id\":\"" + entries[0].ElementId.ToString("D") + "\"", "\"element_id\":\"" + entries[0].ElementId.ToString("D").ToUpperInvariant() + "\"", StringComparison.Ordinal);
-    Check(!ProvenanceLedger.Load(upperRehashed).Ok, "a non-canonical element id never loads", Load(upperRehashed));
+    var lettered = entries.First(entry => entry.ElementId.ToString("D").Any(char.IsLetter)).ElementId.ToString("D");
+    var upperGuid = text.Replace("\"element_id\":\"" + lettered + "\"", "\"element_id\":\"" + lettered.ToUpperInvariant() + "\"", StringComparison.Ordinal);
+    Check(upperGuid != text && Load(upperGuid) == ProvenanceCodes.NotCanonical, "an upper-case element id is refused as not canonical (its hash still matches the parsed id)", Load(upperGuid));
 
     // ---- Append-only surface ----
     var mutators = typeof(ProvenanceLedger).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
