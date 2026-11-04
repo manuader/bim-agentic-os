@@ -137,14 +137,15 @@ public static class CommandReadbackRoofExtrusion
             return "the roof profile reads back as " + observed.Edges.Count + " curves that differ from the " + args.Profile.Count + " requested segments (ends and midpoints within 1 mm, same kind)";
         if (observed.BoxMin is not { Length: 3 } min || observed.BoxMax is not { Length: 3 } max) return "the roof has no bounding box";
         // Wrong-side guard, both ways: the box must hold the profile swept to the requested side and must not be
-        // nearer the profile swept to the other side (skipped when both sides give the same box).
+        // nearer the profile swept to the other side by more than 2 x 25 mm (skipped when both sides give the same box;
+        // the margin keeps a box that holds both sweeps, a tie, from being refused on rounding).
         var expected = CommandRulesRoofExtrusion.ExpectedBox(args, observed.LevelElevationMm, mirrored: false);
         var other = CommandRulesRoofExtrusion.ExpectedBox(args, observed.LevelElevationMm, mirrored: true);
         string Box(double[] lo, double[] hi) => "[" + string.Join(", ", lo.Concat(hi).Select(v => F(Math.Round(v, 1)))) + "]";
         if (!CommandRulesRoofExtrusion.Holds(min, max, expected))
             return "the roof bounding box " + Box(min, max) + " does not hold the requested profile swept along the plane's left normal " + Box(expected.Min, expected.Max) + " (extruded the wrong way?)";
         if (CommandRulesRoofExtrusion.Gap(expected.Min, expected.Max, other) > 6 * CommandRulesRoofExtrusion.BoxToleranceMm
-            && CommandRulesRoofExtrusion.Gap(min, max, other) < CommandRulesRoofExtrusion.Gap(min, max, expected))
+            && CommandRulesRoofExtrusion.Gap(min, max, other) + 2 * CommandRulesRoofExtrusion.BoxToleranceMm < CommandRulesRoofExtrusion.Gap(min, max, expected))
             return "the roof bounding box " + Box(min, max) + " is nearer the profile swept to the other side of the plane " + Box(other.Min, other.Max) + " (extruded the wrong way?)";
         return null;
     }

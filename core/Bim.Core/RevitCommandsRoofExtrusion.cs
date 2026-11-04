@@ -74,6 +74,9 @@ public static class RevitRoofExtrusionRules
                     RoofProfileArc arc => Through(previous, arc.End, arc.Mid, field + "[" + i + "]"),
                     _ => new RoofProfileLine(previous, segment.End),
                 };
+                // Snapping may shorten a line below Revit's short-curve tolerance.
+                if (segment is RoofProfileLine)
+                    RevitCommandGeometry.CheckLine(previous.U.Millimetres, previous.Z.Millimetres, segment.End.U.Millimetres, segment.End.Z.Millimetres, field + "[" + i + "]");
             }
             connected.Add(segment);
         }
