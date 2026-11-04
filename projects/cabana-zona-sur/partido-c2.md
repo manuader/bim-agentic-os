@@ -27,3 +27,12 @@ Fuego F=(85500,13500); d=(0.707,-0.707) bisagra hacia SE; m=(0.707,0.707) hacia 
 - Muros piedra provisorios "Exterior - Brick on CMU" 490; madera "Generic - 200mm". Techos "Cabaña - chapa, aislación y machimbre".
 - Salamandra DOMOFOCUS b171c7aa-...-00034968 en F. Vista "C2 3D".
 Pendiente: materiales reales (piedra/lenga/chapa negra), puertas antecámara, semicubierto (techo), piso, tabiques baño.
+
+## 2026-11-04 tarde — C2 RECHAZADA por el owner ("no encuentro lógica"); pidió algo como diapositivas 13-14 (Garibaldi). Owner borró C2 a mano.
+## C3 "volumen tallado" (Garibaldi) modelada y guardada
+- Rectángulo 6x9 m x 82500..88500, y 9000..18000; cumbrera N-S; techo 50°, alero z2600, cumbrera z6175; zócalo hormigón (Foundation 300) -500..+400; muros desde +400.
+- Esquina NE tallada (x 86100..88500, y 16000..18000) = semicubierto/antecámara, muros "C3 Porche madera" (lenga).
+- Envolvente "C3 Envolvente chapa negra" (chapa negra ext / lenga int); hastial sur usa "(cara invertida)" porque Revit pone la cara exterior a la IZQUIERDA del sentido de dibujo. Techo "C3 Cubierta chapa negra y lenga".
+- Salamandra DOMOFOCUS en (85500,13500) centro (z 0; falta subir a +400).
+- Pendiente: vidriado norte, puerta(s) antecámara, núcleo de piedra al sur (baño+roca), piso, ventanas laterales.
+- Lecciones: elevación "East" del proyecto corta DENTRO de C3 (marcador x≈87750); vista 3D por defecto mira desde el NO.
