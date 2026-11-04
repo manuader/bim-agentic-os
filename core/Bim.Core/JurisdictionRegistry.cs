@@ -33,6 +33,11 @@ public sealed class JurisdictionRegistry
         foreach (var claim in claims)
         {
             ArgumentNullException.ThrowIfNull(claim);
+            // Hand-built claims get the same checks as parsed sidecars.
+            if (!JurisdictionRedStub.On && !JurisdictionClaim.IsCode(claim.Code)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.CodeInvalid, Printable(claim.Code), "claim on pack " + Printable(claim.Pack) + " has a malformed jurisdiction code")); continue; }
+            if (!JurisdictionRedStub.On && !SkillParser.IsId(claim.Pack) || !claim.Pack.StartsWith(claim.Code + ".", StringComparison.Ordinal)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.PackMismatch, Printable(claim.Pack), "pack is not a skill id under jurisdiction " + claim.Code)); continue; }
+            if (!JurisdictionRedStub.On && !NamesValid(claim.CountryNames) || !NamesValid(claim.MunicipalityNames)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.ValueInvalid, claim.Pack, "country and municipality name lists must be present and hold non-blank well-formed names")); continue; }
+            if (!JurisdictionRedStub.On && claim.Note is not null && !WellFormed(claim.Note)) { issues.Add(new JurisdictionIssue(JurisdictionCodes.ValueInvalid, claim.Pack, "note is not well-formed text")); continue; }
             var pack = catalog.Find(claim.Pack);
             if (pack is null) { issues.Add(new JurisdictionIssue(JurisdictionCodes.PackMissing, claim.Pack, "jurisdiction " + claim.Code + " names a pack that is not in the catalog")); continue; }
             if (pack.Kind != SkillKind.Code) { issues.Add(new JurisdictionIssue(JurisdictionCodes.PackNotCode, claim.Pack, "jurisdiction " + claim.Code + " names a " + SkillParser.KindName(pack.Kind) + " skill; only code packs serve a jurisdiction")); continue; }
@@ -41,6 +46,20 @@ public sealed class JurisdictionRegistry
         Claims = kept.OrderBy(claim => claim.Code, StringComparer.Ordinal).ThenBy(claim => claim.Pack, StringComparer.Ordinal).ToArray();
         foreach (var group in Claims.GroupBy(claim => claim.Code, StringComparer.Ordinal).Where(group => group.Count() > 1))
             issues.Add(new JurisdictionIssue(JurisdictionCodes.ClaimDuplicate, group.Key, "claimed by " + string.Join(", ", group.Select(claim => claim.Pack))));
+        // Two jurisdictions whose country and municipality aliases coincide after normalisation cannot be told apart by
+        // metadata; they stay registered (metadata selection is refused as ambiguous) and the overlap is reported here.
+        for (var left = 0; !JurisdictionRedStub.On && left < Claims.Count; left++)
+            for (var right = left + 1; right < Claims.Count; right++)
+            {
+                var a = Claims[left];
+                var b = Claims[right];
+                if (a.Code == b.Code) continue;
+                var countries = CountryKeys(a).Intersect(CountryKeys(b), StringComparer.Ordinal).OrderBy(key => key, StringComparer.Ordinal).ToArray();
+                if (countries.Length == 0) continue;
+                var municipalities = MunicipalityKeys(a).Intersect(MunicipalityKeys(b), StringComparer.Ordinal).OrderBy(key => key, StringComparer.Ordinal).ToArray();
+                if (municipalities.Length == 0) continue;
+                issues.Add(new JurisdictionIssue(JurisdictionCodes.AliasOverlap, a.Code + " " + b.Code, "both match country " + string.Join("|", countries) + " and municipality " + string.Join("|", municipalities)));
+            }
         Issues = issues.OrderBy(issue => issue.Code, StringComparer.Ordinal).ThenBy(issue => issue.Subject, StringComparer.Ordinal).ThenBy(issue => issue.Detail, StringComparer.Ordinal).ToArray();
         var claimed = new HashSet<string>(Claims.Select(claim => claim.Pack), StringComparer.Ordinal);
         UnregisteredCodePacks = catalog.Skills.Where(skill => skill.Kind == SkillKind.Code && !claimed.Contains(skill.Id)).Select(skill => skill.Id).ToArray();
@@ -50,6 +69,13 @@ public sealed class JurisdictionRegistry
     public IReadOnlyList<JurisdictionClaim> Claims { get; }
     public IReadOnlyList<JurisdictionIssue> Issues { get; }
     public IReadOnlyList<string> UnregisteredCodePacks { get; }
+
+    // The single claim on pack, or null when no claim (or a duplicated code) covers it.
+    public JurisdictionClaim? ClaimFor(string packId)
+    {
+        var claim = Claims.FirstOrDefault(candidate => candidate.Pack == packId);
+        return claim is not null && Claims.Count(candidate => candidate.Code == claim.Code) == 1 ? claim : null;
+    }
 
     // Distinct jurisdiction codes in ordinal order.
     public IReadOnlyList<string> Codes => Claims.Select(claim => claim.Code).Distinct(StringComparer.Ordinal).ToArray();
@@ -84,10 +110,21 @@ public sealed class JurisdictionRegistry
     // Metadata route (no Code): Country and Municipality are both required (only one: jurisdiction_incomplete); a claim
     // matches when the country equals its country label or a country name and the municipality equals its locality label
     // or a municipality name. No match: jurisdiction_unknown; more than one claim: jurisdiction_ambiguous. Nothing given:
-    // jurisdiction_unspecified.
-    public JurisdictionSelection Select(ProjectJurisdiction project)
+    // jurisdiction_unspecified. Text that is not well-formed (a lone surrogate) is jurisdiction_invalid. A stub claim is
+    // only selected when allowStub is true, else jurisdiction_stub_refused, so an example pack is never used by accident.
+    public JurisdictionSelection Select(ProjectJurisdiction project, bool allowStub = false)
     {
         ArgumentNullException.ThrowIfNull(project);
+        foreach (var (field, text) in new[] { ("code", project.Code), ("country", project.Country), ("municipality", project.Municipality) })
+            if (!JurisdictionRedStub.On && text is not null && !WellFormed(text)) return Refuse(JurisdictionCodes.JurisdictionInvalid, field, field + " is not well-formed text");
+        var selection = SelectAny(project);
+        if (!JurisdictionRedStub.On && selection.Claim is { Stub: true } stub && !allowStub)
+            return Refuse(JurisdictionCodes.JurisdictionStubRefused, stub.Code, "jurisdiction " + stub.Code + " is a stub example pack (" + stub.Pack + "), not real law; pass allowStub to use it");
+        return selection;
+    }
+
+    JurisdictionSelection SelectAny(ProjectJurisdiction project)
+    {
         var code = Blank(project.Code) ? null : project.Code!.Trim().ToLowerInvariant();
         var country = Blank(project.Country) ? null : Normalize(project.Country!);
         var municipality = Blank(project.Municipality) ? null : Normalize(project.Municipality!);
@@ -110,6 +147,25 @@ public sealed class JurisdictionRegistry
         if (found.Length == 0) return Refuse(JurisdictionCodes.JurisdictionUnknown, subject, "no registered jurisdiction matches; registered: " + Registered());
         if (found.Length > 1) return Refuse(JurisdictionCodes.JurisdictionAmbiguous, subject, "matches " + string.Join(", ", found.Select(claim => claim.Code + " (" + claim.Pack + ")")));
         return new JurisdictionSelection(found[0], JurisdictionSelection.ByMetadata, null);
+    }
+
+    static IEnumerable<string> CountryKeys(JurisdictionClaim claim) => claim.CountryNames.Select(Normalize).Append(claim.Country).Distinct(StringComparer.Ordinal);
+
+    static IEnumerable<string> MunicipalityKeys(JurisdictionClaim claim) => claim.MunicipalityNames.Select(Normalize).Append(claim.Locality).Distinct(StringComparer.Ordinal);
+
+    static bool NamesValid(IReadOnlyList<string>? names) => names is not null && names.All(name => name is not null && !string.IsNullOrWhiteSpace(name) && WellFormed(name));
+
+    static string Printable(string? text) => text is null ? "(null)" : WellFormed(text) ? text : "(malformed)";
+
+    // True when text has no lone UTF-16 surrogate, so it can be normalised and written as JSON.
+    internal static bool WellFormed(string text)
+    {
+        for (var index = 0; index < text.Length; index++)
+        {
+            if (char.IsHighSurrogate(text[index]) && index + 1 < text.Length && char.IsLowSurrogate(text[index + 1])) { index++; continue; }
+            if (char.IsSurrogate(text[index])) return false;
+        }
+        return true;
     }
 
     static bool CountryMatches(JurisdictionClaim claim, string normalized) =>

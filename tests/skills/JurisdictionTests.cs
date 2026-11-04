@@ -65,26 +65,26 @@ static class JurisdictionTests
             "jurisdiction: the stub pack is a code pack marked STUB / fictitious with every rule to-verify");
 
         // ---- Selection by code ----
-        void Selects(ProjectJurisdiction project, string code, string matchedBy, string name)
+        void Selects(ProjectJurisdiction project, string code, string matchedBy, string name, bool allowStub = false)
         {
-            var selection = registry.Select(project);
+            var selection = registry.Select(project, allowStub);
             check(selection.Succeeded && selection.Claim!.Code == code && selection.MatchedBy == matchedBy, "jurisdiction: " + name, Show(selection));
         }
-        void Refuses(JurisdictionRegistry target, ProjectJurisdiction project, string code, string name)
+        void Refuses(JurisdictionRegistry target, ProjectJurisdiction project, string code, string name, bool allowStub = false)
         {
-            var selection = target.Select(project);
+            var selection = target.Select(project, allowStub);
             check(!selection.Succeeded && selection.Claim is null && selection.Refusal!.Code == code, "jurisdiction: " + name, Show(selection));
         }
         Selects(new ProjectJurisdiction("ar.caba"), "ar.caba", JurisdictionSelection.ByCode, "code ar.caba selects the CABA pack");
         Selects(new ProjectJurisdiction(" AR.Caba "), "ar.caba", JurisdictionSelection.ByCode, "codes are trimmed and lower-cased");
-        Selects(new ProjectJurisdiction("xx.example"), "xx.example", JurisdictionSelection.ByCode, "code xx.example selects the stub pack");
+        Selects(new ProjectJurisdiction("xx.example"), "xx.example", JurisdictionSelection.ByCode, "code xx.example selects the stub pack when the caller opts in", allowStub: true);
         Selects(new ProjectJurisdiction("ar.caba", "Argentina", "CABA"), "ar.caba", JurisdictionSelection.ByCode, "a code with agreeing metadata selects by code");
 
         // ---- Selection by metadata ----
         Selects(new ProjectJurisdiction(null, "Argentina", "Ciudad Autónoma de Buenos Aires"), "ar.caba", JurisdictionSelection.ByMetadata, "country and municipality names select ar.caba (accents ignored)");
         Selects(new ProjectJurisdiction("", "  república   ARGENTINA ", "ciudad de buenos aires"), "ar.caba", JurisdictionSelection.ByMetadata, "metadata ignores case and whitespace runs; a blank code uses metadata");
         Selects(new ProjectJurisdiction(null, "ar", "caba"), "ar.caba", JurisdictionSelection.ByMetadata, "the code labels match as country and municipality");
-        Selects(new ProjectJurisdiction(null, "Example Country", "Example City"), "xx.example", JurisdictionSelection.ByMetadata, "metadata selects the stub jurisdiction");
+        Selects(new ProjectJurisdiction(null, "Example Country", "Example City"), "xx.example", JurisdictionSelection.ByMetadata, "metadata selects the stub jurisdiction when the caller opts in", allowStub: true);
 
         // ---- Refusals ----
         Refuses(registry, new ProjectJurisdiction(), JurisdictionCodes.JurisdictionUnspecified, "nothing given is jurisdiction_unspecified");
@@ -98,6 +98,13 @@ static class JurisdictionTests
         Refuses(registry, new ProjectJurisdiction(null, "Example Country", "CABA"), JurisdictionCodes.JurisdictionUnknown, "country and municipality of different jurisdictions match nothing");
         Refuses(registry, new ProjectJurisdiction("ar.caba", "Example Country"), JurisdictionCodes.JurisdictionConflict, "a code with a contradicting country is jurisdiction_conflict");
         Refuses(registry, new ProjectJurisdiction("xx.example", null, "CABA"), JurisdictionCodes.JurisdictionConflict, "a code with a contradicting municipality is jurisdiction_conflict");
+        Refuses(registry, new ProjectJurisdiction("ar.caba", null, "Example City"), JurisdictionCodes.JurisdictionConflict, "a code with a municipality of another registered jurisdiction is jurisdiction_conflict");
+        Refuses(registry, new ProjectJurisdiction("xx.example"), JurisdictionCodes.JurisdictionStubRefused, "a stub jurisdiction is refused by code unless the caller opts in");
+        Refuses(registry, new ProjectJurisdiction(null, "Example Country", "Example City"), JurisdictionCodes.JurisdictionStubRefused, "a stub jurisdiction is refused by metadata unless the caller opts in");
+        Refuses(registry, new ProjectJurisdiction(null, "Argentina", "CA\ud800BA"), JurisdictionCodes.JurisdictionInvalid, "a lone surrogate in metadata is jurisdiction_invalid, not an exception");
+        Refuses(registry, new ProjectJurisdiction("ar.\udc00"), JurisdictionCodes.JurisdictionInvalid, "a lone surrogate in the code is jurisdiction_invalid");
+        check(JurisdictionClaim.IsCode("xx." + new string('a', 63)) && !JurisdictionClaim.IsCode("xx." + new string('a', 64)) && !JurisdictionClaim.IsCode("ar.caba\n") && !JurisdictionClaim.IsCode(null),
+            "jurisdiction: a code locality is one skill-id label of at most 63 characters, anchored at both ends");
         var unknown = registry.Select(new ProjectJurisdiction("ar.cordoba"));
         check(unknown.Refusal is { Subject: "ar.cordoba" } refusal && refusal.Detail.EndsWith("registered: ar.caba, xx.example", StringComparison.Ordinal),
             "jurisdiction: unknown refusals name the code and list the registered jurisdictions", Show(unknown));
@@ -110,13 +117,13 @@ static class JurisdictionTests
             Claim("ar.caba", "ar.caba.beta", new[] { "Argentina" }, new[] { "CABA" }),
             Claim("ar.caba", "ar.caba.alpha", new[] { "Argentina" }, new[] { "CABA" }),
             Claim("xx.spring-a", "xx.spring-a.code", new[] { "Fictionland" }, new[] { "Springfield" }),
-            Claim("xx.spring-b", "xx.spring-b.code", new[] { "Fictionland" }, new[] { "Springfield" }),
+            Claim("xx.spring-b", "xx.spring-b.code", new[] { "FICTIONLAND" }, new[] { "Spríngfield" }),
             Claim("xx.style", "xx.style.pack"),
             Claim("xx.gone", "xx.gone.code"),
         };
         var ambiguous = new JurisdictionRegistry(duplicateCatalog, claims);
-        check(ambiguous.Issues.Select(issue => issue.Code + "@" + issue.Subject).SequenceEqual(new[] { "claim_duplicate@ar.caba", "pack_missing@xx.gone.code", "pack_not_code@xx.style.pack" }),
-            "jurisdiction: registry issues report the duplicate claim, the missing pack and the non-code pack in order", string.Join("; ", ambiguous.Issues.Select(issue => Show(issue))));
+        check(ambiguous.Issues.Select(issue => issue.Code + "@" + issue.Subject).SequenceEqual(new[] { "alias_overlap@xx.spring-a xx.spring-b", "claim_duplicate@ar.caba", "pack_missing@xx.gone.code", "pack_not_code@xx.style.pack" }),
+            "jurisdiction: registry issues report aliases colliding after accent folding, the duplicate claim, the missing pack and the non-code pack in order", string.Join("; ", ambiguous.Issues.Select(issue => Show(issue))));
         check(ambiguous.UnregisteredCodePacks.SequenceEqual(new[] { "xx.loose.code" }) && ambiguous.Codes.SequenceEqual(new[] { "ar.caba", "xx.spring-a", "xx.spring-b" }),
             "jurisdiction: dropped claims are not registered and a code pack without a claim is listed as unregistered", string.Join(",", ambiguous.UnregisteredCodePacks) + " / " + string.Join(",", ambiguous.Codes));
         Refuses(ambiguous, new ProjectJurisdiction("ar.caba"), JurisdictionCodes.JurisdictionAmbiguous, "two packs claiming one code make it jurisdiction_ambiguous");
@@ -128,6 +135,25 @@ static class JurisdictionTests
         var spring = ambiguous.Select(new ProjectJurisdiction(null, "Fictionland", "Springfield"));
         check(spring.Refusal?.Detail == "matches xx.spring-a (xx.spring-a.code), xx.spring-b (xx.spring-b.code)", "jurisdiction: metadata ambiguity names every matching jurisdiction", Show(spring));
         Selects2(ambiguous, new ProjectJurisdiction("xx.spring-b"), "xx.spring-b", report);
+
+        // ---- Hand-built claims are validated like sidecars ----
+        var handCatalog = Catalog(Manifest("xx.ok.code"), Manifest("a.b.c"), Manifest("xx.nul.code"), Manifest("xx.bad.code"));
+        var hand = new JurisdictionRegistry(handCatalog, new[]
+        {
+            new JurisdictionClaim("a", "a.b.c", Array.Empty<string>(), Array.Empty<string>(), false, null),
+            new JurisdictionClaim("xx.ok", "yy.ok.code", Array.Empty<string>(), Array.Empty<string>(), false, null),
+            new JurisdictionClaim("xx.nul", "xx.nul.code", null!, Array.Empty<string>(), false, null),
+            new JurisdictionClaim("xx.bad", "xx.bad.code", new[] { "Bad\ud800" }, Array.Empty<string>(), false, null),
+            new JurisdictionClaim("xx.ok", "xx.ok.code", new[] { "Okland" }, new[] { "Ok Town" }, false, null),
+        });
+        check(hand.Codes.SequenceEqual(new[] { "xx.ok" }) && hand.Issues.Select(issue => issue.Code + "@" + issue.Subject).SequenceEqual(new[] { "code_invalid@a", "pack_mismatch@yy.ok.code", "value_invalid@xx.bad.code", "value_invalid@xx.nul.code" }),
+            "jurisdiction: malformed hand-built claims are dropped with code_invalid, pack_mismatch or value_invalid", string.Join("; ", hand.Issues.Select(issue => Show(issue))));
+        JurisdictionSelection? handSelection = null;
+        string handError = "";
+        try { handSelection = hand.Select(new ProjectJurisdiction(null, "a", "b")); }
+        catch (Exception error) { handError = error.GetType().Name + ": " + error.Message; }
+        check(handSelection?.Refusal?.Code == JurisdictionCodes.JurisdictionUnknown && hand.Select(new ProjectJurisdiction(null, "Okland", "ok town")).Claim?.Pack == "xx.ok.code",
+            "jurisdiction: selection over a registry given malformed claims refuses instead of throwing", handError);
 
         // ---- Determinism ----
         var reversed = new JurisdictionRegistry(duplicateCatalog, Enumerable.Reverse(claims));
@@ -147,11 +173,16 @@ static class JurisdictionTests
         var direct = SkillRoomValidator.Validate(cabaManifest, cabaRooms);
         check(cabaResult.Succeeded && cabaResult.Rooms is { } cabaReport && cabaReport.Findings.SequenceEqual(direct.Findings) && cabaReport.UnmatchedRoomIds.SequenceEqual(direct.UnmatchedRoomIds),
             "jurisdiction: the envelope carries the unchanged room validation report of the selected pack", Show(cabaResult.Refusal));
-        var expected = JurisdictionConfidenceSummary.Of(cabaManifest);
+        // Counted independently of ParseCitation: the raw "; source_confidence=<level>" member of each rule citation in the file.
+        var rawRules = JsonNode.Parse(File.ReadAllText(Path.Combine(skillsRoot, Caba, "skill.json")))!["rules"]!.AsArray();
+        int RawCount(string level) => rawRules.Count(rule => ((string?)rule!["citation"] ?? "").Contains("; source_confidence=" + level + ";", StringComparison.Ordinal)
+            || ((string?)rule!["citation"] ?? "").EndsWith("; source_confidence=" + level, StringComparison.Ordinal));
+        var expected = new JurisdictionConfidenceSummary(rawRules.Count, RawCount("cited"), RawCount("owner-confirmed"), RawCount("to-verify"));
         check(cabaResult.Packs.Count == 1 && cabaResult.Packs[0] is { Id: Caba, Version: "0.1.0", Kind: "code", Jurisdiction: "ar.caba", Stub: false } cabaPack
-            && cabaPack.SourceConfidence == expected && expected.Rules == cabaManifest.Rules.Count && expected.Cited + expected.OwnerConfirmed + expected.ToVerify == expected.Rules && expected.Cited > 0,
-            "jurisdiction: the envelope reports the CABA pack id, version and a source_confidence summary that adds up to its rules",
-            string.Join(",", cabaResult.Packs.Select(pack => pack.Id + "@" + pack.Version + " " + pack.SourceConfidence)));
+            && cabaPack.SourceConfidence == expected && expected.Rules >= 40 && expected.Cited + expected.OwnerConfirmed + expected.ToVerify == expected.Rules && expected.Cited > 0 && expected.OwnerConfirmed > 0
+            && cabaPack.SourceConfidence.Lowest == (expected.ToVerify > 0 ? "to-verify" : "owner-confirmed") && !cabaResult.StubRules,
+            "jurisdiction: the envelope reports the CABA pack id, version and a source_confidence summary matching the raw citations",
+            string.Join(",", cabaResult.Packs.Select(pack => pack.Id + "@" + pack.Version + " " + pack.SourceConfidence)) + " expected " + expected);
         check(new JurisdictionConfidenceSummary(3, 1, 1, 1).Lowest == "to-verify" && new JurisdictionConfidenceSummary(2, 1, 1, 0).Lowest == "owner-confirmed"
             && new JurisdictionConfidenceSummary(2, 2, 0, 0).Lowest == "cited" && new JurisdictionConfidenceSummary(0, 0, 0, 0).Lowest == "none",
             "jurisdiction: the lowest source_confidence is to-verify, then owner-confirmed, then cited, or none without rules");
@@ -177,7 +208,9 @@ static class JurisdictionTests
             "jurisdiction: envelope JSON is byte-identical across room order and culture");
 
         var stubRooms = new[] { RoomFacts.Rectangle("s1", "Living", Length.FromMetres(3), Length.FromMetres(3), Length.FromMetres(2.6)) };
-        var stubResult = JurisdictionValidator.Validate(registry, new ProjectJurisdiction("xx.example"), stubRooms);
+        var stubRefused = JurisdictionValidator.Validate(registry, new ProjectJurisdiction("xx.example"), stubRooms);
+        check(stubRefused.Refusal?.Code == JurisdictionCodes.JurisdictionStubRefused && stubRefused.Rooms is null, "jurisdiction: validation refuses a stub jurisdiction without opt-in", Show(stubRefused.Refusal));
+        var stubResult = JurisdictionValidator.Validate(registry, new ProjectJurisdiction("xx.example"), stubRooms, allowStub: true);
         check(stubResult.Succeeded && stubResult.Packs.Count == 1 && stubResult.Packs[0] is { Id: Stub, Version: "0.0.1", Jurisdiction: "xx.example", Stub: true } stubSummary
             && stubSummary.SourceConfidence == new JurisdictionConfidenceSummary(stubPack!.Rules.Count, 0, 0, stubPack.Rules.Count) && stubSummary.SourceConfidence.Lowest == "to-verify",
             "jurisdiction: the stub jurisdiction validates with its own pack, flagged stub and wholly to-verify", Show(stubResult.Refusal));
@@ -186,7 +219,8 @@ static class JurisdictionTests
             "jurisdiction: the stub pack's rules, not CABA's, apply to the xx.example project",
             stubResult.Rooms is null ? "" : string.Join(",", stubResult.Rooms.Findings.Select(finding => finding.RuleId + "=" + finding.Outcome)));
         var stubJson = stubResult.ToJson();
-        check(stubJson.Contains("\"jurisdiction\":{\"code\":\"xx.example\",\"matched_by\":\"code\",\"pack\":\"" + Stub + "\",\"stub\":true}", StringComparison.Ordinal),
+        check(stubJson.Contains("\"jurisdiction\":{\"code\":\"xx.example\",\"matched_by\":\"code\",\"pack\":\"" + Stub + "\",\"stub\":true}", StringComparison.Ordinal)
+            && stubResult.StubRules && stubJson.Contains("\"rooms\":{\"stub_rules\":true,", StringComparison.Ordinal) && cabaJson.Contains("\"rooms\":{\"stub_rules\":false,", StringComparison.Ordinal),
             "jurisdiction: the envelope JSON flags the stub jurisdiction", stubJson.Length > 300 ? stubJson[..300] : stubJson);
 
         var refusedResult = JurisdictionValidator.Validate(registry, new ProjectJurisdiction("ar.cordoba"), cabaRooms);
@@ -195,6 +229,11 @@ static class JurisdictionTests
             "jurisdiction: a refused selection validates nothing and its envelope carries the typed refusal", refusedResult.ToJson());
         var duplicateRooms = JurisdictionValidator.Validate(registry, new ProjectJurisdiction("ar.caba"), new[] { cabaRooms[0], cabaRooms[0] });
         check(duplicateRooms.Refusal?.Code == JurisdictionCodes.InputInvalid, "jurisdiction: duplicate room ids are refused as input_invalid", Show(duplicateRooms.Refusal));
+        var surrogateRoom = JurisdictionValidator.Validate(registry, new ProjectJurisdiction("ar.caba"), new[] { new RoomFacts("r9", "Estar\ud800", 12, 3, 2.6) });
+        string surrogateJson = "";
+        try { surrogateJson = surrogateRoom.ToJson(); } catch (Exception error) { surrogateJson = "threw " + error.GetType().Name; }
+        check(surrogateRoom.Refusal?.Code == JurisdictionCodes.InputInvalid && surrogateJson.Contains("\"input_invalid\"", StringComparison.Ordinal),
+            "jurisdiction: a room name with a lone surrogate is input_invalid and the envelope still serialises", surrogateJson);
         var badParameter = JurisdictionValidator.Validate(registry, new ProjectJurisdiction("ar.caba"), cabaRooms, new Dictionary<string, double> { [Caba + "/corredor_lado_min_m"] = 99 });
         check(badParameter.Refusal?.Code == JurisdictionCodes.InputInvalid, "jurisdiction: an out-of-range parameter override is refused as input_invalid", Show(badParameter.Refusal));
         var unresolvable = new JurisdictionRegistry(Catalog(Manifest("xx.needs.code", requires: "xx.absent.skill")), new[] { Claim("xx.needs", "xx.needs.code") });
@@ -203,11 +242,22 @@ static class JurisdictionTests
             "jurisdiction: a selected pack that does not resolve is pack_unresolved", Show(unresolved.Refusal));
         var withRequirement = new JurisdictionRegistry(Catalog(Manifest("xx.base.qa", "qa", rules: "[{\"id\":\"r\",\"severity\":\"info\",\"target\":{\"room\":\"*\"},\"check\":{\"op\":\"min\",\"property\":\"area_m2\",\"value\":1},\"message\":\"m\",\"citation\":\"A; source_confidence=cited\"}]"),
             Manifest("xx.city.code", requires: "xx.base.qa")), new[] { Claim("xx.city", "xx.city.code", stub: true) });
-        var required = JurisdictionValidator.Validate(withRequirement, new ProjectJurisdiction("xx.city"), Array.Empty<RoomFacts>());
+        var required = JurisdictionValidator.Validate(withRequirement, new ProjectJurisdiction("xx.city"), Array.Empty<RoomFacts>(), allowStub: true);
         check(required.Succeeded && required.Packs.Select(pack => pack.Id + ":" + (pack.Jurisdiction ?? "-") + ":" + pack.Stub + ":" + pack.SourceConfidence.Lowest)
                 .SequenceEqual(new[] { "xx.base.qa:-:False:cited", "xx.city.code:xx.city:True:none" }),
             "jurisdiction: required packs are reported in dependency order with their own versions and confidence",
             string.Join(",", required.Packs.Select(pack => pack.Id + ":" + (pack.Jurisdiction ?? "-") + ":" + pack.Stub + ":" + pack.SourceConfidence.Lowest)) + Show(required.Refusal));
+
+        var stubRequired = new JurisdictionRegistry(Catalog(Manifest("xx.stubbase.code"), Manifest("ar.town.code", requires: "xx.stubbase.code")),
+            new[] { Claim("xx.stubbase", "xx.stubbase.code", stub: true), Claim("ar.town", "ar.town.code") });
+        var stubRequirementRefused = JurisdictionValidator.Validate(stubRequired, new ProjectJurisdiction("ar.town"), Array.Empty<RoomFacts>());
+        check(stubRequirementRefused.Refusal is { Code: JurisdictionCodes.JurisdictionStubRefused, Subject: "xx.stubbase" },
+            "jurisdiction: a real pack that requires a stub code pack is refused without opt-in", Show(stubRequirementRefused.Refusal));
+        var stubRequirement = JurisdictionValidator.Validate(stubRequired, new ProjectJurisdiction("ar.town"), Array.Empty<RoomFacts>(), allowStub: true);
+        check(stubRequirement.Succeeded && stubRequirement.StubRules && stubRequirement.Packs.Select(pack => pack.Id + ":" + (pack.Jurisdiction ?? "-") + ":" + pack.Stub)
+                .SequenceEqual(new[] { "xx.stubbase.code:xx.stubbase:True", "ar.town.code:ar.town:False" }) && stubRequirement.ToJson().Contains("\"stub_rules\":true", StringComparison.Ordinal),
+            "jurisdiction: a required pack that is itself a stub code pack is reported with its own jurisdiction and stub flag",
+            string.Join(",", stubRequirement.Packs.Select(pack => pack.Id + ":" + (pack.Jurisdiction ?? "-") + ":" + pack.Stub)) + Show(stubRequirement.Refusal));
 
         // ---- Sidecar parsing ----
         check(JurisdictionClaim.TryParse(Sidecar(), out var parsed, out var parseIssue) && parsed is { Code: "xx.sample", Pack: "xx.sample.code", Stub: true, Note: null }
@@ -258,6 +308,10 @@ static class JurisdictionTests
         var badSidecar = JurisdictionRegistry.Load(Fixture(("xx.sample.code", "code", Sidecar(node => node["extra"] = true))));
         check(badSidecar.Refusal is { Code: JurisdictionCodes.MemberUnknown, Subject: "xx.sample.code/jurisdiction.json" } badIssue && badIssue.Detail.StartsWith("$.extra", StringComparison.Ordinal),
             "jurisdiction: sidecar parse refusals name the file and the member path", Show(badSidecar.Refusal));
+        var directorySidecar = Fixture(("xx.sample.code", "code", null));
+        Directory.CreateDirectory(Path.Combine(directorySidecar, "xx.sample.code", "jurisdiction.json"));
+        var directoryLoad = JurisdictionRegistry.Load(directorySidecar);
+        check(directoryLoad.Refusal is { Code: JurisdictionCodes.NotRegularFile, Subject: "xx.sample.code/jurisdiction.json" }, "jurisdiction: a directory named jurisdiction.json is not_regular_file, not a missing sidecar", Show(directoryLoad.Refusal));
         var emptySidecar = JurisdictionRegistry.Load(Fixture(("xx.sample.code", "code", "")));
         check(emptySidecar.Refusal?.Code == JurisdictionCodes.NotRegularFile, "jurisdiction: an empty sidecar is not_regular_file", Show(emptySidecar.Refusal));
         var nonCode = JurisdictionRegistry.Load(Fixture(("xx.sample.code", "qa", Sidecar())));

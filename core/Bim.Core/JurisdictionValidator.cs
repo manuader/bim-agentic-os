@@ -34,8 +34,8 @@ public sealed record JurisdictionConfidenceSummary(int Rules, int Cited, int Own
     }
 }
 
-// Jurisdiction is the claim code when the pack is the selected one, else null (a requirement of it). Stub comes from
-// that claim and is false for requirements.
+// Jurisdiction is the code of the registry claim on this pack (the selected one, or a required pack that is itself a
+// jurisdiction's code pack), else null. Stub comes from that claim and is false without one.
 public sealed record JurisdictionPackSummary(string Id, string Version, string Kind, string? Jurisdiction, bool Stub, JurisdictionConfidenceSummary SourceConfidence);
 
 // Either Refusal is set (and Packs is empty, Rooms null) or Selection succeeded and Rooms holds the existing report.
@@ -44,6 +44,9 @@ public sealed record JurisdictionValidation(JurisdictionSelection Selection, IRe
     public const int EnvelopeVersion = 1;
 
     public bool Succeeded => Refusal is null;
+
+    // True when any resolved pack is a stub example: the findings then come (partly) from invented rules.
+    public bool StubRules => Packs.Any(pack => pack.Stub);
 
     // Deterministic UTF-8 JSON text: members in fixed order, findings in report order, numbers round-trip invariant.
     public string ToJson()
@@ -92,6 +95,7 @@ public sealed record JurisdictionValidation(JurisdictionSelection Selection, IRe
                 writer.WriteEndArray();
                 var rooms = Rooms!;
                 writer.WriteStartObject("rooms");
+                writer.WriteBoolean("stub_rules", StubRules);
                 writer.WriteBoolean("complete", rooms.Complete);
                 writer.WriteBoolean("compliant", rooms.Compliant);
                 writer.WriteStartArray("unmatched_room_ids");
@@ -143,25 +147,36 @@ public static class JurisdictionValidator
     // Selects the pack for project, resolves it with its requirements from the registry catalog and validates rooms.
     // Refusals: the selection refusal, pack_unresolved (resolver issues in Detail), input_invalid (duplicate room ids or a
     // parameter override the room validator rejects). Never throws for bad input other than null arguments.
-    public static JurisdictionValidation Validate(JurisdictionRegistry registry, ProjectJurisdiction project, IEnumerable<RoomFacts> rooms, IReadOnlyDictionary<string, double>? parameters = null)
+    public static JurisdictionValidation Validate(JurisdictionRegistry registry, ProjectJurisdiction project, IEnumerable<RoomFacts> rooms, IReadOnlyDictionary<string, double>? parameters = null, bool allowStub = false)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(rooms);
-        var selection = registry.Select(project);
+        var selection = registry.Select(project, allowStub);
         if (!selection.Succeeded) return Refused(selection, selection.Refusal!);
         var claim = selection.Claim!;
         var resolution = SkillResolver.Resolve(registry.Catalog, new[] { new SkillRequest(claim.Pack) });
         if (!resolution.Succeeded)
             return Refused(selection, new JurisdictionIssue(JurisdictionCodes.PackUnresolved, claim.Pack, string.Join("; ", resolution.Issues.Select(issue => issue.Code + "@" + issue.Subject))));
-        RoomValidationReport report;
-        try { report = SkillRoomValidator.Validate(resolution, rooms, parameters); }
-        catch (ArgumentException error) { return Refused(selection, new JurisdictionIssue(JurisdictionCodes.InputInvalid, claim.Pack, error.Message)); }
-        var packs = resolution.Skills.Select(skill =>
+        // Each resolved pack reports its own claim (a required pack may itself be a jurisdiction's code pack, stub or not).
+        var claims = resolution.Skills.Select(skill => skill.Id == claim.Pack ? claim : (JurisdictionRedStub.On ? null : registry.ClaimFor(skill.Id))).ToArray();
+        if (!JurisdictionRedStub.On && !allowStub && claims.FirstOrDefault(candidate => candidate is { Stub: true }) is { } stubRequirement)
+            return Refused(selection, new JurisdictionIssue(JurisdictionCodes.JurisdictionStubRefused, stubRequirement.Code, "pack " + claim.Pack + " requires the stub example pack " + stubRequirement.Pack + ", not real law; pass allowStub to use it"));
+        var list = new List<RoomFacts>();
+        foreach (var room in rooms)
         {
-            var own = skill.Id == claim.Pack;
-            return new JurisdictionPackSummary(skill.Id, skill.Version.ToString(), SkillParser.KindName(skill.Kind), own ? claim.Code : null, own && claim.Stub, JurisdictionConfidenceSummary.Of(skill));
-        }).ToArray();
+            if (room is null) return Refused(selection, new JurisdictionIssue(JurisdictionCodes.InputInvalid, claim.Pack, "a room is null"));
+            if (!JurisdictionRedStub.On && !JurisdictionRegistry.WellFormed(room.Id) || !JurisdictionRegistry.WellFormed(room.Name))
+                return Refused(selection, new JurisdictionIssue(JurisdictionCodes.InputInvalid, claim.Pack, "room id or name is not well-formed text (lone surrogate)"));
+            list.Add(room);
+        }
+        if (parameters is not null && parameters.Keys.Any(key => key is null || !JurisdictionRegistry.WellFormed(key)))
+            return Refused(selection, new JurisdictionIssue(JurisdictionCodes.InputInvalid, claim.Pack, "a parameter override key is not well-formed text"));
+        RoomValidationReport report;
+        try { report = SkillRoomValidator.Validate(resolution, list, parameters); }
+        catch (ArgumentException error) { return Refused(selection, new JurisdictionIssue(JurisdictionCodes.InputInvalid, claim.Pack, error.Message)); }
+        var packs = resolution.Skills.Select((skill, index) =>
+            new JurisdictionPackSummary(skill.Id, skill.Version.ToString(), SkillParser.KindName(skill.Kind), claims[index]?.Code, claims[index]?.Stub ?? false, JurisdictionConfidenceSummary.Of(skill))).ToArray();
         return new JurisdictionValidation(selection, packs, report, null);
     }
 

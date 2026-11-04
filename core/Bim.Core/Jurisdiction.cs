@@ -25,13 +25,14 @@ public sealed record JurisdictionClaim(string Code, string Pack, IReadOnlyList<s
     public const int MaxNames = 32;
     public const int MaxNameChars = 128;
 
-    static readonly Regex CodePattern = new("^[a-z]{2}\\.[a-z][a-z0-9-]{0,63}$", RegexOptions.CultureInvariant);
+    // Locality is one skill-id label (at most 63 characters).
+    static readonly Regex CodePattern = new("\\A[a-z]{2}\\.[a-z][a-z0-9-]{0,62}\\z", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     static readonly string[] Members = { "jurisdiction_version", "code", "pack", "country_names", "municipality_names", "stub", "note" };
 
     public string Country => Code[..2];
     public string Locality => Code[3..];
 
-    public static bool IsCode(string? value) => value is not null && CodePattern.IsMatch(value);
+    public static bool IsCode(string? value) => value is not null && value.Length <= 66 && CodePattern.IsMatch(value);
 
     // Strict parse: an object with exactly the known members, no duplicates, jurisdiction_version the integer token 1,
     // code and pack well formed with pack under code, names non-blank, unique after normalisation, stub a boolean.
@@ -148,6 +149,8 @@ public static class JurisdictionCodes
     public const string PackMissing = "pack_missing";
     public const string PackNotCode = "pack_not_code";
     public const string ClaimDuplicate = "claim_duplicate";
+    // Two jurisdictions share a country alias and a municipality alias after normalisation (both stay registered).
+    public const string AliasOverlap = "alias_overlap";
     // Selection refusals.
     public const string JurisdictionUnspecified = "jurisdiction_unspecified";
     public const string JurisdictionIncomplete = "jurisdiction_incomplete";
@@ -155,10 +158,14 @@ public static class JurisdictionCodes
     public const string JurisdictionUnknown = "jurisdiction_unknown";
     public const string JurisdictionAmbiguous = "jurisdiction_ambiguous";
     public const string JurisdictionConflict = "jurisdiction_conflict";
+    // The selected claim is a stub example pack and the caller did not opt in.
+    public const string JurisdictionStubRefused = "jurisdiction_stub_refused";
     // Validation refusals.
     public const string PackUnresolved = "pack_unresolved";
     public const string InputInvalid = "input_invalid";
 }
+
+static class JurisdictionRedStub { public static readonly bool On = true; }
 
 sealed class JurisdictionParseException : Exception
 {
@@ -186,7 +193,10 @@ static class JurisdictionSidecar
         {
             var directory = new DirectoryInfo(Path.Combine(skillsRoot, packId));
             var file = new FileInfo(Path.Combine(directory.FullName, FileName));
+            var boundary = Path.TrimEndingDirectorySeparator(Path.GetFullPath(skillsRoot)) + Path.DirectorySeparatorChar;
             if (IsLink(directory) || IsLink(file)) return (null, new JurisdictionIssue(JurisdictionCodes.PathUnsafe, relative, "symbolic links and junctions are not followed"));
+            if (!Inside(file.FullName, boundary)) return (null, new JurisdictionIssue(JurisdictionCodes.PathUnsafe, relative, "path leaves the skills root"));
+            if (!JurisdictionRedStub.On && Directory.Exists(file.FullName)) return (null, new JurisdictionIssue(JurisdictionCodes.NotRegularFile, relative, "a directory is not a sidecar"));
             if (!file.Exists) return (null, null);
             if (file.Length == 0) return (null, new JurisdictionIssue(JurisdictionCodes.NotRegularFile, relative, "zero-length entry is not read"));
             if (file.Length > JurisdictionClaim.MaxInputChars * 4L) return (null, new JurisdictionIssue(JurisdictionCodes.InputTooLarge, relative, "sidecar too large"));
@@ -204,8 +214,9 @@ static class JurisdictionSidecar
                 }
                 bytes = buffer.AsSpan(0, total).ToArray();
             }
+            directory.Refresh();
             file.Refresh();
-            if (IsLink(file)) return (null, new JurisdictionIssue(JurisdictionCodes.PathUnsafe, relative, "entry became a link while being read"));
+            if (IsLink(directory) || IsLink(file)) return (null, new JurisdictionIssue(JurisdictionCodes.PathUnsafe, relative, "entry became a link while being read"));
             if (bytes.Length > JurisdictionClaim.MaxInputChars * 4) return (null, new JurisdictionIssue(JurisdictionCodes.InputTooLarge, relative, "sidecar too large"));
             var offset = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
             string text;
@@ -222,4 +233,7 @@ static class JurisdictionSidecar
     }
 
     static bool IsLink(FileSystemInfo entry) => entry.LinkTarget is not null || (entry.Exists && (entry.Attributes & FileAttributes.ReparsePoint) != 0);
+
+    static bool Inside(string fullPath, string boundary) =>
+        Path.GetFullPath(fullPath).StartsWith(boundary, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 }
