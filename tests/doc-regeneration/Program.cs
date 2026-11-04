@@ -461,5 +461,16 @@ catch (Exception error)
     failed++;
 }
 
+// ---- P4-04 default documentation set (tests/doc-regeneration/Defaults.cs) ----
+try
+{
+    DefaultsTests.Run(Check);
+}
+catch (Exception error)
+{
+    Console.WriteLine("::error::doc-regeneration FAIL unexpected " + error.GetType().Name + " | " + error.Message);
+    failed++;
+}
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, doc_regeneration_contract = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
