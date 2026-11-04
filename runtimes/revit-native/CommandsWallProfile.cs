@@ -16,7 +16,8 @@ public sealed record ProfileEdgeMm(ProfilePointMm A, ProfilePointMm B, bool Stra
 public sealed record WallInsertExtent(string UniqueId, string Kind, double UMin, double UMax, double ZMin, double ZMax);
 // What Revit reports after the edit. SketchUid: the wall's profile Sketch (null without one); Edges: every curve of
 // Sketch.Profile; LoopCount: the number of curve loops; Start/End: the location line; TopMm: bounding box max z above
-// the base level (null without a box); BaseOffsetMm/HeightMm: WALL_BASE_OFFSET / WALL_USER_HEIGHT_PARAM.
+// the base level (null without a box); BaseOffsetMm/HeightMm: WALL_BASE_OFFSET / WALL_USER_HEIGHT_PARAM; WidthMm:
+// Wall.Width (0 when unknown), which bounds how far a corner join may extend a sloped top past the wall end.
 public sealed record ObservedWallProfile(string UniqueId, string? SketchUid, IReadOnlyList<ProfileEdgeMm> Edges, int LoopCount, PlanPoint Start, PlanPoint End, double? TopMm, double? BaseOffsetMm, double? HeightMm, double WidthMm = 0);
 
 public static class CommandRulesWallProfile
@@ -28,7 +29,35 @@ public static class CommandRulesWallProfile
 
     static string F(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 
-    public static double JoinAllowanceMm(IReadOnlyList<ProfilePointMm> profile, double wallWidthMm) => 0;
+    // How far the wall's bounding box may rise above the profile's highest z because a corner join extends the wall past
+    // its ends (owner, Revit 2025.2, 2026-11-04: a triangle peaking at 6151 mm at u 0 read back with a box top of
+    // 6233.28 mm; the sketch itself matched). The join continues a sloped top edge that reaches a wall end (u 0 or the
+    // wall length) outward; the extension is bounded here by the wall width, so the allowance is the highest such edge
+    // extrapolated one wall width past the end, above the profile top. Flat or vertical end edges and profiles whose ends
+    // slope down (a gable with its ridge mid-wall) allow nothing; an unknown width (0) allows nothing.
+    public static double JoinAllowanceMm(IReadOnlyList<ProfilePointMm> profile, double wallWidthMm)
+    {
+        if (!(wallWidthMm > 0) || !double.IsFinite(wallWidthMm) || profile.Count < 3) return 0;
+        var top = profile.Max(p => p.Z);
+        var ends = new[] { (U: profile.Min(p => p.U), Outward: -1.0), (U: profile.Max(p => p.U), Outward: 1.0) };
+        var highest = top;
+        for (var i = 0; i < profile.Count; i++)
+        {
+            var vertex = profile[i];
+            foreach (var (endU, outward) in ends)
+            {
+                if (Math.Abs(vertex.U - endU) > ProfileToleranceMm) continue;
+                foreach (var neighbour in new[] { profile[(i + profile.Count - 1) % profile.Count], profile[(i + 1) % profile.Count] })
+                {
+                    var du = neighbour.U - vertex.U;
+                    if (Math.Abs(du) <= ProfileToleranceMm) continue;
+                    var slope = (neighbour.Z - vertex.Z) / du;
+                    highest = Math.Max(highest, vertex.Z + slope * outward * wallWidthMm);
+                }
+            }
+        }
+        return highest - top;
+    }
 
     public static ProfilePointMm[] Requested(WallSetProfileArgs args) => args.Profile.Select(v => new ProfilePointMm(v.U.Millimetres, v.Z.Millimetres)).ToArray();
 
@@ -197,7 +226,11 @@ public static class CommandReadbackWallProfile
             return "the wall location line moved to (" + F(observed.Start.X) + ", " + F(observed.Start.Y) + ") - (" + F(observed.End.X) + ", " + F(observed.End.Y) + "), expected (" + F(start.X) + ", " + F(start.Y) + ") - (" + F(end.X) + ", " + F(end.Y) + ")";
         var top = requested.Max(p => p.Z);
         if (observed.TopMm is not { } box) return "the wall has no bounding box";
-        if (Math.Abs(box - top) > CommandRulesWallProfile.BoxToleranceMm) return "the wall bounding box top is " + F(box) + " mm above the base level, expected the profile's highest z " + F(top) + " mm";
+        var allowance = CommandRulesWallProfile.JoinAllowanceMm(requested, observed.WidthMm);
+        if (box < top - CommandRulesWallProfile.BoxToleranceMm || box > top + allowance + CommandRulesWallProfile.BoxToleranceMm)
+            return "the wall bounding box top is " + F(box) + " mm above the base level, expected the profile's highest z " + F(top) + " mm"
+                + (allowance > 0 ? " (up to " + F(Math.Round(top + allowance, 1)) + " mm where a corner join extends the sloped top past the wall end by up to the wall width " + F(observed.WidthMm) + " mm)" : "")
+                + " within " + F(CommandRulesWallProfile.BoxToleranceMm) + " mm";
         return null;
     }
 
@@ -229,6 +262,7 @@ public static class CommandReadbackWallProfile
             Number(writer, "top_mm", observed.TopMm);
             Number(writer, "base_offset_mm", observed.BaseOffsetMm);
             Number(writer, "unconnected_height_mm", observed.HeightMm);
+            Number(writer, "width_mm", observed.WidthMm);
             Pair(writer, "location_start_mm", observed.Start);
             Pair(writer, "location_end_mm", observed.End);
             writer.WriteEndObject();

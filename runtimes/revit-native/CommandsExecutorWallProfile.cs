@@ -69,7 +69,7 @@ internal static partial class CommandExecutor
             var nan = new PlanPoint(double.NaN, double.NaN);
             return new ObservedWallProfile(wall.UniqueId, sketch?.UniqueId, edges, loops, now is null ? nan : Plan(now.GetEndPoint(0)), now is null ? nan : Plan(now.GetEndPoint(1)),
                 wall.get_BoundingBox(null) is { } box ? Mm(box.Max.Z - baseZ) : null,
-                LengthParameter(wall, BuiltInParameter.WALL_BASE_OFFSET), LengthParameter(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM));
+                LengthParameter(wall, BuiltInParameter.WALL_BASE_OFFSET), LengthParameter(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM), Mm(wall.Width));
         }
 
         var failures = new CommandFailures();

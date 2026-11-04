@@ -104,16 +104,54 @@ public static class CommandRulesViews
         return new Vec3(-y, x, 0);
     }
 
-    public static ViewFrame3D Orientation(ViewDirection3 eye, Vec3 target, double distanceMm) => new(target, new Vec3(0, 0, 0), new Vec3(0, 0, 0));
+    // The view's right direction: start -> end (what CommandReadbackViews.Section expects from View.RightDirection).
+    public static Vec3 RightDirection(ViewSectionCreateArgs args)
+    {
+        var (x, y, _) = Direction(args);
+        return new Vec3(x, y, 0);
+    }
 
-    // Origin at the line midpoint (z 0, so frame Y is the project elevation), X along the line, Y up, Z = X cross Y
-    // toward the viewer. The box spans the line, bottom to top elevation, from the far clip (-depth) to the cut plane (0).
+    // The box handed to ViewSection.CreateSection. Revit 2025 API reference: "The view direction of the resulting section
+    // will be sectionBox.Transform.BasisZ and the up direction will be sectionBox.Transform.BasisY. The right hand
+    // direction will be computed so that (right, up, view direction) form a left handed coordinate system", i.e. Revit
+    // takes right = BasisZ x BasisY and ignores BasisX; View.ViewDirection then points toward the viewer (-BasisZ). So
+    // BasisZ is the looking direction (the left of start -> end) and the view's right is start -> end; BasisX = BasisY x
+    // BasisZ keeps the transform orthonormal and right-handed (it points end -> start). Origin at the line midpoint (z 0,
+    // so frame Y is the project elevation); the box spans the line, bottom to top elevation, from the cut plane (z 0) to
+    // the far clip (z depth, ahead of the cut plane). The previous frame (BasisZ = X cross Y toward the viewer) made every
+    // section look to the right of the line: the owner's Revit 2025.2 reported RightDirection (-0.707, -0.707, 0) for a
+    // line along (0.707, 0.707) on 2026-11-04 (axis-aligned lines had never run in Revit).
     public static SectionFrame Section(ViewSectionCreateArgs args)
     {
         var (x, y, length) = Direction(args);
         var origin = new Vec3((args.Start.X.Millimetres + args.End.X.Millimetres) / 2, (args.Start.Y.Millimetres + args.End.Y.Millimetres) / 2, 0);
-        return new SectionFrame(origin, new Vec3(x, y, 0), new Vec3(0, 0, 1), new Vec3(y, -x, 0),
-            new Vec3(-length / 2, args.Bottom.Millimetres, -args.Depth.Millimetres), new Vec3(length / 2, args.Top.Millimetres, 0));
+        return new SectionFrame(origin, new Vec3(-x, -y, 0), new Vec3(0, 0, 1), new Vec3(-y, x, 0),
+            new Vec3(-length / 2, args.Bottom.Millimetres, 0), new Vec3(length / 2, args.Top.Millimetres, args.Depth.Millimetres));
+    }
+
+    // Distance from the target to the eye when the view has no model extents to measure (an empty document).
+    public const double MinEyeDistanceMm = 1000;
+
+    // View3D.SetOrientation frame for an eye direction (unit, from the target toward the eye): forward = -eye; up = the
+    // project vertical made perpendicular to forward (tilted toward the view), or project north (+Y) when the eye is
+    // straight above or below; the eye position on the eye direction, distanceMm (at least MinEyeDistanceMm) from the
+    // target. An isometric view does not depend on the distance; the target centres the view.
+    public static ViewFrame3D Orientation(ViewDirection3 eye, Vec3 target, double distanceMm)
+    {
+        var length = Math.Sqrt(eye.X * eye.X + eye.Y * eye.Y + eye.Z * eye.Z);
+        var e = new Vec3(eye.X / length, eye.Y / length, eye.Z / length);
+        var forward = new Vec3(-e.X, -e.Y, -e.Z);
+        Vec3 up;
+        if (Math.Sqrt(e.X * e.X + e.Y * e.Y) < 1e-9) up = new Vec3(0, 1, 0);
+        else
+        {
+            // Z minus its component along the eye direction.
+            var ux = -e.Z * e.X; var uy = -e.Z * e.Y; var uz = 1 - e.Z * e.Z;
+            var n = Math.Sqrt(ux * ux + uy * uy + uz * uz);
+            up = new Vec3(ux / n, uy / n, uz / n);
+        }
+        var distance = double.IsFinite(distanceMm) && distanceMm > MinEyeDistanceMm ? distanceMm : MinEyeDistanceMm;
+        return new ViewFrame3D(new Vec3(target.X + e.X * distance, target.Y + e.Y * distance, target.Z + e.Z * distance), up, forward);
     }
 }
 
@@ -148,16 +186,21 @@ public static class CommandReadbackViews
 
     public static string? Section(ViewSectionCreateArgs args, ObservedSection observed)
     {
+        // Independent of the box frame: right runs start -> end, up is vertical, the view looks to the left of the line
+        // (View.ViewDirection points toward the viewer, the opposite way).
         var frame = CommandRulesViews.Section(args);
-        if (!SameDirection(observed.Right, frame.BasisX)) return "section right direction is " + F(observed.Right) + ", expected " + F(frame.BasisX);
-        if (!SameDirection(observed.Up, frame.BasisY)) return "section up direction is " + F(observed.Up) + ", expected " + F(frame.BasisY);
-        if (!SameDirection(observed.ViewDirection, frame.BasisZ)) return "section view direction is " + F(observed.ViewDirection) + ", expected " + F(frame.BasisZ);
+        var right = CommandRulesViews.RightDirection(args);
+        var looking = CommandRulesViews.LookingDirection(args);
+        var toward = new Vec3(-looking.X, -looking.Y, -looking.Z);
+        if (!SameDirection(observed.Right, right)) return "section right direction is " + F(observed.Right) + ", expected " + F(right);
+        if (!SameDirection(observed.Up, new Vec3(0, 0, 1))) return "section up direction is " + F(observed.Up) + ", expected " + F(new Vec3(0, 0, 1));
+        if (!SameDirection(observed.ViewDirection, toward)) return "section view direction is " + F(observed.ViewDirection) + ", expected " + F(toward);
         var start = new Vec3(args.Start.X.Millimetres, args.Start.Y.Millimetres, 0);
-        var offset = Dot(Minus(observed.Origin, start), CommandRulesViews.LookingDirection(args));
+        var offset = Dot(Minus(observed.Origin, start), looking);
         if (!Near(offset, 0)) return "section cut plane is " + F(offset) + " mm off the requested line";
         if (!observed.CropActive) return "section crop box is not active";
         var length = frame.Max.X - frame.Min.X;
-        double a = Dot(Minus(observed.CropMin, start), frame.BasisX), b = Dot(Minus(observed.CropMax, start), frame.BasisX);
+        double a = Dot(Minus(observed.CropMin, start), right), b = Dot(Minus(observed.CropMax, start), right);
         if (!Near(Math.Min(a, b), 0) || !Near(Math.Max(a, b), length)) return "section crop spans " + F(Math.Min(a, b)) + " to " + F(Math.Max(a, b)) + " mm along the line, expected 0 to " + F(length);
         double low = Math.Min(observed.CropMin.Z, observed.CropMax.Z), high = Math.Max(observed.CropMin.Z, observed.CropMax.Z);
         if (!Near(low, args.Bottom.Millimetres) || !Near(high, args.Top.Millimetres)) return "section crop spans elevation " + F(low) + " to " + F(high) + " mm, expected " + F(args.Bottom.Millimetres) + " to " + F(args.Top.Millimetres);
@@ -165,9 +208,16 @@ public static class CommandReadbackViews
         return null;
     }
 
+    // eye: the requested eye direction (null: Revit's default orientation, not checked).
     public static string? ThreeD(ViewBox? box, Observed3D observed, ViewDirection3? eye = null)
     {
         if (observed.IsPerspective) return "the 3D view is a perspective view, expected isometric";
+        if (eye is not null)
+        {
+            var expected = CommandRulesViews.Orientation(eye, new Vec3(0, 0, 0), CommandRulesViews.MinEyeDistanceMm);
+            if (!SameDirection(observed.Forward, expected.Forward)) return "the 3D view forward direction is " + F(observed.Forward) + ", expected " + F(expected.Forward);
+            if (!SameDirection(observed.Up, expected.Up)) return "the 3D view up direction is " + F(observed.Up) + ", expected " + F(expected.Up);
+        }
         if (box is null) return observed.SectionBoxActive ? "the 3D view has an active section box; none was requested" : null;
         if (!observed.SectionBoxActive) return "the 3D view section box is not active";
         if (observed is not { BoxBasisX: { } x, BoxBasisY: { } y, BoxBasisZ: { } z, BoxMin: { } min, BoxMax: { } max }) return "the 3D view section box is unreadable";

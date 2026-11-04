@@ -17,8 +17,12 @@ namespace Bim.Revit;
 //     UpDirection / ViewDirection / Origin / CropBox / CropBoxActive, BuiltInParameter.VIEWER_BOUND_OFFSET_FAR
 //   View3D.CreateIsometric(Document, ElementId), View3D.SetSectionBox / GetSectionBox / IsSectionBoxActive /
 //     IsPerspective / GetOrientation
+//   View3D.SetOrientation(new ViewOrientation3D(eye, up, forward)) for view_from / eye_direction
+// 2026-11-04 (owner's Revit 2025.2): the earlier section box (BasisZ toward the viewer) produced RightDirection
+// (-0.707, -0.707, 0) for a line along (0.707, 0.707): Revit takes the view direction from BasisZ and right = BasisZ x
+// BasisY, so BasisZ is now the looking direction (CommandRulesViews.Section). The corrected frame has not run in Revit.
 // Unverified in Revit (owner session required): that CreateSection keeps the requested box frame (origin at the line
-// midpoint, Max.Z = 0 as the cut plane, Min.Z = -depth as the far clip) and reports it back through RightDirection,
+// midpoint, Min.Z = 0 as the cut plane, Max.Z = depth as the far clip) and reports it back through RightDirection,
 // ViewDirection, Origin, CropBox and Far Clip Offset; that SetSectionBox keeps an identity-oriented box exactly. The
 // readback checks each of these and rolls back on a difference instead of reporting success. created lists the view
 // only: the section marker Revit draws in other views is not diffed.
@@ -184,13 +188,21 @@ internal static partial class CommandExecutor
                     created.IsSectionBoxActive = true;
                 }
                 else created.IsSectionBoxActive = false;
+                if (args.Eye is { } eye)
+                {
+                    // Centre on the section box, or on the model extents GetSectionBox reports when the box is off.
+                    var extents = created.GetSectionBox();
+                    var centre = extents.Transform.OfPoint((extents.Min + extents.Max) / 2);
+                    var frame = CommandRulesViews.Orientation(eye, Position(centre), Mm((extents.Max - extents.Min).GetLength()));
+                    created.SetOrientation(new ViewOrientation3D(Internal(frame.Eye), Unit(frame.Up), Unit(frame.Forward)));
+                }
                 ApplyOptions(created, setup, args.Options);
             },
             () =>
             {
                 if (view is not { IsValidObject: true } created) return "the 3D view no longer exists";
                 return CommandReadbackViews.View(setup.ViewType, setup.Type.UniqueId, args.Options, setup.Template?.UniqueId, null, ObserveView(d, created))
-                    ?? CommandReadbackViews.ThreeD(args.SectionBox, Observe(created));
+                    ?? CommandReadbackViews.ThreeD(args.SectionBox, Observe(created), args.Eye);
             },
             () => CommandReadbackViews.ThreeDJson(ObserveView(d, view!), Observe(view!)),
             () => new[] { view!.UniqueId },

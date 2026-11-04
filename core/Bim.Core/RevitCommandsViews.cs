@@ -33,6 +33,30 @@ public static class RevitViewRules
     // Characters Revit refuses in a view name.
     public const string ForbiddenNameCharacters = "\\:{}[]|;<>?`~";
     public static readonly IReadOnlyList<string> Families = new[] { "floor_plan", "ceiling_plan", "section", "three_d" };
+    // view.create_3d view_from presets, in schema order.
+    public static readonly IReadOnlyList<string> ViewFromPresets = new[] { "ne", "nw", "se", "sw", "n", "s", "e", "w", "top" };
+
+    // Unit eye direction of a preset, from the model toward the eye in project coordinates (+Y project north, +X east).
+    // Corners and sides keep the 35.26 degree elevation of Revit's default isometric (eye (1, -1, 1), from the south-east);
+    // top looks straight down.
+    public static ViewDirection3 EyeDirection(string preset)
+    {
+        var c = 1 / Math.Sqrt(3);
+        var s = Math.Sqrt(2.0 / 3);
+        return preset switch
+        {
+            "ne" => new(c, c, c),
+            "nw" => new(-c, c, c),
+            "se" => new(c, -c, c),
+            "sw" => new(-c, -c, c),
+            "n" => new(0, s, c),
+            "s" => new(0, -s, c),
+            "e" => new(s, 0, c),
+            "w" => new(-s, 0, c),
+            "top" => new(0, 0, 1),
+            _ => throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.view_from", "unknown view_from " + preset),
+        };
+    }
 }
 
 public static partial class RevitCommandCatalogue
@@ -60,7 +84,7 @@ public static partial class RevitCommandCatalogue
             line, options);
 
         var box = Fill("""{"type":"object","description":"Axis-aligned section box in project coordinates; max at least 1.2 mm above min on every axis","properties":{"min":@0@,"max":@1@},"required":["min","max"],"additionalProperties":false}""", Point3, Point3);
-        var threeD = Fill("""{"type":"object","properties":{"section_box":@0@,@1@},"additionalProperties":false}""", box, options);
+        var threeD = Fill("""{"type":"object","properties":{"section_box":@0@,"view_from":{"type":"string","description":"Where the eye is, seen from the model (project north +Y): ne, nw, se, sw, n, s, e, w at 35 degrees above the horizon like Revit's default isometric, or top (plan-like, north up); omit for Revit's default (se); not together with eye_direction","enum":["ne","nw","se","sw","n","s","e","w","top"]},"eye_direction":{"type":"array","description":"[x, y, z] direction from the model toward the eye in project coordinates, any length (normalised); e.g. [-1, 1, 1] looks from the north-west and above; not together with view_from","items":{"type":"number"},"minItems":3,"maxItems":3},@1@},"additionalProperties":false}""", box, options);
 
         return new[]
         {
@@ -68,7 +92,7 @@ public static partial class RevitCommandCatalogue
             new RevitCommandSpec("query.view_templates", false, "List the view templates in the document with name, UniqueId and view type. Read-only.", EmptySchema, _ => new EmptyQueryArgs()),
             new RevitCommandSpec("view.create_plan", true, "Create a floor plan or reflected ceiling plan view of a level, with optional view family type, name, view template or scale. Allowed only on enabled test copies.", plan, BindViewPlan),
             new RevitCommandSpec("view.create_section", true, "Create a section view along a plan line in millimetres, looking to the left of the line, with a far clip depth and a bottom and top elevation, and optional type, name, view template or scale. Allowed only on enabled test copies.", section, BindViewSection),
-            new RevitCommandSpec("view.create_3d", true, "Create an isometric 3D view, optionally limited by an axis-aligned section box in millimetres, with optional type, name, view template or scale. Allowed only on enabled test copies.", threeD, BindView3D),
+            new RevitCommandSpec("view.create_3d", true, "Create an isometric 3D view, optionally limited by an axis-aligned section box in millimetres and oriented from a view_from preset (ne, nw, se, sw, n, s, e, w, top) or an eye_direction, with optional type, name, view template or scale. Allowed only on enabled test copies.", threeD, BindView3D),
         };
     }
 
@@ -154,6 +178,26 @@ public static partial class RevitCommandCatalogue
             }
             box = new ViewBox(Length.FromMillimetres(min[0]), Length.FromMillimetres(min[1]), Length.FromMillimetres(min[2]), Length.FromMillimetres(max[0]), Length.FromMillimetres(max[1]), Length.FromMillimetres(max[2]));
         }
-        return new View3DCreateArgs(box, BindViewOptions(args));
+        ViewDirection3? eye = null;
+        if (args.TryGetProperty("view_from", out var preset))
+        {
+            if (args.TryGetProperty("eye_direction", out _))
+                throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.eye_direction", "give view_from or eye_direction, not both");
+            eye = RevitViewRules.EyeDirection(preset.GetString()!);
+        }
+        else if (args.TryGetProperty("eye_direction", out var direction))
+        {
+            var values = new double[3];
+            for (var i = 0; i < 3; i++)
+            {
+                values[i] = Number(direction[i]);
+                if (!double.IsFinite(values[i])) throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.eye_direction[" + i + "]", "eye_direction values must be finite numbers");
+            }
+            var length = Math.Sqrt(values[0] * values[0] + values[1] * values[1] + values[2] * values[2]);
+            if (!(length >= 1e-9) || !double.IsFinite(length))
+                throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.eye_direction", "eye_direction must be a non-zero direction (length at least 1e-9)");
+            eye = new ViewDirection3(values[0] / length, values[1] / length, values[2] / length);
+        }
+        return new View3DCreateArgs(box, BindViewOptions(args), eye);
     }
 }
