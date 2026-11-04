@@ -365,6 +365,9 @@ try
     refused = Refuse(System.Text.RegularExpressions.Regex.Replace(TinyJson, "\"levels\":\\[[^\\]]*\\]", "\"levels\":" + manyLevels));
     Check(refused == "limit_exceeded@levels", "list length is bounded while parsing", refused ?? "accepted");
     Check(Code(() => IntentJson.Serialize(tiny with { Rooms = new[] { Rm("a", 0, 0, double.NaN, 3) } }))?.StartsWith("argument:", StringComparison.Ordinal) == true, "non-finite numbers are not serialized");
+
+    // ---- P5-04 style skill defaults fill the intent before compile (tests/intent/SkillDefaultsTests.cs) ----
+    SkillDefaultsTests.Run(Check);
 }
 catch (Exception error)
 {
