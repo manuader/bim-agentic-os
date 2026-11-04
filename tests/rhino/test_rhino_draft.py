@@ -51,11 +51,11 @@ def polyline(points, z=0.0):
 
 
 def arc_curve(shape):
-    """An ArcCurve (rhino3dm 8 has no ArcCurve(Arc) constructor; the object table makes one)."""
+    """The curve rhino3dm stores for an arc or circle (8.17: a rational NurbsCurve; ArcCurve has no Arc constructor)."""
     scratch = rhino3dm.File3dm()
     (scratch.Objects.AddCircle if isinstance(shape, rhino3dm.Circle) else scratch.Objects.AddArc)(shape)
     geometry = list(scratch.Objects)[0].Geometry
-    assert isinstance(geometry, rhino3dm.ArcCurve), type(geometry).__name__
+    assert isinstance(geometry, rhino3dm.Curve) and not isinstance(geometry, (rhino3dm.PolylineCurve, rhino3dm.LineCurve)), type(geometry).__name__
     return geometry.Duplicate()
 
 

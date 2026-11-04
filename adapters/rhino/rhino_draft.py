@@ -290,10 +290,55 @@ def _footprint_wall(extrusion, conv, max_vertices):
     return [s[0], s[1], e[0], e[1], height, br._snap(thickness)], base
 
 
-def _sample_arc(curve, segments):
+ARC_SAMPLES = 32
+
+
+def _maybe_arc(curve):
+    """True for curves that may be circular arcs: ArcCurve, or a NurbsCurve of degree >= 2 (rhino3dm stores
+    arcs and circles as rational NURBS)."""
+    if isinstance(curve, rhino3dm.ArcCurve):
+        return True
+    try:
+        return isinstance(curve, rhino3dm.NurbsCurve) and curve.Degree >= 2
+    except Exception:
+        return False
+
+
+def _circular(curve, conv):
+    """(centre, radius, start angle, signed sweep, z) when the curve is a horizontal circular arc, else None.
+
+    Checked geometrically on ARC_SAMPLES + 1 points, so it does not depend on how the arc is stored."""
     domain = curve.Domain
     t0, t1 = domain.T0, domain.T1
-    return [curve.PointAt(t0 + (t1 - t0) * i / segments) for i in range(segments + 1)]
+    points = [conv.xyz(curve.PointAt(t0 + (t1 - t0) * i / ARC_SAMPLES)) for i in range(ARC_SAMPLES + 1)]
+    if any(not math.isfinite(v) for p in points for v in p) or not _horizontal(points):
+        return None
+    (ax, ay, _), (bx, by, _), (cx, cy, _) = points[0], points[ARC_SAMPLES // 3], points[2 * ARC_SAMPLES // 3]
+    det = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(det) <= TOL * TOL:
+        return None
+    ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / det
+    uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / det
+    radius = math.hypot(ax - ux, ay - uy)
+    if any(abs(math.hypot(p[0] - ux, p[1] - uy) - radius) > max(TOL, 1e-9 * radius) for p in points):
+        return None
+    angles = [math.atan2(p[1] - uy, p[0] - ux) for p in points]
+    sweep = 0.0
+    for a, b in zip(angles, angles[1:]):
+        step = b - a
+        while step > math.pi:
+            step -= 2 * math.pi
+        while step <= -math.pi:
+            step += 2 * math.pi
+        sweep += step
+    return (ux, uy), radius, angles[0], sweep, points[0][2]
+
+
+def _arc_chords(arc, segments):
+    """segments + 1 points at equal angles along the arc (so all chords are equal), in metres."""
+    (ux, uy), radius, start, sweep, z = arc
+    return [(ux + radius * math.cos(start + sweep * i / segments), uy + radius * math.sin(start + sweep * i / segments), z)
+            for i in range(segments + 1)]
 
 
 class _Draft:
@@ -340,16 +385,19 @@ class _Draft:
         if not isinstance(geometry, rhino3dm.Curve):
             raise _Unmapped('geometry_unsupported', f'{type(geometry).__name__} on a wall layer (a curve or extrusion is expected)')
         mapping, notes = 'wall-centreline', ['centreline', 'height-assumed', 'thickness-assumed']
-        if isinstance(geometry, rhino3dm.ArcCurve):
+        if _maybe_arc(geometry):
+            arc = _circular(geometry, self.conv)
+            if arc is None:
+                raise _Unmapped('curve_unsupported', f'{type(geometry).__name__} is not a line, polyline or horizontal circular arc')
             if options['arc_segments'] == 0:
                 raise _Unmapped('arc_not_approximated', 'BIM-IR walls are straight; set arc_segments to approximate arcs with chords')
-            raw = _sample_arc(geometry, options['arc_segments'])
+            points = _arc_chords(arc, options['arc_segments'])
             mapping, notes = 'wall-arc-chord', ['arc-approximated', 'centreline', 'height-assumed', 'thickness-assumed']
         else:
             raw = _vertices(geometry, options['max_vertices'])
             if raw is None:
                 raise _Unmapped('curve_unsupported', f'{type(geometry).__name__} is not a line, polyline or arc')
-        points = [self.conv.xyz(p) for p in raw]
+            points = [self.conv.xyz(p) for p in raw]
         for part in range(len(points) - 1):
             a, b = points[part], points[part + 1]
             part_source = {**source, 'part': part}
@@ -383,7 +431,7 @@ class _Draft:
                 raise _Unmapped('space_extrusion_unsupported' if error.reason == 'wall_extrusion_unsupported' else error.reason, error.detail) from None
             notes, mapping = ['height-dropped'], 'space-extrusion'
         elif isinstance(geometry, rhino3dm.Curve):
-            if isinstance(geometry, rhino3dm.ArcCurve):
+            if _maybe_arc(geometry) and _circular(geometry, self.conv) is not None:
                 raise _Unmapped('space_not_rectangle' if geometry.IsClosed else 'open_curve', 'arcs and circles are not rectangles')
             raw = _vertices(geometry, self.options['max_vertices'])
             if raw is None:
