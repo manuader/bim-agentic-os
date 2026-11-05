@@ -26,6 +26,11 @@ public sealed record DxfProvenance(string SourceFile, string? Handle, string Lay
 
     // Group 60 = 1: the entity is invisible (for exploded entities, also when any enclosing INSERT is).
     public bool Invisible { get; init; }
+
+    // Why an entry of DxfDrawing.Unsupported is unsupported when its type is otherwise modelled: "ocs-non-planar" (its
+    // extrusion direction puts it in a plane that is not horizontal) or "ocs-invalid" (zero extrusion vector). Null
+    // for entities of unmodelled types and for every modelled entity.
+    public string? Reason { get; init; }
 }
 
 public abstract record DxfEntity(DxfProvenance Provenance);
@@ -57,8 +62,19 @@ public sealed record DxfPolylineSegment(int Index, Point2 Start, Point2 End, dou
 // inline formatting (\P becomes a newline). Insertion is group 10/20.
 public sealed record DxfText(DxfProvenance Provenance, Point2 Insertion, double Height, double RotationDegrees, string Value, string PlainText, bool IsMText) : DxfEntity(Provenance);
 
+// A MINSERT is an INSERT with more than one column (group 70) or row (group 71): cell (row, column) is the block
+// placed with an extra offset (column * ColumnSpacing, row * RowSpacing) (groups 44, 45) applied after the scale and
+// before the rotation, so the array turns with the insert but its spacing is not scaled. For an insert read from the
+// mirrored OCS (0,0,-1) ColumnSpacing is negated like ScaleX. Exploding writes each cell's insert-path element as
+// "key[row,column]" (0-based; key is the handle, or "@" + line); a 1x1 insert keeps the plain key.
 public sealed record DxfInsert(DxfProvenance Provenance, string BlockName, Point2 Insertion, double ScaleX, double ScaleY, double RotationDegrees) : DxfEntity(Provenance)
 {
+    public int Columns { get; init; } = 1;
+    public int Rows { get; init; } = 1;
+    public double ColumnSpacing { get; init; }
+    public double RowSpacing { get; init; }
+    public bool IsArray => Columns > 1 || Rows > 1;
+
     // The ATTRIBs that follow the INSERT (group 66 = 1) up to its SEQEND, in file order.
     public IReadOnlyList<DxfAttribute> Attributes { get; init; } = Array.Empty<DxfAttribute>();
 }
@@ -98,7 +114,8 @@ public enum DxfUnits
 // the LAYER table entries plus any layer referenced by an entity but not declared (Declared = false); names match
 // case-insensitively, as in DXF, and the list is sorted by name
 // (ordinal). InsUnits is the raw $INSUNITS value (null when absent); MetresPerUnit is null when the units are
-// unspecified, unitless or unknown. Unsupported lists entities of types this reader does not model.
+// unspecified, unitless or unknown. Unsupported lists entities of types this reader does not model, and modelled
+// entities whose extrusion direction makes them non-planar in the plan (with a Reason).
 public sealed record DxfDrawing(
     string SourceFile,
     int? InsUnits,

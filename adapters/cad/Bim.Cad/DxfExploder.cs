@@ -9,7 +9,9 @@ namespace Bim.Cad;
 // blocks and block cycles are skipped with warnings; nesting deeper than MaxDepth or more than MaxEntities output
 // entities raise explode-limit. Every visited entity or INSERT and every warning also counts against MaxWork, so
 // exponential nesting raises explode-limit quickly even when its leaves are empty, unsupported or missing blocks.
-// Paper-space and invisible flags are inherited from enclosing INSERTs.
+// Paper-space and invisible flags are inherited from enclosing INSERTs. A MINSERT array places the block once per cell
+// (row-major), each cell's insert-path element written "key[row,column]"; every cell counts against MaxWork, its
+// entities against MaxEntities.
 public static class DxfExploder
 {
     public static DxfExplodedDrawing Explode(DxfDrawing drawing, DxfExplodeOptions options)
@@ -77,36 +79,65 @@ public static class DxfExploder
                 }
                 if (depth + 1 > options.MaxDepth)
                     throw new DxfFormatException("explode-limit", source.Line, "block nesting deeper than " + options.MaxDepth.ToString(CultureInfo.InvariantCulture));
-                var local = Affine.Translate(insert.Insertion)
-                    .Compose(Affine.Rotate(insert.RotationDegrees))
-                    .Compose(Affine.Scale(insert.ScaleX, insert.ScaleY))
-                    .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
-                var world = transform.Compose(local);
-                var childPath = path.Append(source.Handle ?? "@" + source.Line.ToString(CultureInfo.InvariantCulture)).ToArray();
-                stack.Add(block.Name);
-                foreach (var child in block.Entities)
+                var key = source.Handle ?? "@" + source.Line.ToString(CultureInfo.InvariantCulture);
+                if (!insert.IsArray)
                 {
-                    if (child is DxfAttribute { IsDefinition: true }) continue;
-                    Emit(child, world, childPath, layer, paper, invisible, depth + 1);
+                    var local = Affine.Translate(insert.Insertion)
+                        .Compose(Affine.Rotate(insert.RotationDegrees))
+                        .Compose(Affine.Scale(insert.ScaleX, insert.ScaleY))
+                        .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
+                    EmitBlock(insert, block, transform, transform.Compose(local), path.Append(key).ToArray(), layer, paper, invisible, depth);
+                    return;
                 }
-                stack.RemoveAt(stack.Count - 1);
-                // ATTRIBs are already placed in the coordinates the INSERT itself lives in. Of the block's ATTDEFs only
-                // constant ones are drawn (placed through the insert); AutoCAD never draws a non-constant ATTDEF.
-                var key = childPath[^1];
-                HashSet<string>? tags = insert.Attributes.Count > 0 ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) : null;
-                foreach (var attribute in insert.Attributes)
+                // MINSERT: one placement per cell, row by row; every cell after the first also counts as visited work.
+                for (var row = 0; row < insert.Rows; row++)
                 {
-                    tags!.Add(attribute.Tag);
-                    EmitAttribute(attribute with { InsertHandle = key, BlockName = block.Name }, transform, childPath, layer, paper, invisible);
-                }
-                foreach (var child in block.Entities)
-                {
-                    if (child is not DxfAttribute { IsDefinition: true, IsConstant: true } definition || (tags is not null && tags.Contains(definition.Tag))) continue;
-                    EmitAttribute(definition with { InsertHandle = key, BlockName = block.Name }, world, childPath, layer, paper, invisible);
+                    for (var column = 0; column < insert.Columns; column++)
+                    {
+                        if (row > 0 || column > 0) Spend(source.Line);
+                        var offset = new Point2(column * insert.ColumnSpacing, row * insert.RowSpacing);
+                        var rotation = Affine.Rotate(insert.RotationDegrees);
+                        var local = Affine.Translate(insert.Insertion)
+                            .Compose(rotation)
+                            .Compose(Affine.Translate(offset))
+                            .Compose(Affine.Scale(insert.ScaleX, insert.ScaleY))
+                            .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
+                        // ATTRIBs are placed for cell (0,0); other cells shift them by the rotated cell offset.
+                        var attributes = transform.Compose(Affine.Translate(rotation.ApplyVector(offset)));
+                        var cell = key + "[" + row.ToString(CultureInfo.InvariantCulture) + "," + column.ToString(CultureInfo.InvariantCulture) + "]";
+                        EmitBlock(insert, block, attributes, transform.Compose(local), path.Append(cell).ToArray(), layer, paper, invisible, depth);
+                    }
                 }
                 return;
             }
             Add(transform.IsIdentity ? Relabel(entity, provenance) : Transform(entity, transform, provenance));
+        }
+
+        // Emits one placement of a block: its entities through world, then the INSERT's ATTRIBs (already in the
+        // coordinates the INSERT lives in, moved by attributeTransform) and the block's constant ATTDEFs.
+        private void EmitBlock(DxfInsert insert, DxfBlock block, Affine attributeTransform, Affine world, string[] childPath, string layer, bool paper, bool invisible, int depth)
+        {
+            stack.Add(block.Name);
+            foreach (var child in block.Entities)
+            {
+                if (child is DxfAttribute { IsDefinition: true }) continue;
+                Emit(child, world, childPath, layer, paper, invisible, depth + 1);
+            }
+            stack.RemoveAt(stack.Count - 1);
+            // ATTRIBs are already placed in the coordinates the INSERT itself lives in. Of the block's ATTDEFs only
+            // constant ones are drawn (placed through the insert); AutoCAD never draws a non-constant ATTDEF.
+            var key = childPath[^1];
+            HashSet<string>? tags = insert.Attributes.Count > 0 ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) : null;
+            foreach (var attribute in insert.Attributes)
+            {
+                tags!.Add(attribute.Tag);
+                EmitAttribute(attribute with { InsertHandle = key, BlockName = block.Name }, attributeTransform, childPath, layer, paper, invisible);
+            }
+            foreach (var child in block.Entities)
+            {
+                if (child is not DxfAttribute { IsDefinition: true, IsConstant: true } definition || (tags is not null && tags.Contains(definition.Tag))) continue;
+                EmitAttribute(definition with { InsertHandle = key, BlockName = block.Name }, world, childPath, layer, paper, invisible);
+            }
         }
 
         private void EmitAttribute(DxfAttribute attribute, Affine transform, IReadOnlyList<string> path, string layer, bool paper, bool invisible)

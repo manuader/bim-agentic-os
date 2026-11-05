@@ -4,7 +4,9 @@ namespace Bim.Cad;
 
 // Canonical JSON for the drawing model (dxf_model_version 1) and wall pairs: compact, fixed member order, layers and
 // blocks in model order (sorted by name), entities in file order, numbers as shortest round-trip invariant doubles
-// (-0 as 0, non-finite as null). The same model serializes to the same bytes whatever the current culture.
+// (-0 as 0, non-finite as null). The same model serializes to the same bytes whatever the current culture. Optional
+// members appear only when set: an insert's columns/rows/column_spacing/row_spacing for a MINSERT array and an
+// unsupported entry's reason; without them the output is the same as before they existed.
 public static class DxfJson
 {
     public const int ModelVersion = 1;
@@ -123,6 +125,7 @@ public static class DxfJson
         writer.WriteStartArray("insert_path");
         foreach (var handle in p.InsertPath) writer.WriteStringValue(handle);
         writer.WriteEndArray();
+        if (p.Reason is { } reason) writer.WriteString("reason", reason);
     }
 
     private static void Entity(Utf8JsonWriter writer, DxfEntity entity)
@@ -177,6 +180,13 @@ public static class DxfJson
                 Number(writer, "scale_x", insert.ScaleX);
                 Number(writer, "scale_y", insert.ScaleY);
                 Number(writer, "rotation_deg", insert.RotationDegrees);
+                if (insert.IsArray)
+                {
+                    writer.WriteNumber("columns", insert.Columns);
+                    writer.WriteNumber("rows", insert.Rows);
+                    Number(writer, "column_spacing", insert.ColumnSpacing);
+                    Number(writer, "row_spacing", insert.RowSpacing);
+                }
                 writer.WriteStartArray("attributes");
                 foreach (var attribute in insert.Attributes) Entity(writer, attribute);
                 writer.WriteEndArray();

@@ -77,15 +77,16 @@ internal static class MinsertOcsTests
 
     private static string Digest(string json) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Round(JsonNode.Parse(json))!.ToJsonString())))[..16];
 
-    // Reader and exploder digests of every DXF fixture that existed before P6-09, captured from the P6-01..P6-06 code.
+    // Reader and exploder digests of every DXF fixture that existed before P6-09, captured in CI from the
+    // P6-01..P6-06 code (origin/main before P6-09; identical on Linux and Windows).
     private static readonly (string File, string Read, string Exploded)[] Baseline =
     {
-        ("blocks.dxf", "?", "?"),
-        ("brief-plan.dxf", "?", "?"),
-        ("draft-plan.dxf", "?", "?"),
-        ("room-tags.dxf", "?", "?"),
-        ("simple-plan.dxf", "?", "?"),
-        ("walls.dxf", "?", "?"),
+        ("blocks.dxf", "41062432943CE103", "3C3E521C09FA828A"),
+        ("brief-plan.dxf", "46697137EBFEBE5C", "46697137EBFEBE5C"),
+        ("draft-plan.dxf", "56953E9FBDC953D0", "5A47947E280264FA"),
+        ("room-tags.dxf", "AF593823EB9B1F78", "824DE72B8A13DD7E"),
+        ("simple-plan.dxf", "9B4F829C1B0615D0", "E54699B5443A7299"),
+        ("walls.dxf", "435ABEB726CC3D81", "435ABEB726CC3D81"),
     };
 
     public static void Run(Action<bool, string, string> check, string fixtures)
