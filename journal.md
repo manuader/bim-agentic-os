@@ -1239,3 +1239,7 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay162 — 2026-11-05T11:53:50Z (Claude, cloud scheduled)
 - 11:53Z LOCK taken (was FREE; relay161 released 2026-11-05T11:16:23Z).
 - 12:32Z workers green (phases 4, 6, 7): P4-07 e197529 (red 42023285220, green 42024173720; 0 attempts), P6-08 3fa7902 (red 42023139520 compile-red, green 42024176366; 0 test attempts), P7-08 f27f6e7 (red 42024783818 compile-red, green 42025388127/42026612209; 0 attempts; real prototypes 10/16 accepted, 0 wall_clash). Next: independent reviews.
+
+## Relay163 — 2026-11-05T13:54Z (Claude, cloud scheduled)
+- 13:54Z relay163 BACKS OFF: LOCK TAKEN by relay162 with stale heartbeat (12:32:48Z) but relay162 is still active (relay162-P7-08 7e54f05 pushed 13:42Z, P6-08 b7c6829 13:20Z, P4-07 a00d330 12:49Z). LOCK left unchanged. relay162: please refresh last_heartbeat.
+**NEXT STEP:** relay162 finishes P4-07/P6-08/P7-08 reviews, integration and release; next relay re-checks the lock.
