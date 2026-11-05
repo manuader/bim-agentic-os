@@ -10,8 +10,8 @@ using System.Text.Json;
 sealed class IncrementalDiffOracle(Action<bool, string, string> check)
 {
     static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
-    int steps, agreed, exactOrder, boundChecks, creates, deletes, noOps;
-    long visited, serialized, dirty, total;
+    int steps, agreed, exactOrder, boundChecks, creates, deletes, noOps, injected;
+    long visited, serialized, dirty, total, traversed;
 
     static string N(long value) => value.ToString(Invariant);
     static string Json(object value) => JsonSerializer.Serialize(value);
@@ -57,6 +57,57 @@ sealed class IncrementalDiffOracle(Action<bool, string, string> check)
         return edits.ToArray();
     }
 
+    // Independent recount of the reverse-dependency and dependency entries the incremental path must examine:
+    // before-dependents of every deleted element (dangling check) and of every dirty element (closure), plus the
+    // after-dependencies of every dirty element still present (cycle check). Duplicate entries count each time.
+    public static long ExpectedTraversed(Project before, Project after, IReadOnlyList<ElementEdit> edits, IEnumerable<Guid> dirtyIds)
+    {
+        var reverse = new Dictionary<Guid, int>();
+        foreach (var element in before.Elements)
+            foreach (var dependency in element.Dependencies) reverse[dependency] = reverse.GetValueOrDefault(dependency) + 1;
+        var afterById = after.Elements.ToDictionary(element => element.Id);
+        long count = edits.Where(edit => edit.Action == "delete").Sum(edit => (long)reverse.GetValueOrDefault(edit.Id));
+        foreach (var id in dirtyIds)
+        {
+            count += reverse.GetValueOrDefault(id);
+            if (afterById.TryGetValue(id, out var element)) count += element.Dependencies.Length;
+        }
+        return count;
+    }
+
+    // Seeded invalid edit appended to a valid set (cycle, dangling dependency or NaN, rotating): the incremental
+    // refusal must be the code Compiler.Diff gives, unbounded and under a zero affected bound (invalid_ir wins).
+    void Inject(string corpus, int step, Project before, ElementEdit[] edits)
+    {
+        var touched = edits.Select(edit => edit.Id).ToHashSet();
+        var provenance = before.Elements[0].Provenance;
+        Guid Fresh(int salt) => Guid.Parse("00000000-0000-0000-" + salt.ToString("D4", Invariant) + "-" + step.ToString("D12", Invariant));
+        ElementEdit? bad = null;
+        switch ((step / 5) % 3)
+        {
+            case 0:
+                foreach (var x in before.Elements.Where(element => !touched.Contains(element.Id)))
+                    if (before.Elements.FirstOrDefault(element => !touched.Contains(element.Id) && element.Dependencies.Contains(x.Id)) is Element y)
+                    { bad = ElementEdit.Update(x with { Dependencies = x.Dependencies.Append(y.Id).ToArray() }); break; }
+                break;
+            case 1:
+                bad = ElementEdit.Create(new Element(Fresh(1), "door", new[] { 1.0, 0.9 }, new[] { Fresh(2) }, provenance));
+                break;
+            default:
+                if (before.Elements.FirstOrDefault(element => !touched.Contains(element.Id)) is Element target)
+                    bad = ElementEdit.Update(target with { GeometryMetres = target.GeometryMetres.Select(_ => double.NaN).Append(double.NaN).ToArray() });
+                break;
+        }
+        if (bad is null) { check(false, corpus + " step " + N(step) + ": an invalid edit could be injected", ""); return; }
+        var invalid = edits.Append(bad).ToArray();
+        var full = Code(() => Compiler.Diff(before, Apply(before, invalid)));
+        var index = IncrementalDiffIndex.Build(before);
+        var local = Code(() => index.Diff(invalid));
+        var tight = Code(() => index.Diff(invalid, 0));
+        if (full == "invalid_ir" && local == full && tight == full) injected++;
+        else check(false, corpus + " step " + N(step) + ": injected invalid edit is refused like Compiler.Diff, also under a zero bound", full + " / " + local + " / " + tight);
+    }
+
     static bool SameContent(Project a, Project b) =>
         a.Id == b.Id && a.Revision == b.Revision &&
         a.Elements.OrderBy(element => element.Id).Select(Json).SequenceEqual(b.Elements.OrderBy(element => element.Id).Select(Json));
@@ -80,10 +131,11 @@ sealed class IncrementalDiffOracle(Action<bool, string, string> check)
             && result.Work.Visited <= expected.DirtyIds.Length
             && result.Work.Edits == edits.Length
             && result.Work.TotalElements == before.Elements.Length
-            && result.Work.HashedBytes == Encoding.UTF8.GetByteCount(Json(reference));
+            && result.Work.HashedBytes == Encoding.UTF8.GetByteCount(Json(reference))
+            && result.Work.Traversed == ExpectedTraversed(before, reference, edits, expected.DirtyIds);
         if (ok) agreed++;
         else check(false, corpus + " step " + N(step) + ": incremental plan equals Compiler.Diff and work stays within the dirty closure",
-            "visited " + N(result.Work.Visited) + " dirty " + N(expected.DirtyIds.Length) + " serialized " + N(result.Work.Serialized) + " same " + SameContent(reference, after));
+            "traversed " + N(result.Work.Traversed) + " expected " + N(ExpectedTraversed(before, reference, edits, expected.DirtyIds)) + " visited " + N(result.Work.Visited) + " dirty " + N(expected.DirtyIds.Length) + " serialized " + N(result.Work.Serialized) + " same " + SameContent(reference, after));
         if (Json(reference) == Json(after))
         {
             if (Json(result.Plan) == Json(Compiler.Diff(before, after))) exactOrder++;
@@ -99,6 +151,8 @@ sealed class IncrementalDiffOracle(Action<bool, string, string> check)
             if (refused != IncrementalDiff.BoundExceeded || accepted is not null)
                 check(false, corpus + " step " + N(step) + ": the affected bound is exactly the dirty closure", refused + " / " + accepted);
         }
+        if (step % 5 == 0) Inject(corpus, step, before, edits);
+        traversed += result.Work.Traversed;
         visited += result.Work.Visited; serialized += result.Work.Serialized; dirty += expected.DirtyIds.Length; total += result.Work.TotalElements;
     }
 
@@ -107,8 +161,11 @@ sealed class IncrementalDiffOracle(Action<bool, string, string> check)
         check(steps == expectedSteps && agreed == expectedSteps, corpus + ": every seeded step's incremental plan equals Compiler.Diff (ops, hashes, DirtyIds)", N(agreed) + "/" + N(steps));
         check(exactOrder > 0 && boundChecks > 0, corpus + ": exact-order steps and affected-bound checks were exercised", N(exactOrder) + " " + N(boundChecks));
         check(noOps > 0, corpus + ": no-op updates were exercised and produce no operation", N(noOps));
+        check(creates > 0 && deletes > 0, corpus + ": creates and deletes were exercised", N(creates) + " " + N(deletes));
+        check(injected == (expectedSteps + 4) / 5, corpus + ": every injected invalid edit (cycle, dangling, NaN) is refused like Compiler.Diff", N(injected));
+        check(traversed < total, corpus + ": traversed entries stay below project size summed over steps", N(traversed) + " of " + N(total));
         check(visited <= dirty && visited < total / 2, corpus + ": visited elements are bounded by the dirty closure and stay local on average", N(visited) + " <= " + N(dirty) + " of " + N(total));
-        Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "incremental_diff_" + corpus, steps, visited, serialized, dirty, total, creates, deletes, no_ops = noOps, exact_order = exactOrder }));
+        Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "incremental_diff_" + corpus, steps, visited, traversed, serialized, dirty, total, creates, deletes, no_ops = noOps, exact_order = exactOrder }));
     }
 
     // Unit, refusal and locality cases over the P3-04 room corpus.
@@ -149,7 +206,7 @@ sealed class IncrementalDiffOracle(Action<bool, string, string> check)
         Same("updates across two rooms in reverse order", basis, new[] { ElementEdit.Update(Moved(Get(basis, role(1, "north")), 1)), ElementEdit.Update(Moved(Get(basis, wall), -1)) });
 
         var noop = IncrementalDiff.Diff(basis, Array.Empty<ElementEdit>());
-        check(noop.Plan.Operations.Length == 0 && noop.Plan.DirtyIds.Length == 0 && noop.Work.Visited == 0 && noop.Work.Serialized == 0, "empty edit set visits and serializes nothing", Json(noop.Work));
+        check(noop.Plan.Operations.Length == 0 && noop.Plan.DirtyIds.Length == 0 && noop.Work.Visited == 0 && noop.Work.Traversed == 0 && noop.Work.Serialized == 0, "empty edit set visits and serializes nothing", Json(noop.Work));
         check(noop.Plan.BeforeHash == Compiler.Hash(basis) && noop.Plan.AfterHash == Compiler.Hash(basis), "empty edit set keeps both hashes equal to Compiler.Hash", "");
         var unchanged = IncrementalDiff.Diff(basis, new[] { ElementEdit.Update(Get(basis, wall) with { GeometryMetres = Get(basis, wall).GeometryMetres.ToArray() }) });
         check(unchanged.Plan.Operations.Length == 0 && unchanged.Plan.DirtyIds.Length == 0 && unchanged.Work.Serialized == 1, "a no-op update serializes only the edited element and dirties nothing", Json(unchanged.Work));
@@ -175,7 +232,7 @@ sealed class IncrementalDiffOracle(Action<bool, string, string> check)
         check(Code(() => IncrementalDiff.Diff(basis, many)) == IncrementalDiff.BoundExceeded, "more than MaxEdits edits is edit_bound_exceeded", "");
         check(Code(() => IncrementalDiff.Diff(basis, new[] { ElementEdit.Update(Get(basis, level) with { GeometryMetres = new[] { 0.5 } }) }, 10)) == IncrementalDiff.BoundExceeded, "an affected closure larger than the bound is edit_bound_exceeded (11 > 10)", "");
         check(Code(() => IncrementalDiff.Diff(basis, new[] { ElementEdit.Update(Get(basis, level) with { GeometryMetres = new[] { 0.5 } }) }, 11)) is null, "an affected closure equal to the bound is accepted", "");
-        check(Code(() => IncrementalDiff.Diff(basis, new[] { ElementEdit.Update(Get(basis, level)) }, -1)) == IncrementalDiff.BoundExceeded, "a negative affected bound is edit_bound_exceeded", "");
+        check(Code(() => IncrementalDiff.Diff(basis, new[] { ElementEdit.Update(Get(basis, level)) }, -1)) == IncrementalDiff.InvalidEdit, "a negative affected bound is edit_invalid", "");
         check(Code(() => IncrementalDiff.Diff(basis, new[] { new ElementEdit("move", wall, Get(basis, wall)) })) == IncrementalDiff.InvalidEdit, "an unknown action is edit_invalid", "");
         check(Code(() => IncrementalDiff.Diff(basis, new[] { new ElementEdit("update", wall, null) })) == IncrementalDiff.InvalidEdit, "an update without an element is edit_invalid", "");
         check(Code(() => IncrementalDiff.Diff(basis, new[] { new ElementEdit("update", wall, Get(basis, level)) })) == IncrementalDiff.InvalidEdit, "an edit whose element id differs from its target is edit_invalid", "");
@@ -183,16 +240,17 @@ sealed class IncrementalDiffOracle(Action<bool, string, string> check)
         check(Code(() => IncrementalDiff.Diff(basis, new ElementEdit[] { null! })) == IncrementalDiff.InvalidEdit, "a null edit is edit_invalid", "");
 
         // ---- Invalid resulting IR: same invalid_ir refusal as Compiler.Diff on the naive after ----
-        void InvalidIr(string name, ElementEdit[] edits)
+        void InvalidIr(string name, ElementEdit[] edits, int maxAffected = int.MaxValue)
         {
             var full = Code(() => Compiler.Diff(basis, Apply(basis, edits)));
-            var local = Code(() => IncrementalDiff.Diff(basis, edits));
+            var local = Code(() => IncrementalDiff.Diff(basis, edits, maxAffected));
             check(full == "invalid_ir" && local == "invalid_ir", name + ": refused as invalid_ir like Compiler.Diff", full + " / " + local);
         }
         InvalidIr("deleting a wall that still hosts a door", new[] { ElementEdit.Delete(wall) });
         InvalidIr("creating an element with a dangling dependency", new[] { ElementEdit.Create(new Element(id("p305-dangling"), "door", new[] { 1.0, 0.9 }, new[] { id("p305-nowhere") }, provenance)) });
         InvalidIr("updating onto a deleted dependency", new[] { ElementEdit.Delete(window(0)), ElementEdit.Update(Get(basis, door(0)) with { Dependencies = new[] { window(0), level } }) });
         InvalidIr("a level made to depend on its own wall (cycle)", new[] { ElementEdit.Update(Get(basis, level) with { Dependencies = new[] { wall } }) });
+        InvalidIr("cycle under tight bound (11-element closure, maxAffected 3)", new[] { ElementEdit.Update(Get(basis, level) with { Dependencies = new[] { wall } }) }, 3);
         InvalidIr("a two-element cycle among created elements", new[]
         {
             ElementEdit.Create(new Element(id("p305-a"), "datum", Array.Empty<double>(), new[] { id("p305-b") }, provenance)),
@@ -205,6 +263,7 @@ sealed class IncrementalDiffOracle(Action<bool, string, string> check)
         check(Code(() => IncrementalDiffIndex.Build(invalidBase)) == "invalid_ir", "indexing a project Compiler.Validate rejects is invalid_ir", "");
 
         // ---- Locality: work is bounded by edited + dependents and independent of project size ----
+        long? wallMoveTraversed = null;
         foreach (var rooms in new[] { 50, 200 })
         {
             var large = build(rooms);
@@ -215,12 +274,16 @@ sealed class IncrementalDiffOracle(Action<bool, string, string> check)
             check(Json(moved.Plan) == Json(Compiler.Diff(large, Apply(large, move))), N(rooms) + "-room model: one wall move equals Compiler.Diff", "");
             check(moved.Work.Visited == 6 && moved.Work.Serialized == 1 && moved.Work.TotalElements == size && moved.Plan.DirtyIds.Length == 6,
                 N(rooms) + "-room model: one wall move visits 6 and serializes 1 of " + N(size) + " elements", Json(moved.Work));
+            check(moved.Work.Traversed == ExpectedTraversed(large, moved.After, move, moved.Plan.DirtyIds) && moved.Work.Traversed > 0 && moved.Work.Traversed * 20 < size,
+                N(rooms) + "-room model: one wall move examines only the dependency entries around its 6-element closure", Json(moved.Work));
+            check(wallMoveTraversed is null || wallMoveTraversed == moved.Work.Traversed, N(rooms) + "-room model: traversed entries for one wall move do not grow with project size", N(wallMoveTraversed ?? -1) + " vs " + N(moved.Work.Traversed));
+            wallMoveTraversed = moved.Work.Traversed;
             var relevel = new[] { ElementEdit.Update(Get(large, role(17, "level")) with { GeometryMetres = new[] { 0.5 } }), ElementEdit.Delete(door(3)) };
             var levelled = index.Diff(relevel);
             check(Json(levelled.Plan) == Json(Compiler.Diff(large, Apply(large, relevel))) && levelled.Work.Visited == 12 && levelled.Work.Serialized == 1,
                 N(rooms) + "-room model: level change plus door delete visits 11 + 1 and serializes 1", Json(levelled.Work));
             check(moved.Work.HashedBytes == Encoding.UTF8.GetByteCount(Json(Apply(large, move))), N(rooms) + "-room model: hashed bytes counter is the after JSON length (hashing stays linear, serialization does not)", Json(moved.Work));
-            Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "incremental_diff_large", rooms, elements = size, visited = moved.Work.Visited, serialized = moved.Work.Serialized, hashed_bytes = moved.Work.HashedBytes }));
+            Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "incremental_diff_large", rooms, elements = size, visited = moved.Work.Visited, traversed = moved.Work.Traversed, serialized = moved.Work.Serialized, hashed_bytes = moved.Work.HashedBytes }));
         }
     }
 }

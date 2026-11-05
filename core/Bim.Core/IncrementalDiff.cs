@@ -19,7 +19,7 @@ public sealed record ElementEdit(string Action, Guid Id, Element? Element)
 // Visited: distinct elements traversed (exactly the dirty closure; delete and cycle checks stay inside it).
 // HashedBytes: bytes fed to SHA-256 for AfterHash; hashing still streams the whole after JSON (cached per-element
 // bytes, not re-serialized), so it stays linear in project size. TotalElements: elements in before.
-public sealed record IncrementalWork(int Edits, int Serialized, int Visited, int TotalElements, long HashedBytes);
+public sealed record IncrementalWork(int Edits, int Serialized, int Visited, int TotalElements, long HashedBytes, long Traversed = 0);
 
 public sealed record IncrementalDiffResult(Project After, ExecutionPlan Plan, IncrementalWork Work);
 
