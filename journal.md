@@ -1225,3 +1225,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 08:43Z integration 6b02552 CI 41994879016 success (9/9) → main fast-forwarded (76303a9..6b02552). P2-08, P5-08, P10-09 ✅; new P5-09, P5-10, P5-11 ⏳. Progress 93/115 (80.9 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-05T08:43:09Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P1-10/P1-11, P3-06/P3-07, P8-08/P8-09, P9-06 port/P9-03 (relay157; check origin chat-* branches before any Revit command file — chat-wall-attach still unmerged); then P4-07, P6-08, P7-08..P7-10 (relay159); then P2-09, P5-09..P5-11, P10-08 (relay160).
+
+## Relay161 — 2026-11-05T08:52:38Z (Claude, cloud scheduled)
+- 08:52Z LOCK taken (was FREE; relay160 released 2026-11-05T08:43:09Z).
