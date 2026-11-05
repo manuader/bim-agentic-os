@@ -120,4 +120,9 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   `.bim/native-runs`: added (P1-08 `document.save_copy`, unit-tested, executor compiled only); general Save As of real
   projects is still pending.
 - View image export for phone review: added (chat-export-save, unit-tested, executor compiled only).
-- Model in-place / direct shapes for site-specific elements (a boulder kept inside the building).
+- Model in-place / direct shapes for site-specific elements (a boulder kept inside the building): added as
+  `direct_shape.create` (P9-09, unit-tested, executor compiled only): category site/planting/entourage/topography/
+  generic_model, shape = extrusion (closed plan polygon of 3-256 [x, y] mm vertices on a level + `base_offset_mm`,
+  `height_mm`) or box (`min`/`max` [x, y, z] mm, z as project elevation), optional `material` and `name`. Boulder
+  1200 x 800 x 900 on Level 1: `{category: site, shape: {kind: extrusion, level: Level 1, outline:
+  [[0,0],[1200,0],[1200,800],[0,800]], height_mm: 900}}`. Faceted rock shapes need several boxes/extrusions for now.
