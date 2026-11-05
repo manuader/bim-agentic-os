@@ -70,11 +70,12 @@ public static partial class RevitCommandCatalogue
     // Commands that change or remove existing elements (MCP destructiveHint): the modify commands, wall.set_profile
     // (RevitCommandsWallProfile.cs), material.set / element.change_type (RevitCommandsMaterialTypes.cs) and
     // document.save, which overwrites the saved file (RevitCommandsExportSave.cs), and command.batch, whose steps may be
-    // any of these (RevitCommandsBatch.cs), and element.move (RevitCommandsTransform.cs); every other write only adds elements.
+    // any of these (RevitCommandsBatch.cs), and element.move (RevitCommandsTransform.cs), and element.rotate and element.mirror (RevitCommandsRotateMirror.cs; a mirror without keep_original turns the originals); every other write only adds elements.
     public static bool IsDestructive(string? command) => command is not null && (Modify.Any(spec => spec.Name == command) || WallProfile.Any(spec => spec.Name == command)
         || (MaterialTypeDestructive(command) && MaterialTypes.Any(spec => spec.Name == command))
         || (ExportSaveDestructive(command) && ExportSave.Any(spec => spec.Name == command))
-        || command == RevitCommandBatch.Command || command == RevitTransformRules.Move);
+        || command == RevitCommandBatch.Command || command == RevitTransformRules.Move
+        || command == RevitRotateMirrorRules.Rotate || command == RevitRotateMirrorRules.Mirror);
 
     const string DryRunSchema = """{"type":"boolean","description":"Run the change in a transaction, read it back, report it and roll it back; nothing is written and no receipt is stored; default false"}""";
 

@@ -11,10 +11,10 @@ Generated from [revit-parity-census.json](revit-parity-census.json) by `dotnet r
 | views | 0 | 3 | 0 | 0 | 0 | 0 | 4 | 0 | 7 |
 | documentation | 0 | 5 | 0 | 0 | 0 | 0 | 4 | 0 | 9 |
 | content | 0 | 9 | 0 | 0 | 1 | 0 | 3 | 0 | 13 |
-| modify | 0 | 4 | 0 | 0 | 0 | 0 | 3 | 0 | 7 |
+| modify | 0 | 5 | 0 | 0 | 0 | 0 | 3 | 0 | 8 |
 | query | 0 | 1 | 3 | 0 | 1 | 0 | 0 | 0 | 5 |
 | file | 0 | 3 | 0 | 0 | 0 | 0 | 3 | 0 | 6 |
 | collaboration | 0 | 0 | 0 | 0 | 0 | 0 | 3 | 0 | 3 |
-| all | 0 | 41 | 4 | 0 | 10 | 0 | 51 | 0 | 106 |
+| all | 0 | 42 | 4 | 0 | 10 | 0 | 51 | 0 | 107 |
 
-Entries: 106. Catalogue commands referenced: 59 of 59.
+Entries: 107. Catalogue commands referenced: 61 of 61.

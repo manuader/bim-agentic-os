@@ -35,7 +35,8 @@ namespace Bim.Revit;
 // view.export_image and document.save are in CommandsExecutorExportSave.cs; document.save_copy is in
 // CommandsExecutorSaveCopy.cs; command.batch is in CommandsExecutorBatch.cs; roof.create_extrusion is in
 // CommandsExecutorRoofExtrusion.cs; direct_shape.create is in CommandsExecutorDirectShape.cs;
-// element.move and element.copy are in CommandsExecutorTransform.cs.
+// element.move and element.copy are in CommandsExecutorTransform.cs; element.rotate and element.mirror are in
+// CommandsExecutorRotateMirror.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -87,6 +88,8 @@ internal static partial class CommandExecutor
             DirectShapeCreateArgs directShape => DirectShapeWrite(d, directShape),
             ElementMoveArgs move => MovePlan(d, move),
             ElementCopyArgs copy => CopyPlan(d, copy),
+            ElementRotateArgs rotate => RotatePlan(d, rotate),
+            ElementMirrorArgs mirror => MirrorPlan(d, mirror),
             CurtainWallCreateArgs curtain => CurtainWallPlan(d, curtain),
             FloorOpeningCreateArgs opening => FloorOpeningPlan(d, opening),
             ViewPlanCreateArgs view => ViewPlanWrite(d, view),
