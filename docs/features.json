@@ -771,7 +771,7 @@
     },
     {
       "id": "ifc-export-schema-validation",
-      "status": "integration-tested",
+      "status": "integration-tested (ifc)",
       "evidence": [
         "runtimes/ifc/ifc_validate.py",
         "tests/ifc/test_validate.py",
