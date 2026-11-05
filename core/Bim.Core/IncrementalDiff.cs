@@ -127,19 +127,7 @@ public sealed class IncrementalDiffIndex
             else deletes.Add(edit.Id);
         }
 
-        // ---- Serialize only edited elements; an update with unchanged JSON is not an operation ----
-        var serialized = 0;
-        var newJson = new Dictionary<Guid, byte[]>();
-        var changed = new List<Guid>();
-        foreach (var (id, element) in updates)
-        {
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(element); serialized++;
-            newJson.Add(id, bytes);
-            if (!bytes.AsSpan().SequenceEqual(json[position[id]])) changed.Add(id);
-        }
-        foreach (var element in creates) { newJson.Add(element.Id, JsonSerializer.SerializeToUtf8Bytes(element)); serialized++; }
-
-        // ---- Local IR checks (same refusal as Compiler.Diff: invalid_ir) ----
+        // ---- Local IR checks (same refusal as Compiler.Diff: invalid_ir), before any serialization, which rejects non-finite numbers ----
         bool InAfter(Guid id) => created.ContainsKey(id) || (position.ContainsKey(id) && !deletes.Contains(id));
         foreach (var element in updates.Values.Concat(creates))
         {
@@ -151,6 +139,18 @@ public sealed class IncrementalDiffIndex
         foreach (var id in deletes)
             if (dependents.TryGetValue(id, out var list) && list.Any(dependent => !deletes.Contains(dependent) && !updates.ContainsKey(dependent)))
                 throw new InvalidOperationException("invalid_ir");
+
+        // ---- Serialize only edited elements; an update with unchanged JSON is not an operation ----
+        var serialized = 0;
+        var newJson = new Dictionary<Guid, byte[]>();
+        var changed = new List<Guid>();
+        foreach (var (id, element) in updates)
+        {
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(element); serialized++;
+            newJson.Add(id, bytes);
+            if (!bytes.AsSpan().SequenceEqual(json[position[id]])) changed.Add(id);
+        }
+        foreach (var element in creates) { newJson.Add(element.Id, JsonSerializer.SerializeToUtf8Bytes(element)); serialized++; }
 
         // ---- Dirty closure over reverse dependencies, bounded ----
         // After-edges whose dependent is unedited (or a no-op update) equal before-edges; other after-edges start at
