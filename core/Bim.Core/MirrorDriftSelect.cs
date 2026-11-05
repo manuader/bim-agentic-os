@@ -145,9 +145,110 @@ public static class MirrorDriftSelect
     public static MirrorDriftSelection Select(MirrorDriftResolution resolution, IReadOnlyList<MirrorDriftChoice> choices)
     {
         ArgumentNullException.ThrowIfNull(resolution);
+        if (choices is null) throw Fail(MirrorDriftSelectCodes.ChoiceInvalid, null, "choices are required");
+        var proposals = resolution.Proposals;
         var source = resolution.RestorePlan;
-        var plan = new RevitCommandPlan(source.Version, source.ProjectId, source.ExpectedRevision, source.AfterHash, source.Document, Array.Empty<RevitLevelPrecondition>(), Array.Empty<RevitCommandStep>(), Array.Empty<RevitUnsupportedElement>());
-        return new MirrorDriftSelection(resolution.DocumentUid, resolution.CoreProjectId, resolution.CoreRevision, Array.Empty<MirrorDriftChoice>(), Array.Empty<string>(),
-            Array.Empty<Operation>(), Array.Empty<MirrorDriftMapEntry>(), Array.Empty<MirrorDriftMapEntry>(), plan, Array.Empty<MirrorDriftMapInvalidation>());
+
+        // ---- The resolution must be a P2-07 resolution: proposals and plan steps agree ----
+        if (proposals is null || source?.Steps is null || source.Document is null || source.Preconditions is null
+            || proposals.Any(proposal => proposal?.Adopt?.Requires is null || proposal.Restore?.Requires is null || proposal.Restore.Operations is null))
+            throw Invalid("proposals, their sides and the restore plan are required");
+        var ids = proposals.Select(ProposalId).ToArray();
+        var index = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < ids.Length; i++)
+            if (ids[i].Length == 0 || ids[i] == "core:" || !index.TryAdd(ids[i], i)) throw Invalid("proposal ids must be present and distinct: " + ids[i]);
+        if (source.Steps.Any(step => step is null || step.OperationId is null || step.DependsOn is null || step.Inputs is null || step.Inputs.Any(input => input is null))) throw Invalid("restore plan steps are malformed");
+        var steps = new Dictionary<string, RevitCommandStep>(StringComparer.Ordinal);
+        foreach (var step in source.Steps) if (!steps.TryAdd(step.OperationId, step)) throw Invalid("duplicate restore operation " + step.OperationId);
+        var owner = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < proposals.Count; i++)
+        {
+            var (adopt, restore) = (proposals[i].Adopt, proposals[i].Restore);
+            var adoptOk = adopt.Status == MirrorDriftResolveStatus.Unsupported
+                || adopt.Status == MirrorDriftResolveStatus.Proposed && adopt.Element is { } element && element.GeometryMetres is not null && element.Dependencies is not null && element.Provenance is not null
+                    && adopt.Action is MirrorDriftAdoptActions.Create or MirrorDriftAdoptActions.Update or MirrorDriftAdoptActions.Delete;
+            var restoreOk = restore.Status == MirrorDriftResolveStatus.Proposed ? restore.Operations.Count > 0 && restore.Mode is not null
+                : restore.Status == MirrorDriftResolveStatus.Unsupported && restore.Operations.Count == 0;
+            if (!adoptOk || !restoreOk) throw Invalid("proposal " + ids[i] + " has a malformed adopt or restore side");
+            foreach (var operation in restore.Operations)
+                if (operation is null || !steps.ContainsKey(operation) || !owner.TryAdd(operation, i)) throw Invalid("restore of " + ids[i] + " names operation " + operation + " the plan lacks or another proposal owns");
+            foreach (var key in adopt.Requires.Concat(restore.Requires))
+                if (key is null || !index.ContainsKey(key)) throw Invalid("proposal " + ids[i] + " requires " + key + ", which is no proposal");
+        }
+        if (owner.Count != steps.Count) throw Invalid("restore plan steps " + string.Join(",", steps.Keys.Where(key => !owner.ContainsKey(key)).Order(StringComparer.Ordinal)) + " belong to no proposal");
+
+        // ---- Choices: shape, then known ids, then one choice per proposal; checks in a fixed order ----
+        foreach (var choice in choices)
+            if (choice is null || string.IsNullOrWhiteSpace(choice.ProposalId) || choice.Action is not (MirrorDriftResolveActions.Adopt or MirrorDriftResolveActions.Restore))
+                throw Fail(MirrorDriftSelectCodes.ChoiceInvalid, choice?.ProposalId, "a choice needs a proposal id and the action adopt or restore");
+        var unknown = choices.Where(choice => !index.ContainsKey(choice.ProposalId)).Select(choice => choice.ProposalId).Order(StringComparer.Ordinal).FirstOrDefault();
+        if (unknown is not null) throw Fail(MirrorDriftSelectCodes.ProposalUnknown, unknown, unknown + " is not a proposal of this resolution");
+        var chosen = new Dictionary<int, string>();
+        foreach (var group in choices.GroupBy(choice => index[choice.ProposalId]).OrderBy(group => group.Key))
+        {
+            if (group.Count() > 1) throw Fail(MirrorDriftSelectCodes.ChoiceDuplicate, ids[group.Key], ids[group.Key] + " is chosen more than once");
+            chosen[group.Key] = group.Single().Action;
+        }
+        var order = chosen.Keys.Order().ToArray();
+        foreach (var i in order)
+        {
+            var status = chosen[i] == MirrorDriftResolveActions.Adopt ? proposals[i].Adopt.Status : proposals[i].Restore.Status;
+            if (status != MirrorDriftResolveStatus.Proposed)
+            {
+                var code = chosen[i] == MirrorDriftResolveActions.Adopt ? proposals[i].Adopt.Code : proposals[i].Restore.Code;
+                throw Fail(MirrorDriftSelectCodes.ActionUnsupported, ids[i], ids[i] + " has no proposed " + chosen[i] + " (" + (code ?? "") + ")");
+            }
+        }
+        // Requires: every coupled proposal is chosen with the same action.
+        foreach (var i in order)
+        {
+            var action = chosen[i];
+            var requires = action == MirrorDriftResolveActions.Adopt ? proposals[i].Adopt.Requires : proposals[i].Restore.Requires;
+            var missing = requires.Where(key => !chosen.TryGetValue(index[key], out var other) || other != action).Select(key => ids[index[key]])
+                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+            if (missing.Length > 0)
+                throw new MirrorDriftSelectException(MirrorDriftSelectCodes.RequiresIncomplete, ids[i], missing, ids[i] + " " + action + " requires " + string.Join(",", missing) + " " + action + " too");
+        }
+
+        // ---- BIM-IR operations and map changes, in proposal order ----
+        var operations = new List<Operation>();
+        var adds = new List<MirrorDriftMapEntry>();
+        var removals = new List<MirrorDriftMapEntry>();
+        var kept = new HashSet<string>(StringComparer.Ordinal);
+        var invalidated = new List<MirrorDriftMapInvalidation>();
+        foreach (var i in order)
+        {
+            var proposal = proposals[i];
+            if (chosen[i] == MirrorDriftResolveActions.Adopt)
+            {
+                var adopt = proposal.Adopt;
+                var element = adopt.Element!;
+                operations.Add(new Operation(adopt.Action!, element));
+                if (adopt.Action == MirrorDriftAdoptActions.Create && !string.IsNullOrEmpty(adopt.MapUniqueId)) adds.Add(new MirrorDriftMapEntry(element.Id.ToString("D"), adopt.MapUniqueId, ids[i]));
+                if (adopt.Action == MirrorDriftAdoptActions.Delete && !string.IsNullOrEmpty(proposal.UniqueId)) removals.Add(new MirrorDriftMapEntry(element.Id.ToString("D"), proposal.UniqueId, ids[i]));
+                continue;
+            }
+            var restore = proposal.Restore;
+            kept.UnionWith(restore.Operations);
+            // A replace deletes the mapped element and creates another; a create re-creates a missing mapped one.
+            if (restore.Mode is MirrorDriftRestoreModes.Replace or MirrorDriftRestoreModes.Create && proposal.CoreId is { } coreId && !string.IsNullOrEmpty(proposal.UniqueId))
+                invalidated.Add(new MirrorDriftMapInvalidation(coreId.ToString("D"), proposal.UniqueId, ids[i], restore.Mode!, restore.Operations[restore.Operations.Count - 1]));
+        }
+
+        // ---- The restore plan filtered to the chosen steps, original order and ids ----
+        var selected = source.Steps.Where(step => kept.Contains(step.OperationId)).ToArray();
+        foreach (var step in selected)
+            foreach (var dependency in step.DependsOn.Concat(step.Inputs.Select(input => input.FromOperation)))
+                if (dependency is null || !kept.Contains(dependency))
+                    throw Invalid("step " + step.OperationId + " needs " + dependency + ", which no chosen restore requires");
+        var plan = new RevitCommandPlan(source.Version, source.ProjectId, source.ExpectedRevision, source.AfterHash, source.Document,
+            source.Preconditions.Where(item => item is not null && (item.CheckOperation is null || kept.Contains(item.CheckOperation))).ToArray(), selected, Array.Empty<RevitUnsupportedElement>());
+        return new MirrorDriftSelection(resolution.DocumentUid, resolution.CoreProjectId, resolution.CoreRevision,
+            order.Select(i => new MirrorDriftChoice(ids[i], chosen[i])).ToArray(), Enumerable.Range(0, ids.Length).Where(i => !chosen.ContainsKey(i)).Select(i => ids[i]).ToArray(),
+            operations, adds, removals, plan, invalidated);
     }
+
+    static MirrorDriftSelectException Invalid(string detail) => new(MirrorDriftSelectCodes.ResolutionInvalid, null, Array.Empty<string>(), detail);
+
+    static MirrorDriftSelectException Fail(string code, string? proposalId, string detail) => new(code, proposalId, Array.Empty<string>(), detail);
 }
