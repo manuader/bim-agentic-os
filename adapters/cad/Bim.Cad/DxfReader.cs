@@ -273,6 +273,8 @@ public static class DxfReader
             if (j < records.Count && records[j].Type == "SEQEND" && (follows || any)) j++;
             else if (follows) Warn("attrib-unterminated", record.Line, "INSERT attribute sequence has no SEQEND; it ends at the next entity");
             if (any && !follows) Warn("attributes-flag-missing", record.Line, "ATTRIBs follow an INSERT without the attributes-follow flag (66 = 1); attached");
+            if (entity is null && attributes.Count > 0)
+                Warn("attributes-dropped", record.Line, "INSERT not read; its " + attributes.Count.ToString(CultureInfo.InvariantCulture) + " ATTRIBs are dropped");
             i = j - 1;
             return entity is DxfInsert insert && attributes.Count > 0 ? insert with { Attributes = attributes.ToArray() } : entity;
         }
@@ -353,11 +355,12 @@ public static class DxfReader
                         var frame = OcsFrame.Read(r);
                         if (!frame.IsHorizontal) return NotPlanar(p, state, frame);
                         var mirror = frame.Kind == OcsKind.Mirrored;
-                        if (r.Type == "CIRCLE") return new DxfCircle(p, mirror ? Flip(center) : center, radius);
+                        center = frame.Place(center, r, 30);
+                        if (r.Type == "CIRCLE") return new DxfCircle(p, center, radius);
                         if (r.First(50) is not { } sa || r.First(51) is not { } ea) return Invalid(r, state, "ARC without start or end angle");
                         double start = DxfValues.Number(sa), end = DxfValues.Number(ea);
                         if (mirror) (start, end) = (180 - end, 180 - start);
-                        return new DxfArc(p, mirror ? Flip(center) : center, radius, DxfValues.NormaliseDegrees(start), DxfValues.NormaliseDegrees(end));
+                        return new DxfArc(p, center, radius, DxfValues.NormaliseDegrees(start), DxfValues.NormaliseDegrees(end));
                     }
                 case "LWPOLYLINE":
                     {
@@ -387,7 +390,8 @@ public static class DxfReader
                         if (declared is { } count && count != vertices.Count)
                             state.Warn("vertex-count-mismatch", r.Line, "LWPOLYLINE declares " + count.ToString(CultureInfo.InvariantCulture) + " vertices but has " + vertices.Count.ToString(CultureInfo.InvariantCulture));
                         var frame = OcsFrame.Read(r);
-                        if (frame.Kind == OcsKind.Mirrored) vertices = vertices.Select(v => new DxfVertex(Flip(v.Point), -v.Bulge)).ToList();
+                        if (frame.Kind == OcsKind.Mirrored) vertices = vertices.Select(v => new DxfVertex(frame.Place(v.Point, r, 38), -v.Bulge)).ToList();
+                        else if (frame.Kind == OcsKind.World && !frame.Exact) vertices = vertices.Select(v => new DxfVertex(frame.Place(v.Point, r, 38), v.Bulge)).ToList();
                         else if (frame.Kind == OcsKind.Tilted)
                         {
                             // Straight segments in a tilted plane stay a plan polyline only when every vertex lands at the
@@ -424,7 +428,11 @@ public static class DxfReader
                         }
                         else value = r.First(1)?.Value ?? "";
                         // MTEXT 10/20 is in world coordinates; TEXT is in the entity's OCS.
-                        if (!mtext && frame.Kind == OcsKind.Mirrored) { insertion = Flip(insertion); rotation = 180 - rotation; }
+                        if (!mtext)
+                        {
+                            insertion = frame.Place(insertion, r, 30);
+                            if (frame.Kind == OcsKind.Mirrored) rotation = 180 - rotation;
+                        }
                         var plain = DxfTextFormat.PlainText(value);
                         if (mtext)
                         {
@@ -451,7 +459,8 @@ public static class DxfReader
                         var rotation = r.First(50) is { } ar ? DxfValues.Number(ar) : 0;
                         var flags = r.First(70) is { } af ? DxfValues.Int(af) : 0;
                         var value = r.First(1)?.Value ?? "";
-                        if (frame.Kind == OcsKind.Mirrored) { insertion = Flip(insertion); rotation = 180 - rotation; }
+                        insertion = frame.Place(insertion, r, 30);
+                        if (frame.Kind == OcsKind.Mirrored) rotation = 180 - rotation;
                         string plain;
                         // A multi-line attribute (embedded MTEXT after group 101) keeps MTEXT codes in its value.
                         if (r.First(101) is not null)
@@ -488,7 +497,8 @@ public static class DxfReader
                         var rowSpacing = r.First(45) is { } gt ? DxfValues.Number(gt) : 0;
                         var frame = OcsFrame.Read(r);
                         if (!frame.IsHorizontal) return NotPlanar(p, state, frame);
-                        if (frame.Kind == OcsKind.Mirrored) { insertion = Flip(insertion); rotation = -rotation; sx = -sx; columnSpacing = -columnSpacing; }
+                        insertion = frame.Place(insertion, r, 30);
+                        if (frame.Kind == OcsKind.Mirrored) { rotation = -rotation; sx = -sx; columnSpacing = -columnSpacing; }
                         return new DxfInsert(p, name, insertion, sx, sy, DxfValues.NormaliseDegrees(rotation))
                         {
                             Columns = columns,
@@ -501,8 +511,6 @@ public static class DxfReader
                     return null;
             }
         }
-
-        private static Point2 Flip(Point2 p) => new(-p.X, p.Y);
 
         // Records an entity whose extrusion direction leaves it out of the plan as typed unsupported, with a warning.
         private static DxfEntity? NotPlanar(DxfProvenance p, ParseState state, OcsFrame frame)
@@ -545,12 +553,18 @@ internal readonly record struct OcsVector(double X, double Y, double Z)
 
 // The object coordinate system of an entity from its extrusion direction N (groups 210/220/230, default (0,0,1)), by
 // the AutoCAD arbitrary axis algorithm: Ax = normalise(Wy x N) when |Nx| < 1/64 and |Ny| < 1/64, else
-// normalise(Wz x N); Ay = normalise(N x Ax); an OCS point (x, y, z) is world x Ax + y Ay + z N. When N is parallel to
-// Z (its horizontal part at most Tolerance of its length) the OCS is the world plane (World) or, for -Z, the world
-// plane mirrored in X (Mirrored: Ax = (-1,0,0), Ay = (0,1,0)); otherwise it is Tilted. A zero vector is Invalid.
-internal sealed record OcsFrame(OcsKind Kind, OcsVector AxisX, OcsVector AxisY, OcsVector Normal)
+// normalise(Wz x N); Ay = normalise(N x Ax); an OCS point (x, y, z) is world x Ax + y Ay + z N. N exactly +-Z is the
+// world plane (World) or the world plane mirrored in X (Mirrored: Ax = (-1,0,0)), Exact. N whose horizontal part is
+// at most NearTolerance of its length (float noise) is also World/Mirrored, but its points are placed through the
+// computed axes (projected to XY; angles keep the exact-axis meaning, an error of at most about NearTolerance rad).
+// Any other N is Tilted; a zero vector is Invalid.
+internal sealed record OcsFrame(OcsKind Kind, bool Exact, OcsVector AxisX, OcsVector AxisY, OcsVector Normal)
 {
+    // Relative height tolerance for a tilted polyline to count as horizontal.
     public const double Tolerance = 1e-9;
+
+    // Relative horizontal part of N up to which N counts as +-Z.
+    public const double NearTolerance = 1e-6;
 
     public bool IsHorizontal => Kind is OcsKind.World or OcsKind.Mirrored;
 
@@ -559,21 +573,32 @@ internal sealed record OcsFrame(OcsKind Kind, OcsVector AxisX, OcsVector AxisY, 
         x * AxisX.Y + y * AxisY.Y + z * Normal.Y,
         x * AxisX.Z + y * AxisY.Z + z * Normal.Z);
 
+    // An OCS point of a World/Mirrored frame in world XY; the elevation group is read only when the frame is not exact.
+    public Point2 Place(Point2 p, DxfRecord r, int elevationCode)
+    {
+        if (Exact) return Kind == OcsKind.Mirrored ? new Point2(-p.X, p.Y) : p;
+        var z = r.First(elevationCode) is { } g ? DxfValues.Number(g) : 0;
+        var w = ToWorld(p.X, p.Y, z);
+        return new Point2(w.X, w.Y);
+    }
+
     public static OcsFrame Read(DxfRecord r)
     {
         var ex = r.First(210) is { } a ? DxfValues.Number(a) : 0;
         var ey = r.First(220) is { } b ? DxfValues.Number(b) : 0;
         var ez = r.First(230) is { } c ? DxfValues.Number(c) : 1;
         var scale = Math.Max(Math.Abs(ex), Math.Max(Math.Abs(ey), Math.Abs(ez)));
-        if (!(scale > 0)) return new OcsFrame(OcsKind.Invalid, default, default, default);
+        if (!(scale > 0)) return new OcsFrame(OcsKind.Invalid, false, default, default, default);
         var n = new OcsVector(ex / scale, ey / scale, ez / scale).Normalised();
-        if (Math.Sqrt(n.X * n.X + n.Y * n.Y) <= Tolerance)
+        var horizontal = Math.Sqrt(n.X * n.X + n.Y * n.Y);
+        if (horizontal == 0)
             return n.Z < 0
-                ? new OcsFrame(OcsKind.Mirrored, new OcsVector(-1, 0, 0), new OcsVector(0, 1, 0), new OcsVector(0, 0, -1))
-                : new OcsFrame(OcsKind.World, new OcsVector(1, 0, 0), new OcsVector(0, 1, 0), new OcsVector(0, 0, 1));
+                ? new OcsFrame(OcsKind.Mirrored, true, new OcsVector(-1, 0, 0), new OcsVector(0, 1, 0), new OcsVector(0, 0, -1))
+                : new OcsFrame(OcsKind.World, true, new OcsVector(1, 0, 0), new OcsVector(0, 1, 0), new OcsVector(0, 0, 1));
         var axisX = (Math.Abs(n.X) < 1.0 / 64 && Math.Abs(n.Y) < 1.0 / 64 ? new OcsVector(0, 1, 0).Cross(n) : new OcsVector(0, 0, 1).Cross(n)).Normalised();
         var axisY = n.Cross(axisX).Normalised();
-        return new OcsFrame(OcsKind.Tilted, axisX, axisY, n);
+        var kind = horizontal > NearTolerance ? OcsKind.Tilted : n.Z < 0 ? OcsKind.Mirrored : OcsKind.World;
+        return new OcsFrame(kind, false, axisX, axisY, n);
     }
 }
 

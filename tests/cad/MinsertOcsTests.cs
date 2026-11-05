@@ -106,15 +106,16 @@ internal static class MinsertOcsTests
     };
 
     // CadToBimIr draft and BriefExtract brief digests of the same fixtures, captured in CI from origin/main
-    // (b0bcd22, before P6-09) with the temporary probe branch relay159-P6-09-baseline.
+    // (b0bcd22, before P6-09) with the temporary probe branch relay159-P6-09-baseline
+    // (run 41968339713, identical on Linux and Windows).
     private static readonly (string File, string Draft, string Brief)[] ConsumerBaseline =
     {
-        ("blocks.dxf", "?", "?"),
-        ("brief-plan.dxf", "?", "?"),
-        ("draft-plan.dxf", "?", "?"),
-        ("room-tags.dxf", "?", "?"),
-        ("simple-plan.dxf", "?", "?"),
-        ("walls.dxf", "?", "?"),
+        ("blocks.dxf", "1D5CE30FBCFE10C0", "75AFC392F20A78F2"),
+        ("brief-plan.dxf", "F219EF605E019717", "3D3393E3209135F9"),
+        ("draft-plan.dxf", "CBACE02A95866751", "C8A1255B399208A8"),
+        ("room-tags.dxf", "2AF09CB7F4C52D6C", "836D34DE15657214"),
+        ("simple-plan.dxf", "1130E0F07238D658", "9D632623521632CD"),
+        ("walls.dxf", "2704D64C1CD7B9CA", "B56D4D983CD15415"),
     };
 
     public static void Run(Action<bool, string, string> check, string fixtures)

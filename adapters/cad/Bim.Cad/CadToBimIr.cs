@@ -38,6 +38,8 @@ namespace Bim.Cad;
 // Keys are positional: cad:wall:n numbers walls by their first face line in drawing order and cad:opening:n numbers
 // openings by first appearance of their INSERT/Do; they are not stable across edits of the drawing. Element ids are
 // RoomCompiler.Id(ProjectId, key) and the level key is cad:level. When two inserts share a DXF handle, the first wins.
+// Insert-path elements are matched by their INSERT key (DxfInsertPath.Key), so each MINSERT cell ("key[row,column]")
+// is its own opening or its own unmatched-block report.
 public static class CadToBimIr
 {
     private const double EndPenalty = 0.85;
@@ -71,9 +73,24 @@ public static class CadToBimIr
             if (!Visible(insert.Provenance)) { skipped.Add(key); continue; }
             if (Kind(insert.BlockName) is not { } kind) continue;
             // Top-level openings are registered in drawing order (even when their block has no geometry) with their
-            // insertion point as an extra hosting sample.
-            openingOf[key] = AddOpening(input, options, kind, insert.BlockName, DxfSource(insert.Provenance, null));
-            if (Finite(insert.Insertion * scale)) input.Openings[openingOf[key]].Points.Add(insert.Insertion * scale);
+            // insertion point as an extra hosting sample; a MINSERT registers one opening per cell (row-major) under
+            // the cell's path element, sampled at the cell's insertion point.
+            if (!insert.IsArray)
+            {
+                openingOf[key] = AddOpening(input, options, kind, insert.BlockName, DxfSource(insert.Provenance, null));
+                if (Finite(insert.Insertion * scale)) input.Openings[openingOf[key]].Points.Add(insert.Insertion * scale);
+                continue;
+            }
+            for (var row = 0; row < insert.Rows; row++)
+                for (var column = 0; column < insert.Columns; column++)
+                {
+                    work.Spend();
+                    var cell = DxfInsertPath.Cell(key, row, column);
+                    var opening = AddOpening(input, options, kind, insert.BlockName, DxfSource(insert.Provenance, null));
+                    openingOf[cell] = opening;
+                    var at = CellInsertion(insert, cell) * scale;
+                    if (Finite(at)) input.Openings[opening].Points.Add(at);
+                }
         }
         foreach (var block in drawing.Blocks)
             foreach (var entity in block.Entities)
@@ -94,12 +111,12 @@ public static class CadToBimIr
             var path = provenance.InsertPath;
             if (path.Count > 0)
             {
-                if (skipped.Contains(path[0])) continue;
+                if (skipped.Contains(DxfInsertPath.Key(path[0]))) continue;
                 var opening = -1;
                 for (var i = 0; i < path.Count && opening < 0; i++)
                 {
                     work.Spend();
-                    if (!inserts.TryGetValue(path[i], out var insert) || Kind(insert.BlockName) is not { } kind) continue;
+                    if (!inserts.TryGetValue(DxfInsertPath.Key(path[i]), out var insert) || Kind(insert.BlockName) is not { } kind) continue;
                     var key = string.Join(">", path.Take(i + 1));
                     if (!openingOf.TryGetValue(key, out opening))
                     {
@@ -115,9 +132,9 @@ public static class CadToBimIr
                 var full = string.Join(">", path);
                 if (reported.Add(full))
                 {
-                    var name = inserts.TryGetValue(path[^1], out var inner) ? inner.BlockName : "?";
+                    var name = inserts.TryGetValue(DxfInsertPath.Key(path[^1]), out var inner) ? inner.BlockName : "?";
                     var source = inner is null ? DxfSource(provenance, null) : DxfSource(inner.Provenance with { InsertPath = path.Take(path.Count - 1).ToArray() }, null);
-                    var at = path.Count == 1 && inner is not null ? Pf(inner.Insertion * scale) : null;
+                    var at = path.Count == 1 && inner is not null ? Pf(CellInsertion(inner, path[0]) * scale) : null;
                     input.Report.Add(new Pending("unmatched-block", "block " + name + " is not a door or window block", at, null, new[] { source }));
                 }
                 if (!options.WallsFromUnmatchedBlocks) continue;
@@ -197,6 +214,14 @@ public static class CadToBimIr
             }
         }
         return Draft(input, options, work);
+    }
+
+    // The insertion point of a MINSERT cell path element (cell offset rotated with the insert); the insertion point
+    // itself for a plain element.
+    private static Point2 CellInsertion(DxfInsert insert, string element)
+    {
+        if (!DxfInsertPath.TryParseCell(element, out _, out var row, out var column)) return insert.Insertion;
+        return insert.Insertion + Affine.Rotate(insert.RotationDegrees).ApplyVector(new Point2(column * insert.ColumnSpacing, row * insert.RowSpacing));
     }
 
     private static int AddOpening(Input input, CadToBimIrOptions options, string kind, string blockName, CadDraftSource source)

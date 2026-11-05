@@ -86,7 +86,7 @@ public static class DxfExploder
                         .Compose(Affine.Rotate(insert.RotationDegrees))
                         .Compose(Affine.Scale(insert.ScaleX, insert.ScaleY))
                         .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
-                    EmitBlock(insert, block, transform, transform.Compose(local), path.Append(key).ToArray(), layer, paper, invisible, depth);
+                    EmitBlock(insert, block, key, transform, transform.Compose(local), path.Append(key).ToArray(), layer, paper, invisible, depth);
                     return;
                 }
                 // MINSERT: one placement per cell, row by row; every cell after the first also counts as visited work.
@@ -104,8 +104,7 @@ public static class DxfExploder
                             .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
                         // ATTRIBs are placed for cell (0,0); other cells shift them by the rotated cell offset.
                         var attributes = transform.Compose(Affine.Translate(rotation.ApplyVector(offset)));
-                        var cell = key + "[" + row.ToString(CultureInfo.InvariantCulture) + "," + column.ToString(CultureInfo.InvariantCulture) + "]";
-                        EmitBlock(insert, block, attributes, transform.Compose(local), path.Append(cell).ToArray(), layer, paper, invisible, depth);
+                        EmitBlock(insert, block, key, attributes, transform.Compose(local), path.Append(DxfInsertPath.Cell(key, row, column)).ToArray(), layer, paper, invisible, depth);
                     }
                 }
                 return;
@@ -115,7 +114,8 @@ public static class DxfExploder
 
         // Emits one placement of a block: its entities through world, then the INSERT's ATTRIBs (already in the
         // coordinates the INSERT lives in, moved by attributeTransform) and the block's constant ATTDEFs.
-        private void EmitBlock(DxfInsert insert, DxfBlock block, Affine attributeTransform, Affine world, string[] childPath, string layer, bool paper, bool invisible, int depth)
+        // InsertHandle of the emitted attributes is the INSERT's bare key, also for MINSERT cells.
+        private void EmitBlock(DxfInsert insert, DxfBlock block, string key, Affine attributeTransform, Affine world, string[] childPath, string layer, bool paper, bool invisible, int depth)
         {
             stack.Add(block.Name);
             foreach (var child in block.Entities)
@@ -126,7 +126,6 @@ public static class DxfExploder
             stack.RemoveAt(stack.Count - 1);
             // ATTRIBs are already placed in the coordinates the INSERT itself lives in. Of the block's ATTDEFs only
             // constant ones are drawn (placed through the insert); AutoCAD never draws a non-constant ATTDEF.
-            var key = childPath[^1];
             HashSet<string>? tags = insert.Attributes.Count > 0 ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) : null;
             foreach (var attribute in insert.Attributes)
             {
