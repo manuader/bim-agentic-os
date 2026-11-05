@@ -154,9 +154,9 @@ def _mutations():
         return opening
 
     def duplicate_gid(f):
-        wall = f.by_type('IfcWall')[0]
-        f.by_type('IfcDoor')[0].GlobalId = wall.GlobalId
-        return wall
+        wall, door = f.by_type('IfcWall')[0], f.by_type('IfcDoor')[0]
+        door.GlobalId = wall.GlobalId
+        return wall, door  # The validator anchors the issue on either duplicate (its order differs by platform).
 
     def wrong_type(f):
         rel = f.by_type('IfcRelVoidsElement')[0]
@@ -172,7 +172,7 @@ def _mutations():
         'missing_required_attribute': (gid_none, 'attribute_missing', 'GlobalId', 'IfcWall'),
         'simple_type_where_rule': (xdim_negative, 'type_rule', 'IfcPositiveLengthMeasure.WR1', 'IfcRectangleProfileDef'),
         'inverse_cardinality': (second_voids, 'inverse_cardinality', 'VoidsElements', 'IfcOpeningElement'),
-        'unique_global_id': (duplicate_gid, 'unique_rule', 'IfcRoot.UR1', 'IfcWall'),
+        'unique_global_id': (duplicate_gid, 'unique_rule', 'IfcRoot.UR1', ('IfcWall', 'IfcDoor')),
         'attribute_wrong_entity': (wrong_type, 'attribute_invalid', 'RelatingBuildingElement', 'IfcRelVoidsElement'),
         'entity_where_rule': (extrusion, 'where_rule', 'IfcExtrudedAreaSolid.ValidExtrusionDirection', 'IfcExtrudedAreaSolid'),
     }
@@ -189,19 +189,22 @@ class BrokenFilesAreTyped(Scratch):
         target = mutate(f, g) if name == 'inverse_cardinality' else mutate(f)
         out = self.dir / f'{name}.ifc'
         f.write(str(out))
-        return out, kind, where, entity, target.id()
+        targets = target if isinstance(target, tuple) else (target,)
+        entities = entity if isinstance(entity, tuple) else (entity,)
+        return out, kind, where, entities, {t.id() for t in targets}
 
     def test_each_defect_is_reported_with_its_type(self):
         for name in _mutations():
             with self.subTest(defect=name):
-                out, kind, where, entity, step_id = self.broken(name)
+                out, kind, where, entities, step_ids = self.broken(name)
                 report = self.v.validate_file(out)
-                matching = [i for i in report['issues'] if i['kind'] == kind and i['entity'] == entity and i['step_id'] == step_id
-                            and where in ((i.get('rule') or '') + ' ' + (i.get('attribute') or ''))]
+                matching = [i for i in report['issues'] if i['kind'] == kind and i['entity'] in entities and i['step_id'] in step_ids
+                            and where in ((i.get('rule') or '') + ' ' + (i.get('attribute') or ''))
+                            and all(f'#{n}=' in i['message'] for n in step_ids if len(step_ids) > 1)]
                 if report['status'] != 'invalid' or not matching:
                     annotate(name, json.dumps(report, indent=1))
                 self.assertEqual('invalid', report['status'], name)
-                self.assertTrue(matching, f'{name}: expected a {kind} issue on #{step_id} {entity} ({where}); got {json.dumps(report["issues"])[:2500]}')
+                self.assertTrue(matching, f'{name}: expected a {kind} issue on {sorted(step_ids)} {entities} ({where}); got {json.dumps(report["issues"])[:2500]}')
                 self.assertGreaterEqual(report['counts']['errors'], 1)
                 self.assertEqual(len(report['issues']), report['counts']['issues'])
                 self.assertEqual(sum(report['counts']['by_kind'].values()), report['counts']['issues'])
@@ -210,7 +213,7 @@ class BrokenFilesAreTyped(Scratch):
                     self.assertIn(issue['kind'], self.v.ISSUE_KINDS)
                     self.assertIn(issue['level'], ('error', 'warning'))
                 json.dumps(report, allow_nan=False)
-                if entity in ('IfcWall', 'IfcOpeningElement', 'IfcRelVoidsElement') and name != 'missing_required_attribute':
+                if set(entities) & {'IfcWall', 'IfcOpeningElement', 'IfcRelVoidsElement'} and name != 'missing_required_attribute':
                     self.assertTrue(all(i['global_id'] for i in matching), matching)
 
     def test_parser_level_defects_are_not_silently_dropped(self):
