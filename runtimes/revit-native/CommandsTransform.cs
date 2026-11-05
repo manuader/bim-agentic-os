@@ -13,15 +13,17 @@ public static class TransformLocationKinds
     public const string Point = "point";
     public const string Curve = "curve";
     public const string Box = "box";
+    public const string Profile = "profile";
 }
 
 // Where an element is: a location point A (with its rotation in radians when Revit reports one), a location curve from
 // A to B, or, for elements with neither (floors, roofs and other sketch-based elements), the model bounding box from
 // A (min) to B (max). Points are [x, y, z] in millimetres.
-public sealed record TransformLocation(string Kind, double[] A, double[]? B, double? RotationRad = null);
+public sealed record TransformLocation(string Kind, double[] A, double[]? B, double? RotationRad = null, IReadOnlyList<double[]>? Points = null);
 // The Revit facts a target is refused on. HostedPlacement: a family instance of a hosted placement type; HostPresent:
 // its host exists. Location: null when the element has no location point, curve or box (types, views, data storage).
-public sealed record TransformTargetFacts(string Uid, bool Pinned, bool ViewSpecific, bool Grouped, bool HostedPlacement, bool HostPresent, TransformLocation? Location);
+public sealed record TransformTargetFacts(string Uid, bool Pinned, bool ViewSpecific, bool Grouped, bool HostedPlacement, bool HostPresent, TransformLocation? Location, string? HostUid = null);
+public sealed record TransformIdSets(IReadOnlyList<string> Transformed, IReadOnlyList<string> ReadBack);
 // An element considered when mapping copies to sources. Key: what a copy shares with its source (Revit class,
 // category and type).
 public sealed record TransformCandidate(string Uid, string Key, TransformLocation? Location);
@@ -45,6 +47,9 @@ public static class CommandRulesTransform
         if (facts.HostedPlacement && !facts.HostPresent) throw new RevitCommandException(RevitTransformCodes.HostMissing, field, facts.Uid + " is a hosted element whose host is missing");
         if (facts.Location is null) throw new RevitCommandException(RevitTransformCodes.LocationUnsupported, field, facts.Uid + " has no location point, location curve or bounding box to move and read back");
     }
+
+    public static TransformIdSets TransformIds(IReadOnlyList<TransformTargetFacts> targets) =>
+        new(targets.Select(target => target.Uid).ToArray(), targets.Select(target => target.Uid).ToArray());
 
     public static double[] Vector(TranslationVector vector) => new[] { vector.Dx.Millimetres, vector.Dy.Millimetres, vector.Dz.Millimetres };
 

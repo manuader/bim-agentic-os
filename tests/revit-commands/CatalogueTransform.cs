@@ -18,6 +18,8 @@ static class CatalogueTransformChecks
     const string WallCopyUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-0003b001";
     const string ColumnCopyUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-0003b002";
     const string DoorCopyUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-0003b003";
+    const string FloorCopyUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-0003b004";
+    const string DoorUid = "60f91daf-3dd7-4283-a86d-24137b73f3da-0003a004";
     const string FixturePath = @"C:\Repo\.bim\native-runs\run-1\BIM-Agentic-Test.rvt";
     const string RealPath = @"C:\Projects\Real\Tower.rvt";
 
@@ -74,6 +76,10 @@ static class CatalogueTransformChecks
         Targets();
         MoveReadback();
         MappingChecks();
+        NearestMapping();
+        HostedTargets();
+        SketchProfiles();
+        Rotation();
         CopyReadback();
         Json();
     }
@@ -289,6 +295,72 @@ static class CatalogueTransformChecks
         Check(CommandReadbackTransform.Copied(sources, new TransformLocation?[] { Curve(0, 0, 0, 6000, 0, 0) }, Array.Empty<TransformCandidate>(), north) is { } none && none.Contains(WallUid, StringComparison.Ordinal), "no copy is a mismatch");
         Check(CommandReadbackTransform.Copied(sources, new TransformLocation?[] { Curve(0, 4000, 0, 6000, 4000, 0) }, copies, north) is { } moved && moved.Contains("source", StringComparison.Ordinal), "a source that moved instead of staying is a mismatch");
         Check(CommandReadbackTransform.Copied(sources, new TransformLocation?[] { null }, copies, north) is not null, "a source that is gone is a mismatch");
+    }
+
+    // Review (1): sources 0.9 mm apart whose copies come back in another order. First-fit would give source 0 the copy
+    // at 0.9 (0.9 mm off, within 1 mm), source 0.9 the copy at 1.8, and leave source 1.8 with the copy at 0 (1.8 mm
+    // off): a false mismatch. Nearest-first takes the three exact pairs.
+    static void NearestMapping()
+    {
+        var north = new double[] { 0, 4000, 0 };
+        var sources = new[] { new TransformCandidate(WallUid, ColumnKey, Point(0, 0, 0)), new TransformCandidate(ColumnUid, ColumnKey, Point(0.9, 0, 0)), new TransformCandidate(FloorUid, ColumnKey, Point(1.8, 0, 0)) };
+        var copies = new[] { new TransformCandidate(ColumnCopyUid, ColumnKey, Point(0.9, 4000, 0)), new TransformCandidate(FloorCopyUid, ColumnKey, Point(1.8, 4000, 0)), new TransformCandidate(WallCopyUid, ColumnKey, Point(0, 4000, 0)) };
+        var mapping = CommandRulesTransform.MapCopies(sources, copies, north);
+        Check(mapping.Mismatch is null && mapping.Pairs.SequenceEqual(new[] { new CopyPair(WallUid, WallCopyUid), new CopyPair(ColumnUid, ColumnCopyUid), new CopyPair(FloorUid, FloorCopyUid) }) && mapping.AlsoCreated.Count == 0,
+            "close sources map nearest-first to their exact copies whatever order Revit returns them in", mapping.ToString());
+        // Each source still within 1 mm of a copy: (0.5, 0, 0) off for all three keeps the same pairs.
+        var offset = copies.Select(copy => copy with { Location = CommandRulesTransform.Shift(copy.Location!, new double[] { 0.5, 0, 0 }) }).ToArray();
+        var shifted = CommandRulesTransform.MapCopies(sources, offset, north);
+        Check(shifted.Mismatch is null && shifted.Pairs.Select(pair => pair.CopyUid).SequenceEqual(new[] { WallCopyUid, ColumnCopyUid, FloorCopyUid }), "copies all 0.5 mm off still pair with their own sources", shifted.ToString());
+    }
+
+    // Review (2): a door and its host wall in one request. The wall carries the door, so only the wall is passed to
+    // MoveElements / CopyElements; both are read back.
+    static void HostedTargets()
+    {
+        var wall = new TransformTargetFacts(WallUid, false, false, false, false, false, Curve(0, 0, 0, 6000, 0, 0));
+        var door = new TransformTargetFacts(DoorUid, false, false, false, true, true, Point(1500, 0, 0), WallUid);
+        var both = CommandRulesTransform.TransformIds(new[] { wall, door });
+        Check(both.Transformed.SequenceEqual(new[] { WallUid }) && both.ReadBack.SequenceEqual(new[] { WallUid, DoorUid }), "[wall, door hosted by the wall]: only the wall is transformed, both are read back", string.Join(",", both.Transformed) + " / " + string.Join(",", both.ReadBack));
+        var upper = CommandRulesTransform.TransformIds(new[] { door with { HostUid = WallUid.ToUpperInvariant() }, wall });
+        Check(upper.Transformed.SequenceEqual(new[] { WallUid }) && upper.ReadBack.SequenceEqual(new[] { DoorUid, WallUid }), "the host is matched case-insensitively and in any order");
+        var alone = CommandRulesTransform.TransformIds(new[] { door });
+        Check(alone.Transformed.SequenceEqual(new[] { DoorUid }) && alone.ReadBack.SequenceEqual(new[] { DoorUid }), "a door whose host is not a target is transformed itself");
+        // Moved by the wall, the door is read back shifted like any target.
+        Check(CommandReadbackTransform.Moved(both.ReadBack, new[] { wall.Location!, door.Location! }, new TransformLocation?[] { Curve(1000, 0, 0, 7000, 0, 0), Point(2500, 0, 0) }, East) is null
+            && CommandReadbackTransform.Moved(both.ReadBack, new[] { wall.Location!, door.Location! }, new TransformLocation?[] { Curve(1000, 0, 0, 7000, 0, 0), Point(3500, 0, 0) }, East) is { } twice && twice.Contains(DoorUid, StringComparison.Ordinal),
+            "a door moved once with its wall matches; a door moved twice is a mismatch naming it");
+    }
+
+    static TransformLocation Profile(params double[][] points) => new(TransformLocationKinds.Profile, points[0], null, null, points);
+
+    // Review (3): floors and roofs are read back by their sketch profile curve ends, which joins and cuts do not change.
+    static void SketchProfiles()
+    {
+        var floor = Profile(new double[] { 0, 0, 0 }, new double[] { 6000, 0, 0 }, new double[] { 6000, 4000, 0 }, new double[] { 0, 4000, 0 });
+        var shifted = CommandRulesTransform.Shift(floor, East);
+        Check(shifted.Kind == TransformLocationKinds.Profile && shifted.Points is { Count: 4 } points && points[0].SequenceEqual(new double[] { 1000, 0, 0 }) && points[2].SequenceEqual(new double[] { 7000, 4000, 0 }),
+            "every profile point shifts by the vector");
+        string? Moved(TransformLocation? after) => CommandReadbackTransform.Moved(new[] { FloorUid }, new[] { floor }, new[] { after }, East);
+        Check(Moved(Profile(new double[] { 1000, 0, 0 }, new double[] { 7000, 0, 0 }, new double[] { 7000, 4000, 0 }, new double[] { 1000, 4000, 0 })) is null, "a floor profile moved 1000 mm east matches");
+        Check(Moved(Profile(new double[] { 1000, 0, 0 }, new double[] { 7000, 0, 0 }, new double[] { 7000, 4002, 0 }, new double[] { 1000, 4000, 0 })) is { } corner && corner.Contains("profile", StringComparison.Ordinal),
+            "one profile corner 2 mm off is a mismatch");
+        Check(Moved(Profile(new double[] { 1000, 0, 0 }, new double[] { 7000, 0, 0 }, new double[] { 7000, 4000, 0 })) is not null, "a profile with another number of curve ends is a mismatch");
+        Check(Moved(Box(1000, 0, 0, 7000, 4000, 200)) is not null, "a box where a profile was read is a mismatch");
+        var json = JsonNode.Parse(CommandReadbackTransform.MoveJson(new[] { FloorUid }, new[] { floor }, new TransformLocation?[] { shifted }, East));
+        Check(json?["moved"]?[0]?["after"]?["kind"]?.GetValue<string>() == "profile" && json?["moved"]?[0]?["after"]?["points"]?.AsArray().Count == 4 && json?["moved"]?[0]?["after"]?["points"]?[2]?[0]?.GetValue<double>() == 7000,
+            "a profile location is written as its curve end points", json?.ToJsonString() ?? "");
+    }
+
+    // Review (4): a rotation that cannot be read after the move is a mismatch; angles compare modulo a full turn.
+    static void Rotation()
+    {
+        string? Moved(TransformLocation before, TransformLocation after) => CommandReadbackTransform.Moved(new[] { ColumnUid }, new[] { before }, new TransformLocation?[] { after }, East);
+        Check(Moved(Point(0, 0, 0, 0.1), Point(1000, 0, 0) with { RotationRad = null }) is { } lost && lost.Contains("rotation", StringComparison.Ordinal), "a rotation no longer readable after the move is a mismatch");
+        Check(Moved(Point(0, 0, 0, 0), Point(1000, 0, 0, 2 * Math.PI)) is null, "0 and 2 pi are the same rotation");
+        Check(Moved(Point(0, 0, 0, Math.PI - 1e-7), Point(1000, 0, 0, -Math.PI + 1e-7)) is null, "pi - 1e-7 and -pi + 1e-7 are 2e-7 rad apart");
+        Check(Moved(Point(0, 0, 0, 0.5), Point(1000, 0, 0, 0.5 + 2 * Math.PI + 0.1)) is not null, "a turn of 0.1 rad beyond a full turn is a mismatch");
+        Check(Moved(Point(0, 0, 0) with { RotationRad = null }, Point(1000, 0, 0) with { RotationRad = null }) is null, "an element without a rotation before and after matches");
     }
 
     static void Json()
