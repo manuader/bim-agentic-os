@@ -591,8 +591,7 @@ try
         Check(Findings(AuditVerifier.VerifyBytes(JoinLines(decisionLines), new AuditVerifyOptions(known, head))) == "audit_entry_edited@3", "verify: a flipped decision is an edited entry");
         var spacedLines = (string[])vLines.Clone();
         spacedLines[3] = spacedLines[3].Replace("\"seq\":4,", "\"seq\": 4,", StringComparison.Ordinal);
-        Check(Findings(AuditVerifier.VerifyBytes(JoinLines(spacedLines), new AuditVerifyOptions(known, head))) == "audit_entry_edited@4", "verify: a non-canonical rewrite is an edited entry");
-        var entries5 = okReport.VerifiedEntries;
+                var entries5 = okReport.VerifiedEntries;
         var rehashedEntry = entries5[1] with { Actor = "owner", Hash = "" };
         rehashedEntry = rehashedEntry with { Hash = AuditLogFormat.ComputeHash(rehashedEntry) };
         var rehashedLines = (string[])vLines.Clone();
@@ -625,6 +624,37 @@ try
         var missingReport = AuditVerifier.Verify(Path.Combine(verifyDir, "absent.jsonl"));
         Check(missingReport.Code == AuditVerifyCodes.FileMissing && Findings(missingReport) == "audit_file_missing@-", "verify: a missing file is typed", Findings(missingReport));
         Check(AuditVerifier.VerifyBytes(clean, new AuditVerifyOptions(known, new AuditAnchor(-1, head.Hash))).Code == AuditVerifyCodes.AnchorMismatch, "verify: an invalid anchor is an anchor mismatch");
+        // Review fixes. 1: an anchor mismatch makes every entry untrusted, so the summary counts none of them.
+        Check(forgedReport.VerifiedEntries.Count == 0 && forgedReport.ToJson().Contains("\"summary\":{\"entries\":0,", StringComparison.Ordinal), "verify: a forged log under an anchor mismatch contributes nothing to the summary", forgedReport.ToJson());
+        // 2: a malformed last line under the head anchor is malformed, not also truncated.
+        var badTail = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[0], vLines[1], vLines[2], vLines[3], "not json" }), new AuditVerifyOptions(known, head));
+        Check(Findings(badTail) == "audit_entry_malformed@5" && badTail.Code == AuditVerifyCodes.EntryMalformed, "verify: a malformed last line with the head anchor is only malformed", Findings(badTail));
+        var badUtf8 = JoinLines(vLines[..4]).Concat(new byte[] { 0xC3, 0x28, (byte)'\n' }).ToArray();
+        Check(Findings(AuditVerifier.VerifyBytes(badUtf8, new AuditVerifyOptions(known, head))) == "audit_entry_malformed@5", "verify: an invalid UTF-8 last line with the head anchor is only malformed", Findings(AuditVerifier.VerifyBytes(badUtf8, new AuditVerifyOptions(known, head))));
+        // 3: a reorder combined with a gap reports both, each at its own line.
+        var mixed = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[0], vLines[2], vLines[4], vLines[3] }), new AuditVerifyOptions(known, head));
+        Check(Findings(mixed) == "audit_entries_missing@2;audit_reordered@4" && mixed.Code == AuditVerifyCodes.EntriesMissing, "verify: seqs 1,3,5,4 are a gap at line 2 and a reorder at line 4", Findings(mixed) + " " + mixed.Code);
+        // 4: reformatting that keeps the content hash is not canonical, not edited.
+        var crlf = AuditVerifier.VerifyBytes(Encoding.UTF8.GetBytes(string.Concat(vLines.Select(crlfLine => crlfLine + "\r\n"))), new AuditVerifyOptions(known, head));
+        Check(Findings(crlf) == "audit_entry_not_canonical@1;audit_entry_not_canonical@2;audit_entry_not_canonical@3;audit_entry_not_canonical@4;audit_entry_not_canonical@5" && crlf.Code == "audit_entry_not_canonical" && crlf.ChainCode == AuditCodes.EntryNotCanonical, "verify: a CRLF log is not canonical on every line and never edited", Findings(crlf));
+        var bomBytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(clean).ToArray();
+        Check(Findings(AuditVerifier.VerifyBytes(bomBytes, new AuditVerifyOptions(known, head))) == "audit_entry_not_canonical@1", "verify: a leading BOM is not canonical at line 1", Findings(AuditVerifier.VerifyBytes(bomBytes, new AuditVerifyOptions(known, head))));
+        Check(Findings(AuditVerifier.VerifyBytes(JoinLines(spacedLines), new AuditVerifyOptions(known, head))) == "audit_entry_not_canonical@4", "verify: whitespace inside a line is not canonical, not edited");
+        // Nits: Code is the most severe finding (documented order), not the first by line.
+        var severity = AuditVerifier.VerifyBytes(JoinLines(editedLines), new AuditVerifyOptions(new[] { "Copier", "owner", "readex", "reader" }, head));
+        Check(Findings(severity) == "audit_actor_unknown@1;audit_entry_edited@2;audit_actor_unknown@3" && severity.Code == AuditVerifyCodes.EntryEdited, "verify: report code is the most severe finding", Findings(severity) + " " + severity.Code);
+        var badDecisionEntries = new[] { entries5[0] with { Decision = "maybe" } };
+        string? summaryError = null;
+        try { AuditSummary.ToJson(badDecisionEntries); } catch (ArgumentException error) { summaryError = error.GetType().Name; }
+        Check(summaryError is not null, "summary: a decision other than allow or deny is rejected");
+        var directoryReport = AuditVerifier.Verify(verifyDir);
+        Check(directoryReport.Code == AuditVerifyCodes.FileUnreadable && Findings(directoryReport) == "audit_file_unreadable@-", "verify: a directory path is unreadable", Findings(directoryReport));
+        var surrogateLines = (string[])vLines.Clone();
+        surrogateLines[0] = surrogateLines[0].Replace("\"actor\":\"copier\"", "\"actor\":\"\\ud800\"", StringComparison.Ordinal);
+        AuditVerifyReport? surrogate = null;
+        string? surrogateError = null;
+        try { surrogate = AuditVerifier.VerifyBytes(JoinLines(surrogateLines), new AuditVerifyOptions(known, head)); } catch (Exception error) { surrogateError = error.GetType().Name; }
+        Check(surrogateError is null && surrogate is not null && Findings(surrogate) == "audit_entry_malformed@1", "verify: a lone escaped surrogate is malformed without an exception", surrogateError ?? (surrogate is null ? "" : Findings(surrogate)));
     }
 }
 catch (Exception error)
