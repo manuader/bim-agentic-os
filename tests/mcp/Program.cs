@@ -341,7 +341,7 @@ foreach(var (tool,command,destructive) in new[]{("revit_element_move","element.m
 // turns existing elements; a mirror without keep_original turns the originals); a full-turn angle and a zero-length
 // axis are refused before the pipe.
 Check(RevitCommandCatalogue.RotateMirror.Select(spec=>spec.Name).SequenceEqual(new[]{"element.rotate","element.mirror"}) && RevitCommandCatalogue.RotateMirror.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover element.rotate and element.mirror, in the catalogue enumeration");
-foreach(var (tool,command,invalid,code) in new[]{("revit_element_rotate","element.rotate",(JsonNode)new JsonObject{["element_uids"]=new JsonArray(McpUid),["center"]=new JsonArray(0,0),["angle_deg"]=360},RevitCommandCodes.AngleInvalid),("revit_element_mirror","element.mirror",new JsonObject{["element_uids"]=new JsonArray(McpUid),["axis"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(0,0)},["keep_original"]=false},RevitCommandCodes.CurveTooShort)}) {
+foreach(var (tool,command,invalidArgs,code) in new[]{("revit_element_rotate","element.rotate",(JsonNode)new JsonObject{["element_uids"]=new JsonArray(McpUid),["center"]=new JsonArray(0,0),["angle_deg"]=360},RevitCommandCodes.AngleInvalid),("revit_element_mirror","element.mirror",new JsonObject{["element_uids"]=new JsonArray(McpUid),["axis"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(0,0)},["keep_original"]=false},RevitCommandCodes.CurveTooShort)}) {
     var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
     Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && listed?["annotations"]?["destructiveHint"]?.GetValue<bool>()==true && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies",tool+" is listed write-copies with destructiveHint true");
     var before=forwardedLines.Count;
@@ -349,7 +349,7 @@ foreach(var (tool,command,invalid,code) in new[]{("revit_element_rotate","elemen
     Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
     var onCopy=Guarded(tool,sampleArgs[command](),McpCopy);
     Check(IsError(onCopy) && FailureCode(onCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["command"]?.GetValue<string>()==command,tool+" on an enabled copy forwards the command");
-    var bad=Guarded(tool,invalid,McpCopy);
+    var bad=Guarded(tool,invalidArgs,McpCopy);
     Check(IsError(bad) && FailureCode(bad)==code && forwardedLines.Count==before+1,tool+": "+code+" before the pipe");
 }
 // chat-materials-types: fill patterns, materials, layered wall/floor types and type changes are generated tools;
