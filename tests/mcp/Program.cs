@@ -553,6 +553,19 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     Check(IsError(driftNoStore) && JsonDocument.Parse(Text(driftNoStore)).RootElement.GetProperty("code").GetString()=="input_not_found" && !Directory.Exists(Path.Combine(cliDir,"no-drift-store")),"mirror_drift on a missing store is input_not_found and creates nothing");
     var badSnapshot=ToolCall("mirror_drift",new JsonObject{["store_path"]=driftStore,["snapshot"]=new JsonObject{["snapshot_version"]=2},["mirror"]=Mirror()});
     Check(IsError(badSnapshot) && JsonDocument.Parse(Text(badSnapshot)).RootElement.GetProperty("code").GetString()=="drift_snapshot_invalid","mirror_drift refuses a snapshot that is not a query.snapshot");
+    // Review fixes: a malformed store and a duplicate mirror member are typed refusals, equal to the CLI.
+    var malformedStore=Path.Combine(cliDir,"drift-driftMalformed-store"); Directory.CreateDirectory(malformedStore);
+    var malformedProject=Node(JsonSerializer.Serialize(committed.Project)).AsObject(); malformedProject["Elements"]![1]!["GeometryMetres"]=null;
+    File.WriteAllText(Path.Combine(malformedStore,"project.json"),"{\"Project\":"+malformedProject.ToJsonString()+",\"Receipts\":{}}");
+    var driftMalformed=ToolCall("mirror_drift",new JsonObject{["store_path"]=malformedStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror()});
+    var driftMalformedCli=Cli("mirror-drift",malformedStore,snapshotPath,mirrorPath,Path.Combine(cliDir,"drift-driftMalformed.json"));
+    Check(IsError(driftMalformed) && JsonDocument.Parse(Text(driftMalformed)).RootElement.GetProperty("code").GetString()=="drift_store_invalid" && Text(driftMalformed)==driftMalformedCli,"mirror_drift on a driftMalformed store is drift_store_invalid, byte-equal to the CLI | "+Text(driftMalformed));
+    var mirrorText=Mirror().ToJsonString();
+    var duplicateMirror="{\"core_revision\":2,"+mirrorText[1..];
+    var duplicateLine="{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"mirror_drift\",\"arguments\":{\"store_path\":"+JsonSerializer.Serialize(driftStore)+",\"snapshot\":"+driftedText+",\"mirror\":"+duplicateMirror+"}}}";
+    var duplicate=Call(duplicateLine);
+    var duplicateCli=Cli("mirror-drift",driftStore,snapshotPath,Input("drift-mirror-dup.json",duplicateMirror),Path.Combine(cliDir,"drift-dup.json"));
+    Check(IsError(duplicate) && JsonDocument.Parse(Text(duplicate)).RootElement.GetProperty("code").GetString()=="mirror_drift_request_invalid" && Text(duplicate)==duplicateCli,"mirror_drift refuses a duplicate core_revision, byte-equal to the CLI | "+Text(duplicate));
     Check(ErrorCode(ToolCall("mirror_drift",new JsonObject{["store_path"]=driftStore,["snapshot"]=Node(driftedText)}))==-32602,"mirror_drift without mirror returns -32602");
 }
 
