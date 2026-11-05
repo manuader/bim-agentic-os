@@ -134,9 +134,12 @@ static class UpdateTests
         {
             [plan0] = new[] { realized[DocRegeneration.ItemSource(tagRoom0)], realized[DocRegeneration.ItemSource(tagDoor0)], realized[DocRegeneration.ItemSource(place0)], annotation },
         };
-        var renumberFake = new ReplaceFakeTransport(realized.Values.Append(annotation));
+        // The model edit is applied first: the new room's elements are realized before its documentation.
+        var insertedRealized = new Dictionary<string, string>(realized, StringComparer.Ordinal);
+        foreach (var element in inserted.Elements) insertedRealized.TryAdd(DocRegeneration.ElementSource(element.Id), Fake("element:" + element.Id.ToString("D")));
+        var renumberFake = new ReplaceFakeTransport(insertedRealized.Values.Append(annotation));
         renumberFake.DependentsOf[realized[DocRegeneration.ItemSource(plan0)]] = dependents[plan0].ToArray();
-        var renumbered = DocUpdate.Update(before, inserted, Bindings(inserted), realized, renumberFake, dependents);
+        var renumbered = DocUpdate.Update(before, inserted, Bindings(inserted), insertedRealized, renumberFake, dependents);
         var byKey = renumbered.Plan.Replacement.Replacements.ToDictionary(item => item.Key, StringComparer.Ordinal);
         Check(renumbered.Report.Status == RevitPlanRunStatus.Completed && renumbered.Realized is not null,
             "a level insertion runs to completion with the dry-run dependents confirmed", renumbered.Report.Failed is null ? renumbered.Report.Status : renumbered.Report.Failed.Code + " " + renumbered.Report.Failed.Detail);
