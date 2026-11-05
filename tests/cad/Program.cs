@@ -471,5 +471,8 @@ AttributeTests.Run(Check, fixtures);
 // P6-09 MINSERT arrays and tilted OCS entities (tests/cad/MinsertOcsTests.cs).
 MinsertOcsTests.Run(Check, fixtures);
 
+// P6-08 brief draft to planner brief (tests/cad/BriefPlannerTests.cs).
+BriefPlannerTests.Run(Check, fixtures);
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
