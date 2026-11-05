@@ -137,21 +137,21 @@ public static class PrototypePipeline
     }
 
     // The BIM-IR compile step of the facade_ir gate: the project, or the typed reasons it could not be compiled.
-    internal static (Project? Project, IReadOnlyList<PrototypePipelineRejection> Rejections) CompilePrototype(Func<Project> compile)
+    internal static PrototypePipelineCompile CompilePrototype(Func<Project> compile)
     {
         try
         {
-            return (compile(), Array.Empty<PrototypePipelineRejection>());
+            return new(compile(), Array.Empty<PrototypePipelineRejection>());
         }
         catch (IntentException error)
         {
-            return (null, error.Issues.Count > 0
+            return new(null, error.Issues.Count > 0
                 ? error.Issues.Select(issue => new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, issue.Code, issue.Key, issue.Detail)).ToArray()
                 : new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, error.Code, error.Field ?? "plan", error.Detail ?? error.Message) });
         }
         catch (ArgumentException error)
         {
-            return (null, new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, FacadeIrCodes.LayoutInvalid, "plan", error.Message) });
+            return new(null, new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, FacadeIrCodes.LayoutInvalid, "plan", error.Message) });
         }
     }
 

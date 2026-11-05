@@ -56,6 +56,10 @@ public sealed record PrototypePipelineResult(PrototypePipelineStatus Status, Pro
     public PrototypePipelineAlternative? Best => Alternatives.FirstOrDefault(alternative => alternative.Accepted);
 }
 
+// The result of the BIM-IR compile step of the facade_ir gate (PrototypePipeline.CompilePrototype): the project, or the
+// typed reasons it could not be compiled.
+internal sealed record PrototypePipelineCompile(Project? Project, IReadOnlyList<PrototypePipelineRejection> Rejections);
+
 public static class PrototypePipelineCodes
 {
     // Refusal: an empty project id or a negative revision (IntentCompiler could not compile any prototype).
