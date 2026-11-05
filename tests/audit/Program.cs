@@ -504,6 +504,158 @@ try
     PermissionDecision? withheld = null;
     Check(AuditCode(() => withheld = gate.Authorize(copyWrite)) == AuditCodes.ChangedExternally && withheld is null, "an allowed decision is withheld when the audit cannot be appended");
     File.WriteAllBytes(gatePath, gateBefore);
+    // ---- P10-09: audit log verification (typed tamper codes) and deterministic decision summary ----
+    {
+        var verifyDir = Path.Combine(work, "verify");
+        Directory.CreateDirectory(verifyDir);
+        var times = new Queue<DateTimeOffset>(new[]
+        {
+            new DateTimeOffset(2026, 11, 3, 1, 0, 0, TimeSpan.FromHours(3)), // 2026-11-02T22:00Z: UTC day, not local
+            new DateTimeOffset(2026, 11, 2, 23, 59, 59, TimeSpan.Zero),
+            new DateTimeOffset(2026, 11, 3, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 11, 3, 8, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 11, 3, 20, 0, 0, TimeSpan.FromHours(-5)), // 2026-11-04T01:00Z
+        });
+        var verifyPath = Path.Combine(verifyDir, "audit.jsonl");
+        var vlog = AuditLog.Open(verifyPath, () => times.Dequeue());
+        vlog.Append("copier", "op-1", "wall.create", FixturePath, true, PermissionCodes.WriteCopiesAllowed);
+        vlog.Append("reader", "op-2", "query.levels", RealPath, true, PermissionCodes.ReadAllowed);
+        vlog.Append("copier", "op-3", "wall.create", RealPath, false, PermissionCodes.LevelInsufficient);
+        vlog.Append("owner", "op-4", "wall.create", RealPath, true, PermissionCodes.RealProjectEnabled);
+        vlog.Append("Copier", "op-5", "query.levels", RealPath, false, PermissionCodes.ActorUnknown);
+        var head = vlog.Head;
+        var clean = File.ReadAllBytes(verifyPath);
+        var vLines = Encoding.UTF8.GetString(clean).Split('\n')[..5];
+        byte[] JoinLines(IEnumerable<string> parts) => Encoding.UTF8.GetBytes(string.Concat(parts.Select(part => part + "\n")));
+        var known = new[] { "copier", "Copier", "owner", "reader" };
+        string Findings(AuditVerifyReport report) => string.Join(";", report.Findings.Select(f => f.Code + "@" + (f.Line?.ToString() ?? "-")));
+
+        const string ExpectedSummary =
+            "{\"entries\":5,\"allow\":3,\"deny\":2," +
+            "\"by_actor\":[{\"actor\":\"Copier\",\"entries\":1,\"allow\":0,\"deny\":1},{\"actor\":\"copier\",\"entries\":2,\"allow\":1,\"deny\":1},{\"actor\":\"owner\",\"entries\":1,\"allow\":1,\"deny\":0},{\"actor\":\"reader\",\"entries\":1,\"allow\":1,\"deny\":0}]," +
+            "\"by_command\":[{\"command\":\"query.levels\",\"entries\":2,\"allow\":1,\"deny\":1},{\"command\":\"wall.create\",\"entries\":3,\"allow\":2,\"deny\":1}]," +
+            "\"by_day\":[{\"day\":\"2026-11-02\",\"entries\":2,\"allow\":2,\"deny\":0},{\"day\":\"2026-11-03\",\"entries\":2,\"allow\":1,\"deny\":1},{\"day\":\"2026-11-04\",\"entries\":1,\"allow\":0,\"deny\":1}]," +
+            "\"by_actor_command_day\":[{\"actor\":\"Copier\",\"command\":\"query.levels\",\"day\":\"2026-11-04\",\"entries\":1,\"allow\":0,\"deny\":1},{\"actor\":\"copier\",\"command\":\"wall.create\",\"day\":\"2026-11-02\",\"entries\":1,\"allow\":1,\"deny\":0},{\"actor\":\"copier\",\"command\":\"wall.create\",\"day\":\"2026-11-03\",\"entries\":1,\"allow\":0,\"deny\":1},{\"actor\":\"owner\",\"command\":\"wall.create\",\"day\":\"2026-11-03\",\"entries\":1,\"allow\":1,\"deny\":0},{\"actor\":\"reader\",\"command\":\"query.levels\",\"day\":\"2026-11-02\",\"entries\":1,\"allow\":1,\"deny\":0}]}";
+
+        // Clean log with a known actor set: ok, and the summary groups by actor, command and UTC day.
+        var okReport = AuditVerifier.Verify(verifyPath, new AuditVerifyOptions(known, head));
+        Check(okReport.Ok && okReport.Code == AuditVerifyCodes.Ok && okReport.ChainCode == AuditCodes.Ok && okReport.Lines == 5 && okReport.Findings.Count == 0 && okReport.VerifiedEntries.Count == 5, "verify: a clean log with known actors and its head anchor is ok", okReport.Code + " " + Findings(okReport));
+        var summary = AuditSummary.ToJson(okReport.VerifiedEntries);
+        Check(summary == ExpectedSummary, "summary: decisions per actor, command, UTC day and actor/command/day as ordinal-sorted JSON", summary);
+        Check(okReport.ToJson() == "{\"ok\":true,\"code\":\"ok\",\"chain_code\":\"ok\",\"lines\":5,\"findings\":[],\"summary\":" + ExpectedSummary + "}", "verify: report JSON is the fixed shape with the summary", okReport.ToJson());
+        var shuffled = okReport.VerifiedEntries.Reverse().ToArray();
+        Check(AuditSummary.ToJson(shuffled) == ExpectedSummary, "summary: independent of entry order");
+        var savedCulture = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("ar-SA");
+            Check(AuditSummary.ToJson(okReport.VerifiedEntries) == ExpectedSummary && AuditVerifier.VerifyBytes(clean, new AuditVerifyOptions(known, head)).ToJson() == okReport.ToJson(), "summary and report are culture invariant (ar-SA)");
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = savedCulture; }
+        Check(AuditSummary.ToJson(Array.Empty<AuditEntry>()) == "{\"entries\":0,\"allow\":0,\"deny\":0,\"by_actor\":[],\"by_command\":[],\"by_day\":[],\"by_actor_command_day\":[]}", "summary: empty log");
+        Check(AuditVerifier.VerifyBytes(ReadOnlySpan<byte>.Empty).Ok, "verify: an empty log is ok");
+        Check(File.ReadAllBytes(verifyPath).SequenceEqual(clean) && AuditLogFormat.Verify(verifyPath, head).Ok, "verify: the verifier never changes the P10-03 file and the format still verifies");
+
+        // Unknown actor: an actor outside the supplied known set, at its line; no set means no actor check.
+        var unknown = AuditVerifier.VerifyBytes(clean, new AuditVerifyOptions(new[] { "copier", "owner", "reader" }, head));
+        Check(!unknown.Ok && unknown.Code == AuditVerifyCodes.ActorUnknown && Findings(unknown) == "audit_actor_unknown@5" && unknown.ChainCode == AuditCodes.Ok, "verify: unknown actor detected with its line", Findings(unknown));
+        Check(unknown.Findings.Count == 1 && unknown.Findings[0].Detail == "actor Copier is not in the known actor set", "verify: unknown actor detail names the actor", unknown.Findings.Count == 1 ? unknown.Findings[0].Detail : "");
+        Check(unknown.ToJson().StartsWith("{\"ok\":false,\"code\":\"audit_actor_unknown\",\"chain_code\":\"ok\",\"lines\":5,\"findings\":[{\"code\":\"audit_actor_unknown\",\"line\":5,\"detail\":\"actor Copier is not in the known actor set\"}],\"summary\":{\"entries\":5,", StringComparison.Ordinal), "verify: unknown actor report JSON", unknown.ToJson());
+        Check(AuditVerifier.VerifyBytes(clean).Ok, "verify: without a known actor set no actor is unknown");
+        Check(AuditVerifier.VerifyBytes(clean, new AuditVerifyOptions(Array.Empty<string>())) is { Ok: false } none && none.Findings.Count == 5 && none.Findings.All(f => f.Code == AuditVerifyCodes.ActorUnknown), "verify: an empty known actor set makes every actor unknown");
+
+        // Truncation: whole trailing entries need the head anchor; a torn final line is detected without it.
+        var dropped = JoinLines(vLines[..4]);
+        var truncated = AuditVerifier.VerifyBytes(dropped, new AuditVerifyOptions(known, head));
+        Check(truncated.Code == AuditVerifyCodes.Truncated && Findings(truncated) == "audit_truncated@-", "verify: removed trailing entry detected against the head anchor", Findings(truncated));
+        Check(AuditVerifier.VerifyBytes(dropped, new AuditVerifyOptions(known)).Ok, "verify: documented limit - removed trailing entries are undetectable without an anchor");
+        var torn = clean[..(clean.Length - 20)];
+        var tornReport = AuditVerifier.VerifyBytes(torn, new AuditVerifyOptions(known));
+        Check(tornReport.Code == AuditVerifyCodes.Truncated && Findings(tornReport) == "audit_truncated@5" && tornReport.ChainCode == AuditCodes.TornTail, "verify: a torn final line is truncation at its line", Findings(tornReport));
+        Check(AuditVerifier.VerifyBytes(clean, new AuditVerifyOptions(known, new AuditAnchor(7, head.Hash))).Code == AuditVerifyCodes.Truncated, "verify: an anchor beyond the log is truncation");
+
+        // Reorder: swapped entries are reported as reordered at each misplaced line, not as edits.
+        var swapped = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[0], vLines[2], vLines[1], vLines[3], vLines[4] }), new AuditVerifyOptions(known, head));
+        Check(swapped.Code == AuditVerifyCodes.Reordered && Findings(swapped) == "audit_reordered@2;audit_reordered@3" && swapped.ChainCode == AuditCodes.SequenceBroken, "verify: swapped entries detected as reordered", Findings(swapped));
+        Check(swapped.VerifiedEntries.Count == 1 && swapped.ToJson().Contains("\"summary\":{\"entries\":1,", StringComparison.Ordinal), "verify: the summary covers only the chain-verified prefix", swapped.ToJson());
+        var rotated = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[4], vLines[0], vLines[1], vLines[2], vLines[3] }));
+        Check(rotated.Code == AuditVerifyCodes.Reordered && rotated.Findings.Count == 5 && rotated.Findings.All(f => f.Code == AuditVerifyCodes.Reordered), "verify: a rotated log is reordered at every line", Findings(rotated));
+
+        // Edited entry: a changed field without a recomputed hash, or a non-canonical rewrite, is edited at its line.
+        var editedLines = (string[])vLines.Clone();
+        editedLines[1] = editedLines[1].Replace("\"actor\":\"reader\"", "\"actor\":\"readex\"", StringComparison.Ordinal);
+        var editedReport = AuditVerifier.VerifyBytes(JoinLines(editedLines), new AuditVerifyOptions(known.Append("readex").ToArray(), head));
+        Check(editedReport.Code == AuditVerifyCodes.EntryEdited && Findings(editedReport) == "audit_entry_edited@2" && editedReport.ChainCode == AuditCodes.HashMismatch, "verify: an edited field is detected at its line", Findings(editedReport));
+        var decisionLines = (string[])vLines.Clone();
+        decisionLines[2] = decisionLines[2].Replace("\"decision\":\"deny\"", "\"decision\":\"allow\"", StringComparison.Ordinal);
+        Check(Findings(AuditVerifier.VerifyBytes(JoinLines(decisionLines), new AuditVerifyOptions(known, head))) == "audit_entry_edited@3", "verify: a flipped decision is an edited entry");
+        var spacedLines = (string[])vLines.Clone();
+        spacedLines[3] = spacedLines[3].Replace("\"seq\":4,", "\"seq\": 4,", StringComparison.Ordinal);
+                var entries5 = okReport.VerifiedEntries;
+        var rehashedEntry = entries5[1] with { Actor = "owner", Hash = "" };
+        rehashedEntry = rehashedEntry with { Hash = AuditLogFormat.ComputeHash(rehashedEntry) };
+        var rehashedLines = (string[])vLines.Clone();
+        rehashedLines[1] = AuditLogFormat.Line(rehashedEntry);
+        var rehashedReport = AuditVerifier.VerifyBytes(JoinLines(rehashedLines), new AuditVerifyOptions(known, head));
+        Check(rehashedReport.Code == AuditVerifyCodes.ChainBroken && Findings(rehashedReport) == "audit_chain_broken@3" && rehashedReport.ChainCode == AuditCodes.ChainBroken, "verify: an edit with a recomputed hash breaks the next link", Findings(rehashedReport));
+        // Whole-file rewrite with every hash recomputed: only the anchor kept elsewhere detects it.
+        var rewritten = new List<string>();
+        var previousHash = Genesis;
+        foreach (var entry in entries5)
+        {
+            var copy = entry with { Actor = entry.Seq == 2 ? "owner" : entry.Actor, PrevHash = previousHash, Hash = "" };
+            copy = copy with { Hash = AuditLogFormat.ComputeHash(copy) };
+            rewritten.Add(AuditLogFormat.Line(copy));
+            previousHash = copy.Hash;
+        }
+        var forgedReport = AuditVerifier.VerifyBytes(JoinLines(rewritten), new AuditVerifyOptions(known, head));
+        Check(forgedReport.Code == AuditVerifyCodes.AnchorMismatch && Findings(forgedReport) == "audit_anchor_mismatch@5", "verify: a fully rehashed rewrite is an anchor mismatch", Findings(forgedReport));
+        Check(AuditVerifier.VerifyBytes(JoinLines(rewritten), new AuditVerifyOptions(known)).Ok, "verify: documented limit - a fully rehashed rewrite is undetectable without an anchor");
+
+        // Removed middle entry, duplicated entry, malformed line, missing file.
+        var gap = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[0], vLines[1], vLines[3], vLines[4] }), new AuditVerifyOptions(known, head));
+        Check(gap.Code == AuditVerifyCodes.EntriesMissing && Findings(gap) == "audit_entries_missing@3", "verify: a removed middle entry is missing entries at the gap", Findings(gap));
+        var duplicate = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[0], vLines[1], vLines[1], vLines[2], vLines[3], vLines[4] }), new AuditVerifyOptions(known));
+        Check(duplicate.Code == AuditVerifyCodes.SequenceBroken && Findings(duplicate) == "audit_sequence_broken@3", "verify: a duplicated entry is a broken sequence", Findings(duplicate));
+        var garbled = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[0], "not json", vLines[2], vLines[3], vLines[4] }), new AuditVerifyOptions(known));
+        Check(garbled.Code == AuditVerifyCodes.EntryMalformed && Findings(garbled) == "audit_entry_malformed@2", "verify: a malformed line is reported at its line", Findings(garbled));
+        var multi = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[0], editedLines[1], vLines[2], vLines[3] }), new AuditVerifyOptions(new[] { "copier", "owner", "readex" }, head));
+        Check(Findings(multi) == "audit_entry_edited@2;audit_truncated@-" && multi.Code == AuditVerifyCodes.EntryEdited, "verify: every finding is reported in line order, anchor findings last", Findings(multi));
+        var missingReport = AuditVerifier.Verify(Path.Combine(verifyDir, "absent.jsonl"));
+        Check(missingReport.Code == AuditVerifyCodes.FileMissing && Findings(missingReport) == "audit_file_missing@-", "verify: a missing file is typed", Findings(missingReport));
+        Check(AuditVerifier.VerifyBytes(clean, new AuditVerifyOptions(known, new AuditAnchor(-1, head.Hash))).Code == AuditVerifyCodes.AnchorMismatch, "verify: an invalid anchor is an anchor mismatch");
+        // Review fixes. 1: an anchor mismatch makes every entry untrusted, so the summary counts none of them.
+        Check(forgedReport.VerifiedEntries.Count == 0 && forgedReport.ToJson().Contains("\"summary\":{\"entries\":0,", StringComparison.Ordinal), "verify: a forged log under an anchor mismatch contributes nothing to the summary", forgedReport.ToJson());
+        // 2: a malformed last line under the head anchor is malformed, not also truncated.
+        var badTail = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[0], vLines[1], vLines[2], vLines[3], "not json" }), new AuditVerifyOptions(known, head));
+        Check(Findings(badTail) == "audit_entry_malformed@5" && badTail.Code == AuditVerifyCodes.EntryMalformed, "verify: a malformed last line with the head anchor is only malformed", Findings(badTail));
+        var badUtf8 = JoinLines(vLines[..4]).Concat(new byte[] { 0xC3, 0x28, (byte)'\n' }).ToArray();
+        Check(Findings(AuditVerifier.VerifyBytes(badUtf8, new AuditVerifyOptions(known, head))) == "audit_entry_malformed@5", "verify: an invalid UTF-8 last line with the head anchor is only malformed", Findings(AuditVerifier.VerifyBytes(badUtf8, new AuditVerifyOptions(known, head))));
+        // 3: a reorder combined with a gap reports both, each at its own line.
+        var mixed = AuditVerifier.VerifyBytes(JoinLines(new[] { vLines[0], vLines[2], vLines[4], vLines[3] }), new AuditVerifyOptions(known, head));
+        Check(Findings(mixed) == "audit_entries_missing@2;audit_reordered@4" && mixed.Code == AuditVerifyCodes.EntriesMissing, "verify: seqs 1,3,5,4 are a gap at line 2 and a reorder at line 4", Findings(mixed) + " " + mixed.Code);
+        // 4: reformatting that keeps the content hash is not canonical, not edited.
+        var crlf = AuditVerifier.VerifyBytes(Encoding.UTF8.GetBytes(string.Concat(vLines.Select(crlfLine => crlfLine + "\r\n"))), new AuditVerifyOptions(known, head));
+        Check(Findings(crlf) == "audit_entry_not_canonical@1;audit_entry_not_canonical@2;audit_entry_not_canonical@3;audit_entry_not_canonical@4;audit_entry_not_canonical@5" && crlf.Code == "audit_entry_not_canonical" && crlf.ChainCode == AuditCodes.EntryNotCanonical, "verify: a CRLF log is not canonical on every line and never edited", Findings(crlf));
+        var bomBytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(clean).ToArray();
+        Check(Findings(AuditVerifier.VerifyBytes(bomBytes, new AuditVerifyOptions(known, head))) == "audit_entry_not_canonical@1", "verify: a leading BOM is not canonical at line 1", Findings(AuditVerifier.VerifyBytes(bomBytes, new AuditVerifyOptions(known, head))));
+        Check(Findings(AuditVerifier.VerifyBytes(JoinLines(spacedLines), new AuditVerifyOptions(known, head))) == "audit_entry_not_canonical@4", "verify: whitespace inside a line is not canonical, not edited");
+        // Nits: Code is the most severe finding (documented order), not the first by line.
+        var severity = AuditVerifier.VerifyBytes(JoinLines(editedLines), new AuditVerifyOptions(new[] { "Copier", "owner", "readex", "reader" }, head));
+        Check(Findings(severity) == "audit_actor_unknown@1;audit_entry_edited@2;audit_actor_unknown@3" && severity.Code == AuditVerifyCodes.EntryEdited, "verify: report code is the most severe finding", Findings(severity) + " " + severity.Code);
+        var badDecisionEntries = new[] { entries5[0] with { Decision = "maybe" } };
+        string? summaryError = null;
+        try { AuditSummary.ToJson(badDecisionEntries); } catch (ArgumentException error) { summaryError = error.GetType().Name; }
+        Check(summaryError is not null, "summary: a decision other than allow or deny is rejected");
+        var directoryReport = AuditVerifier.Verify(verifyDir);
+        Check(directoryReport.Code == AuditVerifyCodes.FileUnreadable && Findings(directoryReport) == "audit_file_unreadable@-", "verify: a directory path is unreadable", Findings(directoryReport));
+        var surrogateLines = (string[])vLines.Clone();
+        surrogateLines[0] = surrogateLines[0].Replace("\"actor\":\"copier\"", "\"actor\":\"\\ud800\"", StringComparison.Ordinal);
+        AuditVerifyReport? surrogate = null;
+        string? surrogateError = null;
+        try { surrogate = AuditVerifier.VerifyBytes(JoinLines(surrogateLines), new AuditVerifyOptions(known, head)); } catch (Exception error) { surrogateError = error.GetType().Name; }
+        Check(surrogateError is null && surrogate is not null && Findings(surrogate) == "audit_entry_malformed@1", "verify: a lone escaped surrogate is malformed without an exception", surrogateError ?? (surrogate is null ? "" : Findings(surrogate)));
+    }
 }
 catch (Exception error)
 {
