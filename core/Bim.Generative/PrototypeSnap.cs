@@ -11,22 +11,29 @@ namespace Bim.Generative;
 //    different rooms when their lines are closer than the wall thickness (equal lines included, so a shared edge moves
 //    with both rooms) and their spans come within the wall thickness of each other: exactly the pairs whose wall bodies
 //    would overlap. Every joined group moves onto one line: a lot edge (0 or the footprint side) when the group holds
-//    one, else the line carrying the longest total edge length, ties to the lower coordinate. Both axes are repeated
-//    until nothing moves (at most MaxRounds rounds). Targets are existing coordinates, so snapped rectangles stay on the
-//    planner's 1/8192 m grid and inside the lot.
-// 3. Refuse typed, keeping the plan as it was: a room whose two opposite edges would meet (prototype_snap_collapsed); a
-//    room outside the footprint (prototype_snap_outside_lot); overlapping rooms (prototype_snap_overlap); a room that the
-//    snap takes below its minimum area or side (brief minimum raised by the matching planner rules: the CABA rules of
-//    PrototypeTemplates.Rules for the plan's footprint unless options give rules) or above its brief maximum, the area
-//    budget exceeded, or a required (forbidden) adjacency the plan met before that it no longer meets
-//    (prototype_snap_noncompliant); no fixed point, or IntentCompiler still reporting wall_clash on the snapped plan
-//    (prototype_snap_unresolved).
+//    one (a line within one 1/8192 m grid step of 0 or of the footprint side, since planned rooms end on the grid floor
+//    of a lot side such as 8.66 m; the closest to the lot edge), else the line carrying the longest total edge length,
+//    ties to the lower coordinate. Both axes are repeated until a round moves nothing: at most MaxRounds moving rounds,
+//    each checked by the next. Targets are existing coordinates, so snapped rectangles stay on the planner's 1/8192 m
+//    grid and inside the lot.
+// 3. Refuse typed, keeping the plan as it was (refusals sorted by code, then subject): a room whose two opposite edges
+//    would meet (prototype_snap_collapsed); an edge moved by at least the wall thickness, which a chain of joined jogs can
+//    cause (prototype_snap_move_too_large); a room outside the footprint, or rooms overlapping, after the snap
+//    (prototype_snap_outside_lot, prototype_snap_overlap: targets are existing lines and every edge inside a moved band
+//    is joined, so both are reachable only when the given plan already leaves its footprint or overlaps); a room the
+//    snap shrinks below its minimum area or side (brief minimum raised by the matching planner rules: the CABA rules of
+//    PrototypeTemplates.Rules for the plan's footprint unless options give rules) or grows above its brief maximum, the
+//    total area grown above the budget, a required pair's shared wall shrunk below the door width or a forbidden pair's
+//    grown above zero (prototype_snap_noncompliant; a room already below a minimum may grow but not shrink); no fixed
+//    point, or IntentCompiler still reporting wall_clash on the snapped plan (prototype_snap_unresolved: a safeguard, as
+//    every pair of parallel wall bodies that could overlap is joined; no known plan reaches it).
 // 4. A plan where nothing moved is Unchanged (the same object). A snapped plan keeps every field and constraint of the
 //    original and its room order; moved rooms get new rectangles and one soft, satisfied prototype_snap_moved constraint
 //    each, listing the edges moved. The result depends only on the plan's geometry, the brief and the options (not on
 //    room order or culture).
-// Gaps: the original constraints and score are not recomputed (their area details describe the plan before the snap);
-// edges are only moved onto existing lines, never onto a new modular grid.
+// Gaps: the original constraints and score are not recomputed (their area details describe the plan before the snap).
+// No ranker reads SpacePlan.Score; AlternativeRanker's compliance reads the hard constraints, which all still hold since
+// the snap refuses any regression of them. Edges are only moved onto existing lines, never onto a new modular grid.
 public enum PrototypeSnapStatus { Unchanged, Snapped, Refused }
 
 // Rules are the minimum-dimension rules the snapped rooms must keep; null means PrototypeTemplates.Rules of the plan's
@@ -46,6 +53,7 @@ public static class PrototypeSnapCodes
     public const string Moved = "prototype_snap_moved";
     public const string OptionsInvalid = "prototype_snap_options_invalid";
     public const string Collapsed = "prototype_snap_collapsed";
+    public const string MoveTooLarge = "prototype_snap_move_too_large";
     public const string OutsideLot = "prototype_snap_outside_lot";
     public const string Overlap = "prototype_snap_overlap";
     public const string Noncompliant = "prototype_snap_noncompliant";
@@ -57,6 +65,8 @@ public static class PrototypeSnap
     public const int MaxRounds = 8;
     const double Epsilon = 1e-7;
     const double TieTolerance = 1e-9;
+    // One step of the planner's 1/8192 m grid: rooms on a lot side end on its grid floor (8.66 m lots end at 70942/8192 m).
+    const double GridStep = 1.0 / 8192;
 
     // Plan-independent refusals of the options (the planner rules); the wall thickness is checked by Snap.
     public static IReadOnlyList<PlanConstraint> OptionRefusals(PrototypeSnapOptions options)
@@ -77,7 +87,12 @@ public static class PrototypeSnap
         return refusals;
     }
 
-    public static PrototypeSnapResult Snap(ProjectBrief brief, SpacePlan plan, FacadeIrOptions? ir = null, PrototypeSnapOptions? options = null)
+    public static PrototypeSnapResult Snap(ProjectBrief brief, SpacePlan plan, FacadeIrOptions? ir = null, PrototypeSnapOptions? options = null) =>
+        Snap(brief, plan, ir, options, MaxRounds, null);
+
+    // Test seam: the number of moving rounds allowed and the IntentCompiler check of the snapped plan (null: the real one).
+    internal static PrototypeSnapResult Snap(ProjectBrief brief, SpacePlan plan, FacadeIrOptions? ir, PrototypeSnapOptions? options, int maxRounds,
+        Func<SpacePlan, IReadOnlyList<IntentIssue>>? validate)
     {
         ArgumentNullException.ThrowIfNull(brief);
         ArgumentNullException.ThrowIfNull(plan);
@@ -87,7 +102,7 @@ public static class PrototypeSnap
         var refusals = OptionRefusals(options).ToList();
         var thickness = ir.WallThicknessMetres;
         if (!(double.IsFinite(thickness) && thickness > 0)) refusals.Add(Refusal(PrototypeSnapCodes.OptionsInvalid, "wall_thickness_m", "wall thickness must be finite and positive"));
-        if (refusals.Count > 0) return new PrototypeSnapResult(PrototypeSnapStatus.Refused, plan, noMoves, refusals);
+        if (refusals.Count > 0) return Refuse(plan, refusals);
         if (!plan.IsFeasible || plan.Rooms is null || plan.Rooms.Count == 0 || plan.Rooms.Any(room => room is null || room.Rect is null || room.InstanceId is null))
             return new PrototypeSnapResult(PrototypeSnapStatus.Unchanged, plan, noMoves, Array.Empty<PlanConstraint>());
 
@@ -101,7 +116,8 @@ public static class PrototypeSnap
         double? width = plan.Footprint?.WidthMetres, depth = plan.Footprint?.DepthMetres;
         var collapsed = new SortedSet<int>();
         var converged = false;
-        for (var round = 0; round < MaxRounds && collapsed.Count == 0; round++)
+        // Rounds 0..maxRounds-1 may move edges; round maxRounds only checks the fixed point.
+        for (var round = 0; round <= maxRounds && collapsed.Count == 0; round++)
         {
             var movedX = SnapAxis(levels, west, east, south, north, thickness, width, collapsed);
             var movedY = collapsed.Count == 0 && SnapAxis(levels, south, north, west, east, thickness, depth, collapsed);
@@ -111,7 +127,7 @@ public static class PrototypeSnap
             return Refuse(plan, collapsed.Select(i => Refusal(PrototypeSnapCodes.Collapsed, rooms[i].InstanceId,
                 "two opposite edges of " + rooms[i].InstanceId + " are joined to one line: the room is thinner than the " + Format(thickness) + " m wall")));
         if (!converged)
-            return Refuse(plan, new[] { Refusal(PrototypeSnapCodes.Unresolved, "plan", "the snap moved edges in each of " + Text(MaxRounds) + " rounds without reaching a fixed point") });
+            return Refuse(plan, new[] { Refusal(PrototypeSnapCodes.Unresolved, "plan", "the snap moved edges in each of " + Text(maxRounds) + " rounds without reaching a fixed point") });
 
         var moves = new List<PrototypeSnapMove>();
         var snappedRooms = new PlannedRoom[count];
@@ -135,6 +151,9 @@ public static class PrototypeSnap
         if (moves.Count == 0) return new PrototypeSnapResult(PrototypeSnapStatus.Unchanged, plan, noMoves, Array.Empty<PlanConstraint>());
 
         var problems = new List<PlanConstraint>();
+        foreach (var move in moves.Where(move => !(Math.Abs(move.ToMetres - move.FromMetres) < thickness)))
+            problems.Add(Refusal(PrototypeSnapCodes.MoveTooLarge, move.Instance, "the " + move.Edge + " edge would move " + Format(Math.Abs(move.ToMetres - move.FromMetres))
+                + " m (" + Format(move.FromMetres) + " -> " + Format(move.ToMetres) + "), not less than the " + Format(thickness) + " m wall: a chain of jogs"));
         for (var i = 0; i < count; i++)
         {
             var rect = snappedRooms[i].Rect;
@@ -157,13 +176,13 @@ public static class PrototypeSnap
             var spec = brief.Rooms?.FirstOrDefault(candidate => candidate is not null && candidate.Id == rooms[i].RoomId);
             var (minArea, minSide, source) = Minimums(rooms[i].RoomId, spec?.Name ?? rooms[i].Name ?? rooms[i].RoomId, spec?.MinAreaSquareMetres?.Value, rules);
             var subject = rooms[i].InstanceId;
-            if (after.Area < minArea && !(before.Area < minArea))
+            if (after.Area < minArea && after.Area < before.Area)
                 problems.Add(Refusal(PrototypeSnapCodes.Noncompliant, subject, "area " + Format(before.Area) + " -> " + Format(after.Area) + " m2, below minimum " + Format(minArea) + " m2 (" + source + ")"));
             var shortBefore = Math.Min(before.Width, before.Depth);
             var shortAfter = Math.Min(after.Width, after.Depth);
-            if (shortAfter < minSide && !(shortBefore < minSide))
+            if (shortAfter < minSide && shortAfter < shortBefore)
                 problems.Add(Refusal(PrototypeSnapCodes.Noncompliant, subject, "short side " + Format(shortBefore) + " -> " + Format(shortAfter) + " m, below minimum " + Format(minSide) + " m (" + source + ")"));
-            if (spec?.MaxAreaSquareMetres is { } max && after.Area > max.Value + SpacePlanner.AreaToleranceSquareMetres && !(before.Area > max.Value + SpacePlanner.AreaToleranceSquareMetres))
+            if (spec?.MaxAreaSquareMetres is { } max && after.Area > max.Value + SpacePlanner.AreaToleranceSquareMetres && after.Area > before.Area)
                 problems.Add(Refusal(PrototypeSnapCodes.Noncompliant, subject, "area " + Format(before.Area) + " -> " + Format(after.Area) + " m2, above maximum " + Format(max.Value) + " m2"));
         }
         if (brief.Constraints?.TotalAreaBudgetSquareMetres is { } budget)
@@ -171,7 +190,7 @@ public static class PrototypeSnap
             var totalBefore = rooms.Sum(room => room.Rect.Area);
             var totalAfter = snappedRooms.Sum(room => room.Rect.Area);
             var limit = budget.Value + SpacePlanner.AreaToleranceSquareMetres;
-            if (totalAfter > limit && !(totalBefore > limit))
+            if (totalAfter > limit && totalAfter > totalBefore)
                 problems.Add(Refusal(PrototypeSnapCodes.Noncompliant, "plan", "total area " + Format(totalBefore) + " -> " + Format(totalAfter) + " m2, above the " + Format(budget.Value) + " m2 budget"));
         }
         var seen = new HashSet<(string, string, BriefAdjacencyKind)>();
@@ -183,17 +202,17 @@ public static class PrototypeSnap
             var sharedBefore = LongestShared(rooms, adjacency.A, adjacency.B);
             var sharedAfter = LongestShared(snappedRooms, adjacency.A, adjacency.B);
             var subject = adjacency.A + "/" + adjacency.B;
-            if (adjacency.Kind == BriefAdjacencyKind.Required && sharedAfter < plan.DoorWidthMetres && !(sharedBefore < plan.DoorWidthMetres))
+            if (adjacency.Kind == BriefAdjacencyKind.Required && sharedAfter < plan.DoorWidthMetres && sharedAfter < sharedBefore)
                 problems.Add(Refusal(PrototypeSnapCodes.Noncompliant, subject, "required pair shares " + Format(sharedBefore) + " -> " + Format(sharedAfter) + " m of wall, below the "
                     + Format(plan.DoorWidthMetres) + " m door width"));
-            if (adjacency.Kind == BriefAdjacencyKind.Forbidden && sharedAfter > Epsilon && !(sharedBefore > Epsilon))
+            if (adjacency.Kind == BriefAdjacencyKind.Forbidden && sharedAfter > Epsilon && sharedAfter > sharedBefore)
                 problems.Add(Refusal(PrototypeSnapCodes.Noncompliant, subject, "forbidden pair shares " + Format(sharedAfter) + " m of wall after the snap"));
         }
         if (problems.Count > 0) return Refuse(plan, problems);
 
         var snapped = plan with { Rooms = snappedRooms, Constraints = (plan.Constraints ?? Array.Empty<PlanConstraint>()).Concat(movedConstraints).ToArray() };
-        IntentIssue[] issues;
-        try { issues = IntentCompiler.Validate(FacadeIrBuilder.Intent(snapped, ir)); }
+        IReadOnlyList<IntentIssue> issues;
+        try { issues = validate is null ? IntentCompiler.Validate(FacadeIrBuilder.Intent(snapped, ir)) : validate(snapped); }
         catch (ArgumentException) { issues = Array.Empty<IntentIssue>(); } // not a stagger problem: the BIM-IR gate reports it
         var clashes = issues.Where(issue => issue.Code == IntentCodes.WallClash).ToArray();
         if (clashes.Length > 0)
@@ -248,13 +267,20 @@ public static class PrototypeSnap
         return moved;
     }
 
-    // A lot edge held by the group (the lower one if both), else the line with the longest total edge length (summed in
-    // a fixed order), ties within 1e-9 m to the lower coordinate.
+    // A lot edge held by the group (a line within one grid step of 0 or of the footprint side; the closest to it, the
+    // lower on a tie), else the line with the longest total edge length (summed in a fixed order), ties within 1e-9 m to
+    // the lower coordinate.
     static double Target((double Line, double Length)[] edges, double? bound)
     {
         var lines = edges.Select(edge => edge.Line).Distinct().Order().ToArray();
+        double? onEdge = null;
+        var nearest = double.PositiveInfinity;
         foreach (var line in lines)
-            if (line == 0 || bound is { } side && line == side) return line;
+        {
+            var distance = Math.Min(Math.Abs(line), bound is { } side ? Math.Abs(line - side) : double.PositiveInfinity);
+            if (distance <= GridStep && distance < nearest) { onEdge = line; nearest = distance; }
+        }
+        if (onEdge is { } lotLine) return lotLine;
         var best = lines[0];
         var bestLength = double.NegativeInfinity;
         foreach (var line in lines)
@@ -318,7 +344,8 @@ public static class PrototypeSnap
     }
 
     static PrototypeSnapResult Refuse(SpacePlan plan, IEnumerable<PlanConstraint> refusals) =>
-        new(PrototypeSnapStatus.Refused, plan, Array.Empty<PrototypeSnapMove>(), refusals.ToArray());
+        new(PrototypeSnapStatus.Refused, plan, Array.Empty<PrototypeSnapMove>(), refusals
+            .OrderBy(refusal => refusal.Code, StringComparer.Ordinal).ThenBy(refusal => refusal.Subject, StringComparer.Ordinal).ThenBy(refusal => refusal.Detail, StringComparer.Ordinal).ToArray());
 
     static PlanConstraint Refusal(string code, string subject, string detail) => new(code, subject, true, false, detail);
 
