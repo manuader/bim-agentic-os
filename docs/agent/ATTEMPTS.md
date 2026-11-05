@@ -196,3 +196,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P1-10: no failed test attempts (red 42000494415 → green 42001156947; review red 42005842348 → green 42007394205). Compile slips, not attempts: top-level name clash in tests/mcp (41999434457), doubled quote in a description (42005209599), pattern variable collision (42006756913).
 - P3-06: no failed attempts (red 41998448544 → green 41999504722; review red 42009289955 → green 42010080321).
 - P8-08 Attempt1 (run 42000960012, 18620b7): hypothesis the validator anchors a duplicate GlobalId on the first instance (the wall) → wrong, the anchor is the door on ubuntu/windows and the wall on macOS → test accepts either duplicate and still requires unique_rule, IfcRoot.UR1 and both STEP ids; green 42002056141. Review red 42012119306 → green 42012222589 (0 attempts).
+
+### Relay162 (2026-11-05, cloud)
+- P4-07: no failed attempts (red 42023285220 → green 42024173720; review red 42029523294 → green 42030387084). One compile slip in test code (`.Count` on an array, run 42028762984), not an attempt.
+- P6-08: no failed attempts (red 42023139520 compile red → green 42024176366; review red 42033774848 → green 42034941467). One invalid fixture (all-Cyrillic labels are not extracted by P6-05, run 42032518982), replaced by Latin+non-ASCII labels; not an attempt (gap → P6-11).
+- P7-08: no failed attempts (diagnostic digest run 42022995164, reverted; red 42024783818 compile red → green 42025388127/42026612209; review red 42037618668 → green 42038221886).

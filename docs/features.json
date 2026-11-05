@@ -791,6 +791,16 @@
       "scope": "P4-03: caller-owned DocumentationSet (plan/ceiling/section/3D views, tags, wall-to-wall dimensions, schedules by kind, sheets, placements; optional binding to BIM-IR plan/schedule/sheet elements) \u2192 Full regeneration as P4-01/P4-02 catalogue commands with typed unsupported entries; Affected(before, after, Compiler.Diff) keeps only items whose own result differs (candidates by what each item reads), plus parent closure; Merge(Full(before), Affected) == Full(after) on a 300-edit seeded corpus; strict minimality and soundness oracles; input digest refuses mismatched sets/bindings; 2/404 items regenerated for one wall move on a 50-room set. CI 41761011983."
     },
     {
+      "id": "documentation-update-pipeline",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/DocUpdate.cs",
+        "tests/doc-regeneration/Update.cs"
+      ],
+      "blocker": "Fake transport only, never run in Revit; dependents passed strictly (caller plans, dry-runs deletes, replans — P4-09); bindings must be the after-state bindings; a missing UniqueId inside confirm_dependents still fails the update; no CLI verb (P4-08).",
+      "scope": "P4-07: DocUpdate.Update/Plan/Run/Resume take BIM-IR before/after, bindings, realized doc:/element: map and optional dry-run dependents; DocDefaults before/after → DocRegeneration.Affected + forced keys (changed or new default definitions, never-realized supported items, and their children, merged from Full(after)) → retired keys (before-only realized, doc_retired) → DocReplace through PlanRunner; element: sources missing from after pruned; stale deletes answered reference_not_found move to Gone and the plan is rebuilt with operation-id replay; updated map as sorted ReadOnlyDictionary; no-edit run empty; unrelated edit sends nothing; byte-identical under reversed maps and tr-TR/de-DE. CI 42030387084."
+    },
+    {
       "id": "cad-brief-extraction",
       "status": "unit-tested",
       "evidence": [
@@ -801,6 +811,17 @@
       ],
       "blocker": "Synthetic fixtures only, no real architectural plan; CID-font PDF text not read (DXF ATTRIB room tags read since P6-06, see dxf-attributes-mtext); confidence multipliers untuned; no adjacencies, levels or counts; region membership by text insertion point; gross region areas (holes not subtracted); not exposed through CLI/MCP.",
       "scope": "P6-05: DXF/PDF room labels and es/en area texts (m\u00b2, m2, sqm\u2026, decimal comma/point, thousands groups, ambiguity flagged, signed areas invalid) become a P6-03 brief draft that passes the brief validator, with per-room confidence, file/handle/layer/block-path or page provenance and uncertainty codes (unlabelled-region, area-mismatch, duplicate-label/text, orphan-area, outer-region, uncalibrated, area-ambiguous, limit codes always reported); MetresPerUnit option, block furniture regions excluded by default, frame labels suppressed; bounded and culture-invariant, fuzzed. CI 41762098208."
+    },
+    {
+      "id": "cad-brief-planner-brief",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/cad/Bim.Cad/BriefPlanner.cs",
+        "adapters/cad/Bim.Cad/BriefPlannerModel.cs",
+        "tests/cad/BriefPlannerTests.cs"
+      ],
+      "blocker": "Synthetic DXF fixtures only (no PDF draft on this path); no footprint inferred from the drawing (planner needs a site via Constraints); duplicates not merged as counts; confirmation per room or per reason, not per pair; thresholds untuned; no CLI verb (P6-10); all-non-ASCII labels are not extracted (P6-11).",
+      "scope": "P6-08: BriefPlanner.ToPlannerBrief(draft, options) turns a P6-05 BriefDraft into a BriefValidator-checked planner brief: low-confidence (MinConfidence default 0.5, inclusive), area-mismatch and duplicate-label (grouped by the extractor slug or duplicate-label uncertainties, a duplicate only after a kept earlier copy) dropped with typed reasons, or kept via ConfirmedRooms/ConfirmedReasons; adjacencies to dropped rooms removed; unknown confirmations reported; brief-plan.dxf keeps 6 of 7 rooms and the P7-01 SpacePlanner plans it feasibly on a 10x8 site, same seed same plan; deterministic under de-DE. CI 42034941467."
     },
     {
       "id": "generative-circulation",
@@ -1148,6 +1169,17 @@
       ],
       "blocker": "Facade is pass/fail only (no quality ranking, P7-10); 4/16 real prototypes rejected wall_clash on staggered plans (P7-06 limitation, P7-08); option refusals use a one-room probe plan; accepted BIM-IR projects share id/revision and are not committed; not exposed through CLI/MCP (P7-09).",
       "scope": "P7-07: PrototypePipeline.Run(request, options)/Rank(brief, plans, options, weights) run prototype \u2192 circulation \u2192 facade \u2192 BIM-IR windows gates with typed rejections (gate, code, subject, detail), accepted ranked 1..k in CirculationRanker order, rejected rank 0; all refusals merged; canonical v1 JSON with options; PrototypeGenerator digest pinned; real prototypes 6/16 accepted (6 duplicate_geometry, 4 wall_clash). CI 41972006351."
+    },
+    {
+      "id": "generative-prototype-snap",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/PrototypeSnap.cs",
+        "core/Bim.Generative/PrototypePipeline.cs",
+        "tests/generative/PrototypeSnapTests.cs"
+      ],
+      "blocker": "Edges move only onto existing lines (no modular grid); snapped plans keep pre-snap score and constraint details; a refused alternative serializes plan null; 6 duplicate_geometry rejections remain; not exposed through CLI/MCP (P7-09).",
+      "scope": "P7-08: PrototypeSnap.Snap (opt-in via PrototypePipelineOptions.Snap) groups parallel edges per level/axis closer than the wall thickness and snaps each group onto a lot line (within one 1/8192 m grid step) or the longest existing line; refusals prototype_snap_collapsed/outside_lot/overlap/noncompliant/move_too_large/unresolved/options_invalid (sorted), regression-only CABA minimum/maximum/budget/adjacency checks, post-snap wall_clash safeguard; 16 real P7-07 prototypes: 10 accepted, 6 duplicate_geometry, 0 wall_clash (16 moves, max 0.026611 m); without the option output byte-identical to the P7-07 digests. CI 42038221886."
     },
     {
       "id": "mirror-drift-cli-mcp",
