@@ -158,3 +158,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] 🔒 P1-10 element.rotate / element.mirror (compiled + unit-tested; never run in Revit): add to the next owner session on a BIM-Agentic-Test* copy (never production): `git pull` (main 875a483), then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and, in that session, rotate a wall 90° about its start, rotate a door-hosting wall with its door, mirror a wall keep_original true and false, mirror a door/column (Mirrored flag must toggle). Expected: readback passes or rolls back with a typed code; report any `deleted` in mirror replies. P1-11 will script these steps.
 - [ ] Delete stray remote branch `relay161-P8-08-probe` (cloud delete refused by proxy 403): `git push origin --delete relay161-P8-08-probe`.
 - No new decision needed.
+
+## Relay162 (2026-11-05, cloud)
+- No new Revit step (P4-07, P6-08, P7-08 are headless, unit-tested in CI). `git pull` (main 8a8189b). Still open: the Relay153/157/161 test-copy -Catalogue smoke steps, N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence, delete stray branches relay159-P6-09-baseline and relay161-P8-08-probe.
+- No new decision needed.
