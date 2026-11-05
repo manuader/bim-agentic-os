@@ -22,6 +22,11 @@ namespace Bim.Core;
 //     ]
 //   }
 // with packs in ordinal id order, entries separated by ",\n", "packs": [] when empty, and one trailing newline.
+// Scope: the lock verifies every file of a pack (the hash covers them all), but only the manifest (skill.json) is
+// served from the verified bytes, as SkillLocking.Load's catalog. Other files such as jurisdiction.json are still read
+// by their own readers (JurisdictionRegistry) from disk and are not lock-checked there.
+// Byte stability: the hash is over raw bytes, so the root .gitattributes marks skills/** and skills.lock.json -text;
+// without it a core.autocrlf checkout would hash differently from an LF checkout.
 public sealed record SkillLockEntry(string Id, SkillVersion Version, string ContentSha256);
 
 public sealed class SkillLock
@@ -44,6 +49,7 @@ public sealed class SkillLock
             ArgumentNullException.ThrowIfNull(entry);
             if (!SkillParser.IsId(entry.Id)) throw new SkillLockException(SkillLockCodes.ValueInvalid, entry.Id ?? "(null)", "a skill id is required");
             if (!IsSha256(entry.ContentSha256)) throw new SkillLockException(SkillLockCodes.ValueInvalid, entry.Id, "content_sha256 must be 64 lowercase hex digits");
+            if (entry.Version.Major < 0 || entry.Version.Minor < 0 || entry.Version.Patch < 0) throw new SkillLockException(SkillLockCodes.ValueInvalid, entry.Id, "version components must not be negative");
             if (!byId.TryAdd(entry.Id, entry)) throw new SkillLockException(SkillLockCodes.EntryDuplicate, entry.Id, "pack pinned more than once");
         }
         if (byId.Count > MaxPacks) throw new SkillLockException(SkillLockCodes.TooManyItems, "$.packs", "at most 1024 packs");
@@ -103,6 +109,8 @@ public static class SkillLockCodes
     public const string SkillLockMissing = "skill_lock_missing";
     // Pin was given a resolution that has issues.
     public const string ResolutionFailed = "resolution_failed";
+    // Pin was given a resolution whose manifest differs from the one now on disk (even at the same version).
+    public const string ResolutionStale = "resolution_stale";
 }
 
 // Either Issues is empty and Catalog (the pinned packs only) and Lock are set, or Issues lists every refusal in
@@ -117,14 +125,54 @@ public sealed record SkillLockChange(string Id, SkillLockEntry? Before, SkillLoc
 
 public sealed record SkillLockUpdate(SkillLock Lock, IReadOnlyList<SkillLockChange> Changes);
 
+public sealed record SkillPackFile(string Path, byte[] Bytes);
+
+// The files of one pack exactly as they were hashed. Manifest() parses skill.json from these bytes (one leading BOM
+// stripped, strict UTF-8, at most SkillLoader.MaxManifestBytes, id equal to the pack), never from a new disk read; a
+// refusal is skills_invalid with the SkillCodes code first in Detail.
+public sealed class SkillPackSnapshot
+{
+    public SkillPackSnapshot(string id, string contentSha256, IReadOnlyList<SkillPackFile> files)
+    {
+        Id = id;
+        ContentSha256 = contentSha256;
+        Files = files;
+    }
+
+    public string Id { get; }
+    public string ContentSha256 { get; }
+    public IReadOnlyList<SkillPackFile> Files { get; }
+
+    public SkillManifest Manifest()
+    {
+        var at = Id + "/" + SkillLoader.ManifestFileName;
+        var file = Files.FirstOrDefault(item => item.Path == SkillLoader.ManifestFileName);
+        if (file is null) throw Invalid(SkillCodes.ManifestMissing, "skill.json not found", at);
+        var bytes = file.Bytes;
+        if (bytes.Length == 0) throw Invalid(SkillCodes.NotRegularFile, "zero-length manifest", at);
+        if (bytes.Length > SkillLoader.MaxManifestBytes) throw Invalid(SkillCodes.InputTooLarge, "at most 65536 bytes", at);
+        var offset = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+        string text;
+        try { text = new UTF8Encoding(false, true).GetString(bytes, offset, bytes.Length - offset); }
+        catch (DecoderFallbackException error) { throw Invalid(SkillCodes.JsonInvalid, "invalid UTF-8: " + error.Message, at); }
+        SkillManifest manifest;
+        try { manifest = SkillParser.Parse(text); }
+        catch (SkillException error) { throw Invalid(error.Code, (error.Field is null ? "" : error.Field + ": ") + error.Detail, at); }
+        if (manifest.Id != Id) throw Invalid(SkillCodes.IdMismatch, "manifest id " + manifest.Id + " differs from directory " + Id, at);
+        return manifest;
+    }
+
+    static SkillLockException Invalid(string code, string? detail, string at) => new(SkillLockCodes.SkillsInvalid, at, code + (detail is null ? "" : ": " + detail));
+}
+
 // Content hash of one pack directory skills/<id>/, scheme bim-skill-pack-sha256-v1:
 //   SHA-256 of the ASCII header "bim-skill-pack-sha256-v1\n" followed, for every regular file below the pack directory
 //   (any depth, hidden and empty files included, empty directories ignored) in ordinal order of its relative path
 //   ('/' separated, UTF-16 ordinal comparison), by: the UTF-8 path, "\n", the byte length in invariant decimal, "\n",
 //   the raw file bytes (line endings unchanged, no BOM handling), "\n". Lowercase hex.
-// Links (symbolic links, junctions) anywhere in the pack, file names with control characters, more than MaxFiles files,
-// more than MaxBytes bytes or more than MaxDepth nested directories are refused. Zero-length entries are never opened
-// (a FIFO or device reports length 0) and hash as empty files.
+// Links (symbolic links, junctions) anywhere in the pack, file names with control characters, more than MaxFiles
+// entries (files and directories together), more than MaxBytes bytes or more than MaxDepth nested directories are
+// refused. Zero-length entries are never opened (a FIFO or device reports length 0) and hash as empty files.
 public static class SkillPackHash
 {
     public const string Scheme = "bim-skill-pack-sha256-v1";
@@ -132,7 +180,10 @@ public static class SkillPackHash
     public const long MaxBytes = 64L * 1024 * 1024;
     public const int MaxDepth = 32;
 
-    public static string Compute(string skillsRoot, string packId)
+    public static string Compute(string skillsRoot, string packId) => Snapshot(skillsRoot, packId).ContentSha256;
+
+    // Reads every file of the pack once, hashes those bytes and returns them with the hash.
+    public static SkillPackSnapshot Snapshot(string skillsRoot, string packId)
     {
         ArgumentNullException.ThrowIfNull(skillsRoot);
         if (!SkillParser.IsId(packId)) throw new SkillLockException(SkillLockCodes.ValueInvalid, packId ?? "(null)", "a skill id is required");
@@ -146,6 +197,7 @@ public static class SkillPackHash
             if (!pack.Exists) throw new SkillLockException(SkillLockCodes.SkillLockMissing, at, "pack directory not found under the skills root");
             if (!Inside(pack.FullName, boundary)) throw new SkillLockException(SkillLockCodes.PathUnsafe, at, "path leaves the skills root");
             var files = new List<(string Relative, FileInfo File)>();
+            var entries = 0;
             var pending = new Stack<(DirectoryInfo Directory, string Prefix, int Depth)>();
             pending.Push((pack, "", 0));
             while (pending.Count > 0)
@@ -158,21 +210,19 @@ public static class SkillPackHash
                     if (IsLink(entry)) throw new SkillLockException(SkillLockCodes.PathUnsafe, at, "symbolic links and junctions are not followed");
                     if (entry.Name.Any(char.IsControl)) throw new SkillLockException(SkillLockCodes.PathUnsafe, at, "file names with control characters are not hashed");
                     if (!Inside(entry.FullName, boundary)) throw new SkillLockException(SkillLockCodes.PathUnsafe, at, "path leaves the skills root");
+                    if (++entries > MaxFiles) throw new SkillLockException(SkillLockCodes.TooManyItems, at, "at most 4096 files and directories per pack");
                     if (entry is DirectoryInfo child)
                     {
                         if (depth + 1 > MaxDepth) throw new SkillLockException(SkillLockCodes.TooManyItems, at, "at most 32 nested directories");
                         pending.Push((child, relative + "/", depth + 1));
                     }
-                    else if (entry is FileInfo file)
-                    {
-                        if (files.Count == MaxFiles) throw new SkillLockException(SkillLockCodes.TooManyItems, at, "at most 4096 files per pack");
-                        files.Add((relative, file));
-                    }
+                    else if (entry is FileInfo file) files.Add((relative, file));
                 }
             }
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             hash.AppendData(Encoding.ASCII.GetBytes(Scheme + "\n"));
             long total = 0;
+            var read = new List<SkillPackFile>();
             foreach (var (relative, file) in files.OrderBy(item => item.Relative, StringComparer.Ordinal))
             {
                 at = packId + "/" + relative;
@@ -181,8 +231,9 @@ public static class SkillPackHash
                 hash.AppendData(new UTF8Encoding(false, true).GetBytes(relative + "\n" + bytes.Length.ToString(CultureInfo.InvariantCulture) + "\n"));
                 hash.AppendData(bytes);
                 hash.AppendData(new[] { (byte)'\n' });
+                read.Add(new SkillPackFile(relative, bytes));
             }
-            return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+            return new SkillPackSnapshot(packId, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(), read);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or EncoderFallbackException)
         {
@@ -196,7 +247,7 @@ public static class SkillPackHash
         var length = file.Length;
         if (length == 0) return Array.Empty<byte>();
         if (length > budget) throw new SkillLockException(SkillLockCodes.InputTooLarge, at, "a pack holds at most 64 MiB");
-        using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.None);
+        using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1, FileOptions.None);
         if (!stream.CanSeek) throw new SkillLockException(SkillLockCodes.NotRegularFile, at, "not a regular file");
         var buffer = new byte[length + 1];
         var total = 0;
@@ -296,6 +347,19 @@ public static class SkillLockFile
     // Never through a link; a non-empty regular file; bounded read; strict UTF-8 with one optional byte order mark.
     public static SkillLock Read(string path)
     {
+        var bytes = ReadBytes(path);
+        var at = Path.GetFileName(path);
+        var offset = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+        string text;
+        try { text = Utf8.GetString(bytes, offset, bytes.Length - offset); }
+        catch (DecoderFallbackException error) { throw new SkillLockException(SkillLockCodes.JsonInvalid, at, "invalid UTF-8: " + error.Message); }
+        return Parse(text);
+    }
+
+    // The raw lock bytes through the same guards as Read (no link, regular non-empty file, bounded, shared for delete so
+    // a concurrent replace is not blocked).
+    internal static byte[] ReadBytes(string path)
+    {
         ArgumentNullException.ThrowIfNull(path);
         var at = Path.GetFileName(path);
         try
@@ -308,7 +372,7 @@ public static class SkillLockFile
             if (file.Length == 0) throw new SkillLockException(SkillLockCodes.NotRegularFile, at, "zero-length entry: an empty file, or a FIFO, device or socket, is not read");
             if (file.Length > limit) throw new SkillLockException(SkillLockCodes.InputTooLarge, at, "lock file too large");
             byte[] bytes;
-            using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.None))
+            using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1, FileOptions.None))
             {
                 if (!stream.CanSeek) throw new SkillLockException(SkillLockCodes.NotRegularFile, at, "not a regular file");
                 var buffer = new byte[limit + 1];
@@ -322,11 +386,7 @@ public static class SkillLockFile
                 bytes = buffer.AsSpan(0, total).ToArray();
             }
             if (bytes.Length > limit) throw new SkillLockException(SkillLockCodes.InputTooLarge, at, "lock file too large");
-            var offset = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
-            string text;
-            try { text = Utf8.GetString(bytes, offset, bytes.Length - offset); }
-            catch (DecoderFallbackException error) { throw new SkillLockException(SkillLockCodes.JsonInvalid, at, "invalid UTF-8: " + error.Message); }
-            return Parse(text);
+            return bytes;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -334,8 +394,11 @@ public static class SkillLockFile
         }
     }
 
-    // Durable replace: the canonical bytes go to a fresh temporary file beside the target, flushed to disk
-    // (Flush(true)), then moved over the target; a failure leaves the previous lock in place and no temporary file.
+    // Atomic replace: the canonical bytes go to a fresh temporary file beside the target, flushed to disk (Flush(true)),
+    // then renamed over the target, so readers see the old or the new lock, never a torn one, and a failure leaves the
+    // previous lock and no temporary file. The containing directory is not fsynced (the BCL cannot open a directory
+    // handle), so after a power loss the rename itself may be lost and the previous lock come back. A link at the target
+    // is path_unsafe and a directory not_regular_file.
     public static void Write(string path, SkillLock skillLock)
     {
         ArgumentNullException.ThrowIfNull(path);
@@ -394,42 +457,25 @@ public static class SkillLockFile
 }
 
 // Pin, verify and explicitly update a project's skill lock against a skills directory (skills/<id>/skill.json).
+// Every pack is read once (SkillPackHash.Snapshot): the pinned version comes from the manifest parsed out of the very
+// bytes that were hashed, so a pack edited between hashing and parsing can never be pinned or served torn.
 public static class SkillLocking
 {
     // Pins the given packs (repeats ignored) at their current manifest version and content hash. Unknown ids are
-    // skill_missing (SkillCodes); a directory SkillLoader refuses is skills_invalid. Content is hashed before and after
-    // the manifests are loaded, so a pack edited meanwhile is skill_lock_drift instead of a torn pin.
-    public static SkillLock Pin(string skillsRoot, IEnumerable<string> packIds)
-    {
-        ArgumentNullException.ThrowIfNull(skillsRoot);
-        ArgumentNullException.ThrowIfNull(packIds);
-        var ids = packIds.Select(id => id ?? throw new ArgumentNullException(nameof(packIds))).Distinct(StringComparer.Ordinal).OrderBy(id => id, StringComparer.Ordinal).ToArray();
-        var catalog = LoadCatalog(skillsRoot);
-        foreach (var id in ids)
-            if (catalog.Find(id) is null) throw new SkillLockException(SkillCodes.SkillMissing, id, "pack " + id + " is not in the skills directory");
-        var before = ids.ToDictionary(id => id, id => SkillPackHash.Compute(skillsRoot, id), StringComparer.Ordinal);
-        catalog = LoadCatalog(skillsRoot);
-        var entries = new List<SkillLockEntry>();
-        foreach (var id in ids)
-        {
-            var manifest = catalog.Find(id) ?? throw new SkillLockException(SkillLockCodes.SkillLockMissing, id, "pack disappeared while being pinned");
-            var after = SkillPackHash.Compute(skillsRoot, id);
-            if (after != before[id]) throw new SkillLockException(SkillLockCodes.SkillLockDrift, id, "pack content changed while being pinned");
-            entries.Add(new SkillLockEntry(id, manifest.Version, after));
-        }
-        return new SkillLock(entries);
-    }
+    // skill_missing (SkillCodes); a directory SkillLoader refuses is skills_invalid.
+    public static SkillLock Pin(string skillsRoot, IEnumerable<string> packIds) => new(PinSnapshots(skillsRoot, packIds).Select(item => item.Entry));
 
-    // Pins exactly the skills of a successful resolution; their versions must still be the ones on disk.
+    // Pins exactly the skills of a successful resolution. Each resolved manifest must equal the one parsed from the
+    // hashed bytes (every member compared, not only the version), else resolution_stale: resolve again before pinning.
     public static SkillLock Pin(string skillsRoot, SkillResolution resolution)
     {
         ArgumentNullException.ThrowIfNull(resolution);
         if (!resolution.Succeeded) throw new SkillLockException(SkillLockCodes.ResolutionFailed, "", "the resolution has " + resolution.Issues.Count.ToString(CultureInfo.InvariantCulture) + " issue(s); fix them before pinning");
-        var pinned = Pin(skillsRoot, resolution.Skills.Select(skill => skill.Id));
+        var pinned = PinSnapshots(skillsRoot, resolution.Skills.Select(skill => skill.Id)).ToDictionary(item => item.Entry.Id, StringComparer.Ordinal);
         foreach (var skill in resolution.Skills)
-            if (pinned.Find(skill.Id) is { } entry && entry.Version != skill.Version)
-                throw new SkillLockException(SkillLockCodes.SkillLockDrift, skill.Id, "resolved " + skill.Version + " but the skills directory holds " + entry.Version);
-        return pinned;
+            if (Fingerprint(pinned[skill.Id].Manifest) != Fingerprint(skill))
+                throw new SkillLockException(SkillLockCodes.ResolutionStale, skill.Id, "the resolved manifest " + skill.Version + " differs from skill.json on disk (" + pinned[skill.Id].Manifest.Version + "); resolve again before pinning");
+        return new SkillLock(pinned.Values.Select(item => item.Entry));
     }
 
     public static SkillLockLoad Load(string skillsRoot, string lockPath)
@@ -441,57 +487,81 @@ public static class SkillLocking
         return Load(skillsRoot, skillLock);
     }
 
-    // Loads the skills directory and returns a catalog of the pinned packs only, after checking each pinned pack is
-    // present (skill_lock_missing) with the pinned version and content hash (skill_lock_drift). Every problem is
-    // reported; nothing is written. Content is hashed before and after the manifests are read so the catalog always
-    // matches the verified bytes.
+    // Checks the skills directory with SkillLoader (skills_invalid), snapshots every pinned pack and verifies it (see
+    // Verify). Every problem is reported; nothing is written.
     public static SkillLockLoad Load(string skillsRoot, SkillLock skillLock)
     {
         ArgumentNullException.ThrowIfNull(skillsRoot);
         ArgumentNullException.ThrowIfNull(skillLock);
         var issues = new List<SkillLockIssue>();
-        var before = new Dictionary<string, string>(StringComparer.Ordinal);
+        try { LoadCatalog(skillsRoot); }
+        catch (SkillLockException error) { issues.Add(error.ToIssue()); }
+        var snapshots = new List<SkillPackSnapshot>();
+        var unread = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in skillLock.Packs)
         {
-            try { before[entry.Id] = SkillPackHash.Compute(skillsRoot, entry.Id); }
-            catch (SkillLockException error) { issues.Add(new SkillLockIssue(error.Code, entry.Id, error.Detail + (error.Subject == entry.Id ? "" : " (" + error.Subject + ")"))); }
+            try { snapshots.Add(SkillPackHash.Snapshot(skillsRoot, entry.Id)); }
+            catch (SkillLockException error)
+            {
+                unread.Add(entry.Id);
+                issues.Add(new SkillLockIssue(error.Code, entry.Id, error.Detail + (error.Subject == entry.Id ? "" : " (" + error.Subject + ")")));
+            }
         }
-        SkillCatalog catalog;
-        try { catalog = LoadCatalog(skillsRoot); }
-        catch (SkillLockException error) { return new SkillLockLoad(null, skillLock, new[] { error.ToIssue() }); }
+        var verified = Verify(skillLock, snapshots);
+        // A pack whose snapshot failed already has its issue; Verify would only add skill_lock_missing for it again.
+        issues.AddRange(verified.Issues.Where(issue => !unread.Contains(issue.Subject)));
+        if (issues.Count > 0) return new SkillLockLoad(null, skillLock, Sorted(issues));
+        return verified;
+    }
+
+    // Verifies snapshots against the lock: a pinned pack without a snapshot is skill_lock_missing; a different content
+    // hash or manifest version is skill_lock_drift; a manifest that does not parse is skills_invalid. The catalog holds
+    // the pinned packs only, parsed from the snapshot bytes. Snapshots of unpinned packs are ignored.
+    public static SkillLockLoad Verify(SkillLock skillLock, IEnumerable<SkillPackSnapshot> snapshots)
+    {
+        ArgumentNullException.ThrowIfNull(skillLock);
+        ArgumentNullException.ThrowIfNull(snapshots);
+        var byId = new Dictionary<string, SkillPackSnapshot>(StringComparer.Ordinal);
+        foreach (var snapshot in snapshots)
+        {
+            ArgumentNullException.ThrowIfNull(snapshot);
+            byId[snapshot.Id] = snapshot;
+        }
+        var issues = new List<SkillLockIssue>();
         var manifests = new List<SkillManifest>();
         foreach (var entry in skillLock.Packs)
         {
-            if (!before.TryGetValue(entry.Id, out var found)) continue;
-            var manifest = catalog.Find(entry.Id);
-            if (manifest is null) { issues.Add(new SkillLockIssue(SkillLockCodes.SkillLockMissing, entry.Id, "pinned pack is not in the skills directory")); continue; }
-            string after;
-            try { after = SkillPackHash.Compute(skillsRoot, entry.Id); }
+            if (!byId.TryGetValue(entry.Id, out var snapshot)) { issues.Add(new SkillLockIssue(SkillLockCodes.SkillLockMissing, entry.Id, "pinned pack is not in the skills directory")); continue; }
+            SkillManifest manifest;
+            try { manifest = snapshot.Manifest(); }
             catch (SkillLockException error) { issues.Add(new SkillLockIssue(error.Code, entry.Id, error.Detail)); continue; }
-            if (after != found) { issues.Add(new SkillLockIssue(SkillLockCodes.SkillLockDrift, entry.Id, "pack content changed while being loaded")); continue; }
-            if (manifest.Version != entry.Version || found != entry.ContentSha256)
+            if (manifest.Version != entry.Version || snapshot.ContentSha256 != entry.ContentSha256)
             {
                 issues.Add(new SkillLockIssue(SkillLockCodes.SkillLockDrift, entry.Id,
-                    "pinned " + entry.Version + " sha256 " + entry.ContentSha256 + ", found " + manifest.Version + " sha256 " + found + "; an explicit lock update is required to accept it"));
+                    "pinned " + entry.Version + " sha256 " + entry.ContentSha256 + ", found " + manifest.Version + " sha256 " + snapshot.ContentSha256 + "; an explicit lock update is required to accept it"));
                 continue;
             }
             manifests.Add(manifest);
         }
-        if (issues.Count > 0)
-            return new SkillLockLoad(null, skillLock, issues.OrderBy(issue => issue.Subject, StringComparer.Ordinal).ThenBy(issue => issue.Code, StringComparer.Ordinal).ToArray());
+        if (issues.Count > 0) return new SkillLockLoad(null, skillLock, Sorted(issues));
         return new SkillLockLoad(new SkillCatalog(manifests), skillLock, Array.Empty<SkillLockIssue>());
     }
 
     // The explicit update: re-pins packIds (or, when null, the packs the existing lock pins) at their current content
-    // and durably rewrites lockPath. Without packIds the lock must exist (lock_missing). Any pin failure throws before
-    // the file is touched. The file is rewritten only when the pins change or its bytes are not canonical.
+    // and durably rewrites lockPath. Without packIds the lock must exist and parse; with packIds an unreadable or
+    // malformed existing lock is treated as absent and repaired (a link or I/O failure still refuses). Any pin failure
+    // throws before the file is touched. The file is rewritten only when the pins change or its bytes are not canonical.
     public static SkillLockUpdate Update(string skillsRoot, string lockPath, IEnumerable<string>? packIds = null)
     {
         ArgumentNullException.ThrowIfNull(skillsRoot);
         ArgumentNullException.ThrowIfNull(lockPath);
         SkillLock? existing = null;
         if (packIds is null) existing = SkillLockFile.Read(lockPath);
-        else if (File.Exists(lockPath)) existing = SkillLockFile.Read(lockPath);
+        else
+        {
+            try { existing = SkillLockFile.Read(lockPath); }
+            catch (SkillLockException error) when (error.Code is not (SkillLockCodes.PathUnsafe or SkillLockCodes.ReadFailed)) { existing = null; }
+        }
         var ids = packIds ?? existing!.Packs.Select(entry => entry.Id);
         SkillLock updated;
         try { updated = Pin(skillsRoot, ids); }
@@ -509,10 +579,36 @@ public static class SkillLocking
             if (before != after) changes.Add(new SkillLockChange(id, before, after));
         }
         var canonical = SkillLockFile.Serialize(updated);
-        var current = File.Exists(lockPath) ? File.ReadAllBytes(lockPath) : null;
+        byte[]? current = null;
+        try { current = SkillLockFile.ReadBytes(lockPath); }
+        catch (SkillLockException error) when (error.Code is not (SkillLockCodes.PathUnsafe or SkillLockCodes.ReadFailed)) { current = null; }
         if (changes.Count > 0 || current is null || !current.AsSpan().SequenceEqual(canonical)) SkillLockFile.Write(lockPath, updated);
         return new SkillLockUpdate(updated, changes);
     }
+
+    static List<(SkillLockEntry Entry, SkillManifest Manifest)> PinSnapshots(string skillsRoot, IEnumerable<string> packIds)
+    {
+        ArgumentNullException.ThrowIfNull(skillsRoot);
+        ArgumentNullException.ThrowIfNull(packIds);
+        var ids = packIds.Select(id => id ?? throw new ArgumentNullException(nameof(packIds))).Distinct(StringComparer.Ordinal).OrderBy(id => id, StringComparer.Ordinal).ToArray();
+        var catalog = LoadCatalog(skillsRoot);
+        foreach (var id in ids)
+            if (catalog.Find(id) is null) throw new SkillLockException(SkillCodes.SkillMissing, id, "pack " + id + " is not in the skills directory");
+        var pinned = new List<(SkillLockEntry, SkillManifest)>();
+        foreach (var id in ids)
+        {
+            var snapshot = SkillPackHash.Snapshot(skillsRoot, id);
+            var manifest = snapshot.Manifest();
+            pinned.Add((new SkillLockEntry(id, manifest.Version, snapshot.ContentSha256), manifest));
+        }
+        return pinned;
+    }
+
+    // Structural identity of a manifest: every member, lists included, rendered by System.Text.Json.
+    static string Fingerprint(SkillManifest manifest) => JsonSerializer.Serialize(manifest);
+
+    static SkillLockIssue[] Sorted(IEnumerable<SkillLockIssue> issues) =>
+        issues.OrderBy(issue => issue.Subject, StringComparer.Ordinal).ThenBy(issue => issue.Code, StringComparer.Ordinal).ThenBy(issue => issue.Detail, StringComparer.Ordinal).ToArray();
 
     static SkillCatalog LoadCatalog(string skillsRoot)
     {
