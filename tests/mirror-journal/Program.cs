@@ -288,6 +288,9 @@ try
     // ---- P2-07 drift resolution proposals (MirrorDriftResolveChecks.cs) ----
     MirrorDriftResolveChecks.Run(Check);
 
+    // ---- P2-09 selective drift resolution (MirrorDriftSelectChecks.cs) ----
+    MirrorDriftSelectChecks.Run(Check);
+
     // ---- Thread safety: concurrent records keep unique, gap-free sequences ----
     var concurrent = new MirrorJournal(() => start, capacity: 10000);
     Parallel.For(0, 2000, i => concurrent.Record(Change(new[] { "T" + i }, modified: new[] { W1 })));

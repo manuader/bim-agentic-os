@@ -16,6 +16,8 @@ namespace Bim.Core;
 //            then create; the element gets a new UniqueId). Every step is parsed by RevitCommandProtocol.Parse, so the
 //            restore plan passes the same catalogue schema and rules as a command sent by Claude; a step the catalogue
 //            refuses makes that restore unsupported (command_invalid), never a half replace.
+// A restore whose delete takes dependents with it in Revit (a wall's hosted openings, a level's elements) that are
+// deleted only because their own extra-element delete is proposed requires those proposals' restores too.
 // Unsupported proposals carry a typed code (MirrorDriftResolveCodes). The recommendation is adopt for external_edit and
 // addin_pending findings and restore for unknown ones, falling back to the other proposal when the preferred one is
 // unsupported, or none. A delete or replace that would make Revit delete kept elements with it (a level's elements, a
@@ -387,6 +389,15 @@ public static class MirrorDriftResolve
                 .Where(dependent => !deletedSnapshot.Contains(dependent.Id))
                 .Select(dependent => snapshot.Sources.TryGetValue(dependent.Id, out var uid) ? uid : dependent.Id.ToString("D")).Order(StringComparer.Ordinal).ToArray();
         }
+        // Proposal keys of the dependents Revit deletes with the snapshot element because their own delete is proposed:
+        // that restore must run with this one, or Revit deletes them although they were not chosen.
+        var keyBySnapshot = findings.Where(finding => finding.SnapshotId is not null).ToDictionary(finding => finding.SnapshotId!.Value, Key);
+        string[] DeletedWith(Element revit)
+        {
+            if (!dependentsOf.TryGetValue(revit.Id, out var list)) return Array.Empty<string>();
+            return Sorted(list.Where(dependent => revit.Kind == "level" || (revit.Kind == "wall" && dependent.Kind is "door" or "window"))
+                .Where(dependent => deletedSnapshot.Contains(dependent.Id) && keyBySnapshot.ContainsKey(dependent.Id)).Select(dependent => keyBySnapshot[dependent.Id]));
+        }
 
         // Extra elements: delete, children first; one that kept elements depend on is refused.
         foreach (var i in Enumerable.Range(0, findings.Length).Where(index => findings[index].Kind == MirrorDriftKinds.Extra)
@@ -400,7 +411,7 @@ public static class MirrorDriftResolve
                 var step = DeleteStep(finding);
                 deletes.Add((Rank(finding.ElementKind), finding.UniqueId, step));
                 deletedSnapshot.Add(finding.SnapshotId!.Value);
-                restores[i] = new MirrorDriftRestore(MirrorDriftResolveStatus.Proposed, MirrorDriftRestoreModes.Delete, new[] { step.OperationId }, Array.Empty<string>(), null, null);
+                restores[i] = new MirrorDriftRestore(MirrorDriftResolveStatus.Proposed, MirrorDriftRestoreModes.Delete, new[] { step.OperationId }, DeletedWith(observed[finding.SnapshotId!.Value]), null, null);
             }
             catch (Refusal refusal) { restores[i] = RestoreRefused(refusal.Code, refusal.Message); }
         }
@@ -472,6 +483,7 @@ public static class MirrorDriftResolve
                 var canonical = Canonical(built.Command, built.Args);
                 var steps = new List<RevitCommandStep>();
                 var dependsOn = built.DependsOn.ToList();
+                var requires = replacing ? Sorted(built.Requires.Concat(DeletedWith(observed[finding.SnapshotId!.Value]))) : built.Requires;
                 if (replacing && Blocking(observed[finding.SnapshotId!.Value]) is { Length: > 0 } hosted)
                     throw new Refusal(MirrorDriftResolveCodes.DependentsRemain, "replacing it would delete kept hosted elements: " + string.Join(",", hosted));
                 if (replacing)
@@ -487,7 +499,7 @@ public static class MirrorDriftResolve
                 creates.Add((CreateRank(element.Kind), element.Id.ToString("D"), create));
                 createOps[element.Id] = operationId;
                 restores[i] = new MirrorDriftRestore(MirrorDriftResolveStatus.Proposed, replacing ? MirrorDriftRestoreModes.Replace : MirrorDriftRestoreModes.Create,
-                    steps.Select(step => step.OperationId).ToArray(), built.Requires, null, null);
+                    steps.Select(step => step.OperationId).ToArray(), requires, null, null);
             }
             catch (Refusal refusal) { restores[i] = RestoreRefused(refusal.Code, refusal.Message); }
         }
