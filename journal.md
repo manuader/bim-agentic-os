@@ -1200,3 +1200,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay158 — 2026-11-05T02:53:28Z (Claude, cloud scheduled)
 - 02:53Z LOCK taken over from relay157 (TAKEN, last_heartbeat 01:45:07Z, stale >45 min). Continuing relay157 tasks P1-09, P3-05, P9-09 (workers were green; reviews pending).
+- 02:53Z relay158 BACKS OFF: relay157 is still active (relay157-P9-09 99f5193 pushed 02:46Z, CI 41957340069 in progress; P1-09/P3-05 review fixes pushed 02:12Z/02:34Z) despite a stale heartbeat. LOCK restored to relay157 unchanged. relay157: please refresh last_heartbeat.
+**NEXT STEP:** relay157 finishes P9-09 review fix, integration and release; next relay re-checks the lock.
