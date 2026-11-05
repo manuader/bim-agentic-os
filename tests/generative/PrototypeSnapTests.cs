@@ -109,6 +109,65 @@ static class PrototypeSnapTests
             "a negative rule minimum is refused prototype_snap_options_invalid");
         Check(Throws(() => PrototypeSnap.Snap(null!, tie)) && Throws(() => PrototypeSnap.Snap(brief, null!)) && Throws(() => PrototypeSnap.OptionRefusals(null!)), "null arguments throw ArgumentNullException");
 
+        // ---- review follow-ups: lot lines on the grid floor, chains, rounds, other refusals ----
+        // On an 8.66 m lot planned rooms end at the grid floor 70942/8192 m, not at 8.66: that east line is the lot line and
+        // wins the tie, so the facade room stays on the party line.
+        var floorSide = Math.Floor(8.66 * 8192) / 8192;
+        var party = Plan(8.66, 6, P("a", 4, 0, floorSide - 4, 3), P("b", 4.0625, 3, 4.5, 3));
+        var snappedParty = PrototypeSnap.Snap(brief, party);
+        Check(floorSide != 8.66 && snappedParty.Status == PrototypeSnapStatus.Snapped && snappedParty.Plan.Rooms.All(r => r.Rect.Right == floorSide && r.Rect.X == 4)
+            && Compiles(snappedParty.Plan), "a line one grid step off the lot side (8.66 m lot, 70942/8192 m) is the lot line and is kept", Describe(snappedParty));
+        // 4 -> 4.09375 -> 4.1875: each jog thinner than the wall, the chain 0.1875 m wide.
+        var chain = Plan(10, 6, P("a", 0, 0, 4, 2), P("b", 0, 2, 4.09375, 2), P("c", 0, 4, 4.1875, 2));
+        var chained = PrototypeSnap.Snap(brief, chain);
+        Check(chained.Status == PrototypeSnapStatus.Refused && ReferenceEquals(chained.Plan, chain) && chained.Refusals.Count == 1
+            && chained.Refusals[0] is { Code: PrototypeSnapCodes.MoveTooLarge, Subject: "c", Hard: true, Satisfied: false } && chained.Refusals[0].Detail.Contains("0.1875", StringComparison.Ordinal),
+            "a chain of jogs moving an edge by at least the wall thickness is refused prototype_snap_move_too_large", Describe(chained));
+        Check(PrototypeSnap.Snap(brief, tie, null, null, 1, null).Status == PrototypeSnapStatus.Snapped,
+            "a snap moving edges only in the last allowed round is verified by one more round, not refused");
+        Check(PrototypeSnap.Snap(brief, tie, null, null, 0, null) is { Status: PrototypeSnapStatus.Refused } rounds && rounds.Refusals.Count == 1
+            && rounds.Refusals[0] is { Code: PrototypeSnapCodes.Unresolved, Subject: "plan" }, "edges still moving after the allowed rounds: prototype_snap_unresolved");
+        Check(PrototypeSnap.Snap(brief, tie, null, null, PrototypeSnap.MaxRounds, _ => new[] { new IntentIssue(IntentCodes.WallClash, "a", "fake clash") }) is { Status: PrototypeSnapStatus.Refused } clashing
+            && clashing.Refusals.Count == 1 && clashing.Refusals[0] is { Code: PrototypeSnapCodes.Unresolved, Subject: "a" } && clashing.Refusals[0].Detail.Contains("fake clash", StringComparison.Ordinal),
+            "IntentCompiler wall_clash after the snap (safeguard, through the test seam): prototype_snap_unresolved");
+        var outside = Plan(10, 6, P("a", 0, 0, 10.0625, 3), P("b", 0, 3, 10.125, 3));
+        var outsideResult = PrototypeSnap.Snap(brief, outside);
+        Check(outsideResult.Status == PrototypeSnapStatus.Refused && outsideResult.Refusals.Any(r => r.Code == PrototypeSnapCodes.OutsideLot && r.Subject == "b"),
+            "a given plan leaving its footprint: the snapped rooms outside the lot are refused prototype_snap_outside_lot", Describe(outsideResult));
+        var reversedOutside = PrototypeSnap.Snap(brief, outside with { Rooms = Enumerable.Reverse(outside.Rooms).ToArray() });
+        Check(outsideResult.Refusals.Count >= 2 && Refusals(reversedOutside) == Refusals(outsideResult)
+            && outsideResult.Refusals.Select(r => r.Code + "@" + r.Subject).SequenceEqual(outsideResult.Refusals.Select(r => r.Code + "@" + r.Subject).OrderBy(k => k, StringComparer.Ordinal)),
+            "refusals are sorted by code and subject, whatever the room order", Refusals(outsideResult) + " vs " + Refusals(reversedOutside));
+        var overlapping = Plan(10, 6, P("a", 0, 0, 4, 3), P("b", 0, 3, 4.0625, 3), P("o", 1, 1, 1, 1));
+        Check(PrototypeSnap.Snap(Brief("a", "b", "o"), overlapping) is { Status: PrototypeSnapStatus.Refused } overlapped
+            && overlapped.Refusals.Any(r => r.Code == PrototypeSnapCodes.Overlap && r.Subject == "a/o"), "a given plan with overlapping rooms is refused prototype_snap_overlap");
+        var capped = new ProjectBrief(1, "snap", new BriefConstraints(null, null, null, null),
+            new[] { new BriefRoom("a", "a", null, null, null, new BriefValue<double>(8), null) }.Concat(Brief("b", "c", "d").Rooms).ToArray(), Array.Empty<BriefAdjacency>());
+        Check(PrototypeSnap.Snap(capped, longer) is { Status: PrototypeSnapStatus.Refused } grown && grown.Refusals.Any(r => r.Code == PrototypeSnapCodes.Noncompliant && r.Subject == "a" && r.Detail.Contains("above maximum", StringComparison.Ordinal)),
+            "a snap growing a room above its brief maximum is refused prototype_snap_noncompliant");
+        var already = new PrototypeSnapOptions(new PlannerRules(new[] { new PlannerRule(RoomId: "b", MinAreaSquareMetres: 12.25) }));
+        Check(PrototypeSnap.Snap(brief, tie, null, already) is { Status: PrototypeSnapStatus.Refused } shrinking && shrinking.Refusals.Any(r => r.Code == PrototypeSnapCodes.Noncompliant && r.Subject == "b"),
+            "a room already below its minimum that the snap shrinks further is refused");
+        Check(PrototypeSnap.Snap(brief, longer, null, new PrototypeSnapOptions(new PlannerRules(new[] { new PlannerRule(RoomId: "a", MinAreaSquareMetres: 9) }))).Status == PrototypeSnapStatus.Snapped,
+            "a room already below its minimum that the snap grows is allowed");
+        // b's south edge joins the 2.125 m line of e and g (6 m against 3 m): b shrinks and its wall with a drops to 0.875 m.
+        var door = Plan(10, 6, P("a", 0, 0, 4, 3), P("b", 4, 2.0625, 3, 0.9375), P("e", 7, 2.125, 3, 3), P("g", 7, 0, 3, 2.125));
+        var required = new ProjectBrief(1, "snap", new BriefConstraints(null, null, null, null), Brief("a", "b", "e", "g").Rooms, new[] { new BriefAdjacency("a", "b", BriefAdjacencyKind.Required) });
+        Check(PrototypeSnap.Snap(required, door) is { Status: PrototypeSnapStatus.Refused } lost && lost.Refusals.Any(r => r.Code == PrototypeSnapCodes.Noncompliant && r.Subject == "a/b" && r.Detail.Contains("0.875", StringComparison.Ordinal))
+            && PrototypeSnap.Snap(Brief("a", "b", "e", "g"), door).Status == PrototypeSnapStatus.Snapped,
+            "a snap taking a required pair's shared wall below the door width is refused prototype_snap_noncompliant");
+        // f is on b's east line but 3 m beyond its span: it is not joined and stays put.
+        var far = Plan(10, 12, P("a", 0, 0, 4, 3), P("b", 0, 3, 4.0625, 3), P("f", 4.0625, 9, 2, 3));
+        var snappedFar = PrototypeSnap.Snap(Brief("a", "b", "f"), far);
+        Check(snappedFar.Status == PrototypeSnapStatus.Snapped && Rects(snappedFar.Plan) == "a(0,0,4,3) b(0,3,4,3) f(4.0625,9,2,3)" && ReferenceEquals(snappedFar.Plan.Rooms[2], far.Rooms[2]),
+            "a room on the same line beyond span reach stays put", Describe(snappedFar));
+        // No ranker reads SpacePlan.Score: the stale score of a snapped plan does not change its ranking.
+        var scored = AlternativeRanker.Rank(brief, new[] { snappedTie.Plan }, new ScoringWeights());
+        var rescored = AlternativeRanker.Rank(brief, new[] { snappedTie.Plan with { Score = 0.123 } }, new ScoringWeights());
+        Check(scored.Alternatives.Count == 1 && rescored.Alternatives.Count == 1 && scored.Alternatives[0].Total == rescored.Alternatives[0].Total
+            && JsonSerializer.Serialize(scored.Alternatives[0].Criteria) == JsonSerializer.Serialize(rescored.Alternatives[0].Criteria),
+            "the ranking of a snapped plan does not depend on its (stale) score");
+
         // ---- determinism ----
         var reversed = PrototypeSnap.Snap(brief, tie with { Rooms = Enumerable.Reverse(tie.Rooms).ToArray() });
         Check(reversed.Status == PrototypeSnapStatus.Snapped && Sorted(reversed.Plan) == Sorted(snappedTie.Plan) && Sorted(PrototypeSnap.Snap(brief, longer with { Rooms = Enumerable.Reverse(longer.Rooms).ToArray() }).Plan) == Sorted(snappedLonger.Plan),
@@ -159,23 +218,27 @@ static class PrototypeSnapTests
                 var actual = result.Alternatives.FirstOrDefault(a => a.Index == alternative.Index);
                 if (actual is null) { problem ??= where + "missing"; continue; }
                 var original = alternative.Plan;
-                var expected = PrototypeSnap.Snap(generated.Brief, original);
-                if (expected.Status == PrototypeSnapStatus.Refused) problem ??= where + "snap refused: " + string.Join("; ", expected.Refusals.Select(r => r.Code + "@" + r.Subject + " " + r.Detail));
-                if (original.IsFeasible && SpacePlanSerializer.Serialize(actual.Plan) != SpacePlanSerializer.Serialize(expected.Plan)) problem ??= where + "the pipeline plan is not PrototypeSnap.Snap of the generated plan";
-                if (expected.Status == PrototypeSnapStatus.Snapped)
+                var plan = actual.Plan;
+                if (original.IsFeasible)
                 {
-                    snappedCount++;
-                    moves += expected.Moves.Count;
-                    var plan = expected.Plan;
-                    if (Stagger(plan) is { } left) problem ??= where + "stagger left: " + left;
-                    foreach (var move in expected.Moves)
+                    // Independent of PrototypeSnap: compare the pipeline's plan with the generated one edge by edge.
+                    if (!plan.IsFeasible) problem ??= where + "snap refused: " + string.Join("; ", plan.Violations.Select(r => r.Code + "@" + r.Subject + " " + r.Detail));
+                    else if (EdgeProblem(original, plan, lot) is { } edgeProblem) problem ??= where + edgeProblem;
+                    else
                     {
-                        largest = Math.Max(largest, Math.Abs(move.ToMetres - move.FromMetres));
-                        if (!(Math.Abs(move.ToMetres - move.FromMetres) < Thickness)) problem ??= where + "a move of at least the wall thickness: " + move;
+                        var changed = ChangedEdges(original, plan);
+                        if (changed.Count > 0)
+                        {
+                            snappedCount++;
+                            moves += changed.Count;
+                            largest = Math.Max(largest, changed.Max());
+                            if (Stagger(plan) is { } left) problem ??= where + "stagger left: " + left;
+                            if (Stagger(original) is null) problem ??= where + "edges moved in a plan without a stagger";
+                            if (OracleProblem(generated.Brief, original, plan, lot, rules) is { } oracle) problem ??= where + oracle;
+                        }
+                        else if (Stagger(original) is { } missed) problem ??= where + "a stagger was not snapped: " + missed;
                     }
-                    if (OracleProblem(generated.Brief, original, plan, lot, rules) is { } oracle) problem ??= where + oracle;
                 }
-                else if (original.IsFeasible && Stagger(original) is { } missed) problem ??= where + "a stagger was not snapped: " + missed;
                 if (actual.Rejections.Any(r => r.Code == IntentCodes.WallClash)) problem ??= where + "wall_clash rejection " + Describe(actual);
                 if (actual.RejectedAt is { } gate)
                 {
@@ -187,7 +250,7 @@ static class PrototypeSnapTests
                 if (actual.Project is null || Compiler.Validate(actual.Project).Length > 0) problem ??= where + "accepted BIM-IR does not validate clean";
                 else
                 {
-                    var independent = FacadeIrBuilder.AddWindows(FacadeIrBuilder.Prototype(ProjectId, 0, expected.Plan), FacadePlanner.Place(expected.Plan, caba), CirculationAnalyzer.Analyze(generated.Brief, expected.Plan));
+                    var independent = FacadeIrBuilder.AddWindows(FacadeIrBuilder.Prototype(ProjectId, 0, plan), FacadePlanner.Place(plan, caba), CirculationAnalyzer.Analyze(generated.Brief, plan));
                     if (independent.Project is null || JsonSerializer.Serialize(independent.Project) != JsonSerializer.Serialize(actual.Project)) problem ??= where + "accepted BIM-IR differs from the stages run on the snapped plan";
                 }
             }
@@ -199,7 +262,7 @@ static class PrototypeSnapTests
         var counts = "accepted " + Text(accepted) + " of " + Text(total) + "; snapped " + Text(snappedCount) + " plans, " + Text(moves) + " edge moves, largest " + Num(largest) + " m; rejected at "
             + string.Join(", ", gates.OrderBy(g => g.Key).Select(g => g.Key + " " + Text(g.Value))) + "; codes " + string.Join(", ", codes.OrderBy(c => c.Key, StringComparer.Ordinal).Select(c => c.Key + " x" + Text(c.Value)));
         Console.WriteLine("::notice::generative pipeline with stagger snap on real prototypes: " + counts);
-        Check(problem is null && total == 16, "real prototypes with the snap: each plan is PrototypeSnap.Snap of the generated one, no stagger left, moves thinner than the wall, CABA minimums kept, accepted BIM-IR clean",
+        Check(problem is null && total == 16, "real prototypes with the snap: only staggered plans change, each edge kept or moved less than the wall onto an existing line, lot lines kept, no stagger left, moves thinner than the wall, CABA minimums kept, accepted BIM-IR clean",
             (problem ?? "") + " | " + counts);
         Check(total == 16 && !codes.Keys.Any(k => k.EndsWith(":" + IntentCodes.WallClash, StringComparison.Ordinal)) && snappedCount >= 4 && accepted >= 6 + 4,
             "real prototypes with the snap: 0 wall_clash rejections, the 4 staggered alternatives accepted", counts);
@@ -227,6 +290,51 @@ static class PrototypeSnapTests
                 && snap[0].GetProperty("name_pattern").ValueKind == JsonValueKind.Null && snap[0].GetProperty("min_side_m").ValueKind == JsonValueKind.Null,
                 "pipeline JSON writes the snap rules when given");
         }
+    }
+
+    // The pipeline plan against the generated one: the same fields, rooms (ids, order) and constraints but for one soft
+    // prototype_snap_moved constraint per moved room; every edge kept or moved by less than the wall thickness onto a line
+    // some edge of the generated plan's level and axis already had; an edge on a lot line (within one 1/8192 m grid step)
+    // kept.
+    static string? EdgeProblem(SpacePlan original, SpacePlan plan, PrototypeLot lot)
+    {
+        if (plan.Rooms.Count != original.Rooms.Count || !plan.Rooms.Select(r => r.InstanceId).SequenceEqual(original.Rooms.Select(r => r.InstanceId))) return "rooms changed";
+        var moved = plan.Constraints.Where(c => c.Code == PrototypeSnapCodes.Moved).ToArray();
+        var restored = plan with { Rooms = original.Rooms, Constraints = plan.Constraints.Where(c => c.Code != PrototypeSnapCodes.Moved).ToArray() };
+        if (SpacePlanSerializer.Serialize(restored) != SpacePlanSerializer.Serialize(original)) return "fields other than room rectangles changed";
+        for (var i = 0; i < plan.Rooms.Count; i++)
+        {
+            var (before, after) = (original.Rooms[i], plan.Rooms[i]);
+            var edges = new (double Before, double After, bool Vertical, double Side)[]
+            {
+                (before.Rect.X, after.Rect.X, true, lot.WidthMetres), (before.Rect.Right, after.Rect.Right, true, lot.WidthMetres),
+                (before.Rect.Y, after.Rect.Y, false, lot.DepthMetres), (before.Rect.Top, after.Rect.Top, false, lot.DepthMetres),
+            };
+            var any = false;
+            foreach (var (from, to, vertical, side) in edges)
+            {
+                if (from == to) continue;
+                any = true;
+                if (!(Math.Abs(to - from) < Thickness)) return after.InstanceId + " edge moved " + Num(Math.Abs(to - from)) + " m";
+                if (Math.Abs(from) <= 1.0 / 8192 || Math.Abs(from - side) <= 1.0 / 8192) return after.InstanceId + " edge on a lot line moved " + Num(from) + " -> " + Num(to);
+                var lines = original.Rooms.Where(r => r.Level == before.Level).SelectMany(r => vertical ? new[] { r.Rect.X, r.Rect.Right } : new[] { r.Rect.Y, r.Rect.Top });
+                if (!lines.Contains(to)) return after.InstanceId + " edge moved onto a new line " + Num(to);
+            }
+            if (any != moved.Any(c => c.Subject == after.InstanceId && !c.Hard && c.Satisfied)) return after.InstanceId + " prototype_snap_moved constraint does not match its moves";
+        }
+        return moved.Select(c => c.Subject).Distinct().Count() == moved.Length ? null : "duplicate prototype_snap_moved constraints";
+    }
+
+    static List<double> ChangedEdges(SpacePlan original, SpacePlan plan)
+    {
+        var changed = new List<double>();
+        for (var i = 0; i < plan.Rooms.Count; i++)
+        {
+            var (a, b) = (original.Rooms[i].Rect, plan.Rooms[i].Rect);
+            foreach (var (from, to) in new[] { (a.X, b.X), (a.Right, b.Right), (a.Y, b.Y), (a.Top, b.Top) })
+                if (from != to) changed.Add(Math.Abs(to - from));
+        }
+        return changed;
     }
 
     // Independent checks of a snapped real prototype: every room inside the lot, no overlap, the CABA minimum area and side
@@ -308,6 +416,8 @@ static class PrototypeSnapTests
 
     static string Rects(SpacePlan plan) => string.Join(" ", plan.Rooms.Select(r => r.InstanceId + "(" + Num(r.Rect.X) + "," + Num(r.Rect.Y) + "," + Num(r.Rect.Width) + "," + Num(r.Rect.Depth) + ")"));
     static string Sorted(SpacePlan plan) => string.Join(" ", Rects(plan).Split(' ').OrderBy(s => s, StringComparer.Ordinal));
+
+    static string Refusals(PrototypeSnapResult result) => string.Join(";", result.Refusals.Select(r => r.Code + "@" + r.Subject + " " + r.Detail));
 
     static string Describe(PrototypeSnapResult result) => result.Status + " " + Rects(result.Plan) + " | " + string.Join("; ", result.Refusals.Select(r => r.Code + "@" + r.Subject + " " + r.Detail));
 
