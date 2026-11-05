@@ -1042,6 +1042,40 @@
       ],
       "blocker": "Release package has no Bim.Revit.dll (licensed references) \u2192 install needs -AssemblyPath or -AllowMissingAssembly; never loaded by Revit; does not check whether Revit is running; -RevitUserAddins only exercised with a fake APPDATA.",
       "scope": "P10-07: install-addin.ps1 renders Bim.addin from a verified P10-04 package (package-verify, manifest snapshot compared after verify, template hash) into an explicit Addins folder with the XML-escaped assembly path, backs up a foreign Bim.addin, records ownership by hash, rolls back a failed write, uninstall restores the backup and refuses foreign files; temp folders only in tests, ubuntu+windows. CI 41938674297."
+    },
+    {
+      "id": "revit-element-move-copy",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsTransform.cs",
+        "runtimes/revit-native/CommandsTransform.cs",
+        "runtimes/revit-native/CommandsExecutorTransform.cs",
+        "tests/revit-commands/CatalogueTransform.cs"
+      ],
+      "blocker": "Executor never run in Revit: joined-wall rigidity, hosted openings copied with walls, sketch-profile readback of floors/roofs (one-sketch assumption), face-based orphans not refused as host_missing, neighbours Revit modifies not reported (owner session).",
+      "scope": "P1-09: element.move (destructive) / element.copy (additive) for 1-100 UniqueIds by vector_mm (finite, 1.2 mm-1 km) under the copies-only guard with operation_id receipts; typed refusals element_pinned, element_view_specific, element_in_group, host_missing, location_unsupported; hosted targets pruned when their host is a target; readback of location point+rotation (mod 2pi), curve ends, sketch profile or bounding box within 1 mm; copies mapped to sources by nearest-first + augmenting-path match; command.batch step; MCP tools. Rules unit-tested; executor compiled. CI 41953640792."
+    },
+    {
+      "id": "incremental-diff-edit-set",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/IncrementalDiff.cs",
+        "tests/local-validation/IncrementalDiffTests.cs"
+      ],
+      "blocker": "AfterHash and After assembly remain O(n) per diff (plan format hashes whole projects; lowering needs an ADR); Build is O(project) and the index is not advanced after a diff (P3-06).",
+      "scope": "P3-05: IncrementalDiffIndex.Build(before) + Diff(edits, maxAffected) yields an ExecutionPlan byte-identical to Compiler.Diff(before, after) without calling it; only edited elements serialized, only the dirty closure traversed (Traversed counter size-independent: 551 vs 2201 elements); typed refusals edit_invalid/edit_duplicate_id/edit_unknown_id/edit_create_exists/edit_bound_exceeded and invalid_ir (precedence over the bound); 700 seeded P3-04 steps + 140 injected invalid edits. CI 41956142359."
+    },
+    {
+      "id": "revit-direct-shape",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsDirectShape.cs",
+        "runtimes/revit-native/CommandsDirectShape.cs",
+        "runtimes/revit-native/CommandsExecutorDirectShape.cs",
+        "tests/revit-commands/CatalogueDirectShape.cs"
+      ],
+      "blocker": "Executor never run in Revit: which categories DirectShape accepts (topography doubtful), bounding-box padding, SolidOptions material on faces, SetName readback (owner session).",
+      "scope": "P9-09: direct_shape.create (MCP revit_direct_shape_create, write-copies, additive) for site/landscape solids: extruded simple polygon (3-256 vertices, closing repeat allowed, top within 9144000 mm) on a level with offset/height, or an axis-aligned box; categories generic_model/site/planting/entourage/topography; optional material; name with forbidden-character check; readback of category, single solid, bbox within 1 mm, volume (1 mm x perimeter x height tolerance), name and material; not associated with the level; command.batch step. Rules unit-tested; executor compiled. CI 41959286079."
     }
   ]
 }
