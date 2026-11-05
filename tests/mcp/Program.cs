@@ -108,8 +108,8 @@ foreach(var spec in RevitCommandCatalogue.All) {
     var writesFiles=RevitCommandCatalogue.WritesFiles(spec.Name);
     Check(annotations?["readOnlyHint"]?.GetValue<bool>()==!(spec.Writes || writesFiles),spec.ToolName+" annotations.readOnlyHint is "+!(spec.Writes || writesFiles));
     if(spec.Writes) {
-        var destructive=new[]{"element.set_parameter","element.delete","wall.set_profile","material.set","element.change_type","document.save","command.batch"}.Contains(spec.Name);
-        Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter, element.delete, wall.set_profile, material.set and element.change_type change or remove existing elements, document.save overwrites the saved file, and a command.batch step may do either), idempotentHint true (operation_id replay)");
+        var destructive=new[]{"element.set_parameter","element.delete","wall.set_profile","material.set","element.change_type","element.move","document.save","command.batch"}.Contains(spec.Name);
+        Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter, element.delete, wall.set_profile, material.set, element.change_type and element.move change or remove existing elements, document.save overwrites the saved file, and a command.batch step may do either), idempotentHint true (operation_id replay)");
         var description=tool["description"]!.GetValue<string>();
         Check(PermissionPolicy.RequiredLevel(spec.Name,McpReal,copiesRoots)==PermissionLevel.WriteRealProject
             && description.Contains(".bim/native-runs",StringComparison.Ordinal) && description.Contains(".bim/revit-enabled-roots.txt",StringComparison.Ordinal)
