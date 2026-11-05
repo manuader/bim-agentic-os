@@ -60,6 +60,11 @@ public static class PrototypePipelineCodes
 {
     // Refusal: an empty project id or a negative revision (IntentCompiler could not compile any prototype).
     public const string ProjectInvalid = "pipeline_project_invalid";
+    // facade_ir rejection: IntentCompiler failed with an exception other than IntentException (an internal invariant such
+    // as intent_stretch_unbounded); the detail holds its message.
+    public const string IrCompileFailed = "pipeline_ir_compile_failed";
+    // facade rejection fallback: the layout is not complete but lists no failed check (a safeguard).
+    public const string FacadeIncomplete = "pipeline_facade_incomplete";
 
     public static string GateName(PrototypePipelineGate gate) => gate switch
     {

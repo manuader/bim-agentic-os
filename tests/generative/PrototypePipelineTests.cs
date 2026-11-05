@@ -108,8 +108,32 @@ static class PrototypePipelineTests
         var thick = PrototypePipeline.Rank(brief, new[] { flat }, options with { Ir = new FacadeIrOptions(WallThicknessMetres: 2.5) });
         var thickAlternative = thick.Alternatives.FirstOrDefault();
         Check(thick.Status == PrototypePipelineStatus.Infeasible && thickAlternative is { RejectedAt: PrototypePipelineGate.FacadeIr, Facade.IsComplete: true, Ir: null }
-            && thickAlternative.Rejections.All(r => r.Gate == PrototypePipelineGate.FacadeIr && r.Code.Length > 0 && r.Detail.Length > 0),
-            "a plan IntentCompiler refuses is rejected at the BIM-IR gate with the compiler's typed issues", Describe(thick));
+            && thickAlternative.Rejections.All(r => r.Gate == PrototypePipelineGate.FacadeIr && r.Code == IntentCodes.RoomTooSmall && r.Detail.Length > 0)
+            && thickAlternative.Rejections.Select(r => r.Subject).OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(new[] { "bathroom", "hall", "kitchen" }),
+            "a plan IntentCompiler refuses is rejected at the BIM-IR gate with the compiler's typed issues: room_too_small on the 2 m deep rooms", Describe(thick));
+
+        // IntentCompiler failures that are not IntentException: its internal invariant intent_stretch_unbounded
+        // (InvalidOperationException, IntentCompiler.cs) is unreachable for the plans that reach this gate (overlapping rooms
+        // are refused as room_overlap and skip the wall pass, and every unshared stretch that does not start at its room's
+        // corner follows a shared one), so the compile seam is tested directly.
+        var stretch = Attempt(() => PrototypePipeline.CompilePrototype(() => throw new InvalidOperationException("intent_stretch_unbounded")));
+        Check(stretch.Error is null && stretch.Value is { Project: null } unbounded && unbounded.Rejections.Count == 1
+            && unbounded.Rejections[0] is { Gate: PrototypePipelineGate.FacadeIr, Code: PrototypePipelineCodes.IrCompileFailed, Subject: "plan" }
+            && unbounded.Rejections[0].Detail.Contains("intent_stretch_unbounded", StringComparison.Ordinal),
+            "an InvalidOperationException from IntentCompiler is a typed pipeline_ir_compile_failed rejection, not a throw", stretch.Error?.Message ?? "");
+        var keyed = Attempt(() => PrototypePipeline.CompilePrototype(() => throw new ArgumentException(FacadeIrCodes.LayoutInvalid + ": instance a#1 has no unique intent key")));
+        Check(keyed.Error is null && keyed.Value is { Project: null } keyedResult && keyedResult.Rejections.Count == 1
+            && keyedResult.Rejections[0] is { Gate: PrototypePipelineGate.FacadeIr, Code: FacadeIrCodes.LayoutInvalid, Subject: "plan", Detail: "instance a#1 has no unique intent key" },
+            "a facade_ir-prefixed ArgumentException is a typed rejection with its code", keyed.Error?.Message ?? "");
+        var foreign = Attempt(() => PrototypePipeline.CompilePrototype(() => throw new ArgumentException("not a facade_ir code")));
+        Check(foreign.Error is ArgumentException && foreign.Value is null, "any other ArgumentException is not swallowed", foreign.Error?.GetType().Name ?? "no throw");
+        var issued = Attempt(() => PrototypePipeline.CompilePrototype(() => throw new IntentException(IntentCodes.WallClash, null, "x",
+            new[] { new IntentIssue(IntentCodes.WallClash, "hall", "hall clashes with kitchen"), new IntentIssue(IntentCodes.RoomTooSmall, "wc", "small") })));
+        Check(issued.Error is null && issued.Value is { Project: null } issuedResult
+            && string.Join(";", issuedResult.Rejections.Select(r => r.Gate + ":" + r.Code + "@" + r.Subject)) == "FacadeIr:wall_clash@hall;FacadeIr:room_too_small@wc",
+            "an IntentException gives one typed rejection per issue", issued.Error?.Message ?? "");
+        var seamCompiled = Attempt(() => PrototypePipeline.CompilePrototype(() => FacadeIrBuilder.Prototype(ProjectId, 0, flat)));
+        Check(seamCompiled.Error is null && seamCompiled.Value is { Project: not null } compiledResult && compiledResult.Rejections.Count == 0, "a compiled prototype passes the seam");
         var allRejected = PrototypePipeline.Rank(brief, new[] { through, dark }, options);
         Check(allRejected.Status == PrototypePipelineStatus.Infeasible && allRejected.Accepted.Count == 0 && allRejected.Best is null && allRejected.Alternatives.Count == 2,
             "every alternative rejected: infeasible, no best", Describe(allRejected));
@@ -125,11 +149,24 @@ static class PrototypePipelineTests
         Refused(PrototypePipeline.Rank(brief, plans, options with { CirculationWeight = double.NaN }), AlternativeCodes.WeightsInvalid, "weights.circulation", "a non-finite circulation weight is refused");
         Refused(PrototypePipeline.Rank(brief, plans, options with { Circulation = new CirculationOptions(EntranceEdges: Array.Empty<LotEdge>()) }), CirculationCodes.OptionsInvalid,
             "entrance_edges", "circulation options are refused");
-        Refused(PrototypePipeline.Rank(brief, plans, options with { Facade = new FacadeOptions(SillHeightMetres: 2, HeadHeightMetres: 1) }), FacadeCodes.OptionsInvalid, "",
+        Refused(PrototypePipeline.Rank(brief, plans, options with { Facade = new FacadeOptions(SillHeightMetres: 2, HeadHeightMetres: 1) }), FacadeCodes.OptionsInvalid, "head_height_m",
             "facade options are refused");
-        Refused(PrototypePipeline.Rank(brief, plans, options with { Ir = new FacadeIrOptions(WallThicknessMetres: 0) }), FacadeIrCodes.OptionsInvalid, "",
+        Refused(PrototypePipeline.Rank(brief, plans, options with { Ir = new FacadeIrOptions(WallThicknessMetres: 0) }), FacadeIrCodes.OptionsInvalid, "ir_options",
             "BIM-IR options are refused");
         Refused(PrototypePipeline.Rank(brief, plans, options, new ScoringWeights(-1)), AlternativeCodes.WeightsInvalid, "weights.area_fit", "invalid ranking weights are refused");
+        // Option refusals and ranking refusals (weights, count) are listed together.
+        foreach (var (listed, label) in new[] { (plans, "with plans"), (Array.Empty<SpacePlan>(), "with an empty plan list") })
+        {
+            var merged = PrototypePipeline.Rank(brief, listed, options with { ProjectId = Guid.Empty }, new ScoringWeights(-1));
+            Check(merged.Status == PrototypePipelineStatus.Refused && merged.Ranking is null && merged.Alternatives.Count == 0
+                && merged.Refusals.Any(r => r.Code == PrototypePipelineCodes.ProjectInvalid && r.Subject == "project_id")
+                && merged.Refusals.Any(r => r.Code == AlternativeCodes.WeightsInvalid && r.Subject == "weights.area_fit")
+                && merged.Refusals.Any(r => r.Code == AlternativeCodes.CountInvalid) == (listed.Length == 0),
+                "option and ranking refusals are listed together " + label, Describe(merged));
+        }
+        var zero = PrototypePipeline.Rank(brief, plans, options with { CirculationWeight = 0, Revision = -1 }, new ScoringWeights(0, 0, 0, 0, 0, 0));
+        Check(zero.Status == PrototypePipelineStatus.Refused && zero.Refusals.Any(r => r.Code == AlternativeCodes.WeightsInvalid && r.Subject == "weights")
+            && zero.Refusals.Any(r => r.Code == PrototypePipelineCodes.ProjectInvalid && r.Subject == "revision"), "all seven weights zero is refused with the other problems", Describe(zero));
         var many = PrototypePipeline.Rank(brief, plans, options with { ProjectId = Guid.Empty, CirculationWeight = -1 });
         Check(many.Status == PrototypePipelineStatus.Refused && many.Refusals.Any(r => r.Code == PrototypePipelineCodes.ProjectInvalid)
             && many.Refusals.Any(r => r.Code == AlternativeCodes.WeightsInvalid), "every problem is listed", Describe(many));
@@ -147,6 +184,7 @@ static class PrototypePipelineTests
         string? problem = null;
         int accepted = 0, total = 0;
         var gates = new Dictionary<PrototypePipelineGate, int>();
+        var histogram = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var (typology, lot) in new[] { (ApartmentTypology.OneBedroom, new PrototypeLot(8.66, 20)), (ApartmentTypology.TwoBedroom, new PrototypeLot(8.66, 20)),
             (ApartmentTypology.ThreeBedroom, new PrototypeLot(8, 20)), (ApartmentTypology.TwoBedroom, new PrototypeLot(12, 30)) })
         {
@@ -169,20 +207,50 @@ static class PrototypePipelineTests
                     problem ??= where + "seed, strategy or plan differs";
                 PrototypePipelineGate? gate = null;
                 Project? project = null;
-                if (alternative.Status != AlternativeStatus.Ranked) gate = PrototypePipelineGate.Prototype;
+                // The expected reasons, computed independently from each stage: code@subject in the stage's own order.
+                var expected = new List<string>();
+                if (alternative.Status != AlternativeStatus.Ranked)
+                {
+                    gate = PrototypePipelineGate.Prototype;
+                    expected.AddRange(!alternative.Plan.IsFeasible && alternative.Plan.Violations.Count > 0
+                        ? alternative.Plan.Violations.Select(v => v.Code + "@" + v.Subject)
+                        : alternative.Reasons.Select(r => r.Contains(": ", StringComparison.Ordinal) ? r[..r.IndexOf(": ", StringComparison.Ordinal)] : r));
+                }
                 else
                 {
                     var model = CirculationAnalyzer.Analyze(generated.Brief, alternative.Plan);
-                    if (!model.IsValid) gate = PrototypePipelineGate.Circulation;
+                    if (!model.IsValid)
+                    {
+                        gate = PrototypePipelineGate.Circulation;
+                        expected.AddRange(model.Checks.Where(c => c.Hard && !c.Satisfied).Select(c => c.Code + "@" + c.Subject));
+                    }
                     else
                     {
                         var layout = FacadePlanner.Place(alternative.Plan, caba);
-                        if (!layout.IsComplete) gate = PrototypePipelineGate.Facade;
+                        if (!layout.IsComplete)
+                        {
+                            gate = PrototypePipelineGate.Facade;
+                            expected.AddRange(layout.Checks.Where(c => c.Hard && !c.Satisfied).Select(c => c.Code + "@" + c.Subject));
+                        }
                         else
                         {
-                            var ir = Safe(() => FacadeIrBuilder.AddWindows(FacadeIrBuilder.Prototype(ProjectId, 0, alternative.Plan), layout, model));
-                            if (ir is not { IsComplete: true, Project: not null }) gate = PrototypePipelineGate.FacadeIr;
-                            else project = ir.Project;
+                            Project? compiled = null;
+                            try { compiled = FacadeIrBuilder.Prototype(ProjectId, 0, alternative.Plan); }
+                            catch (IntentException error)
+                            {
+                                gate = PrototypePipelineGate.FacadeIr;
+                                expected.AddRange(error.Issues.Count > 0 ? error.Issues.Select(i => i.Code + "@" + i.Key) : new[] { error.Code + "@" + (error.Field ?? "plan") });
+                            }
+                            if (compiled is not null)
+                            {
+                                var ir = FacadeIrBuilder.AddWindows(compiled, layout, model);
+                                if (ir is not { IsComplete: true, Project: not null })
+                                {
+                                    gate = PrototypePipelineGate.FacadeIr;
+                                    expected.AddRange(ir.Checks.Where(c => c.Hard && !c.Satisfied).Select(c => c.Code + "@" + c.Subject));
+                                }
+                                else project = ir.Project;
+                            }
                         }
                     }
                 }
@@ -190,13 +258,16 @@ static class PrototypePipelineTests
                 if (gate is { } stopped)
                 {
                     gates[stopped] = gates.TryGetValue(stopped, out var seen) ? seen + 1 : 1;
+                    foreach (var rejection in actual.Rejections)
+                    {
+                        var key = stopped + ":" + rejection.Code;
+                        histogram[key] = histogram.TryGetValue(key, out var times) ? times + 1 : 1;
+                    }
                     if (actual.Rank != 0 || actual.Total != 0 || actual.Criteria.Count != 0 || actual.Ir is not null || actual.Rejections.Count == 0
                         || actual.Rejections.Any(r => r.Gate != stopped || r.Code.Length == 0 || r.Detail.Length == 0))
                         problem ??= where + "rejection not typed: " + Describe(actual);
-                    if (stopped == PrototypePipelineGate.Circulation && (actual.Circulation is not { } circulation || !actual.Rejections.All(r => circulation.Violations.Any(v => v.Code == r.Code && v.Subject == r.Subject))))
-                        problem ??= where + "circulation reasons are not the model's failed checks";
-                    if (stopped == PrototypePipelineGate.Facade && (actual.Facade is not { } facade || !actual.Rejections.All(r => facade.Violations.Any(v => v.Code == r.Code && v.Subject == r.Subject))))
-                        problem ??= where + "facade reasons are not the layout's failed checks";
+                    var reasons = string.Join(";", actual.Rejections.Select(r => r.Code + "@" + r.Subject));
+                    if (reasons != string.Join(";", expected)) problem ??= where + "reasons [" + reasons + "] expected [" + string.Join(";", expected) + "]";
                     continue;
                 }
                 accepted++;
@@ -217,10 +288,15 @@ static class PrototypePipelineTests
             if (rest.Any(index => expectedAccepted.Contains(index)) || !rest.SequenceEqual(rest.OrderBy(i => i))) problem ??= label + "rejected alternatives are not after the accepted ones in generation order";
             if (result.Status != (expectedAccepted.Count > 0 ? PrototypePipelineStatus.Ranked : PrototypePipelineStatus.Infeasible)) problem ??= label + "status " + result.Status;
         }
-        var counts = "accepted " + Text(accepted) + " of " + Text(total) + "; rejected at " + string.Join(", ", gates.OrderBy(g => g.Key).Select(g => g.Key + " " + Text(g.Value)));
+        int Gate(PrototypePipelineGate gate) => gates.TryGetValue(gate, out var value) ? value : 0;
+        var counts = "accepted " + Text(accepted) + " of " + Text(total) + "; rejected at " + string.Join(", ", gates.OrderBy(g => g.Key).Select(g => g.Key + " " + Text(g.Value)))
+            + "; codes " + string.Join(", ", histogram.OrderBy(h => h.Key, StringComparer.Ordinal).Select(h => h.Key + " x" + Text(h.Value)));
         Console.WriteLine("::notice::generative pipeline on real prototypes: " + counts);
-        Check(problem is null && total == 16, "real 1/2/3-bedroom prototypes: accepted set, rejection gates, ranking and BIM-IR agree with an independent recomputation",
+        Check(problem is null && total == 16, "real 1/2/3-bedroom prototypes: accepted set, rejection gates and typed reasons, ranking and BIM-IR agree with an independent recomputation",
             (problem ?? "") + " | " + counts);
+        // Regression pin of the seed-0 prototypes (4 alternatives each on the four lots above).
+        Check(accepted == 6 && Gate(PrototypePipelineGate.Prototype) == 6 && Gate(PrototypePipelineGate.Circulation) == 0 && Gate(PrototypePipelineGate.Facade) == 0
+            && Gate(PrototypePipelineGate.FacadeIr) == 4, "real prototypes: 6 accepted, 6 rejected at the prototype gate, 4 at the BIM-IR gate (pinned)", counts);
 
         // ---- determinism: byte-identical canonical JSON ----
         var first = PrototypePipelineSerializer.Serialize(run);
@@ -239,6 +315,22 @@ static class PrototypePipelineTests
         Check(run.Alternatives.Zip(germanRun.Alternatives).All(pair => (pair.First.Project is null) == (pair.Second.Project is null)
             && (pair.First.Project is null || Json(pair.First.Project) == Json(pair.Second.Project!))), "the BIM-IR projects are identical across runs and cultures");
         var crafted = PrototypePipelineSerializer.Serialize(ranked);
+        // The stage options are part of the canonical form: runs differing only in them serialize differently.
+        var standard = PrototypePipelineSerializer.Serialize(PrototypePipeline.Rank(brief, new[] { flat }, options));
+        var tallResult = PrototypePipeline.Rank(brief, new[] { flat }, options with { Ir = new FacadeIrOptions(WallHeightMetres: 3) });
+        var tall = PrototypePipelineSerializer.Serialize(tallResult);
+        var hallEntrance = PrototypePipelineSerializer.Serialize(PrototypePipeline.Rank(brief, new[] { flat }, options with { Circulation = new CirculationOptions(EntranceRoomId: "hall") }));
+        Check(tallResult.Best is not null && tall != standard && hallEntrance != standard, "JSON differs when only the wall height or only the circulation options differ");
+        using (var document = JsonDocument.Parse(tall))
+        {
+            var stage = document.RootElement.GetProperty("options");
+            Check(stage.GetProperty("ir").GetProperty("wall_height_m").GetDouble() == 3 && stage.GetProperty("ir").GetProperty("wall_thickness_m").GetDouble() == 0.15
+                && stage.GetProperty("ir").GetProperty("entrance_clearance_m").GetDouble() == 0.3 && stage.GetProperty("ir").GetProperty("provenance").ValueKind == JsonValueKind.Null
+                && stage.GetProperty("facade").GetProperty("sill_height_m").GetDouble() == 0.9 && stage.GetProperty("facade").GetProperty("opening_edges").ValueKind == JsonValueKind.Null
+                && stage.GetProperty("circulation").GetProperty("entrance_room").ValueKind == JsonValueKind.Null
+                && stage.GetProperty("parameters").ValueKind == JsonValueKind.Object && !stage.GetProperty("parameters").EnumerateObject().Any(),
+                "pipeline JSON writes the circulation, facade and BIM-IR options and the pack parameters", tall.Length > 400 ? tall[..400] : tall);
+        }
         Check(crafted == PrototypePipelineSerializer.Serialize(PrototypePipeline.Rank(brief, plans, options)), "ranking crafted plans is deterministic");
         using (var document = JsonDocument.Parse(crafted))
         {
@@ -285,6 +377,12 @@ static class PrototypePipelineTests
     {
         try { return make(); }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or FormatException) { return null; }
+    }
+
+    static (T? Value, Exception? Error) Attempt<T>(Func<T> make) where T : class
+    {
+        try { return (make(), null); }
+        catch (Exception error) { return (null, error); }
     }
 
     static bool Throws(Action action)

@@ -1,4 +1,7 @@
+using System.Runtime.CompilerServices;
 using Bim.Core;
+
+[assembly: InternalsVisibleTo("Bim.Generative.Tests")]
 namespace Bim.Generative;
 
 // The P7-07 prototype pipeline: an opt-in composition of the existing stages, which it calls unchanged. Steps:
@@ -110,22 +113,10 @@ public static class PrototypePipeline
                     circulation, facade));
                 continue;
             }
-            Project project;
-            try
+            var (compiled, compileRejections) = CompilePrototype(() => FacadeIrBuilder.Prototype(options.ProjectId, options.Revision, plan, options.Ir));
+            if (compiled is not { } project)
             {
-                project = FacadeIrBuilder.Prototype(options.ProjectId, options.Revision, plan, options.Ir);
-            }
-            catch (IntentException error)
-            {
-                var issues = error.Issues.Count > 0
-                    ? error.Issues.Select(issue => new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, issue.Code, issue.Key, issue.Detail)).ToArray()
-                    : new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, error.Code, error.Field ?? "plan", error.Detail ?? error.Message) };
-                rejected.Add(Reject(issues, circulation, facade));
-                continue;
-            }
-            catch (ArgumentException error)
-            {
-                rejected.Add(Reject(new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, FacadeIrCodes.LayoutInvalid, "plan", error.Message) }, circulation, facade));
+                rejected.Add(Reject(compileRejections, circulation, facade));
                 continue;
             }
             var ir = FacadeIrBuilder.AddWindows(project, facade, circulation, options.Ir);
@@ -143,6 +134,25 @@ public static class PrototypePipeline
         var ordered = accepted.Concat(rejected.OrderBy(alternative => alternative.Index)).ToArray();
         var status = accepted.Count > 0 ? PrototypePipelineStatus.Ranked : PrototypePipelineStatus.Infeasible;
         return new PrototypePipelineResult(status, options, prototype, ranking, Array.Empty<PlanConstraint>(), ordered);
+    }
+
+    // The BIM-IR compile step of the facade_ir gate: the project, or the typed reasons it could not be compiled.
+    internal static (Project? Project, IReadOnlyList<PrototypePipelineRejection> Rejections) CompilePrototype(Func<Project> compile)
+    {
+        try
+        {
+            return (compile(), Array.Empty<PrototypePipelineRejection>());
+        }
+        catch (IntentException error)
+        {
+            return (null, error.Issues.Count > 0
+                ? error.Issues.Select(issue => new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, issue.Code, issue.Key, issue.Detail)).ToArray()
+                : new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, error.Code, error.Field ?? "plan", error.Detail ?? error.Message) });
+        }
+        catch (ArgumentException error)
+        {
+            return (null, new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, FacadeIrCodes.LayoutInvalid, "plan", error.Message) });
+        }
     }
 
     static List<PlanConstraint> OptionRefusals(PrototypePipelineOptions options)
