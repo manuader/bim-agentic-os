@@ -1275,3 +1275,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay167 — 2026-11-05T20:52:58Z (Claude, cloud scheduled)
 - 20:52Z LOCK taken (was FREE; relay166 released 2026-11-05T20:03:03Z).
+- 20:53Z picked P4-08 (phase 4), P6-11 (phase 6), P7-10 (phase 7) — oldest-touched (relay162), disjoint files (CLI verb / CAD extractor / generative pipeline); P4-09, P6-10, P7-09 next. Workers starting.
