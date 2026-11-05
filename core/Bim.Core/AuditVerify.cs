@@ -7,20 +7,21 @@ namespace Bim.Core;
 // verifier never writes, repairs or truncates the log.
 //
 // Unlike AuditLogFormat.Verify, which stops at the first problem, the verifier classifies every problem it can see
-// and names the kind of tampering:
-//   audit_truncated        a torn final line (no LF), or fewer entries than the head anchor expects
-//   audit_reordered        the seq values are exactly the line numbers, but in a different order
-//   audit_entries_missing  seq increases but jumps over values (entries removed from the middle or the start)
-//   audit_sequence_broken  any other seq damage (duplicated or inserted entries)
-//   audit_entry_edited     the line's hash does not match its content, or it is not the canonical serialization
+// and names the kind of tampering. Codes, most severe first (the report's Code is the most severe finding, ties
+// broken by line order; findings themselves are listed by line, then code, with line-less anchor findings last):
+//   audit_file_missing / audit_file_unreadable  no log, or the path cannot be read as a file (e.g. a directory)
+//   audit_entry_malformed  the line is not a structurally valid P10-03 entry (not JSON, invalid UTF-8, bad text)
+//   audit_entry_edited     the stored hash does not match the entry content
 //   audit_chain_broken     prev_hash differs from the hash of entry seq-1 (that entry was rewritten with a new hash)
 //   audit_anchor_mismatch  the anchor is invalid, or the entry at the anchor's seq has a different hash
+//   audit_truncated        a torn final line (no LF), or fewer entries than the head anchor expects
+//   audit_entries_missing  seq jumps over values that occur nowhere in the log (entries removed)
+//   audit_reordered        an entry's seq is lower than one before it (or the whole log is a permutation)
+//   audit_sequence_broken  a seq occurs more than once (duplicated entry)
+//   audit_entry_not_canonical  the content hash is valid but the line is not the canonical bytes (CRLF, BOM, spaces)
 //   audit_actor_unknown    the actor is not in the supplied known actor set (no set: no actor check)
-//   audit_entry_malformed  the line is not a structurally valid P10-03 entry
-//   audit_file_missing / audit_file_unreadable
-// Findings are ordered by line, then code (ordinal); findings without a line (anchor checks) come last. Code is the
-// first finding's code, or ok. ChainCode is AuditLogFormat.VerifyBytes's own first-problem code, and the verifier is
-// never more lenient than it: should P10-03 reject a log the classification did not flag, its code is reported too.
+// ChainCode is AuditLogFormat.VerifyBytes's own first-problem code, and the verifier is never more lenient than it:
+// should P10-03 reject a log the classification did not flag, its code is mapped into this vocabulary and reported.
 //
 // Limits (inherent to the unkeyed P10-03 chain): without the head anchor kept outside the file, removing whole
 // trailing entries and rewriting the whole file with recomputed hashes are NOT detectable. Reordering, removing
@@ -28,7 +29,8 @@ namespace Bim.Core;
 // shows only as audit_anchor_mismatch; which entry changed cannot be told.
 //
 // The summary (AuditSummary.ToJson, and "summary" in the report) covers only VerifiedEntries: the prefix P10-03
-// verified, so a tampered tail is never counted. Days are UTC calendar days of the entry's utc (yyyy-MM-dd).
+// verified, and nothing at all on an anchor mismatch (no entry is then trustworthy), so a tampered log is never
+// counted. Days are UTC calendar days of the entry's utc (yyyy-MM-dd).
 public static class AuditVerifyCodes
 {
     public const string Ok = AuditCodes.Ok;
@@ -37,12 +39,25 @@ public static class AuditVerifyCodes
     public const string EntriesMissing = "audit_entries_missing";
     public const string SequenceBroken = AuditCodes.SequenceBroken;
     public const string EntryEdited = "audit_entry_edited";
+    public const string EntryNotCanonical = AuditCodes.EntryNotCanonical;
     public const string ChainBroken = AuditCodes.ChainBroken;
     public const string AnchorMismatch = AuditCodes.AnchorMismatch;
     public const string ActorUnknown = "audit_actor_unknown";
     public const string EntryMalformed = AuditCodes.EntryMalformed;
     public const string FileMissing = AuditCodes.FileMissing;
     public const string FileUnreadable = AuditCodes.FileUnreadable;
+
+    // Most severe first; the report's Code is the finding earliest in this list.
+    public static readonly IReadOnlyList<string> Severity = new[] { FileMissing, FileUnreadable, EntryMalformed, EntryEdited, ChainBroken, AnchorMismatch, Truncated, EntriesMissing, Reordered, SequenceBroken, EntryNotCanonical, ActorUnknown };
+
+    // A P10-03 AuditCodes value in this vocabulary.
+    public static string FromChainCode(string code) => code switch
+    {
+        AuditCodes.HashMismatch => EntryEdited,
+        AuditCodes.TornTail => Truncated,
+        AuditCodes.FileMissing or AuditCodes.FileUnreadable or AuditCodes.EntryMalformed or AuditCodes.EntryNotCanonical or AuditCodes.SequenceBroken or AuditCodes.ChainBroken or AuditCodes.Truncated or AuditCodes.AnchorMismatch or AuditCodes.Ok => code,
+        _ => EntryMalformed,
+    };
 }
 
 // KnownActors: the actors allowed to appear (ordinal); null skips the actor check. Anchor: the head kept elsewhere.
@@ -94,6 +109,7 @@ public static class AuditVerifier
         byte[] bytes;
         try
         {
+            if (Directory.Exists(path)) return Single(AuditVerifyCodes.FileUnreadable, "path is a directory");
             if (!File.Exists(path)) return Single(AuditVerifyCodes.FileMissing, "no audit log at the path");
             using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var copy = new MemoryStream();
@@ -115,7 +131,8 @@ public static class AuditVerifier
         var anchor = options?.Anchor;
         HashSet<string>? known = options?.KnownActors is { } actors ? new HashSet<string>(actors, StringComparer.Ordinal) : null;
         var findings = new List<AuditFinding>();
-        var parsed = new List<(long Line, AuditEntry Entry, bool HashValid)>();
+        var parsed = new List<(long Line, AuditEntry Entry)>();
+        var unparsed = new List<long>();
         long line = 0;
         var start = 0;
         var torn = false;
@@ -133,46 +150,56 @@ public static class AuditVerifier
             start += length + 1;
             string text;
             try { text = Utf8.GetString(raw); }
-            catch (DecoderFallbackException) { findings.Add(new AuditFinding(AuditVerifyCodes.EntryMalformed, line, "invalid UTF-8")); continue; }
-            if (Parse(text, out var problem) is not { } entry) { findings.Add(new AuditFinding(AuditVerifyCodes.EntryMalformed, line, problem)); continue; }
-            var hashValid = AuditLogFormat.ComputeHash(entry) == entry.Hash;
-            if (!hashValid) findings.Add(new AuditFinding(AuditVerifyCodes.EntryEdited, line, "hash does not match the entry content"));
-            else if (AuditLogFormat.Line(entry) != text) findings.Add(new AuditFinding(AuditVerifyCodes.EntryEdited, line, "line differs from the canonical serialization"));
+            catch (DecoderFallbackException) { findings.Add(new AuditFinding(AuditVerifyCodes.EntryMalformed, line, "invalid UTF-8")); unparsed.Add(line); continue; }
+            // A byte order mark is tolerated for classification only; the line is then not canonical.
+            var content = text.Length > 0 && text[0] == '﻿' ? text[1..] : text;
+            if (Parse(content, out var problem) is not { } entry) { findings.Add(new AuditFinding(AuditVerifyCodes.EntryMalformed, line, problem)); unparsed.Add(line); continue; }
+            if (AuditLogFormat.ComputeHash(entry) != entry.Hash) findings.Add(new AuditFinding(AuditVerifyCodes.EntryEdited, line, "hash does not match the entry content"));
+            else if (AuditLogFormat.Line(entry) != text) findings.Add(new AuditFinding(AuditVerifyCodes.EntryNotCanonical, line, "content hash is valid but the line differs from the canonical serialization"));
             if (known is not null && !known.Contains(entry.Actor)) findings.Add(new AuditFinding(AuditVerifyCodes.ActorUnknown, line, "actor " + entry.Actor + " is not in the known actor set"));
-            parsed.Add((line, entry, hashValid));
+            parsed.Add((line, entry));
         }
 
-        Sequence(parsed, findings);
+        Sequence(parsed, unparsed, findings);
 
         // Chain links by seq, independent of line order, so reordering alone never reads as an edit. A link is only
         // checked when its predecessor is present exactly once.
         var bySeq = parsed.GroupBy(p => p.Entry.Seq).ToDictionary(g => g.Key, g => g.Count() == 1 ? g.First().Entry : (AuditEntry?)null);
-        foreach (var (entryLine, entry, _) in parsed)
+        foreach (var (entryLine, entry) in parsed)
         {
             if (bySeq.TryGetValue(entry.Seq, out var self) && self is null) continue;
             string? expected = entry.Seq == 1 ? AuditLogFormat.GenesisHash : bySeq.TryGetValue(entry.Seq - 1, out var before) && before is not null ? before.Hash : null;
             if (expected is not null && entry.PrevHash != expected)
-                findings.Add(new AuditFinding(AuditVerifyCodes.ChainBroken, entryLine, "prev_hash differs from the hash of entry seq " + (entry.Seq - 1).ToString(CultureInfo.InvariantCulture)));
+                findings.Add(new AuditFinding(AuditVerifyCodes.ChainBroken, entryLine, "prev_hash differs from the hash of entry seq " + Text(entry.Seq - 1)));
         }
 
+        var anchorMismatch = false;
         if (anchor is not null)
         {
             var maxSeq = parsed.Count == 0 ? 0 : parsed.Max(p => p.Entry.Seq);
+            var maxLine = parsed.Count == 0 ? 0 : parsed.First(p => p.Entry.Seq == maxSeq).Line;
             if (anchor.Seq < 0 || !AuditLogFormat.IsHash(anchor.Hash) || (anchor.Seq == 0 && anchor.Hash != AuditLogFormat.GenesisHash))
+            {
+                anchorMismatch = true;
                 findings.Add(new AuditFinding(AuditVerifyCodes.AnchorMismatch, null, "anchor is not a valid seq and hash"));
+            }
             else if (anchor.Seq > maxSeq)
             {
-                if (!torn) findings.Add(new AuditFinding(AuditVerifyCodes.Truncated, null, "log ends at seq " + maxSeq.ToString(CultureInfo.InvariantCulture) + "; anchor expects at least " + anchor.Seq.ToString(CultureInfo.InvariantCulture)));
+                // A torn or malformed line after the highest entry may be the anchored entry itself: that damage is
+                // already reported, so it is not also truncation while the log still has enough lines.
+                var damagedTail = torn || (unparsed.Any(l => l > maxLine) && line >= anchor.Seq);
+                if (!damagedTail) findings.Add(new AuditFinding(AuditVerifyCodes.Truncated, null, "log ends at seq " + Text(maxSeq) + "; anchor expects at least " + Text(anchor.Seq)));
             }
             else if (anchor.Seq > 0 && bySeq.TryGetValue(anchor.Seq, out var at) && at is not null && at.Hash != anchor.Hash)
             {
-                var atLine = parsed.First(p => p.Entry.Seq == anchor.Seq).Line;
-                findings.Add(new AuditFinding(AuditVerifyCodes.AnchorMismatch, atLine, "entry hash differs from the anchor"));
+                anchorMismatch = true;
+                findings.Add(new AuditFinding(AuditVerifyCodes.AnchorMismatch, parsed.First(p => p.Entry.Seq == anchor.Seq).Line, "entry hash differs from the anchor"));
             }
         }
 
         var chain = AuditLogFormat.VerifyBytes(bytes, anchor);
-        if (!chain.Ok && findings.Count == 0) findings.Add(new AuditFinding(chain.Code, chain.Line, chain.Detail ?? chain.Code));
+        if (!chain.Ok && findings.Count == 0) findings.Add(new AuditFinding(AuditVerifyCodes.FromChainCode(chain.Code), chain.Line, chain.Detail ?? chain.Code));
+        if (chain.Code == AuditCodes.AnchorMismatch) anchorMismatch = true;
 
         var ordered = findings
             .OrderBy(f => f.Line is null ? 1 : 0)
@@ -180,11 +207,22 @@ public static class AuditVerifier
             .ThenBy(f => f.Code, StringComparer.Ordinal)
             .ThenBy(f => f.Detail, StringComparer.Ordinal)
             .ToArray();
-        var code = ordered.Length == 0 ? AuditVerifyCodes.Ok : ordered[0].Code;
-        return new AuditVerifyReport(code, chain.Code, line, ordered, chain.Entries);
+        var code = ordered.Length == 0 ? AuditVerifyCodes.Ok : ordered.OrderBy(f => Rank(f.Code)).First().Code;
+        IReadOnlyList<AuditEntry> verified = anchorMismatch ? Array.Empty<AuditEntry>() : chain.Entries;
+        return new AuditVerifyReport(code, chain.Code, line, ordered, verified);
     }
 
-    static void Sequence(List<(long Line, AuditEntry Entry, bool HashValid)> parsed, List<AuditFinding> findings)
+    static int Rank(string code)
+    {
+        for (var i = 0; i < AuditVerifyCodes.Severity.Count; i++) if (AuditVerifyCodes.Severity[i] == code) return i;
+        return AuditVerifyCodes.Severity.Count;
+    }
+
+    // Permutation of the line numbers: every misplaced line is reordered. Otherwise, walking in line order with the
+    // highest seq seen so far: a seq seen before is a duplicate (sequence broken), a lower seq is reordered, and a
+    // jump over seqs that occur nowhere in the log is missing entries (less any malformed lines in between, which may
+    // hold them).
+    static void Sequence(List<(long Line, AuditEntry Entry)> parsed, List<long> unparsed, List<AuditFinding> findings)
     {
         if (parsed.All(p => p.Entry.Seq == p.Line)) return;
         var seqs = parsed.Select(p => p.Entry.Seq).OrderBy(s => s).ToArray();
@@ -195,29 +233,27 @@ public static class AuditVerifier
                 findings.Add(new AuditFinding(AuditVerifyCodes.Reordered, p.Line, "seq " + Text(p.Entry.Seq) + " at line " + Text(p.Line)));
             return;
         }
-        var increasing = true;
-        for (var i = 1; i < parsed.Count; i++) if (parsed[i].Entry.Seq <= parsed[i - 1].Entry.Seq) increasing = false;
-        if (increasing)
+        var present = new HashSet<long>(seqs);
+        var seen = new HashSet<long>();
+        long highest = 0, previousLine = 0;
+        foreach (var (entryLine, entry) in parsed)
         {
-            long previousSeq = 0, previousLine = 0;
-            var broken = false;
-            foreach (var p in parsed)
+            var seq = entry.Seq;
+            if (!seen.Add(seq))
+                findings.Add(new AuditFinding(AuditVerifyCodes.SequenceBroken, entryLine, "seq " + Text(seq) + " occurs more than once"));
+            else if (seq < highest)
+                findings.Add(new AuditFinding(AuditVerifyCodes.Reordered, entryLine, "seq " + Text(seq) + " after seq " + Text(highest)));
+            else
             {
-                var expected = previousSeq + (p.Line - previousLine);
-                if (p.Entry.Seq > expected)
-                    findings.Add(new AuditFinding(AuditVerifyCodes.EntriesMissing, p.Line, "seq " + Text(p.Entry.Seq) + " where " + Text(expected) + " expected; " + Text(p.Entry.Seq - expected) + " entries missing"));
-                else if (p.Entry.Seq < expected && !broken)
-                {
-                    broken = true;
-                    findings.Add(new AuditFinding(AuditVerifyCodes.SequenceBroken, p.Line, "seq " + Text(p.Entry.Seq) + " where " + Text(expected) + " expected"));
-                }
-                previousSeq = p.Entry.Seq;
-                previousLine = p.Line;
+                long absent = 0;
+                for (var s = highest + 1; s < seq; s++) if (!present.Contains(s)) absent++;
+                absent -= unparsed.Count(l => l > previousLine && l < entryLine);
+                if (absent > 0)
+                    findings.Add(new AuditFinding(AuditVerifyCodes.EntriesMissing, entryLine, "seq " + Text(seq) + " after seq " + Text(highest) + "; " + Text(absent) + " entries missing"));
+                highest = seq;
             }
-            return;
+            previousLine = entryLine;
         }
-        var first = parsed.First(p => p.Entry.Seq != p.Line);
-        findings.Add(new AuditFinding(AuditVerifyCodes.SequenceBroken, first.Line, "seq " + Text(first.Entry.Seq) + " where " + Text(first.Line) + " expected"));
     }
 
     static string Text(long value) => value.ToString(CultureInfo.InvariantCulture);
@@ -298,6 +334,7 @@ public static class AuditSummary
         {
             ArgumentNullException.ThrowIfNull(entry);
             if (!TryDay(entry.Utc, out var day)) throw new ArgumentException("entry seq " + entry.Seq.ToString(CultureInfo.InvariantCulture) + " has an invalid utc", nameof(entries));
+            if (entry.Decision is not (AuditLogFormat.Allow or AuditLogFormat.Deny)) throw new ArgumentException("entry seq " + entry.Seq.ToString(CultureInfo.InvariantCulture) + " has a decision other than allow or deny", nameof(entries));
             return (entry.Actor, entry.Command, Day: day, Allow: entry.Decision == AuditLogFormat.Allow);
         }).ToArray();
         writer.WriteStartObject();
