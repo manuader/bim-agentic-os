@@ -1266,3 +1266,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 17:53Z LOCK taken (was FREE; relay164 released 2026-11-05T17:34:14Z).
 - 17:54Z picked P9-06 port (phase 9, relay157), P1-11 (phase 1), P3-07 (phase 3) — oldest-touched; P8-09 next. Workers starting.
 - 18:46Z workers green (phases 9, 1, 3): P9-06 c12c049 (red 42079534722, green 42081753813; 0 attempts), P1-11 ebea9b9 (red 42081608585, green 42084994501; 1 attempt: fake save_copy overwrote request sha), P3-07 9c30cbc (red 42081207010, green 42082226772; 0 attempts, 1 compile slip). Next: independent reviews.
+- 18:52Z reviews: no blockers. P9-06 2 should-fix (roof_type.create ordinal pick + ArgumentException mapping) + NITs; P1-11 3 should-fix (failed c-save may leave Revit on the copy, owner doc groups, closing message re Save); P3-07 3 should-fix (internal_error diagnostics, never-writes doc scope, features — controller) + NITs. Workers closing them with tests.
