@@ -17,11 +17,12 @@ public static class TransformLocationKinds
 }
 
 // Where an element is: a location point A (with its rotation in radians when Revit reports one), a location curve from
-// A to B, or, for elements with neither (floors, roofs and other sketch-based elements), the model bounding box from
-// A (min) to B (max). Points are [x, y, z] in millimetres.
+// A to B, for sketch-based elements (floors, roofs, ceilings) the end points of their sketch profile curves in sketch
+// order (Points; A is the first), else the model bounding box from A (min) to B (max). Points are [x, y, z] in
+// millimetres.
 public sealed record TransformLocation(string Kind, double[] A, double[]? B, double? RotationRad = null, IReadOnlyList<double[]>? Points = null);
 // The Revit facts a target is refused on. HostedPlacement: a family instance of a hosted placement type; HostPresent:
-// its host exists. Location: null when the element has no location point, curve or box (types, views, data storage).
+// its host exists; HostUid: its host's UniqueId (null when none). Location: null when the element has no location point, curve or box (types, views, data storage).
 public sealed record TransformTargetFacts(string Uid, bool Pinned, bool ViewSpecific, bool Grouped, bool HostedPlacement, bool HostPresent, TransformLocation? Location, string? HostUid = null);
 public sealed record TransformIdSets(IReadOnlyList<string> Transformed, IReadOnlyList<string> ReadBack);
 // An element considered when mapping copies to sources. Key: what a copy shares with its source (Revit class,
@@ -34,7 +35,8 @@ public sealed record CopyMapping(IReadOnlyList<CopyPair> Pairs, IReadOnlyList<st
 
 public static class CommandRulesTransform
 {
-    // Locations are compared point by point within 1 mm (Euclidean); a moved point keeps its rotation within 1e-6 rad.
+    // Locations are compared point by point within 1 mm (Euclidean); a moved point keeps its rotation within 1e-6 rad
+    // (modulo a full turn), and a rotation read before must still be readable after.
     public const double ToleranceMm = 1.0;
     public const double RotationToleranceRad = 1e-6;
 
@@ -48,8 +50,14 @@ public static class CommandRulesTransform
         if (facts.Location is null) throw new RevitCommandException(RevitTransformCodes.LocationUnsupported, field, facts.Uid + " has no location point, location curve or bounding box to move and read back");
     }
 
-    public static TransformIdSets TransformIds(IReadOnlyList<TransformTargetFacts> targets) =>
-        new(targets.Select(target => target.Uid).ToArray(), targets.Select(target => target.Uid).ToArray());
+    // The ids passed to MoveElements / CopyElements: every target except a hosted one whose host is also a target
+    // (the host carries it; passing both could move it twice). ReadBack: every target, in request order.
+    public static TransformIdSets TransformIds(IReadOnlyList<TransformTargetFacts> targets)
+    {
+        var uids = new HashSet<string>(targets.Select(target => target.Uid), StringComparer.OrdinalIgnoreCase);
+        return new(targets.Where(target => target.HostUid is null || !uids.Contains(target.HostUid)).Select(target => target.Uid).ToArray(),
+            targets.Select(target => target.Uid).ToArray());
+    }
 
     public static double[] Vector(TranslationVector vector) => new[] { vector.Dx.Millimetres, vector.Dy.Millimetres, vector.Dz.Millimetres };
 
@@ -63,7 +71,27 @@ public static class CommandRulesTransform
 
     // The location shifted by the vector (rotation kept).
     public static TransformLocation Shift(TransformLocation location, double[] vector) =>
-        location with { A = Add(location.A, vector), B = location.B is null ? null : Add(location.B, vector) };
+        location with { A = Add(location.A, vector), B = location.B is null ? null : Add(location.B, vector), Points = location.Points?.Select(point => Add(point, vector)).ToArray() };
+
+    // Signed difference of two angles brought into [-pi, pi].
+    public static double AngleDifference(double a, double b)
+    {
+        var turn = 2 * Math.PI;
+        var difference = (a - b) % turn;
+        if (difference > Math.PI) difference -= turn;
+        else if (difference < -Math.PI) difference += turn;
+        return difference;
+    }
+
+    // Largest distance between corresponding points of two locations of the same kind and shape (used to rank copies).
+    static double Deviation(TransformLocation expected, TransformLocation observed)
+    {
+        var deviation = Distance(expected.A, observed.A);
+        if (expected.B is not null && observed.B is not null) deviation = Math.Max(deviation, Distance(expected.B, observed.B));
+        if (expected.Points is not null && observed.Points is not null)
+            for (var i = 0; i < Math.Min(expected.Points.Count, observed.Points.Count); i++) deviation = Math.Max(deviation, Distance(expected.Points[i], observed.Points[i]));
+        return deviation;
+    }
 
     static string Format(double[] point) =>
         "(" + string.Join(", ", point.Select(value => value.ToString("0.###", CultureInfo.InvariantCulture))) + ")";
@@ -73,33 +101,52 @@ public static class CommandRulesTransform
     {
         if (observed is null) return what + " no longer has a readable location";
         if (observed.Kind != expected.Kind) return what + " has a location " + observed.Kind + " where a location " + expected.Kind + " was read before";
+        if (expected.Kind == TransformLocationKinds.Profile)
+        {
+            var wanted = expected.Points ?? Array.Empty<double[]>();
+            var seen = observed.Points ?? Array.Empty<double[]>();
+            if (seen.Count != wanted.Count) return what + " sketch profile has " + seen.Count + " curve end points where " + wanted.Count + " were read before";
+            for (var i = 0; i < wanted.Count; i++)
+                if (!(Distance(seen[i], wanted[i]) <= ToleranceMm))
+                    return what + " sketch profile point " + i + " is at " + Format(seen[i]) + " mm, expected " + Format(wanted[i]) + " within 1 mm";
+            return null;
+        }
         if (!(Distance(observed.A, expected.A) <= ToleranceMm))
             return what + " location " + expected.Kind + (expected.Kind == TransformLocationKinds.Point ? "" : expected.Kind == TransformLocationKinds.Curve ? " start" : " min") + " is at " + Format(observed.A) + " mm, expected " + Format(expected.A) + " within 1 mm";
         if (expected.B is not null && (observed.B is null || !(Distance(observed.B, expected.B) <= ToleranceMm)))
             return what + " location " + expected.Kind + (expected.Kind == TransformLocationKinds.Curve ? " end" : " max") + " is at " + (observed.B is null ? "nothing" : Format(observed.B)) + " mm, expected " + Format(expected.B) + " within 1 mm";
-        if (expected.RotationRad is { } rotation && observed.RotationRad is { } turned && !(Math.Abs(turned - rotation) <= RotationToleranceRad))
+        if (expected.RotationRad is { } read && observed.RotationRad is null) return what + " rotation (" + (read * 180 / Math.PI).ToString("0.###", CultureInfo.InvariantCulture) + " degrees before) can no longer be read";
+        if (expected.RotationRad is { } rotation && observed.RotationRad is { } turned && !(Math.Abs(AngleDifference(turned, rotation)) <= RotationToleranceRad))
             return what + " rotation changed from " + (rotation * 180 / Math.PI).ToString("0.###", CultureInfo.InvariantCulture) + " to " + (turned * 180 / Math.PI).ToString("0.###", CultureInfo.InvariantCulture) + " degrees";
         return null;
     }
 
-    // Each source, in request order, takes the first unused copy with its key at its location plus the vector (within
-    // 1 mm); a source left without one is a mismatch. Copies no source takes are AlsoCreated, in Revit's order.
+    // Nearest first: every (source, copy) pair with the same key whose copy sits at the source's location plus the
+    // vector within 1 mm is ranked by its largest point deviation (ties by source, then copy order) and taken when
+    // neither is taken yet. A source left without a copy is a mismatch (the first in request order is named); Pairs are
+    // in request order; copies no source takes are AlsoCreated, in Revit's order.
     public static CopyMapping MapCopies(IReadOnlyList<TransformCandidate> sources, IReadOnlyList<TransformCandidate> copies, double[] vector)
     {
-        var used = new bool[copies.Count];
-        var pairs = new List<CopyPair>(sources.Count);
-        foreach (var source in sources)
+        var candidates = new List<(double Deviation, int Source, int Copy)>();
+        for (var s = 0; s < sources.Count; s++)
         {
-            if (source.Location is null) return new CopyMapping(pairs, Array.Empty<string>(), "source " + source.Uid + " has no location to map its copy by");
-            var expected = Shift(source.Location, vector);
-            var index = -1;
-            for (var i = 0; i < copies.Count && index < 0; i++)
-                if (!used[i] && string.Equals(copies[i].Key, source.Key, StringComparison.Ordinal) && Compare(expected, copies[i].Location, "copy") is null) index = i;
-            if (index < 0) return new CopyMapping(pairs, Array.Empty<string>(), "no new element of the same kind sits at the location of " + source.Uid + " plus the vector " + Format(vector) + " mm (within 1 mm)");
-            used[index] = true;
-            pairs.Add(new CopyPair(source.Uid, copies[index].Uid));
+            if (sources[s].Location is not { } location) return new CopyMapping(Array.Empty<CopyPair>(), Array.Empty<string>(), "source " + sources[s].Uid + " has no location to map its copy by");
+            var expected = Shift(location, vector);
+            for (var c = 0; c < copies.Count; c++)
+                if (string.Equals(copies[c].Key, sources[s].Key, StringComparison.Ordinal) && copies[c].Location is { } observed && Compare(expected, observed, "copy") is null)
+                    candidates.Add((Deviation(expected, observed), s, c));
         }
-        return new CopyMapping(pairs, copies.Where((_, i) => !used[i]).Select(copy => copy.Uid).ToArray(), null);
+        var copyOf = Enumerable.Repeat(-1, sources.Count).ToArray();
+        var used = new bool[copies.Count];
+        foreach (var (_, source, copy) in candidates.OrderBy(candidate => candidate.Deviation).ThenBy(candidate => candidate.Source).ThenBy(candidate => candidate.Copy))
+        {
+            if (copyOf[source] >= 0 || used[copy]) continue;
+            copyOf[source] = copy;
+            used[copy] = true;
+        }
+        for (var s = 0; s < sources.Count; s++)
+            if (copyOf[s] < 0) return new CopyMapping(Array.Empty<CopyPair>(), Array.Empty<string>(), "no new element of the same kind sits at the location of " + sources[s].Uid + " plus the vector " + Format(vector) + " mm (within 1 mm)");
+        return new CopyMapping(sources.Select((source, s) => new CopyPair(source.Uid, copies[copyOf[s]].Uid)).ToArray(), copies.Where((_, c) => !used[c]).Select(copy => copy.Uid).ToArray(), null);
     }
 
     // The reply's created list: the mapped copies in request order, then the extra copies.
@@ -186,6 +233,16 @@ public static class CommandReadbackTransform
             case TransformLocationKinds.Curve:
                 Triple(writer, "start", location.A);
                 if (location.B is not null) Triple(writer, "end", location.B);
+                break;
+            case TransformLocationKinds.Profile:
+                writer.WriteStartArray("points");
+                foreach (var point in location.Points ?? Array.Empty<double[]>())
+                {
+                    writer.WriteStartArray();
+                    foreach (var value in point) writer.WriteNumberValue(value);
+                    writer.WriteEndArray();
+                }
+                writer.WriteEndArray();
                 break;
             default:
                 Triple(writer, "min", location.A);
