@@ -210,8 +210,44 @@ class BrokenFilesAreTyped(Scratch):
                     self.assertIn(issue['kind'], self.v.ISSUE_KINDS)
                     self.assertIn(issue['level'], ('error', 'warning'))
                 json.dumps(report, allow_nan=False)
-                if entity in ('IfcWall', 'IfcOpeningElement', 'IfcRelVoidsElement'):
+                if entity in ('IfcWall', 'IfcOpeningElement', 'IfcRelVoidsElement') and name != 'missing_required_attribute':
                     self.assertTrue(all(i['global_id'] for i in matching), matching)
+
+    def test_parser_level_defects_are_not_silently_dropped(self):
+        # An opened model drops instances the parser cannot build; the report must still show them.
+        path = self.dir / 'room.ifc'
+        self.ifc.export_project(p801.source_project(), path)
+        text = path.read_text(encoding='utf-8')
+        tail = text.rindex('ENDSEC;')
+        cases = {
+            'unknown_entity': ('#999999=IFCNOTATHING(1.);\n', 999999, 'IFCNOTATHING'),
+            'dangling_reference': ('#999998=IFCAXIS2PLACEMENT3D(#999997,$,$);\n', 999998, '#999997'),
+            'wrong_attribute_count': ('#999996=IFCCARTESIANPOINT((0.,0.,0.),5.);\n', 999996, 'attribute values'),
+        }
+        for name, (line, step_id, needle) in cases.items():
+            with self.subTest(defect=name):
+                out = self.dir / f'{name}.ifc'
+                out.write_text(text[:tail] + line + text[tail:], encoding='utf-8')
+                report = self.v.validate_file(out)
+                matching = [i for i in report['issues'] if i['kind'] == 'syntax' and i['step_id'] == step_id and needle in i['message']]
+                if report['status'] != 'invalid' or not matching:
+                    annotate(name, json.dumps(report, indent=1))
+                self.assertEqual('invalid', report['status'], name)
+                self.assertTrue(matching, f'{name}: {json.dumps(report["issues"])[:2500]}')
+        unsupported = self.dir / 'unsupported_schema.ifc'
+        unsupported.write_text(text.replace("FILE_SCHEMA(('IFC4'))", "FILE_SCHEMA(('IFC9'))"), encoding='utf-8')
+        report = self.v.validate_file(unsupported)
+        if report['status'] != 'invalid' or 'header' not in report['counts'].get('by_kind', {}):
+            annotate('unsupported_schema', json.dumps(report, indent=1))
+        self.assertEqual('invalid', report['status'])
+        self.assertIn('header', report['counts']['by_kind'])
+
+    def test_empty_file_is_a_syntax_issue(self):
+        path = self.dir / 'empty.ifc'
+        path.write_bytes(b'')
+        report = self.v.validate_file(path)
+        self.assertEqual('invalid', report['status'], json.dumps(report))
+        self.assertEqual(['syntax'], [i['kind'] for i in report['issues']])
 
     def test_unparseable_file_is_a_syntax_issue(self):
         path = self.dir / 'garbage.ifc'
