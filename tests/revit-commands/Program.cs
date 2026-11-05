@@ -423,6 +423,8 @@ try
     CatalogueDirectShapeChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- element.move / element.copy (P1-09): translate 1 to 100 elements by a millimetre vector ----
     CatalogueTransformChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- element.rotate / element.mirror (P1-10): turn about a vertical axis or mirror in a vertical plane, 1 to 100 elements ----
+    CatalogueRotateMirrorChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();
