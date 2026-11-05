@@ -132,3 +132,9 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - No new owner action: P4-05 (documentation replacement plan), P6-07 (cad-draft/cad-brief CLI) and P7-06 (facade windows in BIM-IR) are headless and unit-tested in CI.
 - Optional: try `dotnet Bim.Cli.dll cad-draft <your plan>.dxf out.json --metres-per-unit 0.001` (or cad-brief) on a real plan of yours and tell a relay what it got wrong; all fixtures so far are synthetic.
 - Still open: one `-Catalogue` owner session on a test copy (OWNER-TODO Relay153 steps), N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence.
+
+## Relay156 (2026-11-05, cloud)
+- No required owner action: P2-07 (drift resolution plan), P5-07 (vivienda unifamiliar typology pack) and P10-07 (add-in install script) are headless and unit-tested in CI.
+- Optional 🔒 P10-07 on your PC, only into a scratch folder first: after `git pull` and `pwsh -File scripts/package.ps1 -OutputDirectory .bim/release`, run `pwsh -File scripts/install-addin.ps1 -PackageDirectory .bim/release -AddinsDirectory .bim/addins-test -AssemblyPath <path to your built Bim.Revit.dll>` and check the generated Bim.addin; `-Uninstall -AddinsDirectory .bim/addins-test` removes it. Only use `-RevitUserAddins` when you want it in the real Revit 2025 Addins folder (backs up any existing Bim.addin).
+- Optional: the vivienda programme values (bedrooms per 2 persons, bathrooms per 4, min/target areas) are illustrative; tell a relay which to change.
+- Still open: one `-Catalogue` owner session on a test copy (OWNER-TODO Relay153 steps), N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence.
