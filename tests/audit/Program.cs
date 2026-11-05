@@ -101,6 +101,12 @@ try
     // P9-07: roof.create_extrusion only adds a roof and its reference plane: an additive write, copies only.
     Check(RevitCommandCatalogue.RoofExtrusion.Any(spec => spec.Name == "roof.create_extrusion" && spec.Writes) && !RevitCommandCatalogue.IsDestructive("roof.create_extrusion"), "roof extrusion catalogue has additive write roof.create_extrusion");
     Check(PermissionPolicy.RequiredLevel("roof.create_extrusion", FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel("roof.create_extrusion", RealPath, copies) == PermissionLevel.WriteRealProject, "roof.create_extrusion requires write-copies on a copy and write-real-project on a real project");
+    // P1-09: element.move changes existing elements (destructive), element.copy only adds; both copies only.
+    foreach (var (command, destructive) in new[] { ("element.move", true), ("element.copy", false) })
+    {
+        Check(RevitCommandCatalogue.Transform.Any(spec => spec.Name == command && spec.Writes) && RevitCommandCatalogue.IsDestructive(command) == destructive, "transform catalogue has " + command + (destructive ? " (destructive write)" : " (additive write)"));
+        Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel(command, RealPath, copies) == PermissionLevel.WriteRealProject, command + " requires write-copies on a copy and write-real-project on a real project");
+    }
     // chat-materials-types: query.fill_patterns is read anywhere; the material and type writes need copies, and
     // material.set / element.change_type are destructive.
     foreach (var (command, writes, destructive) in new[] { ("query.fill_patterns", false, false), ("material.create", true, false), ("material.set", true, true), ("wall_type.create", true, false), ("floor_type.create", true, false), ("element.change_type", true, true) })

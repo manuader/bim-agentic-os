@@ -1281,7 +1281,23 @@
     {
       "id": "modify.move_copy_rotate",
       "area": "modify",
-      "revit_function": "Move, Copy, Rotate, Mirror, Array",
+      "revit_function": "Move, Copy (translate by a vector)",
+      "commands": [
+        "element.move",
+        "element.copy"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueTransform.cs",
+        "runtimes/revit-native/CommandsExecutorTransform.cs"
+      ],
+      "notes": "P1-09: 1 to 100 elements by a [dx, dy, dz] mm vector, copies mapped to their sources; contract, refusals and readback unit-tested, executor compiled only; not recorded in docs/features.json, so not claimed beyond compiled. Rotate, Mirror and Array are modify.rotate_mirror_array."
+    },
+    {
+      "id": "modify.rotate_mirror_array",
+      "area": "modify",
+      "revit_function": "Rotate, Mirror, Array",
       "commands": [],
       "state": "unsupported",
       "features": [],
