@@ -39,7 +39,7 @@ public static class RevitMaterialTypeRules
     // Thinnest non-membrane layer accepted: Revit's minimum compound structure layer thickness is 1/256 ft
     // (1.190625 mm); 1.2 mm keeps a margin over it after unit conversion (also applied by roof_type.create).
     public const double MinLayerThicknessMm = 1.2;
-    public const string TooThin = "layer thinner than 1.2 mm (Revit's minimum layer thickness is 1/256 ft, 1.190625 mm)";
+    public static readonly string TooThin = "layer thinner than " + MinLayerThicknessMm.ToString(CultureInfo.InvariantCulture) + " mm (Revit's minimum layer thickness is 1/256 ft, 1.190625 mm)";
     public const string Membrane = "membrane";
     public const string Structure = "structure";
     public const string ThermalAir = "thermal_air";

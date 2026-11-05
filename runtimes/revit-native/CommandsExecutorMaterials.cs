@@ -56,9 +56,11 @@ internal static partial class CommandExecutor
         var hostLayers = args.Layers.Select(layer => new HostTypeLayerArg(layer.Function, layer.Material, layer.Thickness)).ToArray();
         var shells = RevitMaterialTypeRules.Shells(hostLayers.Select(layer => layer.Function).ToArray(), "args.layers");
 
-        // A roof type of that name (Revit type names ignore case): returned unchanged when identical, else refused.
-        if (roofTypes.FirstOrDefault(roofType => string.Equals(roofType.Name, args.Name, StringComparison.OrdinalIgnoreCase)) is { } existing)
+        // A roof type of that name (exact name first, then ignoring case: CommandRulesMaterialTypes.PickExisting):
+        // returned unchanged when identical, else refused.
+        if (CommandRulesMaterialTypes.PickExisting(roofTypes.Select(roofType => roofType.Name).ToArray(), args.Name) is { } index)
         {
+            var existing = roofTypes[index];
             if (CommandReadbackMaterials.RoofType(args.Name, expected, shells, ObserveRoofType(d, existing)) is { } difference)
                 throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a roof type named '" + existing.Name + "' already exists and differs (" + difference + "); choose another name");
             return new WritePlan(
@@ -73,7 +75,11 @@ internal static partial class CommandExecutor
         return new WritePlan(
             () =>
             {
-                var duplicate = baseType.Duplicate(args.Name) as RoofType ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.base_type", "Revit did not duplicate the roof type");
+                // A Revit ArgumentException on the name (for example one Revit considers taken) is args_invalid at args.name.
+                ElementType copy;
+                try { copy = baseType.Duplicate(args.Name); }
+                catch (Autodesk.Revit.Exceptions.ArgumentException error) { throw CommandRulesModify.RevitRefused("args.name", error.Message); }
+                var duplicate = copy as RoofType ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.base_type", "Revit did not duplicate the roof type");
                 created = duplicate;
                 // Same builder as wall_type.create / floor_type.create (CommandsExecutorMaterialTypes.cs): CreateSimpleCompoundStructure
                 // puts every layer in the core and Revit refuses a core holding a membrane (CoreTooThin), so the core is the

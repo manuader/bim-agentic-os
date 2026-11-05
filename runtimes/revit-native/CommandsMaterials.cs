@@ -54,11 +54,12 @@ public static class CommandReadbackMaterials
     static string F(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 
     // Null when the type is the requested one: exactly this name (ordinal) and these layers in this order, each with
-    // the same function, material and thickness (1e-3 mm). Used both after a create and to decide whether an
-    // existing type of that name is identical.
+    // the same function, material and thickness (1e-3 mm), these core boundaries (shells, RevitMaterialTypeRules.Shells)
+    // and the first structure layer (index shells.Exterior) as the structural material layer. Used both after a create
+    // and to decide whether an existing type of that name is identical (a hand-made one without a structural material
+    // layer is not).
     public static string? RoofType(string name, IReadOnlyList<ExpectedRoofLayer> expected, (int Exterior, int Interior) shells, ObservedRoofType observed)
     {
-        _ = shells; // placeholder: the core is not checked yet
         if (!string.Equals(observed.Name, name, StringComparison.Ordinal)) return "roof type name is '" + observed.Name + "', expected '" + name + "'";
         if (observed.Layers is not { } layers) return "roof type has no layers (no compound structure)";
         if (layers.Count != expected.Count) return "roof type has " + layers.Count + " layers, expected " + expected.Count;
@@ -69,6 +70,10 @@ public static class CommandReadbackMaterials
             if (!string.Equals(layer.MaterialUid, want.MaterialUid, StringComparison.OrdinalIgnoreCase)) return "roof type layer " + i + " material is " + (layer.MaterialUid ?? "none") + ", expected " + want.MaterialUid;
             if (!CommandGeometry.Near(layer.WidthMm, want.ThicknessMm)) return "roof type layer " + i + " thickness is " + F(layer.WidthMm) + " mm, expected " + F(want.ThicknessMm);
         }
+        if (observed.ExteriorShell != shells.Exterior || observed.InteriorShell != shells.Interior)
+            return "roof type has " + observed.ExteriorShell + " exterior and " + observed.InteriorShell + " interior shell layers, expected " + shells.Exterior + " and " + shells.Interior + " (the core is the structure layers)";
+        if (observed.StructuralMaterialIndex != shells.Exterior)
+            return "roof type structural material layer is " + (observed.StructuralMaterialIndex < 0 ? "none" : observed.StructuralMaterialIndex.ToString(CultureInfo.InvariantCulture)) + ", expected " + shells.Exterior + " (the first structure layer)";
         return null;
     }
 
@@ -103,8 +108,8 @@ public static class CommandReadbackMaterials
         writer.WriteEndObject();
     });
 
-    // {roof_type: {unique_id, name, existing, width_mm, layers: [{function, material_unique_id, material_name,
-    // thickness_mm}]}}, layers exterior to interior as read from the type's compound structure.
+    // {roof_type: {unique_id, name, existing, width_mm, exterior_shell_layers, interior_shell_layers,
+    // structural_material_index (-1 when none), layers: [{function, material_unique_id, material_name, thickness_mm}]}}, layers exterior to interior as read from the type's compound structure.
     public static string RoofTypeJson(ObservedRoofType type, bool existing) => Json(writer =>
     {
         writer.WriteStartObject();
@@ -114,6 +119,9 @@ public static class CommandReadbackMaterials
         writer.WriteBoolean("existing", existing);
         if (type.WidthMm is { } width && double.IsFinite(width)) writer.WriteNumber("width_mm", width);
         else writer.WriteNull("width_mm");
+        writer.WriteNumber("exterior_shell_layers", type.ExteriorShell);
+        writer.WriteNumber("interior_shell_layers", type.InteriorShell);
+        writer.WriteNumber("structural_material_index", type.StructuralMaterialIndex);
         writer.WriteStartArray("layers");
         foreach (var layer in type.Layers ?? Array.Empty<ObservedRoofLayer>())
         {
