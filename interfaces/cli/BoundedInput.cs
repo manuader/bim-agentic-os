@@ -26,26 +26,33 @@ internal static class BoundedInput
     public const string IoError = "input_io_error";
     public const string TypeUnverifiable = "input_type_unverifiable";
 
-    public static string ReadText(string path)
+    public static string ReadText(string path) => ReadText(path, FileShare.Read);
+
+    // share: what other handles may do while the file is open. A reader of a file another process replaces in place
+    // (the Core store's project.json, written by temp + move) passes FileShare.ReadWrite | FileShare.Delete so that
+    // replacement is never refused with a sharing violation on Windows.
+    public static string ReadText(string path, FileShare share)
     {
-        var bytes = ReadBytes(path, MaxBytes);
+        var bytes = ReadBytes(path, MaxBytes, share);
         // Exactly File.ReadAllText(path): UTF-8 by default, byte order marks detected and stripped.
         using var reader = new StreamReader(new MemoryStream(bytes, writable: false), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
         return reader.ReadToEnd();
     }
 
     // The same checks as ReadText with a caller-chosen cap (binary inputs such as PDF, or the larger CAD cap).
-    public static byte[] ReadBytes(string path, int maxBytes)
+    public static byte[] ReadBytes(string path, int maxBytes) => ReadBytes(path, maxBytes, FileShare.Read);
+
+    public static byte[] ReadBytes(string path, int maxBytes, FileShare share)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
-        try { return ReadChecked(path, maxBytes); }
+        try { return ReadChecked(path, maxBytes, share); }
         catch (InputRejectedException) { throw; }
         catch (UnauthorizedAccessException e) { throw new InputRejectedException(AccessDenied, e); }
         catch (IOException e) { throw new InputRejectedException(IoError, e); }
     }
 
-    static byte[] ReadChecked(string path, int maxBytes)
+    static byte[] ReadChecked(string path, int maxBytes, FileShare share)
     {
         // Windows device and pipe namespaces (\\.\, \\?\, including NUL/CON which resolve to \\.\) are never inputs.
         if (OperatingSystem.IsWindows() && (DeviceNamespace(path) || DeviceNamespace(Path.GetFullPath(path)))) throw new InputRejectedException(NotRegularFile);
@@ -67,7 +74,7 @@ internal static class BoundedInput
         // control of the input directory. The post-open fstat below is the authoritative check for everything else.
         if (!OperatingSystem.IsWindows()) RequireUnixRegular(LStat(Encoding.UTF8.GetBytes(path + "\0"), out var lstatMode), lstatMode);
         FileStream stream;
-        try { stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.SequentialScan); }
+        try { stream = new FileStream(path, FileMode.Open, FileAccess.Read, share, 1, FileOptions.SequentialScan); }
         catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { throw new InputRejectedException(NotFound, e); }
         using (stream)
         {

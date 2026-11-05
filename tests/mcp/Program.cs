@@ -72,11 +72,11 @@ Check(server.Handle("""{"jsonrpc":"2.0","method":"notifications/unknown","params
 
 var list=Call(Request(2,"tools/list",null));
 var tools=list["result"]!["tools"]!.AsArray();
-Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
+Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
 Check(RevitCommandCatalogue.V1.Select(c=>c.ToolName).SequenceEqual(new[]{"revit_query_levels","revit_query_wall_types","revit_query_floor_types","revit_query_family_symbols","revit_wall_create","revit_opening_place","revit_floor_create","revit_room_create"}),"catalogue v1 tool names are the eight ADR0009 commands");
 Check(tools.All(t=>t!["inputSchema"]!["type"]!.GetValue<string>()=="object" && t!["inputSchema"]!["properties"] is JsonObject && t!["inputSchema"]!["required"] is JsonArray && !string.IsNullOrWhiteSpace(t!["description"]!.GetValue<string>())),"every tool has a JSON Schema object inputSchema and description");
 string Required(string tool)=>string.Join(",",tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!["inputSchema"]!["required"]!.AsArray().Select(x=>x!.GetValue<string>()));
-Check(Required("diff")=="before,after" && Required("validate")=="project" && Required("room")=="project_guid,revision,intent" && Required("plan")=="store_path,desired","tool schemas require the CLI inputs");
+Check(Required("diff")=="before,after" && Required("validate")=="project" && Required("room")=="project_guid,revision,intent" && Required("plan")=="store_path,desired" && Required("mirror_drift")=="store_path,snapshot,mirror","tool schemas require the CLI inputs");
 
 // P9-05: the Revit tools are derived from the whole catalogue (v1 + v2 + whatever is added later), never a fixed list.
 // Each tool states the P10-03 permission level it needs on a test copy; a write to a real project needs more.
@@ -130,7 +130,7 @@ string? BuildError(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpS
 string? NameError(params string[] names) { try { McpServer.CheckToolNames(names); return null; } catch(InvalidOperationException error) { return error.Message; } }
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)}) is null,"an injected catalogue with distinct valid names builds");
 var syntheticServer=new McpServer(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)},RevitCommandPolicy.None,null,null);
-Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
+Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
 Check(BuildError(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")})=="tool_name_duplicate: revit_a_b_c","colliding tool names (a.b_c vs a_b.c) fail closed at construction");
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("query.levels")})=="tool_name_duplicate: revit_query_levels","a duplicated command fails closed at construction");
 Check(BuildError(new[]{Synthetic("a b")})=="tool_name_invalid: revit_a b","a tool name outside [a-zA-Z0-9_-] fails closed at construction");
@@ -503,6 +503,71 @@ Check(Text(noStore)==Cli("plan",missingStore,afterPath),"plan missing-store fail
 var silentStore=Path.Combine(storeDir,"never-created");
 var silentCall=new JsonObject{["jsonrpc"]="2.0",["method"]="tools/call",["params"]=new JsonObject{["name"]="plan",["arguments"]=new JsonObject{["store_path"]=silentStore,["desired"]=Node(afterText)}}};
 Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silentStore),"id-less tools/call gives no response and does not execute");
+
+// P2-08 mirror_drift: the same engine as the CLI mirror-drift verb. The tool text equals the CLI output file byte for byte
+// (and a refusal equals the CLI stdout); nothing is applied to the store; the tool is listed read-only.
+{
+    var driftFixtures=Path.Combine(root,"tests","mirror-journal","fixtures","drift");
+    var committedText=File.ReadAllText(Path.Combine(driftFixtures,"committed.json"));
+    var snapshotText=File.ReadAllText(Path.Combine(driftFixtures,"snapshot.json"));
+    var committed=MirrorCommittedModel.Parse(committedText);
+    const string driftDoc="60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b";
+    var driftStore=Path.Combine(cliDir,"drift-store");
+    new ProjectStore(driftStore).Initialize(committed.Project);
+    var storeBytes=File.ReadAllBytes(Path.Combine(driftStore,"project.json"));
+    var drifted=Node(snapshotText).AsObject();
+    foreach(var element in drifted["elements"]!.AsArray().ToArray())
+        if((string?)element!["Id"]=="db98eeb5-3a66-7972-29a5-494ec813984a") { element!["GeometryMetres"]![0]=5.05; element!["GeometryMetres"]![2]=5.05; }
+    var driftedText=drifted.ToJsonString();
+    JsonObject Mirror(int revision=3,string document=driftDoc) => new JsonObject {
+        ["document"]=new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\p2-08\copy.rvt",["unique_id"]=document},
+        ["core_project_id"]=committed.Project.Id.ToString("D"),
+        ["core_revision"]=revision,
+        ["map"]=Node(committedText)["map"]!.DeepClone(),
+        ["wall_types"]=new JsonArray(new JsonObject{["thickness_metres"]=0.2,["type"]="Generic - 200mm"}),
+        ["door_symbol"]="Single-Flush: 0915 x 2134mm",
+    };
+    var driftTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="mirror_drift");
+    Check(driftTool is not null && driftTool["description"]!.GetValue<string>().Contains("never applies",StringComparison.Ordinal),"mirror_drift is listed and says it never applies anything");
+    var driftCall=ToolCall("mirror_drift",new JsonObject{["store_path"]=driftStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror()});
+    var snapshotPath=Input("drift-snapshot.json",driftedText);
+    var mirrorPath=Input("drift-mirror.json",Mirror().ToJsonString());
+    var outPath=Path.Combine(cliDir,"drift-out.json");
+    var cliSummary=Cli("mirror-drift",driftStore,snapshotPath,mirrorPath,outPath);
+    Check(!IsError(driftCall) && HasType(driftCall) && File.Exists(outPath),"mirror_drift succeeds and the CLI wrote its output | "+cliSummary);
+    Check(Text(driftCall)==File.ReadAllText(outPath,new System.Text.UTF8Encoding(false)),"mirror_drift text byte-equal to the CLI mirror-drift output file");
+    using(var document=JsonDocument.Parse(Text(driftCall))) {
+        var top=document.RootElement;
+        Check(top.GetProperty("applied").GetBoolean()==false && top.GetProperty("report").GetProperty("summary").GetProperty("changed").GetInt32()==1
+            && top.GetProperty("resolution").GetProperty("proposals").GetArrayLength()==1,"mirror_drift returns the changed wall with one proposal, not applied");
+    }
+    Check(File.ReadAllBytes(Path.Combine(driftStore,"project.json")).SequenceEqual(storeBytes),"mirror_drift applies nothing to the store");
+    var stale=ToolCall("mirror_drift",new JsonObject{["store_path"]=driftStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror(revision:4)});
+    var staleCli=Cli("mirror-drift",driftStore,snapshotPath,Input("drift-mirror-stale.json",Mirror(revision:4).ToJsonString()),Path.Combine(cliDir,"drift-stale.json"));
+    Check(IsError(stale) && JsonDocument.Parse(Text(stale)).RootElement.GetProperty("code").GetString()=="drift_resolve_report_stale" && Text(stale)==staleCli,"mirror_drift stale refusal is typed and byte-equal to the CLI stdout");
+    var other="11111111-2222-3333-4444-555555555555-00000001";
+    var mismatch=ToolCall("mirror_drift",new JsonObject{["store_path"]=driftStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror(document:other)});
+    var mismatchCli=Cli("mirror-drift",driftStore,snapshotPath,Input("drift-mirror-other.json",Mirror(document:other).ToJsonString()),Path.Combine(cliDir,"drift-other.json"));
+    Check(IsError(mismatch) && JsonDocument.Parse(Text(mismatch)).RootElement.GetProperty("code").GetString()=="drift_document_mismatch" && Text(mismatch)==mismatchCli,"mirror_drift document mismatch is typed and byte-equal to the CLI stdout");
+    var driftNoStore=ToolCall("mirror_drift",new JsonObject{["store_path"]=Path.Combine(cliDir,"no-drift-store"),["snapshot"]=Node(driftedText),["mirror"]=Mirror()});
+    Check(IsError(driftNoStore) && JsonDocument.Parse(Text(driftNoStore)).RootElement.GetProperty("code").GetString()=="input_not_found" && !Directory.Exists(Path.Combine(cliDir,"no-drift-store")),"mirror_drift on a missing store is input_not_found and creates nothing");
+    var badSnapshot=ToolCall("mirror_drift",new JsonObject{["store_path"]=driftStore,["snapshot"]=new JsonObject{["snapshot_version"]=2},["mirror"]=Mirror()});
+    Check(IsError(badSnapshot) && JsonDocument.Parse(Text(badSnapshot)).RootElement.GetProperty("code").GetString()=="drift_snapshot_invalid","mirror_drift refuses a snapshot that is not a query.snapshot");
+    // Review fixes: a malformed store and a duplicate mirror member are typed refusals, equal to the CLI.
+    var malformedStore=Path.Combine(cliDir,"drift-driftMalformed-store"); Directory.CreateDirectory(malformedStore);
+    var malformedProject=Node(JsonSerializer.Serialize(committed.Project)).AsObject(); malformedProject["Elements"]![1]!["GeometryMetres"]=null;
+    File.WriteAllText(Path.Combine(malformedStore,"project.json"),"{\"Project\":"+malformedProject.ToJsonString()+",\"Receipts\":{}}");
+    var driftMalformed=ToolCall("mirror_drift",new JsonObject{["store_path"]=malformedStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror()});
+    var driftMalformedCli=Cli("mirror-drift",malformedStore,snapshotPath,mirrorPath,Path.Combine(cliDir,"drift-driftMalformed.json"));
+    Check(IsError(driftMalformed) && JsonDocument.Parse(Text(driftMalformed)).RootElement.GetProperty("code").GetString()=="drift_store_invalid" && Text(driftMalformed)==driftMalformedCli,"mirror_drift on a driftMalformed store is drift_store_invalid, byte-equal to the CLI | "+Text(driftMalformed));
+    var mirrorText=Mirror().ToJsonString();
+    var duplicateMirror="{\"core_revision\":2,"+mirrorText[1..];
+    var duplicateLine="{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"mirror_drift\",\"arguments\":{\"store_path\":"+JsonSerializer.Serialize(driftStore)+",\"snapshot\":"+driftedText+",\"mirror\":"+duplicateMirror+"}}}";
+    var duplicate=Call(duplicateLine);
+    var duplicateCli=Cli("mirror-drift",driftStore,snapshotPath,Input("drift-mirror-dup.json",duplicateMirror),Path.Combine(cliDir,"drift-dup.json"));
+    Check(IsError(duplicate) && JsonDocument.Parse(Text(duplicate)).RootElement.GetProperty("code").GetString()=="mirror_drift_request_invalid" && Text(duplicate)==duplicateCli,"mirror_drift refuses a duplicate core_revision, byte-equal to the CLI | "+Text(duplicate));
+    Check(ErrorCode(ToolCall("mirror_drift",new JsonObject{["store_path"]=driftStore,["snapshot"]=Node(driftedText)}))==-32602,"mirror_drift without mirror returns -32602");
+}
 
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
     var unknown=ToolCall(hidden,new JsonObject());

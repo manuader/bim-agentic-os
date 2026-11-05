@@ -16,6 +16,7 @@ namespace Bim.Mcp;
 //   status failed); here revision must be a JSON integer in Int32 range, otherwise the call is rejected with -32602.
 // - missing or wrongly typed arguments are rejected with -32602 instead of the CLI usage/null failures.
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
+// mirror_drift (P2-08) is read-only: its text is the file the CLI mirror-drift verb writes (MirrorDriftTool.cs).
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -56,6 +57,10 @@ public sealed class McpServer
         new ToolSpec("plan", "Read-only execution plan from the intended state in a ProjectStore to a desired Project IR (CLI: plan store desired.json).",
             [new ParameterSpec("store_path", "string", "Directory of an initialized ProjectStore"), new ParameterSpec("desired", "object", "Desired Project IR")],
             Plan),
+        new ToolSpec("mirror_drift", "Read-only drift report (P2-04) and resolution (P2-07: adopt/restore proposals and a restore plan) of a query.snapshot against the Core store; never applies anything, every proposal requires approval (CLI: mirror-drift store snapshot.json mirror.json output.json).",
+            [new ParameterSpec("store_path", "string", "Directory of an initialized ProjectStore (read only)"), new ParameterSpec("snapshot", "object", "query.snapshot readback (snapshot_version 1) or its catalogue response"),
+             new ParameterSpec("mirror", "object", "document {path, unique_id}, core_project_id, core_revision, map {BIM-IR id: UniqueId}, optional levels, wall_types, door_symbol, window_symbol, journal, options")],
+            DriftTool),
     ];
 
     static readonly JsonElement EmptyArguments = CreateEmptyArguments();
@@ -414,6 +419,13 @@ public sealed class McpServer
         var current = new ProjectStore(arguments.GetProperty("store_path").GetString() ?? "").Read();
         var desired = Read<Project>(arguments, "desired");
         return (JsonSerializer.Serialize(Compiler.Diff(current, desired)), false);
+    }
+
+    // P2-08: MirrorDriftTool, the same engine and input order as the CLI mirror-drift verb; the text is its output file.
+    static (string Text, bool IsError) DriftTool(JsonElement arguments)
+    {
+        var outcome = MirrorDriftTool.Run(arguments.GetProperty("store_path").GetString() ?? "", arguments.GetProperty("snapshot").GetRawText(), arguments.GetProperty("mirror").GetRawText());
+        return (outcome.Text, !outcome.Succeeded);
     }
 
     static T Read<T>(JsonElement arguments, string name) =>
