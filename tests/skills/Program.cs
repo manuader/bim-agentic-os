@@ -7,7 +7,7 @@ using System.Text.Json.Nodes;
 // P5-01 domain skill manifest oracle: strict parser refusals with JSON paths, semver ranges, the safe directory loader
 // (temp fixtures, symlinks), the resolver (closure, version ranges, conflicts, cycles, priority and precedence of
 // defaults, traceability, determinism, 20k-skill scale), the checked-in sample skills, the JSON Schema document and the
-// agreement corpus shared with tests/skills/check_schema.py, and (P5-02) the CABA code rule pack with the room validator, (P5-05) the element QA pack with the element validator, (P10-06) the jurisdiction rule-pack registry. Unit-tested only.
+// agreement corpus shared with tests/skills/check_schema.py, and (P5-02) the CABA code rule pack with the room validator, (P5-05) the element QA pack with the element validator, (P10-06) the jurisdiction rule-pack registry, (P5-08) the project skill lock file. Unit-tested only.
 int passed = 0, failed = 0, skipped = 0;
 // Platform fixtures (symlinks, junctions) may only be skipped on a developer's Windows machine; on CI and on every other
 // platform an unavailable fixture is a failure. Skips that are inherent (running as root, FIFOs on Windows) pass allowed.
@@ -995,6 +995,9 @@ try
 
     // ---- P5-07 vivienda unifamiliar typology programme pack and resolver (tests/skills/TypologySkillTests.cs) ----
     TypologySkillTests.Run(root, Check);
+
+    // ---- P5-08 project skill lock file (tests/skills/SkillLockTests.cs) ----
+    SkillLockTests.Run(root, Check, TempRoot);
 
     // ---- Scale: 20000-skill chain and cycle built in code (no recursion) ----
     const int Scale = 20000;
