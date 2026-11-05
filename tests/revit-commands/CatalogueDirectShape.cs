@@ -99,6 +99,9 @@ static class CatalogueDirectShapeChecks
         Check(spec.Description.EndsWith('.') && spec.Description.Contains("enabled test copies", StringComparison.Ordinal) && spec.Description.Contains("site", StringComparison.Ordinal)
             && spec.Description.Contains("box", StringComparison.Ordinal) && spec.Description.Contains("extrusion", StringComparison.Ordinal) && spec.Description.Contains("256", StringComparison.Ordinal),
             "the description states the copies-only rule, the site use, both shapes and the vertex cap", spec.Description);
+        Check(spec.Description.Contains("not hosted on or associated with the level", StringComparison.Ordinal), "the description states the shape is not hosted on or associated with the level", spec.Description);
+        var outlineSchema = JsonNode.Parse(spec.ArgsSchemaJson)!["properties"]!["shape"]!["oneOf"]![0]!["properties"]!["outline"]!;
+        Check(outlineSchema["maxItems"]!.GetValue<int>() == 257 && outlineSchema["minItems"]!.GetValue<int>() == 3, "the outline schema allows 3 to 257 items (256 distinct vertices plus an optional closing repeat)");
         string? problem = null;
         try { using var schema = JsonDocument.Parse(spec.ArgsSchemaJson); RevitCommandSchema.CheckSupported(schema.RootElement); if (schema.RootElement.GetProperty("type").GetString() != "object") problem = "not an object schema"; }
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException) { problem = error.Message; }
@@ -142,6 +145,13 @@ static class CatalogueDirectShapeChecks
         // 256 vertices: a regular polygon of radius 10000 mm (edges 245 mm, well apart).
         var ring = Outline(Enumerable.Range(0, 256).Select(i => (10000 * Math.Cos(2 * Math.PI * i / 256), 10000 * Math.Sin(2 * Math.PI * i / 256))).ToArray());
         Check(Accepts("256 vertices accepted", Envelope(WithShape(Extrusion(ring))))?.Shape is DirectShapeExtrusion { Outline.Count: 256 }, "the 256-vertex cap is accepted");
+        // The same 256-gon with its first vertex repeated at the end (257 items) is 256 distinct vertices.
+        var closedRing = Outline(Enumerable.Range(0, 257).Select(i => (10000 * Math.Cos(2 * Math.PI * (i % 256) / 256), 10000 * Math.Sin(2 * Math.PI * (i % 256) / 256))).ToArray());
+        Check(Accepts("256 vertices plus a closing repeat accepted", Envelope(WithShape(Extrusion(closedRing))))?.Shape is DirectShapeExtrusion { Outline.Count: 256 }, "256 distinct vertices plus a closing repeat (257 items) are accepted as 256");
+        // Collinear interior vertex (600, 0) on the bottom edge: allowed, the area stays 1200 x 800.
+        var collinear = Accepts("collinear interior vertex accepted", Envelope(WithShape(Extrusion(Outline((0, 0), (600, 0), (1200, 0), (1200, 800), (0, 800))))));
+        Check(collinear?.Shape is DirectShapeExtrusion { Outline.Count: 5 } && Near(CommandRulesDirectShape.AreaMm2(CommandRulesDirectShape.Footprint(collinear, 0)), 960_000),
+            "a collinear interior vertex is accepted and kept (area 960000 mm2)");
         Check(Accepts("triangle accepted", Envelope(WithShape(Extrusion(Outline((0, 0), (1000, 0), (500, 900))))))?.Shape is DirectShapeExtrusion { Outline.Count: 3 }, "a triangle is accepted");
     }
 
@@ -149,6 +159,8 @@ static class CatalogueDirectShapeChecks
     {
         var ring = Outline(Enumerable.Range(0, 257).Select(i => (10000 * Math.Cos(2 * Math.PI * i / 257), 10000 * Math.Sin(2 * Math.PI * i / 257))).ToArray());
         Rejects("257 vertices", Envelope(WithShape(Extrusion(ring))), RevitCommandCodes.ArgsInvalid, "args.shape.outline");
+        var longer = Outline(Enumerable.Range(0, 258).Select(i => (10000 * Math.Cos(2 * Math.PI * i / 258), 10000 * Math.Sin(2 * Math.PI * i / 258))).ToArray());
+        Rejects("258 items", Envelope(WithShape(Extrusion(longer))), RevitCommandCodes.ArgsInvalid, "args.shape.outline");
         Rejects("two vertices", Envelope(WithShape(Extrusion(Outline((0, 0), (1000, 0))))), RevitCommandCodes.ArgsInvalid, "args.shape.outline");
         // Three vertices with the last repeating the first: two distinct vertices.
         Rejects("three vertices closing onto the first", Envelope(WithShape(Extrusion(Outline((0, 0), (1000, 0), (0, 0))))), RevitCommandCodes.BoundaryTooFewPoints, "args.shape.outline");
@@ -189,6 +201,25 @@ static class CatalogueDirectShapeChecks
         Rejects("empty material", Envelope(With(Boulder(), "material", "")), RevitCommandCodes.ArgsInvalid, "args.material");
         Rejects("name over 256 characters", Envelope(With(Boulder(), "name", new string('n', 257))), RevitCommandCodes.ArgsInvalid, "args.name");
         Rejects("name with a control character", Envelope(With(Boulder(), "name", "boulder\n3")), RevitCommandCodes.ArgsInvalid, "args.name");
+        Rejects("name with braces", Envelope(With(Boulder(), "name", "boulder {3}")), RevitCommandCodes.ArgsInvalid, "args.name");
+        foreach (var forbidden in RevitViewRules.ForbiddenNameCharacters)
+            Rejects("name with '" + forbidden + "'", Envelope(With(Boulder(), "name", "boulder " + forbidden + " 3")), RevitCommandCodes.ArgsInvalid, "args.name");
+        Check(Accepts("name with spaces, digits, dash and accents accepted", Envelope(With(Boulder(), "name", "roca 3 - río")))?.Name == "roca 3 - río", "an ordinary name is accepted");
+        // Top of the solid: offset + height must stay within 9144000 (the level elevation is unknown before the pipe).
+        var high = Extrusion(height: 9_000_000);
+        high["base_offset_mm"] = 9_000_000;
+        Rejects("offset + height beyond Revit's limit", Envelope(WithShape(high)), RevitCommandCodes.LengthInvalid, "args.shape.height_mm");
+        var topAtLimit = Extrusion(height: 144_000);
+        topAtLimit["base_offset_mm"] = 9_000_000;
+        Check(Accepts("offset + height at Revit's limit accepted", Envelope(WithShape(topAtLimit))) is not null, "a top exactly at 9144000 mm is accepted");
+        var lowBase = Extrusion(height: 9_000_000);
+        lowBase["base_offset_mm"] = -9_000_000;
+        Check(Accepts("low base with tall height accepted", Envelope(WithShape(lowBase))) is not null, "a base at -9000000 with a 9000000 height (top 0) is accepted");
+        // Box extents: corners each within the limit but 18000000 mm apart.
+        Rejects("box wider than Revit's limit", Envelope(WithShape(BoxShape(Triple(-9_000_000, 0, 0), Triple(9_000_000, 800, 900)))), RevitCommandCodes.LengthInvalid, "args.shape.max[0]");
+        Rejects("box taller than Revit's limit", Envelope(WithShape(BoxShape(Triple(0, 0, -9_000_000), Triple(1200, 800, 9_000_000)))), RevitCommandCodes.LengthInvalid, "args.shape.max[2]");
+        // Outline plan extent: vertices within the limit but 18000000 mm apart in x.
+        Rejects("outline wider than Revit's limit", Envelope(WithShape(Extrusion(Outline((-9_000_000, 0), (9_000_000, 0), (0, 800))))), RevitCommandCodes.LengthInvalid, "args.shape.outline");
         Rejects("unexpected argument", Envelope(With(Boulder(), "comment", "x")), RevitCommandCodes.ArgsInvalid, "args.comment");
         Check(RevitDirectShapeRules.BuiltInCategory("site") == "OST_Site", "site maps to OST_Site");
         RevitCommandException? unknown = null;
@@ -256,7 +287,7 @@ static class CatalogueDirectShapeChecks
         Check(Near(box.MinX, 0) && Near(box.MinY, 0) && Near(box.MinZ, 3200) && Near(box.MaxX, 1200) && Near(box.MaxY, 800) && Near(box.MaxZ, 4100), "the expected box is the outline extents from base to base + height", box.ToString());
         // 1200 x 800 = 960000 mm2, x 900 = 864000000 mm3; perimeter 4000; tolerance 4000 x 900 + 2 x 960000 = 5520000.
         Check(Near(CommandRulesDirectShape.AreaMm2(footprint), 960_000) && Near(CommandRulesDirectShape.ExpectedVolumeMm3(footprint), 864_000_000) && Near(CommandRulesDirectShape.PerimeterMm(footprint), 4000)
-            && Near(CommandRulesDirectShape.VolumeToleranceMm3(footprint), 5_520_000), "area, volume, perimeter and the 1 mm volume tolerance of the boulder block");
+            && Near(CommandRulesDirectShape.VolumeToleranceMm3(footprint), 3_600_864), "area, volume, perimeter and the volume tolerance of the boulder block (4000 x 900 x 1 mm + 1e-6 x 864000000)");
         // Clockwise (0,0),(0,800),(1200,800),(1200,0) becomes (0,0),(1200,0),(1200,800),(0,800).
         var clockwise = CommandRulesDirectShape.Footprint(Parsed(WithShape(Extrusion(Outline((0, 0), (0, 800), (1200, 800), (1200, 0))))), 0);
         Check(clockwise.Loop.SequenceEqual(new[] { new PlanPoint(0, 0), new PlanPoint(1200, 0), new PlanPoint(1200, 800), new PlanPoint(0, 800) }), "a clockwise outline is reversed to counter-clockwise, first vertex kept",
@@ -302,9 +333,9 @@ static class CatalogueDirectShapeChecks
         Check(Check1(Observed() with { CategoryBuiltIn = null }) is not null, "no category is a mismatch");
         Check(Check1(Observed() with { Solids = 0, VolumeMm3 = null }) is { } empty && empty.Contains("solid", StringComparison.Ordinal), "no solid is a mismatch");
         Check(Check1(Observed() with { Solids = 2 }) is not null, "two solids are a mismatch");
-        // Within 5520000 mm3 (a 1 mm face offset) of 864000000.
-        Check(Check1(Observed() with { VolumeMm3 = 864_000_000 + 5_000_000 }) is null, "a volume within the 1 mm face-offset tolerance matches");
-        Check(Check1(Observed() with { VolumeMm3 = 864_000_000 + 6_000_000 }) is { } volume && volume.Contains("volume", StringComparison.Ordinal), "a volume beyond the tolerance is a mismatch");
+        // Within 3600864 mm3 (sides offset 1 mm, plus 1e-6 relative) of 864000000.
+        Check(Check1(Observed() with { VolumeMm3 = 864_000_000 + 3_500_000 }) is null, "a volume within the side-offset tolerance matches");
+        Check(Check1(Observed() with { VolumeMm3 = 864_000_000 + 3_700_000 }) is { } volume && volume.Contains("volume", StringComparison.Ordinal), "a volume beyond the tolerance is a mismatch");
         Check(Check1(Observed() with { VolumeMm3 = null }) is not null, "an unreadable volume is a mismatch");
         // The L outline's bounding box equals its full 4000 x 3000 rectangle's; only the volume tells them apart.
         var l = LShape();
@@ -312,6 +343,19 @@ static class CatalogueDirectShapeChecks
         Check(CommandReadbackDirectShape.Shape(l, "OST_GenericModel", null, CommandRulesDirectShape.Footprint(l, 0), lObserved) is null, "the concave L read back as requested matches");
         Check(CommandReadbackDirectShape.Shape(l, "OST_GenericModel", null, CommandRulesDirectShape.Footprint(l, 0), lObserved with { VolumeMm3 = 6e9 }) is { } filled && filled.Contains("volume", StringComparison.Ordinal),
             "a filled rectangle where an L was requested is a mismatch (same bounding box)");
+        // A 1.2 mm L: exact volume 6000000 x 1.2 = 7200000; its filled 4000 x 3000 bounding rectangle 14400000. The
+        // tolerance is 14000 x 1.2 x 1 mm + 1e-6 x 7200000 = 16807.2, so the filled rectangle must not pass.
+        var thinL = Parsed(new JsonObject
+        {
+            ["category"] = "generic_model",
+            ["shape"] = new JsonObject { ["kind"] = "extrusion", ["level"] = "Level 0", ["outline"] = Outline((0, 0), (4000, 0), (4000, 1000), (1000, 1000), (1000, 3000), (0, 3000)), ["height_mm"] = 1.2 },
+        });
+        var thinPrint = CommandRulesDirectShape.Footprint(thinL, 0);
+        var thinObserved = new ObservedDirectShape(ShapeUid, "OST_GenericModel", "", 1, 7_200_000, Faces(8, null), new BoxMm(0, 0, 0, 4000, 3000, 1.2));
+        Check(Near(CommandRulesDirectShape.VolumeToleranceMm3(thinPrint), 16_807.2, 1e-6), "the thin L tolerance is perimeter x height x 1 mm plus 1e-6 relative", CommandRulesDirectShape.VolumeToleranceMm3(thinPrint).ToString("R"));
+        Check(CommandReadbackDirectShape.Shape(thinL, "OST_GenericModel", null, thinPrint, thinObserved) is null, "a 1.2 mm L with its exact volume matches");
+        Check(CommandReadbackDirectShape.Shape(thinL, "OST_GenericModel", null, thinPrint, thinObserved with { VolumeMm3 = 14_400_000 }) is { } thinFilled && thinFilled.Contains("volume", StringComparison.Ordinal),
+            "a 1.2 mm filled rectangle where an L was requested is a mismatch");
         var named = Parsed(With(Boulder(), "name", "boulder 3"));
         Check(Check1(Observed() with { Name = "boulder 3" }, named) is null, "a requested name read back matches");
         Check(Check1(Observed() with { Name = "DirectShape" }, named) is { } name && name.Contains("name", StringComparison.Ordinal), "another name is a mismatch");
