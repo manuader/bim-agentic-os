@@ -36,9 +36,10 @@ public static class RevitMaterialTypeRules
     public const int MaxTransparency = 100;
     public const int MaxShininess = 128;
     public const int MaxSmoothness = 100;
-    // Thinnest non-membrane layer accepted (placeholder: not yet enforced).
+    // Thinnest non-membrane layer accepted: Revit's minimum compound structure layer thickness is 1/256 ft
+    // (1.190625 mm); 1.2 mm keeps a margin over it after unit conversion (also applied by roof_type.create).
     public const double MinLayerThicknessMm = 1.2;
-    public static string TooThin => "layer thinner than 1.2 mm";
+    public const string TooThin = "layer thinner than 1.2 mm (Revit's minimum layer thickness is 1/256 ft, 1.190625 mm)";
     public const string Membrane = "membrane";
     public const string Structure = "structure";
     public const string ThermalAir = "thermal_air";
@@ -96,7 +97,7 @@ public static partial class RevitCommandCatalogue
         var set = Fill("""{"type":"object","properties":{"material":@0@,"color":@1@,"transparency":@2@,"shininess":@3@,"smoothness":@4@,"surface_pattern":@5@,"cut_pattern":@6@},"required":["material"],"additionalProperties":false}""",
             Reference("Material to change: name or UniqueId from revit_query_materials"), Color, Transparency, Shininess, Smoothness, surface, cut);
         var functions = string.Join(",", RevitMaterialTypeRules.Functions.Select(function => "\"" + function + "\""));
-        var layer = Fill("""{"type":"object","description":"One layer of the build-up","properties":{"function":{"type":"string","description":"Layer function: finish1, finish2, substrate, structure (the core), insulation, thermal_air (Revit's Thermal/Air Layer, the same function as insulation) or membrane","enum":[@0@]},"material":@1@,"thickness_mm":{"type":"number","description":"Layer thickness in millimetres: exactly 0 for a membrane, otherwise greater than 0 and at most 9144000"}},"required":["function","material","thickness_mm"],"additionalProperties":false}""",
+        var layer = Fill("""{"type":"object","description":"One layer of the build-up","properties":{"function":{"type":"string","description":"Layer function: finish1, finish2, substrate, structure (the core), insulation, thermal_air (Revit's Thermal/Air Layer, the same function as insulation) or membrane","enum":[@0@]},"material":@1@,"thickness_mm":{"type":"number","description":"Layer thickness in millimetres: exactly 0 for a membrane, otherwise at least 1.2 (Revit minimum) and at most 9144000"}},"required":["function","material","thickness_mm"],"additionalProperties":false}""",
             functions, Reference("Material: name or UniqueId from revit_query_materials"));
         string HostType(string kind, string query, string order) => Fill("""{"type":"object","properties":{"name":@0@,"base_type":@1@,"layers":{"type":"array","description":"Layers from @2@, 1 to @3@; the structure layers form the core","items":@4@,"minItems":1,"maxItems":@3@}},"required":["name","base_type","layers"],"additionalProperties":false}""",
             Text("Name of the new " + kind + " type; none of \\\\ : { } [ ] | ; < > ? ` ~ and no leading or trailing space. If a " + kind + " type of this name already exists with exactly these layers it is returned unchanged; with other layers the request is refused", 256),
@@ -178,6 +179,7 @@ public static partial class RevitCommandCatalogue
                 if (thickness.Millimetres != 0) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "a membrane layer has no thickness in Revit; give 0");
             }
             else if (thickness.Millimetres == 0) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "only a membrane layer may be 0 mm thick");
+            else if (thickness.Millimetres < RevitMaterialTypeRules.MinLayerThicknessMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, RevitMaterialTypeRules.TooThin);
             if (thickness.Millimetres > RevitCommandGeometry.MaxRevitLengthMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "thickness above 9144000 mm (Revit's 30000 ft limit)");
             layers.Add(new HostTypeLayerArg(function, layer.GetProperty("material").GetString()!, thickness));
             index++;

@@ -78,9 +78,11 @@ public static class CommandRulesMaterialTypes
         _ => throw new ArgumentOutOfRangeException(nameof(hostKind), hostKind, "host kind is wall, floor or roof"),
     };
 
-    // Which existing element a create request names (index into names), null when none: placeholder, not yet exact first.
+    // Which existing element a create request names (index into names): the first exact (ordinal) name match, else the
+    // first match ignoring case (Revit type and material names ignore case), else null (nothing of that name: create it).
     public static int? PickExisting(IReadOnlyList<string> names, string name)
     {
+        for (var i = 0; i < names.Count; i++) if (string.Equals(names[i], name, StringComparison.Ordinal)) return i;
         for (var i = 0; i < names.Count; i++) if (string.Equals(names[i], name, StringComparison.OrdinalIgnoreCase)) return i;
         return null;
     }
@@ -118,7 +120,8 @@ public static class CommandReadbackMaterialTypes
     }
 
     // Null when the type is the requested one: exactly this name (ordinal), these layers in this order (function,
-    // material, thickness within 1e-3 mm) and these core boundaries. kind: "wall type" or "floor type".
+    // material, thickness within 1e-3 mm), these core boundaries and the first structure layer (index shells.Exterior)
+    // as the structural material layer. kind: "wall type" or "floor type".
     public static string? HostType(string kind, string name, IReadOnlyList<ExpectedRoofLayer> expected, (int Exterior, int Interior) shells, ObservedHostType observed)
     {
         if (!string.Equals(observed.Name, name, StringComparison.Ordinal)) return kind + " name is '" + observed.Name + "', expected '" + name + "'";
@@ -133,6 +136,8 @@ public static class CommandReadbackMaterialTypes
         }
         if (observed.ExteriorShell != shells.Exterior || observed.InteriorShell != shells.Interior)
             return kind + " has " + observed.ExteriorShell + " exterior and " + observed.InteriorShell + " interior shell layers, expected " + shells.Exterior + " and " + shells.Interior + " (the core is the structure layers)";
+        if (observed.StructuralMaterialIndex != shells.Exterior)
+            return kind + " structural material layer is " + (observed.StructuralMaterialIndex < 0 ? "none" : observed.StructuralMaterialIndex.ToString(CultureInfo.InvariantCulture)) + ", expected " + shells.Exterior + " (the first structure layer)";
         return null;
     }
 
@@ -233,7 +238,8 @@ public static class CommandReadbackMaterialTypes
         writer.WriteEndObject();
     });
 
-    // {<member>: {unique_id, name, existing, width_mm, exterior_shell_layers, interior_shell_layers, layers: [{function,
+    // {<member>: {unique_id, name, existing, width_mm, exterior_shell_layers, interior_shell_layers,
+    // structural_material_index (-1 when none), layers: [{function,
     // material_unique_id, material_name, thickness_mm}]}}; member is "wall_type" or "floor_type".
     public static string HostTypeJson(string member, ObservedHostType type, bool existing) => Json(writer =>
     {
@@ -246,6 +252,7 @@ public static class CommandReadbackMaterialTypes
         else writer.WriteNull("width_mm");
         writer.WriteNumber("exterior_shell_layers", type.ExteriorShell);
         writer.WriteNumber("interior_shell_layers", type.InteriorShell);
+        writer.WriteNumber("structural_material_index", type.StructuralMaterialIndex);
         writer.WriteStartArray("layers");
         foreach (var layer in type.Layers ?? Array.Empty<ObservedRoofLayer>())
         {
