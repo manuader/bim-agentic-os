@@ -162,3 +162,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay162 (2026-11-05, cloud)
 - No new Revit step (P4-07, P6-08, P7-08 are headless, unit-tested in CI). `git pull` (main 8a8189b). Still open: the Relay153/157/161 test-copy -Catalogue smoke steps, N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence, delete stray branches relay159-P6-09-baseline and relay161-P8-08-probe.
 - No new decision needed.
+
+## Relay164 (2026-11-05, cloud)
+- No new Revit step (all headless). Note after `git pull`: `skills-lock update <ids>` now keeps pins it is not told about; dropping a pin is the explicit `skills-lock unpin`. New `scripts/package-archive.ps1` (zip + SHA256SUMS, `-Extract` before `install-addin.ps1 -PackageDirectory`). Still open: the relay162 list in STATUS.md.
