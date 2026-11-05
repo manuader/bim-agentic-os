@@ -9,7 +9,8 @@
 # RoofSlopeOff reports a different roof slope; SnapshotUnstable makes every snapshot differ; SingleLevel leaves the
 # model with one level; NoStructuralTypes = @(categories) lists none of those structural types; P1-11:
 # DirectShapeBoxOff widens every DirectShape box by 5 mm, RoofExtrusionMirrored extrudes roofs to the plane's right,
-# RotateWrongWay turns clockwise, SaveCopyHashOff reports a wrong copy sha256. It also answers direct_shape.create,
+# RotateWrongWay turns clockwise, SaveCopyHashOff reports a wrong copy sha256, SaveCopyFailsAfterSave re-points the
+# document to the copy and then answers transaction_failed; with BehindCli a client-side case answers fake_client_side_leak. It also answers direct_shape.create,
 # roof.create_extrusion, element.move/copy/rotate/mirror and document.save_copy (which writes a small file at the
 # target, re-points the state's DocumentPath to it and keeps no receipt), and emulates, in process only, the
 # client-side refusals the real CLI gives those commands before the pipe. With DocumentPath set on the state, an
@@ -287,6 +288,9 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
     $sha = Get-FakeSha256 $CommandText
     # What the real CLI refuses before the pipe (in process only; behind the pipe the CLI already refused it).
     $refusal = Get-FakeClientRefusal $State $command $a ([string]$envelope.document.path)
+    # Behind the pipe (BehindCli, set by fake-revit-command-pipe.ps1) such a request means the CLI let it through: its
+    # own code, so the step fails instead of passing on the emulated answer.
+    if ($null -ne $refusal -and $State.ContainsKey('BehindCli') -and $State.BehindCli) { return ConvertTo-FakeResponseJson (New-FakeFailure 'fake_client_side_leak' $refusal.field "the CLI forwarded a request it must refuse ($($refusal.code)): $($refusal.detail)") }
     if ($null -ne $refusal) { return ConvertTo-FakeResponseJson $refusal }
     # Admission: the envelope must name the document Revit has open (after document.save_copy, the copy).
     if ($null -ne $State.DocumentPath -and ![string]::Equals([string]$envelope.document.path, $State.DocumentPath, [StringComparison]::OrdinalIgnoreCase)) {
@@ -310,7 +314,7 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
     # Client-side geometry rule, emulated only for the in-process run; behind the pipe the real CLI refuses first.
     if ($command -eq 'wall.create' -and $a.curve.kind -eq 'arc' -and $a.curve.PSObject.Properties['through']) {
         $s = $a.curve.start; $e = $a.curve.end; $t = $a.curve.through
-        if ([Math]::Abs(($e[0] - $s[0]) * ($t[1] - $s[1]) - ($e[1] - $s[1]) * ($t[0] - $s[0])) -lt 1e-6) { return ConvertTo-FakeResponseJson (New-FakeFailure 'arc_collinear' 'args.curve' 'the three points are collinear') }
+        if ([Math]::Abs(($e[0] - $s[0]) * ($t[1] - $s[1]) - ($e[1] - $s[1]) * ($t[0] - $s[0])) -lt 1e-6) { return ConvertTo-FakeResponseJson (New-FakeFailure $(if ($State.ContainsKey('BehindCli') -and $State.BehindCli) { 'fake_client_side_leak' } else { 'arc_collinear' }) 'args.curve' 'the three points are collinear') }
     }
     $created = @()
     $modified = @()
@@ -716,6 +720,8 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
             if ($State.Faults.ContainsKey('SaveCopyHashOff')) { $copySha = '0' * 64 }
             $null = $State.Copies.Add($target)
             $State.DocumentPath = $target
+            # Fault: Save As wrote the copy and re-pointed the document, then the location check failed.
+            if ($State.Faults.ContainsKey('SaveCopyFailsAfterSave')) { return ConvertTo-FakeResponseJson (New-FakeFailure 'transaction_failed' 'args.path' "Revit saved the copy, but its location check failed after the save: injected fault; the open document now points to $target (send later requests with that document.path, or close it in Revit)") }
             $warnings = @("the open document is now the copy $target (Revit Save As re-points it); send later requests with document.path $target; $source keeps its last saved state")
             [ordered]@{ copy = [ordered]@{ path = $target; bytes = $bytes.Length; sha256 = $copySha; source_path = $source; source_unchanged = $true; had_unsaved_changes = $true; document_path = $target; is_modified = $false } }
         }

@@ -1184,7 +1184,7 @@ function Get-CatalogueSaveCopySteps {
             $copy = Get-CataloguePath $r 'readback.copy'
             $opened = Get-CatalogueMember $copy 'document_path'
             # Revit re-pointed the open document to the copy: every later request names it, whatever else differs.
-            if ($opened -and (Get-CatalogueFullPath $opened) -eq $paths.Copy) { $picked['document_path'] = [string]$opened }
+            if ($opened -and (Get-CatalogueFullPath $opened) -eq $paths.Copy) { $picked['document_path'] = [string]$opened; $picked['document_switched_by'] = 'c-save' }
             $sha = [string](Get-CatalogueMember $copy 'sha256')
             $exists = Test-Path -LiteralPath $paths.Copy -PathType Leaf
             $diskSha = if ($exists) { Get-CatalogueFileSha256 $paths.Copy } else { $null }
@@ -1208,9 +1208,25 @@ function Get-CatalogueSaveCopySteps {
     $steps.Add(@{ Key = 'c-save-again'; Es = 'Repetir la misma copia (mismo identificador): debe rechazarse sin tocar Revit porque el archivo ya existe'; Command = 'document.save_copy'; ReuseOf = 'c-save'; UseSourceDocument = $true; ClientSide = $true; Reason = 'target_exists'; Expect = @{ Status = 'failed'; Code = 'save_copy_refused' }
         Build = { Need 'copy_path'; [ordered]@{ path = $picked['copy_path'] } }
         Check = { param($r) Test-CatalogueRefusal $r 'args.path' 'target_exists:*' } })
-    $steps.Add(@{ Key = 'c-levels-copy'; Es = 'Consultar niveles nombrando la copia (Revit la tiene abierta)'; Command = 'query.levels'; Expect = @{ Status = 'succeeded' }
-        Build = { Need 'document_path'; [ordered]@{} }
-        Check = { param($r) $levels = Get-CatalogueList (Get-CatalogueMember $r 'readback') 'levels'; Test-CatalogueContains 'el nivel de los muros está en la copia' $picked['level'] @($levels | ForEach-Object { Get-CatalogueMember $_ 'unique_id' }) } })
+    # Always sent naming the copy, also when c-save failed: Revit can fail the save after Save As already re-pointed the
+    # open document (location check or readback after the save). If this probe succeeds while nothing switched yet,
+    # the run switches to the copy here and records it (picked.document_switched_by = c-levels-copy); a save refused
+    # before Save As makes it document_conflict and the later groups keep the source.
+    $steps.Add(@{ Key = 'c-levels-copy'; Es = 'Consultar niveles nombrando la copia (Revit la tiene abierta; si c-save falló, comprueba si Revit igual quedó en la copia)'; Command = 'query.levels'; Expect = @{ Status = 'succeeded' }
+        Build = { $null = Get-CatalogueCopyPaths $DocumentPath; [ordered]@{} }
+        Document = { (Get-CatalogueCopyPaths $DocumentPath).Copy }
+        Check = {
+            param($r)
+            $levels = Get-CatalogueList (Get-CatalogueMember $r 'readback') 'levels'
+            $reason = Test-CatalogueContains 'el nivel de los muros está en la copia' $picked['level'] @($levels | ForEach-Object { Get-CatalogueMember $_ 'unique_id' })
+            if (!$picked.ContainsKey('document_path') -or !$picked['document_path']) {
+                $copyPath = (Get-CatalogueCopyPaths $DocumentPath).Copy
+                $picked['document_path'] = $copyPath
+                $picked['document_switched_by'] = 'c-levels-copy'
+                $null = Test-CatalogueCondition 'c-save falló pero Revit tiene la copia abierta: la sesión cambia a la copia' $copyPath $copyPath $true
+            }
+            $reason
+        } })
     $steps.Add(@{ Key = 'c-levels-source'; Es = 'Consultar niveles nombrando el modelo de origen (debe responder document_conflict)'; Command = 'query.levels'; UseSourceDocument = $true; Expect = @{ Status = 'failed'; Code = 'document_conflict' }
         Build = { Need 'document_path'; [ordered]@{} }
         Check = { param($r) Test-CatalogueRefusal $r 'document.path' '*not the saved document*' } })
@@ -1419,7 +1435,11 @@ function Invoke-CatalogueSequence {
         if ($Progress) { & $Progress "Paso $index/$($plan.Count) [$($item.Group)]: $($spec.Es)" }
         if ($aborted) { $record.reason = "no enviado: $aborted"; continue }
         if ($Alive -and !(& $Alive)) { $aborted = 'el Revit de prueba se cerró'; $record.reason = "no enviado: $aborted"; continue }
-        try { $stepArgs = & $spec.Build }
+        try {
+            $stepArgs = & $spec.Build
+            # Document (optional): the path this one step names instead (the copy probe after a save_copy).
+            if ($spec.ContainsKey('Document')) { $stepDocument = [string](& $spec.Document); $record.document_path = $stepDocument }
+        }
         catch {
             if (Test-CatalogueBlockedMessage $_.Exception.Message) { Block $record $_.Exception.Message 'no enviado, ' }
             else { $record.reason = 'no enviado: ' + $_.Exception.Message }

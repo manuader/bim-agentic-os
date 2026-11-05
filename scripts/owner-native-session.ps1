@@ -146,8 +146,10 @@ try {
      document_path = $boot.documentPath; document_unique_id = $boot.documentUniqueId; revit_build = $boot.revitBuild
      scope = $summary.catalogue_scope
      result_line = (Format-CatalogueSummary $sequence); counts = $sequence.counts; groups = $sequence.groups; overall = $sequence.overall; all_passed = $sequence.all_passed; aborted = $sequence.aborted; picked = $sequence.picked
-     document_saved = $false
+     fixture_saved = $false
      copy_path = $sequence.picked['copy_path']
+     open_document_path = $(if ($sequence.picked['document_path']) { $sequence.picked['document_path'] } else { $boot.documentPath })
+     document_switched_by = $sequence.picked['document_switched_by']
      document_note = 'The fixture document is never saved. The copia group saves one new copy (copy_path, BIM-Agentic-Test-c04-*-copia.rvt next to the fixture, before the destructive group); Revit then has that copy open and the last group (which deletes the v1 south wall and its door) changes it only in memory. Closing the child Revit without saving discards those changes.'
      steps = $sequence.steps
     } | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $cataloguePath
@@ -183,7 +185,12 @@ try {
     $run.closed = $child.WaitForExit($CloseWaitSeconds * 1000)
     if (!$run.closed) { Say "Run ${i}: child PID $($child.Id) did not close in $CloseWaitSeconds s; left running, close it yourself (not production)" }
    }
-   elseif ($child -and !$child.HasExited) { Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. El modelo de prueba NO está guardado; al cerrarlo, Revit preguntará si guardar: puede elegir No." }
+   elseif ($child -and !$child.HasExited) {
+    if ($Catalogue -and !$CatalogueV1Only -and $run.catalogue -and $sequence.picked['document_path']) {
+     Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. Se guardó una copia ($($sequence.picked['document_path'])) y Revit la tiene abierta con los cambios del último grupo (modificar y borrar) solo en memoria. Al cerrarlo, Revit preguntará si guardar: elija No, así la copia queda igual al sha256 registrado. El modelo de prueba original no se guardó."
+    }
+    else { Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. El modelo de prueba NO está guardado; al cerrarlo, Revit preguntará si guardar: puede elegir No." }
+   }
    Save
   }
  }
