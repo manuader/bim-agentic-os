@@ -36,6 +36,9 @@ public static class RevitMaterialTypeRules
     public const int MaxTransparency = 100;
     public const int MaxShininess = 128;
     public const int MaxSmoothness = 100;
+    // Thinnest non-membrane layer accepted (placeholder: not yet enforced).
+    public const double MinLayerThicknessMm = 1.2;
+    public static string TooThin => "layer thinner than 1.2 mm";
     public const string Membrane = "membrane";
     public const string Structure = "structure";
     public const string ThermalAir = "thermal_air";

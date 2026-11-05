@@ -19,8 +19,9 @@ public sealed record ObservedMaterial(string UniqueId, string Name, RgbColor? Co
 // What a material must be after material.create or material.set; a null member is not checked.
 public sealed record ExpectedMaterial(string Name, RgbColor? Color, int? Transparency, int? Shininess, int? Smoothness, string? MaterialClass, string? SurfacePatternUid, string? CutPatternUid);
 // A wall or floor type as Revit reports it: Layers null without a compound structure; the shell counts are
-// CompoundStructure.GetNumberOfShellLayers(Exterior / Interior).
-public sealed record ObservedHostType(string UniqueId, string Name, IReadOnlyList<ObservedRoofLayer>? Layers, double? WidthMm, int ExteriorShell, int InteriorShell);
+// CompoundStructure.GetNumberOfShellLayers(Exterior / Interior); StructuralMaterialIndex is
+// CompoundStructure.StructuralMaterialIndex (-1 when none or without a compound structure).
+public sealed record ObservedHostType(string UniqueId, string Name, IReadOnlyList<ObservedRoofLayer>? Layers, double? WidthMm, int ExteriorShell, int InteriorShell, int StructuralMaterialIndex);
 // An element type: FamilyName is ElementType.FamilyName (for example "Basic Wall"), null when empty.
 public sealed record ObservedTypeRef(string UniqueId, string Name, string? FamilyName);
 
@@ -76,6 +77,13 @@ public static class CommandRulesMaterialTypes
         "wall" => (baseEndCap is null or NoEndCap ? NoWrapping : baseEndCap, baseOpeningWrapping ?? NoWrapping),
         _ => throw new ArgumentOutOfRangeException(nameof(hostKind), hostKind, "host kind is wall, floor or roof"),
     };
+
+    // Which existing element a create request names (index into names), null when none: placeholder, not yet exact first.
+    public static int? PickExisting(IReadOnlyList<string> names, string name)
+    {
+        for (var i = 0; i < names.Count; i++) if (string.Equals(names[i], name, StringComparison.OrdinalIgnoreCase)) return i;
+        return null;
+    }
 
     // wall_type.create duplicates a basic wall type (curtain and stacked types have no simple layer structure).
     public static void CheckBaseWallKind(string kind)

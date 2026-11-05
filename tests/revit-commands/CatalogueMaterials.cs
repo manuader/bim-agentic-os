@@ -106,6 +106,10 @@ static class CatalogueMaterialsChecks
             "roof_type.create binds name, base type and the layers exterior to interior with thickness in millimetres");
         Check(RevitMaterialRules.Functions.SequenceEqual(new[] { "finish1", "finish2", "substrate", "structure", "insulation", "membrane" }), "layer functions are finish1, finish2, substrate, structure, insulation and membrane");
         Accepts("single structure layer accepted", Envelope("roof_type.create", With(Cabin(), "layers", Layers(Layer("structure", "Concrete", 200)))));
+        // Revit's thinnest compound structure layer is 1/256 ft (1.190625 mm): roof_type.create also refuses layers under 1.2 mm.
+        Rejects("roof type with a 1 mm finish layer", Envelope("roof_type.create", With(Cabin(), "layers", Layers(Layer("finish1", "Tile", 1), Layer("structure", "Wood", 150)))), RevitCommandCodes.LengthInvalid, "args.layers[0].thickness_mm");
+        Rejects("roof type with a 1.19 mm structure layer", Envelope("roof_type.create", With(Cabin(), "layers", Layers(Layer("structure", "Wood", 1.19)))), RevitCommandCodes.LengthInvalid, "args.layers[0].thickness_mm");
+        Accepts("roof type with a 1.2 mm layer accepted", Envelope("roof_type.create", With(Cabin(), "layers", Layers(Layer("finish1", "Tile", 1.2), Layer("structure", "Wood", 150)))));
         Accepts("material by UniqueId accepted", Envelope("roof_type.create", With(Cabin(), "layers", Layers(Layer("insulation", TileUid, 100.5)))));
         Accepts("32 layers accepted", Envelope("roof_type.create", With(Cabin(), "layers", Layers(Enumerable.Range(0, 32).Select(_ => Layer("finish2", "Wood", 10)).ToArray()))));
 

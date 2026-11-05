@@ -130,7 +130,7 @@ internal static partial class CommandExecutor
             return new ObservedRoofLayer(CommandRulesMaterials.FunctionName(layer.Function.ToString()), material?.UniqueId, material?.Name, Mm(layer.Width));
         }).ToArray();
         return new ObservedHostType(type.UniqueId, type.Name, layers, structure is null ? null : Mm(structure.GetWidth()),
-            structure?.GetNumberOfShellLayers(ShellLayerType.Exterior) ?? 0, structure?.GetNumberOfShellLayers(ShellLayerType.Interior) ?? 0);
+            structure?.GetNumberOfShellLayers(ShellLayerType.Exterior) ?? 0, structure?.GetNumberOfShellLayers(ShellLayerType.Interior) ?? 0, structure?.StructuralMaterialIndex ?? -1);
     }
 
     // The layered structure in request order (exterior/top first): the core is the run of structure layers. hostKind
