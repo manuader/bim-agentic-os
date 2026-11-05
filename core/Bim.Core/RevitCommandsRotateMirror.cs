@@ -66,7 +66,7 @@ public static partial class RevitCommandCatalogue
                 "Rotate 1 to 100 elements (by UniqueId) about one vertical axis through a plan point [x, y] in millimetres by angle_deg degrees, counter-clockwise seen from above when positive, like Revit's Rotate; "
                 + "each element's location point (and its rotation), location curve or sketch profile is read back and must sit where the rotation puts it within 1 mm, else everything is rolled back. "
                 + "Hosted elements (doors, windows) turn only with their host: include the host. Example: turn a wall 90 degrees about its start (0, 0) is element_uids [wall], center [0, 0], angle_deg 90. "
-                + ""The " + Refusals + "; elements without a location point, curve or sketch profile, and hosted elements without their host, are element_not_rotatable; "
+                + "The " + Refusals + "; elements without a location point, curve or sketch profile, and hosted elements without their host, are element_not_rotatable; "
                 + "an angle too small to move any point of a target by more than 1 mm (for a target without a readable rotation) is angle_too_small_for_target. Allowed only on enabled test copies.",
                 rotateSchema, BindRotate),
             new RevitCommandSpec(RevitRotateMirrorRules.Mirror, true,
