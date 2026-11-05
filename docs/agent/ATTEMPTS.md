@@ -206,3 +206,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P2-09: no failed attempts (red 42050267331 → green 42053306609; review red 42057004079 → green 42059574519).
 - P5-09: red 42050527620 → green 42051621858; review red 42061959924. Attempt1 (run 42062766941, a55d8a2): hypothesis the static "pin writes only through an exclusive create" check tripped on a new comment naming `SkillLockFile.Write` → confirmed, comment reworded, check unchanged; green 42063596832.
 - P10-08: red 42050344726 → green 42051827079; review red 42067515495. Attempt1 (run 42068613144, db392f39): relative-path test saw a non-zero `$LASTEXITCODE` although outputs landed correctly; hypothesis the script ended without `exit 0` so in-process callers read a stale exit code → confirmed; green 42070078862.
+
+### Relay166 (2026-11-05, cloud)
+- P9-06: no failed attempts (red 42079534722 → green 42081753813; review red 42088743974 → green 42088830631).
+- P1-11 Attempt1 (run 42083809945, 6537406): hypothesis the fake save_copy handler can reuse `$sha` for the copy hash → wrong, `$sha` is the request hash the receipt echoes, so the real-CLI pass got response_invalid; renamed `$copySha`, green 42084994501. Review red 42091583347 → green 42092176694, no further attempts.
+- P3-07: no failed attempts (compile slip 42079678269 — test locals clashing with enclosing names, not an attempt; red 42081207010 → green 42082226772; review red 42094495789 → green 42095406642).

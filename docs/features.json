@@ -723,7 +723,7 @@
         "docs/owner-verification-session.md"
       ],
       "blocker": "Not run by the owner yet; schedule fields need an English Revit UI; missing fixture families are reported as blocked steps.",
-      "scope": "P1-06: -Catalogue continues after the unchanged 17 v1 steps with groups v2 (6), vistas (5), snapshot (2), consultas (6), estructura (12), documentacion (15), diario (6), modificar (12, destructive last) = 81 steps; requested vs observed per step; group failures do not stop later groups, lost pipe stops the run; blocked preconditions counted separately; -CatalogueV1Only. Fake-pipe and real-CLI tests in CI 41704794976."
+      "scope": "P1-06: -Catalogue continues after the unchanged 17 v1 steps with groups v2 (6), vistas (5), snapshot (2), consultas (6), estructura (12), documentacion (15), diario (6), modificar (12, destructive last) = 81 steps; requested vs observed per step; group failures do not stop later groups, lost pipe stops the run; blocked preconditions counted separately; -CatalogueV1Only. Fake-pipe and real-CLI tests in CI 41704794976. P1-11 (relay166, CI 42092176694): new groups after diario — formas 3 (direct_shape box/site extrusion/bow-tie refusal), extrusion 5 (barrel on axis, reversed and diagonal planes, closed-profile refusal), transformar 9 (move, replay, zero vector, copy, rotate, rotate-door refusal, full turn, mirror), copia 5 (outside-root refusal, save_copy with sha256 match, target_exists, probe on copy, document_conflict on source); modificar then runs on the copy; failed save after SaveAs detected by the copy probe; total 103 steps."
     },
     {
       "id": "mirror-drift",
@@ -1116,8 +1116,32 @@
         "core/Bim.Core/IncrementalDiffAdvance.cs",
         "tests/local-validation/IncrementalDiffAdvanceTests.cs"
       ],
-      "blocker": "Advance is still O(project) (dictionary and byte-table reference copies; the committed overload re-hashes O(bytes)); mutations of untouched elements shared with Before not detected; not wired into the CLI or a runtime (P3-07).",
+      "blocker": "Advance is still O(project) (dictionary and byte-table reference copies; the committed overload re-hashes O(bytes)); mutations of untouched elements shared with Before not detected; wired into the CLI by diff-edits (P3-07) but not into a runtime.",
       "scope": "P3-06: IncrementalDiffIndex.Advance(result) and Advance(result, committed) (the instance ProjectStore.Commit returns) equal Build(result.After)/Build(committed) in every observable (BeforeHash, Before, positions, cached bytes, reverse-dependency keys and lists, next Diff incl. Work) over 300 random + 400 rich chained P3-04 steps; predecessor unchanged; untouched bytes shared by reference, Carried == create+update count == Work.Serialized, Advance serializes nothing; Diff->Commit->Advance->Diff->Commit chain succeeds; typed refusals edit_stale_result, edit_result_mutated, edit_commit_mismatch. CI 42010080321."
+    },
+    {
+      "id": "incremental-diff-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/DiffEditsCommand.cs",
+        "tests/cli/Program.cs"
+      ],
+      "blocker": "Index rebuilt per invocation (O(project)); no --max-affected option; refusal envelope does not name the failing file; internal-error path covered only by a static scan.",
+      "scope": "P3-07: `diff-edits --project <p> --edits <e>` (BoundedInput 8 MiB, regular files, links refused) prints the IncrementalDiff ExecutionPlan JSON byte-identical to the in-process library plan and to `diff` on the independently applied project; edits refuse unknown members (nested too) and duplicate keys; typed refusals exit 1 with {status:failed,code}; inputs keep bytes/mtime and dir listings unchanged. CI 42095406642."
+    },
+    {
+      "id": "revit-material-layered-types",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsMaterialTypes.cs",
+        "core/Bim.Core/RevitCommandsMaterials.cs",
+        "runtimes/revit-native/CommandsExecutorMaterialTypes.cs",
+        "runtimes/revit-native/CommandsExecutorMaterials.cs",
+        "tests/revit-commands/CatalogueMaterialTypes.cs",
+        "tests/revit-commands/CatalogueMaterials.cs"
+      ],
+      "blocker": "Executors never run in Revit: shell counts and StructuralMaterialIndex after SetCompoundStructure, 1.2 mm accepted for every layer function, and which names Duplicate/Material.Create refuse are unverified.",
+      "scope": "P9-06 (owner chat material.create/set, wall_type/floor_type/roof_type.create, query.fill_patterns, element.change_type) plus relay166 hardening: exact-name-first PickExisting for materials and wall/floor/roof types, non-membrane layers < 1.2 mm refused length_invalid before the pipe (wall/floor/roof), readback of exterior/interior shell counts and structural material index (= first structure layer) for wall/floor/roof types, Revit ArgumentException on naming → args_invalid at args.name. Rules and readback unit-tested; executors compiled. CI 42088830631."
     },
     {
       "id": "revit-direct-shape",
