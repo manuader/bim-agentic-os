@@ -87,7 +87,18 @@ public static partial class RevitCommandCatalogue
         var uids = DistinctUniqueIds(args.GetProperty("element_uids"), "args.element_uids", null);
         var element = args.GetProperty("vector_mm");
         var components = new double[3];
-        for (var i = 0; i < 3; i++) components[i] = Number(element[i]);
+        for (var i = 0; i < 3; i++)
+        {
+            var field = "args.vector_mm[" + i.ToString(CultureInfo.InvariantCulture) + "]";
+            components[i] = Number(element[i]);
+            RevitUnits.Millimetres(components[i], field, allowNegative: true, allowZero: true);
+            if (Math.Abs(components[i]) > RevitTransformRules.MaxMagnitudeMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, field, "component beyond 1000000 mm (1 km)");
+        }
+        // Magnitude from the request's own numbers, not the Length round trip.
+        var magnitude = Math.Sqrt(components[0] * components[0] + components[1] * components[1] + components[2] * components[2]);
+        if (magnitude == 0) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, "args.vector_mm", "zero vector: nothing to move or copy");
+        if (!(magnitude >= RevitTransformRules.MinMagnitudeMm)) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, "args.vector_mm", "vector shorter than 1.2 mm (" + magnitude.ToString("0.###", CultureInfo.InvariantCulture) + " mm)");
+        if (magnitude > RevitTransformRules.MaxMagnitudeMm) throw new RevitCommandException(RevitCommandCodes.LengthInvalid, "args.vector_mm", "vector longer than 1000000 mm (1 km): " + magnitude.ToString("0.###", CultureInfo.InvariantCulture) + " mm");
         var vector = new TranslationVector(Length.FromMillimetres(components[0]), Length.FromMillimetres(components[1]), Length.FromMillimetres(components[2]));
         return (uids, vector);
     }
