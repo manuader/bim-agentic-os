@@ -1,10 +1,13 @@
 # C04 owner smoke of Revit command catalogue v1 and, after it, the P1-06 one-run verification groups (catalogue v2,
-# views, snapshot, element queries, structure, documentation, journal, modify/delete): the scripted step lists, envelope
+# views, snapshot, element queries, structure, documentation, journal, then the P1-11 groups: DirectShapes, extrusion
+# roofs, move/copy/rotate/mirror and document.save_copy, and last modify/delete): the scripted step lists, envelope
 # building, picking references from query results and checking each response with requested vs observed rows.
 # Dot-sourced by scripts/owner-native-session.ps1 -Catalogue (which passes an invoker that runs the CLI
 # "revit-command" verb against the child Revit's pipe and a wire invoker for journal.read) and by
 # tests/integration/test-catalogue-session.ps1 (which passes fakes). Everything here except Invoke-CatalogueCli and
-# Invoke-CatalogueWire is pure; nothing here starts, stops or saves Revit. See docs/owner-verification-session.md.
+# Invoke-CatalogueWire is pure (the save_copy check reads the copy file to hash it); nothing here starts or stops Revit,
+# and the only save is the document.save_copy step, a new BIM-Agentic-Test-c04-*-copia.rvt next to the test copy.
+# See docs/owner-verification-session.md.
 Set-StrictMode -Version Latest
 
 $script:CatalogueOperationIdPattern = '\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z'
@@ -205,7 +208,7 @@ function Get-CatalogueSteps {
     $steps.Add(@{ Key = 'wall-arc-conflict'; Es = 'Mismo identificador con otro radio (debe rechazarse)'; Command = 'wall.create'; ReuseOf = 'wall-arc'; Expect = @{ Status = 'failed'; Code = 'operation_id_conflict' }
         Build = { Need 'wall-arc'; New-CatalogueArcWall $picked['level'] $picked['wall_type'] 3500 }; Check = { param($r) $null } })
     # arc_collinear is a client-side code (RevitCommandCodes.ClientSide): the CLI refuses before opening the pipe.
-    $steps.Add(@{ Key = 'invalid-arc'; Es = 'Pedido inválido: arco con puntos alineados (debe rechazarse sin tocar Revit)'; Command = 'wall.create'; Expect = @{ Status = 'failed'; Code = 'arc_collinear' }
+    $steps.Add(@{ Key = 'invalid-arc'; Es = 'Pedido inválido: arco con puntos alineados (debe rechazarse sin tocar Revit)'; Command = 'wall.create'; ClientSide = $true; Expect = @{ Status = 'failed'; Code = 'arc_collinear' }
         Build = { Need 'level', 'wall_type'; [ordered]@{ level = $picked['level']; type = $picked['wall_type']; height_mm = $script:CatalogueWallHeightMm; curve = [ordered]@{ kind = 'arc'; start = @(0, -3000); end = @(2000, -3000); through = @(1000, -3000) } } }
         Check = { param($r) $null } })
     return , $steps.ToArray()
@@ -895,8 +898,328 @@ function Get-CatalogueJournalSteps {
     return , $steps.ToArray()
 }
 
+# --- P1-11: the commands added after P1-06, between the journal group and the destructive one ---
+# Each group uses only the v1 picks (level, wall type, the v1 door) and its own elements, placed clear of everything
+# earlier (x >= 29700 or y >= 15000): DirectShapes at x 50000-53200, barrel roofs at x 29700-43780, the transformed
+# walls at y 15000-20500. ClientSide = $true marks a refusal the CLI decides before the pipe (RevitCommandCodes.ClientSide;
+# the headless test proves it never reaches the pipe); Reason names the document.save_copy reason prefix.
+
+# The open barrel profile of the extrusion roofs ([u, z] mm in the plane frame: u along the plane line from its start,
+# z above the level) and its exact extent: the arc is symmetric, so its top is the through point.
+$script:CatalogueBarrelProfile = @([ordered]@{ kind = 'arc'; start = @(-300, 2700); end = @(6300, 2700); through = @(3000, 3800) })
+$script:CatalogueBarrelU = @(-300, 6300)
+$script:CatalogueBarrelZ = @(2700, 3800)
+$script:CatalogueBarrelExtrusion = @(0, 4000)
+
+# The project elevation (mm) of a level in a query.levels reply (elevation_mm when the reply has no project elevation).
+function Get-CatalogueLevelElevation($Response, [string]$LevelUid) {
+    foreach ($level in (Get-CatalogueList (Get-CatalogueMember $Response 'readback') 'levels')) {
+        if ([string](Get-CatalogueMember $level 'unique_id') -eq $LevelUid) {
+            $project = Get-CatalogueMember $level 'project_elevation_mm'
+            if ($null -ne $project) { return [double]$project }
+            return [double](Get-CatalogueMember $level 'elevation_mm')
+        }
+    }
+    throw "falta la elevación del nivel $LevelUid en la consulta de niveles"
+}
+
+# [x, y] of a location member ([x, y, z] in the move/rotate/mirror readback), or $null.
+function Get-CataloguePlan($Location, [string]$Name) {
+    $point = @(Get-CatalogueMember $Location $Name)
+    if ($point.Count -lt 2 -or $null -eq $point[0] -or $null -eq $point[1]) { return $null }
+    return @($point[0], $point[1])
+}
+
+# A curve location whose plan ends are A and B, in either order, within the tolerance.
+function Test-CatalogueSegment([string]$What, [double[]]$A, [double[]]$B, $Location, [double]$Tolerance) {
+    $s = Get-CataloguePlan $Location 'start'
+    $e = Get-CataloguePlan $Location 'end'
+    $ok = $false
+    if ($null -ne $s -and $null -ne $e) {
+        $forward = (Test-CatalogueNear $s[0] $A[0] $Tolerance) -and (Test-CatalogueNear $s[1] $A[1] $Tolerance) -and (Test-CatalogueNear $e[0] $B[0] $Tolerance) -and (Test-CatalogueNear $e[1] $B[1] $Tolerance)
+        $backward = (Test-CatalogueNear $s[0] $B[0] $Tolerance) -and (Test-CatalogueNear $s[1] $B[1] $Tolerance) -and (Test-CatalogueNear $e[0] $A[0] $Tolerance) -and (Test-CatalogueNear $e[1] $A[1] $Tolerance)
+        $ok = $forward -or $backward
+    }
+    return Test-CatalogueCondition $What @($A, $B) @($s, $e) $ok
+}
+
+# The model box (min/max [x, y, z] mm) of a profile u/z range swept along the plane's left normal from WStart to WEnd
+# (or, Mirrored, along the right normal: a roof extruded to the wrong side), at the level elevation.
+function Get-CatalogueExtrusionBox($Plane, [double[]]$URange, [double[]]$ZRange, [double]$WStart, [double]$WEnd, [double]$Elevation, [switch]$Mirrored) {
+    $x0 = [double]$Plane['start'][0]; $y0 = [double]$Plane['start'][1]
+    $dx = [double]$Plane['end'][0] - $x0; $dy = [double]$Plane['end'][1] - $y0
+    $length = [Math]::Sqrt($dx * $dx + $dy * $dy)
+    $ux = $dx / $length; $uy = $dy / $length; $nx = -$uy; $ny = $ux
+    $ws = if ($Mirrored) { @(-$WEnd, -$WStart) } else { @($WStart, $WEnd) }
+    $xs = [Collections.Generic.List[double]]::new(); $ys = [Collections.Generic.List[double]]::new()
+    foreach ($u in $URange) { foreach ($w in $ws) { $xs.Add($x0 + $u * $ux + $w * $nx); $ys.Add($y0 + $u * $uy + $w * $ny) } }
+    return @{ Min = @(($xs | Measure-Object -Minimum).Minimum, ($ys | Measure-Object -Minimum).Minimum, ($Elevation + $ZRange[0])); Max = @(($xs | Measure-Object -Maximum).Maximum, ($ys | Measure-Object -Maximum).Maximum, ($Elevation + $ZRange[1])) }
+}
+
+# The observed bounding_box_mm holds the expected box within the tolerance on every axis.
+function Test-CatalogueBoxHolds($Box, $Expected, [double]$Tolerance) {
+    $min = Get-CatalogueArray $Box 'min'
+    $max = Get-CatalogueArray $Box 'max'
+    if ($min.Count -ne 3 -or $max.Count -ne 3) { return $false }
+    for ($k = 0; $k -lt 3; $k++) {
+        if (!(Test-CatalogueNear $min[$k] 0 1e12) -or !(Test-CatalogueNear $max[$k] 0 1e12)) { return $false }
+        if (!([double]$min[$k] -le $Expected.Min[$k] + $Tolerance -and [double]$max[$k] -ge $Expected.Max[$k] - $Tolerance)) { return $false }
+    }
+    return $true
+}
+
+# One direct_shape.create readback: the created element, category, kind, name, volume (within 1 mm on the side faces,
+# as the executor) and the bounding box within 1 mm.
+function Test-CatalogueDirectShape($Response, [string]$Category, [string]$BuiltIn, [string]$Kind, [string]$Name, [double[]]$Min, [double[]]$Max, [double]$VolumeMm3, [double]$PerimeterMm) {
+    $shape = Get-CataloguePath $Response 'readback.direct_shape'
+    $box = Get-CatalogueMember $shape 'bounding_box_mm'
+    $tolerance = $PerimeterMm * ($Max[2] - $Min[2]) + 1e-6 * $VolumeMm3
+    return Join-CatalogueReasons @(
+        (Test-CatalogueSame 'forma = primer elemento creado' (Get-CatalogueFirstCreated $Response) (Get-CatalogueMember $shape 'unique_id')),
+        (Test-CatalogueSame 'categoría' $Category (Get-CatalogueMember $shape 'category')),
+        (Test-CatalogueSame 'categoría de Revit' $BuiltIn (Get-CatalogueMember $shape 'built_in_category')),
+        (Test-CatalogueSame 'tipo de forma' $Kind (Get-CatalogueMember $shape 'shape_kind')),
+        (Test-CatalogueSame 'nombre' $Name (Get-CatalogueMember $shape 'name')),
+        (Test-CatalogueNumber 'volumen (mm3)' $VolumeMm3 (Get-CatalogueMember $shape 'volume_mm3') $tolerance),
+        (Test-CataloguePoint 'caja: esquina mínima (mm)' $Min (Get-CatalogueMember $box 'min') 1),
+        (Test-CataloguePoint 'caja: esquina máxima (mm)' $Max (Get-CatalogueMember $box 'max') 1))
+}
+
+# P9-09 direct_shape.create: a generic model box, a site extrusion on the walls' level, and a crossed outline the CLI refuses.
+function Get-CatalogueDirectShapeSteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'f-box'; Es = 'Caja DirectShape (modelo genérico) de (50000,0,0) a (51000,1000,1000)'; Command = 'direct_shape.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { [ordered]@{ category = 'generic_model'; shape = [ordered]@{ kind = 'box'; min = @(50000, 0, 0); max = @(51000, 1000, 1000) }; name = "C04 r$Run caja" } }
+        Check = { param($r) Test-CatalogueDirectShape $r 'generic_model' 'OST_GenericModel' 'box' "C04 r$Run caja" @(50000, 0, 0) @(51000, 1000, 1000) 1000000000 4000 } })
+    $steps.Add(@{ Key = 'f-extrusion'; Es = 'Roca DirectShape (sitio): planta 1200 x 800 mm en (52000,0), 900 mm de alto sobre el nivel de los muros'; Command = 'direct_shape.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { Need 'level'; [ordered]@{ category = 'site'; shape = [ordered]@{ kind = 'extrusion'; level = $picked['level']; outline = @(@(52000, 0), @(53200, 0), @(53200, 800), @(52000, 800)); height_mm = 900 }; name = "C04 r$Run roca" } }
+        Check = {
+            param($r)
+            $z = Get-CatalogueLevelElevation (Response 'query-levels') $picked['level']
+            Test-CatalogueDirectShape $r 'site' 'OST_Site' 'extrusion' "C04 r$Run roca" @(52000, 0, $z) @(53200, 800, ($z + 900)) 864000000 4000
+        } })
+    # Edges 0 and 2 cross at (54500, 500): boundary_self_intersecting at args.shape.outline[0], before the pipe.
+    $steps.Add(@{ Key = 'f-bowtie'; Es = 'Pedido inválido: contorno cruzado (moño); debe rechazarse sin tocar Revit'; Command = 'direct_shape.create'; ClientSide = $true; Expect = @{ Status = 'failed'; Code = 'boundary_self_intersecting' }
+        Build = { Need 'level'; [ordered]@{ category = 'generic_model'; shape = [ordered]@{ kind = 'extrusion'; level = $picked['level']; outline = @(@(54000, 0), @(55000, 1000), @(55000, 0), @(54000, 1000)); height_mm = 500 } } }
+        Check = { param($r) Test-CatalogueSame 'campo rechazado' 'args.shape.outline[0]' (Get-CatalogueMember $r 'field') } })
+    return , $steps.ToArray()
+}
+
+# One roof.create_extrusion readback for the barrel profile on $Plane: the roof and its new reference plane among the
+# created elements, level, type, plane echo, extents, one arc through the crown, and the bounding box holding the
+# profile swept to the plane's left (within 25 mm, as the executor) and not the profile swept to its right.
+function Test-CatalogueRoofExtrusion($Response, $Plane) {
+    $roof = Get-CataloguePath $Response 'readback.roof_extrusion'
+    $z = Get-CatalogueLevelElevation (Response 'query-levels') $picked['level']
+    $expected = Get-CatalogueExtrusionBox $Plane $script:CatalogueBarrelU $script:CatalogueBarrelZ $script:CatalogueBarrelExtrusion[0] $script:CatalogueBarrelExtrusion[1] $z
+    $other = Get-CatalogueExtrusionBox $Plane $script:CatalogueBarrelU $script:CatalogueBarrelZ $script:CatalogueBarrelExtrusion[0] $script:CatalogueBarrelExtrusion[1] $z -Mirrored
+    $box = Get-CatalogueMember $roof 'bounding_box_mm'
+    $readProfile = Get-CatalogueList $roof 'profile_mm'
+    $arc = Get-CatalogueFirst $readProfile
+    $expectedText = "min $(ConvertTo-CatalogueText $expected.Min) max $(ConvertTo-CatalogueText $expected.Max)"
+    $otherText = "no: min $(ConvertTo-CatalogueText $other.Min) max $(ConvertTo-CatalogueText $other.Max)"
+    return Join-CatalogueReasons @(
+        (Test-CatalogueSame 'techo = primer elemento creado' (Get-CatalogueFirstCreated $Response) (Get-CatalogueMember $roof 'unique_id')),
+        (Test-CatalogueContains 'plano de referencia entre los elementos creados' (Get-CatalogueMember $roof 'reference_plane_unique_id') (Get-CatalogueList $Response 'created')),
+        (Test-CatalogueSame 'nivel de referencia' $picked['level'] (Get-CatalogueMember $roof 'level_unique_id')),
+        (Test-CatalogueSame 'tipo de techo' $picked['extrusion_roof_type'] (Get-CatalogueMember $roof 'type_unique_id')),
+        (Test-CataloguePoint 'inicio del plano (mm)' @($Plane['start']) (Get-CatalogueMember $roof 'plane_start_mm') 0.01),
+        (Test-CataloguePoint 'fin del plano (mm)' @($Plane['end']) (Get-CatalogueMember $roof 'plane_end_mm') 0.01),
+        (Test-CatalogueNumber 'inicio de la extrusión (mm)' $script:CatalogueBarrelExtrusion[0] (Get-CatalogueMember $roof 'extrusion_start_mm') 1),
+        (Test-CatalogueNumber 'fin de la extrusión (mm)' $script:CatalogueBarrelExtrusion[1] (Get-CatalogueMember $roof 'extrusion_end_mm') 1),
+        (Test-CatalogueCondition 'perfil leído: un arco' 'arc' (@($readProfile | ForEach-Object { Get-CatalogueMember $_ 'kind' }) -join ',') ($readProfile.Count -eq 1 -and (Get-CatalogueMember $arc 'kind') -eq 'arc')),
+        (Test-CataloguePoint 'arco: punto medio (cumbrera, mm)' @(3000, 3800) (Get-CatalogueMember $arc 'mid') 1),
+        (Test-CatalogueSegment 'arco: extremos (aleros, mm)' @(-300, 2700) @(6300, 2700) $arc 1),
+        (Test-CatalogueCondition 'caja: contiene el perfil extruido a la izquierda del plano (25 mm)' $expectedText (ConvertTo-CatalogueText $box) (Test-CatalogueBoxHolds $box $expected 25)),
+        (Test-CatalogueCondition 'caja: no contiene el perfil extruido al lado opuesto' $otherText (ConvertTo-CatalogueText $box) (!(Test-CatalogueBoxHolds $box $other 25))))
+}
+
+# P9-07 roof.create_extrusion: the same barrel (eaves 2700, crown 3800, 300 mm overhangs, 4000 mm deep) on an
+# x-aligned plane (extruded toward +y), the reversed plane (toward -y) and a diagonal 3-4-5 plane, then a closed
+# profile the CLI refuses.
+function Get-CatalogueRoofExtrusionSteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'x-roof-types'; Es = 'Consultar tipos de techo (para la extrusión)'; Command = 'query.roof_types'; Expect = @{ Status = 'succeeded' }
+        Build = { [ordered]@{} }; Check = { param($r) $picked['extrusion_roof_type'] = Guard @('extrusion_roof_type') { Select-CatalogueRoofType $r }; $null } })
+    $cases = @(
+        @{ Key = 'x-barrel'; Es = 'Techo bóveda por extrusión, plano alineado (30000,0)->(36000,0), extruido de 0 a 4000 mm hacia +y'; Plane = [ordered]@{ start = @(30000, 0); end = @(36000, 0) } },
+        @{ Key = 'x-barrel-reversed'; Es = 'Techo bóveda, plano invertido (36000,10000)->(30000,10000), extruido de 0 a 4000 mm hacia -y'; Plane = [ordered]@{ start = @(36000, 10000); end = @(30000, 10000) } },
+        @{ Key = 'x-barrel-diagonal'; Es = 'Techo bóveda, plano diagonal (40000,0)->(43600,4800) (dirección 3-4-5), extruido de 0 a 4000 mm a su izquierda'; Plane = [ordered]@{ start = @(40000, 0); end = @(43600, 4800) } })
+    foreach ($case in $cases) {
+        $steps.Add(@{ Key = $case.Key; Es = $case.Es; Command = 'roof.create_extrusion'; Expect = @{ Status = 'succeeded'; Created = 2 }; Plane = $case.Plane
+            Build = { Need 'level', 'extrusion_roof_type'; [ordered]@{ level = $picked['level']; type = $picked['extrusion_roof_type']; plane = $spec.Plane; profile = $script:CatalogueBarrelProfile; extrusion_start_mm = $script:CatalogueBarrelExtrusion[0]; extrusion_end_mm = $script:CatalogueBarrelExtrusion[1] } }
+            Check = { param($r) Test-CatalogueRoofExtrusion $r $spec.Plane } })
+    }
+    $steps.Add(@{ Key = 'x-closed'; Es = 'Pedido inválido: perfil cerrado (triángulo); debe rechazarse sin tocar Revit'; Command = 'roof.create_extrusion'; ClientSide = $true; Expect = @{ Status = 'failed'; Code = 'args_invalid' }
+        Build = {
+            Need 'level', 'extrusion_roof_type'
+            [ordered]@{ level = $picked['level']; type = $picked['extrusion_roof_type']; plane = [ordered]@{ start = @(30000, 20000); end = @(36000, 20000) }
+                profile = @([ordered]@{ kind = 'line'; start = @(0, 2700); end = @(3000, 3800) }, [ordered]@{ kind = 'line'; start = @(3000, 3800); end = @(6000, 2700) }, [ordered]@{ kind = 'line'; start = @(6000, 2700); end = @(0, 2700) })
+                extrusion_start_mm = 0; extrusion_end_mm = 4000 }
+        }
+        Check = { param($r) Test-CatalogueRefusal $r 'args.profile' '*closed*' } })
+    return , $steps.ToArray()
+}
+
+# P1-09 element.move / element.copy and P1-10 element.rotate / element.mirror on a wall of this group: (0,15000)-(3000,15000)
+# moved by (1000, 500, 0) to (1000,15500)-(4000,15500); the move replayed by operation_id; a copy 2000 mm north at
+# (1000,17500)-(4000,17500) turned 90 degrees about its start to (1000,17500)-(1000,20500); the moved wall mirrored
+# (kept) across x = 6000 to (11000,15500)-(8000,15500). Refusals: a zero move and a full turn (CLI), and the v1 door
+# turned without its wall (element_not_rotatable, executor).
+function Get-CatalogueTransformSteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 't-wall'; Es = 'Muro de prueba para transformar, de (0,15000) a (3000,15000)'; Command = 'wall.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { Need 'level', 'wall_type'; New-CatalogueLineWall $picked['level'] $picked['wall_type'] @(0, 15000) @(3000, 15000) }
+        Check = { param($r) Test-CatalogueSame 'muro = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CataloguePath $r 'readback.wall.unique_id') } })
+    $move = {
+        param($r)
+        $moved = Get-CatalogueFirst (Get-CatalogueArray $r 'readback.moved')
+        Join-CatalogueReasons @(
+            (Test-CataloguePoint 'vector leído (mm)' @(1000, 500, 0) (Get-CataloguePath $r 'readback.vector_mm') 0.01),
+            (Test-CatalogueSame 'elemento movido' (Created 't-wall') (Get-CatalogueMember $moved 'unique_id')),
+            (Test-CatalogueContains 'modified incluye el muro' (Created 't-wall') (Get-CatalogueList $r 'modified')),
+            (Test-CatalogueSegment 'antes (mm)' @(0, 15000) @(3000, 15000) (Get-CatalogueMember $moved 'before') 1),
+            (Test-CataloguePoint 'después: inicio (mm)' @(1000, 15500) (Get-CataloguePlan (Get-CatalogueMember $moved 'after') 'start') 1),
+            (Test-CataloguePoint 'después: fin (mm)' @(4000, 15500) (Get-CataloguePlan (Get-CatalogueMember $moved 'after') 'end') 1))
+    }
+    $steps.Add(@{ Key = 't-move'; Es = 'Mover el muro de prueba (1000, 500, 0) mm'; Command = 'element.move'; Expect = @{ Status = 'succeeded'; Created = 0 }
+        Build = { [ordered]@{ element_uids = @(Created 't-wall'); vector_mm = @(1000, 500, 0) } }; Check = $move })
+    $steps.Add(@{ Key = 't-move-retry'; Es = 'Repetir el movimiento con el mismo identificador (respuesta guardada; no se mueve dos veces)'; Command = 'element.move'; ReuseOf = 't-move'; Expect = @{ Status = 'succeeded'; Replayed = $true; Created = 0 }
+        Build = { [ordered]@{ element_uids = @(Created 't-wall'); vector_mm = @(1000, 500, 0) } }; Check = $move })
+    $steps.Add(@{ Key = 't-move-zero'; Es = 'Pedido inválido: mover un vector nulo; debe rechazarse sin tocar Revit'; Command = 'element.move'; ClientSide = $true; Expect = @{ Status = 'failed'; Code = 'length_invalid' }
+        Build = { [ordered]@{ element_uids = @(Created 't-wall'); vector_mm = @(0, 0, 0) } }
+        Check = { param($r) Test-CatalogueRefusal $r 'args.vector_mm' '*zero vector*' } })
+    $steps.Add(@{ Key = 't-copy'; Es = 'Copiar el muro movido 2000 mm al norte (0, 2000, 0)'; Command = 'element.copy'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { [ordered]@{ element_uids = @(Created 't-wall'); vector_mm = @(0, 2000, 0) } }
+        Check = {
+            param($r)
+            $copies = Get-CatalogueArray $r 'readback.copies'
+            $also = Get-CatalogueArray $r 'readback.also_created'
+            $copy = Get-CatalogueFirst $copies
+            Join-CatalogueReasons @(
+                (Test-CatalogueCondition 'una copia' 1 $copies.Count ($copies.Count -eq 1)),
+                (Test-CatalogueSame 'origen de la copia' (Created 't-wall') (Get-CatalogueMember $copy 'source_unique_id')),
+                (Test-CatalogueSame 'copia = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $copy 'copy_unique_id')),
+                (Test-CataloguePoint 'copia: inicio (mm)' @(1000, 17500) (Get-CataloguePlan (Get-CatalogueMember $copy 'location') 'start') 1),
+                (Test-CataloguePoint 'copia: fin (mm)' @(4000, 17500) (Get-CataloguePlan (Get-CatalogueMember $copy 'location') 'end') 1),
+                (Test-CatalogueCondition 'nada más copiado (also_created vacío)' 0 $also.Count ($also.Count -eq 0)))
+        } })
+    $steps.Add(@{ Key = 't-rotate'; Es = 'Rotar la copia 90 grados (antihorario) alrededor de su inicio (1000,17500)'; Command = 'element.rotate'; Expect = @{ Status = 'succeeded'; Created = 0 }
+        Build = { [ordered]@{ element_uids = @(Created 't-copy'); center = @(1000, 17500); angle_deg = 90 } }
+        Check = {
+            param($r)
+            $rotated = Get-CatalogueFirst (Get-CatalogueArray $r 'readback.rotated')
+            $after = Get-CatalogueMember $rotated 'after'
+            Join-CatalogueReasons @(
+                (Test-CatalogueNumber 'ángulo leído (grados)' 90 (Get-CataloguePath $r 'readback.angle_deg') 1e-9),
+                (Test-CataloguePoint 'centro leído (mm)' @(1000, 17500) (Get-CataloguePath $r 'readback.center_mm') 0.01),
+                (Test-CatalogueSame 'elemento rotado' (Created 't-copy') (Get-CatalogueMember $rotated 'unique_id')),
+                (Test-CatalogueContains 'modified incluye la copia' (Created 't-copy') (Get-CatalogueList $r 'modified')),
+                (Test-CataloguePoint 'después: inicio (mm)' @(1000, 17500) (Get-CataloguePlan $after 'start') 1),
+                (Test-CataloguePoint 'después: fin (mm)' @(1000, 20500) (Get-CataloguePlan $after 'end') 1))
+        } })
+    $steps.Add(@{ Key = 't-rotate-door'; Es = 'Rotar la puerta v1 sin su muro (debe rechazarse: gira solo con su anfitrión)'; Command = 'element.rotate'; Expect = @{ Status = 'failed'; Code = 'element_not_rotatable' }
+        Build = { [ordered]@{ element_uids = @(Created 'door'); center = @(1500, 0); angle_deg = 90 } }
+        Check = { param($r) Test-CatalogueRefusal $r 'args.element_uids[0]' '*include the host*' } })
+    $steps.Add(@{ Key = 't-rotate-full'; Es = 'Pedido inválido: rotar 360 grados; debe rechazarse sin tocar Revit'; Command = 'element.rotate'; ClientSide = $true; Expect = @{ Status = 'failed'; Code = 'angle_invalid' }
+        Build = { [ordered]@{ element_uids = @(Created 't-wall'); center = @(0, 15000); angle_deg = 360 } }
+        Check = { param($r) Test-CatalogueRefusal $r 'args.angle_deg' '*full turn*' } })
+    $steps.Add(@{ Key = 't-mirror'; Es = 'Reflejar el muro movido en la recta x = 6000, conservando el original'; Command = 'element.mirror'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { [ordered]@{ element_uids = @(Created 't-wall'); axis = [ordered]@{ start = @(6000, 15000); end = @(6000, 16000) }; keep_original = $true } }
+        Check = {
+            param($r)
+            $mirrored = Get-CatalogueFirst (Get-CatalogueArray $r 'readback.mirrored')
+            $deleted = Get-CatalogueList $r 'deleted'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'conserva el original' $true (Get-CataloguePath $r 'readback.keep_original')),
+                (Test-CatalogueSame 'origen del reflejo' (Created 't-wall') (Get-CatalogueMember $mirrored 'source_unique_id')),
+                (Test-CatalogueSame 'reflejo nuevo' $true (Get-CatalogueMember $mirrored 'new')),
+                (Test-CatalogueSame 'reflejo = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $mirrored 'unique_id')),
+                (Test-CatalogueSegment 'original antes (mm)' @(1000, 15500) @(4000, 15500) (Get-CatalogueMember $mirrored 'before') 1),
+                (Test-CatalogueSegment 'reflejo (mm)' @(11000, 15500) @(8000, 15500) (Get-CatalogueMember $mirrored 'after') 1),
+                (Test-CatalogueCondition 'nada borrado' 0 $deleted.Count ($deleted.Count -eq 0)))
+        } })
+    return , $steps.ToArray()
+}
+
+# The document.save_copy paths for the open test copy <repo>/.bim/native-runs/<run>/BIM-Agentic-Test*.rvt: the copy
+# next to it and a refused target directly in <repo>/.bim (outside the copies root). Any other document throws, so
+# no copy step is sent: a real project is never copied and nothing is written outside .bim/native-runs.
+function Get-CatalogueCopyPaths([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $folder = [IO.Path]::GetDirectoryName($full)
+    $runs = if ($folder) { [IO.Path]::GetDirectoryName($folder) } else { $null }
+    $bim = if ($runs) { [IO.Path]::GetDirectoryName($runs) } else { $null }
+    if ([IO.Path]::GetFileName($full) -cnotmatch '\ABIM-Agentic-Test[A-Za-z0-9._-]*\.[rR][vV][tT]\z' -or !$runs -or [IO.Path]::GetFileName($runs) -cne 'native-runs' -or !$bim -or [IO.Path]::GetFileName($bim) -cne '.bim') {
+        throw "el documento abierto no es una copia de prueba BIM-Agentic-Test*.rvt dentro de .bim/native-runs: $Path"
+    }
+    $name = "BIM-Agentic-Test-c04-$Stamp-r$Run"
+    return @{ Source = $full; Copy = [IO.Path]::Combine($folder, "$name-copia.rvt"); Outside = [IO.Path]::Combine($bim, "$name-fuera.rvt") }
+}
+
+function Get-CatalogueFullPath($Path) { if ($Path) { return [IO.Path]::GetFullPath([string]$Path) }; return $null }
+
+# Lowercase hex SHA-256 of a file; Revit keeps the saved copy open, so it is opened shared for write and delete.
+function Get-CatalogueFileSha256([string]$Path) {
+    $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose(); $stream.Dispose() }
+}
+
+# P1-08 document.save_copy, last before the destructive group: a target outside .bim/native-runs is refused by the CLI
+# (outside_copies_root); the copy is saved next to the test document and its sha256 and size are compared with the
+# file on disk; the same request again is refused by the CLI (target_exists, not replayed). Revit then has the copy
+# open in place of the source: a query naming the copy succeeds, one naming the source is document_conflict, and
+# every later step (the destructive group) works on the copy, so the saved copy keeps the model as it was here.
+function Get-CatalogueSaveCopySteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'c-outside'; Es = 'Guardar una copia directamente en .bim (fuera de .bim/native-runs): debe rechazarse sin tocar Revit'; Command = 'document.save_copy'; ClientSide = $true; Reason = 'outside_copies_root'; Expect = @{ Status = 'failed'; Code = 'save_copy_refused' }
+        Build = { [ordered]@{ path = (Get-CatalogueCopyPaths $DocumentPath).Outside } }
+        Check = { param($r) Test-CatalogueRefusal $r 'args.path' 'outside_copies_root:*' } })
+    $steps.Add(@{ Key = 'c-save'; Es = 'Guardar una copia BIM-Agentic-Test-c04-*-copia.rvt junto al modelo de prueba (hash leído = hash del archivo)'; Command = 'document.save_copy'; Expect = @{ Status = 'succeeded'; Created = 0 }
+        Build = { [ordered]@{ path = (Get-CatalogueCopyPaths $DocumentPath).Copy } }
+        Check = {
+            param($r)
+            $paths = Get-CatalogueCopyPaths $DocumentPath
+            $copy = Get-CataloguePath $r 'readback.copy'
+            $opened = Get-CatalogueMember $copy 'document_path'
+            # Revit re-pointed the open document to the copy: every later request names it, whatever else differs.
+            if ($opened -and (Get-CatalogueFullPath $opened) -eq $paths.Copy) { $picked['document_path'] = [string]$opened }
+            $sha = [string](Get-CatalogueMember $copy 'sha256')
+            $exists = Test-Path -LiteralPath $paths.Copy -PathType Leaf
+            $diskSha = if ($exists) { Get-CatalogueFileSha256 $paths.Copy } else { $null }
+            $diskBytes = if ($exists) { (Get-Item -LiteralPath $paths.Copy).Length } else { $null }
+            $warnings = Get-CatalogueList $r 'warnings'
+            $warning = $warnings -join ' '
+            $reason = Join-CatalogueReasons @(
+                (Test-CatalogueSame 'ruta de la copia' $paths.Copy (Get-CatalogueFullPath (Get-CatalogueMember $copy 'path'))),
+                (Test-CatalogueSame 'documento abierto = la copia' $paths.Copy (Get-CatalogueFullPath $opened)),
+                (Test-CatalogueSame 'origen' $paths.Source (Get-CatalogueFullPath (Get-CatalogueMember $copy 'source_path'))),
+                (Test-CatalogueSame 'origen sin reescribir' $true (Get-CatalogueMember $copy 'source_unchanged')),
+                (Test-CatalogueSame 'sin cambios pendientes tras guardar' $false (Get-CatalogueMember $copy 'is_modified')),
+                (Test-CatalogueCondition 'sha256 leído (64 hex)' '64 hex' $sha ($sha -cmatch '\A[0-9a-f]{64}\z')),
+                (Test-CatalogueCondition 'archivo de la copia en disco' $paths.Copy $exists $exists),
+                (Test-CatalogueSame 'bytes leídos = tamaño en disco' (Get-CatalogueMember $copy 'bytes') $diskBytes),
+                (Test-CatalogueSame 'sha256 leído = sha256 del archivo en disco' $sha $diskSha),
+                (Test-CatalogueCondition 'aviso: el documento abierto ahora es la copia' '*now the copy*' $warning ($warning -like '*now the copy*')))
+            if ($null -eq $reason) { $picked['copy_path'] = $paths.Copy }
+            $reason
+        } })
+    $steps.Add(@{ Key = 'c-save-again'; Es = 'Repetir la misma copia (mismo identificador): debe rechazarse sin tocar Revit porque el archivo ya existe'; Command = 'document.save_copy'; ReuseOf = 'c-save'; UseSourceDocument = $true; ClientSide = $true; Reason = 'target_exists'; Expect = @{ Status = 'failed'; Code = 'save_copy_refused' }
+        Build = { Need 'copy_path'; [ordered]@{ path = $picked['copy_path'] } }
+        Check = { param($r) Test-CatalogueRefusal $r 'args.path' 'target_exists:*' } })
+    $steps.Add(@{ Key = 'c-levels-copy'; Es = 'Consultar niveles nombrando la copia (Revit la tiene abierta)'; Command = 'query.levels'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'document_path'; [ordered]@{} }
+        Check = { param($r) $levels = Get-CatalogueList (Get-CatalogueMember $r 'readback') 'levels'; Test-CatalogueContains 'el nivel de los muros está en la copia' $picked['level'] @($levels | ForEach-Object { Get-CatalogueMember $_ 'unique_id' }) } })
+    $steps.Add(@{ Key = 'c-levels-source'; Es = 'Consultar niveles nombrando el modelo de origen (debe responder document_conflict)'; Command = 'query.levels'; UseSourceDocument = $true; Expect = @{ Status = 'failed'; Code = 'document_conflict' }
+        Build = { Need 'document_path'; [ordered]@{} }
+        Check = { param($r) Test-CatalogueRefusal $r 'document.path' '*not the saved document*' } })
+    return , $steps.ToArray()
+}
+
 # P1-05 modify and delete, destructive, always last: the v1 west wall height and comments, then the v1 south wall
-# (which hosts the v1 door) is deleted after a dry run and a refused unconfirmed delete.
+# (which hosts the v1 door) is deleted after a dry run and a refused unconfirmed delete. After a successful
+# document.save_copy these steps name the copy Revit has open (the saved copy file keeps the state before them).
 function Get-CatalogueModifySteps {
     $steps = [Collections.Generic.List[hashtable]]::new()
     $height = [ordered]@{ built_in = 'WALL_USER_HEIGHT_PARAM' }
@@ -987,6 +1310,10 @@ function Get-CatalogueGroups([switch]$V1Only) {
         $groups.Add(@{ Key = 'estructura'; Es = 'Estructura (P9-02): ejes, columna, viga, zapata, cimiento corrido'; Steps = (Get-CatalogueStructureSteps) })
         $groups.Add(@{ Key = 'documentacion'; Es = 'Documentación (P4-02): cotas, etiquetas, tabla, lámina y vistas en lámina'; Steps = (Get-CatalogueDocumentationSteps) })
         $groups.Add(@{ Key = 'diario'; Es = 'Diario de cambios (P2-03): journal.read'; Steps = (Get-CatalogueJournalSteps) })
+        $groups.Add(@{ Key = 'formas'; Es = 'Formas DirectShape (P9-09): caja, extrusión y contorno cruzado'; Steps = (Get-CatalogueDirectShapeSteps) })
+        $groups.Add(@{ Key = 'extrusion'; Es = 'Techos por extrusión (P9-07): bóveda en plano alineado, invertido y diagonal; perfil cerrado'; Steps = (Get-CatalogueRoofExtrusionSteps) })
+        $groups.Add(@{ Key = 'transformar'; Es = 'Mover, copiar, rotar y reflejar (P1-09, P1-10) sobre un muro propio'; Steps = (Get-CatalogueTransformSteps) })
+        $groups.Add(@{ Key = 'copia'; Es = 'Guardar copia (P1-08): copia con hash, rechazos fuera de la carpeta y por archivo existente; después todo va a la copia'; Steps = (Get-CatalogueSaveCopySteps) })
         $groups.Add(@{ Key = 'modificar'; Es = 'Modificar y borrar (P1-05, destructivo, al final)'; Steps = (Get-CatalogueModifySteps) })
     }
     return , $groups.ToArray()
@@ -1039,6 +1366,8 @@ function Invoke-CatalogueSequence {
         [switch]$V1Only
     )
     $picked = @{}
+    # After a document.save_copy, Revit has the copy open in place of the source: c-save sets document_path to the
+    # copy's path as read back, and every later request names it (UseSourceDocument steps keep the source on purpose).
     $createdBy = @{}
     $responses = @{}
     $rawText = @{}
@@ -1084,7 +1413,8 @@ function Invoke-CatalogueSequence {
         $spec = $item.Spec
         $wire = $spec.ContainsKey('Wire') -and $spec.Wire
         $operationId = if ($wire) { $null } else { New-CatalogueOperationId $Stamp $Run $(if ($spec.ContainsKey('ReuseOf')) { $spec.ReuseOf } else { $spec.Key }) }
-        $record = [ordered]@{ index = $index; group = $item.Group; key = $spec.Key; description = $spec.Es; command = $spec.Command; operation_id = $operationId; expected = $spec.Expect; request = $null; response = $null; raw_response = $null; exit_code = $null; timed_out = $false; elapsed_ms = $null; passed = $false; blocked = $false; reason = $null; comparisons = [Collections.Generic.List[object]]::new() }
+        $stepDocument = if (($spec.ContainsKey('UseSourceDocument') -and $spec.UseSourceDocument) -or !$picked.ContainsKey('document_path') -or !$picked['document_path']) { $DocumentPath } else { [string]$picked['document_path'] }
+        $record = [ordered]@{ index = $index; group = $item.Group; key = $spec.Key; description = $spec.Es; command = $spec.Command; operation_id = $operationId; document_path = $stepDocument; expected = $spec.Expect; request = $null; response = $null; raw_response = $null; exit_code = $null; timed_out = $false; elapsed_ms = $null; passed = $false; blocked = $false; reason = $null; comparisons = [Collections.Generic.List[object]]::new() }
         $records.Add($record)
         if ($Progress) { & $Progress "Paso $index/$($plan.Count) [$($item.Group)]: $($spec.Es)" }
         if ($aborted) { $record.reason = "no enviado: $aborted"; continue }
@@ -1097,11 +1427,11 @@ function Invoke-CatalogueSequence {
         }
         if ($wire) {
             if (!$InvokeWire) { $record.reason = "no enviado: falta el canal directo al pipe para $($spec.Command)"; continue }
-            $requestText = New-CatalogueWireLine $DocumentPath $spec.Command $stepArgs
+            $requestText = New-CatalogueWireLine $stepDocument $spec.Command $stepArgs
             $invoker = $InvokeWire
         }
         else {
-            $requestText = New-CatalogueEnvelope $operationId $DocumentPath $DocumentUid $spec.Command $stepArgs
+            $requestText = New-CatalogueEnvelope $operationId $stepDocument $DocumentUid $spec.Command $stepArgs
             $invoker = $Invoke
         }
         $record.request = $requestText | ConvertFrom-Json

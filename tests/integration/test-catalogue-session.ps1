@@ -337,8 +337,8 @@ $reversed = Get-PlaneDirection $full 'x-barrel-reversed'
 $diagonal = Get-PlaneDirection $full 'x-barrel-diagonal'
 Assert ($axis[0] -gt 0 -and $axis[1] -eq 0 -and $reversed[0] -lt 0 -and $reversed[1] -eq 0 -and $diagonal[0] -ne 0 -and $diagonal[1] -ne 0) "barrel planes: axis-aligned $($axis -join ','), reversed $($reversed -join ','), diagonal $($diagonal -join ',')"
 foreach ($key in 'x-barrel', 'x-barrel-reversed', 'x-barrel-diagonal') {
-    $profile = @(Get-RequestValue $full $key 'args.profile')
-    Assert ($profile.Count -eq 1 -and (Get-CatalogueMember $profile[0] 'kind') -eq 'arc' -and $null -ne (Get-CatalogueMember $profile[0] 'through') -and (Get-RequestValue $full $key 'args.extrusion_start_mm') -eq 0 -and (Get-RequestValue $full $key 'args.extrusion_end_mm') -eq 4000 -and (Get-RequestValue $full $key 'args.level') -eq $full.picked['level']) "$key sends one open arc, extents 0..4000 on the walls' level"
+    $sentProfile = @(Get-RequestValue $full $key 'args.profile')
+    Assert ($sentProfile.Count -eq 1 -and (Get-CatalogueMember $sentProfile[0] 'kind') -eq 'arc' -and $null -ne (Get-CatalogueMember $sentProfile[0] 'through') -and (Get-RequestValue $full $key 'args.extrusion_start_mm') -eq 0 -and (Get-RequestValue $full $key 'args.extrusion_end_mm') -eq 4000 -and (Get-RequestValue $full $key 'args.level') -eq $full.picked['level']) "$key sends one open arc, extents 0..4000 on the walls' level"
     Assert (@(Get-StepField $full $key 'comparisons' | Where-Object { $null -ne $_ -and $_.ok }).Count -ge 8) "$key records requested vs observed rows"
 }
 # Move, copy, rotate and mirror act on their own test wall (the rotation on its copy) and on the v1 door only for the refusal.

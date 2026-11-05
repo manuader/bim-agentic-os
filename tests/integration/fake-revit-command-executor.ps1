@@ -7,8 +7,13 @@
 # wire answer (Invoke-FakeRevitWire) are consistent, and records every operation_id it receives. Faults (hashtable):
 # ReplayNotFlagged, ReplayNewElement, WrongRadius (v1); FailCommands = @(names) answer transaction_failed;
 # RoofSlopeOff reports a different roof slope; SnapshotUnstable makes every snapshot differ; SingleLevel leaves the
-# model with one level; NoStructuralTypes = @(categories) lists none of those structural types. With DocumentPath set
-# on the state, a journal.read for another path answers document_conflict. It proves nothing about Revit.
+# model with one level; NoStructuralTypes = @(categories) lists none of those structural types; P1-11:
+# DirectShapeBoxOff widens every DirectShape box by 5 mm, RoofExtrusionMirrored extrudes roofs to the plane's right,
+# RotateWrongWay turns clockwise, SaveCopyHashOff reports a wrong copy sha256. It also answers direct_shape.create,
+# roof.create_extrusion, element.move/copy/rotate/mirror and document.save_copy (which writes a small file at the
+# target, re-points the state's DocumentPath to it and keeps no receipt), and emulates, in process only, the
+# client-side refusals the real CLI gives those commands before the pipe. With DocumentPath set on the state, an
+# envelope or journal.read for another path answers document_conflict. It proves nothing about Revit.
 Set-StrictMode -Version Latest
 
 $script:FakeBuiltInCategories = @{ wall = 'OST_Walls'; door = 'OST_Doors'; window = 'OST_Windows'; floor = 'OST_Floors'; room = 'OST_Rooms'; roof = 'OST_Roofs'; stair = 'OST_Stairs'; grid = 'OST_Grids'; level = 'OST_Levels' }
@@ -16,7 +21,8 @@ $script:FakeCategoryNames = @{ wall = 'Walls'; door = 'Doors'; window = 'Windows
 
 function New-FakeRevitState([string]$DocumentUid, [hashtable]$Faults = @{}) {
     @{ DocumentUid = $DocumentUid; Receipts = @{}; Received = [Collections.Generic.List[string]]::new(); Next = 0; Faults = $Faults; Episode = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0'
-        Elements = [ordered]@{}; Cache = @{}; Placed = @{}; ElementNumber = 100000; SkippedAddIn = 0; JournalBaseline = $null; Snapshots = 0; DocumentPath = $null }
+        Elements = [ordered]@{}; Cache = @{}; Placed = @{}; ElementNumber = 100000; SkippedAddIn = 0; JournalBaseline = $null; Snapshots = 0; DocumentPath = $null
+        Copies = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase) }
 }
 
 function New-FakeUniqueId($State) { $State.Next++; '{0}-{1:x8}' -f $State.Episode, (4096 + $State.Next) }
@@ -175,6 +181,102 @@ function Get-FakeSnapshot($State) {
 
 function New-FakeMissing([string]$Field, [string]$UniqueId) { New-FakeFailure 'reference_not_found' $Field "no element with UniqueId $UniqueId" }
 
+# --- P1-11 helpers: client-side refusals (what the real CLI refuses before the pipe, emulated only for the in-process
+# run), element locations for move/copy/rotate/mirror, the barrel roof box and the DirectShape box. ---
+function Get-FakeLevelElevation($State, $LevelUid) {
+    foreach ($level in (Get-FakeLevels $State)) { if ($level.unique_id -eq [string]$LevelUid) { return [double]$level.project_elevation_mm } }
+    return 0.0
+}
+
+# Do segments P1-P2 and Q1-Q2 (plan [x, y]) cross or touch?
+function Test-FakeSegmentsCross($P1, $P2, $Q1, $Q2) {
+    function Side($A, $B, $C) { ([double]$B[0] - [double]$A[0]) * ([double]$C[1] - [double]$A[1]) - ([double]$B[1] - [double]$A[1]) * ([double]$C[0] - [double]$A[0]) }
+    $d1 = Side $Q1 $Q2 $P1; $d2 = Side $Q1 $Q2 $P2; $d3 = Side $P1 $P2 $Q1; $d4 = Side $P1 $P2 $Q2
+    return (($d1 -gt 0 -and $d2 -lt 0) -or ($d1 -lt 0 -and $d2 -gt 0)) -and (($d3 -gt 0 -and $d4 -lt 0) -or ($d3 -lt 0 -and $d4 -gt 0))
+}
+
+# The client-side refusal the CLI would answer for this envelope, or $null (only the cases the owner sequence sends).
+function Get-FakeClientRefusal($State, [string]$Command, $Arguments, [string]$DocumentPath) {
+    switch ($Command) {
+        { $_ -in 'element.move', 'element.copy' } {
+            $v = @($Arguments.vector_mm | ForEach-Object { [double]$_ })
+            if (@($v | Where-Object { $_ -ne 0 }).Count -eq 0) { return New-FakeFailure 'length_invalid' 'args.vector_mm' 'zero vector: nothing to move or copy' }
+        }
+        'element.rotate' {
+            $angle = [double]$Arguments.angle_deg
+            if ($angle -eq 0) { return New-FakeFailure 'angle_invalid' 'args.angle_deg' 'zero angle: nothing to rotate' }
+            if ([Math]::Abs($angle) -ge 360) { return New-FakeFailure 'angle_invalid' 'args.angle_deg' "a full turn or more ($angle degrees); use an angle under 360 either way" }
+        }
+        'roof.create_extrusion' {
+            $profile = @($Arguments.profile)
+            $first = Get-FakeArg $profile[0] 'start'
+            $last = Get-FakeArg $profile[$profile.Count - 1] 'end'
+            if ($null -ne $first -and $null -ne $last -and [Math]::Sqrt([Math]::Pow([double]$first[0] - [double]$last[0], 2) + [Math]::Pow([double]$first[1] - [double]$last[1], 2)) -lt 1.2) {
+                return New-FakeFailure 'args_invalid' 'args.profile' 'the profile is closed (its last segment ends where the first starts); an extrusion roof takes an open profile'
+            }
+        }
+        'direct_shape.create' {
+            if ($Arguments.shape.kind -eq 'extrusion') {
+                $outline = @($Arguments.shape.outline)
+                $n = $outline.Count
+                for ($i = 0; $i -lt $n; $i++) {
+                    for ($j = $i + 2; $j -lt $n; $j++) {
+                        if ($i -eq 0 -and $j -eq $n - 1) { continue }
+                        if (Test-FakeSegmentsCross $outline[$i] $outline[($i + 1) % $n] $outline[$j] $outline[($j + 1) % $n]) { return New-FakeFailure 'boundary_self_intersecting' "args.shape.outline[$i]" "edges $i and $j intersect, overlap or come within 1.2 mm" }
+                    }
+                }
+            }
+        }
+        'document.save_copy' {
+            # RevitSaveCopyGuard.Check as the CLI applies it to the test layout <repo>/.bim/native-runs/<run>/BIM-Agentic-Test*.rvt.
+            $target = [string]$Arguments.path
+            $root = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($DocumentPath)) + [IO.Path]::DirectorySeparatorChar
+            if (!$target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return New-FakeFailure 'save_copy_refused' 'args.path' "outside_copies_root: copies are saved only inside the repository's .bim/native-runs folder ($root)" }
+            if ([string]::Equals($target, $DocumentPath, [StringComparison]::OrdinalIgnoreCase)) { return New-FakeFailure 'save_copy_refused' 'args.path' 'same_as_source: the copy must be a new file, not the open document''s own path (use document.save)' }
+            if ($State.Copies.Contains($target)) { return New-FakeFailure 'save_copy_refused' 'args.path' "target_exists: $target already exists; copies never overwrite, pick a new name" }
+        }
+    }
+    return $null
+}
+
+# The move/copy/rotate/mirror location of a fake element (straight walls: a curve with z 0), or $null.
+function Get-FakeLocation($Element) {
+    if ($null -eq $Element['Start'] -or $null -eq $Element['End']) { return $null }
+    [ordered]@{ kind = 'curve'; start = @([double]$Element['Start'][0], [double]$Element['Start'][1], 0.0); end = @([double]$Element['End'][0], [double]$Element['End'][1], 0.0) }
+}
+
+# A copy of a fake element's facts (without its identity) for element.copy / element.mirror.
+function Copy-FakeFacts($Element) {
+    $facts = @{}
+    foreach ($name in @($Element.Keys)) { if ($name -notin 'Id', 'UniqueId', 'Category') { $facts[$name] = $Element[$name] } }
+    return $facts
+}
+
+# Plan point P mapped by a scriptblock on [x, y].
+function Move-FakeEnds($Element, [scriptblock]$Map) {
+    $Element['Start'] = @(& $Map @([double]$Element['Start'][0], [double]$Element['Start'][1]))
+    $Element['End'] = @(& $Map @([double]$Element['End'][0], [double]$Element['End'][1]))
+}
+
+# Plan points of one extrusion-roof profile segment ([u, z]): a line's ends, or 721 points along a three-point arc.
+function Get-FakeProfilePoints($Segment) {
+    $s = @($Segment.start | ForEach-Object { [double]$_ }); $e = @($Segment.end | ForEach-Object { [double]$_ })
+    $through = Get-FakeArg $Segment 'through'
+    if ($Segment.kind -ne 'arc' -or $null -eq $through) { return @{ Points = @(, $s) + @(, $e); Mid = @((($s[0] + $e[0]) / 2), (($s[1] + $e[1]) / 2)) } }
+    $t = @($through | ForEach-Object { [double]$_ })
+    $d = 2 * ($s[0] * ($t[1] - $e[1]) + $t[0] * ($e[1] - $s[1]) + $e[0] * ($s[1] - $t[1]))
+    $cx = (($s[0] * $s[0] + $s[1] * $s[1]) * ($t[1] - $e[1]) + ($t[0] * $t[0] + $t[1] * $t[1]) * ($e[1] - $s[1]) + ($e[0] * $e[0] + $e[1] * $e[1]) * ($s[1] - $t[1])) / $d
+    $cz = (($s[0] * $s[0] + $s[1] * $s[1]) * ($e[0] - $t[0]) + ($t[0] * $t[0] + $t[1] * $t[1]) * ($s[0] - $e[0]) + ($e[0] * $e[0] + $e[1] * $e[1]) * ($t[0] - $s[0])) / $d
+    $radius = [Math]::Sqrt(($s[0] - $cx) * ($s[0] - $cx) + ($s[1] - $cz) * ($s[1] - $cz))
+    $turn = 2 * [Math]::PI
+    $a0 = [Math]::Atan2($s[1] - $cz, $s[0] - $cx)
+    $ccw = (([Math]::Atan2($e[1] - $cz, $e[0] - $cx) - $a0) % $turn + $turn) % $turn
+    $toThrough = (([Math]::Atan2($t[1] - $cz, $t[0] - $cx) - $a0) % $turn + $turn) % $turn
+    $sweep = if ($toThrough -lt $ccw) { $ccw } else { $ccw - $turn }
+    $points = @(for ($k = 0; $k -le 720; $k++) { $theta = $a0 + $sweep * $k / 720; , @(($cx + $radius * [Math]::Cos($theta)), ($cz + $radius * [Math]::Sin($theta))) })
+    return @{ Points = $points; Mid = $points[360] }
+}
+
 # $CommandText is the envelope exactly as received (the pipe's Command member); returns one response line.
 function Invoke-FakeRevitCommand($State, [string]$CommandText) {
     $envelope = $CommandText | ConvertFrom-Json
@@ -183,6 +285,13 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
     $command = [string]$envelope.command
     $a = $envelope.args
     $sha = Get-FakeSha256 $CommandText
+    # What the real CLI refuses before the pipe (in process only; behind the pipe the CLI already refused it).
+    $refusal = Get-FakeClientRefusal $State $command $a ([string]$envelope.document.path)
+    if ($null -ne $refusal) { return ConvertTo-FakeResponseJson $refusal }
+    # Admission: the envelope must name the document Revit has open (after document.save_copy, the copy).
+    if ($null -ne $State.DocumentPath -and ![string]::Equals([string]$envelope.document.path, $State.DocumentPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return ConvertTo-FakeResponseJson (New-FakeFailure 'document_conflict' 'document.path' 'the active document is not the saved document the envelope names')
+    }
     $writes = $command -notlike 'query.*'
     $dry = [bool](Get-FakeArg $a 'dry_run')
     if ($writes -and $State.Receipts.ContainsKey($operationId)) {
@@ -206,6 +315,7 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
     $created = @()
     $modified = @()
     $deleted = @()
+    $warnings = @()
     $readback = switch ($command) {
         'query.levels' { [ordered]@{ levels = (Get-FakeLevels $State) } }
         'query.wall_types' { [ordered]@{ wall_types = (Get-FakeCached $State 'wall_types' {
@@ -471,12 +581,150 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
             }
             [ordered]@{ delete = [ordered]@{ dry_run = $dry; targets = $targets; dependents = $dependents; dependents_count = $dependents.Count; dependents_sha256 = (Get-FakeSha256 (@($dependents | Sort-Object) -join "`n")); dependents_listed = $true; deleted_count = $targets.Count + $dependents.Count; confirmed = $same } }
         }
+        # --- P1-11: DirectShapes, extrusion roofs, move/copy/rotate/mirror, save_copy ---
+        'direct_shape.create' {
+            $uid = New-FakeUniqueId $State; $created = @($uid)
+            $shape = $a.shape
+            if ($shape.kind -eq 'box') {
+                $min = @($shape.min | ForEach-Object { [double]$_ }); $max = @($shape.max | ForEach-Object { [double]$_ })
+                $volume = ($max[0] - $min[0]) * ($max[1] - $min[1]) * ($max[2] - $min[2])
+            }
+            else {
+                $outline = @($shape.outline)
+                $offset = Get-FakeArg $shape 'base_offset_mm'
+                $z = (Get-FakeLevelElevation $State $shape.level) + $(if ($null -ne $offset) { [double]$offset } else { 0.0 })
+                $xs = @($outline | ForEach-Object { [double]$_[0] }); $ys = @($outline | ForEach-Object { [double]$_[1] })
+                $min = @(($xs | Measure-Object -Minimum).Minimum, ($ys | Measure-Object -Minimum).Minimum, $z)
+                $max = @(($xs | Measure-Object -Maximum).Maximum, ($ys | Measure-Object -Maximum).Maximum, ($z + [double]$shape.height_mm))
+                $volume = (Get-FakeArea $outline) * [double]$shape.height_mm
+            }
+            if ($State.Faults.ContainsKey('DirectShapeBoxOff')) { $max = @(($max[0] + 5), $max[1], $max[2]) }
+            Add-FakeElement $State $uid 'direct_shape' @{ Min = $min; Max = $max }
+            $builtIns = @{ generic_model = 'OST_GenericModel'; site = 'OST_Site'; planting = 'OST_Planting'; entourage = 'OST_Entourage'; topography = 'OST_Topography' }
+            [ordered]@{ direct_shape = [ordered]@{ unique_id = $uid; category = $a.category; built_in_category = $builtIns[[string]$a.category]; shape_kind = $shape.kind; name = (Get-FakeArg $a 'name'); material_unique_id = $null; volume_mm3 = $volume
+                    bounding_box_mm = [ordered]@{ min = $min; max = $max } } }
+        }
+        'roof.create_extrusion' {
+            $uid = New-FakeUniqueId $State; $planeUid = New-FakeUniqueId $State; $created = @($uid, $planeUid)
+            $p0 = @($a.plane.start | ForEach-Object { [double]$_ }); $p1 = @($a.plane.end | ForEach-Object { [double]$_ })
+            $length = [Math]::Sqrt(($p1[0] - $p0[0]) * ($p1[0] - $p0[0]) + ($p1[1] - $p0[1]) * ($p1[1] - $p0[1]))
+            $ux = ($p1[0] - $p0[0]) / $length; $uy = ($p1[1] - $p0[1]) / $length
+            $wStart = [double]$a.extrusion_start_mm; $wEnd = [double]$a.extrusion_end_mm
+            # Fault: the roof extruded along the right normal instead of the left one.
+            $nx = -$uy; $ny = $ux
+            if ($State.Faults.ContainsKey('RoofExtrusionMirrored')) { $nx = $uy; $ny = -$ux }
+            $elevation = Get-FakeLevelElevation $State $a.level
+            $edges = [Collections.Generic.List[object]]::new()
+            $us = [Collections.Generic.List[double]]::new(); $zs = [Collections.Generic.List[double]]::new()
+            foreach ($segment in @($a.profile)) {
+                $sampled = Get-FakeProfilePoints $segment
+                foreach ($point in $sampled.Points) { $us.Add([double]$point[0]); $zs.Add([double]$point[1]) }
+                $edge = [ordered]@{ kind = [string]$segment.kind; start = @($segment.start); end = @($segment.end) }
+                if ($segment.kind -eq 'arc') { $edge['mid'] = @($sampled.Mid) }
+                $edges.Add($edge)
+            }
+            $uMin = ($us | Measure-Object -Minimum).Minimum; $uMax = ($us | Measure-Object -Maximum).Maximum
+            $xs = [Collections.Generic.List[double]]::new(); $ys = [Collections.Generic.List[double]]::new()
+            foreach ($u in @($uMin, $uMax)) { foreach ($w in @($wStart, $wEnd)) { $xs.Add($p0[0] + $u * $ux + $w * $nx); $ys.Add($p0[1] + $u * $uy + $w * $ny) } }
+            Add-FakeElement $State $uid 'roof' @{ Level = [string]$a.level }
+            [ordered]@{ roof_extrusion = [ordered]@{ unique_id = $uid; level_unique_id = $a.level; type_unique_id = $a.type; reference_plane_unique_id = $planeUid; plane_start_mm = $p0; plane_end_mm = $p1
+                    extrusion_start_mm = $wStart; extrusion_end_mm = $wEnd; profile_mm = $edges.ToArray()
+                    bounding_box_mm = [ordered]@{ min = @(($xs | Measure-Object -Minimum).Minimum, ($ys | Measure-Object -Minimum).Minimum, ($elevation + ($zs | Measure-Object -Minimum).Minimum)); max = @(($xs | Measure-Object -Maximum).Maximum, ($ys | Measure-Object -Maximum).Maximum, ($elevation + ($zs | Measure-Object -Maximum).Maximum)) } } }
+        }
+        { $_ -in 'element.move', 'element.copy' } {
+            $uids = @($a.element_uids | ForEach-Object { [string]$_ })
+            $v = @($a.vector_mm | ForEach-Object { [double]$_ })
+            for ($i = 0; $i -lt $uids.Count; $i++) { if (!$State.Elements.Contains($uids[$i])) { return ConvertTo-FakeResponseJson (New-FakeMissing "args.element_uids[$i]" $uids[$i]) } }
+            $shift = { param($p) @(($p[0] + $v[0]), ($p[1] + $v[1])) }
+            if ($command -eq 'element.move') {
+                $moved = @(foreach ($uid in $uids) {
+                    $element = $State.Elements[$uid]
+                    $before = Get-FakeLocation $element
+                    if ($null -ne $before) { Move-FakeEnds $element $shift }
+                    [ordered]@{ unique_id = $uid; before = $before; after = (Get-FakeLocation $element) }
+                })
+                $modified = $uids
+                [ordered]@{ vector_mm = $v; moved = $moved }
+            }
+            else {
+                $copies = @(foreach ($uid in $uids) {
+                    $source = $State.Elements[$uid]
+                    $copyUid = New-FakeUniqueId $State
+                    Add-FakeElement $State $copyUid $source.Category (Copy-FakeFacts $source)
+                    $copy = $State.Elements[$copyUid]
+                    if ($null -ne (Get-FakeLocation $copy)) { Move-FakeEnds $copy $shift }
+                    [ordered]@{ source_unique_id = $uid; copy_unique_id = $copyUid; location = (Get-FakeLocation $copy) }
+                })
+                $created = @($copies | ForEach-Object { $_.copy_unique_id })
+                [ordered]@{ vector_mm = $v; copies = $copies; also_created = @() }
+            }
+        }
+        'element.rotate' {
+            $uids = @($a.element_uids | ForEach-Object { [string]$_ })
+            for ($i = 0; $i -lt $uids.Count; $i++) {
+                if (!$State.Elements.Contains($uids[$i])) { return ConvertTo-FakeResponseJson (New-FakeMissing "args.element_uids[$i]" $uids[$i]) }
+                $element = $State.Elements[$uids[$i]]
+                $hostUid = $element['Host']
+                if ($null -ne $hostUid -and $uids -notcontains [string]$hostUid) { return ConvertTo-FakeResponseJson (New-FakeFailure 'element_not_rotatable' "args.element_uids[$i]" "$($uids[$i]) is hosted by $hostUid, which is not a target: a hosted element turns only with its host; include the host") }
+                if ($null -eq (Get-FakeLocation $element)) { return ConvertTo-FakeResponseJson (New-FakeFailure 'element_not_rotatable' "args.element_uids[$i]" "$($uids[$i]) has no location point, location curve or sketch profile to turn and read back") }
+            }
+            $c = @($a.center | ForEach-Object { [double]$_ })
+            $radians = [double]$a.angle_deg * [Math]::PI / 180
+            # Fault: the turn applied clockwise.
+            if ($State.Faults.ContainsKey('RotateWrongWay')) { $radians = -$radians }
+            $cos = [Math]::Cos($radians); $sin = [Math]::Sin($radians)
+            $turn = { param($p) $dx = $p[0] - $c[0]; $dy = $p[1] - $c[1]; @(($c[0] + $dx * $cos - $dy * $sin), ($c[1] + $dx * $sin + $dy * $cos)) }
+            $rotated = @(foreach ($uid in $uids) {
+                $element = $State.Elements[$uid]
+                $before = Get-FakeLocation $element
+                Move-FakeEnds $element $turn
+                [ordered]@{ unique_id = $uid; before = $before; after = (Get-FakeLocation $element) }
+            })
+            $modified = $uids
+            [ordered]@{ center_mm = $c; angle_deg = [double]$a.angle_deg; rotated = $rotated }
+        }
+        'element.mirror' {
+            $uids = @($a.element_uids | ForEach-Object { [string]$_ })
+            for ($i = 0; $i -lt $uids.Count; $i++) { if (!$State.Elements.Contains($uids[$i])) { return ConvertTo-FakeResponseJson (New-FakeMissing "args.element_uids[$i]" $uids[$i]) } }
+            $m0 = @($a.axis.start | ForEach-Object { [double]$_ }); $m1 = @($a.axis.end | ForEach-Object { [double]$_ })
+            $axisLength = [Math]::Sqrt(($m1[0] - $m0[0]) * ($m1[0] - $m0[0]) + ($m1[1] - $m0[1]) * ($m1[1] - $m0[1]))
+            $mx = ($m1[0] - $m0[0]) / $axisLength; $my = ($m1[1] - $m0[1]) / $axisLength
+            $reflect = { param($p) $along = ($p[0] - $m0[0]) * $mx + ($p[1] - $m0[1]) * $my; $fx = $m0[0] + $along * $mx; $fy = $m0[1] + $along * $my; @((2 * $fx - $p[0]), (2 * $fy - $p[1])) }
+            $keep = [bool]$a.keep_original
+            $mirrored = @(foreach ($uid in $uids) {
+                $source = $State.Elements[$uid]
+                $before = Get-FakeLocation $source
+                if ($keep) {
+                    $newUid = New-FakeUniqueId $State
+                    Add-FakeElement $State $newUid $source.Category (Copy-FakeFacts $source)
+                    $result = $State.Elements[$newUid]
+                }
+                else { $newUid = $uid; $result = $source }
+                if ($null -ne $before) { Move-FakeEnds $result $reflect }
+                [ordered]@{ source_unique_id = $uid; unique_id = $newUid; new = $keep; before = $before; after = (Get-FakeLocation $result) }
+            })
+            if ($keep) { $created = @($mirrored | ForEach-Object { $_.unique_id }) } else { $modified = $uids }
+            [ordered]@{ axis = [ordered]@{ start = $m0; end = $m1 }; keep_original = $keep; mirrored = $mirrored; also_created = @(); deleted = @() }
+        }
+        'document.save_copy' {
+            $target = [string]$a.path
+            $source = [string]$envelope.document.path
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes("fake Revit copy of $source ($operationId)")
+            [IO.File]::WriteAllBytes($target, $bytes)
+            $sha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+            if ($State.Faults.ContainsKey('SaveCopyHashOff')) { $sha = '0' * 64 }
+            $null = $State.Copies.Add($target)
+            $State.DocumentPath = $target
+            $warnings = @("the open document is now the copy $target (Revit Save As re-points it); send later requests with document.path $target; $source keeps its last saved state")
+            [ordered]@{ copy = [ordered]@{ path = $target; bytes = $bytes.Length; sha256 = $sha; source_path = $source; source_unchanged = $true; had_unsaved_changes = $true; document_path = $target; is_modified = $false } }
+        }
         default { $null }
     }
     if ($null -eq $readback) { return ConvertTo-FakeResponseJson (New-FakeFailure 'command_unknown' 'command' $command) }
     $response = [ordered]@{ status = 'succeeded'; code = 'ok'; field = $null; detail = $null; created = $created; modified = $modified; deleted = $deleted; readback = $readback
-        receipt = [ordered]@{ operation_id = $operationId; command = $command; document_unique_id = [string]$envelope.document.unique_id; request_sha256 = $sha; replayed = $false }; warnings = @() }
-    if ($writes -and !$dry) { $State.Receipts[$operationId] = @{ Sha = $sha; Response = $response }; $State.SkippedAddIn++ }
+        receipt = [ordered]@{ operation_id = $operationId; command = $command; document_unique_id = [string]$envelope.document.unique_id; request_sha256 = $sha; replayed = $false }; warnings = $warnings }
+    # document.save_copy keeps no receipt (a repeat is refused target_exists before the pipe).
+    if ($writes -and !$dry -and $command -ne 'document.save_copy') { $State.Receipts[$operationId] = @{ Sha = $sha; Response = $response }; $State.SkippedAddIn++ }
     return ConvertTo-FakeResponseJson $response
 }
 
