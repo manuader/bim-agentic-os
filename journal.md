@@ -1228,3 +1228,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay161 — 2026-11-05T08:52:38Z (Claude, cloud scheduled)
 - 08:52Z LOCK taken (was FREE; relay160 released 2026-11-05T08:43:09Z).
+- 09:33Z workers green (phases 1, 3, 8): P1-10 4fba61a (red 42000494415, green 42001156947; 0 test attempts, 1 compile slip), P3-06 c153744 (red 41998448544, green 41999504722; 0 attempts), P8-08 9739a32 (red 41999435339/42000427658, green 42002056141; 1 attempt: duplicate-GlobalId anchor platform-ordered). Next: independent reviews.
