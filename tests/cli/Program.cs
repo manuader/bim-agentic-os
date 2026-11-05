@@ -867,6 +867,150 @@ try {
         }
     }
 
+    // ---- P3-07 diff-edits --project p --edits e: the P3-05 incremental diff (IncrementalDiffIndex) on the CLI ----
+    // Oracle: stdout is byte-identical to JsonSerializer.Serialize(IncrementalDiff.Diff(project, edits).Plan) called
+    // in-process, and to the `diff` verb's stdout on project vs the project with the edits applied (applied here by an
+    // independent reimplementation of the P3-05 apply rule: updates in place, deletes removed, creates appended in
+    // edit-set order). Refusals print exactly {"status":"failed","code":<code>} and exit 1, like every CLI refusal.
+    // The project and edits files are never written: bytes and mtime (pinned to a past instant first) are unchanged
+    // and no file appears beside them, after every run, success or refusal.
+    {
+        var deRoot=Path.Combine(work,"diff-edits"); Directory.CreateDirectory(deRoot);
+        string DE((int Exit,string Out,string Err) r)=>"exit "+r.Exit+" "+(r.Out.Length>400?r.Out[..400]+"...":r.Out)+(r.Err.Length>0?" stderr "+r.Err:"");
+        string DInput(string name,string content) { var path=Path.Combine(deRoot,name); File.WriteAllText(path,content); File.SetLastWriteTimeUtc(path,new DateTime(2001,2,3,4,5,6,DateTimeKind.Utc)); return path; }
+        Project Applied(Project project,IReadOnlyList<ElementEdit> edits) {
+            var updates=edits.Where(e=>e.Action=="update").ToDictionary(e=>e.Id,e=>e.Element!);
+            var deletes=edits.Where(e=>e.Action=="delete").Select(e=>e.Id).ToHashSet();
+            var elements=project.Elements.Where(e=>!deletes.Contains(e.Id)).Select(e=>updates.TryGetValue(e.Id,out var u)?u:e).ToList();
+            elements.AddRange(edits.Where(e=>e.Action=="create").Select(e=>e.Element!));
+            return project with { Elements=elements.ToArray() };
+        }
+        var deRuns=0;
+        // Every run: the project and edits files keep their bytes and mtime, and the directory gains no file.
+        (int Exit,string Out,string Err) Run(string name,string projectPath,string editsPath,params string[] arguments) {
+            var watched=new[]{projectPath,editsPath}.Where(File.Exists).Distinct().ToArray();
+            var bytes=watched.Select(File.ReadAllBytes).ToArray(); var times=watched.Select(File.GetLastWriteTimeUtc).ToArray();
+            var listing=Directory.GetFileSystemEntries(deRoot).Order(StringComparer.Ordinal).ToArray();
+            var r=Cli(arguments.Length>0?arguments:new[]{"diff-edits","--project",projectPath,"--edits",editsPath});
+            var untouched=watched.Select((p,i)=>File.ReadAllBytes(p).AsSpan().SequenceEqual(bytes[i]) && File.GetLastWriteTimeUtc(p)==times[i]).All(x=>x)
+                && Directory.GetFileSystemEntries(deRoot).Order(StringComparer.Ordinal).SequenceEqual(listing);
+            Check(untouched,"diff-edits never writes the project or edits file ("+name+")",DE(r));
+            deRuns++;
+            return r;
+        }
+        void Succeeds(string name,string projectText,IReadOnlyList<ElementEdit> edits,string? editsText=null) {
+            var project=P(projectText);
+            var projectPath=DInput(name+".project.json",projectText);
+            var editsPath=DInput(name+".edits.json",editsText ?? JsonSerializer.Serialize(edits));
+            var library=JsonSerializer.Serialize(IncrementalDiff.Diff(project,edits).Plan);
+            var appliedProject=Applied(project,edits);
+            Check(library==JsonSerializer.Serialize(Compiler.Diff(project,appliedProject)),"diff-edits fixture: library plan equals Compiler.Diff of the applied project ("+name+")");
+            var appliedPath=DInput(name+".applied.json",JsonSerializer.Serialize(appliedProject));
+            var diffVerb=Cli("diff",projectPath,appliedPath);
+            Check(diffVerb.Exit==0 && diffVerb.Out==library,"diff-edits fixture: diff verb on the applied project equals the library plan ("+name+")",DE(diffVerb));
+            var r=Run(name,projectPath,editsPath);
+            Check(r.Exit==0 && r.Out==library && r.Out==diffVerb.Out && r.Err.Length==0,"diff-edits stdout byte-identical to the library plan and to diff of the applied project ("+name+")",DE(r));
+            // The flags may come in either order.
+            var swapped=Run(name+" swapped",projectPath,editsPath,"diff-edits","--edits",editsPath,"--project",projectPath);
+            Check(swapped.Exit==0 && swapped.Out==library,"diff-edits accepts --edits before --project ("+name+")",DE(swapped));
+        }
+        void Refused(string name,string code,string projectPath,string editsPath,params string[] arguments) {
+            var r=Run(name,projectPath,editsPath,arguments);
+            Check(r.Exit==1 && r.Out==FailedCode(code),"diff-edits refuses "+name+" as "+code,DE(r));
+        }
+        // The library refusal for the same in-process inputs (ArgumentException / InvalidOperationException message).
+        string LibraryCode(string projectText,IReadOnlyList<ElementEdit> edits) {
+            try { IncrementalDiff.Diff(P(projectText),edits); return "succeeded"; }
+            catch(Exception e) when (e is ArgumentException or InvalidOperationException) { return e.Message; }
+        }
+        void RefusedLike(string name,string code,string projectText,IReadOnlyList<ElementEdit> edits) {
+            Check(LibraryCode(projectText,edits)==code,"diff-edits fixture: the library refuses "+name+" as "+code,LibraryCode(projectText,edits));
+            Refused(name,code,DInput(name+".project.json",projectText),DInput(name+".edits.json",JsonSerializer.Serialize(edits)));
+        }
+
+        var baseProject=P(beforeText); var wall=baseProject.Elements[0]; var plan=baseProject.Elements[1];
+        Element Wall(Guid id,double x,Guid[]? dependencies=null)=>new(id,"wall",new[]{x,0,x+5,0,3,0.2},dependencies ?? Array.Empty<Guid>(),new("cli diff-edits fixture","specified"));
+        Element Doc(Guid id,params Guid[] dependencies)=>new(id,"plan",Array.Empty<double>(),dependencies,new("cli diff-edits fixture","proposed"));
+        Guid G(int n)=>Guid.Parse("00000000-0000-0000-0000-"+n.ToString("x12",System.Globalization.CultureInfo.InvariantCulture));
+
+        // 1. The examples' 5 m -> 5.4 m wall edit: the same plan as `diff examples/before.json examples/after.json`.
+        var widened=P(afterText).Elements[0];
+        Succeeds("examples wall update",beforeText,new[]{ElementEdit.Update(widened)});
+        Check(Run("examples vs diff",DInput("ex.project.json",beforeText),DInput("ex.edits.json",JsonSerializer.Serialize(new[]{ElementEdit.Update(widened)}))).Out==expectedDiff,"diff-edits on the examples prints exactly diff examples/before.json examples/after.json");
+        // 2. The edits file format, pinned by a hand-written literal: an array of {"Action","Id","Element"}.
+        var literal="[{\"Action\":\"update\",\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Element\":{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"wall\",\"GeometryMetres\":[0,0,5.4,0,3,0.2],\"Dependencies\":[],\"Provenance\":{\"Source\":\"synthetic core fixture\",\"Approval\":\"specified\"}}}]";
+        Succeeds("literal edits file",beforeText,new[]{ElementEdit.Update(widened)},literal);
+        // 3. Mixed create/update/delete: delete the plan, update the wall, create a wall and a plan depending on it.
+        Succeeds("mixed create update delete",beforeText,new[]{ElementEdit.Create(Wall(G(0x10),20)),ElementEdit.Delete(plan.Id),ElementEdit.Update(wall with {GeometryMetres=new[]{0,0,6,0,3,0.25}}),ElementEdit.Create(Doc(G(0x11),G(0x10),wall.Id))});
+        // 4. A no-op update and an empty edit set: no operations, hashes equal.
+        Succeeds("no-op update",beforeText,new[]{ElementEdit.Update(wall)});
+        Succeeds("empty edit set",beforeText,Array.Empty<ElementEdit>());
+        // 5. A larger project (300 walls, each with a plan) with edits far apart.
+        var big=new List<Element>();
+        for(var i=0;i<300;i++) { big.Add(Wall(G(0x1000+i),i*10)); big.Add(Doc(G(0x2000+i),G(0x1000+i))); }
+        var bigText=JsonSerializer.Serialize(new Project(baseProject.Id,7,big.ToArray()));
+        Succeeds("300-wall project",bigText,new[]{ElementEdit.Update(Wall(G(0x1000+5),51)),ElementEdit.Delete(G(0x2000+150)),ElementEdit.Delete(G(0x1000+150)),ElementEdit.Create(Doc(G(0x3000),G(0x1000+299),G(0x1000+0)))});
+        // 6. Inputs decode like every CLI file input (UTF-8 BOM).
+        Succeeds("UTF-8 BOM edits",beforeText,new[]{ElementEdit.Update(widened)},"﻿"+JsonSerializer.Serialize(new[]{ElementEdit.Update(widened)}));
+
+        // 7. Library refusals keep the library's code.
+        RefusedLike("an unknown action","edit_invalid",beforeText,new[]{new ElementEdit("move",wall.Id,wall)});
+        RefusedLike("a create whose element id differs","edit_invalid",beforeText,new[]{new ElementEdit("create",G(0x20),Wall(G(0x21),30))});
+        RefusedLike("a delete carrying an element","edit_invalid",beforeText,new[]{new ElementEdit("delete",plan.Id,plan)});
+        RefusedLike("an update of an unknown id","edit_unknown_id",beforeText,new[]{ElementEdit.Update(Wall(G(0x30),40))});
+        RefusedLike("a delete of an unknown id","edit_unknown_id",beforeText,new[]{ElementEdit.Delete(G(0x31))});
+        RefusedLike("two edits of one id","edit_duplicate_id",beforeText,new[]{ElementEdit.Update(widened),ElementEdit.Delete(wall.Id)});
+        RefusedLike("a create of an existing id","edit_create_exists",beforeText,new[]{ElementEdit.Create(wall)});
+        RefusedLike("more than IncrementalDiff.MaxEdits edits","edit_bound_exceeded",beforeText,Enumerable.Range(0,IncrementalDiff.MaxEdits+1).Select(i=>ElementEdit.Delete(G(0x40000+i))).ToArray());
+        RefusedLike("a delete leaving a dangling dependency","invalid_ir",beforeText,new[]{ElementEdit.Delete(wall.Id)});
+        RefusedLike("an edit creating a dependency cycle","invalid_ir",beforeText,new[]{ElementEdit.Update(wall with {Dependencies=new[]{plan.Id}})});
+        RefusedLike("an invalid wall geometry","invalid_ir",beforeText,new[]{ElementEdit.Update(wall with {GeometryMetres=new[]{0,0,0,0,3,0.2}})});
+        RefusedLike("an invalid project","invalid_ir",JsonSerializer.Serialize(baseProject with {Elements=new[]{plan}}),Array.Empty<ElementEdit>());
+        var editsOk=DInput("ok.edits.json",JsonSerializer.Serialize(new[]{ElementEdit.Update(widened)}));
+        var projectOk=DInput("ok.project.json",beforeText);
+        // A null entry in the array is the library's malformed edit.
+        Refused("a null edit entry","edit_invalid",projectOk,DInput("null-entry.edits.json","[null]"));
+        Refused("an update with null geometry","edit_invalid",projectOk,DInput("null-geometry.edits.json","[{\"Action\":\"update\",\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Element\":{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"wall\",\"GeometryMetres\":null,\"Dependencies\":[],\"Provenance\":null}}]"));
+
+        // 8. Malformed JSON: typed CLI refusals, never a raw exception message.
+        foreach(var (label,text) in new[]{("not JSON","{"),("JSON null","null"),("an object","{\"Action\":\"delete\"}"),("a string","\"edits\""),("an unknown member","[{\"Action\":\"delete\",\"Id\":\"00000000-0000-0000-0000-000000000003\",\"Elemnt\":null}]"),("a bad guid","[{\"Action\":\"delete\",\"Id\":\"not-a-guid\"}]"),("trailing content","[] []"),("empty file","")})
+            Refused("edits that are "+label,"diff_edits_edits_invalid",projectOk,DInput("bad-"+label.Replace(' ','-')+".edits.json",text));
+        foreach(var (label,text) in new[]{("not JSON","{"),("JSON null","null"),("an array","[]"),("null elements","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":null}"),("a null element","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":[null]}"),("null geometry","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":[{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"plan\",\"GeometryMetres\":null,\"Dependencies\":[],\"Provenance\":null}]}"),("null dependencies","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":[{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"plan\",\"GeometryMetres\":[],\"Dependencies\":null,\"Provenance\":null}]}"),("empty file","")})
+            Refused("a project that is "+label,"diff_edits_project_invalid",DInput("bad-"+label.Replace(' ','-')+".project.json",text),editsOk);
+
+        // 9. Bounded inputs: the shared BoundedInput reader and its typed codes, for either file.
+        var deMissing=Path.Combine(deRoot,"absent.json");
+        Refused("a missing project","input_not_found",deMissing,editsOk,"diff-edits","--project",deMissing,"--edits",editsOk);
+        Refused("a missing edits file","input_not_found",projectOk,deMissing,"diff-edits","--project",projectOk,"--edits",deMissing);
+        var deDirectory=Path.Combine(deRoot,"a-directory.json"); Directory.CreateDirectory(deDirectory);
+        Refused("a directory as project","input_not_regular_file",projectOk,editsOk,"diff-edits","--project",deDirectory,"--edits",editsOk);
+        Refused("a directory as edits","input_not_regular_file",projectOk,editsOk,"diff-edits","--project",projectOk,"--edits",deDirectory);
+        var deOver=Path.Combine(deRoot,"over-cap.json"); File.WriteAllBytes(deOver,overCap);
+        Refused("a project over 8 MiB","input_too_large",projectOk,deOver,"diff-edits","--project",deOver,"--edits",editsOk);
+        Refused("edits over 8 MiB","input_too_large",projectOk,deOver,"diff-edits","--project",projectOk,"--edits",deOver);
+        var deAtCap=new byte[cap]; var editsBytes=File.ReadAllBytes(editsOk); editsBytes.CopyTo(deAtCap,0); Array.Fill(deAtCap,(byte)' ',editsBytes.Length,cap-editsBytes.Length);
+        var deAtCapPath=Path.Combine(deRoot,"at-cap.edits.json"); File.WriteAllBytes(deAtCapPath,deAtCap);
+        var atCapRun=Run("edits of exactly 8 MiB",projectOk,deAtCapPath);
+        Check(atCapRun.Exit==0 && atCapRun.Out==expectedDiff,"diff-edits accepts an edits file of exactly 8 MiB",DE(atCapRun));
+
+        // 10. Usage: exactly --project <p> --edits <e>, each once, nothing else; checked before any file is read.
+        foreach(var bad in new[]{new[]{"diff-edits"},new[]{"diff-edits","--project",projectOk},new[]{"diff-edits","--edits",editsOk},new[]{"diff-edits","--project",projectOk,"--edits"},
+            new[]{"diff-edits","--project",projectOk,"--project",projectOk},new[]{"diff-edits","--project",projectOk,"--edits",editsOk,"extra"},new[]{"diff-edits","--project",projectOk,"--edits",editsOk,"--max","3"},
+            new[]{"diff-edits",projectOk,editsOk},new[]{"diff-edits","--project","","--edits",editsOk},new[]{"diff-edits","--project",deMissing,"--edits",deMissing,"--bogus"}})
+            Refused("arguments: "+string.Join(" ",bad.Skip(1).Select(a=>a==projectOk?"<project>":a==editsOk?"<edits>":a==deMissing?"<missing>":a)),"diff_edits_usage",projectOk,editsOk,bad);
+
+        // 11. Static: the verb reads only through BoundedInput and has no write path.
+        var deSourcePath=Path.Combine(root,"interfaces","cli","DiffEditsCommand.cs");
+        Check(File.Exists(deSourcePath),"interfaces/cli/DiffEditsCommand.cs exists");
+        if(File.Exists(deSourcePath)) {
+            var deSource=File.ReadAllText(deSourcePath);
+            Check(deSource.Contains("BoundedInput.ReadText(",StringComparison.Ordinal) && deSource.Contains("IncrementalDiff",StringComparison.Ordinal) && !deSource.Contains("Compiler.Diff",StringComparison.Ordinal)
+                && new[]{"File.","FileStream","FileMode.","Directory.","ProjectStore","Commit("}.All(api=>!deSource.Contains(api,StringComparison.Ordinal)),
+                "diff-edits reads only through BoundedInput, diffs through IncrementalDiff (not Compiler.Diff) and has no write path");
+        }
+        Check(deRuns>=60,"diff-edits ran every case",deRuns.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
 } catch(Exception exception) {
