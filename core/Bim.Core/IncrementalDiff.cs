@@ -16,15 +16,22 @@ public sealed record ElementEdit(string Action, Guid Id, Element? Element)
 }
 
 // Work counters for one incremental diff. Serialized: elements JSON-serialized (only created/updated edits).
-// Visited: distinct elements traversed (exactly the dirty closure; delete and cycle checks stay inside it).
-// HashedBytes: bytes fed to SHA-256 for AfterHash; hashing still streams the whole after JSON (cached per-element
-// bytes, not re-serialized), so it stays linear in project size. TotalElements: elements in before.
-public sealed record IncrementalWork(int Edits, int Serialized, int Visited, int TotalElements, long HashedBytes, long Traversed = 0);
+// Visited: size of the dirty closure (= plan.DirtyIds.Length; a size, not an independent work measure).
+// Traversed: dependency entries actually examined: before-dependents of each deleted element (dangling check) and
+// of each dirty element (closure), plus the after-dependencies of each dirty element still present (cycle check).
+// It is independent of project size for a fixed edit and neighbourhood. HashedBytes: bytes fed to SHA-256 for
+// AfterHash. TotalElements: elements in before.
+// NOT local, O(project) per diff: assembling After (a reference copy of the element array) and hashing AfterHash
+// (streams every element's cached JSON bytes; nothing unedited is re-serialized). Plan hashes are whole-project.
+public sealed record IncrementalWork(int Edits, int Serialized, int Visited, int TotalElements, long HashedBytes, long Traversed);
 
 public sealed record IncrementalDiffResult(Project After, ExecutionPlan Plan, IncrementalWork Work);
 
 // Read-only index over a Compiler.Validate-clean project, built once in O(project): element positions, cached
 // per-element JSON bytes, reverse dependency lists and BeforeHash. Reusable for any number of diffs; never mutated.
+// The index is a snapshot of before: do not mutate before (its Elements array or elements) after Build. A diff
+// does not advance the index or persist anything; callers commit result.After (with result.Plan) themselves and
+// build a new index from it for the next edit set. maxAffected must be >= 0 (edit_invalid otherwise).
 public sealed class IncrementalDiffIndex
 {
     readonly Dictionary<Guid, int> position;
@@ -88,12 +95,15 @@ public sealed class IncrementalDiffIndex
     static bool WellFormed(Element? element) =>
         element is not null && element.GeometryMetres is not null && element.Dependencies is not null;
 
-    // maxAffected bounds the dirty closure; a larger closure is refused (edit_bound_exceeded) as soon as it is
-    // discovered, so the traversal never exceeds maxAffected + 1 elements. A caller may then fall back to Compiler.Diff.
+    // maxAffected bounds the accepted dirty closure; a larger closure is refused (edit_bound_exceeded) after the
+    // closure and its validity checks run, so invalid_ir always takes precedence (the traversal itself is not capped).
+    // A caller may then fall back to Compiler.Diff.
     public IncrementalDiffResult Diff(IReadOnlyList<ElementEdit> edits, int maxAffected = int.MaxValue)
     {
         ArgumentNullException.ThrowIfNull(edits);
-        if (edits.Count > IncrementalDiff.MaxEdits || maxAffected < 0) throw new ArgumentException(IncrementalDiff.BoundExceeded);
+        if (maxAffected < 0) throw new ArgumentException(IncrementalDiff.InvalidEdit);
+        if (edits.Count > IncrementalDiff.MaxEdits) throw new ArgumentException(IncrementalDiff.BoundExceeded);
+        long traversed = 0;
 
         // ---- Edit-set shape: one edit per id, update/delete of existing ids, create of new ids ----
         var seen = new HashSet<Guid>();
@@ -136,9 +146,11 @@ public sealed class IncrementalDiffIndex
             if (element.Dependencies.Any(dependency => !InAfter(dependency))) throw new InvalidOperationException("invalid_ir");
         }
         // An unedited element that depended on a deleted one would dangle; edited ones were checked above.
+        var dangling = false;
         foreach (var id in deletes)
-            if (dependents.TryGetValue(id, out var list) && list.Any(dependent => !deletes.Contains(dependent) && !updates.ContainsKey(dependent)))
-                throw new InvalidOperationException("invalid_ir");
+            if (dependents.TryGetValue(id, out var list))
+                foreach (var dependent in list) { traversed++; dangling |= !deletes.Contains(dependent) && !updates.ContainsKey(dependent); }
+        if (dangling) throw new InvalidOperationException("invalid_ir");
 
         // ---- Serialize only edited elements; an update with unchanged JSON is not an operation ----
         var serialized = 0;
@@ -152,22 +164,20 @@ public sealed class IncrementalDiffIndex
         }
         foreach (var element in creates) { newJson.Add(element.Id, JsonSerializer.SerializeToUtf8Bytes(element)); serialized++; }
 
-        // ---- Dirty closure over reverse dependencies, bounded ----
+        // ---- Dirty closure over reverse dependencies (the bound is applied after the cycle check) ----
         // After-edges whose dependent is unedited (or a no-op update) equal before-edges; other after-edges start at
         // a seed, so the before reverse index yields the same closure as Compiler.Diff's union of before and after.
         var dirty = new HashSet<Guid>();
         var queue = new Queue<Guid>();
         void Mark(Guid id)
         {
-            if (!dirty.Add(id)) return;
-            if (dirty.Count > maxAffected) throw new ArgumentException(IncrementalDiff.BoundExceeded);
-            queue.Enqueue(id);
+            if (dirty.Add(id)) queue.Enqueue(id);
         }
         foreach (var id in changed) Mark(id);
         foreach (var element in creates) Mark(element.Id);
         foreach (var id in deletes) Mark(id);
         while (queue.TryDequeue(out var id))
-            if (dependents.TryGetValue(id, out var list)) foreach (var dependent in list) Mark(dependent);
+            if (dependents.TryGetValue(id, out var list)) foreach (var dependent in list) { traversed++; Mark(dependent); }
 
         // ---- Cycle check inside the closure: before is acyclic, so any cycle of after contains a seed, and every
         // element on it transitively depends on that seed, hence lies in dirty. Kahn's algorithm on dirty ∩ after. ----
@@ -180,7 +190,10 @@ public sealed class IncrementalDiffIndex
         foreach (var id in nodes)
         {
             foreach (var dependency in AfterElement(id).Dependencies)
+            {
+                traversed++;
                 if (reverse.TryGetValue(dependency, out var list)) { pending[id]++; list.Add(id); }
+            }
         }
         var ready = new Queue<Guid>(nodes.Where(id => pending[id] == 0));
         var processed = 0;
@@ -190,6 +203,8 @@ public sealed class IncrementalDiffIndex
             foreach (var dependent in reverse[id]) if (--pending[dependent] == 0) ready.Enqueue(dependent);
         }
         if (processed != nodes.Length) throw new InvalidOperationException("invalid_ir");
+        // invalid_ir always wins over the bound: the bound limits the accepted closure, checked after validity.
+        if (dirty.Count > maxAffected) throw new ArgumentException(IncrementalDiff.BoundExceeded);
 
         // ---- After project (reference copy, no serialization), operations in Compiler.Diff order, AfterHash ----
         var after = new List<Element>(Before.Elements.Length - deletes.Count + creates.Count);
@@ -210,7 +225,7 @@ public sealed class IncrementalDiffIndex
         foreach (var id in deletes.OrderBy(id => position[id])) operations.Add(new("delete", Before.Elements[position[id]]));
 
         var plan = new ExecutionPlan(Before.Id, Before.Revision, beforeHash, afterHash, operations.ToArray(), dirty.Order().ToArray());
-        var work = new IncrementalWork(edits.Count, serialized, dirty.Count, Before.Elements.Length, hashedBytes);
+        var work = new IncrementalWork(edits.Count, serialized, dirty.Count, Before.Elements.Length, hashedBytes, traversed);
         return new(Before with { Elements = after.ToArray() }, plan, work);
     }
 }
