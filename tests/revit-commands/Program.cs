@@ -419,6 +419,8 @@ try
     CatalogueSaveCopyChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- roof.create_extrusion (P9-07): extruded (barrel / curved) roofs from an open line/arc profile ----
     CatalogueRoofExtrusionChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- element.move / element.copy (P1-09): translate 1 to 100 elements by a millimetre vector ----
+    CatalogueTransformChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();

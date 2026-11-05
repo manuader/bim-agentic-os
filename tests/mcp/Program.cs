@@ -202,6 +202,8 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["view.export_image"]=()=>new JsonObject{["view"]="{3D}",["pixel_size"]=1600,["format"]="png",["output_name"]="fachada-norte"},
     ["document.save"]=()=>new JsonObject(),
     ["roof.create_extrusion"]=()=>new JsonObject{["level"]="Level 1",["type"]="Chapa curva",["plane"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(6000,0)},["profile"]=new JsonArray(new JsonObject{["kind"]="arc",["start"]=new JsonArray(-300,2700),["end"]=new JsonArray(6300,2700),["through"]=new JsonArray(3000,3800)}),["extrusion_start_mm"]=-300,["extrusion_end_mm"]=10300},
+    ["element.move"]=()=>new JsonObject{["element_uids"]=new JsonArray(McpUid),["vector_mm"]=new JsonArray(1000,0,0)},
+    ["element.copy"]=()=>new JsonObject{["element_uids"]=new JsonArray(McpUid),["vector_mm"]=new JsonArray(0,0,3000)},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
@@ -317,6 +319,20 @@ Check(RevitCommandCatalogue.RoofExtrusion.Select(spec=>spec.Name).SequenceEqual(
     Check(IsError(onCopy) && FailureCode(onCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["args"]?["profile"]?.AsArray().Count==1,"revit_roof_create_extrusion on an enabled copy forwards the profile");
     var crossing=Guarded("revit_roof_create_extrusion",new JsonObject{["level"]="Level 1",["type"]="Chapa curva",["plane"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(6000,0)},["profile"]=new JsonArray(new JsonObject{["kind"]="line",["start"]=new JsonArray(0,0),["end"]=new JsonArray(4000,0)},new JsonObject{["kind"]="line",["start"]=new JsonArray(4000,0),["end"]=new JsonArray(4000,2000)},new JsonObject{["kind"]="line",["start"]=new JsonArray(4000,2000),["end"]=new JsonArray(2000,-1000)}),["extrusion_start_mm"]=0,["extrusion_end_mm"]=10000},McpCopy);
     Check(IsError(crossing) && FailureCode(crossing)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before+1,"a self-intersecting extrusion roof profile is refused before the pipe");
+}
+// P1-09 element.move / element.copy: generated write tools, copies only; a move changes existing elements
+// (destructiveHint true), a copy only adds (destructiveHint false); a zero vector is refused before the pipe.
+Check(RevitCommandCatalogue.Transform.Select(spec=>spec.Name).SequenceEqual(new[]{"element.move","element.copy"}) && RevitCommandCatalogue.Transform.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover element.move and element.copy, in the catalogue enumeration");
+foreach(var (tool,command,destructive) in new[]{("revit_element_move","element.move",true),("revit_element_copy","element.copy",false)}) {
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && listed?["annotations"]?["destructiveHint"]?.GetValue<bool>()==destructive && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies",tool+" is listed write-copies with destructiveHint "+destructive);
+    var before=forwardedLines.Count;
+    var onReal=Guarded(tool,sampleArgs[command](),McpReal);
+    Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+    var onCopy=Guarded(tool,sampleArgs[command](),McpCopy);
+    Check(IsError(onCopy) && FailureCode(onCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["args"]?["vector_mm"]?.AsArray().Count==3,tool+" on an enabled copy forwards the vector");
+    var zero=Guarded(tool,new JsonObject{["element_uids"]=new JsonArray(McpUid),["vector_mm"]=new JsonArray(0,0,0)},McpCopy);
+    Check(IsError(zero) && FailureCode(zero)==RevitCommandCodes.LengthInvalid && forwardedLines.Count==before+1,tool+": a zero vector is length_invalid before the pipe");
 }
 // chat-materials-types: fill patterns, materials, layered wall/floor types and type changes are generated tools;
 // material.set and element.change_type change existing elements (destructiveHint true), the rest only add.
