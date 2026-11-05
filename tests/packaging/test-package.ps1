@@ -4,6 +4,7 @@
 # files; checks layout, version stamp (single source scripts/package.version, git fallback), forbidden content
 # (Revit/Autodesk assemblies, Revit models, credentials), never-overwrite and manifest tamper detection.
 # P10-07: runs tests/packaging/test-install-addin.ps1 against the built package (temp Addins folders only).
+# P10-08: runs tests/packaging/test-package-archive.ps1 against both clean builds (archives must be byte-identical).
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -26,7 +27,7 @@ function Complete {
         Write-Error "packaging checks failed: $($failures.Count) failure(s); first: $($failures[0])"
         exit 1
     }
-    'PASS packaging: reproducible rebuild (byte-identical manifest and files), layout, version stamp, forbidden-content refusal, never-overwrite, tamper detection, add-in install/uninstall'
+    'PASS packaging: reproducible rebuild (byte-identical manifest and files), layout, version stamp, forbidden-content refusal, never-overwrite, tamper detection, add-in install/uninstall, release archive'
     exit 0
 }
 function Invoke-Script([string]$Script, [string[]]$Arguments) {
@@ -173,6 +174,13 @@ try {
     foreach ($line in $installFailures) { $failures.Add('install-addin: ' + $line.Substring(5)) }
     if ($install.Code -ne 0 -and $installFailures.Count -eq 0) { $failures.Add("install-addin tests exit $($install.Code): $(Get-Tail $install.Output)") }
     Assert ($install.Code -ne 0 -or $install.Output -match 'PASS install-addin') "install-addin tests did not report PASS: $(Get-Tail $install.Output)"
+
+    # --- P10-08 deterministic release archive with SHA256SUMS, over both clean builds ---
+    $archive = Invoke-Script (Join-Path $PSScriptRoot 'test-package-archive.ps1') @('-PackageDirectory', $outA, '-SecondPackageDirectory', $outB)
+    $archiveFailures = @($archive.Output -split "`n" | Where-Object { $_ -like 'FAIL *' })
+    foreach ($line in $archiveFailures) { $failures.Add('package-archive: ' + $line.Substring(5)) }
+    if ($archive.Code -ne 0 -and $archiveFailures.Count -eq 0) { $failures.Add("package-archive tests exit $($archive.Code): $(Get-Tail $archive.Output)") }
+    Assert ($archive.Code -ne 0 -or $archive.Output -match 'PASS package-archive') "package-archive tests did not report PASS: $(Get-Tail $archive.Output)"
     $cases = @(
         @{ Name = 'tamper'; Expect = 'sha256 mismatch'; Act = { param($d) $f = Join-Path $d 'cli/Bim.Cli.runtimeconfig.json'; $b = [IO.File]::ReadAllBytes($f); $b[0] = $b[0] -bxor 1; [IO.File]::WriteAllBytes($f, $b) } },
         @{ Name = 'missing'; Expect = 'missing file'; Act = { param($d) Remove-Item -LiteralPath (Join-Path $d 'mcp/Bim.Mcp.dll') } },
