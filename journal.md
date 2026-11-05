@@ -1238,3 +1238,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay162 — 2026-11-05T11:53:50Z (Claude, cloud scheduled)
 - 11:53Z LOCK taken (was FREE; relay161 released 2026-11-05T11:16:23Z).
+- 12:32Z workers green (phases 4, 6, 7): P4-07 e197529 (red 42023285220, green 42024173720; 0 attempts), P6-08 3fa7902 (red 42023139520 compile-red, green 42024176366; 0 test attempts), P7-08 f27f6e7 (red 42024783818 compile-red, green 42025388127/42026612209; 0 attempts; real prototypes 10/16 accepted, 0 wall_clash). Next: independent reviews.
