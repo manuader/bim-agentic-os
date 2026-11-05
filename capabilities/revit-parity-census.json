@@ -814,6 +814,21 @@
       "notes": "Used in an owner chat session (docs/revit-playbook.md); not recorded in docs/features.json, so not claimed beyond compiled."
     },
     {
+      "id": "site.direct_shape",
+      "area": "site",
+      "revit_function": "DirectShape / in-place solid for site elements (extruded plan outline or box)",
+      "commands": [
+        "direct_shape.create"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueDirectShape.cs",
+        "runtimes/revit-native/CommandsExecutorDirectShape.cs"
+      ],
+      "notes": "Boulders, planters and similar site solids the owner asked for (docs/revit-playbook.md); contract and readback unit-tested, executor compiled only; not recorded in docs/features.json, so not claimed beyond compiled."
+    },
+    {
       "id": "site.grading_pad_property",
       "area": "site",
       "revit_function": "Graded region, Building Pad, Property Line",

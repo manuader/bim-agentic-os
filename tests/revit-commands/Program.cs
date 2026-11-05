@@ -419,6 +419,8 @@ try
     CatalogueSaveCopyChecks.Run((condition, name, detail) => Check(condition, name, detail));
     // ---- roof.create_extrusion (P9-07): extruded (barrel / curved) roofs from an open line/arc profile ----
     CatalogueRoofExtrusionChecks.Run((condition, name, detail) => Check(condition, name, detail));
+    // ---- direct_shape.create (P9-09): DirectShape site solids (extruded plan polygon or box) ----
+    CatalogueDirectShapeChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
     // ---- Link guard (injected probe) ----
     var probed = new List<string>();

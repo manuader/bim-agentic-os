@@ -201,6 +201,7 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["element.change_type"]=()=>new JsonObject{["element_uid"]=McpUid,["type"]="Muro piedra 600 + revestimiento lenga"},
     ["view.export_image"]=()=>new JsonObject{["view"]="{3D}",["pixel_size"]=1600,["format"]="png",["output_name"]="fachada-norte"},
     ["document.save"]=()=>new JsonObject(),
+    ["direct_shape.create"]=()=>new JsonObject{["category"]="site",["shape"]=new JsonObject{["kind"]="extrusion",["level"]="Level 1",["outline"]=new JsonArray(new JsonArray(0,0),new JsonArray(1200,0),new JsonArray(1200,800),new JsonArray(0,800)),["height_mm"]=900},["name"]="boulder 3"},
     ["roof.create_extrusion"]=()=>new JsonObject{["level"]="Level 1",["type"]="Chapa curva",["plane"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(6000,0)},["profile"]=new JsonArray(new JsonObject{["kind"]="arc",["start"]=new JsonArray(-300,2700),["end"]=new JsonArray(6300,2700),["through"]=new JsonArray(3000,3800)}),["extrusion_start_mm"]=-300,["extrusion_end_mm"]=10300},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
