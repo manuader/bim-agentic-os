@@ -191,6 +191,8 @@ static class PrototypePipelineTests
             var request = new PrototypeRequest(typology, lot, 4, Seed: 0);
             var label = typology + " " + Num(lot.WidthMetres) + "x" + Num(lot.DepthMetres) + ": ";
             var result = PrototypePipeline.Run(request, options);
+            Console.WriteLine("::notice::DIAG sha " + label + Sha(PrototypePipelineSerializer.Serialize(result)) + " | " + string.Join(" || ", result.Alternatives.Where(a => a.RejectedAt == PrototypePipelineGate.FacadeIr)
+                .Select(a => "#" + Text(a.Index) + " " + string.Join(";", a.Rejections.Select(r => r.Code + "@" + r.Subject + " " + r.Detail)) + " ROOMS " + string.Join(" ", a.Plan.Rooms.Select(r => r.InstanceId + "(" + r.Rect.X.ToString("R", CultureInfo.InvariantCulture) + "," + r.Rect.Y.ToString("R", CultureInfo.InvariantCulture) + "," + r.Rect.Width.ToString("R", CultureInfo.InvariantCulture) + "," + r.Rect.Depth.ToString("R", CultureInfo.InvariantCulture) + ")")))));
             var generated = PrototypeGenerator.Generate(request);
             if (generated.Brief is null || generated.Alternatives is null) { problem ??= label + "not generated"; continue; }
             if (result.Prototype is null || PrototypeSerializer.Serialize(result.Prototype) != PrototypeSerializer.Serialize(generated)) problem ??= label + "prototype stage differs";
@@ -300,6 +302,7 @@ static class PrototypePipelineTests
 
         // ---- determinism: byte-identical canonical JSON ----
         var first = PrototypePipelineSerializer.Serialize(run);
+        Console.WriteLine("::notice::DIAG pinned run sha " + Sha(first) + " crafted " + Sha(PrototypePipelineSerializer.Serialize(ranked)));
         var second = PrototypePipelineSerializer.Serialize(PrototypePipeline.Run(pinned, options));
         string german;
         PrototypePipelineResult germanRun;
