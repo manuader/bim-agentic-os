@@ -171,3 +171,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P4-05: no failed attempts (red 41902544798 → green 41904414374; review red 41913071671 → green 41917253830).
 - P6-07 Attempt1 (run 41904029640, 4846ba3): hypothesis the CLI verbs only need the Bim.Cad project reference → wrong, scripts/package.ps1 copies a fixed source list without adapters/cad/Bim.Cad (CS0234 in packaging-reproducible) → added to package sources (5bdad8e), green 41905973151. Review red 41918971069 → green 41920420097 (0 attempts; the new cli/Bim.Cad.dll package requirement is a regression guard, it could not go red first).
 - P7-06: build slip (run 41904526611, nullable warnings under --warnaserror), not an attempt. Attempt1 (run 41907009597): hypothesis every ranked prototype plan compiles through IntentCompiler with 0.15 m walls → false, TwoBedroom 8.66x20 alt 3 has a 2.66 cm stagger refused as wall_clash (diagnostic run 41908754385) → such plans are an explicit typed refusal, independent stagger finder in the test, other prototypes must pass every check; green 41910638575.
+
+### Relay156 (2026-11-04/05, cloud)
+- P2-07: no failed attempts (red 41930130294 → green 41931899995; review red 41933672582 → green 41934750332). One compile slip (CS0136 shadowed `steps` local, run 41931282202), not an attempt.
+- P5-07: no failed attempts (red 41929913861 → green 41931202221; review red 41935947819 → green 41937157242).
+- P10-07: no failed attempts (red 41929591249 → green 41930792081; review red 41938591628 → green 41938674297).

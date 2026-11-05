@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-04",
+  "updated": "2026-11-05",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -1010,6 +1010,38 @@
       ],
       "blocker": "Windows use IntentCompiler's existing 6-value axis geometry (hosted [offset,width] form cannot carry sill/head without a schema change); only projects built by FacadeIrBuilder.Prototype; plans staggered thinner than a wall refuse wall_clash; Compiler.Validate does not itself check window-on-host (independent oracle does).",
       "scope": "P7-06: FacadeIrBuilder.Prototype compiles a feasible plan to BIM-IR; AddWindows hosts each P7-05 window on its single axis-aligned exterior wall with offset/width/sill/head, keeps a 0.30 m entrance-door clearance by the smallest move or fails facade_ir_entrance_overlap; Compiler.Validate clean and P5-02 illumination/ventilation pass. CI 41910638575."
+    },
+    {
+      "id": "mirror-drift-resolution",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/MirrorDriftResolve.cs",
+        "tests/mirror-journal/MirrorDriftResolveChecks.cs"
+      ],
+      "blocker": "Not wired to CLI/MCP; never run in Revit; deletes carry no confirm_dependents (hosts with unchanged dependents are refused as dependents_remain); replace gives new UniqueIds without a map update; level create/replace unsupported; no selective-apply helper (Requires documented, not enforced).",
+      "scope": "P2-07: MirrorDriftResolve.Plan(report, snapshot, committed, bindings) \u2192 per drifted element an adopt proposal (BIM-IR update/create/delete from the mirror, revit-mirror proposed provenance) and a restore proposal (element.delete / wall.create / opening.place / room.create / element.set_parameter steps validated by RevitCommandProtocol.Parse; operation ids hash the observed state so re-plans after new drift never replay); Applied always false; typed unsupported codes and report refusals; deterministic. CI 41934750332."
+    },
+    {
+      "id": "skill-typology-vivienda",
+      "status": "unit-tested",
+      "evidence": [
+        "skills/bim.typology.vivienda-unifamiliar/skill.json",
+        "core/Bim.Core/SkillTypology.cs",
+        "tests/skills/TypologySkillTests.cs"
+      ],
+      "blocker": "Programme values illustrative (not owner-confirmed); only the effective (winning) composed minimum is compared; not wired to Bim.Generative; no CLI/MCP; multi-count rooms are one brief room with a count.",
+      "scope": "P5-07: vivienda unifamiliar typology pack (required/optional rooms, min/target/max areas never below CABA cited minimums, 7 adjacency wishes) resolved by SkillTypology.Resolve for family size 1\u20138 into a ProjectBrief accepted by BriefValidator; typed unknown kind, not offered, minimum conflict (incl. composed defaults and rule parameters), invalid setting and count cap. CI 41937157242."
+    },
+    {
+      "id": "addin-install",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/install-addin.ps1",
+        "tests/packaging/test-install-addin.ps1",
+        "tests/packaging/test-package.ps1"
+      ],
+      "blocker": "Release package has no Bim.Revit.dll (licensed references) \u2192 install needs -AssemblyPath or -AllowMissingAssembly; never loaded by Revit; does not check whether Revit is running; -RevitUserAddins only exercised with a fake APPDATA.",
+      "scope": "P10-07: install-addin.ps1 renders Bim.addin from a verified P10-04 package (package-verify, manifest snapshot compared after verify, template hash) into an explicit Addins folder with the XML-escaped assembly path, backs up a foreign Bim.addin, records ownership by hash, rolls back a failed write, uninstall restores the backup and refuses foreign files; temp folders only in tests, ubuntu+windows. CI 41938674297."
     }
   ]
 }
