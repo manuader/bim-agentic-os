@@ -11,7 +11,8 @@ namespace Bim.Generative;
 // with their BIM-IR element and host ids. The BIM-IR project itself is not written (only its element count): it is the
 // deterministic output of FacadeIrBuilder for the plan, layout and circulation written here. The same result always
 // gives the same bytes, whatever the culture. The stage options (circulation, facade, BIM-IR, pack parameters) are
-// written too, so runs that differ only in an option (for example the BIM-IR wall height) serialize differently.
+// written too, so runs that differ only in an option (for example the BIM-IR wall height) serialize differently. The
+// P7-08 snap options are written (options.snap) only when the pre-pass is on, so P7-07 results keep their bytes.
 public static class PrototypePipelineSerializer
 {
     public static string Serialize(PrototypePipelineResult result)
@@ -105,6 +106,31 @@ public static class PrototypePipelineSerializer
         foreach (var parameter in (options.Parameters ?? new Dictionary<string, double>()).OrderBy(pair => pair.Key, StringComparer.Ordinal))
             Number(writer, parameter.Key, parameter.Value);
         writer.WriteEndObject();
+        // P7-08: written only when the snap pre-pass is on, so P7-07 results keep their exact bytes.
+        if (options.Snap is { } snap)
+        {
+            writer.WriteStartObject("snap");
+            if (snap.Rules?.Rules is { } rules)
+            {
+                writer.WriteStartArray("rules");
+                foreach (var rule in rules)
+                {
+                    writer.WriteStartObject();
+                    if (rule?.RoomId is { } roomId) writer.WriteString("room_id", roomId);
+                    else writer.WriteNull("room_id");
+                    if (rule?.NamePattern is { } pattern) writer.WriteString("name_pattern", pattern);
+                    else writer.WriteNull("name_pattern");
+                    if (rule?.MinAreaSquareMetres is { } area) Number(writer, "min_area_m2", area);
+                    else writer.WriteNull("min_area_m2");
+                    if (rule?.MinSideMetres is { } side) Number(writer, "min_side_m", side);
+                    else writer.WriteNull("min_side_m");
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
+            }
+            else writer.WriteNull("rules");
+            writer.WriteEndObject();
+        }
         writer.WriteEndObject();
     }
 

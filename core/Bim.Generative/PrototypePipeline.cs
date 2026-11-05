@@ -13,6 +13,10 @@ namespace Bim.Generative;
 //    one-room probe plan) and the BIM-IR options (facade_ir_options_invalid). Run also lists the PrototypeGenerator
 //    refusals of the request (they come first); the generator is called exactly as on its own, so its result, canonical
 //    JSON and pinned digests are unchanged.
+// 1b. P7-08, only when options.Snap is set: every plan goes through PrototypeSnap.Snap (wall thickness of options.Ir); a
+//    snapped plan replaces the generated one in every later step, a refused snap becomes an infeasible plan whose
+//    violations are its prototype_snap_* refusals (rejected at the prototype gate). Snap options are refused with the
+//    other options (prototype_snap_options_invalid). With Snap null nothing here runs and the output is P7-07's.
 // 2. Rank the plans in generation order with CirculationRanker (the six AlternativeRanker criteria with the request's
 //    weights plus "circulation" with CirculationWeight, RequireValid true). Its refusals (ranking weights, count) refuse
 //    the pipeline.
@@ -75,6 +79,12 @@ public static class PrototypePipeline
     static PrototypePipelineResult Evaluate(ProjectBrief brief, IReadOnlyList<SpacePlan> plans, ScoringWeights? weights, PrototypePipelineOptions options,
         PrototypeResult? prototype, IReadOnlyDictionary<int, string>? strategies)
     {
+        // P7-08 opt-in pre-pass: snapped plans replace the given ones; a refused snap becomes an infeasible plan carrying
+        // its typed reasons, so the prototype gate rejects it.
+        if (options.Snap is { } snap)
+            plans = plans.Select(plan => PrototypeSnap.Snap(brief, plan, options.Ir, snap)).Select(snapped => snapped.Status == PrototypeSnapStatus.Refused
+                ? snapped.Plan with { Status = SpacePlanStatus.Infeasible, Rooms = Array.Empty<PlannedRoom>(), Constraints = snapped.Refusals, Score = 0 }
+                : snapped.Plan).ToArray();
         var circulationOptions = options.Circulation ?? new CirculationOptions();
         var ranking = CirculationRanker.Rank(brief, plans, new CirculationScoring(weights, options.CirculationWeight, true, circulationOptions));
         if (ranking.Status == AlternativeSetStatus.Refused) return Refused(options, prototype, ranking.Refusals);
@@ -183,6 +193,7 @@ public static class PrototypePipeline
         if (!double.IsFinite(options.CirculationWeight) || options.CirculationWeight < 0)
             refusals.Add(Refusal(AlternativeCodes.WeightsInvalid, "weights.circulation", "weight must be finite and non-negative"));
         refusals.AddRange(CirculationAnalyzer.OptionRefusals(options.Circulation ?? new CirculationOptions()));
+        if (options.Snap is { } snap) refusals.AddRange(PrototypeSnap.OptionRefusals(snap));
         var probe = FacadePlanner.Place(Probe, options.Pack, options.Facade, options.Parameters);
         if (probe.Status == FacadeStatus.Refused) refusals.AddRange(probe.Checks.Where(check => check.Code != FacadeCodes.PlanInvalid));
         try
