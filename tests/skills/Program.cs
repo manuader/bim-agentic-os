@@ -314,10 +314,10 @@ try
     SkillCatalog? samples = null;
     try { samples = SkillLoader.LoadDirectory(skillsRoot); }
     catch (SkillException error) { Check(false, "skills/ loads", error.Code + " " + error.File + " at " + error.Field + " (" + error.Detail + ")"); }
-    Check(samples is { Skills.Count: 7 } && samples.Skills[0].Id == "ar.caba.codigo-edificacion" && samples.Skills[1].Id == "bim.qa.element-basics" && samples.Skills[2].Id == "bim.qa.room-basics"
+    Check(samples is { Skills.Count: 8 } && samples.Skills[0].Id == "ar.caba.codigo-edificacion" && samples.Skills[1].Id == "bim.qa.element-basics" && samples.Skills[2].Id == "bim.qa.room-basics"
         && samples.Skills[3].Id == "bim.style.compact-modern" && samples.Skills[4].Id == "bim.style.warm-masonry" && samples.Skills[5].Id == "bim.typology.dwelling"
-        && samples.Skills[6].Id == "xx.example.codigo-ejemplo",
-        "skills/ holds the CABA code pack, the element and room qa packs, the two style packs, the typology sample and the P10-06 stub jurisdiction pack in ordinal order",
+        && samples.Skills[6].Id == "bim.typology.vivienda-unifamiliar" && samples.Skills[7].Id == "xx.example.codigo-ejemplo",
+        "skills/ holds the CABA code pack, the element and room qa packs, the two style packs, the typology sample, the P5-07 vivienda unifamiliar programme pack and the P10-06 stub jurisdiction pack in ordinal order",
         samples is null ? "" : string.Join(",", samples.Skills.Select(skill => skill.Id)));
     Check(samples?.Find("bim.qa.room-basics") is { Kind: SkillKind.Qa, Priority: 50 } qa && qa.Rules.Select(rule => rule.Check.Op).Distinct().Count() == 4
         && samples.Find("bim.typology.dwelling") is { Kind: SkillKind.Typology, Priority: 20 } dwelling && dwelling.Rules.Any(rule => rule.Check.Op == SkillCheckOp.RatioMin),
@@ -992,6 +992,9 @@ try
 
     // ---- P10-06 jurisdiction rule-pack registry (tests/skills/JurisdictionTests.cs) ----
     JurisdictionTests.Run(root, Check, TempRoot);
+
+    // ---- P5-07 vivienda unifamiliar typology programme pack and resolver (tests/skills/TypologySkillTests.cs) ----
+    TypologySkillTests.Run(root, Check);
 
     // ---- Scale: 20000-skill chain and cycle built in code (no recursion) ----
     const int Scale = 20000;
