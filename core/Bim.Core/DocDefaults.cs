@@ -8,6 +8,9 @@ namespace Bim.Core;
 // spaces and doors keep every key: "plan-<level:N>", "sheet-<level:N>", "place-plan-<level:N>", "tag-room-<space:N>",
 // "tag-door-<door:N>", "schedule-doors", "schedule-rooms", "sheet-schedules", "place-schedule-doors",
 // "place-schedule-rooms". Every list is sorted by key (ordinal); the same project always gives the same set.
+// P4-06 adds "tag-window-<window:N>" (windows are tagged as doors) and, only on the plan of a level with at least one
+// tagged window, "dim-wall-<wall:N>": one dimension chain per exterior wall line between the walls at its ends
+// (DocDefaultsDimensions). A project without windows gives exactly the P4-04 set.
 public static class DocDefaultsCodes
 {
     // All three are InvalidOperationException, as DocRegeneration.Full's invalid_ir. Null elements, element, kind,
@@ -59,7 +62,7 @@ public static class DocDefaults
         }
         Guid? LevelOf(Element element)
         {
-            if (element.Kind == "door" && element.GeometryMetres.Length == 2)
+            if (element.Kind is "door" or "window" && element.GeometryMetres.Length == 2)
             {
                 var hosts = element.Dependencies.Distinct().Where(dependency => elements.TryGetValue(dependency, out var wall) && wall.Kind == "wall").ToArray();
                 if (hosts.Length != 1) return null;
@@ -100,11 +103,21 @@ public static class DocDefaults
         }
 
         var tags = new List<DocTag>();
+        var windowLevels = new HashSet<Guid>();
         foreach (var element in byId)
         {
-            var prefix = element.Kind switch { "space" => "tag-room-", "door" => "tag-door-", _ => null };
+            var prefix = element.Kind switch { "space" => "tag-room-", "door" => "tag-door-", "window" => "tag-window-", _ => null };
             if (prefix is null || LevelOf(element) is not Guid level) continue;
             tags.Add(new DocTag(prefix + K(element.Id), "plan-" + K(level), element.Id));
+            if (element.Kind == "window") windowLevels.Add(level);
+        }
+
+        var dimensions = new List<DocDimension>();
+        foreach (var level in levels)
+        {
+            if (!windowLevels.Contains(level.Id)) continue;
+            var walls = byId.Where(element => element.Kind == "wall" && DirectLevel(element) == level.Id).ToArray();
+            dimensions.AddRange(DocDefaultsDimensions.Chains("plan-" + K(level.Id), walls));
         }
 
         var doorBound = byId.FirstOrDefault(element => element.Kind == "schedule" && Schedules(element, "door"))?.Id;
@@ -121,7 +134,7 @@ public static class DocDefaults
         return new DocumentationSet(
             views.OrderBy(item => item.Key, StringComparer.Ordinal).ToArray(),
             tags.OrderBy(item => item.Key, StringComparer.Ordinal).ToArray(),
-            Array.Empty<DocDimension>(),
+            dimensions.OrderBy(item => item.Key, StringComparer.Ordinal).ToArray(),
             schedules.OrderBy(item => item.Key, StringComparer.Ordinal).ToArray(),
             sheets.OrderBy(item => item.Key, StringComparer.Ordinal).ToArray(),
             placements.OrderBy(item => item.Key, StringComparer.Ordinal).ToArray());
