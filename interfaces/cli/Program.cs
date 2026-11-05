@@ -16,6 +16,7 @@ try {
         case "cad-draft": case "cad-brief": CadCommand.Run(args); break;
         case "mirror-drift": MirrorDriftCommand.Run(args); break;
         case "skills-lock": SkillLockCommand.Run(args); break;
+        case "diff-edits": DiffEditsCommand.Run(args); break;
         case "evaluate":
             EvaluationReport evaluation;
             try {
@@ -73,6 +74,6 @@ try {
             catch(RevitCommandException e) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Code,detail=e.Field+": "+e.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
             if(OwnerProjectGuard.Check(args[1],projectPolicy,RevitFileSystemProbe.Real) is {} projectRefusal) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=projectRefusal.Code,detail=projectRefusal.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
             Console.WriteLine(JsonSerializer.Serialize(new {status="succeeded",document_path=args[1],enabled_root=RevitCopiesGuard.MatchingRoot(args[1],projectPolicy)})); break;
-        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | export-gltf project.json output.glb|output.gltf | cad-draft input.dxf|input.pdf output.json [options] | cad-brief input.dxf|input.pdf output.json [options] | mirror-drift store-directory snapshot.json mirror.json output.json | skills-lock pin|verify|update|unpin skills-directory lock.json [pack-id...] | native request.json process-pipe-name | revit-command envelope.json process-pipe-name | open-project-check absolute-path.rvt");
+        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | export-gltf project.json output.glb|output.gltf | cad-draft input.dxf|input.pdf output.json [options] | cad-brief input.dxf|input.pdf output.json [options] | mirror-drift store-directory snapshot.json mirror.json output.json | skills-lock pin|verify|update|unpin skills-directory lock.json [pack-id...] | diff-edits --project project.json --edits edits.json | native request.json process-pipe-name | revit-command envelope.json process-pipe-name | open-project-check absolute-path.rvt");
     }
 } catch(Exception e) {Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Message}));Environment.ExitCode=1;}
