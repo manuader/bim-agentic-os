@@ -10,10 +10,13 @@ namespace Bim.Revit;
 // and calls the Revit API. Locations are the move/copy TransformLocation (CommandsTransform.cs); a bounding box does
 // not turn with its element, so box-only elements are refused here.
 
-// A turn about the vertical axis through (CenterX, CenterY) by AngleRad, counter-clockwise seen from above.
+// A turn about the vertical axis through (CenterX, CenterY) by AngleRad, counter-clockwise seen from above; AngleDeg is
+// the requested angle_deg, echoed as sent (null: derived from AngleRad).
 public sealed record PlanRotation(double CenterX, double CenterY, double AngleRad, double? AngleDeg = null);
-// Red stub (P1-10 review): the new helpers below answer wrongly until implemented.
+// The rotation axis as the executor builds it: a vertical line from BottomMm (z = 0) along the unit Direction (+z).
 public sealed record PlanAxis(double[] BottomMm, double[] Direction);
+// The mirror plane as the executor builds it: unit horizontal Normal (the line's left perpendicular) through OriginMm
+// (the line's start at z = 0).
 public sealed record PlanPlane(double[] Normal, double[] OriginMm);
 // A reflection in the vertical plane through the plan line (StartX, StartY) -> (EndX, EndY).
 public sealed record PlanMirror(double StartX, double StartY, double EndX, double EndY);
@@ -21,42 +24,92 @@ public sealed record PlanMirror(double StartX, double StartY, double EndX, doubl
 // replacement Revit made for it (IsNew true).
 public sealed record MirrorResult(string SourceUid, string UniqueId, bool IsNew);
 // Results: one per source, in request order. AlsoCreated: new elements that are no source's result (hosted doors and
-// windows Revit mirrored with their walls). Mismatch: why a source has no result, else null.
+// windows Revit mirrored with their walls). Mismatch: why a source has no result, else null. Deleted: the originals
+// Revit replaced (keep_original false), in request order.
 public sealed record MirrorMapping(IReadOnlyList<MirrorResult> Results, IReadOnlyList<string> AlsoCreated, string? Mismatch, IReadOnlyList<string>? Deleted = null);
 
 public static class CommandRulesRotateMirror
 {
     // Refusal order: pinned, view-specific, group member, hosted without host (the move/copy codes), then a hosted
-    // element whose host is not a target, no location point / curve / sketch profile (element_not_rotatable).
+    // element whose host is not a target, no location point / curve / sketch profile (element_not_rotatable), then a
+    // turn the 1 mm readback could not tell from no turn (angle_too_small_for_target).
     public static void CheckRotateTarget(TransformTargetFacts facts, IReadOnlyCollection<string> targetUids, PlanRotation rotation, string field)
     {
         CheckCommon(facts, field);
         if (Unsupported(facts, targetUids) is { } reason) throw new RevitCommandException(RevitRotateMirrorCodes.ElementNotRotatable, field, facts.Uid + " " + reason);
+        if (RotationUnobservable(facts.Location!, rotation) is { } small) throw new RevitCommandException(RevitRotateMirrorCodes.AngleTooSmallForTarget, field, facts.Uid + " " + small);
     }
 
-    // As CheckRotateTarget with element_not_mirrorable, then Revit's own CanMirrorElements answer (mirrorable).
+    // Every target in request order (fields args.element_uids[i]).
+    public static void CheckRotateTargets(IReadOnlyList<TransformTargetFacts> facts, PlanRotation rotation)
+    {
+        var uids = facts.Select(fact => fact.Uid).ToArray();
+        for (var i = 0; i < facts.Count; i++) CheckRotateTarget(facts[i], uids, rotation, Field(i));
+    }
+
+    // As CheckRotateTarget with element_not_mirrorable, then Revit's own CanMirrorElements answer (mirrorable), then
+    // with keep_original false a target already its own mirror image without a readable mirrored flag
+    // (mirror_image_unobservable).
     public static void CheckMirrorTarget(TransformTargetFacts facts, bool mirrorable, IReadOnlyCollection<string> targetUids, PlanMirror mirror, bool keepOriginal, string field)
     {
         CheckCommon(facts, field);
         if (Unsupported(facts, targetUids) is { } reason) throw new RevitCommandException(RevitRotateMirrorCodes.ElementNotMirrorable, field, facts.Uid + " " + reason);
         if (!mirrorable) throw new RevitCommandException(RevitRotateMirrorCodes.ElementNotMirrorable, field, facts.Uid + " cannot be mirrored (Revit's CanMirrorElements refuses it)");
+        if (!keepOriginal && MirrorUnobservable(facts.Location!, mirror)) throw new RevitCommandException(RevitRotateMirrorCodes.MirrorImageUnobservable, field, facts.Uid + UnobservableDetail);
     }
 
-    public static void CheckRotateTargets(IReadOnlyList<TransformTargetFacts> facts, PlanRotation rotation)
-    {
-        var uids = facts.Select(fact => fact.Uid).ToArray();
-        for (var i = 0; i < facts.Count; i++) CheckRotateTarget(facts[i], uids, rotation, "args.element_uids[" + i.ToString(CultureInfo.InvariantCulture) + "]");
-    }
-
+    // Every target in request order, then Revit's CanMirrorElements asked once (canMirror) for the ids actually passed to
+    // MirrorElements (hosted targets carried by a host target left out, CommandRulesTransform.TransformIds). Only when
+    // the set is refused is each of those ids asked alone, in request order, to name the culprit; carried hosted targets
+    // are never asked. A set refused although each alone is accepted is refused at args.element_uids.
     public static void CheckMirrorTargets(IReadOnlyList<TransformTargetFacts> facts, PlanMirror mirror, bool keepOriginal, Func<IReadOnlyList<string>, bool> canMirror)
     {
         var uids = facts.Select(fact => fact.Uid).ToArray();
-        for (var i = 0; i < facts.Count; i++) CheckMirrorTarget(facts[i], canMirror(new[] { facts[i].Uid }), uids, mirror, keepOriginal, "args.element_uids[" + i.ToString(CultureInfo.InvariantCulture) + "]");
+        for (var i = 0; i < facts.Count; i++) CheckMirrorTarget(facts[i], true, uids, mirror, keepOriginal, Field(i));
+        var ids = CommandRulesTransform.TransformIds(facts).Transformed;
+        if (canMirror(ids)) return;
+        var passed = new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < facts.Count; i++)
+            if (passed.Contains(facts[i].Uid) && !canMirror(new[] { facts[i].Uid }))
+                throw new RevitCommandException(RevitRotateMirrorCodes.ElementNotMirrorable, Field(i), facts[i].Uid + " cannot be mirrored (Revit's CanMirrorElements refuses it)");
+        throw new RevitCommandException(RevitRotateMirrorCodes.ElementNotMirrorable, "args.element_uids", "Revit's CanMirrorElements refuses these elements together, though each alone can be mirrored");
     }
 
-    public static PlanAxis RotationAxis(PlanRotation rotation) => new(new[] { 0.0, 0.0, 0.0 }, new[] { 0.0, 0.0, 1.0 });
-    public static PlanPlane MirrorPlane(PlanMirror mirror) => new(new[] { 0.0, 0.0, 0.0 }, new[] { 0.0, 0.0, 0.0 });
-    public static IReadOnlyList<string> MirrorDeleted(MirrorMapping mapping) => Array.Empty<string>();
+    static string Field(int index) => "args.element_uids[" + index.ToString(CultureInfo.InvariantCulture) + "]";
+
+    const string UnobservableDetail = " is already its own mirror image in the line (on it or symmetric about it) and has no readable mirrored flag: a mirror without keep_original could not be told from no mirror; mirror it with keep_original true or in another line";
+
+    static IEnumerable<double[]> PointsOf(TransformLocation location)
+    {
+        yield return location.A;
+        if (location.B is not null) yield return location.B;
+        foreach (var point in location.Points ?? Array.Empty<double[]>()) yield return point;
+    }
+
+    // Null when the 1 mm readback can tell the turned location from the one before (some point moves by more than 1 mm,
+    // or a readable rotation changes), else why not.
+    static string? RotationUnobservable(TransformLocation location, PlanRotation rotation)
+    {
+        var turned = Rotate(location, rotation);
+        if (CommandRulesTransform.Compare(turned, location, "x") is not null) return null;
+        var largest = PointsOf(location).Zip(PointsOf(turned), Distance).DefaultIfEmpty(0).Max();
+        return "moves by at most " + largest.ToString("0.###", CultureInfo.InvariantCulture) + " mm when turned by " + (rotation.AngleDeg ?? rotation.AngleRad * 180 / Math.PI).ToString("0.#####", CultureInfo.InvariantCulture)
+            + " degrees and has no readable rotation: the 1 mm readback could not tell the turn from no turn; use a larger angle or a centre farther from it";
+    }
+
+    // True when the location is already its own mirror image (within 1 mm, curves either way, profiles in any order) and
+    // no mirrored flag was read to show the mirror.
+    static bool MirrorUnobservable(TransformLocation location, PlanMirror mirror) =>
+        location.Mirrored is null && MirroredDeviation(Mirror(location, mirror), location) is not null;
+
+    public static PlanAxis RotationAxis(PlanRotation rotation) => new(new[] { rotation.CenterX, rotation.CenterY, 0.0 }, new[] { 0.0, 0.0, 1.0 });
+
+    public static PlanPlane MirrorPlane(PlanMirror mirror)
+    {
+        double ux = mirror.EndX - mirror.StartX, uy = mirror.EndY - mirror.StartY;
+        var length = Math.Sqrt(ux * ux + uy * uy);
+        return new(new[] { -uy / length, ux / length, 0.0 }, new[] { mirror.StartX, mirror.StartY, 0.0 });
+    }
 
     static void CheckCommon(TransformTargetFacts facts, string field)
     {
@@ -75,7 +128,7 @@ public static class CommandRulesRotateMirror
         return null;
     }
 
-    public static PlanRotation RotationOf(ElementRotateArgs args) => new(args.Center.X.Millimetres, args.Center.Y.Millimetres, args.Angle.Radians);
+    public static PlanRotation RotationOf(ElementRotateArgs args) => new(args.Center.X.Millimetres, args.Center.Y.Millimetres, args.Angle.Radians, args.AngleDeg);
 
     public static PlanMirror MirrorOf(ElementMirrorArgs args) => new(args.AxisStart.X.Millimetres, args.AxisStart.Y.Millimetres, args.AxisEnd.X.Millimetres, args.AxisEnd.Y.Millimetres);
 
@@ -109,7 +162,8 @@ public static class CommandRulesRotateMirror
             RotationRad = location.RotationRad is { } angle ? angle + rotation.AngleRad : null,
         };
 
-    // The location mirrored: every point mirrored; a mirrored instance is a reflection, so no rotation is expected.
+    // The location mirrored: every point mirrored; a mirrored instance is a reflection, so no rotation is expected, and
+    // its FamilyInstance.Mirrored flag (when read) toggles.
     public static TransformLocation Mirror(TransformLocation location, PlanMirror mirror) =>
         location with
         {
@@ -117,6 +171,7 @@ public static class CommandRulesRotateMirror
             B = location.B is null ? null : MirrorPoint(location.B, mirror),
             Points = location.Points?.Select(point => MirrorPoint(point, mirror)).ToArray(),
             RotationRad = null,
+            Mirrored = location.Mirrored is { } mirrored ? !mirrored : null,
         };
 
     static double Distance(double[] a, double[] b)
@@ -134,6 +189,8 @@ public static class CommandRulesRotateMirror
     static double? MirroredDeviation(TransformLocation expected, TransformLocation observed)
     {
         if (observed.Kind != expected.Kind) return null;
+        // A mirrored flag expected (read before) must be read again, toggled.
+        if (expected.Mirrored is { } wanted && observed.Mirrored != wanted) return null;
         var tolerance = CommandRulesTransform.ToleranceMm;
         switch (expected.Kind)
         {
@@ -184,6 +241,8 @@ public static class CommandRulesRotateMirror
         if (observed is null) return what + " no longer has a readable location";
         if (observed.Kind != expected.Kind) return what + " has a location " + observed.Kind + " where a location " + expected.Kind + " was read before";
         if (MirroredDeviation(expected, observed) is not null) return null;
+        if (expected.Mirrored is { } wanted && observed.Mirrored != wanted)
+            return what + " mirrored flag is " + (observed.Mirrored is { } seen ? seen.ToString().ToLowerInvariant() : "unreadable") + ", expected " + wanted.ToString().ToLowerInvariant() + " (a mirror toggles FamilyInstance.Mirrored)";
         return expected.Kind switch
         {
             TransformLocationKinds.Point => what + " location point is at " + Format(observed.A) + " mm, expected its mirror image " + Format(expected.A) + " within 1 mm",
@@ -221,6 +280,7 @@ public static class CommandRulesRotateMirror
             else if (after is not null)
             {
                 if (CompareMirrored(expected[s], after.Location, "element " + sources[s].Uid) is { } wrong) return Fail(wrong);
+                if (MirrorUnobservable(before, mirror)) return Fail("element " + sources[s].Uid + UnobservableDetail);
                 results[s] = new MirrorResult(sources[s].Uid, sources[s].Uid, false);
             }
             else pending.Add(s);
@@ -265,11 +325,16 @@ public static class CommandRulesRotateMirror
                     + (keepOriginal ? "" : "; it is gone and nothing replaced it"));
             results[s] = new MirrorResult(sources[s].Uid, news[copyOf[s]].Uid, true);
         }
-        return new MirrorMapping(results.Select(result => result!).ToArray(), news.Where((_, c) => sourceOf[c] < 0).Select(candidate => candidate.Uid).ToArray(), null);
+        var all = results.Select(result => result!).ToArray();
+        return new MirrorMapping(all, news.Where((_, c) => sourceOf[c] < 0).Select(candidate => candidate.Uid).ToArray(), null,
+            keepOriginal ? Array.Empty<string>() : all.Where(result => result.IsNew).Select(result => result.SourceUid).ToArray());
     }
 
     // The reply's created list: the new results (copies or replacements) in request order, then the extra elements.
     public static IReadOnlyList<string> MirrorCreated(MirrorMapping mapping) => mapping.Results.Where(result => result.IsNew).Select(result => result.UniqueId).Concat(mapping.AlsoCreated).ToArray();
+
+    // The reply's deleted list: the originals Revit replaced (keep_original false), in request order.
+    public static IReadOnlyList<string> MirrorDeleted(MirrorMapping mapping) => mapping.Deleted ?? Array.Empty<string>();
 
     // The reply's modified list: the originals mirrored in place, in request order.
     public static IReadOnlyList<string> MirrorModified(MirrorMapping mapping) => mapping.Results.Where(result => !result.IsNew).Select(result => result.UniqueId).ToArray();
@@ -282,14 +347,19 @@ public static class CommandReadbackRotateMirror
     public static string? Rotated(IReadOnlyList<string> uids, IReadOnlyList<TransformLocation> before, IReadOnlyList<TransformLocation?> after, PlanRotation rotation)
     {
         for (var i = 0; i < uids.Count; i++)
-            if (CommandRulesTransform.Compare(CommandRulesRotateMirror.Rotate(before[i], rotation), after[i], "element " + uids[i]) is { } mismatch) return mismatch;
+        {
+            var expected = CommandRulesRotateMirror.Rotate(before[i], rotation);
+            // A turn that moves nothing by more than 1 mm and changes no readable rotation would pass unturned.
+            if (CommandRulesTransform.Compare(expected, before[i], "x") is null) return "element " + uids[i] + " cannot be read back: the turn moves it by at most 1 mm and it has no readable rotation";
+            if (CommandRulesTransform.Compare(expected, after[i], "element " + uids[i]) is { } mismatch) return mismatch;
+        }
         return null;
     }
 
     public static string RotateJson(IReadOnlyList<string> uids, IReadOnlyList<TransformLocation> before, IReadOnlyList<TransformLocation?> after, PlanRotation rotation) => Write(writer =>
     {
         Numbers(writer, "center_mm", new[] { rotation.CenterX, rotation.CenterY });
-        writer.WriteNumber("angle_deg", rotation.AngleRad * 180 / Math.PI);
+        writer.WriteNumber("angle_deg", rotation.AngleDeg ?? rotation.AngleRad * 180 / Math.PI);
         writer.WriteStartArray("rotated");
         for (var i = 0; i < uids.Count; i++)
         {
@@ -330,6 +400,9 @@ public static class CommandReadbackRotateMirror
         writer.WriteStartArray("also_created");
         foreach (var uid in mapping.AlsoCreated) writer.WriteStringValue(uid);
         writer.WriteEndArray();
+        writer.WriteStartArray("deleted");
+        foreach (var uid in CommandRulesRotateMirror.MirrorDeleted(mapping)) writer.WriteStringValue(uid);
+        writer.WriteEndArray();
     });
 
     static string Write(Action<Utf8JsonWriter> body)
@@ -356,6 +429,7 @@ public static class CommandReadbackRotateMirror
             case TransformLocationKinds.Point:
                 Numbers(writer, "point", location.A);
                 if (location.RotationRad is { } rotation) writer.WriteNumber("rotation_deg", rotation * 180 / Math.PI);
+                if (location.Mirrored is { } mirrored) writer.WriteBoolean("mirrored", mirrored);
                 break;
             case TransformLocationKinds.Curve:
                 Numbers(writer, "start", location.A);
