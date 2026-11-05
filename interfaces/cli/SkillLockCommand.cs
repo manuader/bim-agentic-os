@@ -106,7 +106,7 @@ internal static class SkillLockCommand
     // one: Windows MoveFileEx without replace and, on Unix, .NET's link() + unlink() are atomic and fail on an existing
     // target. Residual: where the file system has no hard links, .NET on Unix falls back to an existence check followed
     // by rename(), so a lock created by another process inside that window can still be replaced (by whole bytes, never
-    // torn). The directory is not fsynced (as in SkillLockFile.Write).
+    // torn). The directory is not fsynced (as in Core's atomic lock replace).
     static void WriteNew(string full, string at, byte[] bytes)
     {
         var temp = full + "." + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + ".tmp";
