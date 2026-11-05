@@ -13,7 +13,8 @@ namespace Bim.Mcp;
 //
 // Both paths must be non-blank, without NUL, at most MaxPathChars characters and accepted by Path.GetFullPath, else
 // {"status":"failed","code":"skills_lock_path_invalid","detail":"skills"|"lock"}. A lock that cannot be read or parsed
-// is {"status":"failed","code":<SkillLockCodes>,"subject":<lock file name or member path>,"detail":..}.
+// is {"status":"failed","code":<SkillLockCodes>,"subject":<lock file name or member path>,"detail":..,"mode":"verify",
+// "verified":false,"packs":[],"issues":[<that issue>]}.
 // Otherwise the report (UTF-8, compact):
 //   {"status":"succeeded"|"failed"[,"code":..],"mode":"verify","verified":bool,"lock_version":1,
 //    "content_hash":"bim-skill-pack-sha256-v1","packs":[{"id","version","content_sha256","state"[,"detail"]}],
@@ -57,13 +58,46 @@ internal static class SkillLockTool
             if (load.Lock is null)
             {
                 var issue = load.Issues.Count > 0 ? load.Issues[0] : new SkillLockIssue(InternalError, "", "no lock and no issue");
-                return new Outcome(false, Failure(issue.Code, issue.Subject, issue.Detail));
+                return new Outcome(false, LockFailure(issue));
             }
             return Report(load.Lock, load.Issues);
         }
-        catch (SkillLockException error) { return new Outcome(false, Failure(error.Code, error.Subject, error.Detail)); }
+        catch (SkillLockException error) { return new Outcome(false, LockFailure(error.ToIssue())); }
         // Anything else is a defect, never a message passed off as a code.
-        catch (Exception error) { return new Outcome(false, Failure(InternalError, null, error.GetType().Name)); }
+        catch (Exception error) { return new Outcome(false, LockFailure(new SkillLockIssue(InternalError, "", error.GetType().Name))); }
+    }
+
+    // No lock could be read: the plain failure members first, then the report members with no packs, so every verify
+    // outcome past the path checks has the same shape.
+    static string LockFailure(SkillLockIssue issue)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("status", "failed");
+            writer.WriteString("code", issue.Code);
+            writer.WriteString("subject", issue.Subject);
+            writer.WriteString("detail", issue.Detail);
+            writer.WriteString("mode", "verify");
+            writer.WriteBoolean("verified", false);
+            writer.WriteStartArray("packs");
+            writer.WriteEndArray();
+            writer.WriteStartArray("issues");
+            WriteIssue(writer, issue);
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    static void WriteIssue(Utf8JsonWriter writer, SkillLockIssue issue)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("code", issue.Code);
+        writer.WriteString("subject", issue.Subject);
+        writer.WriteString("detail", issue.Detail);
+        writer.WriteEndObject();
     }
 
     static Outcome Report(SkillLock skillLock, IReadOnlyList<SkillLockIssue> issues)
@@ -98,14 +132,7 @@ internal static class SkillLockTool
             }
             writer.WriteEndArray();
             writer.WriteStartArray("issues");
-            foreach (var issue in issues)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("code", issue.Code);
-                writer.WriteString("subject", issue.Subject);
-                writer.WriteString("detail", issue.Detail);
-                writer.WriteEndObject();
-            }
+            foreach (var issue in issues) WriteIssue(writer, issue);
             writer.WriteEndArray();
             writer.WriteEndObject();
         }

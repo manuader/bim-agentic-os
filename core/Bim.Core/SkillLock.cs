@@ -547,24 +547,40 @@ public static class SkillLocking
         return new SkillLockLoad(new SkillCatalog(manifests), skillLock, Array.Empty<SkillLockIssue>());
     }
 
-    // The explicit update: re-pins packIds (or, when null, the packs the existing lock pins) at their current content
-    // and durably rewrites lockPath. Without packIds the lock must exist and parse; with packIds an unreadable or
-    // malformed existing lock is treated as absent and repaired (a link or I/O failure still refuses). Any pin failure
-    // throws before the file is touched. The file is rewritten only when the pins change or its bytes are not canonical.
+    // The explicit update: re-pins packIds at their current content, keeping every other existing pin exactly as it is
+    // (or, when packIds is null, re-pins every pack the existing lock pins), drops the unpin ids, and durably rewrites
+    // lockPath. Without packIds, or with unpin ids, the lock must exist and parse; with packIds only, an unreadable or
+    // malformed existing lock is treated as absent and repaired (a link, a non-regular or zero-length entry such as a
+    // FIFO, or an I/O failure still refuses). An unpin id must be pinned and not also in packIds (value_invalid). Any
+    // failure throws before the file is touched. The file is rewritten only when the pins change or its bytes are not
+    // canonical. There is no compare-and-swap between reading the lock and writing it: a concurrent writer's lock can be
+    // replaced (last writer wins).
     public static SkillLockUpdate Update(string skillsRoot, string lockPath, IEnumerable<string>? packIds = null, IEnumerable<string>? unpin = null)
     {
         ArgumentNullException.ThrowIfNull(skillsRoot);
         ArgumentNullException.ThrowIfNull(lockPath);
+        var drop = (unpin ?? Array.Empty<string>()).Select(id => id ?? throw new ArgumentNullException(nameof(unpin))).Distinct(StringComparer.Ordinal).ToArray();
+        var named = packIds?.Select(id => id ?? throw new ArgumentNullException(nameof(packIds))).Distinct(StringComparer.Ordinal).ToArray();
         SkillLock? existing = null;
-        if (packIds is null) existing = SkillLockFile.Read(lockPath);
+        if (named is null || drop.Length > 0) existing = SkillLockFile.Read(lockPath);
         else
         {
             try { existing = SkillLockFile.Read(lockPath); }
-            catch (SkillLockException error) when (error.Code is not (SkillLockCodes.PathUnsafe or SkillLockCodes.ReadFailed)) { existing = null; }
+            catch (SkillLockException error) when (error.Code is not (SkillLockCodes.PathUnsafe or SkillLockCodes.ReadFailed or SkillLockCodes.NotRegularFile)) { existing = null; }
         }
-        var ids = packIds ?? existing!.Packs.Select(entry => entry.Id);
+        foreach (var id in drop)
+        {
+            if (existing!.Find(id) is null) throw new SkillLockException(SkillLockCodes.ValueInvalid, id, "pack " + id + " is not pinned");
+            if (named is not null && named.Contains(id, StringComparer.Ordinal)) throw new SkillLockException(SkillLockCodes.ValueInvalid, id, "pack " + id + " is both re-pinned and unpinned");
+        }
+        var ids = named ?? existing!.Packs.Select(entry => entry.Id).ToArray();
         SkillLock updated;
-        try { updated = Pin(skillsRoot, ids); }
+        try
+        {
+            var repinned = Pin(skillsRoot, ids);
+            var kept = existing?.Packs.Where(entry => repinned.Find(entry.Id) is null && !drop.Contains(entry.Id, StringComparer.Ordinal)) ?? Array.Empty<SkillLockEntry>();
+            updated = new SkillLock(repinned.Packs.Concat(kept));
+        }
         catch (SkillLockException error) when (error.Code == SkillCodes.SkillMissing && existing?.Find(error.Subject) is not null)
         {
             throw new SkillLockException(SkillLockCodes.SkillLockMissing, error.Subject, "pinned pack is not in the skills directory");
@@ -581,7 +597,7 @@ public static class SkillLocking
         var canonical = SkillLockFile.Serialize(updated);
         byte[]? current = null;
         try { current = SkillLockFile.ReadBytes(lockPath); }
-        catch (SkillLockException error) when (error.Code is not (SkillLockCodes.PathUnsafe or SkillLockCodes.ReadFailed)) { current = null; }
+        catch (SkillLockException error) when (error.Code is not (SkillLockCodes.PathUnsafe or SkillLockCodes.ReadFailed or SkillLockCodes.NotRegularFile)) { current = null; }
         if (changes.Count > 0 || current is null || !current.AsSpan().SequenceEqual(canonical)) SkillLockFile.Write(lockPath, updated);
         return new SkillLockUpdate(updated, changes);
     }
