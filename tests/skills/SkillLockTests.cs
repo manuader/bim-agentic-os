@@ -243,6 +243,72 @@ static class SkillLockTests
         Check(Throws(() => new SkillLock(new[] { new SkillLockEntry(Locked, new SkillVersion(1, 0, 0), FullPackSha), new SkillLockEntry(Locked, new SkillVersion(1, 0, 0), FullPackSha) }))?.Code == SkillLockCodes.EntryDuplicate,
             "a hand-built lock with a repeated id is refused");
 
+        // ---- Review fixes: snapshot hashing, write guards, repair, stale resolutions, limits ----
+        var snapRoot = tempRoot();
+        FullPack(snapRoot);
+        var snapshot = SkillPackHash.Snapshot(snapRoot, Locked);
+        Check(snapshot.Id == Locked && snapshot.ContentSha256 == FullPackSha && snapshot.Files.Select(file => file.Path).SequenceEqual(new[] { "Z.txt", "notes/empty.txt", "notes/readme.txt", "skill.json" })
+            && snapshot.Files[3].Bytes.SequenceEqual(Encoding.UTF8.GetBytes(ManifestText(Locked))) && snapshot.Manifest().Version == new SkillVersion(1, 2, 3),
+            "a snapshot holds the hashed files in canonical order and parses its manifest from them");
+        var snapLock = SkillLocking.Pin(snapRoot, new[] { Locked });
+        ManifestPack(snapRoot, Locked, "9.9.9");
+        var fromSnapshot = SkillLocking.Verify(snapLock, new[] { snapshot });
+        Check(fromSnapshot.Succeeded && fromSnapshot.Catalog!.Find(Locked)?.Version == new SkillVersion(1, 2, 3),
+            "a verified manifest comes from the hashed bytes, not from a later read of the disk", Show(fromSnapshot.Issues));
+        Check(SkillLocking.Load(snapRoot, snapLock).Issues.Any(issue => issue.Code == SkillLockCodes.SkillLockDrift), "the edited disk content itself is drift");
+        Check(SkillLocking.Verify(snapLock, Array.Empty<SkillPackSnapshot>()).Issues is [{ Code: SkillLockCodes.SkillLockMissing, Subject: Locked }], "a pinned pack without a snapshot is skill_lock_missing");
+        var noManifest = tempRoot();
+        WriteText(Path.Combine(noManifest, Locked, "notes.txt"), "x");
+        Check(Throws(() => SkillPackHash.Snapshot(noManifest, Locked).Manifest())?.Code == SkillLockCodes.SkillsInvalid, "a snapshot without skill.json has no manifest (skills_invalid)");
+
+        var guardDir = tempRoot();
+        var dirTarget = Path.Combine(guardDir, "as-directory");
+        Directory.CreateDirectory(dirTarget);
+        Check(Throws(() => SkillLockFile.Write(dirTarget, pinned))?.Code == SkillLockCodes.NotRegularFile, "writing over a directory is not_regular_file");
+        var linkTarget = Path.Combine(guardDir, "real.json");
+        File.WriteAllText(linkTarget, "{}");
+        var linkLock = Path.Combine(guardDir, SkillLock.FileName);
+        var lockLinkMade = false;
+        try { File.CreateSymbolicLink(linkLock, linkTarget); lockLinkMade = true; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { }
+        if (lockLinkMade)
+        {
+            Check(Throws(() => SkillLockFile.Write(linkLock, pinned))?.Code == SkillLockCodes.PathUnsafe && File.ReadAllText(linkTarget) == "{}", "writing through a symlinked lock is path_unsafe and leaves the target alone");
+            Check(Throws(() => SkillLockFile.Read(linkLock))?.Code == SkillLockCodes.PathUnsafe, "reading a symlinked lock is path_unsafe");
+        }
+        else Check(OperatingSystem.IsWindows() && !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.Ordinal),
+            "lock symlink fixture available", "could not create a symbolic link");
+
+        var repairRoot = tempRoot();
+        ManifestPack(repairRoot, Other, "0.4.0");
+        var corrupt = Path.Combine(tempRoot(), SkillLock.FileName);
+        File.WriteAllText(corrupt, "{");
+        var repaired = SkillLocking.Update(repairRoot, corrupt, new[] { Other });
+        Check(File.ReadAllBytes(corrupt).SequenceEqual(SkillLockFile.Serialize(repaired.Lock)) && repaired.Changes is [{ Before: null, After: not null }],
+            "an update with explicit ids repairs an unreadable lock");
+        File.WriteAllText(corrupt, "{");
+        Check(Throws(() => SkillLocking.Update(repairRoot, corrupt))?.Code == SkillLockCodes.JsonInvalid && File.ReadAllText(corrupt) == "{", "an update without ids still refuses an unreadable lock");
+
+        var staleRoot = tempRoot();
+        ManifestPack(staleRoot, Other, "0.4.0");
+        var staleResolution = SkillResolver.Resolve(SkillLoader.LoadDirectory(staleRoot), new[] { new SkillRequest(Other) });
+        WriteText(Path.Combine(staleRoot, Other, "skill.json"), ManifestText(Other, "0.4.0").Replace("Locked pack", "Edited pack", StringComparison.Ordinal));
+        Check(Throws(() => SkillLocking.Pin(staleRoot, staleResolution))?.Code == SkillLockCodes.ResolutionStale, "pinning a resolution whose manifest changed on disk (same version) is resolution_stale");
+
+        Check(Throws(() => new SkillLock(new[] { new SkillLockEntry(Locked, new SkillVersion(-1, 0, 0), FullPackSha) }))?.Code == SkillLockCodes.ValueInvalid, "a hand-built entry with a negative version component is refused");
+        var wide = tempRoot();
+        ManifestPack(wide, Locked);
+        for (var index = 0; index <= SkillPackHash.MaxFiles; index++) Directory.CreateDirectory(Path.Combine(wide, Locked, "d" + index.ToString(CultureInfo.InvariantCulture)));
+        Check(Throws(() => SkillPackHash.Compute(wide, Locked))?.Code == SkillLockCodes.TooManyItems, "directories count toward the pack entry limit");
+
+        // ---- Checked-in skills keep their bytes on every checkout ----
+        var attributes = Path.Combine(root, ".gitattributes");
+        var rules = File.Exists(attributes) ? File.ReadAllLines(attributes).Select(line => line.Trim()).ToArray() : Array.Empty<string>();
+        Check(rules.Contains("skills/** -text") && rules.Contains("skills.lock.json -text"), "the root .gitattributes keeps skills/ and lock files byte-exact (-text)", string.Join(" | ", rules));
+        var withCr = Directory.GetFiles(Path.Combine(root, "skills"), "*", SearchOption.AllDirectories).Where(path => File.ReadAllBytes(path).Contains((byte)'\r'))
+            .Select(path => Path.GetRelativePath(root, path)).ToArray();
+        Check(withCr.Length == 0, "no checked-out file under skills/ contains a carriage return", string.Join(", ", withCr));
+
         // ---- Checked-in skills ----
         var skills = Path.Combine(root, "skills");
         var all = SkillLoader.LoadDirectory(skills).Skills.Select(skill => skill.Id).ToArray();
