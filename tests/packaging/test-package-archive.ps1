@@ -10,6 +10,7 @@ param([string]$PackageDirectory, [string]$SecondPackageDirectory)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path (Split-Path $PSScriptRoot)
 $archiver = Join-Path $root 'scripts/package-archive.ps1'
+$archiveCommon = Join-Path $root 'scripts/package-archive-common.ps1'
 $common = Join-Path $root 'scripts/package-common.ps1'
 $templateSource = Join-Path $root 'runtimes/revit-native/Bim.addin.template'
 $pwsh = (Get-Process -Id $PID).Path
@@ -35,6 +36,15 @@ function Invoke-Archiver([string[]]$Arguments) {
     $output = & $pwsh -NoProfile -File $archiver @Arguments 2>&1 | ForEach-Object { "$_" }
     return [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($output -join "`n") }
 }
+# Runs a script block with process environment variables overridden (child processes inherit them), then restores them.
+function Invoke-WithEnvironment([hashtable]$Environment, [scriptblock]$Body) {
+    $saved = @{}
+    foreach ($name in @($Environment.Keys)) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process'); [Environment]::SetEnvironmentVariable($name, [string]$Environment[$name], 'Process') }
+    try { return (& $Body) }
+    finally { foreach ($name in @($saved.Keys)) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') } }
+}
+function Get-TempEnvironment([string]$Directory) { @{ TEMP = $Directory; TMP = $Directory; TMPDIR = $Directory } }
+function Get-ArchiveTempLeftovers([string]$Directory) { @(Get-ChildItem -LiteralPath $Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'bim-archive-*' }) }
 function Get-B64([string]$Path) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) }
 function Get-Bytes([string]$Text) { return , [Text.UTF8Encoding]::new($false).GetBytes($Text) }
 function Get-Inventory([string]$Directory) {
@@ -118,6 +128,7 @@ function Remove-Entry([object[]]$List, [string]$Name) { return [object[]]@($List
 
 Assert (Test-Path -LiteralPath $archiver -PathType Leaf) 'scripts/package-archive.ps1 is missing'
 Assert (Test-Path -LiteralPath $common -PathType Leaf) 'scripts/package-common.ps1 is missing'
+Assert (Test-Path -LiteralPath $archiveCommon -PathType Leaf) 'scripts/package-archive-common.ps1 is missing'
 if ($failures.Count) { Complete }
 . $common
 
@@ -138,6 +149,8 @@ try {
     Assert (Test-Path -LiteralPath $sumsA -PathType Leaf) 'archive create did not write SHA256SUMS next to the archive'
     if ($failures.Count) { Complete }
     Assert ((Get-Partials (Split-Path $zipA)).Count -eq 0) 'archive create left a .partial file'
+    # Deflate output is only stable for one runtime, so create must state the runtime it was produced with.
+    Assert ($runA.Output.Contains("pwsh $($PSVersionTable.PSVersion)") -and $runA.Output.Contains(".NET $([Environment]::Version)")) "archive create must report its pwsh and .NET runtime versions: $(Get-Tail $runA.Output)"
 
     # --- Determinism: rebuild from the same folder and from a copy with different file timestamps ---
     $copy = Join-Path $work 'package copy'
@@ -151,6 +164,31 @@ try {
         if ($run.Code -ne 0) { continue }
         Assert ((Get-B64 $zip) -ceq (Get-B64 $zipA)) "archive rebuild ($($case.Name)) is not byte-identical"
         Assert ((Get-B64 (Join-Path (Split-Path $zip) 'SHA256SUMS')) -ceq (Get-B64 $sumsA)) "SHA256SUMS rebuild ($($case.Name)) is not byte-identical"
+    }
+    # Same bytes under a far-off time zone (UTC+14) and a Turkish culture (dotted/dotless i casing).
+    $driver = Join-Path $work 'culture driver.ps1'
+    Write-PackageText $driver @'
+param([string]$Culture, [string]$Script, [string]$Package, [string]$Archive)
+$info = [Globalization.CultureInfo]::GetCultureInfo($Culture)
+[Globalization.CultureInfo]::CurrentCulture = $info
+[Globalization.CultureInfo]::CurrentUICulture = $info
+"culture $([Globalization.CultureInfo]::CurrentCulture.Name) tz $([TimeZoneInfo]::Local.Id)"
+& $Script -PackageDirectory $Package -ArchivePath $Archive
+exit $LASTEXITCODE
+'@
+    $zipD = Join-Path $work "release D/$zipName"
+    New-Item -ItemType Directory -Force (Split-Path $zipD) | Out-Null
+    $runD = Invoke-WithEnvironment @{ TZ = 'Pacific/Kiritimati' } {
+        $ErrorActionPreference = 'Continue'
+        $lines = & $pwsh -NoProfile -File $driver -Culture 'tr-TR' -Script $archiver -Package $package -Archive $zipD 2>&1 | ForEach-Object { "$_" }
+        [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($lines -join "`n") }
+    }
+    Assert ($runD.Code -eq 0) "archive rebuild under tr-TR and Pacific/Kiritimati exit $($runD.Code): $(Get-Tail $runD.Output)"
+    Assert ($runD.Output -match 'culture tr-TR') "culture driver did not switch to tr-TR: $(Get-Tail $runD.Output)"
+    if ($IsLinux) { Assert ($runD.Output -match 'tz Pacific/Kiritimati') "TZ=Pacific/Kiritimati was not applied: $(Get-Tail $runD.Output)" }
+    if ($runD.Code -eq 0) {
+        Assert ((Get-B64 $zipD) -ceq (Get-B64 $zipA)) 'archive rebuilt under tr-TR and Pacific/Kiritimati is not byte-identical'
+        Assert ((Get-B64 (Join-Path (Split-Path $zipD) 'SHA256SUMS')) -ceq (Get-B64 $sumsA)) 'SHA256SUMS rebuilt under tr-TR and Pacific/Kiritimati is not byte-identical'
     }
 
     # --- Entries: ordinal order, fixed timestamp, exact bytes; SHA256SUMS format ---
@@ -187,8 +225,11 @@ try {
     Assert ((Get-Partials (Split-Path $badZip)).Count -eq 0) 'refused create left a .partial file'
 
     # --- Verify and extract a good archive ---
-    $verify = Invoke-Archiver @('-Verify', '-ArchivePath', $zipA)
+    $goodTemp = Join-Path $work 'temp good'
+    New-Item -ItemType Directory -Force $goodTemp | Out-Null
+    $verify = Invoke-WithEnvironment (Get-TempEnvironment $goodTemp) { Invoke-Archiver @('-Verify', '-ArchivePath', $zipA) }
     Assert ($verify.Code -eq 0) "archive verify rejected a good archive: $(Get-Tail $verify.Output)"
+    Assert ((Get-ArchiveTempLeftovers $goodTemp).Count -eq 0) 'archive verify left bim-archive-* in temp'
     $install = Join-Path $work 'install ok/package'
     $extract = Invoke-Archiver @('-Extract', '-ArchivePath', $zipA, '-DestinationDirectory', $install)
     Assert ($extract.Code -eq 0) "archive extract rejected a good archive: $(Get-Tail $extract.Output)"
@@ -219,6 +260,20 @@ try {
         @{ Name = 'parent path'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e '../evil.txt' (Get-Bytes 'x') } },
         @{ Name = 'absolute path'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e '/abs.txt' (Get-Bytes 'x') } },
         @{ Name = 'backslash path'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'cli\evil.txt' (Get-Bytes 'x') } },
+        @{ Name = 'drive-relative path'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'C:evil.txt' (Get-Bytes 'x') } },
+        @{ Name = 'dot segment'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'cli/./a' (Get-Bytes 'x') } },
+        @{ Name = 'trailing dot'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'cli/a.' (Get-Bytes 'x') } },
+        @{ Name = 'directory entry'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'cli/' ([byte[]]::new(0)) } },
+        @{ Name = 'reserved CON'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'CON' (Get-Bytes 'x') } },
+        @{ Name = 'reserved nul.txt'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'cli/nul.txt' (Get-Bytes 'x') } },
+        @{ Name = 'reserved Com1.json'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'cli/sub/Com1.json' (Get-Bytes 'x') } },
+        @{ Name = 'reserved lpt9.tar.gz'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'lpt9.tar.gz' (Get-Bytes 'x') } },
+        @{ Name = 'reserved AUX dir'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'Aux/readme.txt' (Get-Bytes 'x') } },
+        @{ Name = 'reserved PRN'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'prn.dll' (Get-Bytes 'x') } },
+        @{ Name = 'reserved conin$'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'conin$' (Get-Bytes 'x') } },
+        @{ Name = 'reserved CONOUT$.txt'; Code = 'entry_path_unsafe'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'cli/CONOUT$.txt' (Get-Bytes 'x') } },
+        @{ Name = 'file over folder'; Code = 'entry_duplicate'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'CLI' (Get-Bytes 'x') } },
+        @{ Name = 'folder over file'; Code = 'entry_duplicate'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'cli/a.txt/inner' (Get-Bytes 'x') } },
         @{ Name = 'duplicate entry'; Code = 'entry_duplicate'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'VERSION' (Get-Bytes "1.2.3`n") } },
         @{ Name = 'case duplicate'; Code = 'entry_duplicate'; Sums = 'fresh'; Entries = { param($e) Add-Entry $e 'cli/A.txt' (Get-Bytes 'alpha') } },
         @{ Name = 'reordered'; Code = 'entry_order'; Sums = 'fresh'; Order = 'reverse'; Entries = { param($e) $e } },
@@ -241,19 +296,82 @@ try {
             'stale' { Copy-Item -LiteralPath $sumsA -Destination (Join-Path $caseDir 'SHA256SUMS') }
             'malformed' { Write-PackageText (Join-Path $caseDir 'SHA256SUMS') "not-a-hash  $zipName`n" }
         }
-        $check = Invoke-Archiver @('-Verify', '-ArchivePath', $zip)
+        $caseTemp = Join-Path $caseDir 'temp'
+        New-Item -ItemType Directory -Force $caseTemp | Out-Null
+        $check = Invoke-WithEnvironment (Get-TempEnvironment $caseTemp) { Invoke-Archiver @('-Verify', '-ArchivePath', $zip) }
+        Assert ((Get-ArchiveTempLeftovers $caseTemp).Count -eq 0) "refused verify ($($case.Name)) left bim-archive-* in temp: $((Get-ArchiveTempLeftovers $caseTemp).Name -join ', ')"
         Assert ($check.Code -ne 0) "archive verify accepted: $($case.Name)"
         Assert ($check.Output -match "package-archive refused: $($case.Code)") "archive verify ($($case.Name)) must refuse with $($case.Code): $(Get-Tail $check.Output)"
         $dest = Join-Path $caseDir 'install/package'
-        $run = Invoke-Archiver @('-Extract', '-ArchivePath', $zip, '-DestinationDirectory', $dest)
+        $run = Invoke-WithEnvironment (Get-TempEnvironment $caseTemp) { Invoke-Archiver @('-Extract', '-ArchivePath', $zip, '-DestinationDirectory', $dest) }
+        Assert ((Get-ArchiveTempLeftovers $caseTemp).Count -eq 0) "refused extract ($($case.Name)) left bim-archive-* in temp: $((Get-ArchiveTempLeftovers $caseTemp).Name -join ', ')"
         Assert ($run.Code -ne 0) "archive extract accepted: $($case.Name)"
         Assert ($run.Output -match "package-archive refused: $($case.Code)") "archive extract ($($case.Name)) must refuse with $($case.Code): $(Get-Tail $run.Output)"
         Assert (!(Test-Path -LiteralPath $dest)) "refused extract ($($case.Name)) created the destination"
-        Assert ((Get-Partials (Join-Path $caseDir 'install')).Count -eq 0) "refused extract ($($case.Name)) left a .partial directory"
+        Assert (!(Test-Path -LiteralPath (Join-Path $caseDir 'install'))) "refused extract ($($case.Name)) left the destination parent it created (or a .partial in it)"
         foreach ($escape in (Join-Path $caseDir 'install/evil.txt'), (Join-Path $caseDir 'evil.txt'), (Join-Path $caseDir 'install/package/evil.txt')) {
             Assert (!(Test-Path -LiteralPath $escape)) "refused extract ($($case.Name)) wrote $escape"
         }
     }
+
+    # --- Relative paths resolve against the PowerShell location, not the process working directory ---
+    $relative = Join-Path $work 'relative base'
+    New-Item -ItemType Directory -Force $relative | Out-Null
+    Copy-Item -LiteralPath $package -Destination (Join-Path $relative 'pkg') -Recurse
+    Push-Location -LiteralPath $relative
+    try {
+        $ErrorActionPreference = 'Continue'
+        $relCreate = & $archiver -PackageDirectory 'pkg' -ArchivePath 'out/rel.zip' 2>&1 | ForEach-Object { "$_" }
+        $relCreateCode = $LASTEXITCODE
+        $relExtract = & $archiver -Extract -ArchivePath 'out/rel.zip' -DestinationDirectory 'installed/pkg' 2>&1 | ForEach-Object { "$_" }
+        $relExtractCode = $LASTEXITCODE
+        $relVerify = & $archiver -Verify -ArchivePath 'out/rel.zip' -ChecksumsPath 'out/SHA256SUMS' 2>&1 | ForEach-Object { "$_" }
+        $relVerifyCode = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+    } finally { Pop-Location }
+    Assert ($relCreateCode -eq 0) "relative-path create exit ${relCreateCode}: $(Get-Tail ($relCreate -join "`n"))"
+    Assert ((Test-Path -LiteralPath (Join-Path $relative 'out/rel.zip') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $relative 'out/SHA256SUMS') -PathType Leaf)) 'relative-path create did not write under the PowerShell location'
+    Assert ($relExtractCode -eq 0) "relative-path extract exit ${relExtractCode}: $(Get-Tail ($relExtract -join "`n"))"
+    Assert (Test-Path -LiteralPath (Join-Path $relative 'installed/pkg/manifest.json') -PathType Leaf) 'relative-path extract did not install under the PowerShell location'
+    Assert ($relVerifyCode -eq 0) "relative-path verify exit ${relVerifyCode}: $(Get-Tail ($relVerify -join "`n"))"
+
+    # --- Seam (dot-sourced helpers): an entry rewritten after verification is caught while copying ---
+    . $archiveCommon
+    $swapZip = Join-Path $work 'swap/rewritten.zip'
+    Write-TestZip $swapZip (Set-Entry $entries 'cli/a.txt' (Get-Bytes 'alphx'))
+    $script:Refusal = $null
+    $message = ''
+    $swapStream = $null; $swap = $null
+    try {
+        $opened = Open-VerifiedArchive $zipA $sumsA
+        $swapStream = [IO.File]::OpenRead($swapZip)
+        $swap = [IO.Compression.ZipArchive]::new($swapStream, [IO.Compression.ZipArchiveMode]::Read)
+        $opened.Zip = $swap
+        Expand-VerifiedArchive $opened (Join-Path $work 'swap install')
+    } catch { $message = $_.Exception.Message }
+    finally {
+        if ($swap) { $swap.Dispose() }
+        if ($swapStream) { $swapStream.Dispose() }
+        Close-ArchiveState
+    }
+    Assert ($message -match 'package-archive refused: entry_mismatch') "entry data changed after verification must be refused as entry_mismatch while copying: '$message'"
+    # Verification and extraction read a private copy, so rewriting the original afterwards changes nothing.
+    $moving = Join-Path $work 'moving'
+    New-Item -ItemType Directory -Force $moving | Out-Null
+    Copy-Item -LiteralPath $zipA -Destination (Join-Path $moving $zipName)
+    Copy-Item -LiteralPath $sumsA -Destination (Join-Path $moving 'SHA256SUMS')
+    $script:Refusal = $null
+    $message = ''
+    $movedInstall = Join-Path $work 'moving install'
+    try {
+        $opened = Open-VerifiedArchive (Join-Path $moving $zipName) (Join-Path $moving 'SHA256SUMS')
+        try { [IO.File]::WriteAllBytes((Join-Path $moving $zipName), [IO.File]::ReadAllBytes($swapZip)) }
+        catch { $failures.Add("verified archive could not be rewritten (original still held open): $($_.Exception.Message)") }
+        Expand-VerifiedArchive $opened $movedInstall
+    } catch { $message = $_.Exception.Message }
+    finally { Close-ArchiveState }
+    Assert ($message -eq '') "extract from the private verified copy failed after the original was rewritten: '$message'"
+    if ($message -eq '') { Assert (((Get-Inventory $movedInstall) -join '|') -ceq ((Get-Inventory $package) -join '|')) 'extract after the original was rewritten did not install the verified bytes' }
 
     # --- Real packages from scripts/package.ps1: archive, extract, byte-identical across two clean builds ---
     if ($PackageDirectory) {
