@@ -190,7 +190,7 @@ public static class CommandRulesRotateMirror
     {
         if (observed.Kind != expected.Kind) return null;
         // A mirrored flag expected (read before) must be read again, toggled.
-        if (expected.Mirrored is { } wanted && observed.Mirrored != wanted) return null;
+        if (expected.Mirrored is { } expectedFlag && observed.Mirrored != expectedFlag) return null;
         var tolerance = CommandRulesTransform.ToleranceMm;
         switch (expected.Kind)
         {
