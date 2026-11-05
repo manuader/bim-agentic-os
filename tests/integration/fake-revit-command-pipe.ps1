@@ -14,6 +14,8 @@ param(
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/fake-revit-command-executor.ps1"
 $state = New-FakeRevitState $DocumentUid
+# Behind the real CLI: a client-side case that arrives here answers fake_client_side_leak.
+$state.BehindCli = $true
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $utf8 = [Text.UTF8Encoding]::new($false)
 $ready = $false

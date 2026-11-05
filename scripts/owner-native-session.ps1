@@ -9,8 +9,13 @@
 # snapshot (P2-01 query.snapshot twice byte-identical, door/window on the wall axis, floor unmapped), consultas
 # (P1-02 query.elements/query.inspect, truncation, reference_not_found), estructura (P9-02), documentacion (P4-02
 # dimensions, tags, schedule, sheet, views on the sheet, duplicate placement refused), diario (P2-03 journal.read,
-# sent straight to the add-in pipe) and modificar (P1-05 set_parameter dry run/real/replay, delete dry run/refused/
-# confirmed; destructive, always last). A failed step or group never stops later groups; a timeout, a lost pipe or a
+# sent straight to the add-in pipe), then (P1-11) formas (P9-09 direct_shape.create box and extrusion, crossed outline
+# refused), extrusion (P9-07 roof.create_extrusion barrel on an axis-aligned, a reversed and a diagonal plane, closed
+# profile refused), transformar (P1-09/P1-10 element.move with replay, copy, rotate, mirror; zero move, full turn and
+# a door turned without its wall refused) and copia (P1-08 document.save_copy next to the test copy with its sha256
+# checked against the file, refused outside .bim/native-runs and on the repeat; Revit then has the copy open and
+# every later step names it), and modificar (P1-05 set_parameter dry run/real/replay, delete dry run/refused/
+# confirmed; destructive, always last, on the copy when it was saved). A failed step or group never stops later groups; a timeout, a lost pipe or a
 # closed Revit stops the run (nothing more is sent; since P1-06 this also applies to the v1 steps, which before were
 # each still sent and failed). A missing fixture precondition (second level, a loaded type of a kind) makes the step
 # and its dependents "blocked", not failed. Schedule field names need the Revit UI in English. -CatalogueV1Only
@@ -130,7 +135,7 @@ try {
    $run.bootstrap = 'succeeded'
    if ($Catalogue) {
     if ($CatalogueV1Only) { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script crea muros, una puerta, una ventana, un suelo y una habitación en el modelo de prueba (solo catálogo v1). No toque Revit hasta que termine." }
-    else { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script corre el catálogo v1 y después todos los grupos pendientes (v2, vistas, snapshot, consultas, estructura, documentación, diario y, al final, modificar y borrar) en el modelo de prueba. No toque Revit hasta que termine." }
+    else { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script corre el catálogo v1 y después todos los grupos pendientes (v2, vistas, snapshot, consultas, estructura, documentación, diario, formas, techos por extrusión, mover/copiar/rotar/reflejar, guardar una copia y, al final, modificar y borrar) en el modelo de prueba. No toque Revit hasta que termine." }
     $catalogueRequests = Join-Path $runDir 'catalogue-requests'
     $catalogueInvoke = { param($index, $key, $json) Invoke-CatalogueCli -Dotnet $dotnet -CliDll $cli -PipeName $boot.pipeName -RequestDirectory $catalogueRequests -Index $index -Key $key -Json $json -TimeoutSeconds $StepTimeoutSeconds }
     $catalogueWire = { param($index, $key, $line) Invoke-CatalogueWire -PipeName $boot.pipeName -Line $line -RequestDirectory $catalogueRequests -Index $index -Key $key -TimeoutSeconds $StepTimeoutSeconds }
@@ -141,8 +146,11 @@ try {
      document_path = $boot.documentPath; document_unique_id = $boot.documentUniqueId; revit_build = $boot.revitBuild
      scope = $summary.catalogue_scope
      result_line = (Format-CatalogueSummary $sequence); counts = $sequence.counts; groups = $sequence.groups; overall = $sequence.overall; all_passed = $sequence.all_passed; aborted = $sequence.aborted; picked = $sequence.picked
-     document_saved = $false
-     document_note = 'The catalogue has no save command and this session adds none: the changes (including the last group, which deletes the v1 south wall and its door) live only in the open child Revit. Closing it without saving discards them.'
+     fixture_saved = $false
+     copy_path = $sequence.picked['copy_path']
+     open_document_path = $(if ($sequence.picked['document_path']) { $sequence.picked['document_path'] } else { $boot.documentPath })
+     document_switched_by = $sequence.picked['document_switched_by']
+     document_note = 'The fixture document is never saved. The copia group saves one new copy (copy_path, BIM-Agentic-Test-c04-*-copia.rvt next to the fixture, before the destructive group); Revit then has that copy open and the last group (which deletes the v1 south wall and its door) changes it only in memory. Closing the child Revit without saving discards those changes.'
      steps = $sequence.steps
     } | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $cataloguePath
     $run.catalogue = [ordered]@{ file = $cataloguePath; counts = $sequence.counts; groups = $sequence.groups; overall = $sequence.overall; all_passed = $sequence.all_passed; aborted = $sequence.aborted }
@@ -177,7 +185,12 @@ try {
     $run.closed = $child.WaitForExit($CloseWaitSeconds * 1000)
     if (!$run.closed) { Say "Run ${i}: child PID $($child.Id) did not close in $CloseWaitSeconds s; left running, close it yourself (not production)" }
    }
-   elseif ($child -and !$child.HasExited) { Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. El modelo de prueba NO está guardado; al cerrarlo, Revit preguntará si guardar: puede elegir No." }
+   elseif ($child -and !$child.HasExited) {
+    if ($Catalogue -and !$CatalogueV1Only -and $run.catalogue -and $sequence.picked['document_path']) {
+     Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. Se guardó una copia ($($sequence.picked['document_path'])) y Revit la tiene abierta con los cambios del último grupo (modificar y borrar) solo en memoria. Al cerrarlo, Revit preguntará si guardar: elija No, así la copia queda igual al sha256 registrado. El modelo de prueba original no se guardó."
+    }
+    else { Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. El modelo de prueba NO está guardado; al cerrarlo, Revit preguntará si guardar: puede elegir No." }
+   }
    Save
   }
  }

@@ -1,4 +1,4 @@
-# Owner one-run verification session (P1-06)
+# Owner one-run verification session (P1-06, P1-11)
 
 One owner-attended Revit 2025 session verifies, in one go, everything the catalogue commands still need from real
 Revit. The script is [scripts/owner-native-session.ps1](../scripts/owner-native-session.ps1); the step lists, checks and
@@ -27,7 +27,7 @@ line, because it is not a catalogue command). Do not touch the child Revit until
 The last lines are:
 
 ```
->>> Ejecución 1: Catálogo: 17/17 pasos OK; grupos: v2 6/6, vistas 5/5, snapshot 2/2, consultas 6/6, estructura 12/12, documentacion 15/15, diario 6/6, modificar 12/12; total 81/81; resultado: TODO OK
+>>> Ejecución 1: Catálogo: 17/17 pasos OK; grupos: v2 6/6, vistas 5/5, snapshot 2/2, consultas 6/6, estructura 12/12, documentacion 15/15, diario 6/6, formas 3/3, extrusion 5/5, transformar 9/9, copia 5/5, modificar 12/12; total 103/103; resultado: TODO OK
 >>> Sesión terminada. Catálogo: 17/17 pasos OK; grupos: ...; resultado: TODO OK
 ```
 
@@ -53,7 +53,14 @@ Evidence: `.bim/native-sessions/<utc>/catalogue-run1.json` (per step: group, req
 `session.log` and `summary.json` (`catalogue_scope`, `catalogue_all_passed`). Request files are in
 `.bim/native-runs/<guid>/catalogue-requests/`.
 
-The model is never saved. The last group deletes the v1 south wall and its door; close the child Revit without saving.
+The fixture model itself is never saved. The `copia` group saves one new copy
+`.bim/native-runs/<guid>/BIM-Agentic-Test-c04-<utc>-r<run>-copia.rvt` (its sha256 is compared with the file on disk and
+recorded in the step's readback); Revit's Save As then keeps **the copy** open in place of the fixture, so the last
+group (which deletes the v1 south wall and its door) changes the copy only in memory and the run ends with the copy
+open. When Revit asks at close whether to save, answer **No**, so the copy stays equal to the recorded sha256.
+`catalogue-run<N>.json` records `fixture_saved` (false), `copy_path`, `open_document_path` and
+`document_switched_by` (`c-save`, or `c-levels-copy` when the save failed after Save As had already re-pointed the
+document and the probe naming the copy succeeded).
 
 ## Preconditions
 
@@ -77,7 +84,11 @@ The model is never saved. The last group deletes the v1 south wall and its door;
 | `estructura` | P9-02 | Levels pair; structural types column, framing, foundation, wall_foundation; `query.grids`; grid (20000,-2000)-(20000,6000) and its replay; column at (20000,0) base to top level; beam (20000,0)-(26000,0) on the upper level; isolated footing at (20000,0); wall foundation under the v1 north wall. A template without a loaded structural family fails that type query and the steps that need it say so. |
 | `documentacion` | P4-02 | Title blocks; its own floor plan; two grids 3000 mm apart; dimension between the grids (3000 mm); dimensions between the south and north walls on their interior and on their exterior faces (each 4000 mm ± the wall type width, the two differing by 2 × width; which face pair is the inner one depends on Revit's wall orientation, so it is not asserted); wall tag; door tag with leader and head (1500,-1500); door schedule Mark, Type sorted by Mark; sheet `C04-r1-A101` and its replay; plan and schedule placed on the sheet; the same plan placed again refused with `args_invalid` naming the sheet. |
 | `diario` | P2-03 | `journal.read` baseline (attached, document, `baseline_existed` false); one CLI wall; read again (`skipped_add_in` grew, the wall is in `diff.added`, no external entry for it); an empty read; two `peek` reads that are byte-identical. |
-| `modificar` | P1-05, destructive, last | Inspect the west wall height (3000); `element.set_parameter` WALL_USER_HEIGHT_PARAM 3200 dry run (before 3000, after 3200, modified empty), inspect (still 3000), real (modified), replay (`replayed`), inspect (3200); Comments text (ALL_MODEL_INSTANCE_COMMENTS); read-only CURVE_ELEM_LENGTH refused (`args_invalid`, field `args.parameter`, detail "read-only"); `element.delete` of the south wall dry run (the door among the dependents), refused without `confirm_dependents` (`args_invalid`, field `args.confirm_dependents`, detail "unconfirmed"), deleted with exactly the dry-run dependents; inspect the deleted wall (`reference_not_found`). |
+| `formas` | P9-09 | `direct_shape.create` generic_model box (50000,0,0)-(51000,1000,1000) (category, OST_GenericModel, name, volume 1e9 mm3, box within 1 mm); site extrusion 1200 x 800 at (52000,0), 900 high on the v1 level (OST_Site, volume 8.64e8 mm3, box z from the level elevation); a crossed outline refused by the CLI (`boundary_self_intersecting`, `args.shape.outline[0]`). |
+| `extrusion` | P9-07 | Roof types; `roof.create_extrusion` barrel (arc (-300,2700)-(6300,2700) through (3000,3800), extents 0 to 4000) on an axis-aligned plane (30000,0)->(36000,0), the reversed plane (36000,10000)->(30000,10000) and a diagonal plane (40000,0)->(43600,4800) (roof and reference plane created, level, type, plane echo, extents, one arc with its crown at (3000,3800), the box holds the profile swept to the plane's left within 25 mm and not the one swept to its right); a closed profile refused by the CLI (`args_invalid`, `args.profile`). |
+| `transformar` | P1-09, P1-10 | A wall (0,15000)-(3000,15000); `element.move` (1000,500,0) and its replay (`replayed`); a zero vector refused by the CLI (`length_invalid`); `element.copy` (0,2000,0) (one copy at (1000,17500)-(4000,17500)); `element.rotate` of the copy 90 degrees about (1000,17500) (end at (1000,20500)); the v1 door turned without its wall (`element_not_rotatable`, "include the host"); 360 degrees refused by the CLI (`angle_invalid`); `element.mirror` across x = 6000 keeping the original (new wall at (8000..11000,15500)). |
+| `copia` | P1-08 | `document.save_copy` into `.bim` outside `.bim/native-runs` refused by the CLI (`save_copy_refused`, `outside_copies_root:`); the copy next to the fixture (path, open document = the copy, source unchanged, not modified, sha256 and size equal to the file on disk, warning); the same request again refused by the CLI (`target_exists:`, not replayed); `query.levels` naming the copy (succeeds; if `c-save` failed after Save As this probe switches the run to the copy); `query.levels` naming the fixture (`document_conflict`). Every later step names the copy. |
+| `modificar` | P1-05, destructive, last (on the copy when one was saved) | Inspect the west wall height (3000); `element.set_parameter` WALL_USER_HEIGHT_PARAM 3200 dry run (before 3000, after 3200, modified empty), inspect (still 3000), real (modified), replay (`replayed`), inspect (3200); Comments text (ALL_MODEL_INSTANCE_COMMENTS); read-only CURVE_ELEM_LENGTH refused (`args_invalid`, field `args.parameter`, detail "read-only"); `element.delete` of the south wall dry run (the door among the dependents), refused without `confirm_dependents` (`args_invalid`, field `args.confirm_dependents`, detail "unconfirmed"), deleted with exactly the dry-run dependents; inspect the deleted wall (`reference_not_found`). |
 
 Every write uses a new `operation_id` (`c04-<utc>-r<run>-<step>`); replays reuse the original step's id on purpose.
 Nothing is retried automatically.

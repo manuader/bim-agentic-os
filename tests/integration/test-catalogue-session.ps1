@@ -2,7 +2,12 @@
 # Always: envelopes, operation ids, reference picking and the 17-step v1 sequence (-V1Only) against an in-process fake
 # executor, including fault cases; then the P1-06 one-run sequence (v1 first and unchanged, then every later group):
 # all pass -> per-group counts and summary line; one failing group -> later groups still run and the outcome names it;
-# a lost pipe -> nothing more is sent. With -Dotnet and -CliDll: the whole one-run sequence through the real CLI
+# a lost pipe -> nothing more is sent. P1-11 (formas, extrusion, transformar, copia, before the destructive group):
+# every step checked against the Core contracts read from core/Bim.Core (catalogue command, refusal code, client-side
+# code, save_copy reason, ReuseOf), exact arguments and outcomes, ordering and dependencies, the document path switch to
+# the copy, no path outside .bim (no copy of a non-test document) and fault cases. Runs in CI through
+# scripts/verify.ps1 (catalogue-session, and catalogue-session-cli with the real CLI); never Revit.
+# With -Dotnet and -CliDll: the whole one-run sequence through the real CLI
 # "revit-command" verb (and Invoke-CatalogueWire for journal.read) against a fake add-in pipe, proving every envelope
 # passes the Core schema and guards and that the invalid arc never reaches the pipe, then a dead pipe stopping the run.
 # Revit itself is never involved; native behaviour stays unverified until the owner session runs.
@@ -16,7 +21,12 @@ function Assert([bool]$Condition, [string]$Message) { if (!$Condition) { $failur
 
 $stamp = '20261030T120000Z'
 $documentUid = '0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9-0000abcd'
-$documentPath = [IO.Path]::GetFullPath((Join-Path $root '.bim/native-runs/catalogue-test/BIM-Agentic-Test.rvt'))
+# Its own folder under .bim/native-runs: the fake writes the document.save_copy copy next to the test document.
+$inProcessDirectory = [IO.Path]::GetFullPath((Join-Path $root ('.bim/native-runs/catalogue-test-' + [guid]::NewGuid())))
+New-Item -ItemType Directory -Force $inProcessDirectory | Out-Null
+$documentPath = Join-Path $inProcessDirectory 'BIM-Agentic-Test.rvt'
+# The in-process checks run inside try; finally removes that folder even when a check throws.
+try {
 
 # --- Envelope and operation id ---
 $id = New-CatalogueOperationId $stamp 2 'wall-arc'
@@ -106,7 +116,7 @@ Assert (($evidence | ConvertFrom-Json).steps.Count -eq 17) 'evidence JSON round 
 Assert ($clean.Result.groups.Count -eq 1 -and (Format-CatalogueSummary $clean.Result) -eq 'Catálogo: 17/17 pasos OK') "v1-only summary line: $(Format-CatalogueSummary $clean.Result)"
 
 # --- P1-06 one-run sequence: v1 first and unchanged, then every later group ---
-$groupKeys = @('v1', 'v2', 'vistas', 'snapshot', 'consultas', 'estructura', 'documentacion', 'diario', 'modificar')
+$groupKeys = @('v1', 'v2', 'vistas', 'snapshot', 'consultas', 'estructura', 'documentacion', 'diario', 'formas', 'extrusion', 'transformar', 'copia', 'modificar')
 function Get-FailedSteps($Result) { (@($Result.steps | Where-Object { !$_.passed } | ForEach-Object { "[$($_.group)] $($_.key): $($_.reason)" }) -join '; ') }
 function Get-Group($Result, [string]$Key) { @($Result.groups | Where-Object { $_.key -eq $Key })[0] }
 $full = (Invoke-FakeSequence -All).Result
@@ -222,8 +232,199 @@ Assert ((Format-CatalogueSummary $v1DeadRun) -eq "Catálogo: $($doorStep.index -
 $joined = Join-CatalogueResults @($full, $roofFails)
 Assert ($joined.counts.passed -eq 34 -and (Get-Group $joined 'v2').failed -eq 1 -and $joined.overall.total -eq 2 * $full.overall.total -and !$joined.all_passed) 'session totals sum the runs by group'
 
+# --- P1-11: direct shapes, extrusion roofs, move/copy/rotate/mirror and document.save_copy (before the destructive group) ---
+function Get-Step($Result, [string]$Key) { @($Result.steps | Where-Object { $_.key -eq $Key }) | Select-Object -First 1 }
+function Get-StepField($Result, [string]$Key, [string]$Field) { Get-CatalogueMember (Get-Step $Result $Key) $Field }
+function Get-RequestValue($Result, [string]$Key, [string]$Path) { Get-CataloguePath (Get-StepField $Result $Key 'request') $Path }
+# A group summary member without indexing (no group yet answers $null).
+function Get-GroupField($Result, [string]$Key, [string]$Field) { Get-CatalogueMember (@($Result.groups | Where-Object { $_.key -eq $Key }) | Select-Object -First 1) $Field }
+
+# The Core contracts, read from the C# source (no build needed): catalogue command names, typed refusal codes, the
+# client-side codes (refused by the CLI before the pipe) and the document.save_copy reason prefixes.
+$coreSource = (Get-ChildItem -LiteralPath (Join-Path $root 'core/Bim.Core') -Filter '*.cs' | Sort-Object Name | ForEach-Object { [IO.File]::ReadAllText($_.FullName) }) -join "`n"
+function Get-CoreClassBody([string]$Class) {
+    $match = [regex]::Match($coreSource, "(?s)\bclass $Class\b.*?\n\}")
+    if ($match.Success) { return $match.Value }
+    return ''
+}
+function Get-CoreConstants([string]$Class) {
+    $map = [ordered]@{}
+    foreach ($m in [regex]::Matches((Get-CoreClassBody $Class), 'const string (\w+)\s*=\s*"([^"]*)"')) { $map[$m.Groups[1].Value] = $m.Groups[2].Value }
+    return $map
+}
+function Get-CoreList([string]$Class, [string]$Property) {
+    $constants = Get-CoreConstants $Class
+    $list = [regex]::Match((Get-CoreClassBody $Class), "(?s)\b$Property \{ get; \} = new\[\]\s*\{(.*?)\};")
+    $set = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($id in [regex]::Matches($list.Groups[1].Value, '\w+')) { if ($constants.Contains($id.Value)) { $null = $set.Add($constants[$id.Value]) } }
+    return , $set
+}
+$catalogue = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($m in [regex]::Matches($coreSource, 'new RevitCommandSpec\(\s*(?:"(?<name>[^"]+)"|(?<class>\w+)\.(?<member>\w+))')) {
+    if ($m.Groups['name'].Success) { $null = $catalogue.Add($m.Groups['name'].Value) }
+    else { $constants = Get-CoreConstants $m.Groups['class'].Value; if ($constants.Contains($m.Groups['member'].Value)) { $null = $catalogue.Add($constants[$m.Groups['member'].Value]) } }
+}
+Assert ($catalogue.Count -ge 60 -and $catalogue.Contains('wall.create') -and $catalogue.Contains('element.mirror') -and $catalogue.Contains('document.save_copy') -and $catalogue.Contains('roof.create_extrusion')) "catalogue command names parsed from core/Bim.Core: $($catalogue.Count)"
+$codes = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($class in 'RevitCommandCodes', 'RevitTransformCodes', 'RevitRotateMirrorCodes') { foreach ($value in (Get-CoreConstants $class).Values) { $null = $codes.Add($value) } }
+$clientSide = Get-CoreList 'RevitCommandCodes' 'ClientSide'
+$copyReasons = Get-CoreList 'RevitSaveCopyGuard' 'Reasons'
+Assert ($codes.Contains('element_not_rotatable') -and $codes.Contains('document_conflict') -and $clientSide.Contains('arc_collinear') -and $clientSide.Contains('save_copy_refused') -and !$clientSide.Contains('reference_not_found')) "refusal codes parsed from core/Bim.Core: $($codes.Count) codes, $($clientSide.Count) client-side"
+Assert ($copyReasons.Count -eq 9 -and $copyReasons.Contains('outside_copies_root') -and $copyReasons.Contains('target_exists')) "save_copy reasons parsed from core/Bim.Core: $(@($copyReasons) -join ',')"
+
+# Every step of the one-run list against those contracts: a catalogue command (journal.read is the wire line), a typed
+# refusal code that exists, client-side refusals only with client-side codes, save_copy reasons that exist, ReuseOf
+# naming an earlier step of the same command, unique keys.
+$seen = @{}
+$clientKeys = [Collections.Generic.List[string]]::new()
+foreach ($group in (Get-CatalogueGroups)) {
+    foreach ($spec in $group.Steps) {
+        $key = [string]$spec.Key
+        $isWire = $spec.ContainsKey('Wire') -and $spec.Wire
+        if ($isWire) { Assert ($spec.Command -eq 'journal.read') "[$($group.Key)] ${key}: only journal.read goes as a wire line" }
+        else { Assert ($catalogue.Contains([string]$spec.Command)) "[$($group.Key)] ${key}: $($spec.Command) is not a catalogue command" }
+        if ($spec.Expect.ContainsKey('Code')) { Assert ($spec.Expect.Status -eq 'failed' -and $codes.Contains([string]$spec.Expect.Code)) "[$($group.Key)] ${key}: expected code $($spec.Expect.Code) is not a Core refusal code" }
+        else { Assert ($spec.Expect.Status -eq 'succeeded') "[$($group.Key)] ${key}: a failure must name its code" }
+        if ($spec.ContainsKey('ClientSide') -and $spec.ClientSide) {
+            $clientKeys.Add($key)
+            Assert (!$isWire -and $spec.Expect.ContainsKey('Code') -and $clientSide.Contains([string]$spec.Expect.Code)) "[$($group.Key)] ${key}: a client-side refusal must expect a RevitCommandCodes.ClientSide code"
+        }
+        if ($spec.ContainsKey('Reason')) { Assert ($spec.Command -eq 'document.save_copy' -and $spec.Expect.Code -eq 'save_copy_refused' -and $copyReasons.Contains([string]$spec.Reason)) "[$($group.Key)] ${key}: save_copy reason $($spec.Reason) is not a RevitSaveCopyGuard reason" }
+        if ($spec.ContainsKey('ReuseOf')) { Assert ($seen.ContainsKey($spec.ReuseOf) -and $seen[$spec.ReuseOf] -eq $spec.Command) "[$($group.Key)] ${key}: ReuseOf $($spec.ReuseOf) must be an earlier step of the same command" }
+        Assert (!$seen.ContainsKey($key)) "duplicate step key $key"
+        $seen[$key] = $spec.Command
+    }
+}
+Assert (($clientKeys -join ',') -eq 'invalid-arc,f-bowtie,x-closed,t-move-zero,t-rotate-full,c-outside,c-save-again') "client-side refusal steps: $($clientKeys -join ',')"
+
+# The new groups: steps in order with their exact outcome (ok or the typed refusal code), each passing in the clean run.
+$p111Groups = [ordered]@{
+    formas = @('f-box', 'f-extrusion', 'f-bowtie')
+    extrusion = @('x-roof-types', 'x-barrel', 'x-barrel-reversed', 'x-barrel-diagonal', 'x-closed')
+    transformar = @('t-wall', 't-move', 't-move-retry', 't-move-zero', 't-copy', 't-rotate', 't-rotate-door', 't-rotate-full', 't-mirror')
+    copia = @('c-outside', 'c-save', 'c-save-again', 'c-levels-copy', 'c-levels-source')
+}
+foreach ($entry in $p111Groups.GetEnumerator()) {
+    $inGroup = (@($full.steps | Where-Object { $_.group -eq $entry.Key } | ForEach-Object { $_.key }) -join ',')
+    Assert ($inGroup -eq ($entry.Value -join ',')) "group $($entry.Key) steps in order: $inGroup"
+}
+$p111Outcomes = [ordered]@{
+    'f-box' = 'ok'; 'f-extrusion' = 'ok'; 'f-bowtie' = 'boundary_self_intersecting'
+    'x-roof-types' = 'ok'; 'x-barrel' = 'ok'; 'x-barrel-reversed' = 'ok'; 'x-barrel-diagonal' = 'ok'; 'x-closed' = 'args_invalid'
+    't-wall' = 'ok'; 't-move' = 'ok'; 't-move-retry' = 'ok'; 't-move-zero' = 'length_invalid'; 't-copy' = 'ok'; 't-rotate' = 'ok'; 't-rotate-door' = 'element_not_rotatable'; 't-rotate-full' = 'angle_invalid'; 't-mirror' = 'ok'
+    'c-outside' = 'save_copy_refused'; 'c-save' = 'ok'; 'c-save-again' = 'save_copy_refused'; 'c-levels-copy' = 'ok'; 'c-levels-source' = 'document_conflict'
+}
+foreach ($entry in $p111Outcomes.GetEnumerator()) {
+    $step = Get-Step $full $entry.Key
+    $code = [string](Get-CatalogueMember (Get-CatalogueMember $step 'response') 'code')
+    Assert ($null -ne $step -and $step.passed -and $code -eq $entry.Value) "P1-11 step $($entry.Key) must pass answering $($entry.Value): $(if ($step) { "$code / $($step.reason)" } else { 'missing' })"
+}
+foreach ($command in @('direct_shape.create', 'roof.create_extrusion', 'element.move', 'element.copy', 'element.rotate', 'element.mirror', 'document.save_copy')) {
+    Assert (@($full.steps | Where-Object { $_.command -eq $command -and $_.passed -and [string](Get-CatalogueMember $_.response 'code') -eq 'ok' }).Count -ge 1) "one-run covers $command with a success"
+}
+$lastNew = $full.steps | Where-Object { $_.group -in @($p111Groups.Keys) } | Select-Object -Last 1
+$firstModify = $full.steps | Where-Object { $_.group -eq 'modificar' } | Select-Object -First 1
+$lastJournal = $full.steps | Where-Object { $_.group -eq 'diario' } | Select-Object -Last 1
+Assert ($null -ne $lastNew -and $lastNew.index -lt $firstModify.index -and $lastNew.index -gt $lastJournal.index) 'the P1-11 groups run after the journal and before the destructive group'
+Assert (@($full.steps | Where-Object { $_.group -in @($p111Groups.Keys) -and $_.command -in 'element.delete', 'element.set_parameter' }).Count -eq 0) 'no delete or parameter change in the P1-11 groups'
+
+# Exact arguments: three barrel planes (axis-aligned, reversed, diagonal) with the same open arc profile and extents.
+function Get-PlaneDirection($Result, [string]$Key) {
+    $s = @(Get-RequestValue $Result $Key 'args.plane.start'); $e = @(Get-RequestValue $Result $Key 'args.plane.end')
+    if ($s.Count -ne 2 -or $e.Count -ne 2) { return @(0, 0) }
+    return @(([double]$e[0] - [double]$s[0]), ([double]$e[1] - [double]$s[1]))
+}
+$axis = Get-PlaneDirection $full 'x-barrel'
+$reversed = Get-PlaneDirection $full 'x-barrel-reversed'
+$diagonal = Get-PlaneDirection $full 'x-barrel-diagonal'
+Assert ($axis[0] -gt 0 -and $axis[1] -eq 0 -and $reversed[0] -lt 0 -and $reversed[1] -eq 0 -and $diagonal[0] -ne 0 -and $diagonal[1] -ne 0) "barrel planes: axis-aligned $($axis -join ','), reversed $($reversed -join ','), diagonal $($diagonal -join ',')"
+foreach ($key in 'x-barrel', 'x-barrel-reversed', 'x-barrel-diagonal') {
+    $sentProfile = @(Get-RequestValue $full $key 'args.profile')
+    Assert ($sentProfile.Count -eq 1 -and (Get-CatalogueMember $sentProfile[0] 'kind') -eq 'arc' -and $null -ne (Get-CatalogueMember $sentProfile[0] 'through') -and (Get-RequestValue $full $key 'args.extrusion_start_mm') -eq 0 -and (Get-RequestValue $full $key 'args.extrusion_end_mm') -eq 4000 -and (Get-RequestValue $full $key 'args.level') -eq $full.picked['level']) "$key sends one open arc, extents 0..4000 on the walls' level"
+    Assert (@(Get-StepField $full $key 'comparisons' | Where-Object { $null -ne $_ -and $_.ok }).Count -ge 8) "$key records requested vs observed rows"
+}
+# Move, copy, rotate and mirror act on their own test wall (the rotation on its copy) and on the v1 door only for the refusal.
+$testWall = Get-CatalogueFirstCreated (Get-StepField $full 't-wall' 'response')
+$wallCopy = Get-CatalogueFirstCreated (Get-StepField $full 't-copy' 'response')
+$doorUid = Get-CatalogueFirstCreated (Get-StepField $full 'door' 'response')
+Assert ($testWall -and $wallCopy -and $testWall -ne $wallCopy) 'the copy is a new element'
+foreach ($pair in @(@('t-move', $testWall), @('t-move-retry', $testWall), @('t-copy', $testWall), @('t-rotate', $wallCopy), @('t-mirror', $testWall), @('t-rotate-door', $doorUid))) {
+    Assert ([string](Get-CatalogueFirst (Get-RequestValue $full $pair[0] 'args.element_uids')) -eq $pair[1]) "$($pair[0]) targets the expected element"
+}
+Assert ((Get-StepField $full 't-move-retry' 'operation_id') -eq (Get-StepField $full 't-move' 'operation_id') -and (Get-CataloguePath (Get-StepField $full 't-move-retry' 'response') 'receipt.replayed') -eq $true) 'the move retry replays (the wall moves once)'
+Assert ((Get-RequestValue $full 't-mirror' 'args.keep_original') -eq $true -and (Get-RequestValue $full 't-rotate' 'args.angle_deg') -eq 90) 'mirror keeps the original, rotation is 90 degrees'
+
+# document.save_copy: copy next to the test document, refusal outside .bim/native-runs, target_exists on the repeat; then
+# every later request names the copy (Revit re-points the open document), except the two that name the source on purpose.
+$copyPath = [IO.Path]::Combine([IO.Path]::GetDirectoryName($documentPath), "BIM-Agentic-Test-c04-$stamp-r1-copia.rvt")
+$outsidePath = [IO.Path]::Combine([IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($documentPath))), "BIM-Agentic-Test-c04-$stamp-r1-fuera.rvt")
+Assert ((Get-RequestValue $full 'c-save' 'args.path') -eq $copyPath -and (Get-RequestValue $full 'c-save-again' 'args.path') -eq $copyPath -and (Get-RequestValue $full 'c-outside' 'args.path') -eq $outsidePath) "save_copy targets: $(Get-RequestValue $full 'c-save' 'args.path') / $(Get-RequestValue $full 'c-outside' 'args.path')"
+Assert ((Get-StepField $full 'c-save-again' 'operation_id') -eq (Get-StepField $full 'c-save' 'operation_id')) 'the repeat reuses the save operation_id (refused target_exists, not replayed)'
+foreach ($key in 'c-outside', 'c-save-again') { Assert (@(Get-StepField $full $key 'comparisons' | Where-Object { $null -ne $_ -and $_.ok }).Count -eq 2) "$key checks the refused field and reason" }
+Assert ([string](Get-CataloguePath (Get-StepField $full 'c-outside' 'response') 'detail') -like 'outside_copies_root:*' -and [string](Get-CataloguePath (Get-StepField $full 'c-save-again' 'response') 'detail') -like 'target_exists:*') 'save_copy refusals carry their reason prefix'
+$saveChecks = @(Get-StepField $full 'c-save' 'comparisons' | Where-Object { $null -ne $_ })
+Assert (@($saveChecks | Where-Object { $_.check -like '*sha256*' -and $_.ok }).Count -ge 2 -and @($saveChecks | Where-Object { !$_.ok }).Count -eq 0) 'c-save compares the read sha256 with the file on disk'
+Assert ((Test-Path -LiteralPath $copyPath -PathType Leaf) -and !(Test-Path -LiteralPath $outsidePath)) 'the copy exists next to the test document and nothing was written outside .bim/native-runs'
+$saveIndex = [int](Get-StepField $full 'c-save' 'index')
+$wrongDocument = @($full.steps | Where-Object { $null -ne $_.request } | Where-Object {
+    $named = if ($_.command -eq 'journal.read') { [string](Get-CatalogueMember $_.request 'DocumentPath') } else { [string](Get-CataloguePath $_.request 'document.path') }
+    $wanted = if ($_.index -gt $saveIndex -and $_.key -notin 'c-save-again', 'c-levels-source') { $copyPath } else { $documentPath }
+    $named -ne $wanted })
+Assert ($wrongDocument.Count -eq 0) "document.path per step (the source until c-save, then the copy): $(@($wrongDocument | ForEach-Object { $_.key }) -join ',')"
+$bimRoot = [IO.Path]::GetFullPath((Join-Path $root '.bim')) + [IO.Path]::DirectorySeparatorChar
+$runsRoot = [IO.Path]::GetFullPath((Join-Path $root '.bim/native-runs')) + [IO.Path]::DirectorySeparatorChar
+$pathsNamed = @($full.steps | Where-Object { $null -ne $_.request -and $_.command -ne 'journal.read' } | ForEach-Object { [string](Get-CataloguePath $_.request 'document.path'); if ($_.command -eq 'document.save_copy') { [string](Get-CataloguePath $_.request 'args.path') } })
+$badPaths = @($pathsNamed | Where-Object { !([IO.Path]::GetFullPath($_)).StartsWith($bimRoot, [StringComparison]::Ordinal) -or [IO.Path]::GetFileName($_) -cnotmatch '\ABIM-Agentic-Test[A-Za-z0-9._-]*\.rvt\z' -or (!$_.StartsWith($runsRoot, [StringComparison]::Ordinal) -and $_ -ne $outsidePath) })
+Assert ($pathsNamed.Count -gt 0 -and $badPaths.Count -eq 0) "every path a request names is a BIM-Agentic-Test*.rvt under .bim/native-runs (the refused outside target under .bim): $($badPaths -join ', ')"
+
+# A document that is not a test copy under .bim/native-runs is never saved as a copy: the copy steps are not sent.
+foreach ($notCopy in @([IO.Path]::GetFullPath((Join-Path $root 'Proyectos/Cliente/Modelo.rvt')), [IO.Path]::GetFullPath((Join-Path $root 'otra-carpeta/BIM-Agentic-Test.rvt')))) {
+    $otherFake = New-FakeRevitState $documentUid
+    $otherInvoke = { param($index, $key, $json) $text = Invoke-FakeRevitCommand $otherFake $json; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
+    $other = Invoke-CatalogueSequence -Stamp $stamp -Run 1 -DocumentPath $notCopy -DocumentUid $documentUid -Invoke $otherInvoke
+    $copySteps = @($other.steps | Where-Object { $_.group -eq 'copia' })
+    Assert ($copySteps.Count -eq 5 -and @($copySteps | Where-Object { $null -ne $_.request }).Count -eq 0 -and [string](Get-StepField $other 'c-save' 'reason') -like '*no es una copia de prueba*') "no save_copy for $notCopy : $(@($copySteps | ForEach-Object { "$($_.key)=$($_.reason)" }) -join '; ')"
+}
+
+# Faults the checks must notice.
+$hashOff = (Invoke-FakeSequence @{ SaveCopyHashOff = $true } -All).Result
+Assert (!(Get-StepField $hashOff 'c-save' 'passed') -and [string](Get-StepField $hashOff 'c-save' 'reason') -like '*sha256*' -and $null -eq (Get-StepField $hashOff 'c-save-again' 'request')) "a read sha256 that differs from the file must fail c-save: $(Get-StepField $hashOff 'c-save' 'reason')"
+Assert ((Get-StepField $hashOff 'c-levels-copy' 'passed') -and (Get-StepField $hashOff 'c-levels-source' 'passed') -and (Get-GroupField $hashOff 'modificar' 'failed') -eq 0) "Revit re-pointed the document anyway: later steps name the copy: $(Get-FailedSteps $hashOff)"
+Assert ($hashOff.picked['document_switched_by'] -eq 'c-save' -and $full.picked['document_switched_by'] -eq 'c-save') 'the evidence records which step switched to the copy'
+# A save refused before Save As: the probe naming the copy is refused (document_conflict), nothing switches, the
+# destructive group runs on the source.
+$noCopy = (Invoke-FakeSequence @{ FailCommands = @('document.save_copy') } -All).Result
+Assert (!(Get-StepField $noCopy 'c-save' 'passed') -and @('c-save-again', 'c-levels-source' | Where-Object { $null -ne (Get-StepField $noCopy $_ 'request') }).Count -eq 0) "a failed save sends no step that needs the copy: $(Get-FailedSteps $noCopy)"
+Assert ((Get-RequestValue $noCopy 'c-levels-copy' 'document.path') -eq $copyPath -and !(Get-StepField $noCopy 'c-levels-copy' 'passed') -and [string](Get-CataloguePath (Get-StepField $noCopy 'c-levels-copy' 'response') 'code') -eq 'document_conflict' -and $null -eq $noCopy.picked['document_path']) "the probe names the copy and is refused when Revit never saved it: $(Get-StepField $noCopy 'c-levels-copy' 'reason')"
+Assert ((Get-GroupField $noCopy 'modificar' 'failed') -eq 0 -and (Get-RequestValue $noCopy 'm-delete' 'document.path') -eq $documentPath) 'without a copy the destructive group still runs on the source'
+# A save that fails after Save As already re-pointed the document (CheckWritten or readback failure): the probe
+# naming the copy succeeds, the run switches to the copy and records it, the destructive group runs on the copy.
+$afterSave = (Invoke-FakeSequence @{ SaveCopyFailsAfterSave = $true } -All).Result
+Assert (!(Get-StepField $afterSave 'c-save' 'passed') -and [string](Get-CataloguePath (Get-StepField $afterSave 'c-save' 'response') 'code') -eq 'transaction_failed' -and $null -eq (Get-StepField $afterSave 'c-save-again' 'request')) "a save failing after Save As fails c-save: $(Get-StepField $afterSave 'c-save' 'reason')"
+Assert ((Get-StepField $afterSave 'c-levels-copy' 'passed') -and $afterSave.picked['document_path'] -eq $copyPath -and $afterSave.picked['document_switched_by'] -eq 'c-levels-copy' -and @(Get-StepField $afterSave 'c-levels-copy' 'comparisons' | Where-Object { $null -ne $_ -and $_.check -like '*cambia a la copia*' -and $_.ok }).Count -eq 1) "the probe switches the run to the copy and records it: $(Get-FailedSteps $afterSave)"
+Assert ((Get-StepField $afterSave 'c-levels-source' 'passed') -and (Get-GroupField $afterSave 'modificar' 'failed') -eq 0 -and (Get-RequestValue $afterSave 'm-delete' 'document.path') -eq $copyPath -and $afterSave.overall.failed -eq 2) "after the switch the destructive group runs on the copy: $(Get-FailedSteps $afterSave)"
+# Behind the real CLI a client-side case must never reach the pipe: the pipe fake answers it with its own code.
+$leakFake = New-FakeRevitState $documentUid
+$leakFake.BehindCli = $true
+$leakLine = New-CatalogueEnvelope 'leak-1' $documentPath $documentUid 'element.move' ([ordered]@{ element_uids = @('0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-00001001'); vector_mm = @(0, 0, 0) })
+$leak = Invoke-FakeRevitCommand $leakFake $leakLine | ConvertFrom-Json
+Assert ($leak.code -eq 'fake_client_side_leak' -and [string]$leak.detail -like '*length_invalid*') "a client-side case that reaches the pipe answers fake_client_side_leak: $($leak.code)"
+$wrongSide = (Invoke-FakeSequence @{ RoofExtrusionMirrored = $true } -All).Result
+Assert ((Get-GroupField $wrongSide 'extrusion' 'failed') -eq 3 -and $wrongSide.overall.failed -eq 3 -and @('x-barrel', 'x-barrel-reversed', 'x-barrel-diagonal' | Where-Object { [string](Get-StepField $wrongSide $_ 'reason') -notlike '*caja*' }).Count -eq 0) "a roof extruded to the wrong side must fail the three barrels on the box: $(Get-FailedSteps $wrongSide)"
+$copyFails = (Invoke-FakeSequence @{ FailCommands = @('element.copy') } -All).Result
+Assert (!(Get-StepField $copyFails 't-copy' 'passed') -and $null -eq (Get-StepField $copyFails 't-rotate' 'request') -and (Get-StepField $copyFails 't-mirror' 'passed') -and (Get-GroupField $copyFails 'transformar' 'failed') -eq 2) "a failed copy leaves its rotation unsent and the mirror running: $(Get-FailedSteps $copyFails)"
+$shapeOff = (Invoke-FakeSequence @{ DirectShapeBoxOff = $true } -All).Result
+Assert ((Get-GroupField $shapeOff 'formas' 'failed') -eq 2 -and $shapeOff.overall.failed -eq 2) "a DirectShape box off by 5 mm must fail both shapes: $(Get-FailedSteps $shapeOff)"
+$rotateOff = (Invoke-FakeSequence @{ RotateWrongWay = $true } -All).Result
+Assert (!(Get-StepField $rotateOff 't-rotate' 'passed') -and $rotateOff.overall.failed -eq 1) "a clockwise turn must fail t-rotate: $(Get-FailedSteps $rotateOff)"
+
+} finally {
+    $boundary0 = [IO.Path]::GetFullPath((Join-Path $root '.bim/native-runs')) + [IO.Path]::DirectorySeparatorChar
+    if ($inProcessDirectory.StartsWith($boundary0, [StringComparison]::Ordinal) -and [IO.Path]::GetFileName($inProcessDirectory).StartsWith('catalogue-test-', [StringComparison]::Ordinal)) { Remove-Item -LiteralPath $inProcessDirectory -Recurse -Force -ErrorAction SilentlyContinue }
+}
+if ($failures.Count -and $env:GITHUB_ACTIONS) { '::error title=catalogue session::' + ((@($failures | Select-Object -First 12) | ForEach-Object { $_ -replace '[\r\n]+', ' ' }) -join '%0A') }
 if ($failures.Count) { throw ("catalogue session unit checks failed:`n" + ($failures -join "`n")) }
-'PASS catalogue session: envelopes, picking, 17-step v1 sequence, one-run groups (all pass, failing group, lost pipe) and fault detection (in-process fake executor)'
+'PASS catalogue session: envelopes, picking, 17-step v1 sequence, one-run groups (all pass, failing group, lost pipe), P1-11 groups (direct shapes, extrusion roofs, move/copy/rotate/mirror, save_copy) against the Core contracts and fault detection (in-process fake executor)'
 
 # --- Real CLI and a fake add-in pipe ---
 if (!$Dotnet -and !$CliDll) { 'NOTE real CLI pass skipped: run with -Dotnet and -CliDll'; return }
@@ -260,8 +461,15 @@ try {
     Assert ($real.counts.passed -eq 17 -and $real.all_passed) "real CLI one-run: $(Format-CatalogueSummary $real) $notes"
     $received = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue)
     $invalid = ($real.steps | Where-Object { $_.key -eq 'invalid-arc' }).operation_id
-    Assert ($received.Count -eq $real.overall.total - 1) "pipe must receive every step but the invalid arc ($($real.overall.total - 1)), got $($received.Count)"
+    # The client-side refusals (collinear arc, crossed outline, closed roof profile, zero move, full turn, save_copy
+    # outside the copies root and over an existing file) are refused by the real CLI before the pipe.
+    $clientSteps = @($real.steps | Where-Object { $_.key -in $clientKeys })
+    Assert ($clientSteps.Count -eq $clientKeys.Count -and $received.Count -eq $real.overall.total - $clientSteps.Count) "pipe must receive every step but the $($clientSteps.Count) client-side refusals ($($real.overall.total - $clientSteps.Count)), got $($received.Count)"
     Assert ($received -notcontains $invalid) 'the collinear arc reached the pipe'
+    $forwardedIds = @($real.steps | Where-Object { $_.key -notin $clientKeys } | ForEach-Object { $_.operation_id })
+    foreach ($step in $clientSteps) { if ($forwardedIds -notcontains $step.operation_id) { Assert ($received -notcontains $step.operation_id) "client-side refusal $($step.key) reached the pipe" } }
+    $realCopy = [IO.Path]::Combine([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($document)), "BIM-Agentic-Test-c04-$stamp-r7-copia.rvt")
+    Assert ((Test-Path -LiteralPath $realCopy -PathType Leaf) -and [string](Get-CataloguePath (Get-StepField $real 'c-save-again' 'response') 'detail') -like 'target_exists:*' -and [string](Get-CataloguePath (Get-StepField $real 'c-outside' 'response') 'detail') -like 'outside_copies_root:*') 'the real CLI refuses the repeat (target_exists) and the outside target (outside_copies_root)'
     Assert (@($received | Where-Object { $_ -eq 'journal.read' }).Count -eq 5) 'the five journal reads reached the pipe as wire lines'
     Assert (@(Get-ChildItem -LiteralPath $requests -Filter *.json).Count -eq $real.overall.total) 'one request file per step'
     Assert ((Format-CatalogueSummary $real) -like 'Catálogo: 17/17 pasos OK; grupos: *; resultado: TODO OK') "real CLI summary: $(Format-CatalogueSummary $real)"
@@ -280,5 +488,6 @@ try {
     $target = [IO.Path]::GetFullPath($runDirectory)
     if ($target.StartsWith($boundary, [StringComparison]::Ordinal) -and [IO.Path]::GetFileName($target).StartsWith('catalogue-test-', [StringComparison]::Ordinal)) { Remove-Item -LiteralPath $target -Recurse -Force }
 }
+if ($failures.Count -and $env:GITHUB_ACTIONS) { '::error title=catalogue session CLI::' + ((@($failures | Select-Object -First 12) | ForEach-Object { $_ -replace '[\r\n]+', ' ' }) -join '%0A') }
 if ($failures.Count) { throw ("catalogue session CLI checks failed:`n" + ($failures -join "`n")) }
-'PASS catalogue session through the real CLI revit-command verb and a fake add-in pipe: v1 17/17 and every one-run group passed, invalid arc not forwarded, dead pipe stops the run'
+'PASS catalogue session through the real CLI revit-command verb and a fake add-in pipe: v1 17/17 and every one-run group passed (P1-11 included), client-side refusals not forwarded, dead pipe stops the run'
