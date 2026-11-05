@@ -17,6 +17,8 @@ namespace Bim.Mcp;
 // - missing or wrongly typed arguments are rejected with -32602 instead of the CLI usage/null failures.
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
 // mirror_drift (P2-08) is read-only: its text is the file the CLI mirror-drift verb writes (MirrorDriftTool.cs).
+// skills_lock_verify (P5-09) is read-only: its text is the CLI skills-lock verify stdout (SkillLockTool.cs); pin and
+// update write the lock and stay CLI-only.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -61,6 +63,9 @@ public sealed class McpServer
             [new ParameterSpec("store_path", "string", "Directory of an initialized ProjectStore (read only)"), new ParameterSpec("snapshot", "object", "query.snapshot readback (snapshot_version 1) or its catalogue response"),
              new ParameterSpec("mirror", "object", "document {path, unique_id}, core_project_id, core_revision, map {BIM-IR id: UniqueId}, optional levels, wall_types, door_symbol, window_symbol, journal, options")],
             DriftTool),
+        new ToolSpec("skills_lock_verify", "Read-only verify of a project skill lock (P5-08 skills.lock.json) against a skills directory: reports skill_lock_drift / skill_lock_missing per pack; never pins, updates or writes (CLI: skills-lock verify skills-directory lock.json).",
+            [new ParameterSpec("skills_path", "string", "Skills directory (skills/<id>/skill.json), read only"), new ParameterSpec("lock_path", "string", "Project lock file (skills.lock.json), read only")],
+            LockVerifyTool),
     ];
 
     static readonly JsonElement EmptyArguments = CreateEmptyArguments();
@@ -425,6 +430,13 @@ public sealed class McpServer
     static (string Text, bool IsError) DriftTool(JsonElement arguments)
     {
         var outcome = MirrorDriftTool.Run(arguments.GetProperty("store_path").GetString() ?? "", arguments.GetProperty("snapshot").GetRawText(), arguments.GetProperty("mirror").GetRawText());
+        return (outcome.Text, !outcome.Succeeded);
+    }
+
+    // P5-09: SkillLockTool.Verify, the same engine as the CLI skills-lock verify verb; the text is its stdout line.
+    static (string Text, bool IsError) LockVerifyTool(JsonElement arguments)
+    {
+        var outcome = SkillLockTool.Verify(arguments.GetProperty("skills_path").GetString() ?? "", arguments.GetProperty("lock_path").GetString() ?? "");
         return (outcome.Text, !outcome.Succeeded);
     }
 
