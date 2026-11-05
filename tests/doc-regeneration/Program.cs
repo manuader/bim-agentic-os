@@ -472,6 +472,17 @@ catch (Exception error)
     failed++;
 }
 
+// ---- P4-06 default dimensions and window tags (tests/doc-regeneration/DefaultsWindows.cs) ----
+try
+{
+    DefaultsWindowsTests.Run(Check);
+}
+catch (Exception error)
+{
+    Console.WriteLine("::error::doc-regeneration FAIL unexpected " + error.GetType().Name + " | " + error.Message);
+    failed++;
+}
+
 // ---- P4-05 stale documentation replacement plan (tests/doc-regeneration/Replace.cs) ----
 try
 {
