@@ -6,8 +6,12 @@ a deterministic JSON report (bim.ifc-validate/1) with typed issues. See docs/ifc
 
   python ifc_validate.py INPUT_IFC [--output REPORT_JSON]
 
-Exit codes: 0 valid (no issue at all), 1 invalid (at least one issue, including an unparseable STEP file),
-2 usage error, unreadable input, unwritable/existing output or an internal validator failure.
+Exit codes: 0 valid (no issue at all), 1 invalid (at least one issue, including an empty or unparseable STEP file),
+2 usage error, unreadable or oversized input, unwritable/existing output or a validator/environment failure.
+
+The input is read once (at most MAX_BYTES + 1 bytes) into a private temporary copy with an ASCII name; that copy is
+hashed and validated, so the reported hash is the validated content and a file changing underneath cannot mix
+versions. Messages quote model content (names, GlobalIds): the report is QA evidence, not publish-safe.
 """
 import argparse
 import hashlib
@@ -15,7 +19,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
+import tempfile
 
 import ifcopenshell
 import ifcopenshell.validate
@@ -24,23 +30,27 @@ FORMAT = 'bim.ifc-validate/1'
 MAX_BYTES = 256 * 1024 * 1024
 MAX_MESSAGE = 4000
 ISSUE_KINDS = (
-    'syntax',               # the STEP file cannot be parsed into an IFC model
+    'syntax',               # empty file or STEP the parser cannot build (unknown entity, dangling reference, arity)
     'attribute_missing',    # a required (non-OPTIONAL) attribute is unset
     'attribute_invalid',    # wrong type, entity, enumeration or aggregate size for an attribute
     'inverse_cardinality',  # an INVERSE attribute outside its declared bounds
     'unique_rule',          # an EXPRESS UNIQUE rule (e.g. IfcRoot.UR1 GlobalId)
     'type_rule',            # a WHERE rule of a defined (simple) type, e.g. IfcPositiveLengthMeasure.WR1
     'where_rule',           # a WHERE rule of an entity
-    'global_rule',          # an EXPRESS global RULE
-    'header',               # STEP header issues reported by the validator
+    'global_rule',          # an EXPRESS global RULE, e.g. IfcSingleProjectInstance
+    'header',               # STEP header issues such as an unsupported schema
     'other',                # any other validator statement (validator_type keeps the raw type)
 )
 _RULE_TYPES = {'parse': 'syntax', 'entity_rule': 'where_rule', 'simpletype_rule': 'type_rule', 'global_rule': 'global_rule', 'header': 'header'}
-_UNIQUE = re.compile(r'Rule\s+([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\s*:')
+_LEVELS = {'error': 'error', 'critical': 'error', 'exception': 'error', 'warning': 'warning', 'info': 'warning', 'debug': 'warning'}
+# The validator writes 'Rule Entity.Name:' on a line of its own; model text (names) is quoted inside indented
+# instance lines and cannot start a line, so anchoring at line start and end keeps it from posing as a rule.
+_UNIQUE = re.compile(r'^Rule\s+([A-Za-z0-9_]+\.[A-Za-z0-9_]+):\s*$', re.M)
 _STEP_LINE = re.compile(r'\s*#(\d+)\s*=\s*([A-Za-z0-9_]+)')
 # Parser statements logged while the validator reads the file itself (validate(path)); an opened model silently
 # drops these instances, so validating an already opened model would miss them.
-_PARSE = ('Entity with name', 'Instance reference', 'Expected ', 'Unable to parse', 'Syntax error', 'Unexpected token')
+_PARSE = ('Entity with name ', 'Instance reference ', 'Unable to parse', 'Syntax error', 'Unexpected token')
+_ARITY = re.compile(r'^Expected \d+ attribute values, found \d+')
 
 
 class ValidateError(Exception):
@@ -51,43 +61,40 @@ class ValidateError(Exception):
 
 
 def _text(value):
-    if value is None:
-        return None
-    return str(value)
+    return None if value is None else str(value)
 
 
 def _kind(statement):
     kind_type = statement.get('type')
     message = statement.get('message') or ''
-    if kind_type == 'schema':
-        if message.startswith('Unsupported schema'):
-            return 'header'
-        if not isinstance(statement.get('instance'), ifcopenshell.entity_instance) and message.startswith(_PARSE):
-            return 'syntax'
-        if message.startswith('Expected ') and ' attribute values, found ' in message:
-            return 'syntax'
-        if message.startswith('Attribute not optional'):
-            return 'attribute_missing'
-        if 'With inverse' in message:
-            return 'inverse_cardinality'
-        if _UNIQUE.search(message) and 'unique' in message:
-            return 'unique_rule'
-        if 'With attribute' in message:
-            return 'attribute_invalid'
-        return 'other'
-    return _RULE_TYPES.get(kind_type, 'other')
+    if kind_type != 'schema':
+        return _RULE_TYPES.get(kind_type, 'other')
+    if message.startswith('Unsupported schema'):
+        return 'header'
+    if _ARITY.match(message):
+        return 'syntax'
+    if message.startswith(_PARSE) and not isinstance(statement.get('instance'), ifcopenshell.entity_instance):
+        return 'syntax'
+    if message.startswith('Attribute not optional'):
+        return 'attribute_missing'
+    if message.startswith('With inverse:'):
+        return 'inverse_cardinality'
+    if message.startswith('With attribute:'):
+        return 'attribute_invalid'
+    if message.startswith('On instance:') and _UNIQUE.search(message):
+        return 'unique_rule'
+    return 'other'
 
 
-def _issue(statement):
+def _issue(statement, scrub):
     kind = _kind(statement)
-    message = (statement.get('message') or '').strip()
+    message = scrub((statement.get('message') or '').strip())[:MAX_MESSAGE]
     attribute = _text(statement.get('attribute'))
     rule = None
     if kind in ('where_rule', 'type_rule', 'global_rule'):
         rule, attribute = attribute, None
     elif kind == 'unique_rule':
-        match = _UNIQUE.search(message)
-        rule = match.group(1) if match else None
+        rule = _UNIQUE.search(message).group(1) if _UNIQUE.search(message) else None
     instance = statement.get('instance')
     entity = step_id = global_id = None
     if isinstance(instance, ifcopenshell.entity_instance):
@@ -102,17 +109,16 @@ def _issue(statement):
         match = _STEP_LINE.match(instance)
         if match:
             step_id = int(match.group(1))
-    level = statement.get('level')
     return {
         'kind': kind,
-        'level': 'warning' if level == 'warning' else 'error',
+        'level': _LEVELS.get(str(statement.get('level')).lower(), 'error'),
         'validator_type': _text(statement.get('type')),
         'rule': rule,
         'attribute': attribute,
         'entity': entity,
         'step_id': step_id,
         'global_id': global_id,
-        'message': message[:MAX_MESSAGE],
+        'message': message,
     }
 
 
@@ -141,57 +147,108 @@ def _error(name, code, detail):
     return {'format': FORMAT, 'status': 'error', 'file': {'name': name}, 'error': {'code': code, 'detail': detail}}
 
 
+def _scrubber(name, *paths):
+    """Replace every spelling of the given local paths (and their directories) by the input basename or '<tmp>'."""
+    pairs = []
+    for path, replacement in paths:
+        for spelling in {str(path), str(Path(path).resolve()), os.path.abspath(str(path))}:
+            for variant in {spelling, spelling.replace('\\', '/'), spelling.replace('/', '\\')}:
+                # Only absolute, non-root spellings: a relative '.' or a bare '/' would mangle every message.
+                if len(variant) > 3 and (os.path.isabs(variant) or os.path.isabs(variant.replace('\\', '/'))):
+                    pairs.append((variant, replacement))
+    pairs.sort(key=lambda p: -len(p[0]))
+
+    def scrub(text):
+        for old, new in pairs:
+            if old:
+                text = text.replace(old, new)
+        return text
+    return scrub
+
+
+def _read_capped(path):
+    if not path.is_file():
+        raise ValidateError('ifc_unreadable', 'input is not a regular file')
+    try:
+        with path.open('rb') as handle:
+            data = handle.read(MAX_BYTES + 1)
+    except OSError as error:
+        raise ValidateError('ifc_unreadable', type(error).__name__) from None
+    if len(data) > MAX_BYTES:
+        raise ValidateError('ifc_too_large', f'more than {MAX_BYTES} bytes')
+    return data
+
+
 def validate_file(path):
     """Validate one IFC file. Returns the report; never raises for bad input (status 'error' instead)."""
     path = Path(path)
     name = path.name
     try:
-        if not path.is_file():
-            raise ValidateError('ifc_unreadable', 'input is not a regular file')
-        size = path.stat().st_size
-        if size > MAX_BYTES:
-            raise ValidateError('ifc_too_large', f'{size} bytes exceeds the {MAX_BYTES} byte cap')
-        data = path.read_bytes()
+        data = _read_capped(path)
     except ValidateError as error:
         return _error(name, error.code, error.detail)
-    except OSError as error:
-        return _error(name, 'ifc_unreadable', type(error).__name__)
     digest = hashlib.sha256(data).hexdigest()
+    if not data:
+        empty = {'level': 'error', 'type': 'parse', 'message': 'empty file: no STEP physical file content'}
+        return _report(name, digest, 0, None, [_issue(empty, str)])
+    private = tempfile.mkdtemp(prefix='bim-ifc-validate-')
+    copy = Path(private) / 'input.ifc'
+    scrub = _scrubber(name, (copy, name), (private, '<tmp>'), (path, name), (path.parent, '<dir>'))
     try:
-        schema = ifcopenshell.open(str(path)).schema
-    except Exception:
-        schema = None
-    logger = ifcopenshell.validate.json_logger()
-    try:
-        # The path form makes the validator parse the file itself and log parser errors (unknown entities,
-        # dangling references, wrong attribute counts) before the schema and EXPRESS rule checks.
-        ifcopenshell.validate.validate(str(path), logger, express_rules=True)
-    except (ifcopenshell.Error, ifcopenshell.SchemaError, OSError) as error:
-        detail = str(error).replace(str(path.resolve()), name).replace(str(path), name)
-        logger.statements.append({'level': 'error', 'type': 'parse', 'message': f'{type(error).__name__}: {detail}'})
-    except Exception as error:
-        return _error(name, 'validator_failed', f'{type(error).__name__}: {error}'[:MAX_MESSAGE])
-    issues = [_issue(s) for s in logger.statements]
-    for issue in issues:  # The report names the file by basename only, never a local path.
-        issue['message'] = issue['message'].replace(str(path.resolve()), name).replace(str(path), name)
-    return _report(name, digest, len(data), schema, issues)
+        try:
+            with copy.open('xb') as handle:
+                handle.write(data)
+        except OSError as error:
+            return _error(name, 'validator_failed', f'private copy: {type(error).__name__}')
+        try:
+            schema = ifcopenshell.open(str(copy)).schema
+        except Exception:
+            schema = None
+        logger = ifcopenshell.validate.json_logger()
+        try:
+            # The path form makes the validator parse the file itself and log parser errors (unknown entities,
+            # dangling references, wrong attribute counts) before the schema and EXPRESS rule checks.
+            ifcopenshell.validate.validate(str(copy), logger, express_rules=True)
+        except (ifcopenshell.SchemaError, ifcopenshell.Error) as error:  # Content the parser refuses.
+            logger.statements.append({'level': 'error', 'type': 'parse', 'message': f'{type(error).__name__}: {error}'})
+        except Exception as error:  # Environment or validator failure: never reported as an invalid model.
+            return _error(name, 'validator_failed', scrub(f'{type(error).__name__}: {error}')[:MAX_MESSAGE])
+        return _report(name, digest, len(data), schema, [_issue(s, scrub) for s in logger.statements])
+    finally:
+        shutil.rmtree(private, ignore_errors=True)
 
 
 def _write_exclusive(target, text):
+    """Publish the report atomically: write a private pending file, then hard-link it (never replacing)."""
     target = Path(target)
+    if target.exists() or target.is_symlink():
+        raise ValidateError('output_exists', 'the report file already exists; it was not replaced')
     try:
-        with target.open('x', encoding='utf-8', newline='\n') as handle:
+        handle = tempfile.NamedTemporaryFile('w', encoding='utf-8', newline='\n', dir=str(target.parent or Path('.')),
+                                             prefix='.' + target.name + '.', suffix='.pending', delete=False)
+    except OSError as error:
+        raise ValidateError('output_unwritable', type(error).__name__) from None
+    pending = Path(handle.name)
+    try:
+        with handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-    except FileExistsError:
-        raise ValidateError('output_exists', 'the report file already exists; it was not replaced') from None
-    except OSError as error:
-        raise ValidateError('output_unwritable', type(error).__name__) from None
+        try:
+            os.link(pending, target)
+        except FileExistsError:
+            raise ValidateError('output_exists', 'the report file already exists; it was not replaced') from None
+        except OSError as error:
+            raise ValidateError('output_unwritable', type(error).__name__) from None
+    finally:
+        try:
+            pending.unlink()
+        except OSError:
+            pass
 
 
 def dumps(report):
-    return json.dumps(report, indent=2, sort_keys=False, allow_nan=False) + '\n'
+    return json.dumps(report, indent=2, allow_nan=False) + '\n'
 
 
 class _Parser(argparse.ArgumentParser):
@@ -205,16 +262,17 @@ def main(argv):
     parser.add_argument('input')
     parser.add_argument('--output')
     args = parser.parse_args(argv)
+    name = Path(args.input).name
     try:
         report = validate_file(args.input)
-    except Exception as error:  # One JSON line, never a traceback.
-        report = _error(Path(args.input).name, 'internal_error', type(error).__name__)
+    except Exception as error:  # One JSON document, never a traceback or a local path.
+        report = _error(name, 'internal_error', type(error).__name__)
     text = dumps(report)
     if args.output is not None:
         try:
             _write_exclusive(args.output, text)
         except ValidateError as error:
-            print(json.dumps(_error(Path(args.input).name, error.code, error.detail)))
+            print(json.dumps(_error(name, error.code, error.detail)))
             return 2
     print(text, end='')
     return {'valid': 0, 'invalid': 1}.get(report['status'], 2)
