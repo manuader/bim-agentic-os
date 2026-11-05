@@ -439,6 +439,174 @@ try {
     var cadSource=File.ReadAllText(Path.Combine(root,"interfaces","cli","CadCommand.cs"));
     Check(cadSource.Contains("BoundedInput.ReadBytes",StringComparison.Ordinal) && !cadSource.Contains("File.ReadAll",StringComparison.Ordinal) && !cadSource.Contains("ReadFile(",StringComparison.Ordinal) && !cadSource.Contains("File.OpenRead",StringComparison.Ordinal),"cad verbs read their input only through BoundedInput");
 
+    // ---- P2-08 mirror-drift: a query.snapshot file and the Core store to the P2-04 drift report plus the P2-07 resolution ----
+    // Oracle: the report and resolution subtrees are byte-equal to MirrorDrift.Compare / MirrorDriftResolve.Plan called
+    // directly on the same inputs; nothing is applied (the store is byte-identical afterwards) and the output is never
+    // overwritten. Fixture: tests/mirror-journal/fixtures/drift (committed model at revision 3 plus its query.snapshot).
+    {
+        var driftDir=Path.Combine(root,"tests","mirror-journal","fixtures","drift");
+        var committedText=File.ReadAllText(Path.Combine(driftDir,"committed.json"));
+        var snapshotText=File.ReadAllText(Path.Combine(driftDir,"snapshot.json"));
+        var committed=MirrorCommittedModel.Parse(committedText);
+        const string driftDoc="60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b";
+        const string otherDoc="11111111-2222-3333-4444-555555555555-00000001";
+        const string movedWall="db98eeb5-3a66-7972-29a5-494ec813984a";
+        const string deletedDoor="5f83f664-4e98-113a-3e1b-38f4a4fe7143";
+        var driftStore=Path.Combine(work,"drift-store");
+        new ProjectStore(driftStore).Initialize(committed.Project);
+        var storeFile=Path.Combine(driftStore,"project.json");
+        var storeBytes=File.ReadAllBytes(storeFile);
+        string[] StoreListing()=>Directory.GetFileSystemEntries(driftStore).Select(entry=>Path.GetFileName(entry)).Order(StringComparer.Ordinal).ToArray();
+        var storeListing=StoreListing();
+        // Drifted snapshot: the second wall moved 50 mm in x, the door deleted in Revit.
+        var drifted=System.Text.Json.Nodes.JsonNode.Parse(snapshotText)!.AsObject();
+        foreach(var element in drifted["elements"]!.AsArray().ToArray())
+            if((string)element!["Id"]!==movedWall) { element!["GeometryMetres"]![0]=5.05; element!["GeometryMetres"]![2]=5.05; }
+        foreach(var element in drifted["elements"]!.AsArray().ToArray())
+            if((string)element!["Id"]!==deletedDoor) drifted["elements"]!.AsArray().Remove(element);
+        foreach(var source in drifted["sources"]!.AsArray().ToArray())
+            if((string)source!["id"]!==deletedDoor) drifted["sources"]!.AsArray().Remove(source);
+        var driftedText=drifted.ToJsonString();
+        var snapshotPath=Input("drift-snapshot.json",driftedText);
+        System.Text.Json.Nodes.JsonObject Mirror(string document=driftDoc,int revision=3,string? projectId=null) {
+            var map=System.Text.Json.Nodes.JsonNode.Parse(committedText)!["map"]!.DeepClone();
+            return new System.Text.Json.Nodes.JsonObject {
+                ["document"]=new System.Text.Json.Nodes.JsonObject{["path"]=@"C:\Repo\.bim\native-runs\p2-08\copy.rvt",["unique_id"]=document},
+                ["core_project_id"]=projectId ?? committed.Project.Id.ToString("D"),
+                ["core_revision"]=revision,
+                ["map"]=map,
+                ["levels"]=new System.Text.Json.Nodes.JsonObject(),
+                ["wall_types"]=new System.Text.Json.Nodes.JsonArray(new System.Text.Json.Nodes.JsonObject{["thickness_metres"]=0.2,["type"]="Generic - 200mm"}),
+                ["door_symbol"]="Single-Flush: 0915 x 2134mm",
+                ["window_symbol"]="Fixed: 1000 x 1200mm",
+            };
+        }
+        var mirrorPath=Input("drift-mirror.json",Mirror().ToJsonString());
+        var driftOut=Path.Combine(work,"drift-out"); Directory.CreateDirectory(driftOut);
+        var driftN=0;
+        string DriftOut(string ext=".json")=>Path.Combine(driftOut,"drift-"+(++driftN).ToString(System.Globalization.CultureInfo.InvariantCulture)+ext);
+        string DR((int Exit,string Out,string Err) r)=>"exit "+r.Exit+" "+r.Out+(r.Err.Length>0?" stderr "+r.Err:"");
+        JsonElement? DEnvelope(string output) { try { return JsonDocument.Parse(output).RootElement; } catch(JsonException) { return null; } }
+        bool Refused((int Exit,string Out,string Err) r,string code)=>r.Exit==1 && DEnvelope(r.Out) is {} e && e.GetProperty("status").GetString()=="failed" && e.GetProperty("code").GetString()==code;
+        void ExpectDrift(string name,string code,params string[] arguments) {
+            var r=Cli(arguments);
+            Check(Refused(r,code),name,DR(r));
+        }
+
+        // Expected, straight from Core on the same inputs.
+        var bindings=new RevitBindings(new RevitDocumentRef(@"C:\Repo\.bim\native-runs\p2-08\copy.rvt",driftDoc),new Dictionary<Guid,string>(),new[]{new RevitWallTypeBinding(0.2,"Generic - 200mm")},"Single-Flush: 0915 x 2134mm","Fixed: 1000 x 1200mm");
+        var parsedSnapshot=MirrorDrift.ParseSnapshot(driftedText);
+        var expectedReport=MirrorDrift.Compare(parsedSnapshot,committed,(IReadOnlyList<MirrorJournalEntry>?)null,new MirrorDriftOptions());
+        var expectedResolution=MirrorDriftResolve.Plan(expectedReport,parsedSnapshot,committed,bindings);
+        Check(expectedReport.Summary.Drift==2 && expectedResolution.Proposals.Count==2 && expectedResolution.RestorePlan.Steps.Count>0,"mirror-drift fixture has a changed wall and a missing door",expectedReport.ToJson());
+
+        var first=DriftOut();
+        var ok=Cli("mirror-drift",driftStore,snapshotPath,mirrorPath,first);
+        var okEnv=DEnvelope(ok.Out);
+        Check(ok.Exit==0 && okEnv is {} s && s.GetProperty("status").GetString()=="succeeded" && s.GetProperty("output").GetString()==first && s.GetProperty("applied").GetBoolean()==false
+            && s.GetProperty("drift").GetInt32()==2 && s.GetProperty("proposals").GetInt32()==2 && File.Exists(first)
+            && s.GetProperty("bytes").GetInt64()==new FileInfo(first).Length && s.GetProperty("sha256").GetString()==Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(first))),
+            "mirror-drift writes the report and resolution to a new file and prints a succeeded summary",DR(ok));
+        if(File.Exists(first)) {
+            var written=File.ReadAllBytes(first);
+            Check(written.Length>0 && written[0]==(byte)'{' && !written.AsSpan().StartsWith(Encoding.UTF8.GetPreamble()),"mirror-drift output is UTF-8 JSON without a BOM");
+            using var doc=JsonDocument.Parse(written);
+            var top=doc.RootElement;
+            Check(top.GetProperty("mirror_drift_version").GetInt32()==1 && top.GetProperty("applied").GetBoolean()==false && top.GetProperty("requires_approval").GetBoolean()==true,
+                "mirror-drift document is version 1, never applied, requires approval",Encoding.UTF8.GetString(written));
+            Check(top.GetProperty("core_store").GetProperty("project_id").GetString()==committed.Project.Id.ToString("D") && top.GetProperty("core_store").GetProperty("revision").GetInt32()==3
+                && top.GetProperty("core_store").GetProperty("hash").GetString()==Compiler.Hash(committed.Project),"mirror-drift document names the Core store state it was computed against");
+            Check(top.GetProperty("report").GetRawText()==expectedReport.ToJson(),"mirror-drift report is byte-equal to MirrorDrift.Compare",top.GetProperty("report").GetRawText());
+            Check(top.GetProperty("resolution").GetRawText()==expectedResolution.ToJson(),"mirror-drift resolution is byte-equal to MirrorDriftResolve.Plan",top.GetProperty("resolution").GetRawText());
+            Check(top.GetProperty("resolution").GetProperty("applied").GetBoolean()==false && top.GetProperty("resolution").GetProperty("restore_plan").GetProperty("steps").GetArrayLength()==expectedResolution.RestorePlan.Steps.Count,
+                "mirror-drift resolution carries the restore plan, not applied");
+            var again=DriftOut();
+            var rerun=Cli("mirror-drift",driftStore,snapshotPath,mirrorPath,again);
+            Check(rerun.Exit==0 && File.Exists(again) && File.ReadAllBytes(again).SequenceEqual(written),"mirror-drift rerun is byte-identical",DR(rerun));
+        }
+        Check(File.ReadAllBytes(storeFile).SequenceEqual(storeBytes) && StoreListing().SequenceEqual(storeListing),"mirror-drift applies nothing: the Core store is byte-identical and gains no file");
+
+        // A catalogue query.snapshot response ({"status":"succeeded",...,"readback":<snapshot>}) is unwrapped.
+        var wrapped=new RevitCommandResponse(RevitCommandResponse.Succeeded,RevitCommandCodes.Ok,null,null,[],[],[],driftedText,new RevitCommandReceipt("op-snap-1","query.snapshot",driftDoc,new string('a',64),false),[]).ToJson();
+        var wrappedOut=DriftOut();
+        var wrappedRun=Cli("mirror-drift",driftStore,Input("drift-snapshot-response.json",wrapped),mirrorPath,wrappedOut);
+        Check(wrappedRun.Exit==0 && File.Exists(first) && File.Exists(wrappedOut) && File.ReadAllBytes(wrappedOut).SequenceEqual(File.ReadAllBytes(first)),"mirror-drift accepts a query.snapshot catalogue response and gives the same document",DR(wrappedRun));
+        var failedResponse=RevitCommandResponse.Failure("document_not_open").ToJson();
+        ExpectDrift("mirror-drift refuses a failed query.snapshot response","drift_snapshot_invalid","mirror-drift",driftStore,Input("drift-snapshot-failed.json",failedResponse),mirrorPath,DriftOut());
+
+        // A clean snapshot: no drift, no proposals, still a document.
+        var cleanOut=DriftOut();
+        var clean=Cli("mirror-drift",driftStore,Input("drift-clean.json",snapshotText),mirrorPath,cleanOut);
+        Check(clean.Exit==0 && DEnvelope(clean.Out) is {} c && c.GetProperty("drift").GetInt32()==0 && c.GetProperty("proposals").GetInt32()==0 && File.Exists(cleanOut),"mirror-drift on an unchanged snapshot reports no drift",DR(clean));
+
+        // Never overwrite; output checked before any input is read.
+        var existing=DriftOut(); File.WriteAllBytes(existing,[7,7]);
+        ExpectDrift("mirror-drift refuses an existing output","output_exists","mirror-drift",driftStore,snapshotPath,mirrorPath,existing);
+        Check(File.ReadAllBytes(existing).SequenceEqual(new byte[]{7,7}),"mirror-drift leaves an existing output untouched");
+        ExpectDrift("mirror-drift checks the output before reading the inputs","output_exists","mirror-drift",driftStore,Path.Combine(work,"missing-snapshot.json"),mirrorPath,existing);
+        ExpectDrift("mirror-drift refuses a non-.json output","output_extension_unsupported","mirror-drift",driftStore,snapshotPath,mirrorPath,DriftOut(".glb"));
+        ExpectDrift("mirror-drift refuses an output in a missing directory","output_directory_not_found","mirror-drift",driftStore,snapshotPath,mirrorPath,Path.Combine(work,"no-such-dir","d.json"));
+        var dirOutput=Path.Combine(driftOut,"dir.json"); Directory.CreateDirectory(dirOutput);
+        ExpectDrift("mirror-drift refuses an existing directory as output","output_exists","mirror-drift",driftStore,snapshotPath,mirrorPath,dirOutput);
+        if(linked) {
+            var driftLink=Path.Combine(driftOut,"dangling.json"); File.CreateSymbolicLink(driftLink,Path.Combine(driftOut,"nowhere.json"));
+            ExpectDrift("mirror-drift refuses a dangling symlink output","output_link_rejected","mirror-drift",driftStore,snapshotPath,mirrorPath,driftLink);
+            Check(!File.Exists(Path.Combine(driftOut,"nowhere.json")),"mirror-drift dangling symlink output target is not created");
+        }
+
+        // Typed refusals write nothing.
+        var staleOut=DriftOut();
+        ExpectDrift("mirror-drift refuses a mirror recorded at another Core revision (stale)","drift_resolve_report_stale","mirror-drift",driftStore,snapshotPath,Input("drift-mirror-stale.json",Mirror(revision:2).ToJsonString()),staleOut);
+        Check(!File.Exists(staleOut),"a stale refusal writes no output");
+        ExpectDrift("mirror-drift refuses a mirror for another Core project (stale)","drift_resolve_report_stale","mirror-drift",driftStore,snapshotPath,Input("drift-mirror-project.json",Mirror(projectId:Guid.Empty.ToString("D")).ToJsonString()),DriftOut());
+        var mismatchOut=DriftOut();
+        ExpectDrift("mirror-drift refuses a mirror for another document","drift_document_mismatch","mirror-drift",driftStore,snapshotPath,Input("drift-mirror-other.json",Mirror(document:otherDoc).ToJsonString()),mismatchOut);
+        Check(!File.Exists(mismatchOut),"a document mismatch writes no output");
+        var badPath=Mirror(); badPath["document"]!["path"]="relative.rvt";
+        ExpectDrift("mirror-drift refuses a relative document path","document_path_invalid","mirror-drift",driftStore,snapshotPath,Input("drift-mirror-path.json",badPath.ToJsonString()),DriftOut());
+        var unknownMember=Mirror(); unknownMember["apply"]=true;
+        ExpectDrift("mirror-drift refuses an unknown mirror member","mirror_drift_request_invalid","mirror-drift",driftStore,snapshotPath,Input("drift-mirror-unknown.json",unknownMember.ToJsonString()),DriftOut());
+        var noRevision=Mirror(); noRevision.Remove("core_revision");
+        ExpectDrift("mirror-drift refuses a mirror without core_revision","mirror_drift_request_invalid","mirror-drift",driftStore,snapshotPath,Input("drift-mirror-norev.json",noRevision.ToJsonString()),DriftOut());
+        ExpectDrift("mirror-drift refuses a mirror that is not JSON","mirror_drift_request_invalid","mirror-drift",driftStore,snapshotPath,Input("drift-mirror-garbage.json","{not json"),DriftOut());
+        var badOptions=Mirror(); badOptions["options"]=new System.Text.Json.Nodes.JsonObject{["max_findings"]=0};
+        ExpectDrift("mirror-drift refuses invalid options","drift_options_invalid","mirror-drift",driftStore,snapshotPath,Input("drift-mirror-options.json",badOptions.ToJsonString()),DriftOut());
+        var truncatedMirror=Mirror(); truncatedMirror["options"]=new System.Text.Json.Nodes.JsonObject{["max_findings"]=1};
+        ExpectDrift("mirror-drift refuses a truncated report","drift_resolve_report_truncated","mirror-drift",driftStore,snapshotPath,Input("drift-mirror-truncated.json",truncatedMirror.ToJsonString()),DriftOut());
+        ExpectDrift("mirror-drift refuses a snapshot that is not a query.snapshot","drift_snapshot_invalid","mirror-drift",driftStore,Input("drift-snapshot-bad.json","{\"snapshot_version\":2}"),mirrorPath,DriftOut());
+
+        // Bounded inputs: every file goes through BoundedInput, the store included.
+        var bigSnapshot=new byte[BoundedInput.MaxBytes+1]; Array.Fill(bigSnapshot,(byte)' ');
+        ExpectDrift("mirror-drift snapshot over 8 MiB is input_too_large","input_too_large","mirror-drift",driftStore,Bytes("drift-big.json",bigSnapshot),mirrorPath,DriftOut());
+        ExpectDrift("mirror-drift directory as mirror is input_not_regular_file","input_not_regular_file","mirror-drift",driftStore,snapshotPath,driftOut,DriftOut());
+        ExpectDrift("mirror-drift missing snapshot is input_not_found","input_not_found","mirror-drift",driftStore,Path.Combine(work,"missing-snapshot.json"),mirrorPath,DriftOut());
+        var emptyStore=Path.Combine(work,"drift-empty-store"); Directory.CreateDirectory(emptyStore);
+        ExpectDrift("mirror-drift on an uninitialized store is input_not_found","input_not_found","mirror-drift",emptyStore,snapshotPath,mirrorPath,DriftOut());
+        Check(Directory.GetFileSystemEntries(emptyStore).Length==0,"mirror-drift never initializes a store");
+        var garbageStore=Path.Combine(work,"drift-garbage-store"); Directory.CreateDirectory(garbageStore); File.WriteAllText(Path.Combine(garbageStore,"project.json"),"{\"Receipts\":{}}");
+        ExpectDrift("mirror-drift on a store without a project is drift_store_invalid","drift_store_invalid","mirror-drift",garbageStore,snapshotPath,mirrorPath,DriftOut());
+        var manyUnmapped=new System.Text.Json.Nodes.JsonArray();
+        for(var i=0;i<=MirrorSnapshotMapper.MaxElements;i++) manyUnmapped.Add(new System.Text.Json.Nodes.JsonObject{["category"]="floor",["unique_id"]="u"+i.ToString(System.Globalization.CultureInfo.InvariantCulture),["reason"]="no_bim_ir_kind",["detail"]=""});
+        var tooMany=System.Text.Json.Nodes.JsonNode.Parse(driftedText)!.AsObject(); tooMany["unmapped"]=manyUnmapped;
+        ExpectDrift("mirror-drift snapshot over the element bound is drift_input_too_large","drift_input_too_large","mirror-drift",driftStore,Input("drift-too-many.json",tooMany.ToJsonString()),mirrorPath,DriftOut());
+
+        // Usage and static guards.
+        var driftUsage=Cli("mirror-drift",driftStore,snapshotPath);
+        Check(driftUsage.Exit==1 && DEnvelope(driftUsage.Out) is {} u && u.GetProperty("status").GetString()=="failed" && u.GetProperty("code").GetString()!.StartsWith("usage: mirror-drift",StringComparison.Ordinal),"mirror-drift with missing arguments prints its usage",DR(driftUsage));
+        var anyUsage=Cli("no-such-verb");
+        Check(anyUsage.Out.Contains("mirror-drift store-directory snapshot.json mirror.json output.json",StringComparison.Ordinal),"default usage lists mirror-drift",anyUsage.Out);
+        var commandPath=Path.Combine(root,"interfaces","cli","MirrorDriftCommand.cs");
+        var toolPath=Path.Combine(root,"interfaces","mcp","MirrorDriftTool.cs");
+        Check(File.Exists(commandPath) && File.Exists(toolPath),"mirror-drift sources exist");
+        if(File.Exists(commandPath) && File.Exists(toolPath)) {
+            var driftSources=File.ReadAllText(commandPath)+File.ReadAllText(toolPath);
+            Check(driftSources.Contains("BoundedInput.ReadText",StringComparison.Ordinal) && !driftSources.Contains("File.ReadAll",StringComparison.Ordinal) && !driftSources.Contains("File.OpenRead",StringComparison.Ordinal) && !driftSources.Contains("ProjectStore(",StringComparison.Ordinal),
+                "mirror-drift reads every input, the store included, only through BoundedInput");
+            Check(!driftSources.Contains(".Commit(",StringComparison.Ordinal) && !driftSources.Contains("PlanRunner",StringComparison.Ordinal) && !driftSources.Contains("RevitCommandService",StringComparison.Ordinal) && !driftSources.Contains("Initialize(",StringComparison.Ordinal),
+                "mirror-drift never commits, runs a plan or talks to Revit");
+        }
+    }
+
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
 } catch(Exception exception) {
