@@ -126,3 +126,5 @@ try {
 }
 if ($exitCode) { exit $exitCode }
 $result
+# Explicit success code so in-process callers (& script) do not read a stale $LASTEXITCODE.
+exit 0
