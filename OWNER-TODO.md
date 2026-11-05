@@ -165,3 +165,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay164 (2026-11-05, cloud)
 - No new Revit step (all headless). Note after `git pull`: `skills-lock update <ids>` now keeps pins it is not told about; dropping a pin is the explicit `skills-lock unpin`. New `scripts/package-archive.ps1` (zip + SHA256SUMS, `-Extract` before `install-addin.ps1 -PackageDirectory`). Still open: the relay162 list in STATUS.md.
+
+## Relay166 (2026-11-05, cloud)
+- [ ] 🔒 The single owner run now has 103 steps: after `git pull`, `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once). New groups after diario: formas (direct_shape box/site extrusion/bow-tie refusal), extrusion (barrel roofs on axis, reversed and diagonal planes; closed-profile refusal), transformar (move/replay/copy/rotate/mirror + refusals), copia (save_copy into the run folder with sha256 check, target_exists, outside-root refusal); modificar then runs on the saved copy. At the end Revit has the copy open: answer **No** to the save prompt so it keeps the recorded sha256. This run replaces the separate save_copy / roof.create_extrusion / move-copy / direct_shape / rotate-mirror items from relays 153, 157 and 161.
+- Still open: escritorio/estudio/biblioteca class; Uniclass licence; N21 run 3; delete stray branches relay159-P6-09-baseline and relay161-P8-08-probe.
