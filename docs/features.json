@@ -770,6 +770,17 @@
       "scope": "P8-05: per-entity import report (entities/summary, imported/approximated/unsupported with reasons, additive to bim.ifc-import/1) for IFC4 and IFC2X3: polyline/indexed-polycurve rectangular profiles, rigid identity-origin mapped items (Body and Axis), exact horizontal half-space clips, approximated sloped clips and bounding-rectangle profiles with fill-ratio limit, host_approximated on hosted openings, FootPrint space fallback; fixtures generated in CI with ifcopenshell.api and checked against kernel world bounds on ubuntu/windows/macos. CI 41742335649."
     },
     {
+      "id": "ifc-export-schema-validation",
+      "status": "integration-tested",
+      "evidence": [
+        "runtimes/ifc/ifc_validate.py",
+        "tests/ifc/test_validate.py",
+        "docs/ifc.md"
+      ],
+      "blocker": "Coverage is what the pinned IfcOpenShell validator implements (no buildingSMART Validation Service rules, implementer agreements or geometry checks); duplicate-GlobalId anchor differs by platform; worker.validate and ifc_import._schema_check still validate the opened model (miss parser-level defects in foreign files); report quotes model content (not publish-safe).",
+      "scope": "P8-08: runtimes/ifc/ifc_validate.py (function + CLI, bim.ifc-validate/1 JSON, exit 0 valid / 1 invalid / 2 error) runs ifcopenshell.validate 0.9.0.post1 with express_rules on a private copy capped at 256 MiB; typed issues (syntax, attribute_missing/invalid, inverse_cardinality, unique_rule, type_rule, where_rule, global_rule, header) by fixed prefixes; paths scrubbed; exclusive atomic report. Every IFC our exporters write in CI (worker fixture/revisions/A-B incl. compiled and chained compiled revisions, crash/recovery outputs, P8-01 export_project with openings/spaces and re-exports, non-ASCII dir) has zero issues on ubuntu/windows/macos; 15+ deliberately broken files typed by kind/entity/STEP id. CI 42012222589."
+    },
+    {
       "id": "documentation-affected-regeneration",
       "status": "unit-tested",
       "evidence": [
@@ -1056,6 +1067,18 @@
       "scope": "P1-09: element.move (destructive) / element.copy (additive) for 1-100 UniqueIds by vector_mm (finite, 1.2 mm-1 km) under the copies-only guard with operation_id receipts; typed refusals element_pinned, element_view_specific, element_in_group, host_missing, location_unsupported; hosted targets pruned when their host is a target; readback of location point+rotation (mod 2pi), curve ends, sketch profile or bounding box within 1 mm; copies mapped to sources by nearest-first + augmenting-path match; command.batch step; MCP tools. Rules unit-tested; executor compiled. CI 41953640792."
     },
     {
+      "id": "revit-element-rotate-mirror",
+      "status": "compiled",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsRotateMirror.cs",
+        "runtimes/revit-native/CommandsRotateMirror.cs",
+        "runtimes/revit-native/CommandsExecutorRotateMirror.cs",
+        "tests/revit-commands/CatalogueRotateMirror.cs"
+      ],
+      "blocker": "Executor never run in Revit: whether RotateElements adds the angle to LocationPoint.Rotation of mirrored instances, whether MirrorElements(mirrorCopies:false) mirrors in place or replaces, Mirrored flag toggling on every point instance, hosted copies in returned ids, hosted elements deleted with a replaced host not reported; facing/hand orientation not compared (owner session).",
+      "scope": "P1-10: element.rotate {element_uids 1-100, center mm, angle_deg CCW+ 0.01 to <360} and element.mirror {element_uids, axis start/end mm >=1.2 mm, keep_original} under the copies-only guard with operation_id receipts, both destructive; typed refusals element_pinned, element_view_specific, element_in_group, host_missing, element_not_rotatable, element_not_mirrorable, angle_too_small_for_target, mirror_image_unobservable; one CanMirrorElements call on the ids passed (per-id only to name the culprit); readback: rotated points/curves/profiles in order within 1 mm and rotation rho+theta, mirrored curves either direction, profiles any order, point Mirrored flag toggled; copies/replacements mapped by nearest-first + augmenting paths, replaced originals reported as deleted; Autodesk-free axis/plane helpers unit-tested; command.batch step; MCP tools revit_element_rotate/revit_element_mirror. Rules unit-tested; executor compiled. CI 42007394205."
+    },
+    {
       "id": "incremental-diff-edit-set",
       "status": "unit-tested",
       "evidence": [
@@ -1064,6 +1087,16 @@
       ],
       "blocker": "AfterHash and After assembly remain O(n) per diff (plan format hashes whole projects; lowering needs an ADR); Build is O(project) and the index is not advanced after a diff (P3-06).",
       "scope": "P3-05: IncrementalDiffIndex.Build(before) + Diff(edits, maxAffected) yields an ExecutionPlan byte-identical to Compiler.Diff(before, after) without calling it; only edited elements serialized, only the dirty closure traversed (Traversed counter size-independent: 551 vs 2201 elements); typed refusals edit_invalid/edit_duplicate_id/edit_unknown_id/edit_create_exists/edit_bound_exceeded and invalid_ir (precedence over the bound); 700 seeded P3-04 steps + 140 injected invalid edits. CI 41956142359."
+    },
+    {
+      "id": "incremental-diff-index-advance",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/IncrementalDiffAdvance.cs",
+        "tests/local-validation/IncrementalDiffAdvanceTests.cs"
+      ],
+      "blocker": "Advance is still O(project) (dictionary and byte-table reference copies; the committed overload re-hashes O(bytes)); mutations of untouched elements shared with Before not detected; not wired into the CLI or a runtime (P3-07).",
+      "scope": "P3-06: IncrementalDiffIndex.Advance(result) and Advance(result, committed) (the instance ProjectStore.Commit returns) equal Build(result.After)/Build(committed) in every observable (BeforeHash, Before, positions, cached bytes, reverse-dependency keys and lists, next Diff incl. Work) over 300 random + 400 rich chained P3-04 steps; predecessor unchanged; untouched bytes shared by reference, Carried == create+update count == Work.Serialized, Advance serializes nothing; Diff->Commit->Advance->Diff->Commit chain succeeds; typed refusals edit_stale_result, edit_result_mutated, edit_commit_mismatch. CI 42010080321."
     },
     {
       "id": "revit-direct-shape",

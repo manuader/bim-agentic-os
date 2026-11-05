@@ -191,3 +191,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P2-08 Attempt1 (run 41986782413, 19cd27a): hypothesis the existing MCP test pins the core tool list from the injected catalogue only → wrong, tests/mcp/Program.cs:133 hard-codes the core tool names → mirror_drift added to that expected list (oracle not relaxed), green 41987958037; review red 41989771640 → green 41989880727. Compile slip in the first red (41984282875), not an attempt.
 - P5-08: no failed attempts (red 41983932849 → green 41985065469; review red 41991496133 → green 41991684029).
 - P10-09: no failed attempts (red 41983890324 compile red → green 41984918492, one compile slip 41984050644 (test locals clashing with top-level names), not an attempt; review red 41993013697 → green 41993168316).
+
+### Relay161 (2026-11-05, cloud)
+- P1-10: no failed test attempts (red 42000494415 → green 42001156947; review red 42005842348 → green 42007394205). Compile slips, not attempts: top-level name clash in tests/mcp (41999434457), doubled quote in a description (42005209599), pattern variable collision (42006756913).
+- P3-06: no failed attempts (red 41998448544 → green 41999504722; review red 42009289955 → green 42010080321).
+- P8-08 Attempt1 (run 42000960012, 18620b7): hypothesis the validator anchors a duplicate GlobalId on the first instance (the wall) → wrong, the anchor is the door on ubuntu/windows and the wall on macOS → test accepts either duplicate and still requires unique_rule, IfcRoot.UR1 and both STEP ids; green 42002056141. Review red 42012119306 → green 42012222589 (0 attempts).
