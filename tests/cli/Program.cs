@@ -928,9 +928,9 @@ try {
             Refused(name,code,DInput(name+".project.json",projectText),DInput(name+".edits.json",JsonSerializer.Serialize(edits)));
         }
 
-        var baseProject=P(beforeText); var wall=baseProject.Elements[0]; var plan=baseProject.Elements[1];
+        var baseProject=P(beforeText); var wall=baseProject.Elements[0]; var planDoc=baseProject.Elements[1];
         Element Wall(Guid id,double x,Guid[]? dependencies=null)=>new(id,"wall",new[]{x,0,x+5,0,3,0.2},dependencies ?? Array.Empty<Guid>(),new("cli diff-edits fixture","specified"));
-        Element Doc(Guid id,params Guid[] dependencies)=>new(id,"plan",Array.Empty<double>(),dependencies,new("cli diff-edits fixture","proposed"));
+        Element PlanDoc(Guid id,params Guid[] dependencies)=>new(id,"plan",Array.Empty<double>(),dependencies,new("cli diff-edits fixture","proposed"));
         Guid G(int n)=>Guid.Parse("00000000-0000-0000-0000-"+n.ToString("x12",System.Globalization.CultureInfo.InvariantCulture));
 
         // 1. The examples' 5 m -> 5.4 m wall edit: the same plan as `diff examples/before.json examples/after.json`.
@@ -941,31 +941,31 @@ try {
         var literal="[{\"Action\":\"update\",\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Element\":{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"wall\",\"GeometryMetres\":[0,0,5.4,0,3,0.2],\"Dependencies\":[],\"Provenance\":{\"Source\":\"synthetic core fixture\",\"Approval\":\"specified\"}}}]";
         Succeeds("literal edits file",beforeText,new[]{ElementEdit.Update(widened)},literal);
         // 3. Mixed create/update/delete: delete the plan, update the wall, create a wall and a plan depending on it.
-        Succeeds("mixed create update delete",beforeText,new[]{ElementEdit.Create(Wall(G(0x10),20)),ElementEdit.Delete(plan.Id),ElementEdit.Update(wall with {GeometryMetres=new[]{0,0,6,0,3,0.25}}),ElementEdit.Create(Doc(G(0x11),G(0x10),wall.Id))});
+        Succeeds("mixed create update delete",beforeText,new[]{ElementEdit.Create(Wall(G(0x10),20)),ElementEdit.Delete(planDoc.Id),ElementEdit.Update(wall with {GeometryMetres=new[]{0,0,6,0,3,0.25}}),ElementEdit.Create(PlanDoc(G(0x11),G(0x10),wall.Id))});
         // 4. A no-op update and an empty edit set: no operations, hashes equal.
         Succeeds("no-op update",beforeText,new[]{ElementEdit.Update(wall)});
         Succeeds("empty edit set",beforeText,Array.Empty<ElementEdit>());
         // 5. A larger project (300 walls, each with a plan) with edits far apart.
         var big=new List<Element>();
-        for(var i=0;i<300;i++) { big.Add(Wall(G(0x1000+i),i*10)); big.Add(Doc(G(0x2000+i),G(0x1000+i))); }
+        for(var i=0;i<300;i++) { big.Add(Wall(G(0x1000+i),i*10)); big.Add(PlanDoc(G(0x2000+i),G(0x1000+i))); }
         var bigText=JsonSerializer.Serialize(new Project(baseProject.Id,7,big.ToArray()));
-        Succeeds("300-wall project",bigText,new[]{ElementEdit.Update(Wall(G(0x1000+5),51)),ElementEdit.Delete(G(0x2000+150)),ElementEdit.Delete(G(0x1000+150)),ElementEdit.Create(Doc(G(0x3000),G(0x1000+299),G(0x1000+0)))});
+        Succeeds("300-wall project",bigText,new[]{ElementEdit.Update(Wall(G(0x1000+5),51)),ElementEdit.Delete(G(0x2000+150)),ElementEdit.Delete(G(0x1000+150)),ElementEdit.Create(PlanDoc(G(0x3000),G(0x1000+299),G(0x1000+0)))});
         // 6. Inputs decode like every CLI file input (UTF-8 BOM).
         Succeeds("UTF-8 BOM edits",beforeText,new[]{ElementEdit.Update(widened)},"﻿"+JsonSerializer.Serialize(new[]{ElementEdit.Update(widened)}));
 
         // 7. Library refusals keep the library's code.
         RefusedLike("an unknown action","edit_invalid",beforeText,new[]{new ElementEdit("move",wall.Id,wall)});
         RefusedLike("a create whose element id differs","edit_invalid",beforeText,new[]{new ElementEdit("create",G(0x20),Wall(G(0x21),30))});
-        RefusedLike("a delete carrying an element","edit_invalid",beforeText,new[]{new ElementEdit("delete",plan.Id,plan)});
+        RefusedLike("a delete carrying an element","edit_invalid",beforeText,new[]{new ElementEdit("delete",planDoc.Id,planDoc)});
         RefusedLike("an update of an unknown id","edit_unknown_id",beforeText,new[]{ElementEdit.Update(Wall(G(0x30),40))});
         RefusedLike("a delete of an unknown id","edit_unknown_id",beforeText,new[]{ElementEdit.Delete(G(0x31))});
         RefusedLike("two edits of one id","edit_duplicate_id",beforeText,new[]{ElementEdit.Update(widened),ElementEdit.Delete(wall.Id)});
         RefusedLike("a create of an existing id","edit_create_exists",beforeText,new[]{ElementEdit.Create(wall)});
         RefusedLike("more than IncrementalDiff.MaxEdits edits","edit_bound_exceeded",beforeText,Enumerable.Range(0,IncrementalDiff.MaxEdits+1).Select(i=>ElementEdit.Delete(G(0x40000+i))).ToArray());
         RefusedLike("a delete leaving a dangling dependency","invalid_ir",beforeText,new[]{ElementEdit.Delete(wall.Id)});
-        RefusedLike("an edit creating a dependency cycle","invalid_ir",beforeText,new[]{ElementEdit.Update(wall with {Dependencies=new[]{plan.Id}})});
+        RefusedLike("an edit creating a dependency cycle","invalid_ir",beforeText,new[]{ElementEdit.Update(wall with {Dependencies=new[]{planDoc.Id}})});
         RefusedLike("an invalid wall geometry","invalid_ir",beforeText,new[]{ElementEdit.Update(wall with {GeometryMetres=new[]{0,0,0,0,3,0.2}})});
-        RefusedLike("an invalid project","invalid_ir",JsonSerializer.Serialize(baseProject with {Elements=new[]{plan}}),Array.Empty<ElementEdit>());
+        RefusedLike("an invalid project","invalid_ir",JsonSerializer.Serialize(baseProject with {Elements=new[]{planDoc}}),Array.Empty<ElementEdit>());
         var editsOk=DInput("ok.edits.json",JsonSerializer.Serialize(new[]{ElementEdit.Update(widened)}));
         var projectOk=DInput("ok.project.json",beforeText);
         // A null entry in the array is the library's malformed edit.
