@@ -71,8 +71,13 @@ public static class CommandRulesDirectShape
 
     public static double ExpectedVolumeMm3(DirectShapeFootprint footprint) => AreaMm2(footprint) * footprint.HeightMm;
 
-    // The volume a 1 mm offset of every face could add or remove: the sides (perimeter x height) plus top and bottom.
-    public static double VolumeToleranceMm3(DirectShapeFootprint footprint) => ToleranceMm * (PerimeterMm(footprint) * footprint.HeightMm + 2 * AreaMm2(footprint));
+    // Relative slack for floating-point and unit conversion on top of the side offset.
+    public const double VolumeRelativeEpsilon = 1e-6;
+
+    // The volume a 1 mm offset of the side faces could add or remove (perimeter x height x 1 mm), plus 1e-6 of the
+    // expected volume. Top and bottom are not included: the bounding box already pins z within 1 mm, and including them
+    // would let a thin solid's filled bounding rectangle pass for a concave outline.
+    public static double VolumeToleranceMm3(DirectShapeFootprint footprint) => ToleranceMm * PerimeterMm(footprint) * footprint.HeightMm + VolumeRelativeEpsilon * ExpectedVolumeMm3(footprint);
 
     // The one material every face carries, or null when there are no faces or they differ.
     public static string? UniformMaterial(IReadOnlyList<string?> faces) =>

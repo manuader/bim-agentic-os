@@ -12,7 +12,7 @@ namespace Bim.Revit;
 // Revit 2025 API used (https://www.revitapidocs.com/2025/):
 //   DirectShape.IsValidCategoryId(ElementId categoryId, Document), DirectShape.CreateElement(Document, ElementId
 //     categoryId), DirectShape.ApplicationId / ApplicationDataId, DirectShape.SetShape(IList<GeometryObject>),
-//     Element.Name (set and read back)
+//     DirectShape.SetName(string), Element.Name (read back)
 //   GeometryCreationUtilities.CreateExtrusionGeometry(IList<CurveLoop>, XYZ extrusionDir, double extrusionDist,
 //     SolidOptions), SolidOptions(ElementId materialId, ElementId graphicsStyleId), CurveLoop, Line.CreateBound
 //   Element.get_Geometry(Options), Solid.Volume, Solid.Faces, Face.MaterialElementId, Category.BuiltInCategory,
@@ -20,8 +20,8 @@ namespace Bim.Revit;
 // Unverified in Revit (owner session required): which of the offered categories DirectShape.IsValidCategoryId accepts
 //   in the owner's template (topography in particular; a refused one is args_invalid before anything is created); that
 //   the DirectShape's bounding box is the solid's exact extent within 1 mm (no padding); that the faces keep the
-//   SolidOptions material (else a requested material reads back as a mismatch and rolls back); that setting Element.Name
-//   on a DirectShape is kept.
+//   SolidOptions material (else a requested material reads back as a mismatch and rolls back); that the name set with
+//   DirectShape.SetName is what Element.Name reads back.
 internal static partial class CommandExecutor
 {
     static WritePlan DirectShapeWrite(Document d, DirectShapeCreateArgs args)
@@ -59,7 +59,7 @@ internal static partial class CommandExecutor
                 created.ApplicationId = CommandRulesDirectShape.ApplicationId;
                 created.ApplicationDataId = CommandRulesDirectShape.ApplicationDataId;
                 created.SetShape(new List<GeometryObject> { solid });
-                if (args.Name is { } name) created.Name = name;
+                if (args.Name is { } name) created.SetName(name);
             },
             () => shape is { IsValidObject: true } created
                 ? CommandReadbackDirectShape.Shape(args, builtIn, material?.UniqueId, footprint, Observe(created))
