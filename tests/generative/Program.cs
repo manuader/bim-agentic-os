@@ -9,7 +9,8 @@ using System.Text.RegularExpressions;
 // output determinism across runs, seeds and cultures, typed infeasible results, non-overlap and in-site invariants
 // over many seeds and generated briefs, and a 30-room performance bound; P7-02 alternatives in AlternativeTests.cs, P7-03
 // apartment prototypes in PrototypeTests.cs, P7-04 circulation in CirculationTests.cs, P7-05 facade openings in FacadeTests.cs, P7-06
-// facade windows into the prototype BIM-IR in FacadeIrTests.cs.
+// facade windows into the prototype BIM-IR in FacadeIrTests.cs, P7-07 the prototype pipeline with circulation and facade gates in
+// PrototypePipelineTests.cs.
 // Unit-tested evidence only.
 int passed = 0, failed = 0;
 
@@ -523,6 +524,9 @@ try
 
     // ---- P7-06 facade windows into the prototype BIM-IR (FacadeIrTests.cs) ----
     FacadeIrTests.Run(Check, root);
+
+    // ---- P7-07 prototype pipeline with circulation and facade gates (PrototypePipelineTests.cs) ----
+    PrototypePipelineTests.Run(Check, root);
 }
 catch (Exception error)
 {
