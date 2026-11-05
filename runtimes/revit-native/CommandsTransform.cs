@@ -123,7 +123,7 @@ public static class CommandRulesTransform
 
     // Nearest first: every (source, copy) pair with the same key whose copy sits at the source's location plus the
     // vector within 1 mm is ranked by its largest point deviation (ties by source, then copy order) and taken when
-    // neither is taken yet. A source left without a copy is a mismatch (the first in request order is named); Pairs are
+    // neither is taken yet; sources left over are then matched by augmenting paths. A source left without a copy is a mismatch (the first in request order is named); Pairs are
     // in request order; copies no source takes are AlsoCreated, in Revit's order.
     public static CopyMapping MapCopies(IReadOnlyList<TransformCandidate> sources, IReadOnlyList<TransformCandidate> copies, double[] vector)
     {
@@ -138,12 +138,38 @@ public static class CommandRulesTransform
         }
         var copyOf = Enumerable.Repeat(-1, sources.Count).ToArray();
         var used = new bool[copies.Count];
-        foreach (var (_, source, copy) in candidates.OrderBy(candidate => candidate.Deviation).ThenBy(candidate => candidate.Source).ThenBy(candidate => candidate.Copy))
+        var ranked = candidates.OrderBy(candidate => candidate.Deviation).ThenBy(candidate => candidate.Source).ThenBy(candidate => candidate.Copy).ToArray();
+        foreach (var (_, source, copy) in ranked)
         {
             if (copyOf[source] >= 0 || used[copy]) continue;
             copyOf[source] = copy;
             used[copy] = true;
         }
+        // Nearest-first can strand a source whose only admissible copies went to closer neighbours; augmenting paths
+        // (Kuhn's bipartite matching over the admissible pairs, each source trying its copies nearest first) then
+        // re-pair them so every source that can have a copy gets one.
+        var sourceOf = Enumerable.Repeat(-1, copies.Count).ToArray();
+        for (var s = 0; s < sources.Count; s++)
+            if (copyOf[s] >= 0) sourceOf[copyOf[s]] = s;
+        var options = Enumerable.Range(0, sources.Count).Select(s => ranked.Where(candidate => candidate.Source == s).Select(candidate => candidate.Copy).ToArray()).ToArray();
+        bool Augment(int source, bool[] visited)
+        {
+            foreach (var copy in options[source])
+            {
+                if (visited[copy]) continue;
+                visited[copy] = true;
+                if (sourceOf[copy] < 0 || Augment(sourceOf[copy], visited))
+                {
+                    copyOf[source] = copy;
+                    sourceOf[copy] = source;
+                    return true;
+                }
+            }
+            return false;
+        }
+        for (var s = 0; s < sources.Count; s++)
+            if (copyOf[s] < 0) Augment(s, new bool[copies.Count]);
+        for (var c = 0; c < copies.Count; c++) used[c] = sourceOf[c] >= 0;
         for (var s = 0; s < sources.Count; s++)
             if (copyOf[s] < 0) return new CopyMapping(Array.Empty<CopyPair>(), Array.Empty<string>(), "no new element of the same kind sits at the location of " + sources[s].Uid + " plus the vector " + Format(vector) + " mm (within 1 mm)");
         return new CopyMapping(sources.Select((source, s) => new CopyPair(source.Uid, copies[copyOf[s]].Uid)).ToArray(), copies.Where((_, c) => !used[c]).Select(copy => copy.Uid).ToArray(), null);
