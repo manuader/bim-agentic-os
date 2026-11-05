@@ -31,7 +31,7 @@ public sealed record IncrementalDiffResult(Project After, ExecutionPlan Plan, In
 // per-element JSON bytes, reverse dependency lists and BeforeHash. Reusable for any number of diffs; never mutated.
 // The index is a snapshot of before: do not mutate before (its Elements array or elements) after Build. A diff
 // does not advance the index or persist anything; callers commit result.After (with result.Plan) themselves and
-// get the next index from Advance(result) (IncrementalDiffAdvance.cs) or Build(result.After). maxAffected must be >= 0 (edit_invalid otherwise).
+// get the next index from Advance(result, committed) / Advance(result) (IncrementalDiffAdvance.cs) or Build. maxAffected must be >= 0 (edit_invalid otherwise).
 public sealed partial class IncrementalDiffIndex
 {
     readonly Dictionary<Guid, int> position;
