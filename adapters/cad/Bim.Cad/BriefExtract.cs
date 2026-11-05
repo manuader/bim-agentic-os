@@ -605,7 +605,7 @@ public static class BriefExtract
 
     private static string TagKey(string tag) => Fold(tag).Replace(" ", "", StringComparison.Ordinal);
 
-    private static string Slug(string name)
+    internal static string Slug(string name)
     {
         var slug = Fold(name).Replace(' ', '-');
         if (slug.Length > MaxSlugLength) slug = slug[..MaxSlugLength].TrimEnd('-');

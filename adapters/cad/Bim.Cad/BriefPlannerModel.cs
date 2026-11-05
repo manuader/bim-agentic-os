@@ -7,8 +7,8 @@ public static class BriefPlannerCodes
 {
     // The extraction noted that the stated area differs from the room's closed region area (draft note area-mismatch).
     public const string AreaMismatch = "area-mismatch";
-    // The label repeats an earlier label of the draft (draft note duplicate-label on a room that is not the first of its
-    // label). The first room of a repeated label is never a duplicate.
+    // The label repeats the label of an earlier room that was kept (draft note duplicate-label, or named by a
+    // duplicate-label uncertainty). When every earlier copy was dropped, the first surviving copy is not a duplicate.
     public const string DuplicateLabel = "duplicate-label";
     // The room's draft confidence is below BriefPlannerOptions.MinConfidence.
     public const string LowConfidence = "low-confidence";
