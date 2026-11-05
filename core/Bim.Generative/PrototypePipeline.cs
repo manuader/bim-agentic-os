@@ -5,7 +5,8 @@ using Bim.Core;
 namespace Bim.Generative;
 
 // The P7-07 prototype pipeline: an opt-in composition of the existing stages, which it calls unchanged. Steps:
-// 1. Refuse the options before ranking, listing every problem: an empty project id or a negative revision
+// 1. Refuse the options before ranking, listing every problem (Rank adds CirculationRanker's own refusals: alternative
+//    count, ranking weights, all seven weights zero): an empty project id or a negative revision
 //    (pipeline_project_invalid), a negative or non-finite circulation weight (weights_invalid "weights.circulation"),
 //    the plan-independent circulation options (circulation_options_invalid), the facade options, pack and parameter
 //    overrides (FacadePlanner's facade_options_invalid / facade_pack_invalid / overrides, found by placing a fixed
@@ -22,7 +23,9 @@ namespace Bim.Generative;
 //                 room, bedroom or dry room reachable only through a bedroom, no entrance, plan-specific refusal);
 //    facade       FacadePlanner.Place is not complete: the failed rooms' reasons (illumination or ventilation ratio
 //                 not met: no exterior edge, edge too short, party walls only, unsupported rule, ratio unmet);
-//    facade_ir    FacadeIrBuilder.Prototype throws (IntentCompiler issues such as wall_clash, one reason per issue) or
+//    facade_ir    FacadeIrBuilder.Prototype fails (IntentCompiler issues such as wall_clash or room_too_small, one reason
+//                 per issue; a facade_ir_* ArgumentException with its code; any other IntentCompiler exception, such
+//                 as its internal intent_stretch_unbounded invariant, as pipeline_ir_compile_failed) or
 //                 FacadeIrBuilder.AddWindows (with the circulation model, so windows clear the entrance door) is not
 //                 complete: its failed checks.
 //    Reasons are typed (gate, code, subject, detail); the stage results computed up to the failing gate are kept.
@@ -64,6 +67,7 @@ public static class PrototypePipeline
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Pack);
         var refusals = OptionRefusals(options);
+        refusals.AddRange(RankingRefusals(plans.Count, weights ?? new ScoringWeights(), options.CirculationWeight));
         if (refusals.Count > 0) return Refused(options, null, refusals);
         return Evaluate(brief, plans, weights, options, null, null);
     }
@@ -109,7 +113,7 @@ public static class PrototypePipeline
             {
                 var failed = facade.Checks.Where(check => check.Hard && !check.Satisfied).Select(check => Reason(PrototypePipelineGate.Facade, check)).ToArray();
                 rejected.Add(Reject(failed.Length > 0 ? failed
-                    : new[] { new PrototypePipelineRejection(PrototypePipelineGate.Facade, FacadeCodes.RatioUnmet, "plan", "the facade layout is " + facade.Status.ToString().ToLowerInvariant()) },
+                    : new[] { new PrototypePipelineRejection(PrototypePipelineGate.Facade, PrototypePipelineCodes.FacadeIncomplete, "plan", "the facade layout is " + facade.Status.ToString().ToLowerInvariant()) },
                     circulation, facade));
                 continue;
             }
@@ -149,10 +153,26 @@ public static class PrototypePipeline
                 ? error.Issues.Select(issue => new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, issue.Code, issue.Key, issue.Detail)).ToArray()
                 : new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, error.Code, error.Field ?? "plan", error.Detail ?? error.Message) });
         }
-        catch (ArgumentException error)
+        catch (ArgumentException error) when (IrCode(error.Message) is not null)
         {
-            return new(null, new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, FacadeIrCodes.LayoutInvalid, "plan", error.Message) });
+            var code = IrCode(error.Message)!;
+            var detail = error.Message.Length > code.Length + 2 ? error.Message[(code.Length + 2)..] : error.Message;
+            return new(null, new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, code, "plan", detail) });
         }
+        catch (InvalidOperationException error)
+        {
+            return new(null, new[] { new PrototypePipelineRejection(PrototypePipelineGate.FacadeIr, PrototypePipelineCodes.IrCompileFailed, "plan",
+                "IntentCompiler failed: " + error.Message) });
+        }
+    }
+
+    // FacadeIrBuilder.Intent reports its problems as ArgumentException("<facade_ir code>: <detail>"); any other
+    // ArgumentException is a caller bug and is not swallowed.
+    static string? IrCode(string message)
+    {
+        foreach (var code in new[] { FacadeIrCodes.LayoutInvalid, FacadeIrCodes.OptionsInvalid })
+            if (message.StartsWith(code + ": ", StringComparison.Ordinal)) return code;
+        return null;
     }
 
     static List<PlanConstraint> OptionRefusals(PrototypePipelineOptions options)
@@ -172,6 +192,21 @@ public static class PrototypePipeline
         catch (ArgumentException error)
         {
             refusals.Add(Refusal(FacadeIrCodes.OptionsInvalid, "ir_options", error.Message));
+        }
+        return refusals;
+    }
+
+    // CirculationRanker's plan-independent refusals other than the circulation weight itself (already an option refusal):
+    // the alternative count, each of the six weights, and all seven weights zero or their sum not finite.
+    static List<PlanConstraint> RankingRefusals(int count, ScoringWeights weights, double circulationWeight)
+    {
+        var refusals = AlternativeRanker.Refusals(count, weights).Where(refusal => refusal.Subject != "weights").ToList();
+        var all = new[] { weights.AreaFit, weights.Adjacency, weights.Proportions, weights.Compactness, weights.Perimeter, weights.Compliance, circulationWeight };
+        if (all.All(weight => double.IsFinite(weight) && weight >= 0))
+        {
+            var sum = all.Sum();
+            if (!(sum > 0)) refusals.Add(Refusal(AlternativeCodes.WeightsInvalid, "weights", "at least one weight must be positive"));
+            else if (!double.IsFinite(sum)) refusals.Add(Refusal(AlternativeCodes.WeightsInvalid, "weights", "the sum of weights must be finite"));
         }
         return refusals;
     }

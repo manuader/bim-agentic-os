@@ -10,7 +10,8 @@ namespace Bim.Generative;
 // plan, circulation model and facade layout as their canonical v1 JSON (null before their gate), and the hosted windows
 // with their BIM-IR element and host ids. The BIM-IR project itself is not written (only its element count): it is the
 // deterministic output of FacadeIrBuilder for the plan, layout and circulation written here. The same result always
-// gives the same bytes, whatever the culture.
+// gives the same bytes, whatever the culture. The stage options (circulation, facade, BIM-IR, pack parameters) are
+// written too, so runs that differ only in an option (for example the BIM-IR wall height) serialize differently.
 public static class PrototypePipelineSerializer
 {
     public static string Serialize(PrototypePipelineResult result)
@@ -32,6 +33,7 @@ public static class PrototypePipelineSerializer
             writer.WriteString("project_id", options.ProjectId.ToString("D", CultureInfo.InvariantCulture));
             writer.WriteNumber("revision", options.Revision);
             Number(writer, "circulation_weight", options.CirculationWeight);
+            Options(writer, options);
             writer.WriteStartObject("summary");
             writer.WriteNumber("accepted", result.Alternatives.Count(alternative => alternative.Accepted));
             foreach (var gate in new[] { PrototypePipelineGate.Prototype, PrototypePipelineGate.Circulation, PrototypePipelineGate.Facade, PrototypePipelineGate.FacadeIr })
@@ -56,6 +58,70 @@ public static class PrototypePipelineSerializer
             writer.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    // The stage options as given (null members mean the stage defaults), so results of runs with different options never
+    // serialize alike; pack parameter overrides in ordinal key order.
+    static void Options(Utf8JsonWriter writer, PrototypePipelineOptions options)
+    {
+        writer.WriteStartObject("options");
+        var circulation = options.Circulation ?? new CirculationOptions();
+        writer.WriteStartObject("circulation");
+        if (circulation.EntranceRoomId is { } room) writer.WriteString("entrance_room", room);
+        else writer.WriteNull("entrance_room");
+        writer.WritePropertyName("entrance_edges");
+        Edges(writer, circulation.EntranceEdges);
+        Texts(writer, "bedroom_patterns", circulation.BedroomPatterns);
+        Texts(writer, "entrance_patterns", circulation.EntrancePatterns);
+        Texts(writer, "pass_through_patterns", circulation.PassThroughPatterns);
+        if (circulation.DoorWidthMetres is { } door) Number(writer, "door_width_m", door);
+        else writer.WriteNull("door_width_m");
+        writer.WriteEndObject();
+        var facade = options.Facade ?? new FacadeOptions();
+        writer.WriteStartObject("facade");
+        Number(writer, "sill_height_m", facade.SillHeightMetres);
+        Number(writer, "head_height_m", facade.HeadHeightMetres);
+        Number(writer, "end_clearance_m", facade.EndClearanceMetres);
+        Number(writer, "openable_fraction", facade.OpenableFraction);
+        Number(writer, "min_window_width_m", facade.MinWindowWidthMetres);
+        writer.WritePropertyName("opening_edges");
+        Edges(writer, facade.OpeningEdges);
+        writer.WriteEndObject();
+        var ir = options.Ir ?? new FacadeIrOptions();
+        writer.WriteStartObject("ir");
+        Number(writer, "wall_thickness_m", ir.WallThicknessMetres);
+        Number(writer, "wall_height_m", ir.WallHeightMetres);
+        Number(writer, "entrance_clearance_m", ir.EntranceClearanceMetres);
+        if (ir.Provenance is { } provenance)
+        {
+            writer.WriteStartObject("provenance");
+            writer.WriteString("source", provenance.Source);
+            writer.WriteString("approval", provenance.Approval);
+            writer.WriteEndObject();
+        }
+        else writer.WriteNull("provenance");
+        writer.WriteEndObject();
+        writer.WriteStartObject("parameters");
+        foreach (var parameter in (options.Parameters ?? new Dictionary<string, double>()).OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            Number(writer, parameter.Key, parameter.Value);
+        writer.WriteEndObject();
+        writer.WriteEndObject();
+    }
+
+    static void Edges(Utf8JsonWriter writer, IReadOnlyList<LotEdge>? edges)
+    {
+        if (edges is null) { writer.WriteNullValue(); return; }
+        writer.WriteStartArray();
+        foreach (var edge in edges) writer.WriteStringValue(Enum.IsDefined(edge) ? CirculationAnalyzer.EdgeName(edge) : ((int)edge).ToString(CultureInfo.InvariantCulture));
+        writer.WriteEndArray();
+    }
+
+    static void Texts(Utf8JsonWriter writer, string name, IReadOnlyList<string>? values)
+    {
+        if (values is null) { writer.WriteNull(name); return; }
+        writer.WriteStartArray(name);
+        foreach (var value in values) writer.WriteStringValue(value);
+        writer.WriteEndArray();
     }
 
     static void Alternative(Utf8JsonWriter writer, PrototypePipelineAlternative alternative)

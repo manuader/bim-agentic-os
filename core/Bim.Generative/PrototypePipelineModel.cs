@@ -46,7 +46,8 @@ public sealed record PrototypePipelineAlternative(int Index, int Seed, string? S
 // Status is Ranked when at least one alternative passed every gate, Infeasible when all were rejected, Refused when the
 // request or the options were refused (Refusals lists every problem found; Alternatives is empty). Prototype is the
 // PrototypeGenerator result (null when the pipeline ranked caller-supplied plans); Ranking the CirculationRanker set the
-// gates started from (null when refused before ranking). Alternatives are accepted ones by rank, then the rejected
+// gates started from, unchanged (null when refused before ranking): its ranks are CirculationRanker's raw ranks, counted
+// before the facade and BIM-IR gates, so they can differ from the pipeline ranks of Alternatives. Alternatives are accepted ones by rank, then the rejected
 // ones in generation order.
 public sealed record PrototypePipelineResult(PrototypePipelineStatus Status, PrototypePipelineOptions Options, PrototypeResult? Prototype, AlternativeSet? Ranking,
     IReadOnlyList<PlanConstraint> Refusals, IReadOnlyList<PrototypePipelineAlternative> Alternatives)
