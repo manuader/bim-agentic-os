@@ -19,8 +19,9 @@ public static class TransformLocationKinds
 // Where an element is: a location point A (with its rotation in radians when Revit reports one), a location curve from
 // A to B, for sketch-based elements (floors, roofs, ceilings) the end points of their sketch profile curves in sketch
 // order (Points; A is the first), else the model bounding box from A (min) to B (max). Points are [x, y, z] in
-// millimetres.
-public sealed record TransformLocation(string Kind, double[] A, double[]? B, double? RotationRad = null, IReadOnlyList<double[]>? Points = null);
+// millimetres. Mirrored: FamilyInstance.Mirrored of a point-located family instance (null when not read); element.move /
+// element.copy ignore it, element.mirror (CommandsRotateMirror.cs) expects it toggled.
+public sealed record TransformLocation(string Kind, double[] A, double[]? B, double? RotationRad = null, IReadOnlyList<double[]>? Points = null, bool? Mirrored = null);
 // The Revit facts a target is refused on. HostedPlacement: a family instance of a hosted placement type; HostPresent:
 // its host exists; HostUid: its host's UniqueId (null when none). Location: null when the element has no location point, curve or box (types, views, data storage).
 public sealed record TransformTargetFacts(string Uid, bool Pinned, bool ViewSpecific, bool Grouped, bool HostedPlacement, bool HostPresent, TransformLocation? Location, string? HostUid = null);

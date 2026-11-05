@@ -11,7 +11,10 @@ namespace Bim.Revit;
 // not turn with its element, so box-only elements are refused here.
 
 // A turn about the vertical axis through (CenterX, CenterY) by AngleRad, counter-clockwise seen from above.
-public sealed record PlanRotation(double CenterX, double CenterY, double AngleRad);
+public sealed record PlanRotation(double CenterX, double CenterY, double AngleRad, double? AngleDeg = null);
+// Red stub (P1-10 review): the new helpers below answer wrongly until implemented.
+public sealed record PlanAxis(double[] BottomMm, double[] Direction);
+public sealed record PlanPlane(double[] Normal, double[] OriginMm);
 // A reflection in the vertical plane through the plan line (StartX, StartY) -> (EndX, EndY).
 public sealed record PlanMirror(double StartX, double StartY, double EndX, double EndY);
 // One mirrored source: UniqueId is its mirrored copy (keep_original true), the source itself mirrored in place, or the
@@ -19,25 +22,41 @@ public sealed record PlanMirror(double StartX, double StartY, double EndX, doubl
 public sealed record MirrorResult(string SourceUid, string UniqueId, bool IsNew);
 // Results: one per source, in request order. AlsoCreated: new elements that are no source's result (hosted doors and
 // windows Revit mirrored with their walls). Mismatch: why a source has no result, else null.
-public sealed record MirrorMapping(IReadOnlyList<MirrorResult> Results, IReadOnlyList<string> AlsoCreated, string? Mismatch);
+public sealed record MirrorMapping(IReadOnlyList<MirrorResult> Results, IReadOnlyList<string> AlsoCreated, string? Mismatch, IReadOnlyList<string>? Deleted = null);
 
 public static class CommandRulesRotateMirror
 {
     // Refusal order: pinned, view-specific, group member, hosted without host (the move/copy codes), then a hosted
     // element whose host is not a target, no location point / curve / sketch profile (element_not_rotatable).
-    public static void CheckRotateTarget(TransformTargetFacts facts, IReadOnlyCollection<string> targetUids, string field)
+    public static void CheckRotateTarget(TransformTargetFacts facts, IReadOnlyCollection<string> targetUids, PlanRotation rotation, string field)
     {
         CheckCommon(facts, field);
         if (Unsupported(facts, targetUids) is { } reason) throw new RevitCommandException(RevitRotateMirrorCodes.ElementNotRotatable, field, facts.Uid + " " + reason);
     }
 
     // As CheckRotateTarget with element_not_mirrorable, then Revit's own CanMirrorElements answer (mirrorable).
-    public static void CheckMirrorTarget(TransformTargetFacts facts, bool mirrorable, IReadOnlyCollection<string> targetUids, string field)
+    public static void CheckMirrorTarget(TransformTargetFacts facts, bool mirrorable, IReadOnlyCollection<string> targetUids, PlanMirror mirror, bool keepOriginal, string field)
     {
         CheckCommon(facts, field);
         if (Unsupported(facts, targetUids) is { } reason) throw new RevitCommandException(RevitRotateMirrorCodes.ElementNotMirrorable, field, facts.Uid + " " + reason);
         if (!mirrorable) throw new RevitCommandException(RevitRotateMirrorCodes.ElementNotMirrorable, field, facts.Uid + " cannot be mirrored (Revit's CanMirrorElements refuses it)");
     }
+
+    public static void CheckRotateTargets(IReadOnlyList<TransformTargetFacts> facts, PlanRotation rotation)
+    {
+        var uids = facts.Select(fact => fact.Uid).ToArray();
+        for (var i = 0; i < facts.Count; i++) CheckRotateTarget(facts[i], uids, rotation, "args.element_uids[" + i.ToString(CultureInfo.InvariantCulture) + "]");
+    }
+
+    public static void CheckMirrorTargets(IReadOnlyList<TransformTargetFacts> facts, PlanMirror mirror, bool keepOriginal, Func<IReadOnlyList<string>, bool> canMirror)
+    {
+        var uids = facts.Select(fact => fact.Uid).ToArray();
+        for (var i = 0; i < facts.Count; i++) CheckMirrorTarget(facts[i], canMirror(new[] { facts[i].Uid }), uids, mirror, keepOriginal, "args.element_uids[" + i.ToString(CultureInfo.InvariantCulture) + "]");
+    }
+
+    public static PlanAxis RotationAxis(PlanRotation rotation) => new(new[] { 0.0, 0.0, 0.0 }, new[] { 0.0, 0.0, 1.0 });
+    public static PlanPlane MirrorPlane(PlanMirror mirror) => new(new[] { 0.0, 0.0, 0.0 }, new[] { 0.0, 0.0, 0.0 });
+    public static IReadOnlyList<string> MirrorDeleted(MirrorMapping mapping) => Array.Empty<string>();
 
     static void CheckCommon(TransformTargetFacts facts, string field)
     {

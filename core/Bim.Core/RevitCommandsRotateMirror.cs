@@ -11,7 +11,8 @@ namespace Bim.Core;
 // (RevitTransformCodes: pinned, view-specific, group member, host missing) and the codes below, elements it cannot turn
 // or mirror and read back.
 
-public sealed record ElementRotateArgs(IReadOnlyList<string> ElementUids, Point2 Center, Angle Angle) : RevitCommandArgs;
+// AngleDeg: the requested angle_deg exactly as sent (echoed in the readback); Angle is the same turn as a Core Angle.
+public sealed record ElementRotateArgs(IReadOnlyList<string> ElementUids, Point2 Center, Angle Angle, double AngleDeg) : RevitCommandArgs;
 public sealed record ElementMirrorArgs(IReadOnlyList<string> ElementUids, Point2 AxisStart, Point2 AxisEnd, bool KeepOriginal) : RevitCommandArgs;
 
 public static class RevitRotateMirrorRules
@@ -34,7 +35,13 @@ public static class RevitRotateMirrorCodes
     public const string ElementNotRotatable = "element_not_rotatable";
     // As not rotatable, or Revit's ElementTransformUtils.CanMirrorElements refuses it.
     public const string ElementNotMirrorable = "element_not_mirrorable";
-    public static IReadOnlyList<string> All { get; } = new[] { ElementNotRotatable, ElementNotMirrorable };
+    // The turn moves every point of the target by at most 1 mm and the target has no readable rotation: the 1 mm
+    // readback could not tell the rotation from no rotation.
+    public const string AngleTooSmallForTarget = "angle_too_small_for_target";
+    // keep_original false and the target is already its own mirror image (on or symmetric about the line) with no
+    // readable FamilyInstance.Mirrored flag: the readback could not tell the mirror from no mirror.
+    public const string MirrorImageUnobservable = "mirror_image_unobservable";
+    public static IReadOnlyList<string> All { get; } = new[] { ElementNotRotatable, ElementNotMirrorable, AngleTooSmallForTarget, MirrorImageUnobservable };
 }
 
 public static partial class RevitCommandCatalogue
@@ -59,13 +66,16 @@ public static partial class RevitCommandCatalogue
                 "Rotate 1 to 100 elements (by UniqueId) about one vertical axis through a plan point [x, y] in millimetres by angle_deg degrees, counter-clockwise seen from above when positive, like Revit's Rotate; "
                 + "each element's location point (and its rotation), location curve or sketch profile is read back and must sit where the rotation puts it within 1 mm, else everything is rolled back. "
                 + "Hosted elements (doors, windows) turn only with their host: include the host. Example: turn a wall 90 degrees about its start (0, 0) is element_uids [wall], center [0, 0], angle_deg 90. "
-                + "The " + Refusals + "; elements without a location point, curve or sketch profile, and hosted elements without their host, are element_not_rotatable. Allowed only on enabled test copies.",
+                + ""The " + Refusals + "; elements without a location point, curve or sketch profile, and hosted elements without their host, are element_not_rotatable; "
+                + "an angle too small to move any point of a target by more than 1 mm (for a target without a readable rotation) is angle_too_small_for_target. Allowed only on enabled test copies.",
                 rotateSchema, BindRotate),
             new RevitCommandSpec(RevitRotateMirrorRules.Mirror, true,
                 "Mirror 1 to 100 elements (by UniqueId) in the vertical plane through a plan line axis.start -> axis.end in millimetres, like Revit's Mirror - Draw Axis; with keep_original true the originals stay and the reply maps each to its mirrored copy, "
                 + "with keep_original false the originals themselves are mirrored (a replacement Revit makes is mapped to its original); each result must sit at the mirror image of its original within 1 mm (curves either way round, sketch profiles in any order), else everything is rolled back. "
                 + "Example: a mirrored wing across the line x = 5000 is element_uids [walls], axis {start: [5000, 0], end: [5000, 1000]}, keep_original true. "
-                + "The " + Refusals + "; elements Revit cannot mirror, elements without a location point, curve or sketch profile, and hosted elements without their host are element_not_mirrorable. Allowed only on enabled test copies.",
+                + "The " + Refusals + " (pinned elements are refused even with keep_original true: unpin them first); elements Revit cannot mirror (asked once for the whole set), elements without a location point, curve or sketch profile, and hosted elements without their host are element_not_mirrorable; "
+                + "with keep_original false a target that is already its own mirror image (on or symmetric about the line) and has no readable mirrored flag is mirror_image_unobservable. "
+                + "Originals Revit replaces are listed as deleted. Allowed only on enabled test copies.",
                 mirrorSchema, BindMirror),
         };
     }
@@ -82,7 +92,7 @@ public static partial class RevitCommandCatalogue
         if (degrees == 0) throw new RevitCommandException(RevitCommandCodes.AngleInvalid, field, "zero angle: nothing to rotate");
         if (Math.Abs(degrees) >= RevitRotateMirrorRules.MaxAngleDeg) throw new RevitCommandException(RevitCommandCodes.AngleInvalid, field, "a full turn or more (" + degrees.ToString("0.###", CultureInfo.InvariantCulture) + " degrees); use an angle under 360 either way");
         if (Math.Abs(degrees) < RevitRotateMirrorRules.MinAngleDeg) throw new RevitCommandException(RevitCommandCodes.AngleInvalid, field, "angle under 0.01 degrees (" + degrees.ToString("0.#####", CultureInfo.InvariantCulture) + ")");
-        return new ElementRotateArgs(uids, ToPoint(center), angle);
+        return new ElementRotateArgs(uids, ToPoint(center), angle, degrees);
     }
 
     // Distinct UniqueIds, an axis line at least 1.2 mm long and keep_original.

@@ -30,26 +30,30 @@ namespace Bim.Revit;
 //   makes of hosted doors and windows with their mirrored walls are among the returned ids (reported in also_created,
 //   or as a door target's result); that CanMirrorElements answered per element agrees with Revit's answer for the whole
 //   set; what LocationPoint.Rotation a mirrored instance reports (reported in the readback, never checked); which
-//   neighbours Revit modifies (not reported).
+//   neighbours Revit modifies (not reported); that FamilyInstance.Mirrored toggles on every mirrored point-located
+//   instance (expected, so a copy or in-place result whose flag did not toggle is a mismatch); that the hosted doors and
+//   windows Revit deletes with a replaced host are among the replaced targets (other deleted elements are not reported).
 internal static partial class CommandExecutor
 {
-    static (RevitElement[] Elements, TransformTargetFacts[] Facts, HashSet<string> Uids) PlanTargets(Document d, IReadOnlyList<string> uids)
+    static (RevitElement[] Elements, TransformTargetFacts[] Facts) PlanTargets(Document d, IReadOnlyList<string> uids)
     {
         var elements = uids.Select((uid, i) => ElementByUid(d, uid, "args.element_uids[" + i.ToString(CultureInfo.InvariantCulture) + "]")).ToArray();
-        var facts = elements.Select(TransformFacts).ToArray();
-        return (elements, facts, new HashSet<string>(facts.Select(fact => fact.Uid), StringComparer.OrdinalIgnoreCase));
+        return (elements, elements.Select(TransformFacts).ToArray());
     }
+
+    static XYZ UnitXyz(double[] unit) => new(unit[0], unit[1], unit[2]);
 
     static WritePlan RotatePlan(Document d, ElementRotateArgs args)
     {
-        var (targets, facts, targetUids) = PlanTargets(d, args.ElementUids);
-        for (var i = 0; i < facts.Length; i++) CommandRulesRotateMirror.CheckRotateTarget(facts[i], targetUids, "args.element_uids[" + i.ToString(CultureInfo.InvariantCulture) + "]");
+        var (targets, facts) = PlanTargets(d, args.ElementUids);
+        var rotation = CommandRulesRotateMirror.RotationOf(args);
+        CommandRulesRotateMirror.CheckRotateTargets(facts, rotation);
         var uids = facts.Select(fact => fact.Uid).ToArray();
         var before = facts.Select(fact => fact.Location!).ToArray();
-        var rotation = CommandRulesRotateMirror.RotationOf(args);
         var ids = TransformedIds(targets, facts);
-        var bottom = new XYZ(U(rotation.CenterX), U(rotation.CenterY), 0);
-        var axis = Line.CreateBound(bottom, bottom + XYZ.BasisZ);
+        var line = CommandRulesRotateMirror.RotationAxis(rotation);
+        var bottom = Xyz(line.BottomMm);
+        var axis = Line.CreateBound(bottom, bottom + UnitXyz(line.Direction));
         return new WritePlan(
             () => Refusing("args.element_uids", () => { ElementTransformUtils.RotateElements(d, ids, axis, rotation.AngleRad); return true; }),
             () => CommandReadbackRotateMirror.Rotated(uids, before, LocationsNow(targets), rotation),
@@ -60,19 +64,16 @@ internal static partial class CommandExecutor
 
     static WritePlan MirrorPlan(Document d, ElementMirrorArgs args)
     {
-        var (targets, facts, targetUids) = PlanTargets(d, args.ElementUids);
-        for (var i = 0; i < facts.Length; i++)
-        {
-            var mirrorable = ElementTransformUtils.CanMirrorElements(d, new List<ElementId> { targets[i].Id });
-            CommandRulesRotateMirror.CheckMirrorTarget(facts[i], mirrorable, targetUids, "args.element_uids[" + i.ToString(CultureInfo.InvariantCulture) + "]");
-        }
-        var sources = targets.Select((element, i) => new TransformCandidate(facts[i].Uid, CandidateKey(d, element), facts[i].Location)).ToArray();
+        var (targets, facts) = PlanTargets(d, args.ElementUids);
         var mirror = CommandRulesRotateMirror.MirrorOf(args);
+        // Revit is asked once for the ids actually mirrored (carried hosted targets left out), per id only to name a culprit.
+        var byUid = targets.ToDictionary(element => element.UniqueId, element => element.Id, StringComparer.OrdinalIgnoreCase);
+        CommandRulesRotateMirror.CheckMirrorTargets(facts, mirror, args.KeepOriginal, uids => ElementTransformUtils.CanMirrorElements(d, uids.Select(uid => byUid[uid]).ToList()));
+        var sources = targets.Select((element, i) => new TransformCandidate(facts[i].Uid, CandidateKey(d, element), facts[i].Location)).ToArray();
         var ids = TransformedIds(targets, facts);
-        double ux = mirror.EndX - mirror.StartX, uy = mirror.EndY - mirror.StartY;
-        var length = Math.Sqrt(ux * ux + uy * uy);
         // The plane's normal is the line's horizontal perpendicular; the line itself lies in the plane.
-        var plane = Plane.CreateByNormalAndOrigin(new XYZ(-uy / length, ux / length, 0), new XYZ(U(mirror.StartX), U(mirror.StartY), 0));
+        var planned = CommandRulesRotateMirror.MirrorPlane(mirror);
+        var plane = Plane.CreateByNormalAndOrigin(UnitXyz(planned.Normal), Xyz(planned.OriginMm));
         var created = Array.Empty<ElementId>();
         // Every new element Revit reports, read from the element itself (one failure processing deleted is skipped).
         TransformCandidate[] Created() => created.Select(id => d.GetElement(id)).Where(element => element is { IsValidObject: true })
@@ -85,6 +86,7 @@ internal static partial class CommandExecutor
             () => Map().Mismatch,
             () => CommandReadbackRotateMirror.MirrorJson(Map(), sources, SourcesNow(), Created(), mirror, args.KeepOriginal),
             () => CommandRulesRotateMirror.MirrorCreated(Map()),
-            () => CommandRulesRotateMirror.MirrorModified(Map()));
+            () => CommandRulesRotateMirror.MirrorModified(Map()),
+            () => CommandRulesRotateMirror.MirrorDeleted(Map()));
     }
 }

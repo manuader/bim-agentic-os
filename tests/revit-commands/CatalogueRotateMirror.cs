@@ -98,6 +98,11 @@ static class CatalogueRotateMirrorChecks
         MirrorInPlace();
         MirrorProfiles();
         Json();
+        SmallTurns();
+        MirrorFlags();
+        Replacements();
+        CanMirrorOnce();
+        AxisAndPlane();
     }
 
     static void Catalogue()
@@ -127,8 +132,14 @@ static class CatalogueRotateMirrorChecks
         Check(RevitCommandCatalogue.All.Select(s => s.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(s => s.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct with the rotate and mirror commands");
         Check(RevitRotateMirrorRules.Rotate == "element.rotate" && RevitRotateMirrorRules.Mirror == "element.mirror" && RevitRotateMirrorRules.MinTargets == 1 && RevitRotateMirrorRules.MaxTargets == 100
             && RevitRotateMirrorRules.MinAngleDeg == 0.01 && RevitRotateMirrorRules.MaxAngleDeg == 360, "1 to 100 targets, angle from 0.01 to under 360 degrees either way");
-        var codes = new[] { RevitRotateMirrorCodes.ElementNotRotatable, RevitRotateMirrorCodes.ElementNotMirrorable };
-        Check(codes.SequenceEqual(new[] { "element_not_rotatable", "element_not_mirrorable" }) && RevitRotateMirrorCodes.All.SequenceEqual(codes), "typed refusal codes element_not_rotatable, element_not_mirrorable");
+        var codes = new[] { RevitRotateMirrorCodes.ElementNotRotatable, RevitRotateMirrorCodes.ElementNotMirrorable, RevitRotateMirrorCodes.AngleTooSmallForTarget, RevitRotateMirrorCodes.MirrorImageUnobservable };
+        Check(codes.SequenceEqual(new[] { "element_not_rotatable", "element_not_mirrorable", "angle_too_small_for_target", "mirror_image_unobservable" }) && RevitRotateMirrorCodes.All.SequenceEqual(codes),
+            "typed refusal codes element_not_rotatable, element_not_mirrorable, angle_too_small_for_target, mirror_image_unobservable");
+        // Review NIT7: the pinned refusal holds with keep_original true too, and the description says so.
+        Check(RevitCommandCatalogue.Find("element.mirror")?.Description.Contains("even with keep_original true", StringComparison.Ordinal) == true
+            && RevitCommandCatalogue.Find("element.mirror")?.Description.Contains("deleted", StringComparison.Ordinal) == true
+            && RevitCommandCatalogue.Find("element.rotate")?.Description.Contains("angle_too_small_for_target", StringComparison.Ordinal) == true,
+            "element.mirror documents the pinned refusal with keep_original true and the deleted originals; element.rotate documents angle_too_small_for_target");
         Check(codes.All(code => !RevitCommandCodes.ClientSide.Contains(code) && !RevitCommandCodes.ExecutorReserved.Contains(code) && !RevitTransformCodes.All.Contains(code) && System.Text.RegularExpressions.Regex.IsMatch(code, @"\A[a-z]+(_[a-z0-9]+)*\z")),
             "rotate/mirror refusal codes are snake_case and distinct from every protocol and move/copy code");
         // The catalogue keeps its order: the rotate and mirror commands come right after move and copy (P1-09), before command.batch.
@@ -174,6 +185,12 @@ static class CatalogueRotateMirrorChecks
         {
             var plan = Safe("plan rotation of a bound element.rotate", () => CommandRulesRotateMirror.RotationOf(bound));
             Check(plan is not null && Near(plan.CenterX, 1000) && Near(plan.CenterY, -500) && Near(plan.AngleRad, Math.PI / 2, 1e-12), "the executor's plan rotation is the centre in millimetres and the angle in radians", plan?.ToString() ?? "");
+        }
+        // Review NIT8: the requested angle is echoed exactly as sent, not through radians.
+        if (Accepts("a 33.3 degree turn is accepted", Envelope("element.rotate", RotateArgs(Uids(WallUid), Xy(0, 0), 33.3))) is ElementRotateArgs third)
+        {
+            var echoed = JsonNode.Parse(Safe("rotate json echo", () => CommandReadbackRotateMirror.RotateJson(new[] { WallUid }, new[] { Curve(1000, 0, 0, 6000, 0, 0) }, new TransformLocation?[] { null }, CommandRulesRotateMirror.RotationOf(third))) ?? "{}");
+            Check(third.AngleDeg == 33.3 && echoed?["angle_deg"]?.GetValue<double>() == 33.3, "the readback echoes angle_deg 33.3 exactly as requested", echoed?.ToJsonString() ?? "");
         }
     }
 
@@ -256,10 +273,11 @@ static class CatalogueRotateMirrorChecks
     {
         var wall = Facts(Curve(0, 0, 0, 6000, 0, 0));
         var only = new[] { WallUid };
+        // A quarter turn about the origin and a mirror line far to the west move every target here by metres.
         string? Rotate(TransformTargetFacts facts, IReadOnlyCollection<string> targets, string field = "args.element_uids[0]") =>
-            Thrown(() => CommandRulesRotateMirror.CheckRotateTarget(facts, targets, field)) is { } error ? error.Code + "@" + error.Field + "|" + error.Detail : null;
+            Thrown(() => CommandRulesRotateMirror.CheckRotateTarget(facts, targets, new PlanRotation(0, 0, Math.PI / 2), field)) is { } error ? error.Code + "@" + error.Field + "|" + error.Detail : null;
         string? Mirror(TransformTargetFacts facts, bool mirrorable, IReadOnlyCollection<string> targets, string field = "args.element_uids[0]") =>
-            Thrown(() => CommandRulesRotateMirror.CheckMirrorTarget(facts, mirrorable, targets, field)) is { } error ? error.Code + "@" + error.Field + "|" + error.Detail : null;
+            Thrown(() => CommandRulesRotateMirror.CheckMirrorTarget(facts, mirrorable, targets, new PlanMirror(-10000, 0, -10000, 1), false, field)) is { } error ? error.Code + "@" + error.Field + "|" + error.Detail : null;
 
         Check(Rotate(wall, only) is null && Mirror(wall, true, only) is null, "an unpinned model element with a location curve can be rotated and mirrored");
         Check(Rotate(Facts(Point(0, 0, 0)), only) is null && Mirror(Facts(Point(0, 0, 0)), true, only) is null, "an element with a location point can be rotated and mirrored");
@@ -486,5 +504,155 @@ static class CatalogueRotateMirrorChecks
             && column?["unique_id"]?.GetValue<string>() == ColumnUid && column?["new"]?.GetValue<bool>() == false && column?["after"]?["point"]?[1]?.GetValue<double>() == 3500
             && mirrored?["also_created"]?.AsArray().Select(n => n?.GetValue<string>()).SequenceEqual(new[] { DoorCopyUid }) == true,
             "mirror readback JSON lists the axis, keep_original, each source with its result (new or the original), locations before and after, and also_created", mirrored?.ToJsonString() ?? "");
+    }
+
+    // Review SF1: a turn that moves a target by at most 1 mm and changes no readable rotation could pass unturned.
+    static void SmallTurns()
+    {
+        var tiny = new PlanRotation(0, 0, 0.01 * Math.PI / 180, 0.01);
+        var wall = Curve(-3000, 0, 0, 3000, 0, 0);
+        // Each end moves 2 * 3000 * sin(0.005 degrees) = 0.5236 mm <= 1 mm: an unturned wall would pass a 1 mm readback.
+        var unturned = Safe("small-turn readback", () => CommandReadbackRotateMirror.Rotated(new[] { WallUid }, new[] { wall }, new TransformLocation?[] { wall }, tiny) ?? "");
+        Check(unturned is { Length: > 0 } why && why.Contains(WallUid, StringComparison.Ordinal), "a 0.01 degree turn of a 6 m wall about its middle, read back unturned, does not pass", unturned ?? "");
+        string? Refuse(TransformLocation location, PlanRotation rotation) =>
+            Thrown(() => CommandRulesRotateMirror.CheckRotateTarget(Facts(location), new[] { WallUid }, rotation, "args.element_uids[2]")) is { } error ? error.Code + "@" + error.Field + "|" + error.Detail : null;
+        Check(Refuse(wall, tiny) is { } small && small.StartsWith("angle_too_small_for_target@args.element_uids[2]|", StringComparison.Ordinal) && small.Contains("0.524", StringComparison.Ordinal),
+            "the same target is refused angle_too_small_for_target before any write, stating the 0.524 mm largest move", Refuse(wall, tiny) ?? "");
+        // 0.1 degrees: 2 * 3000 * sin(0.05 degrees) = 5.236 mm > 1 mm.
+        Check(Refuse(wall, new PlanRotation(0, 0, 0.1 * Math.PI / 180, 0.1)) is null, "a 0.1 degree turn of the same wall moves its ends 5.2 mm and is accepted");
+        // 0.01 degrees about a centre 10 km away: 2 * 1e7 * sin(0.005 degrees) = 1745 mm.
+        Check(Refuse(wall, new PlanRotation(0, 10_000_000, 0.01 * Math.PI / 180, 0.01)) is null, "a 0.01 degree turn about a far centre is accepted");
+        // A column on the axis does not move, but its readable rotation changes by the angle; without one it is refused.
+        Check(Refuse(Point(0, 0, 0, 0.3), tiny) is null, "a column on the axis with a readable rotation can be turned (its rotation is read back)");
+        Check(Refuse(Point(0, 0, 0, null), new PlanRotation(0, 0, Math.PI / 2, 90))?.StartsWith("angle_too_small_for_target@", StringComparison.Ordinal) == true, "a point on the axis without a readable rotation is refused even by 90 degrees");
+        var sets = Thrown(() => CommandRulesRotateMirror.CheckRotateTargets(new[] { Facts(Curve(0, 0, 0, 6000, 0, 0)), new TransformTargetFacts(ColumnUid, false, false, false, false, false, Curve(-3000, 0, 0, 3000, 0, 0)) }, tiny));
+        Check(sets is { Code: RevitRotateMirrorCodes.AngleTooSmallForTarget, Field: "args.element_uids[1]" }, "every target is checked in request order: the second one, moving 0.52 mm, is refused at its index", sets?.Code + " " + sets?.Field);
+        Check(Thrown(() => CommandRulesRotateMirror.CheckRotateTargets(new[] { Facts(Curve(0, 0, 0, 6000, 0, 0)) }, tiny)) is null, "a wall turned 0.01 degrees about its end (the far end moves 1.05 mm) is accepted");
+    }
+
+    static TransformLocation Flagged(double x, double y, double z, bool mirrored) => new(TransformLocationKinds.Point, new[] { x, y, z }, null, 0.3, null, mirrored);
+
+    // Review SF2: a point-located instance on the mirror line sits at its own mirror image; only its orientation
+    // (FamilyInstance.Mirrored) shows whether it was mirrored.
+    static void MirrorFlags()
+    {
+        var onAxis = new PlanMirror(0, 0, 0, 1);
+        var sources = new[] { new TransformCandidate(ColumnUid, ColumnKey, Point(0, 1000, 0, 0.3)) };
+        var same = Safe("unflagged on-axis mirror", () => CommandRulesRotateMirror.MapMirrored(sources, new TransformCandidate?[] { sources[0] }, Array.Empty<TransformCandidate>(), onAxis, false));
+        Check(same?.Mismatch is { } unseen && unseen.Contains(ColumnUid, StringComparison.Ordinal), "a column on the mirror line read back unchanged, with no mirrored flag, is a mismatch", same?.ToString() ?? "");
+        var flagged = new[] { new TransformCandidate(ColumnUid, ColumnKey, Flagged(0, 1000, 0, false)) };
+        var toggled = Safe("toggled on-axis mirror", () => CommandRulesRotateMirror.MapMirrored(flagged, new TransformCandidate?[] { flagged[0] with { Location = Flagged(0, 1000, 0, true) } }, Array.Empty<TransformCandidate>(), onAxis, false));
+        Check(toggled is { Mismatch: null } && toggled.Results.SequenceEqual(new[] { new MirrorResult(ColumnUid, ColumnUid, false) }), "a column on the line whose mirrored flag toggled matches", toggled?.ToString() ?? "");
+        var stuck = Safe("untoggled mirror", () => CommandRulesRotateMirror.MapMirrored(flagged, new TransformCandidate?[] { flagged[0] }, Array.Empty<TransformCandidate>(), onAxis, false));
+        Check(stuck?.Mismatch is { } flag && flag.Contains("mirrored flag", StringComparison.Ordinal), "a column on the line whose mirrored flag did not toggle is a mismatch", stuck?.ToString() ?? "");
+        // Off the line: (2000, 0) -> (-2000, 0); right place but flag not toggled is still a mismatch.
+        var off = new[] { new TransformCandidate(ColumnUid, ColumnKey, Flagged(2000, 0, 0, true)) };
+        Check(Safe("off-axis untoggled", () => CommandRulesRotateMirror.MapMirrored(off, new TransformCandidate?[] { off[0] with { Location = Flagged(-2000, 0, 0, true) } }, Array.Empty<TransformCandidate>(), onAxis, false))?.Mismatch is not null,
+            "a column at its mirror image whose flag stayed true is a mismatch");
+        Check(Safe("off-axis toggled", () => CommandRulesRotateMirror.MapMirrored(off, new TransformCandidate?[] { off[0] with { Location = Flagged(-2000, 0, 0, false) } }, Array.Empty<TransformCandidate>(), onAxis, false))?.Mismatch is null,
+            "a column at its mirror image whose flag toggled to false matches");
+        Check(Safe("flag unreadable after", () => CommandRulesRotateMirror.MapMirrored(off, new TransformCandidate?[] { off[0] with { Location = Point(-2000, 0, 0) } }, Array.Empty<TransformCandidate>(), onAxis, false))?.Mismatch is not null,
+            "a mirrored flag read before but unreadable after is a mismatch");
+        // Copies: a copy whose flag equals its source's is not its mirror image.
+        var keep = Safe("copy flag", () => CommandRulesRotateMirror.MapMirrored(flagged, new TransformCandidate?[] { flagged[0] }, new[] { new TransformCandidate(ColumnCopyUid, ColumnKey, Flagged(0, 1000, 0, false)) }, onAxis, true));
+        Check(keep?.Mismatch is not null, "a copy on the line with its source's mirrored flag maps to no source", keep?.ToString() ?? "");
+        var copy = Safe("copy flag toggled", () => CommandRulesRotateMirror.MapMirrored(flagged, new TransformCandidate?[] { flagged[0] }, new[] { new TransformCandidate(ColumnCopyUid, ColumnKey, Flagged(0, 1000, 0, true)) }, onAxis, true));
+        Check(copy is { Mismatch: null } && copy.Results.SequenceEqual(new[] { new MirrorResult(ColumnUid, ColumnCopyUid, true) }), "a copy on the line with the toggled flag is the source's mirrored copy", copy?.ToString() ?? "");
+        Check(CommandRulesRotateMirror.Mirror(Flagged(2000, 0, 0, true), onAxis).Mirrored == false && CommandRulesRotateMirror.Mirror(Point(2000, 0, 0), onAxis).Mirrored is null, "the expected mirror image toggles a read flag and expects none when none was read");
+        // Refused before any write: keep_original false on the line without a flag; a flag, keep_original true or another line are fine.
+        string? Refuse(TransformLocation location, bool keepOriginal, PlanMirror mirror) =>
+            Thrown(() => CommandRulesRotateMirror.CheckMirrorTarget(new TransformTargetFacts(ColumnUid, false, false, false, false, false, location), true, new[] { ColumnUid }, mirror, keepOriginal, "args.element_uids[1]")) is { } error ? error.Code + "@" + error.Field : null;
+        Check(Refuse(Point(0, 1000, 0, 0.3), false, onAxis) == "mirror_image_unobservable@args.element_uids[1]", "a column on the line without a mirrored flag is mirror_image_unobservable with keep_original false");
+        Check(Refuse(Flagged(0, 1000, 0, false), false, onAxis) is null && Refuse(Point(0, 1000, 0, 0.3), true, onAxis) is null && Refuse(Point(0, 1000, 0, 0.3), false, new PlanMirror(5000, 0, 5000, 1)) is null,
+            "with a flag, with keep_original true, or mirrored in another line, it is accepted");
+        // A floor symmetric about the line x = 3000 is its own mirror image as a set of points.
+        var symmetric = Profile(new double[] { 0, 0, 0 }, new double[] { 6000, 0, 0 }, new double[] { 6000, 4000, 0 }, new double[] { 0, 4000, 0 });
+        Check(Refuse(symmetric, false, new PlanMirror(3000, 0, 3000, 1)) == "mirror_image_unobservable@args.element_uids[1]", "a floor symmetric about the mirror line is mirror_image_unobservable with keep_original false");
+        Check(Refuse(Curve(0, 2000, 0, 6000, 2000, 0), false, new PlanMirror(0, 2000, 1000, 2000)) == "mirror_image_unobservable@args.element_uids[1]", "a wall lying on the mirror line is mirror_image_unobservable with keep_original false");
+        var json = JsonNode.Parse(Safe("mirror json flag", () => CommandReadbackRotateMirror.MirrorJson(toggled ?? new MirrorMapping(Array.Empty<MirrorResult>(), Array.Empty<string>(), null), flagged, new TransformCandidate?[] { flagged[0] with { Location = Flagged(0, 1000, 0, true) } }, Array.Empty<TransformCandidate>(), onAxis, false)) ?? "{}");
+        Check(json?["mirrored"]?[0]?["before"]?["mirrored"]?.GetValue<bool>() == false && json?["mirrored"]?[0]?["after"]?["mirrored"]?.GetValue<bool>() == true, "the readback reports the mirrored flag before and after", json?.ToJsonString() ?? "");
+    }
+
+    // Review SF3: originals Revit replaced are reported deleted, so a batch does not blame the step that created them.
+    static void Replacements()
+    {
+        var sources = new[] { new TransformCandidate(WallUid, WallKey, Curve(0, 0, 0, 6000, 0, 0)), new TransformCandidate(ColumnUid, ColumnKey, Point(6000, 500, 0, 0.3)) };
+        var replaced = Safe("replaced mapping", () => CommandRulesRotateMirror.MapMirrored(sources, new TransformCandidate?[] { null, sources[1] with { Location = Point(6000, 3500, 0) } }, new[] { new TransformCandidate(WallCopyUid, WallKey, Curve(0, 4000, 0, 6000, 4000, 0)) }, North, false));
+        Check(replaced is { Mismatch: null } && CommandRulesRotateMirror.MirrorDeleted(replaced).SequenceEqual(new[] { WallUid }), "an original Revit replaced is deleted", replaced?.ToString() ?? "");
+        var copies = Safe("copy mapping deleted", () => CommandRulesRotateMirror.MapMirrored(sources, sources.Select(source => (TransformCandidate?)source).ToArray(), new[] { new TransformCandidate(WallCopyUid, WallKey, Curve(0, 4000, 0, 6000, 4000, 0)), new TransformCandidate(ColumnCopyUid, ColumnKey, Point(6000, 3500, 0)) }, North, true));
+        Check(copies is { Mismatch: null } && CommandRulesRotateMirror.MirrorDeleted(copies).Count == 0, "mirrored copies delete nothing", copies?.ToString() ?? "");
+        if (replaced is not null)
+        {
+            var json = JsonNode.Parse(Safe("mirror json deleted", () => CommandReadbackRotateMirror.MirrorJson(replaced, sources, new TransformCandidate?[] { null, sources[1] with { Location = Point(6000, 3500, 0) } }, new[] { new TransformCandidate(WallCopyUid, WallKey, Curve(0, 4000, 0, 6000, 4000, 0)) }, North, false)) ?? "{}");
+            Check(json?["deleted"]?.AsArray().Select(n => n?.GetValue<string>()).SequenceEqual(new[] { WallUid }) == true, "the mirror readback lists the deleted originals", json?.ToJsonString() ?? "");
+        }
+        // The reply carries them, like element.delete.
+        try
+        {
+            var envelope = RevitCommandProtocol.Parse(Envelope("element.mirror", MirrorArgs(Uids(WallUid), Xy(0, 2000), Xy(1000, 2000), false)).ToJsonString());
+            var reply = CommandResponses.Success(new CommandRequest(envelope, envelope.RequestSha256), new[] { WallCopyUid }, Array.Empty<string>(), "{}", Array.Empty<string>(), replaced is null ? Array.Empty<string>() : CommandRulesRotateMirror.MirrorDeleted(replaced));
+            var parsed = RevitCommandResponse.Parse(reply.ToJson());
+            Check(parsed.Deleted.SequenceEqual(new[] { WallUid }) && parsed.Created.SequenceEqual(new[] { WallCopyUid }), "the element.mirror reply lists the replacement as created and the original as deleted", reply.ToJson());
+            Check(CommandResponses.Success(new CommandRequest(envelope, envelope.RequestSha256), Array.Empty<string>(), Array.Empty<string>(), "{}", Array.Empty<string>()).Deleted.Count == 0, "other writes still delete nothing by default");
+        }
+        catch (Exception error) { Check(false, "element.mirror reply with deleted", error.GetType().Name + ": " + error.Message); }
+        // A batch: step 0 copies a wall (creating X), step 1 mirrors X without keeping it and Revit replaces it by Y.
+        string X = Numbered(0x7001), Y = Numbered(0x7002);
+        var batch = RevitCommandProtocol.Parse(Envelope("command.batch", new JsonObject { ["steps"] = new JsonArray(
+            Step("s-0", "element.copy", new JsonObject { ["element_uids"] = Uids(WallUid), ["vector_mm"] = new JsonArray(0, 5000, 0) }),
+            Step("s-1", "element.mirror", MirrorArgs(Uids(X), Xy(0, 2000), Xy(1000, 2000), false))) }).ToJsonString());
+        var steps = ((CommandBatchArgs)batch.Args).Steps.Select(step => RevitCommandBatch.StepEnvelope(batch, step.Index)).ToArray();
+        RevitCommandResponse Reply(RevitCommandEnvelope step, string[] created, string[] deleted) =>
+            RevitCommandResponse.Success(new RevitCommandReceipt(step.OperationId, step.Command, step.Document.UniqueId, step.RequestSha256, false), created, Array.Empty<string>(), deleted, "{}", Array.Empty<string>());
+        var mirrorDeleted = Safe("batch mirror deleted", () => CommandRulesRotateMirror.MirrorDeleted(new MirrorMapping(new[] { new MirrorResult(X, Y, true) }, Array.Empty<string>(), null, new[] { X }))) ?? Array.Empty<string>();
+        RevitCommandResponse? persisted = null;
+        var line = RevitCommandBatch.Run(batch, batch.RequestSha256, _ => false, 0, 2000,
+            step => step.OperationId == "s-0" ? Reply(step, new[] { X }, Array.Empty<string>()) : Reply(step, new[] { Y }, mirrorDeleted.ToArray()),
+            uid => !string.Equals(uid, X, StringComparison.OrdinalIgnoreCase), () => { }, response => { persisted = response; return "persisted"; });
+        Check(line == "persisted" && persisted is { } done && done.Created.SequenceEqual(new[] { Y }) && done.Deleted.Count == 0,
+            "a batch whose mirror step replaced an element an earlier step created persists, with only the replacement created", line);
+        // Without the deleted list the survivor check blamed the copy step (the defect the review found).
+        var blamed = RevitCommandBatch.Run(batch, batch.RequestSha256, _ => false, 0, 2000,
+            step => step.OperationId == "s-0" ? Reply(step, new[] { X }, Array.Empty<string>()) : Reply(step, new[] { Y }, Array.Empty<string>()),
+            uid => !string.Equals(uid, X, StringComparison.OrdinalIgnoreCase), () => { }, _ => "persisted");
+        Check(blamed != "persisted" && blamed.Contains("args.steps[0]", StringComparison.Ordinal), "without the deleted list the batch would refuse, blaming the copy step", blamed);
+    }
+
+    // Review SF4: Revit is asked once for the ids actually mirrored; per id only to name a culprit, never for a carried door.
+    static void CanMirrorOnce()
+    {
+        var far = new PlanMirror(-10000, 0, -10000, 1);
+        var wall = new TransformTargetFacts(WallUid, false, false, false, false, false, Curve(0, 0, 0, 6000, 0, 0));
+        var door = new TransformTargetFacts(DoorUid, false, false, false, true, true, Point(1500, 0, 0), WallUid);
+        var column = new TransformTargetFacts(ColumnUid, false, false, false, false, false, Point(8000, 0, 0));
+        var asked = new List<string>();
+        RevitCommandException? Ask(IReadOnlyList<TransformTargetFacts> facts, Func<IReadOnlyList<string>, bool> answer)
+        {
+            asked.Clear();
+            return Thrown(() => CommandRulesRotateMirror.CheckMirrorTargets(facts, far, true, ids => { asked.Add(string.Join(",", ids)); return answer(ids); }));
+        }
+        Check(Ask(new[] { wall, door }, _ => true) is null && asked.SequenceEqual(new[] { WallUid }), "[wall, its door]: CanMirrorElements is asked once, for the wall only", string.Join(" / ", asked));
+        var culprit = Ask(new[] { door, wall, column }, ids => !ids.Contains(ColumnUid));
+        Check(culprit is { Code: RevitRotateMirrorCodes.ElementNotMirrorable, Field: "args.element_uids[2]" } && asked.SequenceEqual(new[] { WallUid + "," + ColumnUid, WallUid, ColumnUid }),
+            "a refused set is asked id by id in request order, skipping the carried door, and the column is refused at its index", culprit?.Field + " | " + string.Join(" / ", asked));
+        var together = Ask(new[] { wall, column }, ids => ids.Count == 1);
+        Check(together is { Code: RevitRotateMirrorCodes.ElementNotMirrorable, Field: "args.element_uids" }, "a set refused although each alone is accepted is refused at args.element_uids", together?.Field ?? "");
+        Check(Ask(new[] { wall, column with { Pinned = true } }, _ => true) is { Code: RevitTransformCodes.ElementPinned, Field: "args.element_uids[1]" } && asked.Count == 0, "per-target refusals come before Revit is asked at all");
+    }
+
+    // Review NIT9: the rotation axis and the mirror plane the executor hands to Revit.
+    static void AxisAndPlane()
+    {
+        var axis = CommandRulesRotateMirror.RotationAxis(new PlanRotation(1000, -500, Math.PI / 2));
+        Check(NearAll(axis.BottomMm, 1000, -500, 0) && NearAll(axis.Direction, 0, 0, 1), "the rotation axis is vertical (+z) through the centre at z = 0");
+        // Line (0,0)->(3000,4000): unit (0.6, 0.8), left normal (-0.8, 0.6, 0), origin the start.
+        var plane = CommandRulesRotateMirror.MirrorPlane(new PlanMirror(0, 0, 3000, 4000));
+        Check(NearAll(plane.Normal, -0.8, 0.6, 0) && NearAll(plane.OriginMm, 0, 0, 0), "the mirror plane's normal is the line's left unit perpendicular and its origin the line's start");
+        // Reflecting (5000, 0, 0) in that plane: p - 2 ((p - o) . n) n = (5000, 0) - 2 (-4000) (-0.8, 0.6) = (-1400, 4800), as MirrorPoint.
+        var p = new double[] { 5000, 0, 0 };
+        var dot = (p[0] - plane.OriginMm[0]) * plane.Normal[0] + (p[1] - plane.OriginMm[1]) * plane.Normal[1] + (p[2] - plane.OriginMm[2]) * plane.Normal[2];
+        Check(NearAll(new[] { p[0] - 2 * dot * plane.Normal[0], p[1] - 2 * dot * plane.Normal[1], p[2] - 2 * dot * plane.Normal[2] }, -1400, 4800, 0), "reflecting in the executor's plane gives the hand-computed (-1400, 4800)");
+        var offset = CommandRulesRotateMirror.MirrorPlane(new PlanMirror(5000, 100, 5000, 2100));
+        Check(NearAll(offset.Normal, -1, 0, 0) && NearAll(offset.OriginMm, 5000, 100, 0), "a north-running line x = 5000 has normal (-1, 0, 0) through (5000, 100, 0)");
     }
 }
