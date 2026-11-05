@@ -461,11 +461,11 @@ try {
         // Drifted snapshot: the second wall moved 50 mm in x, the door deleted in Revit.
         var drifted=System.Text.Json.Nodes.JsonNode.Parse(snapshotText)!.AsObject();
         foreach(var element in drifted["elements"]!.AsArray().ToArray())
-            if((string)element!["Id"]!==movedWall) { element!["GeometryMetres"]![0]=5.05; element!["GeometryMetres"]![2]=5.05; }
+            if((string?)element!["Id"]==movedWall) { element!["GeometryMetres"]![0]=5.05; element!["GeometryMetres"]![2]=5.05; }
         foreach(var element in drifted["elements"]!.AsArray().ToArray())
-            if((string)element!["Id"]!==deletedDoor) drifted["elements"]!.AsArray().Remove(element);
+            if((string?)element!["Id"]==deletedDoor) drifted["elements"]!.AsArray().Remove(element);
         foreach(var source in drifted["sources"]!.AsArray().ToArray())
-            if((string)source!["id"]!==deletedDoor) drifted["sources"]!.AsArray().Remove(source);
+            if((string?)source!["id"]==deletedDoor) drifted["sources"]!.AsArray().Remove(source);
         var driftedText=drifted.ToJsonString();
         var snapshotPath=Input("drift-snapshot.json",driftedText);
         System.Text.Json.Nodes.JsonObject Mirror(string document=driftDoc,int revision=3,string? projectId=null) {

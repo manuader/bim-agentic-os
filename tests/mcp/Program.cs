@@ -517,7 +517,7 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     var storeBytes=File.ReadAllBytes(Path.Combine(driftStore,"project.json"));
     var drifted=Node(snapshotText).AsObject();
     foreach(var element in drifted["elements"]!.AsArray().ToArray())
-        if((string)element!["Id"]!=="db98eeb5-3a66-7972-29a5-494ec813984a") { element!["GeometryMetres"]![0]=5.05; element!["GeometryMetres"]![2]=5.05; }
+        if((string?)element!["Id"]=="db98eeb5-3a66-7972-29a5-494ec813984a") { element!["GeometryMetres"]![0]=5.05; element!["GeometryMetres"]![2]=5.05; }
     var driftedText=drifted.ToJsonString();
     JsonObject Mirror(int revision=3,string document=driftDoc) => new JsonObject {
         ["document"]=new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\p2-08\copy.rvt",["unique_id"]=document},
