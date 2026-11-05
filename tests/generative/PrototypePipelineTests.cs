@@ -20,6 +20,9 @@ static class PrototypePipelineTests
     const string PackId = "ar.caba.codigo-edificacion";
     // PrototypeTests.PinnedSha256: canonical JSON of the 2-bedroom prototype on the 8.66 x 20 m lot, 6 alternatives, seed 0.
     const string PinnedPrototypeSha256 = "eb6da9ef00b170918354c2823fa5d5490e4eb0ac564bd1944e0ece4fff2c8c70";
+    // P7-10: SHA-256 of PrototypePipelineSerializer output before the facade criterion (main f671157).
+    const string PinnedRunSha256 = "pending";
+    const string PinnedCraftedSha256 = "pending";
     static readonly Guid ProjectId = Guid.Parse("00000000-0000-4000-8000-0000000007a7");
 
     public static void Run(Action<bool, string, string> check, string root)
@@ -315,6 +318,10 @@ static class PrototypePipelineTests
         Check(run.Alternatives.Zip(germanRun.Alternatives).All(pair => (pair.First.Project is null) == (pair.Second.Project is null)
             && (pair.First.Project is null || Json(pair.First.Project) == Json(pair.Second.Project!))), "the BIM-IR projects are identical across runs and cultures");
         var crafted = PrototypePipelineSerializer.Serialize(ranked);
+        // P7-10 byte pin: the P7-07 canonical JSON of the pinned run and of the crafted plans, recorded before the facade
+        // criterion existed; an absent or zero facade weight must keep exactly these bytes.
+        Check(Sha(first) == PinnedRunSha256, "P7-07 pipeline JSON of the pinned 2-bedroom run is byte-identical to the pre-P7-10 pin", Sha(first));
+        Check(Sha(crafted) == PinnedCraftedSha256, "P7-07 pipeline JSON of the crafted plans is byte-identical to the pre-P7-10 pin", Sha(crafted));
         // The stage options are part of the canonical form: runs differing only in them serialize differently.
         var standard = PrototypePipelineSerializer.Serialize(PrototypePipeline.Rank(brief, new[] { flat }, options));
         var tallResult = PrototypePipeline.Rank(brief, new[] { flat }, options with { Ir = new FacadeIrOptions(WallHeightMetres: 3) });
