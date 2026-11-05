@@ -24,10 +24,13 @@ public sealed record PrototypePipelineRejection(PrototypePipelineGate Gate, stri
 // are its run-time overrides ("<skill id>/<parameter>", as FacadePlanner). ProjectId and Revision identify the BIM-IR
 // prototype of every alternative (each accepted alternative gets its own project with that identity; the caller picks
 // one to commit). CirculationWeight is the seventh ranking criterion's weight (CirculationRanker), always with
-// RequireValid: the circulation gate. Circulation, Facade and Ir are the stage options (defaults when null).
+// RequireValid: the circulation gate. Circulation, Facade and Ir are the stage options (defaults when null). Snap (P7-08,
+// opt-in, off when null) runs PrototypeSnap on every plan before the gates, with the Ir wall thickness: snapped plans go
+// through the gates in place of the generated ones, a refused snap rejects its alternative at the prototype gate with the
+// prototype_snap_* reasons. With Snap null the result and its canonical JSON are exactly those of P7-07.
 public sealed record PrototypePipelineOptions(SkillManifest Pack, Guid ProjectId, int Revision = 0,
     double CirculationWeight = CirculationScoring.DefaultCirculationWeight, CirculationOptions? Circulation = null, FacadeOptions? Facade = null,
-    FacadeIrOptions? Ir = null, IReadOnlyDictionary<string, double>? Parameters = null);
+    FacadeIrOptions? Ir = null, IReadOnlyDictionary<string, double>? Parameters = null, PrototypeSnapOptions? Snap = null);
 
 // One alternative through the pipeline. Index and Seed are its generation position and seed; Strategy the prototype
 // strategy (null when ranking caller-supplied plans). Rank is 1-based among the accepted alternatives and 0 for a
