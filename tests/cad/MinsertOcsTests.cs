@@ -202,7 +202,7 @@ internal static class MinsertOcsTests
         {
             // ATTRIBs of a MINSERT repeat in every cell, keyed by the cell.
             var tagBlock = G("0 BLOCK|5 TB|8 0|2 TAG|70 2|10 0|20 0|30 0|0 ATTDEF|5 TD|8 0|10 0|20 0|30 0|40 1|1 X|3 Name|2 N|70 0|0 ENDBLK|5 TE|8 0");
-            var attributed = DxfReader.Parse(Doc(G("0 INSERT|5 A1|8 0|66 1|2 TAG|10 10|20 0|50 90|70 2|71 1|44 100|0 ATTRIB|5 AT|8 0|10 12|20 3|40 1|1 V|2 N|0 SEQEND|5 AS|8 0")), tagBlock), "attr.dxf");
+            var attributed = DxfReader.Parse(Doc(G("0 INSERT|5 A1|8 0|66 1|2 TAG|10 10|20 0|50 90|70 2|71 1|44 100|0 ATTRIB|5 AT|8 0|10 12|20 3|40 1|1 V|2 N|0 SEQEND|5 AS|8 0"), tagBlock), "attr.dxf");
             var attributes = attributed.Explode().Entities.OfType<DxfAttribute>().ToList();
             C(attributes.Count == 2 && NearP(attributes[0].Insertion, 12, 3) && attributes[0].InsertHandle == "A1[0,0]" && Path0(attributes[0]) == "A1[0,0]"
                 && NearP(attributes[1].Insertion, 12, 103) && attributes[1].InsertHandle == "A1[0,1]" && Near(attributes[1].RotationDegrees, 0),
