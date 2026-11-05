@@ -620,7 +620,7 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
 
     var none=Path.Combine(lockRoot,"none.lock.json");
     var missing=Verify(skillsDir,none);
-    Check(IsError(missing) && Text(missing)=="""{"status":"failed","code":"lock_missing","subject":"none.lock.json","detail":"lock file not found"}""" && Text(missing)==Cli("skills-lock","verify",skillsDir,none) && !File.Exists(none),"skills_lock_verify of a missing lock is lock_missing, byte-equal to the CLI, and creates nothing");
+    Check(IsError(missing) && Text(missing)=="""{"status":"failed","code":"lock_missing","subject":"none.lock.json","detail":"lock file not found","mode":"verify","verified":false,"packs":[],"issues":[{"code":"lock_missing","subject":"none.lock.json","detail":"lock file not found"}]}""" && Text(missing)==Cli("skills-lock","verify",skillsDir,none) && !File.Exists(none),"skills_lock_verify of a missing lock is lock_missing, byte-equal to the CLI, and creates nothing");
     var emptyPath=Verify(skillsDir,"");
     Check(IsError(emptyPath) && Text(emptyPath)=="""{"status":"failed","code":"skills_lock_path_invalid","detail":"lock"}""","skills_lock_verify empty lock path is skills_lock_path_invalid");
     var nulPath=Verify("a\0b",lockFile);

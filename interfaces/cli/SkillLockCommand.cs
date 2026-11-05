@@ -59,14 +59,16 @@ internal static class SkillLockCommand
         catch (Exception error) { Fail(SkillLockTool.Failure(SkillLockTool.InternalError, null, error.GetType().Name)); }
     }
 
-    static void Pin(string skills, string lockPath, string[] ids)
+    static void Pin(string skills, string lockPath, string[] ids) => Succeeded("pin", lockPath, PinNew(skills, lockPath, ids, null), null);
+
+    internal static SkillLock PinNew(string skills, string lockPath, string[] ids, Action<string>? beforeWrite)
     {
         var full = Path.GetFullPath(lockPath);
         var at = Path.GetFileName(full);
         Refuse(full, at);
         var pinned = SkillLocking.Pin(skills, ids);
         WriteNew(full, at, SkillLockFile.Serialize(pinned));
-        Succeeded("pin", lockPath, pinned, null);
+        return pinned;
     }
 
     // Pre-checks so nothing is hashed for a path that can never be written; WriteNew re-checks at the move.

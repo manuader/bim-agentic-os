@@ -551,7 +551,7 @@ public static class SkillLocking
     // and durably rewrites lockPath. Without packIds the lock must exist and parse; with packIds an unreadable or
     // malformed existing lock is treated as absent and repaired (a link or I/O failure still refuses). Any pin failure
     // throws before the file is touched. The file is rewritten only when the pins change or its bytes are not canonical.
-    public static SkillLockUpdate Update(string skillsRoot, string lockPath, IEnumerable<string>? packIds = null)
+    public static SkillLockUpdate Update(string skillsRoot, string lockPath, IEnumerable<string>? packIds = null, IEnumerable<string>? unpin = null)
     {
         ArgumentNullException.ThrowIfNull(skillsRoot);
         ArgumentNullException.ThrowIfNull(lockPath);
