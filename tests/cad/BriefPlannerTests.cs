@@ -21,6 +21,8 @@ internal static class BriefPlannerTests
     private static string G(string spec) => string.Concat(spec.Split('|').Select(item => { var space = item.IndexOf(' ', StringComparison.Ordinal); return item[..space] + "\n" + item[(space + 1)..] + "\n"; }));
     private static string Text(string handle, double x, double y, string value) =>
         G("0 TEXT|5 " + handle + "|8 ROOM-TEXT|10 " + F(x) + "|20 " + F(y) + "|40 200|1 " + value);
+    private static string Rect(string handle, double x0, double y0, double x1, double y1) =>
+        G("0 LWPOLYLINE|5 " + handle + "|8 ROOMS|90 4|70 1|10 " + F(x0) + "|20 " + F(y0) + "|10 " + F(x1) + "|20 " + F(y0) + "|10 " + F(x1) + "|20 " + F(y1) + "|10 " + F(x0) + "|20 " + F(y1));
     private static BriefDraft Dxf(string entities, BriefExtractOptions? options = null) =>
         BriefExtract.FromDxf(DxfReader.Parse(G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC|0 SECTION|2 ENTITIES") + entities + G("0 ENDSEC|0 EOF"), "gen.dxf"), options);
 
@@ -42,19 +44,19 @@ internal static class BriefPlannerTests
             var draft = BriefExtract.FromDxf(DxfReader.ReadFile(Path.Combine(fixtures, "brief-plan.dxf")));
             var r = BriefPlanner.ToPlannerBrief(draft);
             C(BriefPlannerOptions.DefaultMinConfidence == 0.5 && new BriefPlannerOptions().MinConfidence == 0.5, "default threshold is 0.5");
-            C(Ids(r.Kept) == "dormitorio-1,cocina,living-room,lavadero,hall" && Ids(r.Dropped) == "bano,bano-2", "defaults keep five rooms and drop the mismatched baño and the later duplicate (draft order)", Show(r));
+            C(Ids(r.Kept) == "dormitorio-1,cocina,living-room,bano-2,lavadero,hall" && Ids(r.Dropped) == "bano", "defaults keep six rooms and drop the mismatched low-confidence baño (draft order)", Show(r));
             var bano = r.Dropped.FirstOrDefault(x => x.Id == "bano");
             C(bano is not null && bano.Name == "BAÑO" && bano.Reasons.SequenceEqual(new[] { BriefPlannerCodes.AreaMismatch, BriefPlannerCodes.LowConfidence }) && bano.Confirmed.Count == 0
                 && bano.Unconfirmed.SequenceEqual(bano.Reasons) && Math.Abs(bano.Confidence - 0.95 * 0.6 * 0.8) <= 1e-12,
                 "baño (first of the duplicates) is dropped for area-mismatch and low-confidence, not duplicate-label", bano is null ? Show(r) : Show(bano));
-            var bano2 = r.Dropped.FirstOrDefault(x => x.Id == "bano-2");
-            C(bano2 is not null && bano2.Reasons.SequenceEqual(new[] { BriefPlannerCodes.DuplicateLabel }), "baño 2 is dropped as a duplicate-label only", bano2 is null ? Show(r) : Show(bano2));
+            var bano2 = r.Kept.FirstOrDefault(x => x.Id == "bano-2");
+            C(bano2 is not null && bano2.Reasons.Count == 0, "baño 2 is promoted (no duplicate-label) because the first baño was dropped, so a bathroom survives", Show(r));
             C(r.Kept.All(k => k.Reasons.Count == 0 && k.Confirmed.Count == 0 && k.Unconfirmed.Count == 0), "kept rooms carry no reasons by default", Show(r));
             C(BriefPlannerCodes.All.SequenceEqual(new[] { "area-mismatch", "duplicate-label", "low-confidence" }), "reason codes are typed constants in ordinal order", string.Join(",", BriefPlannerCodes.All));
 
             var brief = r.Brief;
             var draftRooms = draft.Brief.Rooms.ToDictionary(x => x.Id, StringComparer.Ordinal);
-            C(brief.Rooms.Select(x => x.Id).SequenceEqual(new[] { "dormitorio-1", "cocina", "living-room", "lavadero", "hall" })
+            C(brief.Rooms.Select(x => x.Id).SequenceEqual(new[] { "dormitorio-1", "cocina", "living-room", "bano-2", "lavadero", "hall" })
                 && brief.Rooms.All(x => draftRooms.TryGetValue(x.Id, out var original) && original == x),
                 "planner brief keeps the draft's room records (areas, provenance) in draft order", BriefSerializer.Serialize(brief));
             C(brief.Name == draft.Brief.Name && brief.Version == ProjectBrief.CurrentVersion && brief.Constraints == draft.Brief.Constraints && brief.Adjacencies.Count == 0,
@@ -86,14 +88,19 @@ internal static class BriefPlannerTests
             var keptBano = confirmed.Kept.FirstOrDefault(x => x.Id == "bano");
             C(keptBano is not null && keptBano.Reasons.SequenceEqual(new[] { "area-mismatch", "low-confidence" }) && keptBano.Confirmed.SequenceEqual(keptBano.Reasons) && keptBano.Unconfirmed.Count == 0,
                 "a confirmed room records the reasons it was kept despite", keptBano is null ? Show(confirmed) : Show(keptBano));
+            C(confirmed.Kept.Any(x => x.Id == "bano-2" && x.Reasons.SequenceEqual(new[] { "duplicate-label" }) && x.Confirmed.SequenceEqual(new[] { "duplicate-label" })),
+                "once the first baño is kept, baño 2 is a confirmed duplicate-label", Show(confirmed));
             var target = confirmed.Brief.Rooms.FirstOrDefault(x => x.Id == "bano")?.TargetAreaSquareMetres?.Value;
             C(target == 6.5, "a confirmed mismatched room keeps the stated area as its target", target?.ToString(CultureInfo.InvariantCulture) ?? "null");
             var planAll = SpacePlanner.Plan(confirmed.Brief, 3);
             C(planAll.IsFeasible && planAll.Rooms.Count == 7 && PlanIds(planAll) == Sorted(confirmed.Kept.Select(k => k.Id)), "space planner plans all seven confirmed rooms",
                 planAll.Status + " " + string.Join(";", planAll.Violations.Select(v => v.Code + ":" + v.Subject)));
 
-            var reasonDup = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { ConfirmedReasons = new[] { BriefPlannerCodes.DuplicateLabel } });
-            C(Ids(reasonDup.Dropped) == "bano" && reasonDup.Kept.Any(x => x.Id == "bano-2" && x.Confirmed.SequenceEqual(new[] { "duplicate-label" })), "confirming the duplicate-label reason keeps every later duplicate", Show(reasonDup));
+            var firstOnly = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { ConfirmedRooms = new[] { "bano" } });
+            var dup = firstOnly.Dropped.FirstOrDefault(x => x.Id == "bano-2");
+            C(firstOnly.Kept.Any(x => x.Id == "bano") && dup is not null && dup.Reasons.SequenceEqual(new[] { "duplicate-label" }), "a later copy of a kept label is dropped as duplicate-label", Show(firstOnly));
+            var reasonDup = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { ConfirmedRooms = new[] { "bano" }, ConfirmedReasons = new[] { BriefPlannerCodes.DuplicateLabel } });
+            C(reasonDup.Dropped.Count == 0 && reasonDup.Kept.Any(x => x.Id == "bano-2" && x.Confirmed.SequenceEqual(new[] { "duplicate-label" })), "confirming the duplicate-label reason keeps every later duplicate", Show(reasonDup));
             var reasonMismatch = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { ConfirmedReasons = new[] { BriefPlannerCodes.AreaMismatch } });
             var partly = reasonMismatch.Dropped.FirstOrDefault(x => x.Id == "bano");
             C(partly is not null && partly.Confirmed.SequenceEqual(new[] { "area-mismatch" }) && partly.Unconfirmed.SequenceEqual(new[] { "low-confidence" }), "a room stays dropped while any reason is unconfirmed", Show(reasonMismatch));
@@ -108,14 +115,16 @@ internal static class BriefPlannerTests
             // Threshold.
             var none = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { MinConfidence = 0 });
             var noneBano = none.Dropped.FirstOrDefault(x => x.Id == "bano");
-            C(noneBano is not null && noneBano.Reasons.SequenceEqual(new[] { "area-mismatch" }) && Ids(none.Dropped) == "bano,bano-2", "threshold 0 drops only mismatches and duplicates", Show(none));
+            C(noneBano is not null && noneBano.Reasons.SequenceEqual(new[] { "area-mismatch" }) && Ids(none.Dropped) == "bano", "threshold 0 drops only the mismatch (its later copy is promoted)", Show(none));
             var strict = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { MinConfidence = 0.96 });
-            C(Ids(strict.Kept) == "cocina" && strict.Dropped.Where(x => x.Id != "bano" && x.Id != "bano-2").All(x => x.Reasons.SequenceEqual(new[] { "low-confidence" })), "threshold 0.96 keeps only the certain kitchen", Show(strict));
+            C(Ids(strict.Kept) == "cocina" && strict.Dropped.Where(x => x.Id != "bano").All(x => x.Reasons.SequenceEqual(new[] { "low-confidence" })), "threshold 0.96 keeps only the certain kitchen", Show(strict));
             var edge = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { MinConfidence = draft.Rooms[0].Confidence });
             C(edge.Kept.Any(x => x.Id == "dormitorio-1"), "a confidence equal to the threshold is kept", Show(edge));
-            var all = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { MinConfidence = 1, ConfirmedRooms = new[] { "cocina" } });
             var everything = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { MinConfidence = 1 });
-            C(Ids(all.Kept) == "cocina" && all.IsValid, "threshold 1 keeps a confidence-1 room", Show(all));
+            C(Ids(everything.Kept) == "cocina" && everything.IsValid, "threshold 1 without confirmation keeps only the confidence-1 kitchen", Show(everything));
+            var all = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { MinConfidence = 1, ConfirmedRooms = new[] { "dormitorio-1" } });
+            C(draft.Rooms[0].Id == "dormitorio-1" && draft.Rooms[0].Confidence < 1 && Ids(all.Kept) == "dormitorio-1,cocina" && all.IsValid
+                && all.Kept[0].Confirmed.SequenceEqual(new[] { "low-confidence" }), "threshold 1 keeps a confirmed room whose confidence is below 1", Show(all));
 
             // Every room dropped: the brief is typed invalid and the planner refuses it without throwing.
             var emptied = BriefPlanner.ToPlannerBrief(Dxf(Text("1", 0, 0, "Cocina")), new BriefPlannerOptions { MinConfidence = 0.6, Constraints = Site(10, 8) });
@@ -127,6 +136,23 @@ internal static class BriefPlannerTests
 
             var budget = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { Constraints = new BriefConstraints(Levels: new BriefValue<int>(0)) });
             C(!budget.IsValid && budget.Issues.Any(i => i.Code == BriefCodes.LevelsInvalid), "invalid caller constraints are reported by the validator", Show(budget));
+
+            var blank = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { Name = "" });
+            C(blank.Brief.Name == "" && !blank.IsValid && blank.Issues.Any(i => i.Code == BriefCodes.TextInvalid && i.Field == "name"), "an empty name option is reported text_invalid", Show(blank));
+
+            // Adjacencies naming a dropped room are removed.
+            var adjacencies = new[] { new BriefAdjacency("dormitorio-1", "cocina", BriefAdjacencyKind.Required), new BriefAdjacency("cocina", "bano", BriefAdjacencyKind.Preferred) };
+            var adjacent = BriefPlanner.ToPlannerBrief(draft with { Brief = draft.Brief with { Adjacencies = adjacencies } });
+            C(adjacent.Brief.Adjacencies.Count == 1 && adjacent.Brief.Adjacencies[0] == adjacencies[0] && adjacent.IsValid && Ids(adjacent.Dropped) == "bano",
+                "kept-kept adjacency survives, kept-dropped adjacency is removed, brief valid", Show(adjacent) + " " + adjacent.Brief.Adjacencies.Count);
+
+            // Brief rooms without a matching proposal use their provenance confidence (1 without provenance).
+            var extra = draft with { Brief = draft.Brief with { Rooms = draft.Brief.Rooms.Concat(new[] {
+                new BriefRoom("extra", "Extra", Provenance: new BriefProvenance(BriefSource.Document, 0.3)), new BriefRoom("plain", "Plain") }).ToArray() } };
+            var extraResult = BriefPlanner.ToPlannerBrief(extra);
+            var extraRoom = extraResult.Dropped.FirstOrDefault(x => x.Id == "extra");
+            C(extraRoom is not null && extraRoom.Confidence == 0.3 && extraRoom.Reasons.SequenceEqual(new[] { "low-confidence" })
+                && extraResult.Kept.Any(x => x.Id == "plain" && x.Confidence == 1 && x.Reasons.Count == 0), "rooms without a proposal: provenance confidence, else 1", Show(extraResult));
 
             // Determinism across runs and culture.
             var culture = CultureInfo.CurrentCulture;
@@ -145,7 +171,6 @@ internal static class BriefPlannerTests
             foreach (var bad in new[] { double.NaN, -0.01, 1.01, double.PositiveInfinity })
                 C(ErrorType(() => BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { MinConfidence = bad })) == typeof(ArgumentOutOfRangeException), "threshold " + F(bad) + " refused");
             C(ErrorType(() => BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { ConfirmedRooms = null!, ConfirmedReasons = null! })) is null, "null confirmation collections mean none");
-            C(everything.Kept.Count == 1, "threshold 1 without confirmation keeps only confidence-1 rooms", Show(everything));
         }
         catch (Exception error) { C(false, "fixture unexpected", error.GetType().Name + ": " + error.Message + " " + error.StackTrace); }
 
@@ -162,6 +187,40 @@ internal static class BriefPlannerTests
             var capped = Dxf(Text("1", 0, 0, "Baño 4 m²") + Text("2", 20000, 0, "BAÑO 5 m²") + Text("3", 40000, 0, "bano 6 m²") + Text("5", 80000, 0, "17 m²"), new BriefExtractOptions { MaxUncertainties = 1 });
             var cappedResult = BriefPlanner.ToPlannerBrief(capped);
             C(Ids(cappedResult.Dropped) == "bano-2,bano-3", "gen duplicates are found from room notes even when the uncertainty report is capped", Show(cappedResult) + " " + string.Join(",", capped.Uncertainties.Select(u => u.Code)));
+
+            // The first copy is dropped (low confidence): the next copy is promoted, the third is its duplicate.
+            var promoted = BriefPlanner.ToPlannerBrief(Dxf(Text("1", 0, 0, "Baño") + Text("2", 20000, 0, "BAÑO 5 m²") + Text("3", 40000, 0, "bano 6 m²")));
+            var firstDropped = promoted.Dropped.FirstOrDefault(x => x.Id == "bano");
+            C(firstDropped is not null && firstDropped.Reasons.SequenceEqual(new[] { "low-confidence" }) && Ids(promoted.Kept) == "bano-2"
+                && promoted.Dropped.Any(x => x.Id == "bano-3" && x.Reasons.SequenceEqual(new[] { "duplicate-label" })), "gen first surviving copy is promoted, later copies are its duplicates", Show(promoted));
+
+            // Non-ASCII labels share the extractor slug "room": the later one is a duplicate whatever the report holds.
+            var cyr = Rect("10", 0, 0, 4000, 3000) + Text("11", 1000, 1500, "Комната 12 m²") + Rect("12", 10000, 0, 14000, 3000) + Text("13", 11000, 1500, "Кухня 12 m²");
+            foreach (var max in new[] { 1000, 1 })
+            {
+                var cd = Dxf(cyr, new BriefExtractOptions { MaxUncertainties = max });
+                C(cd.Rooms.Select(x => x.Id).SequenceEqual(new[] { "room", "room-2" }) && cd.Rooms[1].Notes.Contains("duplicate-label"), "gen cyrillic draft ids room, room-2 (max " + max + ")", string.Join(",", cd.Rooms.Select(x => x.Id + "[" + string.Join(",", x.Notes) + "]")));
+                foreach (var d in new[] { cd, cd with { Uncertainties = Array.Empty<BriefExtractUncertainty>() } })
+                {
+                    var cr = BriefPlanner.ToPlannerBrief(d);
+                    C(Ids(cr.Kept) == "room" && Ids(cr.Dropped) == "room-2" && cr.Dropped[0].Reasons.SequenceEqual(new[] { "duplicate-label" }),
+                        "gen cyrillic later label dropped as duplicate-label (max " + max + ", " + d.Uncertainties.Count + " uncertainties)", Show(cr));
+                }
+            }
+
+            // A duplicate-label uncertainty alone (no notes, labels with different slugs) groups the rooms.
+            var pair = Dxf(Text("1", 0, 0, "Cocina 9 m²") + Text("2", 20000, 0, "Comedor 10 m²"));
+            if (pair.Rooms.Count == 2)
+            {
+                var reported = pair with { Uncertainties = new[] { new BriefExtractUncertainty("duplicate-label", "hand-built", "comedor", null, new[] { pair.Rooms[0].Label, pair.Rooms[1].Label }) } };
+                var rr = BriefPlanner.ToPlannerBrief(reported);
+                C(pair.Rooms.All(x => !x.Notes.Contains("duplicate-label")) && Ids(rr.Kept) == "cocina" && Ids(rr.Dropped) == "comedor" && rr.Dropped[0].Reasons.SequenceEqual(new[] { "duplicate-label" }),
+                    "gen reported duplicate-label without notes drops the later room", Show(rr));
+                var firstMismatch = reported with { Rooms = new[] { pair.Rooms[0] with { Notes = new[] { "area-mismatch" } }, pair.Rooms[1] } };
+                var rp = BriefPlanner.ToPlannerBrief(firstMismatch);
+                C(Ids(rp.Kept) == "comedor" && rp.Kept[0].Reasons.Count == 0 && Ids(rp.Dropped) == "cocina", "gen reported duplicate is promoted when its first room is dropped", Show(rp));
+            }
+            else C(false, "gen cocina/comedor draft", string.Join(",", pair.Rooms.Select(x => x.Id)));
         }
         catch (Exception error) { C(false, "gen unexpected", error.GetType().Name + ": " + error.Message + " " + error.StackTrace); }
     }
