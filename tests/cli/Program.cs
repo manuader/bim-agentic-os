@@ -509,7 +509,7 @@ try {
             "mirror-drift writes the report and resolution to a new file and prints a succeeded summary",DR(ok));
         if(File.Exists(first)) {
             var written=File.ReadAllBytes(first);
-            Check(written.Length>0 && written[0]==(byte)'{' && !written.AsSpan().StartsWith(Encoding.UTF8.GetPreamble()),"mirror-drift output is UTF-8 JSON without a BOM");
+            Check(written.Length>0 && written[0]==(byte)'{' && !(written.Length>=3 && written[0]==0xEF && written[1]==0xBB && written[2]==0xBF),"mirror-drift output is UTF-8 JSON without a BOM");
             using var doc=JsonDocument.Parse(written);
             var top=doc.RootElement;
             Check(top.GetProperty("mirror_drift_version").GetInt32()==1 && top.GetProperty("applied").GetBoolean()==false && top.GetProperty("requires_approval").GetBoolean()==true,
