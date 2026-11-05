@@ -284,7 +284,8 @@ static class DefaultsWindowsTests
         var triWindow = new Element(Id("tri-window"), "window", new[] { 1.0, 1.0 }, new[] { ta.Id, tri }, provenance);
         var triProject = new Project(projectId, 0, new[] { Level(tri, 0), ta, tb, tc, triWindow });
         var triSet = DocDefaults.From(triProject);
-        check(triSet.Dimensions.Count == 0 && triSet.Tags.Any(tag => tag.Element == triWindow.Id) && Valid(triProject, triSet, out var triDetail),
+        var triValid = Valid(triProject, triSet, out var triDetail);
+        check(triSet.Dimensions.Count == 0 && triSet.Tags.Any(tag => tag.Element == triWindow.Id) && triValid,
             "edge: a wall line without perpendicular walls at both ends is not dimensioned", Json(triSet.Dimensions) + " " + triDetail);
 
         // Two disjoint rooms on one level: a wall line with another room's walls on both sides is not exterior.
@@ -294,6 +295,7 @@ static class DefaultsWindowsTests
         var pairWindow = new Element(Id("pair-window"), "window", new[] { 1.0, 1.0 }, new[] { pa[0].Id, pair }, provenance);
         var pairProject = new Project(projectId, 0, new[] { Level(pair, 0) }.Concat(pa).Concat(pb).Append(pairWindow).ToArray());
         var pairSet = DocDefaults.From(pairProject);
+        var pairValid = Valid(pairProject, pairSet, out var pairDetail);
         var pairExpected = new[]
         {
             DimensionKey(pa[0].Id, pb[0].Id) + "|" + Pair(pa[3].Id, pb[1].Id),
@@ -301,7 +303,7 @@ static class DefaultsWindowsTests
             DimensionKey(pa[3].Id) + "|" + Pair(pa[0].Id, pa[2].Id),
             DimensionKey(pb[1].Id) + "|" + Pair(pb[0].Id, pb[2].Id),
         }.OrderBy(item => item, StringComparer.Ordinal).ToArray();
-        check(pairSet.Dimensions.Select(item => item.Key + "|" + Pair(item.First, item.Second)).SequenceEqual(pairExpected) && Valid(pairProject, pairSet, out var pairDetail),
+        check(pairSet.Dimensions.Select(item => item.Key + "|" + Pair(item.First, item.Second)).SequenceEqual(pairExpected) && pairValid,
             "edge: on a level with two rooms only the outer lines are dimensioned, collinear walls of both rooms in one chain", Json(pairSet.Dimensions) + " " + pairDetail);
     }
 }
