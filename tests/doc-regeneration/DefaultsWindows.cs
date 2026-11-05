@@ -6,10 +6,11 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 
 // P4-06 oracle: DocDefaults.From adds a tag per window (in the plan of the level it stands on, as doors) and, on every
-// level plan that has a tagged window, one linear dimension chain per exterior wall line: the collinear walls of a line
-// with every other wall endpoint of the level on one side, measured between the two perpendicular walls meeting its
-// ends (wall-end references), its dimension line 1 m outside. Keys "tag-window-<window:N>" and
-// "dim-wall-<first wall of the line by id:N>". Full regeneration yields only catalogue-valid dimension.create_linear
+// level plan that has a tagged window, one linear dimension chain per exterior wall line: a run of touching collinear
+// walls whose outward rays (from each wall's midpoint) cross no wall of its connected component on exactly one side,
+// measured between the two antiparallel perpendicular walls meeting its ends (wall-end references) on their outer faces
+// (Revit exterior is left of start -> end), its dimension line 1 m outside. Keys "tag-window-<window:N>" and
+// "dim-wall-<first wall of the run by id:N>". Full regeneration yields only catalogue-valid dimension.create_linear
 // and tag.create steps; projects without windows stay byte-identical to the P4-04 defaults; deterministic.
 static class DefaultsWindowsTests
 {
@@ -91,6 +92,21 @@ static class DefaultsWindowsTests
     static IEnumerable<string> Keys(DocumentationSet set) =>
         set.Views.Select(item => item.Key).Concat(set.Tags.Select(item => item.Key)).Concat(set.Dimensions.Select(item => item.Key))
             .Concat(set.Schedules.Select(item => item.Key)).Concat(set.Sheets.Select(item => item.Key)).Concat(set.Placements.Select(item => item.Key));
+    // Walls along a polyline of points on a level (closed back to the first point), named prefix0, prefix1, ...
+    static Element[] Loop(Guid level, string prefix, params (double X, double Y)[] points) => points.Select((point, index) =>
+    {
+        var next = points[(index + 1) % points.Length];
+        return Wall(Id(prefix + index.ToString(CultureInfo.InvariantCulture)), level, point.X, point.Y, next.X, next.Y);
+    }).ToArray();
+    static Element Window(string name, Guid level, Element host) => new(Id(name), "window", new[] { 0.5, 1.0 }, new[] { host.Id, level }, provenance);
+    static string Ordered(Guid first, Guid second) => K(first) + ">" + K(second);
+    // Each dimension of a set as "key|first>second|face|line" (line from its full regeneration step), in set order.
+    static string[] Described(Project project, DocumentationSet set)
+    {
+        var full = DocRegeneration.Full(project, set, Bindings(project));
+        return set.Dimensions.Select(item => item.Key + "|" + Ordered(item.First, item.Second) + "|" + item.WallFace + "|"
+            + (full.Steps.SingleOrDefault(step => step.Key == item.Key) is { } step ? Line(step) : "missing")).ToArray();
+    }
     static string Pair(Guid a, Guid b) => string.Join("+", new[] { K(a), K(b) }.OrderBy(key => key, StringComparer.Ordinal));
     static string DimensionKey(params Guid[] lineWalls) => "dim-wall-" + K(lineWalls.OrderBy(id => id.ToString("D"), StringComparer.Ordinal).First());
 
@@ -186,14 +202,14 @@ static class DefaultsWindowsTests
         // ---- Dimension chains: one per exterior wall line on each plan with a window ----
         var expectedDimensions = new[] { 0, 1 }.SelectMany(room => new[]
         {
-            DimensionKey(Role(room, "south")) + "|plan-" + K(levels[room]) + "|" + Pair(Role(room, "west"), Role(room, "east")) + "|exterior",
-            DimensionKey(Role(room, "north")) + "|plan-" + K(levels[room]) + "|" + Pair(Role(room, "west"), Role(room, "east")) + "|exterior",
-            DimensionKey(Role(room, "east")) + "|plan-" + K(levels[room]) + "|" + Pair(Role(room, "south"), Role(room, "north")) + "|exterior",
-            DimensionKey(Role(room, "west")) + "|plan-" + K(levels[room]) + "|" + Pair(Role(room, "south"), Role(room, "north")) + "|exterior",
+            DimensionKey(Role(room, "south")) + "|plan-" + K(levels[room]) + "|" + Ordered(Role(room, "west"), Role(room, "east")) + "|interior",
+            DimensionKey(Role(room, "north")) + "|plan-" + K(levels[room]) + "|" + Ordered(Role(room, "east"), Role(room, "west")) + "|interior",
+            DimensionKey(Role(room, "east")) + "|plan-" + K(levels[room]) + "|" + Ordered(Role(room, "south"), Role(room, "north")) + "|interior",
+            DimensionKey(Role(room, "west")) + "|plan-" + K(levels[room]) + "|" + Ordered(Role(room, "north"), Role(room, "south")) + "|interior",
         }).OrderBy(item => item, StringComparer.Ordinal).ToArray();
-        var actualDimensions = set.Dimensions.Select(item => item.Key + "|" + item.View + "|" + Pair(item.First, item.Second) + "|" + item.WallFace).ToArray();
+        var actualDimensions = set.Dimensions.Select(item => item.Key + "|" + item.View + "|" + Ordered(item.First, item.Second) + "|" + item.WallFace).ToArray();
         check(actualDimensions.SequenceEqual(expectedDimensions),
-            "dimensions: one chain per exterior wall line, referencing the two walls at its ends, on plans with a window only", Json(set.Dimensions));
+            "dimensions: one chain per exterior wall line, First at the start end of the line's first wall, on plans with a window only; a counter-clockwise room (Revit exterior inside) measures outer faces with interior", Json(set.Dimensions));
         check(!set.Dimensions.Any(item => item.View == "plan-" + K(levels[2])), "dimensions: a level without windows gets no dimensions");
 
         // ---- Full regeneration: only catalogue-valid steps, dimension lines 1 m outside each wall line ----
@@ -213,10 +229,12 @@ static class DefaultsWindowsTests
             [DimensionKey(Role(0, "east"))] = Segment(5300, 100, 5300, 3300),
             [DimensionKey(Role(0, "west"))] = Segment(-900, 100, -900, 3300),
             [DimensionKey(Role(1, "south"))] = Segment(10100, -900, 14300, -900),
+            [DimensionKey(Role(1, "north"))] = Segment(10100, 4300, 14300, 4300),
+            [DimensionKey(Role(1, "east"))] = Segment(15300, 100, 15300, 3300),
             [DimensionKey(Role(1, "west"))] = Segment(9100, 100, 9100, 3300),
         };
         var actualLines = lines.Keys.Select(key => full.Steps.SingleOrDefault(step => step.Key == key) is { } step ? Line(step) : "missing").ToArray();
-        check(actualLines.SequenceEqual(lines.Values), "full: each dimension line runs between the end walls' axes 1 m outside its wall line",
+        check(lines.Count == set.Dimensions.Count && actualLines.SequenceEqual(lines.Values), "full: each of the eight dimension lines runs between the end walls' axes 1 m outside its wall line",
             string.Join(" | ", actualLines) + " expected " + string.Join(" | ", lines.Values));
 
         // ---- Determinism ----
@@ -288,7 +306,8 @@ static class DefaultsWindowsTests
         check(triSet.Dimensions.Count == 0 && triSet.Tags.Any(tag => tag.Element == triWindow.Id) && triValid,
             "edge: a wall line without perpendicular walls at both ends is not dimensioned", Json(triSet.Dimensions) + " " + triDetail);
 
-        // Two disjoint rooms on one level: a wall line with another room's walls on both sides is not exterior.
+        // Two separate buildings on one level: each gets its own four outer chains (collinear walls of different buildings
+        // are different runs; the other building does not hide a line).
         var pair = Id("pair-level");
         var pa = new[] { Wall(Id("pair-a-s"), pair, 0, 0, 4, 0), Wall(Id("pair-a-e"), pair, 4, 0, 4, 3), Wall(Id("pair-a-n"), pair, 4, 3, 0, 3), Wall(Id("pair-a-w"), pair, 0, 3, 0, 0) };
         var pb = new[] { Wall(Id("pair-b-s"), pair, 6, 0, 10, 0), Wall(Id("pair-b-e"), pair, 10, 0, 10, 3), Wall(Id("pair-b-n"), pair, 10, 3, 6, 3), Wall(Id("pair-b-w"), pair, 6, 3, 6, 0) };
@@ -296,14 +315,89 @@ static class DefaultsWindowsTests
         var pairProject = new Project(projectId, 0, new[] { Level(pair, 0) }.Concat(pa).Concat(pb).Append(pairWindow).ToArray());
         var pairSet = DocDefaults.From(pairProject);
         var pairValid = Valid(pairProject, pairSet, out var pairDetail);
-        var pairExpected = new[]
+        var pairExpected = new[] { pa, pb }.SelectMany(building => new[]
         {
-            DimensionKey(pa[0].Id, pb[0].Id) + "|" + Pair(pa[3].Id, pb[1].Id),
-            DimensionKey(pa[2].Id, pb[2].Id) + "|" + Pair(pa[3].Id, pb[1].Id),
-            DimensionKey(pa[3].Id) + "|" + Pair(pa[0].Id, pa[2].Id),
-            DimensionKey(pb[1].Id) + "|" + Pair(pb[0].Id, pb[2].Id),
-        }.OrderBy(item => item, StringComparer.Ordinal).ToArray();
+            DimensionKey(building[0].Id) + "|" + Pair(building[3].Id, building[1].Id),
+            DimensionKey(building[2].Id) + "|" + Pair(building[3].Id, building[1].Id),
+            DimensionKey(building[1].Id) + "|" + Pair(building[0].Id, building[2].Id),
+            DimensionKey(building[3].Id) + "|" + Pair(building[0].Id, building[2].Id),
+        }).OrderBy(item => item, StringComparer.Ordinal).ToArray();
         check(pairSet.Dimensions.Select(item => item.Key + "|" + Pair(item.First, item.Second)).SequenceEqual(pairExpected) && pairValid,
-            "edge: on a level with two rooms only the outer lines are dimensioned, collinear walls of both rooms in one chain", Json(pairSet.Dimensions) + " " + pairDetail);
+            "edge: two separate buildings on one level each get their four outer chains", Json(pairSet.Dimensions) + " " + pairDetail);
+        // L-shape: the reentrant lines (y = 4 and x = 4) are exterior too; six chains.
+        var ell = Id("ell-level");
+        var lw = Loop(ell, "ell-", (0, 0), (10, 0), (10, 4), (4, 4), (4, 10), (0, 10));
+        var ellProject = new Project(projectId, 0, new[] { Level(ell, 0) }.Concat(lw).Append(Window("ell-window", ell, lw[0])).ToArray());
+        var ellSet = DocDefaults.From(ellProject);
+        var ellValid = Valid(ellProject, ellSet, out var ellDetail);
+        var ellExpected = Enumerable.Range(0, 6).Select(i => DimensionKey(lw[i].Id) + "|" + Ordered(lw[(i + 5) % 6].Id, lw[(i + 1) % 6].Id) + "|interior")
+            .OrderBy(item => item, StringComparer.Ordinal).ToArray();
+        check(ellSet.Dimensions.Select(item => item.Key + "|" + Ordered(item.First, item.Second) + "|" + item.WallFace).SequenceEqual(ellExpected) && ellValid,
+            "exterior: an L-shape gets six chains, its reentrant lines included", Json(ellSet.Dimensions) + " " + ellDetail);
+        var ellLines = Described(ellProject, ellSet).ToDictionary(item => item.Split('|')[0], item => item.Split('|')[3], StringComparer.Ordinal);
+        check(ellLines.GetValueOrDefault(DimensionKey(lw[2].Id)) == Segment(10000, 5000, 4000, 5000) && ellLines.GetValueOrDefault(DimensionKey(lw[3].Id)) == Segment(5000, 4000, 5000, 10000),
+            "exterior: the reentrant chains run 1 m outside their lines", string.Join(" ; ", ellLines));
+
+        // A free-standing site wall in front of a room (its own component) removes no chain and gets none.
+        var site = Id("site-level");
+        var sw = Loop(site, "site-", (0, 0), (8, 0), (8, 4), (0, 4));
+        var siteAlone = new Project(projectId, 0, new[] { Level(site, 0) }.Concat(sw).Append(Window("site-window", site, sw[0])).ToArray());
+        var siteProject = Add(siteAlone, Wall(Id("site-fence"), site, -2, -5, 10, -5));
+        var siteSet = DocDefaults.From(siteProject);
+        var siteValid = Valid(siteProject, siteSet, out var siteDetail);
+        check(siteSet.Dimensions.Count == 4 && Json(siteSet.Dimensions) == Json(DocDefaults.From(siteAlone).Dimensions) && siteValid,
+            "exterior: a free-standing wall outside a room removes no chain and is not dimensioned", Json(siteSet.Dimensions) + " " + siteDetail);
+
+        // Clockwise rectangle (Revit exterior outside); its south line is three collinear walls, the middle one drawn in the
+        // opposite direction.
+        var cw = Id("cw-level");
+        var c0 = Wall(Id("cw-west"), cw, 0, 0, 0, 4);
+        var c1 = Wall(Id("cw-north"), cw, 0, 4, 8, 4);
+        var c2 = Wall(Id("cw-east"), cw, 8, 4, 8, 0);
+        var sa = Wall(Id("cw-south-a"), cw, 8, 0, 6, 0);
+        var sb = Wall(Id("cw-south-b"), cw, 2, 0, 6, 0);
+        var sc = Wall(Id("cw-south-c"), cw, 2, 0, 0, 0);
+        var cwProject = new Project(projectId, 0, new[] { Level(cw, 0), c0, c1, c2, sa, sb, sc, Window("cw-window", cw, c1) });
+        var cwSet = DocDefaults.From(cwProject);
+        var cwValid = Valid(cwProject, cwSet, out var cwDetail);
+        var cwFull = DocRegeneration.Full(cwProject, cwSet, Bindings(cwProject));
+        var cwExpected = new[]
+        {
+            DimensionKey(sa.Id, sb.Id, sc.Id) + "|" + Pair(c0.Id, c2.Id) + "|exterior|" + Segment(0, -1000, 8000, -1000),
+            DimensionKey(c1.Id) + "|" + Pair(c0.Id, c2.Id) + "|exterior|" + Segment(0, 5000, 8000, 5000),
+            DimensionKey(c0.Id) + "|" + Pair(sc.Id, c1.Id) + "|exterior|" + Segment(-1000, 0, -1000, 4000),
+            DimensionKey(c2.Id) + "|" + Pair(c1.Id, sa.Id) + "|exterior|" + Segment(9000, 0, 9000, 4000),
+        }.OrderBy(item => item, StringComparer.Ordinal).ToArray();
+        var cwActual = cwSet.Dimensions.Select(item => item.Key + "|" + Pair(item.First, item.Second) + "|" + item.WallFace + "|"
+            + (cwFull.Steps.SingleOrDefault(step => step.Key == item.Key) is { } step ? Line(step) : "missing")).ToArray();
+        check(cwActual.SequenceEqual(cwExpected) && cwValid,
+            "orientation: a clockwise room measures outer faces with exterior, lines at y = -1, y = 5, x = -1, x = 9; collinear walls in opposite directions make one chain",
+            string.Join(" ; ", cwActual) + " " + cwDetail);
+
+        // End walls drawn in the same direction at two convex ends: no single wall_face measures both outer faces, so that
+        // line is skipped (at a reentrant end the same-direction pair is consistent; see the L-shape).
+        var same = Id("same-level");
+        var m0 = Wall(Id("same-south"), same, 0, 0, 8, 0);
+        var m1 = Wall(Id("same-east"), same, 8, 0, 8, 4);
+        var m2 = Wall(Id("same-north"), same, 8, 4, 0, 4);
+        var m3 = Wall(Id("same-west"), same, 0, 0, 0, 4);
+        var sameProject = new Project(projectId, 0, new[] { Level(same, 0), m0, m1, m2, m3, Window("same-window", same, m0) });
+        var sameSet = DocDefaults.From(sameProject);
+        var sameValid = Valid(sameProject, sameSet, out var sameDetail);
+        var sameExpected = new[]
+        {
+            DimensionKey(m1.Id) + "|" + Ordered(m0.Id, m2.Id) + "|interior",
+            DimensionKey(m3.Id) + "|" + Ordered(m0.Id, m2.Id) + "|interior",
+        }.OrderBy(item => item, StringComparer.Ordinal).ToArray();
+        check(sameSet.Dimensions.Select(item => item.Key + "|" + Ordered(item.First, item.Second) + "|" + item.WallFace).SequenceEqual(sameExpected) && sameValid,
+            "orientation: a line whose end walls need different faces (both convex ends, walls drawn the same way) is skipped; the others measure their outer faces", Json(sameSet.Dimensions) + " " + sameDetail);
+
+        // A rotated 3-4-5 rectangle: four chains (perpendicular within 1e-6, end walls antiparallel within 1e-9).
+        var rot = Id("rot-level");
+        var rw = Loop(rot, "rot-", (0, 0), (4, 3), (1, 7), (-3, 4));
+        var rotProject = new Project(projectId, 0, new[] { Level(rot, 0) }.Concat(rw).Append(Window("rot-window", rot, rw[0])).ToArray());
+        var rotSet = DocDefaults.From(rotProject);
+        var rotValid = Valid(rotProject, rotSet, out var rotDetail);
+        check(rotSet.Dimensions.Count == 4 && rotValid, "orientation: a rotated rectangle gets four chains", Json(rotSet.Dimensions) + " " + rotDetail);
     }
 }
