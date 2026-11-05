@@ -268,6 +268,93 @@ static class MirrorDriftSelectChecks
                 && root.GetProperty("restore_plan").GetProperty("steps").GetArrayLength() == 2, "selection JSON carries choices, operations, invalidated map entries and the restore plan", json);
         }
         catch (Exception error) { Check(false, "selection JSON parses", error.GetType().Name + ": " + error.Message + " | " + json); }
+
+        ReviewChecks(observation, committed, resolution, both);
+    }
+
+    static MirrorDriftSelectException? Refusal(Action action)
+    {
+        try { action(); return null; }
+        catch (MirrorDriftSelectException error) { return error; }
+        catch (Exception) { return null; }
+    }
+
+    // Independent review: deletes Revit cascades to unchosen elements, evidence, ordering, malformed resolutions.
+    static void ReviewChecks(MirrorObservation observation, MirrorCommittedModel committed, MirrorDriftResolution resolution, MirrorDriftResolution both)
+    {
+        MirrorSnapshot Snap(MirrorObservation source, params MirrorObservedElement[] elements) => MirrorSnapshotMapper.Map(source with { Elements = elements });
+        MirrorDriftResolution Plan(MirrorSnapshot snapshot) =>
+            MirrorDriftResolve.Plan(MirrorDrift.Compare(snapshot, committed, options: new MirrorDriftOptions(Scope: MirrorDriftScopes.Document)), snapshot, committed, Bindings());
+        var wall1 = observation.Elements.Single(element => element.UniqueId == W1);
+        var wall2 = observation.Elements.Single(element => element.UniqueId == W2);
+        var door = observation.Elements.Single(element => element.UniqueId == D1);
+        var floor = observation.Elements.Single(element => element.UniqueId == F1);
+        const string DX = P + "00002009";
+        const string DY = P + "00002008";
+        const string DZ = P + "00002007";
+        const string L2 = P + "00000138";
+
+        // (blocker 1) An extra wall hosting an extra door: restoring the wall alone would make Revit delete the door too.
+        var hosted = Plan(Snap(observation, wall1, wall2, door, floor, Wall(wall1, W3, 0, 0, 0, 4000), door with { UniqueId = DX, HostUid = W3, Location = new MirrorPoint(0, 1000) }));
+        var wx = hosted.Proposals.FirstOrDefault(proposal => proposal.UniqueId == W3);
+        Check(wx?.Restore is { Status: MirrorDriftResolveStatus.Proposed, Mode: MirrorDriftRestoreModes.Delete } && wx.Restore.Requires.SequenceEqual(new[] { DX }),
+            "restoring (deleting) an extra wall requires restoring its extra hosted door, which Revit deletes with it", hosted.ToJson());
+        var alone = Refusal(() => MirrorDriftSelect.Select(hosted, Cs((W3, Restore))));
+        Check(alone is { Code: MirrorDriftSelectCodes.RequiresIncomplete, ProposalId: W3 } && alone.Missing.SequenceEqual(new[] { DX }),
+            "selecting the extra wall's restore without its hosted door is refused (requires_incomplete, missing the door)", alone?.Message ?? "accepted");
+        var pair = Accept(() => MirrorDriftSelect.Select(hosted, Cs((W3, Restore), (DX, Restore))), "restoring the extra wall with its door");
+        Check(pair is not null && pair.RestorePlan.Steps.Select(step => Args(step).GetProperty("element_uids")[0].GetString()).SequenceEqual(new[] { DX, W3 }),
+            "restoring the extra wall with its door deletes the door first, then the wall", pair?.ToJson() ?? "");
+        // Several hosted doors: the missing keys are sorted.
+        var twoDoors = Plan(Snap(observation, wall1, wall2, door, floor, Wall(wall1, W3, 0, 0, 0, 4000),
+            door with { UniqueId = DX, HostUid = W3, Location = new MirrorPoint(0, 1000) }, door with { UniqueId = DY, HostUid = W3, Location = new MirrorPoint(0, 3000) }));
+        var several = Refusal(() => MirrorDriftSelect.Select(twoDoors, Cs((W3, Restore))));
+        Check(several is { Code: MirrorDriftSelectCodes.RequiresIncomplete } && several.Missing.SequenceEqual(new[] { DY, DX }),
+            "a wall hosting two extra doors misses both, sorted", several?.Message ?? "accepted");
+        Check(Code(() => MirrorDriftSelect.Select(twoDoors, Cs((W3, Restore), (DX, Restore), (DY, Adopt)))) == MirrorDriftSelectCodes.RequiresIncomplete,
+            "adopting one hosted door while deleting its wall is refused");
+        // An extra level with an extra wall on it.
+        var withLevel2 = observation with { Levels = observation.Levels.Append(new MirrorObservedLevel(L2, "Level 2", 4000)).ToArray() };
+        var level = Plan(Snap(withLevel2, wall1, wall2, door, floor, Wall(wall1, W3, 0, 0, 0, 4000) with { LevelUid = L2 }));
+        var l2 = level.Proposals.FirstOrDefault(proposal => proposal.UniqueId == L2);
+        Check(l2?.Restore is { Status: MirrorDriftResolveStatus.Proposed } && l2.Restore.Requires.SequenceEqual(new[] { W3 }),
+            "deleting an extra level requires deleting the extra wall on it", level.ToJson());
+        Check(Code(() => MirrorDriftSelect.Select(level, Cs((L2, Restore)))) == MirrorDriftSelectCodes.RequiresIncomplete, "deleting the extra level alone is refused");
+        // A replace of a changed wall hosting an extra door being deleted.
+        var replaced = Plan(Snap(observation, wall1, Wall(wall2, W2, 5050, 0, 5050, 4000), door, floor, door with { UniqueId = DZ, HostUid = W2, Location = new MirrorPoint(5050, 2000) }));
+        var w2 = replaced.Proposals.FirstOrDefault(proposal => proposal.UniqueId == W2);
+        Check(w2?.Restore is { Status: MirrorDriftResolveStatus.Proposed, Mode: MirrorDriftRestoreModes.Replace } && w2.Restore.Requires.SequenceEqual(new[] { DZ }),
+            "replacing a wall whose extra hosted door is deleted requires that door's restore", replaced.ToJson());
+        Check(Code(() => MirrorDriftSelect.Select(replaced, Cs((W2, Restore)))) == MirrorDriftSelectCodes.RequiresIncomplete, "replacing that wall alone is refused");
+
+        // (2) Evidence completeness is carried.
+        var incomplete = Accept(() => MirrorDriftSelect.Select(resolution with { EvidenceIncomplete = true }, Cs((W2, Adopt))), "an incomplete-evidence selection");
+        var complete = Accept(() => MirrorDriftSelect.Select(resolution, Cs((W2, Adopt))), "a complete-evidence selection");
+        Check(incomplete is { EvidenceIncomplete: true } && complete is not null && complete.EvidenceIncomplete == resolution.EvidenceIncomplete
+            && incomplete.ToJson().Contains("\"evidence_incomplete\":true", StringComparison.Ordinal) && complete.ToJson().Contains("\"evidence_incomplete\":" + (resolution.EvidenceIncomplete ? "true" : "false"), StringComparison.Ordinal),
+            "the selection carries the resolution's evidence_incomplete", incomplete?.ToJson() ?? "");
+
+        // (4) Mixed selections state their order: restore plan first (bound to Core's revision), then the adopt commit.
+        Check(complete is { Order: MirrorDriftSelection.RestoreThenAdopt } && MirrorDriftSelection.RestoreThenAdopt == "restore_then_adopt"
+            && complete.ToJson().Contains("\"order\":\"restore_then_adopt\"", StringComparison.Ordinal), "a selection states the order restore_then_adopt", complete?.ToJson() ?? "");
+
+        // (3) A kept step needing a dropped one is a malformed resolution even when Requires says nothing.
+        var unrequired = both with { Proposals = both.Proposals.Select(proposal => proposal.UniqueId == D1 ? proposal with { Restore = proposal.Restore with { Requires = Array.Empty<string>() } } : proposal).ToArray() };
+        Check(Code(() => MirrorDriftSelect.Select(unrequired, Cs((D1, Restore)))) == MirrorDriftSelectCodes.ResolutionInvalid, "a door step taking a dropped host step is refused (resolution_invalid)");
+        // (5) A plan step that no proposal owns.
+        var orphan = resolution with { RestorePlan = resolution.RestorePlan with { Steps = resolution.RestorePlan.Steps.Append(resolution.RestorePlan.Steps[0] with { OperationId = "drift.00000000000000000000000000000001" }).ToArray() } };
+        Check(Code(() => MirrorDriftSelect.Select(orphan, Cs((W2, Adopt)))) == MirrorDriftSelectCodes.ResolutionInvalid, "a restore step no proposal lists is refused (resolution_invalid)");
+        // Nits: null preconditions; non-finite geometry in an adopt element.
+        var noPreconditions = resolution with { RestorePlan = resolution.RestorePlan with { Preconditions = null! } };
+        Check(Code(() => MirrorDriftSelect.Select(noPreconditions, Cs((W2, Adopt)))) == MirrorDriftSelectCodes.ResolutionInvalid, "null preconditions are refused (resolution_invalid)");
+        var nan = resolution with { Proposals = resolution.Proposals.Select(proposal => proposal.UniqueId == W2 ? proposal with { Adopt = proposal.Adopt with { Element = proposal.Adopt.Element! with { GeometryMetres = new[] { 5.05, 0, 5.05, double.NaN, 3, 0.2 } } } } : proposal).ToArray() };
+        Check(Code(() => MirrorDriftSelect.Select(nan, Cs((W3, Adopt)))) == MirrorDriftSelectCodes.ResolutionInvalid, "an adopt element with NaN geometry is refused (resolution_invalid)");
+    }
+
+    static JsonElement Args(RevitCommandStep step)
+    {
+        using var parsed = JsonDocument.Parse(step.ArgsJson);
+        return parsed.RootElement.Clone();
     }
 
     static MirrorDriftSelection? Accept(Func<MirrorDriftSelection> select, string label)

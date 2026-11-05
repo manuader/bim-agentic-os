@@ -4,7 +4,8 @@ namespace Bim.Core;
 // P2-09 selective drift resolution. From a P2-07 resolution (MirrorDriftResolve.Plan) and a reviewer's choice of a
 // subset of its proposals, each with adopt or restore, Select returns what that choice means and nothing else:
 //   operations    the BIM-IR operations (create/update/delete, the adopt proposal's element) of every adopted
-//                 proposal, in proposal order, plus the map entries an adopt adds (create) or removes (delete);
+//                 proposal: one batch in proposal order, committed together (Compiler.Diff of the model they give),
+//                 plus the map entries an adopt adds (create) or removes (delete);
 //   restore_plan  the resolution's restore plan filtered to the steps of every restored proposal, in the original run
 //                 order, with the original operation ids, args, inputs and dependencies (so it passes the same
 //                 catalogue schema and PlanRunner keeps its idempotency), bound to the same Core revision and hash;
@@ -17,7 +18,14 @@ namespace Bim.Core;
 // (MirrorDriftSelectCodes, the first word of the ArgumentException message; MirrorDriftSelectException carries the
 // proposal and the missing keys). Unchosen proposals are listed as omitted. Nothing is applied (applied false,
 // requires approval). Pure and deterministic whatever the order of the choices (selection_version 1, never persisted);
-// vendor-free; no BIM-IR or persisted format change.
+// vendor-free; no BIM-IR or persisted format change. A malformed resolution (null preconditions, an adopt element with
+// non-finite geometry, a step no proposal owns, a kept step needing a dropped one) is drift_select_resolution_invalid.
+// Order (restore_then_adopt): the restore plan runs first, then the adopt operations are committed. The restore plan is
+// bound to Core's committed revision and after_hash (expected_revision; its operation ids hash that state), so a
+// commit made first would make it stale for PlanRunner; restores and adopts of one selection never touch the same
+// element, and Requires couplings never cross sides (a coupled proposal must be chosen with the same action).
+// EvidenceIncomplete is the resolution's (and so the drift report's): the classification behind the choice may miss
+// edits.
 
 public static class MirrorDriftSelectCodes
 {
@@ -46,15 +54,18 @@ public sealed record MirrorDriftMapInvalidation(string Key, string UniqueId, str
 
 public sealed record MirrorDriftMapEntry(string Key, string UniqueId, string ProposalId);
 
-public sealed record MirrorDriftSelection(string DocumentUid, Guid CoreProjectId, int CoreRevision, IReadOnlyList<MirrorDriftChoice> Choices, IReadOnlyList<string> Omitted,
+public sealed record MirrorDriftSelection(string DocumentUid, Guid CoreProjectId, int CoreRevision, bool EvidenceIncomplete, IReadOnlyList<MirrorDriftChoice> Choices, IReadOnlyList<string> Omitted,
     IReadOnlyList<Operation> Operations, IReadOnlyList<MirrorDriftMapEntry> MapAdds, IReadOnlyList<MirrorDriftMapEntry> MapRemovals,
     RevitCommandPlan RestorePlan, IReadOnlyList<MirrorDriftMapInvalidation> Invalidated)
 {
     public const int Version = 1;
+    public const string RestoreThenAdopt = "restore_then_adopt";
+    public string Order => "";
     public bool Applied => false;
     public bool RequiresApproval => true;
 
     // {"selection_version":1,"document_unique_id","core_project_id","core_revision","applied":false,"requires_approval":true,
+    //  "evidence_incomplete","order":"restore_then_adopt",
     //  "choices":[{"proposal_id","action"}],"omitted":[..],"operations":[{"action","element":{..}}],
     //  "map_adds":[{"key","unique_id","proposal_id"}],"map_removals":[..],
     //  "invalidated_map":[{"key","unique_id","proposal_id","mode","by_operation","select":"created[0]"}],"restore_plan":<RevitCommandPlan JSON>}
@@ -165,7 +176,7 @@ public static class MirrorDriftSelect
         {
             var (adopt, restore) = (proposals[i].Adopt, proposals[i].Restore);
             var adoptOk = adopt.Status == MirrorDriftResolveStatus.Unsupported
-                || adopt.Status == MirrorDriftResolveStatus.Proposed && adopt.Element is { } element && element.GeometryMetres is not null && element.Dependencies is not null && element.Provenance is not null
+                || adopt.Status == MirrorDriftResolveStatus.Proposed && adopt.Element is { } element && element.Kind is not null && element.GeometryMetres is not null && element.Dependencies is not null && element.Provenance is not null
                     && adopt.Action is MirrorDriftAdoptActions.Create or MirrorDriftAdoptActions.Update or MirrorDriftAdoptActions.Delete;
             var restoreOk = restore.Status == MirrorDriftResolveStatus.Proposed ? restore.Operations.Count > 0 && restore.Mode is not null
                 : restore.Status == MirrorDriftResolveStatus.Unsupported && restore.Operations.Count == 0;
@@ -243,7 +254,7 @@ public static class MirrorDriftSelect
                     throw Invalid("step " + step.OperationId + " needs " + dependency + ", which no chosen restore requires");
         var plan = new RevitCommandPlan(source.Version, source.ProjectId, source.ExpectedRevision, source.AfterHash, source.Document,
             source.Preconditions.Where(item => item is not null && (item.CheckOperation is null || kept.Contains(item.CheckOperation))).ToArray(), selected, Array.Empty<RevitUnsupportedElement>());
-        return new MirrorDriftSelection(resolution.DocumentUid, resolution.CoreProjectId, resolution.CoreRevision,
+        return new MirrorDriftSelection(resolution.DocumentUid, resolution.CoreProjectId, resolution.CoreRevision, false,
             order.Select(i => new MirrorDriftChoice(ids[i], chosen[i])).ToArray(), Enumerable.Range(0, ids.Length).Where(i => !chosen.ContainsKey(i)).Select(i => ids[i]).ToArray(),
             operations, adds, removals, plan, invalidated);
     }
