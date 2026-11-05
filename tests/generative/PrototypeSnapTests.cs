@@ -203,6 +203,9 @@ static class PrototypeSnapTests
             (problem ?? "") + " | " + counts);
         Check(total == 16 && !codes.Keys.Any(k => k.EndsWith(":" + IntentCodes.WallClash, StringComparison.Ordinal)) && snappedCount >= 4 && accepted >= 6 + 4,
             "real prototypes with the snap: 0 wall_clash rejections, the 4 staggered alternatives accepted", counts);
+        // Regression pin (CI 42025388127): 10 accepted, 6 snapped plans (16 edge moves), the 6 duplicates still rejected at the prototype gate.
+        Check(accepted == 10 && snappedCount == 6 && moves == 16 && gates.Count == 1 && gates.GetValueOrDefault(PrototypePipelineGate.Prototype) == 6
+            && codes.Count == 1 && codes.GetValueOrDefault("Prototype:" + AlternativeCodes.DuplicateGeometry) == 6, "real prototypes with the snap: 10 accepted, 6 duplicate_geometry (pinned)", counts);
 
         // ---- pipeline: crafted plans, refusals and JSON ----
         var ranked = PrototypePipeline.Rank(brief, new[] { tie }, options);
