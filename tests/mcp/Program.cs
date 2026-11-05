@@ -72,11 +72,11 @@ Check(server.Handle("""{"jsonrpc":"2.0","method":"notifications/unknown","params
 
 var list=Call(Request(2,"tools/list",null));
 var tools=list["result"]!["tools"]!.AsArray();
-Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
+Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,skills_lock_verify,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, skills_lock_verify, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
 Check(RevitCommandCatalogue.V1.Select(c=>c.ToolName).SequenceEqual(new[]{"revit_query_levels","revit_query_wall_types","revit_query_floor_types","revit_query_family_symbols","revit_wall_create","revit_opening_place","revit_floor_create","revit_room_create"}),"catalogue v1 tool names are the eight ADR0009 commands");
 Check(tools.All(t=>t!["inputSchema"]!["type"]!.GetValue<string>()=="object" && t!["inputSchema"]!["properties"] is JsonObject && t!["inputSchema"]!["required"] is JsonArray && !string.IsNullOrWhiteSpace(t!["description"]!.GetValue<string>())),"every tool has a JSON Schema object inputSchema and description");
 string Required(string tool)=>string.Join(",",tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!["inputSchema"]!["required"]!.AsArray().Select(x=>x!.GetValue<string>()));
-Check(Required("diff")=="before,after" && Required("validate")=="project" && Required("room")=="project_guid,revision,intent" && Required("plan")=="store_path,desired" && Required("mirror_drift")=="store_path,snapshot,mirror","tool schemas require the CLI inputs");
+Check(Required("diff")=="before,after" && Required("validate")=="project" && Required("room")=="project_guid,revision,intent" && Required("plan")=="store_path,desired" && Required("mirror_drift")=="store_path,snapshot,mirror" && Required("skills_lock_verify")=="skills_path,lock_path","tool schemas require the CLI inputs");
 
 // P9-05: the Revit tools are derived from the whole catalogue (v1 + v2 + whatever is added later), never a fixed list.
 // Each tool states the P10-03 permission level it needs on a test copy; a write to a real project needs more.
@@ -130,7 +130,7 @@ string? BuildError(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpS
 string? NameError(params string[] names) { try { McpServer.CheckToolNames(names); return null; } catch(InvalidOperationException error) { return error.Message; } }
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)}) is null,"an injected catalogue with distinct valid names builds");
 var syntheticServer=new McpServer(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)},RevitCommandPolicy.None,null,null);
-Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
+Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,skills_lock_verify,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
 Check(BuildError(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")})=="tool_name_duplicate: revit_a_b_c","colliding tool names (a.b_c vs a_b.c) fail closed at construction");
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("query.levels")})=="tool_name_duplicate: revit_query_levels","a duplicated command fails closed at construction");
 Check(BuildError(new[]{Synthetic("a b")})=="tool_name_invalid: revit_a b","a tool name outside [a-zA-Z0-9_-] fails closed at construction");
@@ -584,6 +584,55 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     var duplicateCli=Cli("mirror-drift",driftStore,snapshotPath,Input("drift-mirror-dup.json",duplicateMirror),Path.Combine(cliDir,"drift-dup.json"));
     Check(IsError(duplicate) && JsonDocument.Parse(Text(duplicate)).RootElement.GetProperty("code").GetString()=="mirror_drift_request_invalid" && Text(duplicate)==duplicateCli,"mirror_drift refuses a duplicate core_revision, byte-equal to the CLI | "+Text(duplicate));
     Check(ErrorCode(ToolCall("mirror_drift",new JsonObject{["store_path"]=driftStore,["snapshot"]=Node(driftedText)}))==-32602,"mirror_drift without mirror returns -32602");
+}
+
+// P5-09 skills_lock_verify: the read-only verify of the CLI skills-lock verb (one engine, SkillLockTool). The tool text
+// equals the CLI stdout byte for byte, success and refusal alike; it reports skill_lock_drift / skill_lock_missing per
+// pack and never writes the lock or anything beside it.
+{
+    var lockRoot=Path.Combine(cliDir,"skills-lock"); var skillsDir=Path.Combine(lockRoot,"skills");
+    const string alpha="bim.test.alpha", beta="bim.test.beta";
+    void Pack(string id) { Directory.CreateDirectory(Path.Combine(skillsDir,id)); File.WriteAllBytes(Path.Combine(skillsDir,id,"skill.json"),new System.Text.UTF8Encoding(false).GetBytes("{\"manifest_version\":1,\"id\":\""+id+"\",\"version\":\"2.1.0\",\"kind\":\"qa\",\"description\":\"MCP lock pack\",\"priority\":10}\n")); }
+    Pack(alpha); Pack(beta);
+    var lockFile=Path.Combine(lockRoot,"skills.lock.json");
+    File.WriteAllBytes(lockFile,SkillLockFile.Serialize(SkillLocking.Pin(skillsDir,new[]{alpha,beta})));
+    var lockBytes=File.ReadAllBytes(lockFile);
+    string[] Listing()=>Directory.GetFileSystemEntries(lockRoot).Select(e=>Path.GetFileName(e)).Order(StringComparer.Ordinal).ToArray();
+    var listing=Listing();
+    JsonObject Verify(string skills,string lockPath)=>ToolCall("skills_lock_verify",new JsonObject{["skills_path"]=skills,["lock_path"]=lockPath});
+    JsonElement Doc(JsonObject response)=>JsonDocument.Parse(Text(response)).RootElement.Clone();
+    string State(JsonElement doc,string id)=>doc.GetProperty("packs").EnumerateArray().Single(p=>p.GetProperty("id").GetString()==id).GetProperty("state").GetString()!;
+
+    var lockTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="skills_lock_verify");
+    Check(lockTool is not null && lockTool["description"]!.GetValue<string>().Contains("read-only",StringComparison.OrdinalIgnoreCase) && lockTool["description"]!.GetValue<string>().Contains("skills-lock verify",StringComparison.Ordinal),"skills_lock_verify is listed, read-only, naming the CLI verb");
+    var ok=Verify(skillsDir,lockFile);
+    Check(!IsError(ok) && HasType(ok) && Doc(ok).GetProperty("status").GetString()=="succeeded" && Doc(ok).GetProperty("verified").GetBoolean() && State(Doc(ok),alpha)=="ok" && State(Doc(ok),beta)=="ok","skills_lock_verify succeeds on an unchanged directory | "+Text(ok));
+    Check(Text(ok)==Cli("skills-lock","verify",skillsDir,lockFile),"skills_lock_verify text byte-equal to the CLI skills-lock verify stdout");
+
+    File.WriteAllText(Path.Combine(skillsDir,beta,"extra.txt"),"edited");
+    var drift=Verify(skillsDir,lockFile);
+    Check(IsError(drift) && Doc(drift).GetProperty("code").GetString()=="skill_lock_drift" && State(Doc(drift),beta)=="skill_lock_drift" && State(Doc(drift),alpha)=="ok","skills_lock_verify reports skill_lock_drift for the edited pack | "+Text(drift));
+    Check(Text(drift)==Cli("skills-lock","verify",skillsDir,lockFile),"skills_lock_verify drift report byte-equal to the CLI stdout");
+    Directory.Delete(Path.Combine(skillsDir,alpha),true);
+    var gone=Verify(skillsDir,lockFile);
+    Check(IsError(gone) && State(Doc(gone),alpha)=="skill_lock_missing" && State(Doc(gone),beta)=="skill_lock_drift" && Text(gone)==Cli("skills-lock","verify",skillsDir,lockFile),"skills_lock_verify reports skill_lock_missing per pack, byte-equal to the CLI | "+Text(gone));
+    Check(File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(lockBytes) && Listing().SequenceEqual(listing),"skills_lock_verify never writes the lock or anything beside it");
+
+    var none=Path.Combine(lockRoot,"none.lock.json");
+    var missing=Verify(skillsDir,none);
+    Check(IsError(missing) && Text(missing)=="""{"status":"failed","code":"lock_missing","subject":"none.lock.json","detail":"lock file not found","mode":"verify","verified":false,"packs":[],"issues":[{"code":"lock_missing","subject":"none.lock.json","detail":"lock file not found"}]}""" && Text(missing)==Cli("skills-lock","verify",skillsDir,none) && !File.Exists(none),"skills_lock_verify of a missing lock is lock_missing, byte-equal to the CLI, and creates nothing");
+    var emptyPath=Verify(skillsDir,"");
+    Check(IsError(emptyPath) && Text(emptyPath)=="""{"status":"failed","code":"skills_lock_path_invalid","detail":"lock"}""","skills_lock_verify empty lock path is skills_lock_path_invalid");
+    var nulPath=Verify("a\0b",lockFile);
+    Check(IsError(nulPath) && Text(nulPath)=="""{"status":"failed","code":"skills_lock_path_invalid","detail":"skills"}""","skills_lock_verify skills path with NUL is skills_lock_path_invalid");
+    Check(IsError(Verify(skillsDir,new string('x',5000))) && Doc(Verify(skillsDir,new string('x',5000))).GetProperty("code").GetString()=="skills_lock_path_invalid","skills_lock_verify refuses a path over the length bound");
+    Check(ErrorCode(ToolCall("skills_lock_verify",new JsonObject{["skills_path"]=skillsDir}))==-32602,"skills_lock_verify without lock_path returns -32602");
+    Check(ErrorCode(ToolCall("skills_lock_verify",new JsonObject{["skills_path"]=skillsDir,["lock_path"]=lockFile,["update"]=true}))==-32602,"skills_lock_verify takes no update argument (-32602)");
+    Check(ErrorCode(ToolCall("skills_lock_verify",new JsonObject{["skills_path"]=skillsDir,["lock_path"]=1}))==-32602,"skills_lock_verify with a non-string lock_path returns -32602");
+    foreach(var writer in new[]{"skills_lock_pin","skills_lock_update"}) {
+        var refused=ToolCall(writer,new JsonObject());
+        Check(IsError(refused) && Text(refused)=="""{"status":"failed","code":"unknown_tool"}""","MCP exposes no lock writer: "+writer+" is unknown_tool");
+    }
 }
 
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {

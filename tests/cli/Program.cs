@@ -677,6 +677,196 @@ try {
         }
     }
 
+    // ---- P5-09 skills-lock: pin, verify and update the P5-08 project skill lock (skills.lock.json) from the CLI ----
+    // Oracle: pin writes exactly SkillLockFile.Serialize(SkillLocking.Pin(..)) to a new file and never overwrites one;
+    // verify writes nothing and reports skill_lock_drift / skill_lock_missing per pack; update is the only rewrite and
+    // its bytes are SkillLocking.Update's. Fixture packs are minimal manifests written below (LF bytes).
+    {
+        var lockRoot=Path.Combine(work,"skills-lock"); Directory.CreateDirectory(lockRoot);
+        var skillsDir=Path.Combine(lockRoot,"skills");
+        const string alpha="bim.test.alpha", beta="bim.test.beta";
+        string Manifest(string id,string version)=>"{\"manifest_version\":1,\"id\":\""+id+"\",\"version\":\""+version+"\",\"kind\":\"qa\",\"description\":\"CLI lock pack\",\"priority\":10}\n";
+        void Pack(string id,string version="1.0.0") { Directory.CreateDirectory(Path.Combine(skillsDir,id)); File.WriteAllBytes(Path.Combine(skillsDir,id,"skill.json"),new UTF8Encoding(false).GetBytes(Manifest(id,version))); }
+        Pack(alpha); Pack(beta);
+        string LR((int Exit,string Out,string Err) r)=>"exit "+r.Exit+" "+r.Out+(r.Err.Length>0?" stderr "+r.Err:"");
+        JsonElement? LEnvelope(string output) { try { return JsonDocument.Parse(output).RootElement.Clone(); } catch(JsonException) { return null; } }
+        string? Str(JsonElement? e,string name)=>e is {} v && v.ValueKind==JsonValueKind.Object && v.TryGetProperty(name,out var p) && p.ValueKind==JsonValueKind.String ? p.GetString() : null;
+        bool LRefused((int Exit,string Out,string Err) r,string code)=>r.Exit==1 && Str(LEnvelope(r.Out),"status")=="failed" && Str(LEnvelope(r.Out),"code")==code;
+        string Hex(byte[] bytes)=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+        JsonElement PackState(JsonElement envelope,string id)=>envelope.GetProperty("packs").EnumerateArray().Single(p=>p.GetProperty("id").GetString()==id);
+        var lockFile=Path.Combine(lockRoot,"skills.lock.json");
+
+        // 1. pin writes the canonical lock to a new file.
+        var expectedPin=SkillLockFile.Serialize(SkillLocking.Pin(skillsDir,new[]{alpha,beta}));
+        var pin=Cli("skills-lock","pin",skillsDir,lockFile,beta,alpha);
+        var pinEnv=LEnvelope(pin.Out);
+        Check(pin.Exit==0 && Str(pinEnv,"status")=="succeeded" && Str(pinEnv,"mode")=="pin" && Str(pinEnv,"lock")==lockFile && File.Exists(lockFile),"skills-lock pin writes a new lock and prints a succeeded summary",LR(pin));
+        var pinned=File.Exists(lockFile) ? File.ReadAllBytes(lockFile) : Array.Empty<byte>();
+        Check(pinned.AsSpan().SequenceEqual(expectedPin),"skills-lock pin bytes equal SkillLockFile.Serialize(SkillLocking.Pin)",Encoding.UTF8.GetString(pinned));
+        Check(pinEnv is {} pe && pe.TryGetProperty("bytes",out var pb) && pb.GetInt64()==expectedPin.LongLength && Str(pe,"sha256")==Hex(expectedPin)
+            && pe.GetProperty("packs").GetArrayLength()==2 && pe.GetProperty("packs")[0].GetProperty("id").GetString()==alpha && pe.GetProperty("packs")[0].GetProperty("version").GetString()=="1.0.0"
+            && pe.GetProperty("packs")[0].GetProperty("content_sha256").GetString()==SkillPackHash.Compute(skillsDir,alpha),"skills-lock pin summary lists bytes, sha256 and the pinned packs in id order",LR(pin));
+
+        // 2. pin never overwrites.
+        var pinAgain=Cli("skills-lock","pin",skillsDir,lockFile,alpha);
+        Check(LRefused(pinAgain,"lock_exists") && File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(expectedPin),"skills-lock pin refuses an existing lock (lock_exists) and leaves it byte-identical",LR(pinAgain));
+
+        // 3. verify on an unchanged directory.
+        var verify=Cli("skills-lock","verify",skillsDir,lockFile);
+        var verifyEnv=LEnvelope(verify.Out);
+        Check(verify.Exit==0 && Str(verifyEnv,"status")=="succeeded" && Str(verifyEnv,"mode")=="verify" && verifyEnv!.Value.GetProperty("verified").GetBoolean()
+            && verifyEnv.Value.GetProperty("lock_version").GetInt32()==1 && Str(verifyEnv,"content_hash")=="bim-skill-pack-sha256-v1"
+            && verifyEnv.Value.GetProperty("packs").GetArrayLength()==2 && verifyEnv.Value.GetProperty("packs").EnumerateArray().All(p=>p.GetProperty("state").GetString()=="ok")
+            && verifyEnv.Value.GetProperty("issues").GetArrayLength()==0,"skills-lock verify reports every pinned pack ok",LR(verify));
+
+        // 4. drift: beta gains a file; verify reports it per pack and writes nothing.
+        File.WriteAllText(Path.Combine(skillsDir,beta,"notes.txt"),"edited");
+        var drift=Cli("skills-lock","verify",skillsDir,lockFile);
+        var driftEnv=LEnvelope(drift.Out);
+        Check(LRefused(drift,"skill_lock_drift") && driftEnv is {} de && !de.GetProperty("verified").GetBoolean()
+            && PackState(de,beta).GetProperty("state").GetString()=="skill_lock_drift" && PackState(de,beta).GetProperty("detail").GetString()!.Contains(SkillPackHash.Compute(skillsDir,beta),StringComparison.Ordinal)
+            && PackState(de,alpha).GetProperty("state").GetString()=="ok"
+            && de.GetProperty("issues").EnumerateArray().Any(i=>i.GetProperty("code").GetString()=="skill_lock_drift" && i.GetProperty("subject").GetString()==beta),
+            "skills-lock verify reports skill_lock_drift for the edited pack only",LR(drift));
+        Check(File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(expectedPin) && Directory.GetFiles(lockRoot).Length==1,"skills-lock verify never writes the lock or a temporary file");
+
+        // 5. missing: alpha's directory is gone.
+        var alphaAway=Path.Combine(lockRoot,"alpha-away");
+        Directory.Move(Path.Combine(skillsDir,alpha),alphaAway);
+        var gone=Cli("skills-lock","verify",skillsDir,lockFile);
+        var goneEnv=LEnvelope(gone.Out);
+        Check(LRefused(gone,"skill_lock_drift") && goneEnv is {} ge && PackState(ge,alpha).GetProperty("state").GetString()=="skill_lock_missing" && PackState(ge,beta).GetProperty("state").GetString()=="skill_lock_drift",
+            "skills-lock verify reports skill_lock_missing and skill_lock_drift per pack (code: drift first)",LR(gone));
+        var onlyMissingLock=Path.Combine(lockRoot,"only-alpha.lock.json");
+        File.WriteAllBytes(onlyMissingLock,SkillLockFile.Serialize(new SkillLock(new[]{new SkillLockEntry(alpha,new SkillVersion(1,0,0),new string('0',64))})));
+        var onlyMissing=Cli("skills-lock","verify",skillsDir,onlyMissingLock);
+        Check(LRefused(onlyMissing,"skill_lock_missing") && LEnvelope(onlyMissing.Out) is {} om && PackState(om,alpha).GetProperty("state").GetString()=="skill_lock_missing","skills-lock verify with only a missing pack is skill_lock_missing",LR(onlyMissing));
+        var updateMissing=Cli("skills-lock","update",skillsDir,lockFile);
+        Check(LRefused(updateMissing,"skill_lock_missing") && File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(expectedPin),"skills-lock update refuses a vanished pinned pack and leaves the lock unchanged",LR(updateMissing));
+        Directory.Move(alphaAway,Path.Combine(skillsDir,alpha));
+
+        // 6. update is the explicit rewrite.
+        var update=Cli("skills-lock","update",skillsDir,lockFile);
+        var updateEnv=LEnvelope(update.Out);
+        var expectedUpdate=SkillLockFile.Serialize(SkillLocking.Pin(skillsDir,new[]{alpha,beta}));
+        Check(update.Exit==0 && Str(updateEnv,"status")=="succeeded" && Str(updateEnv,"mode")=="update" && File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(expectedUpdate)
+            && updateEnv!.Value.GetProperty("changes").GetArrayLength()==1 && updateEnv.Value.GetProperty("changes")[0].GetProperty("id").GetString()==beta
+            && updateEnv.Value.GetProperty("changes")[0].GetProperty("before").GetProperty("content_sha256").GetString()!=updateEnv.Value.GetProperty("changes")[0].GetProperty("after").GetProperty("content_sha256").GetString()
+            && Str(updateEnv,"sha256")==Hex(expectedUpdate),"skills-lock update re-pins the drifted pack, lists the change and rewrites the lock",LR(update));
+        var verifyAfter=Cli("skills-lock","verify",skillsDir,lockFile);
+        Check(verifyAfter.Exit==0 && Str(LEnvelope(verifyAfter.Out),"status")=="succeeded","skills-lock verify succeeds after the update",LR(verifyAfter));
+        var updateNoop=Cli("skills-lock","update",skillsDir,lockFile);
+        Check(updateNoop.Exit==0 && LEnvelope(updateNoop.Out) is {} un && un.GetProperty("changes").GetArrayLength()==0 && File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(expectedUpdate),"skills-lock update with nothing changed lists no change",LR(updateNoop));
+        // Review finding 1: update with ids re-pins those ids and keeps every other pin (beta stays pinned).
+        File.WriteAllText(Path.Combine(skillsDir,alpha,"notes.txt"),"alpha edited");
+        File.WriteAllText(Path.Combine(skillsDir,beta,"notes.txt"),"beta edited again");
+        var betaPinned=SkillLockFile.Read(lockFile).Find(beta);
+        var narrow=Cli("skills-lock","update",skillsDir,lockFile,alpha);
+        var narrowLock=File.Exists(lockFile) ? SkillLockFile.Read(lockFile) : null;
+        Check(narrow.Exit==0 && LEnvelope(narrow.Out) is {} nw && nw.GetProperty("changes").GetArrayLength()==1 && nw.GetProperty("changes")[0].GetProperty("id").GetString()==alpha
+            && narrowLock is not null && narrowLock.Packs.Count==2 && narrowLock.Find(beta)==betaPinned && narrowLock.Find(alpha)?.ContentSha256==SkillPackHash.Compute(skillsDir,alpha),
+            "skills-lock update with pack ids re-pins those ids and keeps the other pins unchanged (beta still pinned, not re-pinned)",LR(narrow));
+        var stillDrift=Cli("skills-lock","verify",skillsDir,lockFile);
+        Check(LRefused(stillDrift,"skill_lock_drift") && LEnvelope(stillDrift.Out) is {} sd && PackState(sd,beta).GetProperty("state").GetString()=="skill_lock_drift" && PackState(sd,alpha).GetProperty("state").GetString()=="ok",
+            "an update naming alpha does not silently accept beta's drift",LR(stillDrift));
+        // Dropping a pin is explicit: skills-lock unpin.
+        var unpin=Cli("skills-lock","unpin",skillsDir,lockFile,beta);
+        Check(unpin.Exit==0 && Str(LEnvelope(unpin.Out),"mode")=="unpin" && LEnvelope(unpin.Out) is {} up && up.GetProperty("changes").GetArrayLength()==1 && up.GetProperty("changes")[0].GetProperty("id").GetString()==beta
+            && up.GetProperty("changes")[0].GetProperty("after").ValueKind==JsonValueKind.Null && SkillLockFile.Read(lockFile).Packs.Select(e=>e.Id).SequenceEqual(new[]{alpha}),"skills-lock unpin drops exactly the named pin",LR(unpin));
+        var unpinBytes=File.ReadAllBytes(lockFile);
+        var unpinAgain=Cli("skills-lock","unpin",skillsDir,lockFile,beta);
+        Check(LRefused(unpinAgain,"value_invalid") && Str(LEnvelope(unpinAgain.Out),"subject")==beta && File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(unpinBytes),"skills-lock unpin of a pack that is not pinned is value_invalid and writes nothing",LR(unpinAgain));
+        Check(LRefused(Cli("skills-lock","unpin",skillsDir,Path.Combine(lockRoot,"absent.lock.json"),alpha),"lock_missing") && !File.Exists(Path.Combine(lockRoot,"absent.lock.json")),"skills-lock unpin needs an existing lock");
+
+        // 7. refusals: typed envelopes, nothing written.
+        var noLock=Path.Combine(lockRoot,"none.lock.json");
+        var missingLock=Cli("skills-lock","verify",skillsDir,noLock);
+        Check(missingLock.Exit==1 && missingLock.Out=="""{"status":"failed","code":"lock_missing","subject":"none.lock.json","detail":"lock file not found","mode":"verify","verified":false,"packs":[],"issues":[{"code":"lock_missing","subject":"none.lock.json","detail":"lock file not found"}]}""","skills-lock verify of a missing lock is lock_missing with the uniform verify shape",LR(missingLock));
+        Check(LRefused(Cli("skills-lock","update",skillsDir,noLock),"lock_missing") && !File.Exists(noLock),"skills-lock update without ids needs an existing lock");
+        var unknown=Cli("skills-lock","pin",skillsDir,noLock,"bim.test.nope");
+        Check(LRefused(unknown,"skill_missing") && Str(LEnvelope(unknown.Out),"subject")=="bim.test.nope" && !File.Exists(noLock),"skills-lock pin of an unknown pack is skill_missing and writes nothing",LR(unknown));
+        var badId=Cli("skills-lock","pin",skillsDir,noLock,"Not An Id");
+        Check(LRefused(badId,"skills_lock_request_invalid") && !File.Exists(noLock),"skills-lock pin refuses a malformed pack id before reading anything",LR(badId));
+        var tooMany=Cli(new[]{"skills-lock","pin",skillsDir,noLock}.Concat(Enumerable.Range(0,SkillLock.MaxPacks+1).Select(i=>"bim.test.p"+i.ToString(System.Globalization.CultureInfo.InvariantCulture))).ToArray());
+        Check(LRefused(tooMany,"skills_lock_request_invalid") && !File.Exists(noLock),"skills-lock pin refuses more than SkillLock.MaxPacks pack ids",LR(tooMany));
+        var emptyLockPath=Cli("skills-lock","verify",skillsDir,"");
+        Check(emptyLockPath.Exit==1 && emptyLockPath.Out==JsonSerializer.Serialize(new {status="failed",code="skills_lock_path_invalid",detail="lock"}),"skills-lock empty lock path is skills_lock_path_invalid (detail lock)",LR(emptyLockPath));
+        var emptySkills=Cli("skills-lock","verify","",lockFile);
+        Check(emptySkills.Exit==1 && emptySkills.Out==JsonSerializer.Serialize(new {status="failed",code="skills_lock_path_invalid",detail="skills"}),"skills-lock empty skills path is skills_lock_path_invalid (detail skills)",LR(emptySkills));
+        var longPath=Cli("skills-lock","verify",skillsDir,Path.Combine(lockRoot,new string('x',5000)));
+        Check(longPath.Exit==1 && Str(LEnvelope(longPath.Out),"code")=="skills_lock_path_invalid","skills-lock refuses a lock path over the length bound",LR(longPath));
+        var dirLock=Path.Combine(lockRoot,"dir.lock.json"); Directory.CreateDirectory(dirLock);
+        Check(LRefused(Cli("skills-lock","pin",skillsDir,dirLock,alpha),"not_regular_file") && Directory.Exists(dirLock),"skills-lock pin refuses a directory as the lock path");
+        Check(LRefused(Cli("skills-lock","verify",skillsDir,dirLock),"not_regular_file"),"skills-lock verify refuses a directory as the lock path");
+        var noSkills=Cli("skills-lock","verify",Path.Combine(lockRoot,"no-skills"),lockFile);
+        Check(LRefused(noSkills,"skills_invalid"),"skills-lock verify on a missing skills directory is skills_invalid",LR(noSkills));
+        var garbage=Path.Combine(lockRoot,"garbage.lock.json"); File.WriteAllText(garbage,"{not json");
+        Check(LRefused(Cli("skills-lock","verify",skillsDir,garbage),"json_invalid"),"skills-lock verify of a malformed lock is json_invalid");
+        var linkLock=Path.Combine(lockRoot,"link.lock.json");
+        var linkOk=false;
+        try { File.CreateSymbolicLink(linkLock,lockFile); linkOk=true; } catch(Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { }
+        if(linkOk) {
+            Check(LRefused(Cli("skills-lock","verify",skillsDir,linkLock),"path_unsafe"),"skills-lock verify refuses a symlinked lock (path_unsafe)");
+            var danglingLock=Path.Combine(lockRoot,"dangling.lock.json");
+            File.CreateSymbolicLink(danglingLock,Path.Combine(lockRoot,"nowhere.json"));
+            Check(LRefused(Cli("skills-lock","pin",skillsDir,danglingLock,alpha),"path_unsafe") && !File.Exists(Path.Combine(lockRoot,"nowhere.json")),"skills-lock pin refuses a dangling symlink at the lock path and writes nothing through it");
+            var targetBytes=File.ReadAllBytes(lockFile);
+            Check(LRefused(Cli("skills-lock","update",skillsDir,linkLock),"path_unsafe") && LRefused(Cli("skills-lock","update",skillsDir,linkLock,alpha),"path_unsafe")
+                && File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(targetBytes) && new FileInfo(linkLock).LinkTarget is not null,"skills-lock update over a symlinked lock is path_unsafe and leaves the link and its target unchanged");
+        } else Skip("skills-lock symlink refusals","symbolic links unavailable");
+
+        // FIFO at the lock path: update with ids must not repair (replace) it.
+        if(!OperatingSystem.IsWindows()) {
+            var fifoLock=Path.Combine(lockRoot,"fifo.lock.json");
+            bool fifoMade;
+            try { using var mk=Process.Start(new ProcessStartInfo("mkfifo"){ArgumentList={fifoLock},UseShellExecute=false}); fifoMade=mk!=null && mk.WaitForExit(10000) && mk.ExitCode==0; }
+            catch(System.ComponentModel.Win32Exception) { fifoMade=false; }
+            if(fifoMade) {
+                var fifoUpdate=Cli("skills-lock","update",skillsDir,fifoLock,alpha);
+                Check(LRefused(fifoUpdate,"not_regular_file") && File.Exists(fifoLock) && new FileInfo(fifoLock).Length==0 && !Directory.GetFiles(lockRoot,"*.tmp").Any(),"skills-lock update with ids over a FIFO is not_regular_file and leaves the FIFO in place",LR(fifoUpdate));
+                Check(LRefused(Cli("skills-lock","unpin",skillsDir,fifoLock,alpha),"not_regular_file"),"skills-lock unpin over a FIFO is not_regular_file");
+            } else Skip("skills-lock update over a FIFO","mkfifo unavailable");
+        } else Skip("skills-lock update over a FIFO","Unix-only fixture");
+
+        // Review finding 2: a lock created by another writer between the pre-check and the move is lock_exists; the other
+        // writer's bytes stay and no temporary file is left (in-process seam SkillLockCommand.PinNew beforeWrite).
+        {
+            var raced=Path.Combine(lockRoot,"raced","skills.lock.json"); Directory.CreateDirectory(Path.GetDirectoryName(raced)!);
+            var otherBytes=Encoding.UTF8.GetBytes("{\"other\":\"writer\"}\n");
+            string? racedCode=null;
+            try { SkillLockCommand.PinNew(skillsDir,raced,new[]{alpha},path=>File.WriteAllBytes(path,otherBytes)); }
+            catch(SkillLockException e) { racedCode=e.Code; }
+            Check(racedCode=="lock_exists" && File.ReadAllBytes(raced).AsSpan().SequenceEqual(otherBytes) && Directory.GetFiles(Path.GetDirectoryName(raced)!).Length==1,
+                "a lock created concurrently before the move is lock_exists, the other writer's bytes are kept and no *.tmp is left","code "+racedCode);
+            var calm=Path.Combine(lockRoot,"calm","skills.lock.json");
+            var calmLock=SkillLockCommand.PinNew(skillsDir,calm,new[]{alpha},null);
+            Check(File.ReadAllBytes(calm).AsSpan().SequenceEqual(SkillLockFile.Serialize(calmLock)) && Directory.GetFiles(Path.GetDirectoryName(calm)!).Length==1,"PinNew without a race writes the canonical lock and leaves no *.tmp");
+        }
+
+        // 8. usage.
+        foreach(var bad in new[]{new[]{"skills-lock"},new[]{"skills-lock","verify",skillsDir},new[]{"skills-lock","verify",skillsDir,lockFile,alpha},new[]{"skills-lock","pin",skillsDir,noLock},new[]{"skills-lock","repin",skillsDir,lockFile},new[]{"skills-lock","unpin",skillsDir,lockFile}}) {
+            var r=Cli(bad);
+            Check(r.Exit==1 && Str(LEnvelope(r.Out),"code")=="skills_lock_usage" && (Str(LEnvelope(r.Out),"detail")??"").StartsWith("usage: skills-lock",StringComparison.Ordinal),"skills-lock usage for: "+string.Join(" ",bad.Skip(1).Select(a=>a==skillsDir?"<skills>":a==lockFile?"<lock>":a)),LR(r));
+        }
+        Check(Cli("no-such-verb").Out.Contains("skills-lock pin|verify|update",StringComparison.Ordinal),"default usage lists skills-lock");
+
+        // 9. static: the MCP-shared engine is read-only.
+        var lockToolPath=Path.Combine(root,"interfaces","mcp","SkillLockTool.cs");
+        var lockCommandPath=Path.Combine(root,"interfaces","cli","SkillLockCommand.cs");
+        Check(File.Exists(lockToolPath) && File.Exists(lockCommandPath),"skills-lock sources exist");
+        if(File.Exists(lockToolPath)) {
+            var toolSource=File.ReadAllText(lockToolPath);
+            Check(toolSource.Contains("SkillLocking.Load(",StringComparison.Ordinal) && !toolSource.Contains("SkillLocking.Update",StringComparison.Ordinal) && !toolSource.Contains("SkillLocking.Pin",StringComparison.Ordinal)
+                && new[]{"SkillLockFile.Write","File.Write","File.Move","File.Create","File.Copy","File.Delete","File.Open","FileMode.","FileStream","Directory.Create","Directory.Move","Directory.Delete"}.All(api=>!toolSource.Contains(api,StringComparison.Ordinal)),
+                "the verify engine shared with MCP only loads (never pins, updates or writes)");
+        }
+        if(File.Exists(lockCommandPath)) {
+            var commandSource=File.ReadAllText(lockCommandPath);
+            Check(!commandSource.Contains("SkillLockFile.Write",StringComparison.Ordinal) && commandSource.Contains("SkillLocking.Update(",StringComparison.Ordinal) && commandSource.Contains("FileMode.CreateNew",StringComparison.Ordinal),
+                "pin writes only through an exclusive create; SkillLocking.Update is the only rewrite");
+        }
+    }
+
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
 } catch(Exception exception) {

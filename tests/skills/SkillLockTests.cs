@@ -187,11 +187,18 @@ static class SkillLockTests
         Check(SkillLocking.Load(project, lockPath).Succeeded, "after the update the drifted content loads");
         var again = SkillLocking.Update(project, lockPath);
         Check(again.Changes.Count == 0 && File.ReadAllBytes(lockPath).SequenceEqual(updatedBytes), "updating an up-to-date lock reports no change and keeps the bytes");
+        var otherPin = SkillLockFile.Read(lockPath).Find(Other);
         var grow = SkillLocking.Update(project, lockPath, new[] { Third, Locked });
-        Check(grow.Lock.Packs.Select(entry => entry.Id).SequenceEqual(new[] { Locked, Third })
-            && grow.Changes.Any(change => change.Id == Third && change.Before is null && change.After is not null)
-            && grow.Changes.Any(change => change.Id == Other && change.Before is not null && change.After is null) && !grow.Changes.Any(change => change.Id == Locked),
-            "an update with an explicit id set adds and removes pins");
+        Check(grow.Lock.Packs.Select(entry => entry.Id).SequenceEqual(new[] { Locked, Other, Third }) && grow.Lock.Find(Other) == otherPin
+            && grow.Changes.Count == 1 && grow.Changes[0] is { Id: Third, Before: null, After: not null },
+            "an update with explicit ids re-pins those ids and keeps every other pin unchanged");
+        var kept = SkillLocking.Update(project, lockPath, Array.Empty<string>(), new[] { Other });
+        Check(kept.Lock.Packs.Select(entry => entry.Id).SequenceEqual(new[] { Locked, Third }) && kept.Changes is [{ Id: Other, Before: not null, After: null }]
+            && File.ReadAllBytes(lockPath).SequenceEqual(SkillLockFile.Serialize(kept.Lock)), "dropping a pin is explicit (unpin)");
+        Check(Throws(() => SkillLocking.Update(project, lockPath, Array.Empty<string>(), new[] { Other }))?.Code == SkillLockCodes.ValueInvalid
+            && File.ReadAllBytes(lockPath).SequenceEqual(SkillLockFile.Serialize(kept.Lock)), "unpinning a pack that is not pinned is value_invalid and writes nothing");
+        Check(Throws(() => SkillLocking.Update(project, lockPath, new[] { Third }, new[] { Third }))?.Code == SkillLockCodes.ValueInvalid, "re-pinning and unpinning the same id is value_invalid");
+        Check(Throws(() => SkillLocking.Update(project, Path.Combine(tempRoot(), SkillLock.FileName), Array.Empty<string>(), new[] { Locked }))?.Code == SkillLockCodes.LockMissing, "unpinning needs an existing lock");
         var fresh = Path.Combine(tempRoot(), SkillLock.FileName);
         var created = SkillLocking.Update(project, fresh, new[] { Locked });
         Check(File.Exists(fresh) && created.Changes.Count == 1 && created.Changes[0].Before is null, "an update with ids creates a missing lock");
@@ -201,7 +208,7 @@ static class SkillLockTests
         Directory.Delete(Path.Combine(project, Third), true);
         var missing = SkillLocking.Load(project, lockPath);
         Check(missing.Issues.Count == 1 && missing.Issues[0] is { Code: SkillLockCodes.SkillLockMissing, Subject: Third }, "a pinned pack that disappeared is skill_lock_missing", Show(missing.Issues));
-        Check(Throws(() => SkillLocking.Update(project, lockPath))?.Code == SkillLockCodes.SkillLockMissing && File.ReadAllBytes(lockPath).SequenceEqual(SkillLockFile.Serialize(grow.Lock)),
+        Check(Throws(() => SkillLocking.Update(project, lockPath))?.Code == SkillLockCodes.SkillLockMissing && File.ReadAllBytes(lockPath).SequenceEqual(SkillLockFile.Serialize(kept.Lock)),
             "an update that cannot hash a pinned pack fails and leaves the lock unchanged");
         var broken = tempRoot();
         Directory.CreateDirectory(Path.Combine(broken, "Not An Id"));
