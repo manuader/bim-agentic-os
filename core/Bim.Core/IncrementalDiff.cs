@@ -31,8 +31,8 @@ public sealed record IncrementalDiffResult(Project After, ExecutionPlan Plan, In
 // per-element JSON bytes, reverse dependency lists and BeforeHash. Reusable for any number of diffs; never mutated.
 // The index is a snapshot of before: do not mutate before (its Elements array or elements) after Build. A diff
 // does not advance the index or persist anything; callers commit result.After (with result.Plan) themselves and
-// build a new index from it for the next edit set. maxAffected must be >= 0 (edit_invalid otherwise).
-public sealed class IncrementalDiffIndex
+// get the next index from Advance(result) (IncrementalDiffAdvance.cs) or Build(result.After). maxAffected must be >= 0 (edit_invalid otherwise).
+public sealed partial class IncrementalDiffIndex
 {
     readonly Dictionary<Guid, int> position;
     readonly byte[][] json;
@@ -226,11 +226,11 @@ public sealed class IncrementalDiffIndex
 
         var plan = new ExecutionPlan(Before.Id, Before.Revision, beforeHash, afterHash, operations.ToArray(), dirty.Order().ToArray());
         var work = new IncrementalWork(edits.Count, serialized, dirty.Count, Before.Elements.Length, hashedBytes, traversed);
-        return new(Before with { Elements = after.ToArray() }, plan, work);
+        return Remember(new(Before with { Elements = after.ToArray() }, plan, work), deletes, updates, creates, newJson);
     }
 }
 
-public static class IncrementalDiff
+public static partial class IncrementalDiff
 {
     public const int MaxEdits = 1024;
     public const string InvalidEdit = "edit_invalid";

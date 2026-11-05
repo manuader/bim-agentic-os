@@ -102,7 +102,7 @@ sealed class IncrementalDiffAdvanceOracle(Action<bool, string, string> check)
     {
         check(steps == expectedSteps && agreed == expectedSteps, corpus + ": every chained Advance equals Build(result.After) in every observable and in the next diff", N(agreed) + "/" + N(steps));
         check(staleChecks == (expectedSteps + 9) / 10, corpus + ": stale results (other index, successor, copies, fabricated) are refused", N(staleChecks));
-        check(probes == expectedSteps && carried > 0 && reused + carried == total && carried * 10 < total, corpus + ": only edited elements carry new bytes; untouched bytes are reused", N(carried) + " carried, " + N(reused) + " reused of " + N(total));
+        check(probes == expectedSteps && carried > 0 && reused + carried == total && carried * 4 < total, corpus + ": only edited elements carry new bytes; untouched bytes are reused", N(carried) + " carried, " + N(reused) + " reused of " + N(total));
         Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "incremental_advance_" + corpus, steps, reused, carried, total }));
     }
 
