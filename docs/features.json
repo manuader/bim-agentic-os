@@ -1115,6 +1115,40 @@
       ],
       "blocker": "Facade is pass/fail only (no quality ranking, P7-10); 4/16 real prototypes rejected wall_clash on staggered plans (P7-06 limitation, P7-08); option refusals use a one-room probe plan; accepted BIM-IR projects share id/revision and are not committed; not exposed through CLI/MCP (P7-09).",
       "scope": "P7-07: PrototypePipeline.Run(request, options)/Rank(brief, plans, options, weights) run prototype \u2192 circulation \u2192 facade \u2192 BIM-IR windows gates with typed rejections (gate, code, subject, detail), accepted ranked 1..k in CirculationRanker order, rejected rank 0; all refusals merged; canonical v1 JSON with options; PrototypeGenerator digest pinned; real prototypes 6/16 accepted (6 duplicate_geometry, 4 wall_clash). CI 41972006351."
+    },
+    {
+      "id": "mirror-drift-cli-mcp",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/MirrorDriftCommand.cs",
+        "interfaces/mcp/MirrorDriftTool.cs",
+        "interfaces/mcp/McpServer.cs",
+        "tests/cli/Program.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "Not exercised against a real Revit snapshot (fixture only); map supplied by the caller, not ExtensibleStorage; add-in receipts not accepted; store read once (a concurrent commit is not detected, output records revision+hash); MCP takes snapshot/mirror inline (8 MiB line cap); no readOnlyHint annotation; findings above options.max_findings refused (drift_resolve_report_truncated with detail).",
+      "scope": "P2-08: `mirror-drift store snapshot.json mirror.json output.json` CLI verb and MCP tool mirror_drift on one engine (MirrorDriftTool): bounded read-only store read (FileShare ReadWrite|Delete), query.snapshot readback or catalogue response, strict mirror request (document, core_project_id, core_revision, map, levels, wall_types, symbols, journal, options; duplicate members refused) → {mirror_drift_version 1, applied false, requires_approval, core_store, report (P2-04), resolution (P2-07)} byte-equal to Core and between CLI file and MCP text; never-overwrite output, output_in_store; typed codes drift_resolve_report_stale, drift_document_mismatch, input_*, drift_store_invalid, mirror_drift_request_invalid, mirror_drift_internal_error; store untouched. CI 41989880727."
+    },
+    {
+      "id": "skill-lock-file",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/SkillLock.cs",
+        "tests/skills/SkillLockTests.cs",
+        ".gitattributes"
+      ],
+      "blocker": "Not wired to CLI/MCP/compilers (P5-09); jurisdiction.json is hashed but JurisdictionRegistry reads it unchecked (P5-10); no directory fsync after the atomic replace; concurrent updaters last-writer-wins; no JSON Schema.",
+      "scope": "P5-08: skills.lock.json (new standalone format, lock_version 1, canonical LF bytes, packs in ordinal id order) pins id/version/content_sha256 with scheme bim-skill-pack-sha256-v1 over raw pack bytes (ordinal relative paths, length-framed, links/control names refused, file/dir/size/depth limits); root .gitattributes `skills/** -text` keeps hashes equal across autocrlf checkouts; SkillLocking.Pin/Load/Verify/Update: manifests parsed from the hashed snapshot bytes, skill_lock_drift / skill_lock_missing / resolution_stale refusals, only an explicit Update rewrites (repairs a corrupt lock when ids are given). CI 41991684029."
+    },
+    {
+      "id": "audit-verify-summary",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/AuditVerify.cs",
+        "tests/audit/Program.cs"
+      ],
+      "blocker": "P10-03 hash chain is unkeyed: removing tail entries or rewriting the whole file with recomputed hashes is only detectable with an externally stored head anchor; a rehashed edit is reported at the next line; missing-entry count heuristic around malformed lines; library only (no CLI/MCP).",
+      "scope": "P10-09: AuditVerifier.Verify/VerifyBytes over the unchanged P10-03 audit log (optional known actors and head anchor) reports every finding by line with typed codes audit_truncated, audit_reordered, audit_entries_missing, audit_sequence_broken, audit_entry_edited, audit_entry_not_canonical, audit_chain_broken, audit_anchor_mismatch, audit_actor_unknown, audit_entry_malformed, audit_file_missing/unreadable; report code ranked by documented severity; AuditSummary deterministic JSON of allow/deny by actor, command, UTC day and combination over the verified prefix (empty on anchor mismatch). CI 41993168316."
     }
   ]
 }

@@ -186,3 +186,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P4-06: no failed attempts (red 41965712152 → green 41966585544; review red 41973671243 → green 41974540346). One compile slip in test code (CS0165, run 41964999967), not an attempt.
 - P6-09: no failed attempts (red 41965721659 → green 41966656787; review red 41968502384 → green 41969132742). One syntax slip (run 41965047303), not an attempt; baseline digest probe 41968339713 on throwaway branch relay159-P6-09-baseline.
 - P7-07: no failed attempts (red 41965200434 → green 41965816230; review red 41971196839 → green 41972006351). One invalid red (test helper generic constraint, run 41970416543), not an attempt.
+
+### Relay160 (2026-11-05, cloud)
+- P2-08 Attempt1 (run 41986782413, 19cd27a): hypothesis the existing MCP test pins the core tool list from the injected catalogue only → wrong, tests/mcp/Program.cs:133 hard-codes the core tool names → mirror_drift added to that expected list (oracle not relaxed), green 41987958037; review red 41989771640 → green 41989880727. Compile slip in the first red (41984282875), not an attempt.
+- P5-08: no failed attempts (red 41983932849 → green 41985065469; review red 41991496133 → green 41991684029).
+- P10-09: no failed attempts (red 41983890324 compile red → green 41984918492, one compile slip 41984050644 (test locals clashing with top-level names), not an attempt; review red 41993013697 → green 41993168316).
