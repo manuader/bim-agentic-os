@@ -182,6 +182,7 @@ try
 
     // ---- Seeded random corpus: localized == full after every edit ----
     var random = new Random(20261103);
+    var incrementalRandom = new IncrementalDiffOracle((condition, name, detail) => Check(condition, name, detail));
     var current = Build(12);
     long revalidatedSum = 0, totalSum = 0; var edits = 0; var agreed = 0; var local1 = 0;
     for (var step = 0; step < 300; step++)
@@ -206,14 +207,17 @@ try
         else Check(false, "random edit " + N(step) + " agrees with full validation", Show(merged) + " vs " + Show(full));
         if (result.RevalidatedCount <= 11) local1++;
         revalidatedSum += result.RevalidatedCount; totalSum += result.TotalElements;
+        incrementalRandom.Observe("random", step, current, next);
         current = next;
     }
     Check(agreed == 300, "300 seeded random edits: localized findings always equal full validation", N(agreed));
+    incrementalRandom.Finish("random", 300);
     Check(local1 == 300 && revalidatedSum < totalSum / 10, "every single-room edit revalidates at most that room's 11 elements", N(local1) + " " + revalidatedSum.ToString(invariant) + "/" + totalSum.ToString(invariant));
 
     // ---- Seeded rich corpus: rehost, boundary rewiring, wall create/delete, upper level move/replace, level kind flips,
     // one to three edits per step; plus per-step non-vacuity (dropping one revalidated id) and element-order independence ----
     var rich = new Random(20261104);
+    var incrementalRich = new IncrementalDiffOracle((condition, name, detail) => Check(condition, name, detail));
     var state = Build(6);
     var upperId = upper;
     var serial = 0;
@@ -319,7 +323,9 @@ try
         if (JsonSerializer.Serialize(LocalValidation.Validate(before, permuted, Compiler.Diff(before, permuted))) == JsonSerializer.Serialize(result)) orderAgreed++;
         else Check(false, "rich edit " + N(step) + ": result does not depend on element order");
         richRevalidated += result.RevalidatedCount; richTotal += result.TotalElements;
+        incrementalRich.Observe("rich", step, before, state);
     }
+    incrementalRich.Finish("rich", richSteps);
     Check(richAgreed == richSteps, "400 rich seeded steps (1-3 edits each): localized findings always equal full validation", N(richAgreed));
     Check(kindsSeen.All(count => count > 0), "rich corpus exercised every edit type", string.Join(",", kindsSeen.Select(N)));
     Check(dropChecks >= 25 && dropDisagreed == dropChecks, "non-vacuity: skipping any revalidated element whose findings changed disagrees with full validation", N(dropDisagreed) + "/" + N(dropChecks));
@@ -333,6 +339,8 @@ try
     var largeResult = LocalValidation.Validate(large, largeAfter, Compiler.Diff(large, largeAfter));
     Check(largeResult.RevalidatedCount == 6 && largeResult.TotalElements == 551, "50-room model: one wall move revalidates 6 of 551 elements", N(largeResult.RevalidatedCount) + "/" + N(largeResult.TotalElements));
     Check(LocalValidation.Agrees(large, largeAfter, Compiler.Diff(large, largeAfter)), "50-room model: localized result equals full validation");
+    // ---- P3-05 incremental diff from an edit set ----
+    IncrementalDiffOracle.Units((condition, name, detail) => Check(condition, name, detail), Build, Role, Door, Window, Id, provenance);
     Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "local_validation", revalidated = largeResult.RevalidatedCount, total = largeResult.TotalElements, random_edits = edits, random_revalidated = revalidatedSum, random_total = totalSum }));
 }
 catch (Exception error)
