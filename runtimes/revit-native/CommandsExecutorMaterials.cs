@@ -39,7 +39,8 @@ internal static partial class CommandExecutor
             var material = d.GetElement(layer.MaterialId) as Material;
             return new ObservedRoofLayer(CommandRulesMaterials.FunctionName(layer.Function.ToString()), material?.UniqueId, material?.Name, Mm(layer.Width));
         }).ToArray();
-        return new ObservedRoofType(type.UniqueId, type.Name, layers, structure is null ? null : Mm(structure.GetWidth()));
+        return new ObservedRoofType(type.UniqueId, type.Name, layers, structure is null ? null : Mm(structure.GetWidth()),
+            structure?.GetNumberOfShellLayers(ShellLayerType.Exterior) ?? 0, structure?.GetNumberOfShellLayers(ShellLayerType.Interior) ?? 0, structure?.StructuralMaterialIndex ?? -1);
     }
 
     static WritePlan RoofTypeWrite(Document d, RoofTypeCreateArgs args)
@@ -58,11 +59,11 @@ internal static partial class CommandExecutor
         // A roof type of that name (Revit type names ignore case): returned unchanged when identical, else refused.
         if (roofTypes.FirstOrDefault(roofType => string.Equals(roofType.Name, args.Name, StringComparison.OrdinalIgnoreCase)) is { } existing)
         {
-            if (CommandReadbackMaterials.RoofType(args.Name, expected, ObserveRoofType(d, existing)) is { } difference)
+            if (CommandReadbackMaterials.RoofType(args.Name, expected, shells, ObserveRoofType(d, existing)) is { } difference)
                 throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a roof type named '" + existing.Name + "' already exists and differs (" + difference + "); choose another name");
             return new WritePlan(
                 () => { },
-                () => existing.IsValidObject ? CommandReadbackMaterials.RoofType(args.Name, expected, ObserveRoofType(d, existing)) : "the existing roof type no longer exists",
+                () => existing.IsValidObject ? CommandReadbackMaterials.RoofType(args.Name, expected, shells, ObserveRoofType(d, existing)) : "the existing roof type no longer exists",
                 () => CommandReadbackMaterials.RoofTypeJson(ObserveRoofType(d, existing), existing: true),
                 Array.Empty<string>,
                 Array.Empty<string>);
@@ -80,7 +81,7 @@ internal static partial class CommandExecutor
                 // for roofs (CommandRulesMaterialTypes.Wrapping).
                 SetStructure(duplicate, HostStructure(d, "roof", baseType.GetCompoundStructure(), hostLayers, resolved, shells));
             },
-            () => created is { IsValidObject: true } type ? CommandReadbackMaterials.RoofType(args.Name, expected, ObserveRoofType(d, type)) : "the new roof type no longer exists",
+            () => created is { IsValidObject: true } type ? CommandReadbackMaterials.RoofType(args.Name, expected, shells, ObserveRoofType(d, type)) : "the new roof type no longer exists",
             () => CommandReadbackMaterials.RoofTypeJson(ObserveRoofType(d, created!), existing: false),
             () => new[] { created!.UniqueId },
             Array.Empty<string>);

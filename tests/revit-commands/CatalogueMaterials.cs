@@ -164,7 +164,9 @@ static class CatalogueMaterialsChecks
     {
         new ObservedRoofLayer("finish1", TileUid, "Roofing - Tile", 20), new ObservedRoofLayer("membrane", MembraneUid, "Roofing - Membrane", 0),
         new ObservedRoofLayer("substrate", BoardsUid, "Wood - Tongue and Groove", 19.00004), new ObservedRoofLayer("structure", RaftersUid, "Wood - Rafters", 150),
-    }, 189);
+    }, 189, 3, 0, 3);
+    // Tile, membrane and boards above the rafters: three exterior shell layers, the rafters the core and structural layer.
+    static readonly (int Exterior, int Interior) Shells = (3, 0);
 
     static ObservedRoofType Replace(int index, ObservedRoofLayer layer)
     {
@@ -177,16 +179,22 @@ static class CatalogueMaterialsChecks
     static void Readbacks()
     {
         var observed = Observed();
-        Check(CommandReadbackMaterials.RoofType(Name, Expected(), observed) is null, "roof type readback matches (thickness within 1e-3 mm)");
-        Check(CommandReadbackMaterials.RoofType(Name, Expected(), observed with { Name = Name.ToUpperInvariant() }) is { } name && name.Contains("name", StringComparison.Ordinal), "a roof type of another name (even only in case) is a mismatch");
-        Check(CommandReadbackMaterials.RoofType(Name, Expected(), observed with { Layers = null }) is { } none && none.Contains("layers", StringComparison.Ordinal), "a roof type without a compound structure is a mismatch");
-        Check(CommandReadbackMaterials.RoofType(Name, Expected(), observed with { Layers = observed.Layers!.Take(3).ToArray() }) is { } count && count.Contains("3 layers", StringComparison.Ordinal), "a roof type with another layer count is a mismatch");
-        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Replace(0, new ObservedRoofLayer("finish2", TileUid, "Roofing - Tile", 20))) is { } function && function.Contains("layer 0", StringComparison.Ordinal) && function.Contains("function", StringComparison.Ordinal), "a layer with another function is a mismatch naming the layer");
-        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Replace(2, new ObservedRoofLayer("substrate", RaftersUid, "Wood - Rafters", 19))) is { } material && material.Contains("material", StringComparison.Ordinal), "a layer of another material is a mismatch");
-        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Replace(2, new ObservedRoofLayer("substrate", null, null, 19))) is not null, "a layer without a material is a mismatch");
-        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Replace(3, new ObservedRoofLayer("structure", RaftersUid, "Wood - Rafters", 150.01))) is { } thickness && thickness.Contains("thickness", StringComparison.Ordinal), "a layer of another thickness is a mismatch");
-        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Replace(0, observed.Layers![3])) is not null, "layers in another order are a mismatch (exterior to interior)");
-        Check(CommandReadbackMaterials.RoofType(Name, Expected().Reverse().ToArray(), observed) is not null, "the requested order is the order read back");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, observed) is null, "roof type readback matches (thickness within 1e-3 mm)");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, observed with { Name = Name.ToUpperInvariant() }) is { } name && name.Contains("name", StringComparison.Ordinal), "a roof type of another name (even only in case) is a mismatch");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, observed with { Layers = null }) is { } none && none.Contains("layers", StringComparison.Ordinal), "a roof type without a compound structure is a mismatch");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, observed with { Layers = observed.Layers!.Take(3).ToArray() }) is { } count && count.Contains("3 layers", StringComparison.Ordinal), "a roof type with another layer count is a mismatch");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, Replace(0, new ObservedRoofLayer("finish2", TileUid, "Roofing - Tile", 20))) is { } function && function.Contains("layer 0", StringComparison.Ordinal) && function.Contains("function", StringComparison.Ordinal), "a layer with another function is a mismatch naming the layer");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, Replace(2, new ObservedRoofLayer("substrate", RaftersUid, "Wood - Rafters", 19))) is { } material && material.Contains("material", StringComparison.Ordinal), "a layer of another material is a mismatch");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, Replace(2, new ObservedRoofLayer("substrate", null, null, 19))) is not null, "a layer without a material is a mismatch");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, Replace(3, new ObservedRoofLayer("structure", RaftersUid, "Wood - Rafters", 150.01))) is { } thickness && thickness.Contains("thickness", StringComparison.Ordinal), "a layer of another thickness is a mismatch");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, Replace(0, observed.Layers![3])) is not null, "layers in another order are a mismatch (exterior to interior)");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected().Reverse().ToArray(), Shells, observed) is not null, "the requested order is the order read back");
+        Check(RevitMaterialTypeRules.Shells(Expected().Select(layer => layer.Function).ToArray(), "args.layers") == Shells, "the cabin roof's core is the rafters under three shell layers");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, observed with { ExteriorShell = 0, InteriorShell = 0 }) is { } core && core.Contains("shell", StringComparison.Ordinal), "a roof type with other core boundaries is a mismatch");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, observed with { InteriorShell = 1 }) is { } interior && interior.Contains("shell", StringComparison.Ordinal), "a roof type with an interior shell layer the request has not is a mismatch");
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, observed with { StructuralMaterialIndex = 0 }) is { } structural && structural.Contains("structural material layer", StringComparison.Ordinal) && structural.Contains("expected 3", StringComparison.Ordinal), "a roof type whose structural material layer is not the first structure layer is a mismatch");
+        // A hand-made roof type of that name without a structural material layer is not identical: refused, not existing.
+        Check(CommandReadbackMaterials.RoofType(Name, Expected(), Shells, observed with { StructuralMaterialIndex = -1 }) is { } noStructural && noStructural.Contains("structural material layer is none", StringComparison.Ordinal), "a roof type without a structural material layer is a mismatch");
     }
 
     static void ReadbackJson()
@@ -197,6 +205,7 @@ static class CatalogueMaterialsChecks
             "materials readback is sorted by name then UniqueId", materials.ToJsonString());
         Check(rows[0]!["class"] is null && rows[0]!["category"]!.GetValue<string>() == "Roofing" && rows[2]!["class"]!.GetValue<string>() == "Wood" && rows[1]!["category"] is null, "materials readback reports class and category, null when Revit has none", materials.ToJsonString());
         var created = JsonNode.Parse(CommandReadbackMaterials.RoofTypeJson(Observed(), existing: false))!["roof_type"]!;
+        Check(created["exterior_shell_layers"]?.GetValue<int>() == 3 && created["interior_shell_layers"]?.GetValue<int>() == 0 && created["structural_material_index"]?.GetValue<int>() == 3, "roof type readback JSON reports the core boundaries and the structural material layer", created.ToJsonString());
         Check(created["unique_id"]!.GetValue<string>() == TypeUid && created["name"]!.GetValue<string>() == Name && created["existing"]!.GetValue<bool>() == false && created["width_mm"]!.GetValue<double>() == 189,
             "roof type readback JSON reports UniqueId, name, whether it already existed and the total width", created.ToJsonString());
         var layers = created["layers"]!.AsArray();

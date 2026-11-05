@@ -16,8 +16,10 @@ public sealed record ExpectedRoofLayer(string Function, string MaterialUid, doub
 // A compound structure layer as Revit reports it; Function is CommandRulesMaterials.FunctionName of its
 // MaterialFunctionAssignment; MaterialUid/MaterialName are null when the layer has no material.
 public sealed record ObservedRoofLayer(string Function, string? MaterialUid, string? MaterialName, double WidthMm);
-// Layers null: the type has no compound structure. WidthMm: CompoundStructure.GetWidth.
-public sealed record ObservedRoofType(string UniqueId, string Name, IReadOnlyList<ObservedRoofLayer>? Layers, double? WidthMm);
+// Layers null: the type has no compound structure. WidthMm: CompoundStructure.GetWidth. ExteriorShell / InteriorShell:
+// CompoundStructure.GetNumberOfShellLayers(Exterior / Interior) (0 without a compound structure);
+// StructuralMaterialIndex: CompoundStructure.StructuralMaterialIndex (-1 when none or without a compound structure).
+public sealed record ObservedRoofType(string UniqueId, string Name, IReadOnlyList<ObservedRoofLayer>? Layers, double? WidthMm, int ExteriorShell, int InteriorShell, int StructuralMaterialIndex);
 
 public static class CommandRulesMaterials
 {
@@ -54,8 +56,9 @@ public static class CommandReadbackMaterials
     // Null when the type is the requested one: exactly this name (ordinal) and these layers in this order, each with
     // the same function, material and thickness (1e-3 mm). Used both after a create and to decide whether an
     // existing type of that name is identical.
-    public static string? RoofType(string name, IReadOnlyList<ExpectedRoofLayer> expected, ObservedRoofType observed)
+    public static string? RoofType(string name, IReadOnlyList<ExpectedRoofLayer> expected, (int Exterior, int Interior) shells, ObservedRoofType observed)
     {
+        _ = shells; // placeholder: the core is not checked yet
         if (!string.Equals(observed.Name, name, StringComparison.Ordinal)) return "roof type name is '" + observed.Name + "', expected '" + name + "'";
         if (observed.Layers is not { } layers) return "roof type has no layers (no compound structure)";
         if (layers.Count != expected.Count) return "roof type has " + layers.Count + " layers, expected " + expected.Count;

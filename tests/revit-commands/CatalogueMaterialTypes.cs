@@ -194,7 +194,8 @@ static class CatalogueMaterialTypesChecks
             // Revit's thinnest compound structure layer is 1/256 ft (1.190625 mm); 1.2 mm is the floor, refused before the pipe.
             Rejects(command + " structure layer of 1.19 mm", Envelope(command, With(Args(), "layers", Layers(Layer("structure", "Piedra local", 1.19)))), RevitCommandCodes.LengthInvalid, "args.layers[0].thickness_mm");
             Rejects(command + " finish layer of 1 mm", Envelope(command, With(Args(), "layers", Layers(Layer("structure", "Piedra local", 200), Layer("finish2", "Madera lenga", 1)))), RevitCommandCodes.LengthInvalid, "args.layers[1].thickness_mm");
-            Check(Refusal(Envelope(command, With(Args(), "layers", Layers(Layer("structure", "Piedra local", 0.5)))).ToJsonString()) is { } thin && thin.Detail!.Contains("1.2 mm", StringComparison.Ordinal), command + " a too-thin layer names the 1.2 mm minimum");
+            Check(Refusal(Envelope(command, With(Args(), "layers", Layers(Layer("structure", "Piedra local", 0.5)))).ToJsonString()) is { } thin && thin.Detail == RevitMaterialTypeRules.TooThin
+                && RevitMaterialTypeRules.TooThin.StartsWith("layer thinner than " + RevitMaterialTypeRules.MinLayerThicknessMm.ToString(System.Globalization.CultureInfo.InvariantCulture) + " mm", StringComparison.Ordinal), command + " a too-thin layer names the minimum from MinLayerThicknessMm");
             Accepts(command + " layer of exactly 1.2 mm accepted", Envelope(command, With(Args(), "layers", Layers(Layer("structure", "Piedra local", 200), Layer("finish2", "Madera lenga", 1.2)))));
             Rejects(command + " layer beyond the Revit limit", Envelope(command, With(Args(), "layers", Layers(Layer("structure", "Piedra local", 9_144_001)))), RevitCommandCodes.LengthInvalid, "args.layers[0].thickness_mm");
             Rejects(command + " name with a bracket", Envelope(command, With(Args(), "name", "Muro [piedra]")), RevitCommandCodes.ArgsInvalid, "args.name");
@@ -304,6 +305,10 @@ static class CatalogueMaterialTypesChecks
     }, 600, 0, 2, 0);
     static ExpectedRoofLayer[] WallLayers() => new[] { new ExpectedRoofLayer("structure", StoneUid, 550), new ExpectedRoofLayer("insulation", AirUid, 25), new ExpectedRoofLayer("finish2", WoodUid, 25) };
 
+    // Top to bottom: lenga boards and a membrane above the slab (two exterior shell layers, the slab is layer 2).
+    static ObservedHostType Floor() => new(TypeUid, "Piso", new[] { new ObservedRoofLayer("finish1", WoodUid, "Madera lenga", 22), new ObservedRoofLayer("membrane", AirUid, "Air", 0), new ObservedRoofLayer("structure", StoneUid, "Piedra local", 150) }, 172, 2, 0, 2);
+    static ExpectedRoofLayer[] FloorLayers() => new[] { new ExpectedRoofLayer("finish1", WoodUid, 22), new ExpectedRoofLayer("membrane", AirUid, 0), new ExpectedRoofLayer("structure", StoneUid, 150) };
+
     static void HostTypeReadback()
     {
         Check(CommandReadbackMaterialTypes.HostType("wall type", WallName, WallLayers(), (0, 2), Wall()) is null, "wall type readback matches layers, thicknesses (1e-3 mm) and the core boundaries");
@@ -316,8 +321,8 @@ static class CatalogueMaterialTypesChecks
         // The structural material layer is the first structure layer (the first core layer, index = exterior shell count).
         Check(CommandReadbackMaterialTypes.HostType("wall type", WallName, WallLayers(), (0, 2), Wall() with { StructuralMaterialIndex = 2 }) is { } structural && structural.Contains("structural material layer", StringComparison.Ordinal), "another structural material layer is a mismatch");
         Check(CommandReadbackMaterialTypes.HostType("wall type", WallName, WallLayers(), (0, 2), Wall() with { StructuralMaterialIndex = -1 }) is { } noStructural && noStructural.Contains("structural material layer", StringComparison.Ordinal), "no structural material layer is a mismatch");
-        var floorLayers = new[] { new ExpectedRoofLayer("finish1", WoodUid, 22), new ExpectedRoofLayer("membrane", AirUid, 0), new ExpectedRoofLayer("structure", StoneUid, 150) };
-        var floor = new ObservedHostType(TypeUid, "Piso", new[] { new ObservedRoofLayer("finish1", WoodUid, "Madera lenga", 22), new ObservedRoofLayer("membrane", AirUid, "Air", 0), new ObservedRoofLayer("structure", StoneUid, "Piedra local", 150) }, 172, 2, 0, 2);
+        var floorLayers = FloorLayers();
+        var floor = Floor();
         Check(CommandReadbackMaterialTypes.HostType("floor type", "Piso", floorLayers, (2, 0), floor) is null, "a slab under two shell layers reads back as structural material layer 2");
         Check(CommandReadbackMaterialTypes.HostType("floor type", "Piso", floorLayers, (2, 0), floor with { StructuralMaterialIndex = 0 }) is { } floorStructural && floorStructural.Contains("expected 2", StringComparison.Ordinal), "a structural material layer outside the core is a mismatch naming the expected index");
     }
@@ -357,7 +362,8 @@ static class CatalogueMaterialTypesChecks
         var wall = JsonNode.Parse(CommandReadbackMaterialTypes.HostTypeJson("wall_type", Wall(), existing: false))!["wall_type"]!;
         Check(wall["unique_id"]!.GetValue<string>() == TypeUid && wall["name"]!.GetValue<string>() == WallName && wall["existing"]!.GetValue<bool>() == false && wall["width_mm"]!.GetValue<double>() == 600
             && wall["exterior_shell_layers"]!.GetValue<int>() == 0 && wall["interior_shell_layers"]!.GetValue<int>() == 2, "wall type readback JSON reports UniqueId, name, existing, width and core boundaries", wall.ToJsonString());
-        Check(wall["structural_material_index"]?.GetValue<int>() == 0, "wall type readback JSON reports the structural material layer index", wall.ToJsonString());
+        var floorJson = JsonNode.Parse(CommandReadbackMaterialTypes.HostTypeJson("floor_type", Floor(), existing: false))!["floor_type"]!;
+        Check(floorJson["structural_material_index"]?.GetValue<int>() == 2 && floorJson["exterior_shell_layers"]?.GetValue<int>() == 2, "floor type readback JSON reports the structural material layer index (the slab under two shell layers)", floorJson.ToJsonString());
         var layers = wall["layers"]!.AsArray();
         Check(layers.Count == 3 && layers[0]!["function"]!.GetValue<string>() == "structure" && layers[0]!["material_unique_id"]!.GetValue<string>() == StoneUid && layers[2]!["material_name"]!.GetValue<string>() == "Madera lenga"
             && layers[1]!["function"]!.GetValue<string>() == "insulation", "wall type readback JSON lists the layers exterior to interior", wall.ToJsonString());
