@@ -149,3 +149,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - No new Revit step (P4-06, P6-09, P7-07 are headless, unit-tested in CI). Still open: the Relay153/Relay157 test-copy -Catalogue smoke steps, N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence.
 - [ ] Housekeeping: delete the throwaway branch `relay159-P6-09-baseline` on GitHub (a digest probe; the cloud relay was not allowed to delete branches): `git push origin --delete relay159-P6-09-baseline`.
 - FYI: P4-06 dimension chains assume BIM-IR walls are realized unflipped in Revit (exterior face left of start→end); the first real -Catalogue/doc run will confirm or refute the chosen wall face.
+
+## Relay160 (2026-11-05, cloud)
+- No new Revit step (P2-08, P5-08, P10-09 are headless, unit-tested in CI). Still open: the Relay153/Relay157 test-copy -Catalogue smoke steps, N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence, delete branch relay159-P6-09-baseline.
+- FYI: main now has a root `.gitattributes` with `skills/** -text` (skill pack hashes for the new skills.lock.json must match on Windows and Linux). After `git pull` on Windows, if `git status` shows skills files modified, run `git add --renormalize skills` is NOT needed — just `git checkout -- skills` to get the LF bytes.
