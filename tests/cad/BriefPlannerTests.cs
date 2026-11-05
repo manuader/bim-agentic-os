@@ -194,16 +194,17 @@ internal static class BriefPlannerTests
             C(firstDropped is not null && firstDropped.Reasons.SequenceEqual(new[] { "low-confidence" }) && Ids(promoted.Kept) == "bano-2"
                 && promoted.Dropped.Any(x => x.Id == "bano-3" && x.Reasons.SequenceEqual(new[] { "duplicate-label" })), "gen first surviving copy is promoted, later copies are its duplicates", Show(promoted));
 
-            // Non-ASCII labels share the extractor slug "room": the later one is a duplicate whatever the report holds.
-            var cyr = Rect("10", 0, 0, 4000, 3000) + Text("11", 1000, 1500, "Комната 12 m²") + Rect("12", 10000, 0, 14000, 3000) + Text("13", 11000, 1500, "Кухня 12 m²");
+            // Labels differing only in non-ASCII letters share the extractor slug "sala" (Cyrillic folds away; a fully
+            // Cyrillic label is not a label at all): the later one is a duplicate whatever the report holds.
+            var cyr = Rect("10", 0, 0, 4000, 3000) + Text("11", 1000, 1500, "Sala Ж 12 m²") + Rect("12", 10000, 0, 14000, 3000) + Text("13", 11000, 1500, "Sala Д 12 m²");
             foreach (var max in new[] { 1000, 1 })
             {
                 var cd = Dxf(cyr, new BriefExtractOptions { MaxUncertainties = max });
-                C(cd.Rooms.Select(x => x.Id).SequenceEqual(new[] { "room", "room-2" }) && cd.Rooms[1].Notes.Contains("duplicate-label"), "gen cyrillic draft ids room, room-2 (max " + max + ")", string.Join(",", cd.Rooms.Select(x => x.Id + "[" + string.Join(",", x.Notes) + "]")));
+                C(cd.Rooms.Select(x => x.Id).SequenceEqual(new[] { "sala", "sala-2" }) && cd.Rooms[1].Notes.Contains("duplicate-label"), "gen cyrillic draft ids sala, sala-2 (max " + max + ")", string.Join(",", cd.Rooms.Select(x => x.Id + "[" + string.Join(",", x.Notes) + "]")));
                 foreach (var d in new[] { cd, cd with { Uncertainties = Array.Empty<BriefExtractUncertainty>() } })
                 {
                     var cr = BriefPlanner.ToPlannerBrief(d);
-                    C(Ids(cr.Kept) == "room" && Ids(cr.Dropped) == "room-2" && cr.Dropped[0].Reasons.SequenceEqual(new[] { "duplicate-label" }),
+                    C(Ids(cr.Kept) == "sala" && Ids(cr.Dropped) == "sala-2" && cr.Dropped[0].Reasons.SequenceEqual(new[] { "duplicate-label" }),
                         "gen cyrillic later label dropped as duplicate-label (max " + max + ", " + d.Uncertainties.Count + " uncertainties)", Show(cr));
                 }
             }
