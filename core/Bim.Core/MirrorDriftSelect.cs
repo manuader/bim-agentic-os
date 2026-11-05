@@ -60,7 +60,7 @@ public sealed record MirrorDriftSelection(string DocumentUid, Guid CoreProjectId
 {
     public const int Version = 1;
     public const string RestoreThenAdopt = "restore_then_adopt";
-    public string Order => "";
+    public string Order => RestoreThenAdopt;
     public bool Applied => false;
     public bool RequiresApproval => true;
 
@@ -78,6 +78,8 @@ public sealed record MirrorDriftSelection(string DocumentUid, Guid CoreProjectId
         writer.WriteNumber("core_revision", CoreRevision);
         writer.WriteBoolean("applied", Applied);
         writer.WriteBoolean("requires_approval", RequiresApproval);
+        writer.WriteBoolean("evidence_incomplete", EvidenceIncomplete);
+        writer.WriteString("order", Order);
         writer.WriteStartArray("choices");
         foreach (var choice in Choices)
         {
@@ -176,7 +178,7 @@ public static class MirrorDriftSelect
         {
             var (adopt, restore) = (proposals[i].Adopt, proposals[i].Restore);
             var adoptOk = adopt.Status == MirrorDriftResolveStatus.Unsupported
-                || adopt.Status == MirrorDriftResolveStatus.Proposed && adopt.Element is { } element && element.Kind is not null && element.GeometryMetres is not null && element.Dependencies is not null && element.Provenance is not null
+                || adopt.Status == MirrorDriftResolveStatus.Proposed && adopt.Element is { } element && element.Kind is not null && element.GeometryMetres is not null && element.GeometryMetres.All(double.IsFinite) && element.Dependencies is not null && element.Provenance is not null
                     && adopt.Action is MirrorDriftAdoptActions.Create or MirrorDriftAdoptActions.Update or MirrorDriftAdoptActions.Delete;
             var restoreOk = restore.Status == MirrorDriftResolveStatus.Proposed ? restore.Operations.Count > 0 && restore.Mode is not null
                 : restore.Status == MirrorDriftResolveStatus.Unsupported && restore.Operations.Count == 0;
@@ -254,7 +256,7 @@ public static class MirrorDriftSelect
                     throw Invalid("step " + step.OperationId + " needs " + dependency + ", which no chosen restore requires");
         var plan = new RevitCommandPlan(source.Version, source.ProjectId, source.ExpectedRevision, source.AfterHash, source.Document,
             source.Preconditions.Where(item => item is not null && (item.CheckOperation is null || kept.Contains(item.CheckOperation))).ToArray(), selected, Array.Empty<RevitUnsupportedElement>());
-        return new MirrorDriftSelection(resolution.DocumentUid, resolution.CoreProjectId, resolution.CoreRevision, false,
+        return new MirrorDriftSelection(resolution.DocumentUid, resolution.CoreProjectId, resolution.CoreRevision, resolution.EvidenceIncomplete,
             order.Select(i => new MirrorDriftChoice(ids[i], chosen[i])).ToArray(), Enumerable.Range(0, ids.Length).Where(i => !chosen.ContainsKey(i)).Select(i => ids[i]).ToArray(),
             operations, adds, removals, plan, invalidated);
     }
