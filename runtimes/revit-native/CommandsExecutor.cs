@@ -35,7 +35,8 @@ namespace Bim.Revit;
 // view.export_image and document.save are in CommandsExecutorExportSave.cs; document.save_copy is in
 // CommandsExecutorSaveCopy.cs; command.batch is in CommandsExecutorBatch.cs; roof.create_extrusion is in
 // CommandsExecutorRoofExtrusion.cs; direct_shape.create is in CommandsExecutorDirectShape.cs;
-// element.move and element.copy are in CommandsExecutorTransform.cs.
+// element.move and element.copy are in CommandsExecutorTransform.cs; element.rotate and element.mirror are in
+// CommandsExecutorRotateMirror.cs.
 internal static partial class CommandExecutor
 {
     public static string Run(UIApplication app, Request request)
@@ -87,6 +88,8 @@ internal static partial class CommandExecutor
             DirectShapeCreateArgs directShape => DirectShapeWrite(d, directShape),
             ElementMoveArgs move => MovePlan(d, move),
             ElementCopyArgs copy => CopyPlan(d, copy),
+            ElementRotateArgs rotate => RotatePlan(d, rotate),
+            ElementMirrorArgs mirror => MirrorPlan(d, mirror),
             CurtainWallCreateArgs curtain => CurtainWallPlan(d, curtain),
             FloorOpeningCreateArgs opening => FloorOpeningPlan(d, opening),
             ViewPlanCreateArgs view => ViewPlanWrite(d, view),
@@ -180,7 +183,8 @@ internal static partial class CommandExecutor
     // ---- Writes ----
     // Apply runs inside the one write Transaction; Check returns a readback mismatch (or null) and runs before the
     // transaction commits and again after Revit's failure processing; Readback is the reply's readback JSON.
-    sealed record WritePlan(Action Apply, Func<string?> Check, Func<string> Readback, Func<IReadOnlyList<string>> Created, Func<IReadOnlyList<string>> Modified);
+    // Deleted: the elements the write removed (element.mirror without keep_original when Revit replaces an original); none when omitted.
+    sealed record WritePlan(Action Apply, Func<string?> Check, Func<string> Readback, Func<IReadOnlyList<string>> Created, Func<IReadOnlyList<string>> Modified, Func<IReadOnlyList<string>>? Deleted = null);
 
     static string Write(Document d, CommandRequest request, ReceiptStore store, WritePlan plan)
     {
@@ -214,7 +218,7 @@ internal static partial class CommandExecutor
             }
             // Failure processing may delete or change elements: read back again before the receipt is persisted.
             if (plan.Check() is { } after) throw Mismatch(after);
-            var response = CommandResponses.Success(request, plan.Created(), plan.Modified(), plan.Readback(), failures.Warnings.ToArray());
+            var response = CommandResponses.Success(request, plan.Created(), plan.Modified(), plan.Readback(), failures.Warnings.ToArray(), plan.Deleted?.Invoke());
             return Persist(d, request, store, group, response);
         }
         catch

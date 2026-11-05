@@ -55,7 +55,7 @@ internal static partial class CommandExecutor
             switch (element.Location)
             {
                 case LocationPoint point:
-                    return new TransformLocation(TransformLocationKinds.Point, Triple(point.Point), null, PointRotation(point));
+                    return new TransformLocation(TransformLocationKinds.Point, Triple(point.Point), null, PointRotation(point), null, element is FamilyInstance instance ? instance.Mirrored : null);
                 case LocationCurve { Curve: { IsBound: true } curve }:
                     return new TransformLocation(TransformLocationKinds.Curve, Triple(curve.GetEndPoint(0)), Triple(curve.GetEndPoint(1)));
             }

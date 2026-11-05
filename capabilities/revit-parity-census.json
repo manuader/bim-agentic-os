@@ -1292,12 +1292,28 @@
         "tests/revit-commands/CatalogueTransform.cs",
         "runtimes/revit-native/CommandsExecutorTransform.cs"
       ],
-      "notes": "P1-09: 1 to 100 elements by a [dx, dy, dz] mm vector, copies mapped to their sources; contract, refusals and readback unit-tested, executor compiled only; not recorded in docs/features.json, so not claimed beyond compiled. Rotate, Mirror and Array are modify.rotate_mirror_array."
+      "notes": "P1-09: 1 to 100 elements by a [dx, dy, dz] mm vector, copies mapped to their sources; contract, refusals and readback unit-tested, executor compiled only; not recorded in docs/features.json, so not claimed beyond compiled. Rotate and Mirror are modify.rotate_mirror, Array is modify.array."
     },
     {
-      "id": "modify.rotate_mirror_array",
+      "id": "modify.rotate_mirror",
       "area": "modify",
-      "revit_function": "Rotate, Mirror, Array",
+      "revit_function": "Rotate (vertical axis), Mirror - Draw Axis (vertical plane)",
+      "commands": [
+        "element.rotate",
+        "element.mirror"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueRotateMirror.cs",
+        "runtimes/revit-native/CommandsExecutorRotateMirror.cs"
+      ],
+      "notes": "P1-10: 1 to 100 elements turned about a vertical axis through a plan point by degrees, or mirrored in the vertical plane through a plan line keeping or not the originals; contract, refusals and hand-computed rotated/mirrored readback unit-tested, executor compiled only; not recorded in docs/features.json, so not claimed beyond compiled. Array is modify.array."
+    },
+    {
+      "id": "modify.array",
+      "area": "modify",
+      "revit_function": "Array (linear, radial)",
       "commands": [],
       "state": "unsupported",
       "features": [],

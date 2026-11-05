@@ -108,8 +108,8 @@ foreach(var spec in RevitCommandCatalogue.All) {
     var writesFiles=RevitCommandCatalogue.WritesFiles(spec.Name);
     Check(annotations?["readOnlyHint"]?.GetValue<bool>()==!(spec.Writes || writesFiles),spec.ToolName+" annotations.readOnlyHint is "+!(spec.Writes || writesFiles));
     if(spec.Writes) {
-        var destructive=new[]{"element.set_parameter","element.delete","wall.set_profile","material.set","element.change_type","element.move","document.save","command.batch"}.Contains(spec.Name);
-        Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter, element.delete, wall.set_profile, material.set, element.change_type and element.move change or remove existing elements, document.save overwrites the saved file, and a command.batch step may do either), idempotentHint true (operation_id replay)");
+        var destructive=new[]{"element.set_parameter","element.delete","wall.set_profile","material.set","element.change_type","element.move","element.rotate","element.mirror","document.save","command.batch"}.Contains(spec.Name);
+        Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter, element.delete, wall.set_profile, material.set, element.change_type, element.move, element.rotate and element.mirror change or remove existing elements, document.save overwrites the saved file, and a command.batch step may do either), idempotentHint true (operation_id replay)");
         var description=tool["description"]!.GetValue<string>();
         Check(PermissionPolicy.RequiredLevel(spec.Name,McpReal,copiesRoots)==PermissionLevel.WriteRealProject
             && description.Contains(".bim/native-runs",StringComparison.Ordinal) && description.Contains(".bim/revit-enabled-roots.txt",StringComparison.Ordinal)
@@ -205,6 +205,8 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
     ["roof.create_extrusion"]=()=>new JsonObject{["level"]="Level 1",["type"]="Chapa curva",["plane"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(6000,0)},["profile"]=new JsonArray(new JsonObject{["kind"]="arc",["start"]=new JsonArray(-300,2700),["end"]=new JsonArray(6300,2700),["through"]=new JsonArray(3000,3800)}),["extrusion_start_mm"]=-300,["extrusion_end_mm"]=10300},
     ["element.move"]=()=>new JsonObject{["element_uids"]=new JsonArray(McpUid),["vector_mm"]=new JsonArray(1000,0,0)},
     ["element.copy"]=()=>new JsonObject{["element_uids"]=new JsonArray(McpUid),["vector_mm"]=new JsonArray(0,0,3000)},
+    ["element.rotate"]=()=>new JsonObject{["element_uids"]=new JsonArray(McpUid),["center"]=new JsonArray(0,0),["angle_deg"]=90},
+    ["element.mirror"]=()=>new JsonObject{["element_uids"]=new JsonArray(McpUid),["axis"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(0,1000)},["keep_original"]=true},
 };
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
@@ -334,6 +336,21 @@ foreach(var (tool,command,destructive) in new[]{("revit_element_move","element.m
     Check(IsError(onCopy) && FailureCode(onCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["args"]?["vector_mm"]?.AsArray().Count==3,tool+" on an enabled copy forwards the vector");
     var zero=Guarded(tool,new JsonObject{["element_uids"]=new JsonArray(McpUid),["vector_mm"]=new JsonArray(0,0,0)},McpCopy);
     Check(IsError(zero) && FailureCode(zero)==RevitCommandCodes.LengthInvalid && forwardedLines.Count==before+1,tool+": a zero vector is length_invalid before the pipe");
+}
+// P1-10 element.rotate / element.mirror: generated write tools, copies only, both destructiveHint true (a rotation
+// turns existing elements; a mirror without keep_original turns the originals); a full-turn angle and a zero-length
+// axis are refused before the pipe.
+Check(RevitCommandCatalogue.RotateMirror.Select(spec=>spec.Name).SequenceEqual(new[]{"element.rotate","element.mirror"}) && RevitCommandCatalogue.RotateMirror.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover element.rotate and element.mirror, in the catalogue enumeration");
+foreach(var (tool,command,invalidArgs,code) in new[]{("revit_element_rotate","element.rotate",(JsonNode)new JsonObject{["element_uids"]=new JsonArray(McpUid),["center"]=new JsonArray(0,0),["angle_deg"]=360},RevitCommandCodes.AngleInvalid),("revit_element_mirror","element.mirror",new JsonObject{["element_uids"]=new JsonArray(McpUid),["axis"]=new JsonObject{["start"]=new JsonArray(0,0),["end"]=new JsonArray(0,0)},["keep_original"]=false},RevitCommandCodes.CurveTooShort)}) {
+    var listed=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()==tool);
+    Check(listed?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && listed?["annotations"]?["destructiveHint"]?.GetValue<bool>()==true && listed?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies",tool+" is listed write-copies with destructiveHint true");
+    var before=forwardedLines.Count;
+    var onReal=Guarded(tool,sampleArgs[command](),McpReal);
+    Check(IsError(onReal) && FailureCode(onReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,tool+" on a real project is refused document_not_enabled before the pipe");
+    var onCopy=Guarded(tool,sampleArgs[command](),McpCopy);
+    Check(IsError(onCopy) && FailureCode(onCopy)==RevitCommandCodes.NoResponse && forwardedLines.Count==before+1 && Node(forwardedLines[^1])["Command"]?["command"]?.GetValue<string>()==command,tool+" on an enabled copy forwards the command");
+    var bad=Guarded(tool,invalidArgs,McpCopy);
+    Check(IsError(bad) && FailureCode(bad)==code && forwardedLines.Count==before+1,tool+": "+code+" before the pipe");
 }
 // chat-materials-types: fill patterns, materials, layered wall/floor types and type changes are generated tools;
 // material.set and element.change_type change existing elements (destructiveHint true), the rest only add.

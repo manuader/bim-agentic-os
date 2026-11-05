@@ -227,11 +227,13 @@ public static class CommandReceiptStore
 
 public static class CommandResponses
 {
-    public static RevitCommandResponse Success(CommandRequest request, IReadOnlyList<string> created, IReadOnlyList<string> modified, string readbackJson, IReadOnlyList<string> warnings)
+    // deleted: the UniqueIds the command removed (element.mirror without keep_original when Revit replaces an original);
+    // none when omitted.
+    public static RevitCommandResponse Success(CommandRequest request, IReadOnlyList<string> created, IReadOnlyList<string> modified, string readbackJson, IReadOnlyList<string> warnings, IReadOnlyList<string>? deleted = null)
     {
         var envelope = request.Envelope;
         var receipt = new RevitCommandReceipt(envelope.OperationId, envelope.Command, envelope.Document.UniqueId, request.RequestSha256, false);
-        return RevitCommandResponse.Success(receipt, created, modified, Array.Empty<string>(), readbackJson, warnings);
+        return RevitCommandResponse.Success(receipt, created, modified, deleted ?? Array.Empty<string>(), readbackJson, warnings);
     }
 
     public static string Failure(RevitCommandException error) => RevitCommandResponse.Failure(error.Code, error.Field, error.Detail).ToJson();

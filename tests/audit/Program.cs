@@ -107,6 +107,12 @@ try
         Check(RevitCommandCatalogue.Transform.Any(spec => spec.Name == command && spec.Writes) && RevitCommandCatalogue.IsDestructive(command) == destructive, "transform catalogue has " + command + (destructive ? " (destructive write)" : " (additive write)"));
         Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel(command, RealPath, copies) == PermissionLevel.WriteRealProject, command + " requires write-copies on a copy and write-real-project on a real project");
     }
+    // P1-10: element.rotate and element.mirror change existing elements (destructive); both copies only.
+    foreach (var command in new[] { "element.rotate", "element.mirror" })
+    {
+        Check(RevitCommandCatalogue.RotateMirror.Any(spec => spec.Name == command && spec.Writes) && RevitCommandCatalogue.IsDestructive(command), "rotate/mirror catalogue has " + command + " (destructive write)");
+        Check(PermissionPolicy.RequiredLevel(command, FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel(command, RealPath, copies) == PermissionLevel.WriteRealProject, command + " requires write-copies on a copy and write-real-project on a real project");
+    }
     // chat-materials-types: query.fill_patterns is read anywhere; the material and type writes need copies, and
     // material.set / element.change_type are destructive.
     foreach (var (command, writes, destructive) in new[] { ("query.fill_patterns", false, false), ("material.create", true, false), ("material.set", true, true), ("wall_type.create", true, false), ("floor_type.create", true, false), ("element.change_type", true, true) })
