@@ -118,7 +118,7 @@ static class UpdateTests
         var taller = Replace(before, Role(1, "west"), wall => wall with { GeometryMetres = wall.GeometryMetres.Select((value, index) => index == 4 ? value + 0.4 : value).ToArray() });
         var tallFake = new ReplaceFakeTransport(realized.Values);
         var tall = DocUpdate.Update(before, taller, Bindings(taller), realized, tallFake);
-        Check(Compiler.Diff(before, taller).Operations.Count == 1 && tall.Plan.Regeneration.Regenerated.Count == 0 && tall.Plan.Replacement.Commands.Steps.Count == 0
+        Check(Compiler.Diff(before, taller).Operations.Length == 1 && tall.Plan.Regeneration.Regenerated.Count == 0 && tall.Plan.Replacement.Commands.Steps.Count == 0
             && tallFake.Sent.Count == 0 && tall.Report.Status == RevitPlanRunStatus.Completed && Sorted(tall.Realized) == Sorted(realized),
             "an edit that changes the model but no item's result plans and sends nothing", Json(tall.Plan.Regeneration.Regenerated));
 
