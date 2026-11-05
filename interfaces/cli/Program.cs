@@ -16,6 +16,7 @@ try {
         case "cad-draft": case "cad-brief": CadCommand.Run(args); break;
         case "mirror-drift": MirrorDriftCommand.Run(args); break;
         case "skills-lock": SkillLockCommand.Run(args); break;
+        case "diff-edits": DiffEditsCommand.Run(args); break;
         case "evaluate":
             EvaluationReport evaluation;
             try {
