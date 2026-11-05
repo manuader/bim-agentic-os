@@ -14,7 +14,8 @@ namespace Bim.Cli;
 //
 // The output path follows GltfExportCommand.OutputProblem with extension .json (never an existing file, directory or
 // link) and is checked before any input is read; it is created exclusively (GltfExporter.WriteNew). Both input files go
-// through BoundedInput (8 MiB, regular files only; refusals carry detail "snapshot" or "mirror"). Every refusal prints
+// through BoundedInput (8 MiB, regular files only; refusals carry detail "snapshot" or "mirror"; an empty path is
+// input_path_invalid). The output may not be in or below the store directory (output_in_store). Every refusal prints
 // one {"status":"failed","code":..[,"detail":..]} envelope, exits 1 and writes nothing. Success prints
 // {"status":"succeeded","output","bytes","sha256","drift","proposals","applied":false}.
 internal static class MirrorDriftCommand
@@ -26,11 +27,8 @@ internal static class MirrorDriftCommand
         if (args.Length != 5) throw new ArgumentException(Usage);
         var output = args[4];
         if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string refused) { Fail(MirrorDriftTool.Failure(refused, null)); return; }
-        string snapshot, mirror;
-        try { snapshot = BoundedInput.ReadText(args[2]); }
-        catch (InputRejectedException e) { Fail(MirrorDriftTool.Failure(e.Message, "snapshot")); return; }
-        try { mirror = BoundedInput.ReadText(args[3]); }
-        catch (InputRejectedException e) { Fail(MirrorDriftTool.Failure(e.Message, "mirror")); return; }
+        if (InsideStore(args[1], output)) { Fail(MirrorDriftTool.Failure(OutputInStore, null)); return; }
+        if (!Read(args[2], "snapshot", out var snapshot) || !Read(args[3], "mirror", out var mirror)) return;
         var outcome = MirrorDriftTool.Run(args[1], snapshot, mirror);
         if (!outcome.Succeeded) { Fail(outcome.Text); return; }
         var bytes = new UTF8Encoding(false).GetBytes(outcome.Text);
@@ -47,6 +45,35 @@ internal static class MirrorDriftCommand
             proposals = outcome.Proposals,
             applied = false,
         }));
+    }
+
+    // An output in the store directory (or below it) would sit next to project.json, where a later CloudGuard check
+    // could take it for a conflict copy (project-drift.json); the store is never written.
+    public const string OutputInStore = "output_in_store";
+    public const string InputPathInvalid = "input_path_invalid";
+
+    static bool InsideStore(string store, string output)
+    {
+        if (string.IsNullOrWhiteSpace(store) || store.IndexOf('\0') >= 0) return false;
+        string storeFull, parent;
+        try
+        {
+            storeFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(store));
+            parent = Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(Path.GetFullPath(output)) ?? "");
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return false; }
+        // Case-insensitive everywhere: refusing a differently cased sibling on a case-sensitive volume is harmless.
+        return string.Equals(parent, storeFull, StringComparison.OrdinalIgnoreCase)
+            || parent.StartsWith(storeFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || parent.StartsWith(storeFull + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
+    static bool Read(string path, string name, out string text)
+    {
+        text = "";
+        if (string.IsNullOrEmpty(path) || path.IndexOf('\0') >= 0) { Fail(MirrorDriftTool.Failure(InputPathInvalid, name)); return false; }
+        try { text = BoundedInput.ReadText(path); return true; }
+        catch (InputRejectedException e) { Fail(MirrorDriftTool.Failure(e.Message, name)); return false; }
     }
 
     static void Fail(string envelope)

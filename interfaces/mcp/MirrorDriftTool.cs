@@ -26,7 +26,8 @@ namespace Bim.Mcp;
 // Success document (UTF-8, compact): {"mirror_drift_version":1,"applied":false,"requires_approval":true,
 // "core_store":{"project_id","revision","hash"},"report":<MirrorDriftReport.ToJson>,"resolution":<MirrorDriftResolution.ToJson>}.
 // Refusal: {"status":"failed","code":..[,"detail":..]}. Codes: drift_store_path_invalid, input_* (BoundedInput, detail
-// "store"), drift_store_invalid, mirror_drift_request_invalid, drift_input_too_large, drift_resolve_report_stale, and
+// "store"), drift_store_invalid (missing or null Project/element members), mirror_drift_request_invalid (also any
+// duplicate member), mirror_drift_internal_error (an unexpected exception; detail is its type), drift_input_too_large, drift_resolve_report_stale, and
 // the Core codes (drift_snapshot_invalid, drift_document_mismatch, drift_document_required, drift_map_invalid,
 // drift_model_invalid, drift_journal_invalid, drift_options_invalid, drift_resolve_*, document_path_invalid,
 // document_identity_invalid).
@@ -36,6 +37,7 @@ internal static class MirrorDriftTool
     public const string StorePathInvalid = "drift_store_path_invalid";
     public const string StoreInvalid = "drift_store_invalid";
     public const string RequestInvalid = "mirror_drift_request_invalid";
+    public const string InternalError = "mirror_drift_internal_error";
     public const int MaxBindings = 10_000;
 
     public sealed record Outcome(bool Succeeded, string Text, int Drift, int Proposals);
@@ -70,6 +72,8 @@ internal static class MirrorDriftTool
             var space = message.IndexOf(' ');
             return new Outcome(false, space < 0 ? Failure(message, null) : Failure(message[..space], message[(space + 1)..]), 0, 0);
         }
+        // Anything else is a defect, never a message passed off as a code.
+        catch (Exception error) { return new Outcome(false, Failure(InternalError, error.GetType().Name), 0, 0); }
     }
 
     static string? Join(string? field, string? detail) =>
@@ -79,11 +83,8 @@ internal static class MirrorDriftTool
     {
         // 1. The Core store, read-only.
         if (string.IsNullOrWhiteSpace(storeDirectory) || storeDirectory.IndexOf('\0') >= 0) throw new Refusal(StorePathInvalid);
-        var storeText = BoundedInput.ReadText(Path.Combine(storeDirectory, "project.json"));
-        Project project;
-        try { project = JsonSerializer.Deserialize<ProjectStore.State>(storeText)?.Project ?? throw new Refusal(StoreInvalid, "project.json has no Project"); }
-        catch (JsonException) { throw new Refusal(StoreInvalid, "project.json is not a store state"); }
-        if (project.Elements is null) throw new Refusal(StoreInvalid, "project has no Elements");
+        // FileShare.ReadWrite | Delete: a concurrent commit replaces project.json (temp + move) without a sharing violation.
+        var project = ParseStore(BoundedInput.ReadText(Path.Combine(storeDirectory, "project.json"), FileShare.ReadWrite | FileShare.Delete));
 
         // 2. The mirror request.
         var mirror = ParseMirror(mirrorJson);
@@ -101,6 +102,9 @@ internal static class MirrorDriftTool
         var report = mirror.Journal is { } journal
             ? MirrorDrift.Compare(snapshot, committed, MirrorDrift.ParseJournal(journal), mirror.Options)
             : MirrorDrift.Compare(snapshot, committed, (IReadOnlyList<MirrorJournalEntry>?)null, mirror.Options);
+        if (report.Truncated)
+            throw new Refusal(MirrorDriftResolveCodes.ReportTruncated, "the report holds more than options.max_findings = " + report.Options.MaxFindings.ToString(CultureInfo.InvariantCulture)
+                + " findings; raise options.max_findings (at most " + MirrorDriftOptions.MaxFindingsLimit.ToString(CultureInfo.InvariantCulture) + ") to resolve it");
         var resolution = MirrorDriftResolve.Plan(report, snapshot, committed, new RevitBindings(mirror.Document, mirror.Levels, mirror.WallTypes, mirror.DoorSymbol, mirror.WindowSymbol));
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -122,6 +126,44 @@ internal static class MirrorDriftTool
         }
         var text = Encoding.UTF8.GetString(buffer.ToArray());
         return new Outcome(true, text, report.Summary.Drift, resolution.Proposals.Count);
+    }
+
+    // The store state ({"Project":{..},"Receipts":{..}}) with every member Core relies on present and non-null: a
+    // missing Id or Revision would otherwise deserialize as Guid.Empty or 0.
+    static Project ParseStore(string json)
+    {
+        try
+        {
+            using (var document = JsonDocument.Parse(json))
+            {
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("Project", out var projectElement) || projectElement.ValueKind != JsonValueKind.Object)
+                    throw new Refusal(StoreInvalid, "project.json has no Project object");
+                if (!projectElement.TryGetProperty("Id", out var id) || id.ValueKind != JsonValueKind.String
+                    || !projectElement.TryGetProperty("Revision", out var revision) || revision.ValueKind != JsonValueKind.Number
+                    || !projectElement.TryGetProperty("Elements", out var elements) || elements.ValueKind != JsonValueKind.Array)
+                    throw new Refusal(StoreInvalid, "Project needs Id, Revision and Elements");
+                foreach (var element in elements.EnumerateArray())
+                    if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty("Id", out var elementId) || elementId.ValueKind != JsonValueKind.String)
+                        throw new Refusal(StoreInvalid, "every element needs an Id");
+            }
+            var project = JsonSerializer.Deserialize<ProjectStore.State>(json)?.Project ?? throw new Refusal(StoreInvalid, "project.json has no Project");
+            if (project.Id == Guid.Empty || project.Elements is null) throw new Refusal(StoreInvalid, "Project Id and Elements required");
+            foreach (var element in project.Elements)
+                if (element is null || element.Id == Guid.Empty || element.Kind is null || element.GeometryMetres is null || element.Dependencies is null || element.Provenance is null)
+                    throw new Refusal(StoreInvalid, "every element needs Id, Kind, GeometryMetres, Dependencies and Provenance");
+            return project;
+        }
+        catch (JsonException) { throw new Refusal(StoreInvalid, "project.json is not a store state"); }
+        catch (InvalidOperationException) { throw new Refusal(StoreInvalid, "project.json value type"); }
+    }
+
+    // JsonDocument keeps duplicate members; a request that names one twice is ambiguous and refused.
+    static void Unique(JsonElement element, string prefix)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var member in element.EnumerateObject())
+            if (!seen.Add(member.Name)) throw new Refusal(RequestInvalid, "duplicate member " + prefix + member.Name);
     }
 
     static string SnapshotBody(string json)
@@ -167,6 +209,7 @@ internal static class MirrorDriftTool
             using var parsed = JsonDocument.Parse(json);
             var root = parsed.RootElement;
             if (root.ValueKind != JsonValueKind.Object) throw new Refusal(RequestInvalid, "mirror must be an object");
+            Unique(root, "");
             foreach (var member in root.EnumerateObject())
                 if (!MirrorMembers.Contains(member.Name)) throw new Refusal(RequestInvalid, "unknown member " + member.Name);
             JsonElement Required(string name, JsonValueKind kind) =>
@@ -175,6 +218,7 @@ internal static class MirrorDriftTool
                 : value.ValueKind == JsonValueKind.String ? value.GetString() : throw new Refusal(RequestInvalid, name + " must be a string or null");
 
             var documentElement = Required("document", JsonValueKind.Object);
+            Unique(documentElement, "document.");
             foreach (var member in documentElement.EnumerateObject())
                 if (member.Name != "path" && member.Name != "unique_id") throw new Refusal(RequestInvalid, "unknown member document." + member.Name);
             string DocumentText(string name) => documentElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
@@ -190,6 +234,7 @@ internal static class MirrorDriftTool
             if (root.TryGetProperty("levels", out var levelsElement) && levelsElement.ValueKind != JsonValueKind.Null)
             {
                 if (levelsElement.ValueKind != JsonValueKind.Object) throw new Refusal(RequestInvalid, "levels must be an object");
+                Unique(levelsElement, "levels.");
                 foreach (var level in levelsElement.EnumerateObject())
                 {
                     if (levels.Count >= MaxBindings) throw new Refusal(MirrorDrift.TooLargeCode, "levels");
@@ -205,6 +250,7 @@ internal static class MirrorDriftTool
                 if (typesElement.GetArrayLength() > MaxBindings) throw new Refusal(MirrorDrift.TooLargeCode, "wall_types");
                 foreach (var type in typesElement.EnumerateArray())
                 {
+                    if (type.ValueKind == JsonValueKind.Object) Unique(type, "wall_types[].");
                     if (type.ValueKind != JsonValueKind.Object || type.EnumerateObject().Any(member => member.Name != "thickness_metres" && member.Name != "type")
                         || !type.TryGetProperty("thickness_metres", out var thickness) || thickness.ValueKind != JsonValueKind.Number || !thickness.TryGetDouble(out var metres) || !double.IsFinite(metres)
                         || !type.TryGetProperty("type", out var name) || name.ValueKind != JsonValueKind.String)
@@ -231,6 +277,7 @@ internal static class MirrorDriftTool
         var options = new MirrorDriftOptions();
         if (!root.TryGetProperty("options", out var element) || element.ValueKind == JsonValueKind.Null) return options;
         if (element.ValueKind != JsonValueKind.Object) throw new Refusal(RequestInvalid, "options must be an object");
+        Unique(element, "options.");
         foreach (var member in element.EnumerateObject())
         {
             if (!OptionMembers.Contains(member.Name)) throw new Refusal(RequestInvalid, "unknown member options." + member.Name);
