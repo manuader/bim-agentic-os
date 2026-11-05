@@ -711,12 +711,13 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
             $source = [string]$envelope.document.path
             $bytes = [Text.UTF8Encoding]::new($false).GetBytes("fake Revit copy of $source ($operationId)")
             [IO.File]::WriteAllBytes($target, $bytes)
-            $sha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-            if ($State.Faults.ContainsKey('SaveCopyHashOff')) { $sha = '0' * 64 }
+            # Not $sha: that is the request hash the receipt echoes.
+            $copySha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+            if ($State.Faults.ContainsKey('SaveCopyHashOff')) { $copySha = '0' * 64 }
             $null = $State.Copies.Add($target)
             $State.DocumentPath = $target
             $warnings = @("the open document is now the copy $target (Revit Save As re-points it); send later requests with document.path $target; $source keeps its last saved state")
-            [ordered]@{ copy = [ordered]@{ path = $target; bytes = $bytes.Length; sha256 = $sha; source_path = $source; source_unchanged = $true; had_unsaved_changes = $true; document_path = $target; is_modified = $false } }
+            [ordered]@{ copy = [ordered]@{ path = $target; bytes = $bytes.Length; sha256 = $copySha; source_path = $source; source_unchanged = $true; had_unsaved_changes = $true; document_path = $target; is_modified = $false } }
         }
         default { $null }
     }
