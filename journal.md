@@ -1263,4 +1263,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 **NEXT STEP:** next relay: oldest-touched phases first — P1-11 (add rotate/mirror steps too), P3-07, P8-09, P9-06 port/P9-03 (relay161/157; check origin chat-* branches before any Revit command file — chat-wall-attach still unmerged); then P4-08/P4-09, P6-10/P6-11, P7-09/P7-10 (relay162); then P2-10/P2-11, P5-10/P5-11, P10-10/P10-11 (relay164).
 
 ## Relay166 — 2026-11-05T17:53:23Z (Claude, cloud scheduled)
-- 17:53:Z LOCK taken (was FREE; relay164 released 2026-11-05T17:34:14Z).
+- 17:53Z LOCK taken (was FREE; relay164 released 2026-11-05T17:34:14Z).
+- 17:54Z picked P9-06 port (phase 9, relay157), P1-11 (phase 1), P3-07 (phase 3) — oldest-touched; P8-09 next. Workers starting.
