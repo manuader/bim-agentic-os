@@ -85,8 +85,11 @@ static class UpdateTests
         var result = DocUpdate.Update(before, moved, Bindings(moved), realized, fake);
         var keys = result.Plan.Replacement.Replacements.Select(item => item.Key).ToArray();
         var expected = DocRegeneration.Affected(before, moved, Compiler.Diff(before, moved), DocDefaults.From(moved), Bindings(moved)).Regenerated;
-        Check(keys.SequenceEqual(expected, StringComparer.Ordinal) && keys.Contains(tagDoor1) && result.Plan.Forced.Count == 0 && result.Plan.Retired.Count == 0,
-            "a door move regenerates exactly what DocDefaults -> Affected names (its tag), nothing forced or retired", string.Join(",", keys));
+        Check(keys.SequenceEqual(new[] { tagDoor1 }, StringComparer.Ordinal) && keys.SequenceEqual(expected, StringComparer.Ordinal)
+            && result.Plan.Forced.Count == 0 && result.Plan.Retired.Count == 0 && result.Plan.Gone.Count == 0,
+            "a door move regenerates exactly its tag (as DocDefaults -> Affected names), nothing forced, retired or gone", string.Join(",", keys));
+        Check(result.Plan.Realized is System.Collections.ObjectModel.ReadOnlyDictionary<string, string> && result.Realized is System.Collections.ObjectModel.ReadOnlyDictionary<string, string>,
+            "the plan's input map and the updated map are read-only copies");
         Check(result.Report.Status == RevitPlanRunStatus.Completed && result.Report.Pending.Count == 0 && result.Realized is not null
             && fake.Sent.Count == result.Plan.Replacement.Commands.Steps.Count && fake.Sent.Count > 0,
             "the plan runs through PlanRunner with the fake transport and completes", result.Report.Status);
@@ -110,6 +113,27 @@ static class UpdateTests
         Check(second.Plan.Replacement.Commands.Steps.Count == 0 && second.Plan.Replacement.Replacements.Count == 0 && second.Plan.Regeneration.Regenerated.Count == 0
             && quiet.Sent.Count == 0 && second.Report.Status == RevitPlanRunStatus.Completed && Sorted(second.Realized) == Sorted(result.Realized),
             "a second run with no edit yields an empty plan, sends nothing and returns the same map", Json(second.Plan.Regeneration.Regenerated));
+
+        // ---- An edit no documentation item reads: a wall gets taller ----
+        var taller = Replace(before, Role(1, "west"), wall => wall with { GeometryMetres = wall.GeometryMetres.Select((value, index) => index == 4 ? value + 0.4 : value).ToArray() });
+        var tallFake = new ReplaceFakeTransport(realized.Values);
+        var tall = DocUpdate.Update(before, taller, Bindings(taller), realized, tallFake);
+        Check(Compiler.Diff(before, taller).Operations.Count == 1 && tall.Plan.Regeneration.Regenerated.Count == 0 && tall.Plan.Replacement.Commands.Steps.Count == 0
+            && tallFake.Sent.Count == 0 && tall.Report.Status == RevitPlanRunStatus.Completed && Sorted(tall.Realized) == Sorted(realized),
+            "an edit that changes the model but no item's result plans and sends nothing", Json(tall.Plan.Regeneration.Regenerated));
+
+        // ---- An unchanged default item that was never realized is created ----
+        var missing = new Dictionary<string, string>(realized, StringComparer.Ordinal);
+        missing.Remove(DocRegeneration.ItemSource(DocDefaults.DoorSchedule));
+        var missingFake = new ReplaceFakeTransport(missing.Values);
+        var refill = DocUpdate.Update(before, before, Bindings(before), missing, missingFake);
+        var refillKeys = refill.Plan.Replacement.Replacements.Select(item => item.Key).ToArray();
+        var refillSchedule = refill.Plan.Replacement.Replacements.FirstOrDefault(item => item.Key == DocDefaults.DoorSchedule);
+        Check(refillKeys.SequenceEqual(new[] { "place-schedule-doors", DocDefaults.DoorSchedule }, StringComparer.Ordinal)
+            && refillSchedule is { StaleUniqueId: null, DeleteOperation: null, CreateOperation: not null }
+            && refill.Report.Status == RevitPlanRunStatus.Completed && refill.Realized is not null && refill.Realized.ContainsKey(DocRegeneration.ItemSource(DocDefaults.DoorSchedule))
+            && refill.Realized[DocRegeneration.ItemSource("place-schedule-doors")] != realized[DocRegeneration.ItemSource("place-schedule-doors")],
+            "a no-edit run creates a default item missing from the realized map and re-places it on its sheet", string.Join(",", refillKeys));
 
         // ---- Determinism ----
         var again = DocUpdate.Update(before, moved, Bindings(moved), new Dictionary<string, string>(realized, StringComparer.Ordinal), new ReplaceFakeTransport(realized.Values));
@@ -155,6 +179,35 @@ static class UpdateTests
             && renumbered.Realized?[DocRegeneration.ItemSource(DocDefaults.SchedulesSheet)] == realized[DocRegeneration.ItemSource(DocDefaults.SchedulesSheet)],
             "the confirmed dependent goes with its view; the unchanged schedules sheet is kept");
 
+        // ---- Determinism across map insertion order and culture ----
+        var baseline = DocUpdate.Update(before, inserted, Bindings(inserted), insertedRealized, new ReplaceFakeTransport(insertedRealized.Values));
+        var reversed = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var pair in insertedRealized.Reverse()) reversed[pair.Key] = pair.Value;
+        var culture = CultureInfo.CurrentCulture;
+        var uiCulture = CultureInfo.CurrentUICulture;
+        var identical = true;
+        try
+        {
+            foreach (var name in new[] { "tr-TR", "de-DE" })
+            {
+                CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(name);
+                CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo(name);
+                var other = DocUpdate.Update(before, inserted, Bindings(inserted), reversed, new ReplaceFakeTransport(reversed.Values));
+                identical &= Json(other.Plan.Replacement) == Json(baseline.Plan.Replacement) && Json(other.Plan.Regeneration) == Json(baseline.Plan.Regeneration)
+                    && Json(other.Realized!) == Json(baseline.Realized!) && Json(other.Plan.Realized) == Json(baseline.Plan.Realized);
+            }
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = culture;
+            CultureInfo.CurrentUICulture = uiCulture;
+        }
+        Check(identical && baseline.Report.Status == RevitPlanRunStatus.Completed, "a reversed-insertion map under tr-TR and de-DE gives byte-identical plans and maps");
+
+        // ---- A new element without its element: realization is refused ----
+        Check(Code(() => DocUpdate.Plan(before, inserted, Bindings(inserted), realized)) == DocReplaceCodes.InputUnresolved,
+            "documenting a new element that is not realized yet is refused with input_unresolved");
+
         // ---- An element removed: its tag key disappears and the realized tag is retired ----
         var removed = Remove(before, Door(1));
         var removeFake = new ReplaceFakeTransport(realized.Values);
@@ -163,8 +216,20 @@ static class UpdateTests
         Check(retired.Plan.Retired.SequenceEqual(new[] { tagDoor1 }) && retiredItem is { DeleteOperation: not null, CreateOperation: null }
             && retired.Plan.Replacement.Unsupported.Any(item => item.Key == tagDoor1 && item.Code == DocUpdateCodes.Retired)
             && removeFake.Log.Contains("delete " + realized[DocRegeneration.ItemSource(tagDoor1)])
-            && retired.Realized is not null && !retired.Realized.ContainsKey(DocRegeneration.ItemSource(tagDoor1)),
+            && retired.Realized is not null && !retired.Realized.ContainsKey(DocRegeneration.ItemSource(tagDoor1))
+            && !retired.Realized.ContainsKey(DocRegeneration.ElementSource(Door(1))) && retired.Plan.Gone.Count == 0,
             "a removed door's realized tag is deleted, not re-created, and leaves the map", Json(retired.Plan.Retired));
+
+        // ---- The removed door's tag was already deleted with the door in Revit ----
+        var doorUid = realized[DocRegeneration.ElementSource(Door(1))];
+        var tagUid = realized[DocRegeneration.ItemSource(tagDoor1)];
+        var goneFake = new ReplaceFakeTransport(realized.Values.Where(uid => uid != doorUid && uid != tagUid));
+        var gone = DocUpdate.Update(before, removed, Bindings(removed), realized, goneFake);
+        Check(gone.Report.Status == RevitPlanRunStatus.Completed && gone.Plan.Gone.SequenceEqual(new[] { tagDoor1 }) && gone.Plan.Retired.Count == 0
+            && gone.Realized is not null && !gone.Realized.ContainsKey(DocRegeneration.ItemSource(tagDoor1)) && !gone.Realized.ContainsKey(DocRegeneration.ElementSource(Door(1)))
+            && !goneFake.Log.Contains("delete " + tagUid) && gone.Realized.Count == retired.Realized!.Count,
+            "a retired tag Revit already deleted is reported gone (typed), skipped, and neither it nor the removed door stays in the map",
+            gone.Report.Failed is null ? Json(gone.Plan.Gone) : gone.Report.Failed.Code + " " + gone.Report.Failed.Field);
 
         // ---- Resume after a lost reply ----
         var planned = DocUpdate.Plan(before, moved, Bindings(moved), realized);

@@ -22,7 +22,7 @@ namespace Bim.Core;
 // Before/After: the default sets. Forced: the after keys regenerated for a definition change, sorted (ordinal).
 // Retired: the realized before-only keys, sorted. Realized: a copy of the realized map the plan was made against.
 public sealed record DocUpdatePlan(DocumentationSet Before, DocumentationSet After, DocRegenerationPlan Regeneration, DocReplacementPlan Replacement,
-    IReadOnlyList<string> Forced, IReadOnlyList<string> Retired, IReadOnlyDictionary<string, string> Realized);
+    IReadOnlyList<string> Forced, IReadOnlyList<string> Retired, IReadOnlyDictionary<string, string> Realized, IReadOnlyList<string> Gone);
 
 // Realized: the updated map when Report completed, else null (resume with DocUpdate.Resume).
 public sealed record DocUpdateResult(DocUpdatePlan Plan, RevitPlanRunReport Report, IReadOnlyDictionary<string, string>? Realized);
@@ -87,7 +87,7 @@ public static class DocUpdate
         }
 
         var replacement = DocReplace.Plan(regeneration, map, dependents);
-        return new DocUpdatePlan(setBefore, setAfter, regeneration, replacement, forcedKeys, retired, map);
+        return new DocUpdatePlan(setBefore, setAfter, regeneration, replacement, forcedKeys, retired, map, Array.Empty<string>());
     }
 
     public static DocUpdateResult Run(DocUpdatePlan plan, IRevitCommandTransport transport)
