@@ -1195,3 +1195,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay157 — 2026-11-05T00:53:15Z (Claude, cloud scheduled)
 - 00:53Z LOCK taken (was FREE; relay156 released 2026-11-05T00:22:58Z).
+- 00:54Z dispatching 3 workers (oldest-touched phases 1, 3, 9 — relay153): P1-09 element.move/copy, P3-05 incremental diff, P9-09 direct_shape.create. Headless/compiled only; no Revit run.
