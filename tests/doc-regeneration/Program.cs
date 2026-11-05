@@ -494,5 +494,16 @@ catch (Exception error)
     failed++;
 }
 
+// ---- P4-07 documentation update pipeline from a BIM-IR edit (tests/doc-regeneration/Update.cs) ----
+try
+{
+    UpdateTests.Run(Check);
+}
+catch (Exception error)
+{
+    Console.WriteLine("::error::doc-regeneration FAIL unexpected " + error.GetType().Name + " | " + error.Message);
+    failed++;
+}
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, doc_regeneration_contract = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
