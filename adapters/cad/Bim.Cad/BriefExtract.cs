@@ -138,7 +138,8 @@ public static class BriefExtract
                         var provenance = own with
                         {
                             Layer = own.Layer == "0" ? insert.Provenance.Layer : own.Layer,
-                            InsertPath = attribute.InsertHandle is { } key ? new[] { key } : own.InsertPath,
+                            // A MINSERT's ATTRIBs are read once, as its first cell's (as exploding names them).
+                            InsertPath = attribute.InsertHandle is { } key ? new[] { insert.IsArray ? DxfInsertPath.Cell(key, 0, 0) : key } : own.InsertPath,
                             PaperSpace = own.PaperSpace || insert.Provenance.PaperSpace,
                             Invisible = own.Invisible || insert.Provenance.Invisible,
                         };

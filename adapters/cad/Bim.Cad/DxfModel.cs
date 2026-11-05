@@ -1,3 +1,4 @@
+using System.Globalization;
 namespace Bim.Cad;
 
 // Provenance-tagged 2D drawing model read from an ASCII DXF file. It is a CAD input model, separate from BIM-IR:
@@ -26,6 +27,11 @@ public sealed record DxfProvenance(string SourceFile, string? Handle, string Lay
 
     // Group 60 = 1: the entity is invisible (for exploded entities, also when any enclosing INSERT is).
     public bool Invisible { get; init; }
+
+    // Why an entry of DxfDrawing.Unsupported is unsupported when its type is otherwise modelled: "ocs-non-planar" (its
+    // extrusion direction puts it in a plane that is not horizontal) or "ocs-invalid" (zero extrusion vector). Null
+    // for entities of unmodelled types and for every modelled entity.
+    public string? Reason { get; init; }
 }
 
 public abstract record DxfEntity(DxfProvenance Provenance);
@@ -57,8 +63,20 @@ public sealed record DxfPolylineSegment(int Index, Point2 Start, Point2 End, dou
 // inline formatting (\P becomes a newline). Insertion is group 10/20.
 public sealed record DxfText(DxfProvenance Provenance, Point2 Insertion, double Height, double RotationDegrees, string Value, string PlainText, bool IsMText) : DxfEntity(Provenance);
 
+// A MINSERT is an INSERT with more than one column (group 70) or row (group 71): cell (row, column) is the block
+// placed with an extra offset (column * ColumnSpacing, row * RowSpacing) (groups 44, 45) applied after the scale and
+// before the rotation, so the array turns with the insert but its spacing is not scaled. For an insert read from the
+// mirrored OCS (0,0,-1) ColumnSpacing is negated like ScaleX. Exploding writes each cell's insert-path element as
+// "key[row,column]" (0-based; key is the handle, or "@" + line; see DxfInsertPath); a 1x1 insert keeps the plain key.
+// Exploded ATTRIBs of every cell keep the bare key as InsertHandle; the cell is only in their InsertPath.
 public sealed record DxfInsert(DxfProvenance Provenance, string BlockName, Point2 Insertion, double ScaleX, double ScaleY, double RotationDegrees) : DxfEntity(Provenance)
 {
+    public int Columns { get; init; } = 1;
+    public int Rows { get; init; } = 1;
+    public double ColumnSpacing { get; init; }
+    public double RowSpacing { get; init; }
+    public bool IsArray => Columns > 1 || Rows > 1;
+
     // The ATTRIBs that follow the INSERT (group 66 = 1) up to its SEQEND, in file order.
     public IReadOnlyList<DxfAttribute> Attributes { get; init; } = Array.Empty<DxfAttribute>();
 }
@@ -76,6 +94,40 @@ public sealed record DxfAttribute(DxfProvenance Provenance, string Tag, Point2 I
     // Name of the block the owning INSERT places (null like InsertHandle).
     public string? BlockName { get; init; }
     public bool IsConstant => (Flags & 2) != 0;
+}
+
+// Elements of DxfProvenance.InsertPath: an INSERT's key (its handle, or "@" + its line when it has none) or, for one
+// cell of a MINSERT array, "key[row,column]" (0-based). Key gives the INSERT key of either form.
+public static class DxfInsertPath
+{
+    public static string Cell(string key, int row, int column)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        return key + "[" + row.ToString(CultureInfo.InvariantCulture) + "," + column.ToString(CultureInfo.InvariantCulture) + "]";
+    }
+
+    // The INSERT key of a path element: the element without a trailing "[row,column]".
+    public static string Key(string element) => TryParseCell(element, out var key, out _, out _) ? key : element;
+
+    // True when the element is a MINSERT cell "key[row,column]".
+    public static bool TryParseCell(string element, out string key, out int row, out int column)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        key = element;
+        row = column = 0;
+        if (!element.EndsWith(']')) return false;
+        var open = element.LastIndexOf('[');
+        if (open <= 0) return false;
+        var inner = element.AsSpan(open + 1, element.Length - open - 2);
+        var comma = inner.IndexOf(',');
+        if (comma < 0
+            || !int.TryParse(inner[..comma], NumberStyles.None, CultureInfo.InvariantCulture, out var r)
+            || !int.TryParse(inner[(comma + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var c)) return false;
+        key = element[..open];
+        row = r;
+        column = c;
+        return true;
+    }
 }
 
 public sealed record DxfLayer(string Name, int Color, string LineType, bool Frozen, bool Off, bool Declared);
@@ -98,7 +150,8 @@ public enum DxfUnits
 // the LAYER table entries plus any layer referenced by an entity but not declared (Declared = false); names match
 // case-insensitively, as in DXF, and the list is sorted by name
 // (ordinal). InsUnits is the raw $INSUNITS value (null when absent); MetresPerUnit is null when the units are
-// unspecified, unitless or unknown. Unsupported lists entities of types this reader does not model.
+// unspecified, unitless or unknown. Unsupported lists entities of types this reader does not model, and modelled
+// entities whose extrusion direction makes them non-planar in the plan (with a Reason).
 public sealed record DxfDrawing(
     string SourceFile,
     int? InsUnits,
