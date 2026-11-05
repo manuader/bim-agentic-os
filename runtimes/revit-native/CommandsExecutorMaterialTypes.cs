@@ -27,7 +27,10 @@ namespace Bim.Revit;
 //   shaded views show (Realistic views and renders keep the appearance asset, so a duplicated light "Metal Deck" stays
 //   light there); that CreateSimpleCompoundStructure plus the shell counts gives a valid wall and floor structure for
 //   every build-up (IsValid is checked first, a refusal is transaction_failed); that ChangeTypeId keeps hosted doors and
-//   windows and wall joins when the new wall type is thicker; that GetValidTypes lists every same-category type.
+//   windows and wall joins when the new wall type is thicker; that GetValidTypes lists every same-category type; that
+//   the shell counts and StructuralMaterialIndex survive SetCompoundStructure as set (they are read back); that 1.2 mm
+//   (RevitMaterialTypeRules.MinLayerThicknessMm) is accepted for every layer function; which names Duplicate and
+//   Material.Create refuse with ArgumentException (mapped to args_invalid at args.name).
 internal static partial class CommandExecutor
 {
     static FillPatternElement[] FillPatterns(Document d) => new FilteredElementCollector(d).OfClass(typeof(FillPatternElement)).Cast<FillPatternElement>().ToArray();
@@ -76,9 +79,11 @@ internal static partial class CommandExecutor
         var cut = ResolvePattern(patterns, args.CutPattern, "args.cut_pattern");
         var expected = new ExpectedMaterial(args.Name, args.Color, args.Transparency, args.Shininess, args.Smoothness, args.MaterialClass, surface?.UniqueId, cut?.UniqueId);
 
-        // A material of that name (Revit names ignore case): returned unchanged when it matches, else refused.
-        if (materials.FirstOrDefault(material => string.Equals(material.Name, args.Name, StringComparison.OrdinalIgnoreCase)) is { } existing)
+        // A material of that name (exact name first, then ignoring case: CommandRulesMaterialTypes.PickExisting):
+        // returned unchanged when it matches, else refused.
+        if (CommandRulesMaterialTypes.PickExisting(materials.Select(material => material.Name).ToArray(), args.Name) is { } index)
         {
+            var existing = materials[index];
             if (CommandReadbackMaterialTypes.Material(expected, ObserveMaterial(d, existing)) is { } difference)
                 throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a material named '" + existing.Name + "' already exists and differs (" + difference + "); choose another name or change it with material.set");
             return new WritePlan(
@@ -93,9 +98,15 @@ internal static partial class CommandExecutor
         return new WritePlan(
             () =>
             {
-                var material = baseMaterial is not null
-                    ? baseMaterial.Duplicate(args.Name)
-                    : d.GetElement(Material.Create(d, args.Name)) as Material;
+                // A Revit ArgumentException on the name (for example one Revit considers taken) is args_invalid at args.name.
+                Material? material;
+                try
+                {
+                    material = baseMaterial is not null
+                        ? baseMaterial.Duplicate(args.Name)
+                        : d.GetElement(Material.Create(d, args.Name)) as Material;
+                }
+                catch (Autodesk.Revit.Exceptions.ArgumentException error) { throw CommandRulesModify.RevitRefused("args.name", error.Message); }
                 created = material ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, args.BaseMaterial is null ? "args.name" : "args.base_material", "Revit did not create the material");
                 ApplyMaterial(material, args.Color, args.Transparency, args.Shininess, args.Smoothness, args.MaterialClass, surface, cut);
             },
@@ -130,7 +141,7 @@ internal static partial class CommandExecutor
             return new ObservedRoofLayer(CommandRulesMaterials.FunctionName(layer.Function.ToString()), material?.UniqueId, material?.Name, Mm(layer.Width));
         }).ToArray();
         return new ObservedHostType(type.UniqueId, type.Name, layers, structure is null ? null : Mm(structure.GetWidth()),
-            structure?.GetNumberOfShellLayers(ShellLayerType.Exterior) ?? 0, structure?.GetNumberOfShellLayers(ShellLayerType.Interior) ?? 0);
+            structure?.GetNumberOfShellLayers(ShellLayerType.Exterior) ?? 0, structure?.GetNumberOfShellLayers(ShellLayerType.Interior) ?? 0, structure?.StructuralMaterialIndex ?? -1);
     }
 
     // The layered structure in request order (exterior/top first): the core is the run of structure layers. hostKind
@@ -179,8 +190,10 @@ internal static partial class CommandExecutor
         var expected = CommandRulesMaterialTypes.ExpectedLayers(layers, resolved.Select(material => material.UniqueId).ToArray());
         var shells = RevitMaterialTypeRules.Shells(layers.Select(layer => layer.Function).ToArray(), "args.layers");
 
-        if (existingTypes.FirstOrDefault(type => string.Equals(type.Name, name, StringComparison.OrdinalIgnoreCase)) is { } existing)
+        // A type of that name: exact name first, then ignoring case (CommandRulesMaterialTypes.PickExisting).
+        if (CommandRulesMaterialTypes.PickExisting(existingTypes.Select(type => type.Name).ToArray(), name) is { } index)
         {
+            var existing = existingTypes[index];
             if (CommandReadbackMaterialTypes.HostType(kind, name, expected, shells, ObserveHostType(d, existing)) is { } difference)
                 throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.name", "a " + kind + " named '" + existing.Name + "' already exists and differs (" + difference + "); choose another name");
             return new WritePlan(
@@ -195,7 +208,10 @@ internal static partial class CommandExecutor
         return new WritePlan(
             () =>
             {
-                var duplicate = baseType.Duplicate(name) as T ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.base_type", "Revit did not duplicate the " + kind);
+                ElementType copy;
+                try { copy = baseType.Duplicate(name); }
+                catch (Autodesk.Revit.Exceptions.ArgumentException error) { throw CommandRulesModify.RevitRefused("args.name", error.Message); }
+                var duplicate = copy as T ?? throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.base_type", "Revit did not duplicate the " + kind);
                 created = duplicate;
                 SetStructure(duplicate, HostStructure(d, hostKind, baseType.GetCompoundStructure(), layers, resolved, shells));
             },
