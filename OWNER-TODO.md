@@ -152,4 +152,4 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay160 (2026-11-05, cloud)
 - No new Revit step (P2-08, P5-08, P10-09 are headless, unit-tested in CI). Still open: the Relay153/Relay157 test-copy -Catalogue smoke steps, N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence, delete branch relay159-P6-09-baseline.
-- FYI: main now has a root `.gitattributes` with `skills/** -text` (skill pack hashes for the new skills.lock.json must match on Windows and Linux). After `git pull` on Windows, if `git status` shows skills files modified, run `git add --renormalize skills` is NOT needed — just `git checkout -- skills` to get the LF bytes.
+- FYI: main now has a root `.gitattributes` with `skills/** -text` (skill pack hashes for the new skills.lock.json must match on Windows and Linux). After `git pull` on Windows, if `git status` shows files under skills/ as modified (line endings only), run `git checkout -- skills` to restore the LF bytes.
