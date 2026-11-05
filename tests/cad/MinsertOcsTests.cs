@@ -38,6 +38,22 @@ internal static class MinsertOcsTests
         + G("0 SECTION|2 ENTITIES") + entities + G("0 ENDSEC|0 EOF");
     private static string LineBlock(string name = "B") => G("0 BLOCK|5 BB|8 0|2 " + name + "|70 0|10 0|20 0|30 0|0 LINE|5 BL|8 0|10 0|20 0|11 10|21 0|0 ENDBLK|5 BE|8 0");
 
+    private static string Safe(Func<string> json)
+    {
+        try { return Digest(json()); }
+        catch (CadDraftException error) { return "E-" + error.Code; }
+        catch (DxfFormatException error) { return "E-" + error.Code; }
+        catch (Exception error) { return "E-" + error.GetType().Name; }
+    }
+
+    private static string Codes(CadDraft d) => string.Join(",", d.Uncertainties.Select(u => u.Code));
+    private static string Openings(CadDraft d) => string.Join(" | ", d.Openings.Select(o => o.Key + " " + o.BlockName + " (" + F(o.Start.X) + "," + F(o.Start.Y) + ")-(" + F(o.End.X) + "," + F(o.End.Y) + ") host " + o.HostKey));
+    private static string Walls() => G("0 LINE|5 W1|8 WALLS|10 0|20 0|11 10000|21 0|0 LINE|5 W2|8 WALLS|10 0|20 200|11 10000|21 200");
+    private static string DoorBlock() => G("0 BLOCK|5 DB|8 0|2 DOOR-A|70 0|10 0|20 0|30 0|0 LINE|5 DL|8 0|10 0|20 100|11 800|21 100|0 ENDBLK|5 DE|8 0");
+    private static bool DoorsAt(CadDraft d, params double[] xs) =>
+        d.Openings.Count == xs.Length && d.Openings.Select(o => Math.Min(o.Start.X, o.End.X)).OrderBy(x => x).Zip(xs).All(p => Near(p.First, p.Second, 1e-6))
+        && d.Openings.All(o => Near(Math.Abs(o.End.X - o.Start.X), 800, 1e-6) && Near(o.Start.Y, 100, 1e-6) && o.HostKey.Length > 0 && o.Kind == "door");
+
     private static string? CodeOf(Func<object?> action)
     {
         try { action(); return null; }
@@ -89,9 +105,43 @@ internal static class MinsertOcsTests
         ("walls.dxf", "435ABEB726CC3D81", "435ABEB726CC3D81"),
     };
 
+    // CadToBimIr draft and BriefExtract brief digests of the same fixtures, captured in CI from origin/main
+    // (b0bcd22, before P6-09) with the temporary probe branch relay159-P6-09-baseline.
+    private static readonly (string File, string Draft, string Brief)[] ConsumerBaseline =
+    {
+        ("blocks.dxf", "?", "?"),
+        ("brief-plan.dxf", "?", "?"),
+        ("draft-plan.dxf", "?", "?"),
+        ("room-tags.dxf", "?", "?"),
+        ("simple-plan.dxf", "?", "?"),
+        ("walls.dxf", "?", "?"),
+    };
+
     public static void Run(Action<bool, string, string> check, string fixtures)
     {
         void C(bool condition, string name, string detail = "") => check(condition, "minsert-ocs " + name, detail);
+        var projectId = Guid.Parse("6f0c6a52-4d3b-4a8e-9b51-2f6f9d0e7a11");
+
+        // ---------- regression: consumers of pre-existing fixtures are unchanged ----------
+        try
+        {
+            var actual = new List<string>();
+            var same = true;
+            foreach (var (file, draft, brief) in ConsumerBaseline)
+            {
+                var d = DxfReader.ReadFile(Path.Combine(fixtures, file));
+                var options = new CadToBimIrOptions(projectId) { MillimetresPerUnit = d.MetresPerUnit is null ? 1 : null };
+                var a = Safe(() => JsonSerializer.Serialize(CadToBimIr.FromDxf(d, options)));
+                var b = Safe(() => JsonSerializer.Serialize(BriefExtract.FromDxf(d)));
+                actual.Add(file + "=" + a + "/" + b);
+                same &= a == draft && b == brief;
+            }
+            C(same, "pre-existing fixtures keep their CadToBimIr draft and BriefExtract output", string.Join(" ", actual));
+        }
+        catch (Exception error)
+        {
+            C(false, "consumer regression unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
 
         // ---------- regression: pre-existing fixtures give the same reader and exploder output ----------
         try
@@ -205,9 +255,9 @@ internal static class MinsertOcsTests
             var tagBlock = G("0 BLOCK|5 TB|8 0|2 TAG|70 2|10 0|20 0|30 0|0 ATTDEF|5 TD|8 0|10 0|20 0|30 0|40 1|1 X|3 Name|2 N|70 0|0 ENDBLK|5 TE|8 0");
             var attributed = DxfReader.Parse(Doc(G("0 INSERT|5 A1|8 0|66 1|2 TAG|10 10|20 0|50 90|70 2|71 1|44 100|0 ATTRIB|5 AT|8 0|10 12|20 3|40 1|1 V|2 N|0 SEQEND|5 AS|8 0"), tagBlock), "attr.dxf");
             var attributes = attributed.Explode().Entities.OfType<DxfAttribute>().ToList();
-            C(attributes.Count == 2 && NearP(attributes[0].Insertion, 12, 3) && attributes[0].InsertHandle == "A1[0,0]" && Path0(attributes[0]) == "A1[0,0]"
-                && NearP(attributes[1].Insertion, 12, 103) && attributes[1].InsertHandle == "A1[0,1]" && Near(attributes[1].RotationDegrees, 0),
-                "MINSERT ATTRIBs repeat per cell, shifted by the rotated cell offset", All(attributes));
+            C(attributes.Count == 2 && NearP(attributes[0].Insertion, 12, 3) && attributes[0].InsertHandle == "A1" && Path0(attributes[0]) == "A1[0,0]"
+                && NearP(attributes[1].Insertion, 12, 103) && attributes[1].InsertHandle == "A1" && attributes[1].Provenance.InsertPath.SequenceEqual(new[] { "A1[0,1]" }) && Near(attributes[1].RotationDegrees, 0),
+                "MINSERT ATTRIBs repeat per cell, shifted by the rotated cell offset; InsertHandle is the bare handle, the cell is in InsertPath", All(attributes));
 
             // A 1x1 insert keeps the plain handle as its path element.
             var single = DxfReader.Parse(Doc(G("0 INSERT|5 I1|2 B|10 0|20 0|70 1|71 1"), LineBlock()), "one.dxf").Explode().Entities.Single();
@@ -234,6 +284,65 @@ internal static class MinsertOcsTests
         catch (Exception error)
         {
             C(false, "generated unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // ---------- review: consumers of MINSERT cells, near-Z extrusions, nits ----------
+        try
+        {
+            var options = new CadToBimIrOptions(projectId);
+            var doors = CadToBimIr.FromDxf(DxfReader.Parse(Doc(Walls() + G("0 INSERT|5 D1|8 OPENINGS|2 DOOR-A|10 1000|20 0|70 3|71 1|44 2000"), DoorBlock()), "doors.dxf"), options);
+            C(DoorsAt(doors, 1000, 3000, 5000) && !Codes(doors).Contains("unmatched-block", StringComparison.Ordinal) && !Codes(doors).Contains("unhosted-opening", StringComparison.Ordinal)
+                && doors.Openings.All(o => o.Source.Handle == "D1" && o.BlockName == "DOOR-A"),
+                "a 1x3 door MINSERT gives three hosted openings with geometry", Openings(doors) + " " + Codes(doors));
+
+            var nestedDoors = CadToBimIr.FromDxf(DxfReader.Parse(Doc(Walls() + G("0 INSERT|5 P1|8 0|2 PLAN|10 0|20 0"),
+                DoorBlock() + G("0 BLOCK|5 PB|8 0|2 PLAN|70 0|10 0|20 0|30 0|0 INSERT|5 D2|8 OPENINGS|2 DOOR-A|10 1000|20 0|70 3|71 1|44 2000|0 ENDBLK|5 PE|8 0")), "nested-doors.dxf"), options);
+            C(DoorsAt(nestedDoors, 1000, 3000, 5000) && !Codes(nestedDoors).Contains("unmatched-block", StringComparison.Ordinal),
+                "a door MINSERT nested in a block gives three openings", Openings(nestedDoors) + " " + Codes(nestedDoors));
+
+            var hidden = CadToBimIr.FromDxf(DxfReader.Parse(Doc(Walls() + G("0 INSERT|5 D3|8 OPENINGS|60 1|2 DOOR-A|10 1000|20 0|70 3|71 1|44 2000"), DoorBlock()), "hidden-doors.dxf"), options);
+            C(hidden.Openings.Count == 0 && !Codes(hidden).Contains("unmatched-block", StringComparison.Ordinal) && !Codes(hidden).Contains("unhosted-opening", StringComparison.Ordinal),
+                "an invisible door MINSERT gives no openings and no reports", Openings(hidden) + " " + Codes(hidden));
+
+            var chairs = CadToBimIr.FromDxf(DxfReader.Parse(Doc(Walls() + G("0 INSERT|5 C1|8 0|2 CHAIR|10 1000|20 3000|70 3|71 1|44 2000"),
+                G("0 BLOCK|5 CB|8 0|2 CHAIR|70 0|10 0|20 0|30 0|0 LINE|5 CL|8 0|10 0|20 0|11 400|21 0|0 ENDBLK|5 CE|8 0")), "chairs.dxf"), options);
+            var unmatched = chairs.Uncertainties.Where(u => u.Code == "unmatched-block").ToList();
+            C(unmatched.Count == 3 && unmatched.All(u => u.Message.Contains("block CHAIR ", StringComparison.Ordinal))
+                && unmatched.Select(u => u.At is { } at ? F(at.X) + "," + F(at.Y) : "-").SequenceEqual(new[] { "1000,3000", "3000,3000", "5000,3000" }),
+                "a non-door MINSERT reports one unmatched-block per cell with the real block name and cell position", string.Join(" | ", unmatched.Select(u => u.Message + " @" + (u.At is { } at ? F(at.X) + "," + F(at.Y) : "-"))));
+
+            // Near-Z extrusions (float noise) keep the entity, placed through the arbitrary axis algorithm.
+            var nearZ = DxfReader.Parse(Doc(G("0 CIRCLE|5 Z1|8 0|10 1000|20 0|30 0|40 5|210 1e-8|220 0|230 1") + G("0 CIRCLE|5 Z2|8 0|10 1000|20 0|30 0|40 5|210 1e-8|220 0|230 -1")
+                + G("0 CIRCLE|5 Z3|8 0|10 1000|20 0|30 0|40 5|210 0.01|220 0|230 1")), "nearz.dxf");
+            var z1 = nearZ.Entities.OfType<DxfCircle>().SingleOrDefault(e => e.Provenance.Handle == "Z1");
+            var z2 = nearZ.Entities.OfType<DxfCircle>().SingleOrDefault(e => e.Provenance.Handle == "Z2");
+            C(z1 is not null && NearP(z1.Center, 1000, 0, 1e-6) && z2 is not null && NearP(z2.Center, -1000, 0, 1e-6) && nearZ.Unsupported.Select(u => u.Handle).SequenceEqual(new[] { "Z3" }),
+                "extrusion (1e-8,0,+-1) is kept within 1e-6; (0.01,0,1) stays unsupported", All(nearZ.Entities) + " unsupported " + string.Join(",", nearZ.Unsupported.Select(u => u.Handle)));
+
+            // Room-tag MINSERT: one room per cell, each labelled by its own cell path.
+            var tagBlock = G("0 BLOCK|5 TB|8 0|2 ROOMTAG|70 2|10 0|20 0|30 0|0 ATTDEF|5 TD|8 0|10 0|20 0|30 0|40 200|1 X|3 Name|2 NAME|70 0|0 ENDBLK|5 TE|8 0");
+            var tagInsert = G("0 INSERT|5 R1|8 TAGS|66 1|2 ROOMTAG|10 0|20 0|70 3|71 1|44 5000|0 ATTRIB|5 RA|8 TAGS|10 0|20 0|40 200|1 Cocina|2 NAME|0 ATTRIB|5 RB|8 TAGS|10 0|20 -300|40 200|1 7 m²|2 AREA|0 SEQEND|5 RS|8 TAGS");
+            var rooms = BriefExtract.FromDxf(DxfReader.Parse(Doc(tagInsert, tagBlock), "rooms.dxf"));
+            C(rooms.Rooms.Count == 3 && rooms.Rooms.Select(r => string.Join(">", r.Label.InsertPath)).OrderBy(x => x, StringComparer.Ordinal).SequenceEqual(new[] { "R1[0,0]", "R1[0,1]", "R1[0,2]" }),
+                "a room-tag MINSERT gives one room per cell with distinct label paths", string.Join(" | ", rooms.Rooms.Select(r => r.Id + " " + string.Join(">", r.Label.InsertPath))));
+            var fallback = BriefExtract.FromDxf(DxfReader.Parse(Doc(tagInsert, tagBlock), "rooms.dxf"), new BriefExtractOptions { ExplodeOptions = new DxfExplodeOptions(MaxEntities: 1) });
+            C(fallback.Rooms.Count == 1 && fallback.Rooms[0].Label.InsertPath.SequenceEqual(new[] { "R1[0,0]" }),
+                "the explode-limit fallback labels a MINSERT's attributes with its first cell path", string.Join(" | ", fallback.Rooms.Select(r => r.Id + " " + string.Join(">", r.Label.InsertPath))));
+
+            // Nits: a tilted INSERT warns that its ATTRIBs are dropped; an empty-block huge MINSERT hits the limit; base point.
+            var tiltedTags = DxfReader.Parse(Doc(G("0 INSERT|5 T1|8 0|66 1|2 ROOMTAG|10 0|20 0|210 1|220 0|230 0|0 ATTRIB|5 TA|8 0|10 0|20 0|40 1|1 V|2 NAME|0 SEQEND|5 TS|8 0"), tagBlock), "tilted-tags.dxf");
+            C(tiltedTags.Warnings.Any(w => w.Code == "attributes-dropped") && tiltedTags.Unsupported.Any(u => u.Handle == "T1"), "a tilted INSERT warns that its ATTRIBs are dropped", string.Join(",", tiltedTags.Warnings.Select(w => w.Code)));
+            var empty = DxfReader.Parse(Doc(G("0 INSERT|5 E1|2 EMPTY|10 0|20 0|70 30000|71 30000|44 1|45 1"), G("0 BLOCK|5 EB|8 0|2 EMPTY|70 0|10 0|20 0|30 0|0 ENDBLK|5 EE|8 0")), "empty.dxf");
+            C(CodeOf(() => empty.Explode(new DxfExplodeOptions(MaxWork: 10_000))) == "explode-limit", "an empty-block 30000x30000 MINSERT raises explode-limit", CodeOf(() => empty.Explode(new DxfExplodeOptions(MaxWork: 10_000))) ?? "no error");
+            var based = DxfReader.Parse(Doc(G("0 INSERT|5 BP|2 BASED|10 100|20 200|50 90|70 2|71 2|44 30|45 40"),
+                G("0 BLOCK|5 BB|8 0|2 BASED|70 0|10 5|20 5|30 0|0 LINE|5 BL|8 0|10 5|20 5|11 15|21 5|0 ENDBLK|5 BE|8 0")), "based.dxf").Explode().Entities.OfType<DxfLine>().ToList();
+            // Cell (r,c) offset (30c, 40r) rotated 90 is (-40r, 30c); the block base (5,5) maps to the insertion point.
+            C(based.Count == 4 && NearP(based[0].Start, 100, 200) && NearP(based[0].End, 100, 210) && NearP(based[1].Start, 100, 230) && NearP(based[2].Start, 60, 200) && NearP(based[3].Start, 60, 230) && NearP(based[3].End, 60, 240),
+                "MINSERT with a non-zero block base point and rotation", All(based));
+        }
+        catch (Exception error)
+        {
+            C(false, "review unexpected exception", error.GetType().Name + ": " + error.Message);
         }
     }
 }
