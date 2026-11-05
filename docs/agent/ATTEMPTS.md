@@ -181,3 +181,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P1-09 Attempt1 (run 41952461590, 262a028): hypothesis nearest-first global pairing maps every copy to its source → wrong when all copies are 0.5 mm off (a source is stranded after its nearest copy is taken by a neighbour) → nearest-first plus augmenting paths (bipartite match within 1 mm), green 41953640792. Reds 41945946857/41946946583/41948185837 (stubs) and review red 41951385049 were intended.
 - P3-05 Attempt1 (run 41946548655, 78784b7): hypothesis edited elements can be serialized before validity checks → wrong, System.Text.Json throws on NaN before the invalid_ir refusal → checks moved before serialization, green 41947771055; review red 41955010456 → green 41956142359.
 - P9-09: no failed attempts (red 41945858175 → green 41946817036; review red 41957340069 → green 41959286079). One slip (schema placeholder @5@ for @4@, run 41958353461), not an attempt.
+
+### Relay159 (2026-11-05, cloud)
+- P4-06: no failed attempts (red 41965712152 → green 41966585544; review red 41973671243 → green 41974540346). One compile slip in test code (CS0165, run 41964999967), not an attempt.
+- P6-09: no failed attempts (red 41965721659 → green 41966656787; review red 41968502384 → green 41969132742). One syntax slip (run 41965047303), not an attempt; baseline digest probe 41968339713 on throwaway branch relay159-P6-09-baseline.
+- P7-07: no failed attempts (red 41965200434 → green 41965816230; review red 41971196839 → green 41972006351). One invalid red (test helper generic constraint, run 41970416543), not an attempt.

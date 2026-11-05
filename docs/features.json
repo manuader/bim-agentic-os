@@ -1076,6 +1076,45 @@
       ],
       "blocker": "Executor never run in Revit: which categories DirectShape accepts (topography doubtful), bounding-box padding, SolidOptions material on faces, SetName readback (owner session).",
       "scope": "P9-09: direct_shape.create (MCP revit_direct_shape_create, write-copies, additive) for site/landscape solids: extruded simple polygon (3-256 vertices, closing repeat allowed, top within 9144000 mm) on a level with offset/height, or an axis-aligned box; categories generic_model/site/planting/entourage/topography; optional material; name with forbidden-character check; readback of category, single solid, bbox within 1 mm, volume (1 mm x perimeter x height tolerance), name and material; not associated with the level; command.batch step. Rules unit-tested; executor compiled. CI 41959286079."
+    },
+    {
+      "id": "doc-defaults-dimensions-window-tags",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/DocDefaults.cs",
+        "core/Bim.Core/DocDefaultsDimensions.cs",
+        "tests/doc-regeneration/DefaultsWindows.cs",
+        "tests/doc-regeneration/DefaultsP404Reference.cs"
+      ],
+      "blocker": "Never run in Revit; chains only on levels with a tagged window; two wall-end references per chain (no intermediate opening/partition references); face choice assumes BIM-IR walls realized unflipped (flipped walls or mirrored types invert it); facades facing another wing across a courtyard skipped; curved walls not handled; chain keys follow the run's first wall id.",
+      "scope": "P4-06: DocDefaults.From adds tag-window-<id> per window on its level plan and, on levels with a tagged window, one dim-wall-<id> linear chain per exterior collinear wall run (per-building ray test, perpendicular end walls as references, offset 1 m outside, wall face chosen from draw direction, mismatching ends skipped); window-less projects byte-identical to P4-04 (frozen-copy pin); Full emits only catalogue-valid dimension.create_linear/tag.create; deterministic. CI 41974540346."
+    },
+    {
+      "id": "cad-dxf-minsert-ocs",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/cad/Bim.Cad/DxfReader.cs",
+        "adapters/cad/Bim.Cad/DxfExploder.cs",
+        "adapters/cad/Bim.Cad/DxfModel.cs",
+        "adapters/cad/Bim.Cad/CadToBimIr.cs",
+        "adapters/cad/Bim.Cad/BriefExtract.cs",
+        "tests/cad/MinsertOcsTests.cs",
+        "tests/cad/fixtures/minsert-ocs.dxf"
+      ],
+      "blocker": "Hand-written fixtures only; tilted circles/arcs/text/inserts and bulged or uneven polylines are unsupported (ocs-non-planar), not projected; CadDraftSource carries no row/column (cells distinguished by order/position); brief explode-limit fallback reads MINSERT attributes once as [0,0]; regression digests rounded to 1e-6; warning codes ocs-unsupported/minsert-ignored removed.",
+      "scope": "P6-09: MINSERT (70/71/44/45) cells expand row-major, spacing in the rotated unscaled frame, every cell charged to MaxWork/MaxEntities, insert path key[row,column] (DxfInsertPath.Key/TryParseCell); door/window cells become one CadToBimIr opening each; AutoCAD arbitrary-axis OCS with N horizontal part <= 1e-6 treated as +/-Z, tilted straight LWPOLYLINE at one world height moved to WCS, other tilted entities typed unsupported (ocs-non-planar, ocs-invalid); existing fixtures pinned through reader, explode, draft and brief digests. CI 41969132742."
+    },
+    {
+      "id": "generative-prototype-pipeline",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/PrototypePipeline.cs",
+        "core/Bim.Generative/PrototypePipelineModel.cs",
+        "core/Bim.Generative/PrototypePipelineSerializer.cs",
+        "tests/generative/PrototypePipelineTests.cs"
+      ],
+      "blocker": "Facade is pass/fail only (no quality ranking, P7-10); 4/16 real prototypes rejected wall_clash on staggered plans (P7-06 limitation, P7-08); option refusals use a one-room probe plan; accepted BIM-IR projects share id/revision and are not committed; not exposed through CLI/MCP (P7-09).",
+      "scope": "P7-07: PrototypePipeline.Run(request, options)/Rank(brief, plans, options, weights) run prototype \u2192 circulation \u2192 facade \u2192 BIM-IR windows gates with typed rejections (gate, code, subject, detail), accepted ranked 1..k in CirculationRanker order, rejected rank 0; all refusals merged; canonical v1 JSON with options; PrototypeGenerator digest pinned; real prototypes 6/16 accepted (6 duplicate_geometry, 4 wall_clash). CI 41972006351."
     }
   ]
 }
