@@ -201,3 +201,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P4-07: no failed attempts (red 42023285220 → green 42024173720; review red 42029523294 → green 42030387084). One compile slip in test code (`.Count` on an array, run 42028762984), not an attempt.
 - P6-08: no failed attempts (red 42023139520 compile red → green 42024176366; review red 42033774848 → green 42034941467). One invalid fixture (all-Cyrillic labels are not extracted by P6-05, run 42032518982), replaced by Latin+non-ASCII labels; not an attempt (gap → P6-11).
 - P7-08: no failed attempts (diagnostic digest run 42022995164, reverted; red 42024783818 compile red → green 42025388127/42026612209; review red 42037618668 → green 42038221886).
+
+### Relay164 (2026-11-05, cloud)
+- P2-09: no failed attempts (red 42050267331 → green 42053306609; review red 42057004079 → green 42059574519).
+- P5-09: red 42050527620 → green 42051621858; review red 42061959924. Attempt1 (run 42062766941, a55d8a2): hypothesis the static "pin writes only through an exclusive create" check tripped on a new comment naming `SkillLockFile.Write` → confirmed, comment reworded, check unchanged; green 42063596832.
+- P10-08: red 42050344726 → green 42051827079; review red 42067515495. Attempt1 (run 42068613144, db392f39): relative-path test saw a non-zero `$LASTEXITCODE` although outputs landed correctly; hypothesis the script ended without `exit 0` so in-process callers read a stale exit code → confirmed; green 42070078862.

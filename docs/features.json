@@ -1202,7 +1202,7 @@
         "tests/skills/SkillLockTests.cs",
         ".gitattributes"
       ],
-      "blocker": "Not wired to CLI/MCP/compilers (P5-09); jurisdiction.json is hashed but JurisdictionRegistry reads it unchecked (P5-10); no directory fsync after the atomic replace; concurrent updaters last-writer-wins; no JSON Schema.",
+      "blocker": "On CLI/MCP since P5-09 (skill-lock-cli-mcp), not wired to compilers; jurisdiction.json is hashed but JurisdictionRegistry reads it unchecked (P5-10); no directory fsync after the atomic replace; concurrent updaters last-writer-wins; no JSON Schema.",
       "scope": "P5-08: skills.lock.json (new standalone format, lock_version 1, canonical LF bytes, packs in ordinal id order) pins id/version/content_sha256 with scheme bim-skill-pack-sha256-v1 over raw pack bytes (ordinal relative paths, length-framed, links/control names refused, file/dir/size/depth limits); root .gitattributes `skills/** -text` keeps hashes equal across autocrlf checkouts; SkillLocking.Pin/Load/Verify/Update: manifests parsed from the hashed snapshot bytes, skill_lock_drift / skill_lock_missing / resolution_stale refusals, only an explicit Update rewrites (repairs a corrupt lock when ids are given). CI 41991684029."
     },
     {
@@ -1214,6 +1214,43 @@
       ],
       "blocker": "P10-03 hash chain is unkeyed: removing tail entries or rewriting the whole file with recomputed hashes is only detectable with an externally stored head anchor; a rehashed edit is reported at the next line; missing-entry count heuristic around malformed lines; library only (no CLI/MCP).",
       "scope": "P10-09: AuditVerifier.Verify/VerifyBytes over the unchanged P10-03 audit log (optional known actors and head anchor) reports every finding by line with typed codes audit_truncated, audit_reordered, audit_entries_missing, audit_sequence_broken, audit_entry_edited, audit_entry_not_canonical, audit_chain_broken, audit_anchor_mismatch, audit_actor_unknown, audit_entry_malformed, audit_file_missing/unreadable; report code ranked by documented severity; AuditSummary deterministic JSON of allow/deny by actor, command, UTC day and combination over the verified prefix (empty on anchor mismatch). CI 41993168316."
+    },
+    {
+      "id": "mirror-drift-selection",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/MirrorDriftSelect.cs",
+        "core/Bim.Core/MirrorDriftResolve.cs",
+        "tests/mirror-journal/MirrorDriftSelectChecks.cs"
+      ],
+      "blocker": "Library only (no CLI/MCP: P2-10); adopted operations not committed to Core (P2-11); Select has no committed model, BIM-IR validity rests on P2-07 Requires and dependency checks (tests apply the operations); re-create of a missing mapped element reported as an invalidation; never run against Revit.",
+      "scope": "P2-09: MirrorDriftSelect.Select(P2-07 resolution, choices adopt/restore per proposal id) → Operations (one batch, proposal order), RestorePlan filtered with original step ids/order/args/depends_on/header, MapAdds/MapRemovals, Invalidated key→UniqueId entries with the creating step, evidence_incomplete, order restore_then_adopt; P2-07 Restore.Requires now lists dependents Revit cascades (hosted openings, level elements, replaced hosts); typed drift_select_resolution_invalid/choice_invalid/proposal_unknown/choice_duplicate/action_unsupported/requires_incomplete (sorted Missing); deterministic under choice permutation and de-DE. CI 42059574519."
+    },
+    {
+      "id": "skill-lock-cli-mcp",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/SkillLockCommand.cs",
+        "interfaces/mcp/SkillLockTool.cs",
+        "core/Bim.Core/SkillLock.cs",
+        "tests/cli/Program.cs",
+        "tests/mcp/Program.cs",
+        "tests/skills/SkillLockTests.cs"
+      ],
+      "blocker": "No pin from a SkillResolution; no compare-and-swap between update read and write (last writer wins); on filesystems without hard links the no-overwrite move falls back to check+rename; directory not fsynced; symlink tests skipped where links cannot be created.",
+      "scope": "P5-09: `skills-lock pin|verify|update|unpin skills lock.json [ids]` CLI and read-only MCP `skills_lock_verify` on one engine (byte-equal text); pin never overwrites (lock_exists incl. concurrent create, path_unsafe for links/reparse points), update re-pins named ids and keeps other pins, unpin explicit; verify reports per pack ok/skill_lock_drift/skill_lock_missing with uniform envelope; typed skills_lock_usage/path_invalid/request_invalid/internal_error; FIFO refused not_regular_file; lock format unchanged. CI 42063596832."
+    },
+    {
+      "id": "release-archive",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/package-archive.ps1",
+        "scripts/package-archive-common.ps1",
+        "tests/packaging/test-package-archive.ps1",
+        "tests/packaging/test-package.ps1"
+      ],
+      "blocker": "No signing (consistent edit of entry + manifest + SHA256SUMS is accepted); byte-identical only within one OS and pwsh/.NET version; install-addin.ps1 does not take an archive yet (P10-10); archive entries at root.",
+      "scope": "P10-08: package-archive.ps1 create (verified P10-04 folder → zip with manifest.json + listed files in ordinal order, fixed timestamp/attributes, Optimal deflate, SHA256SUMS, staged then renamed, never overwrite, runtime version printed), -Verify and -Extract (private copy hashed, every entry size-bounded and re-hashed on extract, package-verify on staging, rename into place); typed refusals checksums_missing/invalid/mismatch, archive_unreadable, entry_path_unsafe (traversal, drive/colon, reserved device names, directory entries), entry_duplicate (case-insensitive, file/folder clash), manifest_missing/invalid, entry_unlisted/missing/mismatch/order, package_invalid, destination_exists; no leftovers; same bytes under TZ Pacific/Kiritimati and tr-TR; real two clean builds byte-identical on ubuntu and windows. CI 42070078862."
     }
   ]
 }
