@@ -885,17 +885,19 @@ try {
             elements.AddRange(edits.Where(e=>e.Action=="create").Select(e=>e.Element!));
             return project with { Elements=elements.ToArray() };
         }
-        var deRuns=0;
-        // Every run: the project and edits files keep their bytes and mtime, and the directory gains no file.
+        // Every run: the project and edits files keep their bytes and mtime, and neither their directory nor the CLI's
+        // working directory (inherited from this harness) gains, loses or renames an entry. Together with the static
+        // source scan below this is the "never writes" evidence; it does not prove nothing is written anywhere else.
         (int Exit,string Out,string Err) Run(string name,string projectPath,string editsPath,params string[] arguments) {
             var watched=new[]{projectPath,editsPath}.Where(File.Exists).Distinct().ToArray();
             var bytes=watched.Select(File.ReadAllBytes).ToArray(); var times=watched.Select(File.GetLastWriteTimeUtc).ToArray();
             var listing=Directory.GetFileSystemEntries(deRoot).Order(StringComparer.Ordinal).ToArray();
+            var cwdListing=Directory.GetFileSystemEntries(Environment.CurrentDirectory).Order(StringComparer.Ordinal).ToArray();
             var r=Cli(arguments.Length>0?arguments:new[]{"diff-edits","--project",projectPath,"--edits",editsPath});
             var untouched=watched.Select((p,i)=>File.ReadAllBytes(p).AsSpan().SequenceEqual(bytes[i]) && File.GetLastWriteTimeUtc(p)==times[i]).All(x=>x)
-                && Directory.GetFileSystemEntries(deRoot).Order(StringComparer.Ordinal).SequenceEqual(listing);
-            Check(untouched,"diff-edits never writes the project or edits file ("+name+")",DE(r));
-            deRuns++;
+                && Directory.GetFileSystemEntries(deRoot).Order(StringComparer.Ordinal).SequenceEqual(listing)
+                && Directory.GetFileSystemEntries(Environment.CurrentDirectory).Order(StringComparer.Ordinal).SequenceEqual(cwdListing);
+            Check(untouched,"diff-edits leaves the input files, their directory and the working directory unchanged ("+name+")",DE(r));
             return r;
         }
         void Succeeds(string name,string projectText,IReadOnlyList<ElementEdit> edits,string? editsText=null) {
@@ -951,7 +953,15 @@ try {
         var bigText=JsonSerializer.Serialize(new Project(baseProject.Id,7,big.ToArray()));
         Succeeds("300-wall project",bigText,new[]{ElementEdit.Update(Wall(G(0x1000+5),51)),ElementEdit.Delete(G(0x2000+150)),ElementEdit.Delete(G(0x1000+150)),ElementEdit.Create(PlanDoc(G(0x3000),G(0x1000+299),G(0x1000+0)))});
         // 6. Inputs decode like every CLI file input (UTF-8 BOM).
-        Succeeds("UTF-8 BOM edits",beforeText,new[]{ElementEdit.Update(widened)},"﻿"+JsonSerializer.Serialize(new[]{ElementEdit.Update(widened)}));
+        Succeeds("UTF-8 BOM edits",beforeText,new[]{ElementEdit.Update(widened)},"\uFEFF"+JsonSerializer.Serialize(new[]{ElementEdit.Update(widened)}));
+
+        var widenedEdits=JsonSerializer.Serialize(new[]{ElementEdit.Update(widened)});
+        var bomProjectPath=Path.Combine(deRoot,"bom.project.json"); File.WriteAllBytes(bomProjectPath,[..Encoding.UTF8.GetPreamble(),..Encoding.UTF8.GetBytes(beforeText)]);
+        var bomProject=Run("UTF-8 BOM project",bomProjectPath,DInput("bom-project.edits.json",widenedEdits));
+        Check(bomProject.Exit==0 && bomProject.Out==expectedDiff,"diff-edits decodes a UTF-8 BOM project like File.ReadAllText",DE(bomProject));
+        var capProjectPath=Path.Combine(deRoot,"at-cap.project.json"); File.WriteAllBytes(capProjectPath,atCap);
+        var capProject=Run("project of exactly 8 MiB",capProjectPath,DInput("cap-project.edits.json",widenedEdits));
+        Check(capProject.Exit==0 && capProject.Out==expectedDiff,"diff-edits accepts a project file of exactly 8 MiB",DE(capProject));
 
         // 7. Library refusals keep the library's code.
         RefusedLike("an unknown action","edit_invalid",beforeText,new[]{new ElementEdit("move",wall.Id,wall)});
@@ -973,7 +983,11 @@ try {
         Refused("an update with null geometry","edit_invalid",projectOk,DInput("null-geometry.edits.json","[{\"Action\":\"update\",\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Element\":{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"wall\",\"GeometryMetres\":null,\"Dependencies\":[],\"Provenance\":null}}]"));
 
         // 8. Malformed JSON: typed CLI refusals, never a raw exception message.
-        foreach(var (label,text) in new[]{("not JSON","{"),("JSON null","null"),("an object","{\"Action\":\"delete\"}"),("a string","\"edits\""),("an unknown member","[{\"Action\":\"delete\",\"Id\":\"00000000-0000-0000-0000-000000000003\",\"Elemnt\":null}]"),("a bad guid","[{\"Action\":\"delete\",\"Id\":\"not-a-guid\"}]"),("trailing content","[] []"),("empty file","")})
+        foreach(var (label,text) in new[]{("not JSON","{"),("JSON null","null"),("an object","{\"Action\":\"delete\"}"),("a string","\"edits\""),("an unknown member","[{\"Action\":\"delete\",\"Id\":\"00000000-0000-0000-0000-000000000003\",\"Elemnt\":null}]"),("a bad guid","[{\"Action\":\"delete\",\"Id\":\"not-a-guid\"}]"),("trailing content","[] []"),("empty file",""),
+            // Duplicate keys in any object of the edits file (System.Text.Json alone would keep the last one).
+            ("a duplicate key","[{\"Action\":\"delete\",\"Id\":\"00000000-0000-0000-0000-000000000003\",\"Id\":\"00000000-0000-0000-0000-000000000003\"}]"),
+            ("a duplicate nested key","[{\"Action\":\"update\",\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Element\":{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"wall\",\"GeometryMetres\":[0,0,5.4,0,3,0.2],\"Dependencies\":[],\"Provenance\":{\"Source\":\"a\",\"Source\":\"a\",\"Approval\":\"specified\"}}}]"),
+            ("an unknown nested member","[{\"Action\":\"update\",\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Element\":{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"wall\",\"GeometryMetres\":[0,0,5.4,0,3,0.2],\"Dependencies\":[],\"Provenance\":{\"Source\":\"a\",\"Approval\":\"specified\",\"Extra\":1}}}]")})
             Refused("edits that are "+label,"diff_edits_edits_invalid",projectOk,DInput("bad-"+label.Replace(' ','-')+".edits.json",text));
         foreach(var (label,text) in new[]{("not JSON","{"),("JSON null","null"),("an array","[]"),("null elements","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":null}"),("a null element","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":[null]}"),("null geometry","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":[{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"plan\",\"GeometryMetres\":null,\"Dependencies\":[],\"Provenance\":null}]}"),("null dependencies","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":[{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"plan\",\"GeometryMetres\":[],\"Dependencies\":null,\"Provenance\":null}]}"),("empty file","")})
             Refused("a project that is "+label,"diff_edits_project_invalid",DInput("bad-"+label.Replace(' ','-')+".project.json",text),editsOk);
@@ -996,7 +1010,9 @@ try {
         // 10. Usage: exactly --project <p> --edits <e>, each once, nothing else; checked before any file is read.
         foreach(var bad in new[]{new[]{"diff-edits"},new[]{"diff-edits","--project",projectOk},new[]{"diff-edits","--edits",editsOk},new[]{"diff-edits","--project",projectOk,"--edits"},
             new[]{"diff-edits","--project",projectOk,"--project",projectOk},new[]{"diff-edits","--project",projectOk,"--edits",editsOk,"extra"},new[]{"diff-edits","--project",projectOk,"--edits",editsOk,"--max","3"},
-            new[]{"diff-edits",projectOk,editsOk},new[]{"diff-edits","--project","","--edits",editsOk},new[]{"diff-edits","--project",deMissing,"--edits",deMissing,"--bogus"}})
+            new[]{"diff-edits",projectOk,editsOk},new[]{"diff-edits","--project","","--edits",editsOk},new[]{"diff-edits","--project",deMissing,"--edits",deMissing,"--bogus"},
+            // A flag-shaped value is a missing value, never a file name.
+            new[]{"diff-edits","--project","--edits","--edits",editsOk},new[]{"diff-edits","--project","--x","--edits",editsOk},new[]{"diff-edits","--project",projectOk,"--edits","--project"}})
             Refused("arguments: "+string.Join(" ",bad.Skip(1).Select(a=>a==projectOk?"<project>":a==editsOk?"<edits>":a==deMissing?"<missing>":a)),"diff_edits_usage",projectOk,editsOk,bad);
 
         // 11. Static: the verb reads only through BoundedInput and has no write path.
@@ -1004,11 +1020,13 @@ try {
         Check(File.Exists(deSourcePath),"interfaces/cli/DiffEditsCommand.cs exists");
         if(File.Exists(deSourcePath)) {
             var deSource=File.ReadAllText(deSourcePath);
+            // A defect is reported on stderr (type and message); stdout keeps the one-line envelope.
+            Check(deSource.Contains("catch (Exception error)",StringComparison.Ordinal) && deSource.Contains("Console.Error.WriteLine(",StringComparison.Ordinal) && deSource.Contains("InternalError",StringComparison.Ordinal),"diff-edits writes the type and message of an internal error to stderr");
             Check(deSource.Contains("BoundedInput.ReadText(",StringComparison.Ordinal) && deSource.Contains("IncrementalDiff",StringComparison.Ordinal) && !deSource.Contains("Compiler.Diff",StringComparison.Ordinal)
                 && new[]{"File.","FileStream","FileMode.","Directory.","ProjectStore","Commit("}.All(api=>!deSource.Contains(api,StringComparison.Ordinal)),
                 "diff-edits reads only through BoundedInput, diffs through IncrementalDiff (not Compiler.Diff) and has no write path");
         }
-        Check(deRuns>=60,"diff-edits ran every case",deRuns.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Check(Cli("no-such-verb").Out.Contains("diff-edits --project project.json --edits edits.json",StringComparison.Ordinal),"default usage lists diff-edits");
     }
 
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
