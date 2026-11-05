@@ -467,6 +467,7 @@ BriefExtractTests.Run(Check, fixtures);
 
 // P6-06 block attributes and MTEXT room tags (tests/cad/AttributeTests.cs).
 AttributeTests.Run(Check, fixtures);
+ConsumerProbe.Run(Check, fixtures);
 
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
