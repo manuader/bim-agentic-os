@@ -614,7 +614,7 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
         ["door_symbol"]="Single-Flush: 0915 x 2134mm",
     };
     JsonObject Choices(string id,string action)=>new JsonObject{["choices"]=new JsonArray(new JsonObject{["proposal_id"]=id,["action"]=action})};
-    JsonObject SelectCall(JsonObject mirror,JsonNode choices,string? store=null)=>ToolCall("mirror_drift_select",new JsonObject{["store_path"]=store ?? selectStore,["snapshot"]=Node(driftedText),["mirror"]=mirror,["choices"]=choices});
+    JsonObject SelectCall(JsonObject mirror,JsonNode choices,string? store=null,string? snapshot=null)=>ToolCall("mirror_drift_select",new JsonObject{["store_path"]=store ?? selectStore,["snapshot"]=Node(snapshot ?? driftedText),["mirror"]=mirror,["choices"]=choices});
     string Code(JsonObject response)=>JsonDocument.Parse(Text(response)).RootElement.GetProperty("code").GetString() ?? "";
 
     var selectTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="mirror_drift_select");
@@ -667,6 +667,40 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     Check(ErrorCode(ToolCall("mirror_drift_select",new JsonObject{["store_path"]=selectStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror()}))==-32602,"mirror_drift_select without choices returns -32602");
     Check(ErrorCode(ToolCall("mirror_drift_select",new JsonObject{["store_path"]=selectStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror(),["choices"]=new JsonArray()}))==-32602,"mirror_drift_select with a non-object choices returns -32602");
     Check(File.ReadAllBytes(Path.Combine(selectStore,"project.json")).SequenceEqual(storeBytes),"mirror_drift_select refusals leave the store untouched");
+    // ---- P2-10 review fixes: refusals byte-equal to the CLI stdout ----
+    string CliSelect(string snapshotFile,string mirrorJson,string choicesJson,string name)=>
+        Cli("mirror-drift-select",selectStore,snapshotFile,Input("select-"+name+"-mirror.json",mirrorJson),Input("select-"+name+"-choices.json",choicesJson),Path.Combine(cliDir,"select-"+name+"-out.json"));
+    // SF1: no wall type bound, so restoring the moved wall is unsupported.
+    var noTypes=Mirror(); noTypes.Remove("wall_types");
+    var noTypesJson=noTypes.ToJsonString();
+    var unsupported=SelectCall(noTypes,Choices(w2,"restore"));
+    var unsupportedCli=CliSelect(snapshotPath,noTypesJson,Choices(w2,"restore").ToJsonString(),"unsupported");
+    Check(IsError(unsupported) && Code(unsupported)=="drift_select_action_unsupported" && JsonDocument.Parse(Text(unsupported)).RootElement.GetProperty("proposal_id").GetString()==w2
+        && Text(unsupported)==unsupportedCli && !File.Exists(Path.Combine(cliDir,"select-unsupported-out.json")),"mirror_drift_select unsupported restore is drift_select_action_unsupported with proposal_id, byte-equal to the CLI | "+Text(unsupported)+" | "+unsupportedCli);
+    // SF2/SF3: strict choices shape, drift_select_request_invalid, byte-equal to the CLI.
+    foreach(var (label,json) in new[]{("null choices","{\"choices\":null}"),("no choices member","{}"),("null choice","{\"choices\":[null]}"),
+        ("null proposal_id","{\"choices\":[{\"proposal_id\":null,\"action\":\"adopt\"}]}"),("missing action","{\"choices\":[{\"proposal_id\":\""+w2+"\"}]}"),
+        ("lone surrogate proposal_id","{\"choices\":[{\"proposal_id\":\"\\ud800\",\"action\":\"adopt\"}]}"),("choices not an array","{\"choices\":\"all\"}")}) {
+        var requestLine="{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"mirror_drift_select\",\"arguments\":{\"store_path\":"+JsonSerializer.Serialize(selectStore)+",\"snapshot\":"+driftedText+",\"mirror\":"+Mirror().ToJsonString()+",\"choices\":"+json+"}}}";
+        var strictCall=Call(requestLine);
+        var strictCli=CliSelect(snapshotPath,Mirror().ToJsonString(),json,"strict-"+label.Replace(' ','-'));
+        Check(IsError(strictCall) && Code(strictCall)=="drift_select_request_invalid" && Text(strictCall)==strictCli,"mirror_drift_select "+label+" is drift_select_request_invalid, byte-equal to the CLI | "+Text(strictCall)+" | "+strictCli);
+    }
+    var manyCli=CliSelect(snapshotPath,Mirror().ToJsonString(),new JsonObject{["choices"]=many.DeepClone()}.ToJsonString(),"too-many");
+    Check(Text(tooMany)==manyCli,"mirror_drift_select choices_too_large byte-equal to the CLI | "+Text(tooMany)+" | "+manyCli);
+    // SF3: requires_incomplete with missing, full envelope byte-equal to the CLI (W1, the door's host, and D1 both gone).
+    const string w1="60f91daf-3dd7-4283-a86d-24137b73f3da-00001001", d1="60f91daf-3dd7-4283-a86d-24137b73f3da-00002001";
+    var coupled=Node(snapshotText).AsObject();
+    var gone=new[]{"b3c223e3-23ef-a05c-2345-ab547eb5c0a5","5f83f664-4e98-113a-3e1b-38f4a4fe7143"};
+    foreach(var element in coupled["elements"]!.AsArray().ToArray()) if(gone.Contains((string?)element!["Id"] ?? "")) coupled["elements"]!.AsArray().Remove(element);
+    foreach(var source in coupled["sources"]!.AsArray().ToArray()) if(gone.Contains((string?)source!["id"] ?? "")) coupled["sources"]!.AsArray().Remove(source);
+    var coupledText=coupled.ToJsonString();
+    var incomplete=SelectCall(Mirror(),Choices(d1,"restore"),snapshot:coupledText);
+    var incompleteCli=CliSelect(Input("select-coupled-snapshot.json",coupledText),Mirror().ToJsonString(),Choices(d1,"restore").ToJsonString(),"incomplete");
+    using(var incompleteDoc=JsonDocument.Parse(Text(incomplete)))
+        Check(IsError(incomplete) && Code(incomplete)=="drift_select_requires_incomplete" && incompleteDoc.RootElement.GetProperty("proposal_id").GetString()==d1
+            && incompleteDoc.RootElement.GetProperty("missing").EnumerateArray().Select(m=>m.GetString()).SequenceEqual(new[]{w1}) && Text(incomplete)==incompleteCli,
+            "mirror_drift_select requires_incomplete envelope (proposal_id, missing) byte-equal to the CLI | "+Text(incomplete)+" | "+incompleteCli);
 }
 
 // P5-09 skills_lock_verify: the read-only verify of the CLI skills-lock verb (one engine, SkillLockTool). The tool text

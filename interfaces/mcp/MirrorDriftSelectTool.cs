@@ -44,7 +44,11 @@ internal static class MirrorDriftSelectTool
         {
             var choices = ParseChoices(choicesJson);
             var analysis = MirrorDriftTool.Analyze(storeDirectory, snapshotJson, mirrorJson);
-            var selection = MirrorDriftSelect.Select(analysis.Resolution, choices);
+            // Only the typed MirrorDriftSelectException is a refusal of Select; anything else it throws is a defect.
+            MirrorDriftSelection selection;
+            try { selection = MirrorDriftSelect.Select(analysis.Resolution, choices); }
+            catch (MirrorDriftSelectException) { throw; }
+            catch (Exception error) { return new Outcome(false, MirrorDriftTool.Failure(MirrorDriftTool.InternalError, error.GetType().Name), 0, 0); }
             return new Outcome(true, selection.ToJson(), selection.Operations.Count, selection.RestorePlan.Steps.Count);
         }
         catch (Refusal refusal) { return new Outcome(false, MirrorDriftTool.Failure(refusal.Code, refusal.Detail), 0, 0); }

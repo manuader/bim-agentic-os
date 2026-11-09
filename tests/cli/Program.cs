@@ -795,6 +795,38 @@ try {
             ExpectSelect("mirror-drift-select refuses a mirror for another document","drift_document_mismatch","mirror-drift-select",driftStore,snapshotPath,Input("select-mirror-other.json",Mirror(document:otherDoc).ToJsonString()),mixedChoices,DriftOut());
             ExpectSelect("mirror-drift-select on an uninitialized store is input_not_found","input_not_found","mirror-drift-select",emptyStore,snapshotPath,mirrorPath,mixedChoices,DriftOut());
 
+            // ---- P2-10 review fixes ----
+            // SF1: a choice of a side the resolution does not support is drift_select_action_unsupported (no door family
+            // type bound, so restoring the deleted door is unsupported).
+            {
+                var noDoor=Mirror(); noDoor["door_symbol"]=null;
+                var noDoorBindings=new RevitBindings(new RevitDocumentRef(@"C:\Repo\.bim\native-runs\p2-08\copy.rvt",driftDoc),new Dictionary<Guid,string>(),new[]{new RevitWallTypeBinding(0.2,"Generic - 200mm")},null,"Fixed: 1000 x 1200mm");
+                string? coreCode=null, coreMessage=null;
+                try { MirrorDriftSelect.Select(MirrorDriftResolve.Plan(expectedReport,parsedSnapshot,committed,noDoorBindings),new[]{new MirrorDriftChoice(selD1,"restore")}); }
+                catch(MirrorDriftSelectException e) { coreCode=e.Code; coreMessage=e.Message; }
+                var expectedUnsupported=coreCode=="drift_select_action_unsupported"
+                    ? JsonSerializer.Serialize(new {status="failed",code=coreCode,detail=(coreMessage ?? "")["drift_select_action_unsupported ".Length..],proposal_id=selD1}) : "<Core gave "+(coreCode ?? "no refusal")+">";
+                var unsupportedOut=DriftOut();
+                var r=Cli("mirror-drift-select",driftStore,snapshotPath,Input("select-mirror-nodoor.json",noDoor.ToJsonString()),ChoicesFile(ChoicesJson((selD1,"restore"))),unsupportedOut);
+                Check(r.Exit==1 && r.Out==expectedUnsupported && !File.Exists(unsupportedOut),
+                    "mirror-drift-select refuses restoring a proposal whose restore is unsupported: drift_select_action_unsupported with proposal_id, no file","expected "+expectedUnsupported+" got "+DR(r));
+            }
+            // SF2: the choices request is strict.
+            foreach(var (label,json) in new[]{("null choices","{\"choices\":null}"),("no choices member","{}"),("null choice","{\"choices\":[null]}"),
+                ("null proposal_id","{\"choices\":[{\"proposal_id\":null,\"action\":\"adopt\"}]}"),("missing action","{\"choices\":[{\"proposal_id\":\""+selW2+"\"}]}"),
+                ("trailing data","{\"choices\":[]} []"),("lone surrogate proposal_id","{\"choices\":[{\"proposal_id\":\"\\ud800\",\"action\":\"adopt\"}]}")})
+                ExpectSelect("mirror-drift-select refuses "+label,"drift_select_request_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile(json),DriftOut());
+            // NIT4: an empty or blank proposal id is Core's drift_select_choice_invalid, pinned envelope.
+            foreach(var blank in new[]{""," "}) {
+                var blankOut=DriftOut();
+                var r=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile(ChoicesJson((blank,"adopt"))),blankOut);
+                var expectedBlank=JsonSerializer.Serialize(new {status="failed",code="drift_select_choice_invalid",detail="a choice needs a proposal id and the action adopt or restore",proposal_id=blank});
+                Check(r.Exit==1 && r.Out==expectedBlank && !File.Exists(blankOut),"mirror-drift-select blank proposal id \""+blank+"\" is drift_select_choice_invalid (pinned envelope)","expected "+expectedBlank+" got "+DR(r));
+            }
+            // NIT8: an output in a missing directory is refused before any analysis.
+            ExpectSelect("mirror-drift-select refuses an output in a missing directory","output_directory_not_found","mirror-drift-select",driftStore,snapshotPath,mirrorPath,mixedChoices,Path.Combine(work,"no-select-dir","s.json"));
+            ExpectSelect("mirror-drift-select checks the output directory before reading the store","output_directory_not_found","mirror-drift-select",Path.Combine(work,"no-select-store"),snapshotPath,mirrorPath,mixedChoices,Path.Combine(work,"no-select-dir","s.json"));
+
             var selUsage=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,mixedChoices);
             Check(selUsage.Exit==1 && DEnvelope(selUsage.Out) is {} su && su.GetProperty("code").GetString()!.StartsWith("usage: mirror-drift-select",StringComparison.Ordinal),"mirror-drift-select with a missing argument prints its usage",DR(selUsage));
             Check(Cli("no-such-verb").Out.Contains("mirror-drift-select store-directory snapshot.json mirror.json choices.json output.json",StringComparison.Ordinal),"default usage lists mirror-drift-select");
