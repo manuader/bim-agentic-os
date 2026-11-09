@@ -1029,6 +1029,223 @@ try {
         Check(Cli("no-such-verb").Out.Contains("diff-edits --project project.json --edits edits.json",StringComparison.Ordinal),"default usage lists diff-edits");
     }
 
+    // ---- P4-08 doc-update --before b --after a --realized r --bindings g --output plan.json [--dependents d]: the P4-07 dry plan ----
+    // Oracle: the output file holds exactly UTF-8(JsonSerializer.Serialize(DocUpdate.Plan(before, after, bindings, realized,
+    // dependents))) computed in-process (no BOM, no newline); nothing is run (no transport). Every refusal prints one
+    // {"status":"failed","code"[,"detail"]} envelope, exits 1 and creates no output file; an existing output is never
+    // overwritten; the input files keep their bytes.
+    {
+        var duRoot=Path.Combine(work,"doc-update"); Directory.CreateDirectory(duRoot);
+        string DU((int Exit,string Out,string Err) r)=>"exit "+r.Exit+" "+(r.Out.Length>400?r.Out[..400]+"...":r.Out)+(r.Err.Length>0?" stderr "+r.Err:"");
+        string UInput(string name,string content) { var path=Path.Combine(duRoot,name); File.WriteAllText(path,content); return path; }
+        string Failed(string code,string? detail)=>detail is null ? FailedCode(code) : JsonSerializer.Serialize(new {status="failed",code,detail});
+        var outputs=0;
+        string NewOutput()=>Path.Combine(duRoot,"plan-"+(outputs++).ToString(System.Globalization.CultureInfo.InvariantCulture)+".json");
+        Guid UId(string name)=>new(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes("cli-doc-update:"+name)).Take(16).ToArray());
+        string FakeUid(string source) {
+            var hex=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(source))).ToLowerInvariant();
+            return hex[..8]+"-"+hex[8..12]+"-"+hex[12..16]+"-"+hex[16..20]+"-"+hex[20..32]+"-"+hex[32..40];
+        }
+        var duProject=UId("project"); var duProvenance=new Provenance("cli-doc-update-tests","unit");
+        Guid RoomOf(int n)=>UId("room"+n.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Guid DoorOf(int n)=>UId("door"+n.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Project Rooms(params double[] elevations) {
+            var elements=new List<Element>();
+            for(var index=0;index<elevations.Length;index++) {
+                foreach(var element in RoomCompiler.Compile(duProject,0,new RoomIntent(RoomOf(index),4,3,2.8,0.2,index*10,0,"m",duProvenance)).Elements)
+                    elements.Add(element.Kind=="level" ? element with {GeometryMetres=new[]{elevations[index]}} : element);
+                var x=index*10+0.1;
+                elements.Add(new(DoorOf(index),"door",new[]{x+1,0.1,x+1.9,0.1,0,2.1},new[]{RoomCompiler.Id(RoomOf(index),"south"),RoomCompiler.Id(RoomOf(index),"level")},duProvenance));
+            }
+            return new(duProject,0,elements.ToArray());
+        }
+        IEnumerable<string> DocKeys(DocumentationSet set)=>set.Views.Select(i=>i.Key).Concat(set.Tags.Select(i=>i.Key)).Concat(set.Dimensions.Select(i=>i.Key))
+            .Concat(set.Schedules.Select(i=>i.Key)).Concat(set.Sheets.Select(i=>i.Key)).Concat(set.Placements.Select(i=>i.Key));
+        Dictionary<string,string> RealizedOf(Project project) {
+            var map=new Dictionary<string,string>(StringComparer.Ordinal);
+            foreach(var key in DocKeys(DocDefaults.From(project))) map[DocRegeneration.ItemSource(key)]=FakeUid("stale:"+key);
+            foreach(var element in project.Elements) map[DocRegeneration.ElementSource(element.Id)]=FakeUid("element:"+element.Id.ToString("D"));
+            return map;
+        }
+        var revitDocument=new RevitDocumentRef(@"C:\Repo\.bim\native-runs\p4-08\copy.rvt","60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0e");
+        RevitBindings BindingsOf(Project project)=>new(revitDocument,project.Elements.Where(e=>e.Kind=="level").ToDictionary(e=>e.Id,e=>"Level "+e.Id.ToString("N")[..8]),Array.Empty<RevitWallTypeBinding>(),null,null);
+        // The bindings file format, written by hand (not by a serializer of RevitBindings).
+        string BindingsJson(RevitBindings bindings,string extra="")=>"{\"document\":{\"path\":"+JsonSerializer.Serialize(bindings.Document.Path)+",\"unique_id\":"+JsonSerializer.Serialize(bindings.Document.UniqueId)+"},\"levels\":{"
+            +string.Join(",",bindings.Levels.Select(pair=>JsonSerializer.Serialize(pair.Key.ToString("D"))+":"+JsonSerializer.Serialize(pair.Value)))+"}"+extra+"}";
+        string MapJson(IEnumerable<KeyValuePair<string,string>> map)=>"{"+string.Join(",",map.Select(pair=>JsonSerializer.Serialize(pair.Key)+":"+JsonSerializer.Serialize(pair.Value)))+"}";
+        string Library(Project b,Project a,RevitBindings g,IReadOnlyDictionary<string,string> r,IReadOnlyDictionary<string,IReadOnlyList<string>>? d=null)=>JsonSerializer.Serialize(DocUpdate.Plan(b,a,g,r,d));
+        string LibraryCode(Project b,Project a,RevitBindings g,IReadOnlyDictionary<string,string> r,IReadOnlyDictionary<string,IReadOnlyList<string>>? d=null) {
+            try { DocUpdate.Plan(b,a,g,r,d); return "succeeded"; }
+            catch(RevitCommandException e) { return e.Code+"|"+e.Field; }
+            catch(Exception e) when (e is ArgumentException or InvalidOperationException) { return e.Message; }
+        }
+        // Runs the verb; the inputs keep their bytes, and on failure the output path does not exist afterwards.
+        (int Exit,string Out,string Err) RunDU(string name,string[] inputs,string output,params string[] arguments) {
+            var watched=inputs.Where(File.Exists).Distinct().ToArray();
+            var bytes=watched.Select(File.ReadAllBytes).ToArray();
+            var outputBefore=File.Exists(output) ? File.ReadAllBytes(output) : null;
+            var r=Cli(arguments);
+            Check(watched.Select((p,i)=>File.ReadAllBytes(p).AsSpan().SequenceEqual(bytes[i])).All(x=>x),"doc-update leaves its input files unchanged ("+name+")",DU(r));
+            if(r.Exit!=0) Check(outputBefore is null ? !File.Exists(output) && !Directory.Exists(output) || Directory.Exists(output) : File.ReadAllBytes(output).AsSpan().SequenceEqual(outputBefore),
+                "doc-update writes no output on failure and never touches an existing one ("+name+")",DU(r));
+            return r;
+        }
+        string[] Args(string b,string a,string r,string g,string o,string? d=null)=>d is null
+            ? new[]{"doc-update","--before",b,"--after",a,"--realized",r,"--bindings",g,"--output",o}
+            : new[]{"doc-update","--before",b,"--after",a,"--realized",r,"--bindings",g,"--output",o,"--dependents",d};
+        void Succeeds(string name,Project b,Project a,RevitBindings g,IReadOnlyDictionary<string,string> r,string? realizedText=null,IReadOnlyDictionary<string,IReadOnlyList<string>>? d=null,string? dependentsText=null) {
+            var library=Library(b,a,g,r,d);
+            var bp=UInput(name+".before.json",JsonSerializer.Serialize(b)); var ap=UInput(name+".after.json",JsonSerializer.Serialize(a));
+            var rp=UInput(name+".realized.json",realizedText ?? MapJson(r)); var gp=UInput(name+".bindings.json",BindingsJson(g));
+            var dp=d is null ? null : UInput(name+".dependents.json",dependentsText ?? JsonSerializer.Serialize(d));
+            var output=NewOutput();
+            var run=RunDU(name,new[]{bp,ap,rp,gp,dp ?? bp},output,Args(bp,ap,rp,gp,output,dp));
+            var written=File.Exists(output) ? File.ReadAllBytes(output) : Array.Empty<byte>();
+            var expected=new UTF8Encoding(false).GetBytes(library);
+            Check(run.Exit==0 && run.Err.Length==0 && written.AsSpan().SequenceEqual(expected),"doc-update writes the plan byte-identical to JsonSerializer.Serialize(DocUpdate.Plan(...)) ("+name+")",DU(run));
+            using var planDocument=JsonDocument.Parse(library);
+            var summary=JsonSerializer.Serialize(new {status="succeeded",output,bytes=(long)expected.Length,sha256=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(expected)),
+                regenerated=planDocument.RootElement.GetProperty("Regeneration").GetProperty("Regenerated").GetArrayLength(),
+                steps=planDocument.RootElement.GetProperty("Replacement").GetProperty("Commands").GetProperty("Steps").GetArrayLength(),
+                forced=planDocument.RootElement.GetProperty("Forced").GetArrayLength(),retired=planDocument.RootElement.GetProperty("Retired").GetArrayLength(),applied=false});
+            Check(run.Out==summary,"doc-update prints the success summary (output, bytes, sha256, counts, applied false) ("+name+")",DU(run));
+            // Any flag order, a second output: the same bytes (deterministic).
+            var second=NewOutput();
+            var swapped=new List<string>{"doc-update","--output",second,"--bindings",gp,"--realized",rp,"--after",ap,"--before",bp};
+            if(dp is not null) swapped.InsertRange(1,new[]{"--dependents",dp});
+            var again=RunDU(name+" swapped",new[]{bp,ap,rp,gp},second,swapped.ToArray());
+            Check(again.Exit==0 && File.Exists(second) && File.ReadAllBytes(second).AsSpan().SequenceEqual(expected),"doc-update accepts the flags in any order and writes the same bytes ("+name+")",DU(again));
+        }
+
+        var duBefore=Rooms(0,3); var duRealized=RealizedOf(duBefore);
+        var duMoved=duBefore with {Elements=duBefore.Elements.Select(e=>e.Id==DoorOf(1) ? e with {GeometryMetres=new[]{e.GeometryMetres[0]+0.2,e.GeometryMetres[1],e.GeometryMetres[2]+0.2,e.GeometryMetres[3],e.GeometryMetres[4],e.GeometryMetres[5]}} : e).ToArray()};
+        var movedPlan=DocUpdate.Plan(duBefore,duMoved,BindingsOf(duMoved),duRealized);
+        Check(movedPlan.Replacement.Commands.Steps.Count>0 && movedPlan.Replacement.Replacements.Any(item=>item.DeleteOperation is not null),"doc-update fixture: a door move plans a stale delete and a re-creation");
+
+        // 1. A door move: the tag is replaced (delete + create); the realized map in reversed order gives the same bytes.
+        Succeeds("door move",duBefore,duMoved,BindingsOf(duMoved),duRealized);
+        Succeeds("door move reversed map",duBefore,duMoved,BindingsOf(duMoved),duRealized,MapJson(duRealized.Reverse()));
+        // 2. No edit: an empty plan, still written byte-identical.
+        Check(DocUpdate.Plan(duBefore,duBefore,BindingsOf(duBefore),duRealized).Replacement.Commands.Steps.Count==0,"doc-update fixture: no edit plans nothing");
+        Succeeds("no edit",duBefore,duBefore,BindingsOf(duBefore),duRealized);
+        // 3. A level inserted below (forced renumbering) with dry-run dependents, and a removed door (retired tag).
+        var duInserted=Rooms(0,3,-3);
+        var insertedRealized=new Dictionary<string,string>(duRealized,StringComparer.Ordinal);
+        foreach(var element in duInserted.Elements) insertedRealized.TryAdd(DocRegeneration.ElementSource(element.Id),FakeUid("element:"+element.Id.ToString("D")));
+        var plan0="plan-"+RoomCompiler.Id(RoomOf(0),"level").ToString("N");
+        var tagDoor0="tag-door-"+DoorOf(0).ToString("N");
+        var duDependents=new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal){[plan0]=new[]{duRealized[DocRegeneration.ItemSource(tagDoor0)],FakeUid("annotation:plan0")}};
+        Check(LibraryCode(duBefore,duInserted,BindingsOf(duInserted),insertedRealized,duDependents)=="succeeded","doc-update fixture: the level insertion plans with dependents",LibraryCode(duBefore,duInserted,BindingsOf(duInserted),insertedRealized,duDependents));
+        Succeeds("level inserted with dependents",duBefore,duInserted,BindingsOf(duInserted),insertedRealized,null,duDependents);
+        var duRemoved=duBefore with {Elements=duBefore.Elements.Where(e=>e.Id!=DoorOf(1)).ToArray()};
+        Check(DocUpdate.Plan(duBefore,duRemoved,BindingsOf(duRemoved),duRealized).Retired.Count==1,"doc-update fixture: a removed door retires its tag");
+        Succeeds("door removed",duBefore,duRemoved,BindingsOf(duRemoved),duRealized);
+
+        // Inputs for the refusals.
+        var okBefore=UInput("ok.before.json",JsonSerializer.Serialize(duBefore)); var okAfter=UInput("ok.after.json",JsonSerializer.Serialize(duMoved));
+        var okRealized=UInput("ok.realized.json",MapJson(duRealized)); var okBindings=UInput("ok.bindings.json",BindingsJson(BindingsOf(duMoved)));
+        var okInputs=new[]{okBefore,okAfter,okRealized,okBindings};
+        void Refused(string name,string code,string? detail,string[] arguments,string output) {
+            var r=RunDU(name,okInputs.Concat(arguments.Where(File.Exists)).ToArray(),output,arguments);
+            Check(r.Exit==1 && r.Out==Failed(code,detail),"doc-update refuses "+name+" as "+code+(detail is null?"":" ("+detail+")"),DU(r));
+        }
+        void RefusedInput(string name,string code,string? detail,string? b=null,string? a=null,string? r=null,string? g=null,string? d=null) {
+            var output=NewOutput();
+            Refused(name,code,detail,Args(b ?? okBefore,a ?? okAfter,r ?? okRealized,g ?? okBindings,output,d),output);
+        }
+
+        // 4. Never-overwrite and output rules, checked before any input is read (a missing input is not reported).
+        var duMissing=Path.Combine(duRoot,"absent.json");
+        var existing=UInput("existing-plan.json","keep me");
+        Refused("an existing output file","output_exists",null,Args(okBefore,okAfter,okRealized,okBindings,existing),existing);
+        Check(File.ReadAllText(existing)=="keep me","doc-update never overwrites an existing output");
+        Refused("an existing output file before a missing input","output_exists",null,Args(duMissing,okAfter,okRealized,okBindings,existing),existing);
+        var outDir=Path.Combine(duRoot,"a-directory.json"); Directory.CreateDirectory(outDir);
+        Refused("a directory as output","output_exists",null,Args(okBefore,okAfter,okRealized,okBindings,outDir),outDir);
+        var wrongExt=Path.Combine(duRoot,"plan.txt");
+        Refused("an output that is not .json","output_extension_unsupported",null,Args(okBefore,okAfter,okRealized,okBindings,wrongExt),wrongExt);
+        var noParent=Path.Combine(duRoot,"no-such-dir","plan.json");
+        Refused("an output in a missing directory","output_directory_not_found",null,Args(okBefore,okAfter,okRealized,okBindings,noParent),noParent);
+
+        // 5. Bounded inputs: BoundedInput codes with the input named.
+        RefusedInput("a missing before","input_not_found","before",b:duMissing);
+        RefusedInput("a missing after","input_not_found","after",a:duMissing);
+        RefusedInput("a missing realized map","input_not_found","realized",r:duMissing);
+        RefusedInput("a missing bindings file","input_not_found","bindings",g:duMissing);
+        RefusedInput("a missing dependents file","input_not_found","dependents",d:duMissing);
+        var inDir=Path.Combine(duRoot,"input-directory"); Directory.CreateDirectory(inDir);
+        RefusedInput("a directory as realized map","input_not_regular_file","realized",r:inDir);
+        var duOver=Path.Combine(duRoot,"over-cap.json"); File.WriteAllBytes(duOver,overCap);
+        RefusedInput("a before over 8 MiB","input_too_large","before",b:duOver);
+        RefusedInput("bindings over 8 MiB","input_too_large","bindings",g:duOver);
+        var bigMap=new StringBuilder("{");
+        for(var i=0;i<=100_000;i++) bigMap.Append(i==0?"":",").Append("\"doc:k").Append(i.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append("\":\"x\"");
+        RefusedInput("a realized map over the entry bound","doc_update_input_bound_exceeded","realized",r:UInput("big.realized.json",bigMap.Append('}').ToString()));
+
+        // 6. Malformed inputs: typed CLI refusals.
+        foreach(var (label,text) in new[]{("not JSON","{"),("JSON null","null"),("an array","[]"),("null elements","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":null}"),("a null element","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":[null]}"),("empty file","")}) {
+            RefusedInput("a before that is "+label,"doc_update_project_invalid","before",b:UInput("bad-"+label.Replace(' ','-')+".before.json",text));
+            RefusedInput("an after that is "+label,"doc_update_project_invalid","after",a:UInput("bad-"+label.Replace(' ','-')+".after.json",text));
+        }
+        foreach(var (label,text) in new[]{("not JSON","{"),("an array","[]"),("a number value","{\"doc:a\":1}"),("a null value","{\"doc:a\":null}"),("a duplicate key","{\"doc:a\":\"x\",\"doc:a\":\"x\"}"),("empty file","")})
+            RefusedInput("a realized map that is "+label,"doc_update_realized_invalid",null,r:UInput("bad-"+label.Replace(' ','-')+".realized.json",text));
+        var goodBindings=BindingsJson(BindingsOf(duMoved));
+        foreach(var (label,text) in new[]{("not JSON","{"),("an array","[]"),("without document","{\"levels\":{}}"),("without levels","{\"document\":{\"path\":\"C:\\\\a\\\\b.rvt\",\"unique_id\":\"x\"}}"),
+            ("an unknown member",goodBindings[..^1]+",\"extra\":1}"),("an unknown document member",goodBindings.Replace("\"unique_id\"","\"uid\"")),
+            ("a level key that is not a guid","{\"document\":{\"path\":\"C:\\\\a\\\\b.rvt\",\"unique_id\":\"x\"},\"levels\":{\"L1\":\"Level 1\"}}"),
+            ("a duplicate key",goodBindings[..^1]+",\"door_symbol\":\"a\",\"door_symbol\":\"a\"}"),("a non-string door symbol",goodBindings[..^1]+",\"door_symbol\":3}"),
+            ("a wall type without thickness",goodBindings[..^1]+",\"wall_types\":[{\"type\":\"W\"}]}")})
+            RefusedInput("bindings that are "+label,"doc_update_bindings_invalid",null,g:UInput("bad-"+label.Replace(' ','-')+".bindings.json",text));
+        foreach(var (label,text) in new[]{("not JSON","{"),("an array","[]"),("a string list","{\"k\":\"x\"}"),("a null entry","{\"k\":[null]}"),("a duplicate key","{\"k\":[],\"k\":[]}")})
+            RefusedInput("dependents that are "+label,"doc_update_dependents_invalid",null,d:UInput("bad-"+label.Replace(' ','-')+".dependents.json",text));
+        // Optional bindings members are accepted (byte-identical to the library with the same bindings).
+        var fullBindings=BindingsOf(duMoved) with {WallTypes=new[]{new RevitWallTypeBinding(0.2,"Generic 200")},DoorSymbol="Door 0915",WindowSymbol=null};
+        {
+            var gp=UInput("full.bindings.json",BindingsJson(fullBindings,",\"wall_types\":[{\"thickness_metres\":0.2,\"type\":\"Generic 200\"}],\"door_symbol\":\"Door 0915\",\"window_symbol\":null"));
+            var output=NewOutput();
+            var r=RunDU("all bindings members",new[]{okBefore,okAfter,okRealized,gp},output,Args(okBefore,okAfter,okRealized,gp,output));
+            Check(r.Exit==0 && File.Exists(output) && File.ReadAllText(output)==Library(duBefore,duMoved,fullBindings,duRealized),"doc-update reads wall_types, door_symbol and window_symbol",DU(r));
+        }
+
+        // 7. Library refusals keep the library's code (RevitCommandException: detail is its field).
+        void RefusedLike(string name,string expected,Project b,Project a,RevitBindings g,IReadOnlyDictionary<string,string> r,IReadOnlyDictionary<string,IReadOnlyList<string>>? d=null) {
+            var library=LibraryCode(b,a,g,r,d);
+            Check(library==expected,"doc-update fixture: the library refuses "+name+" as "+expected,library);
+            var parts=expected.Split('|');
+            RefusedInput(name,parts[0],parts.Length>1?parts[1]:null,b:UInput(name.Replace(' ','-')+".before.json",JsonSerializer.Serialize(b)),a:UInput(name.Replace(' ','-')+".after.json",JsonSerializer.Serialize(a)),
+                r:UInput(name.Replace(' ','-')+".realized.json",MapJson(r)),g:UInput(name.Replace(' ','-')+".bindings.json",BindingsJson(g)),d:(d is null ? null : UInput(name.Replace(' ','-')+".dependents.json",JsonSerializer.Serialize(d))));
+        }
+        RefusedLike("a malformed realized source","realized_invalid",duBefore,duMoved,BindingsOf(duMoved),new Dictionary<string,string>(duRealized,StringComparer.Ordinal){["view:x"]=FakeUid("x")});
+        RefusedLike("dependents of a key not regenerated","dependents_unknown_key",duBefore,duMoved,BindingsOf(duMoved),duRealized,new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal){[plan0]=new[]{FakeUid("a")}});
+        RefusedLike("a new element not realized yet","input_unresolved",duBefore,duInserted,BindingsOf(duInserted),duRealized);
+        RefusedLike("a relative document path","document_path_invalid|document.path",duBefore,duMoved,BindingsOf(duMoved) with {Document=new RevitDocumentRef("copy.rvt",revitDocument.UniqueId)},duRealized);
+        RefusedLike("an invalid after project","invalid_ir",duBefore,duMoved with {Elements=duMoved.Elements.Append(new Element(UId("dangling"),"door",new[]{0.0,0,1,0,0,2},new[]{UId("nowhere")},duProvenance)).ToArray()},BindingsOf(duMoved),duRealized);
+
+        // 8. Usage: the five flags once each, optional --dependents once, nothing else; checked before the output.
+        var usageOut=NewOutput();
+        foreach(var bad in new[]{new[]{"doc-update"},Args(okBefore,okAfter,okRealized,okBindings,usageOut)[..^2],Args(okBefore,okAfter,okRealized,okBindings,usageOut).Append("extra").ToArray(),
+            Args(okBefore,okAfter,okRealized,okBindings,usageOut).Concat(new[]{"--max","3"}).ToArray(),Args(okBefore,okAfter,okRealized,okBindings,usageOut).Concat(new[]{"--before",okBefore}).ToArray(),
+            new[]{"doc-update","--before",okBefore,"--before",okBefore,"--realized",okRealized,"--bindings",okBindings,"--output",usageOut},
+            new[]{"doc-update","--before","","--after",okAfter,"--realized",okRealized,"--bindings",okBindings,"--output",usageOut},
+            new[]{"doc-update","--before","--after","--after",okAfter,"--realized",okRealized,"--bindings",okBindings,"--output",usageOut},
+            new[]{"doc-update","--before",okBefore,"--after",okAfter,"--realized",okRealized,"--bindings",okBindings,"--output","--x"},
+            Args(okBefore,okAfter,okRealized,okBindings,usageOut,okBefore).Concat(new[]{"--dependents",okBefore}).ToArray(),
+            new[]{"doc-update",okBefore,okAfter,okRealized,okBindings,usageOut,"x","y","z","w","v"}})
+            Refused("arguments of length "+bad.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)+" ("+string.Join(" ",bad.Skip(1).Where(a=>a.StartsWith("--",StringComparison.Ordinal)))+")","doc_update_usage",null,bad,usageOut);
+
+        // 9. Static: a dry plan; reads through BoundedInput, writes only through the exclusive create, never runs.
+        var duSourcePath=Path.Combine(root,"interfaces","cli","DocUpdateCommand.cs");
+        Check(File.Exists(duSourcePath),"interfaces/cli/DocUpdateCommand.cs exists");
+        if(File.Exists(duSourcePath)) {
+            var duSource=File.ReadAllText(duSourcePath);
+            Check(duSource.Contains("BoundedInput.ReadText(",StringComparison.Ordinal) && duSource.Contains("DocUpdate.Plan(",StringComparison.Ordinal) && duSource.Contains("GltfExporter.WriteNew(",StringComparison.Ordinal)
+                && new[]{"DocUpdate.Run","DocUpdate.Resume","DocUpdate.Update","Transport","NamedPipe","File.","FileStream","FileMode.","Directory.","ProjectStore"}.All(api=>!duSource.Contains(api,StringComparison.Ordinal)),
+                "doc-update reads only through BoundedInput, plans with DocUpdate.Plan, writes only through GltfExporter.WriteNew and never runs a transport");
+            Check(duSource.Contains("Console.Error.WriteLine(",StringComparison.Ordinal) && duSource.Contains("InternalError",StringComparison.Ordinal),"doc-update writes the type and message of an internal error to stderr");
+        }
+        Check(Cli("no-such-verb").Out.Contains("doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json",StringComparison.Ordinal),"default usage lists doc-update");
+    }
+
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
 } catch(Exception exception) {
