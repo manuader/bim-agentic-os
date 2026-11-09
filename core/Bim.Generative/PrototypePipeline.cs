@@ -43,13 +43,19 @@ namespace Bim.Generative;
 //    the Compliant rooms with a positive illumination or ventilation ratio, a room's margin is
 //    min(window area / room area / illumination ratio, ventilation area / room area / ventilation ratio) - 1 over the
 //    ratios it has (at least 0: how far its weakest ratio is above the minimum); raw = mean room margin (0 when no room
-//    has a ratio), normalized = raw / (1 + raw), so windows exactly at the minimum score 0 and twice the minimum 0.5. The
-//    detail lists each room's achieved/required ratios with the pack rule ids. Every weight is then its given weight over
-//    the sum of the eight given weights (the six ranking weights, CirculationWeight, FacadeWeight; a sum that is not
-//    finite is refused as weights_invalid "weights"), contributions = weight x normalized (base criteria keep their raw
-//    and normalized values), total = in-order sum, at most 1, and the accepted alternatives are re-ranked by total
-//    descending, ties by generation index. Rejected alternatives, the gates and the CirculationRanker set (Ranking) are
-//    unchanged. With FacadeWeight 0 nothing here runs and the output is P7-07's, byte for byte.
+//    has a ratio), normalized = raw / (1 + raw), so windows exactly at the minimum score 0 and twice the minimum 0.5.
+//    NotRequired and Failed rooms do not count. The minimums are the required ratios as FacadePlanner resolved them (pack
+//    rules with any options.Parameters overrides, which the detail mentions); the detail lists, per room, the achieved
+//    and minimum ratios, the margin and the pack rule ids. Every weight is then its given weight over the sum of the eight
+//    given weights (the six ranking weights, CirculationWeight, FacadeWeight; a sum that is not finite is refused as
+//    weights_invalid "weights"; a positive facade weight alone is enough, CirculationRanker then runs with unit ranking
+//    weights only to gate and score), contributions = weight x normalized (base criteria keep their raw and normalized
+//    values), total = in-order sum, at most 1, and the accepted alternatives are re-ranked by total descending, ties by
+//    generation index. A non-finite facade score (a degenerate room area) rejects the alternative at the facade gate with
+//    score_not_finite@facade, as CirculationRanker does for its criterion. The other rejected alternatives and the gates
+//    are unchanged; Ranking stays the CirculationRanker set with its seven criteria and its own order (it never carries
+//    the facade criterion). With FacadeWeight 0 nothing here runs and the output is P7-07's, byte for byte. Run still
+//    refuses six zero ranking weights at the prototype stage (PrototypeGenerator, unchanged).
 // Gaps: the facade criterion measures only the window area margin over the ratio minimums (not orientation, sun or
 // view); each accepted alternative gets its own BIM-IR with the same project identity; nothing is committed.
 public static class PrototypePipeline
