@@ -1280,3 +1280,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay168 — 2026-11-09T16:53:26Z (Claude, cloud scheduled)
 - 16:53Z LOCK taken (relay167 TAKEN with heartbeat 2026-11-05T20:53:22Z, stale >3 days; relay167 never closed).
 - 16:54Z picked P4-08 (phase 4), P6-11 (phase 6), P7-10 (phase 7, continuing relay167-P7-10: its pin run 42107977912 recorded the P7-07 digests) — oldest-touched (relay162/167), disjoint files. Workers starting.
+- 17:54Z workers green (phases 4, 6, 7): P4-08 706cb4e (red 42660367951, green 42662042513; 0 attempts; verb also needs --bindings), P6-11 a54fac0 (red 42660083366, green 42665024555 attempt 2 after unrelated flaky pipe_io_error in core; 0 attempts), P7-10 ea954f9 (red 42660034271, green 42662455732; 0 attempts). Next: independent reviews.
