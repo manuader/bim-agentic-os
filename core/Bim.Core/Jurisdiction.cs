@@ -160,6 +160,12 @@ public static class JurisdictionCodes
     public const string JurisdictionConflict = "jurisdiction_conflict";
     // The selected claim is a stub example pack and the caller did not opt in.
     public const string JurisdictionStubRefused = "jurisdiction_stub_refused";
+    // Lock-checked loading (JurisdictionRegistry.LoadLocked / FromSnapshots): the same strings as SkillLockCodes. Other
+    // lock refusals (lock_missing, path_unsafe, read_failed, json_invalid of the lock file, ...) pass their SkillLockCodes
+    // code through unchanged.
+    public const string SkillLockDrift = SkillLockCodes.SkillLockDrift;
+    public const string SkillLockMissing = SkillLockCodes.SkillLockMissing;
+    public const string LockMissing = SkillLockCodes.LockMissing;
     // Validation refusals.
     public const string PackUnresolved = "pack_unresolved";
     public const string InputInvalid = "input_invalid";
@@ -215,19 +221,27 @@ static class JurisdictionSidecar
             directory.Refresh();
             file.Refresh();
             if (IsLink(directory) || IsLink(file)) return (null, new JurisdictionIssue(JurisdictionCodes.PathUnsafe, relative, "entry became a link while being read"));
-            if (bytes.Length > JurisdictionClaim.MaxInputChars * 4) return (null, new JurisdictionIssue(JurisdictionCodes.InputTooLarge, relative, "sidecar too large"));
-            var offset = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
-            string text;
-            try { text = new UTF8Encoding(false, true).GetString(bytes, offset, bytes.Length - offset); }
-            catch (DecoderFallbackException error) { return (null, new JurisdictionIssue(JurisdictionCodes.JsonInvalid, relative, "invalid UTF-8: " + error.Message)); }
-            if (!JurisdictionClaim.TryParse(text, out var claim, out var issue)) return (null, new JurisdictionIssue(issue!.Code, relative, issue.Subject + ": " + issue.Detail));
-            if (claim!.Pack != packId) return (null, new JurisdictionIssue(JurisdictionCodes.PackMismatch, relative, "sidecar pack " + claim.Pack + " differs from directory " + packId));
-            return (claim, null);
+            return FromBytes(bytes, packId);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             return (null, new JurisdictionIssue(JurisdictionCodes.ReadFailed, relative, error.Message));
         }
+    }
+
+    // Parses sidecar bytes already read (from disk above, or from a verified pack snapshot): size bound, one optional
+    // byte order mark, strict UTF-8, strict parse, pack equal to packId. Never touches the file system.
+    internal static (JurisdictionClaim? Claim, JurisdictionIssue? Issue) FromBytes(byte[] bytes, string packId)
+    {
+        var relative = packId + "/" + FileName;
+        if (bytes.Length > JurisdictionClaim.MaxInputChars * 4) return (null, new JurisdictionIssue(JurisdictionCodes.InputTooLarge, relative, "sidecar too large"));
+        var offset = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+        string text;
+        try { text = new UTF8Encoding(false, true).GetString(bytes, offset, bytes.Length - offset); }
+        catch (DecoderFallbackException error) { return (null, new JurisdictionIssue(JurisdictionCodes.JsonInvalid, relative, "invalid UTF-8: " + error.Message)); }
+        if (!JurisdictionClaim.TryParse(text, out var claim, out var issue)) return (null, new JurisdictionIssue(issue!.Code, relative, issue.Subject + ": " + issue.Detail));
+        if (claim!.Pack != packId) return (null, new JurisdictionIssue(JurisdictionCodes.PackMismatch, relative, "sidecar pack " + claim.Pack + " differs from directory " + packId));
+        return (claim, null);
     }
 
     static bool IsLink(FileSystemInfo entry) => entry.LinkTarget is not null || (entry.Exists && (entry.Attributes & FileAttributes.ReparsePoint) != 0);
