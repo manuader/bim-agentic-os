@@ -1086,17 +1086,18 @@ try {
             var outputBefore=File.Exists(output) ? File.ReadAllBytes(output) : null;
             var r=Cli(arguments);
             Check(watched.Select((p,i)=>File.ReadAllBytes(p).AsSpan().SequenceEqual(bytes[i])).All(x=>x),"doc-update leaves its input files unchanged ("+name+")",DU(r));
-            if(r.Exit!=0) Check(outputBefore is null ? !File.Exists(output) && !Directory.Exists(output) || Directory.Exists(output) : File.ReadAllBytes(output).AsSpan().SequenceEqual(outputBefore),
+            // A pre-existing directory at the output path is not a file, so !File.Exists covers it too.
+            if(r.Exit!=0) Check(outputBefore is null ? !File.Exists(output) : File.ReadAllBytes(output).AsSpan().SequenceEqual(outputBefore),
                 "doc-update writes no output on failure and never touches an existing one ("+name+")",DU(r));
             return r;
         }
         string[] Args(string b,string a,string r,string g,string o,string? d=null)=>d is null
             ? new[]{"doc-update","--before",b,"--after",a,"--realized",r,"--bindings",g,"--output",o}
             : new[]{"doc-update","--before",b,"--after",a,"--realized",r,"--bindings",g,"--output",o,"--dependents",d};
-        void Succeeds(string name,Project b,Project a,RevitBindings g,IReadOnlyDictionary<string,string> r,string? realizedText=null,IReadOnlyDictionary<string,IReadOnlyList<string>>? d=null,string? dependentsText=null) {
+        void Succeeds(string name,Project b,Project a,RevitBindings g,IReadOnlyDictionary<string,string> r,string? realizedText=null,IReadOnlyDictionary<string,IReadOnlyList<string>>? d=null,string? dependentsText=null,string? bindingsText=null) {
             var library=Library(b,a,g,r,d);
             var bp=UInput(name+".before.json",JsonSerializer.Serialize(b)); var ap=UInput(name+".after.json",JsonSerializer.Serialize(a));
-            var rp=UInput(name+".realized.json",realizedText ?? MapJson(r)); var gp=UInput(name+".bindings.json",BindingsJson(g));
+            var rp=UInput(name+".realized.json",realizedText ?? MapJson(r)); var gp=UInput(name+".bindings.json",bindingsText ?? BindingsJson(g));
             var dp=d is null ? null : UInput(name+".dependents.json",dependentsText ?? JsonSerializer.Serialize(d));
             var output=NewOutput();
             var run=RunDU(name,new[]{bp,ap,rp,gp,dp ?? bp},output,Args(bp,ap,rp,gp,output,dp));
@@ -1134,9 +1135,17 @@ try {
         foreach(var element in duInserted.Elements) insertedRealized.TryAdd(DocRegeneration.ElementSource(element.Id),FakeUid("element:"+element.Id.ToString("D")));
         var plan0="plan-"+RoomCompiler.Id(RoomOf(0),"level").ToString("N");
         var tagDoor0="tag-door-"+DoorOf(0).ToString("N");
-        var duDependents=new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal){[plan0]=new[]{duRealized[DocRegeneration.ItemSource(tagDoor0)],FakeUid("annotation:plan0")}};
+        var plan1="plan-"+RoomCompiler.Id(RoomOf(1),"level").ToString("N");
+        var tagDoor1="tag-door-"+DoorOf(1).ToString("N");
+        var duDependents=new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal){[plan0]=new[]{duRealized[DocRegeneration.ItemSource(tagDoor0)],FakeUid("annotation:plan0")},[plan1]=new[]{duRealized[DocRegeneration.ItemSource(tagDoor1)]}};
         Check(LibraryCode(duBefore,duInserted,BindingsOf(duInserted),insertedRealized,duDependents)=="succeeded","doc-update fixture: the level insertion plans with dependents",LibraryCode(duBefore,duInserted,BindingsOf(duInserted),insertedRealized,duDependents));
         Succeeds("level inserted with dependents",duBefore,duInserted,BindingsOf(duInserted),insertedRealized,null,duDependents);
+        // The member order of the levels and dependents objects does not change a byte (keys reversed in both files).
+        var reversedLevels=BindingsOf(duInserted); var reversedLevelsText="{\"document\":{\"path\":"+JsonSerializer.Serialize(revitDocument.Path)+",\"unique_id\":"+JsonSerializer.Serialize(revitDocument.UniqueId)+"},\"levels\":{"
+            +string.Join(",",reversedLevels.Levels.OrderByDescending(pair=>pair.Key.ToString("D"),StringComparer.Ordinal).Select(pair=>JsonSerializer.Serialize(pair.Key.ToString("D"))+":"+JsonSerializer.Serialize(pair.Value)))+"}}";
+        var reversedDependentsText="{"+string.Join(",",duDependents.OrderByDescending(pair=>pair.Key,StringComparer.Ordinal).Select(pair=>JsonSerializer.Serialize(pair.Key)+":"+JsonSerializer.Serialize(pair.Value)))+"}";
+        Check(reversedLevelsText!=BindingsJson(reversedLevels) && reversedDependentsText!=JsonSerializer.Serialize(duDependents),"doc-update fixture: the reversed levels and dependents texts differ from the forward ones");
+        Succeeds("level inserted, levels and dependents keys reversed",duBefore,duInserted,reversedLevels,insertedRealized,null,duDependents,reversedDependentsText,reversedLevelsText);
         var duRemoved=duBefore with {Elements=duBefore.Elements.Where(e=>e.Id!=DoorOf(1)).ToArray()};
         Check(DocUpdate.Plan(duBefore,duRemoved,BindingsOf(duRemoved),duRealized).Retired.Count==1,"doc-update fixture: a removed door retires its tag");
         Succeeds("door removed",duBefore,duRemoved,BindingsOf(duRemoved),duRealized);
@@ -1181,6 +1190,33 @@ try {
         var bigMap=new StringBuilder("{");
         for(var i=0;i<=100_000;i++) bigMap.Append(i==0?"":",").Append("\"doc:k").Append(i.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append("\":\"x\"");
         RefusedInput("a realized map over the entry bound","doc_update_input_bound_exceeded","realized",r:UInput("big.realized.json",bigMap.Append('}').ToString()));
+        string Numbered(int count,Func<int,string> entry)=>string.Join(",",Enumerable.Range(0,count).Select(entry));
+        string N6(int i)=>i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // Exactly 100,000 realized entries pass the bound; the library then refuses the made-up UniqueIds.
+        RefusedInput("a realized map of exactly the entry bound (the library's code, not the bound)","realized_invalid",null,r:UInput("limit.realized.json","{"+Numbered(100_000,i=>"\"doc:k"+N6(i)+"\":\"x\"")+"}"));
+        // Dependent UniqueIds are counted over all keys: 100,001 refused; exactly 100,000 reach the library.
+        RefusedInput("dependents over the UniqueId bound","doc_update_input_bound_exceeded","dependents",d:UInput("big.dependents.json","{\"a\":["+Numbered(50_000,i=>"\"u"+N6(i)+"\"")+"],\"b\":["+Numbered(50_001,i=>"\"v"+N6(i)+"\"")+"]}"));
+        RefusedInput("dependents of exactly the UniqueId bound (the library's code, not the bound)","dependents_unknown_key",null,d:UInput("limit.dependents.json","{\"a\":["+Numbered(50_000,i=>"\"u"+N6(i)+"\"")+"],\"b\":["+Numbered(50_000,i=>"\"v"+N6(i)+"\"")+"]}"));
+        // Level bindings: 100,001 refused; exactly 100,000 (the two real levels plus made-up ones) plan like the library.
+        Guid LevelId(int i)=>Guid.Parse("00000000-0000-0000-0000-"+i.ToString("x12",System.Globalization.CultureInfo.InvariantCulture));
+        RevitBindings ManyLevels(int count) { var levels=new Dictionary<Guid,string>(BindingsOf(duMoved).Levels); for(var i=0;levels.Count<count;i++) levels.TryAdd(LevelId(i),"L"+N6(i)); return BindingsOf(duMoved) with {Levels=levels}; }
+        RefusedInput("level bindings over the entry bound","doc_update_input_bound_exceeded","bindings",g:UInput("big.bindings.json",BindingsJson(ManyLevels(100_001))));
+        {
+            var limitBindings=ManyLevels(100_000);
+            var gp=UInput("limit.bindings.json",BindingsJson(limitBindings));
+            var output=NewOutput();
+            var r=RunDU("level bindings of exactly the entry bound",new[]{okBefore,okAfter,okRealized,gp},output,Args(okBefore,okAfter,okRealized,gp,output));
+            Check(r.Exit==0 && File.Exists(output) && File.ReadAllText(output)==Library(duBefore,duMoved,limitBindings,duRealized),"doc-update accepts exactly 100,000 level bindings and plans like the library",DU(r));
+        }
+        // Wall types share the bound: 100,001 refused.
+        RefusedInput("wall types over the entry bound","doc_update_input_bound_exceeded","bindings",g:UInput("big-walls.bindings.json",BindingsJson(BindingsOf(duMoved),",\"wall_types\":["+Numbered(100_001,i=>"{\"thickness_metres\":"+N6(i+1)+",\"type\":\"W\"}")+"]")));
+        // A linked input is refused (skipped where the OS will not create a symbolic link).
+        {
+            var duLink=Path.Combine(duRoot,"linked.realized.json");
+            var duLinked=false;
+            try { File.CreateSymbolicLink(duLink,okRealized); duLinked=true; } catch(Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { Skip("doc-update refuses a linked realized map","symbolic links unavailable: "+e.GetType().Name); }
+            if(duLinked) RefusedInput("a symbolic link as realized map","input_link_rejected","realized",r:duLink);
+        }
 
         // 6. Malformed inputs: typed CLI refusals.
         foreach(var (label,text) in new[]{("not JSON","{"),("JSON null","null"),("an array","[]"),("null elements","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":null}"),("a null element","{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Revision\":0,\"Elements\":[null]}"),("empty file","")}) {
@@ -1194,7 +1230,10 @@ try {
             ("an unknown member",goodBindings[..^1]+",\"extra\":1}"),("an unknown document member",goodBindings.Replace("\"unique_id\"","\"uid\"")),
             ("a level key that is not a guid","{\"document\":{\"path\":\"C:\\\\a\\\\b.rvt\",\"unique_id\":\"x\"},\"levels\":{\"L1\":\"Level 1\"}}"),
             ("a duplicate key",goodBindings[..^1]+",\"door_symbol\":\"a\",\"door_symbol\":\"a\"}"),("a non-string door symbol",goodBindings[..^1]+",\"door_symbol\":3}"),
-            ("a wall type without thickness",goodBindings[..^1]+",\"wall_types\":[{\"type\":\"W\"}]}")})
+            ("a wall type without thickness",goodBindings[..^1]+",\"wall_types\":[{\"type\":\"W\"}]}"),
+            // Two wall types of one thickness: their order would decide the bytes, so they are refused.
+            ("two wall types of one thickness",goodBindings[..^1]+",\"wall_types\":[{\"thickness_metres\":0.2,\"type\":\"A\"},{\"thickness_metres\":0.2,\"type\":\"B\"}]}"),
+            ("null levels","{\"document\":{\"path\":\"C:\\\\a\\\\b.rvt\",\"unique_id\":\"x\"},\"levels\":null}"),("a null document","{\"document\":null,\"levels\":{}}")})
             RefusedInput("bindings that are "+label,"doc_update_bindings_invalid",null,g:UInput("bad-"+label.Replace(' ','-')+".bindings.json",text));
         foreach(var (label,text) in new[]{("not JSON","{"),("an array","[]"),("a string list","{\"k\":\"x\"}"),("a null entry","{\"k\":[null]}"),("a duplicate key","{\"k\":[],\"k\":[]}")})
             RefusedInput("dependents that are "+label,"doc_update_dependents_invalid",null,d:UInput("bad-"+label.Replace(' ','-')+".dependents.json",text));
@@ -1205,6 +1244,24 @@ try {
             var output=NewOutput();
             var r=RunDU("all bindings members",new[]{okBefore,okAfter,okRealized,gp},output,Args(okBefore,okAfter,okRealized,gp,output));
             Check(r.Exit==0 && File.Exists(output) && File.ReadAllText(output)==Library(duBefore,duMoved,fullBindings,duRealized),"doc-update reads wall_types, door_symbol and window_symbol",DU(r));
+        }
+        // An optional member given as null is the same as absent, for every optional member.
+        {
+            var gp=UInput("null-optional.bindings.json",BindingsJson(BindingsOf(duMoved),",\"wall_types\":null,\"door_symbol\":null,\"window_symbol\":null"));
+            var output=NewOutput();
+            var r=RunDU("null optional bindings members",new[]{okBefore,okAfter,okRealized,gp},output,Args(okBefore,okAfter,okRealized,gp,output));
+            Check(r.Exit==0 && File.Exists(output) && File.ReadAllText(output)==Library(duBefore,duMoved,BindingsOf(duMoved),duRealized),"doc-update reads null wall_types, door_symbol and window_symbol as absent",DU(r));
+        }
+        // Wall types of different thicknesses in either order give the same bytes.
+        {
+            var twoTypes=BindingsOf(duMoved) with {WallTypes=new[]{new RevitWallTypeBinding(0.1,"Thin"),new RevitWallTypeBinding(0.2,"Generic 200")}};
+            var forward=UInput("two-types.bindings.json",BindingsJson(twoTypes,",\"wall_types\":[{\"thickness_metres\":0.1,\"type\":\"Thin\"},{\"thickness_metres\":0.2,\"type\":\"Generic 200\"}]"));
+            var backward=UInput("two-types-reversed.bindings.json",BindingsJson(twoTypes,",\"wall_types\":[{\"thickness_metres\":0.2,\"type\":\"Generic 200\"},{\"thickness_metres\":0.1,\"type\":\"Thin\"}]"));
+            var first=NewOutput(); var second=NewOutput();
+            var r1=RunDU("two wall types",new[]{okBefore,okAfter,okRealized,forward},first,Args(okBefore,okAfter,okRealized,forward,first));
+            var r2=RunDU("two wall types reversed",new[]{okBefore,okAfter,okRealized,backward},second,Args(okBefore,okAfter,okRealized,backward,second));
+            Check(r1.Exit==0 && r2.Exit==0 && File.Exists(first) && File.Exists(second) && File.ReadAllText(first)==File.ReadAllText(second) && File.ReadAllText(first)==Library(duBefore,duMoved,twoTypes,duRealized),
+                "doc-update: wall types in either order give the same bytes as the library",DU(r1)+" / "+DU(r2));
         }
 
         // 7. Library refusals keep the library's code (RevitCommandException: detail is its field).
@@ -1219,6 +1276,7 @@ try {
         RefusedLike("dependents of a key not regenerated","dependents_unknown_key",duBefore,duMoved,BindingsOf(duMoved),duRealized,new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal){[plan0]=new[]{FakeUid("a")}});
         RefusedLike("a new element not realized yet","input_unresolved",duBefore,duInserted,BindingsOf(duInserted),duRealized);
         RefusedLike("a relative document path","document_path_invalid|document.path",duBefore,duMoved,BindingsOf(duMoved) with {Document=new RevitDocumentRef("copy.rvt",revitDocument.UniqueId)},duRealized);
+        RefusedLike("an after project at another revision","revision_conflict",duBefore,duMoved with {Revision=1},BindingsOf(duMoved),duRealized);
         RefusedLike("an invalid after project","invalid_ir",duBefore,duMoved with {Elements=duMoved.Elements.Append(new Element(UId("dangling"),"door",new[]{0.0,0,1,0,0,2},new[]{UId("nowhere")},duProvenance)).ToArray()},BindingsOf(duMoved),duRealized);
 
         // 8. Usage: the five flags once each, optional --dependents once, nothing else; checked before the output.
@@ -1242,6 +1300,9 @@ try {
                 && new[]{"DocUpdate.Run","DocUpdate.Resume","DocUpdate.Update","Transport","NamedPipe","File.","FileStream","FileMode.","Directory.","ProjectStore"}.All(api=>!duSource.Contains(api,StringComparison.Ordinal)),
                 "doc-update reads only through BoundedInput, plans with DocUpdate.Plan, writes only through GltfExporter.WriteNew and never runs a transport");
             Check(duSource.Contains("Console.Error.WriteLine(",StringComparison.Ordinal) && duSource.Contains("InternalError",StringComparison.Ordinal),"doc-update writes the type and message of an internal error to stderr");
+            Check(duSource.Contains("LibraryCodes.Contains(",StringComparison.Ordinal) && !duSource.Contains("Regex",StringComparison.Ordinal),"doc-update passes on only an explicit allowlist of library codes (no code-shaped message heuristic)");
+            var countsAt=duSource.IndexOf("Commands.Steps.Count",StringComparison.Ordinal); var writeAt=duSource.IndexOf("GltfExporter.WriteNew(",StringComparison.Ordinal);
+            Check(countsAt>=0 && writeAt>countsAt && !duSource.Contains("JsonDocument.Parse(plan",StringComparison.Ordinal),"doc-update computes its summary from the plan object before writing the file (nothing can fail after the write)");
         }
         Check(Cli("no-such-verb").Out.Contains("doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json",StringComparison.Ordinal),"default usage lists doc-update");
     }
