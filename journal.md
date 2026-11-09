@@ -1289,3 +1289,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay169 — 2026-11-09T20:52:47Z (Claude, cloud scheduled)
 - 20:52Z LOCK taken (was FREE; relay168 released 2026-11-09T20:25:42Z).
+- 21:55Z picked P2-10 (phase 2), P5-10 (phase 5), P10-10 (phase 10) — oldest-touched (relay164), disjoint files.
+- 21:55Z workers green: P2-10 12e891d (red 42698245612, green 42700577456; 0 attempts), P5-10 e5bbd20 (red 42699789308 after a compile slip 42697907201, green 42702120305; 0 attempts), P10-10 4bd4071 (red 42697985017, green 42701261565 after re-running the flaky ubuntu catalogue-session-cli pipe_io_error step 68; 0 attempts). Next: independent reviews.
