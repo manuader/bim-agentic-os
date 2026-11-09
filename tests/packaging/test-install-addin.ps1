@@ -61,12 +61,13 @@ function Invoke-Child([string]$Script, [string[]]$Arguments) {
 }
 # P10-10: runs a script block with APPDATA and the temp directory (TEMP/TMP/TMPDIR) pointed at test folders, so the
 # installer's private staging and package-archive's private copy land where the test can prove they were removed.
-function Invoke-WithTemp([scriptblock]$Body) {
+function Invoke-WithTemp([scriptblock]$Body, [string]$Temp) {
+    if (!$Temp) { $Temp = $script:fakeTemp }
     $names = 'APPDATA', 'TEMP', 'TMP', 'TMPDIR'
     $saved = @{}
     foreach ($name in $names) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     [Environment]::SetEnvironmentVariable('APPDATA', $script:fakeAppData, 'Process')
-    foreach ($name in 'TEMP', 'TMP', 'TMPDIR') { [Environment]::SetEnvironmentVariable($name, $script:fakeTemp, 'Process') }
+    foreach ($name in 'TEMP', 'TMP', 'TMPDIR') { [Environment]::SetEnvironmentVariable($name, $Temp, 'Process') }
     try { return (& $Body) }
     finally { foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') } }
 }
@@ -368,9 +369,82 @@ exit `$code
     Assert-StagingRemoved $run 'archive without -AssemblyPath'
     $run = Invoke-ArchiveInstaller @('-PackageDirectory', $full, '-ChecksumsPath', $zipSums, '-AddinsDirectory', $target)
     Assert ($run.Code -ne 0 -and $run.Output -match 'ChecksumsPath') "-ChecksumsPath without -Archive must be refused naming it: $(Get-Tail $run.Output)"
+    Assert ($run.Output -notmatch '(?m)^STAGED ') "-ChecksumsPath without -Archive must stage nothing: $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run '-ChecksumsPath without -Archive'
     $run = Invoke-ArchiveInstaller @('-Uninstall', '-Archive', $zip, '-AddinsDirectory', $target)
     Assert ($run.Code -ne 0 -and $run.Output -match 'Uninstall') "-Uninstall with -Archive must be refused: $(Get-Tail $run.Output)"
+    $run = Invoke-ArchiveInstaller @('-Uninstall', '-ChecksumsPath', $zipSums, '-AddinsDirectory', $target)
+    Assert ($run.Code -ne 0 -and $run.Output -match 'Uninstall' -and $run.Output -match 'ChecksumsPath') "-Uninstall with -ChecksumsPath must be refused: $(Get-Tail $run.Output)"
     Assert (!(Test-Path -LiteralPath $target)) "archive argument refusals created $target"
+
+    # Review: staging privacy, a pre-existing staging path, an unusable temp folder, honest cleanup reporting,
+    # and the untyped package-archive failure branch.
+    $target = Join-Path $work 'addins staging checks'
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll, '-ReportStagingForTest')
+    Assert ($run.Code -eq 0) "install with -ReportStagingForTest exit $($run.Code): $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'staging privacy install' -ExpectStaged
+    if ($IsWindows) {
+        $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $allowed = @($user, 'S-1-5-18', 'S-1-5-32-544')
+        if ($run.Output -match '(?m)^STAGING-ACL protected=(\S+) sids=(\S*)\r?$') {
+            $sids = @($Matches[2].Split(',', [StringSplitOptions]::RemoveEmptyEntries))
+            Assert ($Matches[1] -ceq 'True') "staging ACL must not inherit (protected=$($Matches[1]))"
+            Assert ($sids -contains $user) "staging ACL must grant the current user $user, has: $($sids -join ', ')"
+            Assert (@($sids | Where-Object { $_ -notin $allowed }).Count -eq 0) "staging ACL must grant only the current user, SYSTEM and Administrators, has: $($sids -join ', ')"
+        } else { $failures.Add("install did not report its staging ACL (STAGING-ACL): $(Get-Tail $run.Output)") }
+    } else {
+        if ($run.Output -match '(?m)^STAGING-MODE (\S+)\r?$') { Assert ($Matches[1] -ceq '448') "staging folder mode must be 0700 (UserRead, UserWrite, UserExecute = 448), got $($Matches[1])" }
+        else { $failures.Add("install did not report its staging mode (STAGING-MODE): $(Get-Tail $run.Output)") }
+    }
+    $run = Invoke-ArchiveInstaller @('-Uninstall', '-AddinsDirectory', $target)
+    Assert ($run.Code -eq 0 -and (Get-Names $target).Count -eq 0) "uninstall after the staging privacy install must leave the folder empty: $(Get-Tail $run.Output)"
+
+    $preexisting = Join-Path $fakeTemp 'bim-install-addin-preexisting'
+    New-Item -ItemType Directory -Force $preexisting | Out-Null
+    [IO.File]::WriteAllText((Join-Path $preexisting 'keep.txt'), 'not ours')
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll, '-StagingPathForTest', $preexisting)
+    Assert ($run.Code -ne 0 -and $run.Output -match 'staging_exists') "a pre-existing staging folder must be refused with staging_exists: $(Get-Tail $run.Output)"
+    Assert ((Test-Path -LiteralPath (Join-Path $preexisting 'keep.txt')) -and [IO.File]::ReadAllText((Join-Path $preexisting 'keep.txt')) -ceq 'not ours') 'a refused pre-existing staging folder must be left untouched'
+    Assert (!(Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) 'pre-existing staging refusal still installed Bim.addin'
+    Remove-Item -LiteralPath $preexisting -Recurse -Force
+
+    $missingTemp = Join-Path $work 'no such temp'
+    $run = Invoke-WithTemp { Invoke-Child $installer @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll) } $missingTemp
+    Assert ($run.Code -ne 0 -and $run.Output -match 'staging_temp_invalid') "a missing temp folder must be refused with staging_temp_invalid: $(Get-Tail $run.Output)"
+    Assert (!(Test-Path -LiteralPath $missingTemp) -and !(Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) 'missing temp refusal created the temp folder or installed Bim.addin'
+
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll, '-FailStagingRemovalForTest')
+    $left = $null
+    foreach ($line in ($run.Output -split "`n")) { if ($line -match '\ASTAGED (.+?)\r?\z') { $left = $Matches[1] } }
+    Assert ($run.Code -eq 0 -and $run.Output -match 'INSTALLED') "install whose staging removal fails still installs (exit $($run.Code)): $(Get-Tail $run.Output)"
+    Assert ($null -ne $left -and $run.Output -match ('staging folder left at ' + [regex]::Escape([string]$left))) "failed staging removal after install must say 'staging folder left at <path>': $(Get-Tail $run.Output)"
+    Assert ($run.Output -notmatch '(?i)staging folder (was )?removed') "failed staging removal must not be reported as removed: $(Get-Tail $run.Output)"
+    Assert ($null -ne $left -and (Test-Path -LiteralPath $left)) "test hook: the staging folder should still exist after a failed removal ($left)"
+    if ($left -and (Test-Path -LiteralPath $left)) { Remove-Item -LiteralPath $left -Recurse -Force }
+    $run = Invoke-ArchiveInstaller @('-Uninstall', '-AddinsDirectory', $target)
+    New-Item -ItemType Directory -Force $target | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $target 'Bim.addin'), $original)
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll, '-FailWriteForTest', '-FailStagingRemovalForTest')
+    $left = $null
+    foreach ($line in ($run.Output -split "`n")) { if ($line -match '\ASTAGED (.+?)\r?\z') { $left = $Matches[1] } }
+    Assert ($run.Code -ne 0 -and $null -ne $left -and $run.Output -match ('staging folder left at ' + [regex]::Escape([string]$left))) "failed staging removal after a refusal must say 'staging folder left at <path>': $(Get-Tail $run.Output)"
+    Assert ($run.Output -notmatch '(?i)staging folder (was )?removed') "failed staging removal after a refusal must not be reported as removed: $(Get-Tail $run.Output)"
+    if ($left -and (Test-Path -LiteralPath $left)) { Remove-Item -LiteralPath $left -Recurse -Force }
+    Assert-StagingRemoved ([pscustomobject]@{ Output = '' }) 'after cleaning the deliberately left staging folders'
+    Remove-Item -LiteralPath $target -Recurse -Force
+
+    $fakeArchiver = Join-Path $work 'fake package-archive.ps1'
+    [IO.File]::WriteAllText($fakeArchiver, "param([switch]`$Extract, [string]`$ArchivePath, [string]`$DestinationDirectory, [string]`$ChecksumsPath)`n[Console]::Error.WriteLine('unexpected crash in the archiver.')`nexit 3`n")
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll, '-ArchiveScript', $fakeArchiver)
+    Assert ($run.Code -ne 0 -and $run.Output -match 'package-archive failed' -and $run.Output -match 'exit 3' -and $run.Output -match 'unexpected crash') "an untyped package-archive failure must be refused with its exit code and output: $(Get-Tail $run.Output)"
+    Assert ($run.Output -notmatch '\.\.(\s|$)') "refusal text must not contain a doubled period: $(Get-Tail $run.Output)"
+    Assert (!(Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) 'untyped package-archive failure still installed Bim.addin'
+    Assert-StagingRemoved $run 'untyped package-archive failure' -ExpectStaged
+    $silentArchiver = Join-Path $work 'silent package-archive.ps1'
+    [IO.File]::WriteAllText($silentArchiver, "param([switch]`$Extract, [string]`$ArchivePath, [string]`$DestinationDirectory, [string]`$ChecksumsPath)`nexit 0`n")
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll, '-ArchiveScript', $silentArchiver)
+    Assert ($run.Code -ne 0 -and $run.Output -match 'no extracted package') "a package-archive success without an extracted package must be refused: $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'package-archive success without output' -ExpectStaged
 
     # End to end on an explicit Addins folder holding a foreign Bim.addin: archive -> install -> reinstall -> uninstall.
     $target = Join-Path $work 'addins archive e2e'
@@ -447,6 +521,7 @@ exit `$code
         $run = Invoke-ArchiveInstaller @('-Archive', $case.Zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll)
         Assert ($run.Code -ne 0) "$($case.Name) archive must be refused (exit $($run.Code)): $(Get-Tail $run.Output)"
         Assert ($run.Output -match 'install-addin refused' -and $run.Output -match ('package-archive refused: ' + $case.Code + ':')) "$($case.Name) archive refusal must carry the typed code $($case.Code): $(Get-Tail $run.Output)"
+        Assert ($run.Output -notmatch '\.\.(\s|$)') "$($case.Name) archive refusal text must not contain a doubled period: $(Get-Tail $run.Output)"
         Assert ((Get-Names $target) -join ',' -ceq 'Bim.addin' -and (Get-B64 (Join-Path $target 'Bim.addin')) -ceq [Convert]::ToBase64String($original)) "$($case.Name) archive refusal changed the Addins folder, found: $((Get-Names $target) -join ', ')"
         Assert-StagingRemoved $run ("$($case.Name) archive refusal")
     }
