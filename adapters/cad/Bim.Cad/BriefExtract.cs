@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using Bim.Core;
@@ -43,7 +44,8 @@ namespace Bim.Cad;
 //    slug). Regions holding no kept label are unlabelled-region.
 // Confidence starts at 1 and is multiplied by: label-outside-vocabulary 0.7, area-nearby 0.95, area-ambiguous 0.7,
 // no-region 0.9, shared-region 0.9, outer-region 0.9, area-from-region 0.8, area-missing 0.6, area-mismatch 0.6,
-// duplicate-label 0.8. Ids are slugs of the label (lowercase, accents removed, other characters to '-'). Every text,
+// duplicate-label 0.8. Ids are slugs of the label (lowercase, accents removed, other characters to '-'); see Slug for
+// labels whose only words are in a non-Latin script (P6-11). Every text,
 // region vertex, containment edge test and pairing candidate counts against MaxWork. Limit entries (explode-limit,
 // pair-limit, region-limit, text-limit, work-limit) and uncalibrated are always reported, outside the
 // MaxUncertainties cap. Malformed text never throws.
@@ -91,6 +93,9 @@ public static class BriefExtract
     {
         "m", "mm", "cm", "dm", "km", "m2", "mt", "mts", "mt2", "mts2", "sq", "sqm", "ft", "sqft", "in", "yd", "x", "ha", "metro", "metros", "cuadrado", "cuadrados", "square", "feet", "foot",
     };
+    // P6-11: unit words of non-Latin labels (ScriptKey tokens), never a script word: Cyrillic м, м2, кв (кв. м), мм, см,
+    // км; Greek τ.μ. (τ, μ, τμ); CJK 平方米, 平米, 米. "12 кв. м" is therefore not a room label.
+    private static readonly HashSet<string> ScriptUnitWords = new(StringComparer.Ordinal) { "м", "м2", "кв", "квм", "мм", "см", "км", "τ", "μ", "τμ", "平方米", "平米", "米" };
     private static readonly HashSet<string> AlwaysReported = new(StringComparer.Ordinal) { "explode-limit", "pair-limit", "region-limit", "text-limit", "uncalibrated", "work-limit" };
     private static readonly char[] LabelTrim = { ' ', '-', '–', ':', ';', ',', '.', '=', '(', ')', '[', ']', '/', '*', '+', '_' };
 
@@ -605,9 +610,25 @@ public static class BriefExtract
 
     private static string TagKey(string tag) => Fold(tag).Replace(" ", "", StringComparison.Ordinal);
 
+    // Room id stem of a label, also the P6-08 BriefPlanner duplicate-group key.
+    // Latin labels: Fold with spaces as '-', at most MaxSlugLength characters ("room" when nothing is left).
+    // P6-11 fallback: when Fold leaves only unit words and digits (or nothing) and the label holds a script word (a
+    // ScriptKey token, not a ScriptUnitWords entry, with at least two letters of a non-Latin script: Greek, Cyrillic,
+    // Armenian, Hebrew, Arabic, Indic, Thai, Georgian, Hangul, Kana, Han; see IsScriptLetter), the stem is "room_" + the
+    // first 16 lowercase hex digits of SHA-256 over the UTF-8 of ScriptKey(label). It is a hash rather than a
+    // transliteration so that no culture- or table-dependent romanisation is needed; it is deterministic and
+    // culture-invariant (invariant lowercasing, Unicode normalisation; no current culture); case, punctuation and Greek
+    // accent variants ("Кухня"/"КУХНЯ.", "Σαλόνι"/"ΣΑΛΟΝΙ", "Χώρος"/"ΧΩΡΟΣ") share it, so they group as duplicate-label
+    // here and in BriefPlanner exactly like Latin slugs; and it cannot collide with a Latin slug, which only ever holds
+    // [a-z0-9-] and never '_'. Symbols and stray letters (Ø from %%c, ordinals º/ª, ß, µ, a lone α, Δ or Σ) are not a
+    // script word, so such texts are still not labels, as before P6-11. Every label that had a Latin slug before P6-11
+    // keeps it (such a label always has a non-unit Latin token). Known limitation: mixed-script labels therefore slug
+    // to their Latin part only, so "Кухня WC" and "Ванная WC" are both "wc" and group as duplicate-label.
     internal static string Slug(string name)
     {
-        var slug = Fold(name).Replace(' ', '-');
+        var folded = Fold(name);
+        if (UnitsOnly(folded) && HasScriptWord(name)) return ScriptSlug(name);
+        var slug = folded.Replace(' ', '-');
         if (slug.Length > MaxSlugLength) slug = slug[..MaxSlugLength].TrimEnd('-');
         return slug.Length == 0 ? "room" : slug;
     }
@@ -615,12 +636,64 @@ public static class BriefExtract
     private static string? Label(string rest, int maxLength, int maxWords)
     {
         var label = Collapse(rest).Trim(LabelTrim);
-        if (label.Length == 0 || label.Length > maxLength || !label.Any(char.IsLetter)) return null;
+        if (label.Length == 0 || label.Length > maxLength || !label.EnumerateRunes().Any(Rune.IsLetter)) return null;
         if (label.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > maxWords) return null;
-        // Letters that are only units ("120 sq ft", "3 x 4 m") do not make a label.
-        if (Fold(label).Split(' ', StringSplitOptions.RemoveEmptyEntries).All(t => UnitWords.Contains(t) || t.All(char.IsAsciiDigit))) return null;
+        // Letters that are only units ("120 sq ft", "3 x 4 m", "12 м²") do not make a label. P6-11: a script word (see
+        // Slug) also makes one.
+        if (UnitsOnly(Fold(label)) && !HasScriptWord(label)) return null;
         return label;
     }
+
+    private static bool UnitsOnly(string folded) => folded.Split(' ', StringSplitOptions.RemoveEmptyEntries).All(t => UnitWords.Contains(t) || t.All(char.IsAsciiDigit));
+
+    private static bool HasScriptWord(string text)
+    {
+        foreach (var token in ScriptKey(text).Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (ScriptUnitWords.Contains(token)) continue;
+            var letters = 0;
+            foreach (var rune in token.EnumerateRunes())
+                if (IsScriptLetter(rune) && ++letters >= 2) return true;
+        }
+        return false;
+    }
+
+    // A letter of a non-Latin script block (Latin-1 symbols such as Ø, º, ª, ß and µ are not).
+    private static bool IsScriptLetter(Rune rune) => Rune.IsLetter(rune) && rune.Value is
+        >= 0x0370 and <= 0x03FF or >= 0x1F00 and <= 0x1FFF // Greek
+        or >= 0x0400 and <= 0x052F or >= 0x1C80 and <= 0x1C8F or >= 0x2DE0 and <= 0x2DFF or >= 0xA640 and <= 0xA69F // Cyrillic
+        or >= 0x0530 and <= 0x08FF // Armenian, Hebrew, Arabic, Syriac, Thaana
+        or >= 0x0900 and <= 0x0DFF // Indic
+        or >= 0x0E00 and <= 0x0EFF // Thai, Lao
+        or >= 0x10A0 and <= 0x10FF or >= 0x1C90 and <= 0x1CBF // Georgian
+        or >= 0x1100 and <= 0x11FF or >= 0x3130 and <= 0x318F or >= 0xAC00 and <= 0xD7AF // Hangul
+        or >= 0x3040 and <= 0x30FF or >= 0x31F0 and <= 0x31FF // Kana
+        or >= 0x3400 and <= 0x4DBF or >= 0x4E00 and <= 0x9FFF or >= 0xF900 and <= 0xFAFF or >= 0x20000 and <= 0x3FFFF; // Han
+
+    private static bool IsGreek(Rune rune) => rune.Value is >= 0x0370 and <= 0x03FF or >= 0x1F00 and <= 0x1FFF;
+
+    // Invariant lowercase label decomposed (NFD); combining marks after a Greek letter dropped (tonos, dialytika, as
+    // Fold drops Latin accents) and final sigma as sigma, so Greek case variants match; other marks (Cyrillic й's breve,
+    // Indic vowel signs) kept; letters, decimal digits and kept marks retained, every other run one space; recomposed
+    // (NFC), so decomposed and precomposed input give the same key.
+    private static string ScriptKey(string text)
+    {
+        var builder = new StringBuilder(text.Length);
+        var afterGreek = false;
+        foreach (var rune in text.ToLowerInvariant().Normalize(NormalizationForm.FormD).EnumerateRunes())
+        {
+            var category = Rune.GetUnicodeCategory(rune);
+            if (category == UnicodeCategory.NonSpacingMark && afterGreek) continue;
+            var current = rune.Value == 0x03C2 ? new Rune(0x03C3) : rune;
+            if (Rune.IsLetter(current)) { builder.Append(current.ToString()); afterGreek = IsGreek(current); }
+            else if (Rune.IsDigit(current) || category is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark) builder.Append(current.ToString());
+            else { builder.Append(' '); afterGreek = false; }
+        }
+        return string.Join(' ', builder.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries)).Normalize(NormalizationForm.FormC);
+    }
+
+    private static string ScriptSlug(string name) =>
+        "room_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ScriptKey(name))), 0, 8).ToLowerInvariant();
 
     // "1.234,5" and "1,234.5": the last separator is decimal and the others group thousands; a lone separator is decimal.
     private static bool TryNumber(string token, out double value)

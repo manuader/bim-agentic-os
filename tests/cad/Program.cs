@@ -474,5 +474,8 @@ MinsertOcsTests.Run(Check, fixtures);
 // P6-08 brief draft to planner brief (tests/cad/BriefPlannerTests.cs).
 BriefPlannerTests.Run(Check, fixtures);
 
+// P6-11 non-ASCII room labels in brief extraction (tests/cad/BriefNonAsciiTests.cs).
+BriefNonAsciiTests.Run(Check, fixtures);
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
