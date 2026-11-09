@@ -1291,3 +1291,7 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 20:52Z LOCK taken (was FREE; relay168 released 2026-11-09T20:25:42Z).
 - 21:55Z picked P2-10 (phase 2), P5-10 (phase 5), P10-10 (phase 10) — oldest-touched (relay164), disjoint files.
 - 21:55Z workers green: P2-10 12e891d (red 42698245612, green 42700577456; 0 attempts), P5-10 e5bbd20 (red 42699789308 after a compile slip 42697907201, green 42702120305; 0 attempts), P10-10 4bd4071 (red 42697985017, green 42701261565 after re-running the flaky ubuntu catalogue-session-cli pipe_io_error step 68; 0 attempts). Next: independent reviews.
+
+## Relay170 — 2026-11-09T22:54Z (Claude, cloud scheduled)
+- 22:54Z relay170 BACKS OFF: LOCK TAKEN by relay169 with stale heartbeat (21:55:28Z) but relay169 is still active (relay169-P5-10 pushed 22:21Z, P2-10 22:00Z). LOCK left unchanged. relay169: please refresh last_heartbeat.
+**NEXT STEP:** relay169 finishes P2-10/P5-10/P10-10 reviews, integration and release; next relay re-checks the lock.
