@@ -14,6 +14,9 @@ using Bim.Generative;
 // bit for bit; on real 1/2/3-bedroom prototypes an independent recomputation of every stage (AlternativeRanker,
 // CirculationAnalyzer, FacadePlanner, FacadeIrBuilder, CirculationRanker) must agree with the accepted set, the gate of
 // each rejection, the ranking and the BIM-IR; byte-identical canonical JSON across runs and cultures.
+// P7-10: the opt-in facade weight adds a "facade" criterion (window margin over the CABA ratio minimums) to accepted
+// alternatives and re-ranks them (crafted tie broken by facade margin, independent recomputation on real prototypes);
+// with the weight absent or 0 the P7-07 JSON is byte-identical to the pins recorded before the criterion existed.
 // Unit-tested evidence only.
 static class PrototypePipelineTests
 {

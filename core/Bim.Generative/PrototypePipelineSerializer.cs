@@ -13,6 +13,8 @@ namespace Bim.Generative;
 // gives the same bytes, whatever the culture. The stage options (circulation, facade, BIM-IR, pack parameters) are
 // written too, so runs that differ only in an option (for example the BIM-IR wall height) serialize differently. The
 // P7-08 snap options are written (options.snap) only when the pre-pass is on, so P7-07 results keep their bytes.
+// The P7-10 facade weight is written (facade_weight, after circulation_weight) only when it is not zero; the facade
+// criterion then appears as the eighth entry of each accepted alternative's criteria.
 public static class PrototypePipelineSerializer
 {
     public static string Serialize(PrototypePipelineResult result)
@@ -34,6 +36,8 @@ public static class PrototypePipelineSerializer
             writer.WriteString("project_id", options.ProjectId.ToString("D", CultureInfo.InvariantCulture));
             writer.WriteNumber("revision", options.Revision);
             Number(writer, "circulation_weight", options.CirculationWeight);
+            // P7-10: written only when the facade weight is not zero, so P7-07 results keep their exact bytes.
+            if (options.FacadeWeight != 0) Number(writer, "facade_weight", options.FacadeWeight);
             Options(writer, options);
             writer.WriteStartObject("summary");
             writer.WriteNumber("accepted", result.Alternatives.Count(alternative => alternative.Accepted));

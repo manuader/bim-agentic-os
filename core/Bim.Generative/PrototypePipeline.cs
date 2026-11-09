@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using Bim.Core;
 
@@ -37,8 +38,20 @@ namespace Bim.Generative;
 //    1..k with its total and seven criteria; rejected ones follow in generation order with rank 0, total 0 and no
 //    criteria. Every stage is deterministic and sequential and nothing depends on culture, so the same input gives the
 //    same result and the same canonical JSON (PrototypePipelineSerializer).
-// Gaps: the facade is a gate, not a ranking criterion (window quality does not reorder accepted alternatives); each
-// accepted alternative gets its own BIM-IR with the same project identity; nothing is committed.
+// 5. P7-10, only when options.FacadeWeight > 0: every accepted alternative gets an eighth criterion "facade" from its
+//    FacadePlanner layout (the CABA ratio minimums of the pack as FacadePlanner resolved them, no new rule values): over
+//    the Compliant rooms with a positive illumination or ventilation ratio, a room's margin is
+//    min(window area / room area / illumination ratio, ventilation area / room area / ventilation ratio) - 1 over the
+//    ratios it has (at least 0: how far its weakest ratio is above the minimum); raw = mean room margin (0 when no room
+//    has a ratio), normalized = raw / (1 + raw), so windows exactly at the minimum score 0 and twice the minimum 0.5. The
+//    detail lists each room's achieved/required ratios with the pack rule ids. Every weight is then its given weight over
+//    the sum of the eight given weights (the six ranking weights, CirculationWeight, FacadeWeight; a sum that is not
+//    finite is refused as weights_invalid "weights"), contributions = weight x normalized (base criteria keep their raw
+//    and normalized values), total = in-order sum, at most 1, and the accepted alternatives are re-ranked by total
+//    descending, ties by generation index. Rejected alternatives, the gates and the CirculationRanker set (Ranking) are
+//    unchanged. With FacadeWeight 0 nothing here runs and the output is P7-07's, byte for byte.
+// Gaps: the facade criterion measures only the window area margin over the ratio minimums (not orientation, sun or
+// view); each accepted alternative gets its own BIM-IR with the same project identity; nothing is committed.
 public static class PrototypePipeline
 {
     // A one-room plan used only to check the facade and BIM-IR options before ranking.
@@ -88,6 +101,9 @@ public static class PrototypePipeline
         var circulationOptions = options.Circulation ?? new CirculationOptions();
         var ranking = CirculationRanker.Rank(brief, plans, new CirculationScoring(weights, options.CirculationWeight, true, circulationOptions));
         if (ranking.Status == AlternativeSetStatus.Refused) return Refused(options, prototype, ranking.Refusals);
+        var given = Given(weights, options);
+        if (options.FacadeWeight > 0 && !double.IsFinite(given.Sum()))
+            return Refused(options, prototype, new[] { Refusal(AlternativeCodes.WeightsInvalid, "weights", "the sum of weights with the facade weight must be finite") });
         // Classification only (the statuses do not depend on the weights): which plans AlternativeRanker ranks on its own.
         var classified = AlternativeRanker.Rank(brief, plans, new ScoringWeights(1, 1, 1, 1, 1, 1));
         var origins = new Dictionary<int, Alternative>();
@@ -145,10 +161,75 @@ public static class PrototypePipeline
             accepted.Add(new PrototypePipelineAlternative(alternative.Index, alternative.Seed, strategy, accepted.Count + 1, alternative.Total, alternative.Criteria,
                 Array.Empty<PrototypePipelineRejection>(), plan, circulation, facade, ir));
         }
+        // P7-10 opt-in step 5: the facade criterion re-weights and re-ranks the accepted alternatives.
+        if (options.FacadeWeight > 0)
+            accepted = accepted.Select(alternative => WithFacade(alternative, given, options.FacadeWeight)).OrderByDescending(alternative => alternative.Total)
+                .ThenBy(alternative => alternative.Index).Select((alternative, position) => alternative with { Rank = position + 1 }).ToList();
         var ordered = accepted.Concat(rejected.OrderBy(alternative => alternative.Index)).ToArray();
         var status = accepted.Count > 0 ? PrototypePipelineStatus.Ranked : PrototypePipelineStatus.Infeasible;
         return new PrototypePipelineResult(status, options, prototype, ranking, Array.Empty<PlanConstraint>(), ordered);
     }
+
+    // The eight given weights in criterion order: the six ranking weights, the circulation weight and the facade weight.
+    static double[] Given(ScoringWeights? weights, PrototypePipelineOptions options)
+    {
+        var w = weights ?? new ScoringWeights();
+        return new[] { w.AreaFit, w.Adjacency, w.Proportions, w.Compactness, w.Perimeter, w.Compliance, options.CirculationWeight, options.FacadeWeight };
+    }
+
+    // Step 5 for one accepted alternative: its seven criteria re-weighted over the eight given weights plus the facade one.
+    static PrototypePipelineAlternative WithFacade(PrototypePipelineAlternative alternative, double[] given, double facadeWeight)
+    {
+        var sum = given.Sum();
+        var criteria = new List<CriterionScore>(alternative.Criteria.Count + 1);
+        for (var k = 0; k < alternative.Criteria.Count; k++)
+        {
+            var weight = given[k] / sum;
+            criteria.Add(alternative.Criteria[k] with { Weight = weight, Contribution = weight * alternative.Criteria[k].Normalized });
+        }
+        criteria.Add(FacadeCriterion(alternative.Facade!, facadeWeight / sum, facadeWeight));
+        double total = 0;
+        foreach (var criterion in criteria) total += criterion.Contribution;
+        return alternative with { Total = Math.Min(1, total), Criteria = criteria };
+    }
+
+    // The facade criterion of a complete layout (step 5): mean margin of the rooms' windows over their ratio minimums.
+    internal static CriterionScore FacadeCriterion(FacadeLayout layout, double weight, double givenWeight)
+    {
+        var margins = new List<double>();
+        var parts = new List<string>();
+        foreach (var room in layout.Rooms.Where(room => room.Status == FacadeRoomStatus.Compliant))
+        {
+            var factors = new List<double>();
+            var texts = new List<string>();
+            if (room.IlluminationRatio is { } light && light > 0)
+            {
+                factors.Add(room.WindowAreaSquareMetres / room.AreaSquareMetres / light);
+                texts.Add("illumination " + Format(room.WindowAreaSquareMetres / room.AreaSquareMetres) + " / " + Format(light));
+            }
+            if (room.VentilationRatio is { } air && air > 0)
+            {
+                factors.Add(room.VentilationAreaSquareMetres / room.AreaSquareMetres / air);
+                texts.Add("ventilation " + Format(room.VentilationAreaSquareMetres / room.AreaSquareMetres) + " / " + Format(air));
+            }
+            if (factors.Count == 0) continue;
+            var margin = Math.Max(0, factors.Min() - 1);
+            margins.Add(margin);
+            parts.Add(room.Instance + " " + string.Join(", ", texts) + " = +" + Format(margin * 100) + " % (" + string.Join(", ", room.RuleIds) + ")");
+        }
+        double raw = 0;
+        foreach (var margin in margins) raw += margin;
+        raw = margins.Count == 0 ? 0 : raw / margins.Count;
+        var normalized = raw / (1 + raw);
+        var detail = (margins.Count == 0
+            ? "no room of the facade layout has an illumination or ventilation ratio minimum"
+            : "mean margin " + Format(raw * 100) + " % of the windows over the " + layout.PackId + " ratio minimums (weakest ratio per room) over "
+              + margins.Count.ToString(CultureInfo.InvariantCulture) + " rooms: " + string.Join("; ", parts))
+            + "; normalized margin / (1 + margin); facade weight " + Format(givenWeight) + " given (effective " + Format(weight) + ")";
+        return new CriterionScore(PrototypePipelineCodes.FacadeCriterion, raw, normalized, weight, weight * normalized, detail);
+    }
+
+    static string Format(double value) => double.IsFinite(value) ? SpacePlanSerializer.Format(value) : "non-finite";
 
     // The BIM-IR compile step of the facade_ir gate: the project, or the typed reasons it could not be compiled.
     internal static PrototypePipelineCompile CompilePrototype(Func<Project> compile)
@@ -192,6 +273,8 @@ public static class PrototypePipeline
         if (options.Revision < 0) refusals.Add(Refusal(PrototypePipelineCodes.ProjectInvalid, "revision", "the revision must not be negative"));
         if (!double.IsFinite(options.CirculationWeight) || options.CirculationWeight < 0)
             refusals.Add(Refusal(AlternativeCodes.WeightsInvalid, "weights.circulation", "weight must be finite and non-negative"));
+        if (!double.IsFinite(options.FacadeWeight) || options.FacadeWeight < 0)
+            refusals.Add(Refusal(AlternativeCodes.WeightsInvalid, "weights.facade", "weight must be finite and non-negative"));
         refusals.AddRange(CirculationAnalyzer.OptionRefusals(options.Circulation ?? new CirculationOptions()));
         if (options.Snap is { } snap) refusals.AddRange(PrototypeSnap.OptionRefusals(snap));
         var probe = FacadePlanner.Place(Probe, options.Pack, options.Facade, options.Parameters);
