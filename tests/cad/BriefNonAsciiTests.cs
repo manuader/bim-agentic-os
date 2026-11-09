@@ -8,10 +8,13 @@ using System.Text.Json;
 // P6-11 non-ASCII room labels oracle. Regression first: the raw BriefExtract JSON of every pre-existing DXF/PDF fixture,
 // the P6-08 planner result of brief-plan.dxf and a generated drawing of Latin labels (accents, ß, ø, a mixed
 // Cyrillic+Latin label) are pinned byte for byte (SHA-256 prefixes captured in CI from main f671157, before P6-11).
-// Then labels made only of Cyrillic, Greek or CJK letters (TEXT and MTEXT \U+ escapes) become rooms whose id is the
-// deterministic, culture-invariant fallback room_<16 hex of SHA-256 of the case-folded NFC label>, which never collides
-// with a Latin slug (those never contain '_'); case variants group as duplicate-label in the extractor and in the P6-08
-// planner; non-Latin unit words ("12 м²") are still not labels. Unit-tested evidence only.
+// Then labels holding a script word (two or more Cyrillic, Greek, CJK, ... letters; TEXT and MTEXT \U+ escapes) become
+// rooms whose id is the deterministic, culture-invariant fallback room_<16 hex of SHA-256 of the label key: invariant
+// lowercase, Greek accents dropped and final sigma as sigma, NFC>, which never collides with a Latin slug (those never
+// contain '_'); case and Greek accent variants group as duplicate-label in the extractor and in the P6-08 planner.
+// Symbols and stray letters (%%c/Ø diameters, 1º/2ª ordinals, ß, µ, a lone α/Δ/Σ, "12 м²") are still not labels: a
+// drawing mixing them with Latin rooms is pinned against main. Mixed-script labels keep their Latin slug (pinned
+// limitation). Unit-tested evidence only.
 internal static class BriefNonAsciiTests
 {
     private static string F(double value) => value.ToString("R", CultureInfo.InvariantCulture);
@@ -39,6 +42,16 @@ internal static class BriefNonAsciiTests
                 ? Text("2" + i.ToString("00", CultureInfo.InvariantCulture), x + 1000, 1500, labels[i]["MTEXT:".Length..], "MTEXT")
                 : Text("2" + i.ToString("00", CultureInfo.InvariantCulture), x + 1000, 1500, labels[i]));
         }
+        return builder.ToString();
+    }
+
+    // Latin rooms with symbol and stray-letter texts inside them (main f671157 refuses all of these as labels).
+    private static readonly string[] NoiseTexts = { "%%c100", "Ø 12 mm", "1º", "2ª", "Σ 120 m²", "ß", "µ", "α", "Δ", "Σ" };
+    private static string Noise()
+    {
+        var builder = new StringBuilder(Rooms("Cocina", "Baño 4 m²"));
+        for (var i = 0; i < NoiseTexts.Length; i++)
+            builder.Append(Text("3" + i.ToString("00", CultureInfo.InvariantCulture), (i < 5 ? 300 : 5300) + 700 * (i % 5), 2600, NoiseTexts[i]));
         return builder.ToString();
     }
 
@@ -82,6 +95,8 @@ internal static class BriefNonAsciiTests
             actual.Add(("planner brief-plan.dxf", Pin("planner", () => JsonSerializer.Serialize(BriefPlanner.ToPlannerBrief(BriefExtract.FromDxf(DxfReader.ReadFile(Path.Combine(fixtures, "brief-plan.dxf"))))))));
             actual.Add(("extract latin", Pin("latin", () => JsonSerializer.Serialize(Dxf(Rooms(LatinLabels))))));
             actual.Add(("planner latin", Pin("latin planner", () => JsonSerializer.Serialize(BriefPlanner.ToPlannerBrief(Dxf(Rooms(LatinLabels)))))));
+            actual.Add(("extract noise", Pin("noise", () => JsonSerializer.Serialize(Dxf(Noise())))));
+            actual.Add(("planner noise", Pin("noise planner", () => JsonSerializer.Serialize(BriefPlanner.ToPlannerBrief(Dxf(Noise()))))));
             foreach (var (name, digest) in actual)
                 C(Pins.TryGetValue(name, out var expected) && expected == digest, "pin " + name, "actual " + digest + " expected " + (expected ?? "unpinned"));
             C(Pins.Count == actual.Count, "pin table complete", string.Join(" ; ", actual.Select(a => a.Name + "=" + a.Digest)));
@@ -108,7 +123,17 @@ internal static class BriefNonAsciiTests
             Label("Σαλόνι 9,5 m2", "Σαλόνι", 9.5);
             Label("厨房 10 m²", "厨房", 10);
             Label("Спальня 1", "Спальня 1");
-            Label("𠮷", "𠮷");
+            Label("𠮷野家", "𠮷野家");
+            Label("𠮷", null);
+            Label("Ø 100", null);
+            Label("Ø 12 mm", null);
+            Label("1º", null);
+            Label("2ª", null);
+            Label("ß", null);
+            Label("µ", null);
+            Label("α", null);
+            Label("Δ", null);
+            Label("Σ 120 m²", null, 120);
             Label("12 м²", null);
             Label("12 кв. м", null);
             Label("20 τ.μ.", null);
@@ -123,7 +148,7 @@ internal static class BriefNonAsciiTests
         {
             var labels = new[] { "Кухня 12 m²", "Σαλόνι", "厨房 12 m²", "Спальня", "MTEXT:\\U+041A\\U+0423\\U+0425\\U+041D\\U+042F 12 m²", "Cocina", "Спальня 1" };
             var d = Dxf(Rooms(labels));
-            const string kitchen = "room_07c473093067d1ee", living = "room_41be6f037a1f508d", chu = "room_4ae988a29c1f702c", bedroom = "room_a01cd0c3f09d643e", bedroom1 = "room_317ea1f9a5958ce8";
+            const string kitchen = "room_07c473093067d1ee", living = "room_c0aa0bb590aa7056", chu = "room_4ae988a29c1f702c", bedroom = "room_a01cd0c3f09d643e", bedroom1 = "room_317ea1f9a5958ce8";
             C(Ids(d) == string.Join(",", kitchen, living, chu, bedroom, kitchen + "-2", "cocina", bedroom1), "non-ascii labels become rooms with fallback ids", Ids(d));
             C(string.Join("|", d.Rooms.Select(r => r.Name)) == "Кухня|Σαλόνι|厨房|Спальня|КУХНЯ|Cocina|Спальня 1", "names keep the original script", string.Join("|", d.Rooms.Select(r => r.Name)));
             C(d.Rooms.All(r => BriefParser.IsRoomId(r.Id)) && d.Issues.Count == 0 && BriefValidator.Validate(d.Brief).Length == 0, "fallback ids are valid room ids and the brief validates",
@@ -154,6 +179,29 @@ internal static class BriefNonAsciiTests
                 finally { CultureInfo.CurrentCulture = culture; }
             }
             C(same && JsonSerializer.Serialize(Dxf(Rooms(labels))) == invariant, "non-ascii draft deterministic across runs and cultures");
+
+            // Symbols and stray letters next to Latin rooms: the same two rooms as main (output pinned above).
+            var noise = Dxf(Noise());
+            C(Ids(noise) == "cocina,bano" && noise.Rooms.All(r => !r.Notes.Contains("shared-region")), "symbols and stray letters are not rooms", Ids(noise) + " " + Codes(noise));
+
+            // Greek case and accent variants share the fallback id (accents dropped, final sigma folded).
+            const string room = "room_c18ab9237f3f8705";
+            var greek = Dxf(Rooms("Σαλόνι", "ΣΑΛΟΝΙ", "Χώρος", "ΧΩΡΟΣ"));
+            C(Ids(greek) == string.Join(",", living, living + "-2", room, room + "-2") && greek.Uncertainties.Count(u => u.Code == "duplicate-label") == 2, "greek case and accent variants are duplicate-label", Ids(greek) + " " + Codes(greek));
+
+            // Decomposed input (и + U+0306) gets the id of precomposed й; Cyrillic marks are kept, so й is not и.
+            var composed = Dxf(Rooms("Чайная"));
+            var decomposed = Dxf(Rooms("Чаи\u0306ная"));
+            var plainI = Dxf(Rooms("Чаиная"));
+            C(Ids(composed) == "room_be5b74167823bfcd" && Ids(decomposed) == Ids(composed) && Ids(plainI) != Ids(composed), "NFD input shares the precomposed id", Ids(composed) + " " + Ids(decomposed) + " " + Ids(plainI));
+
+            // A label with a letter outside the BMP.
+            var astral = Dxf(Rooms("𠮷野家"));
+            C(Ids(astral) == "room_73991c295b79b0fc" && astral.Rooms[0].Name == "𠮷野家", "non-BMP label slugs to its fallback id", Ids(astral));
+
+            // Known limitation: a label with a Latin word keeps its Latin slug, so different rooms sharing it group.
+            var mixed = Dxf(Rooms("Кухня WC", "Ванная WC"));
+            C(Ids(mixed) == "wc,wc-2" && mixed.Uncertainties.Count(u => u.Code == "duplicate-label") == 1, "mixed-script labels keep the Latin slug (limitation pinned)", Ids(mixed) + " " + Codes(mixed));
 
             // A Latin label that reads like a fallback id still slugs with '-' only, so it cannot collide.
             var spoof = Dxf(Rooms("Room 07c473093067d1ee", "Кухня"));
