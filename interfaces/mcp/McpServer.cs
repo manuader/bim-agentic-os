@@ -17,6 +17,8 @@ namespace Bim.Mcp;
 // - missing or wrongly typed arguments are rejected with -32602 instead of the CLI usage/null failures.
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
 // mirror_drift (P2-08) is read-only: its text is the file the CLI mirror-drift verb writes (MirrorDriftTool.cs).
+// mirror_drift_select (P2-10) is read-only: its text is the file the CLI mirror-drift-select verb writes (the canonical
+// P2-09 selection JSON, MirrorDriftSelectTool.cs); nothing is applied.
 // skills_lock_verify (P5-09) is read-only: its text is the CLI skills-lock verify stdout (SkillLockTool.cs); pin and
 // update write the lock and stay CLI-only.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
@@ -63,6 +65,11 @@ public sealed class McpServer
             [new ParameterSpec("store_path", "string", "Directory of an initialized ProjectStore (read only)"), new ParameterSpec("snapshot", "object", "query.snapshot readback (snapshot_version 1) or its catalogue response"),
              new ParameterSpec("mirror", "object", "document {path, unique_id}, core_project_id, core_revision, map {BIM-IR id: UniqueId}, optional levels, wall_types, door_symbol, window_symbol, journal, options")],
             DriftTool),
+        new ToolSpec("mirror_drift_select", "Read-only selective drift resolution (P2-09) of the mirror_drift resolution for a reviewer's adopt/restore choice per proposal: returns the canonical selection JSON (BIM-IR operations, filtered restore plan, invalidated map entries); never applies anything, applied false, requires approval (CLI: mirror-drift-select store snapshot.json mirror.json choices.json output.json).",
+            [new ParameterSpec("store_path", "string", "Directory of an initialized ProjectStore (read only)"), new ParameterSpec("snapshot", "object", "query.snapshot readback (snapshot_version 1) or its catalogue response"),
+             new ParameterSpec("mirror", "object", "the mirror_drift mirror request: document, core_project_id, core_revision, map, optional levels, wall_types, door_symbol, window_symbol, journal, options"),
+             new ParameterSpec("choices", "object", "{\"choices\":[{\"proposal_id\": proposal UniqueId or core:<id>, \"action\": \"adopt\" or \"restore\"}]}, at most 20000 entries")],
+            DriftSelectTool),
         new ToolSpec("skills_lock_verify", "Read-only verify of a project skill lock (P5-08 skills.lock.json) against a skills directory: reports skill_lock_drift / skill_lock_missing per pack; never pins, updates or writes (CLI: skills-lock verify skills-directory lock.json).",
             [new ParameterSpec("skills_path", "string", "Skills directory (skills/<id>/skill.json), read only"), new ParameterSpec("lock_path", "string", "Project lock file (skills.lock.json), read only")],
             LockVerifyTool),
@@ -430,6 +437,14 @@ public sealed class McpServer
     static (string Text, bool IsError) DriftTool(JsonElement arguments)
     {
         var outcome = MirrorDriftTool.Run(arguments.GetProperty("store_path").GetString() ?? "", arguments.GetProperty("snapshot").GetRawText(), arguments.GetProperty("mirror").GetRawText());
+        return (outcome.Text, !outcome.Succeeded);
+    }
+
+    // P2-10: MirrorDriftSelectTool, the same engine and input order as the CLI mirror-drift-select verb; the text is its output file.
+    static (string Text, bool IsError) DriftSelectTool(JsonElement arguments)
+    {
+        var outcome = MirrorDriftSelectTool.Run(arguments.GetProperty("store_path").GetString() ?? "", arguments.GetProperty("snapshot").GetRawText(),
+            arguments.GetProperty("mirror").GetRawText(), arguments.GetProperty("choices").GetRawText());
         return (outcome.Text, !outcome.Succeeded);
     }
 
