@@ -216,3 +216,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P4-08: no failed attempts (red 42660367951 → green 42662042513; review red 42680566316 → green 42682045940).
 - P6-11: no failed attempts (red 42660083366, pin capture 42662381263 → green 42665024555 after a re-run of an unrelated flaky `pipe_io_error` in the real-CLI one-run test; review red 42669852315, then 42672669522 after the first red drawing could not show the blocker (stray texts only inside vocabulary rooms) — a test-design correction, not an attempt; main baseline via probe branch run 42672673209 (deleted); green 42674160689).
 - P7-10: no failed attempts (relay167 pin capture 42107977912; red 42660034271 → green 42662455732; review red 42684396478 → green 42687195714).
+
+### Relay169 (2026-11-09, cloud)
+- P2-10: no failed attempts (red 42698245612 → green 42700577456; review tests-only 42707806711 green).
+- P5-10: no failed attempts (compile slip 42697907201 — missing constants, not an attempt; red 42699789308 → green 42702120305; review red 42710926268 → green 42713067042 after re-running the flaky ubuntu real-CLI one-run `pipe_io_error` at step 68).
+- P10-10: red 42697985017 → green 42701261565 (ubuntu catalogue-session-cli flake re-run). Review: red 42717484448; attempt 1 failed (42717670869, windows) — hypothesis "TEMP/TMP pointing at a missing folder makes the installer refuse staging_temp_invalid" disproved: the child pwsh recreates a missing TEMP on Windows; corrected the test to point temp at a file on both OSes and keep the missing-folder case Unix-only → green 42720517108.

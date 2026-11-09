@@ -1226,7 +1226,7 @@
         "tests/skills/SkillLockTests.cs",
         ".gitattributes"
       ],
-      "blocker": "On CLI/MCP since P5-09 (skill-lock-cli-mcp), not wired to compilers; jurisdiction.json is hashed but JurisdictionRegistry reads it unchecked (P5-10); no directory fsync after the atomic replace; concurrent updaters last-writer-wins; no JSON Schema.",
+      "blocker": "On CLI/MCP since P5-09 (skill-lock-cli-mcp), not wired to compilers; jurisdiction.json is lock-checked only through JurisdictionRegistry.LoadLocked/FromSnapshots (P5-10; plain Load stays unchecked); no directory fsync after the atomic replace; concurrent updaters last-writer-wins; no JSON Schema.",
       "scope": "P5-08: skills.lock.json (new standalone format, lock_version 1, canonical LF bytes, packs in ordinal id order) pins id/version/content_sha256 with scheme bim-skill-pack-sha256-v1 over raw pack bytes (ordinal relative paths, length-framed, links/control names refused, file/dir/size/depth limits); root .gitattributes `skills/** -text` keeps hashes equal across autocrlf checkouts; SkillLocking.Pin/Load/Verify/Update: manifests parsed from the hashed snapshot bytes, skill_lock_drift / skill_lock_missing / resolution_stale refusals, only an explicit Update rewrites (repairs a corrupt lock when ids are given). CI 41991684029."
     },
     {
@@ -1247,7 +1247,7 @@
         "core/Bim.Core/MirrorDriftResolve.cs",
         "tests/mirror-journal/MirrorDriftSelectChecks.cs"
       ],
-      "blocker": "Library only (no CLI/MCP: P2-10); adopted operations not committed to Core (P2-11); Select has no committed model, BIM-IR validity rests on P2-07 Requires and dependency checks (tests apply the operations); re-create of a missing mapped element reported as an invalidation; never run against Revit.",
+      "blocker": "On CLI/MCP since P2-10 (mirror-drift-select-cli-mcp); adopted operations not committed to Core (P2-11); Select has no committed model, BIM-IR validity rests on P2-07 Requires and dependency checks (tests apply the operations); re-create of a missing mapped element reported as an invalidation; never run against Revit.",
       "scope": "P2-09: MirrorDriftSelect.Select(P2-07 resolution, choices adopt/restore per proposal id) → Operations (one batch, proposal order), RestorePlan filtered with original step ids/order/args/depends_on/header, MapAdds/MapRemovals, Invalidated key→UniqueId entries with the creating step, evidence_incomplete, order restore_then_adopt; P2-07 Restore.Requires now lists dependents Revit cascades (hosted openings, level elements, replaced hosts); typed drift_select_resolution_invalid/choice_invalid/proposal_unknown/choice_duplicate/action_unsupported/requires_incomplete (sorted Missing); deterministic under choice permutation and de-DE. CI 42059574519."
     },
     {
@@ -1273,7 +1273,7 @@
         "tests/packaging/test-package-archive.ps1",
         "tests/packaging/test-package.ps1"
       ],
-      "blocker": "No signing (consistent edit of entry + manifest + SHA256SUMS is accepted); byte-identical only within one OS and pwsh/.NET version; install-addin.ps1 does not take an archive yet (P10-10); archive entries at root.",
+      "blocker": "No signing (consistent edit of entry + manifest + SHA256SUMS is accepted); byte-identical only within one OS and pwsh/.NET version; install-addin.ps1 -Archive since P10-10 (addin-install-from-archive); archive entries at root.",
       "scope": "P10-08: package-archive.ps1 create (verified P10-04 folder → zip with manifest.json + listed files in ordinal order, fixed timestamp/attributes, Optimal deflate, SHA256SUMS, staged then renamed, never overwrite, runtime version printed), -Verify and -Extract (private copy hashed, every entry size-bounded and re-hashed on extract, package-verify on staging, rename into place); typed refusals checksums_missing/invalid/mismatch, archive_unreadable, entry_path_unsafe (traversal, drive/colon, reserved device names, directory entries), entry_duplicate (case-insensitive, file/folder clash), manifest_missing/invalid, entry_unlisted/missing/mismatch/order, package_invalid, destination_exists; no leftovers; same bytes under TZ Pacific/Kiritimati and tr-TR; real two clean builds byte-identical on ubuntu and windows. CI 42070078862."
     },
     {
@@ -1308,6 +1308,39 @@
       ],
       "blocker": "Weak signal on real prototypes (0 of 4 requests re-ranked at weight 0.5) because FacadePlanner sizes windows to the minimum; area margin only (no orientation, sun or view); not exposed by a CLI yet (P7-09); Run still refuses all-zero ranking weights at the prototype stage.",
       "scope": "P7-10: PrototypePipelineOptions.FacadeWeight (default 0) adds the eighth criterion `facade` to accepted alternatives = mean per-room window margin over the illumination/ventilation ratios FacadePlanner resolved from the pack (weakest ratio, floored at 0), normalized m/(1+m), explained per room (achieved, minimum, margin, rule ids, overrides); weights renormalised over eight and accepted alternatives re-ranked by total then index; facade-only weights accepted; non-finite score rejected score_not_finite@facade; negative/non-finite weight weights_invalid; `facade_weight` serialized only when non-zero, so weight 0/absent keeps the P7-07 bytes (pinned). Ranking keeps CirculationRanker's seven criteria. CI 42687195714 (red 42660034271, review red 42684396478)."
+    },
+    {
+      "id": "mirror-drift-select-cli-mcp",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/MirrorDriftSelectCommand.cs",
+        "interfaces/mcp/MirrorDriftSelectTool.cs",
+        "tests/cli/Program.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "Selection only, never applied (P2-11 commits adopted drift); the key→UniqueId map is caller-supplied; never run against a real Revit snapshot; output_in_store is lexical (symlink alias not detected); per-choice proposal_id length bounded only by the 8 MiB input/line cap.",
+      "scope": "P2-10: `mirror-drift-select store snapshot.json mirror.json choices.json output.json` CLI verb and read-only MCP `mirror_drift_select {store_path, snapshot, mirror, choices}` on one engine (P2-08 analysis → P2-09 MirrorDriftSelect.Select) returning canonical MirrorDriftSelection.ToJson() (applied false, requires approval), byte-equal CLI file and MCP text including refusals; strict choices {\"choices\":[{proposal_id, action}]} ≤ 20000 (drift_select_request_invalid / drift_select_choices_too_large), Core drift_select_* codes with proposal_id/missing, mirror-drift codes passed through; never-overwrite, never in the store, exit 1 and no file on failure; store byte-identical. CI 42700577456, review 42707806711."
+    },
+    {
+      "id": "jurisdiction-lock-check",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/JurisdictionLock.cs",
+        "core/Bim.Core/SkillLock.cs",
+        "tests/skills/JurisdictionLockTests.cs"
+      ],
+      "blocker": "Not wired to CLI/MCP or compilers (callers must choose LoadLocked); only the first lock issue is returned (+N count); an empty jurisdiction.json directory is 'no sidecar' under the lock but not_regular_file unlocked (pinned).",
+      "scope": "P5-10: JurisdictionRegistry.LoadLocked(skillsRoot, lockPath|SkillLock) and FromSnapshots(SkillLock, snapshots) load pinned packs only, parsing skill.json and jurisdiction.json from a private copy of the snapshot bytes re-hashed with SkillPackHash.Hash (shared with Snapshot; no re-read, no TOCTOU); edited/added/removed/CRLF sidecar → skill_lock_drift, missing pack → skill_lock_missing, forged snapshot paths/bounds → skill_lock_drift, cased Jurisdiction.json → path_unsafe on every OS; unlocked Load byte-identical. CI 42702120305, review 42713067042."
+    },
+    {
+      "id": "addin-install-from-archive",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/install-addin.ps1",
+        "tests/packaging/test-install-addin.ps1"
+      ],
+      "blocker": "-AssemblyPath required with -Archive (release package ships no Bim.Revit.dll); never loaded in a real Revit; pipeline-stop (Ctrl-C) cleanup and staging_unavailable not exercised by tests; Windows missing-TEMP case untestable (pwsh recreates it).",
+      "scope": "P10-10: install-addin.ps1 -Archive <zip> [-ChecksumsPath] installs only from a package-archive -Extract into an owner-only staging folder (0700 on Unix, protected ACL current user/SYSTEM/Administrators on Windows), removed in a finally block on success and every refusal; package-archive refusals pass through typed (install-addin refused: package-archive refused: <code>: …, exit 1, nothing installed); staging_temp_invalid/staging_exists/staging_unavailable; honest 'staging folder left at' when removal fails; -PackageDirectory and -Uninstall unchanged; end-to-end archive → install → UNCHANGED → uninstall on ubuntu and windows with an explicit Addins folder. CI 42701261565, review 42720517108."
     }
   ]
 }
