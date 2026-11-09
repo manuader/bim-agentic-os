@@ -44,7 +44,8 @@ internal static class BriefNonAsciiTests
 
     private static readonly string[] LatinLabels = { "Sala de estar", "Großraum", "Cocina 2", "Kuchyně", "Øvre stue", "Кухня A", "Baño", "Baño" };
 
-    // Raw (unrounded) digests of JsonSerializer.Serialize output, captured in CI from main f671157 before P6-11.
+    // Raw (unrounded) digests of JsonSerializer.Serialize output, captured in CI (runs 42660083366 and 42662381263,
+    // identical on Linux and Windows) from the main f671157 implementation before P6-11.
     private static readonly Dictionary<string, string> Pins = new(StringComparer.Ordinal)
     {
         ["extract blocks.dxf"] = "75AFC392F20A78F2",
@@ -57,6 +58,8 @@ internal static class BriefNonAsciiTests
         ["extract draft-plan.pdf"] = "5EFCC1ADADA03B00",
         ["extract simple-plan.pdf"] = "0E9BC10F90C1ED63",
         ["planner brief-plan.dxf"] = "7D85165FD11FA714",
+        ["extract latin"] = "17C299A93E0A1024",
+        ["planner latin"] = "7CE1E819392AE95A",
     };
 
     private static string? Pin(string name, Func<string> json)
