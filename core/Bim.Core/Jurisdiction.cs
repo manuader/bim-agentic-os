@@ -165,6 +165,7 @@ public static class JurisdictionCodes
     // code through unchanged.
     public const string SkillLockDrift = SkillLockCodes.SkillLockDrift;
     public const string SkillLockMissing = SkillLockCodes.SkillLockMissing;
+    public const string LockMissing = SkillLockCodes.LockMissing;
     // Validation refusals.
     public const string PackUnresolved = "pack_unresolved";
     public const string InputInvalid = "input_invalid";

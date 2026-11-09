@@ -1,4 +1,6 @@
 using Bim.Core;
+using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -42,6 +44,29 @@ static class JurisdictionLockTests
 
     static string Show(JurisdictionLoad load) =>
         load.Refusal is { } refusal ? refusal.Code + "@" + refusal.Subject + " (" + refusal.Detail + ")" : load.Registry is { } registry ? "ok " + Render(registry) : "(no registry, no refusal)";
+
+    // Independent implementation of the bim-skill-pack-sha256-v1 stream over files in the order given, used to forge
+    // snapshots that are self-consistent (their declared hash matches their bytes).
+    static string StreamHash(IEnumerable<(string Path, byte[] Bytes)> files)
+    {
+        var stream = new List<byte>(Encoding.ASCII.GetBytes("bim-skill-pack-sha256-v1\n"));
+        foreach (var (path, bytes) in files)
+        {
+            stream.AddRange(Encoding.UTF8.GetBytes(path + "\n" + bytes.Length.ToString(CultureInfo.InvariantCulture) + "\n"));
+            stream.AddRange(bytes);
+            stream.Add((byte)'\n');
+        }
+        return Convert.ToHexString(SHA256.HashData(stream.ToArray())).ToLowerInvariant();
+    }
+
+    static SkillPackSnapshot Forge(string id, params (string Path, byte[] Bytes)[] files) =>
+        new(id, StreamHash(files.OrderBy(file => file.Path, StringComparer.Ordinal)), files.Select(file => new SkillPackFile(file.Path, file.Bytes)).ToList());
+
+    static string Load(Func<JurisdictionLoad> load)
+    {
+        try { return Show(load()); }
+        catch (Exception error) { return "threw " + error.GetType().Name + ": " + error.Message; }
+    }
 
     static bool ThrowsNull(Func<object?> action)
     {
@@ -242,6 +267,110 @@ static class JurisdictionLockTests
         }
         else Check(OperatingSystem.IsWindows() && !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.Ordinal),
             "symlink fixture available", "could not create a symbolic link");
+
+        // ---- Review: only paths Snapshot can produce are accepted, so the hash stream stays injective ----
+        var manifestBytes = Bytes(Manifest(Sample));
+        var forgedSidecar = Bytes(Sidecar("Forged Town"));
+        // Real file "a" holds X = "pad\n1\nx\njurisdiction.json\n<len J>\n" + J; the forged snapshot splits the same stream into
+        // a path "a\n<len X>\npad" (bytes "x"), a jurisdiction.json J and the real skill.json.
+        var realA = Bytes("pad\n1\nx\njurisdiction.json\n" + forgedSidecar.Length.ToString(CultureInfo.InvariantCulture) + "\n").Concat(forgedSidecar).ToArray();
+        var streamRoot = Fixture((Sample, "code", null));
+        File.WriteAllBytes(Path.Combine(streamRoot, Sample, "a"), realA);
+        var streamLock = SkillLocking.Pin(streamRoot, new[] { Sample });
+        var streamReal = JurisdictionRegistry.LoadLocked(streamRoot, streamLock);
+        Check(streamReal.Registry is { Claims.Count: 0 }, "the real pinned stream fixture has no jurisdiction claim", Show(streamReal));
+        var forgedStream = new (string Path, byte[] Bytes)[] { ("a\n" + realA.Length.ToString(CultureInfo.InvariantCulture) + "\npad", Bytes("x")), ("jurisdiction.json", forgedSidecar), ("skill.json", manifestBytes) };
+        Check(StreamHash(forgedStream) == streamLock.Find(Sample)!.ContentSha256, "the forged snapshot reproduces the pinned hash stream byte for byte (test premise)");
+        var streamForged = Load(() => JurisdictionRegistry.FromSnapshots(streamLock, new[] { new SkillPackSnapshot(Sample, streamLock.Find(Sample)!.ContentSha256, forgedStream.Select(file => new SkillPackFile(file.Path, file.Bytes)).ToList()) }));
+        Check(streamForged.StartsWith("skill_lock_drift@" + Sample + " (snapshot ", StringComparison.Ordinal), "a snapshot forging the pinned hash stream through a path with line breaks is refused skill_lock_drift", streamForged);
+        foreach (var bad in new[] { "", "/lead", "dir//x", "trail/", "./x", "dir/./x", "..", "dir/../x", "back\\slash", "ctl\u0001x", "dir/ctl\u007Fx" })
+        {
+            var refused = Load(() => JurisdictionRegistry.FromSnapshots(snapLock, new[] { Forge(Sample, ("skill.json", manifestBytes), (bad, Bytes("x"))) }));
+            Check(refused.StartsWith("skill_lock_drift@" + Sample + " (snapshot ", StringComparison.Ordinal) && refused.Contains("path", StringComparison.Ordinal),
+                "a self-consistent snapshot path Snapshot never produces is refused: " + bad.Replace("\u0001", "\\u0001", StringComparison.Ordinal).Replace("\u007F", "\\u007F", StringComparison.Ordinal), refused);
+        }
+        var legal = Load(() => JurisdictionRegistry.FromSnapshots(snapLock, new[] { Forge(Sample, ("skill.json", manifestBytes), ("dir/.hidden/nñ.txt", Bytes("x"))) }));
+        Check(legal.StartsWith("skill_lock_drift@" + Sample + " (pinned ", StringComparison.Ordinal), "a self-consistent snapshot with legal paths reaches the lock comparison (drift against the pin, not a path refusal)", legal);
+        var manyFiles = Enumerable.Range(0, SkillPackHash.MaxFiles).Select(index => ("f" + index.ToString("D5", CultureInfo.InvariantCulture), Array.Empty<byte>())).Append(("skill.json", manifestBytes)).ToArray();
+        var tooMany = Load(() => JurisdictionRegistry.FromSnapshots(snapLock, new[] { Forge(Sample, manyFiles) }));
+        Check(tooMany.StartsWith("skill_lock_drift@" + Sample + " (snapshot ", StringComparison.Ordinal), "a snapshot with more than MaxFiles entries is refused as Snapshot would", tooMany);
+        var deepPath = string.Join("/", Enumerable.Range(0, SkillPackHash.MaxDepth + 1).Select(index => "d" + index.ToString(CultureInfo.InvariantCulture))) + "/f.txt";
+        var tooDeep = Load(() => JurisdictionRegistry.FromSnapshots(snapLock, new[] { Forge(Sample, ("skill.json", manifestBytes), (deepPath, Bytes("x"))) }));
+        Check(tooDeep.StartsWith("skill_lock_drift@" + Sample + " (snapshot ", StringComparison.Ordinal), "a snapshot nested deeper than MaxDepth is refused as Snapshot would", tooDeep);
+        var tooBig = Load(() => JurisdictionRegistry.FromSnapshots(snapLock, new[] { Forge(Sample, ("skill.json", manifestBytes), ("big.bin", new byte[SkillPackHash.MaxBytes - manifestBytes.Length + 1])) }));
+        Check(tooBig.StartsWith("skill_lock_drift@" + Sample + " (snapshot ", StringComparison.Ordinal), "a snapshot over MaxBytes is refused as Snapshot would", tooBig);
+        if (!OperatingSystem.IsWindows())
+        {
+            var backslash = Fixture((Sample, "code", null));
+            File.WriteAllBytes(Path.Combine(backslash, Sample, "back\\slash"), Bytes("x"));
+            string pinned;
+            try { pinned = "pinned " + SkillLocking.Pin(backslash, new[] { Sample }).Packs.Count.ToString(CultureInfo.InvariantCulture); }
+            catch (SkillLockException error) { pinned = error.Code + "@" + error.Subject; }
+            Check(pinned == SkillLockCodes.PathUnsafe + "@" + Sample + "/back\\slash", "Snapshot refuses a file name with a backslash (path_unsafe), so it never hashes a path FromSnapshots refuses", pinned);
+        }
+
+        // ---- Review: FromSnapshots(Snapshot(...)) round-trips every checked-in pack and an unusual fixture ----
+        var allSnapshots = everyPack.Select(id => SkillPackHash.Snapshot(skillsRoot, id)).ToArray();
+        var roundTrip = Load(() => JurisdictionRegistry.FromSnapshots(lockAll, allSnapshots));
+        Check(roundTrip == Show(lockedAll) && roundTrip == Show(unlocked) && allSnapshots.All(item => StreamHash(item.Files.Select(file => (file.Path, file.Bytes))) == lockAll.Find(item.Id)!.ContentSha256),
+            "FromSnapshots over a fresh Snapshot of every skills/ pack equals LoadLocked and Load, and every hash matches the independent stream", roundTrip);
+        var unusual = Fixture((Sample, "code", original));
+        File.WriteAllBytes(Path.Combine(unusual, Sample, ".hidden"), Bytes("h"));
+        File.WriteAllBytes(Path.Combine(unusual, Sample, "empty.txt"), Array.Empty<byte>());
+        File.WriteAllBytes(Path.Combine(unusual, Sample, "ñandú.txt"), Bytes("n"));
+        Directory.CreateDirectory(Path.Combine(unusual, Sample, "notes", "deep"));
+        File.WriteAllBytes(Path.Combine(unusual, Sample, "notes", "deep", "x.txt"), Bytes("a\r\nb\n"));
+        var unusualLock = SkillLocking.Pin(unusual, new[] { Sample });
+        var unusualSnapshot = SkillPackHash.Snapshot(unusual, Sample);
+        var unusualLoad = Load(() => JurisdictionRegistry.FromSnapshots(unusualLock, new[] { unusualSnapshot }));
+        Check(unusualLoad.StartsWith("ok xx.sample|xx.sample.code|Sample Land|Sample Town|", StringComparison.Ordinal) && unusualLoad == Show(JurisdictionRegistry.LoadLocked(unusual, unusualLock))
+            && StreamHash(unusualSnapshot.Files.Select(file => (file.Path, file.Bytes))) == unusualLock.Find(Sample)!.ContentSha256 && unusualSnapshot.Files.Count == 6,
+            "a pack with nested directories, a non-ASCII name, hidden and empty files round-trips through FromSnapshots", unusualLoad + " files " + string.Join(",", unusualSnapshot.Files.Select(file => file.Path)));
+
+        // ---- Review: a differently cased jurisdiction.json is refused under the lock on every OS ----
+        var cased = Fixture((Sample, "code", null));
+        File.WriteAllBytes(Path.Combine(cased, Sample, "Jurisdiction.json"), original);
+        var casedLoad = JurisdictionRegistry.LoadLocked(cased, SkillLocking.Pin(cased, new[] { Sample }));
+        Check(casedLoad.Refusal is { Code: JurisdictionCodes.PathUnsafe, Subject: Sample + "/Jurisdiction.json" }, "a pinned Jurisdiction.json (case differs) is path_unsafe under the lock", Show(casedLoad));
+        var casedDirectory = Fixture((Sample, "code", null));
+        Directory.CreateDirectory(Path.Combine(casedDirectory, Sample, "JURISDICTION.JSON"));
+        File.WriteAllBytes(Path.Combine(casedDirectory, Sample, "JURISDICTION.JSON", "inner.txt"), Bytes("x"));
+        var casedDirectoryLoad = JurisdictionRegistry.LoadLocked(casedDirectory, SkillLocking.Pin(casedDirectory, new[] { Sample }));
+        Check(casedDirectoryLoad.Refusal is { Code: JurisdictionCodes.PathUnsafe, Subject: Sample + "/JURISDICTION.JSON" }, "a pinned JURISDICTION.JSON directory is path_unsafe under the lock", Show(casedDirectoryLoad));
+
+        // ---- Review: pinned divergences, aggregation, manifests and malformed snapshots ----
+        var emptyDirectory = Fixture((Sample, "code", null));
+        Directory.CreateDirectory(Path.Combine(emptyDirectory, Sample, "jurisdiction.json"));
+        var emptyDirectoryLocked = JurisdictionRegistry.LoadLocked(emptyDirectory, SkillLocking.Pin(emptyDirectory, new[] { Sample }));
+        Check(Show(JurisdictionRegistry.Load(emptyDirectory)) == "not_regular_file@xx.sample.code/jurisdiction.json (a directory is not a sidecar)" && emptyDirectoryLocked.Registry is { Claims.Count: 0 },
+            "an empty directory named jurisdiction.json: unlocked not_regular_file, under the lock no sidecar (the hash ignores empty directories)", Show(emptyDirectoryLocked));
+        var aggregate = Fixture((Sample, "code", original), (Plain, "code", null));
+        var aggregateLock = SkillLocking.Pin(aggregate, new[] { Sample, Plain });
+        File.WriteAllBytes(Path.Combine(aggregate, Sample, "jurisdiction.json"), Bytes(Sidecar("Edited Town")));
+        Directory.Delete(Path.Combine(aggregate, Plain), true);
+        var aggregated = JurisdictionRegistry.LoadLocked(aggregate, aggregateLock);
+        Check(aggregated.Refusal is { Code: JurisdictionCodes.SkillLockMissing, Subject: Plain } aggregatedIssue && aggregatedIssue.Detail.EndsWith(" (+1 more lock issue(s))", StringComparison.Ordinal),
+            "one missing and one drifted pack: the first issue in pack order is reported with the count of the others", Show(aggregated));
+        var badManifestRoot = tempRoot();
+        Directory.CreateDirectory(Path.Combine(badManifestRoot, Sample));
+        File.WriteAllBytes(Path.Combine(badManifestRoot, Sample, "skill.json"), Bytes("{"));
+        var badManifest = Load(() => JurisdictionRegistry.FromSnapshots(snapLock, new[] { SkillPackHash.Snapshot(badManifestRoot, Sample) }));
+        Check(badManifest.StartsWith("skills_invalid@" + Sample + " (", StringComparison.Ordinal), "a self-consistent snapshot whose skill.json does not parse is skills_invalid under FromSnapshots", badManifest);
+        var genuine = SkillPackHash.Snapshot(snapRoot, Sample);
+        var malformed = new (string Name, Func<SkillPackSnapshot> Make)[]
+        {
+            ("a null content hash", () => new SkillPackSnapshot(Sample, null!, genuine.Files)),
+            ("a null file list", () => new SkillPackSnapshot(Sample, genuine.ContentSha256, null!)),
+            ("a null file entry", () => new SkillPackSnapshot(Sample, genuine.ContentSha256, genuine.Files.Append(null!).ToList())),
+            ("a file with a null path", () => new SkillPackSnapshot(Sample, genuine.ContentSha256, genuine.Files.Append(new SkillPackFile(null!, Bytes("x"))).ToList())),
+            ("a file with null bytes", () => new SkillPackSnapshot(Sample, genuine.ContentSha256, genuine.Files.Append(new SkillPackFile("x", null!)).ToList())),
+        };
+        foreach (var (name, make) in malformed)
+        {
+            var result = Load(() => JurisdictionRegistry.FromSnapshots(snapLock, new[] { make() }));
+            Check(result.StartsWith("skill_lock_drift@" + Sample + " (snapshot ", StringComparison.Ordinal), "a snapshot with " + name + " is a typed skill_lock_drift refusal", result);
+        }
+        Check(JurisdictionCodes.LockMissing == SkillLockCodes.LockMissing, "JurisdictionCodes.LockMissing is the skill lock code");
 
         // ---- Arguments ----
         Check(ThrowsNull(() => JurisdictionRegistry.LoadLocked(null!, snapLock)) && ThrowsNull(() => JurisdictionRegistry.LoadLocked(snapRoot, (SkillLock)null!))
