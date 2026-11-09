@@ -47,6 +47,16 @@ internal static class BriefNonAsciiTests
     // Raw (unrounded) digests of JsonSerializer.Serialize output, captured in CI from main f671157 before P6-11.
     private static readonly Dictionary<string, string> Pins = new(StringComparer.Ordinal)
     {
+        ["extract blocks.dxf"] = "75AFC392F20A78F2",
+        ["extract brief-plan.dxf"] = "59F85B7F143C5C8B",
+        ["extract draft-plan.dxf"] = "FEFB2436957AE7A4",
+        ["extract minsert-ocs.dxf"] = "799C995C1C1F14A7",
+        ["extract room-tags.dxf"] = "7866D7E1CF95383F",
+        ["extract simple-plan.dxf"] = "9FB001E439A28A82",
+        ["extract walls.dxf"] = "B56D4D983CD15415",
+        ["extract draft-plan.pdf"] = "5EFCC1ADADA03B00",
+        ["extract simple-plan.pdf"] = "0E9BC10F90C1ED63",
+        ["planner brief-plan.dxf"] = "7D85165FD11FA714",
     };
 
     private static string? Pin(string name, Func<string> json)
