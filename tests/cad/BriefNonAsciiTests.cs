@@ -45,13 +45,15 @@ internal static class BriefNonAsciiTests
         return builder.ToString();
     }
 
-    // Latin rooms with symbol and stray-letter texts inside them (main f671157 refuses all of these as labels).
-    private static readonly string[] NoiseTexts = { "%%c100", "Ø 12 mm", "1º", "2ª", "Σ 120 m²", "ß", "µ", "α", "Δ", "Σ" };
+    // Latin rooms (two vocabulary labels and the non-vocabulary "Atelier") and an unlabelled region, each holding
+    // symbol and stray-letter texts (main f671157 refuses all of these as labels).
+    private static readonly string[] NoiseTexts = { "%%c100", "Ø 12 mm", "1º", "2ª", "Σ 120 m²", "ß", "µ", "α", "Δ", "Σ", "Ø 50", "1ª", "ß", "Δ", "α", "%%c80", "Σ" };
     private static string Noise()
     {
-        var builder = new StringBuilder(Rooms("Cocina", "Baño 4 m²"));
+        var builder = new StringBuilder(Rooms("Cocina", "Baño 4 m²", "Atelier"));
+        builder.Append(Rect("199", 15000, 0, 19000, 3000));
         for (var i = 0; i < NoiseTexts.Length; i++)
-            builder.Append(Text("3" + i.ToString("00", CultureInfo.InvariantCulture), (i < 5 ? 300 : 5300) + 700 * (i % 5), 2600, NoiseTexts[i]));
+            builder.Append(Text("3" + i.ToString("00", CultureInfo.InvariantCulture), 5000 * (i / 5) + 300 + 700 * (i % 5), 2600, NoiseTexts[i]));
         return builder.ToString();
     }
 
@@ -182,7 +184,7 @@ internal static class BriefNonAsciiTests
 
             // Symbols and stray letters next to Latin rooms: the same two rooms as main (output pinned above).
             var noise = Dxf(Noise());
-            C(Ids(noise) == "cocina,bano" && noise.Rooms.All(r => !r.Notes.Contains("shared-region")), "symbols and stray letters are not rooms", Ids(noise) + " " + Codes(noise));
+            C(Ids(noise) == "cocina,bano,atelier" && noise.Rooms.All(r => !r.Notes.Contains("shared-region")) && noise.Uncertainties.Count(u => u.Code == "unlabelled-region") == 1, "symbols and stray letters are not rooms", Ids(noise) + " " + Codes(noise));
 
             // Greek case and accent variants share the fallback id (accents dropped, final sigma folded).
             const string room = "room_c18ab9237f3f8705";
