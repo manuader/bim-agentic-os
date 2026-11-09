@@ -63,23 +63,59 @@ internal static class MirrorDriftTool
     public static Outcome Run(string storeDirectory, string snapshotJson, string mirrorJson)
     {
         try { return Execute(storeDirectory, snapshotJson, mirrorJson); }
-        catch (Refusal refusal) { return new Outcome(false, Failure(refusal.Code, refusal.Detail), 0, 0); }
-        catch (InputRejectedException rejected) { return new Outcome(false, Failure(rejected.Message, "store"), 0, 0); }
-        catch (RevitCommandException error) { return new Outcome(false, Failure(error.Code, Join(error.Field, error.Detail)), 0, 0); }
-        catch (ArgumentException error)
+        catch (Exception error) { return new Outcome(false, Describe(error), 0, 0); }
+    }
+
+    // The refusal envelope of an exception raised by Analyze (shared with MirrorDriftSelectTool, P2-10).
+    internal static string Describe(Exception error)
+    {
+        switch (error)
         {
-            var message = error.Message;
-            var space = message.IndexOf(' ');
-            return new Outcome(false, space < 0 ? Failure(message, null) : Failure(message[..space], message[(space + 1)..]), 0, 0);
+            case Refusal refusal: return Failure(refusal.Code, refusal.Detail);
+            case InputRejectedException rejected: return Failure(rejected.Message, "store");
+            case RevitCommandException command: return Failure(command.Code, Join(command.Field, command.Detail));
+            case ArgumentException argument:
+                var message = argument.Message;
+                var space = message.IndexOf(' ');
+                return space < 0 ? Failure(message, null) : Failure(message[..space], message[(space + 1)..]);
+            // Anything else is a defect, never a message passed off as a code.
+            default: return Failure(InternalError, error.GetType().Name);
         }
-        // Anything else is a defect, never a message passed off as a code.
-        catch (Exception error) { return new Outcome(false, Failure(InternalError, error.GetType().Name), 0, 0); }
     }
 
     static string? Join(string? field, string? detail) =>
         field is null ? detail : detail is null ? field : field + ": " + detail;
 
+    // The Core state read, the P2-04 report and the P2-07 resolution; throws what Describe maps. P2-10 MirrorDriftSelectTool
+    // runs the same analysis before MirrorDriftSelect.Select.
+    internal sealed record Analysis(Project Project, MirrorDriftReport Report, MirrorDriftResolution Resolution);
+
     static Outcome Execute(string storeDirectory, string snapshotJson, string mirrorJson)
+    {
+        var (project, report, resolution) = Analyze(storeDirectory, snapshotJson, mirrorJson);
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("mirror_drift_version", Version);
+            writer.WriteBoolean("applied", false);
+            writer.WriteBoolean("requires_approval", true);
+            writer.WriteStartObject("core_store");
+            writer.WriteString("project_id", project.Id.ToString("D"));
+            writer.WriteNumber("revision", project.Revision);
+            writer.WriteString("hash", Compiler.Hash(project));
+            writer.WriteEndObject();
+            writer.WritePropertyName("report");
+            writer.WriteRawValue(report.ToJson());
+            writer.WritePropertyName("resolution");
+            writer.WriteRawValue(resolution.ToJson());
+            writer.WriteEndObject();
+        }
+        var text = Encoding.UTF8.GetString(buffer.ToArray());
+        return new Outcome(true, text, report.Summary.Drift, resolution.Proposals.Count);
+    }
+
+    internal static Analysis Analyze(string storeDirectory, string snapshotJson, string mirrorJson)
     {
         // 1. The Core store, read-only.
         if (string.IsNullOrWhiteSpace(storeDirectory) || storeDirectory.IndexOf('\0') >= 0) throw new Refusal(StorePathInvalid);
@@ -106,26 +142,7 @@ internal static class MirrorDriftTool
             throw new Refusal(MirrorDriftResolveCodes.ReportTruncated, "the report holds more than options.max_findings = " + report.Options.MaxFindings.ToString(CultureInfo.InvariantCulture)
                 + " findings; raise options.max_findings (at most " + MirrorDriftOptions.MaxFindingsLimit.ToString(CultureInfo.InvariantCulture) + ") to resolve it");
         var resolution = MirrorDriftResolve.Plan(report, snapshot, committed, new RevitBindings(mirror.Document, mirror.Levels, mirror.WallTypes, mirror.DoorSymbol, mirror.WindowSymbol));
-        using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteNumber("mirror_drift_version", Version);
-            writer.WriteBoolean("applied", false);
-            writer.WriteBoolean("requires_approval", true);
-            writer.WriteStartObject("core_store");
-            writer.WriteString("project_id", project.Id.ToString("D"));
-            writer.WriteNumber("revision", project.Revision);
-            writer.WriteString("hash", Compiler.Hash(project));
-            writer.WriteEndObject();
-            writer.WritePropertyName("report");
-            writer.WriteRawValue(report.ToJson());
-            writer.WritePropertyName("resolution");
-            writer.WriteRawValue(resolution.ToJson());
-            writer.WriteEndObject();
-        }
-        var text = Encoding.UTF8.GetString(buffer.ToArray());
-        return new Outcome(true, text, report.Summary.Drift, resolution.Proposals.Count);
+        return new Analysis(project, report, resolution);
     }
 
     // The store state ({"Project":{..},"Receipts":{..}}) with every member Core relies on present and non-null: a

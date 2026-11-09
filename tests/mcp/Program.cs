@@ -72,7 +72,7 @@ Check(server.Handle("""{"jsonrpc":"2.0","method":"notifications/unknown","params
 
 var list=Call(Request(2,"tools/list",null));
 var tools=list["result"]!["tools"]!.AsArray();
-Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,skills_lock_verify,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, skills_lock_verify, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
+Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,skills_lock_verify,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, mirror_drift_select, skills_lock_verify, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
 Check(RevitCommandCatalogue.V1.Select(c=>c.ToolName).SequenceEqual(new[]{"revit_query_levels","revit_query_wall_types","revit_query_floor_types","revit_query_family_symbols","revit_wall_create","revit_opening_place","revit_floor_create","revit_room_create"}),"catalogue v1 tool names are the eight ADR0009 commands");
 Check(tools.All(t=>t!["inputSchema"]!["type"]!.GetValue<string>()=="object" && t!["inputSchema"]!["properties"] is JsonObject && t!["inputSchema"]!["required"] is JsonArray && !string.IsNullOrWhiteSpace(t!["description"]!.GetValue<string>())),"every tool has a JSON Schema object inputSchema and description");
 string Required(string tool)=>string.Join(",",tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!["inputSchema"]!["required"]!.AsArray().Select(x=>x!.GetValue<string>()));
@@ -130,7 +130,7 @@ string? BuildError(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpS
 string? NameError(params string[] names) { try { McpServer.CheckToolNames(names); return null; } catch(InvalidOperationException error) { return error.Message; } }
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)}) is null,"an injected catalogue with distinct valid names builds");
 var syntheticServer=new McpServer(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)},RevitCommandPolicy.None,null,null);
-Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,skills_lock_verify,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
+Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,skills_lock_verify,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
 Check(BuildError(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")})=="tool_name_duplicate: revit_a_b_c","colliding tool names (a.b_c vs a_b.c) fail closed at construction");
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("query.levels")})=="tool_name_duplicate: revit_query_levels","a duplicated command fails closed at construction");
 Check(BuildError(new[]{Synthetic("a b")})=="tool_name_invalid: revit_a b","a tool name outside [a-zA-Z0-9_-] fails closed at construction");
@@ -584,6 +584,89 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     var duplicateCli=Cli("mirror-drift",driftStore,snapshotPath,Input("drift-mirror-dup.json",duplicateMirror),Path.Combine(cliDir,"drift-dup.json"));
     Check(IsError(duplicate) && JsonDocument.Parse(Text(duplicate)).RootElement.GetProperty("code").GetString()=="mirror_drift_request_invalid" && Text(duplicate)==duplicateCli,"mirror_drift refuses a duplicate core_revision, byte-equal to the CLI | "+Text(duplicate));
     Check(ErrorCode(ToolCall("mirror_drift",new JsonObject{["store_path"]=driftStore,["snapshot"]=Node(driftedText)}))==-32602,"mirror_drift without mirror returns -32602");
+}
+
+// P2-10 mirror_drift_select: the same engine as the CLI mirror-drift-select verb (MirrorDriftSelectTool). The tool text
+// equals the CLI output file (the canonical P2-09 selection JSON) byte for byte, and a refusal equals the CLI stdout;
+// nothing is applied to the store; the tool is listed read-only.
+{
+    var selectFixtures=Path.Combine(root,"tests","mirror-journal","fixtures","drift");
+    var committedText=File.ReadAllText(Path.Combine(selectFixtures,"committed.json"));
+    var snapshotText=File.ReadAllText(Path.Combine(selectFixtures,"snapshot.json"));
+    var committed=MirrorCommittedModel.Parse(committedText);
+    const string selectDoc="60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b";
+    const string w2="60f91daf-3dd7-4283-a86d-24137b73f3da-00001002";
+    var selectStore=Path.Combine(cliDir,"select-store");
+    new ProjectStore(selectStore).Initialize(committed.Project);
+    var storeBytes=File.ReadAllBytes(Path.Combine(selectStore,"project.json"));
+    string StoreListing()=>string.Join(",",Directory.GetFileSystemEntries(selectStore).Select(entry=>Path.GetFileName(entry)).Order(StringComparer.Ordinal));
+    var storeListing=StoreListing();
+    var drifted=Node(snapshotText).AsObject();
+    foreach(var element in drifted["elements"]!.AsArray().ToArray())
+        if((string?)element!["Id"]=="db98eeb5-3a66-7972-29a5-494ec813984a") { element!["GeometryMetres"]![0]=5.05; element!["GeometryMetres"]![2]=5.05; }
+    var driftedText=drifted.ToJsonString();
+    JsonObject Mirror(int revision=3) => new JsonObject {
+        ["document"]=new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\p2-10\copy.rvt",["unique_id"]=selectDoc},
+        ["core_project_id"]=committed.Project.Id.ToString("D"),
+        ["core_revision"]=revision,
+        ["map"]=Node(committedText)["map"]!.DeepClone(),
+        ["wall_types"]=new JsonArray(new JsonObject{["thickness_metres"]=0.2,["type"]="Generic - 200mm"}),
+        ["door_symbol"]="Single-Flush: 0915 x 2134mm",
+    };
+    JsonObject Choices(string id,string action)=>new JsonObject{["choices"]=new JsonArray(new JsonObject{["proposal_id"]=id,["action"]=action})};
+    JsonObject SelectCall(JsonObject mirror,JsonNode choices,string? store=null)=>ToolCall("mirror_drift_select",new JsonObject{["store_path"]=store ?? selectStore,["snapshot"]=Node(driftedText),["mirror"]=mirror,["choices"]=choices});
+    string Code(JsonObject response)=>JsonDocument.Parse(Text(response)).RootElement.GetProperty("code").GetString() ?? "";
+
+    var selectTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="mirror_drift_select");
+    Check(selectTool is not null && selectTool["description"]!.GetValue<string>().Contains("never applies",StringComparison.Ordinal) && selectTool["description"]!.GetValue<string>().Contains("Read-only",StringComparison.Ordinal)
+        && selectTool["description"]!.GetValue<string>().Contains("mirror-drift-select",StringComparison.Ordinal),"mirror_drift_select is listed, read-only, never applies, naming the CLI verb");
+    Check(Required("mirror_drift_select")=="store_path,snapshot,mirror,choices","mirror_drift_select requires store_path, snapshot, mirror and choices");
+
+    // Expected, straight from Core.
+    var bindings=new RevitBindings(new RevitDocumentRef(@"C:\Repo\.bim\native-runs\p2-10\copy.rvt",selectDoc),new Dictionary<Guid,string>(),new[]{new RevitWallTypeBinding(0.2,"Generic - 200mm")},"Single-Flush: 0915 x 2134mm",null);
+    var parsedSnapshot=MirrorDrift.ParseSnapshot(driftedText);
+    var resolution=MirrorDriftResolve.Plan(MirrorDrift.Compare(parsedSnapshot,committed,(IReadOnlyList<MirrorJournalEntry>?)null,new MirrorDriftOptions()),parsedSnapshot,committed,bindings);
+    var expected=MirrorDriftSelect.Select(resolution,new[]{new MirrorDriftChoice(w2,"adopt")}).ToJson();
+
+    var ok=SelectCall(Mirror(),Choices(w2,"adopt"));
+    var snapshotPath=Input("select-snapshot.json",driftedText);
+    var mirrorPath=Input("select-mirror.json",Mirror().ToJsonString());
+    var outPath=Path.Combine(cliDir,"select-out.json");
+    var cliSummary=Cli("mirror-drift-select",selectStore,snapshotPath,mirrorPath,Input("select-choices.json",Choices(w2,"adopt").ToJsonString()),outPath);
+    Check(!IsError(ok) && HasType(ok) && File.Exists(outPath),"mirror_drift_select succeeds and the CLI wrote its output | "+cliSummary+" | "+Text(ok));
+    Check(Text(ok)==File.ReadAllText(outPath,new System.Text.UTF8Encoding(false)),"mirror_drift_select text byte-equal to the CLI mirror-drift-select output file");
+    Check(Text(ok)==expected,"mirror_drift_select text byte-equal to MirrorDriftSelect.Select(..).ToJson() | "+Text(ok));
+    using(var document=JsonDocument.Parse(Text(ok))) {
+        var top=document.RootElement;
+        Check(top.GetProperty("applied").GetBoolean()==false && top.GetProperty("requires_approval").GetBoolean() && top.GetProperty("operations").GetArrayLength()==1
+            && top.GetProperty("restore_plan").GetProperty("steps").GetArrayLength()==0,"mirror_drift_select adopting the moved wall gives one BIM-IR operation and no restore step, not applied");
+    }
+    Check(File.ReadAllBytes(Path.Combine(selectStore,"project.json")).SequenceEqual(storeBytes) && StoreListing()==storeListing,"mirror_drift_select applies nothing to the store");
+
+    // Refusals: typed, isError, byte-equal to the CLI stdout, no CLI output file.
+    var unknownChoices=Choices("60f91daf-3dd7-4283-a86d-24137b73f3da-0000beef","restore");
+    var unknown=SelectCall(Mirror(),unknownChoices);
+    var unknownOut=Path.Combine(cliDir,"select-unknown.json");
+    var unknownCli=Cli("mirror-drift-select",selectStore,snapshotPath,mirrorPath,Input("select-unknown-choices.json",unknownChoices.ToJsonString()),unknownOut);
+    Check(IsError(unknown) && Code(unknown)=="drift_select_proposal_unknown" && Text(unknown)==unknownCli && !File.Exists(unknownOut),"mirror_drift_select unknown proposal is drift_select_proposal_unknown, byte-equal to the CLI | "+Text(unknown));
+    var invalidChoices=Choices(w2,"apply");
+    var invalidCall=SelectCall(Mirror(),invalidChoices);
+    Check(IsError(invalidCall) && Code(invalidCall)=="drift_select_choice_invalid" && Text(invalidCall)==Cli("mirror-drift-select",selectStore,snapshotPath,mirrorPath,Input("select-invalidCall-choices.json",invalidChoices.ToJsonString()),Path.Combine(cliDir,"select-invalidCall.json")),
+        "mirror_drift_select action other than adopt/restore is drift_select_choice_invalid, byte-equal to the CLI | "+Text(invalidCall));
+    var stale=SelectCall(Mirror(revision:4),Choices(w2,"adopt"));
+    var staleCli=Cli("mirror-drift-select",selectStore,snapshotPath,Input("select-mirror-stale.json",Mirror(revision:4).ToJsonString()),Input("select-stale-choices.json",Choices(w2,"adopt").ToJsonString()),Path.Combine(cliDir,"select-stale.json"));
+    Check(IsError(stale) && Code(stale)=="drift_resolve_report_stale" && Text(stale)==staleCli,"mirror_drift_select stale mirror is drift_resolve_report_stale, byte-equal to the CLI");
+    var shape=SelectCall(Mirror(),new JsonObject{["choices"]="all"});
+    Check(IsError(shape) && Code(shape)=="drift_select_request_invalid","mirror_drift_select refuses a choices member that is not an array (drift_select_request_invalid)");
+    var many=new JsonArray();
+    for(var i=0;i<=MirrorDriftOptions.MaxFindingsLimit;i++) many.Add(new JsonObject{["proposal_id"]="x"+i.ToString(System.Globalization.CultureInfo.InvariantCulture),["action"]="adopt"});
+    var tooMany=SelectCall(Mirror(),new JsonObject{["choices"]=many});
+    Check(IsError(tooMany) && Code(tooMany)=="drift_select_choices_too_large","mirror_drift_select refuses more than 20000 choices (drift_select_choices_too_large)");
+    var selectNoStore=SelectCall(Mirror(),Choices(w2,"adopt"),Path.Combine(cliDir,"no-select-store"));
+    Check(IsError(selectNoStore) && Code(selectNoStore)=="input_not_found" && !Directory.Exists(Path.Combine(cliDir,"no-select-store")),"mirror_drift_select on a missing store is input_not_found and creates nothing");
+    Check(ErrorCode(ToolCall("mirror_drift_select",new JsonObject{["store_path"]=selectStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror()}))==-32602,"mirror_drift_select without choices returns -32602");
+    Check(ErrorCode(ToolCall("mirror_drift_select",new JsonObject{["store_path"]=selectStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror(),["choices"]=new JsonArray()}))==-32602,"mirror_drift_select with a non-object choices returns -32602");
+    Check(File.ReadAllBytes(Path.Combine(selectStore,"project.json")).SequenceEqual(storeBytes),"mirror_drift_select refusals leave the store untouched");
 }
 
 // P5-09 skills_lock_verify: the read-only verify of the CLI skills-lock verb (one engine, SkillLockTool). The tool text

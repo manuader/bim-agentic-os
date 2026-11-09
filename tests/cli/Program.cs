@@ -675,6 +675,141 @@ try {
             Check(!driftSources.Contains(".Commit(",StringComparison.Ordinal) && !driftSources.Contains("PlanRunner",StringComparison.Ordinal) && !driftSources.Contains("RevitCommandService",StringComparison.Ordinal) && !driftSources.Contains("Initialize(",StringComparison.Ordinal),
                 "mirror-drift never commits, runs a plan or talks to Revit");
         }
+
+        // ---- P2-10 mirror-drift-select: the P2-09 selection of the P2-07 resolution, for the reviewer's choices ----
+        // Oracle: the output file is byte-equal to MirrorDriftSelect.Select(MirrorDriftResolve.Plan(MirrorDrift.Compare(..)))
+        // .ToJson() on the same inputs; nothing is applied; never-overwrite; every refusal exits 1, prints one typed
+        // envelope and leaves no output file.
+        {
+            const string selW1="60f91daf-3dd7-4283-a86d-24137b73f3da-00001001";
+            const string selW2="60f91daf-3dd7-4283-a86d-24137b73f3da-00001002";
+            const string selD1="60f91daf-3dd7-4283-a86d-24137b73f3da-00002001";
+            string ChoicesJson(params (string Id,string Action)[] items)=>new System.Text.Json.Nodes.JsonObject{["choices"]=new System.Text.Json.Nodes.JsonArray(items.Select(item=>(System.Text.Json.Nodes.JsonNode?)new System.Text.Json.Nodes.JsonObject{["proposal_id"]=item.Id,["action"]=item.Action}).ToArray())}.ToJsonString();
+            var selN=0;
+            string ChoicesFile(string json)=>Input("select-choices-"+(++selN).ToString(System.Globalization.CultureInfo.InvariantCulture)+".json",json);
+            void ExpectSelect(string name,string code,params string[] arguments) {
+                var output=arguments[^1];
+                var existed=File.Exists(output) || Directory.Exists(output);
+                var r=Cli(arguments);
+                Check(Refused(r,code) && (existed || !File.Exists(output)),name+" (exit 1, "+code+", no output file)",DR(r));
+            }
+            MirrorDriftSelection? CoreSelect(MirrorDriftResolution resolution,params (string Id,string Action)[] items) {
+                try { return MirrorDriftSelect.Select(resolution,items.Select(item=>new MirrorDriftChoice(item.Id,item.Action)).ToArray()); }
+                catch(ArgumentException e) { Check(false,"Core accepts the P2-10 fixture choice",e.Message); return null; }
+            }
+            var mixedChoices=ChoicesFile(ChoicesJson((selW2,"adopt"),(selD1,"restore")));
+            var expectedMixed=CoreSelect(expectedResolution,(selW2,"adopt"),(selD1,"restore"));
+            var selOut=DriftOut();
+            var sel=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,mixedChoices,selOut);
+            var selEnv=DEnvelope(sel.Out);
+            Check(sel.Exit==0 && selEnv is {} se && se.GetProperty("status").GetString()=="succeeded" && se.GetProperty("output").GetString()==selOut && se.GetProperty("applied").GetBoolean()==false
+                && File.Exists(selOut) && se.GetProperty("bytes").GetInt64()==new FileInfo(selOut).Length && se.GetProperty("sha256").GetString()==Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(selOut)))
+                && expectedMixed is not null && se.GetProperty("operations").GetInt32()==expectedMixed.Operations.Count && se.GetProperty("restore_steps").GetInt32()==expectedMixed.RestorePlan.Steps.Count,
+                "mirror-drift-select writes the selection to a new file and prints a succeeded summary",DR(sel));
+            if(File.Exists(selOut) && expectedMixed is not null) {
+                var written=File.ReadAllBytes(selOut);
+                Check(written.SequenceEqual(new UTF8Encoding(false).GetBytes(expectedMixed.ToJson())),"mirror-drift-select output is byte-equal to MirrorDriftSelect.Select(..).ToJson() (UTF-8, no BOM)",Encoding.UTF8.GetString(written));
+                using var selDoc=JsonDocument.Parse(written);
+                var top=selDoc.RootElement;
+                Check(top.GetProperty("selection_version").GetInt32()==1 && top.GetProperty("applied").GetBoolean()==false && top.GetProperty("requires_approval").GetBoolean()==true
+                    && top.GetProperty("order").GetString()=="restore_then_adopt" && top.GetProperty("operations").GetArrayLength()==1 && top.GetProperty("restore_plan").GetProperty("steps").GetArrayLength()>0,
+                    "mirror-drift-select document is the canonical selection: adopted operation, filtered restore plan, never applied",Encoding.UTF8.GetString(written));
+                var rerunOut=DriftOut();
+                var rerun=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile(ChoicesJson((selD1,"restore"),(selW2,"adopt"))),rerunOut);
+                Check(rerun.Exit==0 && File.Exists(rerunOut) && File.ReadAllBytes(rerunOut).SequenceEqual(written),"mirror-drift-select is deterministic whatever the order of the choices",DR(rerun));
+            }
+            Check(File.ReadAllBytes(storeFile).SequenceEqual(storeBytes) && StoreListing().SequenceEqual(storeListing),"mirror-drift-select applies nothing: the Core store is byte-identical and gains no file");
+            // No choice at all: every proposal omitted, still a selection document.
+            var emptyOut=DriftOut();
+            var emptyRun=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile("{\"choices\":[]}"),emptyOut);
+            var expectedEmpty=CoreSelect(expectedResolution);
+            Check(emptyRun.Exit==0 && File.Exists(emptyOut) && expectedEmpty is not null && File.ReadAllText(emptyOut,new UTF8Encoding(false))==expectedEmpty.ToJson() && expectedEmpty.Omitted.Count==2,
+                "mirror-drift-select with no choices omits every proposal",DR(emptyRun));
+
+            // Never overwrite; the output is checked before any input is read.
+            var selExisting=DriftOut(); File.WriteAllBytes(selExisting,[5,5]);
+            ExpectSelect("mirror-drift-select refuses an existing output","output_exists","mirror-drift-select",driftStore,snapshotPath,mirrorPath,mixedChoices,selExisting);
+            Check(File.ReadAllBytes(selExisting).SequenceEqual(new byte[]{5,5}),"mirror-drift-select leaves an existing output untouched");
+            ExpectSelect("mirror-drift-select checks the output before reading the inputs","output_exists","mirror-drift-select",driftStore,snapshotPath,mirrorPath,Path.Combine(work,"missing-choices.json"),selExisting);
+            ExpectSelect("mirror-drift-select refuses a non-.json output","output_extension_unsupported","mirror-drift-select",driftStore,snapshotPath,mirrorPath,mixedChoices,DriftOut(".glb"));
+            ExpectSelect("mirror-drift-select refuses an output inside the store","output_in_store","mirror-drift-select",driftStore,snapshotPath,mirrorPath,mixedChoices,Path.Combine(driftStore,"selection.json"));
+            Check(StoreListing().SequenceEqual(storeListing),"an output_in_store refusal leaves the store listing unchanged",string.Join(",",StoreListing()));
+
+            // Typed drift_select_* codes from Core, in the failure envelope, with the proposal they concern.
+            {
+                var unknownOut=DriftOut();
+                var r=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile(ChoicesJson(("60f91daf-3dd7-4283-a86d-24137b73f3da-0000beef","adopt"))),unknownOut);
+                Check(Refused(r,"drift_select_proposal_unknown") && DEnvelope(r.Out) is {} e && e.GetProperty("proposal_id").GetString()=="60f91daf-3dd7-4283-a86d-24137b73f3da-0000beef" && !File.Exists(unknownOut),
+                    "mirror-drift-select refuses an unknown proposal id (drift_select_proposal_unknown with proposal_id, no file)",DR(r));
+            }
+            ExpectSelect("mirror-drift-select refuses a proposal chosen twice","drift_select_choice_duplicate","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile(ChoicesJson((selW2,"adopt"),(selW2,"restore"))),DriftOut());
+            ExpectSelect("mirror-drift-select refuses an action other than adopt or restore","drift_select_choice_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile(ChoicesJson((selW2,"keep"))),DriftOut());
+            ExpectSelect("mirror-drift-select refuses an empty proposal id","drift_select_choice_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile(ChoicesJson(("","adopt"))),DriftOut());
+            // Coupling: W1 (the door's host) and D1 both missing; restoring the door alone is drift_select_requires_incomplete.
+            {
+                var coupledNode=System.Text.Json.Nodes.JsonNode.Parse(snapshotText)!.AsObject();
+                var gone=new[]{"b3c223e3-23ef-a05c-2345-ab547eb5c0a5",deletedDoor};
+                foreach(var element in coupledNode["elements"]!.AsArray().ToArray()) if(gone.Contains((string?)element!["Id"] ?? "")) coupledNode["elements"]!.AsArray().Remove(element);
+                foreach(var source in coupledNode["sources"]!.AsArray().ToArray()) if(gone.Contains((string?)source!["id"] ?? "")) coupledNode["sources"]!.AsArray().Remove(source);
+                var coupledText=coupledNode.ToJsonString();
+                var coupledSnapshot=MirrorDrift.ParseSnapshot(coupledText);
+                var coupledResolution=MirrorDriftResolve.Plan(MirrorDrift.Compare(coupledSnapshot,committed,(IReadOnlyList<MirrorJournalEntry>?)null,new MirrorDriftOptions()),coupledSnapshot,committed,bindings);
+                string? coreMessage=null;
+                try { MirrorDriftSelect.Select(coupledResolution,new[]{new MirrorDriftChoice(selD1,"restore")}); } catch(MirrorDriftSelectException e) { coreMessage=e.Message; }
+                var coupledPath=Input("select-coupled-snapshot.json",coupledText);
+                var coupledOut=DriftOut();
+                var r=Cli("mirror-drift-select",driftStore,coupledPath,mirrorPath,ChoicesFile(ChoicesJson((selD1,"restore"))),coupledOut);
+                var expectedEnvelope=coreMessage is null ? "<Core accepted>" : JsonSerializer.Serialize(new {status="failed",code="drift_select_requires_incomplete",detail=coreMessage["drift_select_requires_incomplete ".Length..],proposal_id=selD1,missing=new[]{selW1}});
+                Check(r.Exit==1 && r.Out==expectedEnvelope && !File.Exists(coupledOut),
+                    "mirror-drift-select refuses restoring the door without its host: drift_select_requires_incomplete with proposal_id and missing, no file","expected "+expectedEnvelope+" got "+DR(r));
+                var bothOut=DriftOut();
+                var both=Cli("mirror-drift-select",driftStore,coupledPath,mirrorPath,ChoicesFile(ChoicesJson((selD1,"restore"),(selW1,"restore"))),bothOut);
+                var expectedBoth=CoreSelect(coupledResolution,(selD1,"restore"),(selW1,"restore"));
+                Check(both.Exit==0 && File.Exists(bothOut) && expectedBoth is not null && File.ReadAllText(bothOut,new UTF8Encoding(false))==expectedBoth.ToJson(),"mirror-drift-select accepts the complete coupling (host and door restored) byte-equal to Core",DR(both));
+            }
+
+            // The choices request is strict and bounded (drift_select_request_invalid / drift_select_choices_too_large).
+            ExpectSelect("mirror-drift-select refuses choices that are not JSON","drift_select_request_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile("{not json"),DriftOut());
+            ExpectSelect("mirror-drift-select refuses a bare choices array","drift_select_request_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile("[]"),DriftOut());
+            ExpectSelect("mirror-drift-select refuses an unknown choices member","drift_select_request_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile("{\"choices\":[],\"apply\":true}"),DriftOut());
+            ExpectSelect("mirror-drift-select refuses a duplicate choices member","drift_select_request_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile("{\"choices\":[],\"choices\":[]}"),DriftOut());
+            ExpectSelect("mirror-drift-select refuses a non-string action","drift_select_request_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile("{\"choices\":[{\"proposal_id\":\""+selW2+"\",\"action\":1}]}"),DriftOut());
+            ExpectSelect("mirror-drift-select refuses an unknown choice member","drift_select_request_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile("{\"choices\":[{\"proposal_id\":\""+selW2+"\",\"action\":\"adopt\",\"force\":true}]}"),DriftOut());
+            ExpectSelect("mirror-drift-select refuses a duplicate choice member","drift_select_request_invalid","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile("{\"choices\":[{\"proposal_id\":\""+selW2+"\",\"action\":\"adopt\",\"action\":\"restore\"}]}"),DriftOut());
+            var manyChoices=new StringBuilder("{\"choices\":[");
+            for(var i=0;i<=MirrorDriftOptions.MaxFindingsLimit;i++) { if(i>0) manyChoices.Append(','); manyChoices.Append("{\"proposal_id\":\"x").Append(i.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append("\",\"action\":\"adopt\"}"); }
+            manyChoices.Append("]}");
+            ExpectSelect("mirror-drift-select refuses more than 20000 choices","drift_select_choices_too_large","mirror-drift-select",driftStore,snapshotPath,mirrorPath,ChoicesFile(manyChoices.ToString()),DriftOut());
+            ExpectSelect("mirror-drift-select checks the choices before the store","drift_select_choices_too_large","mirror-drift-select",Path.Combine(work,"no-select-store"),snapshotPath,mirrorPath,ChoicesFile(manyChoices.ToString()),DriftOut());
+            var bigChoices=new byte[BoundedInput.MaxBytes+1]; Array.Fill(bigChoices,(byte)' ');
+            {
+                var r=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,Bytes("select-big.json",bigChoices),DriftOut());
+                Check(r.Exit==1 && r.Out==JsonSerializer.Serialize(new {status="failed",code="input_too_large",detail="choices"}),"mirror-drift-select choices over 8 MiB is input_too_large (detail choices)",DR(r));
+                var r2=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,"",DriftOut());
+                Check(r2.Exit==1 && r2.Out==JsonSerializer.Serialize(new {status="failed",code="input_path_invalid",detail="choices"}),"mirror-drift-select empty choices path is input_path_invalid",DR(r2));
+                var r3=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,Path.Combine(work,"missing-choices.json"),DriftOut());
+                Check(r3.Exit==1 && r3.Out==JsonSerializer.Serialize(new {status="failed",code="input_not_found",detail="choices"}),"mirror-drift-select missing choices file is input_not_found",DR(r3));
+            }
+            // The P2-08 analysis refusals pass through unchanged.
+            ExpectSelect("mirror-drift-select refuses a stale mirror","drift_resolve_report_stale","mirror-drift-select",driftStore,snapshotPath,Input("select-mirror-stale.json",Mirror(revision:2).ToJsonString()),mixedChoices,DriftOut());
+            ExpectSelect("mirror-drift-select refuses a mirror for another document","drift_document_mismatch","mirror-drift-select",driftStore,snapshotPath,Input("select-mirror-other.json",Mirror(document:otherDoc).ToJsonString()),mixedChoices,DriftOut());
+            ExpectSelect("mirror-drift-select on an uninitialized store is input_not_found","input_not_found","mirror-drift-select",emptyStore,snapshotPath,mirrorPath,mixedChoices,DriftOut());
+
+            var selUsage=Cli("mirror-drift-select",driftStore,snapshotPath,mirrorPath,mixedChoices);
+            Check(selUsage.Exit==1 && DEnvelope(selUsage.Out) is {} su && su.GetProperty("code").GetString()!.StartsWith("usage: mirror-drift-select",StringComparison.Ordinal),"mirror-drift-select with a missing argument prints its usage",DR(selUsage));
+            Check(Cli("no-such-verb").Out.Contains("mirror-drift-select store-directory snapshot.json mirror.json choices.json output.json",StringComparison.Ordinal),"default usage lists mirror-drift-select");
+            var selCommandPath=Path.Combine(root,"interfaces","cli","MirrorDriftSelectCommand.cs");
+            var selToolPath=Path.Combine(root,"interfaces","mcp","MirrorDriftSelectTool.cs");
+            Check(File.Exists(selCommandPath) && File.Exists(selToolPath),"mirror-drift-select sources exist");
+            if(File.Exists(selCommandPath) && File.Exists(selToolPath)) {
+                var selSources=File.ReadAllText(selCommandPath)+File.ReadAllText(selToolPath);
+                Check(selSources.Contains("BoundedInput.ReadText",StringComparison.Ordinal) && selSources.Contains("MirrorDriftTool.Analyze",StringComparison.Ordinal) && selSources.Contains("MirrorDriftSelect.Select",StringComparison.Ordinal)
+                    && !selSources.Contains("File.ReadAll",StringComparison.Ordinal) && !selSources.Contains("File.OpenRead",StringComparison.Ordinal) && !selSources.Contains("ProjectStore(",StringComparison.Ordinal),
+                    "mirror-drift-select reads inputs only through BoundedInput and runs the P2-08 analysis then P2-09 Select");
+                Check(!selSources.Contains(".Commit(",StringComparison.Ordinal) && !selSources.Contains("PlanRunner",StringComparison.Ordinal) && !selSources.Contains("RevitCommandService",StringComparison.Ordinal) && !selSources.Contains("Initialize(",StringComparison.Ordinal),
+                    "mirror-drift-select never commits, runs a plan or talks to Revit");
+            }
+        }
     }
 
     // ---- P5-09 skills-lock: pin, verify and update the P5-08 project skill lock (skills.lock.json) from the CLI ----

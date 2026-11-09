@@ -52,7 +52,7 @@ internal static class MirrorDriftCommand
     public const string OutputInStore = "output_in_store";
     public const string InputPathInvalid = "input_path_invalid";
 
-    static bool InsideStore(string store, string output)
+    internal static bool InsideStore(string store, string output)
     {
         if (string.IsNullOrWhiteSpace(store) || store.IndexOf('\0') >= 0) return false;
         string storeFull, parent;
