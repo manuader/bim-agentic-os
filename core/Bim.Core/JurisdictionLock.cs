@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 namespace Bim.Core;
 
@@ -10,8 +9,11 @@ namespace Bim.Core;
 // - LoadLocked(skillsRoot, lock) checks the skills directory with SkillLoader (skills_invalid, as Load), snapshots every
 //   pinned pack once (SkillPackHash.Snapshot) and hands the snapshots to FromSnapshots.
 // - FromSnapshots(lock, snapshots) copies each pinned pack's snapshot bytes, recomputes the bim-skill-pack-sha256-v1 hash
-//   over the copies (a snapshot whose bytes do not match its own ContentSha256, or that lists a path twice, is
-//   skill_lock_drift), verifies the copies with SkillLocking.Verify (version or content differing from the lock:
+//   over the copies with SkillPackHash's own hash function (a snapshot whose bytes do not match its own ContentSha256,
+//   that lists a path twice, holds a path Snapshot could never produce (control character, backslash, empty, "." or
+//   ".." segment, leading or trailing '/', deeper than MaxDepth), exceeds Snapshot's MaxFiles or MaxBytes bounds, or has
+//   a null hash, file list, file, path or byte array, is skill_lock_drift; the path rules keep the hash stream
+//   injective, so no other split of the same bytes into files can reproduce a pinned hash), verifies the copies with SkillLocking.Verify (version or content differing from the lock:
 //   skill_lock_drift; pinned pack without a snapshot: skill_lock_missing; manifest refused: skills_invalid) and parses the
 //   manifests and sidecars from those copies. Later changes to the caller's arrays or to the disk change nothing loaded.
 //   Snapshots of unpinned packs are ignored.
@@ -19,8 +21,13 @@ namespace Bim.Core;
 // same checks and refusal texts as the unlocked reader (empty: not_regular_file; a non-empty directory named
 // jurisdiction.json: not_regular_file; size, UTF-8, strict parse, pack mismatch). Links anywhere in a pinned pack are
 // refused by the snapshot (path_unsafe). An empty directory named jurisdiction.json is not content (the hash ignores empty
-// directories) and counts as no sidecar under a lock, while unlocked Load refuses it. The refusal is the first lock issue
-// in (pack id, code, detail) order, with the number of further issues appended to its detail.
+// directories) and counts as no sidecar under a lock, while unlocked Load refuses it. A top-level file or directory whose
+// name equals jurisdiction.json ignoring case but not exactly (Jurisdiction.json) is path_unsafe under the lock on every
+// OS (unlocked Load reads it only on a case-insensitive file system). The refusal is the first lock issue in (pack id,
+// code, detail) order, with the number of further issues appended to its detail. Subjects: lock and snapshot refusals
+// name the pack id (a snapshot read failure appends the offending file to the detail), where unlocked Load would name
+// <id>/jurisdiction.json for a link or read failure of the sidecar; sidecar content refusals name <id>/jurisdiction.json
+// in both modes, and the case refusal names <id>/<entry as cased>.
 public sealed partial class JurisdictionRegistry
 {
     public static JurisdictionLoad LoadLocked(string skillsRoot, string lockPath)
@@ -82,6 +89,12 @@ public sealed partial class JurisdictionRegistry
         {
             var files = sealedSnapshots[skill.Id].Files;
             var relative = skill.Id + "/" + JurisdictionSidecar.FileName;
+            foreach (var file in files)
+            {
+                var top = file.Path.Split('/')[0];
+                if (string.Equals(top, JurisdictionSidecar.FileName, StringComparison.OrdinalIgnoreCase) && !string.Equals(top, JurisdictionSidecar.FileName, StringComparison.Ordinal))
+                    return new JurisdictionLoad(null, new JurisdictionIssue(JurisdictionCodes.PathUnsafe, skill.Id + "/" + top, "a differently cased jurisdiction.json is refused under the lock; only a case-insensitive file system would read it"));
+            }
             if (files.Any(file => file.Path.StartsWith(JurisdictionSidecar.FileName + "/", StringComparison.Ordinal)))
                 return new JurisdictionLoad(null, new JurisdictionIssue(JurisdictionCodes.NotRegularFile, relative, "a directory is not a sidecar"));
             var sidecar = files.FirstOrDefault(file => file.Path == JurisdictionSidecar.FileName);
@@ -106,23 +119,21 @@ public sealed partial class JurisdictionRegistry
             copies.Add(new SkillPackFile(file.Path, (byte[])file.Bytes.Clone()));
         }
         copies = copies.OrderBy(file => file.Path, StringComparer.Ordinal).ToList();
-        for (var index = 1; index < copies.Count; index++)
-            if (copies[index].Path == copies[index - 1].Path) return (null, Drift("lists " + copies[index].Path + " twice"));
-        string hash;
-        try
+        long total = 0;
+        var directories = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = 0; index < copies.Count; index++)
         {
-            using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            var utf8 = new UTF8Encoding(false, true);
-            sha.AppendData(Encoding.ASCII.GetBytes(SkillPackHash.Scheme + "\n"));
-            foreach (var file in copies)
-            {
-                sha.AppendData(utf8.GetBytes(file.Path + "\n" + file.Bytes.Length.ToString(CultureInfo.InvariantCulture) + "\n"));
-                sha.AppendData(file.Bytes);
-                sha.AppendData(new[] { (byte)'\n' });
-            }
-            hash = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+            var path = copies[index].Path;
+            if (SkillPackHash.PathProblem(path) is { } problem) return (null, Drift("holds a path Snapshot never produces (" + problem + ")"));
+            if (index > 0 && path == copies[index - 1].Path) return (null, Drift("lists a path twice"));
+            for (var slash = path.IndexOf('/', StringComparison.Ordinal); slash >= 0; slash = path.IndexOf('/', slash + 1)) directories.Add(path[..slash]);
+            total += copies[index].Bytes.Length;
         }
-        catch (EncoderFallbackException) { return (null, Drift("lists a path that is not well-formed text")); }
+        if (copies.Count + directories.Count > SkillPackHash.MaxFiles) return (null, Drift("holds more than 4096 files and directories"));
+        if (total > SkillPackHash.MaxBytes) return (null, Drift("holds more than 64 MiB"));
+        string hash;
+        try { hash = SkillPackHash.Hash(copies); }
+        catch (EncoderFallbackException) { return (null, Drift("holds a path that is not well-formed text")); }
         if (hash != snapshot.ContentSha256) return (null, Drift("content sha256 " + hash + " differs from its declared " + snapshot.ContentSha256));
         return (new SkillPackSnapshot(snapshot.Id, hash, copies), null);
     }

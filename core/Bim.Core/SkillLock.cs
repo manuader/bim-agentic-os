@@ -22,9 +22,10 @@ namespace Bim.Core;
 //     ]
 //   }
 // with packs in ordinal id order, entries separated by ",\n", "packs": [] when empty, and one trailing newline.
-// Scope: the lock verifies every file of a pack (the hash covers them all), but only the manifest (skill.json) is
-// served from the verified bytes, as SkillLocking.Load's catalog. Other files such as jurisdiction.json are still read
-// by their own readers (JurisdictionRegistry) from disk and are not lock-checked there.
+// Scope: the lock verifies every file of a pack (the hash covers them all). SkillLocking.Load serves the manifest
+// (skill.json) from the verified bytes as its catalog; JurisdictionRegistry.LoadLocked / FromSnapshots (P5-10) serve
+// jurisdiction.json from the same verified snapshot bytes. Unlocked readers (SkillLoader, JurisdictionRegistry.Load)
+// still read from disk and are not lock-checked.
 // Byte stability: the hash is over raw bytes, so the root .gitattributes marks skills/** and skills.lock.json -text;
 // without it a core.autocrlf checkout would hash differently from an LF checkout.
 public sealed record SkillLockEntry(string Id, SkillVersion Version, string ContentSha256);
@@ -208,7 +209,7 @@ public static class SkillPackHash
                     var relative = prefix + entry.Name;
                     at = packId + "/" + relative;
                     if (IsLink(entry)) throw new SkillLockException(SkillLockCodes.PathUnsafe, at, "symbolic links and junctions are not followed");
-                    if (entry.Name.Any(char.IsControl)) throw new SkillLockException(SkillLockCodes.PathUnsafe, at, "file names with control characters are not hashed");
+                    if (NameProblem(entry.Name) is { } nameProblem) throw new SkillLockException(SkillLockCodes.PathUnsafe, at, nameProblem);
                     if (!Inside(entry.FullName, boundary)) throw new SkillLockException(SkillLockCodes.PathUnsafe, at, "path leaves the skills root");
                     if (++entries > MaxFiles) throw new SkillLockException(SkillLockCodes.TooManyItems, at, "at most 4096 files and directories per pack");
                     if (entry is DirectoryInfo child)
@@ -219,8 +220,6 @@ public static class SkillPackHash
                     else if (entry is FileInfo file) files.Add((relative, file));
                 }
             }
-            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            hash.AppendData(Encoding.ASCII.GetBytes(Scheme + "\n"));
             long total = 0;
             var read = new List<SkillPackFile>();
             foreach (var (relative, file) in files.OrderBy(item => item.Relative, StringComparer.Ordinal))
@@ -228,17 +227,54 @@ public static class SkillPackHash
                 at = packId + "/" + relative;
                 var bytes = ReadFile(file, MaxBytes - total, at);
                 total += bytes.Length;
-                hash.AppendData(new UTF8Encoding(false, true).GetBytes(relative + "\n" + bytes.Length.ToString(CultureInfo.InvariantCulture) + "\n"));
-                hash.AppendData(bytes);
-                hash.AppendData(new[] { (byte)'\n' });
+                // A path that is not well-formed UTF-16 fails here (read_failed at this file), as before the hash moved out.
+                _ = StrictUtf8.GetByteCount(relative);
                 read.Add(new SkillPackFile(relative, bytes));
             }
-            return new SkillPackSnapshot(packId, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(), read);
+            return new SkillPackSnapshot(packId, Hash(read), read);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or EncoderFallbackException)
         {
             throw new SkillLockException(SkillLockCodes.ReadFailed, at, error.Message);
         }
+    }
+
+    static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
+    // The scheme hash of files already in ordinal path order (shared by Snapshot and JurisdictionRegistry.FromSnapshots,
+    // which recomputes it over its own copy of a snapshot). Throws EncoderFallbackException on a path that is not
+    // well-formed UTF-16.
+    internal static string Hash(IEnumerable<SkillPackFile> files)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(Encoding.ASCII.GetBytes(Scheme + "\n"));
+        foreach (var file in files)
+        {
+            hash.AppendData(StrictUtf8.GetBytes(file.Path + "\n" + file.Bytes.Length.ToString(CultureInfo.InvariantCulture) + "\n"));
+            hash.AppendData(file.Bytes);
+            hash.AppendData(new[] { (byte)'\n' });
+        }
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    // Why Snapshot refuses a file or directory name (path_unsafe), or null. Enumeration never yields "", "." or "..",
+    // and '/' cannot occur in a name, so with these refusals no hashed path holds a line break or a backslash.
+    internal static string? NameProblem(string name) =>
+        name.Any(char.IsControl) ? "file names with control characters are not hashed"
+        : name.Contains('\\', StringComparison.Ordinal) ? "file names with a backslash are not hashed" : null;
+
+    // Why a snapshot path could not have come from Snapshot, or null: '/'-separated segments, each non-empty, not "." or
+    // "..", accepted by NameProblem, with at most MaxDepth directories. Such paths keep the hash stream injective.
+    internal static string? PathProblem(string path)
+    {
+        var segments = path.Split('/');
+        if (segments.Length - 1 > MaxDepth) return "more than 32 nested directories";
+        foreach (var segment in segments)
+        {
+            if (segment.Length == 0 || segment is "." or "..") return "a path with an empty, . or .. segment, or a leading or trailing /";
+            if (NameProblem(segment) is { } problem) return problem;
+        }
+        return null;
     }
 
     // One handle, at most Length + 1 bytes, so a file that changes size while being hashed is caught.
