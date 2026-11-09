@@ -19,17 +19,27 @@ points at a built Bim.Revit.dll.
 Uninstall: removes only a Bim.addin matching the recorded hash and restores the backup byte-exactly if one exists
 (also when only the backup is left); a foreign or edited Bim.addin is refused and left untouched; nothing installed
 is a no-op.
+Install from a release archive (P10-10): -Archive <x.zip> [-ChecksumsPath <SHA256SUMS>] instead of -PackageDirectory.
+The archive is extracted only through scripts/package-archive.ps1 -Extract (checksum, entries against manifest.json,
+re-hash on extract, package-verify) into a new private staging folder <temp>/bim-install-addin-<guid> (owner-only
+mode on Unix), which is then installed from exactly like -PackageDirectory (package-verify runs again) and removed
+on success and on every refusal. A package-archive refusal is reported with its type
+('install-addin refused: package-archive refused: <code>: <detail>') and nothing is installed. Because the staging
+folder is removed, -Archive requires -AssemblyPath (Bim.addin must not point into it).
 Target: there is no default. Pass -AddinsDirectory <folder>, or -RevitUserAddins [-RevitYear 2025] to use
 %APPDATA%\Autodesk\Revit\Addins\<year> explicitly. A symlinked Bim.addin, backup or hash record is refused.
 
 .EXAMPLE
 pwsh -File scripts/install-addin.ps1 -PackageDirectory out/release -RevitUserAddins -RevitYear 2025 -AssemblyPath C:\build\Bim.Revit.dll
+pwsh -File scripts/install-addin.ps1 -Archive dist/bim.zip -AddinsDirectory C:\temp\Addins -AssemblyPath C:\build\Bim.Revit.dll
 pwsh -File scripts/install-addin.ps1 -Uninstall -RevitUserAddins -RevitYear 2025
 #>
 #Requires -Version 7.2
 [CmdletBinding()]
 param(
     [string]$PackageDirectory,
+    [string]$Archive,
+    [string]$ChecksumsPath,
     [string]$AddinsDirectory,
     [switch]$RevitUserAddins,
     [string]$RevitYear = '2025',
@@ -45,7 +55,17 @@ $marker = '<!-- bim-agentic-os install-addin.ps1'
 $placeholder = 'REPLACE_WITH_ABSOLUTE_PATH_TO_Bim.Revit.dll'
 function Resolve-FullPath([string]$Path) { [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)) }
 function Get-Sha256Hex([byte[]]$Bytes) { [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant() }
-function Stop-Install([string]$Message) { [Console]::Error.WriteLine("install-addin refused: $Message"); exit 1 }
+# Private staging folder of an -Archive install; removed before every exit of the install path.
+$script:StagingRoot = $null
+function Remove-Staging {
+    if ($script:StagingRoot -and (Test-Path -LiteralPath $script:StagingRoot)) {
+        try { Remove-Item -LiteralPath $script:StagingRoot -Recurse -Force -ErrorAction Stop }
+        catch { [Console]::Error.WriteLine("install-addin: WARNING could not remove the staging folder $($script:StagingRoot): $($_.Exception.Message)") }
+    }
+}
+function Stop-Install([string]$Message) { Remove-Staging; [Console]::Error.WriteLine("install-addin refused: $Message"); exit 1 }
+# An unexpected terminating error still removes the staging folder before the script stops.
+trap { Remove-Staging; break }
 function Write-AtomicText([string]$Path, [string]$Text) {
     $temp = $Path + '.tmp-' + [Guid]::NewGuid().ToString('N')
     try {
@@ -57,6 +77,12 @@ function Write-AtomicText([string]$Path, [string]$Text) {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
     }
 }
+
+# --- Source arguments: -PackageDirectory or -Archive [-ChecksumsPath], install only ---
+if ($Uninstall -and ($Archive -or $ChecksumsPath)) { Stop-Install '-Archive/-ChecksumsPath are install inputs; -Uninstall takes only the target folder. Nothing was changed.' }
+if ($Archive -and $PackageDirectory) { Stop-Install 'pass either -PackageDirectory or -Archive, not both. Nothing was written.' }
+if ($ChecksumsPath -and !$Archive) { Stop-Install '-ChecksumsPath is only used with -Archive. Nothing was written.' }
+if ($Archive -and !$AssemblyPath) { Stop-Install '-Archive needs -AssemblyPath <built Bim.Revit.dll>: the archive is extracted into a private staging folder that is removed after the install, so Bim.addin cannot point at an assembly inside it. Nothing was written.' }
 
 # --- Target: explicit only ---
 if ($AddinsDirectory -and $RevitUserAddins) { Stop-Install 'pass either -AddinsDirectory or -RevitUserAddins, not both.' }
@@ -111,14 +137,42 @@ if ($Uninstall) {
 }
 
 # --- Package: must pass package-verify ---
-if (!$PackageDirectory) { Stop-Install '-PackageDirectory <release folder from scripts/package.ps1> is required to install.' }
-$package = Resolve-FullPath $PackageDirectory
+$pwsh = (Get-Process -Id $PID).Path
+if ($Archive) {
+    # Only package-archive -Extract may produce the folder installed from; it goes into a fresh private staging folder.
+    $archiveFile = Resolve-FullPath $Archive
+    $archiveArguments = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'package-archive.ps1'), '-Extract', '-ArchivePath', $archiveFile)
+    if ($ChecksumsPath) { $archiveArguments += @('-ChecksumsPath', (Resolve-FullPath $ChecksumsPath)) }
+    $script:StagingRoot = Join-Path ([IO.Path]::GetTempPath()) ('bim-install-addin-' + [Guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($script:StagingRoot)
+    "STAGED $($script:StagingRoot)"
+    if (!$IsWindows) {
+        # Owner-only (0700); [IO.UnixFileMode] needs .NET 7+, older runtimes keep the default temp permissions.
+        try { [IO.File]::SetUnixFileMode($script:StagingRoot, [IO.UnixFileMode]448) }
+        catch { "WARNING could not restrict $($script:StagingRoot) to its owner: $($_.Exception.Message)" }
+    }
+    $package = Join-Path $script:StagingRoot 'package'
+    $archiveArguments += @('-DestinationDirectory', $package)
+    $ErrorActionPreference = 'Continue'
+    $archiveOutput = @(& $pwsh @archiveArguments 2>&1 | ForEach-Object { "$_" })
+    $archiveCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($archiveCode -ne 0) {
+        $typed = @($archiveOutput | Where-Object { $_ -cmatch '\Apackage-archive refused: [a-z_]+: ' })
+        $reason = if ($typed.Count) { $typed[0] } else { "package-archive failed on $archiveFile (exit $archiveCode): $($archiveOutput -join '; ')" }
+        Stop-Install "$reason. Nothing was installed; the staging folder was removed."
+    }
+    if (!(Test-Path -LiteralPath (Join-Path $package 'manifest.json') -PathType Leaf)) { Stop-Install "package-archive reported success but $package holds no extracted package. Nothing was installed; the staging folder was removed." }
+    "EXTRACTED $archiveFile (verified by package-archive against its SHA256SUMS and manifest.json)"
+} else {
+    if (!$PackageDirectory) { Stop-Install '-PackageDirectory <release folder from scripts/package.ps1> (or -Archive <release zip>) is required to install.' }
+    $package = Resolve-FullPath $PackageDirectory
+}
 if (!(Test-Path -LiteralPath $package -PathType Container)) { Stop-Install "package folder not found: $package" }
 $manifestPath = Join-Path $package 'manifest.json'
 # Snapshot manifest.json before verification; the snapshot is what gets parsed, and it must still match afterwards.
 $manifestBefore = if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { [IO.File]::ReadAllBytes($manifestPath) } else { $null }
 $verifier = if ($VerifyScript) { Resolve-FullPath $VerifyScript } else { Join-Path $PSScriptRoot 'package-verify.ps1' }
-$pwsh = (Get-Process -Id $PID).Path
 $ErrorActionPreference = 'Continue'
 $verifyOutput = @(& $pwsh -NoProfile -File $verifier -PackageDirectory $package 2>&1 | ForEach-Object { "$_" })
 $verifyCode = $LASTEXITCODE
@@ -154,7 +208,7 @@ try { $xml = [xml]$text } catch { Stop-Install "rendered Bim.addin is not valid 
 if ([string]$xml.RevitAddIns.AddIn.Assembly -cne $assembly) { Stop-Install "rendered Bim.addin assembly '$($xml.RevitAddIns.AddIn.Assembly)' does not match '$assembly'." }
 
 $textBytes = [Text.UTF8Encoding]::new($false).GetBytes($text)
-if ($ours -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($addin)) -ceq [Convert]::ToBase64String($textBytes)) { "UNCHANGED $addin already installs $assembly"; exit 0 }
+if ($ours -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($addin)) -ceq [Convert]::ToBase64String($textBytes)) { Remove-Staging; "UNCHANGED $addin already installs $assembly"; exit 0 }
 [void][IO.Directory]::CreateDirectory($addinsDir)
 $createdBackup = $false
 if ($exists -and !$ours) {
@@ -181,4 +235,6 @@ try {
     if ($createdBackup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
     Stop-Install "writing $addin failed ($reason); the existing Bim.addin was left as it was and this run's backup was removed."
 }
+Remove-Staging
 "INSTALLED $addin (package $($manifest.version), assembly $assembly). Restart Revit to load it."
+exit 0
