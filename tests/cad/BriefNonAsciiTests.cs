@@ -75,6 +75,9 @@ internal static class BriefNonAsciiTests
         ["planner brief-plan.dxf"] = "7D85165FD11FA714",
         ["extract latin"] = "17C299A93E0A1024",
         ["planner latin"] = "7CE1E819392AE95A",
+        // Captured from main f671157 with the temporary probe branch relay168-P6-11-baseline (run 42672673209).
+        ["extract noise"] = "95ECFCF91685FE31",
+        ["planner noise"] = "5526081E600DD88D",
     };
 
     private static string? Pin(string name, Func<string> json)
