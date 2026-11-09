@@ -28,9 +28,13 @@ public sealed record PrototypePipelineRejection(PrototypePipelineGate Gate, stri
 // opt-in, off when null) runs PrototypeSnap on every plan before the gates, with the Ir wall thickness: snapped plans go
 // through the gates in place of the generated ones, a refused snap rejects its alternative at the prototype gate with the
 // prototype_snap_* reasons. With Snap null the result and its canonical JSON are exactly those of P7-07.
+// FacadeWeight (P7-10, opt-in, off when 0) is the given weight of an eighth ranking criterion, "facade": the
+// illumination/ventilation margin of the accepted alternatives' windows over the pack's ratio minimums (see
+// PrototypePipeline step 5). It must be finite and non-negative; with 0 the result and its canonical JSON are exactly
+// those of P7-07.
 public sealed record PrototypePipelineOptions(SkillManifest Pack, Guid ProjectId, int Revision = 0,
     double CirculationWeight = CirculationScoring.DefaultCirculationWeight, CirculationOptions? Circulation = null, FacadeOptions? Facade = null,
-    FacadeIrOptions? Ir = null, IReadOnlyDictionary<string, double>? Parameters = null, PrototypeSnapOptions? Snap = null);
+    FacadeIrOptions? Ir = null, IReadOnlyDictionary<string, double>? Parameters = null, PrototypeSnapOptions? Snap = null, double FacadeWeight = 0);
 
 // One alternative through the pipeline. Index and Seed are its generation position and seed; Strategy the prototype
 // strategy (null when ranking caller-supplied plans). Rank is 1-based among the accepted alternatives and 0 for a
@@ -73,6 +77,8 @@ public static class PrototypePipelineCodes
     public const string IrCompileFailed = "pipeline_ir_compile_failed";
     // facade rejection fallback: the layout is not complete but lists no failed check (a safeguard).
     public const string FacadeIncomplete = "pipeline_facade_incomplete";
+    // P7-10: the name of the opt-in facade ranking criterion (PrototypePipelineOptions.FacadeWeight).
+    public const string FacadeCriterion = "facade";
 
     public static string GateName(PrototypePipelineGate gate) => gate switch
     {
