@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-05",
+  "updated": "2026-11-09",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -797,7 +797,7 @@
         "core/Bim.Core/DocUpdate.cs",
         "tests/doc-regeneration/Update.cs"
       ],
-      "blocker": "Fake transport only, never run in Revit; dependents passed strictly (caller plans, dry-runs deletes, replans — P4-09); bindings must be the after-state bindings; a missing UniqueId inside confirm_dependents still fails the update; no CLI verb (P4-08).",
+      "blocker": "Fake transport only, never run in Revit; dependents passed strictly (caller plans, dry-runs deletes, replans — P4-09); bindings must be the after-state bindings; a missing UniqueId inside confirm_dependents still fails the update; dry-plan CLI only (doc-update, P4-08), no run verb.",
       "scope": "P4-07: DocUpdate.Update/Plan/Run/Resume take BIM-IR before/after, bindings, realized doc:/element: map and optional dry-run dependents; DocDefaults before/after → DocRegeneration.Affected + forced keys (changed or new default definitions, never-realized supported items, and their children, merged from Full(after)) → retired keys (before-only realized, doc_retired) → DocReplace through PlanRunner; element: sources missing from after pruned; stale deletes answered reference_not_found move to Gone and the plan is rebuilt with operation-id replay; updated map as sorted ReadOnlyDictionary; no-edit run empty; unrelated edit sends nothing; byte-identical under reversed maps and tr-TR/de-DE. CI 42030387084."
     },
     {
@@ -1275,6 +1275,39 @@
       ],
       "blocker": "No signing (consistent edit of entry + manifest + SHA256SUMS is accepted); byte-identical only within one OS and pwsh/.NET version; install-addin.ps1 does not take an archive yet (P10-10); archive entries at root.",
       "scope": "P10-08: package-archive.ps1 create (verified P10-04 folder → zip with manifest.json + listed files in ordinal order, fixed timestamp/attributes, Optimal deflate, SHA256SUMS, staged then renamed, never overwrite, runtime version printed), -Verify and -Extract (private copy hashed, every entry size-bounded and re-hashed on extract, package-verify on staging, rename into place); typed refusals checksums_missing/invalid/mismatch, archive_unreadable, entry_path_unsafe (traversal, drive/colon, reserved device names, directory entries), entry_duplicate (case-insensitive, file/folder clash), manifest_missing/invalid, entry_unlisted/missing/mismatch/order, package_invalid, destination_exists; no leftovers; same bytes under TZ Pacific/Kiritimati and tr-TR; real two clean builds byte-identical on ubuntu and windows. CI 42070078862."
+    },
+    {
+      "id": "doc-update-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/DocUpdateCommand.cs",
+        "interfaces/cli/Program.cs",
+        "tests/cli/Program.cs"
+      ],
+      "blocker": "Dry plan only (no Run/Resume verb); output is the default System.Text.Json serialization of DocUpdatePlan (no hand-written canonical writer); before/after projects parsed leniently like diff-edits; no CLI-level culture-swap test (relies on P4-07 library test and ubuntu/windows/macos CI).",
+      "scope": "P4-08: `doc-update --before --after --realized --bindings --output [--dependents]` writes JsonSerializer.Serialize(DocUpdate.Plan(...)) byte-identical to the library without a transport; BoundedInput 8 MiB and 100,000-entry bounds on realized entries, level bindings, wall types and dependent UniqueIds; strict realized/bindings/dependents JSON (duplicate/unknown members refused; null optional members = absent; duplicate wall-type thicknesses refused); summary counts computed before the exclusive never-overwrite write; typed {status:failed,code[,detail]} exit 1 and no file on failure; library codes passed through an explicit allowlist; deterministic across flag, realized, levels and dependents order. CI 42682045940 (red 42660367951, review red 42680566316)."
+    },
+    {
+      "id": "cad-brief-non-latin-labels",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/cad/Bim.Cad/BriefExtract.cs",
+        "tests/cad/BriefNonAsciiTests.cs"
+      ],
+      "blocker": "No non-Latin room vocabulary (non-Latin labels are kept only alone in a region, label-outside-vocabulary); non-Latin area units not parsed; one-character CJK names and scripts outside the fixed ranges (Ethiopic, Tibetan, Mongolian) not labels; mixed-script labels slug to their Latin part and can false-duplicate; synthetic DXF only.",
+      "scope": "P6-11: labels whose only words are non-Latin script words (≥2 Greek/Cyrillic/Armenian/Hebrew/Arabic/Indic/Thai/Lao/Georgian/Hangul/Kana/Han letters, non-Latin unit words excluded) become brief rooms with id room_<16 hex SHA-256 of the invariant-lowercase NFC key, Greek accents and final sigma folded>; culture-invariant and collision-free with Latin slugs; case/accent variants group as duplicate-label in BriefExtract and BriefPlanner; Ø/%%c, º/ª, ß, µ and lone Greek letters are still not labels (output pinned against main); all pre-existing fixture extractions and brief-plan planner output pinned byte for byte. CI 42674160689."
+    },
+    {
+      "id": "prototype-facade-ranking",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/PrototypePipeline.cs",
+        "core/Bim.Generative/PrototypePipelineModel.cs",
+        "core/Bim.Generative/PrototypePipelineSerializer.cs",
+        "tests/generative/PrototypePipelineTests.cs"
+      ],
+      "blocker": "Weak signal on real prototypes (0 of 4 requests re-ranked at weight 0.5) because FacadePlanner sizes windows to the minimum; area margin only (no orientation, sun or view); not exposed by a CLI yet (P7-09); Run still refuses all-zero ranking weights at the prototype stage.",
+      "scope": "P7-10: PrototypePipelineOptions.FacadeWeight (default 0) adds the eighth criterion `facade` to accepted alternatives = mean per-room window margin over the illumination/ventilation ratios FacadePlanner resolved from the pack (weakest ratio, floored at 0), normalized m/(1+m), explained per room (achieved, minimum, margin, rule ids, overrides); weights renormalised over eight and accepted alternatives re-ranked by total then index; facade-only weights accepted; non-finite score rejected score_not_finite@facade; negative/non-finite weight weights_invalid; `facade_weight` serialized only when non-zero, so weight 0/absent keeps the P7-07 bytes (pinned). Ranking keeps CirculationRanker's seven criteria. CI 42687195714 (red 42660034271, review red 42684396478)."
     }
   ]
 }

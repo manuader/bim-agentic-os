@@ -211,3 +211,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P9-06: no failed attempts (red 42079534722 → green 42081753813; review red 42088743974 → green 42088830631).
 - P1-11 Attempt1 (run 42083809945, 6537406): hypothesis the fake save_copy handler can reuse `$sha` for the copy hash → wrong, `$sha` is the request hash the receipt echoes, so the real-CLI pass got response_invalid; renamed `$copySha`, green 42084994501. Review red 42091583347 → green 42092176694, no further attempts.
 - P3-07: no failed attempts (compile slip 42079678269 — test locals clashing with enclosing names, not an attempt; red 42081207010 → green 42082226772; review red 42094495789 → green 42095406642).
+
+### Relay168 (2026-11-09, cloud)
+- P4-08: no failed attempts (red 42660367951 → green 42662042513; review red 42680566316 → green 42682045940).
+- P6-11: no failed attempts (red 42660083366, pin capture 42662381263 → green 42665024555 after a re-run of an unrelated flaky `pipe_io_error` in the real-CLI one-run test; review red 42669852315, then 42672669522 after the first red drawing could not show the blocker (stray texts only inside vocabulary rooms) — a test-design correction, not an attempt; main baseline via probe branch run 42672673209 (deleted); green 42674160689).
+- P7-10: no failed attempts (relay167 pin capture 42107977912; red 42660034271 → green 42662455732; review red 42684396478 → green 42687195714).
