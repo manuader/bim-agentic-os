@@ -18,7 +18,9 @@
 #            Entry names must also be portable: no file/folder clash (case-insensitive), no Windows reserved device
 #            names (CON, PRN, AUX, NUL, COM1-9, LPT1-9, CONIN$, CONOUT$, any extension), no directory entries.
 #            The -Extract output is a verified P10-04 release folder: pass it to scripts/install-addin.ps1
-#            -PackageDirectory (which runs package-verify again) to install the add-in.
+#            -PackageDirectory (which runs package-verify again) to install the add-in, or let
+#            scripts/install-addin.ps1 -Archive <x.zip> [-ChecksumsPath ...] run this -Extract into its own private
+#            staging folder (removed afterwards) and report refusals with their code (P10-10).
 # Relative paths resolve against the PowerShell location. Directories created by a refused run are removed.
 # Reproducibility: byte-identical for the same release folder on the same OS with the same pwsh/.NET runtime
 # (deflate output changed between runtimes, e.g. .NET 9 zlib-ng); create prints the runtime it used. Time zone and
