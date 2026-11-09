@@ -1,5 +1,6 @@
 #Requires -Version 7.2
-# P10-07 add-in install/uninstall checks (plain assertions, no Pester). Never touches a real Revit folder: every
+# P10-07 add-in install/uninstall checks, plus P10-10 install from a release archive (-Archive [-ChecksumsPath]) whose
+# private staging folder must be gone after every outcome (plain assertions, no Pester). Never touches a real Revit folder: every
 # Addins directory is a temp directory, and APPDATA is pointed at a temp directory for the -RevitUserAddins case.
 # Synthetic packages are made with the P10-04 manifest helpers (no dotnet needed); -PackageDirectory adds a check
 # against a real package produced by scripts/package.ps1 (tests/packaging/test-package.ps1 passes one).
@@ -24,7 +25,7 @@ function Complete {
         Write-Error "install-addin checks failed: $($failures.Count) failure(s); first: $($failures[0])"
         exit 1
     }
-    'PASS install-addin: explicit target required, unverified or swapped package refused, assembly path filled, backup and uninstall restore, write-failure rollback, hash ownership, relative paths, idempotent reinstall'
+    'PASS install-addin: explicit target required, unverified or swapped package refused, assembly path filled, backup and uninstall restore, write-failure rollback, hash ownership, relative paths, idempotent reinstall; archive install via package-archive -Extract into removed private staging, typed archive refusals, -ChecksumsPath, archive -> install -> uninstall'
     exit 0
 }
 function Get-Tail([string]$Text) { $t = $Text -replace '[\r\n]+', ' | '; if ($t.Length -gt 500) { $t.Substring($t.Length - 500) } else { $t } }
@@ -53,6 +54,70 @@ function Read-Assembly([string]$AddinFile) {
 function Get-B64([string]$Path) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) }
 function Get-Quoted([string]$Text) { "'" + $Text.Replace("'", "''") + "'" }
 function Get-Names([string]$Directory) { if (Test-Path -LiteralPath $Directory) { @(Get-ChildItem -LiteralPath $Directory -Force | ForEach-Object Name | Sort-Object) } else { @() } }
+function Invoke-Child([string]$Script, [string[]]$Arguments) {
+    $ErrorActionPreference = 'Continue'
+    $output = & $pwsh -NoProfile -File $Script @Arguments 2>&1 | ForEach-Object { "$_" }
+    return [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($output -join "`n") }
+}
+# P10-10: runs a script block with APPDATA and the temp directory (TEMP/TMP/TMPDIR) pointed at test folders, so the
+# installer's private staging and package-archive's private copy land where the test can prove they were removed.
+function Invoke-WithTemp([scriptblock]$Body) {
+    $names = 'APPDATA', 'TEMP', 'TMP', 'TMPDIR'
+    $saved = @{}
+    foreach ($name in $names) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+    [Environment]::SetEnvironmentVariable('APPDATA', $script:fakeAppData, 'Process')
+    foreach ($name in 'TEMP', 'TMP', 'TMPDIR') { [Environment]::SetEnvironmentVariable($name, $script:fakeTemp, 'Process') }
+    try { return (& $Body) }
+    finally { foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') } }
+}
+function Invoke-ArchiveInstaller([string[]]$Arguments) { Invoke-WithTemp { Invoke-Child $installer $Arguments } }
+# The installer prints 'STAGED <private folder>'; that folder and every bim-install-addin-*/bim-archive-* temp entry
+# must be gone after the run, whatever its outcome.
+function Assert-StagingRemoved($Run, [string]$Label, [switch]$ExpectStaged) {
+    $staged = $null
+    foreach ($line in ($Run.Output -split "`n")) { if ($line -match '\ASTAGED (.+?)\r?\z') { $staged = $Matches[1] } }
+    if ($ExpectStaged) {
+        Assert ($null -ne $staged) "${Label}: installer did not report its STAGED folder: $(Get-Tail $Run.Output)"
+        if ($staged) { Assert ($staged.StartsWith($script:fakeTemp, [StringComparison]::OrdinalIgnoreCase)) "${Label}: staging folder $staged is not under the temp directory $($script:fakeTemp)" }
+    }
+    if ($staged) { Assert (!(Test-Path -LiteralPath $staged)) "${Label}: staging folder $staged was left behind" }
+    $left = @(Get-ChildItem -LiteralPath $script:fakeTemp -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'bim-install-addin-*' -or $_.Name -like 'bim-archive-*' })
+    Assert ($left.Count -eq 0) "${Label}: temp leftovers: $(($left | ForEach-Object Name) -join ', ')"
+    foreach ($item in $left) { Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+}
+# Rewrites a zip entry by entry (the edit block gets a list of Name/Bytes objects) and writes a matching SHA256SUMS,
+# so the archive passes the checksum and only the entry checks can refuse it.
+function Copy-ZipWith([string]$Source, [string]$Destination, [scriptblock]$Edit) {
+    $entries = [Collections.Generic.List[object]]::new()
+    $in = [IO.File]::OpenRead($Source)
+    try {
+        $zip = [IO.Compression.ZipArchive]::new($in, [IO.Compression.ZipArchiveMode]::Read)
+        try {
+            foreach ($entry in $zip.Entries) {
+                $memory = [IO.MemoryStream]::new()
+                $stream = $entry.Open()
+                try { $stream.CopyTo($memory) } finally { $stream.Dispose() }
+                $entries.Add([pscustomobject]@{ Name = $entry.FullName; Bytes = $memory.ToArray() })
+            }
+        } finally { $zip.Dispose() }
+    } finally { $in.Dispose() }
+    & $Edit $entries
+    New-Item -ItemType Directory -Force (Split-Path $Destination) | Out-Null
+    $out = [IO.File]::Create($Destination)
+    try {
+        $zip = [IO.Compression.ZipArchive]::new($out, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($item in $entries) {
+                $stream = $zip.CreateEntry($item.Name).Open()
+                try { $stream.Write($item.Bytes, 0, $item.Bytes.Length) } finally { $stream.Dispose() }
+            }
+        } finally { $zip.Dispose() }
+    } finally { $out.Dispose() }
+    $hash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText((Join-Path (Split-Path $Destination) 'SHA256SUMS'), "$hash  $([IO.Path]::GetFileName($Destination))`n")
+}
+Add-Type -AssemblyName System.IO.Compression
+$archiver = Join-Path $root 'scripts/package-archive.ps1'
 
 Assert (Test-Path -LiteralPath $installer -PathType Leaf) 'scripts/install-addin.ps1 is missing'
 Assert (Test-Path -LiteralPath $common -PathType Leaf) 'scripts/package-common.ps1 is missing'
@@ -63,6 +128,9 @@ $work = Join-Path ([IO.Path]::GetTempPath()) ('bim addin test & ' + [Guid]::NewG
 New-Item -ItemType Directory -Force $work | Out-Null
 $script:fakeAppData = Join-Path $work 'fake appdata'
 New-Item -ItemType Directory -Force $script:fakeAppData | Out-Null
+$script:fakeTemp = Join-Path $work 'fake temp'
+New-Item -ItemType Directory -Force $script:fakeTemp | Out-Null
+$fakeTemp = $script:fakeTemp
 try {
     $bare = New-SyntheticPackage (Join-Path $work 'pkg bare')
     $full = New-SyntheticPackage (Join-Path $work 'pkg & full') -WithAssembly
@@ -273,8 +341,157 @@ exit `$code
     $run = Invoke-Installer @('-PackageDirectory', $full, '-RevitUserAddins', '-RevitYear', '25')
     Assert ($run.Code -ne 0) '-RevitYear must be a four-digit year'
 
+    # --- P10-10: -PackageDirectory still installs straight from the folder (no archive staging) ---
+    $target = Join-Path $work 'addins folder path'
+    $run = Invoke-Installer @('-PackageDirectory', $full, '-AddinsDirectory', $target)
+    Assert ($run.Code -eq 0 -and $run.Output -notmatch '(?m)^STAGED ') "-PackageDirectory install must not stage an archive: $(Get-Tail $run.Output)"
+    if (Test-Path -LiteralPath (Join-Path $target 'Bim.addin')) { Assert ((Read-Assembly (Join-Path $target 'Bim.addin')).Assembly -ceq $fullDll) '-PackageDirectory install no longer points at the package Bim.Revit.dll' }
+    else { $failures.Add('-PackageDirectory install did not create Bim.addin') }
+
+    # --- P10-10: install from a release archive (package-archive -Extract into private staging) ---
+    $archivePkg = New-SyntheticPackage (Join-Path $work 'pkg for archive')
+    $zip = Join-Path (Join-Path $work 'release & dist') 'bim-1.2.3.zip'
+    $zipSums = Join-Path (Split-Path $zip) 'SHA256SUMS'
+    $made = Invoke-Child $archiver @('-PackageDirectory', $archivePkg, '-ArchivePath', $zip)
+    Assert ($made.Code -eq 0 -and (Test-Path -LiteralPath $zip) -and (Test-Path -LiteralPath $zipSums)) "test setup: package-archive could not create $zip : $(Get-Tail $made.Output)"
+    $builtDll = Join-Path (Join-Path $work 'built dll') 'Bim.Revit.dll'
+    New-Item -ItemType Directory -Force (Split-Path $builtDll) | Out-Null
+    [IO.File]::WriteAllText($builtDll, 'not a real assembly')
+
+    # Argument refusals happen before anything is staged or written.
+    $target = Join-Path $work 'addins archive args'
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-PackageDirectory', $full, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll)
+    Assert ($run.Code -ne 0 -and $run.Output -match 'Archive' -and $run.Output -match 'PackageDirectory') "-Archive with -PackageDirectory must be refused naming both: $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'archive+package refusal'
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target)
+    Assert ($run.Code -ne 0 -and $run.Output -match 'AssemblyPath') "-Archive without -AssemblyPath must be refused naming it (the staging folder is removed, so Bim.addin cannot point into it): $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'archive without -AssemblyPath'
+    $run = Invoke-ArchiveInstaller @('-PackageDirectory', $full, '-ChecksumsPath', $zipSums, '-AddinsDirectory', $target)
+    Assert ($run.Code -ne 0 -and $run.Output -match 'ChecksumsPath') "-ChecksumsPath without -Archive must be refused naming it: $(Get-Tail $run.Output)"
+    $run = Invoke-ArchiveInstaller @('-Uninstall', '-Archive', $zip, '-AddinsDirectory', $target)
+    Assert ($run.Code -ne 0 -and $run.Output -match 'Uninstall') "-Uninstall with -Archive must be refused: $(Get-Tail $run.Output)"
+    Assert (!(Test-Path -LiteralPath $target)) "archive argument refusals created $target"
+
+    # End to end on an explicit Addins folder holding a foreign Bim.addin: archive -> install -> reinstall -> uninstall.
+    $target = Join-Path $work 'addins archive e2e'
+    New-Item -ItemType Directory -Force $target | Out-Null
+    $addin = Join-Path $target 'Bim.addin'
+    [IO.File]::WriteAllBytes($addin, $original)
+    [IO.File]::WriteAllText((Join-Path $target 'Other.addin'), 'other add-in')
+    $zipBytes = Get-B64 $zip
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll)
+    Assert ($run.Code -eq 0 -and $run.Output -match 'INSTALLED') "install from a release archive exit $($run.Code): $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'archive install' -ExpectStaged
+    if (Test-Path -LiteralPath $addin) {
+        $read = Read-Assembly $addin
+        Assert ($read.Assembly -ceq [IO.Path]::GetFullPath($builtDll)) "archive install assembly '$($read.Assembly)' != -AssemblyPath '$builtDll'"
+        Assert ($read.AddInId -ceq '7CB23333-1063-4E43-84E9-415EAA1E4BF2' -and $read.FullClassName -ceq 'Bim.Revit.App') 'archive install lost the template AddInId/FullClassName'
+        Assert ([IO.File]::ReadAllText($addin).Contains('version=1.2.3')) 'archive install marker does not carry the archived package version'
+    } else { $failures.Add("install from a release archive did not create $addin") }
+    Assert ((Test-Path -LiteralPath ($addin + '.bim-agentic-os-backup')) -and (Get-B64 ($addin + '.bim-agentic-os-backup')) -ceq [Convert]::ToBase64String($original)) 'archive install must back up the foreign Bim.addin byte-exactly'
+    Assert ((Get-B64 $zip) -ceq $zipBytes) 'archive install changed the archive'
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll)
+    Assert ($run.Code -eq 0 -and $run.Output -match 'UNCHANGED') "identical archive reinstall must be UNCHANGED: $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'archive reinstall (UNCHANGED)' -ExpectStaged
+    $run = Invoke-ArchiveInstaller @('-Uninstall', '-AddinsDirectory', $target)
+    Assert ($run.Code -eq 0) "uninstall after archive install exit $($run.Code): $(Get-Tail $run.Output)"
+    Assert ((Get-B64 $addin) -ceq [Convert]::ToBase64String($original) -and (Get-Names $target) -join ',' -ceq 'Bim.addin,Other.addin') "uninstall after archive install must restore the original, found: $((Get-Names $target) -join ', ')"
+
+    # Fresh explicit Addins folder: install then uninstall leaves it empty.
+    $target = Join-Path $work 'addins archive fresh'
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll)
+    Assert ($run.Code -eq 0 -and (Get-Names $target) -join ',' -ceq 'Bim.addin,Bim.addin.bim-agentic-os-sha256') "fresh archive install must create only Bim.addin and its hash record (exit $($run.Code)), found: $((Get-Names $target) -join ', '): $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'fresh archive install' -ExpectStaged
+    $run = Invoke-ArchiveInstaller @('-Uninstall', '-AddinsDirectory', $target)
+    Assert ($run.Code -eq 0 -and (Get-Names $target).Count -eq 0) "uninstall of a fresh archive install must leave the folder empty: $(Get-Tail $run.Output)"
+
+    # -ChecksumsPath: SHA256SUMS kept elsewhere than next to the archive.
+    $moved = Join-Path (Join-Path $work 'moved archive') 'bim-1.2.3.zip'
+    New-Item -ItemType Directory -Force (Split-Path $moved) | Out-Null
+    Copy-Item -LiteralPath $zip -Destination $moved
+    $movedSums = Join-Path (Join-Path $work 'sums elsewhere') 'release.sha256'
+    New-Item -ItemType Directory -Force (Split-Path $movedSums) | Out-Null
+    Copy-Item -LiteralPath $zipSums -Destination $movedSums
+    $target = Join-Path $work 'addins archive sums'
+    $run = Invoke-ArchiveInstaller @('-Archive', $moved, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll)
+    Assert ($run.Code -ne 0 -and $run.Output -match 'package-archive refused: checksums_missing') "archive without SHA256SUMS next to it must be refused with checksums_missing: $(Get-Tail $run.Output)"
+    Assert (!(Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) 'archive refused for missing checksums still installed Bim.addin'
+    Assert-StagingRemoved $run 'checksums_missing refusal'
+    $run = Invoke-ArchiveInstaller @('-Archive', $moved, '-ChecksumsPath', $movedSums, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll)
+    Assert ($run.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) "install with -ChecksumsPath exit $($run.Code): $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'install with -ChecksumsPath' -ExpectStaged
+    $run = Invoke-ArchiveInstaller @('-Uninstall', '-AddinsDirectory', $target)
+    Assert ($run.Code -eq 0 -and (Get-Names $target).Count -eq 0) "uninstall after -ChecksumsPath install must leave the folder empty: $(Get-Tail $run.Output)"
+
+    # P10-08 refusals propagate typed: nothing installed, foreign Bim.addin untouched, staging removed.
+    $bad = Join-Path $work 'bad archives'
+    $mismatchZip = Join-Path (Join-Path $bad 'checksum') 'bim-1.2.3.zip'
+    New-Item -ItemType Directory -Force (Split-Path $mismatchZip) | Out-Null
+    Copy-Item -LiteralPath $zip -Destination $mismatchZip
+    Copy-Item -LiteralPath $zipSums -Destination (Join-Path (Split-Path $mismatchZip) 'SHA256SUMS')
+    [IO.File]::AppendAllText($mismatchZip, 'x')
+    $entryZip = Join-Path (Join-Path $bad 'entry') 'bim-1.2.3.zip'
+    Copy-ZipWith $zip $entryZip { param($list) foreach ($item in $list) { if ($item.Name -ceq 'revit/Bim.addin.template') { $item.Bytes = [Text.Encoding]::UTF8.GetBytes('<RevitAddIns>tampered</RevitAddIns>') } } }
+    $unsafeZip = Join-Path (Join-Path $bad 'unsafe') 'bim-1.2.3.zip'
+    Copy-ZipWith $zip $unsafeZip { param($list) $list.Insert(0, [pscustomobject]@{ Name = '../escaped.txt'; Bytes = [Text.Encoding]::UTF8.GetBytes('escaped') }) }
+    $cases = @(
+        @{ Name = 'checksum'; Zip = $mismatchZip; Code = 'checksum_mismatch' },
+        @{ Name = 'entry'; Zip = $entryZip; Code = 'entry_mismatch' },
+        @{ Name = 'unsafe'; Zip = $unsafeZip; Code = 'entry_path_unsafe' },
+        @{ Name = 'missing'; Zip = (Join-Path $bad 'nothing here.zip'); Code = 'archive_missing' }
+    )
+    foreach ($case in $cases) {
+        $target = Join-Path $work ('addins refused ' + $case.Name)
+        New-Item -ItemType Directory -Force $target | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $target 'Bim.addin'), $original)
+        $run = Invoke-ArchiveInstaller @('-Archive', $case.Zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll)
+        Assert ($run.Code -ne 0) "$($case.Name) archive must be refused (exit $($run.Code)): $(Get-Tail $run.Output)"
+        Assert ($run.Output -match 'install-addin refused' -and $run.Output -match ('package-archive refused: ' + $case.Code + ':')) "$($case.Name) archive refusal must carry the typed code $($case.Code): $(Get-Tail $run.Output)"
+        Assert ((Get-Names $target) -join ',' -ceq 'Bim.addin' -and (Get-B64 (Join-Path $target 'Bim.addin')) -ceq [Convert]::ToBase64String($original)) "$($case.Name) archive refusal changed the Addins folder, found: $((Get-Names $target) -join ', ')"
+        Assert-StagingRemoved $run ("$($case.Name) archive refusal")
+    }
+    Assert (!(Test-Path -LiteralPath (Join-Path $work 'escaped.txt')) -and !(Test-Path -LiteralPath (Join-Path $bad 'escaped.txt')) -and !(Test-Path -LiteralPath (Join-Path $fakeTemp 'escaped.txt'))) 'unsafe archive entry escaped onto disk'
+
+    # Refusals after extraction (install stage) also remove the staging folder.
+    $target = Join-Path $work 'addins archive late'
+    New-Item -ItemType Directory -Force $target | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $target 'Bim.addin'), $original)
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', (Join-Path $work 'no such/Bim.Revit.dll'))
+    Assert ($run.Code -ne 0 -and $run.Output -match 'Bim\.Revit\.dll not found') "archive install with a missing -AssemblyPath must be refused: $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'missing assembly after extraction' -ExpectStaged
+    $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll, '-FailWriteForTest')
+    Assert ($run.Code -ne 0 -and $run.Output -match 'injected write failure') "archive install with an injected write failure must be refused: $(Get-Tail $run.Output)"
+    Assert-StagingRemoved $run 'write failure after extraction' -ExpectStaged
+    Assert ((Get-Names $target) -join ',' -ceq 'Bim.addin' -and (Get-B64 (Join-Path $target 'Bim.addin')) -ceq [Convert]::ToBase64String($original)) "late archive refusals changed the Addins folder, found: $((Get-Names $target) -join ', ')"
+
+    # Relative -Archive/-ChecksumsPath/-AssemblyPath/-AddinsDirectory resolve against $PWD.
+    $relArchiveRoot = Join-Path $work 'relative archive'
+    New-Item -ItemType Directory -Force (Join-Path $relArchiveRoot 'dist') | Out-Null
+    New-Item -ItemType Directory -Force (Join-Path $relArchiveRoot 'sums') | Out-Null
+    Copy-Item -LiteralPath $zip -Destination (Join-Path $relArchiveRoot 'dist/bim-1.2.3.zip')
+    Copy-Item -LiteralPath $zipSums -Destination (Join-Path $relArchiveRoot 'sums/SHA256SUMS')
+    Copy-Item -LiteralPath $builtDll -Destination (Join-Path $relArchiveRoot 'Bim.Revit.dll')
+    $command = "Set-Location -LiteralPath $(Get-Quoted $relArchiveRoot); & $(Get-Quoted $installer) -Archive 'dist/bim-1.2.3.zip' -ChecksumsPath 'sums/SHA256SUMS' -AssemblyPath 'Bim.Revit.dll' -AddinsDirectory 'addins'; exit `$LASTEXITCODE"
+    $relRun = Invoke-WithTemp { $ErrorActionPreference = 'Continue'; $o = (& $pwsh -NoProfile -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))) 2>&1 | ForEach-Object { "$_" }) -join "`n"; [pscustomobject]@{ Code = $LASTEXITCODE; Output = $o } }
+    $relArchiveAddin = Join-Path (Join-Path $relArchiveRoot 'addins') 'Bim.addin'
+    Assert ($relRun.Code -eq 0 -and (Test-Path -LiteralPath $relArchiveAddin)) "relative -Archive paths must resolve against `$PWD (exit $($relRun.Code)): $(Get-Tail $relRun.Output)"
+    if (Test-Path -LiteralPath $relArchiveAddin) { Assert ((Read-Assembly $relArchiveAddin).Assembly -ceq (Join-Path $relArchiveRoot 'Bim.Revit.dll')) "relative archive install assembly path '$((Read-Assembly $relArchiveAddin).Assembly)'" }
+    Assert-StagingRemoved $relRun 'relative archive install' -ExpectStaged
+
     # --- A real release package from scripts/package.ps1 installs (it carries no Bim.Revit.dll) ---
     if ($PackageDirectory) {
+        # P10-10: the same real package through package-archive -> install -Archive -> uninstall.
+        $realZip = Join-Path (Join-Path $work 'real dist') 'bim-real.zip'
+        $made = Invoke-Child $archiver @('-PackageDirectory', $PackageDirectory, '-ArchivePath', $realZip)
+        Assert ($made.Code -eq 0) "test setup: package-archive of the real package exit $($made.Code): $(Get-Tail $made.Output)"
+        $target = Join-Path $work 'addins real archive'
+        $run = Invoke-ArchiveInstaller @('-Archive', $realZip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll)
+        Assert ($run.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) "install from the real package archive exit $($run.Code): $(Get-Tail $run.Output)"
+        Assert-StagingRemoved $run 'real archive install' -ExpectStaged
+        if (Test-Path -LiteralPath (Join-Path $target 'Bim.addin')) { Assert ((Read-Assembly (Join-Path $target 'Bim.addin')).Assembly -ceq [IO.Path]::GetFullPath($builtDll)) 'real archive install did not use -AssemblyPath' }
+        $run = Invoke-ArchiveInstaller @('-Uninstall', '-AddinsDirectory', $target)
+        Assert ($run.Code -eq 0 -and (Get-Names $target).Count -eq 0) "uninstall after the real archive install must leave the folder empty: $(Get-Tail $run.Output)"
+
         $target = Join-Path $work 'addins real'
         $run = Invoke-Installer @('-PackageDirectory', $PackageDirectory, '-AddinsDirectory', $target, '-AllowMissingAssembly')
         Assert ($run.Code -eq 0) "install from the real package exit $($run.Code): $(Get-Tail $run.Output)"
