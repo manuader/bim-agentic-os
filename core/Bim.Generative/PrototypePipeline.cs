@@ -84,7 +84,7 @@ public static class PrototypePipeline
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Pack);
         var refusals = OptionRefusals(options);
-        refusals.AddRange(RankingRefusals(plans.Count, weights ?? new ScoringWeights(), options.CirculationWeight));
+        refusals.AddRange(RankingRefusals(plans.Count, weights ?? new ScoringWeights(), options.CirculationWeight, options.FacadeWeight));
         if (refusals.Count > 0) return Refused(options, null, refusals);
         return Evaluate(brief, plans, weights, options, null, null);
     }
@@ -99,7 +99,10 @@ public static class PrototypePipeline
                 ? snapped.Plan with { Status = SpacePlanStatus.Infeasible, Rooms = Array.Empty<PlannedRoom>(), Constraints = snapped.Refusals, Score = 0 }
                 : snapped.Plan).ToArray();
         var circulationOptions = options.Circulation ?? new CirculationOptions();
-        var ranking = CirculationRanker.Rank(brief, plans, new CirculationScoring(weights, options.CirculationWeight, true, circulationOptions));
+        // P7-10: with a positive facade weight and the seven other weights all zero, CirculationRanker (which refuses that)
+        // runs with unit ranking weights only to gate and score the plans; step 5 re-weights over the given weights.
+        var rankerWeights = options.FacadeWeight > 0 && Given(weights, options).Take(7).All(weight => weight == 0) ? new ScoringWeights(1, 1, 1, 1, 1, 1) : weights;
+        var ranking = CirculationRanker.Rank(brief, plans, new CirculationScoring(rankerWeights, options.CirculationWeight, true, circulationOptions));
         if (ranking.Status == AlternativeSetStatus.Refused) return Refused(options, prototype, ranking.Refusals);
         var given = Given(weights, options);
         if (options.FacadeWeight > 0 && !double.IsFinite(given.Sum()))
@@ -185,9 +188,20 @@ public static class PrototypePipeline
     internal static (IReadOnlyList<PrototypePipelineAlternative> Accepted, IReadOnlyList<PrototypePipelineAlternative> Rejected) ApplyFacade(
         IReadOnlyList<PrototypePipelineAlternative> accepted, double[] given, IReadOnlyDictionary<string, double>? parameters)
     {
-        var scored = accepted.Select(alternative => WithFacade(alternative, given, given[7], parameters)).OrderByDescending(alternative => alternative.Total)
-            .ThenBy(alternative => alternative.Index).Select((alternative, position) => alternative with { Rank = position + 1 }).ToArray();
-        return (scored, Array.Empty<PrototypePipelineAlternative>());
+        var finite = new List<PrototypePipelineAlternative>();
+        var unscored = new List<PrototypePipelineAlternative>();
+        foreach (var alternative in accepted)
+        {
+            var scored = WithFacade(alternative, given, given[7], parameters);
+            var facade = scored.Criteria[^1];
+            if (double.IsFinite(facade.Raw) && double.IsFinite(facade.Normalized) && double.IsFinite(scored.Total)) finite.Add(scored);
+            // Mirrors CirculationRanker's score_not_finite: the alternative is rejected (at the facade gate) with the reason.
+            else unscored.Add(alternative with { Rank = 0, Total = 0, Criteria = Array.Empty<CriterionScore>(), Ir = null,
+                Rejections = new[] { new PrototypePipelineRejection(PrototypePipelineGate.Facade, AlternativeCodes.ScoreNotFinite, PrototypePipelineCodes.FacadeCriterion, facade.Detail) } });
+        }
+        var ranked = finite.OrderByDescending(alternative => alternative.Total).ThenBy(alternative => alternative.Index)
+            .Select((alternative, position) => alternative with { Rank = position + 1 }).ToArray();
+        return (ranked, unscored);
     }
 
     // Step 5 for one accepted alternative: its seven criteria re-weighted over the eight given weights plus the facade one.
@@ -218,17 +232,19 @@ public static class PrototypePipeline
             if (room.IlluminationRatio is { } light && light > 0)
             {
                 factors.Add(room.WindowAreaSquareMetres / room.AreaSquareMetres / light);
-                texts.Add("illumination " + Format(room.WindowAreaSquareMetres / room.AreaSquareMetres) + " / " + Format(light));
+                texts.Add("illumination achieved " + Format(room.WindowAreaSquareMetres / room.AreaSquareMetres) + ", minimum " + Format(light));
             }
             if (room.VentilationRatio is { } air && air > 0)
             {
                 factors.Add(room.VentilationAreaSquareMetres / room.AreaSquareMetres / air);
-                texts.Add("ventilation " + Format(room.VentilationAreaSquareMetres / room.AreaSquareMetres) + " / " + Format(air));
+                texts.Add("ventilation achieved " + Format(room.VentilationAreaSquareMetres / room.AreaSquareMetres) + ", minimum " + Format(air));
             }
             if (factors.Count == 0) continue;
-            var margin = Math.Max(0, factors.Min() - 1);
+            // NaN (0 / 0) must stay non-finite for the guard, so it is not clamped away.
+            var weakest = factors.Min();
+            var margin = double.IsNaN(weakest) ? weakest : Math.Max(0, weakest - 1);
             margins.Add(margin);
-            parts.Add(room.Instance + " " + string.Join(", ", texts) + " = +" + Format(margin * 100) + " % (" + string.Join(", ", room.RuleIds) + ")");
+            parts.Add(room.Instance + ": " + string.Join("; ", texts) + "; margin " + Format(margin * 100) + " % (" + string.Join(", ", room.RuleIds) + ")");
         }
         double raw = 0;
         foreach (var margin in margins) raw += margin;
@@ -236,13 +252,16 @@ public static class PrototypePipeline
         var normalized = raw / (1 + raw);
         var detail = (margins.Count == 0
             ? "no room of the facade layout has an illumination or ventilation ratio minimum"
-            : "mean margin " + Format(raw * 100) + " % of the windows over the " + layout.PackId + " ratio minimums (weakest ratio per room) over "
-              + margins.Count.ToString(CultureInfo.InvariantCulture) + " rooms: " + string.Join("; ", parts))
+            : "mean margin " + Format(raw * 100) + " % (weakest ratio per room) of the windows over the required ratios as FacadePlanner resolved them from pack "
+              + layout.PackId + Overrides(parameters) + " over " + margins.Count.ToString(CultureInfo.InvariantCulture) + " rooms: " + string.Join(" | ", parts))
             + "; normalized margin / (1 + margin); facade weight " + Format(givenWeight) + " given (effective " + Format(weight) + ")";
         return new CriterionScore(PrototypePipelineCodes.FacadeCriterion, raw, normalized, weight, weight * normalized, detail);
     }
 
     static string Format(double value) => double.IsFinite(value) ? SpacePlanSerializer.Format(value) : "non-finite";
+
+    static string Overrides(IReadOnlyDictionary<string, double>? parameters) => parameters is not { Count: > 0 } ? ""
+        : " with " + parameters.Count.ToString(CultureInfo.InvariantCulture) + " parameter override" + (parameters.Count == 1 ? "" : "s");
 
     // The BIM-IR compile step of the facade_ir gate: the project, or the typed reasons it could not be compiled.
     internal static PrototypePipelineCompile CompilePrototype(Func<Project> compile)
@@ -305,14 +324,15 @@ public static class PrototypePipeline
 
     // CirculationRanker's plan-independent refusals other than the circulation weight itself (already an option refusal):
     // the alternative count, each of the six weights, and all seven weights zero or their sum not finite.
-    static List<PlanConstraint> RankingRefusals(int count, ScoringWeights weights, double circulationWeight)
+    // P7-10: a positive, finite facade weight also satisfies "at least one weight must be positive".
+    static List<PlanConstraint> RankingRefusals(int count, ScoringWeights weights, double circulationWeight, double facadeWeight)
     {
         var refusals = AlternativeRanker.Refusals(count, weights).Where(refusal => refusal.Subject != "weights").ToList();
         var all = new[] { weights.AreaFit, weights.Adjacency, weights.Proportions, weights.Compactness, weights.Perimeter, weights.Compliance, circulationWeight };
         if (all.All(weight => double.IsFinite(weight) && weight >= 0))
         {
             var sum = all.Sum();
-            if (!(sum > 0)) refusals.Add(Refusal(AlternativeCodes.WeightsInvalid, "weights", "at least one weight must be positive"));
+            if (!(sum > 0) && !(double.IsFinite(facadeWeight) && facadeWeight > 0)) refusals.Add(Refusal(AlternativeCodes.WeightsInvalid, "weights", "at least one weight must be positive"));
             else if (!double.IsFinite(sum)) refusals.Add(Refusal(AlternativeCodes.WeightsInvalid, "weights", "the sum of weights must be finite"));
         }
         return refusals;
