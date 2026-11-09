@@ -408,11 +408,21 @@ exit `$code
     Assert (!(Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) 'pre-existing staging refusal still installed Bim.addin'
     Remove-Item -LiteralPath $preexisting -Recurse -Force
 
-    $missingTemp = Join-Path $work 'no such temp'
-    $run = Invoke-WithTemp { Invoke-Child $installer @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll) } $missingTemp
-    Assert ($run.Code -ne 0 -and $run.Output -match 'staging_temp_invalid') "a missing temp folder must be refused with staging_temp_invalid: $(Get-Tail $run.Output)"
-    Assert (!(Test-Path -LiteralPath $missingTemp) -and !(Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) 'missing temp refusal created the temp folder or installed Bim.addin'
+    # A temp path that is a file can never hold the staging folder. A missing temp folder is checked on Unix only:
+    # on Windows the child pwsh itself creates a missing TEMP folder at startup, before the installer runs.
+    $fileTemp = Join-Path $work 'temp is a file'
+    [IO.File]::WriteAllText($fileTemp, 'not a folder')
+    $run = Invoke-WithTemp { Invoke-Child $installer @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll) } $fileTemp
+    Assert ($run.Code -ne 0 -and $run.Output -match 'staging_temp_invalid') "a temp path that is a file must be refused with staging_temp_invalid: $(Get-Tail $run.Output)"
+    Assert ([IO.File]::ReadAllText($fileTemp) -ceq 'not a folder' -and !(Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) 'temp-is-a-file refusal changed the file or installed Bim.addin'
+    if (!$IsWindows) {
+        $missingTemp = Join-Path $work 'no such temp'
+        $run = Invoke-WithTemp { Invoke-Child $installer @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll) } $missingTemp
+        Assert ($run.Code -ne 0 -and $run.Output -match 'staging_temp_invalid') "a missing temp folder must be refused with staging_temp_invalid: $(Get-Tail $run.Output)"
+        Assert (!(Test-Path -LiteralPath $missingTemp) -and !(Test-Path -LiteralPath (Join-Path $target 'Bim.addin'))) 'missing temp refusal created the temp folder or installed Bim.addin'
+    }
 
+    if (Test-Path -LiteralPath (Join-Path $target 'Bim.addin')) { $null = Invoke-ArchiveInstaller @('-Uninstall', '-AddinsDirectory', $target) }
     $run = Invoke-ArchiveInstaller @('-Archive', $zip, '-AddinsDirectory', $target, '-AssemblyPath', $builtDll, '-FailStagingRemovalForTest')
     $left = $null
     foreach ($line in ($run.Output -split "`n")) { if ($line -match '\ASTAGED (.+?)\r?\z') { $left = $Matches[1] } }
