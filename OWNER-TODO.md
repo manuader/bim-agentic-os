@@ -169,3 +169,8 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay166 (2026-11-05, cloud)
 - [ ] 🔒 The single owner run now has 103 steps: after `git pull`, `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once). New groups after diario: formas (direct_shape box/site extrusion/bow-tie refusal), extrusion (barrel roofs on axis, reversed and diagonal planes; closed-profile refusal), transformar (move/replay/copy/rotate/mirror + refusals), copia (save_copy into the run folder with sha256 check, target_exists, outside-root refusal); modificar then runs on the saved copy. At the end Revit has the copy open: answer **No** to the save prompt so it keeps the recorded sha256. This run replaces the separate save_copy / roof.create_extrusion / move-copy / direct_shape / rotate-mirror items from relays 153, 157 and 161.
 - Still open: escritorio/estudio/biblioteca class; Uniclass licence; N21 run 3; delete stray branches relay159-P6-09-baseline and relay161-P8-08-probe.
+
+## Relay168 (2026-11-09, cloud)
+- No new Revit step (P4-08, P6-11, P7-10 are headless, unit-tested in CI). `git pull` (main 1486c8a). New CLI verb `doc-update` (dry plan of documentation updates, needs `--bindings`).
+- Delete stray branch relay168-P6-11-baseline too (the cloud proxy refuses branch deletes): `git push origin --delete relay168-P6-11-baseline relay159-P6-09-baseline relay161-P8-08-probe`.
+- Still open: the relay166 -Catalogue run (103 steps, answer No at the save prompt); escritorio/estudio/biblioteca class; Uniclass licence; N21 run 3.

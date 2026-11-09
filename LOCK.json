@@ -1,7 +1,3 @@
 {
-  "state": "TAKEN",
-  "session": "session_014pxpsPyhqpkUnhGLzvygmk",
-  "taken_by": "relay168 claude-cloud",
-  "taken_at": "2026-11-09T16:53:26Z",
-  "last_heartbeat": "2026-11-09T20:14:24Z"
+  "state": "FREE"
 }
