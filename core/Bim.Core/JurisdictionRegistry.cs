@@ -24,7 +24,7 @@ public sealed record JurisdictionLoad(JurisdictionRegistry? Registry, Jurisdicti
     public bool Succeeded => Refusal is null;
 }
 
-public sealed class JurisdictionRegistry
+public sealed partial class JurisdictionRegistry
 {
     public JurisdictionRegistry(SkillCatalog catalog, IEnumerable<JurisdictionClaim> claims)
     {

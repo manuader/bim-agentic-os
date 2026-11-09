@@ -999,6 +999,9 @@ try
     // ---- P5-08 project skill lock file (tests/skills/SkillLockTests.cs) ----
     SkillLockTests.Run(root, Check, TempRoot);
 
+    // ---- P5-10 lock-checked jurisdiction sidecars (tests/skills/JurisdictionLockTests.cs) ----
+    JurisdictionLockTests.Run(root, Check, TempRoot);
+
     // ---- Scale: 20000-skill chain and cycle built in code (no recursion) ----
     const int Scale = 20000;
     string ChainId(int index) => "bim.chain.s" + index.ToString("D5", CultureInfo.InvariantCulture);
