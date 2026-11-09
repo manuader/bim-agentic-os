@@ -163,8 +163,11 @@ public static class PrototypePipeline
         }
         // P7-10 opt-in step 5: the facade criterion re-weights and re-ranks the accepted alternatives.
         if (options.FacadeWeight > 0)
-            accepted = accepted.Select(alternative => WithFacade(alternative, given, options.FacadeWeight)).OrderByDescending(alternative => alternative.Total)
-                .ThenBy(alternative => alternative.Index).Select((alternative, position) => alternative with { Rank = position + 1 }).ToList();
+        {
+            var (scored, unscored) = ApplyFacade(accepted, given, options.Parameters);
+            accepted = scored.ToList();
+            rejected.AddRange(unscored);
+        }
         var ordered = accepted.Concat(rejected.OrderBy(alternative => alternative.Index)).ToArray();
         var status = accepted.Count > 0 ? PrototypePipelineStatus.Ranked : PrototypePipelineStatus.Infeasible;
         return new PrototypePipelineResult(status, options, prototype, ranking, Array.Empty<PlanConstraint>(), ordered);
@@ -177,8 +180,18 @@ public static class PrototypePipeline
         return new[] { w.AreaFit, w.Adjacency, w.Proportions, w.Compactness, w.Perimeter, w.Compliance, options.CirculationWeight, options.FacadeWeight };
     }
 
+    // Step 5 over the accepted alternatives (given = the eight given weights, the facade weight last): each one scored with
+    // the facade criterion and re-weighted, then re-ranked 1..k by total descending, ties by generation index.
+    internal static (IReadOnlyList<PrototypePipelineAlternative> Accepted, IReadOnlyList<PrototypePipelineAlternative> Rejected) ApplyFacade(
+        IReadOnlyList<PrototypePipelineAlternative> accepted, double[] given, IReadOnlyDictionary<string, double>? parameters)
+    {
+        var scored = accepted.Select(alternative => WithFacade(alternative, given, given[7], parameters)).OrderByDescending(alternative => alternative.Total)
+            .ThenBy(alternative => alternative.Index).Select((alternative, position) => alternative with { Rank = position + 1 }).ToArray();
+        return (scored, Array.Empty<PrototypePipelineAlternative>());
+    }
+
     // Step 5 for one accepted alternative: its seven criteria re-weighted over the eight given weights plus the facade one.
-    static PrototypePipelineAlternative WithFacade(PrototypePipelineAlternative alternative, double[] given, double facadeWeight)
+    static PrototypePipelineAlternative WithFacade(PrototypePipelineAlternative alternative, double[] given, double facadeWeight, IReadOnlyDictionary<string, double>? parameters)
     {
         var sum = given.Sum();
         var criteria = new List<CriterionScore>(alternative.Criteria.Count + 1);
@@ -187,14 +200,14 @@ public static class PrototypePipeline
             var weight = given[k] / sum;
             criteria.Add(alternative.Criteria[k] with { Weight = weight, Contribution = weight * alternative.Criteria[k].Normalized });
         }
-        criteria.Add(FacadeCriterion(alternative.Facade!, facadeWeight / sum, facadeWeight));
+        criteria.Add(FacadeCriterion(alternative.Facade!, facadeWeight / sum, facadeWeight, parameters));
         double total = 0;
         foreach (var criterion in criteria) total += criterion.Contribution;
         return alternative with { Total = Math.Min(1, total), Criteria = criteria };
     }
 
     // The facade criterion of a complete layout (step 5): mean margin of the rooms' windows over their ratio minimums.
-    internal static CriterionScore FacadeCriterion(FacadeLayout layout, double weight, double givenWeight)
+    internal static CriterionScore FacadeCriterion(FacadeLayout layout, double weight, double givenWeight, IReadOnlyDictionary<string, double>? parameters = null)
     {
         var margins = new List<double>();
         var parts = new List<string>();

@@ -417,6 +417,64 @@ static class PrototypePipelineTests
             && compactFacade.Detail.Contains("bedroom-illumination-ratio", StringComparison.Ordinal) && compactFacade.Detail.Contains("ventilation", StringComparison.Ordinal)
             && compactFacade.Detail.Contains("facade weight 1 given", StringComparison.Ordinal),
             "the facade criterion explains each room's margin with its pack rules and the weight", compactFacade?.Detail ?? "");
+        Check(compactFacade is not null && compactFacade.Detail.Contains("bedroom_1: illumination achieved 0.107143, minimum 0.1; ventilation achieved 0.053571, minimum 0.033333; margin 7.142857 % (", StringComparison.Ordinal)
+            && compactFacade.Detail.Contains("of the windows over the required ratios as FacadePlanner resolved them from pack " + PackId + " over 2 rooms: ", StringComparison.Ordinal),
+            "the facade detail states achieved, minimum and margin per room and names the source of the minimums (exact fragment)", compactFacade?.Detail ?? "");
+
+        // Review fix 1: facade-only ranking (the seven other weights all zero) is ranked by the facade criterion alone.
+        var facadeOnly = PrototypePipeline.Rank(brief, pair, options with { CirculationWeight = 0, FacadeWeight = 1 }, new ScoringWeights(0, 0, 0, 0, 0, 0));
+        Check(facadeOnly.Status == PrototypePipelineStatus.Ranked && facadeOnly.Refusals.Count == 0 && facadeOnly.Alternatives.Select(a => a.Index).SequenceEqual(new[] { 1, 0 })
+            && facadeOnly.Alternatives.All(a => a.Criteria.Count == 8 && a.Criteria.Take(7).All(c => c.Weight == 0 && c.Contribution == 0)
+                && a.Criteria[7] is { Criterion: PrototypePipelineCodes.FacadeCriterion, Weight: 1 } && a.Total == a.Criteria[7].Normalized),
+            "facade weight 1 with every other weight 0 is not refused: the total is the facade score alone", Describe(facadeOnly));
+        var allZero = PrototypePipeline.Rank(brief, pair, options with { CirculationWeight = 0, FacadeWeight = 0 }, new ScoringWeights(0, 0, 0, 0, 0, 0));
+        Check(allZero.Status == PrototypePipelineStatus.Refused && allZero.Refusals.Any(r => r.Code == AlternativeCodes.WeightsInvalid && r.Subject == "weights"),
+            "all eight weights zero is still refused", Describe(allZero));
+
+        // Crafted facade layouts, independent values: a room with both ratios (+50 %: illumination 0.15 / 0.1, ventilation
+        // 0.075 / 0.0333 = 2.25), a ventilation-only room (+100 %), a room a rounding slack below its minimum (clamped to 0);
+        // NotRequired and Failed rooms do not count. raw = (0.5 + 1 + 0) / 3 = 0.5, normalized = 0.5 / 1.5.
+        FacadeRoom Room(string id, FacadeRoomStatus status, double area, double? light, double? air, double window, double vent) =>
+            new(id, id, 0, status, status == FacadeRoomStatus.Failed ? "facade_no_exterior_edge" : null, area, light, air, light * area, air * area, window, vent, 4,
+                new[] { "p/" + id + "-rule" }, "");
+        FacadeLayout Layout(params FacadeRoom[] rooms) => new(FacadeStatus.Complete, "b", 0, "p", new FacadeOptions(), rooms, Array.Empty<FacadeWindow>(), Array.Empty<PlanConstraint>());
+        var mixed = Layout(Room("room_a", FacadeRoomStatus.Compliant, 10, 0.1, 1 / 30.0, 1.5, 0.75), Room("room_b", FacadeRoomStatus.Compliant, 10, null, 0.05, 2, 1),
+            Room("room_c", FacadeRoomStatus.Compliant, 10, 0.1, null, 0.9999999999999, 0.5), Room("room_d", FacadeRoomStatus.NotRequired, 5, null, null, 3, 1.5),
+            Room("room_e", FacadeRoomStatus.Failed, 50, 0.1, 1 / 30.0, 0, 0));
+        var mixedScore = PrototypePipeline.FacadeCriterion(mixed, 0.5, 1);
+        Check(Math.Abs(mixedScore.Raw - 0.5) <= 1e-12 && Math.Abs(mixedScore.Normalized - 0.5 / 1.5) <= 1e-12 && Math.Abs(mixedScore.Contribution - 0.5 * 0.5 / 1.5) <= 1e-12
+            && mixedScore.Weight == 0.5 && mixedScore.Criterion == PrototypePipelineCodes.FacadeCriterion,
+            "crafted layout: mean of +50 %, +100 % (ventilation only) and 0 (slack below the minimum clamped), NotRequired and Failed rooms excluded",
+            mixedScore.Raw.ToString("R", CultureInfo.InvariantCulture) + " | " + mixedScore.Detail);
+        Check(mixedScore.Detail.Contains("over 3 rooms: room_a: illumination achieved 0.15, minimum 0.1; ventilation achieved 0.075, minimum 0.033333; margin 50 % (p/room_a-rule)", StringComparison.Ordinal)
+            && mixedScore.Detail.Contains(" | room_b: ventilation achieved 0.1, minimum 0.05; margin 100 % (p/room_b-rule)", StringComparison.Ordinal)
+            && mixedScore.Detail.Contains(" | room_c: illumination achieved 0.1, minimum 0.1; margin 0 % (p/room_c-rule)", StringComparison.Ordinal)
+            && !mixedScore.Detail.Contains("room_d", StringComparison.Ordinal) && !mixedScore.Detail.Contains("room_e", StringComparison.Ordinal)
+            && mixedScore.Detail.EndsWith("; normalized margin / (1 + margin); facade weight 1 given (effective 0.5)", StringComparison.Ordinal),
+            "crafted layout detail: exact per-room fragments, excluded rooms absent", mixedScore.Detail);
+        var overridden = PrototypePipeline.FacadeCriterion(mixed, 0.5, 1, new Dictionary<string, double> { ["p/room_a-rule"] = 0.2 });
+        Check(overridden.Detail.Contains("required ratios as FacadePlanner resolved them from pack p with 1 parameter override over 3 rooms", StringComparison.Ordinal)
+            && mixedScore.Detail.Contains("required ratios as FacadePlanner resolved them from pack p over 3 rooms", StringComparison.Ordinal),
+            "the detail says when pack parameter overrides changed the minimums", overridden.Detail);
+        var none = PrototypePipeline.FacadeCriterion(Layout(Room("room_d", FacadeRoomStatus.NotRequired, 5, null, null, 0, 0)), 0.5, 1);
+        Check(none is { Raw: 0, Normalized: 0, Contribution: 0 } && none.Detail.StartsWith("no room of the facade layout has an illumination or ventilation ratio minimum", StringComparison.Ordinal),
+            "a layout without ratio rooms scores 0 with an explanation", none.Detail);
+
+        // Review fix 2: a non-finite facade score (a degenerate, near-zero room area) rejects the alternative with a typed
+        // score_not_finite reason at the facade gate instead of sorting it last with a null total.
+        var degenerate = Layout(Room("tiny", FacadeRoomStatus.Compliant, 1e-310, 0.1, 1 / 30.0, 0.72, 0.36));
+        var degenerateScore = PrototypePipeline.FacadeCriterion(degenerate, 0.5, 1);
+        Check(!double.IsFinite(degenerateScore.Raw) || !double.IsFinite(degenerateScore.Normalized), "a near-zero room area gives a non-finite facade score",
+            degenerateScore.Raw.ToString("R", CultureInfo.InvariantCulture));
+        var plainFlat = plain.Alternatives.First(a => a.Index == 0);
+        var plainCompact = plain.Alternatives.First(a => a.Index == 1);
+        var (guardedAccepted, guardedRejected) = PrototypePipeline.ApplyFacade(new[] { plainFlat, plainCompact with { Facade = degenerate } }, new double[] { 0, 0, 1, 0, 0, 0, 0, 1 }, null);
+        Check(guardedAccepted.Count == 1 && guardedAccepted[0] is { Index: 0, Rank: 1, Accepted: true } && double.IsFinite(guardedAccepted[0].Total)
+            && guardedRejected.Count == 1 && guardedRejected[0] is { Index: 1, Rank: 0, Total: 0, Accepted: false, RejectedAt: PrototypePipelineGate.Facade, Ir: null, Criteria.Count: 0 }
+            && guardedRejected[0].Rejections.Count == 1 && guardedRejected[0].Rejections[0] is { Code: AlternativeCodes.ScoreNotFinite, Subject: PrototypePipelineCodes.FacadeCriterion }
+            && guardedRejected[0].Rejections[0].Detail.Contains("tiny", StringComparison.Ordinal),
+            "a non-finite facade score is a typed score_not_finite@facade rejection, the others stay ranked",
+            string.Join(" | ", guardedAccepted.Concat(guardedRejected).Select(Describe)));
         Check(withFacade.Ranking is not null && plain.Ranking is not null
             && AlternativeSetSerializer.Serialize(withFacade.Ranking) == AlternativeSetSerializer.Serialize(PrototypePipeline.Rank(brief, pair, options with { CirculationWeight = 0 }, proportionsOnly).Ranking!)
             && withFacade.Alternatives.All(a => plain.Alternatives.Single(other => other.Index == a.Index) is var twin && Json(a.Project) == Json(twin.Project)
