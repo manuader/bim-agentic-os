@@ -2,7 +2,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Bim.Core;
 using Bim.Gltf;
 
@@ -18,23 +17,28 @@ namespace Bim.Cli;
 //   bindings       {"document":{"path","unique_id"},"levels":{"<BIM-IR level id>":"<Revit level>"}, optional
 //                  "wall_types":[{"thickness_metres","type"}], "door_symbol", "window_symbol"} (the member names of the
 //                  mirror-drift request); the after-state RevitBindings DocRegeneration needs (Revit document, levels).
+//                  "document" and "levels" are required objects; an optional member given as null is the same as absent.
+//                  Two wall types of one thickness are refused (their order would decide the bytes of the plan).
 //   dependents     optional {"<regenerated key>":["<UniqueId>",...]}, the dry-run dependents of DocUpdate.Plan.
 // Every object of realized, bindings and dependents refuses duplicate keys and unknown members.
 // Output: the file holds exactly JsonSerializer.Serialize(DocUpdate.Plan(before, after, bindings, realized, dependents))
 // (default options, compact, UTF-8 without BOM, no trailing newline): byte-identical to the library call. Deterministic:
 // the plan sorts its maps and keys, so input member order and culture do not change a byte.
 // Bounded input: every file goes through BoundedInput.ReadText (8 MiB, regular files only, links refused; input_* codes
-// with detail naming the input); at most MaxEntries realized entries and MaxEntries dependent UniqueIds in total
-// (doc_update_input_bound_exceeded, detail "realized" or "dependents").
+// with detail naming the input); at most MaxEntries realized entries, MaxEntries level bindings, MaxEntries wall types
+// and MaxEntries dependent UniqueIds in total (doc_update_input_bound_exceeded, detail "realized", "bindings" or
+// "dependents").
 // Never-overwrite: the output path follows GltfExportCommand.OutputProblem with extension .json (never an existing file,
 // directory or link; checked before any input is read) and is created exclusively (GltfExporter.WriteNew).
 // Success prints {"status":"succeeded","output","bytes","sha256","regenerated","steps","forced","retired","applied":false}
 // and exits 0. Every refusal prints one {"status":"failed","code"[,"detail"]} envelope, exits 1 and writes no file:
 // doc_update_usage, output_*, input_*, doc_update_project_invalid, doc_update_realized_invalid,
 // doc_update_bindings_invalid, doc_update_dependents_invalid, doc_update_input_bound_exceeded, the library's codes
-// (ArgumentException / InvalidOperationException messages such as invalid_ir, realized_invalid, input_unresolved,
-// dependents_unknown_key, level_unbound; RevitCommandException codes with detail = field, such as document_path_invalid)
-// and doc_update_internal_error (a defect: type and message on stderr).
+// (LibraryCodes: the ArgumentException / InvalidOperationException messages of DocDefaults, Compiler.Diff,
+// DocRegeneration and DocReplace, such as invalid_ir, revision_conflict, realized_invalid, input_unresolved,
+// dependents_unknown_key; a RevitCommandException's Code with detail = its field, such as document_path_invalid)
+// and doc_update_internal_error (a defect: type and message on stderr). The summary counts are taken from the plan
+// before the file is written, so nothing can fail after the write.
 // Precedence: usage, output path, inputs read (before, after, realized, bindings, dependents), parsed in that order, then
 // the library; the first failure is the only one reported.
 internal static class DocUpdateCommand
@@ -50,7 +54,17 @@ internal static class DocUpdateCommand
     public const int MaxEntries = 100_000;
 
     static readonly string[] Required = { "--before", "--after", "--realized", "--bindings", "--output" };
-    static readonly Regex CodeShape = new("^[a-z][a-z0-9_]*$", RegexOptions.CultureInvariant);
+    // Every refusal message DocUpdate.Plan can raise as ArgumentException or InvalidOperationException (DocDefaults,
+    // Compiler.Diff, DocRegeneration, DocReplace); any other message is an internal error, never passed off as a code.
+    static readonly string[] LibraryCodes =
+    {
+        DocDefaultsCodes.InvalidIr, DocDefaultsCodes.LevelInvalid, DocDefaultsCodes.NoLevel, "revision_conflict", "plan_mismatch", "project_mismatch", "input_mismatch",
+        "doc_item_unknown", "args_not_object", "input_invalid", "doc_text_invalid", "doc_number_invalid", "doc_key_invalid", "doc_key_duplicate", "doc_view_kind_invalid",
+        "doc_view_elements_invalid", "doc_dimension_references_invalid", "doc_view_unknown", "doc_view_not_plan", "doc_sheet_unknown",
+        DocReplaceCodes.RegenerationInvalid, DocReplaceCodes.RealizedInvalid, DocReplaceCodes.StaleShared, DocReplaceCodes.DependentsUnknownKey,
+        DocReplaceCodes.DependentsWithoutStale, DocReplaceCodes.DependentsInvalid, DocReplaceCodes.DependentKept, DocReplaceCodes.DependentPlanned,
+        DocReplaceCodes.DependentIsTarget, DocReplaceCodes.InputFieldUnsupported, DocReplaceCodes.InputUnresolved, DocReplaceCodes.InputFieldDuplicate,
+    };
 
     sealed class Refusal(string code, string? detail = null) : Exception(code)
     {
@@ -75,31 +89,37 @@ internal static class DocUpdateCommand
             var realized = ParseRealized(realizedText);
             var bindings = ParseBindings(bindingsText);
             var dependents = dependentsText is null ? null : ParseDependents(dependentsText);
-            var bytes = new UTF8Encoding(false).GetBytes(Plan(before, after, bindings, realized, dependents));
-            try { GltfExporter.WriteNew(bytes, output); }
-            catch (GltfExportException e) { Fail(e.Code, null); return; }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Fail("output_io_error", e.GetType().Name); return; }
-            Console.WriteLine(JsonSerializer.Serialize(new
+            var (text, plan) = Plan(before, after, bindings, realized, dependents);
+            var bytes = new UTF8Encoding(false).GetBytes(text);
+            var summary = new
             {
                 status = "succeeded",
                 output,
                 bytes = bytes.LongLength,
                 sha256 = Convert.ToHexString(SHA256.HashData(bytes)),
-                regenerated = Count(bytes, "Regeneration", "Regenerated"),
-                steps = Count(bytes, "Replacement", "Commands", "Steps"),
-                forced = Count(bytes, "Forced"),
-                retired = Count(bytes, "Retired"),
+                regenerated = plan.Regeneration.Regenerated.Count,
+                steps = plan.Replacement.Commands.Steps.Count,
+                forced = plan.Forced.Count,
+                retired = plan.Retired.Count,
                 applied = false,
-            }));
+            };
+            try { GltfExporter.WriteNew(bytes, output); }
+            catch (GltfExportException e) { Fail(e.Code, null); return; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Fail("output_io_error", e.GetType().Name); return; }
+            Console.WriteLine(JsonSerializer.Serialize(summary));
         }
         catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
     }
 
-    static string Plan(Project before, Project after, RevitBindings bindings, Dictionary<string, string> realized, Dictionary<string, IReadOnlyList<string>>? dependents)
+    static (string Text, DocUpdatePlan Plan) Plan(Project before, Project after, RevitBindings bindings, Dictionary<string, string> realized, Dictionary<string, IReadOnlyList<string>>? dependents)
     {
-        try { return JsonSerializer.Serialize(DocUpdate.Plan(before, after, bindings, realized, dependents)); }
-        catch (RevitCommandException error) when (CodeShape.IsMatch(error.Code)) { throw new Refusal(error.Code, error.Field); }
-        catch (Exception error) when (error is ArgumentException or InvalidOperationException && error is not ArgumentNullException && CodeShape.IsMatch(error.Message))
+        try
+        {
+            var plan = DocUpdate.Plan(before, after, bindings, realized, dependents);
+            return (JsonSerializer.Serialize(plan), plan);
+        }
+        catch (RevitCommandException error) { throw new Refusal(error.Code, error.Field); }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException && error is not ArgumentNullException && LibraryCodes.Contains(error.Message, StringComparer.Ordinal))
         {
             throw new Refusal(error.Message);
         }
@@ -109,15 +129,6 @@ internal static class DocUpdateCommand
             Console.Error.WriteLine("doc-update internal error: " + error.GetType().FullName + ": " + error.Message);
             throw new Refusal(InternalError);
         }
-    }
-
-    // The length of an array in the written plan (the success summary reads the bytes it reports).
-    static int Count(byte[] plan, params string[] path)
-    {
-        using var document = JsonDocument.Parse(plan);
-        var element = document.RootElement;
-        foreach (var name in path) element = element.GetProperty(name);
-        return element.GetArrayLength();
     }
 
     // The five required flags and the optional --dependents, each once with a non-empty value that is not flag-shaped
@@ -183,7 +194,7 @@ internal static class DocUpdateCommand
         using var document = Parse(text, BindingsInvalid);
         var root = document.RootElement;
         Members(root, BindingsInvalid, "document", "levels", "wall_types", "door_symbol", "window_symbol");
-        if (!root.TryGetProperty("document", out var documentElement)) throw new Refusal(BindingsInvalid);
+        if (!root.TryGetProperty("document", out var documentElement) || documentElement.ValueKind != JsonValueKind.Object) throw new Refusal(BindingsInvalid);
         Members(documentElement, BindingsInvalid, "path", "unique_id");
         var revitDocument = new RevitDocumentRef(Text(documentElement, "path"), Text(documentElement, "unique_id"));
 
@@ -197,7 +208,8 @@ internal static class DocUpdateCommand
         }
 
         var wallTypes = new List<RevitWallTypeBinding>();
-        if (root.TryGetProperty("wall_types", out var typesElement))
+        var thicknesses = new HashSet<double>();
+        if (root.TryGetProperty("wall_types", out var typesElement) && typesElement.ValueKind != JsonValueKind.Null)
         {
             if (typesElement.ValueKind != JsonValueKind.Array) throw new Refusal(BindingsInvalid);
             foreach (var type in typesElement.EnumerateArray())
@@ -205,6 +217,8 @@ internal static class DocUpdateCommand
                 Members(type, BindingsInvalid, "thickness_metres", "type");
                 if (!type.TryGetProperty("thickness_metres", out var thickness) || thickness.ValueKind != JsonValueKind.Number || !thickness.TryGetDouble(out var metres) || !double.IsFinite(metres))
                     throw new Refusal(BindingsInvalid);
+                // Equal thicknesses keep input order through RevitBindings' stable sort, so their order would change bytes.
+                if (!thicknesses.Add(metres)) throw new Refusal(BindingsInvalid);
                 wallTypes.Add(new RevitWallTypeBinding(metres, Text(type, "type")));
                 if (wallTypes.Count > MaxEntries) throw new Refusal(BoundExceeded, "bindings");
             }
