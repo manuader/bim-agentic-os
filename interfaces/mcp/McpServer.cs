@@ -21,6 +21,9 @@ namespace Bim.Mcp;
 // P2-09 selection JSON, MirrorDriftSelectTool.cs); nothing is applied.
 // skills_lock_verify (P5-09) is read-only: its text is the CLI skills-lock verify stdout (SkillLockTool.cs); pin and
 // update write the lock and stay CLI-only.
+// audit_verify (P10-12) is read-only: its text is the CLI audit-verify stdout for the same log, anchor, actors and summary
+// (AuditVerifyTool.cs); --write-anchor stays CLI-only. Listed with permission level read (readOnlyHint true). Its
+// anchor_path, actors and summary are optional (ParameterSpec.Required false); actors is a JSON array of actor ids.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -44,7 +47,7 @@ public sealed class McpServer
     const int InvalidParams = -32602;
     const int InternalError = -32603;
 
-    sealed record ParameterSpec(string Name, string Type, string Description);
+    sealed record ParameterSpec(string Name, string Type, string Description, bool Required = true);
     sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null, PermissionLevel? Permission = null, bool Destructive = false, bool WritesFiles = false);
 
     static readonly ToolSpec[] CoreTools =
@@ -73,7 +76,13 @@ public sealed class McpServer
         new ToolSpec("skills_lock_verify", "Read-only verify of a project skill lock (P5-08 skills.lock.json) against a skills directory: reports skill_lock_drift / skill_lock_missing per pack; never pins, updates or writes (CLI: skills-lock verify skills-directory lock.json).",
             [new ParameterSpec("skills_path", "string", "Skills directory (skills/<id>/skill.json), read only"), new ParameterSpec("lock_path", "string", "Project lock file (skills.lock.json), read only")],
             LockVerifyTool),
+        new ToolSpec("audit_verify", "Read-only verification (P10-09) of a P10-03 audit log, with an optional head anchor file and known actor set: the report (or with summary the decision summary); isError on any finding; never writes the log or an anchor (CLI: audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary]).",
+            [new ParameterSpec("log_path", "string", "Audit log (JSONL), read only"), new ParameterSpec("anchor_path", "string", "Head anchor file {kind audit-anchor, version 1, sequence, hash}, read only", false),
+             new ParameterSpec("actors", "array", "Known actor ids", false), new ParameterSpec("summary", "boolean", "Return the decision summary instead of the report", false)],
+            AuditTool, AuditInputSchema, PermissionLevel.Read),
     ];
+
+    const string AuditInputSchema = """{"type":"object","properties":{"log_path":{"type":"string","description":"Audit log (JSONL), read only"},"anchor_path":{"type":"string","description":"Head anchor file {kind audit-anchor, version 1, sequence, hash}, read only"},"actors":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Known actor ids; an entry by any other actor is audit_actor_unknown"},"summary":{"type":"boolean","description":"Return the decision summary instead of the report"}},"required":["log_path"],"additionalProperties":false}""";
 
     static readonly JsonElement EmptyArguments = CreateEmptyArguments();
 
@@ -389,7 +398,14 @@ public sealed class McpServer
         foreach (var property in arguments.EnumerateObject())
             if (!tool.Parameters.Any(parameter => parameter.Name == property.Name)) return Error(id, InvalidParams, "invalid_params: unexpected argument " + property.Name);
         foreach (var parameter in tool.Parameters)
-            if (!arguments.TryGetProperty(parameter.Name, out var value) || !Matches(value, parameter.Type)) return Error(id, InvalidParams, "invalid_params: " + parameter.Name + " must be " + parameter.Type);
+        {
+            if (!arguments.TryGetProperty(parameter.Name, out var value))
+            {
+                if (parameter.Required) return Error(id, InvalidParams, "invalid_params: " + parameter.Name + " must be " + parameter.Type);
+                continue;
+            }
+            if (!Matches(value, parameter.Type)) return Error(id, InvalidParams, "invalid_params: " + parameter.Name + " must be " + parameter.Type);
+        }
         string text;
         bool isError;
         try { (text, isError) = tool.Execute(arguments); }
@@ -402,6 +418,8 @@ public sealed class McpServer
         "object" => value.ValueKind == JsonValueKind.Object,
         "string" => value.ValueKind == JsonValueKind.String,
         "integer" => value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out _),
+        "boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
+        "array" => value.ValueKind == JsonValueKind.Array,
         _ => false,
     };
 
@@ -454,6 +472,25 @@ public sealed class McpServer
     {
         var outcome = SkillLockTool.Verify(arguments.GetProperty("skills_path").GetString() ?? "", arguments.GetProperty("lock_path").GetString() ?? "");
         return (outcome.Text, !outcome.Succeeded);
+    }
+
+    // P10-12: AuditVerifyTool.Run, the same engine as the CLI audit-verify verb; the text is its stdout line. A string that is
+    // not valid text (a lone surrogate) is passed as "" (path) or null (actor), so it is refused by the engine.
+    static (string Text, bool IsError) AuditTool(JsonElement arguments)
+    {
+        string? anchorPath = arguments.TryGetProperty("anchor_path", out var anchorElement) ? AuditString(anchorElement) ?? "" : null;
+        IReadOnlyList<string?>? actors = arguments.TryGetProperty("actors", out var actorsElement)
+            ? actorsElement.EnumerateArray().Select(item => item.ValueKind == JsonValueKind.String ? AuditString(item) : null).ToArray()
+            : null;
+        var summary = arguments.TryGetProperty("summary", out var summaryElement) && summaryElement.GetBoolean();
+        var outcome = AuditVerifyTool.Run(AuditString(arguments.GetProperty("log_path")) ?? "", anchorPath, actors, summary);
+        return (outcome.Text, !outcome.Succeeded);
+    }
+
+    static string? AuditString(JsonElement element)
+    {
+        try { return element.GetString(); }
+        catch (InvalidOperationException) { return null; }
     }
 
     static T Read<T>(JsonElement arguments, string name) =>

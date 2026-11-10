@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Bim.Core;
 using Bim.Gltf;
+using Bim.Mcp;
 
 namespace Bim.Cli;
 
@@ -32,28 +33,23 @@ namespace Bim.Cli;
 // output_io_error), input_* (BoundedInput; a missing log is input_not_found, never audit_file_missing),
 // audit_verify_anchor_invalid, audit_verify_internal_error (a defect: exception on stderr).
 // Precedence: usage, actors, write-anchor path, log read, anchor read, anchor parse, verification, anchor write.
+// P10-12: actor parsing, the log and anchor reads, anchor parsing and verification are the shared read-only engine
+// interfaces/mcp/AuditVerifyTool.cs (also the MCP tool audit_verify); usage and --write-anchor stay here.
 internal static class AuditVerifyCommand
 {
     public const string Usage = "usage: audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json]";
     public const string UsageCode = "audit_verify_usage";
-    public const string ActorsInvalid = "audit_verify_actors_invalid";
-    public const string AnchorInvalid = "audit_verify_anchor_invalid";
-    public const string InternalError = "audit_verify_internal_error";
-    public const string AnchorKind = "audit-anchor";
-    public const int AnchorVersion = 1;
-    // The log may outgrow the 8 MiB JSON input cap; 64 MiB is roughly 150,000 entries.
-    public const int MaxLogBytes = 64 * 1024 * 1024;
-
-    sealed class Refusal(string code, string? detail = null) : Exception(code)
-    {
-        public string Code { get; } = code;
-        public string? Detail { get; } = detail;
-    }
+    public const string ActorsInvalid = AuditVerifyTool.ActorsInvalid;
+    public const string AnchorInvalid = AuditVerifyTool.AnchorInvalid;
+    public const string InternalError = AuditVerifyTool.InternalError;
+    public const string AnchorKind = AuditVerifyTool.AnchorKind;
+    public const int AnchorVersion = AuditVerifyTool.AnchorVersion;
+    public const int MaxLogBytes = AuditVerifyTool.MaxLogBytes;
 
     public static void Run(string[] args)
     {
         try { Execute(args); }
-        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
+        catch (AuditVerifyRefusal refusal) { Fail(refusal.Code, refusal.Detail); }
         catch (Exception error)
         {
             Console.Error.WriteLine("audit-verify internal error: " + error.GetType().FullName + ": " + error.Message);
@@ -71,53 +67,35 @@ internal static class AuditVerifyCommand
             switch (arg)
             {
                 case "--summary":
-                    if (summary) throw new Refusal(UsageCode, Usage);
+                    if (summary) throw new AuditVerifyRefusal(UsageCode, Usage);
                     summary = true;
                     break;
                 case "--anchor": anchorPath = Value(args, ref i, anchorPath); break;
                 case "--actors": actorsText = Value(args, ref i, actorsText); break;
                 case "--write-anchor": writePath = Value(args, ref i, writePath); break;
                 default:
-                    if (arg.Length == 0 || arg.StartsWith("--", StringComparison.Ordinal) || logPath is not null) throw new Refusal(UsageCode, Usage);
+                    if (arg.Length == 0 || arg.StartsWith("--", StringComparison.Ordinal) || logPath is not null) throw new AuditVerifyRefusal(UsageCode, Usage);
                     logPath = arg;
                     break;
             }
         }
-        if (logPath is null) throw new Refusal(UsageCode, Usage);
+        if (logPath is null) throw new AuditVerifyRefusal(UsageCode, Usage);
 
-        IReadOnlyCollection<string>? actors = null;
-        if (actorsText is not null)
-        {
-            var set = new SortedSet<string>(StringComparer.Ordinal);
-            foreach (var actor in actorsText.Split(','))
-            {
-                if (!PermissionPolicy.IsActor(actor)) throw new Refusal(ActorsInvalid, "--actors: comma-separated actor ids, no empty items, at most " + PermissionPolicy.MaxActorChars.ToString(CultureInfo.InvariantCulture) + " characters each, no control characters");
-                set.Add(actor);
-            }
-            actors = set.ToArray();
-        }
+        IReadOnlyCollection<string>? actors = actorsText is null ? null
+            : AuditVerifyTool.Actors(actorsText.Split(','), "--actors: comma-separated actor ids, no empty items, at most " + PermissionPolicy.MaxActorChars.ToString(CultureInfo.InvariantCulture) + " characters each, no control characters");
 
-        if (writePath is not null && GltfExportCommand.OutputProblem(writePath, [".json"], out _) is string refused) throw new Refusal(refused);
+        if (writePath is not null && GltfExportCommand.OutputProblem(writePath, [".json"], out _) is string refused) throw new AuditVerifyRefusal(refused);
 
-        byte[] bytes;
-        string? anchorText = null;
-        try
-        {
-            bytes = BoundedInput.ReadBytes(logPath, MaxLogBytes);
-            if (anchorPath is not null) anchorText = BoundedInput.ReadText(anchorPath);
-        }
-        catch (InputRejectedException error) { throw new Refusal(error.Message); }
-        var anchor = anchorText is null ? null : ParseAnchor(anchorText);
-
-        var report = AuditVerifier.VerifyBytes(bytes, new AuditVerifyOptions(actors, anchor));
-        var printed = summary ? AuditSummary.ToJson(report.VerifiedEntries) : report.ToJson();
+        var verified = AuditVerifyTool.VerifyFiles(logPath, anchorPath, actors, summary);
+        var report = verified.Report;
+        var printed = verified.Text;
 
         if (writePath is not null && report.Ok)
         {
             var head = report.VerifiedEntries.Count == 0 ? new AuditAnchor(0, AuditLogFormat.GenesisHash) : new AuditAnchor(report.VerifiedEntries[^1].Seq, report.VerifiedEntries[^1].Hash);
             try { GltfExporter.WriteNew(AnchorBytes(head), writePath); }
-            catch (GltfExportException e) { throw new Refusal(e.Code); }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", e.GetType().Name); }
+            catch (GltfExportException e) { throw new AuditVerifyRefusal(e.Code); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { throw new AuditVerifyRefusal("output_io_error", e.GetType().Name); }
         }
 
         Console.WriteLine(printed);
@@ -126,9 +104,9 @@ internal static class AuditVerifyCommand
 
     static string Value(string[] args, ref int i, string? existing)
     {
-        if (existing is not null || i + 1 >= args.Length) throw new Refusal(UsageCode, Usage);
+        if (existing is not null || i + 1 >= args.Length) throw new AuditVerifyRefusal(UsageCode, Usage);
         var value = args[++i];
-        if (value.Length == 0 || value.StartsWith("--", StringComparison.Ordinal)) throw new Refusal(UsageCode, Usage);
+        if (value.Length == 0 || value.StartsWith("--", StringComparison.Ordinal)) throw new AuditVerifyRefusal(UsageCode, Usage);
         return value;
     }
 
@@ -149,43 +127,9 @@ internal static class AuditVerifyCommand
         return buffer.ToArray();
     }
 
-    static AuditAnchor ParseAnchor(string text)
-    {
-        JsonDocument document;
-        try { document = JsonDocument.Parse(text); }
-        catch (JsonException) { throw new Refusal(AnchorInvalid, "not JSON"); }
-        catch (ArgumentException) { throw new Refusal(AnchorInvalid, "not JSON"); }
-        // A lone escaped surrogate ("\ud800") in a member name or string value is valid JSON but not text: reading it
-        // throws InvalidOperationException, which is refused like any other malformed anchor.
-        try { return ReadAnchor(document); }
-        catch (InvalidOperationException) { throw new Refusal(AnchorInvalid, "member names and strings must be valid text"); }
-        finally { document.Dispose(); }
-    }
-
-    static AuditAnchor ReadAnchor(JsonDocument document)
-    {
-        {
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) throw new Refusal(AnchorInvalid, "a JSON object required");
-            var members = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-            foreach (var property in root.EnumerateObject())
-            {
-                if (property.Name is not ("kind" or "version" or "sequence" or "hash")) throw new Refusal(AnchorInvalid, "unknown member " + property.Name);
-                if (!members.TryAdd(property.Name, property.Value)) throw new Refusal(AnchorInvalid, "duplicate member " + property.Name);
-            }
-            if (members.Count != 4) throw new Refusal(AnchorInvalid, "members kind, version, sequence and hash required");
-            if (members["kind"].ValueKind != JsonValueKind.String || members["kind"].GetString() != AnchorKind) throw new Refusal(AnchorInvalid, "kind must be \"" + AnchorKind + "\"");
-            if (members["version"].ValueKind != JsonValueKind.Number || !members["version"].TryGetInt32(out var version) || version != AnchorVersion) throw new Refusal(AnchorInvalid, "version must be 1");
-            if (members["sequence"].ValueKind != JsonValueKind.Number || !members["sequence"].TryGetInt64(out var sequence) || sequence < 0) throw new Refusal(AnchorInvalid, "sequence must be a non-negative integer");
-            var hash = members["hash"].ValueKind == JsonValueKind.String ? members["hash"].GetString() : null;
-            if (hash is null || hash.Length != 64 || !hash.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'))) throw new Refusal(AnchorInvalid, "hash must be 64 lowercase hex characters");
-            return new AuditAnchor(sequence, hash);
-        }
-    }
-
     static void Fail(string code, string? detail)
     {
-        Console.WriteLine(detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail }));
+        Console.WriteLine(AuditVerifyTool.Failure(code, detail));
         Environment.ExitCode = 1;
     }
 }
