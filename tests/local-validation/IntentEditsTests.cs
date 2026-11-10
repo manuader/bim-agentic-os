@@ -16,6 +16,9 @@ using System.Text.Json;
 //     exactly A's elements. When that order is A's own (no create, or creates that sort last) the whole plan is
 //     byte-identical to Compiler.Diff(B, A), AfterHash included. Creates append (P3-05), while compile orders by
 //     kind and key, so a create that sorts before a surviving element gives the same content in another order.
+// P3-10: Diff(E, createOrder: IncrementalDiff.OrderOf(A)) places each create at its compile position, so its plan is
+// byte-identical to Compiler.Diff(B, A) on every step (AfterHash and operation order included), with the same work
+// counters as the default diff, and Advance of that result equals Build(A); the default (no order) is unchanged.
 // Seeded chains of random changes of each kind check this per step; refused changes must propagate the compiler's
 // refusal (same code and issues).
 static class IntentEditsOracle
@@ -147,6 +150,21 @@ static class IntentEditsOracle
         if (exactOrder != predicted) return "exact order " + exactOrder + " but the documented condition predicts " + predicted;
         if (exactOrder && Json(plan) != Json(expected)) return "same order but plan is not byte-identical to Compiler.Diff(B, A)";
 
+        // P3-10: with compile(after) as the create placement order the plan is byte-identical to Compiler.Diff(B, A)
+        // on every step (AfterHash and operation order included), at the default diff's cost, and advancing the
+        // ordered result gives the index of compile(after).
+        var index = IncrementalDiffIndex.Build(b);
+        var ordered = index.Diff(edits, createOrder: IncrementalDiff.OrderOf(a));
+        if (Json(ordered.After) != Json(a)) return "ordered incremental after is not compile(after)";
+        if (Json(ordered.Plan) != Json(expected)) return "ordered plan is not byte-identical to Compiler.Diff(B, A)";
+        if (Json(ordered.Work) != Json(result.Work)) return "ordered work " + Json(ordered.Work) + " differs from the default diff's " + Json(result.Work);
+        if (!ordered.After.Elements.All(element => b.Elements.Any(prior => ReferenceEquals(prior, element)) || edits.Any(edit => ReferenceEquals(edit.Element, element))))
+            return "ordered after holds an element that is neither a before instance nor an edit's element";
+        if (Json(index.Diff(edits, int.MaxValue, null).Plan) != Json(plan)) return "a null create order changes the default plan";
+        var advanced = index.Advance(ordered);
+        var differ = IncrementalDiffAdvanceOracle.Differ(advanced, IncrementalDiffIndex.Build(a));
+        if (differ is not null) return "advancing the ordered result differs from Build(compile(after)): " + differ;
+
         // Deterministic and independent of intent list order.
         if (Json(IntentEdits.From(ProjectId, Revision, Reversed(before), Reversed(after))) != Json(set)) return "edit set depends on intent list order";
 
@@ -177,6 +195,20 @@ static class IntentEditsOracle
         if (Json(result.After) != Json(expectedAfter)) return "stored incremental after is not survivors in stored order followed by creates";
         if (Json(result.Plan) != Json(Compiler.Diff(stored, expectedAfter))) return "stored plan is not byte-identical to Compiler.Diff(stored, A')";
         if (result.Plan.BeforeHash != Compiler.Hash(stored)) return "stored plan BeforeHash is not the stored hash";
+        // P3-10 on a stored project: survivors keep stored order and each create (in compile order) goes before the
+        // first survivor that sorts after it in A, the rest last; the plan describes exactly that project.
+        var rank = a.Elements.Select((element, position) => (element.Id, position)).ToDictionary(item => item.Id, item => item.position);
+        var pendingCreates = new Queue<Element>(a.Elements.Where(element => set.Edits.Any(edit => edit.Action == "create" && edit.Id == element.Id)));
+        var merged = new List<Element>();
+        foreach (var element in stored.Elements.Where(element => afterById.ContainsKey(element.Id)).Select(element => afterById[element.Id]))
+        {
+            while (pendingCreates.Count > 0 && rank[pendingCreates.Peek().Id] < rank[element.Id]) merged.Add(pendingCreates.Dequeue());
+            merged.Add(element);
+        }
+        merged.AddRange(pendingCreates);
+        var ordered = IncrementalDiffIndex.Build(stored).Diff(set.Edits, createOrder: IncrementalDiff.OrderOf(a));
+        if (Json(ordered.After) != Json(a with { Elements = merged.ToArray() })) return "stored ordered after is not the survivors in stored order with creates merged by compile rank";
+        if (Json(ordered.Plan) != Json(Compiler.Diff(stored, ordered.After))) return "stored ordered plan is not byte-identical to Compiler.Diff(stored, ordered after)";
         committed = result.After;
         return null;
     }
@@ -304,6 +336,52 @@ static class IntentEditsOracle
         }
         finally { try { Directory.Delete(directory, true); } catch (IOException) { } }
 
+        // P3-10: the create placement order. With OrderOf(compile(after)) the r1 adjacency change (creates sort before
+        // survivors) is byte-identical to Compiler.Diff(B, A), so set.After itself commits and From chains on.
+        var tallerIndex = IncrementalDiffIndex.Build(tallerSet.Before);
+        var tallerDefault = tallerIndex.Diff(tallerSet.Edits);
+        var tallerOrdered = tallerIndex.Diff(tallerSet.Edits, createOrder: IncrementalDiff.OrderOf(tallerSet.After));
+        var tallerExpected = Compiler.Diff(tallerSet.Before, tallerSet.After);
+        check(Json(tallerOrdered.Plan) == Json(tallerExpected) && Json(tallerOrdered.After) == Json(tallerSet.After) && Json(tallerDefault.Plan) != Json(tallerExpected),
+            "ordered creates: growing r1 north gives Compiler.Diff(compile(before), compile(after)) byte for byte (the default order does not)", Json(tallerOrdered.Plan.Operations.Select(operation => operation.Action)));
+        var operationOrder = tallerExpected.Operations.Select(operation => operation.Action + ":" + operation.Element.Id).ToArray();
+        check(tallerOrdered.Plan.Operations.Select(operation => operation.Action + ":" + operation.Element.Id).SequenceEqual(operationOrder)
+            && operationOrder.Take(operationOrder.Length - 1).Any(text => text.StartsWith("create:", StringComparison.Ordinal))
+            && tallerOrdered.Plan.Operations.SkipWhile(operation => operation.Action != "create").Any(operation => operation.Action == "update"),
+            "ordered creates: creates and updates interleave in compile order, deletes last", string.Join(",", operationOrder.Select(text => text[..text.IndexOf(':')])));
+        check(tallerOrdered.Plan.AfterHash == Compiler.Hash(tallerSet.After) && tallerDefault.Plan.AfterHash != Compiler.Hash(tallerSet.After),
+            "ordered creates: AfterHash is Compiler.Hash(compile(after))", tallerOrdered.Plan.AfterHash);
+        // A comparer that ties everything, and OrderOf a project without the created ids, place creates last: the
+        // default layout. Placement never changes a refusal.
+        var ties = Comparer<Element>.Create((x, y) => 0);
+        check(Json(tallerIndex.Diff(tallerSet.Edits, createOrder: ties)) == Json(tallerDefault) && Json(tallerIndex.Diff(tallerSet.Edits, createOrder: IncrementalDiff.OrderOf(tallerSet.Before))) == Json(tallerDefault),
+            "ordered creates: ties and unknown ids keep the default placement (creates last in edit order)", "");
+        var reversedCreates = Comparer<Element>.Create((x, y) => -IncrementalDiff.OrderOf(tallerSet.After).Compare(x, y));
+        var reversedResult = tallerIndex.Diff(tallerSet.Edits, createOrder: reversedCreates);
+        check(Json(reversedResult.Plan) == Json(Compiler.Diff(tallerSet.Before, reversedResult.After)) && reversedResult.After.Elements.Length == tallerSet.After.Elements.Length,
+            "ordered creates: any comparer gives a plan byte-identical to Compiler.Diff(before, result.After)", "");
+        var badEdits = tallerSet.Edits.Append(ElementEdit.Delete(Guid.NewGuid())).ToArray();
+        check(Code(() => tallerIndex.Diff(badEdits, createOrder: IncrementalDiff.OrderOf(tallerSet.After))) == IncrementalDiff.UnknownId
+            && Code(() => tallerIndex.Diff(tallerSet.Edits, 1, IncrementalDiff.OrderOf(tallerSet.After))) == IncrementalDiff.BoundExceeded,
+            "ordered creates: refusals are unchanged by a create order", "");
+        check(Code(() => IncrementalDiff.OrderOf(null!)) is not null, "ordered creates: OrderOf refuses a null project", "");
+        check(Json(IncrementalDiff.Diff(tallerSet.Before, tallerSet.Edits, int.MaxValue, IncrementalDiff.OrderOf(tallerSet.After)).Plan) == Json(tallerExpected),
+            "ordered creates: the one-shot IncrementalDiff.Diff accepts the order", "");
+        var orderedDirectory = Path.Combine(Path.GetTempPath(), "intent-edits-ordered-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new ProjectStore(orderedDirectory);
+            store.Initialize(tallerSet.Before);
+            check(Code(() => store.Commit(tallerSet.After, tallerOrdered.Plan, "taller-ordered")) is null && Json(store.Read()) == Json(tallerSet.After with { Revision = Revision + 1 }),
+                "ordered creates: compile(after) commits with the ordered plan", "");
+            var moveNext = IntentEdits.MoveOpening(taller, "w0", 2.0);
+            var chained = IntentEdits.From(ProjectId, Revision + 1, taller, moveNext);
+            var chainedPlan = IncrementalDiffIndex.Build(chained.Before).Diff(chained.Edits, createOrder: IncrementalDiff.OrderOf(chained.After)).Plan;
+            check(chainedPlan.BeforeHash == Compiler.Hash(store.Read()) && Code(() => store.Commit(chained.After, chainedPlan, "move-ordered")) is null,
+                "ordered creates: after an ordered commit, From(previous, next) chains against the store", "");
+        }
+        finally { try { Directory.Delete(orderedDirectory, true); } catch (IOException) { } }
+
         // Bound: a typed refusal above maxEdits (and the default IncrementalDiff.MaxEdits), argument checks.
         check(Code(() => IntentEdits.From(ProjectId, Revision, base0, wider, 3)) == IncrementalDiff.BoundExceeded, "intent edits: 4 edits above maxEdits 3 are refused edit_bound_exceeded",
             Code(() => IntentEdits.From(ProjectId, Revision, base0, wider, 3)) ?? "accepted");
@@ -354,8 +432,8 @@ static class IntentEditsOracle
         var refused = new int[3];
         var propagated = new int[3];
         var exact = new int[3];
-        int steps = 0, agreed = 0, withCreates = 0, withDeletes = 0, orderOnly = 0, levelRetypes = 0, storedAgreed = 0, hazards = 0, localityChecks = 0, unrelatedRooms = 0;
-        string? firstStoredProblem = null, firstLocalityProblem = null;
+        int steps = 0, agreed = 0, withCreates = 0, withDeletes = 0, orderOnly = 0, levelRetypes = 0, storedAgreed = 0, hazards = 0, localityChecks = 0, unrelatedRooms = 0, orderedChain = 0;
+        string? firstStoredProblem = null, firstLocalityProblem = null, firstChainProblem = null;
         long edits = 0, untouched = 0, totalBefore = 0;
         string? firstProblem = null, firstRefusalMismatch = null;
         foreach (var seed in new[] { 9101, 9102, 9103 })
@@ -363,6 +441,7 @@ static class IntentEditsOracle
             var random = new Random(seed);
             var current = Base();
             var stored = IntentCompiler.Compile(ProjectId, Revision, current);
+            var orderedStored = stored;
             for (var step = 0; step < 200; step++)
             {
                 var kind = random.Next(3);
@@ -401,6 +480,18 @@ static class IntentEditsOracle
                 if (storedProblem is null) storedAgreed++;
                 else firstStoredProblem ??= kinds[kind] + " seed " + N(seed) + " step " + N(step) + ": " + storedProblem;
                 stored = committed;
+                // P3-10 chain: diffing the stored project with compile order as the create placement keeps the stored
+                // project equal to compile(current) at every step, so every plan is Compiler.Diff(stored, compile(next)).
+                try
+                {
+                    var orderedSet = IntentEdits.FromStored(orderedStored, next);
+                    var orderedResult = IncrementalDiffIndex.Build(orderedStored).Diff(orderedSet.Edits, createOrder: IncrementalDiff.OrderOf(orderedSet.After));
+                    if (Json(orderedResult.After) == Json(orderedSet.After) && Json(orderedResult.Plan) == Json(Compiler.Diff(orderedStored, orderedSet.After))
+                        && Compiler.Hash(orderedStored) == Compiler.Hash(IntentCompiler.Compile(ProjectId, Revision, current))) orderedChain++;
+                    else firstChainProblem ??= kinds[kind] + " seed " + N(seed) + " step " + N(step) + ": ordered stored chain left compile order";
+                    orderedStored = orderedResult.After;
+                }
+                catch (Exception error) { firstChainProblem ??= "unexpected " + error.GetType().Name + ": " + error.Message; }
                 if (kind == 0)
                 {
                     var changedRoom = current.Rooms.Zip(next.Rooms).FirstOrDefault(pair => Json(pair.First) != Json(pair.Second)).First;
@@ -417,12 +508,15 @@ static class IntentEditsOracle
         check(refused.All(count => count >= 3) && propagated.SequenceEqual(refused), "intent edits corpus: every refused change propagates the compiler refusal unchanged", counts + " " + (firstRefusalMismatch ?? ""));
         check(exact.All(count => count >= 10), "intent edits corpus: plans byte-identical to Compiler.Diff(compile(before), compile(after)) for each kind", string.Join(",", exact.Select(count => N(count))));
         check(withCreates >= 5 && withDeletes >= 5 && orderOnly >= 1, "intent edits corpus: adjacency changes create and delete walls", N(withCreates) + "/" + N(withDeletes) + "/" + N(orderOnly));
+        check(agreed == steps && orderOnly >= 1, "ordered creates corpus: with OrderOf(compile(after)) every plan is byte-identical to Compiler.Diff(compile(before), compile(after)), including steps where a create sorts before a survivor",
+            N(agreed) + "/" + N(steps) + ", reordering steps " + N(orderOnly) + " " + (firstProblem ?? ""));
+        check(orderedChain == steps, "ordered creates corpus: the ordered stored chain stays in compile order and matches Compiler.Diff on every step", N(orderedChain) + "/" + N(steps) + " " + (firstChainProblem ?? ""));
         check(storedAgreed == steps, "intent edits corpus: FromStored on the stored (incremental-order) chain agrees with Compiler.Diff(stored, compile(after)) on every step", N(storedAgreed) + "/" + N(steps) + " " + (firstStoredProblem ?? ""));
         check(hazards >= 1, "intent edits corpus: the stored chain diverges in order from compile(previous) (non-vacuity)", N(hazards));
         check(firstLocalityProblem is null && localityChecks == accepted[0] && unrelatedRooms >= 100, "intent edits corpus: a single-room resize never edits elements of an unrelated room", N(localityChecks) + " steps, " + N(unrelatedRooms) + " rooms " + (firstLocalityProblem ?? ""));
         check(levelRetypes >= 5, "intent edits corpus: whole-level wall type changes are exercised", N(levelRetypes));
         check(untouched > edits, "intent edits corpus: most elements stay out of the edit sets", N(edits) + " edits, " + N(untouched) + " untouched of " + N(totalBefore));
-        Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "intent_edits", steps, agreed, accepted, refused, exact_order = exact, order_only = orderOnly, with_creates = withCreates, stored_agreed = storedAgreed, hazards, unrelated_rooms = unrelatedRooms, with_deletes = withDeletes, edits, untouched, total_before = totalBefore }));
+        Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "intent_edits", steps, agreed, accepted, refused, exact_order = exact, order_only = orderOnly, with_creates = withCreates, stored_agreed = storedAgreed, ordered_chain = orderedChain, hazards, unrelated_rooms = unrelatedRooms, with_deletes = withDeletes, edits, untouched, total_before = totalBefore }));
     }
 
     // One random bounded change of the given kind, built with the typed helpers.
