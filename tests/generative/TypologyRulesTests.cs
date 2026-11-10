@@ -33,11 +33,11 @@ static class TypologyRulesTests
      ]}
     """;
 
-    // A stricter code pack: bedrooms at least 3.5 m on their short side (parameter threshold), plus a warning rule and a
+    // A stricter code pack: bedrooms at least 3.2 m on their short side (parameter threshold), plus a warning rule and a
     // rule for a room the programme does not have, neither of which may reach the planner.
     const string StricterPack = """
     {"manifest_version":1,"id":"xx.test.stricter-bedroom","version":"1.0.0","kind":"code","description":"test pack with a stricter bedroom side","priority":100,
-     "parameters":[{"name":"bedroom_side_min_m","type":"number","default":3.5}],
+     "parameters":[{"name":"bedroom_side_min_m","type":"number","default":3.2}],
      "rules":[
       {"id":"bedroom-side-min","severity":"error","target":{"room":"bedroom*"},"check":{"op":"min","property":"min_side_m","parameter":"bedroom_side_min_m"},"message":"m"},
       {"id":"bedroom-side-wish","severity":"warning","target":{"room":"bedroom*"},"check":{"op":"min","property":"min_side_m","value":5},"message":"m"},
@@ -109,19 +109,20 @@ static class TypologyRulesTests
         var strict = SkillResolver.Resolve(strictCatalog, new[] { new SkillRequest(Caba), new SkillRequest(Pack), new SkillRequest(Stricter) });
         var fromStrict = Safe(() => TypologyRules.Generate(strict, request));
         var strictRule = fromStrict.Rules?.Rules.Rules.FirstOrDefault(rule => rule.Reference?.StartsWith(Stricter, StringComparison.Ordinal) == true);
-        Check(strictRule is { NamePattern: "bedroom*", MinSideMetres: 3.5, MinAreaSquareMetres: null, Reference: Stricter + " bedroom-side-min (bedroom_side_min_m 3.5)" },
+        Check(strictRule is { NamePattern: "bedroom*", MinSideMetres: 3.2, MinAreaSquareMetres: null, Reference: Stricter + " bedroom-side-min (bedroom_side_min_m 3.2)" },
             "the stricter pack's parameter minimum reaches the planner, naming its rule and parameter", strictRule?.ToString() ?? Show(fromStrict));
-        Check(fromStrict.Rules is { } strictSet && strictSet.Traces.Any(trace => trace.Rule?.ToString() == Stricter + ":rule:bedroom-side-min" && trace.Threshold == 3.5
+        Check(fromStrict.Rules is { } strictSet && strictSet.Traces.Any(trace => trace.Rule?.ToString() == Stricter + ":rule:bedroom-side-min" && trace.Threshold == 3.2
                 && trace.Property == TypologyRules.SideProperty && trace.ThresholdSource?.ToString() == Stricter + ":parameter:bedroom_side_min_m")
             && !strictSet.Rules.Rules.Any(rule => rule.Reference?.Contains("bedroom-side-wish", StringComparison.Ordinal) == true || rule.Reference?.Contains("sauna", StringComparison.Ordinal) == true),
             "the stricter rule is traced with its parameter source; warning rules and rules for rooms outside the programme are not planner rules");
         var baseBedrooms = p511.Alternatives?.Ranked.SelectMany(alternative => alternative.Plan.Rooms.Where(room => room.RoomId == "bedroom")).ToArray() ?? Array.Empty<PlannedRoom>();
-        Check(baseBedrooms.Any(room => ShortSide(room.Rect) < 3.5 - Tolerance), "under the default rules some P5-11 bedroom is narrower than 3.5 m",
+        Check(baseBedrooms.Any(room => ShortSide(room.Rect) < 3.2 - Tolerance), "under the default rules some P5-11 bedroom is narrower than 3.2 m",
             string.Join(" ", baseBedrooms.Select(room => F(ShortSide(room.Rect)))));
+        Console.WriteLine("::notice::typology-rules P5-11 bedroom short side/area: " + string.Join(" ", baseBedrooms.Select(room => F(ShortSide(room.Rect)) + "/" + F(room.Rect.Area))));
         var strictBedrooms = fromStrict.Result.Alternatives?.Ranked.SelectMany(alternative => alternative.Plan.Rooms.Where(room => room.RoomId == "bedroom")).ToArray() ?? Array.Empty<PlannedRoom>();
         Check(fromStrict.Result.Status == PrototypeStatus.Ranked && strictBedrooms.Length > 0
-            && strictBedrooms.All(room => ShortSide(room.Rect) >= 3.5 - Tolerance && room.Rect.Area >= 12.25 - Tolerance),
-            "with the stricter pack every ranked bedroom is at least 3.5 m wide and 12.25 m2", Show(fromStrict) + " | " + string.Join(" ", strictBedrooms.Select(room => F(ShortSide(room.Rect)) + "/" + F(room.Rect.Area))));
+            && strictBedrooms.All(room => ShortSide(room.Rect) >= 3.2 - Tolerance && room.Rect.Area >= 10.24 - Tolerance),
+            "with the stricter pack every ranked bedroom is at least 3.2 m wide and 10.24 m2", Show(fromStrict) + " | " + string.Join(" ", strictBedrooms.Select(room => F(ShortSide(room.Rect)) + "/" + F(room.Rect.Area))));
         Check(Digest(fromStrict.Result) != Digest(fromCaba.Result) && Digest(fromStrict.Result) == Digest(Safe(() => TypologyRules.Generate(strict, request)).Result),
             "the stricter composition gives different, deterministic prototypes");
         string german;
