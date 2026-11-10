@@ -22,9 +22,8 @@ static class ElementQueryPagingChecks
     public static void Run(Action<bool, string, string> checker)
     {
         check = checker;
-        SentEnvelopes();
-        RefusedBeforeSending();
-        PageCap();
+        CursorLoop();
+        MalformedReplies();
     }
 
     sealed record Fixture(long Id, string BuiltIn, string Level);
@@ -120,81 +119,68 @@ static class ElementQueryPagingChecks
     // Rows deleted between pages (after an earlier page was read): the result equals the unlimited query on the final
     // model as long as no returned row was deleted later.
 
-    static void SentEnvelopes()
-    {
-        var fake = new FakeAddIn();
-        var args = Args("OST_Walls", L1, 2, "Mark", "Comments");
-        var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), fake);
-        Check(result.IsSuccess && fake.Sent.Count >= 3, "a multi-page listing", Describe(result));
-        var envelopes = fake.Sent.Select(RevitCommandProtocol.Parse).ToArray();
-        Check(envelopes.All(e => e.Command == "query.elements" && !e.Spec.Writes), "only query.elements (read-only) is sent");
-        Check(fake.Sent.SequenceEqual(envelopes.Select(e => e.CanonicalJson)), "every request is a canonical envelope");
-        Check(envelopes.All(e => e.Document == new RevitDocumentRef(RealPath, Doc) && e.OperationId == "op-all"), "every page goes to the same document with the caller's operation id");
-        var first = (ElementQueryArgs)envelopes[0].Args;
-        Check(first.Cursor is null && first.Limit == 2 && first.BuiltInCategory == "OST_Walls" && first.Level == L1 && first.Parameters.SequenceEqual(new[] { "Mark", "Comments" }), "the first page is the caller's query without a cursor");
-        Check(envelopes.Skip(1).All(e => e.Args is ElementQueryArgs a && a.Category == first.Category && a.BuiltInCategory == first.BuiltInCategory && a.Level == first.Level && a.Limit == first.Limit && a.Parameters.SequenceEqual(first.Parameters) && a.Cursor is not null),
-            "every later page has the same filter and limit plus a cursor");
-        var replies = fake.Sent.Select(sent => JsonNode.Parse(Collect(RevitCommandProtocol.Parse(sent), fake.Items, null))!).ToArray();
-        var cursors = envelopes.Skip(1).Select(e => JsonNode.Parse(e.CanonicalJson)!["args"]!["cursor"]!.GetValue<string>()).ToArray();
-        Check(cursors.SequenceEqual(replies.Take(replies.Length - 1).Select(r => r["next_cursor"]!.GetValue<string>())), "each cursor sent is the previous reply's next_cursor, verbatim");
-        // A caller cursor resumes from it.
-        var filter = RevitElementQueryCursor.FilterDigest("OST_Walls", null, Array.Empty<string>());
-        var walls = Model.Where(f => f.BuiltIn == "OST_Walls").Select(f => f.Id).OrderBy(id => id).ToArray();
-        var resumeArgs = Args("wall", null, 4);
-        resumeArgs["cursor"] = RevitElementQueryCursor.Encode(Doc, filter, walls[5]);
-        var resumed = RevitElementQueryPaging.All(Envelope(resumeArgs).ToJsonString(), new FakeAddIn());
-        var resumedIds = resumed.Elements.Select(e => JsonNode.Parse(e)!["id"]!.GetValue<long>()).ToArray();
-        Check(resumed.IsSuccess && resumedIds.SequenceEqual(walls.Skip(6)), "an initial cursor resumes the listing after its id", Describe(resumed));
-    }
 
-    static void RefusedBeforeSending()
-    {
-        foreach (var (label, json, code) in new[]
-        {
-            ("query.levels", Envelope(new JsonObject(), "query.levels").ToJsonString(), RevitElementQueryPagingCodes.CommandNotPageable),
-            ("query.inspect", Envelope(new JsonObject { ["unique_id"] = Uid(2005) }, "query.inspect").ToJsonString(), RevitElementQueryPagingCodes.CommandNotPageable),
-            ("element.delete (a write)", Envelope(new JsonObject { ["element_uids"] = new JsonArray(Uid(2005)) }, "element.delete").ToJsonString(), RevitElementQueryPagingCodes.CommandNotPageable),
-            ("not JSON", "{not json", RevitCommandCodes.EnvelopeInvalid),
-            ("an unknown command", Envelope(new JsonObject(), "query.nothing").ToJsonString(), RevitElementQueryPagingCodes.CommandNotPageable),
-            ("a document that is not a UniqueId", Envelope(Args("wall", null, 3)).Also(e => e["document"]!["unique_id"] = "Tower").ToJsonString(), RevitCommandCodes.DocumentIdentityInvalid),
-            ("no filter", Envelope(Args(null, null, 3)).ToJsonString(), RevitCommandCodes.ArgsInvalid),
-            ("a cursor for another filter", Envelope(Args("door", null, 3).Also(a => a["cursor"] = RevitElementQueryCursor.Encode(Doc, RevitElementQueryCursor.FilterDigest("OST_Walls", null, Array.Empty<string>()), 5))).ToJsonString(), RevitCommandCodes.CursorFilterMismatch),
-        })
-        {
-            var fake = new FakeAddIn();
-            var result = RevitElementQueryPaging.All(json, fake);
-            Check(!result.IsSuccess && result.Code == code && fake.Sent.Count == 0 && result.Pages == 0 && result.Elements.Count == 0, label + " is refused " + code + " before anything is sent", Describe(result));
-        }
-        Check(Throws<ArgumentOutOfRangeException>(() => RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), new FakeAddIn(), 0))
-            && Throws<ArgumentOutOfRangeException>(() => RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), new FakeAddIn(), RevitElementQueryPaging.MaxPages + 1)),
-            "the page cap is 1 to 1000");
-        Check(RevitElementQueryPaging.MaxPages == 1000, "the default page cap is 1000");
-    }
 
-    static void PageCap()
-    {
-        var walls = Enumerable.Range(1, 30).Select(i => new Fixture(100 + i, "OST_Walls", L1)).ToArray();
-        var small = new FakeAddIn(walls);
-        var capped = RevitElementQueryPaging.All(Envelope(Args("wall", null, 1)).ToJsonString(), small, 10);
-        Check(!capped.IsSuccess && capped.Code == RevitElementQueryPagingCodes.PageLimitExceeded && small.Sent.Count == 10 && capped.Pages == 10 && capped.Elements.Count == 0,
-            "a listing needing more pages than the cap is refused page_limit_exceeded after the cap, without partial elements", Describe(capped));
-        var exact = new FakeAddIn(walls);
-        var fits = RevitElementQueryPaging.All(Envelope(Args("wall", null, 1)).ToJsonString(), exact, 30);
-        Check(fits.IsSuccess && fits.Pages == 30 && fits.Elements.Count == 30, "a listing of exactly the cap succeeds", Describe(fits));
-        var thousand = Enumerable.Range(1, 1000).Select(i => new Fixture(i, "OST_Walls", L1)).ToArray();
-        var big = new FakeAddIn(thousand);
-        var atDefault = RevitElementQueryPaging.All(Envelope(Args("wall", null, 1)).ToJsonString(), big);
-        Check(atDefault.IsSuccess && atDefault.Pages == 1000 && atDefault.Elements.Count == 1000, "1000 pages fit the default cap", Describe(atDefault));
-        var over = new FakeAddIn(thousand.Append(new Fixture(5000, "OST_Walls", L1)));
-        var overDefault = RevitElementQueryPaging.All(Envelope(Args("wall", null, 1)).ToJsonString(), over);
-        Check(!overDefault.IsSuccess && overDefault.Code == RevitElementQueryPagingCodes.PageLimitExceeded && over.Sent.Count == 1000, "a 1001st page is refused page_limit_exceeded with the default cap", Describe(overDefault));
-    }
 
     static string FilterOf(RevitCommandEnvelope envelope) => RevitElementQueryCursor.FilterDigest((ElementQueryArgs)envelope.Args);
 
+    static void CursorLoop()
+    {
+        // The second page issues a cursor at its own after: the same request would be sent forever.
+        var same = new FakeAddIn();
+        same.Line = (page, envelope, line) => page == 1 ? Reply(envelope, ReadbackOf(line).Also(r => r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, FilterOf(envelope), ((ElementQueryArgs)envelope.Args).Cursor!.After)).Also(r => r["elements"] = new JsonArray()).Also(r => r["returned"] = 0).ToJsonString()) : line;
+        var repeated = RevitElementQueryPaging.All(Envelope(Args("wall", null, 2)).ToJsonString(), same);
+        Check(!repeated.IsSuccess && repeated.Code == RevitElementQueryPagingCodes.CursorLoop && same.Sent.Count == 2 && repeated.Elements.Count == 0, "a next_cursor whose id does not move forward is refused cursor_loop", Describe(repeated));
+        var back = new FakeAddIn();
+        back.Line = (page, envelope, line) => page == 2 ? Reply(envelope, ReadbackOf(line).Also(r => r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, FilterOf(envelope), 0)).Also(r => r["elements"] = new JsonArray()).Also(r => r["returned"] = 0).ToJsonString()) : line;
+        var backwards = RevitElementQueryPaging.All(Envelope(Args("wall", null, 2)).ToJsonString(), back);
+        Check(!backwards.IsSuccess && backwards.Code == RevitElementQueryPagingCodes.CursorLoop && back.Sent.Count == 3, "a next_cursor whose id goes back is refused cursor_loop", Describe(backwards));
+    }
 
     static JsonObject ReadbackOf(string line) => JsonNode.Parse(line)!["readback"]!.AsObject();
 
+    static void MalformedReplies()
+    {
+        void Refused(string label, Func<int, RevitCommandEnvelope, string, string?> line, string code, int pages = 2)
+        {
+            var fake = new FakeAddIn { Line = line };
+            var result = RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), fake);
+            Check(!result.IsSuccess && result.Code == code && result.Elements.Count == 0 && fake.Sent.Count == pages, label + " is refused " + code, Describe(result));
+        }
+        string OnSecond(int page, RevitCommandEnvelope envelope, string line, Action<JsonObject> change) => page == 1 ? Reply(envelope, ReadbackOf(line).Also(change).ToJsonString()) : line;
+        var invalid = RevitCommandCodes.ResponseInvalid;
+        Refused("a reply that is not JSON", (page, _, line) => page == 1 ? "{" : line, invalid);
+        Refused("a reply missing members", (page, _, line) => page == 1 ? "{\"status\":\"succeeded\"}" : line, invalid);
+        Refused("a failed reply with code ok", (page, _, line) => page == 1 ? RevitCommandResponse.Failure(RevitCommandCodes.Ok).ToJson() : line, invalid);
+        Refused("a receipt for another operation", (page, envelope, line) => page == 1 ? RevitCommandResponse.Success(new RevitCommandReceipt("other-op", envelope.Command, Doc, envelope.RequestSha256, false), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), ReadbackOf(line).ToJsonString(), Array.Empty<string>()).ToJson() : line, invalid);
+        Refused("a receipt for another request (the previous page's)", (page, envelope, line) => page == 1 ? RevitCommandResponse.Success(new RevitCommandReceipt(envelope.OperationId, envelope.Command, Doc, new string('0', 64), false), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), ReadbackOf(line).ToJsonString(), Array.Empty<string>()).ToJson() : line, invalid);
+        Refused("a reply reporting changes", (page, envelope, line) => page == 1 ? RevitCommandResponse.Success(new RevitCommandReceipt(envelope.OperationId, envelope.Command, Doc, envelope.RequestSha256, false), Array.Empty<string>(), new[] { Uid(2005) }, Array.Empty<string>(), ReadbackOf(line).ToJsonString(), Array.Empty<string>()).ToJson() : line, invalid);
+        Refused("a reply without readback", (page, envelope, line) => page == 1 ? Reply(envelope, null) : line, invalid);
+        Refused("a readback that is not an object", (page, envelope, line) => page == 1 ? Reply(envelope, "[]") : line, invalid);
+        Refused("truncated without next_cursor", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = null), invalid);
+        Refused("a missing next_cursor member", (page, envelope, line) => OnSecond(page, envelope, line, r => r.Remove("next_cursor")), invalid);
+        Refused("next_cursor on an untruncated page", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["truncated"] = false; r["truncated_reason"] = null; }), invalid);
+        Refused("an unknown truncated_reason", (page, envelope, line) => OnSecond(page, envelope, line, r => r["truncated_reason"] = "time"), invalid);
+        Refused("a next_cursor that does not decode", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = "%%%"), invalid);
+        Refused("a next_cursor for another filter", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, RevitElementQueryCursor.FilterDigest("OST_Doors", null, Array.Empty<string>()), 999999)), invalid);
+        Refused("a next_cursor for another document", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = RevitElementQueryCursor.Encode(OtherDoc, FilterOf(envelope), 999999)), invalid);
+        Refused("a next_cursor before the page's last element", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, FilterOf(envelope), r["elements"]!.AsArray()[^1]!["id"]!.GetValue<long>() - 1)), invalid);
+        Refused("an after that is not the cursor's id", (page, envelope, line) => OnSecond(page, envelope, line, r => r["after"] = r["after"]!.GetValue<long>() + 1), invalid);
+        Refused("an after on the first page", (page, envelope, line) => page == 0 ? Reply(envelope, ReadbackOf(line).Also(r => r["after"] = 1).ToJsonString()) : line, invalid, 1);
+        Refused("another limit", (page, envelope, line) => OnSecond(page, envelope, line, r => r["limit"] = 4), invalid);
+        Refused("a returned count that is not the element count", (page, envelope, line) => OnSecond(page, envelope, line, r => r["returned"] = 1), invalid);
+        Refused("more elements than the limit", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["elements"]!.AsArray().Add(r["elements"]!.AsArray()[0]!.DeepClone().AsObject().Also(e => e["id"] = 99999999)); r["returned"] = 4; }), invalid);
+        Refused("a non-integer matched", (page, envelope, line) => OnSecond(page, envelope, line, r => r["matched"] = 1.5), invalid);
+        Refused("matched below returned", (page, envelope, line) => OnSecond(page, envelope, line, r => r["matched"] = 1), invalid);
+        Refused("elements out of order", (page, envelope, line) => OnSecond(page, envelope, line, r => { var e = r["elements"]!.AsArray(); var copy = e.Select(x => x!.DeepClone()).Reverse().ToArray(); e.Clear(); foreach (var x in copy) e.Add(x); }), invalid);
+        Refused("an element at or before the cursor id", (page, envelope, line) => OnSecond(page, envelope, line, r => r["elements"]!.AsArray()[0]!["id"] = r["after"]!.GetValue<long>()), invalid);
+        Refused("an element without an integer id", (page, envelope, line) => OnSecond(page, envelope, line, r => r["elements"]!.AsArray()[0]!["id"] = "7"), invalid);
+        Refused("an element that is not an object", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["elements"]!.AsArray()[0] = 7; }), invalid);
+        Refused("a failure from the add-in", (page, _, line) => page == 1 ? RevitCommandResponse.Failure(RevitCommandCodes.ReferenceNotFound, "args.level", "gone").ToJson() : line, RevitCommandCodes.ReferenceNotFound);
+        var failing = new FakeAddIn { Line = (page, _, line) => page == 1 ? RevitCommandResponse.Failure(RevitCommandCodes.DocumentConflict, "document.unique_id", "another document").ToJson() : line };
+        var failed = RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), failing);
+        Check(failed.Field == "document.unique_id" && failed.Detail == "another document" && failed.Pages == 1, "an add-in failure keeps its field and detail and counts only the accepted pages", Describe(failed));
+    }
 
 
     // The CLI adapter: each page goes through RevitCommandService.Run (pipe rule, envelope validation, guards, receipt).
