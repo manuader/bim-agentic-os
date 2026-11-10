@@ -211,6 +211,15 @@ var sampleArgs=new Dictionary<string,Func<JsonNode>>{
 foreach(var (tool,makeArgs) in v2Writes) sampleArgs[RevitCommandCatalogue.All.Single(spec=>spec.ToolName==tool).Name]=makeArgs;
 Check(RevitCommandCatalogue.V1.Concat(RevitCommandCatalogue.V2).All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover every v1 and v2 command");
 Check(RevitCommandCatalogue.Elements.Select(spec=>spec.Name).SequenceEqual(new[]{"query.elements","query.inspect"}) && RevitCommandCatalogue.Elements.All(spec=>sampleArgs.ContainsKey(spec.Name)),"sample arguments cover the P1-02 element queries");
+// P1-13: revit_query_elements advertises the optional pagination cursor; a bad cursor is refused before the pipe.
+var elementsTool=tools.Single(t=>t!["name"]!.GetValue<string>()=="revit_query_elements")!;
+Check(elementsTool["inputSchema"]!["properties"]!["args"]!["properties"]!["cursor"]?["type"]?.GetValue<string>()=="string" && elementsTool["inputSchema"]!["properties"]!["args"]!["properties"]!["cursor"]!["maxLength"]!.GetValue<int>()==RevitElementQueryCursor.MaxChars,"revit_query_elements inputSchema has the optional string cursor");
+var cursorBefore=forwardedLines.Count;
+var badCursor=Guarded("revit_query_elements",new JsonObject{["category"]="wall",["cursor"]="%%%"},McpReal);
+var foreignCursor=Guarded("revit_query_elements",new JsonObject{["category"]="wall",["cursor"]=RevitElementQueryCursor.Encode("11111111-2222-3333-4444-555555555555-0001fd0b",RevitElementQueryCursor.FilterDigest("OST_Walls",null,Array.Empty<string>()),7)},McpReal);
+Check(IsError(badCursor) && FailureCode(badCursor)==RevitCommandCodes.CursorMalformed && IsError(foreignCursor) && FailureCode(foreignCursor)==RevitCommandCodes.CursorForeignDocument && forwardedLines.Count==cursorBefore,"revit_query_elements refuses a malformed or foreign cursor with its typed code before the pipe");
+var goodCursor=Guarded("revit_query_elements",new JsonObject{["category"]="wall",["cursor"]=RevitElementQueryCursor.Encode(McpUid,RevitElementQueryCursor.FilterDigest("OST_Walls",null,Array.Empty<string>()),7)},McpReal);
+Check(IsError(goodCursor) && FailureCode(goodCursor)==RevitCommandCodes.NoResponse && forwardedLines.Count==cursorBefore+1,"revit_query_elements forwards a cursor issued for this document and filter");
 // P9-02: the structure commands are generated tools with the same read/write split and guards.
 Check(RevitCommandCatalogue.Structure.Select(spec=>spec.Name).SequenceEqual(new[]{"query.grids","query.structural_types","grid.create","structural_column.create","structural_beam.create","foundation.create_isolated","foundation.create_wall"}) && RevitCommandCatalogue.Structure.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the P9-02 structure commands, all in the catalogue enumeration");
 foreach(var (tool,readOnly) in new[]{("revit_query_grids",true),("revit_query_structural_types",true),("revit_grid_create",false),("revit_structural_column_create",false),("revit_structural_beam_create",false),("revit_foundation_create_isolated",false),("revit_foundation_create_wall",false)}) {
