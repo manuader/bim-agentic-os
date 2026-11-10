@@ -224,7 +224,7 @@ class Envelope(Base):
 
     def test_summary_counts(self):
         result = self.draft(self.exported())
-        self.assertEqual({'levels': 1, 'walls': 4, 'spaces': 1, 'unmapped': 3, 'unmapped_by_reason': {'layer_unmapped': 3}}, result['summary'])
+        self.assertEqual({'levels': 1, 'walls': 4, 'doors': 0, 'windows': 0, 'spaces': 1, 'unmapped': 3, 'unmapped_by_reason': {'layer_unmapped': 3}}, result['summary'])
 
 
 class LayerMapping(Base):
@@ -977,6 +977,214 @@ class ReReviewDeclared(Base):
         self.assertEqual(['00000000-0000-0000-0000-000000000010'], wall['element']['Dependencies'])
         self.assertIn('declared-dependencies-ignored', wall['notes'])
         self.assertNotIn('dependencies-declared', wall['notes'])
+
+
+# ---------------------------------------------------------------- P8-09 doors and windows
+
+OPENINGS = json.loads((ROOT / 'tests/rhino/fixtures/openings.json').read_text(encoding='utf-8'))
+
+
+def fid(n):
+    return f'00000000-0000-0000-0000-0000000000{n:02d}'
+
+
+def box(ax, ay, bx, by, z, height, thickness):
+    """A writer-style opening (or wall) box: horizontal path on the axis, centred vertical section."""
+    return br._wall([ax, ay, bx, by, height, thickness], z)
+
+
+def line(ax, ay, bx, by, z=0.0):
+    return rhino3dm.LineCurve(P3(ax, ay, z), P3(bx, by, z))
+
+
+class OpeningsRoundtrip(Base):
+    def test_writer_openings_draft_back_on_their_hosts(self):
+        source = self.exported(OPENINGS)
+        result = self.draft(source)
+        exact = {e['Id']: e for e in json.loads(br.dumps(br.import_project(source)))['Elements']}
+        self.assertEqual(sorted(exact), sorted(e['Id'] for e in result['project']['Elements']))
+        self.assertEqual([], result['unmapped'])
+        for element in result['project']['Elements']:
+            want = exact[element['Id']]
+            self.assertEqual(want['Kind'], element['Kind'])
+            self.assertEqual(want['Dependencies'], element['Dependencies'], element['Id'])
+            self.assertEqual(json.dumps(want['GeometryMetres']), json.dumps(element['GeometryMetres']), element['Id'])
+        for n in (31, 32, 33, 34, 35, 36):
+            proposal = self.proposal(result, fid(n))
+            self.assertEqual(0.9, proposal['confidence'])
+            self.assertIn('dependencies-declared', proposal['notes'])
+            self.assertEqual({'door': 'BIM::Doors', 'window': 'BIM::Windows'}[proposal['kind']], proposal['source']['layer'])
+            self.assertEqual('Extrusion', proposal['source']['geometry_type'])
+
+    def test_summary_counts_doors_and_windows(self):
+        self.assertEqual({'levels': 2, 'walls': 5, 'doors': 2, 'windows': 4, 'spaces': 1, 'unmapped': 0, 'unmapped_by_reason': {}},
+                         self.draft(self.exported(OPENINGS))['summary'])
+
+    def test_proposals_are_ordered_level_wall_door_window_space(self):
+        kinds = [p['kind'] for p in self.draft(self.exported(OPENINGS))['proposals']]
+        self.assertEqual(['level'] * 2 + ['wall'] * 5 + ['door'] * 2 + ['window'] * 4 + ['space'], kinds)
+
+    def test_draft_with_openings_exports_and_drafts_to_the_same_bytes(self):
+        first = self.draft(self.exported(OPENINGS, name='one/model.3dm'))
+        second = self.draft(self.exported(first['project'], name='two/model.3dm'))
+        self.assertEqual(br.dumps(first['project']), br.dumps(second['project']))
+        self.assertEqual(json.dumps(first['proposals']), json.dumps(second['proposals']))
+
+    def test_millimetre_writer_output_with_openings(self):
+        scale = rhino3dm.Transform.Scale(P3(0, 0, 0), 1000.0)
+        old = rhino3dm.File3dm.Read(str(self.exported(OPENINGS)))
+        objects = []
+        for obj in old.Objects:
+            geometry = obj.Geometry
+            self.assertTrue(geometry.Transform(scale))
+            objects.append((geometry, old.Layers[obj.Attributes.LayerIndex].FullPath, obj.Attributes.Id))
+        mm = self.draft(self.model(objects, units=rhino3dm.UnitSystem.Millimeters, name='mm.3dm'), project_id=OPENINGS['Id'])
+        metres = self.draft(self.exported(OPENINGS, name='m/model.3dm'))
+        self.assertEqual([e['Id'] for e in metres['project']['Elements']], [e['Id'] for e in mm['project']['Elements']])
+        for a, b in zip(metres['project']['Elements'], mm['project']['Elements']):
+            self.assertEqual(a['Dependencies'], b['Dependencies'])
+            self.assertClose(a['GeometryMetres'], b['GeometryMetres'])
+
+    def test_declared_host_that_does_not_hold_the_opening_is_ignored(self):
+        def rehost(geometry, strings, layer, object_id):
+            if str(object_id) == fid(31):
+                strings = {**strings, 'bim.dependencies': json.dumps([fid(10), fid(22)])}
+            return geometry, layer, object_id, strings
+        result = self.draft(self.copied(self.exported(OPENINGS), rehost), project_id=OPENINGS['Id'])
+        door = self.proposal(result, fid(31))
+        self.assertEqual([fid(10), fid(21)], door['element']['Dependencies'])
+        self.assertIn('declared-host-ignored', door['notes'])
+        self.assertNotIn('dependencies-declared', door['notes'])
+
+    def test_openings_without_writer_strings_find_their_hosts(self):
+        plain = self.copied(self.exported(OPENINGS), lambda g, s, l, i: (g, l, i, {}))
+        result = self.draft(plain, project_id=OPENINGS['Id'])
+        for n, host in ((31, 21), (32, 21), (33, 23), (34, 22), (35, 25), (36, 25)):
+            proposal = self.proposal(result, fid(n))
+            self.assertEqual(fid(host), proposal['element']['Dependencies'][1], n)
+            self.assertIn('host-inferred', proposal['notes'])
+            self.assertEqual(elements_of(OPENINGS)[fid(n)]['GeometryMetres'], proposal['element']['GeometryMetres'])
+
+
+def elements_of(project):
+    return {e['Id']: e for e in project['Elements']}
+
+
+class Openings(Base):
+    def test_door_and_window_layer_names(self):
+        for layer, kind in (('Doors', 'door'), ('door', 'door'), ('Puertas', 'door'), ('BIM::Doors::Entrance', 'door'),
+                            ('Windows', 'window'), ('WINDOW', 'window'), ('ventanas', 'window')):
+            with self.subTest(layer):
+                result = self.draft(self.model([(line(0, 0, 5, 0), 'Walls', oid(1)), (box(1, 0, 2, 0, 0.0 if kind == 'door' else 0.9, 1.0, 0.2), layer, oid(2))],
+                                               name=f'{layer}.3dm'.replace(':', '_')))
+                self.assertEqual([kind], [p['kind'] for p in result['proposals'] if p['key'] == sid(2)])
+
+    def test_free_drawn_door_on_a_centreline_wall(self):
+        result = self.draft(self.model([(line(0, 0, 5, 0), 'Walls', oid(1)), (box(1, 0, 1.9, 0, 0.0, 2.1, 0.2), 'Doors', oid(2))]))
+        wall_id = rd._derived_id(sid(1), '0')
+        door = self.proposal(result, sid(2))
+        self.assertEqual([1, 0, 1.9, 0, 0, 2.1], door['element']['GeometryMetres'])
+        level_id = door['element']['Dependencies'][0]
+        self.assertEqual([level_id, wall_id], door['element']['Dependencies'])
+        self.assertEqual(0.9, door['confidence'])
+        self.assertIn('host-inferred', door['notes'])
+        wall = self.proposal(result, f'{sid(1)}:0')
+        self.assertEqual([level_id], wall['element']['Dependencies'])
+        self.assertIn('level-added-for-opening', wall['notes'])
+        level = [p for p in result['proposals'] if p['element']['Id'] == level_id][0]
+        self.assertEqual([0], level['element']['GeometryMetres'])
+        self.assertIn('level-synthesized', level['notes'])
+        self.assertEqual(1, result['summary']['doors'])
+
+    def test_free_drawn_openings_roundtrip_through_the_writer(self):
+        source = self.model([(line(0, 0, 5, 0), 'Walls', oid(1)), (box(1, 0, 1.9, 0, 0.0, 2.1, 0.2), 'Doors', oid(2)),
+                             (box(3, 0, 4, 0, 0.9, 1.2, 0.2), 'Windows', oid(3)), (rhino3dm.Point(P3(0, 0, 3)), 'Levels', oid(4)),
+                             (line(0, 0, 0, 4, 3.0), 'Walls', oid(5)), (box(0, 1, 0, 2, 3.8, 1.0, 0.2), 'Windows', oid(6))], name='one/model.3dm')
+        first = self.draft(source)
+        self.assertEqual({'door': 1, 'window': 2}, {k: first['summary'][k + 's'] for k in ('door', 'window')})
+        upper = self.proposal(first, sid(6))
+        self.assertEqual([sid(4), rd._derived_id(sid(5), '0')], upper['element']['Dependencies'])
+        self.assertClose([0.8, 1.0], upper['element']['GeometryMetres'][4:])
+        second = self.draft(self.exported(first['project'], name='two/model.3dm'))
+        self.assertEqual(br.dumps(first['project']), br.dumps(second['project']))
+
+    def test_footprint_drawn_window_is_projected_onto_the_host_axis(self):
+        result = self.draft(self.model([(vertical_extrusion(2.5, 0, 0, 3.0, 5.0, 0.3), 'Walls', oid(1)),
+                                        (vertical_extrusion(3, 0.05, 0.9, 1.2, 1.0, 0.2), 'Windows', oid(2))]))
+        window = self.proposal(result, sid(2))
+        g = window['element']['GeometryMetres']
+        self.assertEndpoints([(2.5, 0), (3.5, 0)], g)
+        self.assertClose([0.9, 1.2], g[4:])
+        self.assertIn('footprint-rectangle', window['notes'])
+        self.assertIn('projected-to-host-axis', window['notes'])
+        self.assertAlmostEqual(0.8 * 0.9, window['confidence'], places=9)
+        self.assertEqual(sid(1), window['element']['Dependencies'][1])
+        # The ends follow the host direction (the writer's rule).
+        host = self.proposal(result, sid(1))['element']['GeometryMetres']
+        direction = (host[2] - host[0]) * (g[2] - g[0]) + (host[3] - host[1]) * (g[3] - g[1])
+        self.assertGreater(direction, 0)
+
+    def test_opening_against_the_host_direction_is_reordered(self):
+        result = self.draft(self.model([(line(0, 0, 5, 0), 'Walls', oid(1)), (box(3, 0, 2, 0, 1.0, 1.0, 0.2), 'Windows', oid(2))]))
+        window = self.proposal(result, sid(2))
+        self.assertEqual([2, 0, 3, 0, 1, 1], window['element']['GeometryMetres'])
+        self.assertIn('reversed-to-host', window['notes'])
+
+    def test_openings_without_a_host_are_unmapped(self):
+        objects = [(line(0, 0, 5, 0), 'Walls', oid(1)),
+                   (box(10, 10, 11, 10, 0.0, 2.1, 0.2), 'Doors', oid(2)),      # far from any wall
+                   (box(1, 0.5, 2, 0.5, 0.0, 2.1, 0.2), 'Doors', oid(3)),      # beside the wall, outside its thickness
+                   (box(1, 0, 2, 0, 2.0, 1.0, 0.2), 'Windows', oid(4)),        # head above the assumed 2.7 m wall top
+                   (box(4.5, 0, 5.5, 0, 1.0, 1.0, 0.2), 'Windows', oid(5)),    # past the wall end
+                   (box(1, 0, 2, 0.5, 1.0, 1.0, 0.2), 'Windows', oid(6))]      # across the wall, not along it
+        result = self.draft(self.model(objects))
+        for n in (2, 3, 4, 5, 6):
+            self.assertUnmapped('opening_host_missing', result, sid(n))
+
+    def test_door_above_the_floor_is_unmapped(self):
+        result = self.draft(self.model([(line(0, 0, 5, 0), 'Walls', oid(1)), (box(1, 0, 2, 0, 0.5, 2.0, 0.2), 'Doors', oid(2))]))
+        self.assertUnmapped('door_sill_not_zero', result, sid(2))
+        wall = self.proposal(result, f'{sid(1)}:0')
+        self.assertEqual([], wall['element']['Dependencies'])
+        self.assertNotIn('level-added-for-opening', wall['notes'])
+
+    def test_window_on_a_level_takes_the_host_level_and_its_sill(self):
+        result = self.draft(self.model([(rhino3dm.Point(P3(0, 0, 3)), 'Levels', oid(1)), (line(0, 0, 5, 0, 3.0), 'Walls', oid(2)),
+                                        (box(1, 0, 2.2, 0, 3.9, 1.2, 0.2), 'Windows', oid(3))]))
+        window = self.proposal(result, sid(3))
+        self.assertEqual([sid(1), rd._derived_id(sid(2), '0')], window['element']['Dependencies'])
+        self.assertClose([1, 0, 2.2, 0, 0.9, 1.2], window['element']['GeometryMetres'])
+
+    def test_ambiguous_host_takes_the_smallest_id_and_is_noted(self):
+        result = self.draft(self.model([(line(0, 0, 5, 0), 'Walls', oid(1)), (line(0, 0, 5, 0), 'Walls', oid(2)),
+                                        (box(1, 0, 2, 0, 1.0, 1.0, 0.2), 'Windows', oid(3))]))
+        window = self.proposal(result, sid(3))
+        self.assertEqual(min(rd._derived_id(sid(1), '0'), rd._derived_id(sid(2), '0')), window['element']['Dependencies'][1])
+        self.assertIn('host-ambiguous', window['notes'])
+
+    def test_exact_host_is_preferred_over_a_projection(self):
+        result = self.draft(self.model([(line(0, 0.05, 5, 0.05), 'Walls', oid(1)), (line(0, 0, 5, 0), 'Walls', oid(2)),
+                                        (box(1, 0, 2, 0, 1.0, 1.0, 0.2), 'Windows', oid(3))]))
+        window = self.proposal(result, sid(3))
+        self.assertEqual(rd._derived_id(sid(2), '0'), window['element']['Dependencies'][1])
+        self.assertNotIn('projected-to-host-axis', window['notes'])
+        self.assertIn('host-ambiguous', window['notes'])
+
+    def test_other_geometry_on_an_opening_layer(self):
+        objects = [(line(0, 0, 5, 0), 'Walls', oid(1)), (line(1, 0, 2, 0), 'Doors', oid(2)), (rhino3dm.Point(P3(1, 0, 0)), 'Windows', oid(3)),
+                   (vertical_extrusion(1, 0, 0, 2.1, 0.2, 0.2), 'Doors', oid(4))]
+        result = self.draft(self.model(objects))
+        self.assertUnmapped('geometry_unsupported', result, sid(2))
+        self.assertUnmapped('geometry_unsupported', result, sid(3))
+        self.assertUnmapped('opening_footprint_ambiguous', result, sid(4))
+
+    def test_object_order_does_not_change_the_bytes(self):
+        objects = [(line(0, 0, 5, 0), 'Walls', oid(1)), (line(0, 0, 5, 0), 'Walls', oid(2)), (box(1, 0, 2, 0, 0.0, 2.0, 0.2), 'Doors', oid(3)),
+                   (box(3, 0, 4, 0, 1.0, 1.0, 0.2), 'Windows', oid(4)), (box(9, 9, 10, 9, 1.0, 1.0, 0.2), 'Windows', oid(5))]
+        a = self.model(objects, name='a/model.3dm')
+        b = self.model(list(reversed(objects)), name='b/model.3dm')
+        self.assertEqual(rd.dumps(rd.draft(a, project_id=sid(9))), rd.dumps(rd.draft(b, project_id=sid(9))))
+
 
 
 if __name__ == '__main__':
