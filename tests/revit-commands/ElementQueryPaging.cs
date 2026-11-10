@@ -339,13 +339,13 @@ static class ElementQueryPagingChecks
     {
         var fake = new FakeAddIn();
         var wire = new List<string>();
-        string? Wire(string pipe, string line)
+        Func<string, string, string?> forward = (pipe, line) =>
         {
             wire.Add(line);
             return pipe == Pipe ? fake.Send(JsonNode.Parse(line)!["Command"]!.ToJsonString()) : null;
-        }
+        };
         var args = Args("wall", null, 4);
-        var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), new RevitServiceTransport(Pipe, RevitCommandPolicy.None, Wire));
+        var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), new RevitServiceTransport(Pipe, RevitCommandPolicy.None, forward));
         Check(result.IsSuccess && Canonical(result.Elements).SequenceEqual(Unlimited(args, fake.Items).Elements) && wire.Count == result.Pages && wire.All(w => JsonNode.Parse(w)!["DocumentPath"]!.GetValue<string>() == RealPath),
             "through RevitCommandService each page is one wire line and the result equals one unlimited query", Describe(result));
         var rejected = new List<string>();
