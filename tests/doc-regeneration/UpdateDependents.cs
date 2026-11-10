@@ -302,7 +302,8 @@ static class UpdateDependentsTests
         var tagUid = realized[DocRegeneration.ItemSource(tagDoor1)];
         var goneFake = new DependentsFakeTransport(new ReplaceFakeTransport(realized.Values.Where(uid => uid != doorUid && uid != tagUid)));
         var gone = DocUpdateDependents.Update(before, removed, Bindings(removed), realized, goneFake);
-        Check(gone.Planned.Failed is null && gone.Planned.Probes.SingleOrDefault() is { Missing: true } probe && probe.Key == tagDoor1 && probe.Dependents.Count == 0
+        Check(gone.Planned.Failed is null && gone.Planned.Probes.FirstOrDefault(item => item.Key == tagDoor1) is { Missing: true } probe && probe.Dependents.Count == 0
+            && gone.Planned.Probes.Count(item => item.Missing) == 1
             && !gone.Planned.Dependents.ContainsKey(tagDoor1)
             && gone.Run is { Report.Status: RevitPlanRunStatus.Completed } goneRun && goneRun.Plan.Gone.SequenceEqual(new[] { tagDoor1 }) && !goneFake.Inner.Log.Contains("delete " + tagUid),
             "a stale instance Revit already deleted is probed missing, gets no dependents, and the run reports it gone", Failure(gone.Planned));
@@ -344,7 +345,7 @@ static class UpdateDependentsTests
         Check(identical, "the same input gives byte-identical plans, dependents, probes, refusals and dry-run operation ids (reversed map, tr-TR, de-DE)");
         Check(fake.DryRuns.Select(envelope => envelope.OperationId).Distinct(StringComparer.Ordinal).Count() == fake.DryRuns.Count
             && fake.DryRuns.All(envelope => envelope.OperationId.StartsWith("docdry.", StringComparison.Ordinal))
-            && result.Plan is not null && fake.DryRuns.All(envelope => result.Plan.Replacement.Commands.Steps.Concat(first.Replacement.Commands.Steps).All(step => step.OperationId != envelope.OperationId)),
+            && result.Plan is not null && fake.DryRuns.All(envelope => result.Plan!.Replacement.Commands.Steps.Concat(first.Replacement.Commands.Steps).All(step => step.OperationId != envelope.OperationId)),
             "dry-run operation ids are distinct, docdry.-prefixed and never a plan step's id", dryIds);
 
         // ---- Refusals of the inputs ----
