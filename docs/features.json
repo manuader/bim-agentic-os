@@ -1447,6 +1447,39 @@
       ],
       "blocker": "whole-lot, one level, no fixed rooms/walls; not yet through the circulation/facade/IR gates (P5-12); planner uses the fixed CABA PrototypeTemplates.Rules, composed pack rules only checked as programme minimum conflicts (P5-13); PrototypeGenerator.Generate still takes only ApartmentTypology.",
       "scope": "P5-11: TypologyBrief.Brief/Generate turn a SkillTypology programme (pack or SkillResolution + family size) into a P6-03 brief with the lot as site and plan ranked whole-lot SpacePlanner candidates (seeds Seed+i unchecked, PrototypeTemplates.Rules, AlternativeRanker); typology_* issues and PrototypeGenerator request codes as typed refusals; family sizes 1–8 rank on 16x16; pinned SHA-256 85102ea0…b513 (family 4, 12x12, 6 alternatives, seed 0); apartment generator pinned digest unchanged. CI red 42787338649, green 42788507940, review red 42803818216, green 42805199628."
+    },
+    {
+      "id": "audit-verify-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/AuditVerifyCommand.cs",
+        "tests/cli/AuditVerifyTests.cs",
+        "core/Bim.Core/AuditVerify.cs",
+        "tests/audit/Program.cs"
+      ],
+      "blocker": "No MCP tool yet (P10-12); the anchor is only as trustworthy as where the caller stores it; actor ids containing commas cannot be passed; reading holds a shared handle so a concurrent AuditLog.Append may get audit_locked; when over 10000 findings only the first are listed (Code still the most severe).",
+      "scope": "P10-11: audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json] prints AuditVerifier report (or AuditSummary over verified entries), exit 1 on any finding; 64 MiB bounded raw-byte read; never-overwrite anchor {kind:audit-anchor,version:1,sequence,hash} written only on a clean report; tail cut → audit_truncated, full rehash → audit_anchor_mismatch; typed audit_verify_usage/_actors_invalid/_anchor_invalid/input_*/output_*. Review: seq-gap counting arithmetic (no hang on seq 9e18), findings capped at 10000 with findings_omitted, O(1) malformed-line prefix count. CI red 42811823793, green 42812956696, review red 42827752441, green 42829463239."
+    },
+    {
+      "id": "intent-edits",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/IntentEdits.cs",
+        "tests/local-validation/IntentEditsTests.cs"
+      ],
+      "blocker": "Plan byte-identical to Compiler.Diff(compile(before), compile(after)) only when no created element sorts before a surviving one (P3-05 appends creates; P3-10); otherwise identical ops/ids/BeforeHash/DirtyIds, different AfterHash and op order. Cost O(project) (two compiles + serialization).",
+      "scope": "P3-09: IntentEdits.From(projectId, revision, before, after, maxEdits) and FromStored(stored, afterIntent, maxEdits) produce the minimal ElementEdit set (updates in before/stored order, creates in after order, deletes); helpers ResizeRoom, MoveOpening, ChangeWallType; compiler refusals pass through (before first); edit_invalid/edit_bound_exceeded/unknown_room/unknown_opening; 3 seeds × 200 chained steps against Compiler.Diff, predicted exact-order condition both ways, independent A' order, store chaining through ProjectStore, independent locality check. CI red 42812044156, green 42815451044, review red 42833038699, green 42834677864."
+    },
+    {
+      "id": "query-elements-all-paging",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsQueryPaging.cs",
+        "tests/revit-commands/ElementQueryPaging.cs",
+        "tests/integration/test-catalogue-session.ps1"
+      ],
+      "blocker": "Never run in Revit (fake add-in only); no MCP equivalent; results are positions, not a snapshot; a stalled page blocks (no pipe read timeout, pre-existing); every page reuses the caller's operation id (safe: queries store no receipts).",
+      "scope": "P1-15: RevitElementQueryPaging.All(envelope, transport, maxPages ≤ 1000, maxElements ≤ 1,000,000, maxBytes ≤ 256 MiB) follows next_cursor with only query.elements (paging_command_invalid otherwise), validates receipts (not replayed, no changes) and every page against P1-13 (echoed filter/limit, after, next_cursor iff truncated and bound to document/filter, ascending ids, full/byte pages resume exactly after the last row); typed cursor_loop, page_limit_exceeded, listing_too_large, response_invalid; equals one unlimited query on fake fixtures incl. vanished rows and byte cuts; CLI revit-command envelope.json pipe --all (headless test on the fake pipe). CI red 42820900875, green 42824288044, review red 42838230156, green 42842909138."
     }
   ]
 }
