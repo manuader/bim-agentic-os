@@ -14,6 +14,7 @@ try {
             Console.WriteLine(JsonSerializer.Serialize(IfcCompiler.Export(ifcBefore,ifcAfter,ifcPlan,Guid.Parse(args[4]),args[5])));break;
         case "export-gltf": GltfExportCommand.Run(args); break;
         case "cad-draft": case "cad-brief": CadCommand.Run(args); break;
+        case "cad-plan-brief": CadPlanBriefCommand.Run(args); break;
         case "mirror-drift": MirrorDriftCommand.Run(args); break;
         case "mirror-drift-select": MirrorDriftSelectCommand.Run(args); break;
         case "skills-lock": SkillLockCommand.Run(args); break;
