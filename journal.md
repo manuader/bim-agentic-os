@@ -1367,3 +1367,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 20:51Z integration 09f4b65 CI 42896620605 success (9/9) → main fast-forwarded (f4662dc..09f4b65). P5-13, P6-12, P7-11 ✅; P6-13 ⏳; new P1-19 (flaky fake pipe), P7-13 (plan-layouts --pack). Progress 129/150 (86.0 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-10T20:51:57Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P3-10 (then P3-11), P10-12/P10-13 (relay178); then P4-11 (serialize with P1-18), P1-16/P1-17/P1-19, P2-13 (relay181); then P5-12, P6-13, P7-12/P7-13 (relay183; P7-12 and P7-13 touch different files but both use the skills lookup — serialize or share). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay184 — 2026-11-10T20:52:52Z (Claude, cloud scheduled)
+- 20:52Z LOCK taken (was FREE; relay183 released 2026-11-10T20:51:57Z).
