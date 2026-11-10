@@ -189,3 +189,8 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] `git pull` (main is now 4854d3e).
 - [ ] 🔒 The single -Catalogue run now has 104 steps: consultas gains read-only `q-walls-next` (follows the query.elements pagination cursor from q-walls-limit). Same command as before: `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once; answer No at Revit's save prompt), then `catalogue-report --run .bim/native-runs/<run>`.
 - No new decision needed. New code this run (apply-edits CLI, two-pass documentation dependents) is headless only.
+
+## Relay176 (2026-11-10, cloud)
+- [ ] Decide ADR0010 (docs/architecture/adr/0010-drift-adopt-provenance.md, status proposed): how adopted Revit edits are recorded in the provenance ledger. Recommended A (new `drift_adopt` ledger kind; existing records unchanged). Reply "ADR0010 A" (or B/C/defer) in chat or here. Unblocks P2-11; P2-12 (commit without provenance) proceeds meanwhile.
+- [ ] `git pull` (main is now 58bec24: new CLI verbs `cad-plan-brief` and `generate-prototypes`, typology → prototypes).
+- Still open: 🔒 one `-Catalogue` run + catalogue-report; P9-03 ADR; N21 run 3.
