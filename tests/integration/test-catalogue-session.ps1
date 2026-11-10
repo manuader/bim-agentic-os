@@ -9,7 +9,11 @@
 # document.save_as of the open copy into .bim/native-runs with the hash and post-save path readback, the repeat refused
 # target_exists, a target in an owner-enabled folder refused outside_copies_root (the test lists its own folder in
 # .bim/revit-enabled-roots.txt when that file is absent, and removes it afterwards), the switch to the new file and
-# fault cases. Runs in CI through
+# fault cases. P4-11 (end of documentacion): the two-pass documentation update of a moved test wall (P4-09 on the
+# test copy: dry-run probes, replan, confirm dry runs, real deletes with the planned confirm_dependents, re-created
+# section, tag and dimension read back against the moved wall), its delete order and requests, and the P4-09 refusals
+# (dependent_kept, dependent_unknown, dependent_planned, dependents_changed, a sha256 mismatch) sending no real delete.
+# Runs in CI through
 # scripts/verify.ps1 (catalogue-session, and catalogue-session-cli with the real CLI); never Revit.
 # With -Dotnet and -CliDll: the whole one-run sequence through the real CLI
 # "revit-command" verb (and Invoke-CatalogueWire for journal.read) against a fake add-in pipe, proving every envelope
@@ -157,6 +161,12 @@ Assert ($clean.Result.groups.Count -eq 1 -and (Format-CatalogueSummary $clean.Re
 
 # --- P1-06 one-run sequence: v1 first and unchanged, then every later group ---
 $groupKeys = @('v1', 'v2', 'vistas', 'snapshot', 'consultas', 'estructura', 'documentacion', 'diario', 'formas', 'extrusion', 'transformar', 'copia', 'modificar')
+# P4-11: the two-pass documentation update at the end of the documentation group; its element.delete steps (dry runs,
+# confirm dry runs and the real deletes) touch only the stale dimension, tag and section that group made for it.
+$docUpOrder = @('dimension', 'tag', 'section')
+$docUpDeleteKeys = @(foreach ($pass in 'probe', 'confirm', 'delete') { foreach ($name in $docUpOrder) { "doc-up-$pass-$name" } })
+# Plus the baseline dry run of the new section (its plan marker, the only untracked dependent the update may confirm).
+$docUpAllowedDeletes = @('doc-up-section-baseline') + $docUpDeleteKeys
 function Get-FailedSteps($Result) { (@($Result.steps | Where-Object { !$_.passed } | ForEach-Object { "[$($_.group)] $($_.key): $($_.reason)" }) -join '; ') }
 function Get-Group($Result, [string]$Key) { @($Result.groups | Where-Object { $_.key -eq $Key })[0] }
 $full = (Invoke-FakeSequence -All).Result
@@ -172,7 +182,7 @@ $summary = Format-CatalogueSummary $full
 $expectedGroups = (@($full.groups | Where-Object { $_.key -ne 'v1' } | ForEach-Object { "$($_.key) $($_.total)/$($_.total)" }) -join ', ')
 Assert ($summary -eq "Catálogo: 17/17 pasos OK; grupos: $expectedGroups; total $($full.overall.total)/$($full.overall.total); resultado: TODO OK") "one-run summary line: $summary"
 $destructive = @($full.steps | Where-Object { $_.command -eq 'element.delete' -or $_.command -eq 'element.set_parameter' })
-Assert ($destructive.Count -ge 5 -and @($destructive | Where-Object { $_.group -ne 'modificar' }).Count -eq 0) 'modify/delete steps only in the last group'
+Assert ($destructive.Count -ge 5 -and @($destructive | Where-Object { $_.group -ne 'modificar' -and !($_.group -eq 'documentacion' -and $_.key -in $docUpAllowedDeletes) }).Count -eq 0) 'modify/delete steps only in the last group (and the P4-11 documentation update deletes of its own stale items)'
 $lastWrite = @($full.steps | Where-Object { $_.group -ne 'modificar' } | Select-Object -Last 1)[0]
 Assert ($lastWrite.index -lt @($full.steps | Where-Object { $_.group -eq 'modificar' } | Select-Object -First 1)[0].index) 'the destructive group runs last'
 # P1-13: the fake add-in issues query.elements cursors exactly as core RevitElementQueryCursor (pinned vector shared
@@ -207,7 +217,10 @@ foreach ($key in @($groupKeys | Select-Object -Skip 2)) { Assert ((Get-Group $ro
 Assert ((Format-CatalogueSummary $roofFails) -like '*resultado: FALLÓ en v2') "failure summary: $(Format-CatalogueSummary $roofFails)"
 Assert (@($roofFails.steps | Where-Object { $_.key -eq 'v2-roof' })[0].reason -like '*transaction_failed*') 'failure reason carries the code'
 $sectionFails = (Invoke-FakeSequence @{ FailCommands = @('view.create_section') } -All).Result
-Assert ((Get-Group $sectionFails 'vistas').failed -eq 1 -and $sectionFails.overall.failed -eq 1 -and (Format-CatalogueSummary $sectionFails) -like '*resultado: FALLÓ en vistas') "failing section: $(Get-FailedSteps $sectionFails)"
+# P4-11: the documentation update makes its own section, so its section steps (and what needs them) fail there too.
+$sectionOthers = @($sectionFails.steps | Where-Object { !$_.passed -and $_.key -ne 'views-section' -and $_.key -notlike 'doc-up-*' })
+$upSectionFails = @($sectionFails.steps | Where-Object { $_.key -eq 'doc-up-section' }) | Select-Object -First 1
+Assert ((Get-Group $sectionFails 'vistas').failed -eq 1 -and $sectionOthers.Count -eq 0 -and $null -ne $upSectionFails -and !$upSectionFails.passed -and (Format-CatalogueSummary $sectionFails) -like '*resultado: FALLÓ en vistas, documentacion') "failing section: $(Get-FailedSteps $sectionFails)"
 $slope = (Invoke-FakeSequence @{ RoofSlopeOff = $true } -All).Result
 $slopeReason = [string]@($slope.steps | Where-Object { $_.key -eq 'v2-roof' })[0].reason
 Assert ($slope.overall.failed -eq 1 -and $slopeReason -like '*se pidió 4*se observó 0*') "readback mismatch reports requested vs observed: $slopeReason"
@@ -570,12 +583,143 @@ Assert ((Get-GroupField $shapeOff 'formas' 'failed') -eq 2 -and $shapeOff.overal
 $rotateOff = (Invoke-FakeSequence @{ RotateWrongWay = $true } -All).Result
 Assert (!(Get-StepField $rotateOff 't-rotate' 'passed') -and $rotateOff.overall.failed -eq 1) "a clockwise turn must fail t-rotate: $(Get-FailedSteps $rotateOff)"
 
+# --- P4-11: a two-pass documentation update in the documentation group (P4-09 on the test copy) ---
+# Its own wall, reference wall, section along the wall, tag and wall-to-wall dimension in doc-plan; the wall moved
+# (0, 1000, 0); then P4-09's two passes over the stale dimension, tag and section in DocReplace delete order: a dry run
+# of each stale target alone (collect), the replan (dependents classified: stale of an earlier delete dropped, kept /
+# later-planned / untracked refused, untracked accepted only for the view), a dry run of each planned delete (confirm,
+# same set), then the real deletes with exactly the planned confirm_dependents and the re-creations in create order
+# (view, tag, dimension), each read back against the moved wall; the stale tag reads back reference_not_found.
+$docUpExpected = @('doc-up-wall', 'doc-up-wall-ref', 'doc-up-section', 'doc-up-section-baseline', 'doc-up-tag', 'doc-up-dim', 'doc-up-move') + $docUpDeleteKeys + @('doc-up-section-new', 'doc-up-tag-new', 'doc-up-dim-new', 'doc-up-stale-gone')
+$docTail = @(@($full.steps | Where-Object { $_.group -eq 'documentacion' } | ForEach-Object { $_.key }) | Select-Object -Last $docUpExpected.Count)
+Assert (($docTail -join ',') -eq ($docUpExpected -join ',')) "P4-11: the documentation group must end with the two-pass update steps in order; got $($docTail -join ',')"
+foreach ($key in $docUpExpected) {
+    $step = Get-Step $full $key
+    $want = if ($key -eq 'doc-up-stale-gone') { 'reference_not_found' } else { 'ok' }
+    $code = [string](Get-CatalogueMember (Get-CatalogueMember $step 'response') 'code')
+    Assert ($null -ne $step -and $step.passed -and $code -eq $want) "P4-11 step $key must pass answering ${want}: $(if ($step) { "$code / $($step.reason)" } else { 'missing' })"
+}
+$upWall = Get-CatalogueFirstCreated (Get-StepField $full 'doc-up-wall' 'response')
+$upStale = [ordered]@{ dimension = (Get-CatalogueFirstCreated (Get-StepField $full 'doc-up-dim' 'response')); tag = (Get-CatalogueFirstCreated (Get-StepField $full 'doc-up-tag' 'response')); section = (Get-CatalogueFirstCreated (Get-StepField $full 'doc-up-section' 'response')) }
+Assert ($upWall -and @($upStale.Values | Where-Object { $_ }).Count -eq 3 -and [string](Get-CatalogueFirst (Get-RequestValue $full 'doc-up-move' 'args.element_uids')) -eq $upWall -and ((@(Get-RequestValue $full 'doc-up-move' 'args.vector_mm') | ForEach-Object { [double]$_ }) -join ',') -eq '0,1000,0') 'P4-11: the update moves its own wall (0, 1000, 0) and has its own stale dimension, tag and section'
+$upBaseline = @(Get-CataloguePath (Get-StepField $full 'doc-up-section-baseline' 'response') 'readback.delete.dependents' | Where-Object { $_ })
+$upMarker = if ($upBaseline.Count -eq 1) { [string]$upBaseline[0] } else { 'missing' }
+Assert ($upBaseline.Count -eq 1 -and [string](Get-CatalogueFirst (Get-RequestValue $full 'doc-up-section-baseline' 'args.element_uids')) -eq $upStale['section'] -and (Get-RequestValue $full 'doc-up-section-baseline' 'args.dry_run') -eq $true) "P4-11: the baseline dry run of the new section reads its one plan marker: $($upBaseline -join ',')"
+Assert (@(Get-CatalogueList (Get-StepField $full 'doc-up-delete-section' 'response') 'deleted' | ForEach-Object { $_ }) -contains $upMarker -and (Get-StepField $full 'doc-up-section-new' 'passed') -and (Get-StepField $full 'doc-up-tag-new' 'passed') -and (Get-StepField $full 'doc-up-dim-new' 'passed')) 'P4-11: the baseline marker is accepted, confirmed and deleted with the stale section; the re-creations pass'
+foreach ($name in $docUpOrder) {
+    foreach ($pass in 'probe', 'confirm', 'delete') {
+        $key = "doc-up-$pass-$name"
+        $uids = @(Get-RequestValue $full $key 'args.element_uids')
+        $dry = Get-RequestValue $full $key 'args.dry_run'
+        $dryOk = if ($pass -eq 'delete') { $null -eq $dry } else { $dry -eq $true }
+        # The fake add-in's section has a plan marker (References = the section): the only dependent confirmed, by the
+        # section's confirm dry run and real delete; the first dry runs send only their target.
+        $wantConfirm = if ($name -eq 'section' -and $pass -ne 'probe') { $upMarker } else { '' }
+        $sentConfirm = (@(Get-RequestValue $full $key 'args.confirm_dependents') | Where-Object { $_ }) -join ','
+        Assert ($uids.Count -eq 1 -and [string]$uids[0] -eq [string]$upStale[$name] -and $dryOk -and $sentConfirm -eq $wantConfirm) "P4-11 $key must delete only the stale $name (dry run only before the real delete) confirming '$wantConfirm': $($uids -join ',') dry_run=$dry confirm=$sentConfirm"
+    }
+}
+$upIndex = @{}
+foreach ($key in $docUpExpected) { $upIndex[$key] = [int](Get-StepField $full $key 'index') }
+Assert ($upIndex['doc-up-move'] -lt $upIndex['doc-up-probe-dimension'] -and $upIndex['doc-up-confirm-section'] -lt $upIndex['doc-up-delete-dimension'] -and $upIndex['doc-up-delete-section'] -lt $upIndex['doc-up-section-new']) 'P4-11 order: move, every dry run, the real deletes (dimension, tag, view), then the re-creations'
+$newSection = Get-StepField $full 'doc-up-section-new' 'response'
+$newTag = Get-CataloguePath (Get-StepField $full 'doc-up-tag-new' 'response') 'readback.tag'
+$oldValue = Get-CataloguePath (Get-StepField $full 'doc-up-dim' 'response') 'readback.dimension.value_mm'
+$newValue = Get-CataloguePath (Get-StepField $full 'doc-up-dim-new' 'response') 'readback.dimension.value_mm'
+$sectionY = Get-CatalogueFirst (Get-CatalogueArray $newSection 'readback.view.section.origin') 1
+Assert ((Get-CatalogueFirstCreated $newSection) -and (Get-CatalogueFirstCreated $newSection) -ne $upStale['section'] -and $null -ne $sectionY -and [Math]::Abs([double]$sectionY + 5000) -lt 0.01) "P4-11: the regenerated section is a new view on the moved wall line (y = -5000): $sectionY"
+Assert (((Get-CatalogueList $newTag 'tagged_unique_ids') -join ',') -eq $upWall -and ((@(Get-CatalogueMember $newTag 'head') | ForEach-Object { [double]$_ }) -join ',') -eq '-7500,-4500' -and [string](Get-CatalogueMember $newTag 'unique_id') -ne $upStale['tag']) "P4-11: the regenerated tag tags the moved wall at the moved head: $(ConvertTo-CatalogueText $newTag)"
+Assert ($null -ne $oldValue -and $null -ne $newValue -and [Math]::Abs([double]$newValue - [double]$oldValue - 1000) -lt 0.01) "P4-11: the regenerated dimension measures 1000 mm more than the stale one: $oldValue -> $newValue"
+Assert ([string](Get-RequestValue $full 'doc-up-stale-gone' 'args.unique_id') -eq $upStale['tag']) 'P4-11: the stale tag is read back gone'
+foreach ($key in 'doc-up-move', 'doc-up-section-new', 'doc-up-tag-new', 'doc-up-dim-new', 'doc-up-probe-section', 'doc-up-confirm-section', 'doc-up-delete-section') {
+    $rows = @(Get-StepField $full $key 'comparisons' | Where-Object { $null -ne $_ })
+    Assert ($rows.Count -ge 3 -and @($rows | Where-Object { !$_.ok }).Count -eq 0) "P4-11 $key records requested vs observed rows: $(@($rows | ForEach-Object { $_.check }) -join ' | ')"
+}
+
+# Fault cases: dependents injected into the delete readbacks of the update (count and sha256 recomputed as the add-in does).
+function Get-TestDependentsSha([string[]]$Uids) {
+    $lower = [string[]]@($Uids | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() })
+    [Array]::Sort($lower, [StringComparer]::Ordinal)
+    [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.UTF8Encoding]::new($false).GetBytes(($lower -join "`n")))).ToLowerInvariant()
+}
+$docUpSeen = @{}
+$docUpInject = @{}
+$docUpBadSha = @{ On = $false }
+$docUpDeletedExtra = @{}
+# 'step:<key>' names the element that step created (in this run); anything else is a literal UniqueId.
+$docUpWrap = {
+    param($index, $key, $json, $inner)
+    $reply = & $inner $index $key $json
+    if ($key -notlike 'doc-up-*') { return $reply }
+    $parsed = $reply.output | ConvertFrom-Json
+    if ($parsed.status -eq 'succeeded' -and @($parsed.created).Count) { $docUpSeen[$key] = [string]@($parsed.created)[0] }
+    if ($docUpInject.ContainsKey($key) -and $parsed.status -eq 'succeeded') {
+        $delete = $parsed.readback.delete
+        $extra = @($docUpInject[$key] | ForEach-Object { if ([string]$_ -like 'step:*') { $docUpSeen[([string]$_).Substring(5)] } else { [string]$_ } })
+        $list = [string[]]@(@(@($delete.dependents) + $extra) | Where-Object { $_ })
+        $delete.dependents = $list
+        $delete.dependents_count = $list.Count
+        $delete.dependents_sha256 = if ($docUpBadSha.On) { '0' * 64 } else { Get-TestDependentsSha $list }
+        $reply.output = $parsed | ConvertTo-Json -Depth 20 -Compress
+    }
+    if ($docUpDeletedExtra.ContainsKey($key) -and $parsed.status -eq 'succeeded') {
+        $parsed.deleted = [string[]]@(@(@($parsed.deleted) + @($docUpDeletedExtra[$key])) | Where-Object { $_ })
+        $reply.output = $parsed | ConvertTo-Json -Depth 20 -Compress
+    }
+    $reply
+}
+function Invoke-DocUpFault([hashtable]$Inject, [switch]$BadSha, [hashtable]$Deleted = @{}) {
+    $docUpSeen.Clear()
+    $docUpInject.Clear()
+    $docUpDeletedExtra.Clear()
+    foreach ($entry in $Inject.GetEnumerator()) { $docUpInject[$entry.Key] = $entry.Value }
+    foreach ($entry in $Deleted.GetEnumerator()) { $docUpDeletedExtra[$entry.Key] = $entry.Value }
+    $docUpBadSha.On = [bool]$BadSha
+    try { return (Invoke-FakeSequence -All -Wrap $docUpWrap).Result } finally { $docUpInject.Clear(); $docUpDeletedExtra.Clear(); $docUpBadSha.On = $false }
+}
+$untracked = 'abcdef01-2345-6789-abcd-ef0123456789-0000beef'
+$realDeletes = @($docUpOrder | ForEach-Object { "doc-up-delete-$_" })
+function Get-SentAfter($Result, [string]$Key) { @($Result.steps | Where-Object { $_.key -like 'doc-up-*' -and $_.index -gt [int](Get-StepField $Result $Key 'index') -and $null -ne $_.request }) }
+# An honest dry run of the view lists its tag and dimension: stale of earlier deletes, dropped from its confirm_dependents.
+$honest = Invoke-DocUpFault @{ 'doc-up-probe-section' = @('step:doc-up-tag', 'step:doc-up-dim'); 'doc-up-confirm-section' = @('step:doc-up-tag', 'step:doc-up-dim') }
+$honestMarker = [string](Get-CatalogueFirst (@(Get-CataloguePath (Get-StepField $honest 'doc-up-section-baseline' 'response') 'readback.delete.dependents')))
+Assert ($honest.overall.failed -eq 0 -and $honestMarker -and ((@(Get-RequestValue $honest 'doc-up-confirm-section' 'args.confirm_dependents') | Where-Object { $_ }) -join ',') -eq $honestMarker -and ((@(Get-RequestValue $honest 'doc-up-delete-section' 'args.confirm_dependents') | Where-Object { $_ }) -join ',') -eq $honestMarker -and (Get-StepField $honest 'doc-up-section-new' 'passed')) "P4-11: stale dependents of an earlier delete are dropped from the view's confirm_dependents: $(Get-FailedSteps $honest)"
+# Refusals of the first pass: nothing more of the update is sent (no confirm, no real delete), later groups still run.
+foreach ($case in @(
+        @{ What = 'a kept element (the reference wall)'; Key = 'doc-up-probe-tag'; Inject = @{ 'doc-up-probe-tag' = @('step:doc-up-wall-ref') }; Code = 'dependent_kept' },
+        @{ What = 'an untracked element of a tag'; Key = 'doc-up-probe-dimension'; Inject = @{ 'doc-up-probe-dimension' = @($untracked) }; Code = 'dependent_unknown' },
+        @{ What = 'the stale view deleted later'; Key = 'doc-up-probe-dimension'; Inject = @{ 'doc-up-probe-dimension' = @('step:doc-up-section') }; Code = 'dependent_planned' },
+        @{ What = 'a second dry run with another set'; Key = 'doc-up-confirm-tag'; Inject = @{ 'doc-up-confirm-tag' = @($untracked) }; Code = 'dependents_changed' },
+        # Review blocker: an untracked dependent of the view that is not its baseline marker is refused, never confirmed.
+        @{ What = 'an untracked element of the view outside its baseline'; Key = 'doc-up-probe-section'; Inject = @{ 'doc-up-probe-section' = @($untracked); 'doc-up-confirm-section' = @($untracked) }; Code = 'dependent_unknown' },
+        # The last probe and the last confirm gate the real deletes too.
+        @{ What = 'the moved wall as a dependent of the view'; Key = 'doc-up-probe-section'; Inject = @{ 'doc-up-probe-section' = @('step:doc-up-wall') }; Code = 'dependent_kept' },
+        @{ What = 'a second dry run of the view with another set'; Key = 'doc-up-confirm-section'; Inject = @{ 'doc-up-confirm-section' = @($untracked) }; Code = 'dependents_changed' },
+        # Readbacks read as strictly as core: a duplicated dependent (count and sha256 matching) and a non-UniqueId one.
+        @{ What = 'a duplicated dependent'; Key = 'doc-up-probe-dimension'; Inject = @{ 'doc-up-probe-dimension' = @($untracked, $untracked) }; Code = 'duplicados' },
+        @{ What = 'a dependent that is not a UniqueId'; Key = 'doc-up-probe-dimension'; Inject = @{ 'doc-up-probe-dimension' = @('not-a-unique-id') }; Code = 'UniqueId' })) {
+    $faulted = Invoke-DocUpFault $case.Inject
+    $faultReason = [string](Get-StepField $faulted $case.Key 'reason')
+    Assert ($null -ne (Get-StepField $faulted $case.Key 'request') -and !(Get-StepField $faulted $case.Key 'passed') -and $faultReason -like "*$($case.Code)*") "P4-11 $($case.What) must fail $($case.Key) with $($case.Code): $faultReason"
+    Assert (@(Get-SentAfter $faulted $case.Key).Count -eq 0 -and @($realDeletes | Where-Object { $null -ne (Get-StepField $faulted $_ 'request') }).Count -eq 0) "P4-11 after $($case.Code) no later update step and no real delete is sent: $(@(Get-SentAfter $faulted $case.Key | ForEach-Object { $_.key }) -join ',')"
+    Assert ((Get-GroupField $faulted 'modificar' 'failed') -eq 0 -and (Get-GroupField $faulted 'copia' 'failed') -eq 0) "P4-11 later groups still run after $($case.Code): $(Get-FailedSteps $faulted)"
+}
+# A dry-run readback whose sha256 does not match its dependents is refused before the replan.
+$badSha = Invoke-DocUpFault @{ 'doc-up-probe-dimension' = @() } -BadSha
+Assert (!(Get-StepField $badSha 'doc-up-probe-dimension' 'passed') -and [string](Get-StepField $badSha 'doc-up-probe-dimension' 'reason') -like '*dependents_sha256*' -and @($realDeletes | Where-Object { $null -ne (Get-StepField $badSha $_ 'request') }).Count -eq 0) "P4-11 a dry-run sha256 mismatch fails the probe: $(Get-StepField $badSha 'doc-up-probe-dimension' 'reason')"
+# A real delete that deletes more than its target and the planned dependents fails; the later deletes are not sent.
+$extraDeleted = Invoke-DocUpFault @{} -Deleted @{ 'doc-up-delete-dimension' = @($untracked) }
+Assert (!(Get-StepField $extraDeleted 'doc-up-delete-dimension' 'passed') -and [string](Get-StepField $extraDeleted 'doc-up-delete-dimension' 'reason') -like '*deleted*' -and @('doc-up-delete-tag', 'doc-up-delete-section', 'doc-up-section-new' | Where-Object { $null -ne (Get-StepField $extraDeleted $_ 'request') }).Count -eq 0) "P4-11 an extra element in the real delete's deleted list fails it: $(Get-StepField $extraDeleted 'doc-up-delete-dimension' 'reason')"
+# The baseline is bounded (at most two markers): a third dependent fails it and the update is never moved or deleted.
+$wideBaseline = Invoke-DocUpFault @{ 'doc-up-section-baseline' = @($untracked, 'abcdef01-2345-6789-abcd-ef0123456789-0000bee2') }
+Assert (!(Get-StepField $wideBaseline 'doc-up-section-baseline' 'passed') -and $null -eq (Get-StepField $wideBaseline 'doc-up-move' 'request') -and @($docUpAllowedDeletes | Where-Object { $_ -ne 'doc-up-section-baseline' -and $null -ne (Get-StepField $wideBaseline $_ 'request') }).Count -eq 0) "P4-11 more than two baseline dependents stop the update before the move: $(Get-StepField $wideBaseline 'doc-up-section-baseline' 'reason')"
+
 } finally {
     if ([IO.Path]::GetFileName($inProcessTree).StartsWith('bim-catalogue-session-', [StringComparison]::Ordinal) -and $inProcessTree.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::Ordinal)) { Remove-Item -LiteralPath $inProcessTree -Recurse -Force -ErrorAction SilentlyContinue }
 }
 if ($failures.Count -and $env:GITHUB_ACTIONS) { '::error title=catalogue session::' + ((@($failures | Select-Object -First 12) | ForEach-Object { $_ -replace '[\r\n]+', ' ' }) -join '%0A') }
 if ($failures.Count) { throw ("catalogue session unit checks failed:`n" + ($failures -join "`n")) }
-'PASS catalogue session: envelopes, picking, 17-step v1 sequence, one-run groups (all pass, failing group, lost pipe), P1-11 groups (direct shapes, extrusion roofs, move/copy/rotate/mirror, save_copy) and P1-14 save_as against the Core contracts and fault detection (in-process fake executor)'
+'PASS catalogue session: envelopes, picking, 17-step v1 sequence, one-run groups (all pass, failing group, lost pipe), P1-11 groups (direct shapes, extrusion roofs, move/copy/rotate/mirror, save_copy), P1-14 save_as and the P4-11 two-pass documentation update against the Core contracts and fault detection (in-process fake executor)'
 
 # --- Real CLI and a fake add-in pipe ---
 if (!$Dotnet -and !$CliDll) { 'NOTE real CLI pass skipped: run with -Dotnet and -CliDll'; return }
@@ -639,6 +783,10 @@ try {
     }
     $received = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue)
     $invalid = ($real.steps | Where-Object { $_.key -eq 'invalid-arc' }).operation_id
+    $realUp = @($real.steps | Where-Object { $_.key -like 'doc-up-*' })
+    $realMarker = @(Get-CataloguePath (Get-StepField $real 'doc-up-section-baseline' 'response') 'readback.delete.dependents' | Where-Object { $_ })
+    Assert ($realMarker.Count -eq 1 -and ((@(Get-RequestValue $real 'doc-up-delete-section' 'args.confirm_dependents') | Where-Object { $_ }) -join ',') -eq [string]$realMarker[0]) "P4-11: through the real CLI the section delete confirms exactly its baseline marker: $($realMarker -join ',')"
+    Assert ($realUp.Count -eq 20 -and @($realUp | Where-Object { !$_.passed }).Count -eq 0 -and @($realUp | Where-Object { $received -notcontains $_.operation_id }).Count -eq 0) "P4-11: the two-pass documentation update passes through the real CLI, every step reaching the pipe: $(@($realUp | Where-Object { !$_.passed } | ForEach-Object { "$($_.key): $($_.reason)" }) -join '; ')"
     # The client-side refusals (collinear arc, crossed outline, closed roof profile, zero move, full turn, save_copy
     # outside the copies root and over an existing file, save_as into an owner folder and over an existing file) are
     # refused by the real CLI before the pipe (off Windows also both save_as targets, args_invalid).
