@@ -211,3 +211,9 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - Merged to main 09f4b65 (CI 42896620605 green): P5-13 composed pack rules for the typology planner, P6-12 `cad-plan-brief --site-width/--site-depth/--name`, P7-11 `plan-layouts` CLI verb. Nothing needs Revit.
 - [ ] Confirm P5-13 semantics: only error-severity pack rules (area/side minimums) constrain the typology planner; warning rules (e.g. bim.typology.dwelling bedroom-min-area) are ignored by the planner. Reply "P5-13 OK" or say which warnings should bind.
 - Still open: ADR0010 (P2-11), ADR0011 (P9-03), recommended A in both; 🔒 one `-Catalogue` run + catalogue-report; N21 run 3.
+
+## Relay184 (2026-11-10, cloud)
+- [ ] 🔒 `git pull` (main 924c8f4), then ONE `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once): now 129 steps; the documentacion group adds 20 doc-up-* steps (P4-11) that move a test wall and delete/re-create only its own stale section, tag and dimension on the test copy. If doc-up-section-baseline or doc-up-probe-section fails, send the run record — it tells us what Revit lists as a section's dependents.
+- [ ] Decide: P4-11 accepts up to 2 untracked dependents of the freshly made test section (its plan marker). OK as is, or require an OST_Viewers category check?
+- [ ] Delete stray remote branch `relay184-P10-12-red` (test-only red evidence; the cloud could not delete it): `git push origin --delete relay184-P10-12-red`. Same for `relay181-P4-10b`.
+- Still open: ADR0010 (P2-11) and ADR0011 (P9-03), recommended option A; N21 run 3.
