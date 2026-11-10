@@ -199,3 +199,10 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] Decide ADR0011 (docs/architecture/adr/0011-guarded-free-path.md, status proposed): design of the "vía libre" you approved on 2026-10-30 — Claude writes Revit API C#, the add-in compiles it with Roslyn (MIT) against an allowlist of API symbols (no files/network/processes/reflection/save/close), runs it only on test copies inside a transaction group that is rolled back by default, returns a change report, and commits only with a confirm token from a previous identical dry run; 30 s limit; every run in the audit log. Recommended A. Reply "ADR0011 A" (or B/C/defer) in chat. Unblocks P9-03.
 - [ ] `git pull` (main is now fae94cb: new CLI verb `audit-verify` with head anchor; `revit-command envelope.json pipe --all` pages query.elements to the end; IntentEdits).
 - Still open: ADR0010; 🔒 one `-Catalogue` run + catalogue-report; N21 run 3.
+
+## Relay181 (2026-11-10, cloud)
+- [ ] `git pull` (main f4662dc).
+- [ ] 🔒 P1-14 one -Catalogue run (now includes 5 document.save_as steps; copia 10/10, total 109): `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), then `catalogue-report --run <run folder>`. Revit ends with the test copy's `-guardado.rvt` open; close it without touching production.
+- [ ] Optional, so c-as-outside is not reported blocked: add one owner project folder outside `.bim/native-runs` to `.bim/revit-enabled-roots.txt` (e.g. `C:\Users\ezead\OneDrive\Documentos\ARQ.ARG`). The step only targets a non-existent subfolder and is refused before the pipe; nothing is written there.
+- [ ] Decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended A in both.
+- Optional cleanup: remote branch `relay181-P4-10b` (duplicate of relay181-P4-10) can be deleted; the cloud relay got HTTP 403 on branch deletion.
