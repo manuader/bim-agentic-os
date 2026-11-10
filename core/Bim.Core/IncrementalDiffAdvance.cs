@@ -50,13 +50,19 @@ public sealed partial class IncrementalDiffIndex
     internal IEnumerable<Guid> DependentKeys => dependents.Keys;
     internal byte[]? CachedBytes(Guid id) => position.TryGetValue(id, out var index) ? json[index] : null;
 
-    IncrementalDiffResult Remember(IncrementalDiffResult result, HashSet<Guid> deletes, Dictionary<Guid, Element> updates, List<Element> creates, Dictionary<Guid, byte[]> newJson)
+    // Copies of each edited element's geometry and dependencies, taken by Diff before any createOrder comparer runs.
+    static Dictionary<Guid, Edited> Snapshot(Dictionary<Guid, Element> updates, List<Element> creates)
     {
-        var old = new Dictionary<Guid, Guid[]>(deletes.Count + updates.Count);
-        foreach (var id in deletes.Concat(updates.Keys)) old.Add(id, Before.Elements[position[id]].Dependencies.ToArray());
         var edits = new Dictionary<Guid, Edited>(updates.Count + creates.Count);
         foreach (var (id, element) in updates) edits.Add(id, new(element.GeometryMetres.ToArray(), element.Dependencies.ToArray(), false));
         foreach (var element in creates) edits.Add(element.Id, new(element.GeometryMetres.ToArray(), element.Dependencies.ToArray(), true));
+        return edits;
+    }
+
+    IncrementalDiffResult Remember(IncrementalDiffResult result, HashSet<Guid> deletes, Dictionary<Guid, Element> updates, List<Element> creates, Dictionary<Guid, byte[]> newJson, Dictionary<Guid, Edited> edits)
+    {
+        var old = new Dictionary<Guid, Guid[]>(deletes.Count + updates.Count);
+        foreach (var id in deletes.Concat(updates.Keys)) old.Add(id, Before.Elements[position[id]].Dependencies.ToArray());
         issued.Add(result, new(result.After.Elements.ToArray(), result.Plan.AfterHash, new(deletes), old, edits, creates.Select(element => element.Id).ToList(), newJson));
         return result;
     }
@@ -129,13 +135,13 @@ public sealed partial class IncrementalDiffIndex
         foreach (var key in keys)
         {
             // Build order: dependents in project order, one entry per occurrence. Survivors keep their relative
-            // order, updated elements stay in place, creates come last in edit order.
+            // order and updated elements their slot; creates sit wherever Diff placed them (last in edit order by
+            // default, merged by a P3-10 createOrder otherwise), so every entry is ordered by its next position.
             var survivors = dependents.TryGetValue(key, out var old)
                 ? old.Where(dependent => !state.Deletes.Contains(dependent) && !state.Edits.ContainsKey(dependent)) : Enumerable.Empty<Guid>();
             var moved = updated.SelectMany(pair => pair.Value.Dependencies.Where(dependency => dependency == key).Select(_ => pair.Key));
-            var list = survivors.Concat(moved).OrderBy(dependent => position[dependent]).ToList(); // stable: equal positions keep order
-            foreach (var id in state.CreateOrder)
-                foreach (var dependency in state.Edits[id].Dependencies) if (dependency == key) list.Add(id);
+            var fresh = state.CreateOrder.SelectMany(id => state.Edits[id].Dependencies.Where(dependency => dependency == key).Select(_ => id));
+            var list = survivors.Concat(moved).Concat(fresh).OrderBy(dependent => nextPosition[dependent]).ToList(); // stable: equal positions keep order
             if (list.Count == 0) nextDependents.Remove(key); else nextDependents[key] = list;
         }
 

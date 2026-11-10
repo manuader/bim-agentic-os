@@ -5,7 +5,7 @@ namespace Bim.Core;
 
 // P3-05 incremental diff. An edit names one element by id: create/update carry the full new element (whose Id
 // must equal the edit Id), delete carries none. Applying an edit set means: updates replace the element in place,
-// deletes remove it, creates are appended in edit-set order. The result equals
+// deletes remove it, creates are appended in edit-set order (or merged by an optional P3-10 createOrder). The result equals
 // Compiler.Diff(before, Apply(before, edits)) byte for byte (operations, both hashes and DirtyIds), or the same
 // invalid_ir refusal, without calling Compiler.Diff or Compiler.Validate on the whole project.
 public sealed record ElementEdit(string Action, Guid Id, Element? Element)
@@ -98,7 +98,21 @@ public sealed partial class IncrementalDiffIndex
     // maxAffected bounds the accepted dirty closure; a larger closure is refused (edit_bound_exceeded) after the
     // closure and its validity checks run, so invalid_ir always takes precedence (the traversal itself is not capped).
     // A caller may then fall back to Compiler.Diff.
-    public IncrementalDiffResult Diff(IReadOnlyList<ElementEdit> edits, int maxAffected = int.MaxValue)
+    // P3-10 createOrder (optional; null keeps the P3-05 layout byte for byte): survivors keep before order and the
+    // creates, stably sorted by createOrder (ties in edit order), are merged in: each goes immediately before the first
+    // survivor (its after version) that it compares strictly less than, the rest last. Create and update operations
+    // then follow result.After order, as in Compiler.Diff, so the plan is always byte-identical to
+    // Compiler.Diff(before, result.After). With IncrementalDiff.OrderOf(target) and survivors in target's relative
+    // order (e.g. compile(before) against compile(after)), result.After is target's order. The comparer runs only
+    // on after elements, after every refusal check and after every element is serialized and the edited elements are
+    // snapshotted for Advance. An inconsistent comparer still yields a valid placement (the same elements, plan equal
+    // to Compiler.Diff(before, result.After)) unless the sort rejects it. Any exception, whatever the create count, becomes
+    // InvalidOperationException(IncrementalDiff.CreateOrderFailed) whose InnerException is the comparer's exception
+    // (or the sort's exception around it); nothing is issued and the index stays usable. The comparer must not
+    // mutate elements: the element bytes AfterHash streams were serialized before it runs, and Advance refuses a result whose edited elements changed since (edit_result_mutated). Cost: the
+    // sort of the c creates (O(c log c) comparisons) plus at most survivors + c comparisons in the merge, inside the
+    // O(project) assembly; serialization and traversal are unchanged.
+    public IncrementalDiffResult Diff(IReadOnlyList<ElementEdit> edits, int maxAffected = int.MaxValue, IComparer<Element>? createOrder = null)
     {
         ArgumentNullException.ThrowIfNull(edits);
         if (maxAffected < 0) throw new ArgumentException(IncrementalDiff.InvalidEdit);
@@ -217,16 +231,50 @@ public sealed partial class IncrementalDiffIndex
             else { after.Add(element); segments.Add(json[i]); }
         }
         foreach (var element in creates) { after.Add(element); segments.Add(newJson[element.Id]); }
+        var snapshot = Snapshot(updates, creates);
+        if (createOrder is not null && creates.Count > 0) Place(after, segments, creates, createOrder, newJson);
         var afterHash = Hash(prefix, segments, out var hashedBytes);
 
+        // Compiler.Diff order: creates and updates in after order, then deletes in before order. Without createOrder
+        // after is survivors then creates, i.e. updates in before order then creates in edit order (P3-05).
         var operations = new List<Operation>(changed.Count + creates.Count + deletes.Count);
-        foreach (var id in changed.OrderBy(id => position[id])) operations.Add(new("update", updates[id]));
-        foreach (var element in creates) operations.Add(new("create", element));
+        var changedIds = changed.ToHashSet();
+        foreach (var element in after)
+        {
+            if (created.ContainsKey(element.Id)) operations.Add(new("create", element));
+            else if (changedIds.Contains(element.Id)) operations.Add(new("update", element));
+        }
         foreach (var id in deletes.OrderBy(id => position[id])) operations.Add(new("delete", Before.Elements[position[id]]));
 
         var plan = new ExecutionPlan(Before.Id, Before.Revision, beforeHash, afterHash, operations.ToArray(), dirty.Order().ToArray());
         var work = new IncrementalWork(edits.Count, serialized, dirty.Count, Before.Elements.Length, hashedBytes, traversed);
-        return Remember(new(Before with { Elements = after.ToArray() }, plan, work), deletes, updates, creates, newJson);
+        return Remember(new(Before with { Elements = after.ToArray() }, plan, work), deletes, updates, creates, newJson, snapshot);
+    }
+
+    // Re-lays after (survivors, then the creates in edit order) with the creates merged at their createOrder place.
+    static void Place(List<Element> after, List<byte[]> segments, List<Element> creates, IComparer<Element> createOrder, Dictionary<Guid, byte[]> newJson)
+    {
+        var survivors = after.Count - creates.Count;
+        var placed = new List<Element>(after.Count);
+        var bytes = new List<byte[]>(after.Count);
+        try
+        {
+            var sorted = creates.OrderBy(element => element, createOrder).ToArray(); // stable: ties keep edit order
+            var next = 0;
+            for (var i = 0; i < survivors; i++)
+            {
+                while (next < sorted.Length && createOrder.Compare(sorted[next], after[i]) < 0) { placed.Add(sorted[next]); bytes.Add(newJson[sorted[next].Id]); next++; }
+                placed.Add(after[i]); bytes.Add(segments[i]);
+            }
+            for (; next < sorted.Length; next++) { placed.Add(sorted[next]); bytes.Add(newJson[sorted[next].Id]); }
+        }
+        catch (Exception error)
+        {
+            // The sort wraps comparer exceptions and the merge does not: one documented type and code either way.
+            throw new InvalidOperationException(IncrementalDiff.CreateOrderFailed, error);
+        }
+        after.Clear(); after.AddRange(placed);
+        segments.Clear(); segments.AddRange(bytes);
     }
 }
 
@@ -238,8 +286,34 @@ public static partial class IncrementalDiff
     public const string DuplicateId = "edit_duplicate_id";
     public const string CreateExists = "edit_create_exists";
     public const string BoundExceeded = "edit_bound_exceeded";
+    // P3-10: the createOrder comparer threw (InvalidOperationException with the comparer's exception inside).
+    public const string CreateOrderFailed = "edit_create_order_failed";
 
     // One-shot convenience: indexes before (O(project), once) and diffs. Reuse IncrementalDiffIndex for many diffs.
-    public static IncrementalDiffResult Diff(Project before, IReadOnlyList<ElementEdit> edits, int maxAffected = int.MaxValue) =>
-        IncrementalDiffIndex.Build(before).Diff(edits, maxAffected);
+    public static IncrementalDiffResult Diff(Project before, IReadOnlyList<ElementEdit> edits, int maxAffected = int.MaxValue, IComparer<Element>? createOrder = null) =>
+        IncrementalDiffIndex.Build(before).Diff(edits, maxAffected, createOrder);
+
+    // P3-10 create placement taken from a target project's element order (e.g. IntentEditSet.After, the compiled
+    // after project): elements compare by their position in target; ids absent from target compare equal to each
+    // other and after every present id (so with no create in target the default layout results). Never throws on
+    // non-null elements; null sorts first. Built in O(target) once; target must not be mutated while it is used.
+    public static IComparer<Element> OrderOf(Project target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(target.Elements);
+        var rank = new Dictionary<Guid, int>(target.Elements.Length);
+        for (var i = 0; i < target.Elements.Length; i++) if (target.Elements[i] is { } element) rank.TryAdd(element.Id, i);
+        return new TargetOrder(rank);
+    }
+
+    sealed class TargetOrder(Dictionary<Guid, int> rank) : IComparer<Element>
+    {
+        public int Compare(Element? x, Element? y)
+        {
+            if (x is null || y is null) return x is null ? (y is null ? 0 : -1) : 1;
+            return Rank(x).CompareTo(Rank(y));
+        }
+
+        int Rank(Element element) => rank.TryGetValue(element.Id, out var index) ? index : int.MaxValue;
+    }
 }
