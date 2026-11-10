@@ -49,11 +49,13 @@ static class ElementQueryPagingChecks
 
     static JsonObject Args(string? category, string? level, int? limit, params string[] parameters)
     {
-        var args = new JsonObject();
-        if (category is not null) args["category"] = category;
-        if (level is not null) args["level"] = level;
-        if (parameters.Length > 0) args["parameters"] = new JsonArray(parameters.Select(p => (JsonNode?)JsonValue.Create(p)).ToArray());
-        if (limit is not null) args["limit"] = limit;
+        // Built from parsed text, not a JsonObject creation followed by conditional index assignments: that shape crashes
+        // the IDE0028 analyzer (AD0001) on the CI SDK.
+        var args = JsonNode.Parse("{}")!.AsObject();
+        if (category is not null) args.Add("category", category);
+        if (level is not null) args.Add("level", level);
+        if (parameters.Length > 0) args.Add("parameters", new JsonArray(parameters.Select(p => (JsonNode?)JsonValue.Create(p)).ToArray()));
+        if (limit is { } size) args.Add("limit", size);
         return args;
     }
 
