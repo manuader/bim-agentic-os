@@ -68,7 +68,7 @@ internal static partial class CommandExecutor
             rows.Add(ObserveQueryElement(d, element, type) with { Parameters = parameters, Missing = missing });
         }
         var levelReference = level is null ? null : new ObservedReference(level.Name, level.UniqueId);
-        return RevitElementQueryJson.Elements(envelope.Document.UniqueId, args, levelReference, matched.Distinct().Count(), truncated, rows);
+        return RevitElementQueryJson.Elements(envelope.Document.UniqueId, args, levelReference, matched.Distinct().Count(), truncated, rows, selected);
     }
 
     static string InspectQuery(Document d, ElementInspectArgs args)

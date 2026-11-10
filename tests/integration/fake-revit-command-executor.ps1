@@ -279,6 +279,37 @@ function Get-FakeProfilePoints($Segment) {
 }
 
 # $CommandText is the envelope exactly as received (the pipe's Command member); returns one response line.
+# P1-13 query.elements cursor, issued exactly as core RevitElementQueryCursor so the real CLI accepts it on the next
+# request: base64url of {"v":1,"document","filter","after","check"} where filter is the SHA-256 of the canonical filter
+# JSON and check the first 16 bytes of SHA-256 over the domain line plus the payload without check. Texts written here
+# are plain ASCII only (the fake's categories, level UniqueIds and parameter names); anything else throws.
+function ConvertTo-FakeJsonText($Value) {
+    if ($null -eq $Value) { return 'null' }
+    $text = [string]$Value
+    if ($text -notmatch '\A[A-Za-z0-9 _.:-]*\z') { throw "fake cursor: unsupported text $text" }
+    return '"' + $text + '"'
+}
+
+function Get-FakeFilterDigest($BuiltIn, $Level, [object[]]$Parameters) {
+    $names = @(@($Parameters) | Where-Object { $null -ne $_ } | ForEach-Object { ConvertTo-FakeJsonText $_ }) -join ','
+    Get-FakeSha256 ('{"built_in_category":' + (ConvertTo-FakeJsonText $BuiltIn) + ',"level":' + (ConvertTo-FakeJsonText $Level) + ',"parameters":[' + $names + ']}')
+}
+
+function New-FakeCursor([string]$Document, [string]$Filter, [long]$After) {
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $body = '"v":1,"document":' + (ConvertTo-FakeJsonText $Document) + ',"filter":"' + $Filter + '","after":' + $After.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $hash = [Security.Cryptography.SHA256]::HashData($utf8.GetBytes("bim-agentic-os/query.elements/cursor`n{" + $body + '}'))
+    $check = [Convert]::ToHexString($hash, 0, 16).ToLowerInvariant()
+    return [Convert]::ToBase64String($utf8.GetBytes('{' + $body + ',"check":"' + $check + '"}')).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+# The element id a cursor resumes after (the CLI has already refused malformed, tampered, stale or foreign cursors).
+function Get-FakeCursorAfter([string]$Cursor) {
+    $text = $Cursor.Replace('-', '+').Replace('_', '/')
+    $text += '=' * ((4 - $text.Length % 4) % 4)
+    return [long](([Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String($text)) | ConvertFrom-Json).after)
+}
+
 function Invoke-FakeRevitCommand($State, [string]$CommandText) {
     $envelope = $CommandText | ConvertFrom-Json
     $operationId = [string]$envelope.operation_id
@@ -437,15 +468,21 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
         'query.elements' {
             $category = Get-FakeArg $a 'category'
             $level = Get-FakeArg $a 'level'
-            $names = @(Get-FakeArg $a 'parameters')
+            $requested = @(Get-FakeArg $a 'parameters')
+            $names = $requested
             if (!$names.Count) { $names = @('ALL_MODEL_MARK', 'ALL_MODEL_INSTANCE_COMMENTS') }
+            $cursor = Get-FakeArg $a 'cursor'
+            $after = if ($null -eq $cursor) { $null } else { Get-FakeCursorAfter ([string]$cursor) }
             $limit = Get-FakeArg $a 'limit'
             if ($null -eq $limit) { $limit = 1000 }
             $builtIn = if ($null -eq $category) { $null } elseif ([string]$category -like 'OST_*') { [string]$category } else { $script:FakeBuiltInCategories[[string]$category] }
             $matched = @(@($State.Elements.Values) | Where-Object { ($null -eq $category -or $_.Category -eq $category) -and ($null -eq $level -or $_['Level'] -eq $level) } | Sort-Object { $_.Id })
-            $rows = @($matched | Select-Object -First ([int]$limit) | ForEach-Object { New-FakeQueryRow $State $_ $names })
-            $truncated = $matched.Count -gt $limit
-            [ordered]@{ category = $category; built_in_category = $builtIn; level = (Get-FakeLevelRef $State $level); limit = $limit; matched = $matched.Count; returned = $rows.Count; truncated = $truncated; truncated_reason = $(if ($truncated) { 'limit' } else { $null }); elements = $rows }
+            $remaining = @($matched | Where-Object { $null -eq $after -or [long]$_.Id -gt $after })
+            $paged = @($remaining | Select-Object -First ([int]$limit))
+            $rows = @($paged | ForEach-Object { New-FakeQueryRow $State $_ $names })
+            $truncated = $remaining.Count -gt $limit
+            $next = if ($truncated) { New-FakeCursor ([string]$envelope.document.unique_id) (Get-FakeFilterDigest $builtIn $level $requested) ([long]$paged[-1].Id) } else { $null }
+            [ordered]@{ category = $category; built_in_category = $builtIn; level = (Get-FakeLevelRef $State $level); limit = $limit; matched = $matched.Count; returned = $rows.Count; truncated = $truncated; truncated_reason = $(if ($truncated) { 'limit' } else { $null }); after = $after; next_cursor = $next; elements = $rows }
         }
         'query.inspect' {
             $uid = [string]$a.unique_id

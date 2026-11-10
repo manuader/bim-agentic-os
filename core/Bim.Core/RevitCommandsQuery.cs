@@ -27,7 +27,11 @@ public sealed record ElementQueryCursor(string Document, string Filter, long Aft
 // (a forged cursor can only page the caller's own document and filter, which a plain query already reads). Every
 // refusal is decided by RevitCommandProtocol.Parse, so the CLI, the MCP tools and the add-in re-parse refuse alike and
 // before the pipe: cursor_malformed (not that encoding), cursor_tampered (check or canonical form differs),
-// cursor_stale (another cursor version), cursor_foreign_document, cursor_filter_mismatch.
+// cursor_stale (another cursor version; v is read first, so any other version's payload is stale whatever its members),
+// cursor_foreign_document, cursor_filter_mismatch. after is a non-negative element id.
+// A cursor is a position, not a snapshot: the next page reads the document as it is then, strictly after the cursor id.
+// Elements deleted since are simply absent, elements added after that id are listed, elements added at or before it are
+// not; ids never repeat and stay ascending across pages. A model edit between pages does not make a cursor stale.
 public static class RevitElementQueryCursor
 {
     public const int Version = 1;
@@ -58,7 +62,7 @@ public static class RevitElementQueryCursor
 
     // version: only tests pass another value (to build a cursor of another version).
     public static string Encode(string documentUniqueId, string filterDigest, long after, int version = Version) =>
-        Base64Url(Payload(version, documentUniqueId, filterDigest, after, Check(version, documentUniqueId, filterDigest, after)));
+        after < 0 ? throw new ArgumentOutOfRangeException(nameof(after), "element ids in a cursor are not negative") : Base64Url(Payload(version, documentUniqueId, filterDigest, after, Check(version, documentUniqueId, filterDigest, after)));
 
     // Malformed, tampered and stale cursors throw their typed refusal at field.
     public static ElementQueryCursor Decode(string text, string field)
@@ -80,14 +84,16 @@ public static class RevitElementQueryCursor
             using var parsed = JsonDocument.Parse(new UTF8Encoding(false, true).GetString(bytes));
             var root = parsed.RootElement;
             if (root.ValueKind != JsonValueKind.Object) throw Malformed("payload is not an object");
+            // The version first: a payload of another version is stale whatever members it has.
+            if (!root.TryGetProperty("v", out var v) || v.ValueKind != JsonValueKind.Number || !v.TryGetInt32(out version)) throw Malformed("v must be a whole number");
+            if (version != Version) throw new RevitCommandException(RevitCommandCodes.CursorStale, field, "issued by cursor version " + version.ToString(CultureInfo.InvariantCulture) + "; query again without a cursor");
             var names = root.EnumerateObject().Select(property => property.Name).ToArray();
             if (names.Length != Members.Length || names.Distinct(StringComparer.Ordinal).Count() != Members.Length || !Members.All(member => names.Contains(member, StringComparer.Ordinal)))
                 throw Malformed("payload members must be v, document, filter, after and check");
-            var v = root.GetProperty("v"); var d = root.GetProperty("document"); var f = root.GetProperty("filter"); var a = root.GetProperty("after"); var c = root.GetProperty("check");
-            if (v.ValueKind != JsonValueKind.Number || !v.TryGetInt32(out version)) throw Malformed("v must be a whole number");
+            var d = root.GetProperty("document"); var f = root.GetProperty("filter"); var a = root.GetProperty("after"); var c = root.GetProperty("check");
             if (d.ValueKind != JsonValueKind.String || !RevitCommandProtocol.IsUniqueId(d.GetString())) throw Malformed("document must be a UniqueId");
             if (f.ValueKind != JsonValueKind.String || !Hex64.IsMatch(f.GetString()!)) throw Malformed("filter must be a lowercase SHA-256 digest");
-            if (a.ValueKind != JsonValueKind.Number || !a.TryGetInt64(out after)) throw Malformed("after must be a whole element id");
+            if (a.ValueKind != JsonValueKind.Number || !a.TryGetInt64(out after) || after < 0) throw Malformed("after must be a whole, non-negative element id");
             if (c.ValueKind != JsonValueKind.String || !Hex32.IsMatch(c.GetString()!)) throw Malformed("check must be 32 lowercase hex digits");
             document = d.GetString()!; filter = f.GetString()!; check = c.GetString()!;
         }
@@ -95,7 +101,6 @@ public static class RevitElementQueryCursor
         var expected = Check(version, document, filter, after);
         if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(expected), Encoding.ASCII.GetBytes(check)) || !Payload(version, document, filter, after, check).AsSpan().SequenceEqual(bytes))
             throw new RevitCommandException(RevitCommandCodes.CursorTampered, field, "the cursor was edited after it was issued");
-        if (version != Version) throw new RevitCommandException(RevitCommandCodes.CursorStale, field, "issued by cursor version " + version.ToString(CultureInfo.InvariantCulture) + "; query again without a cursor");
         return new ElementQueryCursor(document, filter, after);
     }
 
@@ -300,18 +305,28 @@ public static class RevitElementQueryJson
     // documentUniqueId: the envelope's document, which next_cursor binds. matched: how many elements passed the filter
     // (on the whole document, whatever the cursor); truncatedByLimit: paging (RevitElementQueryRules.Page) cut them at
     // the limit. truncated is that or the byte budget; truncated_reason says which (bytes wins), null when neither.
-    // after: the cursor's element id or null. next_cursor (P1-13): when truncated, a cursor for the last returned id
-    // (RevitElementQueryCursor), else null.
-    public static string Elements(string documentUniqueId, ElementQueryArgs args, ObservedReference? level, int matched, bool truncatedByLimit, IEnumerable<ObservedQueryElement> rows)
+    // paged: the ids RevitElementQueryRules.Page selected (null: exactly the rows' ids); rows are those still readable.
+    // after: the cursor's element id or null. next_cursor (P1-13): present exactly when truncated. A limit cut resumes
+    // after the last PAGED id (even when that element, or every paged one, vanished before it was read), a byte cut
+    // after the last row kept in the reply.
+    public static string Elements(string documentUniqueId, ElementQueryArgs args, ObservedReference? level, int matched, bool truncatedByLimit, IEnumerable<ObservedQueryElement> rows, IReadOnlyList<long>? paged = null)
     {
         var ordered = rows.OrderBy(row => row.Id).ToArray();
         if (ordered.Length > args.Limit) throw new ArgumentException("more rows than the limit", nameof(rows));
         if (ordered.Select(row => row.Id).Distinct().Count() != ordered.Length) throw new ArgumentException("duplicate element id", nameof(rows));
         if (matched < ordered.Length) throw new ArgumentOutOfRangeException(nameof(matched));
         if (args.Cursor is { } cursor && ordered.Any(row => row.Id <= cursor.After)) throw new ArgumentException("a row at or before the cursor id", nameof(rows));
+        var pagedIds = paged ?? ordered.Select(row => row.Id).ToArray();
+        if (pagedIds.Count > args.Limit) throw new ArgumentException("more paged ids than the limit", nameof(paged));
+        var pagedSet = new HashSet<long>(pagedIds);
+        if (pagedSet.Count != pagedIds.Count) throw new ArgumentException("duplicate paged id", nameof(paged));
+        if (args.Cursor is { } start && pagedIds.Any(id => id <= start.After)) throw new ArgumentException("a paged id at or before the cursor id", nameof(paged));
+        if (ordered.Any(row => !pagedSet.Contains(row.Id))) throw new ArgumentException("a row that was not paged", nameof(rows));
+        if (truncatedByLimit && pagedIds.Count == 0) throw new ArgumentException("a limit cut pages at least one id", nameof(paged));
+        long? lastPaged = pagedIds.Count == 0 ? null : pagedIds.Max();
         var filter = RevitElementQueryCursor.FilterDigest(args);
         // Bounded measures the fixed part with truncated false and a reason: reserve the longest possible cursor then.
-        var longest = RevitElementQueryCursor.Encode(documentUniqueId, filter, long.MinValue);
+        var longest = RevitElementQueryCursor.Encode(documentUniqueId, filter, long.MaxValue);
         void Reply(Utf8JsonWriter writer, int returned, bool truncated, string? reason, IReadOnlyList<byte[]> items)
         {
             writer.WriteStartObject();
@@ -326,7 +341,10 @@ public static class RevitElementQueryJson
             WriteNullable(writer, "truncated_reason", reason);
             if (args.Cursor is { } resumed) writer.WriteNumber("after", resumed.After);
             else writer.WriteNull("after");
-            var next = reason is null ? null : !truncated ? longest : returned > 0 ? RevitElementQueryCursor.Encode(documentUniqueId, filter, ordered[returned - 1].Id) : null;
+            var next = reason is null ? null
+                : !truncated ? longest
+                : reason == TruncatedBytes ? (returned > 0 ? RevitElementQueryCursor.Encode(documentUniqueId, filter, ordered[returned - 1].Id) : throw new InvalidOperationException("one row over the byte budget"))
+                : RevitElementQueryCursor.Encode(documentUniqueId, filter, lastPaged!.Value);
             WriteNullable(writer, "next_cursor", next);
             writer.WriteStartArray("elements");
             foreach (var item in items) writer.WriteRawValue(item, skipInputValidation: true);

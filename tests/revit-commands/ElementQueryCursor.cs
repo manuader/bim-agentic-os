@@ -135,7 +135,7 @@ static class ElementQueryCursorChecks
         Check(RevitElementQueryCursor.Encode(Doc, filter, 1234) == cursor, "encoding is deterministic");
         var decoded = RevitElementQueryCursor.Decode(cursor, "args.cursor");
         Check(decoded == new ElementQueryCursor(Doc, filter, 1234), "decode returns the document, filter digest and last id");
-        var worst = RevitElementQueryCursor.Encode(Doc.ToUpperInvariant(), filter, long.MinValue);
+        var worst = RevitElementQueryCursor.Encode(Doc.ToUpperInvariant(), filter, long.MaxValue);
         Check(worst.Length <= RevitElementQueryCursor.MaxChars, "the longest cursor fits the schema maximum", worst.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Check(System.Text.RegularExpressions.Regex.IsMatch(filter, @"\A[0-9a-f]{64}\z"), "the filter digest is lowercase SHA-256 hex");
         Check(RevitElementQueryCursor.FilterDigest("OST_Walls", "Level 1", new[] { "Mark" }) != filter
