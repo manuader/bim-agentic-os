@@ -212,7 +212,8 @@ internal static class GeneratePrototypesTests
         File.WriteAllText(Path.Combine(fakeRepo, "global.json"), "{}");
         var cabaText = File.ReadAllText(Path.Combine(root, "skills", PackId, "skill.json"));
         void Pack(string folder, string text) { Directory.CreateDirectory(Path.Combine(fakeRepo, "skills", folder)); File.WriteAllText(Path.Combine(fakeRepo, "skills", folder, "skill.json"), text); }
-        string WithId(string id) { var node = System.Text.Json.Nodes.JsonNode.Parse(cabaText)!; node["id"] = id; return node.ToJsonString(); }
+        // The CABA manifest text with only its pack id replaced (the one "id": "<pack id>" member), so it stays under the skill size cap.
+        string WithId(string id) => cabaText.Replace("\"id\": \"" + PackId + "\"", "\"id\": \"" + id + "\"", StringComparison.Ordinal);
         Pack("zz.test.caba-copy", WithId("zz.test.caba-copy"));
         Pack("zz.test.bad-json", "{");
         Pack("zz.test.mismatch", WithId("zz.test.other"));
