@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "session_stamp": "20261105T120000Z",
+  "run": 1,
+  "head": "308c756",
+  "child_pid": 4242,
+  "pipe_name": "bim-agentic-os-2025-4242",
+  "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+  "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+  "revit_build": "25.4.0.32",
+  "scope": "v1_only",
+  "result_line": "fixture",
+  "counts": {
+    "total": 2,
+    "passed": 2,
+    "failed": 0,
+    "blocked": 0,
+    "not_sent": 0
+  },
+  "groups": [
+    {
+      "key": "v1",
+      "description": "Catálogo v1 (C04): muros, puerta, ventana, suelo, habitación, reintento y rechazos",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "blocked": 0,
+      "not_sent": 0
+    }
+  ],
+  "overall": {
+    "total": 2,
+    "passed": 2,
+    "failed": 0,
+    "blocked": 0,
+    "not_sent": 0
+  },
+  "all_passed": true,
+  "aborted": null,
+  "picked": {
+    "level": "lvl-0"
+  },
+  "fixture_saved": false,
+  "copy_path": null,
+  "open_document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+  "document_switched_by": null,
+  "document_note": "The fixture document is never saved.",
+  "steps": [
+    {
+      "index": 1,
+      "group": "v1",
+      "key": "q-levels",
+      "description": "Consultar niveles",
+      "command": "query.levels",
+      "operation_id": "c04-20261105T120000Z-r1-q-levels",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "succeeded"
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-q-levels",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "query.levels",
+        "args": {}
+      },
+      "response": {
+        "status": "succeeded",
+        "code": "ok",
+        "field": null,
+        "detail": null,
+        "created": [],
+        "modified": [],
+        "deleted": [],
+        "readback": {
+          "levels": [
+            {
+              "unique_id": "lvl-0",
+              "name": "Level 1",
+              "elevation_mm": 0
+            }
+          ]
+        },
+        "receipt": {
+          "operation_id": "c04-20261105T120000Z-r1-q-levels",
+          "command": "query.levels",
+          "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+          "request_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "replayed": false
+        },
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": true,
+      "blocked": false,
+      "reason": null,
+      "comparisons": []
+    },
+    {
+      "index": 2,
+      "group": "v1",
+      "key": "w-south",
+      "description": "Muro sur (0,0)->(6000,0)",
+      "command": "wall.create",
+      "operation_id": "c04-20261105T120000Z-r1-w-south",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "succeeded",
+        "Created": 1
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-w-south",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "wall.create",
+        "args": {
+          "level": "lvl-0",
+          "type": "wt-1",
+          "height_mm": 3000,
+          "curve": {
+            "kind": "line",
+            "start": [
+              0,
+              0
+            ],
+            "end": [
+              6000,
+              0
+            ]
+          }
+        }
+      },
+      "response": {
+        "status": "succeeded",
+        "code": "ok",
+        "field": null,
+        "detail": null,
+        "created": [
+          "wall-s"
+        ],
+        "modified": [],
+        "deleted": [],
+        "readback": {
+          "walls": [
+            {
+              "unique_id": "wall-s",
+              "height_mm": 3000,
+              "length_mm": 6000
+            }
+          ]
+        },
+        "receipt": {
+          "operation_id": "c04-20261105T120000Z-r1-w-south",
+          "command": "wall.create",
+          "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+          "request_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "replayed": false
+        },
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": true,
+      "blocked": false,
+      "reason": null,
+      "comparisons": [
+        {
+          "check": "altura (mm)",
+          "requested": 3000.0,
+          "observed": 3000,
+          "ok": true
+        },
+        {
+          "check": "largo (mm)",
+          "requested": 6000.0,
+          "observed": 6000,
+          "ok": true
+        }
+      ]
+    }
+  ]
+}
