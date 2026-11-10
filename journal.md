@@ -1335,3 +1335,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 11:42Z integration 58bec24 CI 42807459154 success (9/9) → main fast-forwarded (4854d3e..58bec24). P5-11, P6-10, P7-09 ✅; P2-11 ⛔ (ADR0010 proposed); phases 5/6/7 complete → new batch P2-12, P5-12, P5-13, P6-12, P6-13⛔, P7-11, P7-12. Progress 120/138 (87.0 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-10T11:42:51Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P10-11 (relay169); then P8/P9 (relay171; write the P9-03 free-path ADR as proposed if absent; P8 remaining is 🔒 Blender); then P1-14/P1-15, P3-09, P4-10 (relay174); then P2-12, P5-12/P5-13, P6-12, P7-11/P7-12 (relay176). P1-14 and P4-11 both edit scripts/owner-catalogue-steps.ps1; P6-12 edits CadPlanBriefCommand, P7-12 GenerateCommand + package.ps1. ADR0010 awaits the owner.
+
+## Relay178 — 2026-11-10T11:53:45Z (Claude, cloud scheduled)
+- 11:53Z LOCK taken (was FREE; relay176 released 2026-11-10T11:42:51Z).
