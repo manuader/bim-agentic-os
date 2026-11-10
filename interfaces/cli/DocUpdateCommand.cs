@@ -64,6 +64,8 @@ internal static class DocUpdateCommand
         DocReplaceCodes.RegenerationInvalid, DocReplaceCodes.RealizedInvalid, DocReplaceCodes.StaleShared, DocReplaceCodes.DependentsUnknownKey,
         DocReplaceCodes.DependentsWithoutStale, DocReplaceCodes.DependentsInvalid, DocReplaceCodes.DependentKept, DocReplaceCodes.DependentPlanned,
         DocReplaceCodes.DependentIsTarget, DocReplaceCodes.InputFieldUnsupported, DocReplaceCodes.InputUnresolved, DocReplaceCodes.InputFieldDuplicate,
+        DocUpdateDependentsCodes.DependentUnknown, DocUpdateDependentsCodes.DependentsChanged, DocUpdateDependentsCodes.AcceptedInvalid, DocUpdateDependentsCodes.DependentShared,
+        DocUpdateDependentsCodes.ReplanInternal,
     };
 
     sealed class Refusal(string code, string? detail = null) : Exception(code)
