@@ -135,6 +135,13 @@ $destructive = @($full.steps | Where-Object { $_.command -eq 'element.delete' -o
 Assert ($destructive.Count -ge 5 -and @($destructive | Where-Object { $_.group -ne 'modificar' }).Count -eq 0) 'modify/delete steps only in the last group'
 $lastWrite = @($full.steps | Where-Object { $_.group -ne 'modificar' } | Select-Object -Last 1)[0]
 Assert ($lastWrite.index -lt @($full.steps | Where-Object { $_.group -eq 'modificar' } | Select-Object -First 1)[0].index) 'the destructive group runs last'
+# P1-13: the fake add-in issues query.elements cursors exactly as core RevitElementQueryCursor (pinned vector shared
+# with tests/revit-commands/ElementQueryCursor.cs), and q-walls-next follows the next_cursor of q-walls-limit.
+$vector = 'eyJ2IjoxLCJkb2N1bWVudCI6IjYwZjkxZGFmLTNkZDctNDI4My1hODZkLTI0MTM3YjczZjNkYS0wMDAxZmQwYiIsImZpbHRlciI6IjBjYjIxNzZkNmNlODg4ZjA1OGMxNmY0MzNkNTNkNjIyMmM0M2JiNjU4OTA4NjljYTZlNWZiNzFiYTAwOWE0MzYiLCJhZnRlciI6NDA5NywiY2hlY2siOiI5MTcwMjNkMDlkYWZlYjEzMzBkMTRjMjM5OGMzYzg2OSJ9'
+Assert ((New-FakeCursor '60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b' (Get-FakeFilterDigest 'OST_Walls' $null @()) 4097) -eq $vector -and (Get-FakeCursorAfter $vector) -eq 4097) 'the fake add-in cursor equals the core cursor vector'
+$limitPage = @($full.steps | Where-Object { $_.key -eq 'q-walls-limit' })[0]
+$nextPage = @($full.steps | Where-Object { $_.key -eq 'q-walls-next' })[0]
+Assert ($null -ne $nextPage -and $nextPage.passed -and $null -ne $limitPage.response.readback.next_cursor -and [string]$nextPage.request.args.cursor -eq [string]$limitPage.response.readback.next_cursor -and $null -eq $nextPage.response.readback.next_cursor) "q-walls-next follows the next_cursor of q-walls-limit to the last page: $(if ($nextPage) { $nextPage.reason })"
 $keys = @($full.steps | ForEach-Object { $_.key })
 Assert (@($keys | Select-Object -Unique).Count -eq $keys.Count) 'step keys are unique'
 foreach ($command in @('roof.create_footprint', 'stair.create', 'curtain_wall.create', 'floor.create_opening', 'view.create_section', 'view.create_3d', 'query.snapshot', 'query.elements', 'query.inspect', 'query.structural_types', 'grid.create', 'structural_column.create', 'structural_beam.create', 'foundation.create_isolated', 'foundation.create_wall', 'query.title_blocks', 'dimension.create_linear', 'tag.create', 'schedule.create', 'sheet.create', 'sheet.place_view', 'journal.read', 'element.set_parameter', 'element.delete')) {

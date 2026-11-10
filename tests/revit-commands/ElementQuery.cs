@@ -138,6 +138,14 @@ static class ElementQueryChecks
     static ObservedQueryElement Element(long id, string uid, params ObservedParameter[] parameters) =>
         new(id, uid, "Walls", "OST_Walls") { Level = new ObservedReference("Level 1", L1), FamilyName = "Basic Wall", TypeName = "Generic - 200mm", TypeUid = T1, Parameters = parameters };
 
+    // Every reply checked for the P1-13 invariant: truncated exactly when next_cursor is present.
+    static string Elements(string document, ElementQueryArgs args, ObservedReference? level, int matched, bool truncated, IEnumerable<ObservedQueryElement> rows)
+    {
+        var reply = RevitElementQueryJson.Elements(document, args, level, matched, truncated, rows);
+        Check(ElementQueryCursorChecks.HoldsInvariant(reply), "query.elements reply: truncated == (next_cursor != null)", reply.Length > 300 ? reply[..300] : reply);
+        return reply;
+    }
+
     static ElementQueryArgs Args(int limit = 1000) => new("wall", "OST_Walls", "Level 1", Array.Empty<string>(), limit);
 
     static void ElementsReply()
@@ -155,7 +163,7 @@ static class ElementQueryChecks
             Element(10, E1, length, integer, level, none, empty, minusZero, nan),
             Element(20, E2, Text("Mark", "W-02")) with { Level = null, FamilyName = null, TypeName = null, TypeUid = null, Category = null, BuiltInCategory = null },
         };
-        var json = RevitElementQueryJson.Elements(Doc, Args(), new ObservedReference("Level 1", L1), 7, true, rows);
+        var json = Elements(Doc, Args(), new ObservedReference("Level 1", L1), 7, true, rows);
         var root = JsonNode.Parse(json)!.AsObject();
         Check(string.Join(",", root.Select(member => member.Key)) == "category,built_in_category,level,limit,matched,returned,truncated,truncated_reason,after,next_cursor,elements", "query.elements reply members in a fixed order", json);
         Check(root["category"]!.GetValue<string>() == "wall" && root["built_in_category"]!.GetValue<string>() == "OST_Walls" && root["level"]!["unique_id"]!.GetValue<string>() == L1 && root["level"]!["name"]!.GetValue<string>() == "Level 1", "the reply echoes the category and the resolved level");
@@ -179,25 +187,25 @@ static class ElementQueryChecks
         Check(parameters[4]!["has_value"]!.GetValue<bool>() == false && parameters[4]!["value"] is null && parameters[4]!.AsObject().ContainsKey("value"), "a parameter without a value has value null");
         Check(parameters[5]!["value"]!.ToJsonString() == "0" && parameters[5]!["source"]!.GetValue<string>() == "type" && parameters[5]!["shared"]!.GetValue<bool>() && parameters[5]!["built_in"] is null, "-0 is written as 0; type source, shared and non-built-in parameters are reported");
         Check(parameters[6]!["value"] is null && parameters[6]!["unit"] is null, "a non-finite double is written as null with no unit");
-        Check(RevitElementQueryJson.Elements(Doc, Args(), new ObservedReference("Level 1", L1), 7, true, rows.Reverse()) == json, "the reply is byte-identical for any input order");
-        var exact = RevitElementQueryJson.Elements(Doc, Args(), null, 3, false, rows);
+        Check(Elements(Doc, Args(), new ObservedReference("Level 1", L1), 7, true, rows.Reverse()) == json, "the reply is byte-identical for any input order");
+        var exact = Elements(Doc, Args(), null, 3, false, rows);
         Check(JsonNode.Parse(exact)!["truncated"]!.GetValue<bool>() == false && JsonNode.Parse(exact)!["truncated_reason"] is null && JsonNode.Parse(exact)!.AsObject().ContainsKey("truncated_reason") && JsonNode.Parse(exact)!["level"] is null, "a reply under the limit is not truncated (truncated_reason null); no level filter is null");
         // An element that vanished between paging and reading (GetElement null) leaves fewer rows than matched; the
         // reply is truncated only when paging cut it at the limit, as documented.
-        var vanished = JsonNode.Parse(RevitElementQueryJson.Elements(Doc, Args(), null, 3, false, rows.Take(2)))!;
+        var vanished = JsonNode.Parse(Elements(Doc, Args(), null, 3, false, rows.Take(2)))!;
         Check(vanished["matched"]!.GetValue<int>() == 3 && vanished["returned"]!.GetValue<int>() == 2 && !vanished["truncated"]!.GetValue<bool>() && vanished["truncated_reason"] is null, "limit 1000, matched 3, 2 rows read and no paging cut: not truncated");
 
         var longText = new string('a', 1023) + "\U0001F600" + new string('b', 50);
-        var cut = JsonNode.Parse(RevitElementQueryJson.Elements(Doc, Args(), null, 1, false, new[] { Element(1, E1, Text("Comments", longText)) }))!["elements"]![0]!["parameters"]![0]!;
+        var cut = JsonNode.Parse(Elements(Doc, Args(), null, 1, false, new[] { Element(1, E1, Text("Comments", longText)) }))!["elements"]![0]!["parameters"]![0]!;
         Check(cut["value"]!.GetValue<string>() == new string('a', 1023) && cut["display"]!.GetValue<string>() == new string('a', 1023) && cut["value_truncated"]!.GetValue<bool>(), "strings over 1024 characters are cut without splitting a surrogate pair and flagged value_truncated");
-        var fits = JsonNode.Parse(RevitElementQueryJson.Elements(Doc, Args(), null, 1, false, new[] { Element(1, E1, Text("Comments", new string('c', 1024))) }))!["elements"]![0]!["parameters"]![0]!;
+        var fits = JsonNode.Parse(Elements(Doc, Args(), null, 1, false, new[] { Element(1, E1, Text("Comments", new string('c', 1024))) }))!["elements"]![0]!["parameters"]![0]!;
         Check(fits["value"]!.GetValue<string>().Length == 1024 && !fits["value_truncated"]!.GetValue<bool>(), "a 1024-character string is kept whole");
 
-        Check(Throws<ArgumentException>(() => RevitElementQueryJson.Elements(Doc, Args(limit: 2), null, 3, true, rows)), "more rows than the limit is a collector bug and throws");
-        Check(Throws<ArgumentException>(() => RevitElementQueryJson.Elements(Doc, Args(), null, 2, false, new[] { Element(1, E1), Element(1, E2) })), "duplicate element ids throw");
-        Check(Throws<ArgumentOutOfRangeException>(() => RevitElementQueryJson.Elements(Doc, Args(), null, 2, false, rows)), "matched below the rows returned throws");
-        Check(Throws<ArgumentException>(() => RevitElementQueryJson.Elements(Doc, Args(), null, 1, false, new[] { Element(1, E1, Text("Mark", "x") with { StorageType = "float" }) })), "an unknown storage type throws");
-        Check(Throws<ArgumentException>(() => RevitElementQueryJson.Elements(Doc, Args(), null, 1, false, new[] { Element(1, E1, Text("Mark", "x") with { Source = "family" }) })), "an unknown parameter source throws");
+        Check(Throws<ArgumentException>(() => Elements(Doc, Args(limit: 2), null, 3, true, rows)), "more rows than the limit is a collector bug and throws");
+        Check(Throws<ArgumentException>(() => Elements(Doc, Args(), null, 2, false, new[] { Element(1, E1), Element(1, E2) })), "duplicate element ids throw");
+        Check(Throws<ArgumentOutOfRangeException>(() => Elements(Doc, Args(), null, 2, false, rows)), "matched below the rows returned throws");
+        Check(Throws<ArgumentException>(() => Elements(Doc, Args(), null, 1, false, new[] { Element(1, E1, Text("Mark", "x") with { StorageType = "float" }) })), "an unknown storage type throws");
+        Check(Throws<ArgumentException>(() => Elements(Doc, Args(), null, 1, false, new[] { Element(1, E1, Text("Mark", "x") with { Source = "family" }) })), "an unknown parameter source throws");
         var receipt = new RevitCommandReceipt("op-query", "query.elements", Doc, new string('0', 64), false);
         var response = RevitCommandResponse.Parse(RevitCommandResponse.Success(receipt, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), json, Array.Empty<string>()).ToJson());
         Check(response.IsSuccess && response.ReadbackJson is not null && JsonNode.Parse(response.ReadbackJson)!["returned"]!.GetValue<int>() == 3 && response.Created.Count == 0 && response.Modified.Count == 0, "the reply travels as the readback of a read-only success response");
@@ -232,7 +240,7 @@ static class ElementQueryChecks
         var heavy = new string('\u00e9', 1024);
         var parameters = Enumerable.Range(0, 16).Select(i => Text("P\u00e9" + i, heavy, -i - 1)).ToArray();
         var rows = Enumerable.Range(1, 5000).Select(i => Element(i, "60f91daf-3dd7-4283-a86d-24137b73f3da-" + i.ToString("x8", System.Globalization.CultureInfo.InvariantCulture), parameters)).Reverse().ToArray();
-        var json = RevitElementQueryJson.Elements(Doc, Args(limit: 5000), new ObservedReference("Level 1", L1), 9000, true, rows);
+        var json = Elements(Doc, Args(limit: 5000), new ObservedReference("Level 1", L1), 9000, true, rows);
         var size = System.Text.Encoding.UTF8.GetByteCount(json);
         var root = JsonNode.Parse(json)!;
         var returned = root["returned"]!.GetValue<int>();
@@ -242,7 +250,7 @@ static class ElementQueryChecks
         var receipt = new RevitCommandReceipt("op-query", "query.elements", Doc, new string('0', 64), false);
         var wire = RevitCommandResponse.Success(receipt, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), json, Array.Empty<string>()).ToJson();
         Check(System.Text.Encoding.UTF8.GetByteCount(wire) <= RevitElementQueryRules.MaxReplyBytes + 4096, "the response line carrying the bounded reply stays within the budget plus the envelope");
-        var light = JsonNode.Parse(RevitElementQueryJson.Elements(Doc, Args(limit: 5000), null, 5000, false, Enumerable.Range(1, 5000).Select(i => Element(i, "60f91daf-3dd7-4283-a86d-24137b73f3da-" + i.ToString("x8", System.Globalization.CultureInfo.InvariantCulture)))))!;
+        var light = JsonNode.Parse(Elements(Doc, Args(limit: 5000), null, 5000, false, Enumerable.Range(1, 5000).Select(i => Element(i, "60f91daf-3dd7-4283-a86d-24137b73f3da-" + i.ToString("x8", System.Globalization.CultureInfo.InvariantCulture)))))!;
         Check(light["returned"]!.GetValue<int>() == 5000 && !light["truncated"]!.GetValue<bool>(), "5000 plain rows fit without truncation");
 
         var many = Enumerable.Range(0, RevitElementQueryRules.MaxInspectParameters).Select(i => Text("N" + i.ToString("D5", System.Globalization.CultureInfo.InvariantCulture), heavy, i)).ToArray();
@@ -284,7 +292,7 @@ static class ElementQueryChecks
             "the collector pages ids in core and writes both replies with RevitElementQueryJson");
         Check(text is not null && text.Contains("RevitParameterUnits.ForSpec(", StringComparison.Ordinal) && text.Contains("UnitTypeId.Millimeters", StringComparison.Ordinal) && text.Contains("UnitTypeId.SquareMeters", StringComparison.Ordinal) && text.Contains("UnitTypeId.CubicMeters", StringComparison.Ordinal) && text.Contains("UnitTypeId.Degrees", StringComparison.Ordinal) && !text.Contains("SpecTypeId.", StringComparison.Ordinal), "the collector routes units through RevitParameterUnits.ForSpec (code, not comments) and converts with UnitTypeId");
         Check(text is not null && text.Contains("CategoryType.Model", StringComparison.Ordinal) && System.Text.RegularExpressions.Regex.IsMatch(text, @"BuiltInCategory\s+is\s+null\s*&&[^;]*CategoryType\s*!=\s*CategoryType\.Model"), "a level-only query keeps model categories only (no views or annotations)");
-        Check(text is not null && System.Text.RegularExpressions.Regex.IsMatch(text, @"\.Page\(matched,\s*args\.Limit,\s*args\.Cursor\?\.After\)") && System.Text.RegularExpressions.Regex.IsMatch(text, @"RevitElementQueryJson\.Elements\(envelope\.Document\.UniqueId,[^;]*truncated[^;]*rows\)"), "the collector pages after the cursor id and passes the document identity and the paging truncation flag to the reply");
+        Check(text is not null && System.Text.RegularExpressions.Regex.IsMatch(text, @"\.Page\(matched,\s*args\.Limit,\s*args\.Cursor\?\.After\)") && System.Text.RegularExpressions.Regex.IsMatch(text, @"RevitElementQueryJson\.Elements\(envelope\.Document\.UniqueId,[^;]*truncated,\s*rows,\s*selected\)"), "the collector pages after the cursor id and passes the document identity, the paging truncation flag and the paged ids to the reply");
         Check(text is not null && System.Text.RegularExpressions.Regex.IsMatch(text, @"try\s*\{[^}]*GetDataType\(\)"), "reading a parameter's data type is guarded");
         Check(text is not null && text.Contains("BuiltInCategory.INVALID ? null", StringComparison.Ordinal), "a category whose BuiltInCategory is INVALID reports null");
         var mirror = Source("Mirror.cs");

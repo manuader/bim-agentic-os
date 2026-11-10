@@ -31,6 +31,9 @@ static class ElementQueryCursorChecks
         BeforeThePipe();
         Concatenation();
         ByteBudgetPages();
+        VanishedRows();
+        ModelChangesBetweenPages();
+        Vector();
     }
 
     // ---- fixture: 23 elements over walls and doors on two levels, ids deliberately unordered and sparse ----
@@ -55,15 +58,35 @@ static class ElementQueryCursorChecks
     }
 
     // The add-in's decisions without Revit: filter, page after the cursor id, read rows, write the reply in core.
-    static string Collect(string envelopeJson, Func<long, ObservedQueryElement>? row = null, Fixture[]? model = null)
+    static string Collect(string envelopeJson, Func<long, ObservedQueryElement>? row = null, Fixture[]? model = null, Func<long, bool>? vanished = null)
     {
         model ??= Model;
         var envelope = RevitCommandProtocol.Parse(envelopeJson);
         var args = (ElementQueryArgs)envelope.Args;
         var matched = model.Where(f => (args.BuiltInCategory is null || f.BuiltIn == args.BuiltInCategory) && (args.Level is null || f.Level == args.Level)).Select(f => f.Id).ToList();
         var (selected, truncated) = RevitElementQueryRules.Page(matched, args.Limit, args.Cursor?.After);
-        var rows = selected.Select(id => row?.Invoke(id) ?? new ObservedQueryElement(id, Uid(id), "Walls", model.First(f => f.Id == id).BuiltIn)).ToArray();
-        return RevitElementQueryJson.Elements(envelope.Document.UniqueId, args, null, matched.Distinct().Count(), truncated, rows);
+        var rows = selected.Where(id => vanished?.Invoke(id) != true).Select(id => row?.Invoke(id) ?? new ObservedQueryElement(id, Uid(id), "Walls", model.First(f => f.Id == id).BuiltIn)).ToArray();
+        return Invariant(RevitElementQueryJson.Elements(envelope.Document.UniqueId, args, null, matched.Distinct().Count(), truncated, rows, selected));
+    }
+
+    // Every query.elements reply: truncated exactly when next_cursor is present, and a present cursor decodes.
+    static string Invariant(string reply)
+    {
+        Check(HoldsInvariant(reply), "query.elements reply: truncated == (next_cursor != null) and next_cursor decodes", reply.Length > 400 ? reply[..400] : reply);
+        return reply;
+    }
+
+    public static bool HoldsInvariant(string reply)
+    {
+        var root = JsonNode.Parse(reply)!;
+        var next = root["next_cursor"];
+        var ok = root.AsObject().ContainsKey("next_cursor") && root["truncated"]!.GetValue<bool>() == (next is not null);
+        if (ok && next is not null)
+        {
+            try { RevitElementQueryCursor.Decode(next.GetValue<string>(), "next_cursor"); }
+            catch (RevitCommandException) { ok = false; }
+        }
+        return ok;
     }
 
     static RevitCommandException? Refusal(JsonNode args, string document = Doc)
@@ -164,6 +187,10 @@ static class ElementQueryCursorChecks
 
         foreach (var (label, text) in new[] { ("empty", ""), ("non-base64url characters", "abc+/="), ("padding", "YWJj="), ("an impossible length", "a"), ("whitespace", "YW Jj"), ("non-canonical trailing bits", "YWJjZB") })
             Refuses("a cursor with " + label + " is refused cursor_malformed", Args("wall", null, 3, text), RevitCommandCodes.CursorMalformed);
+        Refuses("a cursor of fullwidth letters is refused cursor_malformed", Args("wall", null, 3, "\uFF21\uFF22\uFF23\uFF24"), RevitCommandCodes.CursorMalformed);
+        Refuses("a cursor with a non-ASCII letter is refused cursor_malformed", Args("wall", null, 3, "YWJj\u00e9"), RevitCommandCodes.CursorMalformed);
+        Refuses("a JSON null cursor is refused by the schema", new JsonObject { ["category"] = "wall", ["cursor"] = null }, RevitCommandCodes.ArgsInvalid);
+        Refuses("a numeric cursor is refused by the schema", new JsonObject { ["category"] = "wall", ["cursor"] = 7 }, RevitCommandCodes.ArgsInvalid);
         Refuses("a cursor over the maximum length is refused by the schema", Args("wall", null, 3, new string('A', RevitElementQueryCursor.MaxChars + 1)), RevitCommandCodes.ArgsInvalid);
         foreach (var (label, payload) in new[]
         {
@@ -172,6 +199,11 @@ static class ElementQueryCursorChecks
             ("a string id", "{\"v\":1,\"document\":\"" + Doc + "\",\"filter\":\"" + filter + "\",\"after\":\"1\",\"check\":\"" + new string('0', 32) + "\"}"),
             ("a fractional id", "{\"v\":1,\"document\":\"" + Doc + "\",\"filter\":\"" + filter + "\",\"after\":1.5,\"check\":\"" + new string('0', 32) + "\"}"),
             ("a document that is not a UniqueId", "{\"v\":1,\"document\":\"Tower\",\"filter\":\"" + filter + "\",\"after\":1,\"check\":\"" + new string('0', 32) + "\"}"),
+            ("an id past the 64-bit range", "{\"v\":1,\"document\":\"" + Doc + "\",\"filter\":\"" + filter + "\",\"after\":9223372036854775808,\"check\":\"" + new string('0', 32) + "\"}"),
+            ("an exponent id", "{\"v\":1,\"document\":\"" + Doc + "\",\"filter\":\"" + filter + "\",\"after\":1e3,\"check\":\"" + new string('0', 32) + "\"}"),
+            ("a negative id", "{\"v\":1,\"document\":\"" + Doc + "\",\"filter\":\"" + filter + "\",\"after\":-5,\"check\":\"" + new string('0', 32) + "\"}"),
+            ("a fractional version", "{\"v\":1.5,\"document\":\"" + Doc + "\",\"filter\":\"" + filter + "\",\"after\":1,\"check\":\"" + new string('0', 32) + "\"}"),
+            ("no version", "{\"document\":\"" + Doc + "\",\"filter\":\"" + filter + "\",\"after\":1,\"check\":\"" + new string('0', 32) + "\"}"),
             ("an upper-case filter digest", "{\"v\":1,\"document\":\"" + Doc + "\",\"filter\":\"" + filter.ToUpperInvariant() + "\",\"after\":1,\"check\":\"" + new string('0', 32) + "\"}"),
         })
         {
@@ -189,6 +221,9 @@ static class ElementQueryCursorChecks
         Refuses("a cursor whose filter digest was changed is refused cursor_tampered", Args("door", null, 3, Pack(Edit(p => p["filter"] = RevitElementQueryCursor.FilterDigest("OST_Doors", null, Array.Empty<string>())))), RevitCommandCodes.CursorTampered);
         Refuses("a cursor whose check was changed is refused cursor_tampered", Args("wall", null, 3, Pack(Edit(p => p["check"] = new string('0', 32)))), RevitCommandCodes.CursorTampered);
         Refuses("a cursor with reordered members is refused cursor_tampered", Args("wall", null, 3, B64(Encoding.UTF8.GetBytes("{\"document\":" + json["document"]!.ToJsonString() + ",\"v\":1,\"filter\":" + json["filter"]!.ToJsonString() + ",\"after\":1003,\"check\":" + json["check"]!.ToJsonString() + "}"))), RevitCommandCodes.CursorTampered);
+        Refuses("a future-version payload with other members is refused cursor_stale (version read first)", Args("wall", null, 3, B64(Encoding.UTF8.GetBytes("{\"v\":2,\"page\":\"opaque\"}"))), RevitCommandCodes.CursorStale);
+        Refuses("a cursor whose version was edited is refused cursor_stale", Args("wall", null, 3, Pack(Edit(p => p["v"] = 2))), RevitCommandCodes.CursorStale);
+        Check(Throws<ArgumentOutOfRangeException>(() => RevitElementQueryCursor.Encode(Doc, filter, -1)), "no cursor is issued for a negative id");
         Refuses("a cursor with a version but a valid check is refused cursor_stale", Args("wall", null, 3, RevitElementQueryCursor.Encode(Doc, filter, 1003, version: 0)), RevitCommandCodes.CursorStale);
 
         // Well-formed, untampered cursors used out of context.
@@ -242,6 +277,83 @@ static class ElementQueryCursorChecks
             pages++;
         } while (cursor is not null && pages < 100);
         return elements;
+    }
+
+    static bool Throws<T>(Action action) where T : Exception
+    {
+        try { action(); return false; }
+        catch (T) { return true; }
+    }
+
+    // SF1: a limit cut issues the cursor from the last PAGED id, even when the rows read for the last (or every) paged id
+    // vanished before they were read; a byte cut issues it from the last kept row.
+    static void VanishedRows()
+    {
+        var filter = RevitElementQueryCursor.FilterDigest("OST_Walls", "Level 1", Array.Empty<string>());
+        var args = new ElementQueryArgs("wall", "OST_Walls", "Level 1", Array.Empty<string>(), 2, new ElementQueryCursor(Doc, filter, 10));
+        ObservedQueryElement Row(long id) => new(id, Uid(id), "Walls", "OST_Walls");
+        var none = JsonNode.Parse(Invariant(RevitElementQueryJson.Elements(Doc, args, null, 5, true, Array.Empty<ObservedQueryElement>(), new long[] { 20, 30 })))!;
+        Check(none["truncated"]!.GetValue<bool>() && none["returned"]!.GetValue<int>() == 0 && none["next_cursor"] is not null && RevitElementQueryCursor.Decode(none["next_cursor"]!.GetValue<string>(), "c").After == 30, "a limit-cut page whose paged ids all vanished still resumes after the last paged id");
+        var lastGone = JsonNode.Parse(Invariant(RevitElementQueryJson.Elements(Doc, args, null, 5, true, new[] { Row(20) }, new long[] { 20, 30 })))!;
+        Check(RevitElementQueryCursor.Decode(lastGone["next_cursor"]!.GetValue<string>(), "c").After == 30 && lastGone["returned"]!.GetValue<int>() == 1, "when the last paged id vanished the cursor does not fall back to an earlier id");
+        var whole = JsonNode.Parse(Invariant(RevitElementQueryJson.Elements(Doc, args, null, 5, false, new[] { Row(20) }, new long[] { 20, 30 })))!;
+        Check(!whole["truncated"]!.GetValue<bool>() && whole["next_cursor"] is null, "an uncut page whose last id vanished has no cursor");
+        Check(Throws<ArgumentException>(() => RevitElementQueryJson.Elements(Doc, args, null, 5, true, new[] { Row(40) }, new long[] { 20, 30 })), "a row that was not paged is a collector bug and throws");
+        Check(Throws<ArgumentException>(() => RevitElementQueryJson.Elements(Doc, args, null, 5, true, Array.Empty<ObservedQueryElement>(), new long[] { 5, 20 })), "a paged id at or before the cursor id throws");
+        Check(Throws<ArgumentException>(() => RevitElementQueryJson.Elements(Doc, args, null, 5, true, Array.Empty<ObservedQueryElement>(), Array.Empty<long>())), "a limit cut with no paged id throws (paging never produces it)");
+        Check(Throws<ArgumentException>(() => RevitElementQueryJson.Elements(Doc, args, null, 5, true, Array.Empty<ObservedQueryElement>(), new long[] { 20, 30, 40 })), "more paged ids than the limit throws");
+        // Through the fake collector: the vanished ids are skipped, every surviving id is still reached once.
+        var gone = new HashSet<long>(Model.Where(f => f.BuiltIn == "OST_Walls").Select(f => f.Id).OrderBy(id => id).Where((_, i) => i % 3 == 2));
+        var seen = new List<long>();
+        string? cursor = null;
+        for (var guard = 0; guard < 100; guard++)
+        {
+            var page = JsonNode.Parse(Collect(Envelope(Args("wall", null, 3, cursor)).ToJsonString(), vanished: gone.Contains))!;
+            seen.AddRange(page["elements"]!.AsArray().Select(e => e!["id"]!.GetValue<long>()));
+            cursor = page["next_cursor"]?.GetValue<string>();
+            if (cursor is null) break;
+        }
+        var expected = Model.Where(f => f.BuiltIn == "OST_Walls" && !gone.Contains(f.Id)).Select(f => f.Id).OrderBy(id => id);
+        Check(gone.Count >= 3 && seen.SequenceEqual(expected), "paging over vanishing rows reaches every surviving id once, ascending", string.Join(",", seen));
+    }
+
+    // SF2: a cursor is not a snapshot. Between pages, elements may be added or deleted; the next page reads the document
+    // as it is then, strictly after the cursor id: no duplicates, ids ascending, deleted ids absent, ids added at or
+    // before the cursor id not seen, ids added after it seen.
+    static void ModelChangesBetweenPages()
+    {
+        var before = Model.Where(f => f.BuiltIn == "OST_Walls").OrderBy(f => f.Id).ToArray();
+        var first = JsonNode.Parse(Collect(Envelope(Args("wall", null, 4)).ToJsonString()))!;
+        var firstIds = first["elements"]!.AsArray().Select(e => e!["id"]!.GetValue<long>()).ToArray();
+        var after = firstIds[^1];
+        var notYet = before.Where(f => f.Id > after).Select(f => f.Id).ToArray();
+        var deleted = new HashSet<long> { firstIds[0], notYet[0], notYet[^1] };
+        var added = new[] { new Fixture(firstIds[0] + 1, "OST_Walls", L1), new Fixture(after + 1, "OST_Walls", L2), new Fixture(notYet[^1] + 1000, "OST_Walls", L1) };
+        var changed = before.Where(f => !deleted.Contains(f.Id)).Concat(added).Concat(Model.Where(f => f.BuiltIn != "OST_Walls")).Reverse().ToArray();
+        var ids = firstIds.ToList();
+        var cursor = first["next_cursor"]!.GetValue<string>();
+        for (var guard = 0; guard < 100 && cursor is not null; guard++)
+        {
+            var page = JsonNode.Parse(Collect(Envelope(Args("wall", null, 4, cursor)).ToJsonString(), model: changed))!;
+            ids.AddRange(page["elements"]!.AsArray().Select(e => e!["id"]!.GetValue<long>()));
+            cursor = page["next_cursor"]?.GetValue<string>();
+        }
+        var resumed = changed.Where(f => f.BuiltIn == "OST_Walls" && f.Id > after).Select(f => f.Id).OrderBy(id => id);
+        Check(ids.Distinct().Count() == ids.Count && ids.Zip(ids.Skip(1)).All(pair => pair.First < pair.Second), "pages across model changes have no duplicate and stay ascending", string.Join(",", ids));
+        Check(ids.Skip(firstIds.Length).SequenceEqual(resumed), "after the change, the pages are exactly the surviving and added ids after the cursor id");
+        Check(!ids.Contains(notYet[0]) && !ids.Contains(notYet[^1]) && !ids.Contains(firstIds[0] + 1) && ids.Contains(after + 1) && ids.Contains(notYet[^1] + 1000), "deleted ids are absent, an id added before the cursor is not seen, ids added after it are");
+    }
+
+    // Cross-language pin: the fake add-in's New-FakeCursor (tests/integration/fake-revit-command-executor.ps1) must issue
+    // this same text; tests/integration/test-catalogue-session.ps1 asserts it.
+    public const string VectorCursor = "eyJ2IjoxLCJkb2N1bWVudCI6IjYwZjkxZGFmLTNkZDctNDI4My1hODZkLTI0MTM3YjczZjNkYS0wMDAxZmQwYiIsImZpbHRlciI6IjBjYjIxNzZkNmNlODg4ZjA1OGMxNmY0MzNkNTNkNjIyMmM0M2JiNjU4OTA4NjljYTZlNWZiNzFiYTAwOWE0MzYiLCJhZnRlciI6NDA5NywiY2hlY2siOiI5MTcwMjNkMDlkYWZlYjEzMzBkMTRjMjM5OGMzYzg2OSJ9";
+    static void Vector()
+    {
+        var filter = RevitElementQueryCursor.FilterDigest("OST_Walls", null, Array.Empty<string>());
+        Check(filter == "0cb2176d6ce888f058c16f433d53d6222c43bb65890869ca6e5fb71ba009a436" && RevitElementQueryCursor.Encode(Doc, filter, 4097) == VectorCursor, "the cursor of a known document, filter and id is the pinned text (shared with the fake add-in)");
+        var root = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory);
+        var fake = root is null ? null : Path.Combine(root, "tests", "integration", "test-catalogue-session.ps1");
+        Check(fake is not null && File.Exists(fake) && File.ReadAllText(fake).Contains(VectorCursor, StringComparison.Ordinal), "the catalogue session test pins the fake add-in to the same cursor text");
     }
 
     static void Concatenation()

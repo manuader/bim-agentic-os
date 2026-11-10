@@ -616,7 +616,32 @@ function Get-CatalogueQuerySteps {
                 (Test-CatalogueCondition 'filas devueltas' 1 $rows.Count ($rows.Count -eq 1)),
                 (Test-CatalogueSame 'returned' 1 (Get-CatalogueMember $readback 'returned')),
                 (Test-CatalogueSame 'truncado' $true (Get-CatalogueMember $readback 'truncated')),
-                (Test-CatalogueSame 'motivo del truncado' 'limit' (Get-CatalogueMember $readback 'truncated_reason')))
+                (Test-CatalogueSame 'motivo del truncado' 'limit' (Get-CatalogueMember $readback 'truncated_reason')),
+                (Test-CatalogueCondition 'next_cursor para seguir' 'presente' $(if (Get-CatalogueMember $readback 'next_cursor') { 'presente' } else { 'ausente' }) ([bool](Get-CatalogueMember $readback 'next_cursor'))))
+        } })
+    # P1-13: follow the next_cursor of the limit-1 page to the end (limit 5000); read-only. The pages are disjoint and,
+    # in order, equal the unlimited q-walls listing (no write between q-walls and here).
+    $steps.Add(@{ Key = 'q-walls-next'; Es = 'Seguir next_cursor de la lista con límite 1 (páginas disjuntas que juntas dan la lista completa)'; Command = 'query.elements'; Expect = @{ Status = 'succeeded' }
+        Build = {
+            $cursor = Get-CataloguePath (Response 'q-walls-limit') 'readback.next_cursor'
+            if (!$cursor) { throw 'falta next_cursor del paso q-walls-limit' }
+            [ordered]@{ category = 'wall'; limit = 5000; cursor = [string]$cursor } }
+        Check = {
+            param($r)
+            $firstRows = Get-CatalogueArray (Response 'q-walls-limit') 'readback.elements'
+            $first = @($firstRows | ForEach-Object { [string](Get-CatalogueMember $_ 'unique_id') })
+            $second = @((Get-CatalogueArray $r 'readback.elements') | ForEach-Object { [string](Get-CatalogueMember $_ 'unique_id') })
+            $all = @((Get-CatalogueArray (Response 'q-walls') 'readback.elements') | ForEach-Object { [string](Get-CatalogueMember $_ 'unique_id') })
+            $overlap = @($second | Where-Object { $first -contains $_ })
+            $union = @($first) + @($second)
+            $lastId = if ($firstRows.Count) { Get-CatalogueMember $firstRows[-1] 'id' } else { $null }
+            $next = Get-CataloguePath $r 'readback.next_cursor'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'after = último id de la primera página' $lastId (Get-CataloguePath $r 'readback.after')),
+                (Test-CatalogueSame 'truncado' $false (Get-CataloguePath $r 'readback.truncated')),
+                (Test-CatalogueCondition 'next_cursor de la última página' 'ausente' $(if ($next) { 'presente' } else { 'ausente' }) (!$next)),
+                (Test-CatalogueCondition 'páginas disjuntas' 0 $overlap.Count ($overlap.Count -eq 0)),
+                (Test-CatalogueCondition 'unión de las páginas = lista completa de q-walls, en orden' $all.Count $union.Count (($union -join ',') -eq ($all -join ',') -and $all.Count -ge 2)))
         } })
     $steps.Add(@{ Key = 'q-doors-level'; Es = 'Listar puertas del nivel de los muros'; Command = 'query.elements'; Expect = @{ Status = 'succeeded' }
         Build = { Need 'level'; [ordered]@{ category = 'door'; level = $picked['level'] } }
