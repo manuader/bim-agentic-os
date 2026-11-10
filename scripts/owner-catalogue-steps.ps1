@@ -231,6 +231,8 @@ $script:CatalogueComparisons = $null
 # A fixture precondition that is missing (no second level, no loaded type of a kind): the step is reported blocked,
 # not failed, and every step that needs what it should have picked is blocked too.
 $script:CatalogueBlockedMarker = '[bloqueado] '
+# The closing sentence of RevitSaveAsRules.WrittenElsewhereDetail: the run stops when a reply carries it.
+$script:CatalogueWrittenElsewhereMarker = 'do not continue until the owner has checked that file'
 
 function New-CatalogueBlocked([string]$Precondition) { [InvalidOperationException]::new($script:CatalogueBlockedMarker + 'falta en el modelo de prueba: ' + $Precondition) }
 
@@ -1184,24 +1186,72 @@ function Get-CatalogueCopyPaths([string]$Path) {
     return @{ Source = $full; Copy = [IO.Path]::Combine($folder, "$name-copia.rvt"); Outside = [IO.Path]::Combine($bim, "$name-fuera.rvt"); SaveAs = [IO.Path]::Combine($folder, "$name-guardado.rvt"); Name = $name }
 }
 
-# The first owner-enabled folder of <repo>/.bim/revit-enabled-roots.txt (the file the CLI reads, found from the test
-# copy <repo>/.bim/native-runs/<run>/BIM-Agentic-Test*.rvt) that is not .bim/native-runs nor inside it, or $null. Lines
-# are read as the CLI reads them: trimmed, blank lines and '#' comments skipped. Only the save_as refusal names it.
+# The first usable owner-enabled folder of <repo>/.bim/revit-enabled-roots.txt (the file the CLI reads, found from the
+# test copy <repo>/.bim/native-runs/<run>/BIM-Agentic-Test*.rvt), or $null (Select-CatalogueOwnerRoot).
 function Get-CatalogueOwnerRoot([string]$Path) {
     $runs = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path)))
     if (!$runs -or [IO.Path]::GetFileName($runs) -cne 'native-runs') { return $null }
     $file = [IO.Path]::Combine([IO.Path]::GetDirectoryName($runs), 'revit-enabled-roots.txt')
     if (!(Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
-    $runs = $runs.TrimEnd('/', '\')
-    foreach ($raw in [IO.File]::ReadAllLines($file)) {
-        $line = $raw.Trim()
+    return Select-CatalogueOwnerRoot ([IO.File]::ReadAllLines($file)) $runs
+}
+
+# Pure: the first entry that is a usable owner folder, or $null. Lines are read as the CLI reads them (trimmed, blank
+# lines and '#' comments skipped). A drive path (C:\... or C:/...) gets '\' separators; a '/'-rooted path is kept.
+# Skipped: UNC, relative or drive-relative entries, '.'/'..' or empty segments, segments ending with a dot or space,
+# wildcard or ':' characters (save_as would refuse any target under them), any entry spelled .bim/native-runs, and
+# Runs itself or anything inside it (compared after the same normalisation, case-insensitively for drive paths).
+function Select-CatalogueOwnerRoot([string[]]$Lines, [string]$Runs) {
+    function Normalize([string]$Entry) {
+        if ($Entry -match '\A[A-Za-z]:[\\/]') { return ($Entry.Replace('/', '\')).TrimEnd('\') }
+        if ($Entry.StartsWith('/') -and !$Entry.StartsWith('//')) { return $Entry.TrimEnd('/') }
+        return $null
+    }
+    $runsNormal = Normalize $Runs
+    foreach ($raw in @($Lines)) {
+        $line = ([string]$raw).Trim()
         if ($line.Length -eq 0 -or $line.StartsWith('#')) { continue }
-        $entry = $line.TrimEnd('/', '\')
-        $segments = @($entry.Split([char[]]@('/', '\')) | Where-Object { $_.Length -gt 0 })
-        if ($segments.Count -ge 2 -and $segments[-2] -eq '.bim' -and $segments[-1] -eq 'native-runs') { continue }
-        if ([string]::Equals($entry, $runs, [StringComparison]::OrdinalIgnoreCase) -or $entry.StartsWith($runs + '/', [StringComparison]::OrdinalIgnoreCase) -or $entry.StartsWith($runs + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $entry = Normalize $line
+        if (!$entry) { continue }
+        $drive = $entry -match '\A[A-Za-z]:'
+        $separator = if ($drive) { '\' } else { '/' }
+        $rest = if ($drive) { $entry.Substring(2) } else { $entry }
+        $segments = @($rest.Split($separator) | Select-Object -Skip 1)
+        if ($segments.Count -eq 0 -or @($segments | Where-Object { $_.Length -eq 0 -or $_ -eq '.' -or $_ -eq '..' -or $_.EndsWith('.') -or $_.EndsWith(' ') -or $_.IndexOfAny([char[]]'<>"|?*:') -ge 0 -or ($drive -and $_.Contains('/')) }).Count) { continue }
+        if ($segments.Count -ge 2 -and $segments[-2] -ieq '.bim' -and $segments[-1] -ieq 'native-runs') { continue }
+        if ($runsNormal) {
+            $comparison = if ($drive) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+            if ([string]::Equals($entry, $runsNormal, $comparison) -or $entry.StartsWith($runsNormal + $separator, $comparison)) { continue }
+        }
         return $entry
     }
+    return $null
+}
+
+# Root\Folder\File with the root's own separator ('\' for a drive path, '/' for a '/'-rooted one).
+function Join-CatalogueOwnerTarget([string]$Root, [string]$Folder, [string]$File) {
+    $separator = if ($Root -match '\A[A-Za-z]:') { '\' } else { '/' }
+    return $Root + $separator + $Folder + $separator + $File
+}
+
+# S1 safety net, checked by Invoke-CatalogueSequence before any document.save_as is sent: $null when the target is
+# acceptable, otherwise why it is not sent. A save_as that is not a client-side refusal goes only inside the test copy's
+# .bim/native-runs; a client-side refusal step outside it only into a folder that does not exist, so a guard
+# regression would stop at folder_missing (and Revit's SaveAs would fail) instead of writing into an owner folder.
+function Test-CatalogueSaveTarget([hashtable]$Spec, $StepArgs, [string]$DocumentPath) {
+    $target = [string](Get-CatalogueMember $StepArgs 'path')
+    if (!$target) { return 'save_as sin ruta de destino' }
+    $runs = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($DocumentPath)))
+    $inside = $false
+    if ($runs -and [IO.Path]::GetFileName($runs) -ceq 'native-runs') {
+        $full = [IO.Path]::GetFullPath($target)
+        $inside = $full.StartsWith($runs.TrimEnd('/', '\') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+    }
+    if ($inside) { return $null }
+    if (!($Spec.ContainsKey('ClientSide') -and $Spec.ClientSide)) { return "un guardar como real solo va dentro de .bim/native-runs del modelo de prueba: $target" }
+    $cut = $target.LastIndexOfAny([char[]]@('/', '\'))
+    $folder = if ($cut -gt 0) { $target.Substring(0, $cut) } else { $null }
+    if (!$folder -or (Test-Path -LiteralPath $folder)) { return "la carpeta del destino rechazado existe ($folder); el rechazo debe apuntar a una carpeta que no existe" }
     return $null
 }
 
@@ -1298,7 +1348,8 @@ function Get-CatalogueSaveAsSteps {
             $paths = Get-CatalogueCopyPaths $DocumentPath
             $owner = Get-CatalogueOwnerRoot $DocumentPath
             if (!$owner) { throw [InvalidOperationException]::new($script:CatalogueBlockedMarker + 'falta una carpeta del propietario en .bim/revit-enabled-roots.txt (fuera de .bim/native-runs) para probar el rechazo outside_copies_root') }
-            [ordered]@{ path = [IO.Path]::Combine($owner, "$($paths.Name)-fuera-como.rvt") }
+            # Into a subfolder that does not exist: a guard regression stops at folder_missing, never in the owner folder.
+            [ordered]@{ path = (Join-CatalogueOwnerTarget $owner "bim-agentic-no-existe-$Stamp-r$Run" "$($paths.Name)-fuera-como.rvt") }
         }
         Check = { param($r) Test-CatalogueRefusal $r 'args.path' 'outside_copies_root:*' } })
     $steps.Add(@{ Key = 'c-as-save'; Es = 'Guardar como BIM-Agentic-Test-c04-*-guardado.rvt junto al modelo de prueba (ruta nueva, anterior intacto, hash leído = hash del archivo)'; Command = 'document.save_as'; Expect = @{ Status = 'succeeded'; Created = 0 }
@@ -1572,6 +1623,7 @@ function Invoke-CatalogueSequence {
             $stepArgs = & $spec.Build
             # Document (optional): the path this one step names instead (the copy probe after a save_copy).
             if ($spec.ContainsKey('Document')) { $stepDocument = [string](& $spec.Document); $record.document_path = $stepDocument }
+            if ($spec.Command -eq 'document.save_as' -and ($unsafe = Test-CatalogueSaveTarget $spec $stepArgs $DocumentPath)) { throw $unsafe }
         }
         catch {
             if (Test-CatalogueBlockedMessage $_.Exception.Message) { Block $record $_.Exception.Message 'no enviado, ' }
@@ -1603,6 +1655,13 @@ function Invoke-CatalogueSequence {
         $responses[$spec.Key] = $parsed
         $rawText[$spec.Key] = $text
         $code = [string](Get-CatalogueMember $parsed 'code')
+        # N1: Revit wrote a save outside the enabled roots or through a link (RevitSaveAsRules.WrittenElsewhereDetail):
+        # the open document IS that file, so nothing more is sent (no probe switches the run to it).
+        if (([string](Get-CatalogueMember $parsed 'detail')).Contains($script:CatalogueWrittenElsewhereMarker, [StringComparison]::Ordinal)) {
+            $aborted = "Revit guardó el archivo fuera de las carpetas habilitadas o por un enlace en el paso $index; no se envía nada más: ciérrelo en Revit sin guardar y revise ese archivo"
+            $record.reason = "$aborted ($(Get-CatalogueMember $parsed 'detail'))"
+            continue
+        }
         if ($script:CatalogueTransportCodes -contains $code -and $spec.Expect['Code'] -ne $code) {
             $aborted = "se perdió la conexión con el Revit de prueba en el paso $index ($code)"
             $record.reason = $aborted

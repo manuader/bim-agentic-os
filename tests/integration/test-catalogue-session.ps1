@@ -551,6 +551,7 @@ Assert ($joinOk -and (Join-CatalogueOwnerTarget 'C:\Proyectos\Owner' 'sub' 'f.rv
 
 # N1: a save_as Revit wrote outside the enabled roots or through a link (WrittenElsewhereDetail: "do not continue")
 # stops the run: the new-file probe never switches to it and nothing more is sent.
+Assert ($coreSource.Contains($script:CatalogueWrittenElsewhereMarker)) 'the stop marker is the closing sentence of core RevitSaveAsRules.WrittenElsewhereDetail'
 $elsewhere = (Invoke-FakeSequence @{ SaveAsWrittenElsewhere = $true } -All).Result
 Assert (!(Get-StepField $elsewhere 'c-as-save' 'passed') -and $null -eq (Get-StepField $elsewhere 'c-as-levels-new' 'request') -and @($elsewhere.steps | Where-Object { $_.index -gt [int](Get-StepField $elsewhere 'c-as-save' 'index') -and $null -ne $_.request }).Count -eq 0) "a save_as written elsewhere sends nothing more: $(Get-FailedSteps $elsewhere)"
 Assert ($elsewhere.picked['document_path'] -eq $copyPath -and $elsewhere.picked['document_switched_by'] -eq 'c-save' -and $null -eq $elsewhere.picked['save_as_document'] -and [string]$elsewhere.aborted -like '*fuera de las carpetas habilitadas*' -and (Format-CatalogueSummary $elsewhere) -like '*DETENIDO*') "the run stops on the copy without switching to the new file: $($elsewhere.aborted)"

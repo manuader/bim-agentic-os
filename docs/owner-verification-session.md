@@ -1,4 +1,4 @@
-# Owner one-run verification session (P1-06, P1-11)
+# Owner one-run verification session (P1-06, P1-11, P1-14)
 
 One owner-attended Revit 2025 session verifies, in one go, everything the catalogue commands still need from real
 Revit. The script is [scripts/owner-native-session.ps1](../scripts/owner-native-session.ps1); the step lists, checks and
@@ -27,7 +27,7 @@ line, because it is not a catalogue command). Do not touch the child Revit until
 The last lines are:
 
 ```
->>> Ejecución 1: Catálogo: 17/17 pasos OK; grupos: v2 6/6, vistas 5/5, snapshot 2/2, consultas 7/7, estructura 12/12, documentacion 15/15, diario 6/6, formas 3/3, extrusion 5/5, transformar 9/9, copia 5/5, modificar 12/12; total 104/104; resultado: TODO OK
+>>> Ejecución 1: Catálogo: 17/17 pasos OK; grupos: v2 6/6, vistas 5/5, snapshot 2/2, consultas 7/7, estructura 12/12, documentacion 15/15, diario 6/6, formas 3/3, extrusion 5/5, transformar 9/9, copia 10/10, modificar 12/12; total 109/109; resultado: TODO OK
 >>> Sesión terminada. Catálogo: 17/17 pasos OK; grupos: ...; resultado: TODO OK
 ```
 
@@ -53,14 +53,39 @@ Evidence: `.bim/native-sessions/<utc>/catalogue-run1.json` (per step: group, req
 `session.log` and `summary.json` (`catalogue_scope`, `catalogue_all_passed`). Request files are in
 `.bim/native-runs/<guid>/catalogue-requests/`.
 
-The fixture model itself is never saved. The `copia` group saves one new copy
-`.bim/native-runs/<guid>/BIM-Agentic-Test-c04-<utc>-r<run>-copia.rvt` (its sha256 is compared with the file on disk and
-recorded in the step's readback); Revit's Save As then keeps **the copy** open in place of the fixture, so the last
-group (which deletes the v1 south wall and its door) changes the copy only in memory and the run ends with the copy
-open. When Revit asks at close whether to save, answer **No**, so the copy stays equal to the recorded sha256.
-`catalogue-run<N>.json` records `fixture_saved` (false), `copy_path`, `open_document_path` and
-`document_switched_by` (`c-save`, or `c-levels-copy` when the save failed after Save As had already re-pointed the
-document and the probe naming the copy succeeded).
+The fixture model itself is never saved. The `copia` group saves two new files next to it, both under
+`.bim/native-runs/<guid>/`:
+
+1. `document.save_copy` writes `BIM-Agentic-Test-c04-<utc>-r<run>-copia.rvt` and Revit keeps **the copy** open in place
+   of the fixture.
+2. `document.save_as` (P1-14) saves that open copy as `BIM-Agentic-Test-c04-<utc>-r<run>-guardado.rvt` and Revit keeps
+   **the new file** open in place of the copy.
+
+Each sha256 is compared with the file on disk and recorded in the step's readback. The last group (which deletes the v1
+south wall and its door) changes the `-guardado.rvt` file only in memory, and the run ends with it open. When Revit asks
+at close whether to save, answer **No**, so both files stay equal to their recorded sha256. `catalogue-run<N>.json`
+records `fixture_saved` (false), `copy_path`, `open_document_path` (the `-guardado.rvt` file after a successful run) and
+`document_switched_by`: `c-as-save`; `c-as-levels-new` when save_as failed after Save As had already re-pointed the
+document and the probe naming the new file succeeded; `c-save` or `c-levels-copy` when no save_as switched it.
+
+If a save_as reply says Revit wrote the file outside the enabled roots or through a link ("do not continue until the
+owner has checked that file"), the run stops there (`DETENIDO`): nothing more is sent. Close that Revit without saving
+and check the file the reply names.
+
+### Owner folder for the `c-as-outside` refusal
+
+`c-as-outside` proves that a test copy is never saved as a new file in an owner folder (`outside_copies_root`, refused by
+the CLI before the pipe). It needs one owner-enabled folder outside `.bim/native-runs`, listed in
+`.bim/revit-enabled-roots.txt` (one absolute path per line; `#` starts a comment), for example:
+
+```
+# owner-enabled folders
+C:\Proyectos\BIM-Agentic-Owner
+```
+
+The step uses the first usable entry and aims at a subfolder that does not exist
+(`<owner>\bim-agentic-no-existe-<utc>-r<run>\...-fuera-como.rvt`), so nothing is written there even if the guard
+failed. Without such an entry the step is **blocked** (`OK con bloqueados: copia (1)`), not failed.
 
 ## Preconditions
 
@@ -87,8 +112,8 @@ document and the probe naming the copy succeeded).
 | `formas` | P9-09 | `direct_shape.create` generic_model box (50000,0,0)-(51000,1000,1000) (category, OST_GenericModel, name, volume 1e9 mm3, box within 1 mm); site extrusion 1200 x 800 at (52000,0), 900 high on the v1 level (OST_Site, volume 8.64e8 mm3, box z from the level elevation); a crossed outline refused by the CLI (`boundary_self_intersecting`, `args.shape.outline[0]`). |
 | `extrusion` | P9-07 | Roof types; `roof.create_extrusion` barrel (arc (-300,2700)-(6300,2700) through (3000,3800), extents 0 to 4000) on an axis-aligned plane (30000,0)->(36000,0), the reversed plane (36000,10000)->(30000,10000) and a diagonal plane (40000,0)->(43600,4800) (roof and reference plane created, level, type, plane echo, extents, one arc with its crown at (3000,3800), the box holds the profile swept to the plane's left within 25 mm and not the one swept to its right); a closed profile refused by the CLI (`args_invalid`, `args.profile`). |
 | `transformar` | P1-09, P1-10 | A wall (0,15000)-(3000,15000); `element.move` (1000,500,0) and its replay (`replayed`); a zero vector refused by the CLI (`length_invalid`); `element.copy` (0,2000,0) (one copy at (1000,17500)-(4000,17500)); `element.rotate` of the copy 90 degrees about (1000,17500) (end at (1000,20500)); the v1 door turned without its wall (`element_not_rotatable`, "include the host"); 360 degrees refused by the CLI (`angle_invalid`); `element.mirror` across x = 6000 keeping the original (new wall at (8000..11000,15500)). |
-| `copia` | P1-08 | `document.save_copy` into `.bim` outside `.bim/native-runs` refused by the CLI (`save_copy_refused`, `outside_copies_root:`); the copy next to the fixture (path, open document = the copy, source unchanged, not modified, sha256 and size equal to the file on disk, warning); the same request again refused by the CLI (`target_exists:`, not replayed); `query.levels` naming the copy (succeeds; if `c-save` failed after Save As this probe switches the run to the copy); `query.levels` naming the fixture (`document_conflict`). Every later step names the copy. |
-| `modificar` | P1-05, destructive, last (on the copy when one was saved) | Inspect the west wall height (3000); `element.set_parameter` WALL_USER_HEIGHT_PARAM 3200 dry run (before 3000, after 3200, modified empty), inspect (still 3000), real (modified), replay (`replayed`), inspect (3200); Comments text (ALL_MODEL_INSTANCE_COMMENTS); read-only CURVE_ELEM_LENGTH refused (`args_invalid`, field `args.parameter`, detail "read-only"); `element.delete` of the south wall dry run (the door among the dependents), refused without `confirm_dependents` (`args_invalid`, field `args.confirm_dependents`, detail "unconfirmed"), deleted with exactly the dry-run dependents; inspect the deleted wall (`reference_not_found`). |
+| `copia` | P1-08, P1-14 | `document.save_copy` into `.bim` outside `.bim/native-runs` refused by the CLI (`save_copy_refused`, `outside_copies_root:`); the copy next to the fixture (path, open document = the copy, source unchanged, not modified, sha256 and size equal to the file on disk, warning); the same request again refused by the CLI (`target_exists:`, not replayed); `query.levels` naming the copy (succeeds; if `c-save` failed after Save As this probe switches the run to the copy); `query.levels` naming the fixture (`document_conflict`). Then P1-14 `document.save_as` on the copy: a target in a missing subfolder of the first owner folder of `.bim/revit-enabled-roots.txt` refused by the CLI (`c-as-outside`, `save_as_refused`, `outside_copies_root:`; blocked when no owner folder is listed); the copy saved as `-guardado.rvt` next to the fixture (`c-as-save`: new path, open document = the new file, previous path = the copy and unchanged on disk, not modified, sha256 and size equal to the file on disk, moved-document warning); the same request again refused by the CLI (`c-as-save-again`, `target_exists:`, not replayed); `query.levels` naming the new file (`c-as-levels-new`, the post-save path readback; if `c-as-save` failed after Save As this probe switches the run to the new file); `query.levels` naming the copy (`c-as-levels-previous`, `document_conflict`). Every later step names the new file. |
+| `modificar` | P1-05, destructive, last (on the file Revit has open: the `-guardado.rvt` file, or the copy, or the fixture) | Inspect the west wall height (3000); `element.set_parameter` WALL_USER_HEIGHT_PARAM 3200 dry run (before 3000, after 3200, modified empty), inspect (still 3000), real (modified), replay (`replayed`), inspect (3200); Comments text (ALL_MODEL_INSTANCE_COMMENTS); read-only CURVE_ELEM_LENGTH refused (`args_invalid`, field `args.parameter`, detail "read-only"); `element.delete` of the south wall dry run (the door among the dependents), refused without `confirm_dependents` (`args_invalid`, field `args.confirm_dependents`, detail "unconfirmed"), deleted with exactly the dry-run dependents; inspect the deleted wall (`reference_not_found`). |
 
 Every write uses a new `operation_id` (`c04-<utc>-r<run>-<step>`); replays reuse the original step's id on purpose.
 Nothing is retried automatically.

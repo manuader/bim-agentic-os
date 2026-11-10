@@ -11,7 +11,8 @@
 # DirectShapeBoxOff widens every DirectShape box by 5 mm, RoofExtrusionMirrored extrudes roofs to the plane's right,
 # RotateWrongWay turns clockwise, SaveCopyHashOff reports a wrong copy sha256, SaveCopyFailsAfterSave re-points the
 # document to the copy and then answers transaction_failed; P1-14: SaveAsHashOff reports a wrong sha256 for the new
-# file, SaveAsFailsAfterSave re-points the document to the new file and then answers transaction_failed; with BehindCli a client-side case answers fake_client_side_leak. It also answers direct_shape.create,
+# file, SaveAsFailsAfterSave re-points the document to the new file and then answers transaction_failed,
+# SaveAsWrittenElsewhere re-points it and answers the post-save "written elsewhere ... do not continue" failure; with BehindCli a client-side case answers fake_client_side_leak. It also answers direct_shape.create,
 # roof.create_extrusion, element.move/copy/rotate/mirror and document.save_copy (which writes a small file at the
 # target, re-points the state's DocumentPath to it and keeps no receipt), document.save_as (the same: a new file at the
 # target, the open document re-pointed to it, the previous path in the readback, no receipt, so a repeat is refused
@@ -804,6 +805,8 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
             if ($State.Faults.ContainsKey('SaveAsHashOff')) { $newSha = '0' * 64 }
             $null = $State.Copies.Add($target)
             $State.DocumentPath = $target
+            # Fault: the post-save check found the file written outside the enabled roots (RevitSaveAsRules.WrittenElsewhereDetail).
+            if ($State.Faults.ContainsKey('SaveAsWrittenElsewhere')) { return ConvertTo-FakeResponseJson (New-FakeFailure 'transaction_failed' 'args.path' "Revit saved the document, but the post-save check found it written outside the enabled roots or through a link: injected fault; the open document now points to $target. Close it in Revit without sending further commands to it, and do not continue until the owner has checked that file.") }
             if ($State.Faults.ContainsKey('SaveAsFailsAfterSave')) { return ConvertTo-FakeResponseJson (New-FakeFailure 'transaction_failed' $null "Revit saved the new file, but the readback differs (the open document may now be the new file): injected fault") }
             $warnings = @("the open document is now $target (Revit Save As re-points it); send later requests with document.path $target; $previous keeps its last saved state")
             [ordered]@{ save_as = [ordered]@{ path = $target; bytes = $bytes.Length; sha256 = $newSha; previous_path = $previous; previous_unchanged = $true; had_unsaved_changes = $true; document_path = $target; is_modified = $false } }
