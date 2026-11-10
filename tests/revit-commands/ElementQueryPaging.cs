@@ -308,7 +308,7 @@ static class ElementQueryPagingChecks
         Refused("an after on the first page", (page, envelope, line) => page == 0 ? Reply(envelope, ReadbackOf(line).Also(r => r["after"] = 1).ToJsonString()) : line, invalid, 1);
         Refused("another limit", (page, envelope, line) => OnSecond(page, envelope, line, r => r["limit"] = 4), invalid);
         Refused("a returned count that is not the element count", (page, envelope, line) => OnSecond(page, envelope, line, r => r["returned"] = 1), invalid);
-        Refused("more elements than the limit", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["elements"]!.AsArray().Add(r["elements"]!.AsArray()[0]!.DeepClone().Also(e => e["id"] = 99999999)); r["returned"] = 4; }), invalid);
+        Refused("more elements than the limit", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["elements"]!.AsArray().Add(r["elements"]!.AsArray()[0]!.DeepClone().AsObject().Also(e => e["id"] = 99999999)); r["returned"] = 4; }), invalid);
         Refused("a non-integer matched", (page, envelope, line) => OnSecond(page, envelope, line, r => r["matched"] = 1.5), invalid);
         Refused("matched below returned", (page, envelope, line) => OnSecond(page, envelope, line, r => r["matched"] = 1), invalid);
         Refused("elements out of order", (page, envelope, line) => OnSecond(page, envelope, line, r => { var e = r["elements"]!.AsArray(); var copy = e.Select(x => x!.DeepClone()).Reverse().ToArray(); e.Clear(); foreach (var x in copy) e.Add(x); }), invalid);
