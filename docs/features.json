@@ -1445,7 +1445,7 @@
         "core/Bim.Generative/TypologyBrief.cs",
         "tests/generative/TypologyBriefTests.cs"
       ],
-      "blocker": "whole-lot, one level, no fixed rooms/walls; not yet through the circulation/facade/IR gates (P5-12); planner uses the fixed CABA PrototypeTemplates.Rules, composed pack rules only checked as programme minimum conflicts (P5-13); PrototypeGenerator.Generate still takes only ApartmentTypology.",
+      "blocker": "whole-lot, one level, no fixed rooms/walls; not yet through the circulation/facade/IR gates (P5-12); PrototypeGenerator.Generate still takes only ApartmentTypology.",
       "scope": "P5-11: TypologyBrief.Brief/Generate turn a SkillTypology programme (pack or SkillResolution + family size) into a P6-03 brief with the lot as site and plan ranked whole-lot SpacePlanner candidates (seeds Seed+i unchecked, PrototypeTemplates.Rules, AlternativeRanker); typology_* issues and PrototypeGenerator request codes as typed refusals; family sizes 1–8 rank on 16x16; pinned SHA-256 85102ea0…b513 (family 4, 12x12, 6 alternatives, seed 0); apartment generator pinned digest unchanged. CI red 42787338649, green 42788507940, review red 42803818216, green 42805199628."
     },
     {
@@ -1513,6 +1513,37 @@
       ],
       "blocker": "No provenance (P2-11, ADR0010 proposed); map_adds/map_removals and restore plan not applied; library only (no CLI/MCP); racing-replay detection relies on ProjectStore.Commit's return shape (pinned by tests); never run in Revit.",
       "scope": "P2-12: MirrorDriftAdoptCommit.Commit(store, selection) commits the P2-09 adopt ops as one ProjectStore revision with key mirror-drift-adopt:<project>:<revision>:<sha256 selection>; outcomes committed / replayed (incl. racing identical commit) / nothing_to_adopt; typed drift_adopt_* refusals before any write; commit_incomplete per ADR0007. CI red 42851415073, green 42853024289; review red 42867411286, green 42869190717."
+    },
+    {
+      "id": "typology-composed-rules",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/TypologyRules.cs",
+        "core/Bim.Generative/TypologyBrief.cs",
+        "tests/generative/TypologyRulesTests.cs"
+      ],
+      "blocker": "Only error-severity area_m2/min_side_m min rules with room-glob targets reach the planner (warnings ignored); composed area minimums above the programme minimum are still refused as typology_minimum_conflict (P5-07), so mostly side rules change plans; hall rule special-cases CABA corredor-side-min 1.00 m to keep the template 0.95 m narrow-lot value; not through the circulation/facade/IR gates (P5-12); no CLI.",
+      "scope": "P5-13: TypologyRules.From(SkillResolution, brief, lot) maps composed min area/side rules (grouped by skill+glob in resolver order, max wins, traced per pack/rule id with threshold source) plus hall/laundry template rules into PlannerRules; TypologyRules.Generate plans TypologyBrief candidates with them through a shared internal TypologyBrief.Plan (refusal parity table with TypologyBrief.Generate); typed typology_rule_pattern_unsupported, typology_rule_threshold_invalid, typology_minimum_conflict when side² exceeds the programme maximum; corridor rule (corredor_lado_min_m) drives the hall; defaults reproduce the P5-11 digest 85102ea0…; stricter 3.2 m bedroom side changes plans. CI red 42880542772, green 42882779700, review red 42889236815, green 42889460850."
+    },
+    {
+      "id": "cad-plan-brief-site",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/CadPlanBriefCommand.cs",
+        "tests/cli/CadPlanBriefTests.cs"
+      ],
+      "blocker": "Site is given by hand (not inferred from the drawing) with no provenance; bounds are PrototypeLot [3,100] m; lone-surrogate --name untestable through argv.",
+      "scope": "P6-12: `cad-plan-brief ... [--site-width w --site-depth d] [--name text]` — invariant finite numbers in [3,100] m, both or neither (cad_option_pair_missing), name BriefParser.IsText; replaces only constraints.site (jurisdiction/levels/budget kept) and BriefPlannerOptions.Name; options echo gains site_width_m/site_depth_m/name; absent options byte-identical; written brief parses and SpacePlanner plans it byte-equal to in-process; refusals before any I/O. CI red 42882221368, green 42884390488, review green 42891766974."
+    },
+    {
+      "id": "plan-layouts-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/PlanLayoutsCommand.cs",
+        "tests/cli/PlanLayoutsTests.cs"
+      ],
+      "blocker": "No skill pack rules applied (P7-13); default planner options and weights only; no MCP tool.",
+      "scope": "P7-11: `plan-layouts brief.json output.json [--alternatives n] [--seed s]` (n 1..64 default 4, s int32 default 0) parses a P6-03 brief (BoundedInput 8 MiB, BriefParser, site required, validator errors refused), runs AlternativeGenerator (SpacePlanner seeds s+i wrapping, AlternativeRanker) and writes AlternativeSetSerializer bytes never-overwrite (CreateNew); infeasible sets written exit 0; typed plan_layouts_* / output_* / input_* refusals exit 1 no file; byte-equal to the in-process run. CI red 42880375102, green 42882133062 (Linux core rerun ×3 on flaky catalogue-session-cli, P1-19), review green 42894097712."
     }
   ]
 }
