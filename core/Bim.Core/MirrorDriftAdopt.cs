@@ -1,6 +1,10 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 namespace Bim.Core;
 
-// P2-12 commit adopted drift into Core (no provenance). From a P2-09 selection (MirrorDriftSelect.Select) and the
+// P2-12 commit adopted drift into Core (no provenance). MirrorDriftAdoptCommit: from a P2-09 selection (MirrorDriftSelect.Select) and the
 // ProjectStore at the selection's Core revision, Commit applies the selection's adopt operations (create/update/delete,
 // in selection order) to the store head and commits them as one Core revision through ProjectStore.Commit, with the
 // plan Compiler.Diff(head, desired) and a deterministic idempotency key (Key):
@@ -64,11 +68,105 @@ public sealed record MirrorDriftAdoptResult(string Outcome, int Revision, string
 public static class MirrorDriftAdoptCommit
 {
     public const string KeyPrefix = "mirror-drift-adopt:";
+    static readonly UTF8Encoding Utf8 = new(false, true);
 
-    // P2-12 red stub: the tests land first.
-    public static string Key(MirrorDriftSelection selection) => throw new NotImplementedException("P2-12 not implemented");
+    public static string Key(MirrorDriftSelection selection)
+    {
+        CheckSelection(selection);
+        var digest = Convert.ToHexString(SHA256.HashData(Utf8.GetBytes(selection.ToJson()))).ToLowerInvariant();
+        return KeyPrefix + selection.CoreProjectId.ToString("D") + ":" + selection.CoreRevision.ToString(CultureInfo.InvariantCulture) + ":" + digest;
+    }
 
-    public static (Project Desired, ExecutionPlan Plan) Plan(Project head, MirrorDriftSelection selection) => throw new NotImplementedException("P2-12 not implemented");
+    // The desired project and plan the selection's adopt operations give on this head; refuses a head that is not the
+    // selection's project, revision and hash. Pure.
+    public static (Project Desired, ExecutionPlan Plan) Plan(Project head, MirrorDriftSelection selection)
+    {
+        ArgumentNullException.ThrowIfNull(head);
+        CheckSelection(selection);
+        if (head.Elements is null || head.Elements.Any(element => element is null)) throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "the head has null elements");
+        if (head.Id != selection.CoreProjectId) throw Fail(MirrorDriftAdoptCodes.ProjectMismatch, "head project " + head.Id.ToString("D") + " is not the selection's " + selection.CoreProjectId.ToString("D"));
+        if (head.Revision != selection.CoreRevision)
+            throw Fail(MirrorDriftAdoptCodes.StaleRevision, "head revision " + head.Revision.ToString(CultureInfo.InvariantCulture) + " is not the selection's " + selection.CoreRevision.ToString(CultureInfo.InvariantCulture));
+        var hash = Compiler.Hash(head with { Elements = head.Elements.OrderBy(element => element.Id.ToString("D"), StringComparer.Ordinal).ToArray() });
+        if (hash != selection.RestorePlan.AfterHash) throw Fail(MirrorDriftAdoptCodes.StaleRevision, "head hash " + hash + " is not the selection's " + selection.RestorePlan.AfterHash);
 
-    public static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection) => throw new NotImplementedException("P2-12 not implemented");
+        var existing = head.Elements.Select(element => element.Id).ToHashSet();
+        var updates = new Dictionary<Guid, Element>();
+        var deletes = new HashSet<Guid>();
+        var creates = new List<Element>();
+        foreach (var operation in selection.Operations)
+        {
+            var id = operation.Element.Id;
+            var present = existing.Contains(id);
+            if (operation.Action == MirrorDriftAdoptActions.Create ? present : !present)
+                throw Fail(MirrorDriftAdoptCodes.SelectionInvalid, operation.Action + " of " + id.ToString("D") + (present ? ", which the head already has" : ", which the head lacks"));
+            if (operation.Action == MirrorDriftAdoptActions.Create) creates.Add(operation.Element);
+            else if (operation.Action == MirrorDriftAdoptActions.Update) updates[id] = operation.Element;
+            else deletes.Add(id);
+        }
+        var elements = head.Elements.Where(element => !deletes.Contains(element.Id)).Select(element => updates.TryGetValue(element.Id, out var updated) ? updated : element).Concat(creates).ToArray();
+        var desired = head with { Elements = elements };
+        var issues = Compiler.Validate(desired);
+        if (issues.Length > 0) throw Fail(MirrorDriftAdoptCodes.InvalidIr, string.Join(",", issues.Select(issue => issue.Code + (issue.Id is { } at ? "@" + at.ToString("D") : ""))));
+        ExecutionPlan plan;
+        try { plan = Compiler.Diff(head, desired); }
+        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "the head fails validation"); }
+        return (desired, plan);
+    }
+
+    public static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(storeDirectory);
+        CheckSelection(selection);
+        if (selection.Operations.Count == 0) return new(MirrorDriftAdoptOutcomes.NothingToAdopt, selection.CoreRevision, null, null, null);
+        var key = Key(selection);
+        var state = ReadState(storeDirectory);
+        if (state.Receipts.ContainsKey(key)) return new(MirrorDriftAdoptOutcomes.Replayed, state.Project.Revision, key, state.Project, null);
+        var (desired, plan) = Plan(state.Project, selection);
+        Project committed;
+        try { committed = new ProjectStore(storeDirectory).Commit(desired, plan, key); }
+        catch (InvalidOperationException error) when (error.Message is "revision_conflict" or "idempotency_conflict") { throw Fail(MirrorDriftAdoptCodes.StaleRevision, "the store moved before the commit (" + error.Message + ")", error); }
+        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { throw Fail(MirrorDriftAdoptCodes.InvalidIr, "refused by the store", error); }
+        catch (IOException error) when (error.Message == ProjectStore.StoreLocked) { throw Fail(MirrorDriftAdoptCodes.StoreUnavailable, "the store lock is held", error); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw Fail(MirrorDriftAdoptCodes.CommitIncomplete, error.GetType().Name + ": " + error.Message, error); }
+        return new(MirrorDriftAdoptOutcomes.Committed, committed.Revision, key, committed, plan);
+    }
+
+    static ProjectStore.State ReadState(string storeDirectory)
+    {
+        string text;
+        try
+        {
+            using var stream = new FileStream(Path.Combine(storeDirectory, "project.json"), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream, Utf8);
+            text = reader.ReadToEnd();
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "the store has no project.json", error); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or DecoderFallbackException) { throw Fail(MirrorDriftAdoptCodes.StoreUnavailable, error.GetType().Name + ": " + error.Message, error); }
+        ProjectStore.State? state;
+        try { state = JsonSerializer.Deserialize<ProjectStore.State>(text); }
+        catch (JsonException error) { throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "project.json is not a store state", error); }
+        var project = state?.Project;
+        if (state?.Receipts is null || project?.Elements is null || project.Elements.Any(element => element is null || element.GeometryMetres is null || element.Dependencies is null))
+            throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "project.json has a null project, element, geometry, dependencies or receipts");
+        return state;
+    }
+
+    static void CheckSelection(MirrorDriftSelection selection)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        if (selection.Operations is null || selection.RestorePlan?.AfterHash is null || selection.Choices is null || selection.Omitted is null
+            || selection.MapAdds is null || selection.MapRemovals is null || selection.Invalidated is null || selection.DocumentUid is null)
+            throw Fail(MirrorDriftAdoptCodes.SelectionInvalid, "the selection's parts are required");
+        var ids = new HashSet<Guid>();
+        foreach (var operation in selection.Operations)
+        {
+            if (operation?.Element is not { } element || element.Kind is null || element.GeometryMetres is null || element.Dependencies is null || element.Provenance is null
+                || operation.Action is not (MirrorDriftAdoptActions.Create or MirrorDriftAdoptActions.Update or MirrorDriftAdoptActions.Delete))
+                throw Fail(MirrorDriftAdoptCodes.SelectionInvalid, "an operation needs create, update or delete and a complete element");
+            if (!ids.Add(element.Id)) throw Fail(MirrorDriftAdoptCodes.SelectionInvalid, "two operations on " + element.Id.ToString("D"));
+        }
+    }
+
+    static MirrorDriftAdoptException Fail(string code, string detail, Exception? inner = null) => new(code, detail, inner);
 }
