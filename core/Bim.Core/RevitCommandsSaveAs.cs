@@ -113,7 +113,7 @@ public static class RevitSaveAsGuard
 
     static bool IsCopiesRootSpelling(string root)
     {
-        var segments = root.Split('/', '\').Where(segment => segment.Length > 0).ToArray();
+        var segments = root.Split('/', '\\').Where(segment => segment.Length > 0).ToArray();
         return segments.Length >= 2 && string.Equals(segments[^2], ".bim", StringComparison.OrdinalIgnoreCase) && string.Equals(segments[^1], "native-runs", StringComparison.OrdinalIgnoreCase);
     }
 
