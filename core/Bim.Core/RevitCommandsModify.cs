@@ -69,11 +69,13 @@ public static partial class RevitCommandCatalogue
 
     // Commands that change or remove existing elements (MCP destructiveHint): the modify commands, wall.set_profile
     // (RevitCommandsWallProfile.cs), material.set / element.change_type (RevitCommandsMaterialTypes.cs) and
-    // document.save, which overwrites the saved file (RevitCommandsExportSave.cs), and command.batch, whose steps may be
+    // document.save, which overwrites the saved file (RevitCommandsExportSave.cs), document.save_as, which re-points the
+    // open document to a new file in an owner folder (RevitCommandsSaveAs.cs), and command.batch, whose steps may be
     // any of these (RevitCommandsBatch.cs), and element.move (RevitCommandsTransform.cs), and element.rotate and element.mirror (RevitCommandsRotateMirror.cs; a mirror without keep_original turns the originals); every other write only adds elements.
     public static bool IsDestructive(string? command) => command is not null && (Modify.Any(spec => spec.Name == command) || WallProfile.Any(spec => spec.Name == command)
         || (MaterialTypeDestructive(command) && MaterialTypes.Any(spec => spec.Name == command))
         || (ExportSaveDestructive(command) && ExportSave.Any(spec => spec.Name == command))
+        || command == RevitSaveAsGuard.Command
         || command == RevitCommandBatch.Command || command == RevitTransformRules.Move
         || command == RevitRotateMirrorRules.Rotate || command == RevitRotateMirrorRules.Mirror);
 

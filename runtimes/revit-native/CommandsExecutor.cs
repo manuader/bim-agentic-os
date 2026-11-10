@@ -33,7 +33,7 @@ namespace Bim.Revit;
 // subdivisions) are in CommandsExecutorSite.cs; wall.set_profile is in CommandsExecutorWallProfile.cs; fill patterns,
 // materials, layered wall/floor types and element.change_type are in CommandsExecutorMaterialTypes.cs;
 // view.export_image and document.save are in CommandsExecutorExportSave.cs; document.save_copy is in
-// CommandsExecutorSaveCopy.cs; command.batch is in CommandsExecutorBatch.cs; roof.create_extrusion is in
+// CommandsExecutorSaveCopy.cs; document.save_as is in CommandsExecutorSaveAs.cs; command.batch is in CommandsExecutorBatch.cs; roof.create_extrusion is in
 // CommandsExecutorRoofExtrusion.cs; direct_shape.create is in CommandsExecutorDirectShape.cs;
 // element.move and element.copy are in CommandsExecutorTransform.cs; element.rotate and element.mirror are in
 // CommandsExecutorRotateMirror.cs.
@@ -73,6 +73,8 @@ internal static partial class CommandExecutor
         if (envelope.Args is DocumentSaveArgs) return SaveExecute(d, request);
         // document.save_copy (P1-08, CommandsExecutorSaveCopy.cs): Save As to a new test copy, no transaction, no receipt.
         if (envelope.Args is DocumentSaveCopyArgs saveCopy) return SaveCopyExecute(d, request, saveCopy);
+        // document.save_as (P9-08, CommandsExecutorSaveAs.cs): Save As into an enabled root, no transaction, no receipt.
+        if (envelope.Args is DocumentSaveAsArgs saveAs) return SaveAsExecute(d, request, saveAs);
         if (envelope.Args is CommandBatchArgs batch) return BatchExecute(d, request, store, batch);
         // Modify and delete (P1-05, CommandsExecutorModify.cs) run their own transactions: a dry run stores no receipt.
         if (envelope.Args is ElementSetParameterArgs or ElementDeleteArgs) return ModifyExecute(d, request, store);
