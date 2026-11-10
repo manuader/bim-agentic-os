@@ -533,7 +533,7 @@ try
 
     var listed = Call("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]!.AsArray();
     var listedNames = listed.Select(tool => tool!["name"]!.GetValue<string>()).ToArray();
-    Check(listedNames.SequenceEqual(new[] { "diff", "validate", "room", "plan", "mirror_drift", "mirror_drift_select", "skills_lock_verify" }.Concat(RevitCommandCatalogue.All.Select(spec => spec.ToolName))), "tools/list = core tools then exactly the catalogue tools", string.Join(",", listedNames));
+    Check(listedNames.SequenceEqual(new[] { "diff", "validate", "room", "plan", "mirror_drift", "mirror_drift_select", "skills_lock_verify", "audit_verify" }.Concat(RevitCommandCatalogue.All.Select(spec => spec.ToolName))), "tools/list = core tools then exactly the catalogue tools", string.Join(",", listedNames));
     foreach (var spec in RevitCommandCatalogue.All)
     {
         var tool = listed.Single(t => t!["name"]!.GetValue<string>() == spec.ToolName)!;
