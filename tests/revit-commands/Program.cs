@@ -389,6 +389,9 @@ try
     // ---- query.elements pagination cursor (P1-13) ----
     ElementQueryCursorChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
+    // ---- query.elements client paging (P1-15): follow next_cursor until null ----
+    ElementQueryPagingChecks.Run((condition, name, detail) => Check(condition, name, detail));
+
     // ---- Structure commands (P9-02): grids, columns, beams, foundations ----
     CatalogueStructureChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
