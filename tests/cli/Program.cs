@@ -1489,6 +1489,9 @@ try {
     // ---- P7-09 generate-prototypes request.json output.json (tests/cli/GeneratePrototypesTests.cs) ----
     GeneratePrototypesTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
 
+    // ---- P7-11 plan-layouts brief.json output.json [--alternatives n] [--seed s] (tests/cli/PlanLayoutsTests.cs) ----
+    PlanLayoutsTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
+
     // ---- P10-11 audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json] (tests/cli/AuditVerifyTests.cs) ----
     AuditVerifyTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
 
