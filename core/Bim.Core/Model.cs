@@ -79,6 +79,10 @@ public sealed class ProjectStore(string directory)
     public Project Read() => ReadState().Project;
     public void Initialize(Project p) { Directory.CreateDirectory(directory); using var guard = Lock(); if(Compiler.Validate(p).Length>0) throw new InvalidOperationException("invalid_ir"); if(File.Exists(Path.Combine(directory,"project.json"))) throw new IOException("already_initialized"); Write(new(p,new())); }
     FileStream Lock() => new(Path.Combine(directory,"lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+    // Commit's lock acquisition, typed: a lock held by another committer (or one that cannot be opened) is IOException("store_locked"),
+    // thrown before anything is read or written, so callers can tell it from a failure after the commit started writing.
+    public const string StoreLocked = "store_locked";
+    FileStream CommitLock() { try { return Lock(); } catch(Exception e) when(e is IOException or UnauthorizedAccessException) { throw new IOException(StoreLocked,e); } }
     void Write(State state) { var tmp=Path.Combine(directory,"project.tmp"); using(var file=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None)) { JsonSerializer.Serialize(file,state); file.Flush(true); } CrashAfter?.Invoke("after_tmp"); File.Move(tmp,Path.Combine(directory,"project.json"),true); }
     // Same encoding File.WriteAllText/AppendAllText use (UTF-8, no BOM, throw on invalid), so persisted bytes are unchanged.
     static readonly UTF8Encoding Utf8=new(false,true);
@@ -87,7 +91,7 @@ public sealed class ProjectStore(string directory)
     void AppendJournal(string line) { var bytes=Utf8.GetBytes(line); using var file=new FileStream(Path.Combine(directory,"journal.jsonl"),FileMode.Append,FileAccess.Write,FileShare.Read); file.Write(bytes); file.Flush(true); }
     public Project Commit(Project desired, ExecutionPlan plan, string key)
     {
-        using var guard = Lock();
+        using var guard = CommitLock();
         if(string.IsNullOrWhiteSpace(key)) throw new ArgumentException("idempotency_key_required");
         var state=ReadState();
         if(state.Receipts.TryGetValue(key,out var hash)) { if(hash!=plan.AfterHash || Compiler.Hash(desired)!=hash) throw new InvalidOperationException("idempotency_conflict"); return state.Project; }
