@@ -18,9 +18,11 @@ static class TypologyRulesTests
     // TypologyBriefTests.PinnedSha256: family 4, 12 x 12 m lot, 6 alternatives, seed 0 under PrototypeTemplates.Rules (P5-11 pin).
     const string P511PinnedSha256 = "85102ea05864ea67a8dad79bed06b2ce4a643056a09d8aee7d8044127340b513";
 
-    // A code pack whose minimum rules are exactly PrototypeTemplates.CabaRules (same id, patterns, values and rule ids).
+    // A code pack whose minimum rules are exactly PrototypeTemplates.CabaRules (same id, patterns, values and rule ids) plus
+// the CABA corridor rule that gives the hall its minimum side.
     const string DefaultsPack = """
     {"manifest_version":1,"id":"ar.caba.codigo-edificacion","version":"0.1.0","kind":"code","description":"test copy of the prototype CABA minimums","priority":100,
+     "parameters":[{"name":"corredor_lado_min_m","type":"number","default":1.0}],
      "rules":[
       {"id":"living-area-min","severity":"error","target":{"room":"living*"},"check":{"op":"min","property":"area_m2","value":9},"message":"m"},
       {"id":"living-side-min","severity":"error","target":{"room":"living*"},"check":{"op":"min","property":"min_side_m","value":2.8},"message":"m"},
@@ -29,7 +31,8 @@ static class TypologyRulesTests
       {"id":"bedroom-area-min","severity":"error","target":{"room":"bedroom*"},"check":{"op":"min","property":"area_m2","value":7.5},"message":"m"},
       {"id":"bedroom-side-min","severity":"error","target":{"room":"bedroom*"},"check":{"op":"min","property":"min_side_m","value":2.5},"message":"m"},
       {"id":"bathroom-area-min","severity":"error","target":{"room":"bath*"},"check":{"op":"min","property":"area_m2","value":1.4},"message":"m"},
-      {"id":"bathroom-side-min","severity":"error","target":{"room":"bath*"},"check":{"op":"min","property":"min_side_m","value":0.9},"message":"m"}
+      {"id":"bathroom-side-min","severity":"error","target":{"room":"bath*"},"check":{"op":"min","property":"min_side_m","value":0.9},"message":"m"},
+      {"id":"corredor-side-min","severity":"error","target":{"room":"corredor*"},"check":{"op":"min","property":"min_side_m","parameter":"corredor_lado_min_m"},"message":"m"}
      ]}
     """;
 
@@ -76,10 +79,17 @@ static class TypologyRulesTests
                     "ar.caba.codigo-edificacion:rule:kitchen-area-min@1", "ar.caba.codigo-edificacion:rule:kitchen-side-min@1",
                     "ar.caba.codigo-edificacion:rule:bedroom-area-min@2", "ar.caba.codigo-edificacion:rule:bedroom-side-min@2",
                     "ar.caba.codigo-edificacion:rule:bathroom-area-min@3", "ar.caba.codigo-edificacion:rule:bathroom-side-min@3",
-                }), "every pack minimum is traced to its planner rule index by pack and rule id", string.Join(" ", pairs));
+                    "ar.caba.codigo-edificacion:rule:corredor-side-min@4",
+                }), "every pack minimum (the hall corridor too) is traced to its planner rule index by pack and rule id", string.Join(" ", pairs));
+            var values = string.Join(" ", defaultSet.Traces.Select(trace => trace.Property + "=" + F(trace.Threshold)));
+            Check(values == "area_m2=9 min_side_m=2.8 area_m2=3 min_side_m=1.5 area_m2=7.5 min_side_m=2.5 area_m2=1.4 min_side_m=0.9 min_side_m=1 min_side_m=1.2",
+                "every trace carries its property and threshold", values);
             var templates = defaultSet.Traces.Where(trace => trace.Rule is null).Select(trace => trace.PlannerRuleIndex).ToArray();
-            Check(templates.SequenceEqual(new[] { 4, 5 }) && defaultSet.Traces.All(trace => trace.Reference == defaultSet.Rules.Rules[trace.PlannerRuleIndex].Reference),
-                "the hall and laundry template rules are traced as template rules and every trace carries its planner rule reference", string.Join(",", templates));
+            Check(templates.SequenceEqual(new[] { 5 }) && defaultSet.Traces.All(trace => trace.Reference == defaultSet.Rules.Rules[trace.PlannerRuleIndex].Reference),
+                "the laundry template rule is traced as a template rule and every trace carries its planner rule reference", string.Join(",", templates));
+            var hallTrace = defaultSet.Traces.FirstOrDefault(trace => trace.PlannerRuleIndex == 4);
+            Check(hallTrace is { ThresholdSource: { } hallSource } && hallSource.ToString() == Caba + ":parameter:corredor_lado_min_m",
+                "the hall trace names the corridor parameter it comes from", hallTrace?.ToString() ?? "none");
         }
 
         // ---- the real CABA pack composed with the typology: its matching minimums (dining too) constrain the planner ----
@@ -103,6 +113,9 @@ static class TypologyRulesTests
         var typologyOnly = Safe(() => TypologyRules.Generate(SkillResolver.Resolve(catalog, new[] { new SkillRequest(Pack) }), request));
         Check(typologyOnly.Rules is { Succeeded: true } onlySet && onlySet.Rules.Rules.All(rule => rule.RoomId is not null) && onlySet.Rules.Rules.Count == 2
             && onlySet.Traces.All(trace => trace.Rule is null), "a resolution without code rules plans with the template rules only", Show(typologyOnly));
+        Check(typologyOnly.Rules is { } onlyRules && onlyRules.Rules.Rules.All(rule => rule.Reference?.Contains(Caba, StringComparison.Ordinal) != true)
+            && onlyRules.Rules.Rules.Any(rule => rule.RoomId == "hall" && rule.MinSideMetres == PrototypeTemplates.CorridorMinSideMetres),
+            "without a composed corridor rule the hall keeps the template side and no rule reference cites the CABA pack", Show(typologyOnly));
 
         // ---- stricter composed minimums change the plans visibly ----
         var strictCatalog = new SkillCatalog(catalog.Skills.Append(SkillParser.Parse(StricterPack)));
@@ -168,6 +181,82 @@ static class TypologyRulesTests
         Check(IsRefused(refusedProgramme.Result, SkillTypologyCodes.RoomKindUnknown, "sauna") && refusedProgramme.Rules is null, "programme refusals pass through unchanged", Show(refusedProgramme));
         var badLot = Safe(() => TypologyRules.Generate(composed, new TypologyBriefRequest(4, new PrototypeLot(2, 2), 6)));
         Check(IsRefused(badLot.Result, PrototypeCodes.LotInvalid, "lot"), "request refusals pass through unchanged", Show(badLot));
+
+        // ---- a composed side whose square exceeds the programme maximum is refused before planning ----
+        var tooWidePack = strictArea with { Parameters = new[] { new SkillParameter("bedroom_side_min_m", SkillParameterType.Number, SkillValue.Of(4.1)) } };
+        var tooWide = Safe(() => TypologyRules.Generate(Resolve(catalog, tooWidePack), request));
+        Check(IsRefused(tooWide.Result, SkillTypologyCodes.MinimumConflict, "bedroom") && tooWide.Result.Refusals.Count == 1
+            && tooWide.Result.Refusals[0].Detail.Contains(Stricter + " bedroom-side-min", StringComparison.Ordinal) && tooWide.Rules is { Succeeded: false },
+            "a composed bedroom side of 4.1 m (16.81 m2 above the programme maximum 16 m2) is typology_minimum_conflict before planning", Show(tooWide));
+        // Accepted on purpose: a side whose square lies above the programme minimum but within its maximum only raises the
+        // planned minimum area inside the programme range (3.2 m -> 10.24 m2 within 9..16 m2), so the programme stays satisfiable.
+        Check(fromStrict.Result.Status != PrototypeStatus.Refused && fromStrict.Rules is { Succeeded: true },
+            "a composed side whose square is above the programme minimum but within its maximum is accepted (3.2 m -> 10.24 m2 in 9..16 m2)", Show(fromStrict));
+
+        // ---- the hall takes the composed corridor minimum ----
+        var wideCorridor = caba with { Parameters = caba.Parameters.Select(parameter => parameter.Name == "corredor_lado_min_m" ? parameter with { Default = SkillValue.Of(1.2) } : parameter).ToArray() };
+        var corridorCatalog = new SkillCatalog(catalog.Skills.Where(skill => skill.Id != Caba).Append(wideCorridor));
+        var corridor = Safe(() => TypologyRules.Generate(SkillResolver.Resolve(corridorCatalog, new[] { new SkillRequest(Caba), new SkillRequest(Pack) }), request));
+        var hall = corridor.Rules?.Rules.Rules.FirstOrDefault(rule => rule.RoomId == "hall");
+        var hallIndex = hall is null || corridor.Rules is null ? -1 : corridor.Rules.Rules.Rules.ToList().IndexOf(hall);
+        Check(hall is { MinSideMetres: 1.2 } && corridor.Rules!.Traces.Any(trace => trace.PlannerRuleIndex == hallIndex && trace.Rule?.ToString() == Caba + ":rule:corredor-side-min"
+                && trace.ThresholdSource?.ToString() == Caba + ":parameter:corredor_lado_min_m" && trace.Threshold == 1.2),
+            "corredor_lado_min_m = 1.2 gives the hall a 1.2 m minimum side traced to corredor-side-min", hall?.ToString() ?? Show(corridor));
+        Check(corridor.Result.Alternatives is { } corridorSet && corridorSet.Ranked.Count > 0
+            && corridorSet.Ranked.All(alternative => alternative.Plan.Rooms.Where(room => room.RoomId == "hall").All(room => ShortSide(room.Rect) >= 1.2 - Tolerance)),
+            "every ranked hall is at least 1.2 m wide under the composed corridor minimum", Show(corridor));
+
+        // ---- TypologyBrief and TypologyRules share one request path ----
+        var parity = new (string Name, TypologyBriefRequest Request)[]
+        {
+            ("bad lot", new TypologyBriefRequest(4, new PrototypeLot(2, double.NaN), 4)),
+            ("bad count", new TypologyBriefRequest(4, lot, 0)),
+            ("bad door width", new TypologyBriefRequest(4, lot, 4, DoorWidthMetres: -1)),
+            ("bad weights", new TypologyBriefRequest(4, lot, 4, Weights: new ScoringWeights(AreaFit: -1))),
+            ("unknown room kind", new TypologyBriefRequest(4, lot, 4, Include: new[] { "sauna" })),
+            ("combined", new TypologyBriefRequest(0, new PrototypeLot(200, 10), 40, Include: new[] { "sauna", "garage" }, DoorWidthMetres: double.NaN, Weights: new ScoringWeights(AreaFit: -1))),
+        };
+        foreach (var (name, bad) in parity)
+        {
+            var viaBrief = TypologyBrief.Generate(defaults, bad);
+            var viaRules = Safe(() => TypologyRules.Generate(defaults, bad)).Result;
+            Check(viaBrief.Status == PrototypeStatus.Refused && viaRules.Status == viaBrief.Status && Refusals(viaBrief) == Refusals(viaRules)
+                    && RequestText(viaBrief.Request) == RequestText(viaRules.Request) && viaBrief.Programme.Issues.SequenceEqual(viaRules.Programme.Issues),
+                "parity " + name + ": TypologyRules refuses with the TypologyBrief refusal sequence", Refusals(viaBrief) + " vs " + Refusals(viaRules));
+        }
+        foreach (var (narrowLot, seed) in new[] { (new PrototypeLot(8, 12), 0), (new PrototypeLot(8, 12), 7), (lot, 7) })
+        {
+            var parityRequest = new TypologyBriefRequest(4, narrowLot, 4, Seed: seed);
+            var viaBrief = Digest(TypologyBrief.Generate(defaults, parityRequest));
+            var viaRules = Digest(Safe(() => TypologyRules.Generate(defaults, parityRequest)).Result);
+            Check(viaBrief == viaRules, "parity: defaults on the " + F(narrowLot.WidthMetres) + " x " + F(narrowLot.DepthMetres) + " m lot, seed " + seed.ToString(CultureInfo.InvariantCulture)
+                + " give the TypologyBrief digest", viaBrief + " vs " + viaRules);
+        }
+
+        // ---- grouping, ordering and threshold nits ----
+        var twoPack = strictArea with
+        {
+            Parameters = Array.Empty<SkillParameter>(),
+            Rules = new[]
+            {
+                new SkillRule("bedroom-side-b", SkillSeverity.Error, new SkillTarget(null, "bedroom*"), new SkillCheck(SkillCheckOp.Min, "min_side_m", SkillValue.Of(2.7)), "m"),
+                new SkillRule("bedroom-side-a", SkillSeverity.Error, new SkillTarget(null, "bedroom*"), new SkillCheck(SkillCheckOp.Min, "min_side_m", SkillValue.Of(2.6)), "m"),
+            },
+        };
+        var two = Safe(() => TypologyRules.Generate(Resolve(catalog, twoPack), request));
+        var twoRule = two.Rules?.Rules.Rules.FirstOrDefault(rule => rule.Reference?.StartsWith(Stricter, StringComparison.Ordinal) == true);
+        Check(twoRule is { MinSideMetres: 2.7, Reference: Stricter + " bedroom-side-b bedroom-side-a" }, "two same-glob side rules of one pack: the larger wins and both are cited in pack order",
+            twoRule?.ToString() ?? Show(two));
+        var cabaBedroom = fromStrict.Rules?.Rules.Rules.ToList().FindIndex(rule => rule.Reference?.StartsWith(Caba + " bedroom-", StringComparison.Ordinal) == true) ?? -1;
+        var strictBedroom = fromStrict.Rules?.Rules.Rules.ToList().FindIndex(rule => rule.Reference?.StartsWith(Stricter, StringComparison.Ordinal) == true) ?? -1;
+        Check(cabaBedroom >= 0 && strictBedroom > cabaBedroom, "the stricter pack rules follow the CABA rules (resolver order)", cabaBedroom.ToString(CultureInfo.InvariantCulture) + " " + strictBedroom.ToString(CultureInfo.InvariantCulture));
+        var negativePack = strictArea with
+        {
+            Parameters = Array.Empty<SkillParameter>(),
+            Rules = new[] { new SkillRule("bedroom-side-negative", SkillSeverity.Error, new SkillTarget(null, "bedroom*"), new SkillCheck(SkillCheckOp.Min, "min_side_m", SkillValue.Of(-2)), "m") },
+        };
+        var negative = Safe(() => TypologyRules.Generate(Resolve(catalog, negativePack), request));
+        Check(IsRefused(negative.Result, TypologyRuleCodes.ThresholdInvalid, Stricter + "/bedroom-side-negative"), "a negative minimum threshold is a typed refusal", Show(negative));
     }
 
     static SkillResolution Resolve(SkillCatalog catalog, SkillManifest extra) =>
@@ -187,6 +276,11 @@ static class TypologyRulesTests
     static bool IsRefused(TypologyBriefResult result, string code, string subject) =>
         result.Status == PrototypeStatus.Refused && result.Brief is null && result.Alternatives is null && result.Candidates.Count == 0
         && result.Refusals.Any(refusal => refusal.Code == code && refusal.Subject == subject && refusal.Hard && !refusal.Satisfied);
+
+    static string Refusals(TypologyBriefResult result) => string.Join(" | ", result.Refusals.Select(r => r.Code + "@" + r.Subject + "#" + r.Detail + "#" + r.Hard + r.Satisfied));
+
+    static string RequestText(TypologyBriefRequest request) => string.Join(",", F(request.FamilySize), F(request.Lot.WidthMetres), F(request.Lot.DepthMetres), F(request.Alternatives), F(request.Seed),
+        request.Include is null ? "-" : string.Join("+", request.Include), F(request.DoorWidthMetres), request.Weights?.ToString() ?? "-");
 
     static double ShortSide(PlanRect rect) => Math.Min(rect.Width, rect.Depth);
 
