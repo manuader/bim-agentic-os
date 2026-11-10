@@ -1037,7 +1037,8 @@ class OpeningsRoundtrip(Base):
         for obj in old.Objects:
             geometry = obj.Geometry
             self.assertTrue(geometry.Transform(scale))
-            objects.append((geometry, old.Layers[obj.Attributes.LayerIndex].FullPath, obj.Attributes.Id))
+            # The writer's user strings come along, so declared hosts and space-to-wall links are kept as in metres.
+            objects.append((geometry, old.Layers[obj.Attributes.LayerIndex].FullPath, obj.Attributes.Id, dict(obj.Attributes.GetUserStrings())))
         mm = self.draft(self.model(objects, units=rhino3dm.UnitSystem.Millimeters, name='mm.3dm'), project_id=OPENINGS['Id'])
         metres = self.draft(self.exported(OPENINGS, name='m/model.3dm'))
         self.assertEqual([e['Id'] for e in metres['project']['Elements']], [e['Id'] for e in mm['project']['Elements']])
