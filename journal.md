@@ -1309,3 +1309,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 03:48Z integration head 730f2c1 (relay171-integration on main 308c756: 3 clean merges + board/features/contracts/attempts/session/handoff) pushed; waiting CI.
 
 - 2026-11-10T03:52:59Z relay173 back off (relay171 active, heartbeat 03:48Z)
+- 04:01Z integration 730f2c1 CI 42751791103 red only on harness-check "Missing feature evidence" (catalogue-report evidence was a folder) → 89b29cd points at a fixture file; waiting CI.
