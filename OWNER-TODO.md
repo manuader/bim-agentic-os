@@ -174,3 +174,8 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - No new Revit step (P4-08, P6-11, P7-10 are headless, unit-tested in CI). `git pull` (main 1486c8a). New CLI verb `doc-update` (dry plan of documentation updates, needs `--bindings`).
 - Delete stray branch relay168-P6-11-baseline too (the cloud proxy refuses branch deletes): `git push origin --delete relay168-P6-11-baseline relay159-P6-09-baseline relay161-P8-08-probe`.
 - Still open: the relay166 -Catalogue run (103 steps, answer No at the save prompt); escritorio/estudio/biblioteca class; Uniclass licence; N21 run 3.
+
+## Relay169 (2026-11-09, cloud)
+- No new owner action (P2-10 drift-select CLI/MCP, P5-10 lock-checked jurisdictions, P10-10 install-addin -Archive are headless and unit-tested in CI; main 308c756).
+- Optional, when convenient: try `pwsh -NoProfile -File scripts/install-addin.ps1 -Archive <release.zip> -AssemblyPath <Bim.Revit.dll> -RevitUserAddins` on your machine after `git pull` (Windows staging uses a protected ACL).
+- Still open: 🔒 ONE `-Catalogue` run (103 steps), N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence, delete stray branches relay159-P6-09-baseline, relay161-P8-08-probe, relay168-P6-11-baseline.
