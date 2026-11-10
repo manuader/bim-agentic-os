@@ -1,0 +1,675 @@
+{
+  "schema_version": 1,
+  "session_stamp": "20261105T120000Z",
+  "run": 1,
+  "head": "308c756",
+  "child_pid": 4242,
+  "pipe_name": "bim-agentic-os-2025-4242",
+  "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+  "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+  "revit_build": "25.4.0.32",
+  "scope": "one_run_all_groups",
+  "result_line": "fixture",
+  "counts": {
+    "total": 2,
+    "passed": 1,
+    "failed": 1,
+    "blocked": 0,
+    "not_sent": 0
+  },
+  "groups": [
+    {
+      "key": "v1",
+      "description": "Catálogo v1 (C04): muros, puerta, ventana, suelo, habitación, reintento y rechazos",
+      "total": 2,
+      "passed": 1,
+      "failed": 1,
+      "blocked": 0,
+      "not_sent": 0
+    },
+    {
+      "key": "estructura",
+      "description": "Estructura (P9-02): ejes, columna, viga, zapata, cimiento corrido",
+      "total": 2,
+      "passed": 1,
+      "failed": 1,
+      "blocked": 0,
+      "not_sent": 0
+    },
+    {
+      "key": "copia",
+      "description": "Guardar copia (P1-08): copia con hash, rechazos fuera de la carpeta y por archivo existente; después todo va a la copia",
+      "total": 5,
+      "passed": 3,
+      "failed": 2,
+      "blocked": 0,
+      "not_sent": 1
+    },
+    {
+      "key": "modificar",
+      "description": "Modificar y borrar (P1-05, destructivo, al final)",
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "blocked": 0,
+      "not_sent": 0
+    }
+  ],
+  "overall": {
+    "total": 10,
+    "passed": 6,
+    "failed": 4,
+    "blocked": 0,
+    "not_sent": 1
+  },
+  "all_passed": false,
+  "aborted": null,
+  "picked": {
+    "level": "lvl-0",
+    "copy_path": null,
+    "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+    "document_switched_by": "c-save"
+  },
+  "fixture_saved": false,
+  "copy_path": null,
+  "open_document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+  "document_switched_by": "c-save",
+  "document_note": "The fixture document is never saved.",
+  "steps": [
+    {
+      "index": 1,
+      "group": "v1",
+      "key": "q-levels",
+      "description": "Consultar niveles",
+      "command": "query.levels",
+      "operation_id": "c04-20261105T120000Z-r1-q-levels",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "succeeded"
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-q-levels",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "query.levels",
+        "args": {}
+      },
+      "response": {
+        "status": "succeeded",
+        "code": null,
+        "field": null,
+        "detail": null,
+        "created": [],
+        "modified": [],
+        "deleted": [],
+        "readback": {
+          "levels": [
+            {
+              "unique_id": "lvl-0",
+              "name": "Level 1",
+              "elevation_mm": 0
+            }
+          ]
+        },
+        "receipt": {
+          "operation_id": "c04-20261105T120000Z-r1-q-levels",
+          "command": "query.levels",
+          "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+          "request_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "replayed": false
+        },
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": true,
+      "blocked": false,
+      "reason": null,
+      "comparisons": []
+    },
+    {
+      "index": 2,
+      "group": "v1",
+      "key": "w-south",
+      "description": "Muro sur (0,0)->(6000,0)",
+      "command": "wall.create",
+      "operation_id": "c04-20261105T120000Z-r1-w-south",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "succeeded",
+        "Created": 1
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-w-south",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "wall.create",
+        "args": {
+          "level": "lvl-0",
+          "type": "wt-1",
+          "height_mm": 3000,
+          "curve": {
+            "kind": "line",
+            "start": [
+              0,
+              0
+            ],
+            "end": [
+              6000,
+              0
+            ]
+          }
+        }
+      },
+      "response": {
+        "status": "succeeded",
+        "code": null,
+        "field": null,
+        "detail": null,
+        "created": [
+          "wall-s"
+        ],
+        "modified": [],
+        "deleted": [],
+        "readback": {
+          "walls": [
+            {
+              "unique_id": "wall-s",
+              "height_mm": 3000,
+              "length_mm": 6000
+            }
+          ]
+        },
+        "receipt": {
+          "operation_id": "c04-20261105T120000Z-r1-w-south",
+          "command": "wall.create",
+          "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+          "request_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "replayed": false
+        },
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": false,
+      "blocked": false,
+      "reason": "altura (mm): se pidió 3000, se observó 2950",
+      "comparisons": [
+        {
+          "check": "altura (mm)",
+          "requested": 3000,
+          "observed": 2950,
+          "ok": false
+        },
+        {
+          "check": "largo (mm)",
+          "requested": 6000,
+          "observed": 6000,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "group": "estructura",
+      "key": "s-grid",
+      "description": "Eje estructural (20000,-2000)->(20000,6000)",
+      "command": "grid.create",
+      "operation_id": "c04-20261105T120000Z-r1-s-grid",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "succeeded",
+        "Created": 1
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-s-grid",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "grid.create",
+        "args": {
+          "line": {
+            "start": [
+              20000,
+              -2000
+            ],
+            "end": [
+              20000,
+              6000
+            ]
+          }
+        }
+      },
+      "response": {
+        "status": "succeeded",
+        "code": null,
+        "field": null,
+        "detail": null,
+        "created": [
+          "grid-1"
+        ],
+        "modified": [],
+        "deleted": [],
+        "readback": {
+          "grid": {
+            "unique_id": "grid-1"
+          }
+        },
+        "receipt": {
+          "operation_id": "c04-20261105T120000Z-r1-s-grid",
+          "command": "grid.create",
+          "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+          "request_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "replayed": false
+        },
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": true,
+      "blocked": false,
+      "reason": null,
+      "comparisons": []
+    },
+    {
+      "index": 4,
+      "group": "estructura",
+      "key": "s-column",
+      "description": "Columna estructural en (20000,0)",
+      "command": "structural_column.create",
+      "operation_id": "c04-20261105T120000Z-r1-s-column",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "succeeded",
+        "Created": 1
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-s-column",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "structural_column.create",
+        "args": {
+          "type": "col-1",
+          "point": [
+            20000,
+            0
+          ],
+          "base_level": "lvl-0",
+          "top_level": "lvl-1"
+        }
+      },
+      "response": {
+        "status": "failed",
+        "code": "type_not_found",
+        "field": "args.type",
+        "detail": "no structural column type col-1",
+        "created": [],
+        "modified": [],
+        "deleted": [],
+        "readback": null,
+        "receipt": null,
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 1,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": false,
+      "blocked": false,
+      "reason": "expected succeeded, got failed/type_not_found: no structural column type col-1",
+      "comparisons": []
+    },
+    {
+      "index": 5,
+      "group": "copia",
+      "key": "c-outside",
+      "description": "Guardar una copia directamente en .bim (fuera de .bim/native-runs): debe rechazarse sin tocar Revit",
+      "command": "document.save_copy",
+      "operation_id": "c04-20261105T120000Z-r1-c-outside",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "failed",
+        "Code": "save_copy_refused"
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-c-outside",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "document.save_copy",
+        "args": {
+          "path": "C:\\Repo\\.bim\\BIM-Agentic-Test-c04-20261105T120000Z-r1-fuera.rvt"
+        }
+      },
+      "response": {
+        "status": "failed",
+        "code": "save_copy_refused",
+        "field": "args.path",
+        "detail": "outside_copies_root: copies are saved only inside the repository's .bim/native-runs folder",
+        "created": [],
+        "modified": [],
+        "deleted": [],
+        "readback": null,
+        "receipt": null,
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": true,
+      "blocked": false,
+      "reason": null,
+      "comparisons": [
+        {
+          "check": "campo rechazado",
+          "requested": "args.path",
+          "observed": "args.path",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "group": "copia",
+      "key": "c-save",
+      "description": "Guardar una copia BIM-Agentic-Test-c04-*-copia.rvt junto al modelo de prueba (hash leído = hash del archivo)",
+      "command": "document.save_copy",
+      "operation_id": "c04-20261105T120000Z-r1-c-save",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "succeeded",
+        "Created": 0
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-c-save",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "document.save_copy",
+        "args": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt"
+        }
+      },
+      "response": {
+        "status": "succeeded",
+        "code": null,
+        "field": null,
+        "detail": null,
+        "created": [],
+        "modified": [],
+        "deleted": [],
+        "readback": {
+          "copy": {
+            "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+            "bytes": 53,
+            "sha256": "3202cfd5c94a2241834e957759aa5fb26a21bed8e485646de3289cfca9aae862",
+            "source_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+            "source_unchanged": true,
+            "had_unsaved_changes": true,
+            "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+            "is_modified": false
+          }
+        },
+        "receipt": {
+          "operation_id": "c04-20261105T120000Z-r1-c-save",
+          "command": "document.save_copy",
+          "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+          "request_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "replayed": false
+        },
+        "warnings": [
+          "the open document is now the copy C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt (Revit Save As re-points it)"
+        ]
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": false,
+      "blocked": false,
+      "reason": "sha256 leído = sha256 del archivo en disco: se pidió \"3202cfd5c94a2241834e957759aa5fb26a21bed8e485646de3289cfca9aae862\", se observó \"671bf4eed8c3b3a2f75a9c40ccbfe5f2e078e894fb85d63bfd98dc5ab232933c\"",
+      "comparisons": [
+        {
+          "check": "ruta de la copia",
+          "requested": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+          "observed": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+          "ok": true
+        },
+        {
+          "check": "sha256 leído (64 hex)",
+          "requested": "64 hex",
+          "observed": "3202cfd5c94a2241834e957759aa5fb26a21bed8e485646de3289cfca9aae862",
+          "ok": true
+        },
+        {
+          "check": "bytes leídos = tamaño en disco",
+          "requested": 53,
+          "observed": 53,
+          "ok": true
+        },
+        {
+          "check": "sha256 leído = sha256 del archivo en disco",
+          "requested": "3202cfd5c94a2241834e957759aa5fb26a21bed8e485646de3289cfca9aae862",
+          "observed": "671bf4eed8c3b3a2f75a9c40ccbfe5f2e078e894fb85d63bfd98dc5ab232933c",
+          "ok": false
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "group": "copia",
+      "key": "c-save-again",
+      "description": "Repetir la misma copia (mismo identificador): debe rechazarse sin tocar Revit porque el archivo ya existe",
+      "command": "document.save_copy",
+      "operation_id": "c04-20261105T120000Z-r1-c-save",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "failed",
+        "Code": "save_copy_refused"
+      },
+      "request": null,
+      "response": null,
+      "raw_response": null,
+      "exit_code": null,
+      "timed_out": false,
+      "elapsed_ms": null,
+      "passed": false,
+      "blocked": false,
+      "reason": "no enviado: falta copy_path de un paso anterior",
+      "comparisons": []
+    },
+    {
+      "index": 8,
+      "group": "copia",
+      "key": "c-levels-copy",
+      "description": "Consultar niveles nombrando la copia",
+      "command": "query.levels",
+      "operation_id": "c04-20261105T120000Z-r1-c-levels-copy",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+      "expected": {
+        "Status": "succeeded"
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-c-levels-copy",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "query.levels",
+        "args": {}
+      },
+      "response": {
+        "status": "succeeded",
+        "code": null,
+        "field": null,
+        "detail": null,
+        "created": [],
+        "modified": [],
+        "deleted": [],
+        "readback": {
+          "levels": [
+            {
+              "unique_id": "lvl-0",
+              "name": "Level 1",
+              "elevation_mm": 0
+            }
+          ]
+        },
+        "receipt": {
+          "operation_id": "c04-20261105T120000Z-r1-c-levels-copy",
+          "command": "query.levels",
+          "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+          "request_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "replayed": false
+        },
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": true,
+      "blocked": false,
+      "reason": null,
+      "comparisons": [
+        {
+          "check": "el nivel de los muros está en la copia",
+          "requested": "lvl-0",
+          "observed": [
+            "lvl-0"
+          ],
+          "ok": true
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "group": "copia",
+      "key": "c-levels-source",
+      "description": "Consultar niveles nombrando el modelo de origen (debe responder document_conflict)",
+      "command": "query.levels",
+      "operation_id": "c04-20261105T120000Z-r1-c-levels-source",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+      "expected": {
+        "Status": "failed",
+        "Code": "document_conflict"
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-c-levels-source",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "query.levels",
+        "args": {}
+      },
+      "response": {
+        "status": "failed",
+        "code": "document_conflict",
+        "field": "document.path",
+        "detail": "the open document is not the saved document",
+        "created": [],
+        "modified": [],
+        "deleted": [],
+        "readback": null,
+        "receipt": null,
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": true,
+      "blocked": false,
+      "reason": null,
+      "comparisons": []
+    },
+    {
+      "index": 10,
+      "group": "modificar",
+      "key": "m-height",
+      "description": "Altura del muro oeste a 3500 mm",
+      "command": "element.set_parameter",
+      "operation_id": "c04-20261105T120000Z-r1-m-height",
+      "document_path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+      "expected": {
+        "Status": "succeeded"
+      },
+      "request": {
+        "protocol_version": 1,
+        "operation_id": "c04-20261105T120000Z-r1-m-height",
+        "document": {
+          "path": "C:\\Repo\\.bim\\native-runs\\__RUN__\\BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt",
+          "unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b"
+        },
+        "command": "element.set_parameter",
+        "args": {
+          "unique_id": "wall-w",
+          "parameter": "WALL_USER_HEIGHT_PARAM",
+          "value_mm": 3500
+        }
+      },
+      "response": {
+        "status": "succeeded",
+        "code": null,
+        "field": null,
+        "detail": null,
+        "created": [],
+        "modified": [],
+        "deleted": [],
+        "readback": {
+          "parameter": {
+            "value_mm": 3500
+          }
+        },
+        "receipt": {
+          "operation_id": "c04-20261105T120000Z-r1-m-height",
+          "command": "element.set_parameter",
+          "document_unique_id": "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b",
+          "request_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "replayed": false
+        },
+        "warnings": []
+      },
+      "raw_response": null,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 812.4,
+      "passed": true,
+      "blocked": false,
+      "reason": null,
+      "comparisons": [
+        {
+          "check": "altura (mm)",
+          "requested": 3500,
+          "observed": 3500,
+          "ok": true
+        }
+      ]
+    }
+  ]
+}

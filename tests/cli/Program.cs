@@ -1474,6 +1474,9 @@ try {
         Check(Cli("no-such-verb").Out.Contains("doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json",StringComparison.Ordinal),"default usage lists doc-update");
     }
 
+    // ---- P1-12 catalogue-report --run .bim/native-runs/<run> (tests/cli/CatalogueReportTests.cs) ----
+    CatalogueReportTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail),(name,why)=>Skip(name,why));
+
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
 } catch(Exception exception) {
