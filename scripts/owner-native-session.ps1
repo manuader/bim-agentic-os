@@ -13,9 +13,10 @@
 # refused), extrusion (P9-07 roof.create_extrusion barrel on an axis-aligned, a reversed and a diagonal plane, closed
 # profile refused), transformar (P1-09/P1-10 element.move with replay, copy, rotate, mirror; zero move, full turn and
 # a door turned without its wall refused) and copia (P1-08 document.save_copy next to the test copy with its sha256
-# checked against the file, refused outside .bim/native-runs and on the repeat; Revit then has the copy open and
-# every later step names it), and modificar (P1-05 set_parameter dry run/real/replay, delete dry run/refused/
-# confirmed; destructive, always last, on the copy when it was saved). A failed step or group never stops later groups; a timeout, a lost pipe or a
+# checked against the file, refused outside .bim/native-runs and on the repeat; Revit then has the copy open; then
+# P1-14 document.save_as of the copy as -guardado.rvt next to it, refused into an owner folder and on the repeat, with
+# the post-save path readback; Revit then has the new file open and every later step names it), and modificar (P1-05 set_parameter dry run/real/replay, delete dry run/refused/
+# confirmed; destructive, always last, on the file Revit has open after the saves). A failed step or group never stops later groups; a timeout, a lost pipe or a
 # closed Revit stops the run (nothing more is sent; since P1-06 this also applies to the v1 steps, which before were
 # each still sent and failed). A missing fixture precondition (second level, a loaded type of a kind) makes the step
 # and its dependents "blocked", not failed. Schedule field names need the Revit UI in English. -CatalogueV1Only
@@ -135,7 +136,7 @@ try {
    $run.bootstrap = 'succeeded'
    if ($Catalogue) {
     if ($CatalogueV1Only) { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script crea muros, una puerta, una ventana, un suelo y una habitación en el modelo de prueba (solo catálogo v1). No toque Revit hasta que termine." }
-    else { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script corre el catálogo v1 y después todos los grupos pendientes (v2, vistas, snapshot, consultas, estructura, documentación, diario, formas, techos por extrusión, mover/copiar/rotar/reflejar, guardar una copia y, al final, modificar y borrar) en el modelo de prueba. No toque Revit hasta que termine." }
+    else { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script corre el catálogo v1 y después todos los grupos pendientes (v2, vistas, snapshot, consultas, estructura, documentación, diario, formas, techos por extrusión, mover/copiar/rotar/reflejar, guardar una copia y guardar como y, al final, modificar y borrar) en el modelo de prueba. No toque Revit hasta que termine." }
     $catalogueRequests = Join-Path $runDir 'catalogue-requests'
     $catalogueInvoke = { param($index, $key, $json) Invoke-CatalogueCli -Dotnet $dotnet -CliDll $cli -PipeName $boot.pipeName -RequestDirectory $catalogueRequests -Index $index -Key $key -Json $json -TimeoutSeconds $StepTimeoutSeconds }
     $catalogueWire = { param($index, $key, $line) Invoke-CatalogueWire -PipeName $boot.pipeName -Line $line -RequestDirectory $catalogueRequests -Index $index -Key $key -TimeoutSeconds $StepTimeoutSeconds }
@@ -150,7 +151,7 @@ try {
      copy_path = $sequence.picked['copy_path']
      open_document_path = $(if ($sequence.picked['document_path']) { $sequence.picked['document_path'] } else { $boot.documentPath })
      document_switched_by = $sequence.picked['document_switched_by']
-     document_note = 'The fixture document is never saved. The copia group saves one new copy (copy_path, BIM-Agentic-Test-c04-*-copia.rvt next to the fixture, before the destructive group); Revit then has that copy open and the last group (which deletes the v1 south wall and its door) changes it only in memory. Closing the child Revit without saving discards those changes.'
+     document_note = 'The fixture document is never saved. The copia group saves two new files next to the fixture, before the destructive group: document.save_copy writes BIM-Agentic-Test-c04-*-copia.rvt (copy_path) and document.save_as then saves that copy as BIM-Agentic-Test-c04-*-guardado.rvt; Revit ends with the file open_document_path names open and the last group (which deletes the v1 south wall and its door) changes it only in memory. Closing the child Revit without saving discards those changes.'
      steps = $sequence.steps
     } | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $cataloguePath
     $run.catalogue = [ordered]@{ file = $cataloguePath; counts = $sequence.counts; groups = $sequence.groups; overall = $sequence.overall; all_passed = $sequence.all_passed; aborted = $sequence.aborted }
@@ -187,7 +188,7 @@ try {
    }
    elseif ($child -and !$child.HasExited) {
     if ($Catalogue -and !$CatalogueV1Only -and $run.catalogue -and $sequence.picked['document_path']) {
-     Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. Se guardó una copia ($($sequence.picked['document_path'])) y Revit la tiene abierta con los cambios del último grupo (modificar y borrar) solo en memoria. Al cerrarlo, Revit preguntará si guardar: elija No, así la copia queda igual al sha256 registrado. El modelo de prueba original no se guardó."
+     Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. Se guardaron archivos nuevos junto al modelo de prueba (la copia y, si guardar como pasó, el archivo -guardado.rvt); Revit tiene abierto $($sequence.picked['document_path']) con los cambios del último grupo (modificar y borrar) solo en memoria. Al cerrarlo, Revit preguntará si guardar: elija No, así los archivos quedan iguales a los sha256 registrados. El modelo de prueba original no se guardó."
     }
     else { Say ">>> Ejecución ${i}: el Revit de prueba (PID $($child.Id)) queda abierto para que mire el resultado. El modelo de prueba NO está guardado; al cerrarlo, Revit preguntará si guardar: puede elegir No." }
    }

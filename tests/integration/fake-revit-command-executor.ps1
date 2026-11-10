@@ -10,10 +10,15 @@
 # model with one level; NoStructuralTypes = @(categories) lists none of those structural types; P1-11:
 # DirectShapeBoxOff widens every DirectShape box by 5 mm, RoofExtrusionMirrored extrudes roofs to the plane's right,
 # RotateWrongWay turns clockwise, SaveCopyHashOff reports a wrong copy sha256, SaveCopyFailsAfterSave re-points the
-# document to the copy and then answers transaction_failed; with BehindCli a client-side case answers fake_client_side_leak. It also answers direct_shape.create,
+# document to the copy and then answers transaction_failed; P1-14: SaveAsHashOff reports a wrong sha256 for the new
+# file, SaveAsFailsAfterSave re-points the document to the new file and then answers transaction_failed,
+# SaveAsWrittenElsewhere re-points it and answers the post-save "written elsewhere ... do not continue" failure; with BehindCli a client-side case answers fake_client_side_leak. It also answers direct_shape.create,
 # roof.create_extrusion, element.move/copy/rotate/mirror and document.save_copy (which writes a small file at the
-# target, re-points the state's DocumentPath to it and keeps no receipt), and emulates, in process only, the
-# client-side refusals the real CLI gives those commands before the pipe. With DocumentPath set on the state, an
+# target, re-points the state's DocumentPath to it and keeps no receipt), document.save_as (the same: a new file at the
+# target, the open document re-pointed to it, the previous path in the readback, no receipt, so a repeat is refused
+# target_exists), and emulates, in process only, the client-side refusals the real CLI gives those commands before
+# the pipe (save_as: RevitSaveAsGuard.Check in its order against .bim/native-runs and the entries of
+# .bim/revit-enabled-roots.txt; the Windows drive-path syntax rule is left to the real CLI). With DocumentPath set on the state, an
 # envelope or journal.read for another path answers document_conflict. It proves nothing about Revit.
 Set-StrictMode -Version Latest
 
@@ -236,8 +241,35 @@ function Get-FakeClientRefusal($State, [string]$Command, $Arguments, [string]$Do
             if ([string]::Equals($target, $DocumentPath, [StringComparison]::OrdinalIgnoreCase)) { return New-FakeFailure 'save_copy_refused' 'args.path' 'same_as_source: the copy must be a new file, not the open document''s own path (use document.save)' }
             if ($State.Copies.Contains($target)) { return New-FakeFailure 'save_copy_refused' 'args.path' "target_exists: $target already exists; copies never overwrite, pick a new name" }
         }
+        'document.save_as' {
+            # RevitSaveAsGuard.Check, in its order, for the test layout <repo>/.bim/native-runs/<run>/BIM-Agentic-Test*.rvt:
+            # enabled roots are .bim/native-runs (the copies root) and the entries of .bim/revit-enabled-roots.txt.
+            $target = [string]$Arguments.path
+            $copies = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($DocumentPath))
+            $owner = @(Get-FakeOwnerRoots ([IO.Path]::Combine([IO.Path]::GetDirectoryName($copies), 'revit-enabled-roots.txt')))
+            $enabled = @($copies) + $owner
+            if (!@($enabled | Where-Object { Test-FakeUnder $target $_ }).Count) { return New-FakeFailure 'save_as_refused' 'args.path' 'outside_enabled_roots: the new file must be inside .bim/native-runs or a folder listed in .bim/revit-enabled-roots.txt' }
+            if (!@($enabled | Where-Object { Test-FakeUnder $DocumentPath $_ }).Count) { return New-FakeFailure 'save_as_refused' 'document.path' 'source_not_enabled: only a document inside .bim/native-runs or a folder listed in .bim/revit-enabled-roots.txt is saved as a new file' }
+            if ((Test-FakeUnder $DocumentPath $copies) -and !(Test-FakeUnder $target $copies)) { return New-FakeFailure 'save_as_refused' 'args.path' 'outside_copies_root: a test copy under .bim/native-runs is saved as a new file only inside .bim/native-runs; owner-enabled folders take only documents already in an owner-enabled folder' }
+            if ([string]::Equals($target, $DocumentPath, [StringComparison]::OrdinalIgnoreCase)) { return New-FakeFailure 'save_as_refused' 'args.path' 'same_as_source: the new file must differ from the open document''s own path (use document.save)' }
+            $folder = [IO.Path]::GetDirectoryName($target)
+            if (!(Test-Path -LiteralPath $folder -PathType Container)) { return New-FakeFailure 'save_as_refused' 'args.path' "folder_missing: the folder $folder does not exist" }
+            if ($State.Copies.Contains($target)) { return New-FakeFailure 'save_as_refused' 'args.path' "target_exists: $target already exists; save as never overwrites, pick a new name" }
+        }
     }
     return $null
+}
+
+# The entries of an enabled-roots file as the CLI reads them (trimmed, blank lines and '#' comments skipped).
+function Get-FakeOwnerRoots([string]$File) {
+    if (!(Test-Path -LiteralPath $File -PathType Leaf)) { return @() }
+    return @([IO.File]::ReadAllLines($File) | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 -and !$_.StartsWith('#') } | ForEach-Object { $_.TrimEnd('/', '\') })
+}
+
+# True when Path is Root or lies inside it (whole segments, case-insensitive like drive paths).
+function Test-FakeUnder([string]$Path, [string]$Root) {
+    $root0 = $Root.TrimEnd('/', '\')
+    return [string]::Equals($Path, $root0, [StringComparison]::OrdinalIgnoreCase) -or $Path.StartsWith($root0 + '/', [StringComparison]::OrdinalIgnoreCase) -or $Path.StartsWith($root0 + '\', [StringComparison]::OrdinalIgnoreCase)
 }
 
 # The move/copy/rotate/mirror location of a fake element (straight walls: a curve with z 0), or $null.
@@ -762,13 +794,30 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
             $warnings = @("the open document is now the copy $target (Revit Save As re-points it); send later requests with document.path $target; $source keeps its last saved state")
             [ordered]@{ copy = [ordered]@{ path = $target; bytes = $bytes.Length; sha256 = $copySha; source_path = $source; source_unchanged = $true; had_unsaved_changes = $true; document_path = $target; is_modified = $false } }
         }
+        'document.save_as' {
+            # Like CommandsExecutorSaveAs: a new file at the target, the open document re-pointed to it, the previous file
+            # left as it was, the readback of both paths and the moved-document warning (RevitSaveAsRules.DocumentMovedWarning).
+            $target = [string]$a.path
+            $previous = [string]$envelope.document.path
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes("fake Revit save as of $previous ($operationId)")
+            [IO.File]::WriteAllBytes($target, $bytes)
+            $newSha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+            if ($State.Faults.ContainsKey('SaveAsHashOff')) { $newSha = '0' * 64 }
+            $null = $State.Copies.Add($target)
+            $State.DocumentPath = $target
+            # Fault: the post-save check found the file written outside the enabled roots (RevitSaveAsRules.WrittenElsewhereDetail).
+            if ($State.Faults.ContainsKey('SaveAsWrittenElsewhere')) { return ConvertTo-FakeResponseJson (New-FakeFailure 'transaction_failed' 'args.path' "Revit saved the document, but the post-save check found it written outside the enabled roots or through a link: injected fault; the open document now points to $target. Close it in Revit without sending further commands to it, and do not continue until the owner has checked that file.") }
+            if ($State.Faults.ContainsKey('SaveAsFailsAfterSave')) { return ConvertTo-FakeResponseJson (New-FakeFailure 'transaction_failed' $null "Revit saved the new file, but the readback differs (the open document may now be the new file): injected fault") }
+            $warnings = @("the open document is now $target (Revit Save As re-points it); send later requests with document.path $target; $previous keeps its last saved state")
+            [ordered]@{ save_as = [ordered]@{ path = $target; bytes = $bytes.Length; sha256 = $newSha; previous_path = $previous; previous_unchanged = $true; had_unsaved_changes = $true; document_path = $target; is_modified = $false } }
+        }
         default { $null }
     }
     if ($null -eq $readback) { return ConvertTo-FakeResponseJson (New-FakeFailure 'command_unknown' 'command' $command) }
     $response = [ordered]@{ status = 'succeeded'; code = 'ok'; field = $null; detail = $null; created = $created; modified = $modified; deleted = $deleted; readback = $readback
         receipt = [ordered]@{ operation_id = $operationId; command = $command; document_unique_id = [string]$envelope.document.unique_id; request_sha256 = $sha; replayed = $false }; warnings = $warnings }
-    # document.save_copy keeps no receipt (a repeat is refused target_exists before the pipe).
-    if ($writes -and !$dry -and $command -ne 'document.save_copy') { $State.Receipts[$operationId] = @{ Sha = $sha; Response = $response }; $State.SkippedAddIn++ }
+    # document.save_copy and document.save_as keep no receipt (a repeat is refused target_exists before the pipe).
+    if ($writes -and !$dry -and $command -notin 'document.save_copy', 'document.save_as') { $State.Receipts[$operationId] = @{ Sha = $sha; Response = $response }; $State.SkippedAddIn++ }
     return ConvertTo-FakeResponseJson $response
 }
 

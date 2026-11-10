@@ -1,6 +1,7 @@
 # P1-12 end-to-end input for catalogue-report: run records written by the REAL owner code, not by hand. For each
 # scenario it builds <Root>/<scenario>/.bim/native-runs/<guid> (the fixture document; the copy the fake writes on
-# document.save_copy) and <Root>/<scenario>/.bim/native-sessions/<stamp>/{summary.json,catalogue-run1.json}:
+# document.save_copy and document.save_as), <Root>/<scenario>/.bim/revit-enabled-roots.txt (an owner folder for the
+# save_as outside_copies_root refusal) and <Root>/<scenario>/.bim/native-sessions/<stamp>/{summary.json,catalogue-run1.json}:
 #   - the sequence is scripts/owner-catalogue-steps.ps1 Invoke-CatalogueSequence against the in-process fake executor of
 #     tests/integration/fake-revit-command-executor.ps1 (the same harness as tests/integration/test-catalogue-session.ps1);
 #   - the record is written by the record writer block of scripts/owner-native-session.ps1 itself (extracted from that
@@ -34,6 +35,9 @@ foreach ($name in @($scenarios.Keys)) {
     $session = [IO.Path]::GetFullPath((Join-Path $Root "$name/.bim/native-sessions/$stamp"))
     New-Item -ItemType Directory -Force $runDir, $session | Out-Null
     $documentPath = Join-Path $runDir 'BIM-Agentic-Test.rvt'
+    # P1-14: the save_as outside_copies_root step needs an owner-enabled folder outside .bim/native-runs, listed in this
+    # scenario's own .bim/revit-enabled-roots.txt (the folder itself is never created: the refusal comes first).
+    [IO.File]::WriteAllText((Join-Path $Root "$name/.bim/revit-enabled-roots.txt"), [IO.Path]::GetFullPath((Join-Path $Root "$name/.bim/owner-enabled")) + "`n", [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($documentPath, 'fixture')
     $fake = New-FakeRevitState $documentUid $scenario.Faults
     $fake.DocumentPath = $documentPath
