@@ -41,6 +41,9 @@ public static class IntentEdits
         return new IntentEditSet(compiledBefore, compiledAfter, edits.ToArray());
     }
 
+    public static IntentEditSet FromStored(Project stored, LayoutIntent after, int maxEdits = IncrementalDiff.MaxEdits) =>
+        throw new NotImplementedException();
+
     // Typed intent changes. Each returns a new intent with one record replaced in place (list order and every other
     // field kept); nothing is validated beyond the key lookup, so an invalid result is refused by the compiler.
 

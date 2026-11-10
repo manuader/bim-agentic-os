@@ -130,18 +130,82 @@ static class IntentEditsOracle
         string Canonical(IEnumerable<Operation> items) => Json(items.OrderBy(operation => operation.Action, StringComparer.Ordinal).ThenBy(operation => operation.Element.Id).ToArray());
         if (Canonical(plan.Operations) != Canonical(expected.Operations)) return "operation sets differ";
         if (result.After.Elements.Length != a.Elements.Length || result.After.Elements.Any(element => !afterById.ContainsKey(element.Id))) return "incremental after holds other elements than compile(after)";
-        var reordered = a with { Elements = result.After.Elements.Select(element => afterById[element.Id]).ToArray() };
-        if (Json(result.After) != Json(reordered)) return "incremental after content differs from compile(after)";
-        if (Json(plan) != Json(Compiler.Diff(b, reordered))) return "plan is not byte-identical to Compiler.Diff(B, compile(after) in incremental order)";
+        // A' built independently of the incremental result: A's survivors in B order, then the creates in edit order.
+        var expectedAfter = a with
+        {
+            Elements = b.Elements.Where(element => afterById.ContainsKey(element.Id)).Select(element => afterById[element.Id])
+                .Concat(edits.Where(edit => edit.Action == "create").Select(edit => edit.Element!)).ToArray(),
+        };
+        if (Json(result.After) != Json(expectedAfter)) return "incremental after is not A's survivors in B order followed by the creates in edit order";
+        if (Json(plan) != Json(Compiler.Diff(b, expectedAfter))) return "plan is not byte-identical to Compiler.Diff(B, A')";
         var exactOrder = Json(result.After) == Json(a);
+        // Documented condition, both directions: exact order iff no created element sorts before a survivor in A.
+        var positions = a.Elements.Select((element, index) => (element.Id, index)).ToArray();
+        var lastSurvivor = positions.Where(item => beforeIds.Contains(item.Id)).Select(item => item.index).DefaultIfEmpty(-1).Max();
+        var firstCreate = positions.Where(item => !beforeIds.Contains(item.Id)).Select(item => item.index).DefaultIfEmpty(int.MaxValue).Min();
+        var predicted = firstCreate > lastSurvivor;
+        if (exactOrder != predicted) return "exact order " + exactOrder + " but the documented condition predicts " + predicted;
         if (exactOrder && Json(plan) != Json(expected)) return "same order but plan is not byte-identical to Compiler.Diff(B, A)";
-        if (!exactOrder && !edits.Any(edit => edit.Action == "create")) return "order differs without any create";
 
         // Deterministic and independent of intent list order.
         if (Json(IntentEdits.From(ProjectId, Revision, Reversed(before), Reversed(after))) != Json(set)) return "edit set depends on intent list order";
 
         outcome = new Outcome(edits.Length, edits.Count(edit => edit.Action == "create"), edits.Count(edit => edit.Action == "delete"), untouched.Length, exactOrder);
         return null;
+    }
+
+    // FromStored on a stored project (any element order, e.g. a committed incremental After): the edit set is the
+    // operation set of Compiler.Diff(stored, compile(after)), and the incremental plan describes the project to commit.
+    public static string? VerifyStored(Project stored, LayoutIntent after, out Project committed)
+    {
+        committed = stored;
+        var a = IntentCompiler.Compile(stored.Id, stored.Revision, after);
+        var set = IntentEdits.FromStored(stored, after);
+        if (Json(set.Before) != Json(stored)) return "stored set.Before is not the stored project";
+        if (Json(set.After) != Json(a)) return "stored set.After is not compile(after)";
+        var expected = Compiler.Diff(stored, a);
+        var operations = expected.Operations.ToDictionary(operation => operation.Element.Id);
+        if (set.Edits.Length != operations.Count || set.Edits.Any(edit => !operations.TryGetValue(edit.Id, out var operation) || operation.Action != edit.Action
+            || (edit.Action != "delete" && Json(edit.Element) != Json(operation.Element)))) return "stored edit set is not the Compiler.Diff(stored, A) operation set";
+        var afterById = a.Elements.ToDictionary(element => element.Id);
+        var expectedAfter = a with
+        {
+            Elements = stored.Elements.Where(element => afterById.ContainsKey(element.Id)).Select(element => afterById[element.Id])
+                .Concat(set.Edits.Where(edit => edit.Action == "create").Select(edit => edit.Element!)).ToArray(),
+        };
+        var result = IncrementalDiffIndex.Build(stored).Diff(set.Edits);
+        if (Json(result.After) != Json(expectedAfter)) return "stored incremental after is not survivors in stored order followed by creates";
+        if (Json(result.Plan) != Json(Compiler.Diff(stored, expectedAfter))) return "stored plan is not byte-identical to Compiler.Diff(stored, A')";
+        if (result.Plan.BeforeHash != Compiler.Hash(stored)) return "stored plan BeforeHash is not the stored hash";
+        committed = result.After;
+        return null;
+    }
+
+    static bool Touch(IntentRoom p, IntentRoom q) =>
+        p.Level == q.Level && p.XMetres - IntentCompiler.Tolerance <= q.XMetres + q.WidthMetres && q.XMetres - IntentCompiler.Tolerance <= p.XMetres + p.WidthMetres
+        && p.YMetres - IntentCompiler.Tolerance <= q.YMetres + q.DepthMetres && q.YMetres - IntentCompiler.Tolerance <= p.YMetres + p.DepthMetres;
+
+    // Locality of a single-room resize: a room touching neither the old nor the new rectangle (or on another level)
+    // keeps its space, its bounding walls and the openings they host out of the edit set. Returns rooms checked.
+    public static int Unrelated(LayoutIntent before, LayoutIntent after, string room, out string? problem)
+    {
+        problem = null;
+        var old = before.Rooms.Single(item => item.Key == room);
+        var resized = after.Rooms.Single(item => item.Key == room);
+        var b = IntentCompiler.Compile(ProjectId, Revision, before);
+        var a = IntentCompiler.Compile(ProjectId, Revision, after);
+        var edited = IntentEdits.From(ProjectId, Revision, before, after).Edits.Select(edit => edit.Id).ToHashSet();
+        var checkedRooms = 0;
+        foreach (var other in before.Rooms.Where(item => item.Key != room && !Touch(item, old) && !Touch(item, resized)))
+        {
+            var space = Id("space:" + other.Key);
+            var walls = b.Elements.Concat(a.Elements).Where(element => element.Id == space).SelectMany(element => element.Dependencies.Skip(1)).ToHashSet();
+            var hosted = b.Elements.Concat(a.Elements).Where(element => element.Kind is "door" or "window" && walls.Contains(element.Dependencies[1])).Select(element => element.Id);
+            var keyed = walls.Append(space).Concat(hosted).ToArray();
+            if (keyed.Any(edited.Contains)) { problem = "resizing " + room + " edited an element of unrelated room " + other.Key; return checkedRooms; }
+            checkedRooms++;
+        }
+        return checkedRooms;
     }
 
     static void Guard(Action<bool, string, string> check, string name, Action body)
@@ -208,6 +272,38 @@ static class IntentEditsOracle
         var untouchedKeys = new[] { "level:l0", "level:l1", "space:r0", "space:r2", "wall:r0:south", "wall:r0|r1", "wall:r1|r2", "opening:d0", "opening:d1", "opening:w0", "space:i0", "wall:u0|u1" };
         check(!tallerSet.Edits.Any(edit => untouchedKeys.Select(Id).Contains(edit.Id)), "intent edits: rooms and walls untouched by the r1 change are not in its edit set", Keys(tallerSet.Edits));
 
+        // Commit path (ProjectStore): the plan describes result.After (incremental order), not set.After (compile order).
+        var directory = Path.Combine(Path.GetTempPath(), "intent-edits-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new ProjectStore(directory);
+            store.Initialize(tallerSet.Before);
+            var tallerResult = IncrementalDiffIndex.Build(tallerSet.Before).Diff(tallerSet.Edits);
+            check(Code(() => store.Commit(tallerSet.After, tallerResult.Plan, "taller-compile-order")) == "revision_conflict" && Json(store.Read()) == Json(tallerSet.Before),
+                "intent edits: committing set.After (compile order) with a reordered plan is refused revision_conflict and writes nothing", "");
+            var stored = store.Commit(tallerResult.After, tallerResult.Plan, "taller");
+            check(stored.Revision == Revision + 1 && Json(store.Read()) == Json(tallerResult.After with { Revision = Revision + 1 }),
+                "intent edits: committing result.After with its plan succeeds", N(stored.Revision));
+            var moveNext = IntentEdits.MoveOpening(taller, "w0", 2.0);
+            // Hazard: chaining from compile(previous intent) indexes compile order, not the stored order.
+            var naive = IntentEdits.From(ProjectId, stored.Revision, taller, moveNext);
+            var naivePlan = IncrementalDiffIndex.Build(naive.Before).Diff(naive.Edits).Plan;
+            check(naivePlan.BeforeHash != Compiler.Hash(stored) && Code(() => store.Commit(naive.After, naivePlan, "naive")) == "revision_conflict",
+                "intent edits: a next step indexed on compile(previous) has another BeforeHash than the stored project and is refused", "");
+            // Documented path: diff against the stored project.
+            var next = IntentEdits.FromStored(store.Read(), moveNext);
+            var nextResult = IncrementalDiffIndex.Build(next.Before).Diff(next.Edits);
+            check(next.Edits.Length == 1 && next.Edits[0].Id == Id("opening:w0") && Code(() => store.Commit(nextResult.After, nextResult.Plan, "move-next")) is null && store.Read().Revision == Revision + 2,
+                "intent edits: FromStored(stored, next) gives the one-edit set and its plan commits", Keys(next.Edits));
+            // Fallback: Compiler.Diff(stored, compile(after)) commits compile(after) itself.
+            var fallbackAfter = IntentCompiler.Compile(ProjectId, Revision + 2, IntentEdits.MoveOpening(moveNext, "w0", 1.5));
+            check(Code(() => store.Commit(fallbackAfter, Compiler.Diff(store.Read(), fallbackAfter), "fallback")) is null && Json(store.Read().Elements) == Json(fallbackAfter.Elements),
+                "intent edits: the Compiler.Diff(stored, compile(after)) fallback commits compile(after)", "");
+            check(Code(() => IntentEdits.FromStored(store.Read() with { Elements = store.Read().Elements.Skip(1).ToArray() }, moveNext)) == "invalid_ir",
+                "intent edits: FromStored refuses a stored project that is not valid IR (invalid_ir)", "");
+        }
+        finally { try { Directory.Delete(directory, true); } catch (IOException) { } }
+
         // Bound: a typed refusal above maxEdits (and the default IncrementalDiff.MaxEdits), argument checks.
         check(Code(() => IntentEdits.From(ProjectId, Revision, base0, wider, 3)) == IncrementalDiff.BoundExceeded, "intent edits: 4 edits above maxEdits 3 are refused edit_bound_exceeded",
             Code(() => IntentEdits.From(ProjectId, Revision, base0, wider, 3)) ?? "accepted");
@@ -232,6 +328,13 @@ static class IntentEditsOracle
         check(Refusal(() => IntentEdits.From(ProjectId, Revision, overlap, base0)) == Refusal(() => IntentCompiler.Compile(ProjectId, Revision, overlap))
             && Refusal(() => IntentCompiler.Compile(ProjectId, Revision, overlap))!.StartsWith("intent:" + IntentCodes.RoomOverlap, StringComparison.Ordinal),
             "intent edits: an invalid before intent propagates its refusal (room_overlap)", Refusal(() => IntentEdits.From(ProjectId, Revision, overlap, base0)) ?? "accepted");
+        check(Code(() => IntentEdits.From(ProjectId, Revision, overlap, base0, -1)) == IncrementalDiff.InvalidEdit && Code(() => IntentEdits.FromStored(tallerSet.Before, overlap, -1)) == IncrementalDiff.InvalidEdit,
+            "intent edits: an invalid maxEdits is edit_invalid before any compile refusal", Code(() => IntentEdits.From(ProjectId, Revision, overlap, base0, -1)) ?? "accepted");
+        check(Refusal(() => IntentEdits.From(ProjectId, Revision, overlap, conflict)) == Refusal(() => IntentCompiler.Compile(ProjectId, Revision, overlap))
+            && Refusal(() => IntentCompiler.Compile(ProjectId, Revision, overlap)) != Refusal(() => IntentCompiler.Compile(ProjectId, Revision, conflict)),
+            "intent edits: with both intents invalid (different codes) the before refusal is reported", Refusal(() => IntentEdits.From(ProjectId, Revision, overlap, conflict)) ?? "accepted");
+        check(Refusal(() => IntentEdits.FromStored(tallerSet.Before, conflict)) == Refusal(() => IntentCompiler.Compile(ProjectId, Revision, conflict)),
+            "intent edits: FromStored propagates the compiler refusal of after", "");
         check(Code(() => IntentEdits.From(Guid.Empty, Revision, base0, base0)) == "invalid_project_identity" && Code(() => IntentEdits.From(ProjectId, -1, base0, base0)) == "invalid_project_identity",
             "intent edits: project identity refusal propagates", "");
         check(Code(() => IntentEdits.ResizeRoom(base0, "zz", 0, 0, 4, 3)) == IntentCodes.UnknownRoom && Code(() => IntentEdits.ChangeWallType(base0, "zz", "a")) == IntentCodes.UnknownRoom
@@ -251,13 +354,15 @@ static class IntentEditsOracle
         var refused = new int[3];
         var propagated = new int[3];
         var exact = new int[3];
-        int steps = 0, agreed = 0, withCreates = 0, withDeletes = 0, orderOnly = 0, levelRetypes = 0;
+        int steps = 0, agreed = 0, withCreates = 0, withDeletes = 0, orderOnly = 0, levelRetypes = 0, storedAgreed = 0, storedPropagated = 0, hazards = 0, localityChecks = 0, unrelatedRooms = 0;
+        string? firstStoredProblem = null, firstLocalityProblem = null;
         long edits = 0, untouched = 0, totalBefore = 0;
         string? firstProblem = null, firstRefusalMismatch = null;
         foreach (var seed in new[] { 9101, 9102, 9103 })
         {
             var random = new Random(seed);
             var current = Base();
+            var stored = IntentCompiler.Compile(ProjectId, Revision, current);
             for (var step = 0; step < 200; step++)
             {
                 var kind = random.Next(3);
@@ -267,7 +372,7 @@ static class IntentEditsOracle
                 {
                     refused[kind]++;
                     var mine = Refusal(() => IntentEdits.From(ProjectId, Revision, current, next));
-                    if (mine == compiled) propagated[kind]++;
+                    if (mine == compiled && Refusal(() => IntentEdits.FromStored(stored, next)) == compiled) propagated[kind]++;
                     else firstRefusalMismatch ??= kinds[kind] + " seed " + N(seed) + " step " + N(step) + ": " + (mine ?? "accepted") + " vs " + compiled;
                     continue;
                 }
@@ -287,6 +392,22 @@ static class IntentEditsOracle
                     if (outcome.ExactOrder) exact[kind]++; else orderOnly++;
                 }
                 else firstProblem ??= kinds[kind] + " seed " + N(seed) + " step " + N(step) + ": " + problem;
+                // The stored chain: diff the stored project (incremental order) against compile(next).
+                if (Compiler.Hash(stored) != Compiler.Hash(IntentCompiler.Compile(ProjectId, Revision, current))) hazards++;
+                string? storedProblem;
+                Project committed;
+                try { storedProblem = VerifyStored(stored, next, out committed); }
+                catch (Exception error) { storedProblem = "unexpected " + error.GetType().Name + ": " + error.Message; committed = stored; }
+                if (storedProblem is null) storedAgreed++;
+                else firstStoredProblem ??= kinds[kind] + " seed " + N(seed) + " step " + N(step) + ": " + storedProblem;
+                stored = committed;
+                if (kind == 0)
+                {
+                    var changedRoom = current.Rooms.Zip(next.Rooms).FirstOrDefault(pair => Json(pair.First) != Json(pair.Second)).First;
+                    if (changedRoom is null) localityChecks++; // a resize that fell back to no change edits nothing
+                    else try { unrelatedRooms += Unrelated(current, next, changedRoom.Key, out var locality); if (locality is null) localityChecks++; else firstLocalityProblem ??= locality; }
+                    catch (Exception error) { firstLocalityProblem ??= "unexpected " + error.GetType().Name + ": " + error.Message; }
+                }
                 current = next;
             }
         }
@@ -296,9 +417,12 @@ static class IntentEditsOracle
         check(refused.All(count => count >= 3) && propagated.SequenceEqual(refused), "intent edits corpus: every refused change propagates the compiler refusal unchanged", counts + " " + (firstRefusalMismatch ?? ""));
         check(exact.All(count => count >= 10), "intent edits corpus: plans byte-identical to Compiler.Diff(compile(before), compile(after)) for each kind", string.Join(",", exact.Select(count => N(count))));
         check(withCreates >= 5 && withDeletes >= 5 && orderOnly >= 1, "intent edits corpus: adjacency changes create and delete walls", N(withCreates) + "/" + N(withDeletes) + "/" + N(orderOnly));
+        check(storedAgreed == steps, "intent edits corpus: FromStored on the stored (incremental-order) chain agrees with Compiler.Diff(stored, compile(after)) on every step", N(storedAgreed) + "/" + N(steps) + " " + (firstStoredProblem ?? ""));
+        check(hazards >= 1, "intent edits corpus: the stored chain diverges in order from compile(previous) (non-vacuity)", N(hazards));
+        check(firstLocalityProblem is null && localityChecks == accepted[0] && unrelatedRooms >= 100, "intent edits corpus: a single-room resize never edits elements of an unrelated room", N(localityChecks) + " steps, " + N(unrelatedRooms) + " rooms " + (firstLocalityProblem ?? ""));
         check(levelRetypes >= 5, "intent edits corpus: whole-level wall type changes are exercised", N(levelRetypes));
         check(untouched > edits, "intent edits corpus: most elements stay out of the edit sets", N(edits) + " edits, " + N(untouched) + " untouched of " + N(totalBefore));
-        Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "intent_edits", steps, agreed, accepted, refused, exact_order = exact, order_only = orderOnly, with_creates = withCreates, with_deletes = withDeletes, edits, untouched, total_before = totalBefore }));
+        Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "intent_edits", steps, agreed, accepted, refused, exact_order = exact, order_only = orderOnly, with_creates = withCreates, stored_agreed = storedAgreed, hazards, unrelated_rooms = unrelatedRooms, with_deletes = withDeletes, edits, untouched, total_before = totalBefore }));
     }
 
     // One random bounded change of the given kind, built with the typed helpers.
