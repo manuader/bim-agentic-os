@@ -63,10 +63,11 @@ try {
             // fresh on every run through the same RevitCommandPolicySource the MCP server keeps current.
             // --all (P1-15): a query.elements envelope is paged with RevitElementQueryPaging.All, each page through the
             // same RevitCommandService path; every --all outcome, early refusals included, is ElementQueryAllResult JSON.
-            // Any other 4th (or further) argument is revit_command_usage naming it, in the single-command shape.
+            // Any other 4th (or further) argument keeps the explicit_process_pipe_required refusal (the call is not the
+            // explicit pipe form; tests/revit-commands pins that code) but names the argument and the usage.
             if(args.Length>=4 && (args[3]!="--all" || args.Length>4)) {
                 var revitExtra=args[3]!="--all" ? 3 : 4;
-                Console.WriteLine(RevitCommandResponse.Failure("revit_command_usage","args["+revitExtra+"]",(revitExtra==3 ? "unknown option " : "unexpected argument ")+args[revitExtra]+"; usage: revit-command envelope.json process-pipe-name [--all]").ToJson()); Environment.ExitCode=1; break;
+                Console.WriteLine(RevitCommandResponse.Failure(RevitCommandCodes.ExplicitProcessPipeRequired,"args["+revitExtra+"]",(revitExtra==3 ? "unknown option " : "unexpected argument ")+args[revitExtra]+"; usage: revit-command envelope.json process-pipe-name [--all]").ToJson()); Environment.ExitCode=1; break;
             }
             var revitAll=args.Length==4;
             string RevitEarly(string code,string? field,string? detail) => revitAll ? ElementQueryAllResult.Refusal(code,field,detail).ToJson() : RevitCommandResponse.Failure(code,field,detail).ToJson();
