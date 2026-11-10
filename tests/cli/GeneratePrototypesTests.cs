@@ -200,12 +200,31 @@ internal static class GeneratePrototypesTests
             }
             return Path.Combine(target, Path.GetFileName(cliDll));
         }
-        var outsideDll = CopyCli(Path.Combine(Path.GetTempPath(), "bim-generate-outside-" + Guid.NewGuid().ToString("N"), "cli"));
-        var outsideOut = Output();
-        var outside = CliAt(outsideDll, "generate-prototypes", twoBedRequest, outsideOut);
-        Check(outside.Exit == 1 && Str(Parse(outside.Out), "code") == "generate_prototypes_repository_not_found" && !File.Exists(outsideOut),
-            "a CLI copy outside any repository refuses with generate_prototypes_repository_not_found, exit 1, no file", D(outside));
-        try { Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(outsideDll)!)!, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        // scripts/verify.ps1 points TMPDIR inside the checkout (.bim/verification/<run>/tmp), so the first candidate base
+        // directory with no global.json in it or any ancestor is used (RUNNER_TEMP on CI runners).
+        static bool UnderRepository(string directory)
+        {
+            for (var dir = new DirectoryInfo(directory); dir is not null; dir = dir.Parent)
+                if (File.Exists(Path.Combine(dir.FullName, "global.json"))) return true;
+            return false;
+        }
+        var outsideBase = new[] { Environment.GetEnvironmentVariable("RUNNER_TEMP"), Path.GetTempPath(), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), OperatingSystem.IsWindows() ? null : "/tmp" }
+            .FirstOrDefault(candidate => !string.IsNullOrEmpty(candidate) && Directory.Exists(candidate) && !UnderRepository(candidate));
+        if (outsideBase is null) Console.WriteLine("SKIP generate-prototypes: no writable directory outside a repository for the copied CLI");
+        else
+        {
+            var outsideRoot = Path.Combine(outsideBase, "bim-generate-outside-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var outsideDll = CopyCli(Path.Combine(outsideRoot, "cli"));
+                var outsideOut = Output();
+                var outside = CliAt(outsideDll, "generate-prototypes", twoBedRequest, outsideOut);
+                Check(outside.Exit == 1 && Str(Parse(outside.Out), "code") == "generate_prototypes_repository_not_found" && !File.Exists(outsideOut),
+                    "a CLI copy outside any repository refuses with generate_prototypes_repository_not_found, exit 1, no file", D(outside) + " copy under " + outsideBase);
+            }
+            finally { try { Directory.Delete(outsideRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        }
 
         var fakeRepo = Path.Combine(scratch, "fake-repo");
         Directory.CreateDirectory(fakeRepo);

@@ -19,26 +19,36 @@ namespace Bim.Cli;
 //   alternatives   integer, default 8                seed     integer, default 0
 //   door_width_m   number, default 0.9
 //   weights        {"area_fit","adjacency","proportions","compactness","perimeter","compliance"}: numbers, each one
-//                  absent taking its ScoringWeights default; the whole member absent = null (the generator's default)
-//   fixed_rooms    [{"room_id": string, "x","y","width","depth": numbers}]   absent = null
-//   fixed_walls    [{"id": string, "x0","y0","x1","y1": numbers}]             absent = null
+//                  absent taking its ScoringWeights default ({} and an absent member both mean the default weights)
+//   fixed_rooms    [{"room_id": string, "x","y","width","depth": numbers}]   absent = [] (no approved rooms)
+//   fixed_walls    [{"id": string, "x0","y0","x1","y1": numbers}]             absent = [] (no approved walls)
 //   pack           skill id of the code pack, default ar.caba.codigo-edificacion, read from <repository>/skills/<id>/skill.json
-//                  through BoundedInput (the repository is the first ancestor of the CLI binary holding global.json)
+//                  through BoundedInput. Repository-only in v1: the repository is the first ancestor directory of the
+//                  CLI binary holding global.json, so a CLI copied or packaged outside a repository checkout (the
+//                  release package ships no global.json or skills/) refuses every request with
+//                  generate_prototypes_repository_not_found.
 //   project_id     GUID string ("D" form); default derived (below)        revision  integer, default 0
 //   circulation_weight number, default 0.15   facade_weight number, default 0   snap boolean, default false
 //                  (true = PrototypeSnapOptions() with its default rules)
-// Every number must be a finite JSON number; integers must be whole int32 values. Value ranges (negative lot, count,
+// Every number must be a finite JSON number (-0 is read as 0); integers must be JSON integer literals (no fraction or
+// exponent) in the int32 range. Strings holding an unpaired UTF-16 surrogate escape are refused like any malformed member. Value ranges (negative lot, count,
 // weights or revision, typology 4...) are left to PrototypeGenerator / PrototypePipeline, whose refusals are reported.
 // The stage options (circulation, facade, BIM-IR, pack parameter overrides) keep their defaults (not exposed in v1).
 //
 // Deterministic default project id (project_id absent): the canonical request is the compact JSON
 //   {"typology","lot":{"width_m","depth_m"},"alternatives","seed","door_width_m","weights","fixed_rooms","fixed_walls",
 //    "pack","revision","circulation_weight","facade_weight","snap"}
-// in that member order with every default resolved (weights / fixed_rooms / fixed_walls null when absent, else their
-// members in the order listed above), numbers as Utf8JsonWriter writes doubles (shortest round trip), no project_id.
+// in that member order with every default resolved, no project_id, no whitespace: weights always the full object in the
+// order listed above; fixed_rooms / fixed_walls always arrays ([] when absent) of objects in the member orders listed
+// above, items in request order; numbers as System.Text.Json's Utf8JsonWriter.WriteNumber(double) formats them (shortest
+// round-trip text, exponent form such as 1E-07 for very small or large magnitudes; -0 already read as 0); strings with
+// System.Text.Json's default escaping (non-ASCII and HTML-sensitive characters as \uXXXX with upper-case hex).
 // The id is the first 16 bytes of SHA-256(UTF-8 "bim-agentic-os/generate-prototypes/v1\n" + canonical request), read
-// big-endian as an RFC 9562 UUID with version 8 and the RFC variant bits set. Member order, whitespace and explicitly
-// written defaults never change it; any value that changes the run does. Never Guid.NewGuid: reruns are byte-identical.
+// big-endian as an RFC 9562 UUID with version 8 and the RFC variant bits set. Member order, whitespace, -0 and explicitly
+// written defaults never change it; any value that changes the run does. It covers the pack id, not the pack manifest's
+// content: the same request against an edited manifest derives the same id. Never Guid.NewGuid: reruns are byte-identical.
+// The pipeline gets null weights when they equal the defaults and null approval lists when they are empty (the generator
+// and serializers treat null and those values alike), so equal canonical requests give byte-identical files.
 //
 // Success: the file is written and stdout is {"status":"succeeded","scope":"proposal_only","persisted":false,
 // "pipeline_status":"ranked"|"infeasible","project_id","project_id_source":"request"|"derived","alternatives":n,
@@ -57,7 +67,8 @@ namespace Bim.Cli;
 internal static class GenerateCommand
 {
     public const string Usage = "usage: generate-prototypes request.json output.json (default project_id: UUIDv8 from the first 16 bytes of "
-        + "SHA-256(\"bim-agentic-os/generate-prototypes/v1\\n\" + canonical request JSON without project_id))";
+        + "SHA-256(\"bim-agentic-os/generate-prototypes/v1\\n\" + canonical request JSON without project_id); repository-only: the pack is read from "
+        + "<repository>/skills/<pack>/skill.json, the repository being the first ancestor of the CLI holding global.json, else generate_prototypes_repository_not_found)";
     public const string UsageCode = "generate_prototypes_usage";
     public const string RequestInvalid = "generate_prototypes_request_invalid";
     public const string RepositoryNotFound = "generate_prototypes_repository_not_found";
@@ -162,25 +173,28 @@ internal static class GenerateCommand
             if (!root.TryGetValue("lot", out var lotElement)) throw new Refusal(RequestInvalid, "lot");
             var lot = Members(lotElement, "lot", LotMembers);
             if (lot.Count != LotMembers.Length) throw new Refusal(RequestInvalid, "lot");
+            var parsedWeights = root.TryGetValue("weights", out var weights) ? Weights(weights) : new ScoringWeights();
+            var parsedRooms = root.TryGetValue("fixed_rooms", out var rooms) ? FixedRooms(rooms) : Array.Empty<FixedRoom>();
+            var parsedWalls = root.TryGetValue("fixed_walls", out var walls) ? FixedWalls(walls) : Array.Empty<FixedWall>();
             var request = new PrototypeRequest(
                 (ApartmentTypology)Int(typology, "typology"),
                 new PrototypeLot(Number(lot["width_m"], "lot.width_m"), Number(lot["depth_m"], "lot.depth_m")),
                 root.TryGetValue("alternatives", out var count) ? Int(count, "alternatives") : 8,
                 root.TryGetValue("seed", out var seed) ? Int(seed, "seed") : 0,
-                root.TryGetValue("fixed_rooms", out var rooms) ? FixedRooms(rooms) : null,
-                root.TryGetValue("fixed_walls", out var walls) ? FixedWalls(walls) : null,
-                root.TryGetValue("weights", out var weights) ? Weights(weights) : null,
+                parsedRooms.Length == 0 ? null : parsedRooms,
+                parsedWalls.Length == 0 ? null : parsedWalls,
+                parsedWeights == new ScoringWeights() ? null : parsedWeights,
                 root.TryGetValue("door_width_m", out var door) ? Number(door, "door_width_m") : PlannerOptions.DefaultDoorWidthMetres);
             var pack = DefaultPack;
             if (root.TryGetValue("pack", out var packElement))
             {
-                pack = packElement.ValueKind == JsonValueKind.String ? packElement.GetString() ?? "" : "";
+                pack = packElement.ValueKind == JsonValueKind.String ? StringValue(packElement, "pack") : "";
                 if (!SkillParser.IsId(pack)) throw new Refusal(RequestInvalid, "pack");
             }
             Guid? projectId = null;
             if (root.TryGetValue("project_id", out var idElement))
             {
-                if (idElement.ValueKind != JsonValueKind.String || !Guid.TryParseExact(idElement.GetString(), "D", out var id)) throw new Refusal(RequestInvalid, "project_id");
+                if (idElement.ValueKind != JsonValueKind.String || !Guid.TryParseExact(StringValue(idElement, "project_id"), "D", out var id)) throw new Refusal(RequestInvalid, "project_id");
                 projectId = id;
             }
             var snap = false;
@@ -204,8 +218,12 @@ internal static class GenerateCommand
         var members = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         foreach (var property in element.EnumerateObject())
         {
-            if (Array.IndexOf(allowed, property.Name) < 0 || members.ContainsKey(property.Name)) throw new Refusal(RequestInvalid, at + "." + property.Name);
-            members[property.Name] = property.Value;
+            string name;
+            // A name holding an unpaired surrogate escape cannot be read as a string.
+            try { name = property.Name; }
+            catch (InvalidOperationException) { throw new Refusal(RequestInvalid, at); }
+            if (Array.IndexOf(allowed, name) < 0 || members.ContainsKey(name)) throw new Refusal(RequestInvalid, at + "." + name);
+            members[name] = property.Value;
         }
         return members;
     }
@@ -213,7 +231,8 @@ internal static class GenerateCommand
     static double Number(JsonElement element, string at)
     {
         if (element.ValueKind != JsonValueKind.Number || !element.TryGetDouble(out var value) || !double.IsFinite(value)) throw new Refusal(RequestInvalid, at);
-        return value;
+        // -0 is 0: the canonical request and the pipeline never see a negative zero.
+        return value == 0 ? 0 : value;
     }
 
     static int Int(JsonElement element, string at)
@@ -225,7 +244,14 @@ internal static class GenerateCommand
     static string Text(JsonElement element, string at)
     {
         if (element.ValueKind != JsonValueKind.String) throw new Refusal(RequestInvalid, at);
-        return element.GetString() ?? "";
+        return StringValue(element, at);
+    }
+
+    // GetString throws InvalidOperationException for an unpaired surrogate escape ("\ud800"): a malformed member.
+    static string StringValue(JsonElement element, string at)
+    {
+        try { return element.GetString() ?? throw new Refusal(RequestInvalid, at); }
+        catch (InvalidOperationException) { throw new Refusal(RequestInvalid, at); }
     }
 
     static ScoringWeights Weights(JsonElement element)
@@ -285,8 +311,8 @@ internal static class GenerateCommand
             writer.WriteNumber("alternatives", request.Alternatives);
             writer.WriteNumber("seed", request.Seed);
             writer.WriteNumber("door_width_m", request.DoorWidthMetres);
-            if (request.Weights is { } weights)
             {
+                var weights = request.Weights ?? new ScoringWeights();
                 writer.WriteStartObject("weights");
                 writer.WriteNumber("area_fit", weights.AreaFit);
                 writer.WriteNumber("adjacency", weights.Adjacency);
@@ -296,9 +322,8 @@ internal static class GenerateCommand
                 writer.WriteNumber("compliance", weights.Compliance);
                 writer.WriteEndObject();
             }
-            else writer.WriteNull("weights");
-            if (request.FixedRooms is { } rooms)
             {
+                var rooms = request.FixedRooms ?? Array.Empty<FixedRoom>();
                 writer.WriteStartArray("fixed_rooms");
                 foreach (var room in rooms)
                 {
@@ -312,9 +337,8 @@ internal static class GenerateCommand
                 }
                 writer.WriteEndArray();
             }
-            else writer.WriteNull("fixed_rooms");
-            if (request.FixedWalls is { } walls)
             {
+                var walls = request.FixedWalls ?? Array.Empty<FixedWall>();
                 writer.WriteStartArray("fixed_walls");
                 foreach (var wall in walls)
                 {
@@ -328,7 +352,6 @@ internal static class GenerateCommand
                 }
                 writer.WriteEndArray();
             }
-            else writer.WriteNull("fixed_walls");
             writer.WriteString("pack", parsed.Pack);
             writer.WriteNumber("revision", parsed.Revision);
             writer.WriteNumber("circulation_weight", parsed.CirculationWeight);
