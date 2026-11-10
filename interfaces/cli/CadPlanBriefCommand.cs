@@ -200,9 +200,9 @@ internal static class CadPlanBriefCommand
             for (var i = 0; i < uncertainties.Length; i++)
             {
                 var uncertainty = uncertainties[i];
-                if (uncertainty is null || uncertainty.Code is null || uncertainty.Sources is null)
-                    throw new Refusal(InputInvalid, "uncertainties[" + I(i) + "] must be an uncertainty with Code and Sources");
-                var sources = uncertainty.Sources.Select(s => s is not null && labels.TryGetValue(Key(s), out var known) ? known : s).ToArray();
+                if (uncertainty is null || uncertainty.Code is null || uncertainty.Sources is null || uncertainty.Sources.Contains(null!))
+                    throw new Refusal(InputInvalid, "uncertainties[" + I(i) + "] must be an uncertainty with Code and non-null Sources");
+                var sources = uncertainty.Sources.Select(item => labels.TryGetValue(Key(item), out var known) ? known : item).ToArray();
                 bound[i] = uncertainty with { Sources = sources };
             }
             var draft = new BriefDraft(sourceFile ?? "", format ?? "", metresPerUnit, brief, rooms.Select(r => r!).ToArray(), bound, BriefValidator.Validate(brief));
