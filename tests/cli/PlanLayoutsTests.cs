@@ -105,11 +105,11 @@ internal static class PlanLayoutsTests
         Check(written1.Length > 3 && !(written1[0] == 0xEF && written1[1] == 0xBB && written1[2] == 0xBF), "the output has no byte order mark");
         var success = Parse(run1.Out);
         var expectedSet = AlternativeGenerator.Generate(example, new AlternativeOptions(2, 1));
-        Check(Str(success, "status") == "succeeded" && Str(success, "kind") == "plan-layouts" && Str(success, "sha256") == Hex(expected) && Int(success, "bytes") == expected.LongLength
+        Check(Str(success, "status") == "succeeded" && Str(success, "kind") == "plan-layouts" && Str(success, "scope") == "proposal_only" && Str(success, "sha256") == Hex(expected) && Int(success, "bytes") == expected.LongLength
             && Str(success, "set_status") == (expectedSet.Status == AlternativeSetStatus.Ranked ? "ranked" : "infeasible") && Int(success, "requested") == 2 && Int(success, "seed") == 1
             && Int(success, "ranked") == expectedSet.Ranked.Count && Int(success, "alternatives") == expectedSet.Alternatives.Count
             && success is { } s && s.TryGetProperty("persisted", out var persisted) && persisted.ValueKind == JsonValueKind.False,
-            "stdout reports succeeded, the set status, requested count, seed, ranked count, byte count and SHA-256 of the file, persisted false", D(run1));
+            "stdout reports succeeded, scope proposal_only, the set status, requested count, seed, ranked count, byte count and SHA-256 of the file, persisted false", D(run1));
         Check(expectedSet.Status == AlternativeSetStatus.Ranked && expectedSet.Ranked.Count >= 1, "the example brief yields at least one ranked alternative", expectedSet.Status.ToString());
         var second = Output();
         var run2 = Cli("plan-layouts", exampleBrief, second, "--seed", "1", "--alternatives", "2");
@@ -152,29 +152,37 @@ internal static class PlanLayoutsTests
 
         // ---- options ----
         string Never() => Output("never.json");
-        void Option(string label, string code, string? detail, params string[] options)
+        void Option(string label, string code, string detail, params string[] options)
         {
             var output = Never();
             var envelope = ExpectFailure(label, code, output, ["plan-layouts", smallPath, output, .. options]);
-            if (detail is not null) Check(Str(envelope, "detail") == detail, label + " names " + detail, Str(envelope, "detail") ?? "<no detail>");
+            Check(Str(envelope, "detail") == detail, label + " detail is exactly '" + detail + "'", Str(envelope, "detail") ?? "<no detail>");
         }
         Option("--alternatives 0", "plan_layouts_alternatives_invalid", "0", "--alternatives", "0");
         Option("--alternatives 65", "plan_layouts_alternatives_invalid", "65", "--alternatives", "65");
-        Option("--alternatives -1", "plan_layouts_alternatives_invalid", null, "--alternatives", "-1");
-        Option("--alternatives abc", "plan_layouts_alternatives_invalid", null, "--alternatives", "abc");
-        Option("--alternatives 1.5", "plan_layouts_alternatives_invalid", null, "--alternatives", "1.5");
-        Option("--alternatives +2", "plan_layouts_alternatives_invalid", null, "--alternatives", "+2");
-        Option("--alternatives ' 2'", "plan_layouts_alternatives_invalid", null, "--alternatives", " 2");
-        Option("--alternatives 99999999999", "plan_layouts_alternatives_invalid", null, "--alternatives", "99999999999");
+        Option("--alternatives -1", "plan_layouts_alternatives_invalid", "-1", "--alternatives", "-1");
+        Option("--alternatives abc", "plan_layouts_alternatives_invalid", "abc", "--alternatives", "abc");
+        Option("--alternatives 1.5", "plan_layouts_alternatives_invalid", "1.5", "--alternatives", "1.5");
+        Option("--alternatives +2", "plan_layouts_alternatives_invalid", "+2", "--alternatives", "+2");
+        Option("--alternatives ' 2'", "plan_layouts_alternatives_invalid", " 2", "--alternatives", " 2");
+        Option("--alternatives 99999999999", "plan_layouts_alternatives_invalid", "99999999999", "--alternatives", "99999999999");
         Option("--seed 2147483648", "plan_layouts_seed_invalid", "2147483648", "--seed", "2147483648");
-        Option("--seed 1e3", "plan_layouts_seed_invalid", null, "--seed", "1e3");
-        Option("--seed empty", "plan_layouts_seed_invalid", null, "--seed", "");
+        Option("--seed 1e3", "plan_layouts_seed_invalid", "1e3", "--seed", "1e3");
+        Option("--seed empty", "plan_layouts_seed_invalid", "", "--seed", "");
         Option("--alternatives without a value", "plan_layouts_option_value_missing", "--alternatives", "--alternatives");
         Option("--seed without a value", "plan_layouts_option_value_missing", "--seed", "--alternatives", "2", "--seed");
         Option("a repeated --seed", "plan_layouts_option_duplicate", "--seed", "--seed", "1", "--seed", "1");
         Option("a repeated --alternatives", "plan_layouts_option_duplicate", "--alternatives", "--alternatives", "2", "--alternatives", "3");
         Option("an unknown option", "plan_layouts_option_unknown", "--weights", "--weights", "x");
         Option("a stray argument", "plan_layouts_option_unknown", "extra", "extra");
+        Option("--alternatives followed by another option", "plan_layouts_alternatives_invalid", "--seed", "--alternatives", "--seed", "3");
+        Option("--seed -2147483649", "plan_layouts_seed_invalid", "-2147483649", "--seed", "-2147483649");
+        var minSeedOut = Output();
+        var minSeed = Cli("plan-layouts", smallPath, minSeedOut, "--seed", "-2147483648", "--alternatives", "1");
+        Check(minSeed.Exit == 0 && Written(minSeedOut).SequenceEqual(Expected(smallBrief, 1, int.MinValue)) && Int(Parse(minSeed.Out), "seed") == int.MinValue,
+            "seed -2147483648 (int.MinValue) is accepted", D(minSeed));
+        var beforePaths = Never();
+        ExpectFailure("an option before the paths", "plan_layouts_usage", beforePaths, "plan-layouts", "--seed", "1", smallPath, beforePaths);
 
         // ---- precedence: options, then the output path, before the input is read ----
         var missing = Path.Combine(scratch, "no-such-brief.json");
@@ -195,6 +203,17 @@ internal static class PlanLayoutsTests
         var dirResult = Cli("plan-layouts", smallPath, directoryOut, "--alternatives", "1");
         Check(dirResult.Exit == 1 && Str(Parse(dirResult.Out), "code") == "output_exists" && Directory.GetFileSystemEntries(directoryOut).Length == 0,
             "a directory at the output path is refused (output_exists)", D(dirResult));
+        var sameBefore = File.ReadAllBytes(smallPath);
+        var same = Cli("plan-layouts", smallPath, smallPath, "--alternatives", "1");
+        Check(same.Exit == 1 && Str(Parse(same.Out), "status") == "failed" && Str(Parse(same.Out), "code") == "output_exists" && File.ReadAllBytes(smallPath).SequenceEqual(sameBefore),
+            "the brief path given as the output is refused (output_exists) and the brief stays byte-identical", D(same));
+        // GltfExporter.WriteNew itself (the verb's only writer): an existing file is output_exists and keeps its bytes.
+        // The failing-stream cleanup path is covered through the shared private WriteNew in tests/gltf (WriteGlb seam).
+        string? writeCode = null;
+        try { Bim.Gltf.GltfExporter.WriteNew(Utf8("{\"replaced\":true}"), existing); }
+        catch (Bim.Gltf.GltfExportException error) { writeCode = error.Code; }
+        Check(writeCode == "output_exists" && File.ReadAllBytes(existing).SequenceEqual(sentinel) && File.GetLastWriteTimeUtc(existing) == stamp,
+            "GltfExporter.WriteNew on an existing path refuses output_exists and leaves the file byte- and mtime-identical", writeCode ?? "<no refusal>");
         var noDir = Path.Combine(scratch, "missing-dir", "out.json");
         ExpectFailure("an output in a missing directory", "output_directory_not_found", noDir, "plan-layouts", smallPath, noDir);
 
@@ -206,18 +225,18 @@ internal static class PlanLayoutsTests
         var o3 = Never(); ExpectFailure("a directory as the brief", "input_not_regular_file", o3, "plan-layouts", scratch, o3);
         var bigBrief = Input("big.json", "{\"brief_version\":1,\"name\":\"" + new string('x', BriefParser.MaxInputChars) + "\"}");
         var o4 = Never(); var big = ExpectFailure("a brief over the parser's character cap", "plan_layouts_brief_invalid", o4, "plan-layouts", bigBrief, o4);
-        Check((Str(big, "detail") ?? "").StartsWith(BriefCodes.InputTooLarge, StringComparison.Ordinal), "the oversize brief detail names input_too_large", Str(big, "detail") ?? "");
-        void Brief(string label, string text, string code, string detailPrefix)
+        Check(Str(big, "detail") == BriefCodes.InputTooLarge + " at brief", "the oversize brief detail is exactly 'input_too_large at brief'", Str(big, "detail") ?? "");
+        void Brief(string label, string text, string code, string detail)
         {
             var output = Never();
             var envelope = ExpectFailure(label, code, output, "plan-layouts", Input("brief.json", text), output, "--alternatives", "1");
-            Check((Str(envelope, "detail") ?? "").StartsWith(detailPrefix, StringComparison.Ordinal), label + " detail starts with " + detailPrefix, Str(envelope, "detail") ?? "<no detail>");
+            Check(Str(envelope, "detail") == detail, label + " detail is exactly '" + detail + "'", Str(envelope, "detail") ?? "<no detail>");
         }
-        Brief("malformed JSON", "{", "plan_layouts_brief_invalid", BriefCodes.JsonInvalid);
-        Brief("an unsupported brief version", small.Replace("\"brief_version\":1", "\"brief_version\":2", StringComparison.Ordinal), "plan_layouts_brief_invalid", BriefCodes.VersionUnsupported);
-        Brief("an unknown brief member", small.Replace("\"name\":\"Small studio\"", "\"name\":\"Small studio\",\"colour\":\"red\"", StringComparison.Ordinal), "plan_layouts_brief_invalid", "");
+        Brief("malformed JSON", "{", "plan_layouts_brief_invalid", BriefCodes.JsonInvalid + " at brief");
+        Brief("an unsupported brief version", small.Replace("\"brief_version\":1", "\"brief_version\":2", StringComparison.Ordinal), "plan_layouts_brief_invalid", BriefCodes.VersionUnsupported + " at brief_version");
+        Brief("an unknown brief member", small.Replace("\"name\":\"Small studio\"", "\"name\":\"Small studio\",\"colour\":\"red\"", StringComparison.Ordinal), "plan_layouts_brief_invalid", BriefCodes.MemberUnknown + " at colour");
         Brief("a brief without a site", small.Replace("\"site\":{\"width_m\":6,\"depth_m\":8},", "", StringComparison.Ordinal), "plan_layouts_site_required", "constraints.site");
         Brief("a negative site width", small.Replace("\"width_m\":6", "\"width_m\":-6", StringComparison.Ordinal), "plan_layouts_brief_invalid", BriefCodes.SiteDimensionNonPositive + " at constraints.site.width_m");
-        Brief("an adjacency naming an unknown room", small.Replace("\"b\":\"bath\"", "\"b\":\"kitchen\"", StringComparison.Ordinal), "plan_layouts_brief_invalid", "");
+        Brief("an adjacency naming an unknown room", small.Replace("\"b\":\"bath\"", "\"b\":\"kitchen\"", StringComparison.Ordinal), "plan_layouts_brief_invalid", BriefCodes.AdjacencyRoomUnknown + " at adjacencies[0].b");
     }
 }
