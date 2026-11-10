@@ -184,7 +184,7 @@ static class ElementQueryCursorChecks
         Check(string.Join(",", json.Select(m => m.Key)) == "v,document,filter,after,check", "the cursor payload is v, document, filter, after and check");
         JsonObject Edit(Action<JsonObject> change) { var copy = JsonNode.Parse(json.ToJsonString())!.AsObject(); change(copy); return copy; }
         string Pack(JsonObject payload) => B64(Encoding.UTF8.GetBytes(payload.ToJsonString()));
-        Refuses("a cursor whose id was changed is refused cursor_tampered", Args("wall", null, 3, Pack(Edit(p => p["after"] = 1)), RevitCommandCodes.CursorTampered);
+        Refuses("a cursor whose id was changed is refused cursor_tampered", Args("wall", null, 3, Pack(Edit(p => p["after"] = 1))), RevitCommandCodes.CursorTampered);
         Refuses("a cursor whose document was changed is refused cursor_tampered", Args("wall", null, 3, Pack(Edit(p => p["document"] = OtherDoc))), RevitCommandCodes.CursorTampered, OtherDoc);
         Refuses("a cursor whose filter digest was changed is refused cursor_tampered", Args("door", null, 3, Pack(Edit(p => p["filter"] = RevitElementQueryCursor.FilterDigest("OST_Doors", null, Array.Empty<string>())))), RevitCommandCodes.CursorTampered);
         Refuses("a cursor whose check was changed is refused cursor_tampered", Args("wall", null, 3, Pack(Edit(p => p["check"] = new string('0', 32)))), RevitCommandCodes.CursorTampered);
