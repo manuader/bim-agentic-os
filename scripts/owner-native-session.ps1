@@ -7,7 +7,7 @@
 # then, in one go, every later group that waits for Revit, each step checked against its readback with requested vs
 # observed rows: v2 (P9-01 roof, stair, curtain wall, floor opening), vistas (P4-01 plan, section, boxed 3D),
 # snapshot (P2-01 query.snapshot twice byte-identical, door/window on the wall axis, floor unmapped), consultas
-# (P1-02 query.elements/query.inspect, truncation, reference_not_found), estructura (P9-02), documentacion (P4-02
+# (P1-02 query.elements/query.inspect, truncation, reference_not_found), estructura (P9-02), documentacion (P4-02 and P4-11 two-pass update of its own section, tag and dimension;
 # dimensions, tags, schedule, sheet, views on the sheet, duplicate placement refused), diario (P2-03 journal.read,
 # sent straight to the add-in pipe), then (P1-11) formas (P9-09 direct_shape.create box and extrusion, crossed outline
 # refused), extrusion (P9-07 roof.create_extrusion barrel on an axis-aligned, a reversed and a diagonal plane, closed
@@ -136,7 +136,7 @@ try {
    $run.bootstrap = 'succeeded'
    if ($Catalogue) {
     if ($CatalogueV1Only) { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script crea muros, una puerta, una ventana, un suelo y una habitación en el modelo de prueba (solo catálogo v1). No toque Revit hasta que termine." }
-    else { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script corre el catálogo v1 y después todos los grupos pendientes (v2, vistas, snapshot, consultas, estructura, documentación, diario, formas, techos por extrusión, mover/copiar/rotar/reflejar, guardar una copia y guardar como y, al final, modificar y borrar) en el modelo de prueba. No toque Revit hasta que termine." }
+    else { Say ">>> Ejecución ${i}: Revit está listo (PID $($child.Id)). Ahora el script corre el catálogo v1 y después todos los grupos pendientes (v2, vistas, snapshot, consultas, estructura, documentación (que también actualiza y borra su propio corte, etiqueta y cota obsoletos), diario, formas, techos por extrusión, mover/copiar/rotar/reflejar, guardar una copia y guardar como y, al final, modificar y borrar) en el modelo de prueba. No toque Revit hasta que termine." }
     $catalogueRequests = Join-Path $runDir 'catalogue-requests'
     $catalogueInvoke = { param($index, $key, $json) Invoke-CatalogueCli -Dotnet $dotnet -CliDll $cli -PipeName $boot.pipeName -RequestDirectory $catalogueRequests -Index $index -Key $key -Json $json -TimeoutSeconds $StepTimeoutSeconds }
     $catalogueWire = { param($index, $key, $line) Invoke-CatalogueWire -PipeName $boot.pipeName -Line $line -RequestDirectory $catalogueRequests -Index $index -Key $key -TimeoutSeconds $StepTimeoutSeconds }

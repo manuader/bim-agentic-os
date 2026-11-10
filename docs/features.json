@@ -1544,6 +1544,40 @@
       ],
       "blocker": "No skill pack rules applied (P7-13); default planner options and weights only; no MCP tool.",
       "scope": "P7-11: `plan-layouts brief.json output.json [--alternatives n] [--seed s]` (n 1..64 default 4, s int32 default 0) parses a P6-03 brief (BoundedInput 8 MiB, BriefParser, site required, validator errors refused), runs AlternativeGenerator (SpacePlanner seeds s+i wrapping, AlternativeRanker) and writes AlternativeSetSerializer bytes never-overwrite (CreateNew); infeasible sets written exit 0; typed plan_layouts_* / output_* / input_* refusals exit 1 no file; byte-equal to the in-process run. CI red 42880375102, green 42882133062 (Linux core rerun ×3 on flaky catalogue-session-cli, P1-19), review green 42894097712."
+    },
+    {
+      "id": "incremental-diff-create-order",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/IncrementalDiff.cs",
+        "core/Bim.Core/IncrementalDiffAdvance.cs",
+        "tests/local-validation/IntentEditsTests.cs"
+      ],
+      "blocker": "No apply-intent CLI yet (P3-11); IntentEdits has no wrapper (callers pass IncrementalDiff.OrderOf(set.After)); assembly still O(n).",
+      "scope": "P3-10: optional createOrder comparer on IncrementalDiff.Diff / IncrementalDiffIndex.Diff and IncrementalDiff.OrderOf(target); survivors keep before order, creates merged at sorted position; plan always byte-identical to Compiler.Diff(before, result.After) and, with OrderOf(compile(after)), to Compiler.Diff(compile(before), compile(after)) on every P3-09 corpus step (600 seeded steps); null order = P3-05 bytes; work counters unchanged; Advance re-sorts dependents by next position; comparer exceptions typed edit_create_order_failed before anything is issued; edits snapshotted before placement (mutating comparer → edit_result_mutated). CI red 42900155912, green 42900943413, review green 42915932076."
+    },
+    {
+      "id": "mcp-audit-verify",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/mcp/AuditVerifyTool.cs",
+        "interfaces/mcp/McpServer.cs",
+        "interfaces/cli/AuditVerifyCommand.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "actors is a JSON array (CLI: comma list), so actors-invalid detail text differs; blank/oversized paths are MCP-only audit_verify_path_invalid; no anchor writing over MCP by design.",
+      "scope": "P10-12: read-only MCP tool audit_verify {log_path, anchor_path?, actors?, summary?} (permission level read, readOnlyHint) over the engine shared with the P10-11 CLI; report, summary and input_* / audit_verify_anchor_invalid / audit_actor_unknown bytes equal to the CLI process; never writes (directory bytes unchanged); bounded reads, symlink refusal, 8 MiB anchor cap; lone-surrogate and null-argument handling tested; McpServer optional parameters (Required=false) and boolean/array types, generated schema honours Required. CI red 42905599580, green 42902992456, review green 42913047401."
+    },
+    {
+      "id": "owner-session-doc-update",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/owner-catalogue-steps.ps1",
+        "tests/integration/test-catalogue-session.ps1",
+        "tests/integration/fake-revit-command-executor.ps1"
+      ],
+      "blocker": "Owner -Catalogue run pending (🔒): assumes Revit's dry-run delete of a fresh section reports ≤2 dependents (its plan marker), empty created/modified on dry runs and deleted == target + dependents; sends the P4-09 algorithm step by step (no CLI executes a DocUpdatePlan yet: P4-12); no OST_Viewers category check on the baseline.",
+      "scope": "P4-11: documentacion group gains 20 doc-up-* steps (group 35 steps, clean -Catalogue run 129): test wall + reference wall, section with a dry-run dependents baseline (≤2, none kept), tag, dimension; move the wall 1000 mm; probe, confirm and real element.delete of the stale dimension/tag/section in DocReplace order with exact confirm_dependents (only the baseline accepted; dependent_kept/planned/unknown/changed refused, strict readbacks incl. duplicates, non-UniqueIds, exact deleted set); re-create and read back section, tag (head moved, not orphaned) and dimension (+1000 mm), stale tag reference_not_found. In-process fake and real-CLI pass. CI red 42901043322, green 42904609025, review red 42909552877, green 42909679196."
     }
   ]
 }
