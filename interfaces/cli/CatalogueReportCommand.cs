@@ -110,22 +110,28 @@ internal static class CatalogueReportCommand
 
     public static void Run(string[] args)
     {
-        string report;
-        try { report = Report(args); }
-        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); return; }
+        var repository = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory);
+        var (exit, output) = repository is null ? (1, Failure(RepositoryNotFound, null)) : Execute(args, repository);
+        Console.WriteLine(output);
+        if (exit != 0) Environment.ExitCode = exit;
+    }
+
+    // The verb with the repository root given (Run passes the one every verb uses; tests pass a temporary one) and the
+    // copy hashing cap (tests pass a small one). Returns the exit code and the one line Run prints.
+    internal static (int Exit, string Output) Execute(string[] args, string repositoryRoot, long maxCopyBytes = MaxCopyBytes)
+    {
+        try { return (0, Report(args, repositoryRoot, maxCopyBytes)); }
+        catch (Refusal refusal) { return (1, Failure(refusal.Code, refusal.Detail)); }
         catch (Exception error)
         {
             Console.Error.WriteLine("catalogue-report internal error: " + error.GetType().FullName + ": " + error.Message);
-            Fail(InternalError, null);
-            return;
+            return (1, Failure(InternalError, null));
         }
-        Console.WriteLine(report);
     }
 
-    static string Report(string[] args)
+    static string Report(string[] args, string repository, long maxCopyBytes)
     {
         if (args.Length != 3 || args[1] != "--run" || args[2].Length == 0 || args[2].StartsWith("--", StringComparison.Ordinal)) throw new Refusal(UsageCode);
-        var repository = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory) ?? throw new Refusal(RepositoryNotFound);
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repository));
         var (runDirectory, runName) = ResolveRun(root, args[2]);
         var (sessionName, recordIndex, recordPath) = FindRecord(root, runName);
@@ -182,7 +188,7 @@ internal static class CatalogueReportCommand
                     writer.WriteEndObject();
                 }
                 writer.WriteEndArray();
-                WriteCopy(writer, steps, copyPath, runDirectory, runName);
+                WriteCopy(writer, steps, copyPath, runDirectory, runName, maxCopyBytes);
                 writer.WriteEndObject();
             }
             return Encoding.UTF8.GetString(buffer.WrittenSpan);
@@ -506,7 +512,7 @@ internal static class CatalogueReportCommand
         writer.WriteEndArray();
     }
 
-    static void WriteCopy(Utf8JsonWriter writer, Step[] steps, string? copyPath, string runDirectory, string runName)
+    static void WriteCopy(Utf8JsonWriter writer, Step[] steps, string? copyPath, string runDirectory, string runName, long maxCopyBytes)
     {
         var save = steps.FirstOrDefault(s => s.Key == SaveKey && s.Command == SaveCommand);
         string state;
@@ -539,7 +545,7 @@ internal static class CatalogueReportCommand
                 else
                 {
                     diskBytes = info.Length;
-                    if (info.Length > MaxCopyBytes) state = "too_large";
+                    if (info.Length > maxCopyBytes) state = "too_large";
                     else
                     {
                         diskSha = Hash(full);
@@ -596,9 +602,6 @@ internal static class CatalogueReportCommand
         value.WriteTo(writer);
     }
 
-    static void Fail(string code, string? detail)
-    {
-        Console.WriteLine(detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail }));
-        Environment.ExitCode = 1;
-    }
+    static string Failure(string code, string? detail) =>
+        detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail });
 }

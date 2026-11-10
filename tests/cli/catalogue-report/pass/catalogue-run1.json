@@ -99,7 +99,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [],
@@ -171,7 +171,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [
@@ -207,13 +207,13 @@
       "comparisons": [
         {
           "check": "altura (mm)",
-          "requested": 3000,
+          "requested": 3000.0,
           "observed": 3000,
           "ok": true
         },
         {
           "check": "largo (mm)",
-          "requested": 6000,
+          "requested": 6000.0,
           "observed": 6000,
           "ok": true
         }
@@ -254,7 +254,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [
@@ -317,7 +317,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [
@@ -354,8 +354,8 @@
         {
           "check": "punto (mm)",
           "requested": [
-            20000,
-            0
+            20000.0,
+            0.0
           ],
           "observed": [
             20000,
@@ -402,7 +402,7 @@
         "warnings": []
       },
       "raw_response": null,
-      "exit_code": 0,
+      "exit_code": 1,
       "timed_out": false,
       "elapsed_ms": 812.4,
       "passed": true,
@@ -443,7 +443,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [],
@@ -543,7 +543,7 @@
         "warnings": []
       },
       "raw_response": null,
-      "exit_code": 0,
+      "exit_code": 1,
       "timed_out": false,
       "elapsed_ms": 812.4,
       "passed": true,
@@ -581,7 +581,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [],
@@ -658,7 +658,7 @@
         "warnings": []
       },
       "raw_response": null,
-      "exit_code": 0,
+      "exit_code": 1,
       "timed_out": false,
       "elapsed_ms": 812.4,
       "passed": true,
@@ -693,7 +693,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [],
@@ -723,7 +723,7 @@
       "comparisons": [
         {
           "check": "altura (mm)",
-          "requested": 3500,
+          "requested": 3500.0,
           "observed": 3500,
           "ok": true
         }

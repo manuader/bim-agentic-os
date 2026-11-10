@@ -99,7 +99,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [],
@@ -171,7 +171,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [
@@ -203,17 +203,17 @@
       "elapsed_ms": 812.4,
       "passed": false,
       "blocked": false,
-      "reason": "altura (mm): se pidió 3000, se observó 2950",
+      "reason": "altura (mm): se pidió 3000.0, se observó 2950",
       "comparisons": [
         {
           "check": "altura (mm)",
-          "requested": 3000,
+          "requested": 3000.0,
           "observed": 2950,
           "ok": false
         },
         {
           "check": "largo (mm)",
-          "requested": 6000,
+          "requested": 6000.0,
           "observed": 6000,
           "ok": true
         }
@@ -254,7 +254,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [
@@ -333,7 +333,7 @@
       "elapsed_ms": 812.4,
       "passed": false,
       "blocked": false,
-      "reason": "expected succeeded, got failed/type_not_found: no structural column type col-1",
+      "reason": "expected success, got failed/type_not_found: no structural column type col-1",
       "comparisons": []
     },
     {
@@ -373,7 +373,7 @@
         "warnings": []
       },
       "raw_response": null,
-      "exit_code": 0,
+      "exit_code": 1,
       "timed_out": false,
       "elapsed_ms": 812.4,
       "passed": true,
@@ -414,7 +414,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [],
@@ -523,7 +523,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [],
@@ -600,7 +600,7 @@
         "warnings": []
       },
       "raw_response": null,
-      "exit_code": 0,
+      "exit_code": 1,
       "timed_out": false,
       "elapsed_ms": 812.4,
       "passed": true,
@@ -635,7 +635,7 @@
       },
       "response": {
         "status": "succeeded",
-        "code": null,
+        "code": "ok",
         "field": null,
         "detail": null,
         "created": [],
@@ -665,7 +665,7 @@
       "comparisons": [
         {
           "check": "altura (mm)",
-          "requested": 3500,
+          "requested": 3500.0,
           "observed": 3500,
           "ok": true
         }
