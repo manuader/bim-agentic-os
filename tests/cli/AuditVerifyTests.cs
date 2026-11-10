@@ -240,6 +240,9 @@ internal static class AuditVerifyTests
             ("upper-case hash", "{\"kind\":\"audit-anchor\",\"version\":1,\"sequence\":3,\"hash\":\"" + h.ToUpperInvariant() + "\"}"),
             ("short hash", "{\"kind\":\"audit-anchor\",\"version\":1,\"sequence\":3,\"hash\":\"" + h[..63] + "\"}"),
             ("trailing content", "{\"kind\":\"audit-anchor\",\"version\":1,\"sequence\":3,\"hash\":\"" + h + "\"} {}"),
+            ("lone surrogate value", "{\"kind\":\"audit-anchor\",\"version\":1,\"sequence\":3,\"hash\":\"\\ud800\"}"),
+            ("lone surrogate kind", "{\"kind\":\"\\ud800\",\"version\":1,\"sequence\":3,\"hash\":\"" + h + "\"}"),
+            ("lone surrogate member name", "{\"\\ud800\":1,\"kind\":\"audit-anchor\",\"version\":1,\"sequence\":3,\"hash\":\"" + h + "\"}"),
         })
         {
             var target = Path1("never.json");
@@ -265,6 +268,7 @@ internal static class AuditVerifyTests
             new[] { "audit-verify", logPath, "--actors", "alice", "--actors", "bob" },
             new[] { "audit-verify", logPath, "--unknown" },
             new[] { "audit-verify", logPath, "-summary" },
+            new[] { "audit-verify", logPath, "--actors", ",", "--bogus" },
         })
         {
             var result = Cli(bad);
@@ -278,18 +282,53 @@ internal static class AuditVerifyTests
         ExpectFailure("log is a directory", "input_not_regular_file", null, "audit-verify", scratch);
         ExpectFailure("missing anchor", "input_not_found", null, "audit-verify", logPath, "--anchor", Path1("missing.json"));
         ExpectFailure("anchor over 8 MiB", "input_too_large", null, "audit-verify", logPath, "--anchor", Bytes("over-cap.json", overCap));
+        var overLogCap = Path1("cap-plus-one.jsonl");
+        using (var file = new FileStream(overLogCap, FileMode.CreateNew)) file.SetLength(MaxLogBytes + 1);
+        ExpectFailure("log of 64 MiB + 1 byte", "input_too_large", null, "audit-verify", overLogCap);
+        File.Delete(overLogCap);
+        // Exactly at the cap (sparse zeros, one torn line): read and verified, not refused.
         var atLogCap = Path1("at-cap.jsonl");
-        using (var file = new FileStream(atLogCap, FileMode.CreateNew)) file.SetLength(MaxLogBytes + 1);
-        ExpectFailure("log over 64 MiB", "input_too_large", null, "audit-verify", atLogCap);
+        using (var file = new FileStream(atLogCap, FileMode.CreateNew)) file.SetLength(MaxLogBytes);
+        var atCapRun = Cli("audit-verify", atLogCap);
+        Check(atCapRun.Exit == 1 && atCapRun.Out == Report(new byte[MaxLogBytes]) && Str(Parse(atCapRun.Out), "code") == "audit_truncated", "a log of exactly 64 MiB is verified (a torn line), not refused", D(atCapRun).Length > 300 ? D(atCapRun)[..300] : D(atCapRun));
         File.Delete(atLogCap);
+        // Precedence: output path before the log, the log before the anchor, usage before actors.
+        var precedenceTarget = Path1("head.txt");
+        ExpectFailure("bad --write-anchor extension with a missing log", "output_extension_unsupported", precedenceTarget, "audit-verify", Path1("missing.jsonl"), "--write-anchor", precedenceTarget);
+        ExpectFailure("missing log with a directory anchor", "input_not_found", null, "audit-verify", Path1("missing.jsonl"), "--anchor", scratch);
+        ExpectFailure("directory log with a missing anchor", "input_not_regular_file", null, "audit-verify", scratch, "--anchor", Path1("missing.json"));
         if (!OperatingSystem.IsWindows())
         {
+            bool Link(string at, string target)
+            {
+                try { File.CreateSymbolicLink(at, target); return true; }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { return false; }
+            }
             var link = Path1("link.jsonl");
-            var linked = true;
-            try { File.CreateSymbolicLink(link, logPath); }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { linked = false; }
-            if (linked) ExpectFailure("log through a symbolic link", "input_link_rejected", null, "audit-verify", link);
+            if (Link(link, logPath)) ExpectFailure("log through a symbolic link", "input_link_rejected", null, "audit-verify", link);
+            var anchorLink = Path1("anchor-link.json");
+            if (Link(anchorLink, anchorPath)) ExpectFailure("anchor through a symbolic link", "input_link_rejected", null, "audit-verify", logPath, "--anchor", anchorLink);
+            var danglingTarget = Path1("dangling-target.json");
+            var writeLink = Path1("write-link.json");
+            if (Link(writeLink, danglingTarget))
+            {
+                ExpectFailure("--write-anchor onto a dangling symbolic link", "output_link_rejected", null, "audit-verify", logPath, "--write-anchor", writeLink);
+                Check(!File.Exists(danglingTarget), "the link target of --write-anchor is never created");
+            }
         }
+
+        // ---- review: huge seq gap and an unbounded number of findings ----
+        var farEntry = entries[0] with { Seq = 9000000000000000000, PrevHash = AuditLogFormat.GenesisHash, Hash = "" };
+        farEntry = farEntry with { Hash = AuditLogFormat.ComputeHash(farEntry) };
+        var farBytes = Utf8(AuditLogFormat.Line(farEntry) + "\n");
+        var farRun = Cli("audit-verify", Bytes("far.jsonl", farBytes));
+        Check(farRun.Exit == 1 && Str(Parse(farRun.Out), "code") == "audit_entries_missing" && farRun.Out == Report(farBytes), "a one-line log with seq 9e18 finishes, exit 1, report equals the library", D(farRun));
+        var allLf = new byte[8 * 1024 * 1024 + 1];
+        Array.Fill(allLf, (byte)'\n');
+        var lfRun = Cli("audit-verify", Bytes("all-lf.jsonl", allLf));
+        Check(lfRun.Exit == 1 && Str(Parse(lfRun.Out), "code") == "audit_entry_malformed" && lfRun.Out.Contains("\"findings_omitted\":8378609,", StringComparison.Ordinal)
+            && lfRun.Out.Length < 2 * 1024 * 1024 && lfRun.Out == Report(allLf),
+            "an 8 MiB + 1 all-LF log finishes with a bounded report (10000 findings, the rest counted), exit 1", D(lfRun).Length > 300 ? D(lfRun)[..300] : D(lfRun));
         Check(File.ReadAllBytes(logPath).SequenceEqual(logBytes) && File.GetLastWriteTimeUtc(logPath) == mtime, "after every run the log keeps its bytes and mtime");
     }
 }

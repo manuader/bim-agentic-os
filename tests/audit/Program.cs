@@ -661,6 +661,38 @@ try
         string? surrogateError = null;
         try { surrogate = AuditVerifier.VerifyBytes(JoinLines(surrogateLines), new AuditVerifyOptions(known, head)); } catch (Exception error) { surrogateError = error.GetType().Name; }
         Check(surrogateError is null && surrogate is not null && Findings(surrogate) == "audit_entry_malformed@1", "verify: a lone escaped surrogate is malformed without an exception", surrogateError ?? (surrogate is null ? "" : Findings(surrogate)));
+
+        // P10-11 review. Each run is time-boxed on a worker so a regression fails instead of hanging the gate.
+        AuditVerifyReport? Timed(byte[] bytes, AuditVerifyOptions? options, int seconds)
+        {
+            var task = Task.Run(() => AuditVerifier.VerifyBytes(bytes, options));
+            return task.Wait(TimeSpan.FromSeconds(seconds)) ? task.Result : null;
+        }
+        // 1: a huge seq gap is counted arithmetically, never by walking every missing seq.
+        var farEntry = entries5[0] with { Seq = 9000000000000000000, PrevHash = Genesis, Hash = "" };
+        farEntry = farEntry with { Hash = AuditLogFormat.ComputeHash(farEntry) };
+        var far = Timed(JoinLines(new[] { AuditLogFormat.Line(farEntry) }), null, 20);
+        Check(far is not null && far.Code == AuditVerifyCodes.EntriesMissing && Findings(far) == "audit_entries_missing@1"
+            && far.Findings[0].Detail == "seq 9000000000000000000 after seq 0; 8999999999999999999 entries missing",
+            "verify: a one-line log with seq 9e18 finishes and reports the gap arithmetically", far is null ? "timed out" : Findings(far) + " " + far.Findings[0].Detail);
+        var gapAround = Timed(JoinLines(new[] { vLines[0], "not json", vLines[3], vLines[4] }), null, 20);
+        Check(gapAround is not null && Findings(gapAround) == "audit_entry_malformed@2;audit_entries_missing@3"
+            && gapAround.Findings[1].Detail == "seq 4 after seq 1; 1 entries missing",
+            "verify: malformed lines between entries still offset the missing count", gapAround is null ? "timed out" : Findings(gapAround));
+        // 2: the report is bounded: at most 10000 line findings in report order, the rest counted in findings_omitted.
+        var lfCount = 8 * 1024 * 1024 + 1;
+        var allLf = new byte[lfCount];
+        Array.Fill(allLf, (byte)'\n');
+        var lfWatch = System.Diagnostics.Stopwatch.StartNew();
+        var lfReport = Timed(allLf, new AuditVerifyOptions(known, new AuditAnchor(-1, head.Hash)), 90);
+        var lfJson = lfReport?.ToJson() ?? "";
+        Check(lfReport is not null && lfReport.Code == AuditVerifyCodes.EntryMalformed && lfReport.Findings.Count == 10001
+            && lfReport.Findings[0].Line == 1 && lfReport.Findings[9999].Line == 10000 && lfReport.Findings[10000].Line is null && lfReport.Findings[10000].Code == AuditVerifyCodes.AnchorMismatch
+            && lfJson.Contains("],\"findings_omitted\":" + (lfCount - 10000).ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"summary\":", StringComparison.Ordinal)
+            && lfJson.Length < 2 * 1024 * 1024,
+            "verify: an 8 MiB all-LF log keeps the first 10000 line findings plus the anchor finding and counts the rest", lfReport is null ? "timed out" : lfReport.Findings.Count + " findings, json " + lfJson.Length + " chars, " + lfWatch.ElapsedMilliseconds + " ms");
+        Check(!okReport.ToJson().Contains("findings_omitted", StringComparison.Ordinal) && !editedReport.ToJson().Contains("findings_omitted", StringComparison.Ordinal),
+            "verify: reports within the bound have no findings_omitted member (unchanged bytes)");
     }
 }
 catch (Exception error)
