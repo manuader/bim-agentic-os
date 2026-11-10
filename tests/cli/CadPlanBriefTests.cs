@@ -341,8 +341,12 @@ internal static class CadPlanBriefTests
             var link = Path.Combine(scratch, "dangling.json");
             var target = Path.Combine(scratch, "nowhere.json");
             File.CreateSymbolicLink(link, target);
-            Expect("refuses a dangling symlink output", "output_link_rejected", "cad-plan-brief", draftPath, link);
-            Check(!File.Exists(target), "the symlink output target is not created");
+            // Not through Expect: File.Exists is true for a dangling link on Unix, and reading it would throw.
+            var r = Cli("cad-plan-brief", draftPath, link);
+            Check(r.Exit == 1 && Parse(r.Out) is { } e && e.GetProperty("status").GetString() == "failed" && e.GetProperty("code").GetString() == "output_link_rejected",
+                "refuses a dangling symlink output", R(r));
+            Check(!File.Exists(target) && new FileInfo(link).LinkTarget == target, "the symlink output target is not created and the link is left as it was");
+            File.Delete(link);
         }
         {
             var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--min-confidence", "-0");
