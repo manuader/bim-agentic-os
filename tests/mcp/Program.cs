@@ -880,6 +880,46 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     Check(ErrorCode(Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=1}))==-32602,"audit_verify with a non-string anchor_path returns -32602");
     Check(ErrorCode(Audit(new JsonObject{["log_path"]=auditLogPath,["write_anchor"]=Path.Combine(auditRoot,"new-head.json")}))==-32602 && !File.Exists(Path.Combine(auditRoot,"new-head.json")),"audit_verify takes no write_anchor argument (-32602) and writes no anchor");
     Check(AuditListing().SequenceEqual(auditListing) && fileBytes.All(pair=>File.ReadAllBytes(Path.Combine(auditRoot,pair.Key)).AsSpan().SequenceEqual(pair.Value)),"audit_verify never writes the log, an anchor or anything beside them");
+    // Review SF1: a lone escaped surrogate is valid JSON but not text; it is refused by the engine, never a crash.
+    JsonObject Raw(string arguments)=>Call("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"audit_verify\",\"arguments\":"+arguments+"}}");
+    var surrogateLog=Raw("""{"log_path":"\ud800"}""");
+    Check(IsError(surrogateLog) && Text(surrogateLog)=="""{"status":"failed","code":"audit_verify_path_invalid","detail":"log"}""","audit_verify log_path with a lone surrogate is audit_verify_path_invalid (log) | "+Text(surrogateLog));
+    var surrogateAnchor=Raw("{\"log_path\":"+JsonSerializer.Serialize(auditLogPath)+",\"anchor_path\":\"\\ud800\"}");
+    Check(IsError(surrogateAnchor) && Text(surrogateAnchor)=="""{"status":"failed","code":"audit_verify_path_invalid","detail":"anchor"}""","audit_verify anchor_path with a lone surrogate is audit_verify_path_invalid (anchor) | "+Text(surrogateAnchor));
+    var surrogateActor=Raw("{\"log_path\":"+JsonSerializer.Serialize(auditLogPath)+",\"actors\":[\"\\ud800\"]}");
+    Check(IsError(surrogateActor) && AuditCode(surrogateActor)=="audit_verify_actors_invalid","audit_verify actor with a lone surrogate is audit_verify_actors_invalid | "+Text(surrogateActor));
+    // Review SF3: optional parameters present as null are wrongly typed (-32602), never treated as absent.
+    foreach(var optional in new[]{"anchor_path","summary","actors"})
+        Check(ErrorCode(Audit(new JsonObject{["log_path"]=auditLogPath,[optional]=null}))==-32602,"audit_verify with "+optional+" null returns -32602");
+    // Review SF2: bounded-input refusals through the tool, byte-equal to the CLI.
+    var overCapAnchor=Path.Combine(auditRoot,"over-cap.json");
+    var overCap=new byte[Bim.Cli.BoundedInput.MaxBytes+1]; Array.Fill(overCap,(byte)' ');
+    File.WriteAllBytes(overCapAnchor,overCap);
+    var tooLarge=Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=overCapAnchor});
+    Check(IsError(tooLarge) && Text(tooLarge)=="""{"status":"failed","code":"input_too_large"}""" && Text(tooLarge)==Cli("audit-verify",auditLogPath,"--anchor",overCapAnchor),"audit_verify with an anchor of 8 MiB + 1 byte is input_too_large, byte-equal to the CLI");
+    if(!OperatingSystem.IsWindows()) {
+        bool Link(string at,string target) {
+            try { File.CreateSymbolicLink(at,target); return true; }
+            catch(Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { return false; }
+        }
+        var logLink=Path.Combine(auditRoot,"link.jsonl");
+        if(Link(logLink,auditLogPath)) {
+            var linked=Audit(Log(logLink));
+            Check(IsError(linked) && Text(linked)=="""{"status":"failed","code":"input_link_rejected"}""" && Text(linked)==Cli("audit-verify",logLink),"audit_verify log_path through a symbolic link is input_link_rejected, byte-equal to the CLI");
+        }
+        var anchorLink=Path.Combine(auditRoot,"anchor-link.json");
+        if(Link(anchorLink,headAnchor)) {
+            var linked=Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=anchorLink});
+            Check(IsError(linked) && Text(linked)=="""{"status":"failed","code":"input_link_rejected"}""" && Text(linked)==Cli("audit-verify",auditLogPath,"--anchor",anchorLink),"audit_verify anchor_path through a symbolic link is input_link_rejected, byte-equal to the CLI");
+        }
+    }
+    // Review NIT1/NIT2: the generated schema honours ParameterSpec.Required, and the hand-written audit_verify schema
+    // lists exactly the spec parameters and requires exactly the Required ones.
+    var generatedAudit=Node(McpServer.GeneratedSchemaJson("audit_verify"));
+    Check(string.Join(",",generatedAudit["required"]!.AsArray().Select(x=>x!.GetValue<string>()))=="log_path" && generatedAudit["properties"]!.AsObject().Count==4,"Schema() lists every parameter but requires only Required ones");
+    Check(string.Join(",",McpServer.CoreParameterNames("audit_verify",true))==Required("audit_verify") && string.Join(",",McpServer.CoreParameterNames("audit_verify",false))==string.Join(",",auditSchema["properties"]!.AsObject().Select(p=>p.Key)),"audit_verify hand-written schema matches its parameter specs (properties and required)");
+    foreach(var core in new[]{"diff","validate","room","plan","mirror_drift","mirror_drift_select","skills_lock_verify"})
+        Check(string.Join(",",McpServer.CoreParameterNames(core,true))==Required(core) && McpServer.CoreParameterNames(core,true).SequenceEqual(McpServer.CoreParameterNames(core,false)),core+" requires all of its parameters, as listed");
     var auditWriter=ToolCall("audit_write_anchor",new JsonObject());
     Check(IsError(auditWriter) && Text(auditWriter)=="""{"status":"failed","code":"unknown_tool"}""","MCP exposes no anchor writer");
 }

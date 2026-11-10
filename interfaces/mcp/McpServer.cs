@@ -24,6 +24,8 @@ namespace Bim.Mcp;
 // audit_verify (P10-12) is read-only: its text is the CLI audit-verify stdout for the same log, anchor, actors and summary
 // (AuditVerifyTool.cs); --write-anchor stays CLI-only. Listed with permission level read (readOnlyHint true). Its
 // anchor_path, actors and summary are optional (ParameterSpec.Required false); actors is a JSON array of actor ids.
+// Present-but-null or wrongly typed arguments are -32602; an actors array that is empty or holds a non-string or invalid
+// item (the schema's items/minItems) is the typed tool error audit_verify_actors_invalid, not -32602.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -367,6 +369,12 @@ public sealed class McpServer
         return listed;
     }
 
+    // Test seams: the names of a core tool's parameters, of its required ones, and the schema Schema() generates from them.
+    internal static string[] CoreParameterNames(string tool, bool requiredOnly) =>
+        [.. CoreTools.Single(spec => spec.Name == tool).Parameters.Where(parameter => !requiredOnly || parameter.Required).Select(parameter => parameter.Name)];
+
+    internal static string GeneratedSchemaJson(string tool) => Schema(CoreTools.Single(spec => spec.Name == tool).Parameters).ToJsonString();
+
     static JsonObject Schema(ParameterSpec[] parameters)
     {
         var properties = new JsonObject();
@@ -376,7 +384,7 @@ public sealed class McpServer
         {
             ["type"] = "object",
             ["properties"] = properties,
-            ["required"] = new JsonArray(parameters.Select(parameter => (JsonNode?)JsonValue.Create(parameter.Name)).ToArray()),
+            ["required"] = new JsonArray(parameters.Where(parameter => parameter.Required).Select(parameter => (JsonNode?)JsonValue.Create(parameter.Name)).ToArray()),
             ["additionalProperties"] = false,
         };
     }
