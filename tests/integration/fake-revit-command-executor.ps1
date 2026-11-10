@@ -480,6 +480,8 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
             if (!$name) { $name = "Fake view $uid" }
             $viewType = switch ($command) { 'view.create_plan' { if ($a.kind -eq 'ceiling_plan') { 'CeilingPlan' } else { 'FloorPlan' } } 'view.create_section' { 'Section' } default { 'ThreeD' } }
             Add-FakeElement $State $uid 'view' @{ ViewType = $viewType }
+            # P4-11: a section's plan marker (its viewer), deleted with the section like Revit's; not in created.
+            if ($command -eq 'view.create_section') { Add-FakeElement $State (New-FakeUniqueId $State) 'viewer' @{ References = @($uid) } }
             $view = [ordered]@{ unique_id = $uid; name = $name; view_type = $viewType; type_unique_id = (New-FakeUniqueId $State); scale = 100; view_template_unique_id = $null; level_unique_id = (Get-FakeArg $a 'level') }
             if ($command -eq 'view.create_section') {
                 $s = @($a.line.start); $e = @($a.line.end)

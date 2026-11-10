@@ -894,24 +894,33 @@ function Get-CatalogueDocumentationSteps {
 #      agreeing); the first refusal stops the pass;
 #   2. replan: each dependent classified (Resolve-CatalogueDocUpdateDependents): the stale instance of a key deleted
 #      earlier is gone by then (dropped from confirm_dependents); the stale of the same or a later key, an element the
-#      run keeps, or an untracked one (except for the view, whose plan marker Revit deletes with it: accepted, as the
-#      P4-10 --accept) are refused dependent_is_target / dependent_planned / dependent_kept / dependent_unknown;
+#      run keeps, or an untracked one are refused dependent_is_target / dependent_planned / dependent_kept /
+#      dependent_unknown. The only untracked ids ever accepted (the P4-10 --accept) are the view's baseline: what a dry
+#      run of the new section reported right after it was made, before anything else of the update existed (its plan
+#      marker; at most two, none an element the run keeps). An element made by a step whose check failed is not
+#      tracked (only passed steps are), so as a dependent it is refused dependent_unknown;
 #   3. confirm pass: a dry run of each planned delete (its planned args plus dry_run) must report the same full set as
 #      its first dry run, else dependents_changed;
 #   4. run: only then the real deletes with exactly the planned confirm_dependents (the executor refuses any other
 #      set), then the re-creations in create order (view, tag, dimension) on the moved wall, each read back; the stale
-#      tag then reads back reference_not_found. Any failure leaves the rest unsent (PlanRunner halts on a failed step).
+#      tag then reads back reference_not_found. Any failure leaves the rest unsent, as PlanRunner would: each step Needs
+#      the picks or Created elements its predecessors record only when they pass.
+# Readbacks are read as strictly as core: dependents distinct UniqueIds, a dry run creates, modifies and deletes nothing,
+# a real delete deletes exactly its target plus the planned dependents.
 # The doc-update CLI verb (P4-10) plans this from a BIM-IR before/after and a realized map, which the test copy has not
 # (its elements come from catalogue commands), and no CLI verb runs a DocUpdatePlan, so the session drives the same
 # requests itself. Writes: only elements this group made, on the test copy the session already uses.
 $script:CatalogueDocUpdateWall = @(@(-9000, -6000), @(-6000, -6000))
 $script:CatalogueDocUpdateReference = @(@(-9000, -9000), @(-6000, -9000))
 $script:CatalogueDocUpdateShiftMm = 1000
-# DocReplace delete order; Accept: untracked dependents accepted for that key only.
+# DocReplace delete order; AcceptBaseline: the section's baseline dependents are accepted for that key only.
 $script:CatalogueDocUpdateItems = @(
-    @{ Key = 'dimension'; Stale = 'doc-up-dim'; Es = 'la cota obsoleta'; Accept = $false },
-    @{ Key = 'tag'; Stale = 'doc-up-tag'; Es = 'la etiqueta obsoleta'; Accept = $false },
-    @{ Key = 'section'; Stale = 'doc-up-section'; Es = 'el corte obsoleto'; Accept = $true })
+    @{ Key = 'dimension'; Stale = 'doc-up-dim'; Es = 'la cota obsoleta'; AcceptBaseline = $false },
+    @{ Key = 'tag'; Stale = 'doc-up-tag'; Es = 'la etiqueta obsoleta'; AcceptBaseline = $false },
+    @{ Key = 'section'; Stale = 'doc-up-section'; Es = 'el corte obsoleto'; AcceptBaseline = $true })
+# At most this many baseline dependents of the new section (its plan marker).
+$script:CatalogueDocUpdateBaselineMax = 2
+$script:CatalogueUniqueIdPattern = '\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-[0-9a-fA-F]{8}\z'
 
 # The section line along the update wall, shifted north by $Shift mm.
 function Get-CatalogueDocUpdateLine([double]$Shift) {
@@ -949,21 +958,29 @@ function Read-CatalogueDeleteReadback($Response, [string]$Target, [bool]$DryRun)
     $targets = @($named | ForEach-Object { [string]$_ })
     $count = Get-CatalogueMember $delete 'dependents_count'
     $deleted = Get-CatalogueList $Response 'deleted'
+    $created = Get-CatalogueList $Response 'created'
+    $modified = Get-CatalogueList $Response 'modified'
+    $distinct = @($dependents | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique).Count
+    $malformed = @($dependents | Where-Object { $_ -notmatch $script:CatalogueUniqueIdPattern })
+    $deletedText = Get-CatalogueUidSetText $deleted
+    $wantDeleted = Get-CatalogueUidSetText (@($Target) + $dependents)
     $reason = Join-CatalogueReasons @(
+        (Test-CatalogueCondition 'dependientes sin duplicados' $dependents.Count $distinct ($distinct -eq $dependents.Count)),
+        (Test-CatalogueCondition 'dependientes con forma de UniqueId' 'todos' $malformed ($malformed.Count -eq 0)),
         (Test-CatalogueSame 'simulacro (dry_run)' $DryRun (Get-CatalogueMember $delete 'dry_run')),
         (Test-CatalogueCondition 'objetivo: solo el elemento obsoleto' $Target $targets ($targets.Count -eq 1 -and [string]::Equals($targets[0], $Target, [StringComparison]::OrdinalIgnoreCase))),
         (Test-CatalogueSame 'dependents_listed' $true (Get-CatalogueMember $delete 'dependents_listed')),
         (Test-CatalogueCondition 'dependents_count = dependientes listados' $dependents.Count $count ($null -ne $count -and [string]$count -eq [string]$dependents.Count)),
         (Test-CatalogueSame 'dependents_sha256 de los dependientes listados' (Get-CatalogueTextSha256 $text) (Get-CatalogueMember $delete 'dependents_sha256')),
-        $(if ($DryRun) { Test-CatalogueCondition 'deleted vacío en simulacro' 0 $deleted.Count ($deleted.Count -eq 0) } else { Test-CatalogueContains 'deleted incluye el elemento obsoleto' $Target $deleted }))
+        $(if ($DryRun) { Test-CatalogueCondition 'simulacro sin created, modified ni deleted' 0 ($created.Count + $modified.Count + $deleted.Count) (($created.Count + $modified.Count + $deleted.Count) -eq 0) } else { Test-CatalogueCondition 'deleted = objetivo + dependientes, sin repetir' $wantDeleted $deletedText ($deletedText -ceq $wantDeleted -and $deleted.Count -eq $dependents.Count + 1) }))
     return @{ Reason = $reason; Dependents = $dependents; Text = $text }
 }
 
 # P4-09 step 3 for the first dry run of key $Key: each dependent must be the stale instance of a key deleted earlier in
 # $Stale's order (dropped: gone by then); else the stale of this key (dependent_is_target) or of a later one
-# (dependent_planned), an element in $Kept (dependent_kept), or untracked: dependent_unknown unless $Accept (then
-# confirmed). UniqueIds compared ignoring case. Returns @{ Reason; Confirm } (Confirm sorted ordinally).
-function Resolve-CatalogueDocUpdateDependents([string]$Key, [string[]]$Dependents, $Stale, [string[]]$Kept, [bool]$Accept) {
+# (dependent_planned), an element in $Kept (dependent_kept), or untracked: dependent_unknown unless it is in $Accepted
+# (then confirmed). UniqueIds compared ignoring case. Returns @{ Reason; Confirm } (Confirm sorted ordinally).
+function Resolve-CatalogueDocUpdateDependents([string]$Key, [string[]]$Dependents, $Stale, [string[]]$Kept, [string[]]$Accepted) {
     $order = @($Stale.Keys)
     $position = [Array]::IndexOf($order, $Key)
     $confirm = [Collections.Generic.List[string]]::new()
@@ -975,7 +992,7 @@ function Resolve-CatalogueDocUpdateDependents([string]$Key, [string[]]$Dependent
             continue
         }
         if (@($Kept | Where-Object { [string]::Equals([string]$_, $uid, [StringComparison]::OrdinalIgnoreCase) }).Count) { return @{ Reason = "dependent_kept: $uid es un elemento que la actualización conserva ($Key)"; Confirm = [string[]]@() } }
-        if (!$Accept) { return @{ Reason = "dependent_unknown: $uid no es un obsoleto de la actualización ni está aceptado ($Key)"; Confirm = [string[]]@() } }
+        if (!@(@($Accepted) | Where-Object { $_ -and [string]::Equals([string]$_, $uid, [StringComparison]::OrdinalIgnoreCase) }).Count) { return @{ Reason = "dependent_unknown: $uid no es un obsoleto de la actualización ni de la línea base del corte ($Key)"; Confirm = [string[]]@() } }
         $confirm.Add($uid)
     }
     $sorted = [string[]]$confirm.ToArray()
@@ -992,6 +1009,22 @@ function New-CatalogueDocUpdateDelete([string]$Target, $Confirm, [bool]$DryRun) 
     return $request
 }
 
+# Baseline of the new section (right after it is made, before the tag, the dimension or the move): a dry run of its
+# delete; its dependents (its plan marker) are the only untracked ids the update may confirm. At most
+# CatalogueDocUpdateBaselineMax, none an element the run keeps; records doc_up_section_baseline = @{ Uids }.
+function Test-CatalogueDocUpdateBaseline($Response) {
+    $section = Created 'doc-up-section'
+    $read = Read-CatalogueDeleteReadback $Response $section $true
+    if ($read.Reason) { return $read.Reason }
+    $kept = [string[]]@(@(@($createdBy.Values) + @($picked.Values | Where-Object { $_ -is [string] })) | Where-Object { $_ -and $_ -ne $section })
+    $known = @($read.Dependents | Where-Object { $kept -contains $_ })
+    $reason = Join-CatalogueReasons @(
+        (Test-CatalogueCondition "línea base: como mucho $($script:CatalogueDocUpdateBaselineMax) dependientes (su marca en planta)" "<= $($script:CatalogueDocUpdateBaselineMax)" $read.Dependents.Count ($read.Dependents.Count -le $script:CatalogueDocUpdateBaselineMax)),
+        (Test-CatalogueCondition 'línea base: ningún elemento que la sesión conserva' 'ninguno' $known ($known.Count -eq 0)))
+    if ($null -eq $reason) { $picked['doc_up_section_baseline'] = @{ Uids = [string[]]@($read.Dependents) } }
+    return $reason
+}
+
 # First pass (collect) and replan for one key; on success records doc_up_probe_<key> = @{ Reported; Confirm }.
 function Test-CatalogueDocUpdateProbe($Response, $Item) {
     $stale = Get-CatalogueDocUpdateStale
@@ -999,7 +1032,8 @@ function Test-CatalogueDocUpdateProbe($Response, $Item) {
     if ($read.Reason) { return $read.Reason }
     $staleUids = @($stale.Values)
     $kept = [string[]]@(@(@($createdBy.Values) + @($picked.Values | Where-Object { $_ -is [string] })) | Where-Object { $_ -and $staleUids -notcontains $_ })
-    $plan = Resolve-CatalogueDocUpdateDependents $Item.Key $read.Dependents $stale $kept ([bool]$Item.Accept)
+    $accepted = if ($Item.AcceptBaseline) { [string[]]@($picked['doc_up_section_baseline'].Uids) } else { [string[]]@() }
+    $plan = Resolve-CatalogueDocUpdateDependents $Item.Key $read.Dependents $stale $kept $accepted
     $reason = Test-CatalogueCondition "replan (P4-09): dependientes de $($Item.Es) conocidos o aceptados" 'ninguno rechazado' $(if ($plan.Reason) { $plan.Reason } else { 'ninguno rechazado' }) ($null -eq $plan.Reason)
     if ($reason) { return $reason }
     $null = Test-CatalogueCondition "dependientes a confirmar en el borrado de $($Item.Es)" ($plan.Confirm -join ',') ($plan.Confirm -join ',') $true
@@ -1081,6 +1115,9 @@ function Get-CatalogueDocUpdateSteps {
     $steps.Add(@{ Key = 'doc-up-section'; Es = 'Actualización: corte a lo largo del muro (y = -6000)'; Command = 'view.create_section'; Expect = @{ Status = 'succeeded' }; Section = $section
         Build = { $null = Created 'doc-up-wall'; & $spec.Section 0 }
         Check = { param($r) Test-CatalogueDocUpdateSection $r 0 } })
+    $steps.Add(@{ Key = 'doc-up-section-baseline'; Es = 'Actualización: simulacro de borrar el corte recién hecho (línea base: su marca en planta, lo único no rastreado que se podrá confirmar)'; Command = 'element.delete'; Expect = @{ Status = 'succeeded' }
+        Build = { New-CatalogueDocUpdateDelete (Created 'doc-up-section') @() $true }
+        Check = { param($r) Test-CatalogueDocUpdateBaseline $r } })
     $steps.Add(@{ Key = 'doc-up-tag'; Es = 'Actualización: etiqueta del muro en la planta de documentación, cabeza en (-7500,-5500)'; Command = 'tag.create'; Expect = @{ Status = 'succeeded' }
         Build = { [ordered]@{ view_uid = (Created 'doc-plan'); element_uid = (Created 'doc-up-wall'); head = @(-7500, -5500) } }
         Check = { param($r) Test-CatalogueDocUpdateTag $r 0 } })
@@ -1088,7 +1125,7 @@ function Get-CatalogueDocUpdateSteps {
         Build = { [ordered]@{ view_uid = (Created 'doc-plan'); first_uid = (Created 'doc-up-wall'); second_uid = (Created 'doc-up-wall-ref') } }
         Check = { param($r) Test-CatalogueDocUpdateDimension $r $null } })
     $steps.Add(@{ Key = 'doc-up-move'; Es = "Actualización: mover el muro (0, $shift, 0) mm; la cota, la etiqueta y el corte quedan obsoletos"; Command = 'element.move'; Expect = @{ Status = 'succeeded'; Created = 0 }
-        Build = { $null = Created 'doc-up-dim'; $null = Created 'doc-up-tag'; $null = Created 'doc-up-section'; [ordered]@{ element_uids = @(Created 'doc-up-wall'); vector_mm = @(0, $script:CatalogueDocUpdateShiftMm, 0) } }
+        Build = { Need 'doc_up_section_baseline'; $null = Created 'doc-up-dim'; $null = Created 'doc-up-tag'; $null = Created 'doc-up-section'; [ordered]@{ element_uids = @(Created 'doc-up-wall'); vector_mm = @(0, $script:CatalogueDocUpdateShiftMm, 0) } }
         Check = {
             param($r)
             $moved = Get-CatalogueFirst (Get-CatalogueArray $r 'readback.moved')
