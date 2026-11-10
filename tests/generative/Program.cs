@@ -10,7 +10,8 @@ using System.Text.RegularExpressions;
 // over many seeds and generated briefs, and a 30-room performance bound; P7-02 alternatives in AlternativeTests.cs, P7-03
 // apartment prototypes in PrototypeTests.cs, P7-04 circulation in CirculationTests.cs, P7-05 facade openings in FacadeTests.cs, P7-06
 // facade windows into the prototype BIM-IR in FacadeIrTests.cs, P7-07 the prototype pipeline with circulation and facade gates in
-// PrototypePipelineTests.cs, P7-08 the stagger snap pre-pass in PrototypeSnapTests.cs.
+// PrototypePipelineTests.cs, P7-08 the stagger snap pre-pass in PrototypeSnapTests.cs, P5-11 the typology programme as planner brief in
+// TypologyBriefTests.cs.
 // Unit-tested evidence only.
 int passed = 0, failed = 0;
 
@@ -530,6 +531,9 @@ try
 
     // ---- P7-08 stagger snap pre-pass (PrototypeSnapTests.cs) ----
     PrototypeSnapTests.Run(Check, root);
+
+    // ---- P5-11 typology programme into the prototype planner (TypologyBriefTests.cs) ----
+    TypologyBriefTests.Run(Check, root);
 }
 catch (Exception error)
 {
