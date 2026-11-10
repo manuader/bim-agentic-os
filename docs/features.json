@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-09",
+  "updated": "2026-11-10",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -1341,6 +1341,43 @@
       ],
       "blocker": "-AssemblyPath required with -Archive (release package ships no Bim.Revit.dll); never loaded in a real Revit; pipeline-stop (Ctrl-C) cleanup and staging_unavailable not exercised by tests; Windows missing-TEMP case untestable (pwsh recreates it).",
       "scope": "P10-10: install-addin.ps1 -Archive <zip> [-ChecksumsPath] installs only from a package-archive -Extract into an owner-only staging folder (0700 on Unix, protected ACL current user/SYSTEM/Administrators on Windows), removed in a finally block on success and every refusal; package-archive refusals pass through typed (install-addin refused: package-archive refused: <code>: …, exit 1, nothing installed); staging_temp_invalid/staging_exists/staging_unavailable; honest 'staging folder left at' when removal fails; -PackageDirectory and -Uninstall unchanged; end-to-end archive → install → UNCHANGED → uninstall on ubuntu and windows with an explicit Addins folder. CI 42701261565, review 42720517108."
+    },
+    {
+      "id": "rhino-openings-roundtrip",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/rhino/bim_rhino.py",
+        "adapters/rhino/rhino_draft.py",
+        "tests/rhino/test_bim_rhino.py",
+        "tests/rhino/test_rhino_draft.py",
+        "tests/rhino/fixtures/openings.json"
+      ],
+      "blocker": "never opened in Rhino itself (Linux CI with rhino3dm 8.17 only); host walls are not cut; overlapping openings not refused; no frames/swing; draft ignores openings drawn as curves, wall-profile holes or breps; a pre-P8-09 importer refuses files with openings (geometry_kind_unsupported).",
+      "scope": "P8-09: door/window in the existing BIM-IR shape ([ax,ay,bx,by,sill,height], [level, host wall]) written as capped Extrusion opening volumes on BIM::Doors/BIM::Windows (layers only when used) with bim.* user strings and Rhino Id = BIM-IR Id; strict import reads the sill from the box base and refuses opening/host mismatches (rhino_opening_host/rhino_opening_geometry); draft proposes doors/windows on their host wall with confidence and notes (declared/inferred host, footprint axis chosen by host, projection, reversal, synthesized level) and typed unmapped reasons (opening_host_missing, door_sill_not_zero, opening_extrusion_unsupported, opening_outside_host); writer roundtrip byte-identical, draft roundtrip stable; 209 tests. CI red 42732771455, green 42734174706, review red 42739322798, green 42739411198."
+    },
+    {
+      "id": "p9-08-document-save-as",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsSaveAs.cs",
+        "runtimes/revit-native/CommandsExecutorSaveAs.cs",
+        "tests/revit-commands/CatalogueSaveAs.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "executor compiled only (native-build, --warnaserror), never run in Revit: SaveAs re-pointing PathName/IsModified, no dialog for upgraded files, OverwriteExistingFile=false throwing, relative links after Save As all unverified; post-save location check is detection, not prevention; owner-open-project latest.json keeps the old path.",
+      "scope": "P9-08: document.save_as {path} saves the open non-workshared, non-cloud, non-family document as a new .rvt inside an enabled root (RevitCommandPolicy.EnabledRoots), never overwriting; a test copy may only target .bim/native-runs (outside_copies_root); backslash-only drive paths, ≤249 chars; UNC/device/relative/'/'/./../streams/8.3/wildcards/device names/non-.rvt/backup names refused; 13 typed save_as_refused reasons decided before the pipe and again in the add-in; post-save check resolves parent links and re-walks the link guard; destructive, write-gated, excluded from command.batch, no receipt. CI red 42732929714, green 42735264245, review red 42741057367, green 42741689855."
+    },
+    {
+      "id": "catalogue-report-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/CatalogueReportCommand.cs",
+        "tests/cli/CatalogueReportTests.cs",
+        "tests/cli/catalogue-report-record.ps1",
+        "tests/cli/catalogue-report"
+      ],
+      "blocker": "never run on a real owner -Catalogue record (end-to-end records come from the fake executor); run-time sha row matched by its Spanish check text; exit 0 even when the report shows failures.",
+      "scope": "P1-12: read-only `catalogue-report --run .bim/native-runs/<run>` finds .bim/native-sessions/<utc>/catalogue-run<i>.json through summary.json, checks the record against its steps, prints per-group passed/failed/blocked/not_sent counts, failing steps with requested vs observed (raw_response for non-JSON), blocked steps and the copy sha256 re-hashed on disk (regular files only, bounded) against c-save's readback, as deterministic ASCII JSON; refuses traversal, paths outside .bim/native-runs, links, malformed/inconsistent/oversized records with typed catalogue_report_* codes; end-to-end on records written by the real owner record writer (clean/mixed/nocopy/v1only). CI red 42733295077, green 42734609677, review red 42747523781, green 42749563142."
     }
   ]
 }
