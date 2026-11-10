@@ -45,7 +45,7 @@ static class ElementQueryPagingChecks
     static string Uid(long id) => "60f91daf-3dd7-4283-a86d-24137b73f3da-" + id.ToString("x8", CultureInfo.InvariantCulture);
 
     static JsonObject Envelope(JsonObject args, string command = "query.elements", string operation = "op-all") =>
-        new() { ["protocol_version"] = 1, ["operation_id"] = operation, ["document"] = new JsonObject { ["path"] = RealPath, ["unique_id"] = Doc }, ["command"] = command, ["args"] = args };
+        new() { ["protocol_version"] = 1, ["operation_id"] = operation, ["document"] = new JsonObject { ["path"] = RealPath, ["unique_id"] = Doc }, ["command"] = command, ["args"] = args.DeepClone() };
 
     static JsonObject Args(string? category, string? level, int? limit, params string[] parameters)
     {
