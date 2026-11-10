@@ -1376,3 +1376,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 23:06Z integration 924c8f4 CI 42918416826 success (9/9) → main fast-forwarded (09f4b65..924c8f4). P3-10, P10-12, P4-11 ✅; P3-11, P1-18 ⏳; new P4-12 (doc-update --execute), P4-13 (realized map for catalogue elements). Progress 132/152 (86.8 %). Worktrees retired (branches on origin; stray relay184-P10-12-red could not be deleted).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-10T23:06:35Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P1-16/P1-17/P1-18/P1-19 and P2-13 (relay181; P1-18 and P4-11 share tests/integration/test-catalogue-session.ps1 — P4-11 is merged, so P1-18 is free); then P5-12, P6-13, P7-12/P7-13 (relay183); then P3-11 (apply-intent: use IncrementalDiff.OrderOf(set.After)), P4-12/P4-13, P10-13 (relay184). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay185 — 2026-11-10T23:54:01Z (Claude, cloud scheduled)
+- 23:54Z LOCK taken (was FREE; relay184 released 2026-11-10T23:06:35Z).
