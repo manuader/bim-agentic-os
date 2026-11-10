@@ -335,7 +335,8 @@ public sealed class McpServer
         if (tool.Permission is { } level)
         {
             // Tool annotations and _meta postdate the advertised 2024-11-05 protocol: best-effort hints that clients
-            // may ignore. Writes replay by operation_id, hence idempotent; they are additive (not destructive) except the
+            // may ignore. Writes replay by operation_id, hence idempotent (document.save_copy and document.save_as keep no
+            // receipt, but a repeat is refused target_exists without writing, so they are idempotent too); they are additive (not destructive) except the
             // P1-05 commands, wall.set_profile, material.set and element.change_type, which change or delete existing elements,
             // and document.save, which overwrites the saved file (RevitCommandCatalogue.IsDestructive).
             // view.export_image needs only read on the model but writes new image files on every call: readOnlyHint

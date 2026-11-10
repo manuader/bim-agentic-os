@@ -20,13 +20,17 @@ namespace Bim.Revit;
 // ProjectInformation UniqueId (the envelope document identity) stays, unsaved changes are written to the new file only
 // and the previous file keeps its last saved state. The readback requires exactly that, and the reply reports both
 // paths and warns that later requests must name the new one. After SaveAs the target is checked again
-// (RevitSaveAsGuard.CheckWritten: full path, final link target, link guard from the matched enabled root) because a
-// folder could be swapped for a junction between the check and the save; a failure is transaction_failed naming where
-// the file is and the path the open document now points to. The SHA-256 is read with FileShare.ReadWrite | Delete
+// (RevitSaveAsGuard.WrittenProblem: full path; final path with every parent folder's symlink or junction resolved from
+// the volume root down, compared with the matched enabled root resolved the same way; the link guard re-walked from
+// that root) because a folder could be swapped for a junction between the check and the save. This is DETECTION, not
+// prevention: Revit has already written the file when the check runs. A failure is transaction_failed saying the
+// document was written outside the enabled roots, naming where, and telling the caller to close it in Revit and not
+// continue (the open document now IS that file). The SHA-256 is read with FileShare.ReadWrite | Delete
 // because Revit keeps the saved file open.
 // Unverified in Revit (owner session required): the same SaveAs behaviour document.save_copy relies on (PathName
 // re-pointed, IsModified cleared, previous file untouched, no dialog for an upgraded file, OverwriteExistingFile =
-// false throwing rather than prompting).
+// false throwing rather than prompting); whether relative links (Revit links, CAD imports by relative path) keep
+// resolving after the document moves to another folder.
 internal static partial class CommandExecutor
 {
     // ---- document.save_as (write, no receipt) ----
@@ -45,8 +49,8 @@ internal static partial class CommandExecutor
         {
             throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.path", "Revit did not save the new file: " + error.Message);
         }
-        // A folder could have been swapped for a junction between the check and the save: check where the file landed.
-        if (RevitSaveAsGuard.CheckWritten(args.Path, policy, FullPath(args.Path), FinalPath(args.Path), RevitFileSystemProbe.Real) is { } elsewhere)
+        // A folder could have been swapped for a junction between the check and the save: detect where the file landed.
+        if (RevitSaveAsGuard.WrittenProblem(args.Path, policy, RevitFileSystemProbe.Real) is { } elsewhere)
             throw new RevitCommandException(RevitCommandCodes.TransactionFailed, "args.path", RevitSaveAsRules.WrittenElsewhereDetail(elsewhere, d.PathName));
         var written = FileState(args.Path);
         string? sha = null;
