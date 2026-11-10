@@ -15,18 +15,30 @@ namespace Bim.Core;
 //   committed         one new revision (head revision + 1); the store gains checkpoint-<rev>.json, one "prepared"
 //                     journal line and one receipt under the key, exactly as ProjectStore.Commit writes them;
 //   replayed          the store already holds a receipt for the key: the current head is returned and nothing is
-//                     written (no second revision), even though the head has moved past the selection's revision;
+//                     written (no second revision), even though the head has moved past the selection's revision.
+//                     Also when a concurrent identical call lands between this call's receipt check and its
+//                     ProjectStore.Commit: Commit then returns the head it holds for the key without writing. Commit
+//                     returns `desired with { Revision = n + 1 }` only when it writes, so a returned head that does not
+//                     share the desired element array (or is not revision n + 1) is that receipt path (tests pin it).
+//                     A replay must pass the original persisted selection: the key hashes its canonical JSON, and a
+//                     selection derived again from a later observation (other restore operation ids, other omitted
+//                     proposals) is another key and is refused as stale once the head has moved;
 //   nothing_to_adopt  the selection has no adopt operations (restore-only or empty): the store is not opened at all.
 // Refusals (MirrorDriftAdoptException, Code = the first word of the message, MirrorDriftAdoptCodes):
 //   drift_adopt_selection_invalid  a malformed selection (null parts, an unknown action, two operations on one
-//                                  element, a create of an existing element, an update or delete of a missing one);
-//   drift_adopt_store_invalid      the store's project.json is missing, not JSON or has null project/elements/receipts;
+//                                  element, a create of an existing element, an update or delete of a missing one, a
+//                                  restore plan bound to another project or revision than the selection);
+//   drift_adopt_store_invalid      the store's project.json is missing, not UTF-8, not JSON, or has a null project,
+//                                  element, geometry, dependencies or receipts (Plan: the same for the head it is
+//                                  given); also project.json turning non-JSON before Commit reads it under its lock;
 //   drift_adopt_project_mismatch   the head is another Core project than the selection's;
 //   drift_adopt_stale_revision     the head is not the selection's revision, or its canonical hash (elements ordered by
 //                                  id) is not the selection's restore_plan after_hash; also Commit's revision_conflict
 //                                  and idempotency_conflict (the store moved between the read and the commit);
 //   drift_adopt_invalid_ir         the adopted model fails Compiler.Validate;
 //   drift_adopt_store_unavailable  project.json cannot be read, or Commit's store_locked (the lock is held);
+//   drift_adopt_internal_error     Commit's plan_mismatch (the plan disagreeing with its own full diff): a defect,
+//                                  refused by Commit before its first write;
 //   drift_adopt_commit_incomplete  an I/O or access failure inside Commit after its lock was taken: Commit may have
 //                                  written the checkpoint, the "prepared" journal line and project.tmp while
 //                                  project.json still holds the old head (the ADR0007 crash case). NOT nothing-written.
@@ -85,7 +97,8 @@ public static class MirrorDriftAdoptCommit
     {
         ArgumentNullException.ThrowIfNull(head);
         CheckSelection(selection);
-        if (head.Elements is null || head.Elements.Any(element => element is null)) throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "the head has null elements");
+        if (head.Elements is null || head.Elements.Any(element => element is null || element.GeometryMetres is null || element.Dependencies is null))
+            throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "the head has null elements, geometry or dependencies");
         if (head.Id != selection.CoreProjectId) throw Fail(MirrorDriftAdoptCodes.ProjectMismatch, "head project " + head.Id.ToString("D") + " is not the selection's " + selection.CoreProjectId.ToString("D"));
         if (head.Revision != selection.CoreRevision)
             throw Fail(MirrorDriftAdoptCodes.StaleRevision, "head revision " + head.Revision.ToString(CultureInfo.InvariantCulture) + " is not the selection's " + selection.CoreRevision.ToString(CultureInfo.InvariantCulture));
@@ -116,10 +129,11 @@ public static class MirrorDriftAdoptCommit
         return (desired, plan);
     }
 
-    // Review red stub: the seam is not wired yet.
-    internal static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection, Func<ExecutionPlan, ExecutionPlan>? beforeCommit) => Commit(storeDirectory, selection);
+    public static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection) => Commit(storeDirectory, selection, null);
 
-    public static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection)
+    // Test seam: beforeCommit runs after the receipt check and Plan, just before ProjectStore.Commit, and returns the
+    // plan to commit (deterministic interleavings: a concurrent identical commit, a store changed under the call).
+    internal static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection, Func<ExecutionPlan, ExecutionPlan>? beforeCommit)
     {
         ArgumentException.ThrowIfNullOrEmpty(storeDirectory);
         CheckSelection(selection);
@@ -128,12 +142,19 @@ public static class MirrorDriftAdoptCommit
         var state = ReadState(storeDirectory);
         if (state.Receipts.ContainsKey(key)) return new(MirrorDriftAdoptOutcomes.Replayed, state.Project.Revision, key, state.Project, null);
         var (desired, plan) = Plan(state.Project, selection);
+        if (beforeCommit is not null) plan = beforeCommit(plan);
         Project committed;
         try { committed = new ProjectStore(storeDirectory).Commit(desired, plan, key); }
         catch (InvalidOperationException error) when (error.Message is "revision_conflict" or "idempotency_conflict") { throw Fail(MirrorDriftAdoptCodes.StaleRevision, "the store moved before the commit (" + error.Message + ")", error); }
         catch (InvalidOperationException error) when (error.Message == "invalid_ir") { throw Fail(MirrorDriftAdoptCodes.InvalidIr, "refused by the store", error); }
+        catch (InvalidOperationException error) when (error.Message == "plan_mismatch") { throw Fail(MirrorDriftAdoptCodes.InternalError, "the store's diff disagrees with the plan", error); }
+        catch (Exception error) when (error is JsonException or DecoderFallbackException) { throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "project.json is not a store state at commit", error); }
         catch (IOException error) when (error.Message == ProjectStore.StoreLocked) { throw Fail(MirrorDriftAdoptCodes.StoreUnavailable, "the store lock is held", error); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw Fail(MirrorDriftAdoptCodes.CommitIncomplete, error.GetType().Name + ": " + error.Message, error); }
+        // Commit writes and returns desired with the next revision (same element array), or returns the stored head
+        // without writing when the key's receipt is already there (a concurrent identical call won the lock).
+        if (!ReferenceEquals(committed.Elements, desired.Elements) || committed.Revision != plan.ExpectedRevision + 1)
+            return new(MirrorDriftAdoptOutcomes.Replayed, committed.Revision, key, committed, null);
         return new(MirrorDriftAdoptOutcomes.Committed, committed.Revision, key, committed, plan);
     }
 
@@ -147,7 +168,8 @@ public static class MirrorDriftAdoptCommit
             text = reader.ReadToEnd();
         }
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "the store has no project.json", error); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or DecoderFallbackException) { throw Fail(MirrorDriftAdoptCodes.StoreUnavailable, error.GetType().Name + ": " + error.Message, error); }
+        catch (DecoderFallbackException error) { throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "project.json is not UTF-8", error); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw Fail(MirrorDriftAdoptCodes.StoreUnavailable, error.GetType().Name + ": " + error.Message, error); }
         ProjectStore.State? state;
         try { state = JsonSerializer.Deserialize<ProjectStore.State>(text); }
         catch (JsonException error) { throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "project.json is not a store state", error); }
@@ -163,6 +185,8 @@ public static class MirrorDriftAdoptCommit
         if (selection.Operations is null || selection.RestorePlan?.AfterHash is null || selection.Choices is null || selection.Omitted is null
             || selection.MapAdds is null || selection.MapRemovals is null || selection.Invalidated is null || selection.DocumentUid is null)
             throw Fail(MirrorDriftAdoptCodes.SelectionInvalid, "the selection's parts are required");
+        if (selection.RestorePlan.ProjectId != selection.CoreProjectId || selection.RestorePlan.ExpectedRevision != selection.CoreRevision)
+            throw Fail(MirrorDriftAdoptCodes.SelectionInvalid, "the restore plan is bound to another project or revision than the selection");
         var ids = new HashSet<Guid>();
         foreach (var operation in selection.Operations)
         {
