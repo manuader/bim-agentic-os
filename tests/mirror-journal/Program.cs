@@ -291,6 +291,9 @@ try
     // ---- P2-09 selective drift resolution (MirrorDriftSelectChecks.cs) ----
     MirrorDriftSelectChecks.Run(Check);
 
+    // ---- P2-12 commit adopted drift into Core, no provenance (MirrorDriftAdoptChecks.cs) ----
+    MirrorDriftAdoptChecks.Run(Check);
+
     // ---- Thread safety: concurrent records keep unique, gap-free sequences ----
     var concurrent = new MirrorJournal(() => start, capacity: 10000);
     Parallel.For(0, 2000, i => concurrent.Record(Change(new[] { "T" + i }, modified: new[] { W1 })));
