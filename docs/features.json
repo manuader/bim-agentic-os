@@ -1414,7 +1414,7 @@
         "tests/doc-regeneration/UpdateDependents.cs",
         "interfaces/cli/DocUpdateCommand.cs"
       ],
-      "blocker": "fake transport only, never run in Revit; untracked dependents (annotations, viewports) need caller acceptance; the confirm-to-execute window is narrowed, not closed (the executor's own confirm_dependents check refuses later changes per step, after earlier steps ran); not yet wired into the doc-update CLI (P4-10).",
+      "blocker": "fake transport only, never run in Revit; untracked dependents (annotations, viewports) need caller acceptance; the confirm-to-execute window is narrowed, not closed (the executor's own confirm_dependents check refuses later changes per step, after earlier steps ran); wired into the doc-update CLI by P4-10 (--probe-dependents).",
       "scope": "P4-09: DocUpdateDependents.Plan/Update plans with DocUpdate, dry-runs every planned element.delete (dry_run only, strict receipt/readback/sha checks), refuses dependent_kept/dependent_unknown/dependent_shared/dependent_planned in the first pass, replans with the collected dependents (byte-equal to DocUpdate.Plan with them) and re-probes (dependents_changed); Update runs only after both passes; pipe/no_response/response_invalid typed like PlanRunner; replayed dry-run receipts refused; deterministic across cultures and map order. CI red 42759343043, green 42760288590, review red 42768953518, green 42770105346."
     },
     {
@@ -1480,6 +1480,39 @@
       ],
       "blocker": "Never run in Revit (fake add-in only); no MCP equivalent; results are positions, not a snapshot; a stalled page blocks (no pipe read timeout, pre-existing); every page reuses the caller's operation id (safe: queries store no receipts).",
       "scope": "P1-15: RevitElementQueryPaging.All(envelope, transport, maxPages ≤ 1000, maxElements ≤ 1,000,000, maxBytes ≤ 256 MiB) follows next_cursor with only query.elements (paging_command_invalid otherwise), validates receipts (not replayed, no changes) and every page against P1-13 (echoed filter/limit, after, next_cursor iff truncated and bound to document/filter, ascending ids, full/byte pages resume exactly after the last row); typed cursor_loop, page_limit_exceeded, listing_too_large, response_invalid; equals one unlimited query on fake fixtures incl. vanished rows and byte cuts; CLI revit-command envelope.json pipe --all (headless test on the fake pipe). CI red 42820900875, green 42824288044, review red 42838230156, green 42842909138."
+    },
+    {
+      "id": "doc-update-probe-dependents",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/DocUpdateProbe.cs",
+        "interfaces/cli/DocUpdateCommand.cs",
+        "tests/cli/DocUpdateProbeTests.cs"
+      ],
+      "blocker": "Never run in Revit; successful real-named-pipe run exercised in-process only (same RevitServiceTransport/RevitCommandService path); owner session step is P4-11.",
+      "scope": "P4-10: doc-update --probe-dependents <pipe> [--accept uid]... runs DocUpdateDependents.Plan over the Revit pipe, element.delete dry runs only, lazy single policy read, canonical plan file; typed {status,code[,key][,operation_id][,field][,detail]} refusals, exit 1, no file; --accept bound 10000; without the flag P4-08 bytes unchanged. CI red 42850465603, green 42851792519; review red 42859559692, green 42860615743."
+    },
+    {
+      "id": "owner-session-save-as",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/owner-catalogue-steps.ps1",
+        "tests/integration/test-catalogue-session.ps1",
+        "tests/integration/fake-revit-command-executor.ps1",
+        "docs/owner-verification-session.md"
+      ],
+      "blocker": "Owner -Catalogue run pending (🔒); Linux real-CLI cannot exercise a successful save_as (path_relative), Windows core-windows is the real-CLI evidence; c-as-outside blocked unless the owner lists a folder outside .bim/native-runs in .bim/revit-enabled-roots.txt.",
+      "scope": "P1-14: copia group gains c-as-outside (missing subfolder of an owner folder, refused outside_copies_root before the pipe), c-as-save (-guardado.rvt next to the copy, path/previous/hash/size/warning readback), c-as-save-again (target_exists), c-as-levels-new, c-as-levels-previous (document_conflict); Test-CatalogueSaveTarget refuses to send any save_as outside native-runs unless a client-side refusal into a missing folder; written-elsewhere reply stops the run. Fake + real-CLI headless. CI red 42850218024, green 42853259446; review red 42863458581, green 42864247011."
+    },
+    {
+      "id": "mirror-drift-adopt-commit",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/MirrorDriftAdopt.cs",
+        "tests/mirror-journal/MirrorDriftAdoptChecks.cs"
+      ],
+      "blocker": "No provenance (P2-11, ADR0010 proposed); map_adds/map_removals and restore plan not applied; library only (no CLI/MCP); racing-replay detection relies on ProjectStore.Commit's return shape (pinned by tests); never run in Revit.",
+      "scope": "P2-12: MirrorDriftAdoptCommit.Commit(store, selection) commits the P2-09 adopt ops as one ProjectStore revision with key mirror-drift-adopt:<project>:<revision>:<sha256 selection>; outcomes committed / replayed (incl. racing identical commit) / nothing_to_adopt; typed drift_adopt_* refusals before any write; commit_incomplete per ADR0007. CI red 42851415073, green 42853024289; review red 42867411286, green 42869190717."
     }
   ]
 }
