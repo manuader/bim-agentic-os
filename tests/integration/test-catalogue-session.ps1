@@ -474,10 +474,11 @@ Assert ((Get-StepField $asAfter 'c-as-levels-previous' 'passed') -and (Get-Reque
 $noOwnerFake = New-FakeRevitState $documentUid
 $noOwnerFake.DocumentPath = $documentPath
 $noOwnerInvoke = { param($index, $key, $json) $text = Invoke-FakeRevitCommand $noOwnerFake $json; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
+$noOwnerWire = { param($index, $key, $line) $text = Invoke-FakeRevitWire $noOwnerFake $line; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
 $savedOwnerRoot = ${function:Get-CatalogueOwnerRoot}
 try {
     ${function:Get-CatalogueOwnerRoot} = { param([string]$Path) $null }
-    $noOwner = Invoke-CatalogueSequence -Stamp $stamp -Run 2 -DocumentPath $documentPath -DocumentUid $documentUid -Invoke $noOwnerInvoke
+    $noOwner = Invoke-CatalogueSequence -Stamp $stamp -Run 2 -DocumentPath $documentPath -DocumentUid $documentUid -Invoke $noOwnerInvoke -InvokeWire $noOwnerWire
 } finally { if ($savedOwnerRoot) { ${function:Get-CatalogueOwnerRoot} = $savedOwnerRoot } else { Remove-Item -LiteralPath function:Get-CatalogueOwnerRoot -ErrorAction SilentlyContinue } }
 Assert ((Get-StepField $noOwner 'c-as-outside' 'blocked') -and $null -eq (Get-StepField $noOwner 'c-as-outside' 'request') -and [string](Get-StepField $noOwner 'c-as-outside' 'reason') -like '*revit-enabled-roots.txt*' -and $noOwner.overall.failed -eq 0 -and $noOwner.overall.blocked -eq 1) "no owner-enabled folder blocks only c-as-outside: $(Get-FailedSteps $noOwner)"
 # Behind the real CLI a client-side case must never reach the pipe: the pipe fake answers it with its own code.
