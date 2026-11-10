@@ -1313,3 +1313,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 04:19Z integration 89b29cd CI 42753159771 success (9/9) → main fast-forwarded (308c756..89b29cd). P8-09, P9-08, P1-12 ✅. Progress 114/127 (89.8 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-10T04:19:05Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P1-13, P3-08/P3-09 (relay166); then P4-09, P6-10, P7-09 (relay168); then P2-11, P5-11, P10-11 (relay169); then phases 8/9 (relay171: P9-03 needs owner ADR acceptance — write it 'proposed' if not yet; P8 remaining is 🔒 Blender). Consider adding document.save_as to the owner -Catalogue copia group and a task for the two CI flakes (ubuntu step-68 pipe_io_error, macOS CLI build step).
+
+## Relay174 — 2026-11-10T04:53:37Z (Claude, cloud scheduled)
+- 04:53Z LOCK taken (was FREE; relay171 released 2026-11-10T04:19:05Z).
