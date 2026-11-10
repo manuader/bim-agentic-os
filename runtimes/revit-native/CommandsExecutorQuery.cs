@@ -28,14 +28,17 @@ internal static partial class CommandExecutor
 {
     static string QueryElements(Document d, RevitCommandEnvelope envelope) => envelope.Args switch
     {
-        ElementQueryArgs query => ElementsQuery(d, query),
+        ElementQueryArgs query => ElementsQuery(d, envelope, query),
         ElementInspectArgs inspect => InspectQuery(d, inspect),
         _ => QueryStructure(d, envelope),
     };
 
     static readonly BuiltInParameter[] LevelParameters = { BuiltInParameter.FAMILY_LEVEL_PARAM, BuiltInParameter.SCHEDULE_LEVEL_PARAM, BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM };
 
-    static string ElementsQuery(Document d, ElementQueryArgs args)
+    // P1-13: a cursor (already decoded and bound to this document and filter by RevitCommandProtocol.Parse, which the
+    // add-in runs again on the received envelope) resumes paging strictly after its element id; the reply's next_cursor
+    // is bound to the envelope's document, which admission has checked against the active document.
+    static string ElementsQuery(Document d, RevitCommandEnvelope envelope, ElementQueryArgs args)
     {
         var collector = new FilteredElementCollector(d).WhereElementIsNotElementType();
         if (args.BuiltInCategory is { } name)
@@ -55,7 +58,7 @@ internal static partial class CommandExecutor
             if (level is not null && ElementLevelId(element) != level.Id) continue;
             matched.Add(element.Id.Value);
         }
-        var (selected, truncated) = RevitElementQueryRules.Page(matched, args.Limit);
+        var (selected, truncated) = RevitElementQueryRules.Page(matched, args.Limit, args.Cursor?.After);
         var rows = new List<ObservedQueryElement>();
         foreach (var id in selected)
         {
@@ -65,7 +68,7 @@ internal static partial class CommandExecutor
             rows.Add(ObserveQueryElement(d, element, type) with { Parameters = parameters, Missing = missing });
         }
         var levelReference = level is null ? null : new ObservedReference(level.Name, level.UniqueId);
-        return RevitElementQueryJson.Elements(args, levelReference, matched.Distinct().Count(), truncated, rows);
+        return RevitElementQueryJson.Elements(envelope.Document.UniqueId, args, levelReference, matched.Distinct().Count(), truncated, rows);
     }
 
     static string InspectQuery(Document d, ElementInspectArgs args)

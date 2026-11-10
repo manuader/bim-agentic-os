@@ -41,6 +41,13 @@ public static class RevitCommandCodes
     public const string SaveCopyRefused = "save_copy_refused";
     // document.save_as (P9-08): the new file or the open document breaks a RevitSaveAsGuard rule (detail starts with the reason).
     public const string SaveAsRefused = "save_as_refused";
+    // query.elements cursor (P1-13, RevitElementQueryCursor): undecodable, edited, issued by another cursor version, for
+    // another document, or for another filter.
+    public const string CursorMalformed = "cursor_malformed";
+    public const string CursorTampered = "cursor_tampered";
+    public const string CursorStale = "cursor_stale";
+    public const string CursorForeignDocument = "cursor_foreign_document";
+    public const string CursorFilterMismatch = "cursor_filter_mismatch";
     // Transport.
     public const string ExplicitProcessPipeRequired = "explicit_process_pipe_required";
     public const string RequestTooLarge = "request_too_large";
@@ -60,7 +67,8 @@ public static class RevitCommandCodes
         EnvelopeInvalid, ProtocolVersionUnsupported, OperationIdInvalid, DocumentPathInvalid, DocumentIdentityInvalid, CommandUnknown,
         ArgsInvalid, LengthInvalid, AngleInvalid, CurveTooShort, ArcCollinear, ArcRadiusInvalid, ArcSweepInvalid,
         BoundaryTooFewPoints, BoundaryEdgeTooShort, BoundaryZeroArea, BoundarySelfIntersecting, LevelsNotDistinct,
-        DocumentNotEnabled, DocumentLinkRefused, AllowlistInvalid, FamilySourceRefused, SaveCopyRefused, SaveAsRefused, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, NoResponse, ResponseInvalid,
+        DocumentNotEnabled, DocumentLinkRefused, AllowlistInvalid, FamilySourceRefused, SaveCopyRefused, SaveAsRefused,
+        CursorMalformed, CursorTampered, CursorStale, CursorForeignDocument, CursorFilterMismatch, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, NoResponse, ResponseInvalid,
     };
 
     public static IReadOnlyList<string> ExecutorReserved { get; } = new[] { OperationIdConflict, DocumentConflict, ReferenceNotFound, TransactionFailed };
@@ -323,6 +331,7 @@ public static class RevitCommandProtocol
         }
         var typed = spec.Bind(args);
         if (typed is CommandBatchArgs batch) RevitCommandBatch.CheckOperationIds(operation.GetString()!, batch);
+        if (typed is ElementQueryArgs { Cursor: { } cursor }) RevitElementQueryCursor.CheckDocument(cursor, documentRef, "args.cursor");
         var canonical = CanonicalEnvelope(protocolVersion, operation.GetString()!, documentRef, command, args);
         return new RevitCommandEnvelope(protocolVersion, operation.GetString()!, documentRef, command, spec, typed, canonical);
     }
