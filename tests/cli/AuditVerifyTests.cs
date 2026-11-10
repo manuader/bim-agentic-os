@@ -123,7 +123,7 @@ internal static class AuditVerifyTests
         var actorsSpaced = Cli("audit-verify", logPath, "--actors", "alice, bob");
         Check(actorsSpaced.Exit == 1 && actorsSpaced.Out == Report(logBytes, new AuditVerifyOptions(KnownActors: new[] { "alice", " bob" })),
             "--actors items are taken verbatim (\" bob\" is not bob)", D(actorsSpaced));
-        foreach (var bad in new[] { "", ",", "alice,", ",alice", "alice,,bob", " ", new string('a', 129) })
+        foreach (var bad in new[] { ",", "alice,", ",alice", "alice,,bob", " ", new string('a', 129) })
             ExpectFailure("--actors \"" + (bad.Length > 20 ? bad[..20] + "..." : bad) + "\"", "audit_verify_actors_invalid", null, "audit-verify", logPath, "--actors", bad);
 
         // ---- every finding class, exit 1, byte-identical to the library ----
@@ -257,6 +257,8 @@ internal static class AuditVerifyTests
             new[] { "audit-verify", logPath, "--write-anchor" },
             new[] { "audit-verify", logPath, "--anchor", "--summary" },
             new[] { "audit-verify", logPath, "--anchor", "" },
+            new[] { "audit-verify", logPath, "--actors", "" },
+            new[] { "audit-verify", logPath, "--actors", "--alice" },
             new[] { "audit-verify", "", "--summary" },
             new[] { "audit-verify", logPath, "--summary", "--summary" },
             new[] { "audit-verify", logPath, "--anchor", anchorPath, "--anchor", anchorPath },
