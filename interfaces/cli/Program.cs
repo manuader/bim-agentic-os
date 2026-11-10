@@ -62,14 +62,28 @@ try {
             // ADR0009 catalogue v1: same explicit-pipe rule as native, checked before any file or pipe I/O. Enabled write
             // roots come only from the repository (.bim/native-runs and the owner file .bim/revit-enabled-roots.txt), read
             // fresh on every run through the same RevitCommandPolicySource the MCP server keeps current.
-            var revitPipe=args.Length==3 ? args[2] : null;
-            if(RevitCommandService.RejectPipe(revitPipe) is {} revitRejected) { Console.WriteLine(revitRejected.Line); Environment.ExitCode=1; break; }
+            // --all (P1-15): a query.elements envelope is paged with RevitElementQueryPaging.All, each page through the
+            // same RevitCommandService path; every --all outcome, early refusals included, is ElementQueryAllResult JSON.
+            // Any other 4th (or further) argument keeps the explicit_process_pipe_required refusal (the call is not the
+            // explicit pipe form; tests/revit-commands pins that code) but names the argument and the usage.
+            if(args.Length>=4 && (args[3]!="--all" || args.Length>4)) {
+                var revitExtra=args[3]!="--all" ? 3 : 4;
+                Console.WriteLine(RevitCommandResponse.Failure(RevitCommandCodes.ExplicitProcessPipeRequired,"args["+revitExtra+"]",(revitExtra==3 ? "unknown option " : "unexpected argument ")+args[revitExtra]+"; usage: revit-command envelope.json process-pipe-name [--all]").ToJson()); Environment.ExitCode=1; break;
+            }
+            var revitAll=args.Length==4;
+            string RevitEarly(string code,string? field,string? detail) => revitAll ? ElementQueryAllResult.Refusal(code,field,detail).ToJson() : RevitCommandResponse.Failure(code,field,detail).ToJson();
+            var revitPipe=args.Length>=3 ? args[2] : null;
+            if(RevitCommandService.RejectPipe(revitPipe) is {} revitRejected) { var revitRefusal=RevitCommandResponse.Parse(revitRejected.Line); Console.WriteLine(RevitEarly(revitRefusal.Code,revitRefusal.Field,revitRefusal.Detail)); Environment.ExitCode=1; break; }
             RevitCommandPolicy revitPolicy;
             try { revitPolicy=new RevitCommandPolicySource(AppContext.BaseDirectory).Current(); }
-            catch(RevitCommandException e) { Console.WriteLine(RevitCommandResponse.Failure(e.Code,e.Field,e.Detail).ToJson()); Environment.ExitCode=1; break; }
+            catch(RevitCommandException e) { Console.WriteLine(RevitEarly(e.Code,e.Field,e.Detail)); Environment.ExitCode=1; break; }
             string revitEnvelope;
             try { revitEnvelope=BoundedInput.ReadText(args[1]); }
-            catch(IOException e) { Console.WriteLine(RevitCommandResponse.Failure(RevitCommandCodes.EnvelopeInvalid,"envelope",e.Message).ToJson()); Environment.ExitCode=1; break; }
+            catch(IOException e) { Console.WriteLine(RevitEarly(RevitCommandCodes.EnvelopeInvalid,"envelope",e.Message)); Environment.ExitCode=1; break; }
+            if(revitAll) {
+                var revitListing=RevitElementQueryPaging.All(revitEnvelope,new RevitServiceTransport(revitPipe!,revitPolicy,RevitCommandService.PipeTransport));
+                Console.WriteLine(revitListing.ToJson()); if(!revitListing.IsSuccess)Environment.ExitCode=1; break;
+            }
             var revitResult=RevitCommandService.Run(revitPipe!,revitEnvelope,revitPolicy,RevitCommandService.PipeTransport);
             Console.WriteLine(revitResult.Line); if(revitResult.IsError)Environment.ExitCode=1; break;
         case "open-project-check":
@@ -81,6 +95,6 @@ try {
             catch(RevitCommandException e) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Code,detail=e.Field+": "+e.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
             if(OwnerProjectGuard.Check(args[1],projectPolicy,RevitFileSystemProbe.Real) is {} projectRefusal) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=projectRefusal.Code,detail=projectRefusal.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
             Console.WriteLine(JsonSerializer.Serialize(new {status="succeeded",document_path=args[1],enabled_root=RevitCopiesGuard.MatchingRoot(args[1],projectPolicy)})); break;
-        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | export-gltf project.json output.glb|output.gltf | cad-draft input.dxf|input.pdf output.json [options] | cad-brief input.dxf|input.pdf output.json [options] | cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]... | mirror-drift store-directory snapshot.json mirror.json output.json | mirror-drift-select store-directory snapshot.json mirror.json choices.json output.json | skills-lock pin|verify|update|unpin skills-directory lock.json [pack-id...] | diff-edits --project project.json --edits edits.json | apply-edits --store store-directory --edits edits.json [--expected-revision n] | doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json] | catalogue-report --run .bim/native-runs/<run> | generate-prototypes request.json output.json | audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json] | native request.json process-pipe-name | revit-command envelope.json process-pipe-name | open-project-check absolute-path.rvt");
+        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | export-gltf project.json output.glb|output.gltf | cad-draft input.dxf|input.pdf output.json [options] | cad-brief input.dxf|input.pdf output.json [options] | cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]... | mirror-drift store-directory snapshot.json mirror.json output.json | mirror-drift-select store-directory snapshot.json mirror.json choices.json output.json | skills-lock pin|verify|update|unpin skills-directory lock.json [pack-id...] | diff-edits --project project.json --edits edits.json | apply-edits --store store-directory --edits edits.json [--expected-revision n] | doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json] | catalogue-report --run .bim/native-runs/<run> | generate-prototypes request.json output.json | audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json] | native request.json process-pipe-name | revit-command envelope.json process-pipe-name [--all] | open-project-check absolute-path.rvt");
     }
 } catch(Exception e) {Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Message}));Environment.ExitCode=1;}
