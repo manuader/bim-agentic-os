@@ -302,7 +302,7 @@ internal static class CadPlanBriefTests
 
         // ---- SF2 label re-binding on a hand-built draft ----
         {
-            static BriefTextSource Source(string text, double x) => new("hand.dxf", "dxf", "1A", "ROOM-TEXT", "TEXT", 10, null, Array.Empty<string>(), new Point2(x, 0), text);
+            static BriefTextSource Source(string text, double x) => new("hand.dxf", "dxf", "1A", "ROOM-TEXT", "TEXT", 10, null, Array.Empty<string>(), new Bim.Cad.Point2(x, 0), text);
             static BriefRoomProposal Proposal(string id, string name, BriefTextSource label) => new(id, name, 12, null, 0.9, label, null, null, Array.Empty<string>());
             static BriefDraft Hand(BriefRoomProposal[] rooms, BriefExtractUncertainty[] uncertainties) =>
                 new("hand.dxf", "dxf", 0.001, new ProjectBrief(1, "Hand", new BriefConstraints(), rooms.Select(p => new BriefRoom(p.Id, p.Name, TargetAreaSquareMetres: new BriefValue<double>(12))).ToArray(), Array.Empty<BriefAdjacency>()),
