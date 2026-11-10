@@ -1359,4 +1359,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 **NEXT STEP:** next relay: oldest-touched phases first — P5-12/P5-13, P6-12, P7-11/P7-12 (relay176); then P3-10, P10-12/P10-13 (relay178); then P4-11 (serialize with P1-18: same test file), P1-16/P1-17, P2-13 (relay181). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
 
 ## Relay183 — 2026-11-10T18:53:23Z (Claude, cloud scheduled)
-- 18:53:Z LOCK taken (was FREE; relay181 released 2026-11-10T18:24:32Z).
+- 18:53Z LOCK taken (was FREE; relay181 released 2026-11-10T18:24:32Z).
+- 18:53Z picked P5-13 (phase 5), P6-12 (phase 6), P7-11 (phase 7) — oldest-touched (relay176). Workers starting.
