@@ -52,20 +52,26 @@ public static class TypologyBrief
     {
         ArgumentNullException.ThrowIfNull(pack);
         ArgumentNullException.ThrowIfNull(request);
-        return Plan(SkillTypology.Resolve(pack, request.FamilySize, request.Include), request);
+        return Plan(SkillTypology.Resolve(pack, request.FamilySize, request.Include), request, TemplateRules);
     }
 
     public static TypologyBriefResult Generate(SkillResolution resolution, TypologyBriefRequest request)
     {
         ArgumentNullException.ThrowIfNull(resolution);
         ArgumentNullException.ThrowIfNull(request);
-        return Plan(SkillTypology.Resolve(resolution, request.FamilySize, request.Include), request);
+        return Plan(SkillTypology.Resolve(resolution, request.FamilySize, request.Include), request, TemplateRules);
     }
+
+    // The fixed P5-11 planner rules: PrototypeTemplates.Rules(lot), whatever the brief.
+    static readonly Func<ProjectBrief, PrototypeLot, TypologyRuleSet> TemplateRules =
+        (_, lot) => new(PrototypeTemplates.Rules(lot), Array.Empty<TypologyRuleTrace>(), Array.Empty<PlanConstraint>());
 
     static TypologyBriefRequest Canonical(TypologyBriefRequest request) => request.Include is null ? request
         : request with { Include = Array.AsReadOnly(request.Include.Distinct(StringComparer.Ordinal).OrderBy(kind => kind, StringComparer.Ordinal).ToArray()) };
 
-    static TypologyBriefResult Plan(TypologyProgramme programme, TypologyBriefRequest request)
+    // The shared request path of TypologyBrief.Generate and TypologyRules.Generate: programme and request refusals first;
+    // only when there are none is the brief built and the planner rule set asked for (its refusals refuse the result).
+    internal static TypologyBriefResult Plan(TypologyProgramme programme, TypologyBriefRequest request, Func<ProjectBrief, PrototypeLot, TypologyRuleSet> rules)
     {
         request = Canonical(request);
         var refusals = programme.Issues.Select(issue => Refusal(issue.Code, issue.Subject, issue.Detail)).ToList();
@@ -86,7 +92,10 @@ public static class TypologyBrief
             return new TypologyBriefResult(PrototypeStatus.Refused, request, programme, null, refusals, Array.Empty<PrototypeCandidate>(), null);
 
         var brief = Brief(programme, lot);
-        var options = new PlannerOptions(door, null, PrototypeTemplates.Rules(lot));
+        var ruleSet = rules(brief, lot);
+        if (!ruleSet.Succeeded)
+            return new TypologyBriefResult(PrototypeStatus.Refused, request, programme, null, ruleSet.Refusals, Array.Empty<PrototypeCandidate>(), null);
+        var options = new PlannerOptions(door, null, ruleSet.Rules);
         var plans = new List<SpacePlan>();
         var candidates = new List<PrototypeCandidate>();
         for (var index = 0; index < request.Alternatives; index++)
