@@ -31,6 +31,12 @@ namespace Bim.Core;
 // The summary (AuditSummary.ToJson, and "summary" in the report) covers only VerifiedEntries: the prefix P10-03
 // verified, and nothing at all on an anchor mismatch (no entry is then trustworthy), so a tampered log is never
 // counted. Days are UTC calendar days of the entry's utc (yyyy-MM-dd).
+//
+// Bounded report: at most MaxFindings findings that have a line are kept (the first in report order); findings without
+// a line (anchor or file findings, at most two) are always kept. The number of line findings left out is
+// FindingsOmitted, serialized as "findings_omitted" after "findings" only when it is positive, so a report within the
+// bound is unchanged. Code is still the most severe finding over all of them, kept or omitted. Work is linear in the
+// input apart from sorting the parsed entries: seq gaps are counted arithmetically, never walked.
 public static class AuditVerifyCodes
 {
     public const string Ok = AuditCodes.Ok;
@@ -65,11 +71,11 @@ public sealed record AuditVerifyOptions(IReadOnlyCollection<string>? KnownActors
 
 public sealed record AuditFinding(string Code, long? Line, string Detail);
 
-public sealed record AuditVerifyReport(string Code, string ChainCode, long Lines, IReadOnlyList<AuditFinding> Findings, IReadOnlyList<AuditEntry> VerifiedEntries)
+public sealed record AuditVerifyReport(string Code, string ChainCode, long Lines, IReadOnlyList<AuditFinding> Findings, IReadOnlyList<AuditEntry> VerifiedEntries, long FindingsOmitted = 0)
 {
     public bool Ok => Code == AuditVerifyCodes.Ok;
 
-    // {"ok","code","chain_code","lines","findings":[{"code","line","detail"}],"summary":{...}} with no whitespace.
+    // {"ok","code","chain_code","lines","findings":[{"code","line","detail"}][,"findings_omitted"],"summary":{...}} with no whitespace.
     public string ToJson()
     {
         using var buffer = new MemoryStream();
@@ -90,6 +96,7 @@ public sealed record AuditVerifyReport(string Code, string ChainCode, long Lines
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
+            if (FindingsOmitted > 0) writer.WriteNumber("findings_omitted", FindingsOmitted);
             writer.WritePropertyName("summary");
             AuditSummary.Write(writer, VerifiedEntries);
             writer.WriteEndObject();
@@ -100,6 +107,8 @@ public sealed record AuditVerifyReport(string Code, string ChainCode, long Lines
 
 public static class AuditVerifier
 {
+    public const int MaxFindings = 10000;
+
     static readonly UTF8Encoding Utf8 = new(false, true);
     static readonly string[] Members = { "seq", "utc", "actor", "operation_id", "command", "document", "decision", "reason", "prev_hash", "hash" };
 
@@ -130,9 +139,11 @@ public static class AuditVerifier
     {
         var anchor = options?.Anchor;
         HashSet<string>? known = options?.KnownActors is { } actors ? new HashSet<string>(actors, StringComparer.Ordinal) : null;
-        var findings = new List<AuditFinding>();
-        var parsed = new List<(long Line, AuditEntry Entry)>();
-        var unparsed = new List<long>();
+        var findings = new FindingSink();
+        // UnparsedBefore: how many unparsed lines precede the entry's line (a prefix count, so the lines between two
+        // entries are counted in O(1)).
+        var parsed = new List<(long Line, AuditEntry Entry, long UnparsedBefore)>();
+        long unparsedCount = 0, lastUnparsed = 0;
         long line = 0;
         var start = 0;
         var torn = false;
@@ -150,22 +161,22 @@ public static class AuditVerifier
             start += length + 1;
             string text;
             try { text = Utf8.GetString(raw); }
-            catch (DecoderFallbackException) { findings.Add(new AuditFinding(AuditVerifyCodes.EntryMalformed, line, "invalid UTF-8")); unparsed.Add(line); continue; }
+            catch (DecoderFallbackException) { findings.Add(new AuditFinding(AuditVerifyCodes.EntryMalformed, line, "invalid UTF-8")); unparsedCount++; lastUnparsed = line; continue; }
             // A byte order mark is tolerated for classification only; the line is then not canonical.
             var content = text.Length > 0 && text[0] == '﻿' ? text[1..] : text;
-            if (Parse(content, out var problem) is not { } entry) { findings.Add(new AuditFinding(AuditVerifyCodes.EntryMalformed, line, problem)); unparsed.Add(line); continue; }
+            if (Parse(content, out var problem) is not { } entry) { findings.Add(new AuditFinding(AuditVerifyCodes.EntryMalformed, line, problem)); unparsedCount++; lastUnparsed = line; continue; }
             if (AuditLogFormat.ComputeHash(entry) != entry.Hash) findings.Add(new AuditFinding(AuditVerifyCodes.EntryEdited, line, "hash does not match the entry content"));
             else if (AuditLogFormat.Line(entry) != text) findings.Add(new AuditFinding(AuditVerifyCodes.EntryNotCanonical, line, "content hash is valid but the line differs from the canonical serialization"));
             if (known is not null && !known.Contains(entry.Actor)) findings.Add(new AuditFinding(AuditVerifyCodes.ActorUnknown, line, "actor " + entry.Actor + " is not in the known actor set"));
-            parsed.Add((line, entry));
+            parsed.Add((line, entry, unparsedCount));
         }
 
-        Sequence(parsed, unparsed, findings);
+        Sequence(parsed, findings);
 
         // Chain links by seq, independent of line order, so reordering alone never reads as an edit. A link is only
         // checked when its predecessor is present exactly once.
         var bySeq = parsed.GroupBy(p => p.Entry.Seq).ToDictionary(g => g.Key, g => g.Count() == 1 ? g.First().Entry : (AuditEntry?)null);
-        foreach (var (entryLine, entry) in parsed)
+        foreach (var (entryLine, entry, _) in parsed)
         {
             if (bySeq.TryGetValue(entry.Seq, out var self) && self is null) continue;
             string? expected = entry.Seq == 1 ? AuditLogFormat.GenesisHash : bySeq.TryGetValue(entry.Seq - 1, out var before) && before is not null ? before.Hash : null;
@@ -187,7 +198,7 @@ public static class AuditVerifier
             {
                 // A torn or malformed line after the highest entry may be the anchored entry itself: that damage is
                 // already reported, so it is not also truncation while the log still has enough lines.
-                var damagedTail = torn || (unparsed.Any(l => l > maxLine) && line >= anchor.Seq);
+                var damagedTail = torn || (lastUnparsed > maxLine && line >= anchor.Seq);
                 if (!damagedTail) findings.Add(new AuditFinding(AuditVerifyCodes.Truncated, null, "log ends at seq " + Text(maxSeq) + "; anchor expects at least " + Text(anchor.Seq)));
             }
             else if (anchor.Seq > 0 && bySeq.TryGetValue(anchor.Seq, out var at) && at is not null && at.Hash != anchor.Hash)
@@ -198,18 +209,56 @@ public static class AuditVerifier
         }
 
         var chain = AuditLogFormat.VerifyBytes(bytes, anchor);
-        if (!chain.Ok && findings.Count == 0) findings.Add(new AuditFinding(AuditVerifyCodes.FromChainCode(chain.Code), chain.Line, chain.Detail ?? chain.Code));
+        if (!chain.Ok && findings.Total == 0) findings.Add(new AuditFinding(AuditVerifyCodes.FromChainCode(chain.Code), chain.Line, chain.Detail ?? chain.Code));
         if (chain.Code == AuditCodes.AnchorMismatch) anchorMismatch = true;
 
-        var ordered = findings
-            .OrderBy(f => f.Line is null ? 1 : 0)
-            .ThenBy(f => f.Line ?? 0)
-            .ThenBy(f => f.Code, StringComparer.Ordinal)
-            .ThenBy(f => f.Detail, StringComparer.Ordinal)
-            .ToArray();
-        var code = ordered.Length == 0 ? AuditVerifyCodes.Ok : ordered.OrderBy(f => Rank(f.Code)).First().Code;
+        var ordered = findings.Kept();
+        var code = findings.Total == 0 ? AuditVerifyCodes.Ok : findings.BestCode!;
         IReadOnlyList<AuditEntry> verified = anchorMismatch ? Array.Empty<AuditEntry>() : chain.Entries;
-        return new AuditVerifyReport(code, chain.Code, line, ordered, verified);
+        return new AuditVerifyReport(code, chain.Code, line, ordered, verified, findings.Total - ordered.Length);
+    }
+
+    // Report order: line findings by line, code, detail; line-less findings last. Keeps the first MaxFindings line
+    // findings in that order (compacting whenever twice as many are buffered, so memory stays O(MaxFindings)) and every
+    // line-less finding, while counting all of them and tracking the most severe code.
+    sealed class FindingSink
+    {
+        static readonly Comparison<AuditFinding> Order = (a, b) =>
+        {
+            var c = (a.Line is null ? 1 : 0).CompareTo(b.Line is null ? 1 : 0);
+            if (c == 0) c = (a.Line ?? 0).CompareTo(b.Line ?? 0);
+            if (c == 0) c = string.CompareOrdinal(a.Code, b.Code);
+            if (c == 0) c = string.CompareOrdinal(a.Detail, b.Detail);
+            return c;
+        };
+        readonly List<AuditFinding> lined = new();
+        readonly List<AuditFinding> lineless = new();
+        public long Total { get; private set; }
+        int bestRank = int.MaxValue;
+        public string? BestCode { get; private set; }
+
+        public void Add(AuditFinding finding)
+        {
+            Total++;
+            var rank = Rank(finding.Code);
+            if (rank < bestRank) { bestRank = rank; BestCode = finding.Code; }
+            if (finding.Line is null) { lineless.Add(finding); return; }
+            lined.Add(finding);
+            if (lined.Count >= 2 * MaxFindings) Compact();
+        }
+
+        void Compact()
+        {
+            lined.Sort(Order);
+            if (lined.Count > MaxFindings) lined.RemoveRange(MaxFindings, lined.Count - MaxFindings);
+        }
+
+        public AuditFinding[] Kept()
+        {
+            Compact();
+            lineless.Sort(Order);
+            return lined.Concat(lineless).ToArray();
+        }
     }
 
     static int Rank(string code)
@@ -222,7 +271,7 @@ public static class AuditVerifier
     // highest seq seen so far: a seq seen before is a duplicate (sequence broken), a lower seq is reordered, and a
     // jump over seqs that occur nowhere in the log is missing entries (less any malformed lines in between, which may
     // hold them).
-    static void Sequence(List<(long Line, AuditEntry Entry)> parsed, List<long> unparsed, List<AuditFinding> findings)
+    static void Sequence(List<(long Line, AuditEntry Entry, long UnparsedBefore)> parsed, FindingSink findings)
     {
         if (parsed.All(p => p.Entry.Seq == p.Line)) return;
         var seqs = parsed.Select(p => p.Entry.Seq).OrderBy(s => s).ToArray();
@@ -233,10 +282,10 @@ public static class AuditVerifier
                 findings.Add(new AuditFinding(AuditVerifyCodes.Reordered, p.Line, "seq " + Text(p.Entry.Seq) + " at line " + Text(p.Line)));
             return;
         }
-        var present = new HashSet<long>(seqs);
+        var present = seqs.Distinct().ToArray();
         var seen = new HashSet<long>();
-        long highest = 0, previousLine = 0;
-        foreach (var (entryLine, entry) in parsed)
+        long highest = 0, previousUnparsed = 0;
+        foreach (var (entryLine, entry, unparsedBefore) in parsed)
         {
             var seq = entry.Seq;
             if (!seen.Add(seq))
@@ -245,15 +294,27 @@ public static class AuditVerifier
                 findings.Add(new AuditFinding(AuditVerifyCodes.Reordered, entryLine, "seq " + Text(seq) + " after seq " + Text(highest)));
             else
             {
-                long absent = 0;
-                for (var s = highest + 1; s < seq; s++) if (!present.Contains(s)) absent++;
-                absent -= unparsed.Count(l => l > previousLine && l < entryLine);
+                // seqs strictly between highest and seq that occur nowhere, less the unparsed lines in between.
+                var absent = seq - highest - 1 - (LowerBound(present, seq) - LowerBound(present, highest + 1));
+                absent -= unparsedBefore - previousUnparsed;
                 if (absent > 0)
                     findings.Add(new AuditFinding(AuditVerifyCodes.EntriesMissing, entryLine, "seq " + Text(seq) + " after seq " + Text(highest) + "; " + Text(absent) + " entries missing"));
                 highest = seq;
             }
-            previousLine = entryLine;
+            previousUnparsed = unparsedBefore;
         }
+    }
+
+    // The index of the first element >= value in an ascending array.
+    static long LowerBound(long[] sorted, long value)
+    {
+        int low = 0, high = sorted.Length;
+        while (low < high)
+        {
+            var middle = low + (high - low) / 2;
+            if (sorted[middle] < value) low = middle + 1; else high = middle;
+        }
+        return low;
     }
 
     static string Text(long value) => value.ToString(CultureInfo.InvariantCulture);
@@ -262,6 +323,11 @@ public static class AuditVerifier
     static AuditEntry? Parse(string text, out string problem)
     {
         problem = "";
+        // Cheap refusal without an exception for text JSON.Parse would reject anyway: blank lines, or a first
+        // non-whitespace ASCII character no JSON value starts with (same "not JSON" problem as the parser's).
+        var first = 0;
+        while (first < text.Length && text[first] is ' ' or '\t' or '\r' or '\n') first++;
+        if (first == text.Length || (text[first] < 0x80 && text[first] is not ('{' or '[' or '"' or '-' or (>= '0' and <= '9') or 't' or 'f' or 'n'))) { problem = "not JSON"; return null; }
         JsonDocument document;
         try { document = JsonDocument.Parse(text); }
         catch (JsonException) { problem = "not JSON"; return null; }

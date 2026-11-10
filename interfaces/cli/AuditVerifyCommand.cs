@@ -155,7 +155,15 @@ internal static class AuditVerifyCommand
         try { document = JsonDocument.Parse(text); }
         catch (JsonException) { throw new Refusal(AnchorInvalid, "not JSON"); }
         catch (ArgumentException) { throw new Refusal(AnchorInvalid, "not JSON"); }
-        using (document)
+        // A lone escaped surrogate ("\ud800") in a member name or string value is valid JSON but not text: reading it
+        // throws InvalidOperationException, which is refused like any other malformed anchor.
+        try { return ReadAnchor(document); }
+        catch (InvalidOperationException) { throw new Refusal(AnchorInvalid, "member names and strings must be valid text"); }
+        finally { document.Dispose(); }
+    }
+
+    static AuditAnchor ReadAnchor(JsonDocument document)
+    {
         {
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) throw new Refusal(AnchorInvalid, "a JSON object required");
