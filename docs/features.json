@@ -1416,6 +1416,37 @@
       ],
       "blocker": "fake transport only, never run in Revit; untracked dependents (annotations, viewports) need caller acceptance; the confirm-to-execute window is narrowed, not closed (the executor's own confirm_dependents check refuses later changes per step, after earlier steps ran); not yet wired into the doc-update CLI (P4-10).",
       "scope": "P4-09: DocUpdateDependents.Plan/Update plans with DocUpdate, dry-runs every planned element.delete (dry_run only, strict receipt/readback/sha checks), refuses dependent_kept/dependent_unknown/dependent_shared/dependent_planned in the first pass, replans with the collected dependents (byte-equal to DocUpdate.Plan with them) and re-probes (dependents_changed); Update runs only after both passes; pipe/no_response/response_invalid typed like PlanRunner; replayed dry-run receipts refused; deterministic across cultures and map order. CI red 42759343043, green 42760288590, review red 42768953518, green 42770105346."
+    },
+    {
+      "id": "cad-plan-brief-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/CadPlanBriefCommand.cs",
+        "tests/cli/CadPlanBriefTests.cs"
+      ],
+      "blocker": "no site/name options yet (P6-12), so SpacePlanner cannot plan the written brief without its own footprint; input must be a full cad-brief document; unknown top-level members accepted (duplicates refused); invalid planner brief is written with valid:false and exit 0 by design.",
+      "scope": "P6-10: `cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]...` runs BriefPlanner.ToPlannerBrief on a cad-brief document (8 MiB bounded, strict member presence/names, Label non-null, Confidence in [0,1], ≤10000 rooms, ≤1000 uncertainties) and writes {kind,version,source,options,valid,brief,kept,dropped,unknown_confirmed_*,issues} never-overwrite; label sources re-bound so duplicate-label joins match the in-process planner; cad_option_*, output_*, input_*, cad_plan_brief_input_invalid, brief_<code> refusals exit 1 with no file; byte-identical reruns. CI red 42780498633, green 42784502068, review red 42793407231, green 42797233472."
+    },
+    {
+      "id": "generate-prototypes-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/GenerateCommand.cs",
+        "tests/cli/GeneratePrototypesTests.cs",
+        "scripts/package.ps1"
+      ],
+      "blocker": "repo-only: the packaged CLI has no skills/ and refuses generate_prototypes_repository_not_found (P7-12); stage options (circulation/facade/IR pack parameters) keep defaults; derived project id covers the pack id, not the manifest content.",
+      "scope": "P7-09: `generate-prototypes request.json output.json` parses a strict snake_case request (typology, lot, alternatives, seed, weights, fixed rooms/walls, pack, project_id, revision, circulation/facade weights, snap), reads skills/<pack>/skill.json bounded, runs PrototypePipeline.Run and writes PrototypePipelineSerializer bytes never-overwrite; default project id = v8 UUID from SHA-256 of the canonical request (-0→0, full weights object, [] for absent lists); typed generate_prototypes_* / output_* / input_* refusals incl. lone surrogates; byte-equal to the in-process run. CI red 42778985107, green 42781456410, review red 42800136898, green 42801508178."
+    },
+    {
+      "id": "typology-brief-prototypes",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/TypologyBrief.cs",
+        "tests/generative/TypologyBriefTests.cs"
+      ],
+      "blocker": "whole-lot, one level, no fixed rooms/walls; not yet through the circulation/facade/IR gates (P5-12); planner uses the fixed CABA PrototypeTemplates.Rules, composed pack rules only checked as programme minimum conflicts (P5-13); PrototypeGenerator.Generate still takes only ApartmentTypology.",
+      "scope": "P5-11: TypologyBrief.Brief/Generate turn a SkillTypology programme (pack or SkillResolution + family size) into a P6-03 brief with the lot as site and plan ranked whole-lot SpacePlanner candidates (seeds Seed+i unchecked, PrototypeTemplates.Rules, AlternativeRanker); typology_* issues and PrototypeGenerator request codes as typed refusals; family sizes 1–8 rank on 16x16; pinned SHA-256 85102ea0…b513 (family 4, 12x12, 6 alternatives, seed 0); apartment generator pinned digest unchanged. CI red 42787338649, green 42788507940, review red 42803818216, green 42805199628."
     }
   ]
 }
