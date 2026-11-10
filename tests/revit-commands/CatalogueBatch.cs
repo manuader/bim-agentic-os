@@ -100,18 +100,18 @@ static class CatalogueBatchChecks
         var spec = RevitCommandCatalogue.Find("command.batch");
         Check(spec is { Writes: true, ToolName: "revit_command_batch" } && RevitCommandCatalogue.Batch.Count == 1 && ReferenceEquals(RevitCommandCatalogue.Batch.FirstOrDefault(), spec),
             "command.batch is a write catalogue command with tool revit_command_batch that Find resolves");
-        Check(spec is not null && ReferenceEquals(RevitCommandCatalogue.All.Last(), spec), "command.batch is the last catalogue entry (after document.save and document.save_copy)");
+        Check(spec is not null && ReferenceEquals(RevitCommandCatalogue.All.Last(), spec), "command.batch is the last catalogue entry (after document.save, document.save_copy and document.save_as)");
         Check(RevitCommandCatalogue.All.Select(s => s.Name).Distinct().Count() == RevitCommandCatalogue.All.Count && RevitCommandCatalogue.All.Select(s => s.ToolName).Distinct().Count() == RevitCommandCatalogue.All.Count, "command and tool names stay distinct with command.batch");
         string? problem = null;
         try { using var schema = JsonDocument.Parse(spec?.ArgsSchemaJson ?? "null"); RevitCommandSchema.CheckSupported(schema.RootElement); }
         catch (Exception error) { problem = error.Message; }
         Check(problem is null, "command.batch args schema is valid JSON using only enforced keywords", problem ?? "");
-        var expected = RevitCommandCatalogue.All.Where(s => s.Writes && s.Name != "command.batch" && s.Name != "document.save" && s.Name != "document.save_copy").Select(s => s.Name).ToArray();
+        var expected = RevitCommandCatalogue.All.Where(s => s.Writes && s.Name != "command.batch" && s.Name != "document.save" && s.Name != "document.save_copy" && s.Name != "document.save_as").Select(s => s.Name).ToArray();
         var steps = RevitCommandCatalogue.BatchStepCommands.Select(s => s.Name).ToArray();
-        Check(steps.SequenceEqual(expected), "batch step commands are exactly every catalogue write except command.batch, document.save and document.save_copy, in catalogue order", string.Join(",", steps));
+        Check(steps.SequenceEqual(expected), "batch step commands are exactly every catalogue write except command.batch, document.save, document.save_copy and document.save_as, in catalogue order", string.Join(",", steps));
         Check(steps.Contains("wall.create") && steps.Contains("element.delete") && steps.Contains("family.load") && steps.Contains("stair.create") && !steps.Contains("query.levels") && !steps.Contains("view.export_image"),
             "steps include creators, modifiers and family.load and exclude queries and view.export_image");
-        Check(RevitCommandBatch.ExcludedWrites.SequenceEqual(new[] { "command.batch", "document.save", "document.save_copy" }) && RevitCommandBatch.MinSteps == 1 && RevitCommandBatch.MaxSteps == 50, "1 to 50 steps; command.batch, document.save and document.save_copy are excluded writes");
+        Check(RevitCommandBatch.ExcludedWrites.SequenceEqual(new[] { "command.batch", "document.save", "document.save_copy", "document.save_as" }) && RevitCommandBatch.MinSteps == 1 && RevitCommandBatch.MaxSteps == 50, "1 to 50 steps; command.batch, document.save, document.save_copy and document.save_as are excluded writes");
         if (spec is not null)
         {
             var schema = JsonNode.Parse(spec.ArgsSchemaJson)!;

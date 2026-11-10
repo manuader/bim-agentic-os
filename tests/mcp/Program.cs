@@ -108,8 +108,8 @@ foreach(var spec in RevitCommandCatalogue.All) {
     var writesFiles=RevitCommandCatalogue.WritesFiles(spec.Name);
     Check(annotations?["readOnlyHint"]?.GetValue<bool>()==!(spec.Writes || writesFiles),spec.ToolName+" annotations.readOnlyHint is "+!(spec.Writes || writesFiles));
     if(spec.Writes) {
-        var destructive=new[]{"element.set_parameter","element.delete","wall.set_profile","material.set","element.change_type","element.move","element.rotate","element.mirror","document.save","command.batch"}.Contains(spec.Name);
-        Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter, element.delete, wall.set_profile, material.set, element.change_type, element.move, element.rotate and element.mirror change or remove existing elements, document.save overwrites the saved file, and a command.batch step may do either), idempotentHint true (operation_id replay)");
+        var destructive=new[]{"element.set_parameter","element.delete","wall.set_profile","material.set","element.change_type","element.move","element.rotate","element.mirror","document.save","document.save_as","command.batch"}.Contains(spec.Name);
+        Check(annotations!["destructiveHint"]?.GetValue<bool>()==destructive && annotations["idempotentHint"]?.GetValue<bool>()==true,spec.ToolName+" write annotations: destructiveHint "+destructive.ToString().ToLowerInvariant()+" (only element.set_parameter, element.delete, wall.set_profile, material.set, element.change_type, element.move, element.rotate and element.mirror change or remove existing elements, document.save overwrites the saved file, document.save_as re-points the open document to a new file, and a command.batch step may do either), idempotentHint true (operation_id replay)");
         var description=tool["description"]!.GetValue<string>();
         Check(PermissionPolicy.RequiredLevel(spec.Name,McpReal,copiesRoots)==PermissionLevel.WriteRealProject
             && description.Contains(".bim/native-runs",StringComparison.Ordinal) && description.Contains(".bim/revit-enabled-roots.txt",StringComparison.Ordinal)
@@ -406,6 +406,28 @@ Check(RevitCommandCatalogue.ExportSave.Select(spec=>spec.Name).SequenceEqual(new
     Check(IsError(copyName) && FailureCode(copyName)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before,"revit_document_save_copy to a name other than BIM-Agentic-Test*.rvt is args_invalid before the pipe");
     var copyNoRepo=Guarded("revit_document_save_copy",copyArgs.DeepClone(),McpCopy);
     Check(IsError(copyNoRepo) && FailureCode(copyNoRepo)==RevitCommandCodes.SaveCopyRefused && forwardedLines.Count==before,"revit_document_save_copy without a known repository is save_copy_refused before the pipe");
+    // P9-08: document.save_as is a destructive write (it re-points the open document); its path, root and existence
+    // guard runs before the pipe with typed codes.
+    var saveAsTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="revit_document_save_as");
+    Check(saveAsTool?["annotations"]?["readOnlyHint"]?.GetValue<bool>()==false && saveAsTool?["annotations"]?["destructiveHint"]?.GetValue<bool>()==true && saveAsTool?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write-copies"
+        && saveAsTool?["inputSchema"]?["properties"]?["args"]?["required"]?[0]?.GetValue<string>()=="path","revit_document_save_as is listed as a destructive write with permission level write-copies and a required path");
+    var saveAsReal=Guarded("revit_document_save_as",new JsonObject{["path"]=@"C:\Projects\Real\Tower v2.rvt"},McpReal);
+    Check(IsError(saveAsReal) && FailureCode(saveAsReal)==RevitCommandCodes.DocumentNotEnabled && forwardedLines.Count==before,"revit_document_save_as of a document outside the enabled roots is document_not_enabled before the pipe");
+    foreach(var (label,path) in new[]{("a traversal",@"C:\Repo\.bim\native-runs\run-1\..\..\Tower.rvt"),("a UNC path",@"\\server\share\Tower.rvt"),("mixed separators",@"C:\Repo/.bim\native-runs\run-1\Tower.rvt"),("a device name",@"C:\Repo\.bim\native-runs\run-1\NUL.rvt"),("a .rfa name",@"C:\Repo\.bim\native-runs\run-1\Tower.rfa"),("an alternate data stream",@"C:\Repo\.bim\native-runs\run-1\Tower.rvt:x")}) {
+        var bad=Guarded("revit_document_save_as",new JsonObject{["path"]=path},McpCopy);
+        Check(IsError(bad) && FailureCode(bad)==RevitCommandCodes.ArgsInvalid && forwardedLines.Count==before,"revit_document_save_as with "+label+" is args_invalid before the pipe");
+    }
+    var saveAsOutside=Guarded("revit_document_save_as",new JsonObject{["path"]=@"C:\Projects\Real\Tower v2.rvt"},McpCopy);
+    Check(IsError(saveAsOutside) && FailureCode(saveAsOutside)==RevitCommandCodes.SaveAsRefused && Node(Text(saveAsOutside))["detail"]!.GetValue<string>().StartsWith("outside_enabled_roots:",StringComparison.Ordinal) && forwardedLines.Count==before,"revit_document_save_as outside the enabled roots is save_as_refused outside_enabled_roots before the pipe");
+    var saveAsMissing=Guarded("revit_document_save_as",new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\run-404\Tower v2.rvt"},McpCopy);
+    Check(IsError(saveAsMissing) && FailureCode(saveAsMissing)==RevitCommandCodes.SaveAsRefused && Node(Text(saveAsMissing))["detail"]!.GetValue<string>().StartsWith("folder_missing:",StringComparison.Ordinal) && forwardedLines.Count==before,"revit_document_save_as into a missing folder is save_as_refused folder_missing before the pipe");
+    // P9-08 review: the tool stays write-copies on a test copy because a test copy may only be saved inside
+    // .bim/native-runs; with an owner root enabled too, a test copy saved into it is refused before the pipe.
+    var ownerServer=new McpServer(new RevitCommandPolicy(new[]{@"C:\Repo\.bim\native-runs",@"C:\Projects\Real"}),(pipe,line)=>{ forwardedLines.Add(line); return null; },new RevitFileSystemProbe(_=>false,_=>null));
+    var escalate=Node(ownerServer.Handle(Request(12,"tools/call",new JsonObject{["name"]="revit_document_save_as",["arguments"]=new JsonObject{["pipe_name"]="bim-agentic-os-2025-4242",["operation_id"]="op-p9-08",["document"]=new JsonObject{["path"]=McpCopy,["unique_id"]=McpUid},["args"]=new JsonObject{["path"]=@"C:\Projects\Real\Tower v2.rvt"}}})) ?? throw new Exception("no response")).AsObject();
+    Check(IsError(escalate) && FailureCode(escalate)==RevitCommandCodes.SaveAsRefused && Node(Text(escalate))["detail"]!.GetValue<string>().StartsWith("outside_copies_root:",StringComparison.Ordinal) && forwardedLines.Count==before
+        && PermissionPolicy.RequiredLevel("document.save_as",McpCopy,copiesRoots)==PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel("document.save_as",McpReal,copiesRoots)==PermissionLevel.WriteRealProject,
+        "revit_document_save_as of a test copy into an owner-enabled root is save_as_refused outside_copies_root before the pipe, so write-copies stays truthful");
 }
 // chat-export-save: the policy is re-read when .bim/revit-enabled-roots.txt changes, so a folder the owner enables
 // works without restarting the MCP server (and Claude).

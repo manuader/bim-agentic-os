@@ -39,6 +39,8 @@ public static class RevitCommandCodes
     public const string FamilySourceRefused = "family_source_refused";
     // document.save_copy (P1-08): the copy target or the open document breaks a RevitSaveCopyGuard rule (detail starts with the reason).
     public const string SaveCopyRefused = "save_copy_refused";
+    // document.save_as (P9-08): the new file or the open document breaks a RevitSaveAsGuard rule (detail starts with the reason).
+    public const string SaveAsRefused = "save_as_refused";
     // Transport.
     public const string ExplicitProcessPipeRequired = "explicit_process_pipe_required";
     public const string RequestTooLarge = "request_too_large";
@@ -58,7 +60,7 @@ public static class RevitCommandCodes
         EnvelopeInvalid, ProtocolVersionUnsupported, OperationIdInvalid, DocumentPathInvalid, DocumentIdentityInvalid, CommandUnknown,
         ArgsInvalid, LengthInvalid, AngleInvalid, CurveTooShort, ArcCollinear, ArcRadiusInvalid, ArcSweepInvalid,
         BoundaryTooFewPoints, BoundaryEdgeTooShort, BoundaryZeroArea, BoundarySelfIntersecting, LevelsNotDistinct,
-        DocumentNotEnabled, DocumentLinkRefused, AllowlistInvalid, FamilySourceRefused, SaveCopyRefused, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, NoResponse, ResponseInvalid,
+        DocumentNotEnabled, DocumentLinkRefused, AllowlistInvalid, FamilySourceRefused, SaveCopyRefused, SaveAsRefused, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, NoResponse, ResponseInvalid,
     };
 
     public static IReadOnlyList<string> ExecutorReserved { get; } = new[] { OperationIdConflict, DocumentConflict, ReferenceNotFound, TransactionFailed };

@@ -47,6 +47,17 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   `*.NNNN.rvt` backup name; real projects, even owner-enabled ones, are refused) and returns its path and sha256.
   Revit's Save As re-points the open document: afterwards it IS the copy, so send later requests with the returned
   path; a retry is refused `target_exists`. Not run in an owner session yet.
+- **Save As of a real project** (`document.save_as {path}`, P9-08): saves the open document as a NEW `.rvt` (existing
+  folder, never over an existing file): an owner-enabled project into a folder of `.bim/revit-enabled-roots.txt` or
+  `.bim/native-runs`; a test copy only inside `.bim/native-runs` (`outside_copies_root` otherwise). At most 249
+  characters (room for Revit's backup names). Give a plain drive path with backslashes (`C:\...\Cabaña v2.rvt`): UNC, relative or `/`
+  paths, `..`, device names (`CON`, `NUL`, ...), `:` streams, 8.3 short names, `.rfa`/`.rte` and `*.NNNN.rvt` backup
+  names are refused `args_invalid`/`save_as_refused` before Revit is touched. Not for workshared, cloud or family
+  documents. Afterwards the open document IS the new file (reply: `path`, `previous_path`, sha256); send later
+  requests with the new path. The check after the save (links in parent folders resolved, link guard re-walked) only
+  DETECTS a file written outside the enabled roots, it cannot prevent it: on that failure close the document in Revit
+  and do not continue. Not run in an owner session yet; unverified there: relative links (Revit links, CAD imports by
+  relative path) may stop resolving after Save As to another folder.
 - **Reviewing from the phone**: `view.export_image` (a 3D view, plan, section, elevation or sheet; `pixel_size` 1600 by
   default; optional `visual_style` realistic/shaded/hidden_line/consistent_colors, rolled back after the export) writes a
   PNG/JPG under `<repo>/.bim/exports/<utc>/` and returns its absolute path, size and sha256; nothing in the model changes.
@@ -117,8 +128,8 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   left. Barrel over 6000 x 10000 with 300 overhangs: plane [0,0]->[6000,0], arc [-300,2700]->[6300,2700] through
   [3000,3800], extrusion -300 to 10300.
 - Document save: added (chat-export-save, unit-tested, executor compiled only). Save as a new test copy under
-  `.bim/native-runs`: added (P1-08 `document.save_copy`, unit-tested, executor compiled only); general Save As of real
-  projects is still pending.
+  `.bim/native-runs`: added (P1-08 `document.save_copy`, unit-tested, executor compiled only); Save As of real
+  projects into enabled folders: added (P9-08 `document.save_as`, unit-tested, executor compiled only).
 - View image export for phone review: added (chat-export-save, unit-tested, executor compiled only).
 - Model in-place / direct shapes for site-specific elements (a boulder kept inside the building): added as
   `direct_shape.create` (P9-09, unit-tested, executor compiled only): category site/planting/entourage/topography/

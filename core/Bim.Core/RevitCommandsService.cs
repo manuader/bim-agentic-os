@@ -34,6 +34,10 @@ public static class RevitCommandService
         if (envelope.Args is DocumentSaveCopyArgs copy
             && RevitSaveCopyGuard.Check(copy.Path, envelope.Document.Path, policy.RepositoryDirectory, probe ?? RevitFileSystemProbe.Real, RevitSaveCopyProbe.Real) is { } copyRefused)
             return Failure(RevitCommandCodes.SaveCopyRefused, copyRefused.Field, copyRefused.Detail);
+        // document.save_as (P9-08): target path shape, enabled root, links and existence, and an enabled source.
+        if (envelope.Args is DocumentSaveAsArgs saveAs
+            && RevitSaveAsGuard.Check(saveAs.Path, envelope.Document.Path, policy, probe ?? RevitFileSystemProbe.Real, RevitSaveCopyProbe.Real) is { } saveAsRefused)
+            return Failure(RevitCommandCodes.SaveAsRefused, saveAsRefused.Field, saveAsRefused.Detail);
         // command.batch: every family.load step is checked too (field args.steps[i].args.path).
         foreach (var (prefix, args) in RevitCommandBatch.GuardedArgs(envelope))
             if (args is FamilyLoadArgs load && RevitFamilySourceGuard.Check(load.Path, policy.FamilySourceRoots, probe ?? RevitFileSystemProbe.Real) is { } source)
