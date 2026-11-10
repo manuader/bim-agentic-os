@@ -70,6 +70,8 @@ internal static class ApplyEditsTests
             try { using var document = JsonDocument.Parse(text); return document.RootElement.Clone(); }
             catch (JsonException) { return null; }
         }
+        static string[] JournalLines(SortedDictionary<string, (byte[] Bytes, DateTime Time)> snapshot) =>
+            snapshot.TryGetValue("journal.jsonl", out var journal) ? Encoding.UTF8.GetString(journal.Bytes).Split('\n', StringSplitOptions.RemoveEmptyEntries) : Array.Empty<string>();
         static string Raw(JsonElement? element, string name) => element is { ValueKind: JsonValueKind.Object } e && e.TryGetProperty(name, out var value) ? value.GetRawText() : "<missing " + name + ">";
         string LibraryCode(Project project, IReadOnlyList<ElementEdit> edits)
         {
@@ -108,8 +110,9 @@ internal static class ApplyEditsTests
             var expectedAdded = new[] { checkpoint, "journal.jsonl" }.Where(f => !before.ContainsKey(f)).Order(StringComparer.Ordinal).ToArray();
             Check(added.SequenceEqual(expectedAdded) && before.Keys.All(after.ContainsKey) && after.ContainsKey(checkpoint) && after.ContainsKey("journal.jsonl"),
                 "the commit adds only " + checkpoint + " and the journal (" + name + ")", string.Join(",", after.Keys));
-            var journal = Encoding.UTF8.GetString(after["journal.jsonl"].Bytes).Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            Check(journal.Length == head.Revision + 1 && Raw(Json(journal[^1]), "plan") == libraryPlan, "the journal gains one prepared line carrying the plan (" + name + ")", journal.Length.ToString(CultureInfo.InvariantCulture));
+            var journalBefore = JournalLines(before); var journal = JournalLines(after);
+            Check(journal.Length == journalBefore.Length + 1 && journal.Length > 0 && Raw(Json(journal[^1]), "plan") == libraryPlan && Raw(Json(journal[^1]), "state") == "\"prepared\"",
+                "the journal gains exactly one prepared line carrying the plan (" + name + ")", journalBefore.Length.ToString(CultureInfo.InvariantCulture) + " -> " + journal.Length.ToString(CultureInfo.InvariantCulture));
             Check(File.ReadAllBytes(editsPath).AsSpan().SequenceEqual(editsBytes) && File.GetLastWriteTimeUtc(editsPath) == editsTime, "the edits file is unchanged (" + name + ")");
         }
         // A refusal: exact envelope, exit 1, the store and the edits file unchanged.
@@ -159,6 +162,61 @@ internal static class ApplyEditsTests
             Check(busy.Exit == 1 && busy.Out == FailedCode("apply_edits_store_unavailable"), "refuses a store whose commit lock is held as apply_edits_store_unavailable", D(busy));
             Check(Same(before, Snapshot(chain)), "nothing written to the store when its lock is held");
         }
+        // Racing runs on one head with the same edits: each run's idempotency key is its own, so exactly one commits and
+        // every other is refused (stale head once the winner landed, store unavailable while it holds the lock); none
+        // reports the winner's commit as its own. The store ends at head + 1 with one new journal line and one receipt.
+        {
+            var raced = NewStore(baseProject);
+            var racedEdits = Input("raced.edits.json", JsonSerializer.Serialize(new[] { ElementEdit.Update(widened) }));
+            var racedPlan = JsonSerializer.Serialize(IncrementalDiff.Diff(baseProject, new[] { ElementEdit.Update(widened) }).Plan);
+            var processes = new List<(Process Process, Task<string> Out)>();
+            for (var i = 0; i < 8; i++)
+            {
+                var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+                foreach (var argument in new[] { cliDll, "apply-edits", "--store", raced, "--edits", racedEdits }) start.ArgumentList.Add(argument);
+                var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+                _ = process.StandardError.ReadToEndAsync();
+                processes.Add((process, process.StandardOutput.ReadToEndAsync()));
+            }
+            var results = new List<(int Exit, string Out)>();
+            foreach (var (process, output) in processes)
+            {
+                if (!process.WaitForExit(120000)) { process.Kill(true); results.Add((-1, "<timed out>")); continue; }
+                process.WaitForExit();
+                results.Add((process.ExitCode, output.Result.TrimEnd('\r', '\n')));
+                process.Dispose();
+            }
+            var winners = results.Where(r => r.Exit == 0).ToArray();
+            var losers = results.Where(r => r.Exit != 0).ToArray();
+            var detail = string.Join(" ; ", results.Select(r => r.Exit.ToString(CultureInfo.InvariantCulture) + " " + (r.Out.Length > 120 ? r.Out[..120] : r.Out)));
+            Check(winners.Length == 1 && Raw(Json(winners[0].Out), "revision") == "1" && Raw(Json(winners[0].Out), "plan") == racedPlan, "8 racing runs on one head: exactly one succeeds, at revision 1 with the plan", detail);
+            Check(losers.Length == 7 && losers.All(r => r.Exit == 1 && (r.Out == FailedCode("apply_edits_stale_head") || r.Out == FailedCode("apply_edits_store_unavailable"))),
+                "8 racing runs on one head: the other 7 are refused as apply_edits_stale_head or apply_edits_store_unavailable", detail);
+            var racedState = Json(File.ReadAllText(Path.Combine(raced, "project.json")));
+            var receipts = racedState is { } st && st.TryGetProperty("Receipts", out var rec) && rec.ValueKind == JsonValueKind.Object ? rec.EnumerateObject().Count() : -1;
+            Check(new ProjectStore(raced).Read().Revision == 1 && JournalLines(Snapshot(raced)).Length == 1 && receipts == 1,
+                "after the race the store is at revision 1 with one journal line and one receipt", "receipts " + receipts.ToString(CultureInfo.InvariantCulture));
+        }
+        // A commit failing after it started writing (project.tmp is a directory, so publishing the new snapshot fails) is
+        // not "nothing written": apply_edits_commit_incomplete. On disk: project.json still holds the old head, the
+        // checkpoint of the head and one "prepared" journal line carrying the plan were written (ADR0007 recovery input).
+        {
+            var broken = NewStore(baseProject);
+            Directory.CreateDirectory(Path.Combine(broken, "project.tmp"));
+            var brokenEdits = Input("broken.edits.json", JsonSerializer.Serialize(new[] { ElementEdit.Update(widened) }));
+            var brokenPlan = JsonSerializer.Serialize(IncrementalDiff.Diff(baseProject, new[] { ElementEdit.Update(widened) }).Plan);
+            var before = Snapshot(broken);
+            var r = Cli("apply-edits", "--store", broken, "--edits", brokenEdits);
+            Check(r.Exit == 1 && r.Out == FailedCode("apply_edits_commit_incomplete"), "a commit failing after it started writing is apply_edits_commit_incomplete, not store_unavailable", D(r));
+            var after = Snapshot(broken);
+            Check(after["project.json"].Bytes.AsSpan().SequenceEqual(before["project.json"].Bytes) && new ProjectStore(broken).Read().Revision == 0, "commit_incomplete: project.json still holds the old head");
+            Check(after.ContainsKey("checkpoint-0.json") && File.ReadAllText(Path.Combine(broken, "checkpoint-0.json")) == JsonSerializer.Serialize(baseProject), "commit_incomplete: checkpoint-0.json holds the unchanged head");
+            var lines = JournalLines(after);
+            Check(lines.Length == 1 && Raw(Json(lines[0]), "state") == "\"prepared\"" && Raw(Json(lines[0]), "plan") == brokenPlan, "commit_incomplete: one prepared journal line carrying the plan", lines.Length.ToString(CultureInfo.InvariantCulture));
+            Check(Directory.Exists(Path.Combine(broken, "project.tmp")) && after.Keys.Except(before.Keys, StringComparer.Ordinal).Order(StringComparer.Ordinal).SequenceEqual(new[] { "checkpoint-0.json", "journal.jsonl" }),
+                "commit_incomplete: only the checkpoint and the journal were added; project.tmp is still the directory", string.Join(",", after.Keys));
+            Check(r.Err.Contains("commit incomplete", StringComparison.Ordinal), "commit_incomplete writes the underlying exception to stderr", r.Err);
+        }
         // Still committable afterwards with the right head.
         Applies("after the refusals, with --expected-revision 3", chain, new[] { ElementEdit.Update(widened with { GeometryMetres = new[] { 0, 0, 7, 0, 3, 0.2 } }) }, "3");
 
@@ -192,8 +250,16 @@ internal static class ApplyEditsTests
             ("a duplicate key", "[{\"Action\":\"delete\",\"Id\":\"00000000-0000-0000-0000-000000000003\",\"Id\":\"00000000-0000-0000-0000-000000000003\"}]"),
             ("a duplicate nested key", "[{\"Action\":\"update\",\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Element\":{\"Id\":\"00000000-0000-0000-0000-000000000002\",\"Kind\":\"wall\",\"GeometryMetres\":[0,0,5.4,0,3,0.2],\"Dependencies\":[],\"Provenance\":{\"Source\":\"a\",\"Source\":\"a\",\"Approval\":\"specified\"}}}]"),
         })
-            Refused("edits that are " + label, "apply_edits_edits_invalid", store, Input("bad-" + label.Replace(' ', '-') + ".edits.json", text));
-        Refused("a null edit entry", "edit_invalid", store, Input("null-entry.edits.json", "[null]"));
+        {
+            // The same refusal as diff-edits on the same file (the shared EditsInput parser; each verb names its own code).
+            var path = Input("bad-" + label.Replace(' ', '-') + ".edits.json", text);
+            var diffEdits = Cli("diff-edits", "--project", headPath, "--edits", path);
+            Check(diffEdits.Exit == 1 && diffEdits.Out == FailedCode("diff_edits_edits_invalid"), "diff-edits refuses the same edits that are " + label + " as diff_edits_edits_invalid", D(diffEdits));
+            Refused("edits that are " + label, "apply_edits_edits_invalid", store, path);
+        }
+        var nullEntry = Input("null-entry.edits.json", "[null]");
+        Check(Cli("diff-edits", "--project", headPath, "--edits", nullEntry).Out == FailedCode("edit_invalid"), "diff-edits refuses a null edit entry as edit_invalid");
+        Refused("a null edit entry", "edit_invalid", store, nullEntry);
 
         // 5. Bounded and missing inputs: BoundedInput's codes, nothing written.
         var okEdits = Input("ok.edits.json", JsonSerializer.Serialize(new[] { ElementEdit.Update(widened) }));
@@ -257,6 +323,17 @@ internal static class ApplyEditsTests
                 "apply-edits reads through BoundedInput, diffs through IncrementalDiff and writes only through ProjectStore.Commit");
             Check(source.Contains("Console.Error.WriteLine(", StringComparison.Ordinal) && source.Contains("InternalError", StringComparison.Ordinal), "apply-edits writes the type and message of an internal error to stderr");
         }
+        // The edits parser is shared with diff-edits, not copied.
+        var diffEditsSource = Path.Combine(root, "interfaces", "cli", "DiffEditsCommand.cs");
+        var sharedSource = Path.Combine(root, "interfaces", "cli", "EditsInput.cs");
+        if (File.Exists(sourcePath) && File.Exists(diffEditsSource) && File.Exists(sharedSource))
+        {
+            var verbs = new[] { File.ReadAllText(sourcePath), File.ReadAllText(diffEditsSource) };
+            Check(verbs.All(v => v.Contains("EditsInput.Parse(", StringComparison.Ordinal) && v.Contains("EditsInput.LibraryCodes", StringComparison.Ordinal) && !v.Contains("HasDuplicateKey", StringComparison.Ordinal) && !v.Contains("JsonUnmappedMemberHandling", StringComparison.Ordinal))
+                && File.ReadAllText(sharedSource).Contains("HasDuplicateKey", StringComparison.Ordinal),
+                "diff-edits and apply-edits share interfaces/cli/EditsInput.cs (parser and library codes), neither keeps a copy");
+        }
+        else Check(false, "interfaces/cli/EditsInput.cs and DiffEditsCommand.cs exist");
         Check(Cli("no-such-verb").Out.Contains("apply-edits --store store-directory --edits edits.json [--expected-revision n]", StringComparison.Ordinal), "default usage lists apply-edits");
     }
 }
