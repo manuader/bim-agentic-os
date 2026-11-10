@@ -10,6 +10,8 @@ using System.Text.Json;
 sealed class DependentsFakeTransport : IRevitCommandTransport
 {
     readonly Dictionary<string, int> dryRunsByTarget = new(StringComparer.OrdinalIgnoreCase);
+    // Operation ids already passed to Inner: the add-in answers those from its receipt store before resolving targets.
+    readonly HashSet<string> forwarded = new(StringComparer.Ordinal);
 
     public DependentsFakeTransport(ReplaceFakeTransport inner) => Inner = inner;
     public ReplaceFakeTransport Inner { get; }
@@ -40,7 +42,8 @@ sealed class DependentsFakeTransport : IRevitCommandTransport
         if (envelope.Args is not ElementDeleteArgs { DryRun: true } delete)
         {
             Calls.Add("write " + envelope.Command + " " + envelope.OperationId);
-            if (AddInMissingForm && envelope.Args is ElementDeleteArgs write && MissingReply(write) is { } refused) return refused;
+            if (AddInMissingForm && !forwarded.Contains(envelope.OperationId) && envelope.Args is ElementDeleteArgs write && MissingReply(write) is { } refused) return refused;
+            forwarded.Add(envelope.OperationId);
             return Inner.Send(envelopeJson);
         }
         Calls.Add("dry " + envelope.OperationId + " " + string.Join(",", delete.ElementUids));
@@ -436,6 +439,9 @@ static class UpdateDependentsTests
             && goneAddIn.Run is { Report.Status: RevitPlanRunStatus.Completed } addInRun && addInRun.Plan.Gone.SequenceEqual(new[] { tagDoor1 })
             && Json(goneAddIn.Run.Realized) == Json(gone.Run?.Realized),
             "the add-in's missing-target form (args.element_uids[0], no element with UniqueId) is probed missing and run as gone", Failure(goneAddIn.Planned));
+
+        Check(DocUpdateDependentsCodes.DependentShared == "dependent_shared" && DocUpdateDependentsCodes.ReplanInternal == "replan_internal",
+            "the new refusal codes are stable strings");
 
         // ---- Refusals of the inputs ----
         Check(Code(() => DocUpdateDependents.Plan(null!, inserted, bindings, insertedRealized, Revit(insertedRealized))) == "null"

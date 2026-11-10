@@ -13,12 +13,22 @@ namespace Bim.Core;
 //   2. dry-runs every planned element.delete through the transport, in plan order, with only its stale target and
 //      dry_run true (the add-in rolls it back: nothing is written, no receipt is stored), and reads the dependents from
 //      the delete readback (strictly: a dry run of that very target, every dependent listed, count and SHA-256 agreeing);
-//   3. checks each dependent: one realized for a kept source (an item not regenerated, or a model element) is refused
-//      dependent_kept; one that is neither the stale instance of a regenerated item nor in accepted (UniqueIds the
-//      caller has confirmed, e.g. an untracked annotation a human reviewed) is refused dependent_unknown;
-//   4. replans with DocUpdate.Plan and the collected dependents;
+//   3. checks each dependent (UniqueIds compared ignoring hex case): one realized for a kept source (an item not
+//      regenerated, or a model element) is refused dependent_kept; the stale instance of a regenerated item deleted
+//      LATER in plan order is refused dependent_planned (only one deleted earlier is gone by then); one that is neither a
+//      stale instance nor in accepted (UniqueIds the caller has confirmed, e.g. an untracked annotation a human
+//      reviewed) is refused dependent_unknown; an accepted untracked one reported by two planned deletes is refused
+//      dependent_shared (the later delete would confirm an element the earlier one already removed). Each refusal
+//      names the key and the UniqueId and stops the first pass;
+//   4. replans with DocUpdate.Plan and the collected dependents (a refusal keeps DocReplace's dependents code; any
+//      other message is replan_internal, a defect);
 //   5. dry-runs every replanned delete again, with exactly its planned args plus dry_run true, and refuses
 //      dependents_changed when Revit now reports another dependent set (or the target appeared or disappeared).
+// The confirm pass runs on the model as it is before the run (nothing deleted yet), so it compares each replanned
+// delete's full reported set with its first probe's full set, not with the confirm_dependents the plan sends (those
+// leave out what earlier deletes remove). It narrows, but cannot close, the window between confirmation and
+// execution: a model change after the confirm pass is caught by the executor itself, which refuses a real delete whose
+// dependents differ from confirm_dependents (the run then fails typed and resumes as DocUpdate.Resume).
 // Only dry runs are sent before the second plan exists; Update runs that plan (DocUpdate.Run) only when every check
 // passed. A target the first dry run answers reference_not_found (Revit already deleted it) gets no dependents and is
 // probed Missing; the run then reports it Gone as DocUpdate does. A transport or reply failure is returned typed with
@@ -49,6 +59,10 @@ public static class DocUpdateDependentsCodes
     public const string DependentsChanged = "dependents_changed";
     // ArgumentException message: an accepted entry that is not a UniqueId.
     public const string AcceptedInvalid = "accepted_invalid";
+    // An accepted untracked dependent reported by more than one planned delete.
+    public const string DependentShared = "dependent_shared";
+    // The second plan refused with something other than a dependents code (a defect: the inputs already planned once).
+    public const string ReplanInternal = "replan_internal";
 }
 
 public static class DocUpdateDependents
@@ -56,6 +70,12 @@ public static class DocUpdateDependents
     public const int Version = 1;
     const string Collect = "collect";
     const string Confirm = "confirm";
+    // The DocReplace refusals the collected dependents can cause in the second plan.
+    static readonly string[] ReplanCodes =
+    {
+        DocReplaceCodes.DependentsUnknownKey, DocReplaceCodes.DependentsWithoutStale, DocReplaceCodes.DependentsInvalid,
+        DocReplaceCodes.DependentKept, DocReplaceCodes.DependentPlanned, DocReplaceCodes.DependentIsTarget,
+    };
 
     public static DocUpdateDependentsResult Plan(Project before, Project after, RevitBindings bindings, IReadOnlyDictionary<string, string> realized,
         IRevitCommandTransport transport, IReadOnlyCollection<string>? accepted = null)
@@ -82,8 +102,14 @@ public static class DocUpdateDependents
         DocUpdateDependentsResult Fail(string code, string? key, string? operation, string? field, string? detail) =>
             new(first, probes.ToArray(), Copy(dependents), null, new DocUpdateDependentsFailure(code, key, operation, field, detail));
 
-        foreach (var (step, item) in Deletes(first))
+        var firstDeletes = Deletes(first).ToArray();
+        // Stale UniqueId -> position of its delete in plan order; an accepted untracked dependent -> the key reporting it.
+        var position = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < firstDeletes.Length; i++) position[firstDeletes[i].Item.StaleUniqueId!] = i;
+        var untracked = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < firstDeletes.Length; index++)
         {
+            var (step, item) = firstDeletes[index];
             var operation = OperationId(Collect, step.OperationId);
             var args = new JsonObject { ["element_uids"] = new JsonArray(JsonValue.Create(item.StaleUniqueId!)), ["dry_run"] = true };
             var (reported, failure) = DryRun(document, operation, args, item.StaleUniqueId!, transport);
@@ -97,15 +123,27 @@ public static class DocUpdateDependents
             foreach (var uid in list)
             {
                 if (kept.Contains(uid)) return Fail(DocReplaceCodes.DependentKept, item.Key, operation, "dependents", uid);
-                if (!stale.Contains(uid) && !allowed.Contains(uid)) return Fail(DocUpdateDependentsCodes.DependentUnknown, item.Key, operation, "dependents", uid);
+                if (position.TryGetValue(uid, out var at))
+                {
+                    if (at > index) return Fail(DocReplaceCodes.DependentPlanned, item.Key, operation, "dependents", uid);
+                    continue;
+                }
+                if (stale.Contains(uid)) continue;
+                if (!allowed.Contains(uid)) return Fail(DocUpdateDependentsCodes.DependentUnknown, item.Key, operation, "dependents", uid);
+                if (untracked.ContainsKey(uid)) return Fail(DocUpdateDependentsCodes.DependentShared, item.Key, operation, "dependents", uid);
             }
+            foreach (var uid in list) if (!stale.Contains(uid)) untracked[uid] = item.Key;
             probes.Add(new DocUpdateDependentsProbe(item.Key, item.StaleUniqueId!, operation, list, false));
             dependents[item.Key] = list;
         }
 
         DocUpdatePlan second;
         try { second = DocUpdate.Plan(before, after, bindings, realized, Copy(dependents)); }
-        catch (ArgumentException error) { return Fail(error.Message, null, null, null, null); }
+        catch (ArgumentException error)
+        {
+            return ReplanCodes.Contains(error.Message, StringComparer.Ordinal) ? Fail(error.Message, null, null, null, null)
+                : Fail(DocUpdateDependentsCodes.ReplanInternal, null, null, null, error.GetType().Name);
+        }
 
         var byKey = probes.ToDictionary(probe => probe.Key, StringComparer.Ordinal);
         var confirmed = 0;
@@ -208,6 +246,8 @@ public static class DocUpdateDependents
             : receipt.RequestSha256 != envelope.RequestSha256 ? "request_sha256"
             : null;
         if (mismatch is not null) return (null, Failure(RevitCommandCodes.ResponseInvalid, "receipt", "receipt " + mismatch + " does not match the request"));
+        // A dry run stores no receipt, so it is never a replay.
+        if (receipt.Replayed) return (null, Failure(RevitCommandCodes.ResponseInvalid, "receipt.replayed", "a dry run cannot be replayed"));
         if (response.Created.Count > 0 || response.Modified.Count > 0 || response.Deleted.Count > 0)
             return (null, Failure(RevitCommandCodes.ResponseInvalid, "deleted", "a dry run reported changes"));
         var dependents = Readback(response.ReadbackJson, target);
