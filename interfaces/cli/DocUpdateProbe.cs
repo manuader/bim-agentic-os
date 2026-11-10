@@ -13,8 +13,8 @@ namespace Bim.Cli;
 // size cap, a receipt answering the request), so a document outside an enabled test root is refused document_not_enabled
 // before anything reaches the pipe.
 
-// Where the dry runs go: the enabled-roots policy (loaded only once a probe is about to run) and the one-line pipe
-// client. Real is what the CLI uses; tests pass a fake executor here.
+// Where the dry runs go: the enabled-roots policy (read lazily, once, just before the first dry run) and the one-line
+// pipe client. Real is what the CLI uses; tests pass a fake executor here.
 internal sealed record DocUpdateRevit(Func<RevitCommandPolicy> Policy, Func<string, string, string?> Pipe)
 {
     public static DocUpdateRevit Real { get; } = new(() => new RevitCommandPolicySource(AppContext.BaseDirectory).Current(), RevitCommandService.PipeTransport);
@@ -23,23 +23,41 @@ internal sealed record DocUpdateRevit(Func<RevitCommandPolicy> Policy, Func<stri
 internal static class DocUpdateProbe
 {
     // The process pipe rule of revit-command, applied before any file or pipe I/O: null when accepted, else the refusal
-    // code and field.
-    public static (string Code, string? Field)? PipeProblem(string pipeName)
+    // code, field and detail.
+    public static (string Code, string? Field, string? Detail)? PipeProblem(string pipeName)
     {
         if (RevitCommandService.RejectPipe(pipeName) is not { } rejected) return null;
         var refusal = RevitCommandResponse.Parse(rejected.Line);
-        return (refusal.Code, refusal.Field);
+        return (refusal.Code, refusal.Field, refusal.Detail);
     }
 
-    // DocUpdateDependents.Plan with every request sent through RevitCommandService.Run on pipeName. The policy is loaded
-    // here, after the accepted UniqueIds are checked (a RevitCommandException from it propagates typed); DocUpdate.Plan's
-    // refusals propagate unchanged.
+    // DocUpdateDependents.Plan with every request sent through RevitCommandService.Run on pipeName. The accepted
+    // UniqueIds are checked first; DocUpdate.Plan's refusals of the first plan propagate unchanged (before the policy is
+    // read). The policy is read by the first Send only (LazyPolicy), so a plan without deletes never reads it.
     public static DocUpdateDependentsResult Plan(Project before, Project after, RevitBindings bindings, IReadOnlyDictionary<string, string> realized,
         string pipeName, IReadOnlyCollection<string> accepted, DocUpdateRevit revit)
     {
         // The library's accepted_invalid, checked before the policy is read.
         if (accepted.Any(uid => !RevitCommandProtocol.IsUniqueId(uid))) throw new ArgumentException(DocUpdateDependentsCodes.AcceptedInvalid);
-        var policy = revit.Policy();
-        return DocUpdateDependents.Plan(before, after, bindings, realized, new RevitServiceTransport(pipeName, policy, revit.Pipe), accepted);
+        return DocUpdateDependents.Plan(before, after, bindings, realized, new LazyPolicy(pipeName, revit), accepted);
+    }
+
+    // Reads the policy once, at the first request, then sends every request through RevitServiceTransport. A
+    // RevitCommandException from the policy becomes that request's typed failure reply (code, field, detail), so
+    // DocUpdateDependents reports it with the key and operation id of the dry run it stopped; nothing reaches the pipe.
+    sealed class LazyPolicy(string pipeName, DocUpdateRevit revit) : IRevitCommandTransport
+    {
+        RevitServiceTransport? inner;
+        RevitCommandException? refused;
+
+        public string? Send(string envelopeJson)
+        {
+            if (inner is null && refused is null)
+            {
+                try { inner = new RevitServiceTransport(pipeName, revit.Policy(), revit.Pipe); }
+                catch (RevitCommandException error) { refused = error; }
+            }
+            return refused is { } policyError ? RevitCommandResponse.Failure(policyError.Code, policyError.Field, policyError.Detail).ToJson() : inner!.Send(envelopeJson);
+        }
     }
 }
