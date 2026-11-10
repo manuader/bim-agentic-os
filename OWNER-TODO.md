@@ -184,3 +184,8 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - `git pull` (main 89b29cd). New: CLI `catalogue-report --run .bim/native-runs/<run>` — after your next `-Catalogue` run, it summarises the result (per-group counts, failing steps requested vs observed, copy sha256). New Revit command `document.save_as` (compiled only): a test copy may only Save As into .bim/native-runs; an owner project into an enabled root, never overwriting.
 - [ ] 🔒 Optional, with Revit: `document.save_as` has never run in Revit. It will be added to the -Catalogue copia group by a later relay; until then nothing to do. After the next `-Catalogue` run, `dotnet run --project interfaces/cli -- catalogue-report --run .bim/native-runs/<run-guid>` and paste the output in chat if anything failed.
 - Still open: 🔒 ONE `-Catalogue` run (103 steps, answer No at the save prompt), N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence, delete stray branches (`git push origin --delete relay168-P6-11-baseline relay159-P6-09-baseline relay161-P8-08-probe`).
+
+## Relay174 (2026-11-10, cloud)
+- [ ] `git pull` (main is now 4854d3e).
+- [ ] 🔒 The single -Catalogue run now has 104 steps: consultas gains read-only `q-walls-next` (follows the query.elements pagination cursor from q-walls-limit). Same command as before: `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once; answer No at Revit's save prompt), then `catalogue-report --run .bim/native-runs/<run>`.
+- No new decision needed. New code this run (apply-edits CLI, two-pass documentation dependents) is headless only.
