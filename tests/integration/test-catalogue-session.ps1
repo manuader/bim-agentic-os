@@ -217,7 +217,8 @@ Assert (@($roofFails.steps | Where-Object { $_.key -eq 'v2-roof' })[0].reason -l
 $sectionFails = (Invoke-FakeSequence @{ FailCommands = @('view.create_section') } -All).Result
 # P4-11: the documentation update makes its own section, so its section steps (and what needs them) fail there too.
 $sectionOthers = @($sectionFails.steps | Where-Object { !$_.passed -and $_.key -ne 'views-section' -and $_.key -notlike 'doc-up-*' })
-Assert ((Get-Group $sectionFails 'vistas').failed -eq 1 -and $sectionOthers.Count -eq 0 -and !@($sectionFails.steps | Where-Object { $_.key -eq 'doc-up-section' })[0].passed -and (Format-CatalogueSummary $sectionFails) -like '*resultado: FALLÓ en vistas, documentacion') "failing section: $(Get-FailedSteps $sectionFails)"
+$upSectionFails = @($sectionFails.steps | Where-Object { $_.key -eq 'doc-up-section' }) | Select-Object -First 1
+Assert ((Get-Group $sectionFails 'vistas').failed -eq 1 -and $sectionOthers.Count -eq 0 -and $null -ne $upSectionFails -and !$upSectionFails.passed -and (Format-CatalogueSummary $sectionFails) -like '*resultado: FALLÓ en vistas, documentacion') "failing section: $(Get-FailedSteps $sectionFails)"
 $slope = (Invoke-FakeSequence @{ RoofSlopeOff = $true } -All).Result
 $slopeReason = [string]@($slope.steps | Where-Object { $_.key -eq 'v2-roof' })[0].reason
 Assert ($slope.overall.failed -eq 1 -and $slopeReason -like '*se pidió 4*se observó 0*') "readback mismatch reports requested vs observed: $slopeReason"
