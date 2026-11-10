@@ -72,11 +72,11 @@ Check(server.Handle("""{"jsonrpc":"2.0","method":"notifications/unknown","params
 
 var list=Call(Request(2,"tools/list",null));
 var tools=list["result"]!["tools"]!.AsArray();
-Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,skills_lock_verify,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, mirror_drift_select, skills_lock_verify, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
+Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,skills_lock_verify,audit_verify,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, mirror_drift_select, skills_lock_verify, audit_verify, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
 Check(RevitCommandCatalogue.V1.Select(c=>c.ToolName).SequenceEqual(new[]{"revit_query_levels","revit_query_wall_types","revit_query_floor_types","revit_query_family_symbols","revit_wall_create","revit_opening_place","revit_floor_create","revit_room_create"}),"catalogue v1 tool names are the eight ADR0009 commands");
 Check(tools.All(t=>t!["inputSchema"]!["type"]!.GetValue<string>()=="object" && t!["inputSchema"]!["properties"] is JsonObject && t!["inputSchema"]!["required"] is JsonArray && !string.IsNullOrWhiteSpace(t!["description"]!.GetValue<string>())),"every tool has a JSON Schema object inputSchema and description");
 string Required(string tool)=>string.Join(",",tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!["inputSchema"]!["required"]!.AsArray().Select(x=>x!.GetValue<string>()));
-Check(Required("diff")=="before,after" && Required("validate")=="project" && Required("room")=="project_guid,revision,intent" && Required("plan")=="store_path,desired" && Required("mirror_drift")=="store_path,snapshot,mirror" && Required("skills_lock_verify")=="skills_path,lock_path","tool schemas require the CLI inputs");
+Check(Required("diff")=="before,after" && Required("validate")=="project" && Required("room")=="project_guid,revision,intent" && Required("plan")=="store_path,desired" && Required("mirror_drift")=="store_path,snapshot,mirror" && Required("skills_lock_verify")=="skills_path,lock_path" && Required("audit_verify")=="log_path","tool schemas require the CLI inputs");
 
 // P9-05: the Revit tools are derived from the whole catalogue (v1 + v2 + whatever is added later), never a fixed list.
 // Each tool states the P10-03 permission level it needs on a test copy; a write to a real project needs more.
@@ -118,7 +118,7 @@ foreach(var spec in RevitCommandCatalogue.All) {
     else if(writesFiles) Check(annotations!.Count==3 && annotations["destructiveHint"]?.GetValue<bool>()==false && annotations["idempotentHint"]?.GetValue<bool>()==false,spec.ToolName+" writes new files on every call: destructiveHint false, idempotentHint false");
     else Check(annotations!.Count==1,spec.ToolName+" read annotations carry only readOnlyHint");
 }
-Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal)).All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools carry no Revit permission level or annotations");
+Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal) && t!["name"]!.GetValue<string>()!="audit_verify").All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools other than audit_verify carry no permission level or annotations");
 Check(McpServer.PermissionLevelName(PermissionLevel.Read)=="read" && McpServer.PermissionLevelName(PermissionLevel.WriteCopies)=="write-copies" && McpServer.PermissionLevelName(PermissionLevel.WriteRealProject)=="write-real-project","PermissionLevelName names the three P10-03 levels");
 var outOfRange=false;
 try { McpServer.PermissionLevelName((PermissionLevel)99); } catch(ArgumentOutOfRangeException) { outOfRange=true; }
@@ -130,7 +130,7 @@ string? BuildError(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpS
 string? NameError(params string[] names) { try { McpServer.CheckToolNames(names); return null; } catch(InvalidOperationException error) { return error.Message; } }
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)}) is null,"an injected catalogue with distinct valid names builds");
 var syntheticServer=new McpServer(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)},RevitCommandPolicy.None,null,null);
-Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,skills_lock_verify,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
+Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,skills_lock_verify,audit_verify,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
 Check(BuildError(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")})=="tool_name_duplicate: revit_a_b_c","colliding tool names (a.b_c vs a_b.c) fail closed at construction");
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("query.levels")})=="tool_name_duplicate: revit_query_levels","a duplicated command fails closed at construction");
 Check(BuildError(new[]{Synthetic("a b")})=="tool_name_invalid: revit_a b","a tool name outside [a-zA-Z0-9_-] fails closed at construction");
@@ -781,6 +781,102 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
         var refused=ToolCall(writer,new JsonObject());
         Check(IsError(refused) && Text(refused)=="""{"status":"failed","code":"unknown_tool"}""","MCP exposes no lock writer: "+writer+" is unknown_tool");
     }
+}
+
+// P10-12 audit_verify: the read-only MCP face of the P10-11 CLI verb audit-verify (one engine, AuditVerifyTool). The tool
+// text equals the CLI stdout and AuditVerifier.VerifyBytes(...).ToJson() (or AuditSummary.ToJson with summary) byte for
+// byte on the same log; isError exactly when the report has a finding; typed refusals; it never writes the log, an anchor
+// or anything else; tools/list labels it permission level read.
+{
+    var auditRoot=Path.Combine(cliDir,"audit-verify"); Directory.CreateDirectory(auditRoot);
+    var auditClock=new DateTimeOffset(2026,11,10,9,30,0,TimeSpan.Zero);
+    var auditLogPath=Path.Combine(auditRoot,"audit.jsonl");
+    var auditLog=AuditLog.Open(auditLogPath,()=>{ auditClock=auditClock.AddHours(13); return auditClock; });
+    auditLog.Append("alice","op-1","wall.create","C:/models/a.rvt",true,"granted");
+    auditLog.Append("bob","op-2","door.delete","C:/models/a.rvt",false,"read-only actor");
+    auditLog.Append("alice","op-3","wall.create","C:/models/b.rvt",true,"granted");
+    var auditBytes=File.ReadAllBytes(auditLogPath);
+    var auditText=new System.Text.UTF8Encoding(false).GetString(auditBytes);
+    var auditLines=auditText.Split('\n')[..^1];
+    Check(auditLines.Length==3 && AuditLogFormat.VerifyBytes(auditBytes).Ok,"audit_verify fixture: a real AuditLog with three verified entries");
+    var auditHead=AuditLogFormat.VerifyBytes(auditBytes).Head;
+    string AuditFile(string name,string content) { var path=Path.Combine(auditRoot,name); File.WriteAllBytes(path,new System.Text.UTF8Encoding(false).GetBytes(content)); return path; }
+    string AnchorJson(long seq,string hash)=>"{\"kind\":\"audit-anchor\",\"version\":1,\"sequence\":"+seq.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"hash\":\""+hash+"\"}\n";
+    var headAnchor=AuditFile("head.json",AnchorJson(auditHead.Seq,auditHead.Hash));
+    var truncatedLog=AuditFile("truncated.jsonl",auditLines[0]+"\n"+auditLines[1]+"\n");
+    var editedLog=AuditFile("edited.jsonl",auditText.Replace("\"op-1\"","\"op-9\"",StringComparison.Ordinal));
+    var badJsonAnchor=AuditFile("bad.json","{");
+    var wrongKindAnchor=AuditFile("kind.json","{\"kind\":\"other\",\"version\":1,\"sequence\":3,\"hash\":\""+auditHead.Hash+"\"}\n");
+    var auditDir=Path.Combine(auditRoot,"a-directory"); Directory.CreateDirectory(auditDir);
+    var missingLog=Path.Combine(auditRoot,"missing.jsonl");
+    var missingAnchor=Path.Combine(auditRoot,"missing-head.json");
+    string[] AuditListing()=>Directory.GetFileSystemEntries(auditRoot).Select(e=>Path.GetFileName(e)!).Order(StringComparer.Ordinal).ToArray();
+    var auditListing=AuditListing();
+    var fileBytes=AuditListing().Where(name=>File.Exists(Path.Combine(auditRoot,name))).ToDictionary(name=>name,name=>File.ReadAllBytes(Path.Combine(auditRoot,name)));
+    JsonObject Audit(JsonObject arguments)=>ToolCall("audit_verify",arguments);
+    JsonObject Log(string path)=>new JsonObject{["log_path"]=path};
+    string AuditCode(JsonObject response) { using var doc=JsonDocument.Parse(Text(response)); return doc.RootElement.GetProperty("code").GetString()!; }
+    string Engine(byte[] bytes,AuditVerifyOptions? options=null,bool summary=false) { var report=AuditVerifier.VerifyBytes(bytes,options); return summary?AuditSummary.ToJson(report.VerifiedEntries):report.ToJson(); }
+
+    var auditTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="audit_verify");
+    Check(auditTool is not null && auditTool["description"]!.GetValue<string>().Contains("read-only",StringComparison.OrdinalIgnoreCase) && auditTool["description"]!.GetValue<string>().Contains("audit-verify",StringComparison.Ordinal),"audit_verify is listed, read-only, naming the CLI verb");
+    Check(auditTool!["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="read" && auditTool["permission_level"]==null,"audit_verify lists _meta bim-agentic-os/permission_level read");
+    Check(auditTool["annotations"]?["readOnlyHint"]?.GetValue<bool>()==true && auditTool["annotations"]!.AsObject().Count==1,"audit_verify annotations: readOnlyHint true only");
+    var auditSchema=auditTool["inputSchema"]!;
+    Check(string.Join(",",auditSchema["properties"]!.AsObject().Select(p=>p.Key))=="log_path,anchor_path,actors,summary"
+        && auditSchema["properties"]!["log_path"]!["type"]!.GetValue<string>()=="string" && auditSchema["properties"]!["anchor_path"]!["type"]!.GetValue<string>()=="string"
+        && auditSchema["properties"]!["actors"]!["type"]!.GetValue<string>()=="array" && auditSchema["properties"]!["actors"]!["items"]!["type"]!.GetValue<string>()=="string"
+        && auditSchema["properties"]!["summary"]!["type"]!.GetValue<string>()=="boolean" && auditSchema["additionalProperties"]!.GetValue<bool>()==false
+        && !auditSchema["properties"]!.AsObject().ContainsKey("write_anchor"),"audit_verify schema: log_path required; anchor_path, actors, summary optional; no write_anchor");
+
+    var clean=Audit(Log(auditLogPath));
+    Check(!IsError(clean) && HasType(clean) && AuditCode(clean)=="ok" && Text(clean)==Engine(auditBytes),"audit_verify clean log: ok report byte-equal to AuditVerifier.VerifyBytes(...).ToJson() | "+Text(clean));
+    Check(Text(clean)==Cli("audit-verify",auditLogPath),"audit_verify clean report byte-equal to the CLI audit-verify stdout");
+    var summary=Audit(new JsonObject{["log_path"]=auditLogPath,["summary"]=true});
+    Check(!IsError(summary) && Text(summary)==Engine(auditBytes,null,true) && Text(summary)==Cli("audit-verify",auditLogPath,"--summary"),"audit_verify summary byte-equal to AuditSummary.ToJson and the CLI --summary | "+Text(summary));
+    var notSummary=Audit(new JsonObject{["log_path"]=auditLogPath,["summary"]=false});
+    Check(!IsError(notSummary) && Text(notSummary)==Text(clean),"audit_verify summary false is the report");
+    var anchored=Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=headAnchor});
+    Check(!IsError(anchored) && Text(anchored)==Engine(auditBytes,new AuditVerifyOptions(null,auditHead)) && Text(anchored)==Cli("audit-verify",auditLogPath,"--anchor",headAnchor),"audit_verify with the head anchor: ok, byte-equal to the engine and the CLI --anchor");
+    var actorsOk=Audit(new JsonObject{["log_path"]=auditLogPath,["actors"]=new JsonArray("bob","alice")});
+    Check(!IsError(actorsOk) && Text(actorsOk)==Engine(auditBytes,new AuditVerifyOptions(new[]{"alice","bob"})) && Text(actorsOk)==Cli("audit-verify",auditLogPath,"--actors","alice,bob"),"audit_verify with every actor known: ok, byte-equal to the CLI --actors");
+    var actorUnknown=Audit(new JsonObject{["log_path"]=auditLogPath,["actors"]=new JsonArray("alice")});
+    Check(IsError(actorUnknown) && AuditCode(actorUnknown)=="audit_actor_unknown" && Text(actorUnknown)==Engine(auditBytes,new AuditVerifyOptions(new[]{"alice"})) && Text(actorUnknown)==Cli("audit-verify",auditLogPath,"--actors","alice"),"audit_verify reports audit_actor_unknown (isError), byte-equal to the engine and the CLI | "+Text(actorUnknown));
+    var truncated=Audit(new JsonObject{["log_path"]=truncatedLog,["anchor_path"]=headAnchor});
+    Check(IsError(truncated) && AuditCode(truncated)=="audit_truncated" && Text(truncated)==Engine(File.ReadAllBytes(truncatedLog),new AuditVerifyOptions(null,auditHead)) && Text(truncated)==Cli("audit-verify",truncatedLog,"--anchor",headAnchor),"audit_verify detects tail truncation against the anchor, byte-equal to the engine and the CLI | "+Text(truncated));
+    var truncatedSummary=Audit(new JsonObject{["log_path"]=truncatedLog,["anchor_path"]=headAnchor,["summary"]=true});
+    Check(IsError(truncatedSummary) && Text(truncatedSummary)==Cli("audit-verify",truncatedLog,"--anchor",headAnchor,"--summary"),"audit_verify summary of a failing log is isError and byte-equal to the CLI");
+    var edited=Audit(Log(editedLog));
+    Check(IsError(edited) && AuditCode(edited)=="audit_entry_edited" && Text(edited)==Engine(File.ReadAllBytes(editedLog)) && Text(edited)==Cli("audit-verify",editedLog),"audit_verify detects an edited entry, byte-equal to the engine and the CLI | "+Text(edited));
+
+    // Refusals: {"status":"failed","code"[,"detail"]}, isError, byte-equal to the CLI wherever the CLI can express the input.
+    var noLog=Audit(Log(missingLog));
+    Check(IsError(noLog) && Text(noLog)=="""{"status":"failed","code":"input_not_found"}""" && Text(noLog)==Cli("audit-verify",missingLog) && !File.Exists(missingLog),"audit_verify of a missing log is input_not_found, byte-equal to the CLI, creates nothing");
+    var dirLog=Audit(Log(auditDir));
+    Check(IsError(dirLog) && Text(dirLog)=="""{"status":"failed","code":"input_not_regular_file"}""" && Text(dirLog)==Cli("audit-verify",auditDir),"audit_verify of a directory is input_not_regular_file, byte-equal to the CLI");
+    var noAnchor=Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=missingAnchor});
+    Check(IsError(noAnchor) && Text(noAnchor)=="""{"status":"failed","code":"input_not_found"}""" && Text(noAnchor)==Cli("audit-verify",auditLogPath,"--anchor",missingAnchor) && !File.Exists(missingAnchor),"audit_verify with a missing anchor is input_not_found and never creates the anchor");
+    var badAnchor=Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=badJsonAnchor});
+    Check(IsError(badAnchor) && Text(badAnchor)=="""{"status":"failed","code":"audit_verify_anchor_invalid","detail":"not JSON"}""" && Text(badAnchor)==Cli("audit-verify",auditLogPath,"--anchor",badJsonAnchor),"audit_verify with a non-JSON anchor is audit_verify_anchor_invalid, byte-equal to the CLI");
+    var kindAnchor=Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=wrongKindAnchor});
+    Check(IsError(kindAnchor) && AuditCode(kindAnchor)=="audit_verify_anchor_invalid" && Text(kindAnchor)==Cli("audit-verify",auditLogPath,"--anchor",wrongKindAnchor),"audit_verify with a wrong-kind anchor is audit_verify_anchor_invalid, byte-equal to the CLI | "+Text(kindAnchor));
+    foreach(var (actors,label) in new[]{(new JsonArray(),"an empty actor list"),(new JsonArray(""),"an empty actor"),(new JsonArray("alice",1),"a non-string actor"),(new JsonArray(new string('a',PermissionPolicy.MaxActorChars+1)),"an over-long actor"),(new JsonArray("al\u0001ice"),"a control character")}) {
+        var refused=Audit(new JsonObject{["log_path"]=auditLogPath,["actors"]=actors});
+        Check(IsError(refused) && AuditCode(refused)=="audit_verify_actors_invalid","audit_verify refuses "+label+" as audit_verify_actors_invalid | "+Text(refused));
+    }
+    Check(IsError(Audit(Log(""))) && Text(Audit(Log("")))=="""{"status":"failed","code":"audit_verify_path_invalid","detail":"log"}""","audit_verify empty log_path is audit_verify_path_invalid (log)");
+    Check(Text(Audit(Log("a\0b")))=="""{"status":"failed","code":"audit_verify_path_invalid","detail":"log"}""","audit_verify log_path with NUL is audit_verify_path_invalid (log)");
+    Check(Text(Audit(Log(new string('x',5000))))=="""{"status":"failed","code":"audit_verify_path_invalid","detail":"log"}""","audit_verify refuses a log_path over the length bound");
+    Check(Text(Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=""}))=="""{"status":"failed","code":"audit_verify_path_invalid","detail":"anchor"}""","audit_verify empty anchor_path is audit_verify_path_invalid (anchor)");
+    Check(ErrorCode(Audit(new JsonObject()))==-32602,"audit_verify without log_path returns -32602");
+    Check(ErrorCode(Audit(new JsonObject{["log_path"]=1}))==-32602,"audit_verify with a non-string log_path returns -32602");
+    Check(ErrorCode(Audit(new JsonObject{["log_path"]=auditLogPath,["summary"]="yes"}))==-32602,"audit_verify with a non-boolean summary returns -32602");
+    Check(ErrorCode(Audit(new JsonObject{["log_path"]=auditLogPath,["actors"]="alice"}))==-32602,"audit_verify with a non-array actors returns -32602");
+    Check(ErrorCode(Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=1}))==-32602,"audit_verify with a non-string anchor_path returns -32602");
+    Check(ErrorCode(Audit(new JsonObject{["log_path"]=auditLogPath,["write_anchor"]=Path.Combine(auditRoot,"new-head.json")}))==-32602 && !File.Exists(Path.Combine(auditRoot,"new-head.json")),"audit_verify takes no write_anchor argument (-32602) and writes no anchor");
+    Check(AuditListing().SequenceEqual(auditListing) && fileBytes.All(pair=>File.ReadAllBytes(Path.Combine(auditRoot,pair.Key)).AsSpan().SequenceEqual(pair.Value)),"audit_verify never writes the log, an anchor or anything beside them");
+    var auditWriter=ToolCall("audit_write_anchor",new JsonObject());
+    Check(IsError(auditWriter) && Text(auditWriter)=="""{"status":"failed","code":"unknown_tool"}""","MCP exposes no anchor writer");
 }
 
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
