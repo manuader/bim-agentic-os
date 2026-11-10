@@ -413,7 +413,8 @@ internal static class CadPlanBriefTests
             {
                 var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Constraints = Sited(library.Brief.Constraints, double.Parse(w, CultureInfo.InvariantCulture), double.Parse(dp, CultureInfo.InvariantCulture)) });
                 var ob = Out(); var rb = Cli("cad-plan-brief", draftPath, ob, "--site-width", w, "--site-depth", dp);
-                Check(Ok(rb, ob) && Matches(ob, expected, out var whyb), "site " + w + " x " + dp + " (PrototypeLot bounds, inclusive) is accepted", R(rb) + " " + whyb);
+                var sameb = Matches(ob, expected, out var whyb);
+                Check(Ok(rb, ob) && sameb, "site " + w + " x " + dp + " (PrototypeLot bounds, inclusive) is accepted", R(rb) + " " + whyb);
             }
             var longName = new string('n', 2048);
             var o4 = Out(); var r4 = Cli("cad-plan-brief", draftPath, o4, "--name", longName);
