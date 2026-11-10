@@ -523,7 +523,9 @@ def import_project(input_path):
         deps = read[element_id]['Dependencies']
         level = read.get(deps[0]) if isinstance(deps, list) and deps and isinstance(deps[0], str) else None
         elevation = level['GeometryMetres'][0] if level is not None and level['Kind'] == 'level' else 0.0
-        read[element_id]['GeometryMetres'][4] = _snap(opening_base - elevation)
+        sill = _snap(opening_base - elevation)
+        # Sub-tolerance drift (a door nudged by 1e-8 m in Rhino) is no sill, like the other position checks here.
+        read[element_id]['GeometryMetres'][4] = 0.0 if abs(sill) <= POSITION_TOLERANCE else sill
     validate_project(project)
     # Walls and spaces must still stand on the level export placed them on: a vertical move in Rhino
     # has no BIM-IR field to land in, so it is refused rather than dropped.

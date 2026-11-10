@@ -554,31 +554,55 @@ class _Draft:
         path = _path_kind(geometry, self.conv)
         try:
             if path == 'axis':
-                values, base, mapping, notes = *_axis_wall(geometry, self.conv, self.options['max_vertices']), 'opening-axis-extrusion', []
+                values, base = _axis_wall(geometry, self.conv, self.options['max_vertices'])
+                alternatives, mapping, notes = [values], 'opening-axis-extrusion', []
             elif path == 'vertical':
-                values, base, mapping, notes = *_footprint_wall(geometry, self.conv, self.options['max_vertices']), 'opening-footprint-extrusion', ['footprint-rectangle']
+                alternatives, base = self.footprint_axes(geometry)
+                mapping, notes = 'opening-footprint-extrusion', ['footprint-rectangle']
             else:
                 raise _Unmapped('opening_extrusion_unsupported', 'extrusion path is neither horizontal nor vertical')
         except _Unmapped as error:
-            if error.reason in ('wall_extrusion_unsupported', 'wall_footprint_ambiguous'):
-                raise _Unmapped(error.reason.replace('wall_', 'opening_', 1), error.detail) from None
+            if error.reason in ('wall_extrusion_unsupported', 'space_not_rectangle'):
+                raise _Unmapped('opening_extrusion_unsupported', error.detail) from None
             raise
-        self.check_wall(values, base)
-        self.propose(kind, source['object_id'], source['object_id'], values, base, mapping, notes, source, inherited)
+        self.propose(kind, source['object_id'], source['object_id'], alternatives[0], base, mapping, notes, source, inherited)
+        self.candidates[-1]['alternatives'] = alternatives
+
+    def footprint_axes(self, extrusion):
+        """Both readings of a plan-rectangle opening (axis along either pair of sides, the long sides first), and its base.
+        The host decides which one is meant: an opening is often narrower along its wall than the wall is thick."""
+        ring, base, height = _footprint(extrusion, self.conv, self.options['max_vertices'])
+        a, b, c, d = ring
+        mid = lambda p, q: ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+        along_ab = [*mid(a, d), *mid(b, c), height, br._snap(math.dist(b, c))]
+        along_bc = [*mid(a, b), *mid(d, c), height, br._snap(math.dist(a, b))]
+        readings = [along_ab, along_bc] if math.dist(a, b) >= math.dist(b, c) else [along_bc, along_ab]
+        valid, first_error = [], None
+        for values in readings:
+            try:
+                self.check_wall(values, base)
+                valid.append(values)
+            except _Unmapped as error:
+                first_error = first_error or error
+        if not valid:
+            raise first_error
+        return valid, base
 
     def host(self, record, walls, level_for):
         """Put an opening on its host wall: the writer's declared host when it holds the opening, else the wall that holds
         it on its axis (then smallest id). Sets its [ax, ay, bx, by, sill, height] and [level, host]; False when unmapped."""
-        g, base, notes, declared = record['geometry'], record['base'], record['notes'], record['declared']
+        base, notes, declared = record['base'], record['notes'], record['declared']
         fits = []
-        for wall in walls:
-            deps = wall['dependencies']
-            if len(deps) > 1:
-                continue  # the writer needs the host on exactly its opening's level
-            fit = _fit(g, base, wall['geometry'], wall['base'])
-            if fit is not None:
-                fits.append((fit['offset'] > TOL, wall['id'], wall, fit))
-        fits.sort(key=lambda item: (item[0], item[1]))
+        for reading, g in enumerate(record.get('alternatives', [record['geometry']])):
+            for wall in walls:
+                if len(wall['dependencies']) > 1:
+                    # Reachable: the writer accepts a wall declared on two levels at one elevation, but an opening needs its
+                    # host on exactly its own level, so such a wall cannot host (else the whole draft would fail validation).
+                    continue
+                fit = _fit(g, base, wall['geometry'], wall['base'])
+                if fit is not None:
+                    fits.append((fit['offset'] > TOL, wall['id'], reading, wall, fit, g))
+        fits.sort(key=lambda item: item[:3])
         chosen = None
         if declared is not None and len(declared) == 2:
             chosen = next((item for item in fits if item[1] == declared[1]), None)
@@ -591,9 +615,9 @@ class _Draft:
             notes.append('host-inferred')
             if declared is not None:
                 notes.append('declared-host-ignored')
-            if len(fits) > 1:
+            if len({item[1] for item in fits}) > 1:
                 notes.append('host-ambiguous')
-        _, host_id, wall, fit = chosen
+        _, host_id, reading, wall, fit, g = chosen
         points = [(g[0], g[1]), (g[2], g[3])]
         projected = fit['offset'] > TOL
         if projected:
@@ -611,11 +635,21 @@ class _Draft:
                 self.skip(record['source'], 'door_sill_not_zero', f'door bottom is {sill} m above its host wall base; BIM-IR doors stand on their level')
                 return False
             sill = 0.0
+        if fit['s0'] > fit['s1']:
+            points.reverse()
+        geometry = [points[0][0], points[0][1], points[1][0], points[1][1], sill, g[4]]
+        # The writer's own rule, so a clamped sill (base just under the host base) with its head just over the top, or any
+        # other rounding at the tolerances, unmaps this object instead of failing the whole draft's validation.
+        problem = br._opening_problem(record['kind'], geometry, [float(v) for v in wall['geometry']])
+        if problem is not None:
+            self.skip(record['source'], 'opening_outside_host', f'{record["kind"]} {problem}')
+            return False
+        if reading > 0:
+            notes.append('footprint-axis-from-host')
         if projected:
             notes.append('projected-to-host-axis')
             record['confidence'] = round(record['confidence'] * PROJECTED_FACTOR, 6)
         if fit['s0'] > fit['s1']:
-            points.reverse()
             notes.append('reversed-to-host')
         if abs(g[5] - wall['geometry'][5]) > TOL:
             notes.append('depth-differs-from-host')
@@ -626,7 +660,7 @@ class _Draft:
         record['dependencies'] = [wall['dependencies'][0], host_id]
         if declared == record['dependencies']:
             notes.append('dependencies-declared')
-        record['geometry'] = [points[0][0], points[0][1], points[1][0], points[1][1], sill, g[4]]
+        record['geometry'] = geometry
         return True
 
     # -------------------------------------------------------------- assembly
