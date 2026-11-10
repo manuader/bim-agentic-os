@@ -129,13 +129,13 @@ public sealed partial class IncrementalDiffIndex
         foreach (var key in keys)
         {
             // Build order: dependents in project order, one entry per occurrence. Survivors keep their relative
-            // order, updated elements stay in place, creates come last in edit order.
+            // order and updated elements their slot; creates sit wherever Diff placed them (last in edit order by
+            // default, merged by a P3-10 createOrder otherwise), so every entry is ordered by its next position.
             var survivors = dependents.TryGetValue(key, out var old)
                 ? old.Where(dependent => !state.Deletes.Contains(dependent) && !state.Edits.ContainsKey(dependent)) : Enumerable.Empty<Guid>();
             var moved = updated.SelectMany(pair => pair.Value.Dependencies.Where(dependency => dependency == key).Select(_ => pair.Key));
-            var list = survivors.Concat(moved).OrderBy(dependent => position[dependent]).ToList(); // stable: equal positions keep order
-            foreach (var id in state.CreateOrder)
-                foreach (var dependency in state.Edits[id].Dependencies) if (dependency == key) list.Add(id);
+            var fresh = state.CreateOrder.SelectMany(id => state.Edits[id].Dependencies.Where(dependency => dependency == key).Select(_ => id));
+            var list = survivors.Concat(moved).Concat(fresh).OrderBy(dependent => nextPosition[dependent]).ToList(); // stable: equal positions keep order
             if (list.Count == 0) nextDependents.Remove(key); else nextDependents[key] = list;
         }
 

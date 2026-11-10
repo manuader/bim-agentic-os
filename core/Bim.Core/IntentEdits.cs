@@ -14,7 +14,11 @@ public sealed record IntentEditSet(Project Before, Project After, ElementEdit[] 
 // by the created ones in edit order: when no created element sorts before a surviving one in After (compile orders
 // by kind and key) that is After itself and the plan is byte-identical to Compiler.Diff(Before, After); otherwise the
 // plan is byte-identical to Compiler.Diff(Before, result.After), the same elements in another order, and its
-// AfterHash is not Compiler.Hash(After).
+// AfterHash is not Compiler.Hash(After). P3-10: Diff(Edits, createOrder: IncrementalDiff.OrderOf(After)) places every
+// create at its compile position, so result.After serializes as After and the plan is byte-identical to
+// Compiler.Diff(Before, After) in every case (AfterHash and operation order included); After then commits directly
+// and From(previous, next) chains against the store. On a FromStored set the same order merges the creates into the
+// stored order (byte-identical to Compiler.Diff(stored, result.After)).
 // Committing: commit result.After with result.Plan (ProjectStore.Commit refuses IntentEditSet.After with that plan as
 // revision_conflict when the order differs). The next change must then be diffed against the stored project, whose
 // order is no longer compile order: FromStored(stored, nextIntent), or fall back to
