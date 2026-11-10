@@ -1477,6 +1477,9 @@ try {
     // ---- P3-08 apply-edits --store s --edits e [--expected-revision n] (tests/cli/ApplyEditsTests.cs) ----
     ApplyEditsTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
 
+    // ---- P6-10 cad-plan-brief draft.json output.json [options] (tests/cli/CadPlanBriefTests.cs) ----
+    CadPlanBriefTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
+
     // ---- P1-12 catalogue-report --run .bim/native-runs/<run> (tests/cli/CatalogueReportTests.cs) ----
     CatalogueReportTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail),(name,why)=>Skip(name,why));
 
