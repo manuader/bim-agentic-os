@@ -1449,12 +1449,27 @@
         "tests/revit-commands/CatalogueSaveCopy.cs",
         "runtimes/revit-native/CommandsExecutorSaveCopy.cs"
       ],
-      "notes": "P1-08: target and source guards, readback and JSON unit-tested in core; the Document.SaveAs executor is compiled only (owner session pending). General Save As of real projects stays unsupported (file.save_as_central)."
+      "notes": "P1-08: target and source guards, readback and JSON unit-tested in core; the Document.SaveAs executor is compiled only (owner session pending). Save As of owner-enabled projects is document.save_as (file.save_as); central models stay unsupported (file.save_as_central)."
+    },
+    {
+      "id": "file.save_as",
+      "area": "file",
+      "revit_function": "Save As a new .rvt inside an enabled folder (.bim/native-runs or .bim/revit-enabled-roots.txt, no overwrite)",
+      "commands": [
+        "document.save_as"
+      ],
+      "state": "compiled",
+      "features": [],
+      "evidence": [
+        "tests/revit-commands/CatalogueSaveAs.cs",
+        "runtimes/revit-native/CommandsExecutorSaveAs.cs"
+      ],
+      "notes": "P9-08: path normalisation and traversal refusals (UNC, relative, '/' separators, '..', device names, streams, short names, non-.rvt and backup names), enabled-root, source, link and no-overwrite guards, readback and JSON unit-tested in core before the pipe; the Document.SaveAs executor is compiled only (owner session pending). Non-workshared, non-cloud, non-family documents only."
     },
     {
       "id": "file.save_as_central",
       "area": "file",
-      "revit_function": "Save As, Save to Central, Synchronize",
+      "revit_function": "Save As central model, Save to Central, Synchronize (workshared)",
       "commands": [],
       "state": "unsupported",
       "features": [],
