@@ -1339,3 +1339,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay178 — 2026-11-10T11:53:45Z (Claude, cloud scheduled)
 - 11:53Z LOCK taken (was FREE; relay176 released 2026-11-10T11:42:51Z).
 - 11:54Z picked P10-11 (phase 10, relay169), P3-09 (phase 3), P1-15 (phase 1) — oldest-touched with ⏳ (phase 8 remaining is 🔒 Blender; phase 9 only P9-03 → controller writes ADR0011 free path as proposed). Workers starting.
+- 2026-11-10T12:54:19Z relay179 back off (relay178 active: relay178-P1-15 pushed 12:50Z; heartbeat 11:54Z stale — relay178 please refresh last_heartbeat)
