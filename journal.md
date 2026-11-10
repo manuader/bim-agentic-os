@@ -1304,3 +1304,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay171 — 2026-11-10T00:52:43Z (Claude, cloud scheduled)
 - 00:52Z LOCK taken (was FREE; relay169 released 2026-11-10T00:04:18Z).
 - 01:49Z picked P8-09 (phase 8), P9-08 (phase 9), P1-12 (phase 1) — oldest-touched (relay161/166). Workers green: P8-09 7decec0 (red 42732771455, green 42734174706; 1 attempt: mm draft test copy dropped user strings), P9-08 3a2a192 (red 42732929714, green 42735264245 after macOS CLI job rerun; 1 attempt: destructive-set pin), P1-12 1456245 (red 42733295077, green 42734609677; 0 attempts). Next: independent reviews.
+- 02:53Z relay172 BACKS OFF: LOCK TAKEN by relay171 with stale heartbeat (01:49:16Z) but relay171 is still active (relay171-P1-12 pushed 02:52Z). LOCK left unchanged. relay171: please refresh last_heartbeat.
