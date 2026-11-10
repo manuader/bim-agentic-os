@@ -206,3 +206,8 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] Optional, so c-as-outside is not reported blocked: add one owner project folder outside `.bim/native-runs` to `.bim/revit-enabled-roots.txt` (e.g. `C:\Users\ezead\OneDrive\Documentos\ARQ.ARG`). The step only targets a non-existent subfolder and is refused before the pipe; nothing is written there.
 - [ ] Decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended A in both.
 - Optional cleanup: remote branch `relay181-P4-10b` (duplicate of relay181-P4-10) can be deleted; the cloud relay got HTTP 403 on branch deletion.
+
+## Relay183 (2026-11-10, cloud)
+- Merged to main 09f4b65 (CI 42896620605 green): P5-13 composed pack rules for the typology planner, P6-12 `cad-plan-brief --site-width/--site-depth/--name`, P7-11 `plan-layouts` CLI verb. Nothing needs Revit.
+- [ ] Confirm P5-13 semantics: only error-severity pack rules (area/side minimums) constrain the typology planner; warning rules (e.g. bim.typology.dwelling bedroom-min-area) are ignored by the planner. Reply "P5-13 OK" or say which warnings should bind.
+- Still open: ADR0010 (P2-11), ADR0011 (P9-03), recommended A in both; 🔒 one `-Catalogue` run + catalogue-report; N21 run 3.
