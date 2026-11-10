@@ -23,6 +23,7 @@ try {
         case "doc-update": DocUpdateCommand.Run(args); break;
         case "catalogue-report": CatalogueReportCommand.Run(args); break;
         case "generate-prototypes": GenerateCommand.Run(args); break;
+        case "plan-layouts": PlanLayoutsCommand.Run(args); break;
         case "audit-verify": AuditVerifyCommand.Run(args); break;
         case "evaluate":
             EvaluationReport evaluation;
