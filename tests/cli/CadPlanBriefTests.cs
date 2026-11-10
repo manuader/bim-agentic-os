@@ -252,9 +252,110 @@ internal static class CadPlanBriefTests
             Check(r.Exit == 1 && Parse(r.Out) is { } e && e.GetProperty("status").GetString() == "failed" && e.GetProperty("code").GetString()!.StartsWith("usage: cad-plan-brief draft.json output.json", StringComparison.Ordinal),
                 "missing arguments print the usage (" + (args.Length - 1).ToString(CultureInfo.InvariantCulture) + " given)", R(r));
         }
-        var sourcePath = Path.Combine(root, "interfaces", "cli", "CadPlanBriefCommand.cs");
-        var source = File.Exists(sourcePath) ? File.ReadAllText(sourcePath) : "";
-        Check(source.Contains("BoundedInput.ReadBytes(", StringComparison.Ordinal) && source.Contains("GltfExporter.WriteNew(", StringComparison.Ordinal) && source.Contains("BriefPlanner.ToPlannerBrief(", StringComparison.Ordinal),
-            "cad-plan-brief reads through BoundedInput, writes through WriteNew and plans through BriefPlanner");
+
+        // ---- SF1 strict proposal/uncertainty members ----
+        {
+            JsonNode Fresh() => JsonNode.Parse(File.ReadAllText(draftPath))!;
+            var n1 = Fresh(); n1["rooms"]![0]!.AsObject().Remove("Confidence");
+            Expect("a proposal without Confidence is refused (not defaulted to 0)", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("no-confidence.json", n1.ToJsonString()), Out());
+            var n2 = Fresh(); n2["rooms"]![0]!.AsObject().Remove("Confidence"); n2["rooms"]![0]!["confidence"] = 0.9;
+            Expect("a lower-case confidence member is refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("lower-confidence.json", n2.ToJsonString()), Out());
+            var n3 = Fresh(); n3["rooms"]![0]!["Label"] = null;
+            Expect("a null Label is refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("null-label.json", n3.ToJsonString()), Out());
+            var n4 = Fresh(); n4["rooms"]![0]!["Confidence"] = 5;
+            Expect("a Confidence above 1 is refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("confidence-5.json", n4.ToJsonString()), Out());
+            var n5 = Fresh(); n5["rooms"]![0]!["Extra"] = 1;
+            Expect("an unknown proposal member is refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("extra.json", n5.ToJsonString()), Out());
+            var n6 = Fresh(); n6["rooms"]![0]!["Label"]!.AsObject().Remove("Layer");
+            Expect("a label source without Layer is refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("no-layer.json", n6.ToJsonString()), Out());
+            var n7 = Fresh(); n7["uncertainties"]!.AsArray().Add(JsonNode.Parse("{\"Code\":\"orphan-area\",\"Message\":\"m\",\"RoomId\":null,\"Sources\":[]}"));
+            Expect("an uncertainty without ValueSquareMetres is refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("no-value.json", n7.ToJsonString()), Out());
+            var text = File.ReadAllText(draftPath);
+            Check(text.StartsWith("{\"kind\":\"cad-brief\",", StringComparison.Ordinal), "the cad-brief draft starts with its kind member");
+            Expect("a duplicate top-level kind is refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("dup-kind.json", "{\"kind\":\"cad-brief\"," + text[1..]), Out());
+            var dupRoom = text.Replace("\"rooms\":[{\"Id\":", "\"rooms\":[{\"Id\":\"x\",\"Id\":", StringComparison.Ordinal);
+            Check(dupRoom != text, "duplicate proposal member fixture differs");
+            Expect("a duplicate proposal member is refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("dup-id.json", dupRoom), Out());
+        }
+
+        // ---- SF3 work bound ----
+        {
+            const string Entry = "{\"Code\":\"duplicate-text\",\"Message\":\"m\",\"RoomId\":null,\"ValueSquareMetres\":null,\"Sources\":[]}";
+            string WithUncertainties(IEnumerable<string> entries)
+            {
+                var node = JsonNode.Parse(File.ReadAllText(draftPath))!;
+                node["uncertainties"] = JsonNode.Parse("[" + string.Join(",", entries) + "]");
+                return node.ToJsonString();
+            }
+            var over = Out();
+            Expect("1001 counted uncertainties are refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("unc-1001.json", WithUncertainties(Enumerable.Repeat(Entry, 1001))), over);
+            Check(!File.Exists(over), "the refused 1001-uncertainty draft writes no file");
+            var capped = Enumerable.Repeat(Entry, 1000).Append(Entry.Replace("duplicate-text", "text-limit", StringComparison.Ordinal)).Append(Entry.Replace("duplicate-text", "uncertainty-limit", StringComparison.Ordinal));
+            var o = Out(); var r = Cli("cad-plan-brief", Input("unc-capped.json", WithUncertainties(capped)), o);
+            Check(Ok(r, o), "a capped report (1000 counted, a limit entry and uncertainty-limit) is accepted", R(r));
+            var twice = Enumerable.Repeat(Entry.Replace("duplicate-text", "uncertainty-limit", StringComparison.Ordinal), 2);
+            Expect("two uncertainty-limit entries are refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("unc-limit2.json", WithUncertainties(twice)), Out());
+            var rooms = JsonNode.Parse(File.ReadAllText(draftPath))!;
+            rooms["rooms"] = JsonNode.Parse("[" + string.Join(",", Enumerable.Repeat("{}", 10001)) + "]");
+            Expect("10001 room proposals are refused", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("rooms-10001.json", rooms.ToJsonString()), Out());
+        }
+
+        // ---- SF2 label re-binding on a hand-built draft ----
+        {
+            static BriefTextSource Source(string text, double x) => new("hand.dxf", "dxf", "1A", "ROOM-TEXT", "TEXT", 10, null, Array.Empty<string>(), new Point2(x, 0), text);
+            static BriefRoomProposal Proposal(string id, string name, BriefTextSource label) => new(id, name, 12, null, 0.9, label, null, null, Array.Empty<string>());
+            static BriefDraft Hand(BriefRoomProposal[] rooms, BriefExtractUncertainty[] uncertainties) =>
+                new("hand.dxf", "dxf", 0.001, new ProjectBrief(1, "Hand", new BriefConstraints(), rooms.Select(p => new BriefRoom(p.Id, p.Name, TargetAreaSquareMetres: new BriefValue<double>(12))).ToArray(), Array.Empty<BriefAdjacency>()),
+                    rooms, uncertainties, Array.Empty<BriefIssue>());
+            static string DraftJson(BriefDraft d) =>
+                "{\"kind\":\"cad-brief\",\"version\":1,\"persisted\":false,\"source\":{\"file\":\"hand.dxf\",\"format\":\"dxf\",\"sha256\":\"00\"},\"brief\":" + BriefSerializer.Serialize(d.Brief)
+                + ",\"rooms\":" + JsonSerializer.Serialize(d.Rooms) + ",\"uncertainties\":" + JsonSerializer.Serialize(d.Uncertainties) + ",\"issues\":[]}";
+            string Show(BriefPlannerResult x) => "kept " + string.Join(",", x.Kept.Select(k => k.Id)) + " dropped " + string.Join(",", x.Dropped.Select(k => k.Id + "[" + string.Join(",", k.Reasons) + "]"));
+
+            // Different slugs; the duplicate-label uncertainty names living and quotes cocina's label as its first source.
+            var cocina = Source("Cocina", 0); var living = Source("Living", 5000);
+            var shared = Hand(new[] { Proposal("cocina", "Cocina", cocina), Proposal("living", "Living", living) },
+                new[] { new BriefExtractUncertainty("duplicate-label", "dup", "living", null, new[] { cocina }) });
+            var expected = BriefPlanner.ToPlannerBrief(shared);
+            Check(expected.Dropped.Count == 1 && expected.Dropped[0].Id == "living" && expected.Dropped[0].Reasons.SequenceEqual(new[] { "duplicate-label" }),
+                "oracle: with the shared label instance living is dropped as duplicate-label", Show(expected));
+            var copied = shared with { Uncertainties = new[] { new BriefExtractUncertainty("duplicate-label", "dup", "living", null, new[] { cocina with { InsertPath = new List<string>() } }) } };
+            Check(BriefPlanner.ToPlannerBrief(copied).Dropped.Count == 0, "oracle: without re-binding (a distinct label record) living would be kept, so this test discriminates", Show(BriefPlanner.ToPlannerBrief(copied)));
+            var o = Out(); var r = Cli("cad-plan-brief", Input("hand-rebind.json", DraftJson(shared)), o);
+            var same = Matches(o, expected, out var why);
+            Check(Ok(r, o) && same, "the CLI re-binds an uncertainty source to the equal proposal label (equals the shared-instance library result)", R(r) + " " + why);
+
+            // Two proposals with value-identical labels are read as one shared label record.
+            var both = Hand(new[] { Proposal("cocina", "Cocina", cocina), Proposal("living", "Living", cocina) },
+                new[] { new BriefExtractUncertainty("duplicate-label", "dup", "living", null, new[] { cocina }) });
+            var expectedBoth = BriefPlanner.ToPlannerBrief(both);
+            var o2 = Out(); var r2 = Cli("cad-plan-brief", Input("hand-identical.json", DraftJson(both)), o2);
+            var same2 = Matches(o2, expectedBoth, out var why2);
+            Check(Ok(r2, o2) && same2 && expectedBoth.Dropped.Count == 1 && expectedBoth.Dropped[0].Id == "living",
+                "value-identical proposal labels are one shared record (equals the shared-instance library result)", R(r2) + " " + why2 + " " + Show(expectedBoth));
+        }
+
+        // ---- nits ----
+        if (!OperatingSystem.IsWindows())
+        {
+            var link = Path.Combine(scratch, "dangling.json");
+            var target = Path.Combine(scratch, "nowhere.json");
+            File.CreateSymbolicLink(link, target);
+            Expect("refuses a dangling symlink output", "output_link_rejected", "cad-plan-brief", draftPath, link);
+            Check(!File.Exists(target), "the symlink output target is not created");
+        }
+        {
+            var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--min-confidence", "-0");
+            Check(Ok(r, o) && Doc(o) is { } d && d.GetProperty("options").GetRawText().StartsWith("{\"min_confidence\":0,", StringComparison.Ordinal), "--min-confidence -0 is echoed as 0", R(r));
+        }
+        Expect("--min-confidence Infinity", "cad_option_value_invalid", "cad-plan-brief", draftPath, Out(), "--min-confidence", "Infinity");
+        Expect("--min-confidence 1e400 (overflows to infinity)", "cad_option_value_invalid", "cad-plan-brief", draftPath, Out(), "--min-confidence", "1e400");
+        {
+            var node = JsonNode.Parse(File.ReadAllText(draftPath))!;
+            node.AsObject().Remove("source");
+            var o = Out(); var r = Cli("cad-plan-brief", Input("no-source.json", node.ToJsonString()), o);
+            Check(Ok(r, o) && Matches(o, BriefPlanner.ToPlannerBrief(library), out _) && Doc(o) is { } d && d.GetProperty("source").GetProperty("drawing_file").ValueKind == JsonValueKind.Null
+                && d.GetProperty("source").GetProperty("drawing_sha256").ValueKind == JsonValueKind.Null, "a draft without a source block plans the same and reports null drawing_file/drawing_sha256", R(r));
+        }
     }
 }
