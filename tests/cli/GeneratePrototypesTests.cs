@@ -27,10 +27,11 @@ internal static class GeneratePrototypesTests
         Directory.CreateDirectory(scratch);
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: " + name, detail);
 
-        (int Exit, string Out, string Err) Cli(params string[] arguments)
+        (int Exit, string Out, string Err) Cli(params string[] arguments) => CliAt(cliDll, arguments);
+        (int Exit, string Out, string Err) CliAt(string dll, params string[] arguments)
         {
             var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
-            start.ArgumentList.Add(cliDll);
+            start.ArgumentList.Add(dll);
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
             using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
             var stdout = process.StandardOutput.ReadToEndAsync();
@@ -81,8 +82,9 @@ internal static class GeneratePrototypesTests
         var usage = Cli("generate-prototypes");
         var usageDetail = Str(Parse(usage.Out), "detail") ?? "";
         Check(usageDetail.Contains("generate-prototypes request.json output.json", StringComparison.Ordinal) && usageDetail.Contains("project_id", StringComparison.Ordinal)
-            && usageDetail.Contains("SHA-256", StringComparison.Ordinal) && usageDetail.Contains("UUIDv8", StringComparison.Ordinal),
-            "the usage text documents the verb and the deterministic default project id rule", D(usage));
+            && usageDetail.Contains("SHA-256", StringComparison.Ordinal) && usageDetail.Contains("UUIDv8", StringComparison.Ordinal)
+            && usageDetail.Contains("repository", StringComparison.Ordinal) && usageDetail.Contains("generate_prototypes_repository_not_found", StringComparison.Ordinal),
+            "the usage text documents the verb, the deterministic default project id rule and the repository-only pack lookup", D(usage));
 
         // ---- success: equals the in-process pipeline, canonical bytes, deterministic ----
         var explicitId = Guid.Parse("00000000-0000-4000-8000-0000000007a9");
@@ -107,8 +109,9 @@ internal static class GeneratePrototypesTests
             "a second run writes byte-identical output and the same stdout", D(run2));
 
         // ---- deterministic default project id ----
-        const string canonical = "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"seed\":0,\"door_width_m\":0.9,\"weights\":null,"
-            + "\"fixed_rooms\":null,\"fixed_walls\":null,\"pack\":\"ar.caba.codigo-edificacion\",\"revision\":0,\"circulation_weight\":0.15,\"facade_weight\":0,\"snap\":false}";
+        const string canonical = "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"seed\":0,\"door_width_m\":0.9,"
+            + "\"weights\":{\"area_fit\":0.3,\"adjacency\":0.25,\"proportions\":0.15,\"compactness\":0.1,\"perimeter\":0.1,\"compliance\":0.1},"
+            + "\"fixed_rooms\":[],\"fixed_walls\":[],\"pack\":\"ar.caba.codigo-edificacion\",\"revision\":0,\"circulation_weight\":0.15,\"facade_weight\":0,\"snap\":false}";
         var derivedId = DerivedId(canonical);
         Check(derivedId.ToString("D")[14] == '8' && "89ab".Contains(derivedId.ToString("D")[19]), "the documented default id is an RFC 9562 version 8 UUID", derivedId.ToString("D"));
         var minimal = Input("one-bed.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2}");
@@ -132,6 +135,105 @@ internal static class GeneratePrototypesTests
         Check(run5.Exit == 0 && Str(Parse(run5.Out), "project_id") == otherSeedId.ToString("D") && otherSeedId != derivedId,
             "a different seed derives a different default id, by the same rule", D(run5));
 
+        // SF1: -0 is 0, an empty weights object is the default weights, [] is an absent approval list.
+        var zeros = Output();
+        var run6 = Cli("generate-prototypes", Input("one-bed-zeros.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"seed\":-0,"
+            + "\"facade_weight\":-0.0,\"weights\":{},\"fixed_rooms\":[],\"fixed_walls\":[]}"), zeros);
+        Check(run6.Exit == 0 && File.Exists(zeros) && File.ReadAllBytes(zeros).SequenceEqual(derivedBytes) && Str(Parse(run6.Out), "project_id") == derivedId.ToString("D"),
+            "-0 values, \"weights\":{} and empty fixed_rooms / fixed_walls give the minimal request's id and bytes", D(run6));
+        var negativeZeroWeights = Output();
+        var run7 = Cli("generate-prototypes", Input("one-bed-zero-weight.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,"
+            + "\"weights\":{\"area_fit\":0.3,\"adjacency\":0.25,\"proportions\":0.15,\"compactness\":0.1,\"perimeter\":0.1,\"compliance\":0.1}}"), negativeZeroWeights);
+        Check(run7.Exit == 0 && File.Exists(negativeZeroWeights) && File.ReadAllBytes(negativeZeroWeights).SequenceEqual(derivedBytes),
+            "explicit default weights give the minimal request's id and bytes", D(run7));
+
+        // SF4: weights in another member order, snap, circulation and facade weights: derived id and in-process equality.
+        const string tunedCanonical = "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"seed\":3,\"door_width_m\":0.9,"
+            + "\"weights\":{\"area_fit\":0.5,\"adjacency\":0.25,\"proportions\":0.15,\"compactness\":0.1,\"perimeter\":0.1,\"compliance\":0.2},"
+            + "\"fixed_rooms\":[],\"fixed_walls\":[],\"pack\":\"ar.caba.codigo-edificacion\",\"revision\":2,\"circulation_weight\":0.3,\"facade_weight\":0.2,\"snap\":true}";
+        var tunedId = DerivedId(tunedCanonical);
+        var tunedLibrary = PrototypePipeline.Run(new PrototypeRequest(ApartmentTypology.OneBedroom, new PrototypeLot(7, 12), 2, 3, Weights: new ScoringWeights(0.5, 0.25, 0.15, 0.1, 0.1, 0.2)),
+            new PrototypePipelineOptions(caba, tunedId, 2, 0.3, Snap: new PrototypeSnapOptions(), FacadeWeight: 0.2));
+        var tunedOut = Output();
+        var run8 = Cli("generate-prototypes", Input("one-bed-tuned.json", "{\"snap\":true,\"weights\":{\"compliance\":0.2,\"area_fit\":0.5},\"facade_weight\":0.2,"
+            + "\"circulation_weight\":0.3,\"revision\":2,\"seed\":3,\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2}"), tunedOut);
+        Check(tunedLibrary.Status != PrototypePipelineStatus.Refused && run8.Exit == 0 && File.Exists(tunedOut)
+            && File.ReadAllBytes(tunedOut).SequenceEqual(Utf8(PrototypePipelineSerializer.Serialize(tunedLibrary))) && Str(Parse(run8.Out), "project_id") == tunedId.ToString("D"),
+            "partial weights in any member order, snap, revision, circulation and facade weights: documented derived id and output equal to the in-process run",
+            D(run8) + " library " + tunedLibrary.Status);
+
+        // SF4: approvals (a real room of a generated layout, a lot-edge wall with a non-ASCII id): canonical arrays and escaping.
+        var generated = PrototypeGenerator.Generate(new PrototypeRequest(ApartmentTypology.OneBedroom, new PrototypeLot(7, 12), 2, 0));
+        var sourceRoom = generated.Alternatives?.Alternatives.Select(a => a.Plan).FirstOrDefault(p => p.Status == SpacePlanStatus.Feasible)?.Rooms.FirstOrDefault(r => r.Instance == 1);
+        Check(sourceRoom is not null, "a generated 1-bedroom layout provides a room to approve");
+        if (sourceRoom is not null)
+        {
+            string R(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+            var rect = sourceRoom.Rect;
+            var approvedCanonical = "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"seed\":0,\"door_width_m\":0.9,"
+                + "\"weights\":{\"area_fit\":0.3,\"adjacency\":0.25,\"proportions\":0.15,\"compactness\":0.1,\"perimeter\":0.1,\"compliance\":0.1},"
+                + "\"fixed_rooms\":[{\"room_id\":\"" + sourceRoom.RoomId + "\",\"x\":" + R(rect.X) + ",\"y\":" + R(rect.Y) + ",\"width\":" + R(rect.Width) + ",\"depth\":" + R(rect.Depth) + "}],"
+                + "\"fixed_walls\":[{\"id\":\"muro-\\u00F1\",\"x0\":0,\"y0\":0,\"x1\":7,\"y1\":0}],"
+                + "\"pack\":\"ar.caba.codigo-edificacion\",\"revision\":0,\"circulation_weight\":0.15,\"facade_weight\":0,\"snap\":false}";
+            var approvedId = DerivedId(approvedCanonical);
+            var approvedLibrary = PrototypePipeline.Run(new PrototypeRequest(ApartmentTypology.OneBedroom, new PrototypeLot(7, 12), 2, 0,
+                new[] { new FixedRoom(sourceRoom.RoomId, rect) }, new[] { new FixedWall("muro-\u00F1", 0, 0, 7, 0) }), new PrototypePipelineOptions(caba, approvedId));
+            var approvedOut = Output();
+            var run9 = Cli("generate-prototypes", Input("one-bed-approved.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,"
+                + "\"fixed_walls\":[{\"y1\":0,\"x1\":7,\"y0\":0,\"x0\":0,\"id\":\"muro-\u00F1\"}],"
+                + "\"fixed_rooms\":[{\"depth\":" + R(rect.Depth) + ",\"width\":" + R(rect.Width) + ",\"y\":" + R(rect.Y) + ",\"x\":" + R(rect.X) + ",\"room_id\":\"" + sourceRoom.RoomId + "\"}]}"), approvedOut);
+            Check(approvedLibrary.Status != PrototypePipelineStatus.Refused && run9.Exit == 0 && File.Exists(approvedOut)
+                && File.ReadAllBytes(approvedOut).SequenceEqual(Utf8(PrototypePipelineSerializer.Serialize(approvedLibrary))) && Str(Parse(run9.Out), "project_id") == approvedId.ToString("D"),
+                "fixed rooms and walls (non-ASCII wall id, escaped as System.Text.Json does): documented derived id and output equal to the in-process run",
+                D(run9) + " library " + approvedLibrary.Status + " " + string.Join(",", approvedLibrary.Refusals.Select(r => r.Code)));
+        }
+
+        // SF3 / SF4: a CLI copy outside any repository, and a copy inside a scratch repository with its own packs.
+        var cliDirectory = Path.GetDirectoryName(cliDll)!;
+        string CopyCli(string target)
+        {
+            foreach (var file in Directory.GetFiles(cliDirectory, "*", SearchOption.AllDirectories))
+            {
+                var destination = Path.Combine(target, Path.GetRelativePath(cliDirectory, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(file, destination);
+            }
+            return Path.Combine(target, Path.GetFileName(cliDll));
+        }
+        var outsideDll = CopyCli(Path.Combine(Path.GetTempPath(), "bim-generate-outside-" + Guid.NewGuid().ToString("N"), "cli"));
+        var outsideOut = Output();
+        var outside = CliAt(outsideDll, "generate-prototypes", twoBedRequest, outsideOut);
+        Check(outside.Exit == 1 && Str(Parse(outside.Out), "code") == "generate_prototypes_repository_not_found" && !File.Exists(outsideOut),
+            "a CLI copy outside any repository refuses with generate_prototypes_repository_not_found, exit 1, no file", D(outside));
+        try { Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(outsideDll)!)!, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+
+        var fakeRepo = Path.Combine(scratch, "fake-repo");
+        Directory.CreateDirectory(fakeRepo);
+        File.WriteAllText(Path.Combine(fakeRepo, "global.json"), "{}");
+        var cabaText = File.ReadAllText(Path.Combine(root, "skills", PackId, "skill.json"));
+        void Pack(string folder, string text) { Directory.CreateDirectory(Path.Combine(fakeRepo, "skills", folder)); File.WriteAllText(Path.Combine(fakeRepo, "skills", folder, "skill.json"), text); }
+        string WithId(string id) { var node = System.Text.Json.Nodes.JsonNode.Parse(cabaText)!; node["id"] = id; return node.ToJsonString(); }
+        Pack("zz.test.caba-copy", WithId("zz.test.caba-copy"));
+        Pack("zz.test.bad-json", "{");
+        Pack("zz.test.mismatch", WithId("zz.test.other"));
+        var fakeDll = CopyCli(Path.Combine(fakeRepo, "cli"));
+        var copyPack = SkillParser.Parse(WithId("zz.test.caba-copy"));
+        var copyCanonical = canonical.Replace("\"pack\":\"ar.caba.codigo-edificacion\"", "\"pack\":\"zz.test.caba-copy\"", StringComparison.Ordinal);
+        var copyId = DerivedId(copyCanonical);
+        var copyLibrary = PrototypePipeline.Run(new PrototypeRequest(ApartmentTypology.OneBedroom, new PrototypeLot(7, 12), 2, 0), new PrototypePipelineOptions(copyPack, copyId));
+        var copyOut = Output();
+        var run10 = CliAt(fakeDll, "generate-prototypes", Input("one-bed-copy-pack.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"pack\":\"zz.test.caba-copy\"}"), copyOut);
+        Check(copyId != derivedId && run10.Exit == 0 && File.Exists(copyOut) && File.ReadAllBytes(copyOut).SequenceEqual(Utf8(PrototypePipelineSerializer.Serialize(copyLibrary)))
+            && Str(Parse(run10.Out), "project_id") == copyId.ToString("D"),
+            "a non-default pack from the repository's skills/: derived id covers the pack id; output equal to the in-process run with that manifest", D(run10));
+        var o5 = Output();
+        var badPack = CliAt(fakeDll, "generate-prototypes", Input("bad-pack.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"pack\":\"zz.test.bad-json\"}"), o5);
+        Check(badPack.Exit == 1 && Str(Parse(badPack.Out), "code") == "generate_prototypes_pack_invalid" && !File.Exists(o5), "a malformed pack manifest -> generate_prototypes_pack_invalid, no file", D(badPack));
+        var o6 = Output();
+        var mismatch = CliAt(fakeDll, "generate-prototypes", Input("mismatch-pack.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"pack\":\"zz.test.mismatch\"}"), o6);
+        Check(mismatch.Exit == 1 && Str(Parse(mismatch.Out), "code") == "generate_prototypes_pack_invalid" && Str(Parse(mismatch.Out), "detail") == "id" && !File.Exists(o6),
+            "a manifest naming another pack id -> generate_prototypes_pack_invalid (detail id), no file", D(mismatch));
+
         // ---- never-overwrite ----
         var existing = Output();
         var sentinel = Utf8("{\"sentinel\":true}");
@@ -149,6 +251,18 @@ internal static class GeneratePrototypesTests
         ExpectFailure("an output with another extension", "output_extension_unsupported", Path.Combine(scratch, "out.txt"), "generate-prototypes", twoBedRequest, Path.Combine(scratch, "out.txt"));
         var noDir = Path.Combine(scratch, "missing-directory", "out.json");
         ExpectFailure("an output in a missing directory", "output_directory_not_found", noDir, "generate-prototypes", twoBedRequest, noDir);
+
+        var linkOut = Path.Combine(scratch, "link-out.json");
+        var linkTarget = Path.Combine(scratch, "link-target.json");
+        var linked = false;
+        try { File.CreateSymbolicLink(linkOut, linkTarget); linked = true; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { Console.WriteLine("SKIP generate-prototypes: output_link_rejected: " + error.GetType().Name); }
+        if (linked)
+        {
+            var linkResult = Cli("generate-prototypes", twoBedRequest, linkOut);
+            Check(linkResult.Exit == 1 && Str(Parse(linkResult.Out), "code") == "output_link_rejected" && !File.Exists(linkTarget) && new FileInfo(linkOut).LinkTarget is not null,
+                "a symbolic link at the output path is refused (output_link_rejected) and nothing is written through it", D(linkResult));
+        }
 
         // ---- bounded and malformed requests ----
         var overCapPath = Path.Combine(scratch, "over-cap.json");
@@ -173,6 +287,11 @@ internal static class GeneratePrototypesTests
             ("a non-boolean snap", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"snap\":1}"),
             ("an unknown weight", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"weights\":{\"beauty\":1}}"),
             ("a fixed room without rect", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"fixed_rooms\":[{\"room_id\":\"living\"}]}"),
+            ("a lone surrogate pack", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"pack\":\"\\ud800\"}"),
+            ("a lone surrogate project id", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"project_id\":\"\\ud800\"}"),
+            ("a lone surrogate room id", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"fixed_rooms\":[{\"room_id\":\"\\udc00\",\"x\":0,\"y\":0,\"width\":3,\"depth\":3}]}"),
+            ("a lone surrogate wall id", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"fixed_walls\":[{\"id\":\"a\\ud800\",\"x0\":0,\"y0\":0,\"x1\":1,\"y1\":0}]}"),
+            ("a lone surrogate member name", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"\\ud800\":1}"),
         })
         {
             var output = Output();
@@ -198,6 +317,11 @@ internal static class GeneratePrototypesTests
             new PrototypeRequest(ApartmentTypology.TwoBedroom, new PrototypeLot(8.66, 20), 2, 0), new PrototypePipelineOptions(caba, explicitId, -1));
         ExpectRefusal("an unsupported typology", "{\"typology\":4,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"project_id\":\"00000000-0000-4000-8000-0000000007a9\"}",
             new PrototypeRequest((ApartmentTypology)4, new PrototypeLot(8.66, 20), 2, 0), new PrototypePipelineOptions(caba, explicitId));
+        ExpectRefusal("an all-zero project id", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"project_id\":\"00000000-0000-0000-0000-000000000000\"}",
+            new PrototypeRequest(ApartmentTypology.TwoBedroom, new PrototypeLot(8.66, 20), 2, 0), new PrototypePipelineOptions(caba, Guid.Empty));
+        ExpectRefusal("a non-ASCII unknown approved room id", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"project_id\":\"00000000-0000-4000-8000-0000000007a9\","
+            + "\"fixed_rooms\":[{\"room_id\":\"sal\u00F3n\",\"x\":0,\"y\":0,\"width\":3,\"depth\":3}]}",
+            new PrototypeRequest(ApartmentTypology.TwoBedroom, new PrototypeLot(8.66, 20), 2, 0, new[] { new FixedRoom("sal\u00F3n", new PlanRect(0, 0, 3, 3)) }), new PrototypePipelineOptions(caba, explicitId));
     }
 
     // The documented rule: the first 16 bytes of SHA-256(UTF-8 "bim-agentic-os/generate-prototypes/v1\n" + canonical
