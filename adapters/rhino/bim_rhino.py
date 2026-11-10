@@ -8,7 +8,8 @@ Failures print one JSON object {"error": code, "detail": text} on stderr and exi
 The persisted BIM-IR schema is unchanged: the adapter reads and writes exactly
 Project{Id,Revision,Elements[{Id,Kind,GeometryMetres,Dependencies,Provenance{Source,Approval}}]}.
 Input checks are stricter than Core in places: UUIDs must be lowercase text, members must be exactly
-the Core ones, kinds must be ones the Core GeometryCodec decodes, strings must be valid Unicode, and
+the Core ones, kinds must be ones the Core GeometryCodec decodes (plus door/window in the IntentCompiler layout
+[ax, ay, bx, by, sill, height] with dependencies [level, host wall], P8-09), strings must be valid Unicode, and
 lengths must be representable in a .3dm (see MIN_LENGTH/MAX_COORDINATE).
 """
 import json
@@ -23,11 +24,15 @@ import rhino3dm
 
 SCHEMA = 'bim-agentic-os.rhino/1'
 ROOT_LAYER = 'BIM'
-LAYER_OF_KIND = {'level': 'Levels', 'wall': 'Walls', 'space': 'Spaces',
+LAYER_OF_KIND = {'level': 'Levels', 'wall': 'Walls', 'space': 'Spaces', 'door': 'Doors', 'window': 'Windows',
                  'plan': 'Documentation', 'schedule': 'Documentation', 'sheet': 'Documentation'}
 CATEGORY_LAYERS = ('Levels', 'Walls', 'Spaces', 'Documentation')
-ARITY = {'wall': 6, 'level': 1, 'space': 4, 'plan': 0, 'schedule': 0, 'sheet': 0}
-ARITY_CODE = {'wall': 'wall_geometry', 'level': 'level_geometry', 'space': 'space_geometry'}
+# Door and window layers are added only when the project has such elements, so files without openings keep the P8-02 layers.
+OPENING_LAYERS = ('Doors', 'Windows')
+OPENING_KINDS = ('door', 'window')
+ARITY = {'wall': 6, 'level': 1, 'space': 4, 'door': 6, 'window': 6, 'plan': 0, 'schedule': 0, 'sheet': 0}
+ARITY_CODE = {'wall': 'wall_geometry', 'level': 'level_geometry', 'space': 'space_geometry',
+              'door': 'rhino_opening_geometry', 'window': 'rhino_opening_geometry'}
 # Metres per model unit accepted on import. Anything else (feet, inches, unset...) is refused, never guessed.
 # Millimetres divide by 1000 like Core's Length.FromMillimetres.
 UNIT_DIVISOR = {rhino3dm.UnitSystem.Meters: 1.0, rhino3dm.UnitSystem.Millimeters: 1000.0}
@@ -138,7 +143,50 @@ def validate_project(project):
                 ready.append(child)
     if processed != len(ids):
         raise RhinoAdapterError('dependency_cycle', 'Cyclic logical dependencies')
+    _check_openings(elements)
     return project
+
+
+def _opening_problem(kind, g, h):
+    """Why door/window geometry g = [ax, ay, bx, by, sill, height] does not fit host wall h, or None.
+
+    The IntentCompiler/IFC rule: both ends on the host axis, ordered in the host direction, inside its length, sill >= 0
+    above the level (0 for a door), positive height, head no higher than the host top."""
+    ax, ay, bx, by = h[:4]
+    length = math.hypot(bx - ax, by - ay)
+    ux, uy = (bx - ax) / length, (by - ay) / length
+    s0 = (g[0] - ax) * ux + (g[1] - ay) * uy
+    s1 = (g[2] - ax) * ux + (g[3] - ay) * uy
+    off = max(abs((g[0] - ax) * uy - (g[1] - ay) * ux), abs((g[2] - ax) * uy - (g[3] - ay) * ux))
+    if not g[5] > 0:
+        return 'height must be positive'
+    if g[4] < 0:
+        return f'sill {g[4]} m is below its level'
+    if kind == 'door' and g[4] != 0:
+        return f'door sill {g[4]} m is not 0 (BIM-IR doors stand on their level)'
+    if off > POSITION_TOLERANCE:
+        return f'ends are {off} m off the host axis'
+    if not s1 - s0 > 0:
+        return 'ends are not ordered in the host wall direction'
+    if s0 < -POSITION_TOLERANCE or s1 > length + POSITION_TOLERANCE:
+        return f'runs past the host wall ends ({s0} .. {s1} m on a {length} m axis)'
+    if g[4] + g[5] > h[4] + POSITION_TOLERANCE:
+        return f'head {g[4] + g[5]} m is above the host wall top {h[4]} m'
+    return None
+
+
+def _check_openings(elements):
+    by_id = {e['Id']: e for e in elements}
+    for e in elements:
+        if e['Kind'] not in OPENING_KINDS:
+            continue
+        deps = e['Dependencies']
+        if not (len(deps) == 2 and by_id[deps[0]]['Kind'] == 'level' and by_id[deps[1]]['Kind'] == 'wall'
+                and by_id[deps[1]]['Dependencies'] == [deps[0]]):
+            raise RhinoAdapterError('rhino_opening_host', f"{e['Kind']} {e['Id']} must depend on [level, host wall] with the host wall on that level")
+        problem = _opening_problem(e['Kind'], [float(v) for v in e['GeometryMetres']], [float(v) for v in by_id[deps[1]]['GeometryMetres']])
+        if problem is not None:
+            raise RhinoAdapterError('rhino_opening_geometry', f"{e['Kind']} {e['Id']} {problem}")
 
 
 def check_representable(project):
@@ -169,6 +217,11 @@ def check_representable(project):
             length(g[3], 'depth', e['Id'])
             for value, what in ((g[0], 'corner.x'), (g[1], 'corner.y'), (g[0] + g[2], 'far corner.x'), (g[1] + g[3], 'far corner.y')):
                 coordinate(value, what, e['Id'])
+        elif e['Kind'] in OPENING_KINDS:
+            for i, what in enumerate(('start.x', 'start.y', 'end.x', 'end.y', 'sill')):
+                coordinate(g[i], what, e['Id'])
+            length(math.hypot(g[2] - g[0], g[3] - g[1]), 'width', e['Id'])
+            length(g[5], 'height', e['Id'])
     return project
 
 
@@ -183,6 +236,7 @@ def _base_elevation(element, by_id):
 
 
 def _wall(g, z):
+    """A capped box along [ax, ay, bx, by] at base z with a thickness x height section: a wall, or an opening's volume."""
     ax, ay, bx, by, height, thickness = g
     extrusion = rhino3dm.Extrusion()
     # Path = wall axis (location line) at the base; the profile is the vertical cross-section
@@ -212,6 +266,11 @@ def _geometry(element, by_id):
         return _space(g, _base_elevation(element, by_id))
     if kind == 'level':
         return rhino3dm.Point(rhino3dm.Point3d(0, 0, g[0]))
+    if kind in OPENING_KINDS:
+        # The opening volume: a box from end to end along the host axis, from sill to head, through the host thickness.
+        # The host wall stays one uncut extrusion (rhino3dm has no booleans).
+        host = by_id[element['Dependencies'][1]]
+        return _wall([g[0], g[1], g[2], g[3], g[5], float(host['GeometryMetres'][5])], _base_elevation(element, by_id) + g[4])
     # Documentation has no geometry in BIM-IR; a marker point at the origin carries its identity only.
     return rhino3dm.Point(rhino3dm.Point3d(0, 0, 0))
 
@@ -233,7 +292,8 @@ def build_model(project):
     root_index = model.Layers.Add(root)
     root_id = model.Layers[root_index].Id
     layer_index = {}
-    for name in CATEGORY_LAYERS:
+    used = {LAYER_OF_KIND[e['Kind']] for e in project['Elements']}
+    for name in CATEGORY_LAYERS + tuple(name for name in OPENING_LAYERS if name in used):
         layer = rhino3dm.Layer()
         layer.Name = name
         layer.ParentLayerId = root_id
@@ -316,28 +376,29 @@ def _rectangle_corners(points, code, element_id):
     return points[:4]
 
 
-def _read_wall(geometry, scale, element_id):
+def _read_wall(geometry, scale, element_id, code='rhino_wall_geometry'):
+    """[ax, ay, bx, by, height, thickness] and base z of a writer box (a wall, or with code rhino_opening_geometry an opening)."""
     if not isinstance(geometry, rhino3dm.Extrusion):
-        raise RhinoAdapterError('rhino_geometry_mismatch', f'{element_id} wall is {type(geometry).__name__}, not an Extrusion')
+        raise RhinoAdapterError('rhino_geometry_mismatch', f'{element_id} is {type(geometry).__name__}, not an Extrusion')
     start, end = _xyz(geometry.PathStart, scale), _xyz(geometry.PathEnd, scale)
     if geometry.ProfileCount != 1 or abs(start[2] - end[2]) > POSITION_TOLERANCE or math.hypot(end[0] - start[0], end[1] - start[1]) <= POSITION_TOLERANCE:
-        raise RhinoAdapterError('rhino_wall_geometry', f'{element_id} wall path must be one horizontal axis with one profile')
-    corners = _rectangle_corners(_polyline_points(geometry.Profile3d(0, 0.0), scale, 'rhino_wall_geometry', element_id), 'rhino_wall_geometry', element_id)
+        raise RhinoAdapterError(code, f'{element_id} path must be one horizontal axis with one profile')
+    corners = _rectangle_corners(_polyline_points(geometry.Profile3d(0, 0.0), scale, code, element_id), code, element_id)
     base = start[2]
     zs = [c[2] for c in corners]
     bottom = [c for c in corners if abs(c[2] - base) <= POSITION_TOLERANCE]
     top = [c for c in corners if abs(c[2] - max(zs)) <= POSITION_TOLERANCE]
     if len(bottom) != 2 or len(top) != 2 or abs(min(zs) - base) > POSITION_TOLERANCE:
-        raise RhinoAdapterError('rhino_wall_geometry', f'{element_id} profile must be a rectangle standing on the axis')
+        raise RhinoAdapterError(code, f'{element_id} profile must be a rectangle standing on the axis')
     thickness = math.hypot(bottom[0][0] - bottom[1][0], bottom[0][1] - bottom[1][1])
     mid = ((bottom[0][0] + bottom[1][0]) / 2, (bottom[0][1] + bottom[1][1]) / 2)
     axis = (end[0] - start[0], end[1] - start[1])
     across = (bottom[0][0] - bottom[1][0], bottom[0][1] - bottom[1][1])
     if math.hypot(mid[0] - start[0], mid[1] - start[1]) > POSITION_TOLERANCE or abs(axis[0] * across[0] + axis[1] * across[1]) > POSITION_TOLERANCE * math.hypot(*axis):
-        raise RhinoAdapterError('rhino_wall_geometry', f'{element_id} profile must be centred on and square to the axis')
+        raise RhinoAdapterError(code, f'{element_id} profile must be centred on and square to the axis')
     for t in top:
         if min(math.hypot(t[0] - b[0], t[1] - b[1]) for b in bottom) > POSITION_TOLERANCE:
-            raise RhinoAdapterError('rhino_wall_geometry', f'{element_id} profile sides must be vertical')
+            raise RhinoAdapterError(code, f'{element_id} profile sides must be vertical')
     height = max(zs) - base
     return [start[0], start[1], end[0], end[1], _snap(height), _snap(thickness)], base
 
@@ -407,6 +468,7 @@ def import_project(input_path):
     path_of = {layer.Index: layer.FullPath for layer in layers}
     records = []
     bases = {}
+    openings = {}
     for obj in model.Objects:
         attributes = obj.Attributes
         strings = _read_strings(attributes)
@@ -435,6 +497,11 @@ def import_project(input_path):
             values, base = _read_wall(geometry, scale, element_id)
         elif kind == 'space':
             values, base = _read_space(geometry, scale, element_id)
+        elif kind in OPENING_KINDS:
+            box, opening_base = _read_wall(geometry, scale, element_id, 'rhino_opening_geometry')
+            # The sill is the box base above the opening's level, known once every level is read.
+            values = [box[0], box[1], box[2], box[3], 0.0, box[4]]
+            openings[element_id] = (opening_base, box[5])
         elif kind == 'level':
             values = [_read_point(geometry, kind, element_id, scale)]
         else:
@@ -451,6 +518,14 @@ def import_project(input_path):
         raise RhinoAdapterError('rhino_object_invalid', 'bim.order values are not a permutation of 0..n-1')
     records.sort(key=lambda item: item[0])
     project = {'Id': project_id, 'Revision': int(revision), 'Elements': [element for _, element in records]}
+    read = {e['Id']: e for e in project['Elements']}
+    for element_id, (opening_base, _) in openings.items():
+        deps = read[element_id]['Dependencies']
+        level = read.get(deps[0]) if isinstance(deps, list) and deps and isinstance(deps[0], str) else None
+        elevation = level['GeometryMetres'][0] if level is not None and level['Kind'] == 'level' else 0.0
+        sill = _snap(opening_base - elevation)
+        # Sub-tolerance drift (a door nudged by 1e-8 m in Rhino) is no sill, like the other position checks here.
+        read[element_id]['GeometryMetres'][4] = 0.0 if abs(sill) <= POSITION_TOLERANCE else sill
     validate_project(project)
     # Walls and spaces must still stand on the level export placed them on: a vertical move in Rhino
     # has no BIM-IR field to land in, so it is refused rather than dropped.
@@ -460,6 +535,11 @@ def import_project(input_path):
             expected = _base_elevation(element, by_id)
             if abs(bases[element['Id']] - expected) > POSITION_TOLERANCE:
                 raise RhinoAdapterError('rhino_elevation_mismatch', f"{element['Id']} {element['Kind']} base is at {bases[element['Id']]} m, its level is at {expected} m")
+    # An opening box is as deep as its host wall; BIM-IR has no opening depth to carry another value.
+    for element_id, (_, depth) in openings.items():
+        host = by_id[by_id[element_id]['Dependencies'][1]]
+        if abs(depth - host['GeometryMetres'][5]) > POSITION_TOLERANCE:
+            raise RhinoAdapterError('rhino_opening_geometry', f"{element_id} box is {depth} m deep, its host wall {host['Id']} is {host['GeometryMetres'][5]} m thick")
     return check_representable(project)
 
 

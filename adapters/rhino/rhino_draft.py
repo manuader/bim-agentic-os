@@ -7,9 +7,11 @@ Usage:
 Failures print one JSON object {"error": code, "detail": text} on stderr and exit 1.
 
 Unlike bim_rhino.py import (which only reads files the P8-02 writer made and refuses anything else), this reads any
-.3dm: objects on layers named for walls, spaces or levels become proposed BIM-IR elements with a confidence, and every
-other object goes to a typed unmapped report. Proposed elements use only the existing BIM-IR element shape
-(level [elevation]; wall [ax, ay, bx, by, height, thickness]; space [x, y, width, depth]); no schema is added.
+.3dm: objects on layers named for walls, spaces, levels, doors or windows become proposed BIM-IR elements with a
+confidence, and every other object goes to a typed unmapped report. Proposed elements use only the existing BIM-IR element
+shape (level [elevation]; wall [ax, ay, bx, by, height, thickness]; space [x, y, width, depth]; door/window
+[ax, ay, bx, by, sill, height] with dependencies [level, host wall], as IntentCompiler and the IFC adapter write them);
+no schema is added.
 """
 import hashlib
 import importlib.util
@@ -29,21 +31,27 @@ RhinoAdapterError = br.RhinoAdapterError
 DRAFT_VERSION = 1
 ID_NAMESPACE = 'bim-agentic-os.rhino-draft/1'
 TOL = br.POSITION_TOLERANCE
-RANK = {'level': 0, 'wall': 1, 'space': 2}
+RANK = {'level': 0, 'wall': 1, 'door': 2, 'window': 3, 'space': 4}
+OPENINGS = ('door', 'window')
 # Layer name (case-insensitive, whole name) -> kind. The writer's names (Levels, Walls, Spaces) come first.
 LAYER_KINDS = {
     'level': 'level', 'levels': 'level', 'nivel': 'level', 'niveles': 'level',
     'wall': 'wall', 'walls': 'wall', 'muro': 'wall', 'muros': 'wall',
     'space': 'space', 'spaces': 'space', 'room': 'space', 'rooms': 'space',
     'espacio': 'space', 'espacios': 'space', 'local': 'space', 'locales': 'space',
+    'door': 'door', 'doors': 'door', 'puerta': 'door', 'puertas': 'door',
+    'window': 'window', 'windows': 'window', 'ventana': 'window', 'ventanas': 'window',
 }
 # Confidence of each mapping before the layer-inherited factor.
 CONFIDENCE = {
     'level-point': 0.9, 'level-synthesized': 0.6,
     'wall-axis-extrusion': 0.95, 'wall-footprint-extrusion': 0.85, 'wall-centreline': 0.5, 'wall-arc-chord': 0.3,
     'space-outline': 0.9, 'space-extrusion': 0.8,
+    'opening-axis-extrusion': 0.9, 'opening-footprint-extrusion': 0.8,
 }
 INHERITED_FACTOR = 0.9
+# An opening box off its host axis (but inside the host thickness) is moved onto the axis.
+PROJECTED_FACTOR = 0.9
 # Units: name -> ('div', d) metres = value / d (exact for decimal units, with Core's mm noise rule), or ('mul', f).
 _UNITS = (('Millimeters', ('div', 1000.0)), ('Centimeters', ('div', 100.0)), ('Decimeters', ('div', 10.0)),
           ('Meters', ('div', 1.0)), ('Kilometers', ('mul', 1000.0)), ('Inches', ('mul', 0.0254)), ('Feet', ('mul', 0.3048)))
@@ -358,6 +366,27 @@ def _circular(curve, conv):
     return (ux, uy), radius, angles[0], sweep, points[0][2]
 
 
+def _fit(g, base, h, host_base):
+    """How opening box g = [ax, ay, bx, by, height, thickness] at base sits on wall h = [ax, ay, bx, by, height, thickness]
+    at host_base: None unless both ends lie inside the host thickness at the same signed offset from its axis (parallel),
+    between its ends, and the box stands between the host base and top."""
+    ax, ay, bx, by = h[:4]
+    length = math.hypot(bx - ax, by - ay)
+    ux, uy = (bx - ax) / length, (by - ay) / length
+    s0 = (g[0] - ax) * ux + (g[1] - ay) * uy
+    s1 = (g[2] - ax) * ux + (g[3] - ay) * uy
+    d0 = (g[0] - ax) * uy - (g[1] - ay) * ux
+    d1 = (g[2] - ax) * uy - (g[3] - ay) * ux
+    half = h[5] / 2
+    if abs(d0) > half + TOL or abs(d1) > half + TOL or abs(d0 - d1) > TOL:
+        return None
+    if min(s0, s1) < -TOL or max(s0, s1) > length + TOL:
+        return None
+    if base < host_base - TOL or base + g[4] > host_base + h[4] + TOL:
+        return None
+    return {'s0': s0, 's1': s1, 'offset': max(abs(d0), abs(d1)), 'a': (ax, ay), 'u': (ux, uy), 'length': length}
+
+
 def _arc_chords(arc, segments):
     """segments + 1 points at equal angles along the arc (so all chords are equal), in metres."""
     (ux, uy), radius, start, sweep, z = arc
@@ -397,7 +426,9 @@ class _Draft:
     def propose(self, kind, element_id, key, geometry, base, mapping, notes, source, inherited):
         # What the P8-02 writer could not carry (beyond +/-1e5 m, under 1e-6 m) is unmapped here, not proposed.
         try:
-            br.check_representable({'Elements': [{'Id': element_id, 'Kind': kind, 'GeometryMetres': geometry}]})
+            # An opening is still its box [ax, ay, bx, by, height, thickness] here, checked like a wall.
+            checked = 'wall' if kind in OPENINGS else kind
+            br.check_representable({'Elements': [{'Id': element_id, 'Kind': checked, 'GeometryMetres': geometry}]})
         except RhinoAdapterError as error:
             raise _Unmapped('degenerate' if 'below' in error.detail else 'out_of_range', error.detail) from None
         if len(self.levels) + len(self.candidates) >= self.options['max_proposals']:
@@ -509,6 +540,129 @@ class _Draft:
         _length(values[3], 'depth')
         self.propose('space', source['object_id'], source['object_id'], values, base, mapping, notes, source, inherited)
 
+    def door(self, geometry, source, inherited):
+        self.opening('door', geometry, source, inherited)
+
+    def window(self, geometry, source, inherited):
+        self.opening('window', geometry, source, inherited)
+
+    def opening(self, kind, geometry, source, inherited):
+        """A door or window volume: a writer-style box along the host axis, or a vertical extrusion of its plan rectangle.
+        Its host wall, level and sill are decided in assemble(), once every wall is known."""
+        if not isinstance(geometry, rhino3dm.Extrusion):
+            raise _Unmapped('geometry_unsupported', f'{type(geometry).__name__} on a {kind} layer (an extrusion box is expected)')
+        path = _path_kind(geometry, self.conv)
+        try:
+            if path == 'axis':
+                values, base = _axis_wall(geometry, self.conv, self.options['max_vertices'])
+                alternatives, mapping, notes = [values], 'opening-axis-extrusion', []
+            elif path == 'vertical':
+                alternatives, base = self.footprint_axes(geometry)
+                mapping, notes = 'opening-footprint-extrusion', ['footprint-rectangle']
+            else:
+                raise _Unmapped('opening_extrusion_unsupported', 'extrusion path is neither horizontal nor vertical')
+        except _Unmapped as error:
+            if error.reason in ('wall_extrusion_unsupported', 'space_not_rectangle'):
+                raise _Unmapped('opening_extrusion_unsupported', error.detail) from None
+            raise
+        self.propose(kind, source['object_id'], source['object_id'], alternatives[0], base, mapping, notes, source, inherited)
+        self.candidates[-1]['alternatives'] = alternatives
+
+    def footprint_axes(self, extrusion):
+        """Both readings of a plan-rectangle opening (axis along either pair of sides, the long sides first), and its base.
+        The host decides which one is meant: an opening is often narrower along its wall than the wall is thick."""
+        ring, base, height = _footprint(extrusion, self.conv, self.options['max_vertices'])
+        a, b, c, d = ring
+        mid = lambda p, q: ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+        along_ab = [*mid(a, d), *mid(b, c), height, br._snap(math.dist(b, c))]
+        along_bc = [*mid(a, b), *mid(d, c), height, br._snap(math.dist(a, b))]
+        readings = [along_ab, along_bc] if math.dist(a, b) >= math.dist(b, c) else [along_bc, along_ab]
+        valid, first_error = [], None
+        for values in readings:
+            try:
+                self.check_wall(values, base)
+                valid.append(values)
+            except _Unmapped as error:
+                first_error = first_error or error
+        if not valid:
+            raise first_error
+        return valid, base
+
+    def host(self, record, walls, level_for):
+        """Put an opening on its host wall: the writer's declared host when it holds the opening, else the wall that holds
+        it on its axis (then smallest id). Sets its [ax, ay, bx, by, sill, height] and [level, host]; False when unmapped."""
+        base, notes, declared = record['base'], record['notes'], record['declared']
+        fits = []
+        for reading, g in enumerate(record.get('alternatives', [record['geometry']])):
+            for wall in walls:
+                if len(wall['dependencies']) > 1:
+                    # Reachable: the writer accepts a wall declared on two levels at one elevation, but an opening needs its
+                    # host on exactly its own level, so such a wall cannot host (else the whole draft would fail validation).
+                    continue
+                fit = _fit(g, base, wall['geometry'], wall['base'])
+                if fit is not None:
+                    fits.append((fit['offset'] > TOL, wall['id'], reading, wall, fit, g))
+        fits.sort(key=lambda item: item[:3])
+        chosen = None
+        if declared is not None and len(declared) == 2:
+            chosen = next((item for item in fits if item[1] == declared[1]), None)
+        if chosen is None:
+            if not fits:
+                self.skip(record['source'], 'opening_host_missing',
+                          'no proposed wall holds the opening (on its axis within half its thickness, between its ends, base to top)')
+                return False
+            chosen = fits[0]
+            notes.append('host-inferred')
+            if declared is not None:
+                notes.append('declared-host-ignored')
+            if len({item[1] for item in fits}) > 1:
+                notes.append('host-ambiguous')
+        _, host_id, reading, wall, fit, g = chosen
+        points = [(g[0], g[1]), (g[2], g[3])]
+        projected = fit['offset'] > TOL
+        if projected:
+            (ax, ay), (ux, uy) = fit['a'], fit['u']
+            stations = [min(max(fit['s0'], 0.0), fit['length']), min(max(fit['s1'], 0.0), fit['length'])]
+            points = [(ax + s * ux, ay + s * uy) for s in stations]
+        if math.dist(points[0], points[1]) < br.MIN_LENGTH:
+            self.skip(record['source'], 'degenerate', 'opening width on its host axis is below the writer precision')
+            return False
+        sill = br._snap(base - wall['base'])
+        if sill <= 0:
+            sill = 0.0
+        if record['kind'] == 'door':
+            if sill > TOL:
+                self.skip(record['source'], 'door_sill_not_zero', f'door bottom is {sill} m above its host wall base; BIM-IR doors stand on their level')
+                return False
+            sill = 0.0
+        if fit['s0'] > fit['s1']:
+            points.reverse()
+        geometry = [points[0][0], points[0][1], points[1][0], points[1][1], sill, g[4]]
+        # The writer's own rule, so a clamped sill (base just under the host base) with its head just over the top, or any
+        # other rounding at the tolerances, unmaps this object instead of failing the whole draft's validation.
+        problem = br._opening_problem(record['kind'], geometry, [float(v) for v in wall['geometry']])
+        if problem is not None:
+            self.skip(record['source'], 'opening_outside_host', f'{record["kind"]} {problem}')
+            return False
+        if reading > 0:
+            notes.append('footprint-axis-from-host')
+        if projected:
+            notes.append('projected-to-host-axis')
+            record['confidence'] = round(record['confidence'] * PROJECTED_FACTOR, 6)
+        if fit['s0'] > fit['s1']:
+            notes.append('reversed-to-host')
+        if abs(g[5] - wall['geometry'][5]) > TOL:
+            notes.append('depth-differs-from-host')
+        if not wall['dependencies']:
+            # BIM-IR openings depend on [level, host wall]: a host at z = 0 without a level gets one.
+            wall['dependencies'] = [level_for(wall['base'])]
+            wall['notes'].append('level-added-for-opening')
+        record['dependencies'] = [wall['dependencies'][0], host_id]
+        if declared == record['dependencies']:
+            notes.append('dependencies-declared')
+        record['geometry'] = geometry
+        return True
+
     # -------------------------------------------------------------- assembly
 
     def assemble(self, project_id):
@@ -528,7 +682,28 @@ class _Draft:
         hosts = [(r['geometry'][0], r['id']) for r in levels]
         taken = set(kind_of)
         synthesized = []
+
+        def synthesize(base):
+            elevation = br._snap(base)
+            level_id = _derived_id(project_id, 'level', repr(elevation))
+            while level_id in taken:
+                level_id = _derived_id(level_id, 'level-collision')
+            taken.add(level_id)
+            hosts.append((elevation, level_id))
+            synthesized.append({'kind': 'level', 'id': level_id, 'key': f'level@{br._core_number(elevation)}', 'geometry': [elevation],
+                                'base': None, 'confidence': CONFIDENCE['level-synthesized'], 'notes': ['level-synthesized'],
+                                'source': {'object_id': None, 'part': None, 'layer': None, 'geometry_type': None}, 'dependencies': []})
+            return level_id
+
+        def level_for(base):
+            match = [i for elevation, i in hosts if abs(elevation - base) <= TOL]
+            return match[0] if match else synthesize(base)
+
+        openings = []
         for record in sorted((r for r in records if r['kind'] != 'level'), key=lambda r: (RANK[r['kind']], r['id'])):
+            if record['kind'] in OPENINGS:
+                openings.append(record)  # placed on their hosts below, once every wall has its level
+                continue
             base = record['base']
             record['dependencies'] = None
             if record['declared'] is not None:
@@ -537,7 +712,7 @@ class _Draft:
                 # level at the element's base, or none at z = 0. Dropping some is noted declared-dependencies-filtered
                 # (all dropped: the geometry decides); a level off the base drops them all (declared-dependencies-ignored).
                 declared = list(dict.fromkeys(record['declared']))
-                kept = [d for d in declared if d in kind_of and RANK[kind_of[d]] < RANK[record['kind']]]
+                kept = [d for d in declared if d in kind_of and kind_of[d] in ('level', 'wall') and RANK[kind_of[d]] < RANK[record['kind']]]
                 hosts_declared = [d for d in kept if kind_of[d] == 'level']
                 if hosts_declared:
                     agrees = all(abs(elevation_of[d] - base) <= TOL for d in hosts_declared)
@@ -562,19 +737,12 @@ class _Draft:
             elif abs(base) <= TOL:
                 record['dependencies'] = []
             else:
-                elevation = br._snap(base)
-                level_id = _derived_id(project_id, 'level', repr(elevation))
-                while level_id in taken:
-                    level_id = _derived_id(level_id, 'level-collision')
-                taken.add(level_id)
-                hosts.append((elevation, level_id))
-                synthesized.append({'kind': 'level', 'id': level_id, 'key': f'level@{br._core_number(elevation)}', 'geometry': [elevation],
-                                    'base': None, 'confidence': CONFIDENCE['level-synthesized'], 'notes': ['level-synthesized'],
-                                    'source': {'object_id': None, 'part': None, 'layer': None, 'geometry_type': None}, 'dependencies': []})
-                record['dependencies'] = [level_id]
+                record['dependencies'] = [synthesize(base)]
+        walls = sorted((r for r in records if r['kind'] == 'wall'), key=lambda r: r['id'])
+        dropped = {r['id'] for r in openings if not self.host(r, walls, level_for)}
         for record in levels:
             record['dependencies'] = []
-        records = sorted(records + synthesized, key=lambda r: (RANK[r['kind']], r['id']))
+        records = sorted([r for r in records if r['id'] not in dropped] + synthesized, key=lambda r: (RANK[r['kind']], r['id']))
         if len(records) > self.options['max_proposals']:
             raise RhinoAdapterError('draft_limit', f'{len(records)} proposals > max_proposals {self.options["max_proposals"]}')
         return records
@@ -668,7 +836,7 @@ def _draft(model, source_name, fingerprint, options):
         proposed = (len(state.levels), len(state.candidates))
         try:
             if kind is None:
-                raise _Unmapped('layer_unmapped', f'layer {layer!r} is not a wall, space or level layer')
+                raise _Unmapped('layer_unmapped', f'layer {layer!r} is not a wall, space, level, door or window layer')
             getattr(state, kind)(geometry, source, inherited)
         except (_Unmapped, ArithmeticError) as error:
             # Only typed geometry refusals and floating-point arithmetic failures unmap the object; anything else
@@ -690,7 +858,8 @@ def _draft(model, source_name, fingerprint, options):
         'source': {'file': source_name, 'units': units_name, 'metres_per_unit': br._core_number(conv.metres_per_unit), 'objects': count},
         'options': {k: options[k] for k in ('wall_height', 'wall_thickness', 'arc_segments')},
         'project': project, 'proposals': proposals, 'unmapped': state.report(),
-        'summary': {'levels': kinds.count('level'), 'walls': kinds.count('wall'), 'spaces': kinds.count('space'),
+        'summary': {'levels': kinds.count('level'), 'walls': kinds.count('wall'), 'doors': kinds.count('door'),
+                    'windows': kinds.count('window'), 'spaces': kinds.count('space'),
                     'unmapped': state.unmapped_total, 'unmapped_by_reason': dict(sorted(state.by_reason.items()))},
     }
 

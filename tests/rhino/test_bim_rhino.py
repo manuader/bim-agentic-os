@@ -496,5 +496,223 @@ class ImportRefusals(Base):
             return geometry, strings, layer_path, object_id
         self.assertRefused('rhino_space_geometry', br.import_project, self.rewrite(self.exported(), only('space', rotate)))
 
+
+# ---------------------------------------------------------------- P8-09 doors and windows
+
+OPENINGS_TEXT = (ROOT / 'tests/rhino/fixtures/openings.json').read_text(encoding='utf-8')
+OPENINGS = json.loads(OPENINGS_TEXT)
+
+
+def oid(n):
+    return f'00000000-0000-0000-0000-0000000000{n:02d}'
+
+
+class OpeningsExport(Base):
+    def objects(self):
+        model = rhino3dm.File3dm.Read(str(self.exported(OPENINGS)))
+        return model, {str(o.Attributes.Id): o for o in model.Objects}
+
+    def test_door_and_window_layers_exist_only_when_used(self):
+        model, _ = self.objects()
+        self.assertEqual(['BIM', 'BIM::Documentation', 'BIM::Doors', 'BIM::Levels', 'BIM::Spaces', 'BIM::Walls', 'BIM::Windows'],
+                         sorted(layer.FullPath for layer in model.Layers))
+        doors_only = copy.deepcopy(OPENINGS)
+        doors_only['Elements'] = [e for e in doors_only['Elements'] if e['Kind'] != 'window']
+        model = rhino3dm.File3dm.Read(str(self.exported(doors_only, 'doors.3dm')))
+        self.assertNotIn('BIM::Windows', [layer.FullPath for layer in model.Layers])
+        self.assertIn('BIM::Doors', [layer.FullPath for layer in model.Layers])
+
+    def test_openings_are_named_layer_objects_with_bim_identity(self):
+        model, objects = self.objects()
+        for element in OPENINGS['Elements']:
+            if element['Kind'] not in ('door', 'window'):
+                continue
+            obj = objects[element['Id']]
+            a = obj.Attributes
+            self.assertEqual({'door': 'BIM::Doors', 'window': 'BIM::Windows'}[element['Kind']], model.Layers[a.LayerIndex].FullPath)
+            self.assertEqual(element['Id'], a.GetUserString('bim.id'))
+            self.assertEqual(element['Kind'], a.GetUserString('bim.kind'))
+            self.assertEqual(element['Dependencies'], json.loads(a.GetUserString('bim.dependencies')))
+            self.assertEqual(element['Provenance']['Source'], json.loads(a.GetUserString('bim.provenance.source')))
+            self.assertEqual(f"{element['Kind']} {element['Id']}", a.Name)
+            self.assertIsInstance(obj.Geometry, rhino3dm.Extrusion)
+            self.assertTrue(obj.Geometry.IsValid)
+            self.assertTrue(obj.Geometry.IsSolid)
+
+    def test_opening_box_spans_its_ends_sill_to_head_through_the_host_thickness(self):
+        _, objects = self.objects()
+        door = objects[oid(31)].Geometry
+        s, e = door.PathStart, door.PathEnd
+        self.assertEqual((1.0, 0.0, 0.0), (s.X, s.Y, s.Z))
+        self.assertEqual((1.9, 0.0, 0.0), (e.X, e.Y, e.Z))
+        box = door.GetBoundingBox()
+        for want, got in ((1.0, box.Min.X), (1.9, box.Max.X), (-0.1, box.Min.Y), (0.1, box.Max.Y), (0.0, box.Min.Z), (2.1, box.Max.Z)):
+            self.assertAlmostEqual(want, got, places=12)
+        transom = objects[oid(32)].Geometry.GetBoundingBox()
+        self.assertAlmostEqual(2.3, transom.Min.Z, places=12)
+        self.assertAlmostEqual(2.7, transom.Max.Z, places=12)
+        # On the upper level (3 m) the sill is measured from the level.
+        diagonal = objects[oid(36)].Geometry
+        self.assertEqual((1.5, 2.0), (diagonal.PathStart.X, diagonal.PathStart.Y))
+        self.assertAlmostEqual(3.123456789, diagonal.PathStart.Z, places=12)
+        self.assertAlmostEqual(3.123456789 + 1.1, diagonal.GetBoundingBox().Max.Z, places=12)
+        # The north window runs in its host's direction (east to west).
+        north = objects[oid(33)].Geometry
+        self.assertEqual((3.5, 2.3), (north.PathStart.X, north.PathEnd.X))
+
+
+class OpeningsRoundtrip(Base):
+    def test_openings_fixture_roundtrip_preserves_ids_order_dependencies_and_geometry(self):
+        self.assertProjectClose(OPENINGS, br.import_project(self.exported(OPENINGS)))
+
+    def test_openings_fixture_imports_to_identical_core_json(self):
+        self.assertEqual(br.dumps(OPENINGS), br.dumps(br.import_project(self.exported(OPENINGS))))
+
+    def test_openings_export_import_export_is_stable(self):
+        first = br.import_project(self.exported(OPENINGS))
+        second = br.import_project(self.exported(first, 'second.3dm'))
+        third = br.import_project(self.exported(second, 'third.3dm'))
+        self.assertEqual(br.dumps(first), br.dumps(second))
+        self.assertEqual(br.dumps(second), br.dumps(third))
+
+    def test_openings_in_a_millimetre_model(self):
+        scale = rhino3dm.Transform.Scale(rhino3dm.Point3d(0, 0, 0), 1000.0)
+        def to_mm(geometry, strings, layer_path, object_id):
+            self.assertTrue(geometry.Transform(scale))
+            return geometry, strings, layer_path, object_id
+        source = self.rewrite(self.exported(OPENINGS), to_mm, units=rhino3dm.UnitSystem.Millimeters)
+        self.assertProjectClose(OPENINGS, br.import_project(source))
+
+    def test_window_raised_in_rhino_imports_its_new_sill(self):
+        def raise_north_window(geometry, strings, layer_path, object_id):
+            if str(object_id) == oid(33):
+                self.assertTrue(geometry.Translate(rhino3dm.Vector3d(0, 0, 0.25)))
+            return geometry, strings, layer_path, object_id
+        imported = elements_by_id(br.import_project(self.rewrite(self.exported(OPENINGS), raise_north_window)))
+        self.assertEqual([3.5, 4, 2.3, 4, 1.15, 1.2], imported[oid(33)]['GeometryMetres'])
+
+    def test_door_nudged_within_tolerance_imports_on_its_level(self):
+        def nudge(geometry, strings, layer_path, object_id):
+            if str(object_id) == oid(31):
+                self.assertTrue(geometry.Translate(rhino3dm.Vector3d(0, 0, 1e-8)))
+            return geometry, strings, layer_path, object_id
+        imported = elements_by_id(br.import_project(self.rewrite(self.exported(OPENINGS), nudge)))
+        self.assertEqual([1, 0, 1.9, 0, 0, 2.1], imported[oid(31)]['GeometryMetres'])
+
+    def test_cli_export_then_import_with_openings(self):
+        source = self.path('openings.json')
+        source.write_text(OPENINGS_TEXT, encoding='utf-8')
+        out = self.path('openings.3dm')
+        exported = subprocess.run([sys.executable, '-I', str(ADAPTER), 'export', str(source), str(out)], capture_output=True, text=True, timeout=120)
+        self.assertEqual(0, exported.returncode, exported.stderr)
+        self.assertEqual(len(OPENINGS['Elements']), json.loads(exported.stdout)['elements'])
+        imported = subprocess.run([sys.executable, '-I', str(ADAPTER), 'import', str(out)], capture_output=True, text=True, timeout=120)
+        self.assertEqual(0, imported.returncode, imported.stderr)
+        self.assertEqual(br.dumps(OPENINGS), imported.stdout.strip())
+
+
+def opening_variant(n, fn):
+    project = copy.deepcopy(OPENINGS)
+    by = elements_by_id(project)
+    fn(by[oid(n)], by, project)
+    return project
+
+
+class OpeningsExportRefusals(Base):
+    def refuse(self, code, n, fn):
+        out = self.path('refused.3dm')
+        self.assertRefused(code, br.export_project, opening_variant(n, fn), out)
+        self.assertFalse(out.exists())
+
+    def test_hosted_offset_width_layout_has_no_sill_or_height(self):
+        self.refuse('rhino_opening_geometry', 31, lambda e, by, p: e.update(GeometryMetres=[1, 0.9]))
+
+    def test_door_without_its_level(self):
+        self.refuse('rhino_opening_host', 31, lambda e, by, p: e.update(Dependencies=[oid(21)]))
+
+    def test_dependencies_in_the_wrong_order(self):
+        self.refuse('rhino_opening_host', 31, lambda e, by, p: e.update(Dependencies=[oid(21), oid(10)]))
+
+    def test_level_differs_from_the_host_level(self):
+        self.refuse('rhino_opening_host', 31, lambda e, by, p: e.update(Dependencies=[oid(11), oid(21)]))
+
+    def test_host_must_be_a_wall(self):
+        self.refuse('rhino_opening_host', 31, lambda e, by, p: e.update(Dependencies=[oid(10), oid(40)]))
+
+    def test_host_wall_without_a_level(self):
+        self.refuse('rhino_opening_host', 31, lambda e, by, p: by[oid(21)].update(Dependencies=[]))
+
+    def test_off_the_host_axis(self):
+        self.refuse('rhino_opening_geometry', 31, lambda e, by, p: e.update(GeometryMetres=[1, 0.05, 1.9, 0.05, 0, 2.1]))
+
+    def test_against_the_host_direction(self):
+        self.refuse('rhino_opening_geometry', 31, lambda e, by, p: e.update(GeometryMetres=[1.9, 0, 1, 0, 0, 2.1]))
+
+    def test_past_the_host_end(self):
+        self.refuse('rhino_opening_geometry', 31, lambda e, by, p: e.update(GeometryMetres=[4.5, 0, 5.5, 0, 0, 2.1]))
+
+    def test_head_above_the_host_top(self):
+        self.refuse('rhino_opening_geometry', 33, lambda e, by, p: e.update(GeometryMetres=[3.5, 4, 2.3, 4, 2.0, 1.2]))
+
+    def test_door_sill_must_be_zero(self):
+        self.refuse('rhino_opening_geometry', 31, lambda e, by, p: e.update(GeometryMetres=[1, 0, 1.9, 0, 0.1, 2.0]))
+
+    def test_negative_window_sill(self):
+        self.refuse('rhino_opening_geometry', 34, lambda e, by, p: e.update(GeometryMetres=[5, 1.5, 5, 2.7, -0.1, 1.2]))
+
+    def test_zero_height(self):
+        self.refuse('rhino_opening_geometry', 34, lambda e, by, p: e.update(GeometryMetres=[5, 1.5, 5, 2.7, 0.9, 0]))
+
+    def test_width_below_representable_precision(self):
+        self.refuse('rhino_precision', 34, lambda e, by, p: e.update(GeometryMetres=[5, 1.5, 5, 1.5000001, 0.9, 1.2]))
+
+    def test_height_below_representable_precision(self):
+        self.refuse('rhino_precision', 34, lambda e, by, p: e.update(GeometryMetres=[5, 1.5, 5, 2.7, 0.9, 1e-7]))
+
+
+class OpeningsImportRefusals(Base):
+    def edited(self, n, change):
+        def edit(geometry, strings, layer_path, object_id):
+            if str(object_id) == oid(n):
+                return change(geometry, strings, layer_path, object_id)
+            return geometry, strings, layer_path, object_id
+        return self.rewrite(self.exported(OPENINGS), edit)
+
+    def moved(self, n, dx, dy, dz):
+        def move(geometry, strings, layer_path, object_id):
+            self.assertTrue(geometry.Translate(rhino3dm.Vector3d(dx, dy, dz)))
+            return geometry, strings, layer_path, object_id
+        return self.edited(n, move)
+
+    def test_box_depth_differs_from_the_host_thickness(self):
+        thicker = br._wall([1, 0, 1.9, 0, 2.1, 0.3], 0.0)
+        self.assertRefused('rhino_opening_geometry', br.import_project, self.edited(31, lambda g, s, l, i: (thicker, s, l, i)))
+
+    def test_door_slid_off_its_host_axis(self):
+        self.assertRefused('rhino_opening_geometry', br.import_project, self.moved(31, 0, 0.5, 0))
+
+    def test_door_slid_past_its_host_end(self):
+        self.assertRefused('rhino_opening_geometry', br.import_project, self.moved(31, 3.5, 0, 0))
+
+    def test_door_lifted_off_its_level(self):
+        self.assertRefused('rhino_opening_geometry', br.import_project, self.moved(31, 0, 0, 0.1))
+
+    def test_window_lifted_above_its_host_top(self):
+        self.assertRefused('rhino_opening_geometry', br.import_project, self.moved(33, 0, 0, 1.0))
+
+    def test_door_moved_to_the_window_layer(self):
+        self.assertRefused('rhino_layer_mismatch', br.import_project, self.edited(31, lambda g, s, l, i: (g, s, 'BIM::Windows', i)))
+
+    def test_door_with_point_geometry(self):
+        point = rhino3dm.Point(rhino3dm.Point3d(1, 0, 0))
+        self.assertRefused('rhino_geometry_mismatch', br.import_project, self.edited(31, lambda g, s, l, i: (point, s, l, i)))
+
+    def test_door_box_standing_on_its_end(self):
+        outline = rhino3dm.PolylineCurve([rhino3dm.Point3d(1, -0.1, 0), rhino3dm.Point3d(1.9, -0.1, 0), rhino3dm.Point3d(1.9, 0.1, 0),
+                                          rhino3dm.Point3d(1, 0.1, 0), rhino3dm.Point3d(1, -0.1, 0)])
+        box = rhino3dm.Extrusion.Create(outline, 2.1, True)
+        self.assertRefused('rhino_opening_geometry', br.import_project, self.edited(31, lambda g, s, l, i: (box, s, l, i)))
+
+
 if __name__ == '__main__':
     unittest.main()
