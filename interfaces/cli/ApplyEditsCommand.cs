@@ -1,7 +1,6 @@
 #nullable enable
 using System.Globalization;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Bim.Core;
 
 namespace Bim.Cli;
@@ -10,24 +9,34 @@ namespace Bim.Cli;
 // the store head, committed through ProjectStore.Commit (core/Bim.Core/Model.cs) with the plan's expected head.
 //   store-directory  an initialized ProjectStore; its project.json (the persisted {Project, Receipts} state) is read
 //                    through BoundedInput.ReadText with FileShare.ReadWrite | FileShare.Delete (the store replaces it by
-//                    temp + move), refusing null projects, elements, geometry, dependencies or receipts.
-//   edits.json       the diff-edits edits format (a JSON array of ElementEdit; unknown members and duplicate keys refused
-//                    in every object), parsed exactly as DiffEditsCommand does.
+//                    temp + move). The store state is therefore bounded at 8 MiB like every CLI input (input_too_large
+//                    beyond; each commit adds one receipt of about 140 bytes). Null projects, elements, geometry,
+//                    dependencies or receipts are refused (apply_edits_store_invalid).
+//   edits.json       the diff-edits edits format, parsed by the shared interfaces/cli/EditsInput.cs.
 //   --expected-revision n  optional; the head revision the caller planned against (a non-negative decimal integer). A
-//                    store at any other revision is refused before anything is diffed.
+//                    store at any other revision is refused before anything is diffed. Passing it makes a retry safe:
+//                    a retry of a commit that already landed is refused as stale instead of applying the edits again.
 // The plan is IncrementalDiff.Diff(head, edits).Plan, so its ExpectedRevision and BeforeHash are the head that was read;
 // ProjectStore.Commit re-checks both under its file lock, so a store that moved between the read and the commit is
-// refused as stale too. The idempotency key is derived from the plan ("apply-edits:<rev>:<before>:<after>"): the same
-// edits on the same head are one commit.
+// refused as stale too. The idempotency key is unique per run ("apply-edits:<rev>:<random guid>"): two runs racing on
+// the same head with the same edits never share a receipt, so exactly one commits and the other is refused as stale
+// (or store_unavailable while the winner holds the lock); a run never reports another run's commit as its own.
+// An empty edit set (or edits that change nothing) is not refused: it commits a new revision with an empty plan.
 // Success: stdout {"status":"succeeded","scope":"intended_state_only","native_verification":"unverified","revision":<head+1>,
 // "plan":<plan>}, where "plan" is byte-identical to diff-edits' stdout on the head project and the same edits file; exit 0.
-// Every refusal prints {"status":"failed","code":<code>} and exits 1: apply_edits_usage, input_* (store project.json or
-// edits), apply_edits_store_invalid, apply_edits_edits_invalid, apply_edits_stale_head, the library's edit_invalid,
-// edit_unknown_id, edit_duplicate_id, edit_create_exists, edit_bound_exceeded and invalid_ir, apply_edits_store_unavailable
-// (the store's commit lock is held by another committer, or the store could not be opened for the commit) and
-// apply_edits_internal_error. Nothing is written on any refusal: every check runs before ProjectStore.Commit, and Commit
-// itself refuses (revision_conflict, idempotency_conflict, invalid_ir, plan_mismatch, a held lock) before its first write.
-// An I/O failure after Commit started writing is the ADR0007 crash case (checkpoint/journal recovery), not a refusal.
+// Every refusal prints {"status":"failed","code":<code>} and exits 1:
+//   apply_edits_usage, input_* (store project.json or edits), apply_edits_store_invalid, apply_edits_edits_invalid,
+//   apply_edits_stale_head, the library's edit_invalid, edit_unknown_id, edit_duplicate_id, edit_create_exists,
+//   edit_bound_exceeded and invalid_ir, and apply_edits_store_unavailable (Commit's store_locked: the commit lock is held
+//   by another committer or cannot be opened). Nothing is written on any of these: every check runs before
+//   ProjectStore.Commit, and Commit refuses store_locked, revision_conflict, idempotency_conflict and invalid_ir before
+//   its first write.
+//   apply_edits_commit_incomplete: an I/O or access failure inside Commit after the lock was taken. Commit may have
+//   written checkpoint-<rev>.json (the unchanged head), the "prepared" journal line and project.tmp, while project.json
+//   still holds the old head: the ADR0007 crash case, recovered by reconciling journal and checkpoint by hashes (tests
+//   pin the case project.tmp is a directory). Not a "nothing written" refusal.
+//   apply_edits_internal_error: a defect (stderr gets its type and message), including Commit's plan_mismatch (the
+//   incremental plan disagreeing with the full diff, refused by Commit before its first write).
 // Precedence: usage, then both files are read (store first), then the store is parsed, then the edits, then the expected
 // revision, then the library, then the commit; the first failure is the only one reported.
 internal static class ApplyEditsCommand
@@ -38,12 +47,8 @@ internal static class ApplyEditsCommand
     public const string EditsInvalid = "apply_edits_edits_invalid";
     public const string StaleHead = "apply_edits_stale_head";
     public const string StoreUnavailable = "apply_edits_store_unavailable";
+    public const string CommitIncomplete = "apply_edits_commit_incomplete";
     public const string InternalError = "apply_edits_internal_error";
-    static readonly string[] LibraryCodes =
-    {
-        IncrementalDiff.InvalidEdit, IncrementalDiff.UnknownId, IncrementalDiff.DuplicateId, IncrementalDiff.CreateExists, IncrementalDiff.BoundExceeded,
-    };
-    static readonly JsonSerializerOptions EditsOptions = new() { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
 
     public static void Run(string[] args)
     {
@@ -56,22 +61,31 @@ internal static class ApplyEditsCommand
         }
         catch (InputRejectedException error) { Fail(error.Message); return; }
         if (ParseHead(stateText) is not { } head) { Fail(StoreInvalid); return; }
-        if (ParseEdits(editsText) is not { } edits) { Fail(EditsInvalid); return; }
+        if (EditsInput.Parse(editsText) is not { } edits) { Fail(EditsInvalid); return; }
         if (expectedRevision is { } expected && expected != head.Revision) { Fail(StaleHead); return; }
         IncrementalDiffResult result;
         try { result = IncrementalDiff.Diff(head, edits); }
-        catch (ArgumentException error) when (LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { Fail(error.Message); return; }
+        catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { Fail(error.Message); return; }
         catch (InvalidOperationException error) when (error.Message == "invalid_ir") { Fail("invalid_ir"); return; }
         catch (Exception error) { Internal(error); return; }
         var plan = result.Plan;
-        var key = string.Create(CultureInfo.InvariantCulture, $"apply-edits:{plan.ExpectedRevision}:{plan.BeforeHash}:{plan.AfterHash}");
+        var key = string.Create(CultureInfo.InvariantCulture, $"apply-edits:{plan.ExpectedRevision}:{Guid.NewGuid():N}");
         Project committed;
         try { committed = new ProjectStore(storePath).Commit(result.After, plan, key); }
         catch (InvalidOperationException error) when (error.Message is "revision_conflict" or "idempotency_conflict") { Fail(StaleHead); return; }
         catch (InvalidOperationException error) when (error.Message == "invalid_ir") { Fail("invalid_ir"); return; }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Fail(StoreUnavailable); return; }
+        // The incremental plan disagreeing with the full diff is a defect, refused by Commit before its first write.
+        catch (InvalidOperationException error) when (error.Message == "plan_mismatch") { Internal(error); return; }
+        catch (IOException error) when (error.Message == ProjectStore.StoreLocked) { Fail(StoreUnavailable); return; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine("apply-edits commit incomplete: " + error.GetType().FullName + ": " + error.Message);
+            Fail(CommitIncomplete);
+            return;
+        }
         catch (Exception error) { Internal(error); return; }
-        // A receipt already holding this key returns the head unchanged without writing: not a new revision.
+        // Commit returns the head unchanged, without writing, only for a key it already holds; a fresh random key never
+        // matches, so this is a defensive check that this call wrote the revision it reports.
         if (committed.Revision != plan.ExpectedRevision + 1) { Fail(StaleHead); return; }
         Console.WriteLine(JsonSerializer.Serialize(new { status = "succeeded", scope = "intended_state_only", native_verification = "unverified", revision = committed.Revision, plan }));
     }
@@ -111,34 +125,6 @@ internal static class ApplyEditsCommand
         // Commit dereferences the receipts and the index dereferences these; a null one is a malformed store, not a crash.
         if (state?.Receipts is null || project?.Elements is null || project.Elements.Any(e => e is null || e.GeometryMetres is null || e.Dependencies is null)) return null;
         return project;
-    }
-
-    // Same rules as DiffEditsCommand.ParseEdits; null entries and null element fields are left to the library (edit_invalid).
-    static ElementEdit[]? ParseEdits(string text)
-    {
-        try
-        {
-            using (var document = JsonDocument.Parse(text)) if (HasDuplicateKey(document.RootElement)) return null;
-            return JsonSerializer.Deserialize<ElementEdit[]>(text, EditsOptions);
-        }
-        catch (JsonException) { return null; }
-    }
-
-    static bool HasDuplicateKey(JsonElement element)
-    {
-        switch (element.ValueKind)
-        {
-            case JsonValueKind.Object:
-                var names = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var property in element.EnumerateObject())
-                    if (!names.Add(property.Name) || HasDuplicateKey(property.Value)) return true;
-                return false;
-            case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray()) if (HasDuplicateKey(item)) return true;
-                return false;
-            default:
-                return false;
-        }
     }
 
     static void Internal(Exception error)

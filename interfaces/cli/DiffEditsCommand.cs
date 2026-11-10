@@ -1,6 +1,5 @@
 #nullable enable
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Bim.Core;
 
 namespace Bim.Cli;
@@ -13,7 +12,7 @@ namespace Bim.Cli;
 //                 `diff project.json applied.json` and to JsonSerializer.Serialize(IncrementalDiff.Diff(project, edits).Plan).
 //   edits.json    a JSON array of ElementEdit {"Action":"create"|"update"|"delete","Id":guid,"Element":Element|null}
 //                 (the record's default serialization); unknown members and duplicate keys are refused in every object,
-//                 including the nested Element and Provenance.
+//                 including the nested Element and Provenance (interfaces/cli/EditsInput.cs, shared with apply-edits).
 // Bounded input: both files go through BoundedInput.ReadText (8 MiB cap, regular files only, links refused; its input_*
 // codes); at most IncrementalDiff.MaxEdits edits (edit_bound_exceeded, the library's check).
 // Success: stdout is the plan JSON, exit 0. Every refusal prints {"status":"failed","code":<code>} and exits 1 (the CLI
@@ -32,12 +31,6 @@ internal static class DiffEditsCommand
     public const string ProjectInvalid = "diff_edits_project_invalid";
     public const string EditsInvalid = "diff_edits_edits_invalid";
     public const string InternalError = "diff_edits_internal_error";
-    static readonly string[] LibraryCodes =
-    {
-        IncrementalDiff.InvalidEdit, IncrementalDiff.UnknownId, IncrementalDiff.DuplicateId, IncrementalDiff.CreateExists, IncrementalDiff.BoundExceeded,
-    };
-    static readonly JsonSerializerOptions EditsOptions = new() { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
-
     public static void Run(string[] args)
     {
         if (!TryParse(args, out var projectPath, out var editsPath)) { Fail(UsageCode); return; }
@@ -49,10 +42,10 @@ internal static class DiffEditsCommand
         }
         catch (InputRejectedException error) { Fail(error.Message); return; }
         if (ParseProject(projectText) is not { } project) { Fail(ProjectInvalid); return; }
-        if (ParseEdits(editsText) is not { } edits) { Fail(EditsInvalid); return; }
+        if (EditsInput.Parse(editsText) is not { } edits) { Fail(EditsInvalid); return; }
         ExecutionPlan plan;
         try { plan = IncrementalDiff.Diff(project, edits).Plan; }
-        catch (ArgumentException error) when (LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { Fail(error.Message); return; }
+        catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { Fail(error.Message); return; }
         catch (InvalidOperationException error) when (error.Message == "invalid_ir") { Fail("invalid_ir"); return; }
         // Anything else is a defect, never a message passed off as a code.
         catch (Exception error)
@@ -92,36 +85,6 @@ internal static class DiffEditsCommand
         // Compiler.Validate and the index dereference these; a null one is a malformed project, not a crash.
         if (project?.Elements is null || project.Elements.Any(e => e is null || e.GeometryMetres is null || e.Dependencies is null)) return null;
         return project;
-    }
-
-    // Null entries and null element fields are left to the library (edit_invalid).
-    static ElementEdit[]? ParseEdits(string text)
-    {
-        try
-        {
-            // System.Text.Json keeps the last of duplicate keys; the edits refuse them instead (bounded by the 8 MiB read
-            // and JsonDocument's default depth limit of 64).
-            using (var document = JsonDocument.Parse(text)) if (HasDuplicateKey(document.RootElement)) return null;
-            return JsonSerializer.Deserialize<ElementEdit[]>(text, EditsOptions);
-        }
-        catch (JsonException) { return null; }
-    }
-
-    static bool HasDuplicateKey(JsonElement element)
-    {
-        switch (element.ValueKind)
-        {
-            case JsonValueKind.Object:
-                var names = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var property in element.EnumerateObject())
-                    if (!names.Add(property.Name) || HasDuplicateKey(property.Value)) return true;
-                return false;
-            case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray()) if (HasDuplicateKey(item)) return true;
-                return false;
-            default:
-                return false;
-        }
     }
 
     static void Fail(string code)
