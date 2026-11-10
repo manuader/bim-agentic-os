@@ -1327,3 +1327,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay176 — 2026-11-10T07:52:59Z (Claude, cloud scheduled)
 - 07:52Z LOCK taken (was FREE; relay174 released 2026-11-10T07:15:40Z).
+- 08:58Z picked P6-10 (phase 6), P7-09 (phase 7), P2-11 (phase 2). P6-10 green 2b08a1a (red 42780498633, green 42784502068; 1 attempt: nullability warnaserror), P7-09 green d542fb4 (red 42778985107, green 42781456410; 1 attempt: package.ps1 missing core/Bim.Generative). P2-11 BLOCKED before code: P2-06 ledger cannot record update/delete adopts nor a proposal id without a persisted-format change → proposed ADR + owner decision; replacement P5-11 (phase 5) started. Next: reviews.
