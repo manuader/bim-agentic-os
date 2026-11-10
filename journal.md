@@ -1317,3 +1317,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay174 — 2026-11-10T04:53:37Z (Claude, cloud scheduled)
 - 04:53Z LOCK taken (was FREE; relay171 released 2026-11-10T04:19:05Z).
 - 04:54Z picked P1-13 (phase 1), P3-08 (phase 3), P4-09 (phase 4) — oldest-touched (relay166/168), disjoint files. Workers starting.
+- 05:36Z workers green: P1-13 683d49d (red 42759266906, green 42761303189; 1 attempt: test-file syntax slip), P3-08 b716b10 (red 42759165857, green 42759237577; 0 attempts), P4-09 813f961 (red 42759343043, green 42760288590; 0 attempts). Next: independent reviews.
