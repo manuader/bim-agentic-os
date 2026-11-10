@@ -11,8 +11,9 @@ namespace Bim.Core;
 // created/modified/deleted) and its readback like the P1-13 contract states it (limit and filter echoed, matched >=
 // returned = element count <= limit, truncated_reason consistent, after = the cursor's id, next_cursor present exactly when
 // truncated, decodable, bound to this document and filter, and at or after the page's last id, element ids strictly
-// ascending after the cursor id). A cursor whose id does not move forward is cursor_loop; more than maxPages (at most
-// 1000) pages is page_limit_exceeded. A refusal carries no partial elements. Contract: docs/contracts/module-contracts.md,
+// ascending after the cursor id, and a byte cut or a full page resuming exactly after its last row). A cursor whose id does not move forward is cursor_loop; more than maxPages (at most
+// 1000) pages is page_limit_exceeded; more than maxElements elements or maxBytes UTF-8 bytes of element JSON in all is
+// listing_too_large, with no further page sent. A refusal carries no partial elements. Contract: docs/contracts/module-contracts.md,
 // "query.elements client paging (P1-15)".
 public static class RevitElementQueryPagingCodes
 {
@@ -31,6 +32,10 @@ public static class RevitElementQueryPagingCodes
 public sealed record ElementQueryAllResult(string Status, string Code, string? Field, string? Detail, int Pages, int? Matched, IReadOnlyList<string> Elements)
 {
     public bool IsSuccess => Status == RevitCommandResponse.Succeeded;
+
+    // A refusal before any page (the CLI's pipe, policy and envelope-read refusals under --all).
+    public static ElementQueryAllResult Refusal(string code, string? field, string? detail) =>
+        new(RevitCommandResponse.Failed, code, field, detail, 0, null, Array.Empty<string>());
 
     // {"status","code","field","detail","pages","matched","returned","elements":[...]}
     public string ToJson()
@@ -68,6 +73,8 @@ public static class RevitElementQueryPaging
         ArgumentNullException.ThrowIfNull(envelopeJson);
         ArgumentNullException.ThrowIfNull(transport);
         if (maxPages < 1 || maxPages > MaxPages) throw new ArgumentOutOfRangeException(nameof(maxPages), "1 to " + MaxPages.ToString(CultureInfo.InvariantCulture) + " pages");
+        if (maxElements < 1 || maxElements > MaxElements) throw new ArgumentOutOfRangeException(nameof(maxElements), "1 to " + MaxElements.ToString(CultureInfo.InvariantCulture) + " elements");
+        if (maxBytes < 1 || maxBytes > MaxListingBytes) throw new ArgumentOutOfRangeException(nameof(maxBytes), "1 to " + MaxListingBytes.ToString(CultureInfo.InvariantCulture) + " bytes");
         if (OtherCommand(envelopeJson) is { } other)
             return Fail(RevitElementQueryPagingCodes.CommandNotPageable, "command", "only " + Command + " is paged, not " + other, 0);
         RevitCommandEnvelope first;
@@ -78,6 +85,7 @@ public static class RevitElementQueryPaging
 
         var template = JsonNode.Parse(first.CanonicalJson)!.AsObject();
         List<string> elements = [];
+        long bytes = 0;
         var pages = 0;
         var envelope = first;
         while (true)
@@ -87,7 +95,7 @@ public static class RevitElementQueryPaging
             if (failure is not null) return failure;
             var (page, invalid) = Page(readback!, query, after, pages);
             if (invalid is not null) return invalid;
-            var (rows, matched, next) = page!.Value;
+            var (rows, matched, next, reason) = page!.Value;
             ElementQueryCursor? decoded = null;
             if (next is not null)
             {
@@ -98,6 +106,13 @@ public static class RevitElementQueryPaging
                     RevitElementQueryCursor.CheckFilter(decoded, query, "readback.next_cursor");
                 }
                 catch (RevitCommandException error) { return Fail(RevitCommandCodes.ResponseInvalid, "readback.next_cursor", "next_cursor refused: " + error.Code, pages); }
+                // P1-13: a byte cut resumes after the last returned row (and keeps at least one); a limit cut after the last
+                // paged id, which is the last returned row on a full page and can only be further on when rows vanished.
+                if (reason == RevitElementQueryJson.TruncatedBytes && rows.Count == 0)
+                    return Fail(RevitCommandCodes.ResponseInvalid, "readback.elements", "a byte cut keeps at least one row", pages);
+                var exact = reason == RevitElementQueryJson.TruncatedBytes || rows.Count == query.Limit;
+                if (exact && decoded.After != rows[^1].Id)
+                    return Fail(RevitCommandCodes.ResponseInvalid, "readback.next_cursor", "next_cursor must resume after the page's last element", pages);
                 if (rows.Count > 0 && decoded.After < rows[^1].Id)
                     return Fail(RevitCommandCodes.ResponseInvalid, "readback.next_cursor", "next_cursor is before the page's last element", pages);
                 if (after is { } previous && decoded.After <= previous)
@@ -105,6 +120,9 @@ public static class RevitElementQueryPaging
             }
             pages++;
             elements.AddRange(rows.Select(row => row.Json));
+            bytes += rows.Sum(row => (long)Encoding.UTF8.GetByteCount(row.Json));
+            if (elements.Count > maxElements || bytes > maxBytes)
+                return Fail(RevitElementQueryPagingCodes.ListingTooLarge, "elements", "more than " + maxElements.ToString(CultureInfo.InvariantCulture) + " elements or " + maxBytes.ToString(CultureInfo.InvariantCulture) + " bytes of element JSON", pages);
             if (next is null) return new ElementQueryAllResult(RevitCommandResponse.Succeeded, RevitCommandCodes.Ok, null, null, pages, matched, elements.ToArray());
             if (pages >= maxPages)
                 return Fail(RevitElementQueryPagingCodes.PageLimitExceeded, "readback.next_cursor", "more than " + maxPages.ToString(CultureInfo.InvariantCulture) + " pages", pages);
@@ -161,7 +179,7 @@ public static class RevitElementQueryPaging
     readonly record struct Row(long Id, string Json);
 
     // The readback of one page, checked against the query and the cursor id it was sent with.
-    static ((IReadOnlyList<Row> Rows, int Matched, string? Next)? Page, ElementQueryAllResult? Failure) Page(string readback, ElementQueryArgs query, long? after, int pages)
+    static ((IReadOnlyList<Row> Rows, int Matched, string? Next, string? Reason)? Page, ElementQueryAllResult? Failure) Page(string readback, ElementQueryArgs query, long? after, int pages)
     {
         ElementQueryAllResult Invalid(string member, string detail) => Fail(RevitCommandCodes.ResponseInvalid, "readback." + member, detail, pages);
         try
@@ -207,7 +225,7 @@ public static class RevitElementQueryPaging
             if (rows.Count != returnedValue) return (null, Invalid("returned", "returned is not the element count"));
             if (rows.Count > query.Limit) return (null, Invalid("elements", "more elements than the limit"));
             if (matchedValue < rows.Count) return (null, Invalid("matched", "matched is below returned"));
-            return ((rows, matchedValue, cut ? nextElement.GetString() : null), null);
+            return ((rows, matchedValue, cut ? nextElement.GetString() : null, cut ? reason.GetString() : null), null);
         }
         catch (JsonException) { return (null, Fail(RevitCommandCodes.ResponseInvalid, "readback", "query.elements readback is not JSON", pages)); }
     }

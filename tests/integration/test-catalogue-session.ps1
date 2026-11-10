@@ -502,7 +502,8 @@ try {
             @{ Exit = $allProcess.ExitCode; Json = $allJson; Raw = $allRaw }
         } finally { $allProcess.Dispose() }
     }
-    $allDocument = [ordered]@{ path = [IO.Path]::GetFullPath($document); unique_id = $documentUid }
+    # c-save re-pointed the open document to its copy (Revit Save As), so later requests name the copy.
+    $allDocument = [ordered]@{ path = $realCopy; unique_id = $documentUid }
     $wallsAll = & $runAll 'walls' ([ordered]@{ protocol_version = 1; operation_id = 'p115-all-walls'; document = $allDocument; command = 'query.elements'; args = [ordered]@{ category = 'wall'; limit = 1 } }) $pipeName '--all'
     $allIds = @($wallsAll.Json.elements | ForEach-Object { [long]$_.id })
     $allReceived = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue | Where-Object { $_ -eq 'p115-all-walls' })

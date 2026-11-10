@@ -62,16 +62,22 @@ try {
             // roots come only from the repository (.bim/native-runs and the owner file .bim/revit-enabled-roots.txt), read
             // fresh on every run through the same RevitCommandPolicySource the MCP server keeps current.
             // --all (P1-15): a query.elements envelope is paged with RevitElementQueryPaging.All, each page through the
-            // same RevitCommandService path; the output is the concatenated listing (ElementQueryAllResult JSON).
-            var revitAll=args.Length==4 && args[3]=="--all";
-            var revitPipe=args.Length==3 || revitAll ? args[2] : null;
-            if(RevitCommandService.RejectPipe(revitPipe) is {} revitRejected) { Console.WriteLine(revitRejected.Line); Environment.ExitCode=1; break; }
+            // same RevitCommandService path; every --all outcome, early refusals included, is ElementQueryAllResult JSON.
+            // Any other 4th (or further) argument is revit_command_usage naming it, in the single-command shape.
+            if(args.Length>=4 && (args[3]!="--all" || args.Length>4)) {
+                var revitExtra=args[3]!="--all" ? 3 : 4;
+                Console.WriteLine(RevitCommandResponse.Failure("revit_command_usage","args["+revitExtra+"]",(revitExtra==3 ? "unknown option " : "unexpected argument ")+args[revitExtra]+"; usage: revit-command envelope.json process-pipe-name [--all]").ToJson()); Environment.ExitCode=1; break;
+            }
+            var revitAll=args.Length==4;
+            string RevitEarly(string code,string? field,string? detail) => revitAll ? ElementQueryAllResult.Refusal(code,field,detail).ToJson() : RevitCommandResponse.Failure(code,field,detail).ToJson();
+            var revitPipe=args.Length>=3 ? args[2] : null;
+            if(RevitCommandService.RejectPipe(revitPipe) is {} revitRejected) { var revitRefusal=RevitCommandResponse.Parse(revitRejected.Line); Console.WriteLine(RevitEarly(revitRefusal.Code,revitRefusal.Field,revitRefusal.Detail)); Environment.ExitCode=1; break; }
             RevitCommandPolicy revitPolicy;
             try { revitPolicy=new RevitCommandPolicySource(AppContext.BaseDirectory).Current(); }
-            catch(RevitCommandException e) { Console.WriteLine(RevitCommandResponse.Failure(e.Code,e.Field,e.Detail).ToJson()); Environment.ExitCode=1; break; }
+            catch(RevitCommandException e) { Console.WriteLine(RevitEarly(e.Code,e.Field,e.Detail)); Environment.ExitCode=1; break; }
             string revitEnvelope;
             try { revitEnvelope=BoundedInput.ReadText(args[1]); }
-            catch(IOException e) { Console.WriteLine(RevitCommandResponse.Failure(RevitCommandCodes.EnvelopeInvalid,"envelope",e.Message).ToJson()); Environment.ExitCode=1; break; }
+            catch(IOException e) { Console.WriteLine(RevitEarly(RevitCommandCodes.EnvelopeInvalid,"envelope",e.Message)); Environment.ExitCode=1; break; }
             if(revitAll) {
                 var revitListing=RevitElementQueryPaging.All(revitEnvelope,new RevitServiceTransport(revitPipe!,revitPolicy,RevitCommandService.PipeTransport));
                 Console.WriteLine(revitListing.ToJson()); if(!revitListing.IsSuccess)Environment.ExitCode=1; break;
