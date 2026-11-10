@@ -6,7 +6,9 @@ namespace Bim.Generative;
 // bim.typology.vivienda-unifamiliar) and a family size become the planner input without a hand-written brief:
 // 1. SkillTypology.Resolve turns the pack (a manifest or a skill resolution) and the family size, with the requested
 //    optional rooms, into a TypologyProgramme whose brief holds the programme rooms (ids are the room kinds, counts per
-//    family size, minimum/target/maximum areas) and adjacency wishes.
+//    family size, minimum/target/maximum areas) and adjacency wishes. Composed packs (for example the CABA code pack in
+//    a skill resolution) are checked only as programme minimum conflicts (typology_minimum_conflict); their rules are
+//    not otherwise evaluated here, and the planner applies the fixed CABA minimums of PrototypeTemplates.Rules.
 // 2. TypologyBrief.Brief keeps those rooms and adjacencies exactly and adds the lot as the brief site on one level (the
 //    name gains the lot). No jurisdiction or budget is added.
 // 3. Generate refuses before any planning, listing every problem: the programme issues as they are (typed
@@ -24,7 +26,8 @@ namespace Bim.Generative;
 public sealed record TypologyBriefRequest(int FamilySize, PrototypeLot Lot, int Alternatives = 8, int Seed = 0, IReadOnlyCollection<string>? Include = null,
     ScoringWeights? Weights = null, double DoorWidthMetres = PlannerOptions.DefaultDoorWidthMetres);
 
-// Brief is null and Alternatives null when the request is refused; Programme is always the resolved programme.
+// Brief is null and Alternatives null when the request is refused; Programme is always the resolved programme. Request
+// is the given request with Include copied into an immutable, ordinal-sorted, distinct list.
 public sealed record TypologyBriefResult(PrototypeStatus Status, TypologyBriefRequest Request, TypologyProgramme Programme, ProjectBrief? Brief,
     IReadOnlyList<PlanConstraint> Refusals, IReadOnlyList<PrototypeCandidate> Candidates, AlternativeSet? Alternatives);
 
@@ -59,8 +62,12 @@ public static class TypologyBrief
         return Plan(SkillTypology.Resolve(resolution, request.FamilySize, request.Include), request);
     }
 
+    static TypologyBriefRequest Canonical(TypologyBriefRequest request) => request.Include is null ? request
+        : request with { Include = Array.AsReadOnly(request.Include.Distinct(StringComparer.Ordinal).OrderBy(kind => kind, StringComparer.Ordinal).ToArray()) };
+
     static TypologyBriefResult Plan(TypologyProgramme programme, TypologyBriefRequest request)
     {
+        request = Canonical(request);
         var refusals = programme.Issues.Select(issue => Refusal(issue.Code, issue.Subject, issue.Detail)).ToList();
         var lot = request.Lot;
         var lotValid = lot is not null && LotSide(lot.WidthMetres) && LotSide(lot.DepthMetres);

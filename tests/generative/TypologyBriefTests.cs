@@ -19,7 +19,7 @@ static class TypologyBriefTests
     const double Tolerance = 1e-9;
     // SHA-256 of Digest (canonical brief JSON, canonical alternative set JSON, candidates) for the pack, family 4, the
     // 12 x 12 m lot, 6 alternatives, seed 0 (regression pin).
-    const string PinnedSha256 = "pending";
+    const string PinnedSha256 = "85102ea05864ea67a8dad79bed06b2ce4a643056a09d8aee7d8044127340b513";
     // PrototypeTests.PinnedSha256: canonical JSON of the 2-bedroom apartment prototype on the 8.66 x 20 m lot, 6
     // alternatives, seed 0 (P7-03 regression pin, copied so the typology path is checked against the same value).
     const string ApartmentPinnedSha256 = "eb6da9ef00b170918354c2823fa5d5490e4eb0ac564bd1944e0ece4fff2c8c70";
