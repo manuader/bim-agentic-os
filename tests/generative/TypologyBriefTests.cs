@@ -17,6 +17,12 @@ static class TypologyBriefTests
     const string Pack = "bim.typology.vivienda-unifamiliar";
     const string Caba = "ar.caba.codigo-edificacion";
     const double Tolerance = 1e-9;
+    // SHA-256 of Digest (canonical brief JSON, canonical alternative set JSON, candidates) for the pack, family 4, the
+    // 12 x 12 m lot, 6 alternatives, seed 0 (regression pin).
+    const string PinnedSha256 = "pending";
+    // PrototypeTests.PinnedSha256: canonical JSON of the 2-bedroom apartment prototype on the 8.66 x 20 m lot, 6
+    // alternatives, seed 0 (P7-03 regression pin, copied so the typology path is checked against the same value).
+    const string ApartmentPinnedSha256 = "eb6da9ef00b170918354c2823fa5d5490e4eb0ac564bd1944e0ece4fff2c8c70";
 
     public static void Run(Action<bool, string, string> check, string root)
     {
@@ -81,6 +87,7 @@ static class TypologyBriefTests
         finally { CultureInfo.CurrentCulture = culture; }
         Check(four.Alternatives is not null && firstDigest == Digest(again) && firstDigest == Digest(fromReparsed) && firstDigest == german,
             "same pack + family size + lot + seed give byte-identical prototypes across runs, re-parses and cultures", firstDigest);
+        Check(firstDigest == PinnedSha256, "family-4 12 x 12 m seed-0 prototypes match their pinned SHA-256", "actual " + firstDigest);
         var resolution = SkillResolver.Resolve(catalog, new[] { new SkillRequest(Pack) });
         var fromResolution = Safe(() => TypologyBrief.Generate(resolution, new TypologyBriefRequest(4, lot, 6)));
         Check(fromResolution.Status == PrototypeStatus.Ranked && Digest(fromResolution) == firstDigest, "planning from a skill resolution equals planning from the manifest", Show(fromResolution));
@@ -95,10 +102,19 @@ static class TypologyBriefTests
         var seeded = Safe(() => TypologyBrief.Generate(pack, new TypologyBriefRequest(4, lot, 3, Seed: 40)));
         Check(seeded.Candidates.Select(candidate => candidate.Seed).SequenceEqual(new[] { 40, 41, 42 }) && Digest(seeded) == Digest(Safe(() => TypologyBrief.Generate(pack, new TypologyBriefRequest(4, lot, 3, Seed: 40)))),
             "candidate seeds are Seed + i and a seeded request is deterministic");
+        var wrapped = Safe(() => TypologyBrief.Generate(pack, new TypologyBriefRequest(4, lot, 2, Seed: int.MaxValue)));
+        Check(wrapped.Status != PrototypeStatus.Refused && wrapped.Candidates.Select(candidate => candidate.Seed).SequenceEqual(new[] { int.MaxValue, int.MinValue }),
+            "candidate seeds wrap around in 32-bit arithmetic", Show(wrapped));
+        var include = new[] { "study", "garage", "study" };
+        var copied = Safe(() => TypologyBrief.Generate(pack, new TypologyBriefRequest(4, lot, 2, Include: include)));
+        include[0] = "sauna";
+        Check(copied.Request.Include is { } kept && kept.SequenceEqual(new[] { "garage", "study" }) && kept is not string[] && copied.Request.Include is not ICollection<string> { IsReadOnly: false },
+            "the result request holds the requested rooms as an immutable sorted distinct copy", copied.Request.Include is null ? "null" : string.Join(",", copied.Request.Include) + " " + copied.Request.Include.GetType().Name);
 
         // ---- every family size of the pack gives the programme brief ----
         var bigLot = new PrototypeLot(16, 16);
         var ranked = new List<int>();
+        var unranked = new List<string>();
         for (var size = 1; size <= 8; size++)
         {
             var result = Safe(() => TypologyBrief.Generate(pack, new TypologyBriefRequest(size, bigLot, 3)));
@@ -106,9 +122,10 @@ static class TypologyBriefTests
             Check(result.Status != PrototypeStatus.Refused && result.Brief is not null && Rooms(result.Brief) == want,
                 "family " + size.ToString(CultureInfo.InvariantCulture) + " gives the pack programme as the planner brief", result.Brief is null ? Show(result) : Rooms(result.Brief) + " vs " + want);
             if (result.Status == PrototypeStatus.Ranked) ranked.Add(size);
+            else unranked.Add(size.ToString(CultureInfo.InvariantCulture) + ": " + Show(result));
         }
-        Check(ranked.Contains(1) && ranked.Contains(2) && ranked.Contains(4), "families 1, 2 and 4 are planned into ranked prototypes on a 16 x 16 m lot",
-            string.Join(",", ranked.Select(size => size.ToString(CultureInfo.InvariantCulture))));
+        Check(ranked.SequenceEqual(Enumerable.Range(1, 8)), "every family size 1..8 of the pack is planned into ranked prototypes on a 16 x 16 m lot",
+            "ranked " + string.Join(",", ranked.Select(size => size.ToString(CultureInfo.InvariantCulture))) + " | " + string.Join(" | ", unranked));
 
         // ---- typed refusals ----
         var sauna = Safe(() => TypologyBrief.Generate(pack, new TypologyBriefRequest(4, lot, 4, Include: new[] { "sauna" })));
@@ -141,17 +158,21 @@ static class TypologyBriefTests
         var both = Safe(() => TypologyBrief.Generate(pack, new TypologyBriefRequest(0, new PrototypeLot(200, 10), 4, Include: new[] { "sauna" })));
         Check(both.Status == PrototypeStatus.Refused && both.Refusals.Any(r => r.Code == SkillTypologyCodes.FamilySizeInvalid) && both.Refusals.Any(r => r.Code == SkillTypologyCodes.RoomKindUnknown)
             && both.Refusals.Any(r => r.Code == PrototypeCodes.LotInvalid) && both.Refusals.All(r => r.Hard && !r.Satisfied), "every refusal is listed at once, each hard and unsatisfied", Show(both));
+        var missing = Safe(() => TypologyBrief.Generate(SkillResolver.Resolve(catalog, new[] { new SkillRequest("bim.typology.no-such-pack") }), new TypologyBriefRequest(4, lot, 4)));
+        Check(IsRefused(missing, SkillTypologyCodes.ResolutionFailed, ""), "an unsuccessful skill resolution is a typed refusal", Show(missing));
+        var cabaOnly = Safe(() => TypologyBrief.Generate(SkillResolver.Resolve(catalog, new[] { new SkillRequest(Caba) }), new TypologyBriefRequest(4, lot, 4)));
+        Check(IsRefused(cabaOnly, SkillTypologyCodes.ProgrammeMissing, ""), "a resolution with no typology programme (CABA only) is a typed refusal", Show(cabaOnly));
+        var badWeights = Safe(() => TypologyBrief.Generate(pack, new TypologyBriefRequest(4, lot, 4, Weights: new ScoringWeights(AreaFit: -1))));
+        Check(IsRefused(badWeights, AlternativeCodes.WeightsInvalid, "weights.area_fit"), "an invalid ranker weight is a typed refusal", Show(badWeights));
         var refusedBrief = false;
         try { TypologyBrief.Brief(sauna.Programme, lot); }
         catch (ArgumentException) { refusedBrief = true; }
         Check(refusedBrief, "TypologyBrief.Brief refuses a refused programme with ArgumentException");
 
-        // ---- the existing apartment generator is untouched ----
-        var apartment = new PrototypeRequest(ApartmentTypology.TwoBedroom, new PrototypeLot(8.66, 20), 6, Seed: 0);
-        var before = PrototypeSerializer.Serialize(PrototypeGenerator.Generate(apartment));
-        _ = Safe(() => TypologyBrief.Generate(pack, new TypologyBriefRequest(8, bigLot, 2)));
-        Check(PrototypeSerializer.Serialize(PrototypeGenerator.Generate(apartment)) == before && PrototypeTemplates.Brief(ApartmentTypology.TwoBedroom, apartment.Lot).Rooms.All(room => room.EffectiveCount == 1),
-            "typology planning leaves the apartment template generator output unchanged");
+        // ---- the existing apartment generator is untouched (its P7-03 pinned digest, after typology planning) ----
+        var apartment = PrototypeSerializer.Serialize(PrototypeGenerator.Generate(new PrototypeRequest(ApartmentTypology.TwoBedroom, new PrototypeLot(8.66, 20), 6, Seed: 0)));
+        var apartmentDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(apartment))).ToLowerInvariant();
+        Check(apartmentDigest == ApartmentPinnedSha256, "after typology planning the 2-bedroom apartment prototype still matches the P7-03 pinned SHA-256", apartmentDigest);
     }
 
     static TypologyBriefResult Safe(Func<TypologyBriefResult> run)
