@@ -194,3 +194,8 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] Decide ADR0010 (docs/architecture/adr/0010-drift-adopt-provenance.md, status proposed): how adopted Revit edits are recorded in the provenance ledger. Recommended A (new `drift_adopt` ledger kind; existing records unchanged). Reply "ADR0010 A" (or B/C/defer) in chat or here. Unblocks P2-11; P2-12 (commit without provenance) proceeds meanwhile.
 - [ ] `git pull` (main is now 58bec24: new CLI verbs `cad-plan-brief` and `generate-prototypes`, typology → prototypes).
 - Still open: 🔒 one `-Catalogue` run + catalogue-report; P9-03 ADR; N21 run 3.
+
+## Relay178 (2026-11-10, cloud)
+- [ ] Decide ADR0011 (docs/architecture/adr/0011-guarded-free-path.md, status proposed): design of the "vía libre" you approved on 2026-10-30 — Claude writes Revit API C#, the add-in compiles it with Roslyn (MIT) against an allowlist of API symbols (no files/network/processes/reflection/save/close), runs it only on test copies inside a transaction group that is rolled back by default, returns a change report, and commits only with a confirm token from a previous identical dry run; 30 s limit; every run in the audit log. Recommended A. Reply "ADR0011 A" (or B/C/defer) in chat. Unblocks P9-03.
+- [ ] `git pull` (main is now fae94cb: new CLI verb `audit-verify` with head anchor; `revit-command envelope.json pipe --all` pages query.elements to the end; IntentEdits).
+- Still open: ADR0010; 🔒 one `-Catalogue` run + catalogue-report; N21 run 3.
