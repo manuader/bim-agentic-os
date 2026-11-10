@@ -860,10 +860,15 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     Check(IsError(badAnchor) && Text(badAnchor)=="""{"status":"failed","code":"audit_verify_anchor_invalid","detail":"not JSON"}""" && Text(badAnchor)==Cli("audit-verify",auditLogPath,"--anchor",badJsonAnchor),"audit_verify with a non-JSON anchor is audit_verify_anchor_invalid, byte-equal to the CLI");
     var kindAnchor=Audit(new JsonObject{["log_path"]=auditLogPath,["anchor_path"]=wrongKindAnchor});
     Check(IsError(kindAnchor) && AuditCode(kindAnchor)=="audit_verify_anchor_invalid" && Text(kindAnchor)==Cli("audit-verify",auditLogPath,"--anchor",wrongKindAnchor),"audit_verify with a wrong-kind anchor is audit_verify_anchor_invalid, byte-equal to the CLI | "+Text(kindAnchor));
-    foreach(var (actors,label) in new[]{(new JsonArray(),"an empty actor list"),(new JsonArray(""),"an empty actor"),(new JsonArray("alice",1),"a non-string actor"),(new JsonArray(new string('a',PermissionPolicy.MaxActorChars+1)),"an over-long actor"),(new JsonArray("al\u0001ice"),"a control character")}) {
-        var refused=Audit(new JsonObject{["log_path"]=auditLogPath,["actors"]=actors});
+    void ActorsRefused(string actorsJson,string label) {
+        var refused=Audit(new JsonObject{["log_path"]=auditLogPath,["actors"]=Node(actorsJson)});
         Check(IsError(refused) && AuditCode(refused)=="audit_verify_actors_invalid","audit_verify refuses "+label+" as audit_verify_actors_invalid | "+Text(refused));
     }
+    ActorsRefused("[]","an empty actor list");
+    ActorsRefused("[\"\"]","an empty actor");
+    ActorsRefused("[\"alice\",1]","a non-string actor");
+    ActorsRefused("[\""+new string('a',PermissionPolicy.MaxActorChars+1)+"\"]","an over-long actor");
+    ActorsRefused("[\"al\\u0001ice\"]","a control character");
     Check(IsError(Audit(Log(""))) && Text(Audit(Log("")))=="""{"status":"failed","code":"audit_verify_path_invalid","detail":"log"}""","audit_verify empty log_path is audit_verify_path_invalid (log)");
     Check(Text(Audit(Log("a\0b")))=="""{"status":"failed","code":"audit_verify_path_invalid","detail":"log"}""","audit_verify log_path with NUL is audit_verify_path_invalid (log)");
     Check(Text(Audit(Log(new string('x',5000))))=="""{"status":"failed","code":"audit_verify_path_invalid","detail":"log"}""","audit_verify refuses a log_path over the length bound");
