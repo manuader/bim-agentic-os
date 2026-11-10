@@ -386,6 +386,9 @@ try
     // ---- Generic element queries (P1-02): query.elements and query.inspect ----
     ElementQueryChecks.Run((condition, name, detail) => Check(condition, name, detail));
 
+    // ---- query.elements pagination cursor (P1-13) ----
+    ElementQueryCursorChecks.Run((condition, name, detail) => Check(condition, name, detail));
+
     // ---- Structure commands (P9-02): grids, columns, beams, foundations ----
     CatalogueStructureChecks.Run((condition, name, detail) => Check(condition, name, detail));
 

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 namespace Bim.Core;
@@ -11,8 +12,156 @@ namespace Bim.Core;
 
 // Category: the text the caller gave (a friendly name or an OST_ name); BuiltInCategory: the Revit BuiltInCategory
 // name it stands for. Level: a level name or UniqueId. Parameters: parameter names to read on each element (empty:
-// the defaults of RevitElementQueryRules.DefaultParameters). Limit: most elements returned.
-public sealed record ElementQueryArgs(string? Category, string? BuiltInCategory, string? Level, IReadOnlyList<string> Parameters, int Limit) : RevitCommandArgs;
+// the defaults of RevitElementQueryRules.DefaultParameters). Limit: most elements returned. Cursor (P1-13): the decoded,
+// checked next_cursor of an earlier page; paging resumes strictly after its element id.
+public sealed record ElementQueryArgs(string? Category, string? BuiltInCategory, string? Level, IReadOnlyList<string> Parameters, int Limit, ElementQueryCursor? Cursor = null) : RevitCommandArgs;
+
+// A decoded query.elements cursor: the document (ProjectInformation UniqueId) and filter digest it was issued for and
+// the last element id of the page that issued it.
+public sealed record ElementQueryCursor(string Document, string Filter, long After);
+
+// P1-13 opaque pagination cursor. Text: base64url (no padding) of the UTF-8 JSON
+// {"v":1,"document":"<UniqueId>","filter":"<64 hex>","after":<id>,"check":"<32 hex>"}, members in that order, where
+// check is the first 16 bytes of SHA-256 over "bim-agentic-os/query.elements/cursor\n" + the same JSON without check.
+// The check is an integrity digest, not a secret MAC: it catches edited or corrupted cursors, not a deliberate forgery
+// (a forged cursor can only page the caller's own document and filter, which a plain query already reads). Every
+// refusal is decided by RevitCommandProtocol.Parse, so the CLI, the MCP tools and the add-in re-parse refuse alike and
+// before the pipe: cursor_malformed (not that encoding), cursor_tampered (check or canonical form differs),
+// cursor_stale (another cursor version; v is read first, so any other version's payload is stale whatever its members),
+// cursor_foreign_document, cursor_filter_mismatch. after is a non-negative element id.
+// A cursor is a position, not a snapshot: the next page reads the document as it is then, strictly after the cursor id.
+// Elements deleted since are simply absent, elements added after that id are listed, elements added at or before it are
+// not; ids never repeat and stay ascending across pages. A model edit between pages does not make a cursor stale.
+public static class RevitElementQueryCursor
+{
+    public const int Version = 1;
+    public const int MaxChars = 512;
+    const string Domain = "bim-agentic-os/query.elements/cursor\n";
+    static readonly System.Text.RegularExpressions.Regex Hex64 = new(@"\A[0-9a-f]{64}\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    static readonly System.Text.RegularExpressions.Regex Hex32 = new(@"\A[0-9a-f]{32}\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    static readonly string[] Members = { "v", "document", "filter", "after", "check" };
+
+    // SHA-256 (lowercase hex) of the canonical filter: BuiltInCategory (so "wall" and "OST_Walls" are one filter), the
+    // level text as given, and the parameter names in order. The page size (limit) is not part of the filter.
+    public static string FilterDigest(string? builtInCategory, string? level, IReadOnlyList<string> parameters)
+    {
+        var bytes = Json(writer =>
+        {
+            writer.WriteStartObject();
+            NullableMember(writer, "built_in_category", builtInCategory);
+            NullableMember(writer, "level", level);
+            writer.WriteStartArray("parameters");
+            foreach (var name in parameters) writer.WriteStringValue(name);
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        });
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    public static string FilterDigest(ElementQueryArgs args) => FilterDigest(args.BuiltInCategory, args.Level, args.Parameters);
+
+    // version: only tests pass another value (to build a cursor of another version).
+    public static string Encode(string documentUniqueId, string filterDigest, long after, int version = Version) =>
+        after < 0 ? throw new ArgumentOutOfRangeException(nameof(after), "element ids in a cursor are not negative") : Base64Url(Payload(version, documentUniqueId, filterDigest, after, Check(version, documentUniqueId, filterDigest, after)));
+
+    // Malformed, tampered and stale cursors throw their typed refusal at field.
+    public static ElementQueryCursor Decode(string text, string field)
+    {
+        RevitCommandException Malformed(string detail) => new(RevitCommandCodes.CursorMalformed, field, detail);
+        if (text.Length == 0 || text.Length > MaxChars || text.Length % 4 == 1 || text.Any(c => !(c is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '_')))
+            throw Malformed("not a cursor returned as next_cursor");
+        byte[] bytes;
+        try
+        {
+            var standard = text.Replace('-', '+').Replace('_', '/');
+            bytes = Convert.FromBase64String(standard + new string('=', (4 - standard.Length % 4) % 4));
+        }
+        catch (FormatException) { throw Malformed("not base64url"); }
+        if (Base64Url(bytes) != text) throw Malformed("not canonical base64url");
+        int version; string document, filter, check; long after;
+        try
+        {
+            using var parsed = JsonDocument.Parse(new UTF8Encoding(false, true).GetString(bytes));
+            var root = parsed.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) throw Malformed("payload is not an object");
+            // The version first: a payload of another version is stale whatever members it has.
+            if (!root.TryGetProperty("v", out var v) || v.ValueKind != JsonValueKind.Number || !v.TryGetInt32(out version)) throw Malformed("v must be a whole number");
+            if (version != Version) throw new RevitCommandException(RevitCommandCodes.CursorStale, field, "issued by cursor version " + version.ToString(CultureInfo.InvariantCulture) + "; query again without a cursor");
+            var names = root.EnumerateObject().Select(property => property.Name).ToArray();
+            if (names.Length != Members.Length || names.Distinct(StringComparer.Ordinal).Count() != Members.Length || !Members.All(member => names.Contains(member, StringComparer.Ordinal)))
+                throw Malformed("payload members must be v, document, filter, after and check");
+            var d = root.GetProperty("document"); var f = root.GetProperty("filter"); var a = root.GetProperty("after"); var c = root.GetProperty("check");
+            if (d.ValueKind != JsonValueKind.String || !RevitCommandProtocol.IsUniqueId(d.GetString())) throw Malformed("document must be a UniqueId");
+            if (f.ValueKind != JsonValueKind.String || !Hex64.IsMatch(f.GetString()!)) throw Malformed("filter must be a lowercase SHA-256 digest");
+            if (a.ValueKind != JsonValueKind.Number || !a.TryGetInt64(out after) || after < 0) throw Malformed("after must be a whole, non-negative element id");
+            if (c.ValueKind != JsonValueKind.String || !Hex32.IsMatch(c.GetString()!)) throw Malformed("check must be 32 lowercase hex digits");
+            document = d.GetString()!; filter = f.GetString()!; check = c.GetString()!;
+        }
+        catch (Exception error) when (error is JsonException or DecoderFallbackException or ArgumentException and not RevitCommandException) { throw Malformed("payload is not UTF-8 JSON"); }
+        var expected = Check(version, document, filter, after);
+        if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(expected), Encoding.ASCII.GetBytes(check)) || !Payload(version, document, filter, after, check).AsSpan().SequenceEqual(bytes))
+            throw new RevitCommandException(RevitCommandCodes.CursorTampered, field, "the cursor was edited after it was issued");
+        return new ElementQueryCursor(document, filter, after);
+    }
+
+    // The filter half of the binding, applied by the query.elements binder.
+    public static void CheckFilter(ElementQueryCursor cursor, ElementQueryArgs args, string field)
+    {
+        if (!string.Equals(cursor.Filter, FilterDigest(args), StringComparison.Ordinal))
+            throw new RevitCommandException(RevitCommandCodes.CursorFilterMismatch, field, "the cursor was issued for another category, level or parameter list");
+    }
+
+    // The document half, applied by RevitCommandProtocol.Parse once the envelope's document is known. UniqueIds compare
+    // case-insensitively, like the add-in's admission check.
+    public static void CheckDocument(ElementQueryCursor cursor, RevitDocumentRef document, string field)
+    {
+        if (!string.Equals(cursor.Document, document.UniqueId, StringComparison.OrdinalIgnoreCase))
+            throw new RevitCommandException(RevitCommandCodes.CursorForeignDocument, field, "the cursor was issued for another document");
+    }
+
+    static string Check(int version, string document, string filter, long after)
+    {
+        var body = Json(writer => Unchecked(writer, version, document, filter, after));
+        var input = Encoding.UTF8.GetBytes(Domain).Concat(body).ToArray();
+        return Convert.ToHexString(SHA256.HashData(input), 0, 16).ToLowerInvariant();
+    }
+
+    static byte[] Payload(int version, string document, string filter, long after, string check) => Json(writer =>
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("v", version);
+        writer.WriteString("document", document);
+        writer.WriteString("filter", filter);
+        writer.WriteNumber("after", after);
+        writer.WriteString("check", check);
+        writer.WriteEndObject();
+    });
+
+    static void Unchecked(Utf8JsonWriter writer, int version, string document, string filter, long after)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("v", version);
+        writer.WriteString("document", document);
+        writer.WriteString("filter", filter);
+        writer.WriteNumber("after", after);
+        writer.WriteEndObject();
+    }
+
+    static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    static byte[] Json(Action<Utf8JsonWriter> body)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer)) body(writer);
+        return buffer.ToArray();
+    }
+
+    static void NullableMember(Utf8JsonWriter writer, string name, string? value)
+    {
+        if (value is null) writer.WriteNull(name);
+        else writer.WriteString(name, value);
+    }
+}
 public sealed record ElementInspectArgs(string UniqueId) : RevitCommandArgs;
 
 public static class RevitElementQueryRules
@@ -53,11 +202,12 @@ public static class RevitElementQueryRules
         throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, field, "unknown category " + category);
     }
 
-    // The element ids to read, deterministically: distinct, ascending, at most limit. Truncated when more matched.
-    public static (IReadOnlyList<long> Selected, bool Truncated) Page(IEnumerable<long> matched, int limit)
+    // The element ids to read, deterministically: distinct, ascending, strictly after the cursor id (after) when one is
+    // given, at most limit. Truncated when more matched after it.
+    public static (IReadOnlyList<long> Selected, bool Truncated) Page(IEnumerable<long> matched, int limit, long? after = null)
     {
         if (limit < 1 || limit > MaxLimit) throw new ArgumentOutOfRangeException(nameof(limit));
-        var ordered = matched.Distinct().OrderBy(id => id).ToArray();
+        var ordered = matched.Distinct().Where(id => after is not { } last || id > last).OrderBy(id => id).ToArray();
         return (ordered.Take(limit).ToArray(), ordered.Length > limit);
     }
 }
@@ -152,14 +302,31 @@ public static class RevitElementQueryJson
     public const string TruncatedLimit = "limit";
     public const string TruncatedBytes = "bytes";
 
-    // matched: how many elements passed the filter; truncatedByLimit: paging (RevitElementQueryRules.Page) cut them at
+    // documentUniqueId: the envelope's document, which next_cursor binds. matched: how many elements passed the filter
+    // (on the whole document, whatever the cursor); truncatedByLimit: paging (RevitElementQueryRules.Page) cut them at
     // the limit. truncated is that or the byte budget; truncated_reason says which (bytes wins), null when neither.
-    public static string Elements(ElementQueryArgs args, ObservedReference? level, int matched, bool truncatedByLimit, IEnumerable<ObservedQueryElement> rows)
+    // paged: the ids RevitElementQueryRules.Page selected (null: exactly the rows' ids); rows are those still readable.
+    // after: the cursor's element id or null. next_cursor (P1-13): present exactly when truncated. A limit cut resumes
+    // after the last PAGED id (even when that element, or every paged one, vanished before it was read), a byte cut
+    // after the last row kept in the reply.
+    public static string Elements(string documentUniqueId, ElementQueryArgs args, ObservedReference? level, int matched, bool truncatedByLimit, IEnumerable<ObservedQueryElement> rows, IReadOnlyList<long>? paged = null)
     {
         var ordered = rows.OrderBy(row => row.Id).ToArray();
         if (ordered.Length > args.Limit) throw new ArgumentException("more rows than the limit", nameof(rows));
         if (ordered.Select(row => row.Id).Distinct().Count() != ordered.Length) throw new ArgumentException("duplicate element id", nameof(rows));
         if (matched < ordered.Length) throw new ArgumentOutOfRangeException(nameof(matched));
+        if (args.Cursor is { } cursor && ordered.Any(row => row.Id <= cursor.After)) throw new ArgumentException("a row at or before the cursor id", nameof(rows));
+        var pagedIds = paged ?? ordered.Select(row => row.Id).ToArray();
+        if (pagedIds.Count > args.Limit) throw new ArgumentException("more paged ids than the limit", nameof(paged));
+        var pagedSet = new HashSet<long>(pagedIds);
+        if (pagedSet.Count != pagedIds.Count) throw new ArgumentException("duplicate paged id", nameof(paged));
+        if (args.Cursor is { } start && pagedIds.Any(id => id <= start.After)) throw new ArgumentException("a paged id at or before the cursor id", nameof(paged));
+        if (ordered.Any(row => !pagedSet.Contains(row.Id))) throw new ArgumentException("a row that was not paged", nameof(rows));
+        if (truncatedByLimit && pagedIds.Count == 0) throw new ArgumentException("a limit cut pages at least one id", nameof(paged));
+        long? lastPaged = pagedIds.Count == 0 ? null : pagedIds.Max();
+        var filter = RevitElementQueryCursor.FilterDigest(args);
+        // Bounded measures the fixed part with truncated false and a reason: reserve the longest possible cursor then.
+        var longest = RevitElementQueryCursor.Encode(documentUniqueId, filter, long.MaxValue);
         void Reply(Utf8JsonWriter writer, int returned, bool truncated, string? reason, IReadOnlyList<byte[]> items)
         {
             writer.WriteStartObject();
@@ -172,6 +339,13 @@ public static class RevitElementQueryJson
             writer.WriteNumber("returned", returned);
             writer.WriteBoolean("truncated", truncated);
             WriteNullable(writer, "truncated_reason", reason);
+            if (args.Cursor is { } resumed) writer.WriteNumber("after", resumed.After);
+            else writer.WriteNull("after");
+            var next = reason is null ? null
+                : !truncated ? longest
+                : reason == TruncatedBytes ? (returned > 0 ? RevitElementQueryCursor.Encode(documentUniqueId, filter, ordered[returned - 1].Id) : throw new InvalidOperationException("one row over the byte budget"))
+                : RevitElementQueryCursor.Encode(documentUniqueId, filter, lastPaged!.Value);
+            WriteNullable(writer, "next_cursor", next);
             writer.WriteStartArray("elements");
             foreach (var item in items) writer.WriteRawValue(item, skipInputValidation: true);
             writer.WriteEndArray();
@@ -345,12 +519,12 @@ public static partial class RevitCommandCatalogue
     {
         var friendly = string.Join(",", RevitElementQueryRules.Categories.Select(category => "\"" + category.Name + "\""));
         var category = Fill("""{"description":"Element category: a common name, or any Revit BuiltInCategory name such as OST_Walls","oneOf":[{"type":"string","description":"Common category name","enum":[@0@]},{"type":"string","description":"Revit BuiltInCategory name","minLength":5,"maxLength":80,"pattern":"^OST_[A-Za-z][A-Za-z0-9_]*$"}]}""", friendly);
-        var query = Fill("""{"type":"object","description":"Give category, level or both","properties":{"category":@0@,"level":@1@,"parameters":{"type":"array","description":"Parameter names (as shown in Revit) to read on each element, instance first then type; at most 16; default Mark and Comments","items":@2@,"minItems":1,"maxItems":@3@},"limit":{"type":"integer","description":"Most elements returned, 1 to 5000, lowest element ids first; default 1000; the reply says when more matched"}},"additionalProperties":false}""",
-            category, Reference("Level: name or UniqueId from revit_query_levels; elements whose level (or level parameter) is this level"), Text("Parameter name", 256), RevitElementQueryRules.MaxParameterNames.ToString(CultureInfo.InvariantCulture));
+        var query = Fill("""{"type":"object","description":"Give category, level or both","properties":{"category":@0@,"level":@1@,"parameters":{"type":"array","description":"Parameter names (as shown in Revit) to read on each element, instance first then type; at most 16; default Mark and Comments","items":@2@,"minItems":1,"maxItems":@3@},"limit":{"type":"integer","description":"Most elements returned, 1 to 5000, lowest element ids first; default 1000; the reply says when more matched"},"cursor":{"type":"string","description":"Resume a truncated listing: the next_cursor of the previous reply, with the same document, category, level and parameters (limit may differ); omit for the first page","maxLength":@4@}},"additionalProperties":false}""",
+            category, Reference("Level: name or UniqueId from revit_query_levels; elements whose level (or level parameter) is this level"), Text("Parameter name", 256), RevitElementQueryRules.MaxParameterNames.ToString(CultureInfo.InvariantCulture), RevitElementQueryCursor.MaxChars.ToString(CultureInfo.InvariantCulture));
         var inspect = Fill("""{"type":"object","properties":{"unique_id":@0@},"required":["unique_id"],"additionalProperties":false}""", UniqueIdSchema);
         return new[]
         {
-            new RevitCommandSpec("query.elements", false, "List the elements of a category and/or on a level, lowest element id first and at most 5000, with element id, UniqueId, category, level, family and type name and a few parameters (Mark and Comments, or up to 16 named ones); the reply says when it was truncated. Read-only.", query, BindElementQuery),
+            new RevitCommandSpec("query.elements", false, "List the elements of a category and/or on a level, lowest element id first and at most 5000, with element id, UniqueId, category, level, family and type name and a few parameters (Mark and Comments, or up to 16 named ones); a truncated reply carries next_cursor, passed back as cursor to get the next page. Read-only.", query, BindElementQuery),
             new RevitCommandSpec("query.inspect", false, "Inspect one element by UniqueId: every readable instance and type parameter with its storage type, value, typed unit (lengths in mm, areas in m2, volumes in m3, angles in degrees) and Revit's display text. Read-only.", inspect, args => new ElementInspectArgs(args.GetProperty("unique_id").GetString()!)),
         };
     }
@@ -377,6 +551,10 @@ public static partial class RevitCommandCatalogue
             if (!limitElement.TryGetInt32(out limit) || limit < 1 || limit > RevitElementQueryRules.MaxLimit)
                 throw new RevitCommandException(RevitCommandCodes.ArgsInvalid, "args.limit", "limit must be a whole number from 1 to " + RevitElementQueryRules.MaxLimit.ToString(CultureInfo.InvariantCulture));
         }
-        return new ElementQueryArgs(category, category is null ? null : RevitElementQueryRules.BuiltInCategory(category, "args.category"), level, names, limit);
+        var query = new ElementQueryArgs(category, category is null ? null : RevitElementQueryRules.BuiltInCategory(category, "args.category"), level, names, limit);
+        if (!args.TryGetProperty("cursor", out var cursorElement)) return query;
+        var cursor = RevitElementQueryCursor.Decode(cursorElement.GetString()!, "args.cursor");
+        RevitElementQueryCursor.CheckFilter(cursor, query, "args.cursor");
+        return query with { Cursor = cursor };
     }
 }
