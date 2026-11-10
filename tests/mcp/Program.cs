@@ -421,6 +421,13 @@ Check(RevitCommandCatalogue.ExportSave.Select(spec=>spec.Name).SequenceEqual(new
     Check(IsError(saveAsOutside) && FailureCode(saveAsOutside)==RevitCommandCodes.SaveAsRefused && Node(Text(saveAsOutside))["detail"]!.GetValue<string>().StartsWith("outside_enabled_roots:",StringComparison.Ordinal) && forwardedLines.Count==before,"revit_document_save_as outside the enabled roots is save_as_refused outside_enabled_roots before the pipe");
     var saveAsMissing=Guarded("revit_document_save_as",new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\run-404\Tower v2.rvt"},McpCopy);
     Check(IsError(saveAsMissing) && FailureCode(saveAsMissing)==RevitCommandCodes.SaveAsRefused && Node(Text(saveAsMissing))["detail"]!.GetValue<string>().StartsWith("folder_missing:",StringComparison.Ordinal) && forwardedLines.Count==before,"revit_document_save_as into a missing folder is save_as_refused folder_missing before the pipe");
+    // P9-08 review: the tool stays write-copies on a test copy because a test copy may only be saved inside
+    // .bim/native-runs; with an owner root enabled too, a test copy saved into it is refused before the pipe.
+    var ownerServer=new McpServer(new RevitCommandPolicy(new[]{@"C:\Repo\.bim\native-runs",@"C:\Projects\Real"}),(pipe,line)=>{ forwardedLines.Add(line); return null; },new RevitFileSystemProbe(_=>false,_=>null));
+    var escalate=Node(ownerServer.Handle(Request(12,"tools/call",new JsonObject{["name"]="revit_document_save_as",["arguments"]=new JsonObject{["pipe_name"]="bim-agentic-os-2025-4242",["operation_id"]="op-p9-08",["document"]=new JsonObject{["path"]=McpCopy,["unique_id"]=McpUid},["args"]=new JsonObject{["path"]=@"C:\Projects\Real\Tower v2.rvt"}}})) ?? throw new Exception("no response")).AsObject();
+    Check(IsError(escalate) && FailureCode(escalate)==RevitCommandCodes.SaveAsRefused && Node(Text(escalate))["detail"]!.GetValue<string>().StartsWith("outside_copies_root:",StringComparison.Ordinal) && forwardedLines.Count==before
+        && PermissionPolicy.RequiredLevel("document.save_as",McpCopy,copiesRoots)==PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel("document.save_as",McpReal,copiesRoots)==PermissionLevel.WriteRealProject,
+        "revit_document_save_as of a test copy into an owner-enabled root is save_as_refused outside_copies_root before the pipe, so write-copies stays truthful");
 }
 // chat-export-save: the policy is re-read when .bim/revit-enabled-roots.txt changes, so a folder the owner enables
 // works without restarting the MCP server (and Claude).

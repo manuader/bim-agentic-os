@@ -94,8 +94,8 @@ static class CatalogueSaveAsChecks
             "document.save_as states the enabled folders, no-overwrite and path rules, the readback, the document state refusals and that the open document becomes the new file");
         Check(RevitCommandCodes.ClientSide.Contains(RevitCommandCodes.SaveAsRefused) && RevitCommandCodes.SaveAsRefused == "save_as_refused" && !RevitCommandCodes.ExecutorReserved.Contains(RevitCommandCodes.SaveAsRefused),
             "save_as_refused is a typed client-side code");
-        Check(RevitSaveAsGuard.Reasons.Distinct().Count() == RevitSaveAsGuard.Reasons.Count && RevitSaveAsGuard.Reasons.Count == 12
-            && RevitSaveAsGuard.Reasons.All(reason => System.Text.RegularExpressions.Regex.IsMatch(reason, @"\A[a-z]+(_[a-z]+)*\z")), "save as refusal reasons are twelve distinct snake_case tokens");
+        Check(RevitSaveAsGuard.Reasons.Distinct().Count() == RevitSaveAsGuard.Reasons.Count && RevitSaveAsGuard.Reasons.Count == 13
+            && RevitSaveAsGuard.Reasons.All(reason => System.Text.RegularExpressions.Regex.IsMatch(reason, @"\A[a-z]+(_[a-z]+)*\z")), "save as refusal reasons are thirteen distinct snake_case tokens");
         var copies = new[] { CopiesRoot };
         Check(PermissionPolicy.RequiredLevel("document.save_as", FixturePath, copies) == PermissionLevel.WriteCopies && PermissionPolicy.RequiredLevel("document.save_as", RealPath, copies) == PermissionLevel.WriteRealProject,
             "document.save_as needs write-copies on a test copy and write-real-project on a real project");
@@ -121,7 +121,7 @@ static class CatalogueSaveAsChecks
         }
         Rejects("document.save_as without path is args_invalid", Envelope(new JsonObject()), RevitCommandCodes.ArgsInvalid);
         Rejects("document.save_as with another member (overwrite) is args_invalid", Envelope(new JsonObject { ["path"] = Target, ["overwrite"] = true }), RevitCommandCodes.ArgsInvalid);
-        Rejects("document.save_as with a path over 259 characters is args_invalid", Envelope(Args(@"C:\Users\Owner\Documents\ARQ\" + new string('x', 230) + @"\Cabana.rvt")), RevitCommandCodes.ArgsInvalid);
+        Rejects("document.save_as with a path over 249 characters is args_invalid", Envelope(Args(@"C:\Users\Owner\Documents\ARQ\" + new string('x', 210) + @"\Cabana.rvt")), RevitCommandCodes.ArgsInvalid);
         foreach (var (label, path, reason) in PathCases())
             Rejects("document.save_as with " + label + " is args_invalid " + reason + " at args.path", Envelope(Args(path)), RevitCommandCodes.ArgsInvalid, reason);
     }
@@ -187,10 +187,17 @@ static class CatalogueSaveAsChecks
         Check(Guarded(@"c:\users\owner\documents\arq\cabana\CABANA-V3.rvt") is null, "drive paths compare case-insensitively against the enabled roots");
         Check(Guarded(@"C:\Repo\.bim\native-runs\run-1\Cabana-copia.rvt") is null, "a real project may be saved as a new file under .bim/native-runs (an enabled root)");
         Check(Guarded(@"C:\Repo\.bim\native-runs\run-1\BIM-Agentic-Test-v2.rvt", FixturePath) is null, "an enabled test copy may be saved as a new file beside it");
-        Check(Guarded(@"C:\Users\Owner\Documents\ARQ\Cabana\Fixture-out.rvt", FixturePath) is null, "an enabled test copy may be saved into an owner-enabled folder");
+        // Source and target levels are paired: a test copy (write-copies) never writes into an owner folder (write-real-project).
+        Refused("an enabled test copy saved into an owner-enabled folder is outside_copies_root (no escalation)", Guarded(@"C:\Users\Owner\Documents\ARQ\Cabana\Fixture-out.rvt", FixturePath), RevitSaveAsGuard.OutsideCopiesRoot, "args.path");
+        Refused("without a known repository a .bim\\native-runs root still counts as the copies root", Guarded(@"C:\Users\Owner\Documents\ARQ\Cabana\Fixture-out.rvt", FixturePath, new RevitCommandPolicy(new[] { CopiesRoot, OwnerRoot })), RevitSaveAsGuard.OutsideCopiesRoot, "args.path");
+        Refused("an owner root that contains the repository does not lift a test copy out of .bim/native-runs", Guarded(@"C:\Repo\Planos\Fixture-out.rvt", FixturePath, new RevitCommandPolicy(new[] { CopiesRoot, Repo }) with { RepositoryDirectory = Repo }), RevitSaveAsGuard.OutsideCopiesRoot, "args.path");
+        Check(Guarded(@"C:\Repo\.bim\native-runs\run-2\BIM-Agentic-Test-v3.rvt", FixturePath, new RevitCommandPolicy(new[] { CopiesRoot, Repo }) with { RepositoryDirectory = Repo }) is null, "a test copy may still be saved anywhere inside .bim/native-runs");
+        // MaxPathChars leaves room for Revit's own .NNNN backup suffix: 249 characters at most.
+        Check(RevitSaveAsGuard.MaxPathChars == 249 && Guarded(@"C:\Users\Owner\Documents\ARQ\" + new string('x', 209) + @"\Cabana.rvt") is null, "a 249-character target is accepted");
+        Refused("a 250-character target is path_invalid (room for Revit backups)", Guarded(@"C:\Users\Owner\Documents\ARQ\" + new string('x', 210) + @"\Cabana.rvt"), RevitSaveAsGuard.PathInvalid, "args.path");
         foreach (var (label, path, reason) in PathCases())
             Refused("guard: " + label + " is " + reason, Guarded(path), reason, "args.path");
-        Refused("guard: a path over 259 characters is path_invalid", Guarded(@"C:\Users\Owner\Documents\ARQ\" + new string('x', 230) + @"\Cabana.rvt"), RevitSaveAsGuard.PathInvalid, "args.path");
+        Refused("guard: a path over 249 characters is path_invalid", Guarded(@"C:\Users\Owner\Documents\ARQ\" + new string('x', 230) + @"\Cabana.rvt"), RevitSaveAsGuard.PathInvalid, "args.path");
         Refused("guard: an empty path is path_invalid", Guarded(""), RevitSaveAsGuard.PathInvalid, "args.path");
         Refused("guard: a control character is path_invalid", Guarded("C:\\Users\\Owner\\Documents\\ARQ\\Cab\tana.rvt"), RevitSaveAsGuard.PathInvalid, "args.path");
         Refused("a target outside every enabled root (the production model's folder) is outside_enabled_roots", Guarded(@"C:\Users\Owner\Documents\Casa Angel\Casa Angel v2.rvt"), RevitSaveAsGuard.OutsideEnabledRoots, "args.path");
@@ -232,6 +239,7 @@ static class CatalogueSaveAsChecks
             NotForwarded("client: " + label + " is args_invalid " + reason + " before the pipe", Send(path), RevitCommandCodes.ArgsInvalid, "args.path", reason);
         NotForwarded("client: a target outside the enabled roots is save_as_refused outside_enabled_roots before the pipe", Send(@"C:\Users\Owner\Documents\Casa Angel\Casa Angel v2.rvt"), RevitCommandCodes.SaveAsRefused, "args.path", RevitSaveAsGuard.OutsideEnabledRoots);
         NotForwarded("client: the open document's own path is save_as_refused same_as_source before the pipe", Send(RealPath), RevitCommandCodes.SaveAsRefused, "args.path", RevitSaveAsGuard.SameAsSource);
+        NotForwarded("client: a test copy saved into an owner folder is save_as_refused outside_copies_root before the pipe", Send(@"C:\Users\Owner\Documents\ARQ\Cabana\Fixture-out.rvt", FixturePath), RevitCommandCodes.SaveAsRefused, "args.path", RevitSaveAsGuard.OutsideCopiesRoot);
         NotForwarded("client: a target in a missing folder is save_as_refused folder_missing before the pipe", Send(@"C:\Users\Owner\Documents\ARQ\Missing\Cabana-v2.rvt"), RevitCommandCodes.SaveAsRefused, "args.path", RevitSaveAsGuard.FolderMissing);
         NotForwarded("client: a save as of a document outside every enabled root is document_not_enabled before the pipe", Send(Target, Production), RevitCommandCodes.DocumentNotEnabled, "document.path", null);
         var linked = RevitCommandService.Run(Pipe, Envelope(Args(Target)).ToJsonString(), Policy, Transport, new RevitFileSystemProbe(path => path.EndsWith(@"\Cabana", StringComparison.Ordinal) && !path.EndsWith(".rvt", StringComparison.Ordinal), _ => null));
@@ -344,22 +352,83 @@ static class CatalogueSaveAsChecks
     }
 
     // After SaveAs: the written file must resolve to the requested path inside an enabled root, with no link on the way.
+    // CheckWritten is the pure decision (injected resolutions); WrittenProblem is the real helper the executor calls
+    // (full path, final path with every parent's link resolved, the root's own final path, the link guard re-walked).
     static void Written()
     {
-        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target, Target, NoLinks) is null, "post-save: a file that resolves to itself inside the enabled root passes");
-        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target.ToLowerInvariant(), Target, NoLinks) is null, "post-save: drive paths compare case-insensitively");
-        Check(RevitSaveAsGuard.CheckWritten(Target, RevitCommandPolicy.None, Target, Target, NoLinks) is { } noRoot && noRoot.Contains(Target, StringComparison.Ordinal), "post-save: without an enabled root the check fails naming the file");
-        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, null, null, NoLinks) is { Length: > 0 }, "post-save: a path that cannot be resolved fails");
-        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, @"C:\Users\Owner\Documents\Cabana v2.rvt", @"C:\Users\Owner\Documents\Cabana v2.rvt", NoLinks) is { } moved && moved.Contains(@"C:\Users\Owner\Documents\Cabana v2.rvt", StringComparison.Ordinal),
+        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target, Target, OwnerRoot, NoLinks) is null, "post-save: a file that resolves to itself inside the enabled root passes");
+        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target.ToLowerInvariant(), Target.ToUpperInvariant(), OwnerRoot.ToLowerInvariant(), NoLinks) is null, "post-save: drive paths compare case-insensitively");
+        Check(RevitSaveAsGuard.CheckWritten(Target, RevitCommandPolicy.None, Target, Target, OwnerRoot, NoLinks) is { } noRoot && noRoot.Contains(Target, StringComparison.Ordinal), "post-save: without an enabled root the check fails naming the file");
+        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, null, null, null, NoLinks) is { Length: > 0 } && RevitSaveAsGuard.CheckWritten(Target, Policy, Target, Target, null, NoLinks) is { Length: > 0 }
+            && RevitSaveAsGuard.CheckWritten(Target, Policy, Target, null, OwnerRoot, NoLinks) is { Length: > 0 }, "post-save: a path or root that cannot be resolved fails");
+        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, @"C:\Users\Owner\Documents\Cabana v2.rvt", @"C:\Users\Owner\Documents\Cabana v2.rvt", OwnerRoot, NoLinks) is { } moved && moved.Contains(@"C:\Users\Owner\Documents\Cabana v2.rvt", StringComparison.Ordinal),
             "post-save: a full path that differs from the request fails naming where the file actually is");
-        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target, Production, NoLinks) is { } escaped && escaped.Contains(Production, StringComparison.Ordinal),
-            "post-save: a final link target outside the enabled root (the production model) fails naming it");
+        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target, Production, OwnerRoot, NoLinks) is { } escaped && escaped.Contains(Production, StringComparison.Ordinal) && escaped.Contains("outside", StringComparison.Ordinal),
+            "post-save: a final path outside the resolved enabled root (the production model) fails naming it");
+        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target, @"D:\Sync\ARQ\Cabana\Cabana v2 (Zona Sur).rvt", @"D:\Sync\ARQ", NoLinks) is null,
+            "post-save: an enabled root that is itself reached through a link (the owner's concern) passes when the file stays under the resolved root");
         var linkedNow = new RevitFileSystemProbe(path => path.EndsWith(@"\Cabana", StringComparison.Ordinal), _ => null);
-        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target, Target, linkedNow) is { } swapped && swapped.Contains("link", StringComparison.Ordinal) && swapped.Contains(Target, StringComparison.Ordinal),
+        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target, Target, OwnerRoot, linkedNow) is { } swapped && swapped.Contains("link", StringComparison.Ordinal) && swapped.Contains(Target, StringComparison.Ordinal),
             "post-save: a folder swapped for a junction after the check fails (TOCTOU) naming the file");
-        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target, Target, new RevitFileSystemProbe(_ => false, _ => 2)) is { Length: > 0 }, "post-save: a hard-linked file fails");
+        Check(RevitSaveAsGuard.CheckWritten(Target, Policy, Target, Target, OwnerRoot, new RevitFileSystemProbe(_ => false, _ => 2)) is { Length: > 0 }, "post-save: a hard-linked file fails");
         var detail = RevitSaveAsRules.WrittenElsewhereDetail("the new file resolves to X", Target);
-        Check(detail.Contains("X", StringComparison.Ordinal) && detail.Contains("document.path", StringComparison.Ordinal) && detail.Contains(Target, StringComparison.Ordinal),
-            "post-save failure detail names the problem and the path the open document now points to");
+        Check(detail.Contains("X", StringComparison.Ordinal) && detail.Contains(Target, StringComparison.Ordinal) && detail.Contains("outside the enabled roots", StringComparison.Ordinal)
+            && detail.Contains("close it in Revit", StringComparison.OrdinalIgnoreCase) && detail.Contains("do not continue", StringComparison.OrdinalIgnoreCase)
+            && !detail.Contains("send later requests", StringComparison.OrdinalIgnoreCase) && !detail.Contains("document.path", StringComparison.Ordinal),
+            "post-save failure detail says the document was written outside the enabled roots, to close it in Revit and not continue (no hint to keep sending requests)", detail);
+        WrittenOnDisk();
+    }
+
+    // The real post-save helper on this machine's file system (native paths: drive paths on Windows, '/' elsewhere):
+    // a plain file passes; a file written through a symlinked folder that leads outside the root, or to another folder
+    // inside it, fails; a link above the enabled root is the owner's concern and passes.
+    static void WrittenOnDisk()
+    {
+        var baseDir = Path.Combine(AppContext.BaseDirectory, "bim-save-as-written-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var root = Path.Combine(baseDir, "owner");
+            var project = Path.Combine(root, "Cabana");
+            var outside = Path.Combine(baseDir, "outside");
+            Directory.CreateDirectory(project);
+            Directory.CreateDirectory(outside);
+            var policy = new RevitCommandPolicy(new[] { root });
+            var plain = Path.Combine(project, "Cabana v2.rvt");
+            File.WriteAllBytes(plain, new byte[] { 1 });
+            Check(RevitSaveAsGuard.FinalPath(plain) is { } final && RevitCopiesGuard.IsUnder(final, plain) && RevitCopiesGuard.IsUnder(plain, final), "disk: the final path of a plain file is the file itself", RevitSaveAsGuard.FinalPath(plain) ?? "null");
+            Check(RevitSaveAsGuard.WrittenProblem(plain, policy, RevitFileSystemProbe.Real) is null, "disk: a file written in a plain folder of the enabled root passes the post-save check", RevitSaveAsGuard.WrittenProblem(plain, policy, RevitFileSystemProbe.Real) ?? "");
+            Check(RevitSaveAsGuard.WrittenProblem(Path.Combine(project, "missing.rvt"), new RevitCommandPolicy(new[] { Path.Combine(baseDir, "elsewhere") }), RevitFileSystemProbe.Real) is { Length: > 0 }, "disk: a file outside every enabled root fails");
+            var created = true;
+            try
+            {
+                Directory.CreateSymbolicLink(Path.Combine(root, "escape"), outside);
+                Directory.CreateSymbolicLink(Path.Combine(root, "inner"), project);
+                Directory.CreateDirectory(Path.Combine(baseDir, "real", "owner2", "Cabana"));
+                Directory.CreateSymbolicLink(Path.Combine(baseDir, "alias"), Path.Combine(baseDir, "real"));
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { created = false; }
+            if (!created) { Console.WriteLine("SKIP document.save_as post-save link cases: this machine cannot create directory symlinks"); return; }
+            var escaped = Path.Combine(root, "escape", "Cabana v2.rvt");
+            File.WriteAllBytes(escaped, new byte[] { 2 });
+            var escapedFinal = RevitSaveAsGuard.FinalPath(escaped);
+            var outsideFinal = RevitSaveAsGuard.FinalPath(outside);
+            Check(escapedFinal is not null && outsideFinal is not null && RevitCopiesGuard.IsUnder(escapedFinal, outsideFinal),
+                "disk: the final path resolves a symlinked parent folder (not only the file itself)", escapedFinal + " / " + outsideFinal);
+            Check(RevitSaveAsGuard.WrittenProblem(escaped, policy, RevitFileSystemProbe.Real) is { } problem && problem.Contains("outside", StringComparison.Ordinal),
+                "disk: a file written through a symlinked parent that leads outside the enabled root fails, naming where it is", RevitSaveAsGuard.WrittenProblem(escaped, policy, RevitFileSystemProbe.Real) ?? "passed");
+            var inner = Path.Combine(root, "inner", "Cabana v3.rvt");
+            File.WriteAllBytes(inner, new byte[] { 3 });
+            Check(RevitSaveAsGuard.WrittenProblem(inner, policy, RevitFileSystemProbe.Real) is { } innerProblem && innerProblem.Contains("link", StringComparison.Ordinal),
+                "disk: a file written through a symlinked parent that stays inside the root still fails (the link guard is re-walked)", RevitSaveAsGuard.WrittenProblem(inner, policy, RevitFileSystemProbe.Real) ?? "passed");
+            var aliasRoot = Path.Combine(baseDir, "alias", "owner2");
+            var viaAlias = Path.Combine(aliasRoot, "Cabana", "Cabana v2.rvt");
+            File.WriteAllBytes(viaAlias, new byte[] { 4 });
+            Check(RevitSaveAsGuard.WrittenProblem(viaAlias, new RevitCommandPolicy(new[] { aliasRoot }), RevitFileSystemProbe.Real) is null,
+                "disk: an enabled root reached through a link above it passes (only links from the root down are refused)", RevitSaveAsGuard.WrittenProblem(viaAlias, new RevitCommandPolicy(new[] { aliasRoot }), RevitFileSystemProbe.Real) ?? "");
+        }
+        finally
+        {
+            try { Directory.Delete(baseDir, true); } catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
     }
 }
