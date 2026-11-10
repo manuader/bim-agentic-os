@@ -2,6 +2,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Bim.Core;
 using Bim.Gltf;
 
@@ -41,9 +42,29 @@ namespace Bim.Cli;
 // before the file is written, so nothing can fail after the write.
 // Precedence: usage, output path, inputs read (before, after, realized, bindings, dependents), parsed in that order, then
 // the library; the first failure is the only one reported.
+// P4-10 --probe-dependents process-pipe-name [--accept uid]... (instead of --dependents; --accept only with it): the
+// dependents come from Revit instead of a file. DocUpdateProbe (interfaces/cli/DocUpdateProbe.cs) runs
+// DocUpdateDependents.Plan over the process pipe, which sends only element.delete dry runs, and the file holds exactly
+// JsonSerializer.Serialize(result.Plan), the replanned update (the same canonical plan DocUpdate.Plan gives with those
+// dependents). accepted is the --accept UniqueIds (untracked dependents a human confirmed; invalid ones are
+// accepted_invalid before the policy is read or anything is sent; more than MaxAccepted --accept values are
+// doc_update_input_bound_exceeded, field "accepted", before any input is read). Precedence with --probe-dependents:
+// usage, output path, pipe name (explicit_process_pipe_required, field pipe_name), the --accept bound, inputs read and
+// parsed, accepted_invalid, the first plan (its library refusals), then the enabled-roots policy, read lazily and once,
+// just before the first dry run (a plan without deletes never reads it; its RevitCommandException is reported like a
+// dry run's refusal, with the key and operation_id of that dry run). In probe mode every refusal prints
+// {"status":"failed","code"[,"key"][,"operation_id"][,"field"][,"detail"]}, members present only when set: "field" names
+// the field or input concerned, "detail" is the human detail (e.g. an exception type, a UniqueId); a second-plan refusal
+// has no key and no operation_id. This covers every DocUpdateDependents failure (dependent_unknown, dependent_kept,
+// dependent_planned, dependent_shared, dependents_changed, replan_internal, a second-plan DocReplace code, or a dry run's
+// own failure such as document_not_enabled, pipe_connect_timeout, no_response, response_invalid); exit 1, no file. A
+// stale target Revit already deleted (reference_not_found on args.element_uids) is a Missing probe, not a refusal.
+// Success adds "probed" (dry runs of the first pass) and "dependents" (UniqueIds collected) before "applied":false.
+// Without --probe-dependents nothing changes: no policy, no pipe, the P4-08 bytes, summary and refusal envelopes
+// ({"status","code"[,"detail"]}, detail = the field or input name as before).
 internal static class DocUpdateCommand
 {
-    public const string Usage = "usage: doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json]";
+    public const string Usage = "usage: doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json | --probe-dependents process-pipe-name [--accept uid]...]";
     public const string UsageCode = "doc_update_usage";
     public const string ProjectInvalid = "doc_update_project_invalid";
     public const string RealizedInvalid = "doc_update_realized_invalid";
@@ -52,6 +73,8 @@ internal static class DocUpdateCommand
     public const string BoundExceeded = "doc_update_input_bound_exceeded";
     public const string InternalError = "doc_update_internal_error";
     public const int MaxEntries = 100_000;
+    // At most this many --accept values (P4-10).
+    public const int MaxAccepted = 10_000;
 
     static readonly string[] Required = { "--before", "--after", "--realized", "--bindings", "--output" };
     // Every refusal message DocUpdate.Plan can raise as ArgumentException or InvalidOperationException (DocDefaults,
@@ -68,17 +91,48 @@ internal static class DocUpdateCommand
         DocUpdateDependentsCodes.ReplanInternal,
     };
 
-    sealed class Refusal(string code, string? detail = null) : Exception(code)
+    // Field: the field or input concerned (P4-08 prints it as "detail"); Detail: a human detail (probe mode only).
+    sealed class Refusal(string code, string? field = null, string? detail = null) : Exception(code)
     {
         public string Code { get; } = code;
+        public string? Field { get; } = field;
         public string? Detail { get; } = detail;
     }
 
     public static void Run(string[] args)
     {
-        if (!TryParse(args, out var paths)) { Fail(UsageCode, null); return; }
+        if (Execute(args, Console.Out, DocUpdateRevit.Real) != 0) Environment.ExitCode = 1;
+    }
+
+    // The verb on an explicit stdout and Revit access (the CLI passes Console.Out and DocUpdateRevit.Real); returns the
+    // exit code. revit is used only with --probe-dependents; an internal error's type and message go to Console.Error.
+    internal static int Execute(string[] args, TextWriter stdout, DocUpdateRevit revit)
+    {
+        string? pipe = null;
+        // Plain mode keeps the P4-08 envelope {"status","code"[,"detail"]} (detail = field, else detail); probe mode
+        // prints field and detail as separate members.
+        int Fail(string code, string? field, string? detail, string? key = null, string? operation = null)
+        {
+            if (pipe is null)
+            {
+                var single = field ?? detail;
+                stdout.WriteLine(single is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail = single }));
+                return 1;
+            }
+            var envelope = new JsonObject { ["status"] = "failed", ["code"] = code };
+            if (key is not null) envelope["key"] = key;
+            if (operation is not null) envelope["operation_id"] = operation;
+            if (field is not null) envelope["field"] = field;
+            if (detail is not null) envelope["detail"] = detail;
+            stdout.WriteLine(envelope.ToJsonString());
+            return 1;
+        }
+        if (!TryParse(args, out var paths, out var accepted)) return Fail(UsageCode, null, null);
         var output = paths["--output"];
-        if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string refused) { Fail(refused, null); return; }
+        if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string refused) return Fail(refused, null, null);
+        pipe = paths.TryGetValue("--probe-dependents", out var pipeName) ? pipeName : null;
+        if (pipe is not null && DocUpdateProbe.PipeProblem(pipe) is { } pipeRefused) return Fail(pipeRefused.Code, pipeRefused.Field, pipeRefused.Detail);
+        if (accepted.Count > MaxAccepted) return Fail(BoundExceeded, "accepted", null);
         try
         {
             var beforeText = Read(paths["--before"], "before");
@@ -91,36 +145,60 @@ internal static class DocUpdateCommand
             var realized = ParseRealized(realizedText);
             var bindings = ParseBindings(bindingsText);
             var dependents = dependentsText is null ? null : ParseDependents(dependentsText);
-            var (text, plan) = Plan(before, after, bindings, realized, dependents);
-            var bytes = new UTF8Encoding(false).GetBytes(text);
-            var summary = new
+            DocUpdatePlan plan;
+            DocUpdateDependentsResult? probed = null;
+            if (pipe is not string probePipe) plan = Library(() => DocUpdate.Plan(before, after, bindings, realized, dependents));
+            else
             {
-                status = "succeeded",
-                output,
-                bytes = bytes.LongLength,
-                sha256 = Convert.ToHexString(SHA256.HashData(bytes)),
-                regenerated = plan.Regeneration.Regenerated.Count,
-                steps = plan.Replacement.Commands.Steps.Count,
-                forced = plan.Forced.Count,
-                retired = plan.Retired.Count,
-                applied = false,
-            };
+                probed = Library(() => DocUpdateProbe.Plan(before, after, bindings, realized, probePipe, accepted, revit));
+                if (probed.Failed is { } failed) return Fail(failed.Code, failed.Field, failed.Detail, failed.Key, failed.OperationId);
+                if (probed.Plan is null) return Fail(InternalError, null, null);
+                plan = probed.Plan;
+            }
+            var bytes = new UTF8Encoding(false).GetBytes(JsonSerializer.Serialize(plan));
+            object summary = probed is null
+                ? new
+                {
+                    status = "succeeded",
+                    output,
+                    bytes = bytes.LongLength,
+                    sha256 = Convert.ToHexString(SHA256.HashData(bytes)),
+                    regenerated = plan.Regeneration.Regenerated.Count,
+                    steps = plan.Replacement.Commands.Steps.Count,
+                    forced = plan.Forced.Count,
+                    retired = plan.Retired.Count,
+                    applied = false,
+                }
+                : new
+                {
+                    status = "succeeded",
+                    output,
+                    bytes = bytes.LongLength,
+                    sha256 = Convert.ToHexString(SHA256.HashData(bytes)),
+                    regenerated = plan.Regeneration.Regenerated.Count,
+                    steps = plan.Replacement.Commands.Steps.Count,
+                    forced = plan.Forced.Count,
+                    retired = plan.Retired.Count,
+                    probed = probed.Probes.Count,
+                    dependents = probed.Dependents.Values.Sum(list => list.Count),
+                    applied = false,
+                };
+            var line = JsonSerializer.Serialize(summary);
             try { GltfExporter.WriteNew(bytes, output); }
-            catch (GltfExportException e) { Fail(e.Code, null); return; }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Fail("output_io_error", e.GetType().Name); return; }
-            Console.WriteLine(JsonSerializer.Serialize(summary));
+            catch (GltfExportException e) { return Fail(e.Code, null, null); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return Fail("output_io_error", null, e.GetType().Name); }
+            stdout.WriteLine(line);
+            return 0;
         }
-        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
+        // Plain mode: the P4-08 detail is the field (a RevitCommandException's own detail was never printed there).
+        catch (Refusal refusal) { return Fail(refusal.Code, refusal.Field, pipe is null ? null : refusal.Detail); }
     }
 
-    static (string Text, DocUpdatePlan Plan) Plan(Project before, Project after, RevitBindings bindings, Dictionary<string, string> realized, Dictionary<string, IReadOnlyList<string>>? dependents)
+    // A library call: its typed refusals become Refusal, anything else is an internal error (type and message on stderr).
+    static T Library<T>(Func<T> call)
     {
-        try
-        {
-            var plan = DocUpdate.Plan(before, after, bindings, realized, dependents);
-            return (JsonSerializer.Serialize(plan), plan);
-        }
-        catch (RevitCommandException error) { throw new Refusal(error.Code, error.Field); }
+        try { return call(); }
+        catch (RevitCommandException error) { throw new Refusal(error.Code, error.Field, error.Detail); }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException && error is not ArgumentNullException && LibraryCodes.Contains(error.Message, StringComparer.Ordinal))
         {
             throw new Refusal(error.Message);
@@ -133,18 +211,23 @@ internal static class DocUpdateCommand
         }
     }
 
-    // The five required flags and the optional --dependents, each once with a non-empty value that is not flag-shaped
-    // ("--..."), in any order; nothing else.
-    static bool TryParse(string[] args, out Dictionary<string, string> paths)
+    // The five required flags and either the optional --dependents or the optional --probe-dependents (never both), each
+    // once, plus any number of --accept only with --probe-dependents; every flag with a non-empty value that is not
+    // flag-shaped ("--..."), in any order; nothing else.
+    static bool TryParse(string[] args, out Dictionary<string, string> paths, out List<string> accepted)
     {
         paths = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (args.Length is not (11 or 13)) return false;
+        accepted = new List<string>();
+        if (args.Length < 11 || args.Length % 2 == 0) return false;
         for (var i = 1; i < args.Length; i += 2)
         {
             var value = args[i + 1];
             if (value.Length == 0 || value.StartsWith("--", StringComparison.Ordinal)) return false;
-            if (!(Required.Contains(args[i], StringComparer.Ordinal) || args[i] == "--dependents") || !paths.TryAdd(args[i], value)) return false;
+            if (args[i] == "--accept") { accepted.Add(value); continue; }
+            if (!(Required.Contains(args[i], StringComparer.Ordinal) || args[i] is "--dependents" or "--probe-dependents") || !paths.TryAdd(args[i], value)) return false;
         }
+        if (paths.ContainsKey("--dependents") && paths.ContainsKey("--probe-dependents")) return false;
+        if (accepted.Count > 0 && !paths.ContainsKey("--probe-dependents")) return false;
         return Required.All(paths.ContainsKey);
     }
 
@@ -284,9 +367,4 @@ internal static class DocUpdateCommand
         }
     }
 
-    static void Fail(string code, string? detail)
-    {
-        Console.WriteLine(detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail }));
-        Environment.ExitCode = 1;
-    }
 }
