@@ -675,7 +675,7 @@ foreach ($case in @(
     $faulted = Invoke-DocUpFault $case.Inject
     $faultReason = [string](Get-StepField $faulted $case.Key 'reason')
     Assert ($null -ne (Get-StepField $faulted $case.Key 'request') -and !(Get-StepField $faulted $case.Key 'passed') -and $faultReason -like "*$($case.Code)*") "P4-11 $($case.What) must fail $($case.Key) with $($case.Code): $faultReason"
-    Assert ((Get-SentAfter $faulted $case.Key).Count -eq 0 -and @($realDeletes | Where-Object { $null -ne (Get-StepField $faulted $_ 'request') }).Count -eq 0) "P4-11 after $($case.Code) no later update step and no real delete is sent: $(@(Get-SentAfter $faulted $case.Key | ForEach-Object { $_.key }) -join ',')"
+    Assert (@(Get-SentAfter $faulted $case.Key).Count -eq 0 -and @($realDeletes | Where-Object { $null -ne (Get-StepField $faulted $_ 'request') }).Count -eq 0) "P4-11 after $($case.Code) no later update step and no real delete is sent: $(@(Get-SentAfter $faulted $case.Key | ForEach-Object { $_.key }) -join ',')"
     Assert ((Get-GroupField $faulted 'modificar' 'failed') -eq 0 -and (Get-GroupField $faulted 'copia' 'failed') -eq 0) "P4-11 later groups still run after $($case.Code): $(Get-FailedSteps $faulted)"
 }
 # A dry-run readback whose sha256 does not match its dependents is refused before the replan.
