@@ -20,6 +20,19 @@ sealed class DependentsFakeTransport : IRevitCommandTransport
     public Action<ElementDeleteArgs, int>? OnDryRun { get; set; }
     // Rewrites a dry-run reply (or replaces it with null).
     public Func<RevitCommandEnvelope, string, string?>? Rewrite { get; set; }
+    // Answer a missing delete target (dry run or real) as the add-in does: field args.element_uids[i], detail
+    // "no element with UniqueId <uid>" (CommandsExecutorModify.DeleteRun / ElementByUid).
+    public bool AddInMissingForm { get; set; }
+
+    string? MissingReply(ElementDeleteArgs delete)
+    {
+        for (var i = 0; i < delete.ElementUids.Count; i++)
+            if (!Inner.Existing.Contains(delete.ElementUids[i]))
+                return AddInMissingForm
+                    ? RevitCommandResponse.Failure(RevitCommandCodes.ReferenceNotFound, "args.element_uids[" + i.ToString(CultureInfo.InvariantCulture) + "]", "no element with UniqueId " + delete.ElementUids[i]).ToJson()
+                    : RevitCommandResponse.Failure(RevitCommandCodes.ReferenceNotFound, "args.element_uids", delete.ElementUids[i]).ToJson();
+        return null;
+    }
 
     public string? Send(string envelopeJson)
     {
@@ -27,6 +40,7 @@ sealed class DependentsFakeTransport : IRevitCommandTransport
         if (envelope.Args is not ElementDeleteArgs { DryRun: true } delete)
         {
             Calls.Add("write " + envelope.Command + " " + envelope.OperationId);
+            if (AddInMissingForm && envelope.Args is ElementDeleteArgs write && MissingReply(write) is { } refused) return refused;
             return Inner.Send(envelopeJson);
         }
         Calls.Add("dry " + envelope.OperationId + " " + string.Join(",", delete.ElementUids));
@@ -34,10 +48,8 @@ sealed class DependentsFakeTransport : IRevitCommandTransport
         var target = delete.ElementUids[0];
         dryRunsByTarget[target] = dryRunsByTarget.GetValueOrDefault(target) + 1;
         OnDryRun?.Invoke(delete, dryRunsByTarget[target]);
-        string reply;
-        var missing = delete.ElementUids.FirstOrDefault(uid => !Inner.Existing.Contains(uid));
-        if (missing is not null) reply = RevitCommandResponse.Failure(RevitCommandCodes.ReferenceNotFound, "args.element_uids", missing).ToJson();
-        else
+        var reply = MissingReply(delete);
+        if (reply is null)
         {
             var dependents = delete.ElementUids.SelectMany(uid => Inner.DependentsOf.TryGetValue(uid, out var list) ? list : Array.Empty<string>())
                 .Where(Inner.Existing.Contains).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(uid => uid, StringComparer.Ordinal).ToArray();
@@ -347,6 +359,83 @@ static class UpdateDependentsTests
             && fake.DryRuns.All(envelope => envelope.OperationId.StartsWith("docdry.", StringComparison.Ordinal))
             && result.Plan is not null && fake.DryRuns.All(envelope => result.Plan!.Replacement.Commands.Steps.Concat(first.Replacement.Commands.Steps).All(step => step.OperationId != envelope.OperationId)),
             "dry-run operation ids are distinct, docdry.-prefixed and never a plan step's id", dryIds);
+
+        // ---- Review follow-ups (SF1-SF4, NITs) ----
+        var sheet0 = "sheet-" + K(Role(0, "level"));
+        var sheet0Stale = realized[DocRegeneration.ItemSource(sheet0)];
+        var shared = Fake("viewport:shared");
+        var sharedFake = Revit(insertedRealized, reported.Append(shared.ToUpperInvariant()).ToArray());
+        sharedFake.Inner.Existing.Add(shared);
+        sharedFake.Inner.DependentsOf[sheet0Stale] = new[] { shared };
+        var sharedResult = DocUpdateDependents.Plan(before, inserted, bindings, insertedRealized, sharedFake, accepted.Append(shared).ToArray());
+        Check(sharedResult.Failed is { Code: "dependent_shared", Key: var sharedKey, Detail: var sharedDetail } && sharedKey == plan0
+            && string.Equals(sharedDetail, shared, StringComparison.OrdinalIgnoreCase) && sharedResult.Plan is null && sharedFake.Inner.Sent.Count == 0,
+            "an accepted dependent reported by two planned deletes (case ignored) is refused dependent_shared at the later key, nothing written", Failure(sharedResult));
+        var sharedRun = Revit(insertedRealized, reported.Append(shared).ToArray());
+        sharedRun.Inner.Existing.Add(shared);
+        sharedRun.Inner.DependentsOf[sheet0Stale] = new[] { shared };
+        var sharedUpdate = DocUpdateDependents.Update(before, inserted, bindings, insertedRealized, sharedRun, accepted.Append(shared).ToArray());
+        Check(sharedUpdate.Run is null && sharedUpdate.Planned.Failed?.Code == "dependent_shared" && sharedRun.Inner.Sent.Count == 0 && sharedRun.Inner.Log.Count == 0,
+            "Update with a shared dependent writes nothing");
+
+        var tagRoom0Stale = realized[DocRegeneration.ItemSource(tagRoom0)];
+        var laterFake = Revit(insertedRealized);
+        laterFake.Inner.DependentsOf[tagRoom0Stale] = new[] { plan0Stale };
+        var later = DocUpdateDependents.Plan(before, inserted, bindings, insertedRealized, laterFake, accepted);
+        Check(later.Failed is { Code: DocReplaceCodes.DependentPlanned, Key: var laterKey, Detail: var laterDetail } && laterKey == tagRoom0 && laterDetail == plan0Stale
+            && later.Plan is null && laterFake.Inner.Sent.Count == 0 && laterFake.DryRuns.Count <= firstDeletes.Length,
+            "a dependent that is the stale instance of a key deleted later is refused dependent_planned in the first pass, naming key and UniqueId", Failure(later));
+
+        var appearedFake = Revit(insertedRealized);
+        appearedFake.OnDryRun = (args, count) =>
+        {
+            if (args.ElementUids[0] != plan0Stale) return;
+            if (count == 1) appearedFake.Inner.Existing.Remove(plan0Stale); else appearedFake.Inner.Existing.Add(plan0Stale);
+        };
+        var appeared = DocUpdateDependents.Plan(before, inserted, bindings, insertedRealized, appearedFake, accepted);
+        Check(appeared.Failed is { Code: DocUpdateDependentsCodes.DependentsChanged, Key: var appearedKey } && appearedKey == plan0 && appeared.Plan is null && appearedFake.Inner.Sent.Count == 0
+            && appeared.Probes.Any(item => item.Key == plan0 && item.Missing),
+            "a target missing on the first dry run but present on the confirming one is refused dependents_changed", Failure(appeared));
+
+        var confirmRefused = Revit(insertedRealized);
+        var plan0Seen = 0;
+        confirmRefused.Rewrite = (envelope, reply) => ((ElementDeleteArgs)envelope.Args).ElementUids[0] == plan0Stale && ++plan0Seen == 2
+            ? RevitCommandResponse.Failure(RevitCommandCodes.ArgsInvalid, "args.element_uids[0]", "pinned").ToJson() : reply;
+        var refusedOnConfirm = DocUpdateDependents.Plan(before, inserted, bindings, insertedRealized, confirmRefused, accepted);
+        Check(refusedOnConfirm.Failed is { Code: RevitCommandCodes.ArgsInvalid, Key: var refusedKey } && refusedKey == plan0 && refusedOnConfirm.Plan is null
+            && confirmRefused.Inner.Sent.Count == 0 && plan0Seen == 2,
+            "an executor refusal on the confirming dry run only keeps its code and nothing is written", Failure(refusedOnConfirm));
+
+        Check(Plan0Reply(Revit(insertedRealized), _ => throw new TimeoutException()) == RevitCommandCodes.PipeConnectTimeout, "a transport timeout is pipe_connect_timeout");
+        Check(Plan0Reply(Revit(insertedRealized), _ => throw new IOException("broken pipe")) == RevitCommandCodes.PipeIoError, "any other transport exception is pipe_io_error");
+        Check(Plan0Reply(Revit(insertedRealized), reply => reply.Replace("\"replayed\":false", "\"replayed\":true", StringComparison.Ordinal)) == RevitCommandCodes.ResponseInvalid,
+            "a replayed receipt for a dry run (which stores none) is response_invalid");
+
+        var caseFake = Revit(insertedRealized);
+        caseFake.OnDryRun = (args, count) =>
+        {
+            if (count == 2 && args.ElementUids[0] == plan0Stale) caseFake.Inner.DependentsOf[plan0Stale] = reported.Select(uid => uid.ToUpperInvariant()).ToArray();
+        };
+        var cased = DocUpdateDependents.Update(before, inserted, bindings, insertedRealized, caseFake, accepted);
+        var upperFake = Revit(insertedRealized, reported.Select(uid => uid.ToUpperInvariant()).ToArray());
+        var upper = DocUpdateDependents.Update(before, inserted, bindings, insertedRealized, upperFake, accepted);
+        Check(cased.Planned.Failed is null && cased.Run is { Report.Status: RevitPlanRunStatus.Completed } && upper.Planned.Failed is null && upper.Run is { Report.Status: RevitPlanRunStatus.Completed }
+            && !upperFake.Inner.Existing.Contains(annotation),
+            "dependents reported in another hex case match their stale instances, accepted UniqueIds and the first pass", Failure(cased.Planned) + " / " + Failure(upper.Planned));
+
+        var many = Enumerable.Range(0, RevitModifyRules.MaxConfirmedDependents + 1).Select(index => Fake("many:" + N(index))).ToArray();
+        var manyFake = Revit(insertedRealized, many);
+        foreach (var uid in many) manyFake.Inner.Existing.Add(uid);
+        var tooMany = DocUpdateDependents.Plan(before, inserted, bindings, insertedRealized, manyFake, many);
+        Check(tooMany.Failed is { Code: DocReplaceCodes.DependentsInvalid, Key: null } && tooMany.Plan is null && manyFake.Inner.Sent.Count == 0,
+            "a second-plan refusal keeps DocReplace's code", Failure(tooMany));
+
+        var addInGone = new DependentsFakeTransport(new ReplaceFakeTransport(realized.Values.Where(uid => uid != doorUid && uid != tagUid))) { AddInMissingForm = true };
+        var goneAddIn = DocUpdateDependents.Update(before, removed, Bindings(removed), realized, addInGone);
+        Check(goneAddIn.Planned.Failed is null && goneAddIn.Planned.Probes.FirstOrDefault(item => item.Key == tagDoor1) is { Missing: true }
+            && goneAddIn.Run is { Report.Status: RevitPlanRunStatus.Completed } addInRun && addInRun.Plan.Gone.SequenceEqual(new[] { tagDoor1 })
+            && Json(goneAddIn.Run.Realized) == Json(gone.Run?.Realized),
+            "the add-in's missing-target form (args.element_uids[0], no element with UniqueId) is probed missing and run as gone", Failure(goneAddIn.Planned));
 
         // ---- Refusals of the inputs ----
         Check(Code(() => DocUpdateDependents.Plan(null!, inserted, bindings, insertedRealized, Revit(insertedRealized))) == "null"
