@@ -1350,3 +1350,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay181 — 2026-11-10T15:53:07Z (Claude, cloud scheduled)
 - 15:53Z LOCK taken (was FREE; relay178 released 2026-11-10T15:51:39Z).
+- 16:48Z picked P4-10 (phase 4), P1-14 (phase 1), P2-12 (phase 2) — oldest-touched (relay174/176). Workers green: P4-10 ead0864 (red 42850465603, green 42851792519; 0 attempts), P1-14 f526683 (red 42850218024, green 42853259446; 0 attempts; also touched tests/cli/catalogue-report-record.ps1 to keep P1-12 e2e green), P2-12 ad1b80b (red 42851415073, green 42853024289; 0 attempts). Next: independent reviews.
