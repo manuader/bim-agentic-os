@@ -189,6 +189,11 @@ internal static class DocUpdateProbeTests
             return (process.ExitCode, text, stderr.Result.ReplaceLineEndings(" ").Trim());
         }
         static string D((int Exit, string Out) r) => "exit " + N(r.Exit) + " " + (r.Out.Length > 600 ? r.Out[..600] + "..." : r.Out);
+        static bool Absent(string json, params string[] names)
+        {
+            try { return JsonNode.Parse(json) is JsonObject o && names.All(name => !o.ContainsKey(name)); }
+            catch (JsonException) { return false; }
+        }
         static string? Member(string json, string name)
         {
             try { return JsonNode.Parse(json) is JsonObject o && o[name] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null; }
@@ -240,7 +245,8 @@ internal static class DocUpdateProbeTests
         // ---- 1. Success: the canonical plan, only dry-run deletes on the pipe ----
         var fake = Revit();
         var output = NewOutput();
-        var run = Execute(Args(output, "--probe-dependents", Pipe, "--accept", annotation), Host(fake));
+        var successPolicyReads = 0;
+        var run = Execute(Args(output, "--probe-dependents", Pipe, "--accept", annotation), Host(fake, null, () => successPolicyReads++));
         var written = File.Exists(output) ? File.ReadAllBytes(output) : Array.Empty<byte>();
         Check(run.Exit == 0 && written.AsSpan().SequenceEqual(expected), "writes exactly JsonSerializer.Serialize(DocUpdateDependents.Plan(...).Plan)", D(run));
         var summary = JsonSerializer.Serialize(new
@@ -263,6 +269,7 @@ internal static class DocUpdateProbeTests
             "one dry run per planned delete in each pass, the same wire lines as the library call", N(fake.Lines.Count) + " vs " + N(firstDeletes) + "+" + N(secondDeletes));
         Check(fake.Pipes.All(pipe => pipe == Pipe) && dryRuns.All(envelope => envelope.Document.Path == document.Path && envelope.Document.UniqueId == document.UniqueId),
             "every dry run goes to the named process pipe for the bound document");
+        Check(successPolicyReads == 1 && fake.Lines.Count > 1, "the policy is read exactly once on a successful probe run with several dry runs", N(successPolicyReads) + " reads, " + N(fake.Lines.Count) + " dry runs");
 
         // Deterministic: flags reordered, --accept repeated in another case: the same bytes and the same wire lines.
         var again = Revit();
@@ -334,10 +341,79 @@ internal static class DocUpdateProbeTests
         {
             var f = Revit(); var o = NewOutput();
             var policyReads = 0;
-            Refused("an unreadable enabled-roots policy", "enabled_roots_invalid", Args(o, "--probe-dependents", Pipe), f,
-                new DocUpdateRevit(() => { policyReads++; throw new RevitCommandException("enabled_roots_invalid", "enabled_roots", "test"); }, f.Send),
-                text => Member(text, "detail") == "enabled_roots", lines: 0);
-            Check(policyReads == 1, "the policy is read once per probe run", N(policyReads));
+            Refused("an unreadable enabled-roots policy", RevitCommandCodes.AllowlistInvalid, Args(o, "--probe-dependents", Pipe), f,
+                new DocUpdateRevit(() => { policyReads++; throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, "line 3", "test detail"); }, f.Send),
+                text => Member(text, "field") == "line 3" && Member(text, "detail") == "test detail" && Member(text, "key") is { Length: > 0 } && Member(text, "operation_id") is { Length: > 0 }, lines: 0);
+            Check(policyReads == 1, "a broken policy is read once, at the first dry run", N(policyReads));
+        }
+        // The policy is read lazily: a first-plan library refusal is not masked by a broken policy.
+        {
+            var f = Revit(); var o = NewOutput(); var policyReads = 0;
+            var arguments = Args(o, "--probe-dependents", Pipe); arguments[6] = Input("realized-before-broken-policy.json", MapJson(realized));
+            Refused("a first plan the library refuses, with a broken policy", "input_unresolved", arguments, f,
+                new DocUpdateRevit(() => { policyReads++; throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid, "line 3", "test detail"); }, f.Send),
+                text => Absent(text, "field", "detail", "key", "operation_id"), lines: 0);
+            Check(policyReads == 0, "a first-plan refusal is reported before the policy is read", N(policyReads));
+        }
+        // A RevitCommandException of the library: field = its field (P4-08 printed it as detail; plain mode still does).
+        {
+            var f = Revit(); var o = NewOutput(); var policyReads = 0;
+            var arguments = Args(o, "--probe-dependents", Pipe); arguments[8] = Input("relative-bindings.json", BindingsJson(Bindings(inserted, new RevitDocumentRef("copy.rvt", document.UniqueId))));
+            Refused("a relative document path", RevitCommandCodes.DocumentPathInvalid, arguments, f, Host(f, null, () => policyReads++),
+                text => Member(text, "field") == "document.path" && Absent(text, "key", "operation_id"), lines: 0);
+            var plain = arguments.Take(11).ToArray(); plain[10] = NewOutput();
+            var p = Execute(plain, Host(f, null, () => policyReads++));
+            Check(p.Exit == 1 && p.Out == JsonSerializer.Serialize(new { status = "failed", code = RevitCommandCodes.DocumentPathInvalid, detail = "document.path" }) && policyReads == 0,
+                "plain mode keeps the P4-08 envelope for the same refusal", D(p));
+        }
+        // A second-plan refusal: no key, no operation id (DocReplace's dependents_invalid for more confirmed dependents
+        // than one delete may carry, all accepted).
+        {
+            var f = Revit(); var o = NewOutput();
+            var many = Enumerable.Range(0, RevitModifyRules.MaxConfirmedDependents + 1).Select(index => Fake("many:" + N(index))).ToArray();
+            foreach (var uid in many) f.Existing.Add(uid);
+            f.DependentsOf[plan0Stale] = many;
+            Refused("a second plan DocReplace refuses", DocReplaceCodes.DependentsInvalid,
+                Args(o, new[] { "--probe-dependents", Pipe }.Concat(many.SelectMany(uid => new[] { "--accept", uid })).ToArray()), f, Host(f),
+                text => Absent(text, "key", "operation_id", "field", "detail"));
+            var firstPass = oracle.First.Replacement.Commands.Steps.Count(step => step.Command == DocReplace.DeleteCommand);
+            Check(f.Lines.Count == firstPass, "a second-plan refusal follows the first pass only (no confirming dry run)", N(f.Lines.Count) + " vs " + N(firstPass));
+        }
+        // A stale target Revit already deleted: the dry run answers reference_not_found on args.element_uids[0], the probe is
+        // Missing (no dependents), and the CLI writes the library's plan.
+        {
+            var removed = before with { Elements = before.Elements.Where(element => element.Id != Door(1)).ToArray() };
+            var doorUid = realized[DocRegeneration.ElementSource(Door(1))];
+            var tagUid = realized[DocRegeneration.ItemSource("tag-door-" + Door(1).ToString("N"))];
+            FakeExecutor Gone()
+            {
+                var gone = new FakeExecutor();
+                foreach (var uid in realized.Values.Where(value => value != doorUid && value != tagUid)) gone.Existing.Add(uid);
+                return gone;
+            }
+            var goneOracle = DocUpdateDependents.Plan(before, removed, Bindings(removed), realized, new LibraryTransport(Gone()));
+            Check(goneOracle.Failed is null && goneOracle.Plan is not null && goneOracle.Probes.Count(probe => probe.Missing) == 1 && goneOracle.Probes.Single(probe => probe.Missing).StaleUniqueId == tagUid,
+                "fixture: a stale tag already deleted in Revit is probed missing", goneOracle.Failed?.Code ?? "");
+            var f = Gone(); var o = NewOutput();
+            var arguments = new[] { "doc-update", "--before", beforePath, "--after", Input("removed.json", JsonSerializer.Serialize(removed)), "--realized", Input("realized-removed.json", MapJson(realized)),
+                "--bindings", Input("removed-bindings.json", BindingsJson(Bindings(removed))), "--output", o, "--probe-dependents", Pipe };
+            var r = Execute(arguments, Host(f));
+            var goneExpected = goneOracle.Plan is null ? Array.Empty<byte>() : Utf8(JsonSerializer.Serialize(goneOracle.Plan));
+            Check(r.Exit == 0 && File.Exists(o) && File.ReadAllBytes(o).AsSpan().SequenceEqual(goneExpected) && Member(r.Out, "status") == "succeeded"
+                && JsonNode.Parse(r.Out)?["probed"]?.GetValue<int>() == goneOracle.Probes.Count && f.Violations.Count == 0
+                && f.Lines.Any(line => line.Contains(tagUid, StringComparison.OrdinalIgnoreCase)),
+                "a missing stale target is a Missing probe through the CLI and the plan is written", D(r) + " " + string.Join(";", f.Violations));
+        }
+        // More than MaxAccepted --accept values: a typed bound refusal before anything is read.
+        {
+            var f = Revit(); var o = NewOutput(); var policyReads = 0;
+            var tooMany = Enumerable.Range(0, DocUpdateCommand.MaxAccepted + 1).SelectMany(index => new[] { "--accept", Fake("accept:" + N(index)) });
+            var arguments = Args(o, new[] { "--probe-dependents", Pipe }.Concat(tooMany).ToArray()); arguments[2] = Path.Combine(scratch, "absent-too.json");
+            Refused("more --accept values than the bound", DocUpdateCommand.BoundExceeded, arguments, f, Host(f, null, () => policyReads++),
+                text => Member(text, "field") == "accepted", lines: 0);
+            var exact = Args(NewOutput(), new[] { "--probe-dependents", Pipe }.Concat(tooMany.Take(2 * DocUpdateCommand.MaxAccepted)).ToArray()); exact[2] = Path.Combine(scratch, "absent-too.json");
+            var atBound = Execute(exact, Host(f, null, () => policyReads++));
+            Check(atBound.Exit == 1 && Member(atBound.Out, "code") == "input_not_found" && policyReads == 0, "exactly MaxAccepted --accept values pass the bound", D(atBound));
         }
         {
             var f = Revit(); var o = NewOutput(); var policyReads = 0;
@@ -347,14 +423,14 @@ internal static class DocUpdateProbeTests
         {
             var f = Revit(); var o = NewOutput(); var policyReads = 0;
             Refused("a pipe that is not a process pipe", RevitCommandCodes.ExplicitProcessPipeRequired, Args(o, "--probe-dependents", "revit"), f, Host(f, null, () => policyReads++),
-                text => Member(text, "detail") == "pipe_name", lines: 0);
+                text => Member(text, "field") == "pipe_name" && Member(text, "detail") is { Length: > 0 }, lines: 0);
             Check(policyReads == 0, "a bad pipe name is refused before the policy is read", N(policyReads));
         }
         {
             var f = Revit(); var o = NewOutput(); var policyReads = 0;
             var missing = Path.Combine(scratch, "absent.json");
             var arguments = Args(o, "--probe-dependents", Pipe); arguments[2] = missing;
-            Refused("a missing input", "input_not_found", arguments, f, Host(f, null, () => policyReads++), lines: 0);
+            Refused("a missing input", "input_not_found", arguments, f, Host(f, null, () => policyReads++), text => Member(text, "field") == "before" && Absent(text, "detail"), lines: 0);
             Check(policyReads == 0, "inputs are read before the policy", N(policyReads));
         }
         {
@@ -426,7 +502,7 @@ internal static class DocUpdateProbeTests
         {
             var o = NewOutput();
             var r = Cli(Args(o, "--probe-dependents", "revit"));
-            Check(r.Exit == 1 && r.Out == JsonSerializer.Serialize(new { status = "failed", code = RevitCommandCodes.ExplicitProcessPipeRequired, detail = "pipe_name" }) && !File.Exists(o),
+            Check(r.Exit == 1 && Member(r.Out, "code") == RevitCommandCodes.ExplicitProcessPipeRequired && Member(r.Out, "field") == "pipe_name" && Member(r.Out, "detail") is { Length: > 0 } && !File.Exists(o),
                 "the real CLI refuses a non-process pipe before reading anything", "exit " + N(r.Exit) + " " + r.Out + " " + r.Err);
             // C:\Repo\... is under no enabled root of this repository: the first dry run is refused by the copies guard
             // before the pipe is opened (no add-in is listening on this name).
@@ -434,7 +510,8 @@ internal static class DocUpdateProbeTests
             var notEnabled = Cli(Args(n, "--probe-dependents", "bim-agentic-os-2025-1", "--accept", annotation));
             Check(notEnabled.Exit == 1 && Member(notEnabled.Out, "code") == RevitCommandCodes.DocumentNotEnabled && Member(notEnabled.Out, "field") == "document.path" && !File.Exists(n),
                 "the real CLI refuses a document outside the enabled roots before the pipe and writes no file", "exit " + N(notEnabled.Exit) + " " + notEnabled.Out + " " + notEnabled.Err);
-            // No edit: nothing to delete, so nothing is dry-run and the plan is the plain doc-update plan.
+            // No edit: nothing to delete, so nothing is dry-run, the enabled-roots policy is never read (the run does not
+            // depend on this repository's .bim owner files) and the plan is the plain doc-update plan.
             var sameAfter = Input("same-after.json", JsonSerializer.Serialize(before));
             var e = NewOutput();
             var empty = Cli("doc-update", "--before", beforePath, "--after", sameAfter, "--realized", realizedBeforePath, "--bindings", movedBindingsPath, "--output", e, "--probe-dependents", "bim-agentic-os-2025-1");

@@ -67,6 +67,8 @@ internal static class DocUpdateCommand
     public const string BoundExceeded = "doc_update_input_bound_exceeded";
     public const string InternalError = "doc_update_internal_error";
     public const int MaxEntries = 100_000;
+    // At most this many --accept values (P4-10 review; stub, not enforced yet).
+    public const int MaxAccepted = 10_000;
 
     static readonly string[] Required = { "--before", "--after", "--realized", "--bindings", "--output" };
     // Every refusal message DocUpdate.Plan can raise as ArgumentException or InvalidOperationException (DocDefaults,
