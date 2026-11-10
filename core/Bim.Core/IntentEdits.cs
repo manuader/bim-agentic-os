@@ -53,10 +53,10 @@ public static class IntentEdits
     {
         ArgumentNullException.ThrowIfNull(intent);
         ArgumentNullException.ThrowIfNull(intent.Openings);
-        if (!intent.Openings.Any(item => item?.Key == opening)) throw new IntentException(UnknownOpening, null, opening);
+        if (!intent.Openings.Any(item => Is(item, opening))) throw new IntentException(UnknownOpening, null, opening);
         return intent with
         {
-            Openings = intent.Openings.Select(item => item?.Key == opening ? item with { OffsetMetres = offsetMetres, Host = host ?? item.Host } : item).ToArray(),
+            Openings = intent.Openings.Select(item => Is(item, opening) ? item with { OffsetMetres = offsetMetres, Host = host ?? item.Host } : item).ToArray(),
         };
     }
 
@@ -64,11 +64,15 @@ public static class IntentEdits
     public static LayoutIntent ChangeWallType(LayoutIntent intent, string room, string wallType) =>
         WithRoom(intent, room, item => item with { WallType = wallType });
 
+    // Helper calls, unlike item?.Key or an inline null test, leave the declared (non-null) flow state of item unchanged.
+    static bool Is(IntentRoom? item, string key) => item is not null && item.Key == key;
+    static bool Is(IntentOpening? item, string key) => item is not null && item.Key == key;
+
     static LayoutIntent WithRoom(LayoutIntent intent, string room, Func<IntentRoom, IntentRoom> change)
     {
         ArgumentNullException.ThrowIfNull(intent);
         ArgumentNullException.ThrowIfNull(intent.Rooms);
-        if (!intent.Rooms.Any(item => item?.Key == room)) throw new IntentException(IntentCodes.UnknownRoom, null, room);
-        return intent with { Rooms = intent.Rooms.Select(item => item?.Key == room ? change(item) : item).ToArray() };
+        if (!intent.Rooms.Any(item => Is(item, room))) throw new IntentException(IntentCodes.UnknownRoom, null, room);
+        return intent with { Rooms = intent.Rooms.Select(item => Is(item, room) ? change(item) : item).ToArray() };
     }
 }
