@@ -1474,6 +1474,9 @@ try {
         Check(Cli("no-such-verb").Out.Contains("doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json",StringComparison.Ordinal),"default usage lists doc-update");
     }
 
+    // ---- P4-10 doc-update ... --probe-dependents process-pipe-name [--accept uid]... (tests/cli/DocUpdateProbeTests.cs) ----
+    DocUpdateProbeTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
+
     // ---- P3-08 apply-edits --store s --edits e [--expected-revision n] (tests/cli/ApplyEditsTests.cs) ----
     ApplyEditsTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
 
