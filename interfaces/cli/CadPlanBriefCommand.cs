@@ -20,12 +20,15 @@ namespace Bim.Cli;
 //
 // Input (bounded, BoundedInput.ReadBytes at BoundedInput.MaxBytes): a JSON object with "kind":"cad-brief", "version":1, "brief" (P6-03, read
 // with BriefParser), "rooms" (BriefRoomProposal[]) and "uncertainties" (BriefExtractUncertainty[]) as cad-brief writes
-// them. Uncertainty sources that equal a proposal label are re-bound to that label instance, so the planner's
-// duplicate-label grouping sees the same identities as on the in-process draft.
+// them: every member of a proposal, label/area/region source and uncertainty is required with its exact name, unknown
+// and duplicate members are refused, Label must not be null and Confidence must be in [0, 1]. Room and uncertainty
+// counts are bounded by the BriefExtractOptions defaults (see ReadDraft). Value-identical labels and sources are
+// re-bound to one instance (see ReadDraft). Without a "source" block, drawing_file and drawing_sha256 are null.
 //
 // The output path follows GltfExportCommand.OutputProblem with extension .json and is checked before the input is read;
 // options are checked before either. Every refusal prints one {"status":"failed","code":...[,"detail"]} envelope, exits
-// 1 and writes nothing. Codes: usage, cad_option_unknown, cad_option_duplicate, cad_option_value_missing,
+// 1 and writes nothing. Codes: "usage: cad-plan-brief ..." (fewer than two arguments; printed with the usage text as
+// the code by the CLI's top-level handler, no detail), cad_option_unknown, cad_option_duplicate, cad_option_value_missing,
 // cad_option_value_invalid, output_* (OutputProblem, output_exists, output_io_error), input_* (BoundedInput),
 // cad_plan_brief_input_invalid (not a cad-brief document), brief_<code> (BriefParser refusal of the draft's brief).
 //
@@ -33,7 +36,9 @@ namespace Bim.Cli;
 // "source":{"file","bytes","sha256","drawing_file","drawing_sha256"},"options":{"min_confidence","confirmed_rooms",
 // "confirmed_reasons"} (distinct, ordinal order),"valid","brief" (BriefSerializer canonical text, verbatim),"kept",
 // "dropped","unknown_confirmed_rooms","unknown_confirmed_reasons","issues"}. An invalid planner brief (for example every
-// room dropped: rooms_empty) is still written with "valid": false and exit 0; the issues say why.
+// room dropped: rooms_empty) is a result, not a refusal: it is still written with "valid": false, the stdout envelope
+// says "valid":false, and the exit code is 0; the issues say why. unknown_confirmed_reasons is always [] because
+// unknown reason codes are refused as cad_option_value_invalid; it is kept to mirror BriefPlannerResult.
 internal static class CadPlanBriefCommand
 {
     public const string Usage = "usage: cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]...";
@@ -142,8 +147,28 @@ internal static class CadPlanBriefCommand
         writer.WriteEndArray();
     }
 
+    // Shapes of the cad-brief "rooms" and "uncertainties" members as System.Text.Json writes the Bim.Cad records (exact,
+    // case-sensitive names). Every listed member is required (it may be null where the record allows it); Point2's
+    // computed Length is the only optional member; any other member is refused.
+    static readonly string[] ProposalMembers = { "Id", "Name", "StatedAreaSquareMetres", "RegionAreaSquareMetres", "Confidence", "Label", "Area", "Region", "Notes" };
+    static readonly string[] SourceMembers = { "SourceFile", "Format", "Handle", "Layer", "EntityType", "Line", "Page", "InsertPath", "At", "Text", "Tag" };
+    static readonly string[] PointMembers = { "X", "Y" };
+    static readonly string[] PointOptional = { "Length" };
+    static readonly string[] UncertaintyMembers = { "Code", "Message", "RoomId", "ValueSquareMetres", "Sources" };
+    static readonly string[] None = Array.Empty<string>();
+    static readonly BriefExtractOptions Limits = new();
+    const string UncertaintyLimit = "uncertainty-limit";
+    static readonly HashSet<string> AlwaysReported = new(StringComparer.Ordinal) { "explode-limit", "pair-limit", "region-limit", "text-limit", "uncalibrated", "work-limit" };
+
     // The cad-brief document as a BriefDraft. Structure errors are cad_plan_brief_input_invalid with a detail; the
     // brief itself goes through the strict P6-03 parser (brief_<code>).
+    // Work bound: at most BriefExtractOptions.MaxTexts (default) rooms; at most MaxUncertainties (default) counted
+    // uncertainties, at most as many always-reported limit/scale entries, and at most one uncertainty-limit entry, the
+    // most an extraction with default options writes (BriefExtract Report).
+    // Labels and sources are compared by value (their JSON form): every proposal label and uncertainty source that is
+    // value-identical to an earlier proposal label is re-bound to that first label instance, so the planner's reference
+    // comparison (BriefPlanner step 2) sees one label record per distinct value, as on an in-process draft whose
+    // value-identical labels share one instance.
     static (BriefDraft Draft, string? DrawingFile, string? DrawingSha) ReadDraft(string text)
     {
         JsonDocument document;
@@ -154,6 +179,8 @@ internal static class CadPlanBriefCommand
         {
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) throw new Refusal(InputInvalid, "the draft must be a JSON object");
+            // Duplicate members anywhere outside the brief (the brief parser refuses its own as brief_member_duplicate).
+            NoDuplicates(root, "", top: true);
             if (!root.TryGetProperty("kind", out var kind) || kind.ValueKind != JsonValueKind.String || kind.GetString() != "cad-brief")
                 throw new Refusal(InputInvalid, "kind must be \"cad-brief\" (the cad-brief verb output)");
             if (!root.TryGetProperty("version", out var version) || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var number) || number != 1)
@@ -169,6 +196,40 @@ internal static class CadPlanBriefCommand
                 format = OptionalString(source, "format");
                 drawingSha = OptionalString(source, "sha256");
                 if (source.TryGetProperty("metres_per_unit", out var mpu) && mpu.ValueKind == JsonValueKind.Number && mpu.TryGetDouble(out var m) && double.IsFinite(m)) metresPerUnit = m;
+            }
+
+            if (roomsElement.GetArrayLength() > Limits.MaxTexts)
+                throw new Refusal(InputInvalid, "rooms: at most " + I(Limits.MaxTexts) + " proposals");
+            int counted = 0, always = 0, capped = 0, index = 0;
+            foreach (var item in uncertaintiesElement.EnumerateArray())
+            {
+                var code = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("Code", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
+                if (code == UncertaintyLimit) capped++;
+                else if (code is not null && AlwaysReported.Contains(code)) always++;
+                else counted++;
+                if (counted > Limits.MaxUncertainties || always > Limits.MaxUncertainties || capped > 1)
+                    throw new Refusal(InputInvalid, "uncertainties: at most " + I(Limits.MaxUncertainties) + " counted entries, as many limit entries and one uncertainty-limit (entry " + I(index) + ")");
+                index++;
+            }
+
+            var i = 0;
+            foreach (var item in roomsElement.EnumerateArray())
+            {
+                var path = "rooms[" + I(i++) + "]";
+                Shape(item, path, ProposalMembers, None);
+                SourceShape(item.GetProperty("Label"), path + ".Label", nullable: false);
+                SourceShape(item.GetProperty("Area"), path + ".Area", nullable: true);
+                SourceShape(item.GetProperty("Region"), path + ".Region", nullable: true);
+            }
+            i = 0;
+            foreach (var item in uncertaintiesElement.EnumerateArray())
+            {
+                var path = "uncertainties[" + I(i++) + "]";
+                Shape(item, path, UncertaintyMembers, None);
+                var sources = item.GetProperty("Sources");
+                if (sources.ValueKind != JsonValueKind.Array) throw new Refusal(InputInvalid, path + ".Sources must be an array");
+                var k = 0;
+                foreach (var entry in sources.EnumerateArray()) SourceShape(entry, path + ".Sources[" + I(k++) + "]", nullable: false);
             }
 
             ProjectBrief brief;
@@ -187,30 +248,68 @@ internal static class CadPlanBriefCommand
                 throw new Refusal(InputInvalid, "rooms/uncertainties: " + e.Message);
             }
             if (rooms is null || uncertainties is null) throw new Refusal(InputInvalid, "rooms and uncertainties must be arrays");
-            for (var i = 0; i < rooms.Length; i++)
-            {
-                var room = rooms[i];
-                if (room is null || room.Id is null || room.Name is null || room.Notes is null || !double.IsFinite(room.Confidence))
-                    throw new Refusal(InputInvalid, "rooms[" + I(i) + "] must be a proposal with Id, Name, Confidence and Notes");
-            }
             var labels = new Dictionary<string, BriefTextSource>(StringComparer.Ordinal);
-            foreach (var room in rooms)
-                if (room!.Label is { } label) labels.TryAdd(Key(label), label);
-            var bound = new BriefExtractUncertainty[uncertainties.Length];
-            for (var i = 0; i < uncertainties.Length; i++)
+            var proposals = new BriefRoomProposal[rooms.Length];
+            for (var r = 0; r < rooms.Length; r++)
             {
-                var uncertainty = uncertainties[i];
-                if (uncertainty is null || uncertainty.Code is null || uncertainty.Sources is null || uncertainty.Sources.Contains(null!))
-                    throw new Refusal(InputInvalid, "uncertainties[" + I(i) + "] must be an uncertainty with Code and non-null Sources");
-                var sources = uncertainty.Sources.Select(item => labels.TryGetValue(Key(item), out var known) ? known : item).ToArray();
-                bound[i] = uncertainty with { Sources = sources };
+                var room = rooms[r];
+                if (room is null || room.Id is null || room.Name is null || room.Notes is null || room.Label is null || !(room.Confidence >= 0 && room.Confidence <= 1))
+                    throw new Refusal(InputInvalid, "rooms[" + I(r) + "] must be a proposal with Id, Name, Label, Notes and a Confidence in [0, 1]");
+                var key = Key(room.Label);
+                if (!labels.TryAdd(key, room.Label)) room = room with { Label = labels[key] };
+                proposals[r] = room;
             }
-            var draft = new BriefDraft(sourceFile ?? "", format ?? "", metresPerUnit, brief, rooms.Select(r => r!).ToArray(), bound, BriefValidator.Validate(brief));
+            var bound = new BriefExtractUncertainty[uncertainties.Length];
+            for (var u = 0; u < uncertainties.Length; u++)
+            {
+                var uncertainty = uncertainties[u];
+                if (uncertainty is null || uncertainty.Code is null || uncertainty.Sources is null || uncertainty.Sources.Contains(null!))
+                    throw new Refusal(InputInvalid, "uncertainties[" + I(u) + "] must be an uncertainty with Code and non-null Sources");
+                var rebound = uncertainty.Sources.Select(item => labels.TryGetValue(Key(item), out var known) ? known : item).ToArray();
+                bound[u] = uncertainty with { Sources = rebound };
+            }
+            var draft = new BriefDraft(sourceFile ?? "", format ?? "", metresPerUnit, brief, proposals, bound, BriefValidator.Validate(brief));
             return (draft, sourceFile, drawingSha);
         }
     }
 
     static string Key(BriefTextSource source) => JsonSerializer.Serialize(source);
+
+    // An object with exactly the required members (any optional ones) and no others.
+    static void Shape(JsonElement element, string path, string[] required, string[] optional)
+    {
+        if (element.ValueKind != JsonValueKind.Object) throw new Refusal(InputInvalid, path + " must be an object");
+        foreach (var property in element.EnumerateObject())
+            if (!required.Contains(property.Name, StringComparer.Ordinal) && !optional.Contains(property.Name, StringComparer.Ordinal))
+                throw new Refusal(InputInvalid, path + ": unknown member " + property.Name);
+        foreach (var name in required)
+            if (!element.TryGetProperty(name, out _)) throw new Refusal(InputInvalid, path + ": missing member " + name);
+    }
+
+    static void SourceShape(JsonElement element, string path, bool nullable)
+    {
+        if (nullable && element.ValueKind == JsonValueKind.Null) return;
+        Shape(element, path, SourceMembers, None);
+        Shape(element.GetProperty("At"), path + ".At", PointMembers, PointOptional);
+    }
+
+    static void NoDuplicates(JsonElement element, string path, bool top = false)
+    {
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            var i = 0;
+            foreach (var item in element.EnumerateArray()) NoDuplicates(item, path + "[" + I(i++) + "]");
+            return;
+        }
+        if (element.ValueKind != JsonValueKind.Object) return;
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in element.EnumerateObject())
+        {
+            if (!names.Add(property.Name)) throw new Refusal(InputInvalid, (path.Length == 0 ? "" : path + ": ") + "duplicate member " + property.Name);
+            if (top && property.Name == "brief") continue;
+            NoDuplicates(property.Value, path.Length == 0 ? property.Name : path + "." + property.Name);
+        }
+    }
 
     static JsonElement Member(JsonElement root, string name, JsonValueKind kind)
     {
