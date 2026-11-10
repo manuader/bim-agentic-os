@@ -1370,3 +1370,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay184 — 2026-11-10T20:52:52Z (Claude, cloud scheduled)
 - 20:52Z LOCK taken (was FREE; relay183 released 2026-11-10T20:51:57Z).
+- 21:46Z picked P3-10 (phase 3), P10-12 (phase 10), P4-11 (phase 4) — oldest-touched (relay178/181). Workers green: P3-10 aff4a29 (red 42900155912, green 42900943413; 0 attempts), P10-12 c2a0760 (red 42905599580 on relay184-P10-12-red, green 42902992456; 1 attempt: AD0001 analyzer crash on JsonArray in tuple array), P4-11 fb9b49e (red 42901043322, green 42904609025; 2 attempts: strict-mode Count on empty, list-as-one-object enumeration). Next: independent reviews.
