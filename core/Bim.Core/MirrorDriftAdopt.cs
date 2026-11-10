@@ -61,7 +61,7 @@ public sealed class MirrorDriftAdoptException(string code, string detail, Except
 // nothing_to_adopt. Head: the store head (null for nothing_to_adopt). Plan: the committed plan (committed only).
 public sealed record MirrorDriftAdoptResult(string Outcome, int Revision, string? Key, Project? Head, ExecutionPlan? Plan);
 
-public static class MirrorDriftAdopt
+public static class MirrorDriftAdoptCommit
 {
     public const string KeyPrefix = "mirror-drift-adopt:";
 
