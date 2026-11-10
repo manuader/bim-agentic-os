@@ -22,8 +22,9 @@ static class ElementQueryPagingChecks
     public static void Run(Action<bool, string, string> checker)
     {
         check = checker;
-        CursorLoop();
-        MalformedReplies();
+        TransportFailures();
+        ServiceTransport();
+        Json();
     }
 
     sealed record Fixture(long Id, string BuiltIn, string Level);
@@ -124,67 +125,55 @@ static class ElementQueryPagingChecks
 
     static string FilterOf(RevitCommandEnvelope envelope) => RevitElementQueryCursor.FilterDigest((ElementQueryArgs)envelope.Args);
 
-    static void CursorLoop()
-    {
-        // The second page issues a cursor at its own after: the same request would be sent forever.
-        var same = new FakeAddIn();
-        same.Line = (page, envelope, line) => page == 1 ? Reply(envelope, ReadbackOf(line).Also(r => r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, FilterOf(envelope), ((ElementQueryArgs)envelope.Args).Cursor!.After)).Also(r => r["elements"] = new JsonArray()).Also(r => r["returned"] = 0).ToJsonString()) : line;
-        var repeated = RevitElementQueryPaging.All(Envelope(Args("wall", null, 2)).ToJsonString(), same);
-        Check(!repeated.IsSuccess && repeated.Code == RevitElementQueryPagingCodes.CursorLoop && same.Sent.Count == 2 && repeated.Elements.Count == 0, "a next_cursor whose id does not move forward is refused cursor_loop", Describe(repeated));
-        var back = new FakeAddIn();
-        back.Line = (page, envelope, line) => page == 2 ? Reply(envelope, ReadbackOf(line).Also(r => r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, FilterOf(envelope), 0)).Also(r => r["elements"] = new JsonArray()).Also(r => r["returned"] = 0).ToJsonString()) : line;
-        var backwards = RevitElementQueryPaging.All(Envelope(Args("wall", null, 2)).ToJsonString(), back);
-        Check(!backwards.IsSuccess && backwards.Code == RevitElementQueryPagingCodes.CursorLoop && back.Sent.Count == 3, "a next_cursor whose id goes back is refused cursor_loop", Describe(backwards));
-    }
 
     static JsonObject ReadbackOf(string line) => JsonNode.Parse(line)!["readback"]!.AsObject();
 
-    static void MalformedReplies()
+
+    static void TransportFailures()
     {
-        void Refused(string label, Func<int, RevitCommandEnvelope, string, string?> line, string code, int pages = 2)
+        void Fails(string label, Func<int, RevitCommandEnvelope, string, string?> line, string code)
         {
             var fake = new FakeAddIn { Line = line };
             var result = RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), fake);
-            Check(!result.IsSuccess && result.Code == code && result.Elements.Count == 0 && fake.Sent.Count == pages, label + " is refused " + code, Describe(result));
+            Check(!result.IsSuccess && result.Code == code && result.Elements.Count == 0 && result.Pages == 1, label + " is " + code, Describe(result));
         }
-        string OnSecond(int page, RevitCommandEnvelope envelope, string line, Action<JsonObject> change) => page == 1 ? Reply(envelope, ReadbackOf(line).Also(change).ToJsonString()) : line;
-        var invalid = RevitCommandCodes.ResponseInvalid;
-        Refused("a reply that is not JSON", (page, _, line) => page == 1 ? "{" : line, invalid);
-        Refused("a reply missing members", (page, _, line) => page == 1 ? "{\"status\":\"succeeded\"}" : line, invalid);
-        Refused("a failed reply with code ok", (page, _, line) => page == 1 ? RevitCommandResponse.Failure(RevitCommandCodes.Ok).ToJson() : line, invalid);
-        Refused("a receipt for another operation", (page, envelope, line) => page == 1 ? RevitCommandResponse.Success(new RevitCommandReceipt("other-op", envelope.Command, Doc, envelope.RequestSha256, false), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), ReadbackOf(line).ToJsonString(), Array.Empty<string>()).ToJson() : line, invalid);
-        Refused("a receipt for another request (the previous page's)", (page, envelope, line) => page == 1 ? RevitCommandResponse.Success(new RevitCommandReceipt(envelope.OperationId, envelope.Command, Doc, new string('0', 64), false), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), ReadbackOf(line).ToJsonString(), Array.Empty<string>()).ToJson() : line, invalid);
-        Refused("a reply reporting changes", (page, envelope, line) => page == 1 ? RevitCommandResponse.Success(new RevitCommandReceipt(envelope.OperationId, envelope.Command, Doc, envelope.RequestSha256, false), Array.Empty<string>(), new[] { Uid(2005) }, Array.Empty<string>(), ReadbackOf(line).ToJsonString(), Array.Empty<string>()).ToJson() : line, invalid);
-        Refused("a reply without readback", (page, envelope, line) => page == 1 ? Reply(envelope, null) : line, invalid);
-        Refused("a readback that is not an object", (page, envelope, line) => page == 1 ? Reply(envelope, "[]") : line, invalid);
-        Refused("truncated without next_cursor", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = null), invalid);
-        Refused("a missing next_cursor member", (page, envelope, line) => OnSecond(page, envelope, line, r => r.Remove("next_cursor")), invalid);
-        Refused("next_cursor on an untruncated page", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["truncated"] = false; r["truncated_reason"] = null; }), invalid);
-        Refused("an unknown truncated_reason", (page, envelope, line) => OnSecond(page, envelope, line, r => r["truncated_reason"] = "time"), invalid);
-        Refused("a next_cursor that does not decode", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = "%%%"), invalid);
-        Refused("a next_cursor for another filter", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, RevitElementQueryCursor.FilterDigest("OST_Doors", null, Array.Empty<string>()), 999999)), invalid);
-        Refused("a next_cursor for another document", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = RevitElementQueryCursor.Encode(OtherDoc, FilterOf(envelope), 999999)), invalid);
-        Refused("a next_cursor before the page's last element", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, FilterOf(envelope), r["elements"]!.AsArray()[^1]!["id"]!.GetValue<long>() - 1)), invalid);
-        Refused("an after that is not the cursor's id", (page, envelope, line) => OnSecond(page, envelope, line, r => r["after"] = r["after"]!.GetValue<long>() + 1), invalid);
-        Refused("an after on the first page", (page, envelope, line) => page == 0 ? Reply(envelope, ReadbackOf(line).Also(r => r["after"] = 1).ToJsonString()) : line, invalid, 1);
-        Refused("another limit", (page, envelope, line) => OnSecond(page, envelope, line, r => r["limit"] = 4), invalid);
-        Refused("a returned count that is not the element count", (page, envelope, line) => OnSecond(page, envelope, line, r => r["returned"] = 1), invalid);
-        Refused("more elements than the limit", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["elements"]!.AsArray().Add(r["elements"]!.AsArray()[0]!.DeepClone().AsObject().Also(e => e["id"] = 99999999)); r["returned"] = 4; }), invalid);
-        Refused("a non-integer matched", (page, envelope, line) => OnSecond(page, envelope, line, r => r["matched"] = 1.5), invalid);
-        Refused("matched below returned", (page, envelope, line) => OnSecond(page, envelope, line, r => r["matched"] = 1), invalid);
-        Refused("elements out of order", (page, envelope, line) => OnSecond(page, envelope, line, r => { var e = r["elements"]!.AsArray(); var copy = e.Select(x => x!.DeepClone()).Reverse().ToArray(); e.Clear(); foreach (var x in copy) e.Add(x); }), invalid);
-        Refused("an element at or before the cursor id", (page, envelope, line) => OnSecond(page, envelope, line, r => r["elements"]!.AsArray()[0]!["id"] = r["after"]!.GetValue<long>()), invalid);
-        Refused("an element without an integer id", (page, envelope, line) => OnSecond(page, envelope, line, r => r["elements"]!.AsArray()[0]!["id"] = "7"), invalid);
-        Refused("an element that is not an object", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["elements"]!.AsArray()[0] = 7; }), invalid);
-        Refused("a failure from the add-in", (page, _, line) => page == 1 ? RevitCommandResponse.Failure(RevitCommandCodes.ReferenceNotFound, "args.level", "gone").ToJson() : line, RevitCommandCodes.ReferenceNotFound);
-        var failing = new FakeAddIn { Line = (page, _, line) => page == 1 ? RevitCommandResponse.Failure(RevitCommandCodes.DocumentConflict, "document.unique_id", "another document").ToJson() : line };
-        var failed = RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), failing);
-        Check(failed.Field == "document.unique_id" && failed.Detail == "another document" && failed.Pages == 1, "an add-in failure keeps its field and detail and counts only the accepted pages", Describe(failed));
+        Fails("no reply", (page, _, line) => page == 1 ? null : line, RevitCommandCodes.NoResponse);
+        Fails("a transport timeout", (page, _, line) => page == 1 ? throw new TimeoutException() : line, RevitCommandCodes.PipeConnectTimeout);
+        Fails("a transport I/O error", (page, _, line) => page == 1 ? throw new IOException("broken") : line, RevitCommandCodes.PipeIoError);
     }
 
-
     // The CLI adapter: each page goes through RevitCommandService.Run (pipe rule, envelope validation, guards, receipt).
+    static void ServiceTransport()
+    {
+        var fake = new FakeAddIn();
+        List<string> wire = [];
+        Func<string, string, string?> forward = (pipe, line) =>
+        {
+            wire.Add(line);
+            return pipe == Pipe ? fake.Send(JsonNode.Parse(line)!["Command"]!.ToJsonString()) : null;
+        };
+        var args = Args("wall", null, 4);
+        var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), new RevitServiceTransport(Pipe, RevitCommandPolicy.None, forward));
+        Check(result.IsSuccess && Canonical(result.Elements).SequenceEqual(Unlimited(args, fake.Items).Elements) && wire.Count == result.Pages && wire.All(w => JsonNode.Parse(w)!["DocumentPath"]!.GetValue<string>() == RealPath),
+            "through RevitCommandService each page is one wire line and the result equals one unlimited query", Describe(result));
+        List<string> rejected = [];
+        var badPipe = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), new RevitServiceTransport("not-a-process-pipe", RevitCommandPolicy.None, (p, l) => { rejected.Add(l); return null; }));
+        Check(!badPipe.IsSuccess && badPipe.Code == RevitCommandCodes.ExplicitProcessPipeRequired && rejected.Count == 0, "a non-process pipe is refused by the service before any wire line", Describe(badPipe));
+        var noReply = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), new RevitServiceTransport(Pipe, RevitCommandPolicy.None, (_, _) => null));
+        Check(!noReply.IsSuccess && noReply.Code == RevitCommandCodes.NoResponse, "a closed pipe is no_response", Describe(noReply));
+    }
 
+    static void Json()
+    {
+        var result = RevitElementQueryPaging.All(Envelope(Args("door", null, 2)).ToJsonString(), new FakeAddIn());
+        var root = JsonNode.Parse(result.ToJson())!.AsObject();
+        Check(string.Join(",", root.Select(m => m.Key)) == "status,code,field,detail,pages,matched,returned,elements", "the result JSON members are status, code, field, detail, pages, matched, returned, elements", result.ToJson());
+        Check(root["status"]!.GetValue<string>() == "succeeded" && root["code"]!.GetValue<string>() == "ok" && root["pages"]!.GetValue<int>() == result.Pages && root["matched"]!.GetValue<int>() == result.Matched
+            && root["returned"]!.GetValue<int>() == result.Elements.Count && root["elements"]!.AsArray().Select(e => e!.ToJsonString()).SequenceEqual(Canonical(result.Elements)), "the result JSON carries the concatenated elements and counts");
+        var failed = RevitElementQueryPaging.All(Envelope(new JsonObject(), "query.levels").ToJsonString(), new FakeAddIn());
+        var failedRoot = JsonNode.Parse(failed.ToJson())!;
+        Check(failedRoot["status"]!.GetValue<string>() == "failed" && failedRoot["code"]!.GetValue<string>() == RevitElementQueryPagingCodes.CommandNotPageable && failedRoot["matched"] is null && failedRoot["elements"]!.AsArray().Count == 0, "a refusal's JSON has status failed, its code, matched null and no elements", failed.ToJson());
+    }
 
     static JsonObject Also(this JsonObject node, Action<JsonObject> change) { change(node); return node; }
 
