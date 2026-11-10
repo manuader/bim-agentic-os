@@ -22,6 +22,9 @@ static class ElementQueryPagingChecks
     public static void Run(Action<bool, string, string> checker)
     {
         check = checker;
+        Concatenation();
+        VanishedRows();
+        DeletedBetweenPages();
     }
 
     sealed record Fixture(long Id, string BuiltIn, string Level);
@@ -111,11 +114,76 @@ static class ElementQueryPagingChecks
 
     static string Describe(ElementQueryAllResult result) => result.Status + "/" + result.Code + " at " + result.Field + " (" + result.Detail + ") pages " + result.Pages.ToString(CultureInfo.InvariantCulture) + " elements " + result.Elements.Count.ToString(CultureInfo.InvariantCulture);
 
+    static void Concatenation()
+    {
+        foreach (var (category, level, limit, parameters) in new (string?, string?, int?, string[])[]
+        {
+            ("wall", null, 4, Array.Empty<string>()), ("door", null, 1, Array.Empty<string>()), (null, L1, 3, Array.Empty<string>()),
+            ("OST_Walls", L2, 2, new[] { "Mark" }), ("wall", null, 5000, Array.Empty<string>()), ("wall", null, null, Array.Empty<string>()),
+        })
+        {
+            var args = Args(category, level, limit, parameters);
+            var label = (category ?? "any") + "/" + (level is null ? "any" : "level") + " limit " + (limit?.ToString(CultureInfo.InvariantCulture) ?? "default");
+            var fake = new FakeAddIn();
+            var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), fake);
+            var (expected, matched) = Unlimited(args, fake.Items);
+            var size = limit ?? RevitElementQueryRules.DefaultLimit;
+            Check(result.IsSuccess && result.Code == RevitCommandCodes.Ok && result.Field is null, "client paging succeeds (" + label + ")", Describe(result));
+            Check(expected.Length > 0 && Canonical(result.Elements).SequenceEqual(expected), "concatenated pages equal one unlimited query (" + label + ")", Describe(result));
+            Check(result.Pages == Math.Max(1, (matched + size - 1) / size) && result.Pages == fake.Sent.Count, "pages is the ceiling of matched over limit and every page was sent once (" + label + ")", Describe(result));
+            Check(result.Matched == matched, "the last page's matched is reported (" + label + ")", Describe(result));
+        }
+    }
 
     // Rows paged but no longer readable (the add-in skips them; a limit-cut page may even return nothing).
+    static void VanishedRows()
+    {
+        var walls = Model.Where(f => f.BuiltIn == "OST_Walls").Select(f => f.Id).OrderBy(id => id).ToArray();
+        // Limit 2: ids 3-4 of every 4 vanish, so every second page comes back empty but truncated.
+        var gone = walls.Where((_, i) => i % 4 >= 2).ToHashSet();
+        var args = Args("wall", null, 2);
+        var fake = new FakeAddIn { Vanished = gone.Contains };
+        var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), fake);
+        var (expected, matched) = Unlimited(args, fake.Items, gone.Contains);
+        Check(gone.Count >= 4 && result.IsSuccess && Canonical(result.Elements).SequenceEqual(expected), "pages over vanished rows (including empty truncated pages) equal one unlimited query", Describe(result));
+        Check(result.Pages == (matched + 1) / 2 && result.Matched == matched, "an empty truncated page is followed, not taken as the end", Describe(result));
+        // The very last paged ids vanish: the last page is empty and untruncated.
+        var tail = walls.TakeLast(3).ToHashSet();
+        var last = new FakeAddIn { Vanished = tail.Contains };
+        var lastResult = RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), last);
+        Check(lastResult.IsSuccess && Canonical(lastResult.Elements).SequenceEqual(Unlimited(Args("wall", null, 3), last.Items, tail.Contains).Elements), "a last page whose rows all vanished ends the listing", Describe(lastResult));
+        var none = new FakeAddIn { Vanished = _ => true };
+        var noneResult = RevitElementQueryPaging.All(Envelope(Args("wall", null, 5)).ToJsonString(), none);
+        Check(noneResult.IsSuccess && noneResult.Elements.Count == 0 && noneResult.Pages == (walls.Length + 4) / 5, "a listing whose rows all vanish succeeds empty after every page", Describe(noneResult));
+    }
 
     // Rows deleted between pages (after an earlier page was read): the result equals the unlimited query on the final
     // model as long as no returned row was deleted later.
+    static void DeletedBetweenPages()
+    {
+        var walls = Model.Where(f => f.BuiltIn == "OST_Walls").Select(f => f.Id).OrderBy(id => id).ToArray();
+        var fake = new FakeAddIn();
+        List<long> deleted = [];
+        fake.BeforePage = page =>
+        {
+            if (page == 0) return;
+            // Before each later page delete the next not yet listed wall plus the highest remaining one.
+            var after = RevitCommandProtocol.Parse(fake.Sent[^1]).Args is ElementQueryArgs { Cursor: { } cursor } ? cursor.After : -1;
+            foreach (var id in fake.Items.Where(f => f.BuiltIn == "OST_Walls" && f.Id > after).Select(f => f.Id).OrderBy(id => id).Take(1)
+                .Concat(fake.Items.Where(f => f.BuiltIn == "OST_Walls" && f.Id > after).Select(f => f.Id).OrderByDescending(id => id).Take(1)).Distinct().ToArray())
+            {
+                deleted.Add(id);
+                fake.Items.RemoveAll(f => f.Id == id);
+            }
+        };
+        var args = Args("wall", null, 3);
+        var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), fake);
+        var (expected, matched) = Unlimited(args, fake.Items);
+        Check(deleted.Count >= 4 && result.IsSuccess && Canonical(result.Elements).SequenceEqual(expected), "rows deleted between pages: the concatenation equals one unlimited query on the final model", Describe(result) + " deleted " + string.Join(",", deleted));
+        Check(result.Matched == matched && matched == walls.Length - deleted.Count, "matched is the last page's count (after the deletions)", Describe(result));
+        var ids = result.Elements.Select(e => JsonNode.Parse(e)!["id"]!.GetValue<long>()).ToArray();
+        Check(ids.Zip(ids.Skip(1)).All(pair => pair.First < pair.Second) && !ids.Any(deleted.Contains), "ids stay strictly ascending and deleted ids are absent", string.Join(",", ids));
+    }
 
 
 
