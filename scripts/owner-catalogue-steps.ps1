@@ -941,9 +941,12 @@ function Get-CatalogueDocUpdateStale {
 # Returns @{ Reason; Dependents; Text } (Text: Get-CatalogueUidSetText of the dependents).
 function Read-CatalogueDeleteReadback($Response, [string]$Target, [bool]$DryRun) {
     $delete = Get-CataloguePath $Response 'readback.delete'
-    $dependents = [string[]]@(Get-CatalogueList $delete 'dependents' | ForEach-Object { [string]$_ })
+    # Get-CatalogueList writes its list as one object: enumerate it from a variable.
+    $listed = Get-CatalogueList $delete 'dependents'
+    $dependents = [string[]]@($listed | ForEach-Object { [string]$_ })
     $text = Get-CatalogueUidSetText $dependents
-    $targets = @(Get-CatalogueList $delete 'targets' | ForEach-Object { [string]$_ })
+    $named = Get-CatalogueList $delete 'targets'
+    $targets = @($named | ForEach-Object { [string]$_ })
     $count = Get-CatalogueMember $delete 'dependents_count'
     $deleted = Get-CatalogueList $Response 'deleted'
     $reason = Join-CatalogueReasons @(
