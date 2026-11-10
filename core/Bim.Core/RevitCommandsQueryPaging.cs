@@ -22,6 +22,8 @@ public static class RevitElementQueryPagingCodes
     public const string CursorLoop = "cursor_loop";
     // The listing needs more pages than the cap.
     public const string PageLimitExceeded = "page_limit_exceeded";
+    // The listing holds more elements, or more element JSON bytes, than the cumulative cap.
+    public const string ListingTooLarge = "listing_too_large";
 }
 
 // Status succeeded (code ok) or failed (a typed code). Pages: replies accepted. Matched: the last page's matched (null on
@@ -56,9 +58,12 @@ public sealed record ElementQueryAllResult(string Status, string Code, string? F
 public static class RevitElementQueryPaging
 {
     public const int MaxPages = 1000;
+    // Cumulative caps over the whole listing: element count and UTF-8 bytes of the element JSON kept.
+    public const int MaxElements = 1_000_000;
+    public const long MaxListingBytes = 256L * 1024 * 1024;
     public const string Command = "query.elements";
 
-    public static ElementQueryAllResult All(string envelopeJson, IRevitCommandTransport transport, int maxPages = MaxPages)
+    public static ElementQueryAllResult All(string envelopeJson, IRevitCommandTransport transport, int maxPages = MaxPages, int maxElements = MaxElements, long maxBytes = MaxListingBytes)
     {
         ArgumentNullException.ThrowIfNull(envelopeJson);
         ArgumentNullException.ThrowIfNull(transport);

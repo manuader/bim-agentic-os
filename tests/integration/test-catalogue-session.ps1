@@ -480,6 +480,39 @@ try {
     Assert (@($received | Where-Object { $_ -eq 'journal.read' }).Count -eq 5) 'the five journal reads reached the pipe as wire lines'
     Assert (@(Get-ChildItem -LiteralPath $requests -Filter *.json).Count -eq $real.overall.total) 'one request file per step'
     Assert ((Format-CatalogueSummary $real) -like 'Catálogo: 17/17 pasos OK; grupos: *; resultado: TODO OK') "real CLI summary: $(Format-CatalogueSummary $real)"
+    # P1-15: revit-command --all pages query.elements through the real CLI (one pipe request per page); a non-query
+    # envelope, a rejected pipe and an unknown option are refused before the pipe.
+    $runAll = {
+        param([string]$Name, $Envelope, [string]$Pipe, [string]$Option)
+        $file = Join-Path $work ("all-$Name.json")
+        [IO.File]::WriteAllText($file, ($Envelope | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
+        $allStart = [Diagnostics.ProcessStartInfo]::new($Dotnet)
+        foreach ($argument in @($CliDll, 'revit-command', $file, $Pipe, $Option)) { $allStart.ArgumentList.Add($argument) }
+        $allStart.UseShellExecute = $false
+        $allStart.RedirectStandardOutput = $true
+        $allStart.RedirectStandardError = $true
+        $allProcess = [Diagnostics.Process]::Start($allStart)
+        try {
+            $allOut = $allProcess.StandardOutput.ReadToEndAsync()
+            $null = $allProcess.StandardError.ReadToEndAsync()
+            if (!$allProcess.WaitForExit(120000)) { $allProcess.Kill(); return @{ Exit = -1; Json = $null; Raw = 'timeout' } }
+            $allRaw = $allOut.GetAwaiter().GetResult()
+            $allJson = $null
+            try { $allJson = $allRaw | ConvertFrom-Json } catch { $allJson = $null }
+            @{ Exit = $allProcess.ExitCode; Json = $allJson; Raw = $allRaw }
+        } finally { $allProcess.Dispose() }
+    }
+    $allDocument = [ordered]@{ path = [IO.Path]::GetFullPath($document); unique_id = $documentUid }
+    $wallsAll = & $runAll 'walls' ([ordered]@{ protocol_version = 1; operation_id = 'p115-all-walls'; document = $allDocument; command = 'query.elements'; args = [ordered]@{ category = 'wall'; limit = 1 } }) $pipeName '--all'
+    $allIds = @($wallsAll.Json.elements | ForEach-Object { [long]$_.id })
+    $allReceived = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue | Where-Object { $_ -eq 'p115-all-walls' })
+    Assert ($wallsAll.Exit -eq 0 -and $wallsAll.Json.status -eq 'succeeded' -and [int]$wallsAll.Json.matched -ge 2 -and [int]$wallsAll.Json.returned -eq [int]$wallsAll.Json.matched -and [int]$wallsAll.Json.pages -eq [int]$wallsAll.Json.matched -and $allReceived.Count -eq [int]$wallsAll.Json.pages -and (($allIds | Sort-Object -Unique) -join ',') -eq ($allIds -join ',')) "revit-command --all pages every wall with limit 1, one pipe request per page: $($wallsAll.Raw)"
+    $levelsAll = & $runAll 'levels' ([ordered]@{ protocol_version = 1; operation_id = 'p115-all-levels'; document = $allDocument; command = 'query.levels'; args = [ordered]@{} }) $pipeName '--all'
+    Assert ($levelsAll.Exit -eq 1 -and $levelsAll.Json.status -eq 'failed' -and $levelsAll.Json.code -eq 'paging_command_invalid' -and [int]$levelsAll.Json.pages -eq 0 -and @(Get-Content -LiteralPath $log | Where-Object { $_ -eq 'p115-all-levels' }).Count -eq 0) "revit-command --all refuses a non-query envelope before the pipe: $($levelsAll.Raw)"
+    $badPipeAll = & $runAll 'bad-pipe' ([ordered]@{ protocol_version = 1; operation_id = 'p115-all-bad-pipe'; document = $allDocument; command = 'query.elements'; args = [ordered]@{ category = 'wall' } }) 'not-a-process-pipe' '--all'
+    Assert ($badPipeAll.Exit -eq 1 -and $badPipeAll.Json.code -eq 'explicit_process_pipe_required' -and $null -ne $badPipeAll.Json.PSObject.Properties['pages'] -and [int]$badPipeAll.Json.pages -eq 0) "revit-command --all reports an early refusal in the listing shape: $($badPipeAll.Raw)"
+    $unknownOption = & $runAll 'unknown-option' ([ordered]@{ protocol_version = 1; operation_id = 'p115-all-unknown'; document = $allDocument; command = 'query.elements'; args = [ordered]@{ category = 'wall' } }) $pipeName '--everything'
+    Assert ($unknownOption.Exit -eq 1 -and $unknownOption.Json.code -eq 'revit_command_usage' -and $unknownOption.Json.field -eq 'args[3]' -and [string]$unknownOption.Json.detail -like '*--everything*' -and @(Get-Content -LiteralPath $log | Where-Object { $_ -eq 'p115-all-unknown' }).Count -eq 0) "revit-command refuses an unknown option by name: $($unknownOption.Raw)"
     if ($failures.Count -and $server.HasExited) { $failures.Add('fake pipe server stderr: ' + $serverErr.GetAwaiter().GetResult()) }
     # Dead pipe: the add-in is gone, the CLI cannot connect, the run stops after the first step.
     if (!$server.HasExited) { $server.Kill(); $null = $server.WaitForExit(10000) }

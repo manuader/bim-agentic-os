@@ -31,6 +31,8 @@ static class ElementQueryPagingChecks
         CursorLoop();
         MalformedReplies();
         TransportFailures();
+        ByteBudgetPages();
+        CumulativeCap();
         ServiceTransport();
         Json();
     }
@@ -63,6 +65,8 @@ static class ElementQueryPagingChecks
     {
         public List<Fixture> Items;
         public Func<long, bool>? Vanished;
+        // Builds the row read for an id (default: a light row from the fixture).
+        public Func<long, ObservedQueryElement>? Row;
         // Called before each reply with the 0-based page index (to edit the model between pages).
         public Action<int>? BeforePage;
         // Replaces the whole reply line of the 0-based page index.
@@ -77,7 +81,7 @@ static class ElementQueryPagingChecks
             Sent.Add(envelopeJson);
             BeforePage?.Invoke(page);
             var envelope = RevitCommandProtocol.Parse(envelopeJson);
-            var readback = Collect(envelope, Items, Vanished);
+            var readback = Collect(envelope, Items, Vanished, Row);
             var line = Reply(envelope, readback);
             return Line is null ? line : Line(page, envelope, line);
         }
@@ -87,13 +91,14 @@ static class ElementQueryPagingChecks
         RevitCommandResponse.Success(new RevitCommandReceipt(envelope.OperationId, envelope.Command, envelope.Document.UniqueId, envelope.RequestSha256, false),
             Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), readback, Array.Empty<string>()).ToJson();
 
-    static string Collect(RevitCommandEnvelope envelope, IReadOnlyList<Fixture> model, Func<long, bool>? vanished)
+    static string Collect(RevitCommandEnvelope envelope, IReadOnlyList<Fixture> model, Func<long, bool>? vanished, Func<long, ObservedQueryElement>? row = null)
     {
         var args = (ElementQueryArgs)envelope.Args;
         var matched = model.Where(f => (args.BuiltInCategory is null || f.BuiltIn == args.BuiltInCategory) && (args.Level is null || f.Level == args.Level)).Select(f => f.Id).ToList();
         var (selected, truncated) = RevitElementQueryRules.Page(matched, args.Limit, args.Cursor?.After);
         var rows = selected.Where(id => vanished?.Invoke(id) != true).Select(id =>
         {
+            if (row is not null) return row(id);
             var f = model.First(m => m.Id == id);
             return new ObservedQueryElement(id, Uid(id), f.BuiltIn == "OST_Walls" ? "Walls" : "Doors", f.BuiltIn)
             {
@@ -319,6 +324,11 @@ static class ElementQueryPagingChecks
         Refused("an element at or before the cursor id", (page, envelope, line) => OnSecond(page, envelope, line, r => r["elements"]!.AsArray()[0]!["id"] = r["after"]!.GetValue<long>()), invalid);
         Refused("an element without an integer id", (page, envelope, line) => OnSecond(page, envelope, line, r => r["elements"]!.AsArray()[0]!["id"] = "7"), invalid);
         Refused("an element that is not an object", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["elements"]!.AsArray()[0] = 7; }), invalid);
+        // What P1-13 allows a next_cursor to be: a byte cut resumes after the last returned row; a limit cut after the last
+        // paged id, which is the last returned row when the page is full (only vanished rows may put it further on).
+        Refused("a full limit-cut page whose next_cursor jumps past its last row", (page, envelope, line) => OnSecond(page, envelope, line, r => r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, FilterOf(envelope), r["elements"]!.AsArray()[^1]!["id"]!.GetValue<long>() + 1)), invalid);
+        Refused("a byte cut whose next_cursor jumps past its last row", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["truncated_reason"] = "bytes"; r["next_cursor"] = RevitElementQueryCursor.Encode(Doc, FilterOf(envelope), r["elements"]!.AsArray()[^1]!["id"]!.GetValue<long>() + 1); }), invalid);
+        Refused("a byte cut with no row", (page, envelope, line) => OnSecond(page, envelope, line, r => { r["truncated_reason"] = "bytes"; r["elements"]!.AsArray().Clear(); r["returned"] = 0; }), invalid);
         Refused("a failure from the add-in", (page, _, line) => page == 1 ? RevitCommandResponse.Failure(RevitCommandCodes.ReferenceNotFound, "args.level", "gone").ToJson() : line, RevitCommandCodes.ReferenceNotFound);
         var failing = new FakeAddIn { Line = (page, _, line) => page == 1 ? RevitCommandResponse.Failure(RevitCommandCodes.DocumentConflict, "document.unique_id", "another document").ToJson() : line };
         var failed = RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), failing);
@@ -369,6 +379,56 @@ static class ElementQueryPagingChecks
         var failed = RevitElementQueryPaging.All(Envelope(new JsonObject(), "query.levels").ToJsonString(), new FakeAddIn());
         var failedRoot = JsonNode.Parse(failed.ToJson())!;
         Check(failedRoot["status"]!.GetValue<string>() == "failed" && failedRoot["code"]!.GetValue<string>() == RevitElementQueryPagingCodes.CommandNotPageable && failedRoot["matched"] is null && failedRoot["elements"]!.AsArray().Count == 0, "a refusal's JSON has status failed, its code, matched null and no elements", failed.ToJson());
+    }
+
+    // Pages cut by the 4 MiB byte budget (limit 5000, about 196 KB per row): followed like limit cuts, and the
+    // concatenation equals the rows read one by one (no single reply can hold them all).
+    static void ByteBudgetPages()
+    {
+        var heavy = new string('\u00e9', 1024);
+        ObservedQueryElement Heavy(long id) => new(id, Uid(id), "Walls", "OST_Walls")
+        {
+            Parameters = Enumerable.Range(0, 16).Select(i => new ObservedParameter("P" + i.ToString(CultureInfo.InvariantCulture), -i - 1, null, RevitParameterSources.Instance, RevitParameterStorage.String, null, true, false, false) { Text = heavy, Display = heavy }).ToArray(),
+        };
+        var walls = Enumerable.Range(1, 60).Select(i => new Fixture(5000 + i * 11L, "OST_Walls", L1)).Reverse().ToArray();
+        List<string?> reasons = [];
+        var fake = new FakeAddIn(walls) { Row = Heavy };
+        fake.Line = (_, _, line) => { reasons.Add(ReadbackOf(line)["truncated_reason"]?.GetValue<string>()); return line; };
+        var result = RevitElementQueryPaging.All(Envelope(Args("wall", null, RevitElementQueryRules.MaxLimit)).ToJsonString(), fake);
+        var single = new ElementQueryArgs("wall", "OST_Walls", null, Array.Empty<string>(), 1);
+        var expected = walls.Select(f => f.Id).OrderBy(id => id)
+            .Select(id => JsonNode.Parse(RevitElementQueryJson.Elements(Doc, single, null, 1, false, new[] { Heavy(id) }))!["elements"]![0]!.ToJsonString()).ToArray();
+        Check(result.IsSuccess && Canonical(result.Elements).SequenceEqual(expected), "pages cut by the byte budget concatenate to every row once, in order", Describe(result));
+        Check(reasons.Contains(RevitElementQueryJson.TruncatedBytes) && result.Pages >= 3 && result.Pages == fake.Sent.Count && result.Matched == walls.Length, "the heavy listing was cut by bytes on at least one page and every page was followed", string.Join(",", reasons));
+    }
+
+    // The cumulative bound: more elements (or element bytes) than the cap is listing_too_large, with no further page sent
+    // and no partial elements.
+    static void CumulativeCap()
+    {
+        Check(RevitElementQueryPaging.MaxElements == 1_000_000 && RevitElementQueryPaging.MaxListingBytes == 256L * 1024 * 1024, "the default caps are 1,000,000 elements and 256 MiB of element JSON");
+        var walls = Model.Count(f => f.BuiltIn == "OST_Walls");
+        var json = Envelope(Args("wall", null, 3)).ToJsonString();
+        var counted = new FakeAddIn();
+        var tooMany = RevitElementQueryPaging.All(json, counted, maxElements: 5);
+        Check(!tooMany.IsSuccess && tooMany.Code == RevitElementQueryPagingCodes.ListingTooLarge && counted.Sent.Count == 2 && tooMany.Elements.Count == 0 && tooMany.Matched is null,
+            "a listing over the element cap is refused listing_too_large on the page that crosses it, without partial elements", Describe(tooMany) + " sent " + counted.Sent.Count.ToString(CultureInfo.InvariantCulture));
+        var exact = RevitElementQueryPaging.All(json, new FakeAddIn(), maxElements: walls);
+        Check(exact.IsSuccess && exact.Elements.Count == walls, "a listing of exactly the element cap succeeds", Describe(exact));
+        var full = RevitElementQueryPaging.All(json, new FakeAddIn());
+        var bytes = full.Elements.Sum(e => (long)System.Text.Encoding.UTF8.GetByteCount(e));
+        var sized = new FakeAddIn();
+        var tooBig = RevitElementQueryPaging.All(json, sized, maxBytes: bytes - 1);
+        Check(!tooBig.IsSuccess && tooBig.Code == RevitElementQueryPagingCodes.ListingTooLarge && tooBig.Elements.Count == 0, "a listing over the byte cap (UTF-8 element JSON) is refused listing_too_large", Describe(tooBig));
+        var early = new FakeAddIn();
+        var firstPage = RevitElementQueryPaging.All(json, early, maxBytes: 1);
+        Check(!firstPage.IsSuccess && firstPage.Code == RevitElementQueryPagingCodes.ListingTooLarge && early.Sent.Count == 1, "crossing the byte cap on the first page sends no further page", Describe(firstPage));
+        Check(RevitElementQueryPaging.All(json, new FakeAddIn(), maxBytes: bytes).IsSuccess, "a listing of exactly the byte cap succeeds");
+        Check(Throws<ArgumentOutOfRangeException>(() => RevitElementQueryPaging.All(json, new FakeAddIn(), maxElements: 0))
+            && Throws<ArgumentOutOfRangeException>(() => RevitElementQueryPaging.All(json, new FakeAddIn(), maxElements: RevitElementQueryPaging.MaxElements + 1))
+            && Throws<ArgumentOutOfRangeException>(() => RevitElementQueryPaging.All(json, new FakeAddIn(), maxBytes: 0))
+            && Throws<ArgumentOutOfRangeException>(() => RevitElementQueryPaging.All(json, new FakeAddIn(), maxBytes: RevitElementQueryPaging.MaxListingBytes + 1)),
+            "the caps cannot be raised past the defaults or set below 1");
     }
 
     static JsonObject Also(this JsonObject node, Action<JsonObject> change) { change(node); return node; }
