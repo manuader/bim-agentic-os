@@ -591,6 +591,14 @@ class OpeningsRoundtrip(Base):
         imported = elements_by_id(br.import_project(self.rewrite(self.exported(OPENINGS), raise_north_window)))
         self.assertEqual([3.5, 4, 2.3, 4, 1.15, 1.2], imported[oid(33)]['GeometryMetres'])
 
+    def test_door_nudged_within_tolerance_imports_on_its_level(self):
+        def nudge(geometry, strings, layer_path, object_id):
+            if str(object_id) == oid(31):
+                self.assertTrue(geometry.Translate(rhino3dm.Vector3d(0, 0, 1e-8)))
+            return geometry, strings, layer_path, object_id
+        imported = elements_by_id(br.import_project(self.rewrite(self.exported(OPENINGS), nudge)))
+        self.assertEqual([1, 0, 1.9, 0, 0, 2.1], imported[oid(31)]['GeometryMetres'])
+
     def test_cli_export_then_import_with_openings(self):
         source = self.path('openings.json')
         source.write_text(OPENINGS_TEXT, encoding='utf-8')

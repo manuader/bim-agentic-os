@@ -1173,11 +1173,98 @@ class Openings(Base):
 
     def test_other_geometry_on_an_opening_layer(self):
         objects = [(line(0, 0, 5, 0), 'Walls', oid(1)), (line(1, 0, 2, 0), 'Doors', oid(2)), (rhino3dm.Point(P3(1, 0, 0)), 'Windows', oid(3)),
-                   (vertical_extrusion(1, 0, 0, 2.1, 0.2, 0.2), 'Doors', oid(4))]
+                   (vertical_extrusion(9, 9, 0, 2.1, 0.2, 0.2), 'Doors', oid(4))]
         result = self.draft(self.model(objects))
         self.assertUnmapped('geometry_unsupported', result, sid(2))
         self.assertUnmapped('geometry_unsupported', result, sid(3))
-        self.assertUnmapped('opening_footprint_ambiguous', result, sid(4))
+        # A square footprint is not refused for its shape; with no wall to hold it, it has no host.
+        self.assertUnmapped('opening_host_missing', result, sid(4))
+        self.assertNotIn('opening_footprint_ambiguous', json.dumps(result))
+
+
+class ReviewOpenings(Base):
+    """Relay171 review of P8-09: footprint axes chosen by the host, whole-draft safety, notes and refusals."""
+
+    def test_footprint_shorter_along_the_wall_than_across_takes_the_host_direction(self):
+        # A 0.3 m wide window in a 0.4 m wall: its own long side is across the wall.
+        result = self.draft(self.model([(vertical_extrusion(2.5, 0, 0, 3.0, 5.0, 0.4), 'Walls', oid(1)),
+                                        (vertical_extrusion(2, 0, 1.0, 1.0, 0.3, 0.4), 'Windows', oid(2))]))
+        window = self.proposal(result, sid(2))
+        g = window['element']['GeometryMetres']
+        self.assertEndpoints([(1.85, 0), (2.15, 0)], g)
+        self.assertClose([1.0, 1.0], g[4:])
+        self.assertEqual(sid(1), window['element']['Dependencies'][1])
+        self.assertIn('footprint-axis-from-host', window['notes'])
+        self.assertNotIn('projected-to-host-axis', window['notes'])
+        self.assertNotIn('depth-differs-from-host', window['notes'])
+
+    def test_square_footprint_takes_the_host_direction(self):
+        result = self.draft(self.model([(vertical_extrusion(0, 2.5, 0, 3.0, 0.4, 5.0), 'Walls', oid(1)),
+                                        (vertical_extrusion(0, 3.5, 0, 2.0, 0.4, 0.4), 'Doors', oid(2))]))
+        door = self.proposal(result, sid(2))
+        g = door['element']['GeometryMetres']
+        self.assertEndpoints([(0, 3.3), (0, 3.7)], g)
+        self.assertClose([0, 2.0], g[4:])
+        self.assertEqual(sid(1), door['element']['Dependencies'][1])
+
+    def test_sill_noise_below_the_host_base_never_breaks_the_whole_draft(self):
+        # Base 5e-8 m under the wall base (within tolerance, so the sill is 0) but a head 9e-8 m over the wall top:
+        # the clamped sill leaves the head 1.4e-7 m above it. Only that object is unmapped.
+        objects = [(line(0, 0, 5, 0), 'Walls', oid(1)), (box(1, 0, 2, 0, -5e-8, 2.70000014, 0.2), 'Windows', oid(2)),
+                   (box(3, 0, 4, 0, 1.0, 1.0, 0.2), 'Windows', oid(3))]
+        result = self.draft(self.model(objects))
+        self.assertUnmapped('opening_outside_host', result, sid(2))
+        self.assertEqual([sid(1) + ':0', sid(3)], [p['key'] for p in result['proposals'] if p['kind'] != 'level'])
+
+    def test_depth_other_than_the_host_thickness_is_noted(self):
+        result = self.draft(self.model([(line(0, 0, 5, 0), 'Walls', oid(1)), (box(1, 0, 2, 0, 1.0, 1.0, 0.1), 'Windows', oid(2))]))
+        window = self.proposal(result, sid(2))
+        self.assertIn('depth-differs-from-host', window['notes'])
+        self.assertEqual(0.9, window['confidence'])
+
+    def test_non_rectangular_opening_extrusion_is_unsupported(self):
+        triangle = rhino3dm.Extrusion()
+        self.assertTrue(triangle.SetPathAndUp(P3(1, 0, 1), P3(2, 0, 1), rhino3dm.Vector3d(0, 0, 1)))
+        self.assertTrue(triangle.SetOuterProfile(rhino3dm.PolylineCurve([P3(-0.1, 0, 0), P3(0.1, 0, 0), P3(0, 1, 0), P3(-0.1, 0, 0)]), True))
+        result = self.draft(self.model([(line(0, 0, 5, 0), 'Walls', oid(1)), (triangle, 'Windows', oid(2))]))
+        self.assertUnmapped('opening_extrusion_unsupported', result, sid(2))
+
+    def test_projection_onto_a_rotated_wall(self):
+        # Wall along (0.6, 0.8); the window box sits 0.05 m to its left, inside the assumed 0.2 m thickness.
+        objects = [(line(0, 0, 3, 4), 'Walls', oid(1)), (box(0.56, 0.83, 1.16, 1.63, 1.0, 1.0, 0.2), 'Windows', oid(2))]
+        window = self.proposal(self.draft(self.model(objects)), sid(2))
+        self.assertClose([0.6, 0.8, 1.2, 1.6, 1.0, 1.0], window['element']['GeometryMetres'])
+        self.assertIn('projected-to-host-axis', window['notes'])
+        self.assertAlmostEqual(0.9 * 0.9, window['confidence'], places=9)
+
+    def test_width_that_projection_shrinks_below_the_writer_precision_is_degenerate(self):
+        # Driven through the assembler directly: a 1.05e-6 m box 0.05 m off the axis, starting 9e-8 m before the wall start,
+        # is clamped to 9.6e-7 m on the axis.
+        state = rd._Draft('model.3dm', None, rd._options({}))
+        wall, window = sid(1), sid(2)
+        source = lambda o: {'object_id': o, 'part': None, 'layer': 'L', 'geometry_type': 'Extrusion'}
+        state.propose('wall', wall, wall, [0, 0, 5, 0, 3, 0.2], 0.0, 'wall-axis-extrusion', [], source(wall), False)
+        state.propose('window', window, window, [-9e-8, 0.05, 9.6e-7, 0.05, 1.0, 0.2], 1.0, 'opening-axis-extrusion', [], source(window), False)
+        records = state.assemble(sid(9))
+        self.assertEqual([wall], [r['id'] for r in records])
+        self.assertEqual([(window, 'degenerate')], [(u['object_id'], u['reason']) for u in state.report()])
+
+    def test_wall_with_two_declared_levels_cannot_host(self):
+        # The writer accepts a wall on two levels at one elevation; BIM-IR openings need the host on exactly their level.
+        project = copy.deepcopy(OPENINGS)
+        second = fid(12)
+        project['Elements'].insert(2, {'Id': second, 'Kind': 'level', 'GeometryMetres': [0], 'Dependencies': [],
+                                       'Provenance': {'Source': 'second level at 0', 'Approval': 'proposed'}})
+        project['Elements'] = [e for e in project['Elements'] if e['Id'] != fid(34)]  # the writer refuses it on such a host
+        [wall] = [e for e in project['Elements'] if e['Id'] == fid(22)]
+        wall['Dependencies'] = [fid(10), second]
+        source = self.exported(project)
+        extra = (box(5, 1.5, 5, 2.7, 0.9, 1.2, 0.2), 'BIM::Windows', oid(7))
+        old = rhino3dm.File3dm.Read(str(source))
+        objects = [(o.Geometry, old.Layers[o.Attributes.LayerIndex].FullPath, o.Attributes.Id, dict(o.Attributes.GetUserStrings())) for o in old.Objects]
+        result = self.draft(self.model(objects + [extra], name='two-levels.3dm'))
+        self.assertEqual([fid(10), second], self.proposal(result, fid(22))['element']['Dependencies'])
+        self.assertUnmapped('opening_host_missing', result, sid(7))
 
     def test_object_order_does_not_change_the_bytes(self):
         objects = [(line(0, 0, 5, 0), 'Walls', oid(1)), (line(0, 0, 5, 0), 'Walls', oid(2)), (box(1, 0, 2, 0, 0.0, 2.0, 0.2), 'Doors', oid(3)),
