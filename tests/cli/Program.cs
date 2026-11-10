@@ -843,6 +843,7 @@ try {
             }
         }
     }
+    MirrorDriftAdoptTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail)); // P2-13 mirror-drift-adopt store selection.json (tests/cli/MirrorDriftAdoptTests.cs)
 
     // ---- P5-09 skills-lock: pin, verify and update the P5-08 project skill lock (skills.lock.json) from the CLI ----
     // Oracle: pin writes exactly SkillLockFile.Serialize(SkillLocking.Pin(..)) to a new file and never overwrites one;
