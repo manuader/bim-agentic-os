@@ -543,7 +543,7 @@
         "runtimes/revit-native/CommandsExecutorQuery.cs",
         "tests/revit-commands/ElementQuery.cs"
       ],
-      "blocker": "Collector compiled only (native-build); never run in Revit \u2014 level resolution via LevelId vs level parameters, spec id shapes and display texts unverified; level-only queries scan all model elements; no pagination cursor.",
+      "blocker": "Collector compiled only (native-build); never run in Revit \u2014 level resolution via LevelId vs level parameters, spec id shapes and display texts unverified; level-only queries scan all model elements; pagination cursor added by P1-13 (see revit-element-query-cursor).",
       "scope": "P1-02: read-only query.elements (category friendly name or OST_ name and/or level, 1\u201316 parameters instance-then-type, limit 1\u20135000, ascending ids, truncated/truncated_reason, 4 MiB UTF-8 reply budget, model categories only for level-only queries) and query.inspect (all instance/type parameters with storage type, spec, flags, typed units mm/m2/m3/deg via version-insensitive core routing, element-id refs with UniqueId); read permission, no transactions, MCP tools. Contracts unit-tested, executor compiled, CI 41584475032."
     },
     {
@@ -797,7 +797,7 @@
         "core/Bim.Core/DocUpdate.cs",
         "tests/doc-regeneration/Update.cs"
       ],
-      "blocker": "Fake transport only, never run in Revit; dependents passed strictly (caller plans, dry-runs deletes, replans — P4-09); bindings must be the after-state bindings; a missing UniqueId inside confirm_dependents still fails the update; dry-plan CLI only (doc-update, P4-08), no run verb.",
+      "blocker": "Fake transport only, never run in Revit; dependents passed strictly (DocUpdateDependents, P4-09, now plans, dry-runs and replans in one call); bindings must be the after-state bindings; a missing UniqueId inside confirm_dependents still fails the update; dry-plan CLI only (doc-update, P4-08), no run verb.",
       "scope": "P4-07: DocUpdate.Update/Plan/Run/Resume take BIM-IR before/after, bindings, realized doc:/element: map and optional dry-run dependents; DocDefaults before/after → DocRegeneration.Affected + forced keys (changed or new default definitions, never-realized supported items, and their children, merged from Full(after)) → retired keys (before-only realized, doc_retired) → DocReplace through PlanRunner; element: sources missing from after pruned; stale deletes answered reference_not_found move to Gone and the plan is rebuilt with operation-id replay; updated map as sorted ReadOnlyDictionary; no-edit run empty; unrelated edit sends nothing; byte-identical under reversed maps and tr-TR/de-DE. CI 42030387084."
     },
     {
@@ -1378,6 +1378,44 @@
       ],
       "blocker": "never run on a real owner -Catalogue record (end-to-end records come from the fake executor); run-time sha row matched by its Spanish check text; exit 0 even when the report shows failures.",
       "scope": "P1-12: read-only `catalogue-report --run .bim/native-runs/<run>` finds .bim/native-sessions/<utc>/catalogue-run<i>.json through summary.json, checks the record against its steps, prints per-group passed/failed/blocked/not_sent counts, failing steps with requested vs observed (raw_response for non-JSON), blocked steps and the copy sha256 re-hashed on disk (regular files only, bounded) against c-save's readback, as deterministic ASCII JSON; refuses traversal, paths outside .bim/native-runs, links, malformed/inconsistent/oversized records with typed catalogue_report_* codes; end-to-end on records written by the real owner record writer (clean/mixed/nocopy/v1only). CI red 42733295077, green 42734609677, review red 42747523781, green 42749563142."
+    },
+    {
+      "id": "revit-element-query-cursor",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsQuery.cs",
+        "runtimes/revit-native/CommandsExecutorQuery.cs",
+        "tests/revit-commands/ElementQueryCursor.cs",
+        "tests/revit-commands/ElementQuery.cs",
+        "tests/mcp/Program.cs",
+        "tests/integration/test-catalogue-session.ps1",
+        "scripts/owner-catalogue-steps.ps1"
+      ],
+      "blocker": "executor compiled only (native-build, --warnaserror), never run in Revit; owner step q-walls-next pending the owner -Catalogue run; the cursor is a position, not a snapshot (edits between pages are visible, rows added at or before the cursor id are not seen, workshared renumbering not covered); integrity check is an unkeyed SHA-256 (detects edits, not deliberate forgery); document identity is the ProjectInformation UniqueId, so a save_as copy accepts a cursor from its source.",
+      "scope": "P1-13: query.elements args gain optional cursor (≤512 chars); reply gains after and next_cursor (present exactly when truncated); cursor = base64url canonical JSON {v,document,filter,after,check}, filter digest over category/level/parameters (limit excluded); cursor_malformed/cursor_tampered/cursor_stale(version)/cursor_foreign_document/cursor_filter_mismatch refused in RevitCommandProtocol.Parse before the pipe and again in the add-in; limit cuts resume after the last paged id even if rows vanished, byte cuts after the last kept row; concatenated pages equal one unlimited query on fixtures; fake add-in pages with the same cursor; owner step q-walls-next. CI red 42759266906, green 42761303189, review red 42764039642, green 42764176836."
+    },
+    {
+      "id": "apply-edits-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/ApplyEditsCommand.cs",
+        "interfaces/cli/EditsInput.cs",
+        "core/Bim.Core/Model.cs",
+        "tests/cli/ApplyEditsTests.cs"
+      ],
+      "blocker": "empty edit sets commit a no-op revision; without --expected-revision a run applies edits to whatever head it reads; apply_edits_commit_incomplete is reported conservatively (also for a state read failure after the lock); store project.json bounded at 8 MiB like every CLI input.",
+      "scope": "P3-08: `apply-edits --store <dir> --edits <e> [--expected-revision n]` diffs incrementally against the store head (plan byte-equal to diff-edits), commits through ProjectStore.Commit with a per-run idempotency key and prints {status,revision,plan}; apply_edits_stale_head (expected revision or lost race), apply_edits_store_unavailable (ProjectStore.StoreLocked: nothing written), apply_edits_commit_incomplete (failure after Commit started writing; ADR0007 recovery), library codes passed through; shared EditsInput parser with diff-edits; 8-process race test; ubuntu/windows/macOS. CI red 42759165857, green 42759237577, review red 42766035928, green 42767204207."
+    },
+    {
+      "id": "doc-update-two-pass-dependents",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/DocUpdateDependents.cs",
+        "tests/doc-regeneration/UpdateDependents.cs",
+        "interfaces/cli/DocUpdateCommand.cs"
+      ],
+      "blocker": "fake transport only, never run in Revit; untracked dependents (annotations, viewports) need caller acceptance; the confirm-to-execute window is narrowed, not closed (the executor's own confirm_dependents check refuses later changes per step, after earlier steps ran); not yet wired into the doc-update CLI (P4-10).",
+      "scope": "P4-09: DocUpdateDependents.Plan/Update plans with DocUpdate, dry-runs every planned element.delete (dry_run only, strict receipt/readback/sha checks), refuses dependent_kept/dependent_unknown/dependent_shared/dependent_planned in the first pass, replans with the collected dependents (byte-equal to DocUpdate.Plan with them) and re-probes (dependents_changed); Update runs only after both passes; pipe/no_response/response_invalid typed like PlanRunner; replayed dry-run receipts refused; deterministic across cultures and map order. CI red 42759343043, green 42760288590, review red 42768953518, green 42770105346."
     }
   ]
 }

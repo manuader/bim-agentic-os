@@ -27,7 +27,7 @@ line, because it is not a catalogue command). Do not touch the child Revit until
 The last lines are:
 
 ```
->>> Ejecución 1: Catálogo: 17/17 pasos OK; grupos: v2 6/6, vistas 5/5, snapshot 2/2, consultas 6/6, estructura 12/12, documentacion 15/15, diario 6/6, formas 3/3, extrusion 5/5, transformar 9/9, copia 5/5, modificar 12/12; total 103/103; resultado: TODO OK
+>>> Ejecución 1: Catálogo: 17/17 pasos OK; grupos: v2 6/6, vistas 5/5, snapshot 2/2, consultas 7/7, estructura 12/12, documentacion 15/15, diario 6/6, formas 3/3, extrusion 5/5, transformar 9/9, copia 5/5, modificar 12/12; total 104/104; resultado: TODO OK
 >>> Sesión terminada. Catálogo: 17/17 pasos OK; grupos: ...; resultado: TODO OK
 ```
 
