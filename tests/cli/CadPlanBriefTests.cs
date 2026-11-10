@@ -94,6 +94,11 @@ internal static class CadPlanBriefTests
         {
             why = "";
             if (Doc(output) is not { ValueKind: JsonValueKind.Object } d) { why = "output is not a JSON object"; return false; }
+            try { return Compare(d, expected, out why); }
+            catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException) { why = "missing or mistyped member: " + e.Message; return false; }
+        }
+        static bool Compare(JsonElement d, BriefPlannerResult expected, out string why)
+        {
             var checks = new (string Name, bool Ok)[]
             {
                 ("header", d.GetProperty("kind").GetString() == "cad-plan-brief" && d.GetProperty("version").GetInt32() == 1 && !d.GetProperty("persisted").GetBoolean()),
@@ -163,14 +168,16 @@ internal static class CadPlanBriefTests
         {
             var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { ConfirmedReasons = new[] { "low-confidence", "area-mismatch" } });
             var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--confirm-reason", "low-confidence", "--confirm-reason", "area-mismatch");
-            Check(Ok(r, o) && Matches(o, expected, out var why) && Doc(o) is { } d && Ids(d.GetProperty("dropped")) == "bano-2",
+            var same = Matches(o, expected, out var why);
+            Check(Ok(r, o) && same && Doc(o) is { } d && Ids(d.GetProperty("dropped")) == "bano-2",
                 "--confirm-reason for both of baño's reasons keeps it and drops baño 2 as duplicate-label", R(r) + " " + why);
             Check(Doc(o) is { } p && p.GetProperty("options").GetProperty("confirmed_reasons").GetRawText() == "[\"area-mismatch\",\"low-confidence\"]", "confirmed reasons are echoed in ordinal order");
         }
         {
             var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { MinConfidence = 0.4, ConfirmedRooms = new[] { "bano" }, ConfirmedReasons = new[] { "duplicate-label" } });
             var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--confirm-reason", "duplicate-label", "--min-confidence", "0.4", "--confirm", "bano");
-            Check(Ok(r, o) && Matches(o, expected, out var why), "threshold, room and reason confirmations combine as in the library", R(r) + " " + why);
+            var same = Matches(o, expected, out var why);
+            Check(Ok(r, o) && same, "threshold, room and reason confirmations combine as in the library", R(r) + " " + why);
         }
         {
             var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { ConfirmedRooms = new[] { "zz", "cocina" } });
@@ -187,7 +194,8 @@ internal static class CadPlanBriefTests
             var lowDraft = library with { Rooms = library.Rooms.Select(p => p with { Confidence = 0.1 }).ToArray() };
             var expected = BriefPlanner.ToPlannerBrief(lowDraft);
             var o = Out(); var r = Cli("cad-plan-brief", low, o);
-            Check(Ok(r, o) && Matches(o, expected, out var why) && !expected.IsValid && Doc(o) is { } d && !d.GetProperty("valid").GetBoolean() && d.GetProperty("kept").GetArrayLength() == 0
+            var same = Matches(o, expected, out var why);
+            Check(Ok(r, o) && same && !expected.IsValid && Doc(o) is { } d && !d.GetProperty("valid").GetBoolean() && d.GetProperty("kept").GetArrayLength() == 0
                 && d.GetProperty("issues").EnumerateArray().Any(i => i.GetProperty("Code").GetString() == BriefCodes.RoomsEmpty && i.GetProperty("Severity").GetString() == "Error"),
                 "dropping every room writes an invalid brief flagged rooms_empty (proposal confidences come from the file)", R(r) + " " + why);
             Check(Parse(r.Out) is { } e && e.TryGetProperty("valid", out var v) && !v.GetBoolean(), "the envelope reports valid false", r.Out);
@@ -246,7 +254,7 @@ internal static class CadPlanBriefTests
         }
         var sourcePath = Path.Combine(root, "interfaces", "cli", "CadPlanBriefCommand.cs");
         var source = File.Exists(sourcePath) ? File.ReadAllText(sourcePath) : "";
-        Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal) && source.Contains("GltfExporter.WriteNew(", StringComparison.Ordinal) && source.Contains("BriefPlanner.ToPlannerBrief(", StringComparison.Ordinal),
+        Check(source.Contains("BoundedInput.ReadBytes(", StringComparison.Ordinal) && source.Contains("GltfExporter.WriteNew(", StringComparison.Ordinal) && source.Contains("BriefPlanner.ToPlannerBrief(", StringComparison.Ordinal),
             "cad-plan-brief reads through BoundedInput, writes through WriteNew and plans through BriefPlanner");
     }
 }
