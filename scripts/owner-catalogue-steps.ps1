@@ -1,12 +1,14 @@
 # C04 owner smoke of Revit command catalogue v1 and, after it, the P1-06 one-run verification groups (catalogue v2,
 # views, snapshot, element queries, structure, documentation, journal, then the P1-11 groups: DirectShapes, extrusion
-# roofs, move/copy/rotate/mirror and document.save_copy, and last modify/delete): the scripted step lists, envelope
+# roofs, move/copy/rotate/mirror, document.save_copy and document.save_as, and last modify/delete): the scripted step lists, envelope
 # building, picking references from query results and checking each response with requested vs observed rows.
 # Dot-sourced by scripts/owner-native-session.ps1 -Catalogue (which passes an invoker that runs the CLI
 # "revit-command" verb against the child Revit's pipe and a wire invoker for journal.read) and by
 # tests/integration/test-catalogue-session.ps1 (which passes fakes). Everything here except Invoke-CatalogueCli and
-# Invoke-CatalogueWire is pure (the save_copy check reads the copy file to hash it); nothing here starts or stops Revit,
-# and the only save is the document.save_copy step, a new BIM-Agentic-Test-c04-*-copia.rvt next to the test copy.
+# Invoke-CatalogueWire is pure (the save_copy and save_as checks read the saved file to hash it, and the save_as steps
+# read .bim/revit-enabled-roots.txt); nothing here starts or stops Revit, and the only saves are the document.save_copy
+# step, a new BIM-Agentic-Test-c04-*-copia.rvt next to the test copy, and the document.save_as step, a new
+# BIM-Agentic-Test-c04-*-guardado.rvt next to it (the save_as into an owner folder is refused by the CLI before the pipe).
 # See docs/owner-verification-session.md.
 Set-StrictMode -Version Latest
 
@@ -1179,7 +1181,28 @@ function Get-CatalogueCopyPaths([string]$Path) {
         throw "el documento abierto no es una copia de prueba BIM-Agentic-Test*.rvt dentro de .bim/native-runs: $Path"
     }
     $name = "BIM-Agentic-Test-c04-$Stamp-r$Run"
-    return @{ Source = $full; Copy = [IO.Path]::Combine($folder, "$name-copia.rvt"); Outside = [IO.Path]::Combine($bim, "$name-fuera.rvt") }
+    return @{ Source = $full; Copy = [IO.Path]::Combine($folder, "$name-copia.rvt"); Outside = [IO.Path]::Combine($bim, "$name-fuera.rvt"); SaveAs = [IO.Path]::Combine($folder, "$name-guardado.rvt"); Name = $name }
+}
+
+# The first owner-enabled folder of <repo>/.bim/revit-enabled-roots.txt (the file the CLI reads, found from the test
+# copy <repo>/.bim/native-runs/<run>/BIM-Agentic-Test*.rvt) that is not .bim/native-runs nor inside it, or $null. Lines
+# are read as the CLI reads them: trimmed, blank lines and '#' comments skipped. Only the save_as refusal names it.
+function Get-CatalogueOwnerRoot([string]$Path) {
+    $runs = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path)))
+    if (!$runs -or [IO.Path]::GetFileName($runs) -cne 'native-runs') { return $null }
+    $file = [IO.Path]::Combine([IO.Path]::GetDirectoryName($runs), 'revit-enabled-roots.txt')
+    if (!(Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+    $runs = $runs.TrimEnd('/', '\')
+    foreach ($raw in [IO.File]::ReadAllLines($file)) {
+        $line = $raw.Trim()
+        if ($line.Length -eq 0 -or $line.StartsWith('#')) { continue }
+        $entry = $line.TrimEnd('/', '\')
+        $segments = @($entry.Split([char[]]@('/', '\')) | Where-Object { $_.Length -gt 0 })
+        if ($segments.Count -ge 2 -and $segments[-2] -eq '.bim' -and $segments[-1] -eq 'native-runs') { continue }
+        if ([string]::Equals($entry, $runs, [StringComparison]::OrdinalIgnoreCase) -or $entry.StartsWith($runs + '/', [StringComparison]::OrdinalIgnoreCase) -or $entry.StartsWith($runs + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        return $entry
+    }
+    return $null
 }
 
 function Get-CatalogueFullPath($Path) { if ($Path) { return [IO.Path]::GetFullPath([string]$Path) }; return $null }
@@ -1255,12 +1278,97 @@ function Get-CatalogueSaveCopySteps {
     $steps.Add(@{ Key = 'c-levels-source'; Es = 'Consultar niveles nombrando el modelo de origen (debe responder document_conflict)'; Command = 'query.levels'; UseSourceDocument = $true; Expect = @{ Status = 'failed'; Code = 'document_conflict' }
         Build = { Need 'document_path'; [ordered]@{} }
         Check = { param($r) Test-CatalogueRefusal $r 'document.path' '*not the saved document*' } })
+    foreach ($step in (Get-CatalogueSaveAsSteps)) { $steps.Add($step) }
+    return , $steps.ToArray()
+}
+
+# P1-14 document.save_as (P9-08), after the save_copy steps, on the document Revit has open then (the copy, or the test
+# copy itself when no save_copy switched it): a target in an owner-enabled folder (the first entry of
+# .bim/revit-enabled-roots.txt outside .bim/native-runs) is refused by the CLI (outside_copies_root: a test copy is saved
+# as a new file only inside .bim/native-runs; blocked, never sent, when the owner lists no such folder); the open
+# document is saved as BIM-Agentic-Test-c04-*-guardado.rvt next to the test copy and the readback (new path, previous
+# path untouched, sha256 and size against the file on disk, no unsaved changes, the moved-document warning) is checked;
+# the same request again is refused by the CLI (target_exists, not replayed). Revit then has the new file open: a query
+# naming it succeeds (the post-save path readback) and one naming the previous file is document_conflict; the
+# destructive group then works on the new file.
+function Get-CatalogueSaveAsSteps {
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    $steps.Add(@{ Key = 'c-as-outside'; Es = 'Guardar como en una carpeta del propietario (fuera de .bim/native-runs): debe rechazarse sin tocar Revit'; Command = 'document.save_as'; ClientSide = $true; Reason = 'outside_copies_root'; Expect = @{ Status = 'failed'; Code = 'save_as_refused' }
+        Build = {
+            $paths = Get-CatalogueCopyPaths $DocumentPath
+            $owner = Get-CatalogueOwnerRoot $DocumentPath
+            if (!$owner) { throw [InvalidOperationException]::new($script:CatalogueBlockedMarker + 'falta una carpeta del propietario en .bim/revit-enabled-roots.txt (fuera de .bim/native-runs) para probar el rechazo outside_copies_root') }
+            [ordered]@{ path = [IO.Path]::Combine($owner, "$($paths.Name)-fuera-como.rvt") }
+        }
+        Check = { param($r) Test-CatalogueRefusal $r 'args.path' 'outside_copies_root:*' } })
+    $steps.Add(@{ Key = 'c-as-save'; Es = 'Guardar como BIM-Agentic-Test-c04-*-guardado.rvt junto al modelo de prueba (ruta nueva, anterior intacto, hash leído = hash del archivo)'; Command = 'document.save_as'; Expect = @{ Status = 'succeeded'; Created = 0 }
+        Build = {
+            $paths = Get-CatalogueCopyPaths $DocumentPath
+            $picked['save_as_previous'] = $(if ($picked.ContainsKey('document_path') -and $picked['document_path']) { [string]$picked['document_path'] } else { $DocumentPath })
+            [ordered]@{ path = $paths.SaveAs }
+        }
+        Check = {
+            param($r)
+            $paths = Get-CatalogueCopyPaths $DocumentPath
+            $previous = [string]$picked['save_as_previous']
+            $saved = Get-CataloguePath $r 'readback.save_as'
+            $opened = Get-CatalogueMember $saved 'document_path'
+            # Revit re-pointed the open document to the new file: every later request names it, whatever else differs.
+            if ($opened -and (Get-CatalogueFullPath $opened) -eq $paths.SaveAs) { $picked['document_path'] = [string]$opened; $picked['document_switched_by'] = 'c-as-save'; $picked['save_as_document'] = [string]$opened }
+            $sha = [string](Get-CatalogueMember $saved 'sha256')
+            $exists = Test-Path -LiteralPath $paths.SaveAs -PathType Leaf
+            $diskSha = if ($exists) { Get-CatalogueFileSha256 $paths.SaveAs } else { $null }
+            $diskBytes = if ($exists) { (Get-Item -LiteralPath $paths.SaveAs).Length } else { $null }
+            $previousKept = Test-Path -LiteralPath $previous -PathType Leaf
+            $warning = (Get-CatalogueList $r 'warnings') -join ' '
+            $reason = Join-CatalogueReasons @(
+                (Test-CatalogueSame 'ruta nueva' $paths.SaveAs (Get-CatalogueFullPath (Get-CatalogueMember $saved 'path'))),
+                (Test-CatalogueSame 'documento abierto = archivo nuevo' $paths.SaveAs (Get-CatalogueFullPath $opened)),
+                (Test-CatalogueSame 'ruta anterior' (Get-CatalogueFullPath $previous) (Get-CatalogueFullPath (Get-CatalogueMember $saved 'previous_path'))),
+                (Test-CatalogueSame 'archivo anterior sin reescribir' $true (Get-CatalogueMember $saved 'previous_unchanged')),
+                (Test-CatalogueCondition 'archivo anterior sigue en disco' $previous $previousKept $previousKept),
+                (Test-CatalogueSame 'sin cambios pendientes tras guardar' $false (Get-CatalogueMember $saved 'is_modified')),
+                (Test-CatalogueCondition 'sha256 leído (64 hex)' '64 hex' $sha ($sha -cmatch '\A[0-9a-f]{64}\z')),
+                (Test-CatalogueCondition 'archivo nuevo en disco' $paths.SaveAs $exists $exists),
+                (Test-CatalogueSame 'bytes leídos = tamaño en disco' (Get-CatalogueMember $saved 'bytes') $diskBytes),
+                (Test-CatalogueSame 'sha256 leído = sha256 del archivo en disco' $sha $diskSha),
+                (Test-CatalogueCondition 'aviso: el documento abierto ahora es el archivo nuevo' "*now $($paths.SaveAs)*" $warning ($warning.Contains("the open document is now $($paths.SaveAs) ", [StringComparison]::OrdinalIgnoreCase))))
+            if ($null -eq $reason) { $picked['save_as_path'] = $paths.SaveAs }
+            $reason
+        } })
+    $steps.Add(@{ Key = 'c-as-save-again'; Es = 'Repetir el mismo guardar como (mismo identificador y documento anterior): debe rechazarse sin tocar Revit porque el archivo ya existe'; Command = 'document.save_as'; ReuseOf = 'c-as-save'; ClientSide = $true; Reason = 'target_exists'; Expect = @{ Status = 'failed'; Code = 'save_as_refused' }
+        Build = { Need 'save_as_path', 'save_as_previous'; [ordered]@{ path = $picked['save_as_path'] } }
+        Document = { [string]$picked['save_as_previous'] }
+        Check = { param($r) Test-CatalogueRefusal $r 'args.path' 'target_exists:*' } })
+    # Always sent naming the new file, also when c-as-save failed (Revit can fail the readback after Save As already
+    # re-pointed the document): this probe is the post-save path readback; if it succeeds while nothing switched yet,
+    # the run switches to the new file here and records it (picked.document_switched_by = c-as-levels-new).
+    $steps.Add(@{ Key = 'c-as-levels-new'; Es = 'Consultar niveles nombrando el archivo nuevo (Revit lo tiene abierto tras guardar como)'; Command = 'query.levels'; Expect = @{ Status = 'succeeded' }
+        Build = { $null = Get-CatalogueCopyPaths $DocumentPath; [ordered]@{} }
+        Document = { (Get-CatalogueCopyPaths $DocumentPath).SaveAs }
+        Check = {
+            param($r)
+            $levels = Get-CatalogueList (Get-CatalogueMember $r 'readback') 'levels'
+            $reason = Test-CatalogueContains 'el nivel de los muros está en el archivo nuevo' $picked['level'] @($levels | ForEach-Object { Get-CatalogueMember $_ 'unique_id' })
+            if (!$picked.ContainsKey('save_as_document') -or !$picked['save_as_document']) {
+                $newPath = (Get-CatalogueCopyPaths $DocumentPath).SaveAs
+                $picked['document_path'] = $newPath
+                $picked['save_as_document'] = $newPath
+                $picked['document_switched_by'] = 'c-as-levels-new'
+                $null = Test-CatalogueCondition 'c-as-save falló pero Revit tiene el archivo nuevo abierto: la sesión cambia al archivo nuevo' $newPath $newPath $true
+            }
+            $reason
+        } })
+    $steps.Add(@{ Key = 'c-as-levels-previous'; Es = 'Consultar niveles nombrando el archivo anterior (debe responder document_conflict)'; Command = 'query.levels'; Expect = @{ Status = 'failed'; Code = 'document_conflict' }
+        Build = { Need 'save_as_document', 'save_as_previous'; [ordered]@{} }
+        Document = { [string]$picked['save_as_previous'] }
+        Check = { param($r) Test-CatalogueRefusal $r 'document.path' '*not the saved document*' } })
     return , $steps.ToArray()
 }
 
 # P1-05 modify and delete, destructive, always last: the v1 west wall height and comments, then the v1 south wall
 # (which hosts the v1 door) is deleted after a dry run and a refused unconfirmed delete. After a successful
-# document.save_copy these steps name the copy Revit has open (the saved copy file keeps the state before them).
+# document.save_copy (and document.save_as) these steps name the file Revit has open (the saved files keep the state before them).
 function Get-CatalogueModifySteps {
     $steps = [Collections.Generic.List[hashtable]]::new()
     $height = [ordered]@{ built_in = 'WALL_USER_HEIGHT_PARAM' }
@@ -1354,7 +1462,7 @@ function Get-CatalogueGroups([switch]$V1Only) {
         $groups.Add(@{ Key = 'formas'; Es = 'Formas DirectShape (P9-09): caja, extrusión y contorno cruzado'; Steps = (Get-CatalogueDirectShapeSteps) })
         $groups.Add(@{ Key = 'extrusion'; Es = 'Techos por extrusión (P9-07): bóveda en plano alineado, invertido y diagonal; perfil cerrado'; Steps = (Get-CatalogueRoofExtrusionSteps) })
         $groups.Add(@{ Key = 'transformar'; Es = 'Mover, copiar, rotar y reflejar (P1-09, P1-10) sobre un muro propio'; Steps = (Get-CatalogueTransformSteps) })
-        $groups.Add(@{ Key = 'copia'; Es = 'Guardar copia (P1-08): copia con hash, rechazos fuera de la carpeta y por archivo existente; después todo va a la copia'; Steps = (Get-CatalogueSaveCopySteps) })
+        $groups.Add(@{ Key = 'copia'; Es = 'Guardar copia (P1-08) y guardar como (P9-08): copia y archivo nuevo con hash, rechazos fuera de la carpeta y por archivo existente; después todo va al archivo nuevo'; Steps = (Get-CatalogueSaveCopySteps) })
         $groups.Add(@{ Key = 'modificar'; Es = 'Modificar y borrar (P1-05, destructivo, al final)'; Steps = (Get-CatalogueModifySteps) })
     }
     return , $groups.ToArray()

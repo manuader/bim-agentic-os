@@ -29,6 +29,8 @@ $documentUid = '0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9-0000abcd'
 $inProcessDirectory = [IO.Path]::GetFullPath((Join-Path $root ('.bim/native-runs/catalogue-test-' + [guid]::NewGuid())))
 New-Item -ItemType Directory -Force $inProcessDirectory | Out-Null
 $documentPath = Join-Path $inProcessDirectory 'BIM-Agentic-Test.rvt'
+# The test document exists on disk like the owner's copy (c-as-save checks the previous file is still there).
+[IO.File]::WriteAllBytes($documentPath, [byte[]]@())
 # P1-14: the save_as outside_copies_root refusal needs an owner-enabled folder outside .bim/native-runs. Without the
 # owner file, the test writes one listing <repo>/.bim/catalogue-owner-root-<guid> (never created on disk: the refusal
 # comes first) and removes the file afterwards; an existing owner file is used as it is and never touched.
