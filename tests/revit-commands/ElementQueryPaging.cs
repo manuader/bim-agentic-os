@@ -67,7 +67,7 @@ static class ElementQueryPagingChecks
         public Action<int>? BeforePage;
         // Replaces the whole reply line of the 0-based page index.
         public Func<int, RevitCommandEnvelope, string, string?>? Line;
-        public readonly List<string> Sent = new();
+        public readonly List<string> Sent = [];
 
         public FakeAddIn(IEnumerable<Fixture>? items = null) => Items = (items ?? Model).ToList();
 
@@ -146,7 +146,7 @@ static class ElementQueryPagingChecks
     {
         var walls = Model.Where(f => f.BuiltIn == "OST_Walls").Select(f => f.Id).OrderBy(id => id).ToArray();
         // Limit 2: ids 3-4 of every 4 vanish, so every second page comes back empty but truncated.
-        var gone = new HashSet<long>(walls.Where((_, i) => i % 4 >= 2));
+        var gone = walls.Where((_, i) => i % 4 >= 2).ToHashSet();
         var args = Args("wall", null, 2);
         var fake = new FakeAddIn { Vanished = gone.Contains };
         var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), fake);
@@ -154,7 +154,7 @@ static class ElementQueryPagingChecks
         Check(gone.Count >= 4 && result.IsSuccess && Canonical(result.Elements).SequenceEqual(expected), "pages over vanished rows (including empty truncated pages) equal one unlimited query", Describe(result));
         Check(result.Pages == (matched + 1) / 2 && result.Matched == matched, "an empty truncated page is followed, not taken as the end", Describe(result));
         // The very last paged ids vanish: the last page is empty and untruncated.
-        var tail = new HashSet<long>(walls.TakeLast(3));
+        var tail = walls.TakeLast(3).ToHashSet();
         var last = new FakeAddIn { Vanished = tail.Contains };
         var lastResult = RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), last);
         Check(lastResult.IsSuccess && Canonical(lastResult.Elements).SequenceEqual(Unlimited(Args("wall", null, 3), last.Items, tail.Contains).Elements), "a last page whose rows all vanished ends the listing", Describe(lastResult));
@@ -169,7 +169,7 @@ static class ElementQueryPagingChecks
     {
         var walls = Model.Where(f => f.BuiltIn == "OST_Walls").Select(f => f.Id).OrderBy(id => id).ToArray();
         var fake = new FakeAddIn();
-        var deleted = new List<long>();
+        List<long> deleted = [];
         fake.BeforePage = page =>
         {
             if (page == 0) return;
@@ -338,7 +338,7 @@ static class ElementQueryPagingChecks
     static void ServiceTransport()
     {
         var fake = new FakeAddIn();
-        var wire = new List<string>();
+        List<string> wire = [];
         Func<string, string, string?> forward = (pipe, line) =>
         {
             wire.Add(line);
@@ -348,7 +348,7 @@ static class ElementQueryPagingChecks
         var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), new RevitServiceTransport(Pipe, RevitCommandPolicy.None, forward));
         Check(result.IsSuccess && Canonical(result.Elements).SequenceEqual(Unlimited(args, fake.Items).Elements) && wire.Count == result.Pages && wire.All(w => JsonNode.Parse(w)!["DocumentPath"]!.GetValue<string>() == RealPath),
             "through RevitCommandService each page is one wire line and the result equals one unlimited query", Describe(result));
-        var rejected = new List<string>();
+        List<string> rejected = [];
         var badPipe = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), new RevitServiceTransport("not-a-process-pipe", RevitCommandPolicy.None, (p, l) => { rejected.Add(l); return null; }));
         Check(!badPipe.IsSuccess && badPipe.Code == RevitCommandCodes.ExplicitProcessPipeRequired && rejected.Count == 0, "a non-process pipe is refused by the service before any wire line", Describe(badPipe));
         var noReply = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), new RevitServiceTransport(Pipe, RevitCommandPolicy.None, (_, _) => null));
