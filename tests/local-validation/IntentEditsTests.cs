@@ -354,7 +354,7 @@ static class IntentEditsOracle
         var refused = new int[3];
         var propagated = new int[3];
         var exact = new int[3];
-        int steps = 0, agreed = 0, withCreates = 0, withDeletes = 0, orderOnly = 0, levelRetypes = 0, storedAgreed = 0, storedPropagated = 0, hazards = 0, localityChecks = 0, unrelatedRooms = 0;
+        int steps = 0, agreed = 0, withCreates = 0, withDeletes = 0, orderOnly = 0, levelRetypes = 0, storedAgreed = 0, hazards = 0, localityChecks = 0, unrelatedRooms = 0;
         string? firstStoredProblem = null, firstLocalityProblem = null;
         long edits = 0, untouched = 0, totalBefore = 0;
         string? firstProblem = null, firstRefusalMismatch = null;
