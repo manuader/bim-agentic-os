@@ -27,9 +27,11 @@ internal static class CadPlanBriefTests
         Directory.CreateDirectory(scratch);
         void Check(bool condition, string name, string detail = "") => check(condition, "cad-plan-brief: " + name, detail);
 
-        (int Exit, string Out, string Err) Cli(params string[] arguments)
+        (int Exit, string Out, string Err) Cli(params string[] arguments) => CliWith(null, arguments);
+        (int Exit, string Out, string Err) CliWith(IReadOnlyDictionary<string, string>? environment, params string[] arguments)
         {
             var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            if (environment is not null) foreach (var (key, value) in environment) start.Environment[key] = value;
             start.ArgumentList.Add(cliDll);
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
             using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
@@ -360,6 +362,155 @@ internal static class CadPlanBriefTests
             var o = Out(); var r = Cli("cad-plan-brief", Input("no-source.json", node.ToJsonString()), o);
             Check(Ok(r, o) && Matches(o, BriefPlanner.ToPlannerBrief(library), out _) && Doc(o) is { } d && d.GetProperty("source").GetProperty("drawing_file").ValueKind == JsonValueKind.Null
                 && d.GetProperty("source").GetProperty("drawing_sha256").ValueKind == JsonValueKind.Null, "a draft without a source block plans the same and reports null drawing_file/drawing_sha256", R(r));
+        }
+
+        // ---- P6-12 --site-width w --site-depth d (metres, PrototypeLot bounds) and --name text ----
+        static BriefConstraints Sited(BriefConstraints constraints, double width, double depth) =>
+            constraints with { Site = new BriefSite(new BriefValue<double>(width), new BriefValue<double>(depth)) };
+        static string Plan(Bim.Generative.SpacePlan plan) =>
+            plan.Status + " rooms " + string.Join(",", plan.Rooms.Select(p => p.RoomId)) + " violations " + string.Join(";", plan.Violations.Select(v => v.Code + ":" + v.Subject + ":" + v.Detail));
+        {
+            var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Constraints = Sited(library.Brief.Constraints, 10, 8), Name = "Casa Ader" });
+            var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--site-width", "10", "--site-depth", "8", "--name", "Casa Ader");
+            var same = Matches(o, expected, out var why);
+            Check(Ok(r, o) && same && expected.IsValid, "--site-width 10 --site-depth 8 --name equals the library with that site and name", R(r) + " " + why);
+            Check(Doc(o) is { } p && p.GetProperty("options").GetRawText() == "{\"min_confidence\":0.5,\"confirmed_rooms\":[],\"confirmed_reasons\":[],\"site_width_m\":10,\"site_depth_m\":8,\"name\":\"Casa Ader\"}",
+                "options echo the site and the name after the existing members", Doc(o)?.GetProperty("options").GetRawText() ?? "");
+            ProjectBrief? parsed = null;
+            try { if (Doc(o) is { } d) parsed = BriefParser.Parse(d.GetProperty("brief").GetRawText()); }
+            catch (Exception e) when (e is BriefException or KeyNotFoundException or InvalidOperationException) { Check(false, "the sited brief parses back", e.Message); }
+            Check(parsed is { Name: "Casa Ader", Constraints.Site: { } s } && s.WidthMetres.Value == 10 && s.DepthMetres.Value == 8 && BriefValidator.Validate(parsed).Length == 0,
+                "the written brief parses back with the site and name and validates", Doc(o)?.GetProperty("brief").GetRawText() ?? "");
+            if (parsed is not null)
+            {
+                var plan = Bim.Generative.SpacePlanner.Plan(parsed, 7);
+                Check(plan.IsFeasible && plan.HardViolations.Count == 0 && plan.Rooms.Count > 0
+                    && plan.Rooms.All(x => x.Rect.X >= 0 && x.Rect.Y >= 0 && x.Rect.Right <= 10 + 1e-9 && x.Rect.Top <= 8 + 1e-9),
+                    "the space planner plans the written brief feasibly inside the 10 x 8 site", Plan(plan));
+                var inProcess = Bim.Generative.SpacePlanner.Plan(expected.Brief, 7);
+                Check(Bim.Generative.SpacePlanSerializer.Serialize(plan) == Bim.Generative.SpacePlanSerializer.Serialize(inProcess), "the plan of the written brief equals the in-process plan");
+                var unsited = Bim.Generative.SpacePlanner.Plan(BriefPlanner.ToPlannerBrief(library).Brief, 7);
+                Check(!unsited.IsFeasible && unsited.Violations.Any(v => v.Code == Bim.Generative.PlanCodes.FootprintMissing), "oracle: the default (unsited) brief is refused by the planner with footprint_missing", Plan(unsited));
+            }
+            var o2 = Out(); var r2 = Cli("cad-plan-brief", draftPath, o2, "--name", "Casa Ader", "--site-depth", "8", "--site-width", "10");
+            Check(Ok(r2, o2) && File.Exists(o) && File.ReadAllBytes(o2).SequenceEqual(File.ReadAllBytes(o)), "site and name option order does not change the output", R(r2));
+            var o3 = Out(); var r3 = Cli("cad-plan-brief", draftPath, o3, "--site-width", "10", "--site-depth", "8", "--name", "Casa Ader");
+            Check(Ok(r3, o3) && File.Exists(o) && File.ReadAllBytes(o3).SequenceEqual(File.ReadAllBytes(o)), "sited reruns are byte-identical", R(r3));
+        }
+        {
+            // Site only: the draft name is kept; name only: no site is added.
+            var siteOnly = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Constraints = Sited(library.Brief.Constraints, 12.5, 9.25) });
+            var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--site-depth", "9.25", "--site-width", "1.25e1");
+            var same = Matches(o, siteOnly, out var why);
+            Check(Ok(r, o) && same && Doc(o) is { } d && d.GetProperty("brief").GetProperty("name").GetString() == library.Brief.Name
+                && d.GetProperty("options").GetRawText().EndsWith(",\"site_width_m\":12.5,\"site_depth_m\":9.25}", StringComparison.Ordinal),
+                "a site without --name keeps the draft name (library equal; exponent accepted)", R(r) + " " + why + " " + (Doc(o)?.GetProperty("options").GetRawText() ?? ""));
+            var nameOnly = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Name = "Casa Áder 2" });
+            var o2 = Out(); var r2 = Cli("cad-plan-brief", draftPath, o2, "--name", "Casa Áder 2");
+            var same2 = Matches(o2, nameOnly, out var why2);
+            Check(Ok(r2, o2) && same2 && Doc(o2) is { } d2 && d2.GetProperty("brief").GetProperty("name").GetString() == "Casa Áder 2" && d2.GetProperty("options").GetProperty("name").GetString() == "Casa Áder 2"
+                && !d2.GetProperty("options").TryGetProperty("site_width_m", out _) && !d2.GetProperty("brief").GetProperty("constraints").TryGetProperty("site", out _),
+                "--name alone renames the brief (non-ASCII kept) and adds no site", R(r2) + " " + why2);
+            foreach (var (w, dp) in new[] { ("3", "100"), ("100", "3") })
+            {
+                var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Constraints = Sited(library.Brief.Constraints, double.Parse(w, CultureInfo.InvariantCulture), double.Parse(dp, CultureInfo.InvariantCulture)) });
+                var ob = Out(); var rb = Cli("cad-plan-brief", draftPath, ob, "--site-width", w, "--site-depth", dp);
+                var sameb = Matches(ob, expected, out var whyb);
+                Check(Ok(rb, ob) && sameb, "site " + w + " x " + dp + " (PrototypeLot bounds, inclusive) is accepted", R(rb) + " " + whyb);
+            }
+            var longName = new string('n', 2048);
+            var o4 = Out(); var r4 = Cli("cad-plan-brief", draftPath, o4, "--name", longName);
+            Check(Ok(r4, o4) && Doc(o4) is { } d4 && d4.GetProperty("brief").GetProperty("name").GetString() == longName, "a 2048-character name is accepted", R(r4));
+        }
+        {
+            // Other draft constraints are kept and a draft site is replaced.
+            var node = JsonNode.Parse(File.ReadAllText(draftPath))!;
+            node["brief"]!["constraints"] = JsonNode.Parse("{\"jurisdiction\":\"CABA\",\"site\":{\"width_m\":50,\"depth_m\":40},\"levels\":1,\"total_area_budget_m2\":90}");
+            var constrained = Input("constrained.json", node.ToJsonString());
+            var draftConstraints = new BriefConstraints(new BriefValue<string>("CABA"), new BriefSite(new BriefValue<double>(50), new BriefValue<double>(40)), new BriefValue<int>(1), new BriefValue<double>(90));
+            var constrainedDraft = library with { Brief = library.Brief with { Constraints = draftConstraints } };
+            var expected = BriefPlanner.ToPlannerBrief(constrainedDraft, new BriefPlannerOptions { Constraints = Sited(draftConstraints, 10, 8) });
+            var o = Out(); var r = Cli("cad-plan-brief", constrained, o, "--site-width", "10", "--site-depth", "8");
+            var same = Matches(o, expected, out var why);
+            Check(Ok(r, o) && same && Doc(o) is { } d && d.GetProperty("brief").GetProperty("constraints").GetRawText() == "{\"jurisdiction\":\"CABA\",\"site\":{\"width_m\":10,\"depth_m\":8},\"levels\":1,\"total_area_budget_m2\":90}",
+                "the site option replaces only the draft site; jurisdiction, levels and budget are kept", R(r) + " " + why + " " + (Doc(o)?.GetProperty("brief").GetProperty("constraints").GetRawText() ?? ""));
+            var o2 = Out(); var r2 = Cli("cad-plan-brief", constrained, o2);
+            Check(Ok(r2, o2) && Matches(o2, BriefPlanner.ToPlannerBrief(constrainedDraft), out _) && Doc(o2) is { } d2 && d2.GetProperty("brief").GetProperty("constraints").GetProperty("site").GetRawText() == "{\"width_m\":50,\"depth_m\":40}",
+                "without site options the draft site is kept", R(r2));
+        }
+        foreach (var bad in new[] { "2.999", "100.001", "0", "-10", "NaN", "Infinity", "-Infinity", "1e400", "abc", "10,5", "", " 10", "0x10", "10 ", "1 0", "-0" })
+        {
+            Expect("--site-width '" + bad + "' is refused", "cad_option_value_invalid", "cad-plan-brief", draftPath, Out(), "--site-width", bad, "--site-depth", "8");
+            Expect("--site-depth '" + bad + "' is refused", "cad_option_value_invalid", "cad-plan-brief", draftPath, Out(), "--site-width", "10", "--site-depth", bad);
+        }
+        Expect("--site-width without --site-depth", "cad_option_pair_missing", "cad-plan-brief", draftPath, Out(), "--site-width", "10");
+        Expect("--site-depth without --site-width", "cad_option_pair_missing", "cad-plan-brief", draftPath, Out(), "--site-depth", "8", "--name", "Casa");
+        Expect("--site-width twice", "cad_option_duplicate", "cad-plan-brief", draftPath, Out(), "--site-width", "10", "--site-depth", "8", "--site-width", "10");
+        Expect("--site-depth twice", "cad_option_duplicate", "cad-plan-brief", draftPath, Out(), "--site-depth", "8", "--site-width", "10", "--site-depth", "9");
+        Expect("--name twice", "cad_option_duplicate", "cad-plan-brief", draftPath, Out(), "--name", "a", "--name", "a");
+        Expect("--name empty", "cad_option_value_invalid", "cad-plan-brief", draftPath, Out(), "--name", "");
+        Expect("--name blank", "cad_option_value_invalid", "cad-plan-brief", draftPath, Out(), "--name", "   ");
+        Expect("--name over 2048 characters", "cad_option_value_invalid", "cad-plan-brief", draftPath, Out(), "--name", new string('n', 2049));
+        Expect("--site-width without a value", "cad_option_value_missing", "cad-plan-brief", draftPath, Out(), "--site-depth", "8", "--site-width");
+        Expect("--name without a value", "cad_option_value_missing", "cad-plan-brief", draftPath, Out(), "--name");
+        Expect("a missing site pair is refused before any I/O", "cad_option_pair_missing", "cad-plan-brief", Path.Combine(scratch, "missing.json"), Out(), "--site-width", "10");
+        {
+            var r = Cli("cad-plan-brief", draftPath, Out(), "--site-width", "500", "--site-depth", "8");
+            Check(Parse(r.Out) is { } e && e.TryGetProperty("detail", out var detail) && detail.GetString() is { } text && text.Contains("--site-width", StringComparison.Ordinal) && text.Contains("100", StringComparison.Ordinal),
+                "an out-of-bounds site refusal names the option and the bounds", r.Out);
+            var r2 = Cli("cad-plan-brief", draftPath, Out(), "--site-width", "10");
+            Check(Parse(r2.Out) is { } e2 && e2.TryGetProperty("detail", out var detail2) && detail2.GetString() is { } text2 && text2.Contains("--site-depth", StringComparison.Ordinal),
+                "a missing pair refusal names the missing option", r2.Out);
+        }
+        {
+            var r = Cli("cad-plan-brief");
+            Check(Parse(r.Out) is { } e && e.GetProperty("code").GetString() is { } usage && usage.Contains("[--site-width w --site-depth d]", StringComparison.Ordinal) && usage.Contains("[--name text]", StringComparison.Ordinal),
+                "the usage names the site and name options", R(r));
+        }
+
+        // ---- review nits ----
+        // Option refusals come before the output checks.
+        Expect("a missing site pair is refused before the output extension", "cad_option_pair_missing", "cad-plan-brief", draftPath, Out(".txt"), "--site-width", "10");
+        {
+            var existing = Out(); File.WriteAllBytes(existing, new byte[] { 5, 6 });
+            Expect("an out-of-bounds site is refused before output_exists", "cad_option_value_invalid", "cad-plan-brief", draftPath, existing, "--site-width", "500", "--site-depth", "8");
+            Check(File.ReadAllBytes(existing).SequenceEqual(new byte[] { 5, 6 }), "the existing output is untouched by a site refusal");
+        }
+        // Grammar: explicit plus sign and a trailing decimal point are accepted.
+        {
+            var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Constraints = Sited(library.Brief.Constraints, 10, 8) });
+            var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--site-width", "+10", "--site-depth", "8.");
+            var same = Matches(o, expected, out var why);
+            Check(Ok(r, o) && same, "--site-width +10 --site-depth 8. equals the library 10 x 8", R(r) + " " + why);
+        }
+        // Mixed order: the first bad option decides.
+        Expect("--site-width abc alone is a value refusal (before the pair check)", "cad_option_value_invalid", "cad-plan-brief", draftPath, Out(), "--site-width", "abc");
+        Expect("--site-width 10 then an unknown option is cad_option_unknown", "cad_option_unknown", "cad-plan-brief", draftPath, Out(), "--site-width", "10", "--bogus", "x");
+        // A name with a valid surrogate pair is accepted. (A lone surrogate cannot be passed through argv: the OS/runtime
+        // re-encodes arguments as UTF-8 and replaces it, so BriefParser.IsText's lone-surrogate refusal is untestable here.)
+        {
+            var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Name = "Casa \U0001F3E0" });
+            var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--name", "Casa \U0001F3E0");
+            var same = Matches(o, expected, out var why);
+            Check(Ok(r, o) && same && Doc(o) is { } dn && dn.GetProperty("brief").GetProperty("name").GetString() == "Casa \U0001F3E0" && dn.GetProperty("options").GetProperty("name").GetString() == "Casa \U0001F3E0",
+                "a name with a surrogate pair is accepted and equals the library", R(r) + " " + why);
+        }
+        // Culture: the child process runs under a comma-decimal culture; the option grammar stays invariant.
+        {
+            var german = false;
+            try { german = CultureInfo.GetCultureInfo("de-DE").NumberFormat.NumberDecimalSeparator == ","; }
+            catch (CultureNotFoundException) { }
+            if (!german) Console.WriteLine("SKIP cad-plan-brief: de-DE culture data unavailable (invariant globalization); culture check not run");
+            else
+            {
+                var env = new Dictionary<string, string> { ["LANG"] = "de_DE.UTF-8", ["LC_ALL"] = "de_DE.UTF-8" };
+                var bad = CliWith(env, "cad-plan-brief", draftPath, Out(), "--site-width", "10,5", "--site-depth", "8");
+                Check(bad.Exit == 1 && Parse(bad.Out) is { } eb && eb.GetProperty("code").GetString() == "cad_option_value_invalid", "under de_DE, --site-width 10,5 is refused", R(bad));
+                var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Constraints = Sited(library.Brief.Constraints, 12.5, 8) });
+                var o = Out(); var r = CliWith(env, "cad-plan-brief", draftPath, o, "--site-width", "12.5", "--site-depth", "8");
+                var same = Matches(o, expected, out var why);
+                Check(Ok(r, o) && same && Doc(o) is { } dc && dc.GetProperty("options").GetProperty("site_width_m").GetRawText() == "12.5", "under de_DE, --site-width 12.5 is accepted and echoed invariantly", R(r) + " " + why);
+            }
         }
     }
 }

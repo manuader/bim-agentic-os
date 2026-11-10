@@ -9,7 +9,8 @@ using Bim.Gltf;
 
 namespace Bim.Cli;
 
-// P6-10 `cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]...`:
+// P6-10 `cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]...
+//   [--site-width w --site-depth d] [--name text]`:
 // a P6-07 `cad-brief` document (the P6-05 brief draft) becomes the P6-08 planner brief (BriefPlanner.ToPlannerBrief),
 // written to a new JSON file. Nothing is persisted to a project store ("persisted": false).
 //
@@ -17,6 +18,14 @@ namespace Bim.Cli;
 // --confirm id and --confirm-reason code repeatable (ids must be brief room ids, BriefParser.IsRoomId; codes must be
 // BriefPlannerCodes.All, case-sensitive). Repeats and order do not matter. A confirmed id naming no draft room is
 // reported in unknown_confirmed_rooms, not refused.
+// P6-12: --site-width w and --site-depth d, each at most once and only together (cad_option_pair_missing otherwise),
+// are metres with the --min-confidence number grammar, finite and within Bim.Generative.PrototypeGenerator.MinLotSideMetres..
+// MaxLotSideMetres inclusive (the PrototypeLot bounds). They set BriefPlannerOptions.Constraints to the draft brief's
+// constraints with only the site replaced (jurisdiction, levels and budget are kept), so the written brief can be planned
+// by the P7-01 SpacePlanner without a PlannerOptions.Footprint. --name text at most once must pass BriefParser.IsText
+// (non-blank, at most 2048 UTF-16 code units, no lone surrogate) and replaces the brief name. Without these options the
+// output is byte-for-byte what P6-10 wrote; with them "options" also carries "site_width_m","site_depth_m" (when a site
+// is given) and "name" (when given), after the P6-10 members.
 //
 // Input (bounded, BoundedInput.ReadBytes at BoundedInput.MaxBytes): a JSON object with "kind":"cad-brief", "version":1, "brief" (P6-03, read
 // with BriefParser), "rooms" (BriefRoomProposal[]) and "uncertainties" (BriefExtractUncertainty[]) as cad-brief writes
@@ -29,19 +38,20 @@ namespace Bim.Cli;
 // options are checked before either. Every refusal prints one {"status":"failed","code":...[,"detail"]} envelope, exits
 // 1 and writes nothing. Codes: "usage: cad-plan-brief ..." (fewer than two arguments; printed with the usage text as
 // the code by the CLI's top-level handler, no detail), cad_option_unknown, cad_option_duplicate, cad_option_value_missing,
-// cad_option_value_invalid, output_* (OutputProblem, output_exists, output_io_error), input_* (BoundedInput),
+// cad_option_value_invalid, cad_option_pair_missing, output_* (OutputProblem, output_exists, output_io_error), input_* (BoundedInput),
 // cad_plan_brief_input_invalid (not a cad-brief document), brief_<code> (BriefParser refusal of the draft's brief).
 //
 // Output document (UTF-8, no BOM, compact, deterministic): {"kind":"cad-plan-brief","version":1,"persisted":false,
 // "source":{"file","bytes","sha256","drawing_file","drawing_sha256"},"options":{"min_confidence","confirmed_rooms",
-// "confirmed_reasons"} (distinct, ordinal order),"valid","brief" (BriefSerializer canonical text, verbatim),"kept",
+// "confirmed_reasons" (distinct, ordinal order)[,"site_width_m","site_depth_m" (only with a site)][,"name" (only with
+// --name)]},"valid","brief" (BriefSerializer canonical text, verbatim),"kept",
 // "dropped","unknown_confirmed_rooms","unknown_confirmed_reasons","issues"}. An invalid planner brief (for example every
 // room dropped: rooms_empty) is a result, not a refusal: it is still written with "valid": false, the stdout envelope
 // says "valid":false, and the exit code is 0; the issues say why. unknown_confirmed_reasons is always [] because
 // unknown reason codes are refused as cad_option_value_invalid; it is kept to mirror BriefPlannerResult.
 internal static class CadPlanBriefCommand
 {
-    public const string Usage = "usage: cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]...";
+    public const string Usage = "usage: cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]... [--site-width w --site-depth d] [--name text]";
     public const string InputInvalid = "cad_plan_brief_input_invalid";
 
     static readonly JsonSerializerOptions Json = new() { Converters = { new JsonStringEnumConverter() } };
@@ -61,7 +71,7 @@ internal static class CadPlanBriefCommand
 
     static void Execute(string[] args)
     {
-        var options = ParseOptions(args);
+        var (options, site) = ParseOptions(args);
         var input = args[1];
         var output = args[2];
         if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string refused) throw new Refusal(refused);
@@ -75,6 +85,7 @@ internal static class CadPlanBriefCommand
         using (var reader = new StreamReader(new MemoryStream(raw, writable: false), System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true)) text = reader.ReadToEnd();
 
         var (draft, drawingFile, drawingSha) = ReadDraft(text);
+        if (site is { } given) options = options with { Constraints = draft.Brief.Constraints with { Site = given } };
         var result = BriefPlanner.ToPlannerBrief(draft, options);
         var briefJson = BriefSerializer.Serialize(result.Brief);
 
@@ -98,6 +109,12 @@ internal static class CadPlanBriefCommand
                 writer.WriteNumber("min_confidence", options.MinConfidence);
                 Strings(writer, "confirmed_rooms", options.ConfirmedRooms);
                 Strings(writer, "confirmed_reasons", options.ConfirmedReasons);
+                if (site is not null)
+                {
+                    writer.WriteNumber("site_width_m", site.WidthMetres.Value);
+                    writer.WriteNumber("site_depth_m", site.DepthMetres.Value);
+                }
+                if (options.Name is { } name) writer.WriteString("name", name);
                 writer.WriteEndObject();
                 writer.WriteBoolean("valid", result.IsValid);
                 writer.WritePropertyName("brief");
@@ -321,44 +338,69 @@ internal static class CadPlanBriefCommand
     static string? OptionalString(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
-    static BriefPlannerOptions ParseOptions(string[] args)
+    static (BriefPlannerOptions Options, BriefSite? Site) ParseOptions(string[] args)
     {
-        double? threshold = null;
+        double? threshold = null, width = null, depth = null;
+        string? name = null;
         var rooms = new SortedSet<string>(StringComparer.Ordinal);
         var reasons = new SortedSet<string>(StringComparer.Ordinal);
         for (var i = 3; i < args.Length; i += 2)
         {
-            var name = args[i];
-            if (name is not ("--min-confidence" or "--confirm" or "--confirm-reason")) throw new Refusal("cad_option_unknown", name);
-            if (name == "--min-confidence" && threshold is not null) throw new Refusal("cad_option_duplicate", name);
-            if (i + 1 >= args.Length) throw new Refusal("cad_option_value_missing", name);
+            var option = args[i];
+            if (option is not ("--min-confidence" or "--confirm" or "--confirm-reason" or "--site-width" or "--site-depth" or "--name")) throw new Refusal("cad_option_unknown", option);
+            if ((option == "--min-confidence" && threshold is not null) || (option == "--site-width" && width is not null)
+                || (option == "--site-depth" && depth is not null) || (option == "--name" && name is not null))
+                throw new Refusal("cad_option_duplicate", option);
+            if (i + 1 >= args.Length) throw new Refusal("cad_option_value_missing", option);
             var value = args[i + 1];
-            switch (name)
+            switch (option)
             {
                 case "--min-confidence":
-                    if (!double.TryParse(value, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent, CultureInfo.InvariantCulture, out var number)
-                        || !double.IsFinite(number) || number < 0 || number > 1)
-                        throw new Refusal("cad_option_value_invalid", name + ": a finite number in [0, 1]");
+                    if (!(Number(value) is { } number && number >= 0 && number <= 1))
+                        throw new Refusal("cad_option_value_invalid", option + ": a finite number in [0, 1]");
                     threshold = number == 0 ? 0.0 : number;
                     break;
+                case "--site-width":
+                case "--site-depth":
+                    if (!(Number(value) is { } side && side >= Bim.Generative.PrototypeGenerator.MinLotSideMetres && side <= Bim.Generative.PrototypeGenerator.MaxLotSideMetres))
+                        throw new Refusal("cad_option_value_invalid", option + ": metres, a finite number in [" + D(Bim.Generative.PrototypeGenerator.MinLotSideMetres) + ", " + D(Bim.Generative.PrototypeGenerator.MaxLotSideMetres) + "]");
+                    if (option == "--site-width") width = side; else depth = side;
+                    break;
+                case "--name":
+                    if (!BriefParser.IsText(value)) throw new Refusal("cad_option_value_invalid", option + ": non-blank text of at most 2048 UTF-16 code units");
+                    name = value;
+                    break;
                 case "--confirm":
-                    if (!BriefParser.IsRoomId(value)) throw new Refusal("cad_option_value_invalid", name + ": a brief room id ([a-z0-9][a-z0-9_-]{0,63})");
+                    if (!BriefParser.IsRoomId(value)) throw new Refusal("cad_option_value_invalid", option + ": a brief room id ([a-z0-9][a-z0-9_-]{0,63})");
                     rooms.Add(value);
                     break;
                 default:
                     if (!BriefPlannerCodes.All.Contains(value, StringComparer.Ordinal))
-                        throw new Refusal("cad_option_value_invalid", name + ": one of " + string.Join(", ", BriefPlannerCodes.All));
+                        throw new Refusal("cad_option_value_invalid", option + ": one of " + string.Join(", ", BriefPlannerCodes.All));
                     reasons.Add(value);
                     break;
             }
         }
-        return new BriefPlannerOptions
+        if ((width is null) != (depth is null))
+            throw new Refusal("cad_option_pair_missing", width is null ? "--site-depth needs --site-width" : "--site-width needs --site-depth");
+        var options = new BriefPlannerOptions
         {
             MinConfidence = threshold ?? BriefPlannerOptions.DefaultMinConfidence,
             ConfirmedRooms = rooms.ToArray(),
             ConfirmedReasons = reasons.ToArray(),
+            Name = name,
         };
+        var site = width is { } w && depth is { } d ? new BriefSite(new BriefValue<double>(w), new BriefValue<double>(d)) : null;
+        return (options, site);
     }
+
+    // The option number grammar: invariant culture, optional sign, decimal point and exponent, no whitespace or
+    // thousands separators; null when it does not parse or is not finite.
+    static double? Number(string value) =>
+        double.TryParse(value, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent, CultureInfo.InvariantCulture, out var number) && double.IsFinite(number)
+            ? number : null;
+
+    static string D(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 
     static string I(int value) => value.ToString(CultureInfo.InvariantCulture);
 
