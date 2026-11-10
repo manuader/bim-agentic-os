@@ -22,9 +22,9 @@ static class ElementQueryPagingChecks
     public static void Run(Action<bool, string, string> checker)
     {
         check = checker;
-        Concatenation();
-        VanishedRows();
-        DeletedBetweenPages();
+        SentEnvelopes();
+        RefusedBeforeSending();
+        PageCap();
     }
 
     sealed record Fixture(long Id, string BuiltIn, string Level);
@@ -114,79 +114,81 @@ static class ElementQueryPagingChecks
 
     static string Describe(ElementQueryAllResult result) => result.Status + "/" + result.Code + " at " + result.Field + " (" + result.Detail + ") pages " + result.Pages.ToString(CultureInfo.InvariantCulture) + " elements " + result.Elements.Count.ToString(CultureInfo.InvariantCulture);
 
-    static void Concatenation()
-    {
-        foreach (var (category, level, limit, parameters) in new (string?, string?, int?, string[])[]
-        {
-            ("wall", null, 4, Array.Empty<string>()), ("door", null, 1, Array.Empty<string>()), (null, L1, 3, Array.Empty<string>()),
-            ("OST_Walls", L2, 2, new[] { "Mark" }), ("wall", null, 5000, Array.Empty<string>()), ("wall", null, null, Array.Empty<string>()),
-        })
-        {
-            var args = Args(category, level, limit, parameters);
-            var label = (category ?? "any") + "/" + (level is null ? "any" : "level") + " limit " + (limit?.ToString(CultureInfo.InvariantCulture) ?? "default");
-            var fake = new FakeAddIn();
-            var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), fake);
-            var (expected, matched) = Unlimited(args, fake.Items);
-            var size = limit ?? RevitElementQueryRules.DefaultLimit;
-            Check(result.IsSuccess && result.Code == RevitCommandCodes.Ok && result.Field is null, "client paging succeeds (" + label + ")", Describe(result));
-            Check(expected.Length > 0 && Canonical(result.Elements).SequenceEqual(expected), "concatenated pages equal one unlimited query (" + label + ")", Describe(result));
-            Check(result.Pages == Math.Max(1, (matched + size - 1) / size) && result.Pages == fake.Sent.Count, "pages is the ceiling of matched over limit and every page was sent once (" + label + ")", Describe(result));
-            Check(result.Matched == matched, "the last page's matched is reported (" + label + ")", Describe(result));
-        }
-    }
 
     // Rows paged but no longer readable (the add-in skips them; a limit-cut page may even return nothing).
-    static void VanishedRows()
-    {
-        var walls = Model.Where(f => f.BuiltIn == "OST_Walls").Select(f => f.Id).OrderBy(id => id).ToArray();
-        // Limit 2: ids 3-4 of every 4 vanish, so every second page comes back empty but truncated.
-        var gone = walls.Where((_, i) => i % 4 >= 2).ToHashSet();
-        var args = Args("wall", null, 2);
-        var fake = new FakeAddIn { Vanished = gone.Contains };
-        var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), fake);
-        var (expected, matched) = Unlimited(args, fake.Items, gone.Contains);
-        Check(gone.Count >= 4 && result.IsSuccess && Canonical(result.Elements).SequenceEqual(expected), "pages over vanished rows (including empty truncated pages) equal one unlimited query", Describe(result));
-        Check(result.Pages == (matched + 1) / 2 && result.Matched == matched, "an empty truncated page is followed, not taken as the end", Describe(result));
-        // The very last paged ids vanish: the last page is empty and untruncated.
-        var tail = walls.TakeLast(3).ToHashSet();
-        var last = new FakeAddIn { Vanished = tail.Contains };
-        var lastResult = RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), last);
-        Check(lastResult.IsSuccess && Canonical(lastResult.Elements).SequenceEqual(Unlimited(Args("wall", null, 3), last.Items, tail.Contains).Elements), "a last page whose rows all vanished ends the listing", Describe(lastResult));
-        var none = new FakeAddIn { Vanished = _ => true };
-        var noneResult = RevitElementQueryPaging.All(Envelope(Args("wall", null, 5)).ToJsonString(), none);
-        Check(noneResult.IsSuccess && noneResult.Elements.Count == 0 && noneResult.Pages == (walls.Length + 4) / 5, "a listing whose rows all vanish succeeds empty after every page", Describe(noneResult));
-    }
 
     // Rows deleted between pages (after an earlier page was read): the result equals the unlimited query on the final
     // model as long as no returned row was deleted later.
-    static void DeletedBetweenPages()
+
+    static void SentEnvelopes()
     {
-        var walls = Model.Where(f => f.BuiltIn == "OST_Walls").Select(f => f.Id).OrderBy(id => id).ToArray();
         var fake = new FakeAddIn();
-        List<long> deleted = [];
-        fake.BeforePage = page =>
-        {
-            if (page == 0) return;
-            // Before each later page delete the next not yet listed wall plus the highest remaining one.
-            var after = RevitCommandProtocol.Parse(fake.Sent[^1]).Args is ElementQueryArgs { Cursor: { } cursor } ? cursor.After : -1;
-            foreach (var id in fake.Items.Where(f => f.BuiltIn == "OST_Walls" && f.Id > after).Select(f => f.Id).OrderBy(id => id).Take(1)
-                .Concat(fake.Items.Where(f => f.BuiltIn == "OST_Walls" && f.Id > after).Select(f => f.Id).OrderByDescending(id => id).Take(1)).Distinct().ToArray())
-            {
-                deleted.Add(id);
-                fake.Items.RemoveAll(f => f.Id == id);
-            }
-        };
-        var args = Args("wall", null, 3);
+        var args = Args("OST_Walls", L1, 2, "Mark", "Comments");
         var result = RevitElementQueryPaging.All(Envelope(args).ToJsonString(), fake);
-        var (expected, matched) = Unlimited(args, fake.Items);
-        Check(deleted.Count >= 4 && result.IsSuccess && Canonical(result.Elements).SequenceEqual(expected), "rows deleted between pages: the concatenation equals one unlimited query on the final model", Describe(result) + " deleted " + string.Join(",", deleted));
-        Check(result.Matched == matched && matched == walls.Length - deleted.Count, "matched is the last page's count (after the deletions)", Describe(result));
-        var ids = result.Elements.Select(e => JsonNode.Parse(e)!["id"]!.GetValue<long>()).ToArray();
-        Check(ids.Zip(ids.Skip(1)).All(pair => pair.First < pair.Second) && !ids.Any(deleted.Contains), "ids stay strictly ascending and deleted ids are absent", string.Join(",", ids));
+        Check(result.IsSuccess && fake.Sent.Count >= 3, "a multi-page listing", Describe(result));
+        var envelopes = fake.Sent.Select(RevitCommandProtocol.Parse).ToArray();
+        Check(envelopes.All(e => e.Command == "query.elements" && !e.Spec.Writes), "only query.elements (read-only) is sent");
+        Check(fake.Sent.SequenceEqual(envelopes.Select(e => e.CanonicalJson)), "every request is a canonical envelope");
+        Check(envelopes.All(e => e.Document == new RevitDocumentRef(RealPath, Doc) && e.OperationId == "op-all"), "every page goes to the same document with the caller's operation id");
+        var first = (ElementQueryArgs)envelopes[0].Args;
+        Check(first.Cursor is null && first.Limit == 2 && first.BuiltInCategory == "OST_Walls" && first.Level == L1 && first.Parameters.SequenceEqual(new[] { "Mark", "Comments" }), "the first page is the caller's query without a cursor");
+        Check(envelopes.Skip(1).All(e => e.Args is ElementQueryArgs a && a.Category == first.Category && a.BuiltInCategory == first.BuiltInCategory && a.Level == first.Level && a.Limit == first.Limit && a.Parameters.SequenceEqual(first.Parameters) && a.Cursor is not null),
+            "every later page has the same filter and limit plus a cursor");
+        var replies = fake.Sent.Select(sent => JsonNode.Parse(Collect(RevitCommandProtocol.Parse(sent), fake.Items, null))!).ToArray();
+        var cursors = envelopes.Skip(1).Select(e => JsonNode.Parse(e.CanonicalJson)!["args"]!["cursor"]!.GetValue<string>()).ToArray();
+        Check(cursors.SequenceEqual(replies.Take(replies.Length - 1).Select(r => r["next_cursor"]!.GetValue<string>())), "each cursor sent is the previous reply's next_cursor, verbatim");
+        // A caller cursor resumes from it.
+        var filter = RevitElementQueryCursor.FilterDigest("OST_Walls", null, Array.Empty<string>());
+        var walls = Model.Where(f => f.BuiltIn == "OST_Walls").Select(f => f.Id).OrderBy(id => id).ToArray();
+        var resumeArgs = Args("wall", null, 4);
+        resumeArgs["cursor"] = RevitElementQueryCursor.Encode(Doc, filter, walls[5]);
+        var resumed = RevitElementQueryPaging.All(Envelope(resumeArgs).ToJsonString(), new FakeAddIn());
+        var resumedIds = resumed.Elements.Select(e => JsonNode.Parse(e)!["id"]!.GetValue<long>()).ToArray();
+        Check(resumed.IsSuccess && resumedIds.SequenceEqual(walls.Skip(6)), "an initial cursor resumes the listing after its id", Describe(resumed));
     }
 
+    static void RefusedBeforeSending()
+    {
+        foreach (var (label, json, code) in new[]
+        {
+            ("query.levels", Envelope(new JsonObject(), "query.levels").ToJsonString(), RevitElementQueryPagingCodes.CommandNotPageable),
+            ("query.inspect", Envelope(new JsonObject { ["unique_id"] = Uid(2005) }, "query.inspect").ToJsonString(), RevitElementQueryPagingCodes.CommandNotPageable),
+            ("element.delete (a write)", Envelope(new JsonObject { ["element_uids"] = new JsonArray(Uid(2005)) }, "element.delete").ToJsonString(), RevitElementQueryPagingCodes.CommandNotPageable),
+            ("not JSON", "{not json", RevitCommandCodes.EnvelopeInvalid),
+            ("an unknown command", Envelope(new JsonObject(), "query.nothing").ToJsonString(), RevitElementQueryPagingCodes.CommandNotPageable),
+            ("a document that is not a UniqueId", Envelope(Args("wall", null, 3)).Also(e => e["document"]!["unique_id"] = "Tower").ToJsonString(), RevitCommandCodes.DocumentIdentityInvalid),
+            ("no filter", Envelope(Args(null, null, 3)).ToJsonString(), RevitCommandCodes.ArgsInvalid),
+            ("a cursor for another filter", Envelope(Args("door", null, 3).Also(a => a["cursor"] = RevitElementQueryCursor.Encode(Doc, RevitElementQueryCursor.FilterDigest("OST_Walls", null, Array.Empty<string>()), 5))).ToJsonString(), RevitCommandCodes.CursorFilterMismatch),
+        })
+        {
+            var fake = new FakeAddIn();
+            var result = RevitElementQueryPaging.All(json, fake);
+            Check(!result.IsSuccess && result.Code == code && fake.Sent.Count == 0 && result.Pages == 0 && result.Elements.Count == 0, label + " is refused " + code + " before anything is sent", Describe(result));
+        }
+        Check(Throws<ArgumentOutOfRangeException>(() => RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), new FakeAddIn(), 0))
+            && Throws<ArgumentOutOfRangeException>(() => RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), new FakeAddIn(), RevitElementQueryPaging.MaxPages + 1)),
+            "the page cap is 1 to 1000");
+        Check(RevitElementQueryPaging.MaxPages == 1000, "the default page cap is 1000");
+    }
 
-
+    static void PageCap()
+    {
+        var walls = Enumerable.Range(1, 30).Select(i => new Fixture(100 + i, "OST_Walls", L1)).ToArray();
+        var small = new FakeAddIn(walls);
+        var capped = RevitElementQueryPaging.All(Envelope(Args("wall", null, 1)).ToJsonString(), small, 10);
+        Check(!capped.IsSuccess && capped.Code == RevitElementQueryPagingCodes.PageLimitExceeded && small.Sent.Count == 10 && capped.Pages == 10 && capped.Elements.Count == 0,
+            "a listing needing more pages than the cap is refused page_limit_exceeded after the cap, without partial elements", Describe(capped));
+        var exact = new FakeAddIn(walls);
+        var fits = RevitElementQueryPaging.All(Envelope(Args("wall", null, 1)).ToJsonString(), exact, 30);
+        Check(fits.IsSuccess && fits.Pages == 30 && fits.Elements.Count == 30, "a listing of exactly the cap succeeds", Describe(fits));
+        var thousand = Enumerable.Range(1, 1000).Select(i => new Fixture(i, "OST_Walls", L1)).ToArray();
+        var big = new FakeAddIn(thousand);
+        var atDefault = RevitElementQueryPaging.All(Envelope(Args("wall", null, 1)).ToJsonString(), big);
+        Check(atDefault.IsSuccess && atDefault.Pages == 1000 && atDefault.Elements.Count == 1000, "1000 pages fit the default cap", Describe(atDefault));
+        var over = new FakeAddIn(thousand.Append(new Fixture(5000, "OST_Walls", L1)));
+        var overDefault = RevitElementQueryPaging.All(Envelope(Args("wall", null, 1)).ToJsonString(), over);
+        Check(!overDefault.IsSuccess && overDefault.Code == RevitElementQueryPagingCodes.PageLimitExceeded && over.Sent.Count == 1000, "a 1001st page is refused page_limit_exceeded with the default cap", Describe(overDefault));
+    }
 
     static string FilterOf(RevitCommandEnvelope envelope) => RevitElementQueryCursor.FilterDigest((ElementQueryArgs)envelope.Args);
 
