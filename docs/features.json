@@ -1374,7 +1374,7 @@
         "interfaces/cli/CatalogueReportCommand.cs",
         "tests/cli/CatalogueReportTests.cs",
         "tests/cli/catalogue-report-record.ps1",
-        "tests/cli/catalogue-report"
+        "tests/cli/catalogue-report/pass/catalogue-run1.json"
       ],
       "blocker": "never run on a real owner -Catalogue record (end-to-end records come from the fake executor); run-time sha row matched by its Spanish check text; exit 0 even when the report shows failures.",
       "scope": "P1-12: read-only `catalogue-report --run .bim/native-runs/<run>` finds .bim/native-sessions/<utc>/catalogue-run<i>.json through summary.json, checks the record against its steps, prints per-group passed/failed/blocked/not_sent counts, failing steps with requested vs observed (raw_response for non-JSON), blocked steps and the copy sha256 re-hashed on disk (regular files only, bounded) against c-save's readback, as deterministic ASCII JSON; refuses traversal, paths outside .bim/native-runs, links, malformed/inconsistent/oversized records with typed catalogue_report_* codes; end-to-end on records written by the real owner record writer (clean/mixed/nocopy/v1only). CI red 42733295077, green 42734609677, review red 42747523781, green 42749563142."
