@@ -1,11 +1,13 @@
 #nullable enable
 using System.Buffers;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Bim.Core;
+using Microsoft.Win32.SafeHandles;
 
 namespace Bim.Cli;
 
@@ -22,35 +24,42 @@ namespace Bim.Cli;
 //       response, passed, blocked, reason, expected, comparisons[] of {check, requested, observed, ok}).
 // The run record lives in the session folder, not in the run folder, so the record is found through the session
 // summaries: exactly one summary run entry whose run_directory's last segment is <run> (summaries that are links, over
-// MaxSummaryBytes, not JSON or not mode "catalogue" are skipped; at most MaxSessions session folders are scanned).
+// MaxSummaryBytes, not JSON or not mode "catalogue" are skipped; at most MaxSessionFolders session folders are listed and
+// at most MaxSessions catalogue summaries read). The record's session_stamp, when present, must be the session folder's
+// name (the session writes both from one stamp).
 //
 // Path rule: the repository root is the one every verb uses (RevitCommandPolicy.RepositoryRoot from the binary's
 // location). <dir> must not contain a ".." segment (catalogue_report_run_traversal) and, after Path.GetFullPath, must be
 // exactly one level below <repository>/.bim/native-runs (catalogue_report_run_outside; ordinal comparison, ignoring
 // case on Windows). .bim, .bim/native-runs, the run folder, .bim/native-sessions and the copy file may not be links or
-// junctions (catalogue_report_link_refused, detail naming which); a link session folder is skipped.
+// junctions (catalogue_report_link_refused, detail naming which); a link session folder is skipped. A run name with a
+// wildcard, ':' or a control character is catalogue_report_run_invalid. The run name is echoed as it is on disk.
 //
 // The record is checked before anything is reported: duplicate keys, missing or mistyped members, step indexes not
 // 1..n in order, a step both passed and blocked (catalogue_report_record_invalid, detail = the member); groups, overall,
 // counts (v1) and all_passed must equal what the steps say (catalogue_report_record_inconsistent); the record must be
-// about this run (run = the summary index, document_path in <run>: catalogue_report_record_mismatch); the copy path
-// must be a BIM-Agentic-Test-c04-*-copia.rvt file directly in <run> (catalogue_report_copy_outside_run).
+// about this run (run = the summary index, document_path in <run>, session_stamp = the session folder:
+// catalogue_report_record_mismatch). A step's command may be null and its reason any JSON value (echoed as JSON when it
+// is not text), as the writer may record them.
 // Bounds: record MaxRecordBytes (input_too_large, detail "record", like every BoundedInput refusal), MaxSteps steps,
 // MaxComparisons comparisons per step, MaxGroups groups (catalogue_report_bound_exceeded, detail "steps", "comparisons",
 // "groups" or "sessions"); echoed texts are cut at MaxTextChars, echoed JSON values over MaxValueChars become
 // {"truncated_chars":n}, and at most MaxMismatchRows requested-vs-observed rows are printed in all (the rest counted in
-// each step's mismatches_omitted). The copy is hashed only up to MaxCopyBytes (state "too_large" above).
+// each step's mismatches_omitted). The copy is hashed only up to MaxCopyBytes: its length is taken after opening it and
+// reading stops one byte past the cap (state "too_large"). A copy that is not a regular file (a folder, a FIFO, a device)
+// is refused before it is opened (catalogue_report_copy_not_regular_file; lstat on Unix, then the opened handle's type).
 //
 // Success (exit 0) prints one compact JSON object (non-ASCII escaped, so the bytes do not depend on the console):
 // {"status":"succeeded","run":".bim/native-runs/<run>","record":".bim/native-sessions/<s>/catalogue-run<i>.json",
 //  "scope","head","aborted","all_passed","overall":{total,passed,failed,blocked,not_sent},"groups":[{key,...}],
-//  "failing":[{index,group,key,command,sent,reason,expected,observed_status,observed_code,mismatches:[{check,
+//  "failing":[{index,group,key,command,sent,reason,expected,observed_status,observed_code,raw_response,mismatches:[{check,
 //  requested,observed}],mismatches_omitted}],"blocked":[{index,group,key,sent,reason}],
 //  "copy":{state,file,save_step,save_passed,recorded_check_ok,recorded_sha256,recorded_bytes,disk_sha256,disk_bytes}}.
 // failed = total - passed - blocked (the session's own rule: a step not sent and not blocked is failed). copy.state:
 // match | mismatch (the file on disk now differs from the sha256/bytes recorded by c-save) | missing_file | not_saved
-// (c-save not sent or no copy path recorded) | not_in_run (no c-save step, e.g. -CatalogueV1Only) |
-// no_recorded_sha256 | too_large. recorded_check_ok is the run-time "sha256 leído = sha256 del archivo en disco" row.
+// (c-save not sent or no copy path recorded) | not_in_run (no c-save step, e.g. -CatalogueV1Only) | outside_run (the
+// recorded copy path is not a BIM-Agentic-Test-c04-*-copia.rvt directly in <run>: nothing is read, the rest of the report
+// stands) | no_recorded_sha256 | too_large. recorded_check_ok is the run-time "sha256 leído = sha256 del archivo en disco" row.
 // Every refusal prints one {"status":"failed","code"[,"detail"]} envelope and exits 1. catalogue_report_internal_error is a
 // defect (type and message on stderr).
 internal static class CatalogueReportCommand
@@ -68,7 +77,7 @@ internal static class CatalogueReportCommand
     public const string RecordInvalid = "catalogue_report_record_invalid";
     public const string RecordInconsistent = "catalogue_report_record_inconsistent";
     public const string RecordMismatch = "catalogue_report_record_mismatch";
-    public const string CopyOutsideRun = "catalogue_report_copy_outside_run";
+    public const string CopyNotRegular = "catalogue_report_copy_not_regular_file";
     public const string BoundExceeded = "catalogue_report_bound_exceeded";
     public const string IoError = "catalogue_report_io_error";
     public const string InternalError = "catalogue_report_internal_error";
@@ -76,6 +85,7 @@ internal static class CatalogueReportCommand
     public const int MaxRecordBytes = 32 * 1024 * 1024;
     public const int MaxSummaryBytes = 1024 * 1024;
     public const int MaxSessions = 1000;
+    public const int MaxSessionFolders = 10_000;
     public const int MaxRunIndex = 10;
     public const int MaxSteps = 1000;
     public const int MaxComparisons = 256;
@@ -106,7 +116,7 @@ internal static class CatalogueReportCommand
         public int Get(string name) => name switch { "total" => Total, "passed" => Passed, "failed" => Failed, "blocked" => Blocked, _ => NotSent };
     }
 
-    sealed record Step(JsonElement Element, int Index, string Group, string Key, string Command, bool Passed, bool Blocked, bool Sent);
+    sealed record Step(JsonElement Element, int Index, string Group, string Key, string? Command, bool Passed, bool Blocked, bool Sent);
 
     public static void Run(string[] args)
     {
@@ -150,6 +160,7 @@ internal static class CatalogueReportCommand
             if (Int(record, "run", "run") != recordIndex) throw new Refusal(RecordMismatch, "run");
             var documentPath = Text(record, "document_path", "document_path", nullable: false)!;
             if (!InRun(documentPath, runName, DocumentName)) throw new Refusal(RecordMismatch, "document_path");
+            if (Optional(record, "session_stamp", "session_stamp") is { } stamp && stamp != sessionName) throw new Refusal(RecordMismatch, "session_stamp");
             var steps = Steps(record);
             var groups = GroupCounts(steps);
             var overall = Count(steps);
@@ -184,7 +195,7 @@ internal static class CatalogueReportCommand
                     writer.WriteString("group", step.Group);
                     writer.WriteString("key", step.Key);
                     writer.WriteBoolean("sent", step.Sent);
-                    WriteText(writer, "reason", Text(step.Element, "reason", $"steps[{step.Index - 1}].reason", nullable: true));
+                    WriteReason(writer, step.Element);
                     writer.WriteEndObject();
                 }
                 writer.WriteEndArray();
@@ -209,11 +220,15 @@ internal static class CatalogueReportCommand
         var parent = Path.GetDirectoryName(full);
         var name = Path.GetFileName(full);
         if (parent is null || name.Length == 0 || !SamePath(parent, runs)) throw new Refusal(RunOutside);
-        if (name.Contains(':') || name.Contains('/') || name.Contains('\\')) throw new Refusal(RunInvalid);
+        if (name.IndexOfAny(new[] { ':', '/', '\\', '*', '?', '<', '>', '"', '|' }) >= 0) throw new Refusal(RunInvalid);
         RequireDirectory(bim, ".bim", RunNotFound);
         RequireDirectory(runs, "native-runs", RunNotFound);
         RequireDirectory(full, "run", RunNotFound);
-        return (full, name);
+        // The name as it is on disk (a differently cased argument on Windows still echoes and matches the same name).
+        string onDisk;
+        try { onDisk = new DirectoryInfo(runs).EnumerateDirectories(name).Select(d => d.Name).Where(n => string.Equals(n, name, PathComparison)).OrderBy(n => n, StringComparer.Ordinal).FirstOrDefault() ?? name; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal(IoError, "native-runs"); }
+        return (Path.Combine(runs, onDisk), onDisk);
     }
 
     static void RequireDirectory(string path, string label, string missing)
@@ -254,17 +269,21 @@ internal static class CatalogueReportCommand
         {
             foreach (var directory in Directory.EnumerateDirectories(sessions))
             {
-                if (directories.Count == MaxSessions) throw new Refusal(BoundExceeded, "sessions");
+                if (directories.Count == MaxSessionFolders) throw new Refusal(BoundExceeded, "sessions");
                 directories.Add(directory);
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal(IoError, "native-sessions"); }
         directories.Sort(StringComparer.Ordinal);
         var found = new List<(string Session, int Index, string Path)>();
+        var catalogueSummaries = 0;
         foreach (var directory in directories)
         {
             if (IsLink(new DirectoryInfo(directory))) continue;
-            foreach (var index in MatchingRuns(Path.Combine(directory, "summary.json"), runName))
+            // Only catalogue summaries count toward MaxSessions (A/B sessions and unreadable summaries are skipped).
+            if (MatchingRuns(Path.Combine(directory, "summary.json"), runName) is not { } indexes) continue;
+            if (++catalogueSummaries > MaxSessions) throw new Refusal(BoundExceeded, "sessions");
+            foreach (var index in indexes)
                 found.Add((Path.GetFileName(directory), index, Path.Combine(directory, RecordFile(index))));
         }
         if (found.Count == 0) throw new Refusal(RecordNotFound);
@@ -274,19 +293,20 @@ internal static class CatalogueReportCommand
         return record;
     }
 
-    static List<int> MatchingRuns(string summaryPath, string runName)
+    // The run indexes of a catalogue summary that name runName; null when it is not a readable catalogue summary.
+    static List<int>? MatchingRuns(string summaryPath, string runName)
     {
         var result = new List<int>();
-        if (!File.Exists(summaryPath)) return result;
+        if (!File.Exists(summaryPath)) return null;
         byte[] bytes;
         try { bytes = BoundedInput.ReadBytes(summaryPath, MaxSummaryBytes); }
-        catch (InputRejectedException) { return result; }
+        catch (InputRejectedException) { return null; }
         try
         {
             using var document = JsonDocument.Parse(Decode(bytes));
             var summary = document.RootElement;
-            if (summary.ValueKind != JsonValueKind.Object) return result;
-            if (!summary.TryGetProperty("mode", out var mode) || mode.ValueKind != JsonValueKind.String || mode.GetString() != "catalogue") return result;
+            if (summary.ValueKind != JsonValueKind.Object) return null;
+            if (!summary.TryGetProperty("mode", out var mode) || mode.ValueKind != JsonValueKind.String || mode.GetString() != "catalogue") return null;
             if (!summary.TryGetProperty("runs", out var runs) || runs.ValueKind != JsonValueKind.Array) return result;
             foreach (var run in runs.EnumerateArray())
             {
@@ -297,7 +317,7 @@ internal static class CatalogueReportCommand
                 if (segments.Length > 0 && string.Equals(segments[^1], runName, PathComparison) && !result.Contains(index)) result.Add(index);
             }
         }
-        catch (JsonException) { }
+        catch (JsonException) { return null; }
         return result;
     }
 
@@ -327,11 +347,11 @@ internal static class CatalogueReportCommand
             if (!GroupKey.IsMatch(group)) throw new Refusal(RecordInvalid, at + ".group");
             var key = Text(step, "key", at + ".key", nullable: false)!;
             if (key.Length == 0 || key.Length > 128) throw new Refusal(RecordInvalid, at + ".key");
-            var command = Text(step, "command", at + ".command", nullable: false)!;
+            var command = Text(step, "command", at + ".command", nullable: true);
             var passed = Bool(step, "passed", at + ".passed");
             var blocked = Bool(step, "blocked", at + ".blocked");
             if (passed && blocked) throw new Refusal(RecordInvalid, at + ".blocked");
-            Text(step, "reason", at + ".reason", nullable: true);
+            if (!step.TryGetProperty("reason", out _)) throw new Refusal(RecordInvalid, at + ".reason");
             if (!step.TryGetProperty("request", out var request)) throw new Refusal(RecordInvalid, at + ".request");
             var sent = request.ValueKind != JsonValueKind.Null;
             if (sent && request.ValueKind != JsonValueKind.Object) throw new Refusal(RecordInvalid, at + ".request");
@@ -487,11 +507,13 @@ internal static class CatalogueReportCommand
             writer.WriteString("key", step.Key);
             WriteText(writer, "command", step.Command);
             writer.WriteBoolean("sent", step.Sent);
-            WriteText(writer, "reason", Text(element, "reason", "reason", nullable: true));
+            WriteReason(writer, element);
             if (element.TryGetProperty("expected", out var expected)) WriteValue(writer, "expected", expected);
             else writer.WriteNull("expected");
             WriteText(writer, "observed_status", StringMember(element, "response", "status"));
             WriteText(writer, "observed_code", StringMember(element, "response", "code"));
+            // A response that was not JSON is kept by the session as raw_response (cut like every echoed text).
+            WriteText(writer, "raw_response", StringMember(element, "raw_response"));
             var omitted = 0;
             writer.WriteStartArray("mismatches");
             foreach (var comparison in element.GetProperty("comparisons").EnumerateArray())
@@ -527,9 +549,10 @@ internal static class CatalogueReportCommand
                 if (comparison.GetProperty("check").GetString() == ShaCheck) checkOk = comparison.GetProperty("ok").GetBoolean();
             var path = copyPath ?? (readback.HasValue ? StringMember(readback.Value, "path") : null);
             if (!save.Sent || path is null) state = "not_saved";
+            // A path that is not a catalogue copy directly in this run is never opened; the rest of the report stands.
+            else if (!InRun(path, runName, CopyName)) state = "outside_run";
             else
             {
-                if (!InRun(path, runName, CopyName)) throw new Refusal(CopyOutsideRun);
                 file = Segments(path)[^1];
                 if (readback is { } copy)
                 {
@@ -541,17 +564,16 @@ internal static class CatalogueReportCommand
                 var full = Path.Combine(runDirectory, file);
                 var info = new FileInfo(full);
                 if (IsLink(info)) throw new Refusal(LinkRefused, "copy");
+                if (Directory.Exists(full)) throw new Refusal(CopyNotRegular);
                 if (!info.Exists) state = "missing_file";
                 else
                 {
-                    diskBytes = info.Length;
-                    if (info.Length > maxCopyBytes) state = "too_large";
-                    else
-                    {
-                        diskSha = Hash(full);
-                        state = recordedSha is null ? "no_recorded_sha256"
-                            : recordedSha == diskSha && (recordedBytes is null || recordedBytes == diskBytes) ? "match" : "mismatch";
-                    }
+                    var (sha, bytes) = Hash(full, maxCopyBytes);
+                    diskSha = sha;
+                    diskBytes = bytes;
+                    state = sha is null ? "too_large"
+                        : recordedSha is null ? "no_recorded_sha256"
+                        : recordedSha == sha && (recordedBytes is null || recordedBytes == bytes) ? "match" : "mismatch";
                 }
             }
         }
@@ -568,15 +590,70 @@ internal static class CatalogueReportCommand
         writer.WriteEndObject();
     }
 
-    // Lowercase hex SHA-256; Revit may keep the copy open, so it is opened shared for write and delete (read only).
-    static string Hash(string path)
+    // Lowercase hex SHA-256 and length of the copy, or a null hash when it is longer than maxCopyBytes. Revit may keep the
+    // copy open, so it is opened shared for write and delete (read only). Never opens anything but a regular file: on Unix
+    // lstat first (opening a FIFO would block), then the opened handle's type on every system; the length is the opened
+    // file's, and reading stops one byte past the cap whatever the length said.
+    static (string? Sha, long Bytes) Hash(string path, long maxCopyBytes)
     {
-        try
+        if (!OperatingSystem.IsWindows())
         {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16, FileOptions.SequentialScan);
-            return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+            var pathBytes = Encoding.UTF8.GetBytes(path + "\0");
+            if ((UnixMode(status => NativeLStat(pathBytes, status)) & TypeMask) != RegularType) throw new Refusal(CopyNotRegular);
         }
+        FileStream stream;
+        try { stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal(IoError, "copy"); }
+        using (stream)
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows()) { if (GetFileType(stream.SafeFileHandle) != FileTypeDisk) throw new Refusal(CopyNotRegular); }
+                else if ((UnixMode(status => NativeFStat(stream.SafeFileHandle, status)) & TypeMask) != RegularType) throw new Refusal(CopyNotRegular);
+                var length = stream.Length;
+                if (length > maxCopyBytes) return (null, length);
+                using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var buffer = new byte[64 * 1024];
+                long total = 0;
+                int read;
+                while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    total += read;
+                    if (total > maxCopyBytes) return (null, length);
+                    hash.AppendData(buffer, 0, read);
+                }
+                return (Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(), total);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal(IoError, "copy"); }
+        }
+    }
+
+    // File type checks as in BoundedInput: GetFileType on Windows; lstat/fstat through the runtime's own native shim on
+    // Unix (FileStatus: int32 Flags then int32 Mode, whose S_IFMT bits are the type). A missing shim fails closed.
+    const int FileTypeDisk = 1, TypeMask = 0xF000, RegularType = 0x8000, StatusBytes = 512;
+    [DllImport("kernel32.dll")]
+    private static extern int GetFileType(SafeFileHandle handle);
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_LStat")]
+    private static extern int NativeLStat(byte[] path, [Out] byte[] status);
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FStat")]
+    private static extern int NativeFStat(SafeFileHandle fd, [Out] byte[] status);
+
+    static int UnixMode(Func<byte[], int> call)
+    {
+        var status = new byte[StatusBytes];
+        int result;
+        try { result = call(status); }
+        catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException) { throw new Refusal(IoError, "copy_type_unverifiable"); }
+        if (result != 0) throw new Refusal(IoError, "copy");
+        return BitConverter.ToInt32(status, 4);
+    }
+
+    static void WriteReason(Utf8JsonWriter writer, JsonElement step)
+    {
+        var reason = step.GetProperty("reason");
+        if (reason.ValueKind == JsonValueKind.String) WriteText(writer, "reason", reason.GetString());
+        else if (reason.ValueKind == JsonValueKind.Null) writer.WriteNull("reason");
+        else WriteValue(writer, "reason", reason);
     }
 
     static void WriteText(Utf8JsonWriter writer, string name, string? text)
