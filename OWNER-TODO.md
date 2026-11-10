@@ -179,3 +179,8 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - No new owner action (P2-10 drift-select CLI/MCP, P5-10 lock-checked jurisdictions, P10-10 install-addin -Archive are headless and unit-tested in CI; main 308c756).
 - Optional, when convenient: try `pwsh -NoProfile -File scripts/install-addin.ps1 -Archive <release.zip> -AssemblyPath <Bim.Revit.dll> -RevitUserAddins` on your machine after `git pull` (Windows staging uses a protected ACL).
 - Still open: 🔒 ONE `-Catalogue` run (103 steps), N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence, delete stray branches relay159-P6-09-baseline, relay161-P8-08-probe, relay168-P6-11-baseline.
+
+## Relay171 (2026-11-10, cloud)
+- `git pull` (main 89b29cd). New: CLI `catalogue-report --run .bim/native-runs/<run>` — after your next `-Catalogue` run, it summarises the result (per-group counts, failing steps requested vs observed, copy sha256). New Revit command `document.save_as` (compiled only): a test copy may only Save As into .bim/native-runs; an owner project into an enabled root, never overwriting.
+- [ ] 🔒 Optional, with Revit: `document.save_as` has never run in Revit. It will be added to the -Catalogue copia group by a later relay; until then nothing to do. After the next `-Catalogue` run, `dotnet run --project interfaces/cli -- catalogue-report --run .bim/native-runs/<run-guid>` and paste the output in chat if anything failed.
+- Still open: 🔒 ONE `-Catalogue` run (103 steps, answer No at the save prompt), N21 run 3, escritorio/estudio/biblioteca class, Uniclass licence, delete stray branches (`git push origin --delete relay168-P6-11-baseline relay159-P6-09-baseline relay161-P8-08-probe`).
