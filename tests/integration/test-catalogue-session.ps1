@@ -739,7 +739,7 @@ $server = $null
 try {
     $pwsh = (Get-Process -Id $PID).Path
     $start = [Diagnostics.ProcessStartInfo]::new($pwsh)
-    foreach ($argument in @('-NoProfile', '-File', "$PSScriptRoot/fake-revit-command-pipe.ps1", '-PipeName', $pipeName, '-DocumentUid', $documentUid, '-ReadyFile', $ready, '-LogFile', $log, '-MaxRequests', '500', '-TimeoutSeconds', '900')) { $start.ArgumentList.Add($argument) }
+    foreach ($argument in @('-NoProfile', '-File', "$PSScriptRoot/fake-revit-command-pipe.ps1", '-PipeName', $pipeName, '-DocumentUid', $documentUid, '-ReadyFile', $ready, '-LogFile', $log, '-MaxRequests', '2000', '-TimeoutSeconds', '900')) { $start.ArgumentList.Add($argument) }
     $start.UseShellExecute = $false
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
@@ -839,6 +839,21 @@ try {
     Assert ($badPipeAll.Exit -eq 1 -and $badPipeAll.Json.code -eq 'explicit_process_pipe_required' -and $null -ne $badPipeAll.Json.PSObject.Properties['pages'] -and [int]$badPipeAll.Json.pages -eq 0) "revit-command --all reports an early refusal in the listing shape: $($badPipeAll.Raw)"
     $unknownOption = & $runAll 'unknown-option' ([ordered]@{ protocol_version = 1; operation_id = 'p115-all-unknown'; document = $allDocument; command = 'query.elements'; args = [ordered]@{ category = 'wall' } }) $pipeName '--everything'
     Assert ($unknownOption.Exit -eq 1 -and $unknownOption.Json.code -eq 'explicit_process_pipe_required' -and $unknownOption.Json.field -eq 'args[3]' -and [string]$unknownOption.Json.detail -like '*--everything*' -and @(Get-Content -LiteralPath $log | Where-Object { $_ -eq 'p115-all-unknown' }).Count -eq 0) "revit-command refuses an unknown option by name: $($unknownOption.Raw)"
+    # P1-19: --all opens one pipe connection per page in quick succession; the fake server must accept every next
+    # connection (no window where a page connection is reset between two server instances). 50 paged runs.
+    $stressRuns = 50
+    $stressBad = [Collections.Generic.List[string]]::new()
+    $stressWatch = [Diagnostics.Stopwatch]::StartNew()
+    for ($stress = 1; $stress -le $stressRuns; $stress++) {
+        $stressId = 'p119-stress-' + $stress.ToString('000')
+        $stressRun = & $runAll "stress-$stress" ([ordered]@{ protocol_version = 1; operation_id = $stressId; document = $allDocument; command = 'query.elements'; args = [ordered]@{ category = 'wall'; limit = 1 } }) $pipeName '--all'
+        $stressReceived = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue | Where-Object { $_ -eq $stressId }).Count
+        $stressOk = $stressRun.Exit -eq 0 -and $stressRun.Json.status -eq 'succeeded' -and [int]$stressRun.Json.matched -eq [int]$wallsAll.Json.matched -and [int]$stressRun.Json.pages -eq [int]$stressRun.Json.matched -and [int]$stressRun.Json.returned -eq [int]$stressRun.Json.matched -and $stressReceived -eq [int]$stressRun.Json.pages
+        if (!$stressOk) { $stressBad.Add("run ${stress}: code=$($stressRun.Json.code) detail=$($stressRun.Json.detail) pages=$($stressRun.Json.pages) received=$stressReceived") }
+        if ($server.HasExited) { $stressBad.Add("fake pipe server exited after run $stress"); break }
+    }
+    $stressWatch.Stop()
+    Assert ($stressBad.Count -eq 0) "revit-command --all stress: $($stressBad.Count)/$stressRuns paged runs failed in $([int]$stressWatch.Elapsed.TotalSeconds)s; first: $(@($stressBad | Select-Object -First 3) -join ' | ')"
     if ($failures.Count -and $server.HasExited) { $failures.Add('fake pipe server stderr: ' + $serverErr.GetAwaiter().GetResult()) }
     # Dead pipe: the add-in is gone, the CLI cannot connect, the run stops after the first step.
     if (!$server.HasExited) { $server.Kill(); $null = $server.WaitForExit(10000) }

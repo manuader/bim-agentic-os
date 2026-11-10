@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)][string]$DocumentUid,
     [Parameter(Mandatory)][string]$ReadyFile,
     [Parameter(Mandatory)][string]$LogFile,
-    [ValidateRange(1, 1000)][int]$MaxRequests = 400,
+    [ValidateRange(1, 5000)][int]$MaxRequests = 400,
     [ValidateRange(5, 1800)][int]$TimeoutSeconds = 600
 )
 $ErrorActionPreference = 'Stop'
