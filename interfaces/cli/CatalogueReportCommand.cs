@@ -118,7 +118,7 @@ internal static class CatalogueReportCommand
 
     // The verb with the repository root given (Run passes the one every verb uses; tests pass a temporary one) and the
     // copy hashing cap (tests pass a small one). Returns the exit code and the one line Run prints.
-    internal static (int Exit, string Output) Execute(string[] args, string repositoryRoot, long maxCopyBytes = MaxCopyBytes)
+    internal static (int Exit, string Out) Execute(string[] args, string repositoryRoot, long maxCopyBytes = MaxCopyBytes)
     {
         try { return (0, Report(args, repositoryRoot, maxCopyBytes)); }
         catch (Refusal refusal) { return (1, Failure(refusal.Code, refusal.Detail)); }
