@@ -162,9 +162,11 @@ internal static class ApplyEditsTests
             Check(busy.Exit == 1 && busy.Out == FailedCode("apply_edits_store_unavailable"), "refuses a store whose commit lock is held as apply_edits_store_unavailable", D(busy));
             Check(Same(before, Snapshot(chain)), "nothing written to the store when its lock is held");
         }
-        // Racing runs on one head with the same edits: each run's idempotency key is its own, so exactly one commits and
-        // every other is refused (stale head once the winner landed, store unavailable while it holds the lock); none
-        // reports the winner's commit as its own. The store ends at head + 1 with one new journal line and one receipt.
+        // Racing runs planned against one head (--expected-revision 0) with the same edits: each run's idempotency key is
+        // its own, so exactly one commits and every other is refused (stale head once the winner landed, whether it read
+        // the head before or after, store unavailable while the winner holds the lock); none reports the winner's commit
+        // as its own. The store ends at head + 1 with one new journal line and one receipt. (Without --expected-revision a
+        // run that reads the head after the winner landed legitimately applies its edits on that new head.)
         {
             var raced = NewStore(baseProject);
             var racedEdits = Input("raced.edits.json", JsonSerializer.Serialize(new[] { ElementEdit.Update(widened) }));
@@ -173,7 +175,7 @@ internal static class ApplyEditsTests
             for (var i = 0; i < 8; i++)
             {
                 var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
-                foreach (var argument in new[] { cliDll, "apply-edits", "--store", raced, "--edits", racedEdits }) start.ArgumentList.Add(argument);
+                foreach (var argument in new[] { cliDll, "apply-edits", "--store", raced, "--edits", racedEdits, "--expected-revision", "0" }) start.ArgumentList.Add(argument);
                 var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
                 _ = process.StandardError.ReadToEndAsync();
                 processes.Add((process, process.StandardOutput.ReadToEndAsync()));
