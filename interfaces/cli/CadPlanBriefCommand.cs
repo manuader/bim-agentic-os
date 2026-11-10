@@ -43,7 +43,8 @@ namespace Bim.Cli;
 //
 // Output document (UTF-8, no BOM, compact, deterministic): {"kind":"cad-plan-brief","version":1,"persisted":false,
 // "source":{"file","bytes","sha256","drawing_file","drawing_sha256"},"options":{"min_confidence","confirmed_rooms",
-// "confirmed_reasons"} (distinct, ordinal order),"valid","brief" (BriefSerializer canonical text, verbatim),"kept",
+// "confirmed_reasons" (distinct, ordinal order)[,"site_width_m","site_depth_m" (only with a site)][,"name" (only with
+// --name)]},"valid","brief" (BriefSerializer canonical text, verbatim),"kept",
 // "dropped","unknown_confirmed_rooms","unknown_confirmed_reasons","issues"}. An invalid planner brief (for example every
 // room dropped: rooms_empty) is a result, not a refusal: it is still written with "valid": false, the stdout envelope
 // says "valid":false, and the exit code is 0; the issues say why. unknown_confirmed_reasons is always [] because
