@@ -260,7 +260,13 @@ static class MirrorDriftAdoptChecks
         var garbledFiles = Files(garbled);
         Check(Code(() => MirrorDriftAdoptCommit.Commit(garbled, adoptAll)) == MirrorDriftAdoptCodes.StoreInvalid && Same(garbledFiles, Files(garbled)), "a store without a project is refused (store_invalid)");
         File.WriteAllText(Path.Combine(garbled, "project.json"), "not json");
-        Check(Code(() => MirrorDriftAdoptCommit.Commit(garbled, adoptAll)) == MirrorDriftAdoptCodes.StoreInvalid, "a store whose project.json is not JSON is refused (store_invalid)");
+        var notJsonFiles = Files(garbled);
+        Check(Code(() => MirrorDriftAdoptCommit.Commit(garbled, adoptAll)) == MirrorDriftAdoptCodes.StoreInvalid && Same(notJsonFiles, Files(garbled)),
+            "a store whose project.json is not JSON is refused (store_invalid) and nothing is written", Code(() => MirrorDriftAdoptCommit.Commit(garbled, adoptAll)));
+        File.WriteAllBytes(Path.Combine(garbled, "project.json"), new byte[] { 0x7B, 0x22, 0xFF, 0xFE, 0x22, 0x7D });
+        var badUtf8Files = Files(garbled);
+        Check(Code(() => MirrorDriftAdoptCommit.Commit(garbled, adoptAll)) == MirrorDriftAdoptCodes.StoreInvalid && Same(badUtf8Files, Files(garbled)),
+            "a store whose project.json is not UTF-8 is refused (store_invalid) and nothing is written", Code(() => MirrorDriftAdoptCommit.Commit(garbled, adoptAll)));
 
         // A commit failing after it started writing (project.tmp is a directory): commit_incomplete, project.json unchanged.
         var broken = NewStore(head);
@@ -291,5 +297,83 @@ static class MirrorDriftAdoptChecks
         try { MirrorDriftAdoptCommit.Commit(sound, null!); Check(false, "a null selection is refused"); }
         catch (ArgumentNullException) { Check(true, "a null selection is refused"); }
         catch (Exception error) { Check(false, "a null selection is refused", error.GetType().Name); }
+
+        Review(head, adoptAll, key);
+    }
+
+    static string PlanCode(Project head, MirrorDriftSelection selection)
+    {
+        try { var (desired, plan) = MirrorDriftAdoptCommit.Plan(head, selection); return "accepted " + plan.Operations.Length + " operations on " + desired.Elements.Length + " elements"; }
+        catch (MirrorDriftAdoptException error) { return error.Code; }
+        catch (Exception error) { return "unexpected " + error.GetType().Name + ": " + error.Message; }
+    }
+
+    // Review follow-ups (SF1, SF2, nits): a concurrent identical commit, every Commit failure typed, malformed heads and
+    // selection headers, creates depending on creates.
+    static void Review(Project head, MirrorDriftSelection adoptAll, string key)
+    {
+        // ---- SF1: a concurrent identical commit lands between this call's receipt check and its ProjectStore.Commit ----
+        var raced = NewStore(head);
+        MirrorDriftAdoptResult? winner = null;
+        SortedDictionary<string, (byte[] Bytes, DateTime Time)>? afterWinner = null;
+        var loser = Accept(() => MirrorDriftAdoptCommit.Commit(raced, adoptAll, plan =>
+        {
+            winner = MirrorDriftAdoptCommit.Commit(raced, adoptAll);
+            afterWinner = Files(raced);
+            return plan;
+        }), "the racing duplicate");
+        Check(winner is { Outcome: MirrorDriftAdoptOutcomes.Committed, Revision: 4 }, "the racing winner commits revision 4", winner is null ? "no winner" : winner.Outcome + " " + winner.Revision);
+        Check(loser is { Outcome: MirrorDriftAdoptOutcomes.Replayed, Revision: 4, Plan: null } && loser.Key == key && loser.Head is not null && J(loser.Head) == J(new ProjectStore(raced).Read()),
+            "a concurrent identical duplicate that finds the receipt inside Commit is reported replayed, not committed", loser is null ? "" : loser.Outcome + " " + loser.Revision);
+        Check(afterWinner is not null && Same(afterWinner, Files(raced)) && File.ReadAllLines(Path.Combine(raced, "journal.jsonl")).Length == 1 && Receipts(raced).Count == 1,
+            "the duplicate writes nothing: one journal line, one receipt, one revision", Names(Files(raced)));
+
+        // ---- SF2: every failure of ProjectStore.Commit is typed ----
+        var mismatched = NewStore(head);
+        var mismatchedFiles = Files(mismatched);
+        var mismatch = Code(() => MirrorDriftAdoptCommit.Commit(mismatched, adoptAll, plan => plan with { DirtyIds = Array.Empty<Guid>() }));
+        Check(mismatch == MirrorDriftAdoptCodes.InternalError && Same(mismatchedFiles, Files(mismatched)), "Commit's plan_mismatch is drift_adopt_internal_error and nothing is written", mismatch);
+        var corrupted = NewStore(head);
+        SortedDictionary<string, (byte[] Bytes, DateTime Time)>? corruptedFiles = null;
+        var corrupt = Code(() => MirrorDriftAdoptCommit.Commit(corrupted, adoptAll, plan =>
+        {
+            File.WriteAllText(Path.Combine(corrupted, "project.json"), "not json");
+            corruptedFiles = Files(corrupted);
+            return plan;
+        }));
+        Check(corrupt == MirrorDriftAdoptCodes.StoreInvalid && corruptedFiles is not null && Same(corruptedFiles, Files(corrupted)),
+            "project.json turning to non-JSON before Commit reads it is store_invalid and nothing is written", corrupt);
+
+        // ---- Nits: malformed heads given to Plan, selection headers disagreeing with their restore plan ----
+        Check(PlanCode(head, adoptAll) == "accepted 3 operations on " + head.Elements.Length + " elements", "Plan accepts the fixture head", PlanCode(head, adoptAll));
+        Check(PlanCode(head with { Elements = head.Elements.Select((element, i) => i == 0 ? element with { GeometryMetres = null! } : element).ToArray() }, adoptAll) == MirrorDriftAdoptCodes.StoreInvalid,
+            "Plan refuses a head element with null geometry (store_invalid)");
+        Check(PlanCode(head with { Elements = head.Elements.Select((element, i) => i == 0 ? element with { Dependencies = null! } : element).ToArray() }, adoptAll) == MirrorDriftAdoptCodes.StoreInvalid,
+            "Plan refuses a head element with null dependencies (store_invalid)");
+        Check(PlanCode(head with { Elements = null! }, adoptAll) == MirrorDriftAdoptCodes.StoreInvalid, "Plan refuses a head without elements (store_invalid)");
+        var sound = NewStore(head);
+        var soundFiles = Files(sound);
+        var otherProject = adoptAll with { RestorePlan = adoptAll.RestorePlan with { ProjectId = Guid.Parse("b0000000-0000-4000-8000-000000000000") } };
+        Check(Code(() => MirrorDriftAdoptCommit.Commit(sound, otherProject)) == MirrorDriftAdoptCodes.SelectionInvalid, "a restore plan bound to another project than the selection is refused (selection_invalid)",
+            Code(() => MirrorDriftAdoptCommit.Commit(sound, otherProject)));
+        var otherRevision = adoptAll with { RestorePlan = adoptAll.RestorePlan with { ExpectedRevision = 2 } };
+        Check(Code(() => MirrorDriftAdoptCommit.Commit(sound, otherRevision)) == MirrorDriftAdoptCodes.SelectionInvalid, "a restore plan bound to another revision than the selection is refused (selection_invalid)",
+            Code(() => MirrorDriftAdoptCommit.Commit(sound, otherRevision)));
+        Check(PlanCode(head, otherRevision) == MirrorDriftAdoptCodes.SelectionInvalid, "Plan refuses the same header disagreement");
+        Check(Same(soundFiles, Files(sound)), "nothing is written for a selection whose header disagrees");
+
+        // ---- A create depending on another create of the same selection, in either order ----
+        var wallCreate = adoptAll.Operations.Single(operation => operation.Action == "create");
+        var door = head.Elements.Single(element => element.Id == CoreD1);
+        var hosted = new Operation("create", door with { Id = Guid.Parse("c0000000-0000-4000-8000-0000000000f1"), Dependencies = new[] { wallCreate.Element.Id } });
+        foreach (var (label, operations) in new[] { ("host first", new[] { wallCreate, hosted }), ("dependant first", new[] { hosted, wallCreate }) })
+        {
+            var chained = NewStore(head);
+            var result = Accept(() => MirrorDriftAdoptCommit.Commit(chained, adoptAll with { Operations = operations }), "a create depending on another create (" + label + ")");
+            var stored = new ProjectStore(chained).Read();
+            Check(result is { Outcome: MirrorDriftAdoptOutcomes.Committed, Revision: 4 } && stored.Elements.Length == head.Elements.Length + 2 && Compiler.Validate(stored).Length == 0
+                && stored.Elements.Any(element => element.Id == hosted.Element.Id && element.Dependencies.SequenceEqual(new[] { wallCreate.Element.Id })),
+                "a create depending on another create of the same selection commits (" + label + ")", JsonSerializer.Serialize(stored));
+        }
     }
 }

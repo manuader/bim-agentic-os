@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Bim.MirrorJournal.Tests")]
 namespace Bim.Core;
 
 // P2-12 commit adopted drift into Core (no provenance). MirrorDriftAdoptCommit: from a P2-09 selection (MirrorDriftSelect.Select) and the
@@ -46,6 +47,7 @@ public static class MirrorDriftAdoptCodes
     public const string InvalidIr = "drift_adopt_invalid_ir";
     public const string StoreUnavailable = "drift_adopt_store_unavailable";
     public const string CommitIncomplete = "drift_adopt_commit_incomplete";
+    public const string InternalError = "drift_adopt_internal_error";
 }
 
 public static class MirrorDriftAdoptOutcomes
@@ -113,6 +115,9 @@ public static class MirrorDriftAdoptCommit
         catch (InvalidOperationException error) when (error.Message == "invalid_ir") { throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "the head fails validation"); }
         return (desired, plan);
     }
+
+    // Review red stub: the seam is not wired yet.
+    internal static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection, Func<ExecutionPlan, ExecutionPlan>? beforeCommit) => Commit(storeDirectory, selection);
 
     public static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection)
     {
