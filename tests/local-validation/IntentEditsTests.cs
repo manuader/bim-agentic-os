@@ -158,7 +158,8 @@ static class IntentEditsOracle
         if (Json(ordered.After) != Json(a)) return "ordered incremental after is not compile(after)";
         if (Json(ordered.Plan) != Json(expected)) return "ordered plan is not byte-identical to Compiler.Diff(B, A)";
         if (Json(ordered.Work) != Json(result.Work)) return "ordered work " + Json(ordered.Work) + " differs from the default diff's " + Json(result.Work);
-        if (!ordered.After.Elements.All(element => b.Elements.Any(prior => ReferenceEquals(prior, element)) || edits.Any(edit => ReferenceEquals(edit.Element, element))))
+        var instances = new HashSet<object>(b.Elements.Concat(edits.Where(edit => edit.Element is not null).Select(edit => (Element)edit.Element!)), ReferenceEqualityComparer.Instance);
+        if (!ordered.After.Elements.All(instances.Contains))
             return "ordered after holds an element that is neither a before instance nor an edit's element";
         if (Json(index.Diff(edits, int.MaxValue, null).Plan) != Json(plan)) return "a null create order changes the default plan";
         var advanced = index.Advance(ordered);
@@ -360,6 +361,53 @@ static class IntentEditsOracle
         var reversedResult = tallerIndex.Diff(tallerSet.Edits, createOrder: reversedCreates);
         check(Json(reversedResult.Plan) == Json(Compiler.Diff(tallerSet.Before, reversedResult.After)) && reversedResult.After.Elements.Length == tallerSet.After.Elements.Length,
             "ordered creates: any comparer gives a plan byte-identical to Compiler.Diff(before, result.After)", "");
+        check(Json(reversedResult.After) != Json(tallerDefault.After) && Json(reversedResult.After) != Json(tallerOrdered.After),
+            "ordered creates: a reversed comparer places creates differently from both the default and the compile order", "");
+        // Advance of a result placed by a non-target comparer equals Build of that result's project (and of the committed one).
+        check(IncrementalDiffAdvanceOracle.Differ(tallerIndex.Advance(reversedResult), IncrementalDiffIndex.Build(reversedResult.After)) is null,
+            "ordered creates: Advance(result) of a reversed placement equals Build(result.After)",
+            IncrementalDiffAdvanceOracle.Differ(tallerIndex.Advance(reversedResult), IncrementalDiffIndex.Build(reversedResult.After)) ?? "");
+        var reversedCommitted = reversedResult.After with { Revision = reversedResult.After.Revision + 1 };
+        check(IncrementalDiffAdvanceOracle.Differ(tallerIndex.Advance(reversedResult, reversedCommitted), IncrementalDiffIndex.Build(reversedCommitted)) is null,
+            "ordered creates: Advance(result, committed) of a reversed placement equals Build(committed)",
+            IncrementalDiffAdvanceOracle.Differ(tallerIndex.Advance(reversedResult, reversedCommitted), IncrementalDiffIndex.Build(reversedCommitted)) ?? "");
+        // An inconsistent (random-sign, fixed seed) comparer still gives A's elements and a plan equal to Compiler.Diff.
+        var coin = new Random(9110);
+        var randomResult = tallerIndex.Diff(tallerSet.Edits, createOrder: Comparer<Element>.Create((x, y) => coin.Next(3) - 1));
+        check(randomResult.After.Elements.Select(element => element.Id).Order().SequenceEqual(tallerSet.After.Elements.Select(element => element.Id).Order())
+            && Json(randomResult.Plan) == Json(Compiler.Diff(tallerSet.Before, randomResult.After))
+            && IncrementalDiffAdvanceOracle.Differ(tallerIndex.Advance(randomResult), IncrementalDiffIndex.Build(randomResult.After)) is null,
+            "ordered creates: a random-sign comparer gives compile(after)'s elements, a plan equal to Compiler.Diff(before, result.After) and a consistent Advance", "");
+        // A throwing comparer: one typed refusal (InvalidOperationException edit_create_order_failed, cause inside)
+        // for one create (merge only) and for two or three (sort), and the index stays usable.
+        var provenance = tallerSet.Before.Elements[0].Provenance;
+        ElementEdit NewLevel(int i) => ElementEdit.Create(new Element(Id("ordered-level-" + N(i)), "level", new[] { 10.0 + i }, Array.Empty<Guid>(), provenance));
+        var throwing = Comparer<Element>.Create((x, y) => throw new FormatException("comparer boom"));
+        foreach (var edits in new[] { new[] { NewLevel(1) }, new[] { NewLevel(1), NewLevel(2) }, tallerSet.Edits })
+        {
+            var index = IncrementalDiffIndex.Build(tallerSet.Before);
+            Exception? caught = null;
+            try { index.Diff(edits, createOrder: throwing); }
+            catch (Exception error) { caught = error; }
+            var cause = caught?.InnerException;
+            while (cause is not null and not FormatException) cause = cause.InnerException;
+            var createCount = edits.Count(edit => edit.Action == "create");
+            check(caught is InvalidOperationException && caught.Message == IncrementalDiff.CreateOrderFailed && cause is FormatException,
+                "ordered creates: a throwing comparer with " + N(createCount) + " create(s) is refused edit_create_order_failed with its exception inside", caught is null ? "accepted" : caught.GetType().Name + ": " + caught.Message);
+            var fallback = index.Diff(edits);
+            check(Json(fallback) == Json(IncrementalDiffIndex.Build(tallerSet.Before).Diff(edits)) && IncrementalDiffAdvanceOracle.Differ(index.Advance(fallback), IncrementalDiffIndex.Build(fallback.After)) is null,
+                "ordered creates: after a throwing comparer (" + N(createCount) + " create(s)) the index still diffs and advances like a fresh one", "");
+        }
+        // A comparer that mutates a created element's geometry: the bytes and AfterHash predate it, and Advance
+        // refuses the result as mutated rather than indexing stale bytes.
+        var mutated = tallerIndex.Diff(tallerSet.Edits.Select(edit => edit.Element is null ? edit : edit with { Element = edit.Element with { GeometryMetres = edit.Element.GeometryMetres.ToArray() } }).ToArray(),
+            createOrder: Comparer<Element>.Create((x, y) =>
+            {
+                if (x.Kind == "wall" && x.GeometryMetres[0] < 1000) x.GeometryMetres[0] += 1000;
+                return IncrementalDiff.OrderOf(tallerSet.After).Compare(x, y);
+            }));
+        check(mutated.Plan.AfterHash != Compiler.Hash(mutated.After) && Code(() => tallerIndex.Advance(mutated)) == IncrementalDiff.ResultMutated,
+            "ordered creates: a comparer that mutates a created element is caught by Advance (edit_result_mutated)", Code(() => tallerIndex.Advance(mutated)) ?? "accepted");
         var badEdits = tallerSet.Edits.Append(ElementEdit.Delete(Guid.NewGuid())).ToArray();
         check(Code(() => tallerIndex.Diff(badEdits, createOrder: IncrementalDiff.OrderOf(tallerSet.After))) == IncrementalDiff.UnknownId
             && Code(() => tallerIndex.Diff(tallerSet.Edits, 1, IncrementalDiff.OrderOf(tallerSet.After))) == IncrementalDiff.BoundExceeded,
@@ -491,7 +539,11 @@ static class IntentEditsOracle
                     else firstChainProblem ??= kinds[kind] + " seed " + N(seed) + " step " + N(step) + ": ordered stored chain left compile order";
                     orderedStored = orderedResult.After;
                 }
-                catch (Exception error) { firstChainProblem ??= "unexpected " + error.GetType().Name + ": " + error.Message; }
+                catch (Exception error)
+                {
+                    firstChainProblem ??= "unexpected " + error.GetType().Name + ": " + error.Message;
+                    orderedStored = IntentCompiler.Compile(ProjectId, Revision, next);
+                }
                 if (kind == 0)
                 {
                     var changedRoom = current.Rooms.Zip(next.Rooms).FirstOrDefault(pair => Json(pair.First) != Json(pair.Second)).First;
