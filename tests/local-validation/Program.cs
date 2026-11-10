@@ -349,6 +349,8 @@ try
     IncrementalDiffOracle.Units((condition, name, detail) => Check(condition, name, detail), Build, Role, Door, Window, Id, provenance);
     // ---- P3-06 advancing the incremental index after a diff ----
     IncrementalDiffAdvanceOracle.Units((condition, name, detail) => Check(condition, name, detail), Build, Role, Door, Window, Id, provenance);
+    // ---- P3-09 intent edits to element edit sets ----
+    IntentEditsOracle.Run((condition, name, detail) => Check(condition, name, detail));
     Console.WriteLine(JsonSerializer.Serialize(new { benchmark = "local_validation", revalidated = largeResult.RevalidatedCount, total = largeResult.TotalElements, random_edits = edits, random_revalidated = revalidatedSum, random_total = totalSum }));
 }
 catch (Exception error)
