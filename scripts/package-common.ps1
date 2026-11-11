@@ -111,11 +111,25 @@ $script:PackageSpdxPattern = '\A[A-Za-z0-9.+()-]+( (AND|OR|WITH) [A-Za-z0-9.+()-
 # Vendor reference packages (Nice3point Revit API, Autodesk) are build-only by policy: never listed as shipped.
 $script:PackageVendorPattern = '(?i)^(Nice3point|Revit|Autodesk|AdWindows|UIFramework)'
 
+# MSBuild item metadata names are case-insensitive, as attributes (Version="..") or child elements (<Version>..</Version>).
 function Get-PackageXmlValue($Element, [string]$Name) {
-    $attribute = $Element.GetAttribute($Name)
-    if ($attribute) { return $attribute }
-    foreach ($child in $Element.ChildNodes) { if ($child.NodeType -eq 'Element' -and $child.LocalName -ceq $Name) { return $child.InnerText.Trim() } }
+    foreach ($attribute in $Element.Attributes) { if ($attribute.LocalName -ieq $Name -and $attribute.Value) { return $attribute.Value } }
+    foreach ($child in $Element.ChildNodes) { if ($child.NodeType -eq 'Element' -and $child.LocalName -ieq $Name) { return $child.InnerText.Trim() } }
     return $null
+}
+# NuGet normalised version (as used for global-packages folders): '+metadata' dropped, numeric parts without leading
+# zeros, at least three parts and a fourth part only when non-zero (1.0 -> 1.0.0, 1.2.3.0 -> 1.2.3). $null if not a version.
+function ConvertTo-PackageNuGetVersion([string]$Version) {
+    $core = $Version.Split('+')[0]
+    $dash = $core.IndexOf('-')
+    $release = if ($dash -ge 0) { $core.Substring(0, $dash) } else { $core }
+    $prerelease = if ($dash -ge 0) { $core.Substring($dash) } else { '' }
+    if ($release -cnotmatch '\A[0-9]+(\.[0-9]+){0,3}\z' -or ($prerelease -and $prerelease -cnotmatch '\A-[0-9A-Za-z][0-9A-Za-z.-]*\z')) { return $null }
+    $parts = [Collections.Generic.List[string]]::new()
+    foreach ($part in $release.Split('.')) { $trimmed = $part.TrimStart('0'); $parts.Add($(if ($trimmed) { $trimmed } else { '0' })) }
+    while ($parts.Count -lt 3) { $parts.Add('0') }
+    if ($parts.Count -eq 4 -and $parts[3] -ceq '0') { $parts.RemoveAt(3) }
+    return ($parts -join '.') + $prerelease
 }
 function Get-PackageAssetTokens([string]$Value) { return @($Value.Split(';') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ }) }
 # A reference ships runtime assets unless it excludes runtime/all or names IncludeAssets without runtime/all.
@@ -159,7 +173,7 @@ function Get-PackageNuGetReferences([string]$Root, [string[]]$Projects, [string]
         $files.Add($path)
         $xml = [xml]::new(); $xml.XmlResolver = $null; $xml.Load($path)
         foreach ($reference in $xml.GetElementsByTagName('ProjectReference')) {
-            $include = $reference.GetAttribute('Include')
+            $include = Get-PackageXmlValue $reference 'Include'
             if ($include) { $queue.Enqueue([IO.Path]::GetFullPath((Join-Path (Split-Path $path) $include.Replace('\', '/')))) }
         }
     }
@@ -168,11 +182,12 @@ function Get-PackageNuGetReferences([string]$Root, [string[]]$Projects, [string]
         $relative = Get-PackageRelativePath $base $file
         $xml = [xml]::new(); $xml.XmlResolver = $null; $xml.Load($file)
         foreach ($reference in $xml.GetElementsByTagName('PackageReference')) {
-            $name = $reference.GetAttribute('Include')
+            $name = Get-PackageXmlValue $reference 'Include'
             if (!$name -or $name -match $script:PackageVendorPattern -or !(Test-PackageReferenceShipped $reference)) { continue }
             $raw = Get-PackageXmlValue $reference 'Version'
-            $version = if ($raw -cmatch '\A\[([^,\[\]()]+)\]\z') { $Matches[1].Trim() } else { [string]$raw }
-            if ($version -cnotmatch '\A[0-9A-Za-z][0-9A-Za-z.+-]*\z') { throw "sbom: shipped reference $name in $relative is not pinned to one version: '$raw'" }
+            $pinned = if ($raw -cmatch '\A\[([^,\[\]()]+)\]\z') { $Matches[1].Trim() } else { [string]$raw }
+            $version = ConvertTo-PackageNuGetVersion $pinned
+            if (!$version) { throw "sbom: shipped reference $name in $relative is not pinned to one version: '$raw'" }
             $key = $name.ToLowerInvariant() + '@' + $version.ToLowerInvariant()
             if (!$byKey.Contains($key)) { $byKey[$key] = [pscustomobject]@{ Name = $name; Version = $version; License = (Read-PackageNuspecLicense $PackagesRoot $name $version); Projects = [Collections.Generic.List[string]]::new() } }
             if (!$byKey[$key].Projects.Contains($relative)) { $byKey[$key].Projects.Add($relative) }
@@ -189,6 +204,13 @@ function Get-PackageNuGetReferences([string]$Root, [string[]]$Projects, [string]
         $result.Add([pscustomobject]@{ Name = $entry.Name; Version = $entry.Version; License = $entry.License; Projects = $projectArray })
     }
     return $result.ToArray()
+}
+
+# package.ps1 refuses a shipped reference whose licence did not resolve from its nuspec (typed sbom_license_unknown),
+# unless its name is on the explicit allowlist passed by the caller.
+function Assert-PackageReferenceLicenses([object[]]$References, [string[]]$Allowlist) {
+    $unknown = @($References | Where-Object { $null -ne $_ -and [string]$_.License -ceq 'NOASSERTION' -and @($Allowlist) -inotcontains [string]$_.Name } | ForEach-Object { "$($_.Name)@$($_.Version)" })
+    if ($unknown.Count) { throw "sbom_license_unknown: shipped NuGet reference licence not resolved from its nuspec (declare a licence expression or allowlist it in scripts/package.ps1): $($unknown -join ', ')" }
 }
 
 # Version of a shipped assembly read from its own bytes (managed metadata: AssemblyInformationalVersion without
@@ -263,8 +285,10 @@ function New-PackageSbomText([string]$Directory, [string]$Version, [string]$Comm
 }
 
 # Typed SBOM problems (sbom_missing, sbom_invalid, sbom_build_only, sbom_mismatch). The sbom is re-rendered from the
-# package files and its own reference list and must match byte for byte, so any edit is caught even when
-# manifest.json was re-hashed to agree with it.
+# package files and its own reference list and must match byte for byte, and the references must be canonical
+# (ordinal name/version order, unique, sorted projects), with each assembly carrying its same-name reference's
+# licence. Reference data itself (versions, licences, projects) cannot be checked without the sources and NuGet
+# cache: an sbom whose references were rewritten consistently and whose manifest was re-hashed still verifies.
 function Test-PackageSbom([string]$Directory, $Manifest) {
     $base = [IO.Path]::GetFullPath($Directory)
     $problems = [Collections.Generic.List[string]]::new()
@@ -284,6 +308,17 @@ function Test-PackageSbom([string]$Directory, $Manifest) {
         }
         $references.Add([pscustomobject]@{ Name = $name; Version = [string]$ref.version; License = [string]$ref.license; Projects = [string[]]@($ref.projects | ForEach-Object { [string]$_ }) })
     }
+    $order = [Collections.Generic.List[string]]::new()
+    $unique = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    for ($i = 0; $i -lt $references.Count; $i++) {
+        $key = $references[$i].Name + "`0" + $references[$i].Version
+        if (!$unique.Add($key)) { $order.Add("duplicate reference $($references[$i].Name)@$($references[$i].Version)") }
+        elseif ($i -gt 0 -and [string]::CompareOrdinal($references[$i - 1].Name + "`0" + $references[$i - 1].Version, $key) -ge 0) { $order.Add("$($references[$i].Name)@$($references[$i].Version) out of ordinal name/version order") }
+        $projects = [string[]]@($references[$i].Projects)
+        $sortedProjects = [string[]]@([Linq.Enumerable]::Distinct($projects, [StringComparer]::Ordinal)); [Array]::Sort($sortedProjects, [StringComparer]::Ordinal)
+        if ($projects.Length -eq 0 -or ($projects -join "`n") -cne ($sortedProjects -join "`n")) { $order.Add("projects of $($references[$i].Name) empty, unsorted or duplicated") }
+    }
+    if ($order.Count) { $problems.Add("sbom_mismatch: nuget_references are not canonical: $($order -join '; ')") }
     foreach ($component in @($sbom.assemblies | Where-Object { $null -ne $_ })) {
         if ([string]$component.name -match $script:PackageVendorPattern) { $problems.Add("sbom_build_only: vendor assembly listed as shipped: $($component.path)") }
     }

@@ -33,6 +33,8 @@ $projects = [ordered]@{ cli = 'interfaces/cli/Bim.Cli.csproj'; mcp = 'interfaces
 $sourceDirectories = @('core/Bim.Core', 'core/Bim.Generative', 'evaluation/Bim.Evaluation', 'adapters/ifc/Bim.Ifc.Compiler', 'adapters/gltf/Bim.Gltf', 'adapters/cad/Bim.Cad', 'interfaces/cli', 'interfaces/mcp')
 $rootFiles = @('Directory.Build.props', 'global.json', '.editorconfig')
 $addinTemplate = 'runtimes/revit-native/Bim.addin.template'
+# P10-13: shipped NuGet references allowed to ship without a nuspec licence expression (each entry needs a reviewed reason).
+$sbomLicenseAllowlist = [string[]]@()
 
 $ErrorActionPreference = 'Continue'
 $trackedRaw = (& git -C $root ls-files -z -- @($sourceDirectories + $rootFiles)) -join "`n"
@@ -78,6 +80,7 @@ try {
     # P10-13: sbom.json from the shipped assemblies and the NuGet references of the shipped csproj closure.
     $packagesRoot = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.nuget/packages' }
     $references = @(Get-PackageNuGetReferences -Root $build -Projects @($projects.Values) -PackagesRoot $packagesRoot)
+    Assert-PackageReferenceLicenses -References $references -Allowlist $sbomLicenseAllowlist
     Write-PackageText (Join-Path $staging 'sbom.json') (New-PackageSbomText $staging $version $commit $references)
     Write-PackageText (Join-Path $staging 'manifest.json') (New-PackageManifestText $staging $version $commit $dirty)
     $problems = @(Test-PackageManifest $staging)
