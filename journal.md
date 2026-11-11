@@ -1448,3 +1448,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 21:27Z integration b74af57 CI 43100504342 (workflow_dispatch) success (9/9) → main fast-forwarded (06fd2a6..b74af57). P1-20, P2-16, P6-15 ✅; new P1-22 (shared CLI/MCP option parser), P2-18 (fake add-in journal.read with external edits), P6-16 (PDF ToUnicode), P6-17 (compressed + XObject PDF twin). Progress 153/172 (89.0 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-11T21:27:57Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P3-13, P5-15, P7-14/P7-15 (relay190; P7-14 and P7-15 share SkillPackLookup — serialize); then P4-14/P4-15, P2-17, P10-15 (relay191; P4-14 and P1-18 share tests/integration/test-catalogue-session.ps1 — serialize); then P1-18/P1-21/P1-22, P2-18, P6-16/P6-17 (relay192; P1-21 before P1-22, same parser; P6-16 and P6-17 both touch PDF fixtures — serialize). If a push CI run sits queued with no jobs > 30 min, a workflow_dispatch on the same head works. ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay193 — 2026-11-11T21:52:49Z (Claude, cloud scheduled)
+- 21:52Z LOCK taken (was FREE; relay192 released 2026-11-11T21:27:57Z).
