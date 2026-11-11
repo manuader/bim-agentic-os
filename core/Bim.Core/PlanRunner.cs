@@ -336,6 +336,7 @@ public static class PlanRunner
         catch (ArgumentException error) { return (null, Fail(step, error.Message, null, null)); }
         string? line;
         try { line = transport.Send(envelope.CanonicalJson); }
+        catch (RevitPipeReadTimeoutException error) { return (null, Fail(step, RevitCommandCodes.PipeReadTimeout, null, RevitCommandService.ReadTimeoutDetail(envelope, error.Timeout))); }
         catch (TimeoutException error) { return (null, Fail(step, RevitCommandCodes.PipeConnectTimeout, null, error.GetType().Name)); }
         // Any other transport failure is pipe_io_error too, with only the exception type name (messages vary by culture).
         catch (Exception error) { return (null, Fail(step, RevitCommandCodes.PipeIoError, null, error.GetType().Name)); }

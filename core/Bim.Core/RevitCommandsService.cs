@@ -80,17 +80,26 @@ public static class RevitCommandService
             : Failure(RevitCommandCodes.ResponseInvalid, "receipt", "receipt " + mismatch + " does not match the request", forwarded: true);
     }
 
-    // The request reached the add-in but no line came back in time. A read-only command changed nothing and may be
-    // resent; a write (or styled export) may or may not have been applied, so it is never resent here and the detail
-    // says how to replay it safely: the add-in answers a repeated operation_id from its stored receipt.
-    static RevitCommandResult ReadTimeout(RevitCommandEnvelope envelope, TimeSpan timeout)
+    // The request reached the add-in but no line came back in time.
+    static RevitCommandResult ReadTimeout(RevitCommandEnvelope envelope, TimeSpan timeout) =>
+        Failure(RevitCommandCodes.PipeReadTimeout, "pipe_name", ReadTimeoutDetail(envelope, timeout), forwarded: true);
+
+    // The pipe_read_timeout detail, shared with PlanRunner, RevitElementQueryPaging and DocUpdateDependents. A read-only
+    // command (or a dry-run delete) changed nothing and may be resent; a write (or styled export) may or may not have
+    // been applied, so it is never resent automatically and the detail says how to replay it safely: the add-in answers
+    // a repeated operation_id from its stored receipt. The add-in serves one request at a time, so a resend while it
+    // is still busy with the stalled one can end in pipe_connect_timeout: wait and retry later.
+    public static string ReadTimeoutDetail(RevitCommandEnvelope envelope, TimeSpan timeout)
     {
+        ArgumentNullException.ThrowIfNull(envelope);
         var waited = ((long)timeout.TotalMilliseconds).ToString(CultureInfo.InvariantCulture) + " ms";
-        var detail = RevitCommandCatalogue.NeedsWriteGuard(envelope)
+        var writes = RevitCommandCatalogue.NeedsWriteGuard(envelope) && envelope.Args is not ElementDeleteArgs { DryRun: true };
+        return writes
             ? "outcome_unknown: no reply within " + waited + " after the write was sent; it may or may not have been applied and was not retried; "
-                + "check the document, then resend this same envelope (same operation_id) so the add-in answers from its receipt instead of applying it twice"
-            : "no reply within " + waited + "; read-only command, the document is unchanged and the request may be resent";
-        return Failure(RevitCommandCodes.PipeReadTimeout, "pipe_name", detail, forwarded: true);
+                + "check the document, then resend this same envelope (same operation_id) so the add-in answers from its receipt instead of applying it twice; "
+                + "the add-in serves one request at a time, so a resend while it is still busy may get pipe_connect_timeout: retry later"
+            : "no reply within " + waited + "; read-only command, the document is unchanged and the request may be resent "
+                + "(the add-in serves one request at a time, so a resend while it is still busy may get pipe_connect_timeout: retry later)";
     }
 
     static RevitCommandResult Failure(string code, string? field, string? detail, bool forwarded = false) =>
@@ -131,6 +140,8 @@ public static class RevitCommandService
         if (done) return read.Result;
         // Stop the pending read and close the pipe; its late outcome is observed and dropped.
         cancel.Cancel();
+        // A line that arrived between the deadline and the cancel is still this request's reply.
+        if (read.IsCompletedSuccessfully) return read.Result;
         _ = read.ContinueWith(static task => task.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         throw new RevitPipeReadTimeoutException(readTimeout);
     }

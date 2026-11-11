@@ -153,6 +153,7 @@ public static class RevitElementQueryPaging
     {
         string? line;
         try { line = transport.Send(envelope.CanonicalJson); }
+        catch (RevitPipeReadTimeoutException error) { return (null, Fail(RevitCommandCodes.PipeReadTimeout, null, RevitCommandService.ReadTimeoutDetail(envelope, error.Timeout), pages)); }
         catch (TimeoutException error) { return (null, Fail(RevitCommandCodes.PipeConnectTimeout, null, error.GetType().Name, pages)); }
         // Any other transport failure is pipe_io_error, with only the exception type name (messages vary by culture).
         catch (Exception error) { return (null, Fail(RevitCommandCodes.PipeIoError, null, error.GetType().Name, pages)); }

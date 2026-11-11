@@ -231,6 +231,7 @@ public static class DocUpdateDependents
         if (envelope.Args is not ElementDeleteArgs { DryRun: true }) return (null, Failure(RevitCommandCodes.ArgsInvalid, "args.dry_run", "not a dry run"));
         string? line;
         try { line = transport.Send(envelope.CanonicalJson); }
+        catch (RevitPipeReadTimeoutException error) { return (null, Failure(RevitCommandCodes.PipeReadTimeout, null, RevitCommandService.ReadTimeoutDetail(envelope, error.Timeout))); }
         catch (TimeoutException error) { return (null, Failure(RevitCommandCodes.PipeConnectTimeout, null, error.GetType().Name)); }
         catch (Exception error) { return (null, Failure(RevitCommandCodes.PipeIoError, null, error.GetType().Name)); }
         if (line is null) return (null, Failure(RevitCommandCodes.NoResponse, null, "the transport returned no reply"));
