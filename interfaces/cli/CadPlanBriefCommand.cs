@@ -10,7 +10,7 @@ using Bim.Gltf;
 namespace Bim.Cli;
 
 // P6-10 `cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]...
-//   [--site-width w --site-depth d] [--name text]`:
+//   [--site-width w --site-depth d] [--name text] [--brief-only]`:
 // a P6-07 `cad-brief` document (the P6-05 brief draft) becomes the P6-08 planner brief (BriefPlanner.ToPlannerBrief),
 // written to a new JSON file. Nothing is persisted to a project store ("persisted": false).
 //
@@ -49,9 +49,16 @@ namespace Bim.Cli;
 // room dropped: rooms_empty) is a result, not a refusal: it is still written with "valid": false, the stdout envelope
 // says "valid":false, and the exit code is 0; the issues say why. unknown_confirmed_reasons is always [] because
 // unknown reason codes are refused as cad_option_value_invalid; it is kept to mirror BriefPlannerResult.
+//
+// P6-14 --brief-only (a flag, no value, at most once: cad_option_duplicate; anywhere among the options): the file holds
+// only the bare P6-03 planner brief, exactly the bytes of the full document's "brief" member (the UTF-8 encoding of
+// BriefSerializer.Serialize(result.Brief): canonical, compact, no BOM, no trailing newline), which plan-layouts reads
+// directly. Option, output and input checks, refusals, never-overwrite and the valid:false-is-written rule are the same;
+// the stdout envelope is the same plus a final "brief_only":true member. Without the flag file and envelope bytes are
+// unchanged (no brief_only member).
 internal static class CadPlanBriefCommand
 {
-    public const string Usage = "usage: cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]... [--site-width w --site-depth d] [--name text]";
+    public const string Usage = "usage: cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]... [--site-width w --site-depth d] [--name text] [--brief-only]";
     public const string InputInvalid = "cad_plan_brief_input_invalid";
 
     static readonly JsonSerializerOptions Json = new() { Converters = { new JsonStringEnumConverter() } };
@@ -71,7 +78,7 @@ internal static class CadPlanBriefCommand
 
     static void Execute(string[] args)
     {
-        var (options, site) = ParseOptions(args);
+        var (options, site, briefOnly) = ParseOptions(args);
         var input = args[1];
         var output = args[2];
         if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string refused) throw new Refusal(refused);
@@ -90,6 +97,8 @@ internal static class CadPlanBriefCommand
         var briefJson = BriefSerializer.Serialize(result.Brief);
 
         byte[] written;
+        if (briefOnly) written = new System.Text.UTF8Encoding(false).GetBytes(briefJson);
+        else
         using (var buffer = new MemoryStream())
         {
             using (var writer = new Utf8JsonWriter(buffer))
@@ -152,6 +161,7 @@ internal static class CadPlanBriefCommand
             writer.WriteNumber("kept", result.Kept.Count);
             writer.WriteNumber("dropped", result.Dropped.Count);
             writer.WriteNumber("issues", result.Issues.Count);
+            if (briefOnly) writer.WriteBoolean("brief_only", true);
             writer.WriteEndObject();
         }
         Console.WriteLine(System.Text.Encoding.UTF8.GetString(envelope.ToArray()));
@@ -338,15 +348,23 @@ internal static class CadPlanBriefCommand
     static string? OptionalString(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
-    static (BriefPlannerOptions Options, BriefSite? Site) ParseOptions(string[] args)
+    static (BriefPlannerOptions Options, BriefSite? Site, bool BriefOnly) ParseOptions(string[] args)
     {
         double? threshold = null, width = null, depth = null;
         string? name = null;
+        var briefOnly = false;
         var rooms = new SortedSet<string>(StringComparer.Ordinal);
         var reasons = new SortedSet<string>(StringComparer.Ordinal);
         for (var i = 3; i < args.Length; i += 2)
         {
             var option = args[i];
+            if (option == "--brief-only")
+            {
+                if (briefOnly) throw new Refusal("cad_option_duplicate", option);
+                briefOnly = true;
+                i--; // a flag: the next argument is an option
+                continue;
+            }
             if (option is not ("--min-confidence" or "--confirm" or "--confirm-reason" or "--site-width" or "--site-depth" or "--name")) throw new Refusal("cad_option_unknown", option);
             if ((option == "--min-confidence" && threshold is not null) || (option == "--site-width" && width is not null)
                 || (option == "--site-depth" && depth is not null) || (option == "--name" && name is not null))
@@ -391,7 +409,7 @@ internal static class CadPlanBriefCommand
             Name = name,
         };
         var site = width is { } w && depth is { } d ? new BriefSite(new BriefValue<double>(w), new BriefValue<double>(d)) : null;
-        return (options, site);
+        return (options, site, briefOnly);
     }
 
     // The option number grammar: invariant culture, optional sign, decimal point and exponent, no whitespace or

@@ -517,10 +517,10 @@ internal static class CadPlanBriefTests
         // Definition: the written bytes are exactly the bytes of the full document's "brief" member (BriefSerializer
         // canonical text, UTF-8, no BOM, compact, no trailing newline), so the file feeds plan-layouts directly. Without
         // the flag the full document keeps its P6-12 bytes: the two digests below were taken from main's implementation
-        // (the red run of this test, before the flag existed) and must not change.
+        // (red run 42983360377 of this test at fe1d63d, ubuntu/windows/macos agree, before the flag existed) and must not change.
         {
-            const string PinnedDefaults = "PIN-FROM-RED-RUN-DEFAULTS";
-            const string PinnedSited = "PIN-FROM-RED-RUN-SITED";
+            const string PinnedDefaults = "1A092C0BC2ADC6B685D0D85490FAF803FAF0028C9F88614D9DA24002269ABA0F";
+            const string PinnedSited = "69824E31E8B08AAF7B6D6D7E7809A3B165B344FFBB5092B23560705382645153";
             static byte[] U(string s) => new UTF8Encoding(false).GetBytes(s);
             byte[] Member(string path) => Doc(path) is { ValueKind: JsonValueKind.Object } d && d.TryGetProperty("brief", out var b) ? U(b.GetRawText()) : Array.Empty<byte>();
             byte[] Bytes(string path) => File.Exists(path) ? File.ReadAllBytes(path) : Array.Empty<byte>();
