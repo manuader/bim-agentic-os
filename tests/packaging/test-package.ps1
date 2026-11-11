@@ -5,6 +5,8 @@
 # (Revit/Autodesk assemblies, Revit models, credentials), never-overwrite and manifest tamper detection.
 # P10-07: runs tests/packaging/test-install-addin.ps1 against the built package (temp Addins folders only).
 # P10-08: runs tests/packaging/test-package-archive.ps1 against both clean builds (archives must be byte-identical).
+# P10-13: sbom.json (shipped assemblies with SHA-256, NuGet references of the shipped csproj closure, build-only
+# references such as Nice3point never listed) is listed in manifest.json; package-verify refuses a missing/edited sbom.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -27,7 +29,7 @@ function Complete {
         Write-Error "packaging checks failed: $($failures.Count) failure(s); first: $($failures[0])"
         exit 1
     }
-    'PASS packaging: reproducible rebuild (byte-identical manifest and files), layout, version stamp, forbidden-content refusal, never-overwrite, tamper detection, add-in install/uninstall, release archive'
+    'PASS packaging: reproducible rebuild (byte-identical manifest and files), layout, version stamp, forbidden-content refusal, never-overwrite, tamper detection, add-in install/uninstall, release archive, SBOM'
     exit 0
 }
 function Invoke-Script([string]$Script, [string[]]$Arguments) {
@@ -96,6 +98,53 @@ try {
     }
     Assert ($found -notcontains 'ok.txt') 'forbidden scanner flagged a clean file'
 
+    # --- P10-13 SBOM: NuGet references from the shipped project closure; build-only references never shipped ---
+    try {
+        $sbomSrc = Join-Path $work 'sbom src'
+        $sbomFiles = [ordered]@{
+            'Directory.Build.props' = '<Project><ItemGroup><PackageReference Include="Root.Analyzer" Version="1.0.0" PrivateAssets="all" IncludeAssets="analyzers;build" /></ItemGroup></Project>'
+            'app/App.csproj' = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../lib/Lib.csproj" /><PackageReference Include="Zeta.Lib" Version="[2.0.0]" /><PackageReference Include="Alpha.Json"><Version>1.2.3</Version></PackageReference><PackageReference Include="Nice3point.Revit.Toolkit" Version="2025.0.0" /></ItemGroup></Project>'
+            'lib/Lib.csproj' = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Alpha.Json" Version="1.2.3" /><PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="[2025.0.2]" ExcludeAssets="runtime" PrivateAssets="all" /><PackageReference Include="Build.Only" Version="3.0.0"><ExcludeAssets>Runtime</ExcludeAssets></PackageReference></ItemGroup></Project>'
+            'other/Other.csproj' = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Not.Shipped" Version="9.9.9" /></ItemGroup></Project>'
+            'nuget/alpha.json/1.2.3/alpha.json.nuspec' = '<?xml version="1.0"?><package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><id>Alpha.Json</id><version>1.2.3</version><license type="expression">MIT</license></metadata></package>'
+        }
+        foreach ($name in $sbomFiles.Keys) {
+            $path = Join-Path $sbomSrc $name
+            New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
+            [IO.File]::WriteAllText($path, $sbomFiles[$name])
+        }
+        $refs = @(Get-PackageNuGetReferences -Root $sbomSrc -Projects @('app/App.csproj') -PackagesRoot (Join-Path $sbomSrc 'nuget'))
+        $refText = ($refs | ForEach-Object { "$($_.Name)@$($_.Version) $($_.License) [$(@($_.Projects) -join ',')]" }) -join '; '
+        Assert ($refText -ceq 'Alpha.Json@1.2.3 MIT [app/App.csproj,lib/Lib.csproj]; Zeta.Lib@2.0.0 NOASSERTION [app/App.csproj]') "SBOM NuGet references must be the runtime references of the shipped project closure, sorted, licence from the nuspec: got '$refText'"
+        foreach ($excluded in 'Nice3point', 'Build.Only', 'Root.Analyzer', 'Not.Shipped') {
+            Assert (!($refText -match [regex]::Escape($excluded))) "SBOM must not list build-only or unshipped reference $excluded as shipped: '$refText'"
+        }
+        foreach ($bad in @('<PackageReference Include="Floating" Version="1.*" />', '<PackageReference Include="Ranged" Version="[1.0,2.0)" />', '<PackageReference Include="Unversioned" />', '<PackageReference Include="Prop" Version="$(PkgVersion)" />')) {
+            $badSrc = Join-Path $work ('sbom bad ' + [Guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Force $badSrc | Out-Null
+            [IO.File]::WriteAllText((Join-Path $badSrc 'App.csproj'), "<Project Sdk=`"Microsoft.NET.Sdk`"><ItemGroup>$bad</ItemGroup></Project>")
+            $threw = $false
+            try { [void](Get-PackageNuGetReferences -Root $badSrc -Projects @('App.csproj') -PackagesRoot (Join-Path $badSrc 'nuget')) } catch { $threw = $true }
+            Assert $threw "an unpinned or unversioned shipped reference must be refused: $bad"
+        }
+        $repoRefs = @(Get-PackageNuGetReferences -Root $root -Projects @('interfaces/cli/Bim.Cli.csproj', 'interfaces/mcp/Bim.Mcp.csproj', 'runtimes/revit-native/Bim.Revit.csproj') -PackagesRoot (Join-Path $work 'no packages'))
+        Assert (@($repoRefs | Where-Object { $_.Name -match '(?i)^(Nice3point|Revit|Autodesk)' }).Count -eq 0) "repository Nice3point build-only references listed as shipped: $(@($repoRefs | ForEach-Object Name) -join ', ')"
+
+        $sbomPkg = Join-Path $work 'sbom pkg'
+        New-Item -ItemType Directory -Force (Join-Path $sbomPkg 'cli') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $sbomPkg 'cli/Alpha.Json.dll'), 'not a real assembly')
+        [IO.File]::WriteAllText((Join-Path $sbomPkg 'cli/readme.txt'), 'not an assembly')
+        $textA = New-PackageSbomText -Directory $sbomPkg -Version '1.2.3' -Commit ('a' * 40) -References $refs
+        $textB = New-PackageSbomText -Directory $sbomPkg -Version '1.2.3' -Commit ('a' * 40) -References $refs
+        Assert ($textA -ceq $textB -and $textA.EndsWith("`n") -and !$textA.Contains("`r")) 'SBOM text must be deterministic, LF-only and end with one LF'
+        $sbomUnit = $textA | ConvertFrom-Json
+        Assert ($sbomUnit.schema -ceq 'bim-agentic-os/package-sbom/v1' -and $sbomUnit.version -ceq '1.2.3' -and $sbomUnit.source_commit -ceq ('a' * 40)) "SBOM header wrong: $textA"
+        $asm = @($sbomUnit.assemblies)
+        $expectedHash = (Get-FileHash -LiteralPath (Join-Path $sbomPkg 'cli/Alpha.Json.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+        Assert ($asm.Count -eq 1 -and $asm[0].path -ceq 'cli/Alpha.Json.dll' -and $asm[0].name -ceq 'Alpha.Json' -and $asm[0].sha256 -ceq $expectedHash -and $asm[0].license -ceq 'MIT' -and $asm[0].version -ceq 'NOASSERTION') "SBOM assemblies must list every shipped .dll with name, version, licence and sha256 (licence of its NuGet reference): $textA"
+        Assert (@($sbomUnit.nuget_references).Count -eq 2) "SBOM must carry the NuGet references: $textA"
+    } catch { $failures.Add("SBOM unit checks threw: $($_.Exception.Message)") }
+
     # --- Two independent clean builds ---
     $outA = Join-Path $work 'release A'
     $outB = Join-Path $work 'release B'
@@ -156,6 +205,33 @@ try {
         Assert ($productVersion -ceq "$expectedVersion+$headCommit") "$dll product version '$productVersion' != '$expectedVersion+$headCommit'"
     }
 
+    # --- P10-13 SBOM in the real package: listed in the manifest, every shipped assembly hashed, no build-only refs ---
+    Assert ($paths -ccontains 'sbom.json') 'package must contain sbom.json listed in manifest.json'
+    if ($paths -ccontains 'sbom.json') {
+        try {
+            $sbomBytes = [IO.File]::ReadAllBytes((Join-Path $outA 'sbom.json'))
+            Assert ($sbomBytes.Length -gt 0 -and $sbomBytes[0] -ne 0xEF -and !([Text.Encoding]::UTF8.GetString($sbomBytes).Contains("`r"))) 'sbom.json must be UTF-8 without BOM and LF-only'
+            $sbom = [Text.Encoding]::UTF8.GetString($sbomBytes) | ConvertFrom-Json
+            Assert ($sbom.schema -ceq 'bim-agentic-os/package-sbom/v1') "sbom schema: '$($sbom.schema)'"
+            Assert ($sbom.version -ceq $expectedVersion -and $sbom.source_commit -ceq $manifest.source_commit) "sbom version/source_commit must match the manifest: '$($sbom.version)' '$($sbom.source_commit)'"
+            $shippedAssemblies = [string[]]@($paths | Where-Object { $_ -match '(?i)\.(dll|exe)$' })
+            $sbomAssemblies = [string[]]@(@($sbom.assemblies) | ForEach-Object { [string]$_.path })
+            Assert ($shippedAssemblies.Count -gt 0 -and ($sbomAssemblies -join "`n") -ceq ($shippedAssemblies -join "`n")) "sbom assemblies must be exactly the shipped assemblies in ordinal order: sbom=[$($sbomAssemblies -join ', ')] package=[$($shippedAssemblies -join ', ')]"
+            $byPath = @{}; foreach ($entry in $manifest.files) { $byPath[[string]$entry.path] = [string]$entry.sha256 }
+            foreach ($component in @($sbom.assemblies)) {
+                Assert ([string]$component.sha256 -ceq $byPath[[string]$component.path]) "sbom sha256 for $($component.path) differs from the manifest"
+                Assert ([string]$component.license -cmatch '\A[A-Za-z0-9.+()-]+( (AND|OR|WITH) [A-Za-z0-9.+()-]+)*\z') "sbom licence for $($component.path) is not an SPDX id or NOASSERTION: '$($component.license)'"
+                Assert ([string]$component.name -cnotmatch '(?i)^(Nice3point|Revit|Autodesk|AdWindows|UIFramework)') "vendor/build-only assembly listed as shipped: $($component.path)"
+            }
+            $cliComponent = @(@($sbom.assemblies) | Where-Object { $_.path -ceq 'cli/Bim.Cli.dll' })
+            Assert ($cliComponent.Count -eq 1 -and $cliComponent[0].name -ceq 'Bim.Cli' -and $cliComponent[0].version -ceq $expectedVersion) "sbom must describe cli/Bim.Cli.dll as Bim.Cli $expectedVersion"
+            $expectedRefs = @(Get-PackageNuGetReferences -Root $root -Projects @('interfaces/cli/Bim.Cli.csproj', 'interfaces/mcp/Bim.Mcp.csproj') -PackagesRoot (Join-Path $work 'no packages'))
+            $sbomRefs = @($sbom.nuget_references)
+            Assert ((($sbomRefs | ForEach-Object { "$($_.name)@$($_.version)" }) -join ',') -ceq (($expectedRefs | ForEach-Object { "$($_.Name)@$($_.Version)" }) -join ',')) "sbom nuget_references must be the shipped csproj references: sbom=[$(($sbomRefs | ForEach-Object name) -join ', ')]"
+            Assert (@($sbomRefs | Where-Object { $_.name -match '(?i)^(Nice3point|Revit|Autodesk)' }).Count -eq 0) 'sbom lists a Nice3point/Revit reference as shipped'
+        } catch { $failures.Add("sbom.json checks threw: $($_.Exception.Message)") }
+    }
+
     # --- The packaged CLI runs from the release layout ---
     $ErrorActionPreference = 'Continue'
     $cliOut = & $Dotnet (Join-Path $outA 'cli/Bim.Cli.dll') '--help' 2>&1 | ForEach-Object { "$_" }
@@ -189,12 +265,30 @@ try {
         @{ Name = 'version'; Expect = 'VERSION'; Act = { param($d) [IO.File]::WriteAllText((Join-Path $d 'VERSION'), "9.9.9`n") } },
         @{ Name = 'duplicate'; Expect = 'duplicate'; Act = { param($d) $f = Join-Path $d 'manifest.json'; $lines = [Collections.Generic.List[string]]([IO.File]::ReadAllText($f).Split("`n")); $i = $lines.FindIndex({ param($l) $l.Contains('"path": "VERSION"') }); $lines.Insert($i, $lines[$i]); [IO.File]::WriteAllText($f, ($lines -join "`n")) } },
         @{ Name = 'commit'; Expect = 'source_commit'; Act = { param($d) $f = Join-Path $d 'manifest.json'; [IO.File]::WriteAllText($f, ([IO.File]::ReadAllText($f) -replace '"source_commit": "[0-9a-f]{40}"', '"source_commit": "abc"')) } },
-        @{ Name = 'dirty'; Expect = 'source_dirty'; Act = { param($d) $f = Join-Path $d 'manifest.json'; [IO.File]::WriteAllText($f, ([IO.File]::ReadAllText($f) -replace '"source_dirty": (true|false)', '"source_dirty": "no"')) } }
+        @{ Name = 'dirty'; Expect = 'source_dirty'; Act = { param($d) $f = Join-Path $d 'manifest.json'; [IO.File]::WriteAllText($f, ([IO.File]::ReadAllText($f) -replace '"source_dirty": (true|false)', '"source_dirty": "no"')) } },
+        # P10-13: a missing or edited sbom.json is refused even when manifest.json is re-hashed to match it.
+        @{ Name = 'sbom missing'; Expect = 'sbom_missing'; Act = { param($d) Remove-Item -LiteralPath (Join-Path $d 'sbom.json'); Update-CaseManifest $d } },
+        @{ Name = 'sbom edited'; Expect = 'sha256 mismatch: sbom.json'; Act = { param($d) Edit-CaseSbom $d { param($t) $t -replace '"version": "[^"]*"', '"version": "9.9.9"' } } },
+        @{ Name = 'sbom hash rehashed'; Expect = 'sbom_mismatch'; Act = { param($d) Edit-CaseSbom $d { param($t) ([regex]'"sha256": "[0-9a-f]{64}"').Replace($t, ('"sha256": "' + ('0' * 64) + '"'), 1) }; Update-CaseManifest $d } },
+        @{ Name = 'sbom noncanonical rehashed'; Expect = 'sbom_mismatch'; Act = { param($d) Edit-CaseSbom $d { param($t) $t.Replace("`n", "`r`n") }; Update-CaseManifest $d } },
+        @{ Name = 'sbom build-only rehashed'; Expect = 'sbom_build_only'; Act = { param($d) Edit-CaseSbom $d { param($t) $t.Replace('"nuget_references": []', '"nuget_references": [' + "`n" + '    { "name": "Nice3point.Revit.Api.RevitAPI", "version": "2025.0.2", "license": "MIT", "projects": ["runtimes/revit-native/Bim.Revit.csproj"] }' + "`n" + '  ]') }; Update-CaseManifest $d } },
+        @{ Name = 'sbom unlisted assembly'; Expect = 'sbom_mismatch'; Act = { param($d) Copy-Item -LiteralPath (Join-Path $d 'cli/Bim.Core.dll') -Destination (Join-Path $d 'cli/Extra.Component.dll'); Update-CaseManifest $d } }
     )
+    function Update-CaseManifest([string]$Directory) {
+        $m = [IO.File]::ReadAllText((Join-Path $Directory 'manifest.json')) | ConvertFrom-Json
+        Write-PackageText (Join-Path $Directory 'manifest.json') (New-PackageManifestText $Directory ([string]$m.version) ([string]$m.source_commit) ([bool]$m.source_dirty))
+    }
+    function Edit-CaseSbom([string]$Directory, [scriptblock]$Change) {
+        $f = Join-Path $Directory 'sbom.json'
+        $before = [IO.File]::ReadAllText($f)
+        $after = [string](& $Change $before)
+        if ($after -ceq $before) { throw "test setup: sbom edit changed nothing in $f" }
+        Write-PackageText $f $after
+    }
     foreach ($case in $cases) {
         $copy = Join-Path $work ('case ' + $case.Name)
         Copy-Item -LiteralPath $outA -Destination $copy -Recurse
-        & $case.Act $copy
+        try { & $case.Act $copy } catch { $failures.Add("package-verify $($case.Name) setup failed: $($_.Exception.Message)"); continue }
         $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
         Assert ($run.Code -ne 0) "package-verify accepted a $($case.Name) package"
         Assert ($run.Output -match [regex]::Escape($case.Expect)) "package-verify $($case.Name) must report '$($case.Expect)': $(Get-Tail $run.Output)"
