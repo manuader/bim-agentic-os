@@ -145,6 +145,68 @@ try {
         Assert (@($sbomUnit.nuget_references).Count -eq 2) "SBOM must carry the NuGet references: $textA"
     } catch { $failures.Add("SBOM unit checks threw: $($_.Exception.Message)") }
 
+    # --- P10-13 review: version normalisation, licence refusal, case-insensitive MSBuild attributes, verified references ---
+    try {
+        $reviewSrc = Join-Path $work 'sbom review src'
+        $reviewFiles = [ordered]@{
+            'app/App.csproj' = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Short.Ver" Version="1.0" /><PackageReference Include="Four.Part" Version="[1.2.3.0]" /><PackageReference include="Lower.Ship" version="4.0" /><PackageReference include="Lower.Build" version="4.0" excludeassets="RUNTIME" /><PackageReference Include="Lower.Inc" Version="1.0.0" includeassets="compile" /></ItemGroup></Project>'
+            'nuget/short.ver/1.0.0/short.ver.nuspec' = '<?xml version="1.0"?><package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><id>Short.Ver</id><version>1.0</version><license type="expression">MIT</license></metadata></package>'
+            'nuget/four.part/1.2.3/four.part.nuspec' = '<?xml version="1.0"?><package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd"><metadata><id>Four.Part</id><version>1.2.3.0</version><license type="expression">Apache-2.0</license></metadata></package>'
+            'nuget/lower.ship/4.0.0/lower.ship.nuspec' = '<?xml version="1.0"?><package><metadata><id>Lower.Ship</id><version>4.0</version><license type="expression">BSD-3-Clause</license></metadata></package>'
+            'missing/App.csproj' = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Missing.Lic" Version="2.0" /></ItemGroup></Project>'
+        }
+        foreach ($name in $reviewFiles.Keys) {
+            $path = Join-Path $reviewSrc $name
+            New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
+            [IO.File]::WriteAllText($path, $reviewFiles[$name])
+        }
+        $reviewRefs = @(Get-PackageNuGetReferences -Root $reviewSrc -Projects @('app/App.csproj') -PackagesRoot (Join-Path $reviewSrc 'nuget'))
+        $reviewText = ($reviewRefs | ForEach-Object { "$($_.Name)@$($_.Version) $($_.License)" }) -join '; '
+        Assert ($reviewText -ceq 'Four.Part@1.2.3 Apache-2.0; Lower.Ship@4.0.0 BSD-3-Clause; Short.Ver@1.0.0 MIT') "NuGet versions must be normalised (1.0 -> 1.0.0, 1.2.3.0 -> 1.2.3) before the nuspec lookup, and lowercase MSBuild attributes honoured: got '$reviewText'"
+        $threw = $null
+        try { Assert-PackageReferenceLicenses -References $reviewRefs -Allowlist @() } catch { $threw = $_.Exception.Message }
+        Assert ($null -eq $threw) "references with resolved licences must be accepted: $threw"
+        $missingRefs = @(Get-PackageNuGetReferences -Root $reviewSrc -Projects @('missing/App.csproj') -PackagesRoot (Join-Path $reviewSrc 'nuget'))
+        $threw = $null
+        try { Assert-PackageReferenceLicenses -References $missingRefs -Allowlist @() } catch { $threw = $_.Exception.Message }
+        Assert ($threw -match 'sbom_license_unknown' -and $threw -match 'Missing\.Lic') "a shipped reference whose licence resolves to NOASSERTION (no nuspec) must be refused with sbom_license_unknown: '$threw'"
+        $threw = $null
+        try { Assert-PackageReferenceLicenses -References $missingRefs -Allowlist @('Missing.Lic') } catch { $threw = $_.Exception.Message }
+        Assert ($null -eq $threw) "an allowlisted reference may keep NOASSERTION: $threw"
+        Assert (([IO.File]::ReadAllText($packager)) -match 'Assert-PackageReferenceLicenses') 'package.ps1 must refuse shipped references with unknown licences (Assert-PackageReferenceLicenses)'
+
+        # A re-hashed manifest must not make an edited reference list acceptable.
+        function New-RefPackage([string]$Directory, [object[]]$References) {
+            New-Item -ItemType Directory -Force (Join-Path $Directory 'cli') | Out-Null
+            Write-PackageText (Join-Path $Directory 'VERSION') "1.2.3`n"
+            foreach ($ref in $References) { Write-PackageText (Join-Path $Directory "cli/$($ref.Name).dll") "not a real assembly $($ref.Name)" }
+            Write-PackageText (Join-Path $Directory 'sbom.json') (New-PackageSbomText $Directory '1.2.3' ('a' * 40) $References)
+            Write-PackageText (Join-Path $Directory 'manifest.json') (New-PackageManifestText $Directory '1.2.3' ('a' * 40) $false)
+        }
+        $alpha = [pscustomobject]@{ Name = 'Alpha.Json'; Version = '1.2.3'; License = 'MIT'; Projects = [string[]]@('app/App.csproj') }
+        $zeta = [pscustomobject]@{ Name = 'Zeta.Lib'; Version = '2.0.0'; License = 'Apache-2.0'; Projects = [string[]]@('app/App.csproj') }
+        $refCases = @(
+            @{ Name = 'one ref licence'; Refs = @($alpha); Edit = { param($d, $t) $t.Replace('"name": "Alpha.Json", "version": "1.2.3", "license": "MIT"', '"name": "Alpha.Json", "version": "1.2.3", "license": "BSD-3-Clause"') } },
+            @{ Name = 'two refs licence'; Refs = @($alpha, $zeta); Edit = { param($d, $t) $t.Replace('"name": "Zeta.Lib", "version": "2.0.0", "license": "Apache-2.0"', '"name": "Zeta.Lib", "version": "2.0.0", "license": "MIT"') } },
+            @{ Name = 'two refs order'; Refs = @($alpha, $zeta); Edit = { param($d, $t) New-PackageSbomText $d '1.2.3' ('a' * 40) @($zeta, $alpha) } },
+            @{ Name = 'duplicate ref'; Refs = @($alpha); Edit = { param($d, $t) New-PackageSbomText $d '1.2.3' ('a' * 40) @($alpha, $alpha) } }
+        )
+        foreach ($case in $refCases) {
+            $pkg = Join-Path $work ('sbom refs ' + $case.Name)
+            New-RefPackage $pkg $case.Refs
+            $clean = Invoke-Script $verifier @('-PackageDirectory', $pkg)
+            Assert ($clean.Code -eq 0) "synthetic package with references ($($case.Name)) must verify before the edit: $(Get-Tail $clean.Output)"
+            $sbomPath = Join-Path $pkg 'sbom.json'
+            $before = [IO.File]::ReadAllText($sbomPath)
+            $after = [string](& $case.Edit $pkg $before)
+            Assert ($after -cne $before) "test setup: $($case.Name) edit changed nothing"
+            Write-PackageText $sbomPath $after
+            Write-PackageText (Join-Path $pkg 'manifest.json') (New-PackageManifestText $pkg '1.2.3' ('a' * 40) $false)
+            $run = Invoke-Script $verifier @('-PackageDirectory', $pkg)
+            Assert ($run.Code -ne 0 -and $run.Output -match 'sbom_mismatch') "package-verify must refuse an sbom with edited references ($($case.Name)) even with a re-hashed manifest: $(Get-Tail $run.Output)"
+        }
+    } catch { $failures.Add("SBOM review checks threw: $($_.Exception.Message)") }
+
     # --- Two independent clean builds ---
     $outA = Join-Path $work 'release A'
     $outB = Join-Path $work 'release B'
@@ -271,7 +333,7 @@ try {
         @{ Name = 'sbom edited'; Expect = 'sha256 mismatch: sbom.json'; Act = { param($d) Edit-CaseSbom $d { param($t) $t -replace '"version": "[^"]*"', '"version": "9.9.9"' } } },
         @{ Name = 'sbom hash rehashed'; Expect = 'sbom_mismatch'; Act = { param($d) Edit-CaseSbom $d { param($t) ([regex]'"sha256": "[0-9a-f]{64}"').Replace($t, ('"sha256": "' + ('0' * 64) + '"'), 1) }; Update-CaseManifest $d } },
         @{ Name = 'sbom noncanonical rehashed'; Expect = 'sbom_mismatch'; Act = { param($d) Edit-CaseSbom $d { param($t) $t.Replace("`n", "`r`n") }; Update-CaseManifest $d } },
-        @{ Name = 'sbom build-only rehashed'; Expect = 'sbom_build_only'; Act = { param($d) Edit-CaseSbom $d { param($t) $t.Replace('"nuget_references": []', '"nuget_references": [' + "`n" + '    { "name": "Nice3point.Revit.Api.RevitAPI", "version": "2025.0.2", "license": "MIT", "projects": ["runtimes/revit-native/Bim.Revit.csproj"] }' + "`n" + '  ]') }; Update-CaseManifest $d } },
+        @{ Name = 'sbom build-only rehashed'; Expect = 'sbom_build_only'; Act = { param($d) Add-CaseSbomReference $d ([pscustomobject]@{ Name = 'Nice3point.Revit.Api.RevitAPI'; Version = '2025.0.2'; License = 'MIT'; Projects = [string[]]@('runtimes/revit-native/Bim.Revit.csproj') }); Update-CaseManifest $d } },
         @{ Name = 'sbom unlisted assembly'; Expect = 'sbom_mismatch'; Act = { param($d) Copy-Item -LiteralPath (Join-Path $d 'cli/Bim.Core.dll') -Destination (Join-Path $d 'cli/Extra.Component.dll'); Update-CaseManifest $d } }
     )
     function Update-CaseManifest([string]$Directory) {
@@ -284,6 +346,17 @@ try {
         $after = [string](& $Change $before)
         if ($after -ceq $before) { throw "test setup: sbom edit changed nothing in $f" }
         Write-PackageText $f $after
+    }
+    # Injects a reference through a parsed edit and re-renders canonically, so it holds whatever references are shipped.
+    function Add-CaseSbomReference([string]$Directory, $Reference) {
+        $f = Join-Path $Directory 'sbom.json'
+        $parsed = [IO.File]::ReadAllText($f) | ConvertFrom-Json
+        $list = [Collections.Generic.List[object]]::new()
+        foreach ($ref in @($parsed.nuget_references | Where-Object { $null -ne $_ })) { $list.Add([pscustomobject]@{ Name = [string]$ref.name; Version = [string]$ref.version; License = [string]$ref.license; Projects = [string[]]@($ref.projects) }) }
+        $list.Add($Reference)
+        $sorted = [object[]]@($list | Sort-Object -Property @{ Expression = { [string]$_.Name + "`0" + [string]$_.Version } } -CaseSensitive -Culture ([Globalization.CultureInfo]::InvariantCulture))
+        Write-PackageText $f (New-PackageSbomText $Directory ([string]$parsed.version) ([string]$parsed.source_commit) $sorted)
+        if (!([IO.File]::ReadAllText($f).Contains([string]$Reference.Name))) { throw "test setup: $($Reference.Name) was not injected into $f" }
     }
     foreach ($case in $cases) {
         $copy = Join-Path $work ('case ' + $case.Name)
