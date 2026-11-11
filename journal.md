@@ -1444,3 +1444,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 20:21Z reviews: 0 blockers. P1-20 3 should-fix (all:true read-timeout cut untested, StillWaiting flake, codes outside RevitCommandCodes) + nits closed a9635ab (red 43083652387 contract-doc check, green 43086519631); P2-16 2 should-fix (journal causality negative, second-pass peek reply) + nits closed 293a03d (green 43089718042; tests only); P6-15 4 nits closed 01236f4 (green 43092611434); 0 failed attempts. Next: integration.
 - 20:23Z integration head b74af57 (relay192-integration on main 06fd2a6: 3 clean merges + board/features/contracts/attempts/session/handoff; new P1-22, P2-18, P6-16, P6-17) pushed; waiting CI.
 - 21:10Z push run 43095718636 stuck queued 47 min with no jobs → workflow_dispatch 43100504342 on the same head b74af57 (in progress); stuck run cancelled.
+- 21:19Z correction: cancelling 43095718636 was refused (409 'not queued yet'); it stays a ghost run, ignored.
