@@ -1430,3 +1430,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay191 — 2026-11-11T13:53:15Z (Claude, cloud scheduled)
 - 13:53Z LOCK taken (was FREE; relay190 released 2026-11-11T13:11:44Z).
 - 13:53Z picked P4-13 (phase 4), P10-14 (phase 10), P2-15 (phase 2) — oldest-touched (relay187/188). Workers starting on relay191-<ID>.
+- 14:50Z workers green: P4-13 38fad73 (red 43033957185, green 43036029825; 0 attempts), P2-15 0e47c1e (red 43033953076, green 43035023695; 0 attempts; adopt engine moved from CLI into interfaces/mcp/MirrorDriftAdoptTool.cs, CLI bytes unchanged), P10-14 3992b78 (red 43033968042, green 43039406236; 1 attempt: test line selector matched assembly line too). Next: independent reviews.
