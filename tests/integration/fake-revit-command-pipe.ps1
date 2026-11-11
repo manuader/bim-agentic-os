@@ -3,12 +3,17 @@
 # Invoke-FakeRevitCommand, journal.read lines through Invoke-FakeRevitWire) and logs every received operation_id, or
 # "journal.read", one per line, so the test can prove which requests reached the pipe. Stops after MaxRequests
 # connections or TimeoutSeconds.
+# The next listening instance is created as soon as a connection is accepted, before the current reply is written and
+# its instance disposed (two instances at most). On Unix a .NET pipe server is a Unix domain socket shared by the
+# process's instances of that name: disposing the last instance closes the listener and unlinks the socket, so a
+# client that reconnected at once (revit-command --all, one connection per page) and sat in the old listener's backlog
+# was reset (pipe_io_error). With the next instance alive the listener never closes between pages.
 param(
     [Parameter(Mandatory)][string]$PipeName,
     [Parameter(Mandatory)][string]$DocumentUid,
     [Parameter(Mandatory)][string]$ReadyFile,
     [Parameter(Mandatory)][string]$LogFile,
-    [ValidateRange(1, 1000)][int]$MaxRequests = 400,
+    [ValidateRange(1, 10000)][int]$MaxRequests = 400,
     [ValidateRange(5, 1800)][int]$TimeoutSeconds = 600
 )
 $ErrorActionPreference = 'Stop'
@@ -19,34 +24,50 @@ $state.BehindCli = $true
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $utf8 = [Text.UTF8Encoding]::new($false)
 $ready = $false
-for ($served = 0; $served -lt $MaxRequests -and [DateTime]::UtcNow -lt $deadline; $served++) {
-    $server = [IO.Pipes.NamedPipeServerStream]::new($PipeName, [IO.Pipes.PipeDirection]::InOut, 1, [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous)
-    try {
-        if (!$ready) { [IO.File]::WriteAllText($ReadyFile, [string]$PID); $ready = $true }
-        $wait = $server.WaitForConnectionAsync()
-        $remaining = [int][Math]::Max(1, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
-        if (!$wait.Wait($remaining)) { break }
-        $reader = [IO.StreamReader]::new($server, $utf8, $false, 4096, $true)
-        $writer = [IO.StreamWriter]::new($server, $utf8, 4096, $true)
-        $writer.AutoFlush = $true
-        $line = $reader.ReadLine()
-        if ($null -eq $line) { continue }
-        # WireLine writes Command last, verbatim: {"DocumentPath":...,"Operation":"revit.command",...,"Command":<envelope>}
-        $marker = '"Command":'
-        $at = $line.LastIndexOf($marker, [StringComparison]::Ordinal)
-        $outer = $line | ConvertFrom-Json
-        if ($outer.Operation -eq 'journal.read') {
-            $response = Invoke-FakeRevitWire $state $line
-            [IO.File]::AppendAllText($LogFile, "journal.read`n")
-        }
-        elseif ($at -lt 0 -or $outer.Operation -ne 'revit.command' -or !$line.EndsWith('}')) { $response = ConvertTo-FakeResponseJson (New-FakeFailure 'envelope_invalid' $null 'not a revit.command wire line') }
-        else {
-            $commandText = $line.Substring($at + $marker.Length, $line.Length - $at - $marker.Length - 1)
-            $response = Invoke-FakeRevitCommand $state $commandText
-            [IO.File]::AppendAllText($LogFile, $state.Received[$state.Received.Count - 1] + "`n")
-        }
-        $writer.WriteLine($response)
-        if ($IsWindows) { $server.WaitForPipeDrain() }
-        $reader.Dispose(); $writer.Dispose()
-    } finally { $server.Dispose() }
-}
+$newServer = { [IO.Pipes.NamedPipeServerStream]::new($PipeName, [IO.Pipes.PipeDirection]::InOut, 2, [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous) }
+$next = & $newServer
+try {
+    for ($served = 0; $served -lt $MaxRequests -and [DateTime]::UtcNow -lt $deadline; $served++) {
+        $server = $next
+        $next = $null
+        try {
+            if (!$ready) { [IO.File]::WriteAllText($ReadyFile, [string]$PID); $ready = $true }
+            $wait = $server.WaitForConnectionAsync()
+            $remaining = [int][Math]::Max(1, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+            if (!$wait.Wait($remaining)) { break }
+            # Listen for the next connection before this one is answered and closed.
+            if ($served + 1 -lt $MaxRequests) { $next = & $newServer }
+            # A client that vanishes mid-request (killed, timed out) costs only its own connection.
+            try {
+                $reader = [IO.StreamReader]::new($server, $utf8, $false, 4096, $true)
+                $writer = [IO.StreamWriter]::new($server, $utf8, 4096, $true)
+                $writer.AutoFlush = $true
+                $line = $reader.ReadLine()
+                if ($null -eq $line) { continue }
+                # WireLine writes Command last, verbatim: {"DocumentPath":...,"Operation":"revit.command",...,"Command":<envelope>}
+                $marker = '"Command":'
+                $at = $line.LastIndexOf($marker, [StringComparison]::Ordinal)
+                $outer = $line | ConvertFrom-Json
+                if ($outer.Operation -eq 'journal.read') {
+                    $response = Invoke-FakeRevitWire $state $line
+                    [IO.File]::AppendAllText($LogFile, "journal.read`n")
+                }
+                elseif ($at -lt 0 -or $outer.Operation -ne 'revit.command' -or !$line.EndsWith('}')) { $response = ConvertTo-FakeResponseJson (New-FakeFailure 'envelope_invalid' $null 'not a revit.command wire line') }
+                else {
+                    $commandText = $line.Substring($at + $marker.Length, $line.Length - $at - $marker.Length - 1)
+                    $response = Invoke-FakeRevitCommand $state $commandText
+                    [IO.File]::AppendAllText($LogFile, $state.Received[$state.Received.Count - 1] + "`n")
+                }
+                $writer.WriteLine($response)
+                if ($IsWindows) { $server.WaitForPipeDrain() }
+                $reader.Dispose(); $writer.Dispose()
+            } catch {
+                $io = $_.Exception
+                while ($null -ne $io -and $io -isnot [IO.IOException]) { $io = $io.InnerException }
+                if ($null -eq $io) { throw }
+                [Console]::Error.WriteLine('fake pipe: connection dropped: ' + $io.GetType().Name)
+            }
+        } finally { $server.Dispose() }
+        if ($null -eq $next) { break }
+    }
+} finally { if ($null -ne $next) { $next.Dispose() } }
