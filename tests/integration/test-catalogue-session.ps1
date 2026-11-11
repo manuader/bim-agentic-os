@@ -840,8 +840,8 @@ try {
     $unknownOption = & $runAll 'unknown-option' ([ordered]@{ protocol_version = 1; operation_id = 'p115-all-unknown'; document = $allDocument; command = 'query.elements'; args = [ordered]@{ category = 'wall' } }) $pipeName '--everything'
     Assert ($unknownOption.Exit -eq 1 -and $unknownOption.Json.code -eq 'explicit_process_pipe_required' -and $unknownOption.Json.field -eq 'args[3]' -and [string]$unknownOption.Json.detail -like '*--everything*' -and @(Get-Content -LiteralPath $log | Where-Object { $_ -eq 'p115-all-unknown' }).Count -eq 0) "revit-command refuses an unknown option by name: $($unknownOption.Raw)"
     # P1-19: --all opens one pipe connection per page in quick succession; the fake server must accept every next
-    # connection (no window where a page connection is reset between two server instances). 50 paged runs.
-    $stressRuns = 50
+    # connection (no window where a page connection is reset between two server instances). 200 paged runs (~40s).
+    $stressRuns = 200
     $stressBad = [Collections.Generic.List[string]]::new()
     $stressWatch = [Diagnostics.Stopwatch]::StartNew()
     for ($stress = 1; $stress -le $stressRuns; $stress++) {
