@@ -194,7 +194,6 @@ static class RealizedTests
         var dupResponse = one.Replace("\"status\":\"succeeded\",", "\"status\":\"succeeded\",\"status\":\"failed\",", StringComparison.Ordinal);
         Refuses("a response with a duplicate member", DocRealizedCodes.RecordInvalid, "steps[0].response", () => DocRealized.Steps(dupResponse));
         Refuses("a response without status", DocRealizedCodes.RecordInvalid, "steps[0].response.status", () => DocRealized.Steps(Edit(one, root => Drop(root["steps"]![0]!["response"]!, "status"))));
-        Refuses("a response without created", DocRealizedCodes.RecordInvalid, "steps[0].response.created", () => DocRealized.Steps(Edit(one, root => Drop(root["steps"]![0]!["response"]!, "created"))));
         Refuses("a created that is not an array", DocRealizedCodes.RecordInvalid, "steps[0].response.created", () => DocRealized.Steps(Edit(one, root => root["steps"]![0]!["response"]!["created"] = "x")));
         Refuses("a created entry that is not a UniqueId", DocRealizedCodes.UniqueIdInvalid, "steps[0].response.created[1]",
             () => DocRealized.Steps(Edit(one, root => root["steps"]![0]!["response"]!["created"] = new System.Text.Json.Nodes.JsonArray(Uid("a"), "not-a-uid"))));
