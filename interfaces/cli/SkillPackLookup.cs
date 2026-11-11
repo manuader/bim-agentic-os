@@ -10,7 +10,8 @@ namespace Bim.Cli;
 // an id that is not SkillParser.IsId (callers refuse those first) is Invalid "id" before any file system access, so the
 // path never leaves skills/.
 // P7-12: with packageFirst (generate-prototypes only) the release package root is tried before the repository walk: the
-// parent directory of the CLI binary's directory (<package>/cli) when it holds a skills/ directory; then the manifest is
+// parent directory of the CLI binary's directory when that directory is named "cli" (ordinal) and the parent holds the
+// markers scripts/package.ps1 writes (the files VERSION and manifest.json) and a skills/ directory; then the manifest is
 // <package>/skills/<id>/skill.json, read and checked exactly as above. Without skills/ there the repository walk follows
 // (RepositoryNotFound when it finds none). Load(id) without packageFirst (plan-layouts --pack) is unchanged.
 internal enum SkillPackProblem { RepositoryNotFound, Unavailable, Invalid }
@@ -42,10 +43,14 @@ internal static class SkillPackLookup
         return pack;
     }
 
-    // The release package root of a CLI binary directory (<package>/cli): its parent when that holds skills/, else null.
+    // The release package root of a CLI binary directory <package>/cli: the parent when the directory is named "cli" and
+    // the parent holds VERSION, manifest.json and skills/ (a stray skills/ beside any other folder is not a package), else null.
     public static string? PackageRoot(string binaryDirectory)
     {
-        var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(binaryDirectory)));
-        return parent is not null && Directory.Exists(Path.Combine(parent, "skills")) ? parent : null;
+        var directory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(binaryDirectory));
+        if (!string.Equals(Path.GetFileName(directory), "cli", StringComparison.Ordinal)) return null;
+        var parent = Path.GetDirectoryName(directory);
+        return parent is not null && File.Exists(Path.Combine(parent, "VERSION")) && File.Exists(Path.Combine(parent, "manifest.json"))
+            && Directory.Exists(Path.Combine(parent, "skills")) ? parent : null;
     }
 }

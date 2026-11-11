@@ -26,8 +26,8 @@ namespace Bim.Cli;
 // Input: read through BoundedInput (8 MiB cap, input_* codes), then BriefParser.Parse (its own 262144-character cap).
 // The brief must have constraints.site (the planner's footprint) and no BriefValidator error.
 //
-// Pack (P7-13, only with --pack): the manifest is found exactly as generate-prototypes finds its pack (SkillPackLookup:
-// <repository>/skills/<id>/skill.json, the repository being the first ancestor of the CLI binary holding global.json;
+// Pack (P7-13, only with --pack): the manifest is found by the repository-only SkillPackLookup.Load(id) (generate-prototypes
+// alone tries the release package root first, P7-12): <repository>/skills/<id>/skill.json, the repository being the first ancestor of the CLI binary holding global.json;
 // BoundedInput 8 MiB read, SkillParser 65536-character cap, the manifest's id must be the requested one). Its rules
 // become SpacePlanner rules the way TypologyRules.From (P5-13) maps one pack, without the typology template rules:
 // 1. Candidates are the pack's rules with severity error, op min, property area_m2 or min_side_m and a room target;

@@ -42,13 +42,23 @@ $sbomLicenseAllowlist = [string[]]@()
 $ErrorActionPreference = 'Continue'
 $trackedRaw = (& git -C $root ls-files -z -- @($sourceDirectories + $rootFiles)) -join "`n"
 $trackedCode = $LASTEXITCODE
-$skillsRaw = (& git -C $root ls-files -z -- $skillsDirectory) -join "`n"
+$skillsRaw = (& git -C $root ls-files -s -z -- $skillsDirectory) -join "`n"
 $skillsCode = $LASTEXITCODE
 $dirtyLines = @(& git -C $root status --porcelain --untracked-files=no -- @($sourceDirectories + $rootFiles + $addinTemplate + $skillsDirectory + 'scripts/package.version'))
 $ErrorActionPreference = 'Stop'
 $tracked = @($trackedRaw.Split([char]0) | Where-Object { $_ })
 if ($trackedCode -ne 0 -or $tracked.Count -eq 0) { Stop-Package 'git ls-files failed for the packaged sources' }
-$skillFiles = @($skillsRaw.Split([char]0) | Where-Object { $_ })
+# git ls-files -s: "<mode> <object> <stage>`t<path>"; only regular files (100644, 100755) ship, never a symlink (120000)
+# or a submodule (160000), whose bytes on disk are not the tracked content.
+$skillFiles = [Collections.Generic.List[string]]::new()
+foreach ($entry in @($skillsRaw.Split([char]0) | Where-Object { $_ })) {
+    $tab = $entry.IndexOf("`t")
+    if ($tab -lt 0) { Stop-Package "git ls-files -s returned an unreadable skills/ entry: '$entry'" }
+    $mode = $entry.Substring(0, $entry.IndexOf(' '))
+    $path = $entry.Substring($tab + 1)
+    if ($mode -cne '100644' -and $mode -cne '100755') { Stop-Package "skills_entry_not_regular: tracked $path has mode $mode; only regular files (100644, 100755) are packaged" }
+    $skillFiles.Add($path)
+}
 if ($skillsCode -ne 0 -or $skillFiles.Count -eq 0) { Stop-Package 'git ls-files failed for the packaged skills/' }
 foreach ($required in $rootFiles) { if ($tracked -cnotcontains $required) { Stop-Package "$required must be tracked; it bounds the build tree against inherited MSBuild files" } }
 $dirty = $dirtyLines.Count -gt 0

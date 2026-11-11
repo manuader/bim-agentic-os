@@ -24,7 +24,8 @@ namespace Bim.Cli;
 //   fixed_walls    [{"id": string, "x0","y0","x1","y1": numbers}]             absent = [] (no approved walls)
 //   pack           skill id of the code pack, default ar.caba.codigo-edificacion, read from <root>/skills/<id>/skill.json
 //                  through BoundedInput. The root (P7-12) is first the release package root: the parent of the CLI
-//                  binary's directory (<package>/cli) when it holds a skills/ directory (scripts/package.ps1 ships every
+//                  binary's directory when that is named cli and the parent holds VERSION, manifest.json and a skills/
+//                  directory (SkillPackLookup.PackageRoot; scripts/package.ps1 writes those and ships every
 //                  tracked skills file there, listed in manifest.json); else the repository, the first ancestor
 //                  directory of the CLI binary holding global.json. A CLI with neither (copied outside a repository
 //                  without a skills/ beside its directory) refuses every request with generate_prototypes_repository_not_found.
@@ -70,7 +71,7 @@ internal static class GenerateCommand
 {
     public const string Usage = "usage: generate-prototypes request.json output.json (default project_id: UUIDv8 from the first 16 bytes of "
         + "SHA-256(\"bim-agentic-os/generate-prototypes/v1\\n\" + canonical request JSON without project_id); the pack is read from "
-        + "<package>/skills/<pack>/skill.json when the release package root (the parent of the CLI's cli/ directory) holds skills/, else from "
+        + "<package>/skills/<pack>/skill.json when the release package root (the parent of the CLI's cli/ directory, holding VERSION and manifest.json) holds skills/, else from "
         + "<repository>/skills/<pack>/skill.json, the repository being the first ancestor of the CLI holding global.json, else generate_prototypes_repository_not_found)";
     public const string UsageCode = "generate_prototypes_usage";
     public const string RequestInvalid = "generate_prototypes_request_invalid";
