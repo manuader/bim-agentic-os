@@ -83,7 +83,7 @@ static class RealizedTests
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "realized: " + name, detail);
         var fixture = Fixture();
-        IReadOnlyDictionary<string, string> From(string rec, string asg) => From(rec, asg, RecordDocument);
+        IReadOnlyDictionary<string, string> From(string rec, string asg) => DocRealized.FromRecord(fixture, rec, asg, RecordDocument);
         var set = DocDefaults.From(fixture);
         var planKey = "plan-" + K(Role("level"));
         var tagKey = "tag-door-" + K(doorId);
