@@ -521,6 +521,8 @@ internal static class CadPlanBriefTests
         {
             const string PinnedDefaults = "1A092C0BC2ADC6B685D0D85490FAF803FAF0028C9F88614D9DA24002269ABA0F";
             const string PinnedSited = "69824E31E8B08AAF7B6D6D7E7809A3B165B344FFBB5092B23560705382645153";
+            // The default run's stdout envelope with its machine-specific "output" string blanked (see below).
+            const string PinnedDefaultsEnvelope = "PIN-FROM-RED-RUN-ENVELOPE";
             static byte[] U(string s) => new UTF8Encoding(false).GetBytes(s);
             byte[] Member(string path) => Doc(path) is { ValueKind: JsonValueKind.Object } d && d.TryGetProperty("brief", out var b) ? U(b.GetRawText()) : Array.Empty<byte>();
             byte[] Bytes(string path) => File.Exists(path) ? File.ReadAllBytes(path) : Array.Empty<byte>();
@@ -533,6 +535,12 @@ internal static class CadPlanBriefTests
             var defaults = BriefPlanner.ToPlannerBrief(library);
             var full = Out(); var rf = Cli("cad-plan-brief", draftPath, full);
             Check(Ok(rf, full) && NoFlag(rf), "without --brief-only the envelope has no brief_only member", R(rf));
+            // The "output" member is the machine-specific path: that one JSON string value, encoded as the CLI's
+            // Utf8JsonWriter writes it (default encoder, like JsonSerializer), is blanked before hashing.
+            var encodedOutput = "\"output\":" + JsonSerializer.Serialize(full) + ",";
+            var normalized = rf.Out.Split(encodedOutput).Length == 2 ? rf.Out.Replace(encodedOutput, "\"output\":\"\",", StringComparison.Ordinal) : "";
+            Check(Sha(U(normalized)) == PinnedDefaultsEnvelope, "without --brief-only the default stdout envelope keeps its pinned bytes (output path blanked)",
+                "actual " + Sha(U(normalized)) + " pinned " + PinnedDefaultsEnvelope + " envelope " + normalized);
             Check(Sha(Bytes(full)) == PinnedDefaults, "without --brief-only the default full document keeps its pinned P6-12 bytes", "actual " + Sha(Bytes(full)) + " pinned " + PinnedDefaults);
             var bare = Out(); var rb = Cli("cad-plan-brief", draftPath, bare, "--brief-only");
             Check(Bare(rb, bare, true), "--brief-only writes a file and a succeeded envelope with brief_only true", R(rb));
@@ -593,6 +601,16 @@ internal static class CadPlanBriefTests
             Expect("--brief-only never overwrites", "output_exists", "cad-plan-brief", draftPath, existing, "--brief-only");
             Check(File.ReadAllBytes(existing).SequenceEqual(new byte[] { 3, 4 }), "--brief-only leaves an existing output untouched");
             Expect("--brief-only: option refusals come before any I/O", "cad_option_unknown", "cad-plan-brief", Path.Combine(scratch, "missing.json"), existing, "--brief-only", "--nope", "1");
+            // Pinned current behaviour: a value option takes the next word positionally, so --name --brief-only names the
+            // brief "--brief-only" and writes the full document (no flag).
+            {
+                var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--name", "--brief-only");
+                var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Name = "--brief-only" });
+                var same = Matches(o, expected, out var why);
+                Check(Ok(r, o) && NoFlag(r) && same && Doc(o) is { } dn && dn.GetProperty("kind").GetString() == "cad-plan-brief"
+                    && dn.GetProperty("options").GetProperty("name").GetString() == "--brief-only" && dn.GetProperty("brief").GetProperty("name").GetString() == "--brief-only",
+                    "--name --brief-only consumes the word as the name: full document, no brief_only, options.name \"--brief-only\"", R(r) + " " + why);
+            }
             var ru = Cli("cad-plan-brief");
             Check(Parse(ru.Out) is { } eu && eu.GetProperty("code").GetString() is { } usage && usage.EndsWith(" [--brief-only]", StringComparison.Ordinal), "the usage names --brief-only", R(ru));
             var rd = Cli("no-such-verb");
