@@ -122,6 +122,8 @@ internal static class DocUpdateExecuteTests
         public Func<RevitCommandEnvelope, bool>? LoseReplyAfter;
         public Func<RevitCommandEnvelope, bool>? BreakAfter;
         public Action<RevitCommandEnvelope>? OnWrite;
+        // Replaces the reply after the request was answered (and, for a write, executed).
+        public Func<RevitCommandEnvelope, string, string>? Rewrite;
         readonly Dictionary<string, (string Sha, string[] Created, string[] Deleted)> receipts = new(StringComparer.Ordinal);
 
         public string? Send(string pipe, string line)
@@ -133,6 +135,7 @@ internal static class DocUpdateExecuteTests
             catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or RevitCommandException) { Violations.Add("not a wire line"); return null; }
             Envelopes.Add(envelope);
             var reply = Answer(envelope);
+            if (Rewrite is not null) reply = Rewrite(envelope, reply);
             if (LoseReplyAfter?.Invoke(envelope) == true) return null;
             if (BreakAfter?.Invoke(envelope) == true) throw new IOException("pipe broke after the request");
             return reply;
@@ -276,7 +279,7 @@ internal static class DocUpdateExecuteTests
             fake.DependentsOf[plan0Stale] = reported;
             return fake;
         }
-        DocUpdateRevit Host(FakeExecutor fake, Action? onPolicy = null) => new(() => { onPolicy?.Invoke(); return enabled; }, fake.Send);
+        DocUpdateRevit Host(FakeExecutor fake, Action? onPolicy = null, RevitCommandPolicy? policy = null) => new(() => { onPolicy?.Invoke(); return policy ?? enabled; }, fake.Send);
 
         var beforePath = Input("before.json", JsonSerializer.Serialize(before));
         var afterPath = Input("after.json", JsonSerializer.Serialize(inserted));
@@ -330,6 +333,9 @@ internal static class DocUpdateExecuteTests
             Check(writes.Select(envelope => envelope.OperationId).SequenceEqual(steps.Select(step => step.OperationId), StringComparer.Ordinal)
                 && fake.Executed.SequenceEqual(steps.Select(step => step.OperationId), StringComparer.Ordinal),
                 "every write is sent once, in plan order: deletes first, then creates", string.Join(",", writes.Select(envelope => envelope.Command)));
+            Check(writes.Length == deletes.Length + creates.Length && writes.TakeWhile(envelope => envelope.Command == DocReplace.DeleteCommand).Count() == deletes.Length
+                && writes.Skip(deletes.Length).All(envelope => envelope.Command != DocReplace.DeleteCommand),
+                "every delete is sent before the first create", string.Join(",", writes.Select(envelope => envelope.Command)));
             Check(deletes.All(step => writes.Any(envelope => envelope.OperationId == step.OperationId && envelope.Args is ElementDeleteArgs { DryRun: false } && CanonicalArgs(envelope) == step.ArgsJson)),
                 "each real delete carries exactly the planned args (target and confirm_dependents)");
             Check(fake.Violations.Count == 0 && !fake.Existing.Contains(annotation) && !fake.Existing.Contains(plan0Stale), "the accepted annotation is deleted with its plan, confirmed", string.Join(";", fake.Violations));
@@ -344,7 +350,7 @@ internal static class DocUpdateExecuteTests
                 "the per-step report lists every step done, in plan order", D(run));
             var firstCreate = Entry(run.Out, creates[0].OperationId);
             Check(firstCreate?["created"] is JsonArray created && created.Count == 1 && created[0]?.GetValue<string>() == Fake("created:" + creates[0].OperationId)
-                && firstCreate["replayed"]?.GetValue<bool>() == false && firstCreate["key"]?.GetValue<string>() == plan.Replacement.Replacements.Single(item => item.CreateOperation == creates[0].OperationId).Key,
+                && firstCreate["replayed"]?.GetValue<bool>() == false && firstCreate["sent"]?.GetValue<int>() == 1 && firstCreate["key"]?.GetValue<string>() == plan.Replacement.Replacements.Single(item => item.CreateOperation == creates[0].OperationId).Key,
                 "a done step reports its key, created UniqueIds and replayed", firstCreate?.ToJsonString() ?? "");
             var map = parsed?["realized"] as JsonObject;
             Check(map is not null && map.Count == oracleRealized.Count && oracleRealized.All(pair => map[pair.Key]?.GetValue<string>() == pair.Value),
@@ -401,6 +407,59 @@ internal static class DocUpdateExecuteTests
             };
             Stopped("a delete whose dependents changed after the confirm pass", fake, plan0Delete, RevitCommandCodes.ArgsInvalid, false, false);
         }
+        {
+            // The client gave up waiting for the reply line (a typed failure the transport writes): outcome unknown.
+            var fake = Revit();
+            fake.Rewrite = (envelope, reply) => envelope.OperationId == creates[0].OperationId
+                ? RevitCommandResponse.Failure("pipe_read_timeout", "pipe_name", "no reply line within the read timeout").ToJson() : reply;
+            Stopped("a create whose reply timed out", fake, creates[0].OperationId, "pipe_read_timeout", true, true);
+        }
+        {
+            // A malformed reply after the create ran: response_invalid, outcome unknown.
+            var fake = Revit();
+            fake.Rewrite = (envelope, reply) => envelope.OperationId == creates[0].OperationId ? "{garbage" : reply;
+            Stopped("a create answered with a malformed reply", fake, creates[0].OperationId, RevitCommandCodes.ResponseInvalid, true, true);
+        }
+        {
+            // A library exception after every write ran (the last create answers created []: DocReplace.Realized refuses
+            // created_missing): an internal error that still prints the per-step record of what was sent.
+            var fake = Revit();
+            var last = creates[^1].OperationId;
+            fake.Rewrite = (envelope, reply) => envelope.OperationId == last
+                ? RevitCommandResponse.Success(new RevitCommandReceipt(envelope.OperationId, envelope.Command, envelope.Document.UniqueId, envelope.RequestSha256, false),
+                    Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), null, Array.Empty<string>()).ToJson()
+                : reply;
+            var output = NewOutput();
+            var run = Execute(Args(output, "--probe-dependents", Pipe, "--accept", annotation, "--execute", "--expected-document", sha), Host(fake));
+            var report = Steps(run.Out);
+            Check(run.Exit == 1 && Member(run.Out, "status") == "failed" && Member(run.Out, "code") == DocUpdateCommand.InternalError && Parse(run.Out)?["applied"]?.GetValue<bool>() == false
+                && report.Select(entry => entry.Op).SequenceEqual(steps.Select(step => step.OperationId), StringComparer.Ordinal) && report.All(entry => entry.Status == "done")
+                && Entry(run.Out, last)?["created"] is JsonArray { Count: 0 },
+                "a library exception after the writes prints the per-step record (every step done)", D(run));
+            Check(fake.Executed.SequenceEqual(steps.Select(step => step.OperationId), StringComparer.Ordinal) && fake.Writes.Length == steps.Count,
+                "a library exception after the writes: each write executed and sent once", N(fake.Writes.Length) + " writes");
+        }
+        {
+            // The enabled-roots policy refuses the document at the first write of a creates-only plan (no dry run read it).
+            var tagKey0 = "tag-door-" + Door(0).ToString("N");
+            var partial = new Dictionary<string, string>(realized, StringComparer.Ordinal);
+            partial.Remove(DocRegeneration.ItemSource(tagKey0));
+            var createsOnly = DocUpdate.Plan(before, before, Bindings(before), partial);
+            var createSteps = createsOnly.Replacement.Commands.Steps;
+            Check(createSteps.Count >= 1 && createSteps.All(step => step.Command != DocReplace.DeleteCommand), "fixture: an unrealized tag gives a creates-only plan", N(createSteps.Count));
+            var createsSha = Convert.ToHexString(SHA256.HashData(Utf8(JsonSerializer.Serialize(createsOnly))));
+            var fake = new FakeExecutor();
+            var output = NewOutput();
+            var arguments = new[] { "doc-update", "--before", beforePath, "--after", Input("creates-only-after.json", JsonSerializer.Serialize(before)), "--realized", Input("creates-only-realized.json", MapJson(partial)),
+                "--bindings", Input("creates-only-bindings.json", BindingsJson(Bindings(before))), "--output", output, "--probe-dependents", Pipe, "--execute", "--expected-document", createsSha };
+            var run = Execute(arguments, Host(fake, null, RevitCommandPolicy.None));
+            var report = Steps(run.Out);
+            Check(run.Exit == 1 && Member(run.Out, "code") == RevitCommandCodes.DocumentNotEnabled && createSteps.Count > 0 && Member(run.Out, "operation_id") == createSteps[0].OperationId
+                && report.Length == createSteps.Count && report[0].Status == "failed" && report.Skip(1).All(entry => entry.Status == "not_sent")
+                && Entry(run.Out, createSteps[0].OperationId)?["reply_lost"]?.GetValue<bool>() == false,
+                "a policy refusal at the first write: failed, reply_lost false, the rest not_sent", D(run));
+            Check(fake.Lines.Count == 0 && File.Exists(output), "a policy refusal at the first write sends nothing to the pipe", N(fake.Lines.Count));
+        }
 
         // ---- 3. --expected-document guards the reviewed plan ----
         {
@@ -443,30 +502,49 @@ internal static class DocUpdateExecuteTests
 
         // ---- 4. A stale target already gone: reference_not_found on the run's delete, replanned as DocUpdate does ----
         {
-            var removed = before with { Elements = before.Elements.Where(element => element.Id != Door(1)).ToArray() };
-            var doorUid = realized[DocRegeneration.ElementSource(Door(1))];
-            var tagKey = "tag-door-" + Door(1).ToString("N");
-            var tagUid = realized[DocRegeneration.ItemSource(tagKey)];
-            FakeExecutor Gone()
+            static string Target(RevitCommandStep step)
             {
-                var gone = new FakeExecutor();
-                foreach (var uid in realized.Values.Where(value => value != doorUid && value != tagUid)) gone.Existing.Add(uid);
-                return gone;
+                using var args = JsonDocument.Parse(step.ArgsJson);
+                return args.RootElement.GetProperty("element_uids")[0].GetString() ?? "";
             }
-            var goneOracleFake = Gone();
-            var goneOracle = DocUpdateDependents.Update(before, removed, Bindings(removed), realized, new LibraryTransport(goneOracleFake));
-            Check(goneOracle.Run is { Realized: not null } && goneOracle.Run.Plan.Gone.Contains(tagKey, StringComparer.Ordinal),
-                "fixture: the library run reports the stale tag already deleted in Revit as gone", goneOracle.Planned.Failed?.Code ?? goneOracle.Run?.Report.Failed?.Code ?? "");
-            if (goneOracle.Planned.Plan is { } gonePlan)
+            // A delete after the first one whose target no dry run reports as a dependent: at least one write precedes it.
+            var goneStep = deletes.Skip(1).FirstOrDefault(step => !reported.Contains(Target(step), StringComparer.OrdinalIgnoreCase)
+                && !string.Equals(Target(step), plan0Stale, StringComparison.OrdinalIgnoreCase));
+            Check(goneStep is not null, "fixture: a delete after the first whose target is no reported dependent");
+            if (goneStep is not null)
             {
-                var goneSha = Convert.ToHexString(SHA256.HashData(Utf8(JsonSerializer.Serialize(gonePlan))));
-                var f = Gone(); var o = NewOutput();
-                var arguments = new[] { "doc-update", "--before", beforePath, "--after", Input("removed.json", JsonSerializer.Serialize(removed)), "--realized", Input("realized-removed.json", MapJson(realized)),
-                    "--bindings", Input("removed-bindings.json", BindingsJson(Bindings(removed))), "--output", o, "--probe-dependents", Pipe, "--execute", "--expected-document", goneSha };
-                var r = Execute(arguments, Host(f));
-                Check(r.Exit == 0 && Member(r.Out, "status") == "succeeded" && Parse(r.Out)?["gone"] is JsonArray gone && gone.Count == 1 && gone[0]?.GetValue<string>() == tagKey
-                    && f.Lines.SequenceEqual(goneOracleFake.Lines, StringComparer.Ordinal) && f.Executed.Distinct(StringComparer.Ordinal).Count() == f.Executed.Count,
-                    "a gone stale target is reported in gone and the run completes like the library, each write executed once", D(r));
+                var goneUid = Target(goneStep);
+                var goneKey = plan.Replacement.Replacements.Single(item => item.DeleteOperation == goneStep.OperationId).Key;
+                FakeExecutor Gone()
+                {
+                    var gone = Revit();
+                    gone.Existing.Remove(goneUid);
+                    return gone;
+                }
+                var goneOracleFake = Gone();
+                var goneOracle = DocUpdateDependents.Update(before, inserted, bindings, insertedRealized, new LibraryTransport(goneOracleFake), new[] { annotation });
+                Check(goneOracle.Run is { Realized: not null } && goneOracle.Run.Plan.Gone.SequenceEqual(new[] { goneKey }, StringComparer.Ordinal),
+                    "fixture: the library run reports the stale target already deleted in Revit as gone", goneOracle.Planned.Failed?.Code ?? goneOracle.Run?.Report.Failed?.Code ?? "");
+                if (goneOracle.Planned.Plan is { } gonePlan)
+                {
+                    var goneSha = Convert.ToHexString(SHA256.HashData(Utf8(JsonSerializer.Serialize(gonePlan))));
+                    var f = Gone(); var o = NewOutput();
+                    var r = Execute(Args(o, "--probe-dependents", Pipe, "--accept", annotation, "--execute", "--expected-document", goneSha), Host(f));
+                    Check(r.Exit == 0 && Member(r.Out, "status") == "succeeded" && Parse(r.Out)?["gone"] is JsonArray gone && gone.Count == 1 && gone[0]?.GetValue<string>() == goneKey
+                        && f.Lines.SequenceEqual(goneOracleFake.Lines, StringComparer.Ordinal) && f.Executed.Distinct(StringComparer.Ordinal).Count() == f.Executed.Count,
+                        "a gone stale target is reported in gone and the run completes like the library, each write executed once", D(r));
+                    var firstLines = f.Lines.Count == f.Envelopes.Count
+                        ? Enumerable.Range(0, f.Envelopes.Count).Where(i => f.Envelopes[i].OperationId == deletes[0].OperationId).Select(i => f.Lines[i]).ToArray()
+                        : Array.Empty<string>();
+                    Check(firstLines.Length == 2 && firstLines[0] == firstLines[1] && f.Executed.Count(op => op == deletes[0].OperationId) == 1
+                        && f.Envelopes.Count(envelope => envelope.OperationId == goneStep.OperationId) == 1,
+                        "the write before the gone delete is sent twice with identical lines (a receipt replay) and executed once", N(firstLines.Length) + " lines");
+                    var entry = Entry(r.Out, deletes[0].OperationId);
+                    Check(entry is not null && entry["status"]?.GetValue<string>() == "done" && entry["replayed"]?.GetValue<bool>() == false && entry["sent"]?.GetValue<int>() == 2
+                        && entry["key"]?.GetValue<string>() == plan.Replacement.Replacements.Single(item => item.DeleteOperation == deletes[0].OperationId).Key
+                        && Entry(r.Out, goneStep.OperationId) is null,
+                        "the replayed write reports done, replayed false (it ran in this invocation), sent 2; the gone delete leaves the report", entry?.ToJsonString() ?? "");
+                }
             }
         }
 
@@ -488,6 +566,9 @@ internal static class DocUpdateExecuteTests
             var usage = Cli(Args(u, "--probe-dependents", "bim-agentic-os-2025-1", "--execute"));
             Check(usage.Exit == 1 && usage.Out == JsonSerializer.Serialize(new { status = "failed", code = DocUpdateCommand.UsageCode }) && !File.Exists(u),
                 "the real CLI refuses --execute without --expected-document", "exit " + N(usage.Exit) + " " + usage.Out + " " + usage.Err);
+            Check(Cli("no-such-verb").Out.Contains("[--execute --expected-document plan-sha256]", StringComparison.Ordinal)
+                && DocUpdateCommand.Usage.Contains("[--execute --expected-document plan-sha256]", StringComparison.Ordinal) && DocUpdateCommand.Usage.Contains("new file", StringComparison.Ordinal),
+                "the usage lists --execute --expected-document plan-sha256 and says --output is a new file");
         }
 
         // ---- Static: the run lives in DocUpdateExecute.cs, runs the plan with DocUpdate.Run, never resumes or retries ----
