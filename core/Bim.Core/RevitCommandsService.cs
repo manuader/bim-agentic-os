@@ -133,7 +133,6 @@ public static class RevitCommandService
         _ = read.ContinueWith(static task => task.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         throw new RevitPipeReadTimeoutException(readTimeout);
     }
-    }
 
     static void CheckReadTimeout(TimeSpan readTimeout)
     {
