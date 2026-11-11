@@ -1,8 +1,98 @@
 #nullable enable
+using System.Text.Json;
+using Bim.Core;
+
 namespace Bim.Cli;
 
-// P3-11 apply-intent: stub (tests first).
+// P3-11 `apply-intent --store store-directory --intent after.json [--expected-revision n]`: the store head moved to a
+// layout intent through the P3-09 edit set and the P3-05 incremental diff, committed like apply-edits.
+//   store-directory  an initialized ProjectStore, read and checked exactly as apply-edits reads it
+//                    (ApplyEditsCommand.ParseHead; apply_intent_store_invalid).
+//   after.json       a canonical layout intent v1 (core/Bim.Core/IntentJson.cs): read through BoundedInput.ReadText (8 MiB,
+//                    input_* codes), then IntentJson.Parse (at most IntentJson.MaxInputChars characters, depth and list
+//                    bounds, unknown and duplicate members refused).
+//   --expected-revision n  as apply-edits: a store at any other revision is refused before anything is compiled; a retry
+//                    of a commit that already landed is refused as stale instead of applying the intent again.
+// Edits: IntentEdits.FromStored(head, intent) compiles the intent with the head's project id and revision and returns
+// one update per element whose compiled form changed, one create per new element and one delete per head element the
+// intent no longer produces (every head element absent from the compile, intent-made or not). The plan is
+// IncrementalDiff.Diff(head, edits, createOrder: IncrementalDiff.OrderOf(set.After)).Plan: creates sit at their compile
+// position, so the plan is byte-identical to the full diff (`diff`) of head against compile(intent) and the committed head is compile(intent)
+// in compile order whenever the head is in compile order (it is after init from a compile and after every apply-intent).
+// It is byte-identical to `diff-edits --project <head> --edits <the same edits>` whenever no created element sorts before
+// a surviving one (diff-edits appends creates; with an earlier create the two plans hold the same operations in another
+// order and differ in AfterHash).
+// Commit: ApplyEditsCommand.Commit, the commit path apply-edits uses (ProjectStore.Commit with the plan's expected head,
+// a per-run idempotency key "apply-intent:<rev>:<random guid>"), with the apply_intent_ prefix on its codes. An intent
+// that changes nothing commits a new revision with an empty plan, like an empty apply-edits edit set.
+// Success: stdout {"status":"succeeded","scope":"intended_state_only","native_verification":"unverified","revision":<head+1>,
+// "plan":<plan>}; exit 0. Every refusal exits 1 with nothing written (except apply_intent_commit_incomplete):
+//   {"status":"failed","code":c} for apply_intent_usage, input_* (store project.json or intent), apply_intent_store_invalid,
+//     apply_intent_stale_head, apply_intent_store_unavailable, apply_intent_commit_incomplete (the ADR0007 crash case, see
+//     ApplyEditsCommand), apply_intent_internal_error (a defect; stderr gets its type and message), invalid_ir (the head
+//     is not Compiler.Validate-clean, or the diff or commit refuses the result), invalid_project_identity (the head's
+//     project id is empty or its revision negative) and edit_bound_exceeded (more than IncrementalDiff.MaxEdits edits);
+//   {"status":"failed","code":"apply_intent_intent_invalid","reason":r,"field":f} when IntentJson.Parse refuses the file:
+//     r is its IntentCodes code (json_invalid, input_too_large, version_unsupported, member_*, type_invalid, value_invalid,
+//     limit_exceeded), f its JSON path or null;
+//   {"status":"failed","code":"apply_intent_intent_refused","refusals":[{"code","subject","detail"}...]} when
+//     IntentCompiler refuses the intent: every issue of its IntentException (sorted by code, key, detail), subject being
+//     the issue's key.
+// Precedence: usage, then both files are read (store first), then the store is parsed, then the intent, then the
+// expected revision, then the compile and edit set, then the diff, then the commit; the first failure is the only one.
 internal static class ApplyIntentCommand
 {
-    public static void Run(string[] args) => ApplyEditsCommand.Fail("apply_intent_not_implemented");
+    public const string Verb = "apply-intent";
+    public const string Usage = "usage: apply-intent --store store-directory --intent after.json [--expected-revision n]";
+    public const string UsageCode = "apply_intent_usage";
+    public const string StoreInvalid = "apply_intent_store_invalid";
+    public const string IntentInvalid = "apply_intent_intent_invalid";
+    public const string IntentRefused = "apply_intent_intent_refused";
+    public const string StaleHead = "apply_intent_stale_head";
+    const string InvalidIdentity = "invalid_project_identity";
+
+    public static void Run(string[] args)
+    {
+        if (!ApplyEditsCommand.TryParse(args, "--intent", out var storePath, out var intentPath, out var expectedRevision)) { ApplyEditsCommand.Fail(UsageCode); return; }
+        string stateText, intentText;
+        try
+        {
+            stateText = BoundedInput.ReadText(Path.Combine(storePath, "project.json"), FileShare.ReadWrite | FileShare.Delete);
+            intentText = BoundedInput.ReadText(intentPath);
+        }
+        catch (InputRejectedException error) { ApplyEditsCommand.Fail(error.Message); return; }
+        if (ApplyEditsCommand.ParseHead(stateText) is not { } head) { ApplyEditsCommand.Fail(StoreInvalid); return; }
+        LayoutIntent intent;
+        try { intent = IntentJson.Parse(intentText); }
+        catch (IntentException error)
+        {
+            Print(JsonSerializer.Serialize(new { status = "failed", code = IntentInvalid, reason = error.Code, field = error.Field }));
+            return;
+        }
+        catch (Exception error) { ApplyEditsCommand.Internal(Verb, error); return; }
+        if (expectedRevision is { } expected && expected != head.Revision) { ApplyEditsCommand.Fail(StaleHead); return; }
+        IntentEditSet set;
+        try { set = IntentEdits.FromStored(head, intent); }
+        catch (IntentException error)
+        {
+            var issues = error.Issues.Count > 0 ? error.Issues : new[] { new IntentIssue(error.Code, error.Field ?? "", error.Detail ?? "") };
+            Print(JsonSerializer.Serialize(new { status = "failed", code = IntentRefused, refusals = issues.Select(i => new { code = i.Code, subject = i.Key, detail = i.Detail }) }));
+            return;
+        }
+        catch (ArgumentException error) when (error.Message is IncrementalDiff.BoundExceeded or InvalidIdentity) { ApplyEditsCommand.Fail(error.Message); return; }
+        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { ApplyEditsCommand.Fail("invalid_ir"); return; }
+        catch (Exception error) { ApplyEditsCommand.Internal(Verb, error); return; }
+        IncrementalDiffResult result;
+        try { result = IncrementalDiff.Diff(head, set.Edits, createOrder: IncrementalDiff.OrderOf(set.After)); }
+        catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { ApplyEditsCommand.Fail(error.Message); return; }
+        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { ApplyEditsCommand.Fail("invalid_ir"); return; }
+        catch (Exception error) { ApplyEditsCommand.Internal(Verb, error); return; }
+        ApplyEditsCommand.Commit(storePath, result, Verb);
+    }
+
+    static void Print(string envelope)
+    {
+        Console.WriteLine(envelope);
+        Environment.ExitCode = 1;
+    }
 }
