@@ -401,19 +401,43 @@ internal static class ApplyIntentTests
             }
         }
 
-        // 9. Static: reads through BoundedInput, edits through IntentEdits.FromStored and OrderOf, commits through the
-        //    commit path shared with apply-edits; default usage lists the verb.
+        // 9. Static: reads through BoundedInput, commits through the commit path shared with apply-edits, and builds its
+        //    plan only through the shared helper interfaces/cli/IntentPlan.cs (P3-13), the one place that parses the intent,
+        //    calls IntentEdits.FromStored, diffs with OrderOf placement and maps the typed refusals, so apply-intent's plan
+        //    and diff-intent's stdout are the same code path. Comment lines are ignored so prose may name the library calls.
+        static string Code(string text) => string.Join("\n", text.Split('\n').Where(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+        var planSteps = new[] { "IntentJson.Parse(", "IntentEdits.FromStored(", "IncrementalDiff.Diff(", "IncrementalDiff.OrderOf(", "IntentException" };
         var sourcePath = Path.Combine(root, "interfaces", "cli", "ApplyIntentCommand.cs");
         Check(File.Exists(sourcePath), "interfaces/cli/ApplyIntentCommand.cs exists");
         if (File.Exists(sourcePath))
         {
-            var source = File.ReadAllText(sourcePath);
-            Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal) && source.Contains("IntentJson.Parse(", StringComparison.Ordinal) && source.Contains("IntentEdits.FromStored(", StringComparison.Ordinal)
-                && source.Contains("IncrementalDiff.OrderOf(", StringComparison.Ordinal) && source.Contains("ApplyEditsCommand.Commit(", StringComparison.Ordinal) && source.Contains("ApplyEditsCommand.ParseHead(", StringComparison.Ordinal)
+            var source = Code(File.ReadAllText(sourcePath));
+            Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal) && source.Contains("ApplyEditsCommand.Commit(", StringComparison.Ordinal) && source.Contains("ApplyEditsCommand.ParseHead(", StringComparison.Ordinal)
                 && !source.Contains("Compiler.Diff", StringComparison.Ordinal) && !source.Contains("new ProjectStore", StringComparison.Ordinal)
                 && new[] { "File.", "FileStream", "FileMode.", "Directory.", "Initialize(" }.All(api => !source.Contains(api, StringComparison.Ordinal)),
-                "apply-intent reads through BoundedInput, builds edits with IntentEdits.FromStored and OrderOf, and commits only through apply-edits' shared commit path");
+                "apply-intent reads through BoundedInput and commits only through apply-edits' shared commit path");
+            var missing = new[] { "IntentPlan.ParseIntent(", "IntentPlan.Build(" }.Where(call => !source.Contains(call, StringComparison.Ordinal)).ToArray();
+            var inlined = planSteps.Where(step => source.Contains(step, StringComparison.Ordinal)).ToArray();
+            Check(missing.Length == 0 && inlined.Length == 0, "apply-intent builds its plan only through the shared IntentPlan helper",
+                "missing helper calls [" + string.Join(", ", missing) + "]; plan steps still inline in ApplyIntentCommand.cs [" + string.Join(", ", inlined) + "]");
         }
+        var helperPath = Path.Combine(root, "interfaces", "cli", "IntentPlan.cs");
+        Check(File.Exists(helperPath), "interfaces/cli/IntentPlan.cs (the shared apply-intent/diff-intent plan helper) exists", helperPath);
+        if (File.Exists(helperPath))
+        {
+            var helper = Code(File.ReadAllText(helperPath));
+            var absent = planSteps.Concat(new[] { "IncrementalDiff.OrderOf(set.After)", "EditsInput.LibraryCodes", "IncrementalDiff.BoundExceeded", "\"invalid_ir\"", "ApplyEditsCommand.Internal(" })
+                .Where(step => !helper.Contains(step, StringComparison.Ordinal)).ToArray();
+            var writes = new[] { "File.", "FileStream", "FileMode.", "Directory.", "ProjectStore", "Commit(", "Initialize(", "BoundedInput" }.Where(api => helper.Contains(api, StringComparison.Ordinal)).ToArray();
+            Check(absent.Length == 0 && writes.Length == 0, "IntentPlan parses the intent, calls FromStored, diffs with OrderOf(set.After) and maps every typed refusal, with no file, store or commit access",
+                "missing [" + string.Join(", ", absent) + "]; forbidden [" + string.Join(", ", writes) + "]");
+        }
+        // The helper is the only interfaces/cli source whose code (not comments) runs the plan steps.
+        var cliDir = Path.Combine(root, "interfaces", "cli");
+        var owners = Directory.GetFiles(cliDir, "*.cs").Where(f => Path.GetFileName(f) != "IntentPlan.cs")
+            .Where(f => { var code = Code(File.ReadAllText(f)); return code.Contains("IntentEdits.FromStored(", StringComparison.Ordinal) || code.Contains("IncrementalDiff.OrderOf(", StringComparison.Ordinal); })
+            .Select(f => Path.GetFileName(f)).ToArray();
+        Check(owners.Length == 0, "no interfaces/cli source other than IntentPlan.cs calls IntentEdits.FromStored or IncrementalDiff.OrderOf", "found in [" + string.Join(", ", owners) + "]");
         Check(Cli("no-such-verb").Out.Contains("apply-intent --store store-directory --intent after.json [--expected-revision n]", StringComparison.Ordinal), "default usage lists apply-intent");
     }
 }
