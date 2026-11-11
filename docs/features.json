@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-10",
+  "updated": "2026-11-11",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -277,7 +277,7 @@
         "docs/architecture/adr/0007-cross-store-recovery.md"
       ],
       "blocker": null,
-      "scope": "ADR0007 option A: fail-closed IFC\u2194Core reconcile, replays only the latest one-revision gap; crash-injection tests at six points, zero-write hash snapshots, real IFC CLI tests on Ubuntu CI 40019034003. Not covered: native Revit path (C8/C9), Windows/OneDrive rename/fsync semantics, OneDrive conflict-copy and placeholder refusal (R03) fails closed in Core and IFC folders, CLI included; verified on Ubuntu/Windows/macOS CI 40033588216 with injected attributes, not against a real OneDrive client."
+      "scope": "ADR0007 option A: fail-closed IFC↔Core reconcile, replays only the latest one-revision gap; crash-injection tests at six points, zero-write hash snapshots, real IFC CLI tests on Ubuntu CI 40019034003. Not covered: native Revit path (C8/C9), Windows/OneDrive rename/fsync semantics, OneDrive conflict-copy and placeholder refusal (R03) fails closed in Core and IFC folders, CLI included; verified on Ubuntu/Windows/macOS CI 40033588216 with injected attributes, not against a real OneDrive client."
     },
     {
       "id": "ifc-incremental-vs-rebuild-baseline",
@@ -448,7 +448,7 @@
         "requirements/rhino.txt"
       ],
       "blocker": "Never opened in real Rhino; no arcs/openings (not in the Core codec); documentation items are origin markers; .3dm bytes not reproducible; Linux CI only.",
-      "scope": "P8-02: BIM-IR JSON <-> .3dm via rhino3dm 8.17.0 (MIT) without Rhino: layers, ids as object ids, geometry read back from Rhino geometry, metres/millimetres, stable export\u2192import\u2192export, 26+ refusals (foreign, moved, precision, malformed). 60 tests on the real library, CI 41548519960."
+      "scope": "P8-02: BIM-IR JSON <-> .3dm via rhino3dm 8.17.0 (MIT) without Rhino: layers, ids as object ids, geometry read back from Rhino geometry, metres/millimetres, stable export→import→export, 26+ refusals (foreign, moved, precision, malformed). 60 tests on the real library, CI 41548519960."
     },
     {
       "id": "revit-catalogue-v2",
@@ -521,7 +521,7 @@
         "tests/skills/Program.cs"
       ],
       "blocker": "9 rules (escritorio/estudio/biblioteca third-class assignment) stay to-verify; BIM-IR rooms carry no names or openings, so light/ventilation rules are not evaluable on model data; clear height is approximated from wall height; not yet wired into the space planner.",
-      "scope": "P5-02: CABA C\u00f3digo de Edificaci\u00f3n room rules (areas, minimum sides, heights, illumination/ventilation ratios) with article citations and cited/to-verify confidence, validator over BIM-IR rooms with pass/fail/not_evaluable findings, unmatched rooms block compliance, parameter overrides within bounds. CI 41576795164. P5-06 (relay145, CI 41707994544): owner-confirmed confidence (confirmed_by architect (owner), confirmed_on 2026-11-03) for 36 rules the owner confirmed (2.60/2.40/2.10 m heights, x = 10, k = i/3, dormitorio third class); 49 cited, 9 to-verify."
+      "scope": "P5-02: CABA Código de Edificación room rules (areas, minimum sides, heights, illumination/ventilation ratios) with article citations and cited/to-verify confidence, validator over BIM-IR rooms with pass/fail/not_evaluable findings, unmatched rooms block compliance, parameter overrides within bounds. CI 41576795164. P5-06 (relay145, CI 41707994544): owner-confirmed confidence (confirmed_by architect (owner), confirmed_on 2026-11-03) for 36 rules the owner confirmed (2.60/2.40/2.10 m heights, x = 10, k = i/3, dormitorio third class); 49 cited, 9 to-verify."
     },
     {
       "id": "ifc-ids-checks",
@@ -543,8 +543,8 @@
         "runtimes/revit-native/CommandsExecutorQuery.cs",
         "tests/revit-commands/ElementQuery.cs"
       ],
-      "blocker": "Collector compiled only (native-build); never run in Revit \u2014 level resolution via LevelId vs level parameters, spec id shapes and display texts unverified; level-only queries scan all model elements; pagination cursor added by P1-13 (see revit-element-query-cursor).",
-      "scope": "P1-02: read-only query.elements (category friendly name or OST_ name and/or level, 1\u201316 parameters instance-then-type, limit 1\u20135000, ascending ids, truncated/truncated_reason, 4 MiB UTF-8 reply budget, model categories only for level-only queries) and query.inspect (all instance/type parameters with storage type, spec, flags, typed units mm/m2/m3/deg via version-insensitive core routing, element-id refs with UniqueId); read permission, no transactions, MCP tools. Contracts unit-tested, executor compiled, CI 41584475032."
+      "blocker": "Collector compiled only (native-build); never run in Revit — level resolution via LevelId vs level parameters, spec id shapes and display texts unverified; level-only queries scan all model elements; pagination cursor added by P1-13 (see revit-element-query-cursor).",
+      "scope": "P1-02: read-only query.elements (category friendly name or OST_ name and/or level, 1–16 parameters instance-then-type, limit 1–5000, ascending ids, truncated/truncated_reason, 4 MiB UTF-8 reply budget, model categories only for level-only queries) and query.inspect (all instance/type parameters with storage type, spec, flags, typed units mm/m2/m3/deg via version-insensitive core routing, element-id refs with UniqueId); read permission, no transactions, MCP tools. Contracts unit-tested, executor compiled, CI 41584475032."
     },
     {
       "id": "plan-to-revit-commands",
@@ -555,7 +555,7 @@
         "docs/contracts/module-contracts.md"
       ],
       "blocker": "Catalogue v1 cannot create levels (levels are preconditions checked against query.levels); host wall UniqueIds filled from created[0] (unverified against the executor); opening sizes come from the family type; openings on existing walls, updates, deletes and floors not translated; no runner (P3-03).",
-      "scope": "P3-02: ExecutionPlan/compiled Project \u2192 ordered catalogue v1 commands (query.levels, wall.create, opening.place, room.create) with SHA-256 operation ids over plan, document, canonical args and inputs; every command parsed by RevitCommandProtocol; explicit unsupported codes, every operation accounted; level precondition checker; Envelope placeholder substitution; byte-identical JSON pinned and culture-invariant. CI 41586824187."
+      "scope": "P3-02: ExecutionPlan/compiled Project → ordered catalogue v1 commands (query.levels, wall.create, opening.place, room.create) with SHA-256 operation ids over plan, document, canonical args and inputs; every command parsed by RevitCommandProtocol; explicit unsupported codes, every operation accounted; level precondition checker; Envelope placeholder substitution; byte-identical JSON pinned and culture-invariant. CI 41586824187."
     },
     {
       "id": "ifc-import-roundtrip",
@@ -567,7 +567,7 @@
         "docs/ifc.md"
       ],
       "blocker": "Only own-exporter and worker-authored IFC tested (no third-party authoring-tool files); horizontally extruded openings (typical Revit/ArchiCAD exports), layered/clipped/curved walls and Brep bodies are unmapped; provenance is never carried through IFC (imports are observed).",
-      "scope": "P8-01: IFC storeys/walls/doors/windows (fill\u2192opening\u2192void to a mapped wall)/spaces read into existing BIM-IR with full placement composition and unit conversion, unmapped list with reasons and dependency cascade, range/precision/size refusals; deterministic validated IFC4 exporter; export\u2192import\u2192export stable (DATA section byte-identical). CI 41588411915 (ifc + ifc-portable on 3 OS)."
+      "scope": "P8-01: IFC storeys/walls/doors/windows (fill→opening→void to a mapped wall)/spaces read into existing BIM-IR with full placement composition and unit conversion, unmapped list with reasons and dependency cascade, range/precision/size refusals; deterministic validated IFC4 exporter; export→import→export stable (DATA section byte-identical). CI 41588411915 (ifc + ifc-portable on 3 OS)."
     },
     {
       "id": "cad-pdf-vector-reader",
@@ -604,7 +604,7 @@
         "tests/bcf/schemas/README.md"
       ],
       "blocker": "Validated only against project-authored subset XSDs (official buildingSMART BCF-XML 3.0 XSDs not fetched; their licence unchecked); no snapshots, comments, Header/Files or clipping planes; never opened in a BCF viewer; no CLI/MCP caller yet.",
-      "scope": "P10-02: neutral validation issues to a BCF 3.0 zip (bcf.version, extensions.xml, project.bcfp, per-topic markup.bcf and optional viewpoint.bcfv with IfcGuid/AuthoringToolId components and perspective/orthogonal camera); SHA-256-derived UUIDs, IFC GUID compression, hand-written stored zip with fixed headers \u2014 golden SHA-256 equal on Linux and Windows; per-field and whole-export limits with stable codes. CI 41603185340."
+      "scope": "P10-02: neutral validation issues to a BCF 3.0 zip (bcf.version, extensions.xml, project.bcfp, per-topic markup.bcf and optional viewpoint.bcfv with IfcGuid/AuthoringToolId components and perspective/orthogonal camera); SHA-256-derived UUIDs, IFC GUID compression, hand-written stored zip with fixed headers — golden SHA-256 equal on Linux and Windows; per-field and whole-export limits with stable codes. CI 41603185340."
     },
     {
       "id": "revit-structure-commands",
@@ -661,7 +661,7 @@
         "tests/plan-to-commands/PlanRunnerTests.cs"
       ],
       "blocker": "Fake transport only; no concrete pipe adapter class; created_missing does not clear on resume (receipt replays); never run against Revit.",
-      "scope": "P3-03: runs a RevitCommandPlan through an injected transport \u2014 level preconditions first (no writes on issues), host placeholders from created[0], strict receipt matching, stop on first failure with a deterministic resumable JSON report, resume re-sends only pending steps relying on operation_id replay; tampered reports refused. CI 41640877159."
+      "scope": "P3-03: runs a RevitCommandPlan through an injected transport — level preconditions first (no writes on issues), host placeholders from created[0], strict receipt matching, stop on first failure with a deterministic resumable JSON report, resume re-sends only pending steps relying on operation_id replay; tampered reports refused. CI 41640877159."
     },
     {
       "id": "gltf-export",
@@ -671,7 +671,7 @@
         "tests/gltf/Program.cs"
       ],
       "blocker": "Never opened in Blender nor run through the Khronos glTF-Validator; no CLI verb; wall joins not resolved; BIM-IR carries no openings/slabs so none are exported.",
-      "scope": "P8-04: BCL-only deterministic BIM-IR \u2192 glTF 2.0 (.glb and .gltf with embedded buffer): walls as boxes, spaces as floor quads, levels as nodes, extras {bim_id, kind, type, level}, Z-up\u2192Y-up, per-kind materials; in-test spec validator with mutation tests; golden SHA-256 equal on Linux and Windows; bounded input and precision checks; never-overwrite writer. CI 41644141785."
+      "scope": "P8-04: BCL-only deterministic BIM-IR → glTF 2.0 (.glb and .gltf with embedded buffer): walls as boxes, spaces as floor quads, levels as nodes, extras {bim_id, kind, type, level}, Z-up→Y-up, per-kind materials; in-test spec validator with mutation tests; golden SHA-256 equal on Linux and Windows; bounded input and precision checks; never-overwrite writer. CI 41644141785."
     },
     {
       "id": "revit-modify-delete-commands",
@@ -685,7 +685,7 @@
         "tests/audit/Program.cs"
       ],
       "blocker": "Not verified-in-revit (owner session on a test copy needed). Not offered: integer enumerations, unitless/other measured numbers, clearing element-id parameters, type parameters through an instance. Unverified whether DocumentChanged fires inside the transaction group (also_modified may be empty; side-effect deletions are still caught by the id snapshot); three full id collections per delete may be slow on large models.",
-      "scope": "P1-05: element.set_parameter (name/built_in/shared guid; typed length mm, area m2, angle \u00b1360\u00b0, text, int32, yes/no, element UniqueId; refuses read-only/unsupported/group members; readback before and after failure processing; refuses side-effect deletions, reports also_modified) and element.delete (1\u2013100 targets; rolled-back probe lists dependents; dependents get target protections; real delete needs confirm_dependents exactly; \u22641000 dependents; post-commit no-extra-deletions check; compact receipts with dependents count + SHA-256); dry_run rolls back and stores no receipt; copies-only and link guards; MCP destructiveHint true only for these two. Contracts unit-tested, executor compiled. CI 41668015221."
+      "scope": "P1-05: element.set_parameter (name/built_in/shared guid; typed length mm, area m2, angle ±360°, text, int32, yes/no, element UniqueId; refuses read-only/unsupported/group members; readback before and after failure processing; refuses side-effect deletions, reports also_modified) and element.delete (1–100 targets; rolled-back probe lists dependents; dependents get target protections; real delete needs confirm_dependents exactly; ≤1000 dependents; post-commit no-extra-deletions check; compact receipts with dependents count + SHA-256); dry_run rolls back and stores no receipt; copies-only and link guards; MCP destructiveHint true only for these two. Contracts unit-tested, executor compiled. CI 41668015221."
     },
     {
       "id": "cad-to-bim-ir-draft",
@@ -698,7 +698,7 @@
         "tests/cad/fixtures/draft-plan.pdf"
       ],
       "blocker": "Generated fixtures only, no real architectural plans; heights/sills are option defaults marked assumed; PDF openings need listed form object numbers; straight walls only, no mismatched-thickness joins; draft ids are positional (not stable across edits); not exposed through CLI/MCP.",
-      "scope": "P6-04: calibrated DXF/PDF \u2192 non-persisted draft of BIM-IR walls and door/window openings (existing Element shape, metres, Compiler.Validate-clean) with per-element confidence, file/layer/handle or page/operator provenance, mm copies, and an uncertainty report (unpaired-line, ambiguous-thickness/pairing, gap, unclosed-join, unmatched-block, unhosted/ambiguous-host, opening-overlap, opening-beyond-clear-span, uncertainty-limit); nested door blocks, through-wall tees, grid neighbour lookups and work budgets with draft-limit. CI 41672486856."
+      "scope": "P6-04: calibrated DXF/PDF → non-persisted draft of BIM-IR walls and door/window openings (existing Element shape, metres, Compiler.Validate-clean) with per-element confidence, file/layer/handle or page/operator provenance, mm copies, and an uncertainty report (unpaired-line, ambiguous-thickness/pairing, gap, unclosed-join, unmatched-block, unhosted/ambiguous-host, opening-overlap, opening-beyond-clear-span, uncertainty-limit); nested door blocks, through-wall tees, grid neighbour lookups and work budgets with draft-limit. CI 41672486856."
     },
     {
       "id": "generative-apartment-prototypes",
@@ -788,7 +788,7 @@
         "tests/doc-regeneration/Program.cs"
       ],
       "blocker": "Fake transport only, never run against Revit; emits no delete commands (caller removes the earlier instance of each regenerated key); dimensions between walls only; tag heads from walls, spaces and openings; parent closure re-runs tags/dimensions/placements of a regenerated view/schedule/sheet even when their own content is unchanged.",
-      "scope": "P4-03: caller-owned DocumentationSet (plan/ceiling/section/3D views, tags, wall-to-wall dimensions, schedules by kind, sheets, placements; optional binding to BIM-IR plan/schedule/sheet elements) \u2192 Full regeneration as P4-01/P4-02 catalogue commands with typed unsupported entries; Affected(before, after, Compiler.Diff) keeps only items whose own result differs (candidates by what each item reads), plus parent closure; Merge(Full(before), Affected) == Full(after) on a 300-edit seeded corpus; strict minimality and soundness oracles; input digest refuses mismatched sets/bindings; 2/404 items regenerated for one wall move on a 50-room set. CI 41761011983."
+      "scope": "P4-03: caller-owned DocumentationSet (plan/ceiling/section/3D views, tags, wall-to-wall dimensions, schedules by kind, sheets, placements; optional binding to BIM-IR plan/schedule/sheet elements) → Full regeneration as P4-01/P4-02 catalogue commands with typed unsupported entries; Affected(before, after, Compiler.Diff) keeps only items whose own result differs (candidates by what each item reads), plus parent closure; Merge(Full(before), Affected) == Full(after) on a 300-edit seeded corpus; strict minimality and soundness oracles; input digest refuses mismatched sets/bindings; 2/404 items regenerated for one wall move on a 50-room set. CI 41761011983."
     },
     {
       "id": "documentation-update-pipeline",
@@ -810,7 +810,7 @@
         "tests/cad/fixtures/brief-plan.dxf"
       ],
       "blocker": "Synthetic fixtures only, no real architectural plan; CID-font PDF text not read (DXF ATTRIB room tags read since P6-06, see dxf-attributes-mtext); confidence multipliers untuned; no adjacencies, levels or counts; region membership by text insertion point; gross region areas (holes not subtracted); not exposed through CLI/MCP.",
-      "scope": "P6-05: DXF/PDF room labels and es/en area texts (m\u00b2, m2, sqm\u2026, decimal comma/point, thousands groups, ambiguity flagged, signed areas invalid) become a P6-03 brief draft that passes the brief validator, with per-room confidence, file/handle/layer/block-path or page provenance and uncertainty codes (unlabelled-region, area-mismatch, duplicate-label/text, orphan-area, outer-region, uncalibrated, area-ambiguous, limit codes always reported); MetresPerUnit option, block furniture regions excluded by default, frame labels suppressed; bounded and culture-invariant, fuzzed. CI 41762098208."
+      "scope": "P6-05: DXF/PDF room labels and es/en area texts (m², m2, sqm…, decimal comma/point, thousands groups, ambiguity flagged, signed areas invalid) become a P6-03 brief draft that passes the brief validator, with per-room confidence, file/handle/layer/block-path or page provenance and uncertainty codes (unlabelled-region, area-mismatch, duplicate-label/text, orphan-area, outer-region, uncalibrated, area-ambiguous, limit codes always reported); MetresPerUnit option, block furniture regions excluded by default, frame labels suppressed; bounded and culture-invariant, fuzzed. CI 41762098208."
     },
     {
       "id": "cad-brief-planner-brief",
@@ -834,7 +834,7 @@
         "tests/generative/CirculationTests.cs"
       ],
       "blocker": "Doors are candidate openings on every qualifying shared wall (reachable = adjacency-graph connectivity); one entrance; level 0 only (upper levels reported circulation_unsupported, no stairs); no corridors, door swing or clearance; PrototypeGenerator does not apply the gate; not exposed through CLI/MCP.",
-      "scope": "P7-04: door/entrance reachability graph over planner layouts with deterministic shortest routes; hard checks circulation_entrance, circulation_reachable, circulation_bedroom_access, circulation_passage (only wet rooms behind a bedroom); opt-in CirculationRanker adds an explained 'circulation' criterion (mean route length vs \u221aarea, penalty for unreachable rooms, weight and require_valid recorded) on top of AlternativeRanker with existing outputs and digests unchanged; independent BFS + Floyd\u2013Warshall oracle on planner seeds and prototypes; byte-identical across order and culture. CI 41758872020."
+      "scope": "P7-04: door/entrance reachability graph over planner layouts with deterministic shortest routes; hard checks circulation_entrance, circulation_reachable, circulation_bedroom_access, circulation_passage (only wet rooms behind a bedroom); opt-in CirculationRanker adds an explained 'circulation' criterion (mean route length vs √area, penalty for unreachable rooms, weight and require_valid recorded) on top of AlternativeRanker with existing outputs and digests unchanged; independent BFS + Floyd–Warshall oracle on planner seeds and prototypes; byte-identical across order and culture. CI 41758872020."
     },
     {
       "id": "release-packaging",
@@ -913,8 +913,8 @@
         "core/Bim.Core/DocDefaults.cs",
         "tests/doc-regeneration/Defaults.cs"
       ],
-      "blocker": "Never run against Revit; Revit level bindings still caller-owned (unbound level \u2192 P4-03 level_unbound); no dimensions, sections, 3D views or window tags; schedules on a separate sheet A900; plan names and sheet numbers follow elevation order (inserting a lower level renumbers, keys unchanged); first BIM-IR plan/schedule by id wins.",
-      "scope": "P4-04: DocDefaults.From(project) \u2192 deterministic DocumentationSet: one plan per level (scale 100), space and door tags in the plan of the host wall's level (hosted doors only with exactly one host wall), door and room schedules, one sheet per level with its plan placed plus A900 schedules sheet; bound to BIM-IR plan/sheet/schedule elements (each BIM-IR sheet bound once); keys from BIM-IR ids only; DocRegeneration.Full on it yields no unsupported entries and every step validates against the catalogue args schema; byte-identical under reorder and unrelated edits; typed InvalidOperationException refusals (invalid_ir, doc_defaults_level_invalid, doc_defaults_no_level). CI 41809487719."
+      "blocker": "Never run against Revit; Revit level bindings still caller-owned (unbound level → P4-03 level_unbound); no dimensions, sections, 3D views or window tags; schedules on a separate sheet A900; plan names and sheet numbers follow elevation order (inserting a lower level renumbers, keys unchanged); first BIM-IR plan/schedule by id wins.",
+      "scope": "P4-04: DocDefaults.From(project) → deterministic DocumentationSet: one plan per level (scale 100), space and door tags in the plan of the host wall's level (hosted doors only with exactly one host wall), door and room schedules, one sheet per level with its plan placed plus A900 schedules sheet; bound to BIM-IR plan/sheet/schedule elements (each BIM-IR sheet bound once); keys from BIM-IR ids only; DocRegeneration.Full on it yields no unsupported entries and every step validates against the catalogue args schema; byte-identical under reorder and unrelated edits; typed InvalidOperationException refusals (invalid_ir, doc_defaults_level_invalid, doc_defaults_no_level). CI 41809487719."
     },
     {
       "id": "dxf-attributes-mtext",
@@ -926,8 +926,8 @@
         "tests/cad/AttributeTests.cs",
         "tests/cad/fixtures/room-tags.dxf"
       ],
-      "blocker": "Hand-written fixture only, no real CAD office drawing; MINSERT arrays, tilted OCS, MTEXT columns/fields, \\M+ escapes and non-Latin-1 %%nnn not handled; room-block words and NAME/AREA tag lists built in; imperial bare areas always assumed ft\u00b2; constant ATTDEFs lost in the explode-limit fallback; not exposed through CLI/MCP.",
-      "scope": "P6-06: ATTRIB/ATTDEF read with tag, raw/plain value, flags, prompt/default and provenance (handle, layer, insert path, line); INSERT 66\u2026SEQEND attachment with typed warnings, single linear pass; only constant ATTDEFs drawn through inserts; TEXT/ATTRIB/MTEXT decoding (\\P, \\f, {}, \\S, %% codes, caret codes) linear (100k-deep braces tested); room-tag blocks feed brief extraction (NAME tag needs a sibling AREA tag or a room-token block name; AREA consumed by its own insert; ft\u00b2 conversion on imperial drawings; top-level ATTRIBs kept in the explode-limit fallback with layer/visibility inheritance). CI 41815912317."
+      "blocker": "Hand-written fixture only, no real CAD office drawing; MINSERT arrays, tilted OCS, MTEXT columns/fields, \\M+ escapes and non-Latin-1 %%nnn not handled; room-block words and NAME/AREA tag lists built in; imperial bare areas always assumed ft²; constant ATTDEFs lost in the explode-limit fallback; not exposed through CLI/MCP.",
+      "scope": "P6-06: ATTRIB/ATTDEF read with tag, raw/plain value, flags, prompt/default and provenance (handle, layer, insert path, line); INSERT 66…SEQEND attachment with typed warnings, single linear pass; only constant ATTDEFs drawn through inserts; TEXT/ATTRIB/MTEXT decoding (\\P, \\f, {}, \\S, %% codes, caret codes) linear (100k-deep braces tested); room-tag blocks feed brief extraction (NAME tag needs a sibling AREA tag or a room-token block name; AREA consumed by its own insert; ft² conversion on imperial drawings; top-level ATTRIBs kept in the explode-limit fallback with layer/visibility inheritance). CI 41815912317."
     },
     {
       "id": "generative-facade",
@@ -1019,7 +1019,7 @@
         "tests/doc-regeneration/Replace.cs"
       ],
       "blocker": "Never run in Revit; assumes created[0] of each documentation command is the realized item; dependents come from a caller dry run; one element.delete per key (no single undo).",
-      "scope": "P4-05: DocReplace.Plan/Run/Resume/Realized turn an Affected/Full regeneration plus a key\u2192UniqueId map into one RevitCommandPlan: children-first element.delete with confirmed dependents, then parents-first re-creation through PlanRunner; create ids hash the replaced delete so re-plans never replay deleted elements; typed refusals. Fake executor only. CI 41917253830."
+      "scope": "P4-05: DocReplace.Plan/Run/Resume/Realized turn an Affected/Full regeneration plus a key→UniqueId map into one RevitCommandPlan: children-first element.delete with confirmed dependents, then parents-first re-creation through PlanRunner; create ids hash the replaced delete so re-plans never replay deleted elements; typed refusals. Fake executor only. CI 41917253830."
     },
     {
       "id": "cli-cad-draft-brief",
@@ -1051,7 +1051,7 @@
         "tests/mirror-journal/MirrorDriftResolveChecks.cs"
       ],
       "blocker": "Not wired to CLI/MCP; never run in Revit; deletes carry no confirm_dependents (hosts with unchanged dependents are refused as dependents_remain); replace gives new UniqueIds without a map update; level create/replace unsupported; no selective-apply helper (Requires documented, not enforced).",
-      "scope": "P2-07: MirrorDriftResolve.Plan(report, snapshot, committed, bindings) \u2192 per drifted element an adopt proposal (BIM-IR update/create/delete from the mirror, revit-mirror proposed provenance) and a restore proposal (element.delete / wall.create / opening.place / room.create / element.set_parameter steps validated by RevitCommandProtocol.Parse; operation ids hash the observed state so re-plans after new drift never replay); Applied always false; typed unsupported codes and report refusals; deterministic. CI 41934750332."
+      "scope": "P2-07: MirrorDriftResolve.Plan(report, snapshot, committed, bindings) → per drifted element an adopt proposal (BIM-IR update/create/delete from the mirror, revit-mirror proposed provenance) and a restore proposal (element.delete / wall.create / opening.place / room.create / element.set_parameter steps validated by RevitCommandProtocol.Parse; operation ids hash the observed state so re-plans after new drift never replay); Applied always false; typed unsupported codes and report refusals; deterministic. CI 41934750332."
     },
     {
       "id": "skill-typology-vivienda",
@@ -1062,7 +1062,7 @@
         "tests/skills/TypologySkillTests.cs"
       ],
       "blocker": "Programme values illustrative (not owner-confirmed); only the effective (winning) composed minimum is compared; not wired to Bim.Generative; no CLI/MCP; multi-count rooms are one brief room with a count.",
-      "scope": "P5-07: vivienda unifamiliar typology pack (required/optional rooms, min/target/max areas never below CABA cited minimums, 7 adjacency wishes) resolved by SkillTypology.Resolve for family size 1\u20138 into a ProjectBrief accepted by BriefValidator; typed unknown kind, not offered, minimum conflict (incl. composed defaults and rule parameters), invalid setting and count cap. CI 41937157242."
+      "scope": "P5-07: vivienda unifamiliar typology pack (required/optional rooms, min/target/max areas never below CABA cited minimums, 7 adjacency wishes) resolved by SkillTypology.Resolve for family size 1–8 into a ProjectBrief accepted by BriefValidator; typed unknown kind, not offered, minimum conflict (incl. composed defaults and rule parameters), invalid setting and count cap. CI 41937157242."
     },
     {
       "id": "addin-install",
@@ -1072,7 +1072,7 @@
         "tests/packaging/test-install-addin.ps1",
         "tests/packaging/test-package.ps1"
       ],
-      "blocker": "Release package has no Bim.Revit.dll (licensed references) \u2192 install needs -AssemblyPath or -AllowMissingAssembly; never loaded by Revit; does not check whether Revit is running; -RevitUserAddins only exercised with a fake APPDATA.",
+      "blocker": "Release package has no Bim.Revit.dll (licensed references) → install needs -AssemblyPath or -AllowMissingAssembly; never loaded by Revit; does not check whether Revit is running; -RevitUserAddins only exercised with a fake APPDATA.",
       "scope": "P10-07: install-addin.ps1 renders Bim.addin from a verified P10-04 package (package-verify, manifest snapshot compared after verify, template hash) into an explicit Addins folder with the XML-escaped assembly path, backs up a foreign Bim.addin, records ownership by hash, rolls back a failed write, uninstall restores the backup and refuses foreign files; temp folders only in tests, ubuntu+windows. CI 41938674297."
     },
     {
@@ -1192,7 +1192,7 @@
         "tests/generative/PrototypePipelineTests.cs"
       ],
       "blocker": "Facade is pass/fail only (no quality ranking, P7-10); 4/16 real prototypes rejected wall_clash on staggered plans (P7-06 limitation, P7-08); option refusals use a one-room probe plan; accepted BIM-IR projects share id/revision and are not committed; not exposed through CLI/MCP (P7-09).",
-      "scope": "P7-07: PrototypePipeline.Run(request, options)/Rank(brief, plans, options, weights) run prototype \u2192 circulation \u2192 facade \u2192 BIM-IR windows gates with typed rejections (gate, code, subject, detail), accepted ranked 1..k in CirculationRanker order, rejected rank 0; all refusals merged; canonical v1 JSON with options; PrototypeGenerator digest pinned; real prototypes 6/16 accepted (6 duplicate_geometry, 4 wall_clash). CI 41972006351."
+      "scope": "P7-07: PrototypePipeline.Run(request, options)/Rank(brief, plans, options, weights) run prototype → circulation → facade → BIM-IR windows gates with typed rejections (gate, code, subject, detail), accepted ranked 1..k in CirculationRanker order, rejected rank 0; all refusals merged; canonical v1 JSON with options; PrototypeGenerator digest pinned; real prototypes 6/16 accepted (6 duplicate_geometry, 4 wall_clash). CI 41972006351."
     },
     {
       "id": "generative-prototype-snap",
@@ -1578,6 +1578,36 @@
       ],
       "blocker": "Owner -Catalogue run pending (🔒): assumes Revit's dry-run delete of a fresh section reports ≤2 dependents (its plan marker), empty created/modified on dry runs and deleted == target + dependents; sends the P4-09 algorithm step by step (no CLI executes a DocUpdatePlan yet: P4-12); no OST_Viewers category check on the baseline.",
       "scope": "P4-11: documentacion group gains 20 doc-up-* steps (group 35 steps, clean -Catalogue run 129): test wall + reference wall, section with a dry-run dependents baseline (≤2, none kept), tag, dimension; move the wall 1000 mm; probe, confirm and real element.delete of the stale dimension/tag/section in DocReplace order with exact confirm_dependents (only the baseline accepted; dependent_kept/planned/unknown/changed refused, strict readbacks incl. duplicates, non-UniqueIds, exact deleted set); re-create and read back section, tag (head moved, not orphaned) and dimension (+1000 mm), stale tag reference_not_found. In-process fake and real-CLI pass. CI red 42901043322, green 42904609025, review red 42909552877, green 42909679196."
+    },
+    {
+      "id": "fake-pipe-paging-deterministic",
+      "status": "unit-tested",
+      "evidence": [
+        "tests/integration/fake-revit-command-pipe.ps1",
+        "tests/integration/test-catalogue-session.ps1"
+      ],
+      "blocker": "Test harness only; the real Revit add-in pipe server (runtimes/revit-native, Windows) was not examined; production client unchanged.",
+      "scope": "P1-19: the fake revit-command pipe server creates its next listening instance right after each accept (maxNumberOfServerInstances 2) so revit-command --all per-page reconnects never race a closing Unix-socket listener (former intermittent pipe_io_error on Linux); IOException per connection logged and served on; 200-run --all limit-1 stress loop on Linux and Windows with early stop at 3 failures and a budget computed from runs × pages. CI red 42927364048, green 42930825232, review green 42935480549."
+    },
+    {
+      "id": "mirror-drift-adopt-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/MirrorDriftAdoptCommand.cs",
+        "tests/cli/MirrorDriftAdoptTests.cs"
+      ],
+      "blocker": "No MCP tool yet (P2-15; engine to move into interfaces/mcp then); not chained with real mirror-drift/mirror-drift-select binaries (P2-14); no restore plan executed, no map/provenance written (P2-11); drift_adopt_commit_incomplete and internal_error only covered in-process; internal_error from the catch-all gives no nothing-written guarantee.",
+      "scope": "P2-13: `mirror-drift-adopt store-directory selection.json` reads the P2-10 selection bounded (8 MiB, regular file, no links) as strict UTF-8 (optional UTF-8 BOM; UTF-16/32 and invalid UTF-8 refused) and accepts only the canonical MirrorDriftSelection.ToJson text; runs MirrorDriftAdoptCommit.Commit; prints {status,outcome committed|replayed|nothing_to_adopt,revision,key}; Core refusals as typed drift_adopt_* envelopes (exit 1) with the store byte-identical (names, bytes, mtimes); store input errors input_* detail store; blank store path refused only when there are adopt operations. CI red 42927683523, green 42930250939, review red 42933487880, green 42933556749."
+    },
+    {
+      "id": "dxf-to-ranked-layouts-e2e",
+      "status": "unit-tested",
+      "evidence": [
+        "tests/cli/CadToLayoutsTests.cs",
+        "tests/cad/fixtures/brief-plan.dxf"
+      ],
+      "blocker": "plan-layouts reads only a bare brief: the chain copies the cad-plan-brief document's brief member bytes between verbs (P6-14 adds --brief-only); DXF only (PDF in P6-15); child culture not directly probed (LANG/LC_ALL documented .NET rule).",
+      "scope": "P6-13: brief-plan.dxf → cad-brief → cad-plan-brief (--site-width 10 --site-depth 8 --name \"Brief plan\") → plan-layouts (--alternatives 3 --seed 7) through the real CLI is byte-equal to the in-process DxfReader → BriefExtract → BriefPlanner → SpacePlanner ×3 → AlternativeRanker run; pinned sha256 566058984bb381768338f79137a18078bcc5ef6cfdfee0698226a7b84a86408a on ubuntu, windows and macos; rerun identical; de-DE in-process and (Linux, required on Linux CI) child-process runs identical. CI red 42927416675, green 42929293306, review green 42937560412."
     }
   ]
 }
