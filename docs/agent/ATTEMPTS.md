@@ -269,3 +269,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P5-12: no failed attempts (red 42942656762 → placeholder-pin read 42943922405 → green 42945770818; review placeholder-pin read 42948017660 → green 42949856832).
 - P7-13: no failed attempts (red 42942742275 → green 42943881517; review red 42951916888 → green 42952935652).
 - P3-11: no failed attempts (red 42942878532 → green 42944305451; review green 42954721581).
+
+### Relay187 (2026-11-11, cloud)
+- P1-17: 3 failed attempts, distinct causes, oracle unchanged — (1) run 42963271303: stray `}` after the try/finally → `using var` refactor (compile error); (2) run 42963748659: core-windows IOException "Pipe is broken" on close-without-reply — StreamWriter dispose flush on a broken Windows pipe; fixed by writing the identical bytes directly (behaviour change: Windows close-without-reply is now no_response, was pipe_io_error); (3) run 42972140451: CS0128 local name clash in tests/plan-to-commands/PlanRunnerTests.cs; renamed. Red 42962679193 → green 42964972283; review red 42971664563 → green 42972760593.
+- P4-12: no failed attempts (red 42962945423 → green 42963892631; review red 42968757425 → green 42969538210).
+- P10-13: 1 failed attempt — run 42963261965: core-windows package-verify refused the extracted archive as sbom_mismatch (non-canonical); hypothesis FileVersionInfo depends on the Windows file-version API/path; versions now read from assembly bytes via System.Reflection.Metadata. Red 42962728184 → green 42966315083; review red 42974651912 → green 42974975958.

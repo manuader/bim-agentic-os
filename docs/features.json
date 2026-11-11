@@ -1576,7 +1576,7 @@
         "tests/integration/test-catalogue-session.ps1",
         "tests/integration/fake-revit-command-executor.ps1"
       ],
-      "blocker": "Owner -Catalogue run pending (🔒): assumes Revit's dry-run delete of a fresh section reports ≤2 dependents (its plan marker), empty created/modified on dry runs and deleted == target + dependents; sends the P4-09 algorithm step by step (no CLI executes a DocUpdatePlan yet: P4-12); no OST_Viewers category check on the baseline.",
+      "blocker": "Owner -Catalogue run pending (🔒): assumes Revit's dry-run delete of a fresh section reports ≤2 dependents (its plan marker), empty created/modified on dry runs and deleted == target + dependents; sends the P4-09 algorithm step by step (the CLI `doc-update --execute` exists since P4-12; switching the owner step to it is P4-14); no OST_Viewers category check on the baseline.",
       "scope": "P4-11: documentacion group gains 20 doc-up-* steps (group 35 steps, clean -Catalogue run 129): test wall + reference wall, section with a dry-run dependents baseline (≤2, none kept), tag, dimension; move the wall 1000 mm; probe, confirm and real element.delete of the stale dimension/tag/section in DocReplace order with exact confirm_dependents (only the baseline accepted; dependent_kept/planned/unknown/changed refused, strict readbacks incl. duplicates, non-UniqueIds, exact deleted set); re-create and read back section, tag (head moved, not orphaned) and dimension (+1000 mm), stale tag reference_not_found. In-process fake and real-CLI pass. CI red 42901043322, green 42904609025, review red 42909552877, green 42909679196."
     },
     {
@@ -1642,6 +1642,48 @@
       ],
       "blocker": "Intended state only, no native verification; plan equals diff-edits byte for byte only when every create sorts after the survivors (otherwise same operations/BeforeHash/DirtyIds, different order and AfterHash — tested); FromStored deletes any head element the intent does not produce; a no-change rerun without --expected-revision commits an empty revision; no apply-intent-specific concurrency race test (shared commit path race-tested via apply-edits); no read-only diff-intent verb yet (P3-12).",
       "scope": "P3-11: `apply-intent --store <dir> --intent after.json [--expected-revision n]` builds edits with IntentEdits.FromStored on the store head, plans with IncrementalDiff.Diff(head, edits, OrderOf(set.After)) (equal to Compiler.Diff(head, compile(intent))) and commits through the apply-edits commit path shared by refactor (apply-edits bytes/codes/keys unchanged); idempotency key apply-intent:<rev>:<guid>; refusals apply_intent_{usage,store_invalid,stale_head,store_unavailable,commit_incomplete,internal_error,intent_invalid(reason,field),intent_refused(refusals)}, input_*, invalid_ir, invalid_project_identity, edit_bound_exceeded; store and intent untouched on every refusal except commit_incomplete; de_DE identical. CI red 42942878532, green 42944305451, review green 42954721581."
+    },
+    {
+      "id": "revit-command-pipe-read-timeout",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/RevitCommandsService.cs",
+        "core/Bim.Core/RevitCommands.cs",
+        "core/Bim.Core/PlanRunner.cs",
+        "core/Bim.Core/RevitCommandsQueryPaging.cs",
+        "core/Bim.Core/DocUpdateDependents.cs",
+        "scripts/owner-catalogue-steps.ps1",
+        "tests/revit-commands/PipeReadTimeout.cs",
+        "tests/integration/test-catalogue-session.ps1"
+      ],
+      "blocker": "Not run against the real add-in in Revit; only the reply read is bounded (request write is synchronous); CLI and MCP use the 1800 s default with no knob (P1-20); the reply-at-deadline race keeps a completed line but has no test.",
+      "scope": "P1-17: client-side pipe_read_timeout (RevitPipeReadTimeoutException : IOException, never TimeoutException) after RevitCommandService.DefaultReadTimeout = 1800 s (smallest value ≥ owner -StepTimeoutSeconds max; 24 h cap; PipeTransport(pipe,line,TimeSpan), PipeTransportWithReadTimeout); client pipe opened Asynchronous, ReadLineAsync cancelled on timeout; writes and styled exports report outcome_unknown with replay guidance (resend the same envelope/operation_id after checking; retry later on pipe_connect_timeout), read-only commands say resend is safe; Run calls the transport once; PlanRunner/QueryPaging/DocUpdateDependents map the raw exception; owner catalogue stops on it; wire bytes pinned (UTF-8 no BOM + Environment.NewLine); Windows close-without-reply is now no_response (was pipe_io_error via StreamWriter dispose flush). Real stalled-pipe tests on Linux and Windows. CI red 42962679193, green 42964972283, review red 42971664563, green 42972760593."
+    },
+    {
+      "id": "doc-update-execute",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/DocUpdateExecute.cs",
+        "interfaces/cli/DocUpdateCommand.cs",
+        "interfaces/cli/DocUpdateProbe.cs",
+        "tests/cli/DocUpdateExecuteTests.cs"
+      ],
+      "blocker": "Never run in Revit; no resume (a rerun re-probes from the current model); the report is stdout only; on a library exception the rebuilt report covers plan-file steps only (re-planned creates after a gone target are not listed).",
+      "scope": "P4-12: `doc-update ... --probe-dependents pipe [--accept uid]... --execute --expected-document plan-sha256` writes the dry plan file (never overwrites), refuses a plan whose sha differs (doc_update_plan_changed) before any write, then runs it once through DocUpdate.Run on the probe channel (deletes with exact confirm_dependents children first, then creates; policy read once); stops at the first failure; per-step report done/failed/not_sent with reply_lost true for no_response, pipe_io_error, pipe_read_timeout and response_invalid, `sent` count, replayed only for receipts from earlier invocations; a library exception keeps the recorded report (doc_update_internal_error); dry plan bytes unchanged without --execute; doc_update_usage for every malformed combination. Fake pipe + real Release CLI tests. CI red 42962945423, green 42963892631, review red 42968757425, green 42969538210."
+    },
+    {
+      "id": "package-sbom",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/package-common.ps1",
+        "scripts/package.ps1",
+        "scripts/package-verify.ps1",
+        "tests/packaging/test-package.ps1",
+        "tests/packaging/test-install-addin.ps1",
+        "tests/packaging/test-package-archive.ps1"
+      ],
+      "blocker": "Shipped projects have no PackageReference today, so nuget_references is [] and the reference/licence path is exercised on synthetic trees only; transitive packages not attributed (P10-14); first-party Bim.* licence NOASSERTION (no LICENSE in the repo); not CycloneDX/SPDX; unsigned, so a consistent sbom+manifest rewrite still verifies (vendor entries always refused).",
+      "scope": "P10-13: package.ps1 writes canonical sbom.json (schema bim-agentic-os/package-sbom/v1, version, source_commit; assemblies: every shipped dll/exe ordinal-sorted with path, name, version read via System.Reflection.Metadata, licence, sha256; nuget_references: direct PackageReferences of the cli/mcp ProjectReference closure + Directory.Build.props, normalised pinned versions, nuspec SPDX expression, projects) before manifest.json, which lists it; build-only (Include/ExcludeAssets, case-insensitive) and Nice3point/Revit/Autodesk never listed; package refuses unpinned versions and sbom_license_unknown (allowlist in script); package-verify refuses sbom_missing, sbom_invalid, sbom_build_only, sbom_mismatch (unlisted dll, hash/version/commit, non-canonical text or references). CI red 42962728184, green 42966315083, review red 42974651912, green 42974975958."
     }
   ]
 }
