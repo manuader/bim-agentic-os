@@ -11,7 +11,8 @@ namespace Bim.Cli;
 // PlanRunner). Every dry run goes through RevitCommandService.Run exactly like `revit-command` (explicit process pipe,
 // envelope validation, the copies-only and link guards of the enabled roots read from this binary's repository, wire
 // size cap, a receipt answering the request), so a document outside an enabled test root is refused document_not_enabled
-// before anything reaches the pipe.
+// before anything reaches the pipe. With --execute (P4-12) the probed plan is run by interfaces/cli/DocUpdateExecute.cs
+// over the same Channel.
 
 // Where the dry runs go: the enabled-roots policy (read lazily, once, just before the first dry run) and the one-line
 // pipe client. Real is what the CLI uses; tests pass a fake executor here.
@@ -31,15 +32,19 @@ internal static class DocUpdateProbe
         return (refusal.Code, refusal.Field, refusal.Detail);
     }
 
-    // DocUpdateDependents.Plan with every request sent through RevitCommandService.Run on pipeName. The accepted
-    // UniqueIds are checked first; DocUpdate.Plan's refusals of the first plan propagate unchanged (before the policy is
-    // read). The policy is read by the first Send only (LazyPolicy), so a plan without deletes never reads it.
+    // The channel every request of one doc-update run goes through (the dry runs of the probe and, with --execute, the
+    // writes of the run, P4-12): RevitCommandService.Run on pipeName, the policy read once, at the first request.
+    public static IRevitCommandTransport Channel(string pipeName, DocUpdateRevit revit) => new LazyPolicy(pipeName, revit);
+
+    // DocUpdateDependents.Plan with every request sent through channel. The accepted UniqueIds are checked first;
+    // DocUpdate.Plan's refusals of the first plan propagate unchanged (before the policy is read). The policy is read by
+    // the first Send only (LazyPolicy), so a plan without deletes never reads it here.
     public static DocUpdateDependentsResult Plan(Project before, Project after, RevitBindings bindings, IReadOnlyDictionary<string, string> realized,
-        string pipeName, IReadOnlyCollection<string> accepted, DocUpdateRevit revit)
+        IReadOnlyCollection<string> accepted, IRevitCommandTransport channel)
     {
         // The library's accepted_invalid, checked before the policy is read.
         if (accepted.Any(uid => !RevitCommandProtocol.IsUniqueId(uid))) throw new ArgumentException(DocUpdateDependentsCodes.AcceptedInvalid);
-        return DocUpdateDependents.Plan(before, after, bindings, realized, new LazyPolicy(pipeName, revit), accepted);
+        return DocUpdateDependents.Plan(before, after, bindings, realized, channel, accepted);
     }
 
     // Reads the policy once, at the first request, then sends every request through RevitServiceTransport. A
