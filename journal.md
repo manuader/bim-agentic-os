@@ -1399,3 +1399,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay187 — 2026-11-11T04:53:14Z (Claude, cloud scheduled)
 - 04:53Z LOCK taken (was FREE; relay186 released 2026-11-11T04:24:26Z).
 - 04:54Z picked P4-12 (phase 4), P10-13 (phase 10), P1-17 (phase 1) — oldest-touched (relay184/185). Workers starting on relay187-<ID>.
+- 05:48Z workers green: P4-12 5a22f77 (red 42962945423, green 42963892631; 0 attempts), P1-17 bd79e93 (red 42962679193, green 42964972283; 2 attempts: stray brace compile error; Windows StreamWriter flush on broken pipe), P10-13 9bdd769 (red 42962728184, green 42966315083; 1 attempt: Windows FileVersionInfo version differs after archive extraction → read version via System.Reflection.Metadata). Next: independent reviews.
