@@ -1026,11 +1026,11 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     // Typed refusals, the same text in plan and confirm mode, byte-equal to the CLI, store unchanged.
     void Refused(string label,string code,string store,string selectionText,string selectionPath) {
         var listing=Directory.Exists(store) ? Listing(store) : null;
-        var plan=Adopt(store,selectionText,null);
+        var planCall=Adopt(store,selectionText,null);
         var confirmed=Adopt(store,selectionText,true);
         var cli=Cli("mirror-drift-adopt",store,selectionPath);
-        Check(IsError(plan) && IsError(confirmed) && Status(confirmed)=="failed" && Code(confirmed)==code && Text(plan)==Text(confirmed) && Text(confirmed)==cli,
-            "mirror_drift_adopt "+label+" is "+code+" in both modes, byte-equal to the CLI | "+Text(plan)+" | "+Text(confirmed)+" | "+cli);
+        Check(IsError(planCall) && IsError(confirmed) && Status(confirmed)=="failed" && Code(confirmed)==code && Text(planCall)==Text(confirmed) && Text(confirmed)==cli,
+            "mirror_drift_adopt "+label+" is "+code+" in both modes, byte-equal to the CLI | "+Text(planCall)+" | "+Text(confirmed)+" | "+cli);
         Check(Directory.Exists(store) ? Listing(store)==listing : listing is null && !Directory.Exists(store),"mirror_drift_adopt "+label+" writes nothing");
     }
     Refused("stale revision","drift_adopt_stale_revision",NewStore("stale-store",committed.Project with { Revision=2 }),adoptSelection,adoptPath);

@@ -19,6 +19,9 @@ namespace Bim.Mcp;
 // mirror_drift (P2-08) is read-only: its text is the file the CLI mirror-drift verb writes (MirrorDriftTool.cs).
 // mirror_drift_select (P2-10) is read-only: its text is the file the CLI mirror-drift-select verb writes (the canonical
 // P2-09 selection JSON, MirrorDriftSelectTool.cs); nothing is applied.
+// mirror_drift_adopt (P2-15) is a confirm-gated write listed with permission label write (_meta, outside the P10-03 Revit
+// levels; readOnlyHint false, destructiveHint true, idempotentHint true): without confirm:true it returns the plan only and
+// writes nothing; with confirm:true its text is the CLI mirror-drift-adopt stdout (MirrorDriftAdoptTool.cs, one engine).
 // skills_lock_verify (P5-09) is read-only: its text is the CLI skills-lock verify stdout (SkillLockTool.cs); pin and
 // update write the lock and stay CLI-only.
 // audit_verify (P10-12) is read-only: its text is the CLI audit-verify stdout for the same log, anchor, actors and summary
@@ -62,7 +65,7 @@ public sealed class McpServer
     const int InternalError = -32603;
 
     sealed record ParameterSpec(string Name, string Type, string Description, bool Required = true);
-    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null, PermissionLevel? Permission = null, bool Destructive = false, bool WritesFiles = false);
+    sealed record ToolSpec(string Name, string Description, ParameterSpec[] Parameters, Func<JsonElement, (string Text, bool IsError)> Execute, string? InputSchemaJson = null, PermissionLevel? Permission = null, bool Destructive = false, bool WritesFiles = false, string? PermissionLabel = null);
 
     static readonly ToolSpec[] CoreTools =
     [
@@ -87,6 +90,11 @@ public sealed class McpServer
              new ParameterSpec("mirror", "object", "the mirror_drift mirror request: document, core_project_id, core_revision, map, optional levels, wall_types, door_symbol, window_symbol, journal, options"),
              new ParameterSpec("choices", "object", "{\"choices\":[{\"proposal_id\": proposal UniqueId or core:<id>, \"action\": \"adopt\" or \"restore\"}]}, at most 20000 entries")],
             DriftSelectTool),
+        new ToolSpec("mirror_drift_adopt", "Confirm-gated write (P2-12/P2-13): commits the adopt operations of a mirror_drift_select selection into the Core store as one revision (replay by key, stale revision/hash refused, nothing written on a typed refusal). Without confirm:true it returns the plan only {status planned, applied false, outcome would_commit/would_replay/nothing_to_adopt, revision, key, plan} and writes nothing; with confirm:true its text equals the CLI stdout (CLI: mirror-drift-adopt store selection.json). The restore plan is not run.",
+            [new ParameterSpec("store_path", "string", "Directory of an initialized ProjectStore (written only with confirm:true)"),
+             new ParameterSpec("selection", "string", "The canonical selection JSON text, exactly as mirror_drift_select returns it (the CLI selection file contents)"),
+             new ParameterSpec("confirm", "boolean", "true commits; absent or false returns the plan only", false)],
+            DriftAdoptTool, Destructive: true, PermissionLabel: "write"),
         new ToolSpec("skills_lock_verify", "Read-only verify of a project skill lock (P5-08 skills.lock.json) against a skills directory: reports skill_lock_drift / skill_lock_missing per pack; never pins, updates or writes (CLI: skills-lock verify skills-directory lock.json).",
             [new ParameterSpec("skills_path", "string", "Skills directory (skills/<id>/skill.json), read only"), new ParameterSpec("lock_path", "string", "Project lock file (skills.lock.json), read only")],
             LockVerifyTool),
@@ -451,6 +459,12 @@ public sealed class McpServer
             listed["annotations"] = annotations;
             listed["_meta"] = new JsonObject { [PermissionMetaKey] = PermissionLevelName(level) };
         }
+        else if (tool.PermissionLabel is { } label)
+        {
+            // A core-store write outside the P10-03 Revit levels (mirror_drift_adopt): replay by key, hence idempotent.
+            listed["annotations"] = new JsonObject { ["readOnlyHint"] = false, ["destructiveHint"] = tool.Destructive, ["idempotentHint"] = true };
+            listed["_meta"] = new JsonObject { [PermissionMetaKey] = label };
+        }
         return listed;
     }
 
@@ -557,6 +571,16 @@ public sealed class McpServer
     {
         var outcome = MirrorDriftSelectTool.Run(arguments.GetProperty("store_path").GetString() ?? "", arguments.GetProperty("snapshot").GetRawText(),
             arguments.GetProperty("mirror").GetRawText(), arguments.GetProperty("choices").GetRawText());
+        return (outcome.Text, !outcome.Succeeded);
+    }
+
+    // P2-15: MirrorDriftAdoptTool, the CLI mirror-drift-adopt engine; confirm:true commits (text = the CLI stdout), absent
+    // or false returns the plan only. A selection that is not valid text (a lone surrogate) is passed as "", so it is refused
+    // drift_adopt_selection_invalid.
+    static (string Text, bool IsError) DriftAdoptTool(JsonElement arguments)
+    {
+        var confirm = arguments.TryGetProperty("confirm", out var confirmElement) && confirmElement.GetBoolean();
+        var outcome = MirrorDriftAdoptTool.Run(AuditString(arguments.GetProperty("store_path")) ?? "", AuditString(arguments.GetProperty("selection")) ?? "", confirm);
         return (outcome.Text, !outcome.Succeeded);
     }
 
