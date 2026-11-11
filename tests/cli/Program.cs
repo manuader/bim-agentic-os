@@ -1502,6 +1502,7 @@ try {
     // ---- P7-11 plan-layouts brief.json output.json [--alternatives n] [--seed s] (tests/cli/PlanLayoutsTests.cs) ----
     PlanLayoutsTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
     CadToLayoutsTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail),(name,why)=>Skip(name,why)); // P6-13 brief-plan.dxf -> cad-brief -> cad-plan-brief -> plan-layouts (tests/cli/CadToLayoutsTests.cs)
+    CadPdfToLayoutsTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail),(name,why)=>Skip(name,why)); // P6-15 brief-plan.pdf -> cad-brief -> cad-plan-brief -> plan-layouts (tests/cli/CadPdfToLayoutsTests.cs)
 
     // ---- P1-20 revit-command envelope.json process-pipe-name [--all] [--read-timeout-seconds n] (tests/cli/RevitCommandReadTimeoutTests.cs) ----
     RevitCommandReadTimeoutTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
