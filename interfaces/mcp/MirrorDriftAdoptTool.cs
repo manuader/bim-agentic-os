@@ -26,7 +26,8 @@ namespace Bim.Mcp;
 // {"status":"planned","applied":false,"outcome":"would_commit"|"would_replay"|"nothing_to_adopt","revision":n,"key":k|null,
 // "plan":ExecutionPlan|null}, where revision is what the confirmed call would report (head + 1, the current head, or
 // the selection's revision) and plan is MirrorDriftAdoptCommit.Plan's Compiler.Diff plan (would_commit only). The
-// store is read once, read-only, as Commit reads it (strict UTF-8 project.json, same drift_adopt_store_* codes), then
+// store is read once, read-only and without the store lock (a held lock does not block the plan; the confirmed call
+// is then drift_adopt_store_unavailable), as Commit reads it (strict UTF-8 project.json, same drift_adopt_store_* codes), then
 // the receipt (would_replay), then MirrorDriftAdoptCommit.Plan (project, revision, hash, operations, validation), in
 // Commit's order, so a plan refusal is the text the confirmed call would give on that store. The plan is a snapshot:
 // the store may move before a confirmed call, which re-checks everything.
@@ -70,7 +71,6 @@ internal static class MirrorDriftAdoptTool
             return Succeed(result.Outcome, result.Revision, result.Key);
         }
         catch (MirrorDriftAdoptException refusal) { return Refuse(refusal.Code, Detail(refusal)); }
-        catch (InputRejectedException rejected) { return Refuse(rejected.Message, "store"); }
         catch (Exception unexpected) { return Refuse(MirrorDriftAdoptCodes.InternalError, unexpected.GetType().Name); }
     }
 
@@ -84,10 +84,15 @@ internal static class MirrorDriftAdoptTool
         return Plan(WouldCommit, plan.ExpectedRevision + 1, key, plan);
     }
 
-    // As MirrorDriftAdoptCommit's store read: a StreamReader over strict UTF-8 (byte order marks detected), bounded.
+    // As MirrorDriftAdoptCommit's store read: a StreamReader over strict UTF-8 (byte order marks detected), bounded. The
+    // file was checked through BoundedInput just before; if it changes in between, a vanished file is drift_adopt_store_invalid
+    // and any other rejection drift_adopt_store_unavailable, as Commit's own read would report them.
     static ProjectStore.State ReadState(string projectPath)
     {
-        var bytes = BoundedInput.ReadBytes(projectPath, BoundedInput.MaxBytes, FileShare.ReadWrite | FileShare.Delete);
+        byte[] bytes;
+        try { bytes = BoundedInput.ReadBytes(projectPath, BoundedInput.MaxBytes, FileShare.ReadWrite | FileShare.Delete); }
+        catch (InputRejectedException rejected) when (rejected.Message == BoundedInput.NotFound) { throw new MirrorDriftAdoptException(MirrorDriftAdoptCodes.StoreInvalid, "the store has no project.json"); }
+        catch (InputRejectedException rejected) { throw new MirrorDriftAdoptException(MirrorDriftAdoptCodes.StoreUnavailable, nameof(InputRejectedException) + ": " + rejected.Message); }
         string text;
         try
         {
