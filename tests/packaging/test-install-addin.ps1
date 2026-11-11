@@ -43,7 +43,12 @@ function New-SyntheticPackage([string]$Directory, [switch]$WithAssembly) {
     New-Item -ItemType Directory -Force (Join-Path $Directory 'revit') | Out-Null
     Write-PackageText (Join-Path $Directory 'VERSION') "1.2.3`n"
     Write-PackageText (Join-Path $Directory 'revit/Bim.addin.template') (([IO.File]::ReadAllText($templateSource)) -replace "`r`n", "`n")
-    if ($WithAssembly) { Write-PackageText (Join-Path $Directory 'revit/Bim.Revit.dll') 'not a real assembly' }
+    if ($WithAssembly) {
+        Write-PackageText (Join-Path $Directory 'revit/Bim.Revit.dll') 'not a real assembly'
+        # P10-14: first-party binaries are the project entries of their folder's deps.json, as a dotnet build of
+        # runtimes/revit-native emits next to Bim.Revit.dll.
+        Write-PackageText (Join-Path $Directory 'revit/Bim.Revit.deps.json') '{ "runtimeTarget": { "name": ".NETCoreApp,Version=v8.0" }, "targets": { ".NETCoreApp,Version=v8.0": { "Bim.Revit/1.2.3": { "runtime": { "Bim.Revit.dll": {} } } } }, "libraries": { "Bim.Revit/1.2.3": { "type": "project", "serviceable": false, "sha512": "" } } }'
+    }
     Write-PackageText (Join-Path $Directory 'sbom.json') (New-PackageSbomText $Directory '1.2.3' ('a' * 40) @())
     Write-PackageText (Join-Path $Directory 'manifest.json') (New-PackageManifestText $Directory '1.2.3' ('a' * 40) $false)
     return [IO.Path]::GetFullPath($Directory)
