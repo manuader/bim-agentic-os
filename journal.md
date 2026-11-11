@@ -1415,3 +1415,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 10:36Z integration d062a06 CI 43002644486 success (9/9) → main fast-forwarded (4bb0e6e..d062a06). P1-16, P2-14, P6-14 ✅; P6-15 ⏳; new P1-21 (CLI --all overall deadline), P2-16 (drift loop with journal + create/delete adopts). Progress 144/162 (88.9 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-11T10:36:00Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P7-12, P3-12, P5-14, P7-14 (relay186; P7-12/P7-14 share SkillPackLookup — serialize); then P4-13/P4-14, P10-14 (relay187; P4-14 and P1-18 share tests/integration/test-catalogue-session.ps1 — serialize); then P1-18/P1-20/P1-21, P2-15/P2-16, P6-15 (relay188; P1-20 and P1-21 share the revit-command flag parser — serialize; P2-15 and P1-16 both touched interfaces/mcp/McpServer.cs). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay190 — 2026-11-11T10:52:54Z (Claude, cloud scheduled)
+- 10:52Z LOCK taken (was FREE; relay188 released 2026-11-11T10:36:00Z).
