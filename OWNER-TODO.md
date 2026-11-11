@@ -220,3 +220,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay185 (2026-11-11, cloud)
 - No new owner action. `git pull` (main is now f2a6091): the intermittent Linux CI failure in `revit-command --all` (fake pipe) is fixed; new CLI verb `mirror-drift-adopt`. Still open: ADR0010/ADR0011 decisions, one 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once), N21 `... -Runs 1`, delete stray branches relay184-P10-12-red and relay181-P4-10b.
+
+## Relay186 (2026-11-11, cloud)
+- No new owner action. `git pull` (main is now 0fb0429): new CLI verb `apply-intent`, `plan-layouts --pack <id>` (e.g. ar.caba.codigo-edificacion), TypologyPipeline in core. Still open: ADR0010/ADR0011 decisions, one 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once), N21 `... -Runs 1`, delete stray branches relay184-P10-12-red and relay181-P4-10b.
