@@ -724,6 +724,9 @@ try
     Check(tamperExit == 1 && FailureCode(tamperOut) == RevitCommandCodes.ResponseInvalid, "CLI refuses a success whose receipt does not match the request", tamperOut);
     var (absentExit, absentOut) = Cli("revit-command", readEnvelope, "bim-agentic-os-2025-999999999");
     Check(absentExit == 1 && FailureCode(absentOut) == RevitCommandCodes.PipeConnectTimeout, "CLI with no add-in listening is pipe_connect_timeout", absentOut);
+
+    // ---- Pipe read timeout (P1-17): a stalled add-in pipe, on its own process-pipe-shaped name ----
+    PipeReadTimeoutChecks.Run((condition, name, detail) => Check(condition, name, detail), pipeName + "7");
 }
 catch (Exception error)
 {
