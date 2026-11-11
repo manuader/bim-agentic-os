@@ -1503,6 +1503,9 @@ try {
     PlanLayoutsTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
     CadToLayoutsTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail),(name,why)=>Skip(name,why)); // P6-13 brief-plan.dxf -> cad-brief -> cad-plan-brief -> plan-layouts (tests/cli/CadToLayoutsTests.cs)
 
+    // ---- P1-20 revit-command envelope.json process-pipe-name [--all] [--read-timeout-seconds n] (tests/cli/RevitCommandReadTimeoutTests.cs) ----
+    RevitCommandReadTimeoutTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
+
     // ---- P10-11 audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json] (tests/cli/AuditVerifyTests.cs) ----
     AuditVerifyTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
 
