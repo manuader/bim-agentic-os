@@ -223,3 +223,8 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay186 (2026-11-11, cloud)
 - No new owner action. `git pull` (main is now 0fb0429): new CLI verb `apply-intent`, `plan-layouts --pack <id>` (e.g. ar.caba.codigo-edificacion), TypologyPipeline in core. Still open: ADR0010/ADR0011 decisions, one 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once), N21 `... -Runs 1`, delete stray branches relay184-P10-12-red and relay181-P4-10b.
+
+## Relay187 (2026-11-11, cloud)
+- No new required owner action. `git pull` (main is now 4bb0e6e): new `doc-update ... --probe-dependents <pipe> --execute --expected-document <plan-sha256>` (runs a documentation update plan once over the pipe; test copies only), client `pipe_read_timeout` (a stalled add-in reply now ends after 30 min with "outcome unknown" instead of hanging; the -Catalogue run stops on it), and `sbom.json` in release packages.
+- [ ] Optional: declare a licence for the repository (e.g. add a LICENSE file); until then first-party Bim.* assemblies show NOASSERTION in sbom.json.
+- Still open: ADR0010 (P2-11) / ADR0011 (P9-03) decisions (recommended A); one 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then catalogue-report; N21 `... -Runs 1`; delete stray branches relay184-P10-12-red and relay181-P4-10b.
