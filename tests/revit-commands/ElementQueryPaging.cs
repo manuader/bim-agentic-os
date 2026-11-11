@@ -346,6 +346,9 @@ static class ElementQueryPagingChecks
         Fails("no reply", (page, _, line) => page == 1 ? null : line, RevitCommandCodes.NoResponse);
         Fails("a transport timeout", (page, _, line) => page == 1 ? throw new TimeoutException() : line, RevitCommandCodes.PipeConnectTimeout);
         Fails("a transport I/O error", (page, _, line) => page == 1 ? throw new IOException("broken") : line, RevitCommandCodes.PipeIoError);
+        Fails("a raw transport read timeout", (page, _, line) => page == 1 ? throw new RevitPipeReadTimeoutException(TimeSpan.FromMilliseconds(250)) : line, RevitCommandCodes.PipeReadTimeout);
+        var stalled = RevitElementQueryPaging.All(Envelope(Args("wall", null, 3)).ToJsonString(), new FakeAddIn { Line = (page, _, line) => page == 1 ? throw new RevitPipeReadTimeoutException(TimeSpan.FromMilliseconds(250)) : line });
+        Check(stalled.Detail is { } detail && detail.StartsWith("no reply within 250 ms; read-only command", StringComparison.Ordinal), "a paging read timeout says the read-only page may be resent", Describe(stalled));
     }
 
     // The CLI adapter: each page goes through RevitCommandService.Run (pipe rule, envelope validation, guards, receipt).

@@ -241,6 +241,15 @@ Assert ($null -ne $dead.aborted -and !$deadStep.passed -and $deadStep.reason -li
 Assert ($after.Count -gt 0 -and @($after | Where-Object { $null -ne $_.request }).Count -eq 0) 'no step after a lost pipe is sent (journal wire steps included)'
 Assert ((Get-Group $dead 'v1').passed -eq 17 -and (Get-Group $dead 'v2').failed -eq 0 -and (Get-Group $dead 'vistas').failed -eq 0) 'groups before the lost pipe keep their results'
 Assert ((Format-CatalogueSummary $dead) -like '*DETENIDO*pipe_connect_timeout*') "lost-pipe summary: $(Format-CatalogueSummary $dead)"
+# P1-17: a write whose reply timed out (the CLI answers pipe_read_timeout) stops the run as unknown completion; nothing after it is sent.
+$stalledLine = '{"status":"failed","code":"pipe_read_timeout","field":"pipe_name","detail":"outcome_unknown: no reply within 1800000 ms after the write was sent","created":[],"modified":[],"deleted":[],"readback":null,"receipt":null,"warnings":[]}'
+$stalledState = @{ On = $false }
+$stalled = (Invoke-FakeSequence -All -Wrap { param($index, $key, $json, $inner) if ($key -eq 'door') { $stalledState.On = $true }; if ($stalledState.On) { return @{ output = $stalledLine; exit_code = 1; timed_out = $false } }; & $inner $index $key $json }).Result
+$stalledStep = @($stalled.steps | Where-Object { $_.key -eq 'door' })[0]
+$afterStalled = @($stalled.steps | Where-Object { $_.index -gt $stalledStep.index })
+Assert ($null -ne $stalled.aborted -and !$stalledStep.passed -and $stalledStep.reason -like '*pipe_read_timeout*no se sabe si terminó*') "a read timeout must stop the run as unknown completion: $($stalled.aborted)"
+Assert ($afterStalled.Count -gt 0 -and @($afterStalled | Where-Object { $null -ne $_.request }).Count -eq 0) 'no step after a read timeout is sent (no automatic retry)'
+Assert ((Format-CatalogueSummary $stalled) -like '*DETENIDO*pipe_read_timeout*') "read-timeout summary: $(Format-CatalogueSummary $stalled)"
 # Review follow-ups: both wall faces, section crop/origin, locale-free parameters, refusal field and detail.
 $faces = @($full.steps | Where-Object { $_.key -like 'doc-dim-walls-*' })
 Assert ($faces.Count -eq 2 -and @($faces | Where-Object { $_.passed }).Count -eq 2 -and $faces[0].request.args.wall_face -eq 'interior' -and $faces[1].request.args.wall_face -eq 'exterior') 'wall dimensions on both faces'

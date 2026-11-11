@@ -411,6 +411,8 @@ static class UpdateDependentsTests
 
         Check(Plan0Reply(Revit(insertedRealized), _ => throw new TimeoutException()) == RevitCommandCodes.PipeConnectTimeout, "a transport timeout is pipe_connect_timeout");
         Check(Plan0Reply(Revit(insertedRealized), _ => throw new IOException("broken pipe")) == RevitCommandCodes.PipeIoError, "any other transport exception is pipe_io_error");
+        Check(Plan0Reply(Revit(insertedRealized), _ => throw new RevitPipeReadTimeoutException(TimeSpan.FromMilliseconds(250))) == RevitCommandCodes.PipeReadTimeout,
+            "a raw transport read timeout on a dry-run delete is pipe_read_timeout");
         Check(Plan0Reply(Revit(insertedRealized), reply => reply.Replace("\"replayed\":false", "\"replayed\":true", StringComparison.Ordinal)) == RevitCommandCodes.ResponseInvalid,
             "a replayed receipt for a dry run (which stores none) is response_invalid");
 

@@ -53,6 +53,8 @@ public static class RevitCommandCodes
     public const string RequestTooLarge = "request_too_large";
     public const string PipeConnectTimeout = "pipe_connect_timeout";
     public const string PipeIoError = "pipe_io_error";
+    // P1-17: connected, request sent, no reply line within the read timeout (RevitCommandService.DefaultReadTimeout).
+    public const string PipeReadTimeout = "pipe_read_timeout";
     public const string NoResponse = "no_response";
     // A reply that is malformed or answers another request.
     public const string ResponseInvalid = "response_invalid";
@@ -68,7 +70,7 @@ public static class RevitCommandCodes
         ArgsInvalid, LengthInvalid, AngleInvalid, CurveTooShort, ArcCollinear, ArcRadiusInvalid, ArcSweepInvalid,
         BoundaryTooFewPoints, BoundaryEdgeTooShort, BoundaryZeroArea, BoundarySelfIntersecting, LevelsNotDistinct,
         DocumentNotEnabled, DocumentLinkRefused, AllowlistInvalid, FamilySourceRefused, SaveCopyRefused, SaveAsRefused,
-        CursorMalformed, CursorTampered, CursorStale, CursorForeignDocument, CursorFilterMismatch, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, NoResponse, ResponseInvalid,
+        CursorMalformed, CursorTampered, CursorStale, CursorForeignDocument, CursorFilterMismatch, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, PipeReadTimeout, NoResponse, ResponseInvalid,
     };
 
     public static IReadOnlyList<string> ExecutorReserved { get; } = new[] { OperationIdConflict, DocumentConflict, ReferenceNotFound, TransactionFailed };

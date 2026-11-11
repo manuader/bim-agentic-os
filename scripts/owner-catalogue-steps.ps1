@@ -225,7 +225,8 @@ function Get-CatalogueSteps {
 # Test-Catalogue* helpers below. Inputs shared across groups: only the v1 picks and v1 query responses; every later
 # group makes its own levels pair, views and grids, so one failing group leaves the next ones runnable. The modify and
 # delete group (destructive) is last; before it only the P4-11 documentation update deletes, and only its own stale items.
-$script:CatalogueTransportCodes = @('pipe_connect_timeout', 'pipe_io_error', 'no_response')
+# pipe_read_timeout (P1-17): the add-in got the request but sent no line in time, so the step's completion is unknown.
+$script:CatalogueTransportCodes = @('pipe_connect_timeout', 'pipe_io_error', 'pipe_read_timeout', 'no_response')
 # A well-formed UniqueId that no element has (query.inspect must answer reference_not_found).
 $script:CatalogueMissingUid = '00000000-0000-0000-0000-000000000000-00000000'
 # The requested-vs-observed list of the step whose Check is running (set by Invoke-CatalogueSequence), else $null.
@@ -1853,7 +1854,7 @@ function New-CatalogueWireLine([string]$DocumentPath, [string]$Operation, $Optio
 # Runs every step of every group in order. $Invoke (param index, key, envelopeJson; returns @{ output; exit_code;
 # timed_out }) sends catalogue envelopes; $InvokeWire (same shape, with the wire line) sends journal.read; without it
 # those steps are not sent. $Progress (optional) receives one Spanish line per step; $Alive (optional) returns $false
-# when the child Revit is gone. A timeout (unknown completion), a lost pipe (pipe_connect_timeout, pipe_io_error,
+# when the child Revit is gone. A timeout (unknown completion, also pipe_read_timeout), a lost pipe (pipe_connect_timeout, pipe_io_error,
 # no_response), a CLI error or a closed Revit stops the run: the remaining steps of every group are not sent. A failed
 # step or group never stops later groups: a later step that needs something a failed step should have made is not
 # sent and says what is missing. A step whose fixture precondition is missing (New-CatalogueBlocked: no second level,
@@ -1971,7 +1972,7 @@ function Invoke-CatalogueSequence {
             continue
         }
         if ($script:CatalogueTransportCodes -contains $code -and $spec.Expect['Code'] -ne $code) {
-            $aborted = "se perdió la conexión con el Revit de prueba en el paso $index ($code)"
+            $aborted = if ($code -eq 'pipe_read_timeout') { "el paso $index no recibió respuesta a tiempo ($code; no se sabe si terminó)" } else { "se perdió la conexión con el Revit de prueba en el paso $index ($code)" }
             $record.reason = $aborted
             continue
         }
