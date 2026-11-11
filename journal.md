@@ -1395,3 +1395,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 04:24Z integration 0fb0429 CI 42956878455 success (9/9) → main fast-forwarded (f2a6091..0fb0429). P5-12, P7-13, P3-11 ✅; new P3-12 (diff-intent), P5-14 (TypologyPipeline + composed rules), P7-14 (generate-typology CLI). Progress 138/157 (87.9 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-11T04:24:26Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P4-12/P4-13, P10-13 (relay184); then P1-16/P1-17/P1-18, P2-14/P2-15, P6-14 (relay185); then P7-12, P3-12, P5-14, P7-14 (relay186; P7-12 and P7-14 both go through interfaces/cli/SkillPackLookup.cs — serialize). Keep task-table cells free of raw '|' (it breaks the Progress parser). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay187 — 2026-11-11T04:53:14Z (Claude, cloud scheduled)
+- 04:53Z LOCK taken (was FREE; relay186 released 2026-11-11T04:24:26Z).
