@@ -62,9 +62,15 @@ namespace Bim.Cli;
 // Success adds "probed" (dry runs of the first pass) and "dependents" (UniqueIds collected) before "applied":false.
 // Without --probe-dependents nothing changes: no policy, no pipe, the P4-08 bytes, summary and refusal envelopes
 // ({"status","code"[,"detail"]}, detail = the field or input name as before).
+// P4-12 --execute --expected-document <sha256> (both or neither, only with --probe-dependents; --execute takes no value;
+// <sha256> is 64 hex digits, any case; anything else is doc_update_usage): after the probe, a plan whose bytes do not hash
+// to <sha256> is refused doc_update_plan_changed (field "expected_document", detail the SHA-256 of this plan; no file,
+// no write sent); otherwise the plan file is written exactly as without --execute and only then is the plan run by
+// DocUpdateExecute (interfaces/cli/DocUpdateExecute.cs) on the channel of the dry runs. Its line and exit code replace
+// the dry summary. Without --execute nothing changes: the dry plan, its bytes and its summary are those above.
 internal static class DocUpdateCommand
 {
-    public const string Usage = "usage: doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json | --probe-dependents process-pipe-name [--accept uid]...]";
+    public const string Usage = "usage: doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json | --probe-dependents process-pipe-name [--accept uid]... [--execute --expected-document plan-sha256]] (--output: a new file, never overwritten; plan-sha256: the sha256 a dry run printed)";
     public const string UsageCode = "doc_update_usage";
     public const string ProjectInvalid = "doc_update_project_invalid";
     public const string RealizedInvalid = "doc_update_realized_invalid";
@@ -127,12 +133,14 @@ internal static class DocUpdateCommand
             stdout.WriteLine(envelope.ToJsonString());
             return 1;
         }
-        if (!TryParse(args, out var paths, out var accepted)) return Fail(UsageCode, null, null);
+        if (!TryParse(args, out var paths, out var accepted, out var execute)) return Fail(UsageCode, null, null);
         var output = paths["--output"];
         if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string refused) return Fail(refused, null, null);
         pipe = paths.TryGetValue("--probe-dependents", out var pipeName) ? pipeName : null;
         if (pipe is not null && DocUpdateProbe.PipeProblem(pipe) is { } pipeRefused) return Fail(pipeRefused.Code, pipeRefused.Field, pipeRefused.Detail);
         if (accepted.Count > MaxAccepted) return Fail(BoundExceeded, "accepted", null);
+        // One channel for the dry runs and, with --execute, the run: the policy is read once for both.
+        var channel = pipe is null ? null : DocUpdateProbe.Channel(pipe, revit);
         try
         {
             var beforeText = Read(paths["--before"], "before");
@@ -147,22 +155,25 @@ internal static class DocUpdateCommand
             var dependents = dependentsText is null ? null : ParseDependents(dependentsText);
             DocUpdatePlan plan;
             DocUpdateDependentsResult? probed = null;
-            if (pipe is not string probePipe) plan = Library(() => DocUpdate.Plan(before, after, bindings, realized, dependents));
+            if (channel is not { } probeChannel) plan = Library(() => DocUpdate.Plan(before, after, bindings, realized, dependents));
             else
             {
-                probed = Library(() => DocUpdateProbe.Plan(before, after, bindings, realized, probePipe, accepted, revit));
+                probed = Library(() => DocUpdateProbe.Plan(before, after, bindings, realized, accepted, probeChannel));
                 if (probed.Failed is { } failed) return Fail(failed.Code, failed.Field, failed.Detail, failed.Key, failed.OperationId);
                 if (probed.Plan is null) return Fail(InternalError, null, null);
                 plan = probed.Plan;
             }
             var bytes = new UTF8Encoding(false).GetBytes(JsonSerializer.Serialize(plan));
+            var sha = Convert.ToHexString(SHA256.HashData(bytes));
+            // --execute runs only the plan a human reviewed: its bytes must hash to --expected-document.
+            if (execute && !string.Equals(sha, paths["--expected-document"], StringComparison.OrdinalIgnoreCase)) return Fail(DocUpdateExecute.PlanChanged, "expected_document", sha);
             object summary = probed is null
                 ? new
                 {
                     status = "succeeded",
                     output,
                     bytes = bytes.LongLength,
-                    sha256 = Convert.ToHexString(SHA256.HashData(bytes)),
+                    sha256 = sha,
                     regenerated = plan.Regeneration.Regenerated.Count,
                     steps = plan.Replacement.Commands.Steps.Count,
                     forced = plan.Forced.Count,
@@ -174,7 +185,7 @@ internal static class DocUpdateCommand
                     status = "succeeded",
                     output,
                     bytes = bytes.LongLength,
-                    sha256 = Convert.ToHexString(SHA256.HashData(bytes)),
+                    sha256 = sha,
                     regenerated = plan.Regeneration.Regenerated.Count,
                     steps = plan.Replacement.Commands.Steps.Count,
                     forced = plan.Forced.Count,
@@ -187,6 +198,7 @@ internal static class DocUpdateCommand
             try { GltfExporter.WriteNew(bytes, output); }
             catch (GltfExportException e) { return Fail(e.Code, null, null); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return Fail("output_io_error", null, e.GetType().Name); }
+            if (execute && channel is not null) return DocUpdateExecute.Run(plan, channel, line, stdout);
             stdout.WriteLine(line);
             return 0;
         }
@@ -212,22 +224,36 @@ internal static class DocUpdateCommand
     }
 
     // The five required flags and either the optional --dependents or the optional --probe-dependents (never both), each
-    // once, plus any number of --accept only with --probe-dependents; every flag with a non-empty value that is not
-    // flag-shaped ("--..."), in any order; nothing else.
-    static bool TryParse(string[] args, out Dictionary<string, string> paths, out List<string> accepted)
+    // once, plus any number of --accept only with --probe-dependents, and --execute (no value) with --expected-document
+    // (64 hex digits) once each, both or neither, only with --probe-dependents; every other flag with a non-empty value
+    // that is not flag-shaped ("--..."), in any order; nothing else.
+    static bool TryParse(string[] args, out Dictionary<string, string> paths, out List<string> accepted, out bool execute)
     {
         paths = new Dictionary<string, string>(StringComparer.Ordinal);
         accepted = new List<string>();
-        if (args.Length < 11 || args.Length % 2 == 0) return false;
-        for (var i = 1; i < args.Length; i += 2)
+        execute = false;
+        if (args.Length < 11) return false;
+        var i = 1;
+        while (i < args.Length)
         {
+            if (args[i] == "--execute")
+            {
+                if (execute) return false;
+                execute = true;
+                i++;
+                continue;
+            }
+            if (i + 1 >= args.Length) return false;
             var value = args[i + 1];
             if (value.Length == 0 || value.StartsWith("--", StringComparison.Ordinal)) return false;
-            if (args[i] == "--accept") { accepted.Add(value); continue; }
-            if (!(Required.Contains(args[i], StringComparer.Ordinal) || args[i] is "--dependents" or "--probe-dependents") || !paths.TryAdd(args[i], value)) return false;
+            if (args[i] == "--accept") accepted.Add(value);
+            else if (!(Required.Contains(args[i], StringComparer.Ordinal) || args[i] is "--dependents" or "--probe-dependents" or "--expected-document") || !paths.TryAdd(args[i], value)) return false;
+            i += 2;
         }
         if (paths.ContainsKey("--dependents") && paths.ContainsKey("--probe-dependents")) return false;
         if (accepted.Count > 0 && !paths.ContainsKey("--probe-dependents")) return false;
+        if (execute != paths.TryGetValue("--expected-document", out var expected)) return false;
+        if (execute && (!paths.ContainsKey("--probe-dependents") || expected is null || expected.Length != 64 || !expected.All(char.IsAsciiHexDigit))) return false;
         return Required.All(paths.ContainsKey);
     }
 
