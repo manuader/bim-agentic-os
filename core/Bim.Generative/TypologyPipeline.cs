@@ -77,7 +77,8 @@ public static class TypologyPipeline
         return Gate(composed.Result, gated, extra) with { Composed = new TypologyComposedRules(composed.Rules) };
     }
 
-    public static TypologyPipelineResult RunComposed(SkillManifest pack, TypologyBriefRequest request, PrototypePipelineOptions options, IReadOnlyList<SkillManifest>? skills = null)
+    public static TypologyPipelineResult RunComposed(SkillManifest pack, TypologyBriefRequest request, PrototypePipelineOptions options, IReadOnlyList<SkillManifest>? skills = null,
+        IReadOnlyList<string>? precedence = null)
     {
         ArgumentNullException.ThrowIfNull(pack);
         ArgumentNullException.ThrowIfNull(request);
@@ -104,7 +105,7 @@ public static class TypologyPipeline
             .ToArray();
         var resolution = duplicates.Length > 0
             ? new SkillResolution(Array.Empty<SkillManifest>(), Array.Empty<SkillSetting>(), Array.Empty<SkillEffectiveParameter>(), Array.Empty<SkillEffectiveRule>(), duplicates)
-            : SkillResolver.Resolve(new SkillCatalog(manifests), manifests.Select(manifest => new SkillRequest(manifest.Id)).ToArray());
+            : SkillResolver.Resolve(new SkillCatalog(manifests), manifests.Select(manifest => new SkillRequest(manifest.Id)).ToArray(), precedence);
         if (resolution.Succeeded) return Run(resolution, request, options, new TypologyPipelineOptions(ComposedRules: true));
 
         var typology = TypologyRules.Generate(resolution, request);
