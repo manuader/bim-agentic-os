@@ -36,6 +36,13 @@ namespace Bim.Mcp;
 // first; the policy is the repository's .bim/native-runs plus every directory root listed in the owner file
 // .bim/revit-enabled-roots.txt (re-read when it changes, no restart needed), never a tool call. The MCP server does not apply the per-document enablement or the
 // per-actor grants of PermissionPolicy, and writes no audit log.
+// P1-16: revit_query_elements also takes the optional boolean all (a tool argument beside args, never sent to the add-in).
+// all:true pages the listing with RevitElementQueryPaging.All over the same transport, each page through
+// RevitCommandService.Run (RevitServiceTransport, as the CLI revit-command --all verb), and its text is the
+// ElementQueryAllResult JSON, byte-equal to that verb's stdout; refusals (cursor_loop, page_limit_exceeded,
+// listing_too_large and the early ones) are isError in the same listing shape. Absent or false, the call is unchanged.
+// The permission level stays read. Known difference: the CLI reads the owner policy files even for this read-only
+// command (a malformed owner file refuses it); here, as without all, they are not read.
 public sealed class McpServer
 {
     public const int MaxLineChars = 8 * 1024 * 1024;
@@ -93,6 +100,10 @@ public sealed class McpServer
     readonly Func<string, string, string?> revitTransport;
     readonly RevitFileSystemProbe revitProbe;
 
+    // Caps of revit_query_elements all:true; the core RevitElementQueryPaging defaults (the CLI's). Tests lower them.
+    internal (int Pages, int Elements, long Bytes) QueryAllCaps { get; init; } =
+        (RevitElementQueryPaging.MaxPages, RevitElementQueryPaging.MaxElements, RevitElementQueryPaging.MaxListingBytes);
+
     // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), re-read whenever the owner files change
     // (RevitCommandPolicySource: one stat per write call), the real process pipe and file system. A malformed owner
     // file enables no write at all: writes answer allowlist_invalid until it is fixed; reads keep working.
@@ -148,12 +159,17 @@ public sealed class McpServer
             : RevitCommandCatalogue.WritesFiles(spec.Name)
                 ? "read-only for the model: allowed on any document, writing image files only under the repository .bim/exports; with visual_style it gets the write rule (document under .bim/native-runs or a directory root listed in .bim/revit-enabled-roots.txt)."
                 : "read-only: allowed on any document."),
-        [new ParameterSpec("pipe_name", "string", ""), new ParameterSpec("operation_id", "string", ""), new ParameterSpec("document", "object", ""), new ParameterSpec("args", "object", "")],
+        [new ParameterSpec("pipe_name", "string", ""), new ParameterSpec("operation_id", "string", ""), new ParameterSpec("document", "object", ""), new ParameterSpec("args", "object", ""),
+            .. (Pageable(spec) ? new[] { new ParameterSpec(AllParameter, "boolean", "", Required: false) } : Array.Empty<ParameterSpec>())],
         arguments => RevitCall(spec, arguments),
         RevitInputSchema(spec),
         LevelOnCopy(spec),
         RevitCommandCatalogue.IsDestructive(spec.Name),
         RevitCommandCatalogue.WritesFiles(spec.Name));
+
+    const string AllParameter = "all";
+
+    static bool Pageable(RevitCommandSpec spec) => spec.Name == RevitElementQueryPaging.Command;
 
     public const string PermissionMetaKey = "bim-agentic-os/permission_level";
 
@@ -192,21 +208,46 @@ public sealed class McpServer
             ["required"] = new JsonArray("pipe_name", "operation_id", "document", "args"),
             ["additionalProperties"] = false,
         };
+        if (Pageable(spec))
+            schema["properties"]!.AsObject()[AllParameter] = new JsonObject
+            {
+                ["type"] = "boolean",
+                ["description"] = "true: follow next_cursor until the listing is complete (one query.elements request per page, like the CLI revit-command --all) and return the concatenated listing {status, code, field, detail, pages, matched, returned, elements}; refused with cursor_loop, page_limit_exceeded (more than " + RevitElementQueryPaging.MaxPages.ToString(System.Globalization.CultureInfo.InvariantCulture) + " pages) or listing_too_large, without partial elements",
+            };
         return schema.ToJsonString();
     }
 
     // Raw argument values are copied into the envelope unchanged, so the CLI reading the same envelope agrees byte for byte.
     (string Text, bool IsError) RevitCall(RevitCommandSpec spec, JsonElement arguments)
     {
-        try { return RevitCallChecked(spec, arguments); }
+        var all = Pageable(spec) && arguments.TryGetProperty(AllParameter, out var allElement) && allElement.GetBoolean();
+        try { return all ? RevitCallAll(arguments) : RevitCallChecked(spec, arguments); }
         catch (Exception error) when (error is InvalidOperationException or ArgumentException)
         {
             // A lone surrogate in a tool argument cannot be read as a string.
-            return (RevitCommandResponse.Failure(RevitCommandCodes.EnvelopeInvalid, null, error.Message).ToJson(), true);
+            return (all ? ElementQueryAllResult.Refusal(RevitCommandCodes.EnvelopeInvalid, null, error.Message).ToJson()
+                : RevitCommandResponse.Failure(RevitCommandCodes.EnvelopeInvalid, null, error.Message).ToJson(), true);
         }
     }
 
-    (string Text, bool IsError) RevitCallChecked(RevitCommandSpec spec, JsonElement arguments)
+    // all:true, in the CLI revit-command --all order: the pipe name first (an early refusal in the listing shape), then
+    // RevitElementQueryPaging.All on the envelope, every page through RevitCommandService.Run. query.elements never
+    // needs the write guard, so the policy is None.
+    (string Text, bool IsError) RevitCallAll(JsonElement arguments)
+    {
+        var pipeName = arguments.GetProperty("pipe_name").GetString() ?? "";
+        if (RevitCommandService.RejectPipe(pipeName) is { } rejected)
+        {
+            var refusal = RevitCommandResponse.Parse(rejected.Line);
+            return (ElementQueryAllResult.Refusal(refusal.Code, refusal.Field, refusal.Detail).ToJson(), true);
+        }
+        var (pages, elements, bytes) = QueryAllCaps;
+        var listing = RevitElementQueryPaging.All(CommandEnvelope(RevitElementQueryPaging.Command, arguments), new RevitServiceTransport(pipeName, RevitCommandPolicy.None, revitTransport), pages, elements, bytes);
+        return (listing.ToJson(), !listing.IsSuccess);
+    }
+
+    // The command envelope from the tool arguments, raw values copied unchanged.
+    static string CommandEnvelope(string command, JsonElement arguments)
     {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -217,18 +258,24 @@ public sealed class McpServer
             arguments.GetProperty("operation_id").WriteTo(writer);
             writer.WritePropertyName("document");
             arguments.GetProperty("document").WriteTo(writer);
-            writer.WriteString("command", spec.Name);
+            writer.WriteString("command", command);
             writer.WritePropertyName("args");
             arguments.GetProperty("args").WriteTo(writer);
             writer.WriteEndObject();
         }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    (string Text, bool IsError) RevitCallChecked(RevitCommandSpec spec, JsonElement arguments)
+    {
+        var envelope = CommandEnvelope(spec.Name, arguments);
         // The policy matters only for requests with the write guard (writes and exports with a visual_style; other
         // read-only commands are allowed on any document), so only those stat the owner files. A malformed owner file
         // refuses them as allowlist_invalid.
         RevitCommandPolicy policy;
         try { policy = RevitCommandCatalogue.NeedsWriteGuard(spec, arguments.GetProperty("args")) ? revitPolicy() : RevitCommandPolicy.None; }
         catch (RevitCommandException error) { return (RevitCommandResponse.Failure(error.Code, error.Field, error.Detail).ToJson(), true); }
-        var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", Encoding.UTF8.GetString(buffer.ToArray()), policy, revitTransport, revitProbe);
+        var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", envelope, policy, revitTransport, revitProbe);
         return (result.Line, result.IsError);
     }
 
