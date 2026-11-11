@@ -101,7 +101,7 @@ internal static class CadPdfToLayoutsTests
         else skip("cad-pdf-to-layouts: fixture generator rerun", "run on Linux only (python3 launcher differs elsewhere)");
 
         // ---- in process: BriefExtract.FromPdf -> BriefPlanner (sited) -> SpacePlanner seeds 7..9 -> AlternativeRanker ----
-        static PdfCalibration Calibration() => PdfCalibration.FromKnownDimension(new Point2(100, 150), new Point2(300, 150), 4000);
+        static PdfCalibration Calibration() => PdfCalibration.FromKnownDimension(new Bim.Cad.Point2(100, 150), new Bim.Cad.Point2(300, 150), 4000);
         static (byte[] Bytes, AlternativeSet Set, ProjectBrief Brief) Plan(BriefDraft draft)
         {
             var constraints = draft.Brief.Constraints with { Site = new BriefSite(new BriefValue<double>(10), new BriefValue<double>(8)) };
