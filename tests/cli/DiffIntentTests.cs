@@ -345,17 +345,23 @@ internal static class DiffIntentTests
             }
         }
 
-        // 8. Static: reads through BoundedInput, plans through IntentEdits.FromStored and OrderOf, never writes or commits;
-        //    default usage lists the verb.
+        // 8. Static: reads through BoundedInput, never writes or commits, and plans only through the shared helper
+        //    interfaces/cli/IntentPlan.cs (P3-13; the helper itself is pinned in ApplyIntentTests), so its stdout and
+        //    apply-intent's "plan" member come from one code path. Comments and string literals are ignored
+        //    (ApplyIntentTests.CodeOf).
+        static string Code(string text) => ApplyIntentTests.CodeOf(text);
         var sourcePath = Path.Combine(root, "interfaces", "cli", "DiffIntentCommand.cs");
         Check(File.Exists(sourcePath), "interfaces/cli/DiffIntentCommand.cs exists");
         if (File.Exists(sourcePath))
         {
-            var source = File.ReadAllText(sourcePath);
-            Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal) && source.Contains("IntentJson.Parse(", StringComparison.Ordinal) && source.Contains("IntentEdits.FromStored(", StringComparison.Ordinal)
-                && source.Contains("IncrementalDiff.OrderOf(set.After)", StringComparison.Ordinal)
+            var source = Code(File.ReadAllText(sourcePath));
+            Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal)
                 && new[] { "File.", "FileStream", "FileMode.", "Directory.", "ProjectStore", "Commit(", "Initialize(" }.All(api => !source.Contains(api, StringComparison.Ordinal)),
-                "diff-intent reads through BoundedInput, plans with IntentEdits.FromStored and OrderOf, and has no write or commit path");
+                "diff-intent reads through BoundedInput and has no write or commit path");
+            var missing = new[] { "IntentPlan.ParseIntent(intentText, Verb, IntentInvalid)", "IntentPlan.Build(head, intent, Verb, IntentRefused)" }.Where(call => !source.Contains(call, StringComparison.Ordinal)).ToArray();
+            var inlined = new[] { "IntentJson.Parse(", "IntentEdits.FromStored(", "IncrementalDiff.Diff(", "IncrementalDiff.OrderOf(", "IntentException" }.Where(step => source.Contains(step, StringComparison.Ordinal)).ToArray();
+            Check(missing.Length == 0 && inlined.Length == 0, "diff-intent builds its plan only through the shared IntentPlan helper",
+                "missing helper calls [" + string.Join(", ", missing) + "]; plan steps still inline in DiffIntentCommand.cs [" + string.Join(", ", inlined) + "]");
         }
         Check(Cli("no-such-verb").Out.Contains("diff-intent --project project.json --intent after.json", StringComparison.Ordinal), "default usage lists diff-intent");
     }

@@ -6,7 +6,9 @@ using Bim.Core;
 
 // P3-11 `apply-intent --store <dir> --intent <after.json> [--expected-revision <n>]`: the store head's edit set toward a
 // canonical layout intent (IntentEdits.FromStored), diffed incrementally with the compile order of the intent
-// (IncrementalDiff.OrderOf(set.After)) and committed through apply-edits' commit path.
+// (IncrementalDiff.OrderOf(set.After)) and committed through apply-edits' commit path. Since P3-13 the intent parse,
+// edit set, diff and refusal mapping run in the helper interfaces/cli/IntentPlan.cs shared with diff-intent
+// (IntentPlan.ParseIntent, then the --expected-revision check, then IntentPlan.Build), pinned by section 9.
 // Oracles, all against the real Release CLI process:
 //   1. The printed "plan" is byte-identical to the in-process library plan
 //      IncrementalDiff.Diff(head, FromStored(head, intent).Edits, createOrder: OrderOf(set.After)).Plan and to
@@ -21,6 +23,8 @@ using Bim.Core;
 //      apply_intent_commit_incomplete (written, ADR0007 crash case), invalid_ir, invalid_project_identity and
 //      edit_bound_exceeded.
 //   4. A child process under de_DE prints the same bytes as one under the default culture.
+//   5. Precedence: store, then intent parse, then a stale --expected-revision, then the compile, edit set and diff
+//      (a stale head is reported before a compiler refusal or a library refusal such as invalid_ir).
 internal static class ApplyIntentTests
 {
     static readonly Guid ProjectId = Guid.Parse("00000000-0000-0000-0000-0000000000a1");
@@ -364,6 +368,21 @@ internal static class ApplyIntentTests
         Refused("a malformed store and a malformed intent", FailedCode("apply_intent_store_invalid"), malformedStore, Input("bad-and-bad.intent.json", "{"));
         var badAndStale = Input("bad-and-stale.intent.json", "{");
         Refused("a malformed intent and a stale head", ParseRefusal("{"), store, badAndStale, "apply-intent", "--store", store, "--intent", badAndStale, "--expected-revision", "7");
+        // A stale head before the compile: a compiler-refused intent and a library-refused (invalid_ir) store head are
+        // both reported as apply_intent_stale_head when --expected-revision does not match (the store is at revision 0).
+        var overlapping = baseIntent with { Rooms = new[] { Room("r0", 0, 0, 4, 3), Room("r1", 3, 0, 3, 3) }, Openings = Array.Empty<IntentOpening>() };
+        var refusedAndStale = IntentFile("refused-and-stale", overlapping);
+        Check(CompileRefusal(storeHead, overlapping).Contains("\"code\":\"" + IntentCodes.RoomOverlap + "\"", StringComparison.Ordinal), "fixture: the stale-precedence intent is compiler-refused (room overlap)", CompileRefusal(storeHead, overlapping));
+        Refused("a compiler-refused intent and a stale head", FailedCode("apply_intent_stale_head"), store, refusedAndStale, "apply-intent", "--store", store, "--intent", refusedAndStale, "--expected-revision", "7");
+        {
+            var danglingStale = BaseStore();
+            var level = storeHead.Elements[0];
+            var invalidHead = storeHead with { Elements = storeHead.Elements.Append(new Element(Guid.Parse("00000000-0000-0000-0000-0000000000f1"), "plan", Array.Empty<double>(), new[] { Guid.Parse("00000000-0000-0000-0000-0000000000f2"), level.Id }, Source)).ToArray() };
+            File.WriteAllText(Path.Combine(danglingStale, "project.json"), JsonSerializer.Serialize(new ProjectStore.State(invalidHead, new())));
+            Check(LibraryRefusal(invalidHead, baseIntent) == "invalid_ir", "fixture: the stale-precedence store head is refused as invalid_ir", LibraryRefusal(invalidHead, baseIntent));
+            var onDanglingStale = IntentFile("on-dangling-stale", baseIntent);
+            Refused("an invalid_ir store head and a stale head", FailedCode("apply_intent_stale_head"), danglingStale, onDanglingStale, "apply-intent", "--store", danglingStale, "--intent", onDanglingStale, "--expected-revision", "7");
+        }
 
         // 7. Usage: --store and --intent once each, optional --expected-revision once (a non-negative decimal integer),
         //    nothing else; checked before any file is read.
@@ -401,19 +420,94 @@ internal static class ApplyIntentTests
             }
         }
 
-        // 9. Static: reads through BoundedInput, edits through IntentEdits.FromStored and OrderOf, commits through the
-        //    commit path shared with apply-edits; default usage lists the verb.
+        // 9. Static: reads through BoundedInput, commits through the commit path shared with apply-edits, and builds its
+        //    plan only through the shared helper interfaces/cli/IntentPlan.cs (P3-13), the one place that parses the intent,
+        //    calls IntentEdits.FromStored, diffs with OrderOf placement and maps the typed refusals, so apply-intent's plan
+        //    and diff-intent's stdout are the same code path. Comments and string literals are ignored (CodeOf below).
+        static string Code(string text) => CodeOf(text);
+        var planSteps = new[] { "IntentJson.Parse(", "IntentEdits.FromStored(", "IncrementalDiff.Diff(", "IncrementalDiff.OrderOf(", "IntentException" };
         var sourcePath = Path.Combine(root, "interfaces", "cli", "ApplyIntentCommand.cs");
         Check(File.Exists(sourcePath), "interfaces/cli/ApplyIntentCommand.cs exists");
         if (File.Exists(sourcePath))
         {
-            var source = File.ReadAllText(sourcePath);
-            Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal) && source.Contains("IntentJson.Parse(", StringComparison.Ordinal) && source.Contains("IntentEdits.FromStored(", StringComparison.Ordinal)
-                && source.Contains("IncrementalDiff.OrderOf(", StringComparison.Ordinal) && source.Contains("ApplyEditsCommand.Commit(", StringComparison.Ordinal) && source.Contains("ApplyEditsCommand.ParseHead(", StringComparison.Ordinal)
+            var source = Code(File.ReadAllText(sourcePath));
+            Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal) && source.Contains("ApplyEditsCommand.Commit(", StringComparison.Ordinal) && source.Contains("ApplyEditsCommand.ParseHead(", StringComparison.Ordinal)
                 && !source.Contains("Compiler.Diff", StringComparison.Ordinal) && !source.Contains("new ProjectStore", StringComparison.Ordinal)
                 && new[] { "File.", "FileStream", "FileMode.", "Directory.", "Initialize(" }.All(api => !source.Contains(api, StringComparison.Ordinal)),
-                "apply-intent reads through BoundedInput, builds edits with IntentEdits.FromStored and OrderOf, and commits only through apply-edits' shared commit path");
+                "apply-intent reads through BoundedInput and commits only through apply-edits' shared commit path");
+            var parseCall = "IntentPlan.ParseIntent(intentText, Verb, IntentInvalid)";
+            var staleCheck = "expected != head.Revision";
+            var buildCall = "IntentPlan.Build(head, intent, Verb, IntentRefused)";
+            var commitCall = "ApplyEditsCommand.Commit(storePath, result, Verb)";
+            var missing = new[] { parseCall, buildCall }.Where(call => !source.Contains(call, StringComparison.Ordinal)).ToArray();
+            var inlined = planSteps.Where(step => source.Contains(step, StringComparison.Ordinal)).ToArray();
+            Check(missing.Length == 0 && inlined.Length == 0, "apply-intent builds its plan only through the shared IntentPlan helper",
+                "missing helper calls [" + string.Join(", ", missing) + "]; plan steps still inline in ApplyIntentCommand.cs [" + string.Join(", ", inlined) + "]");
+            var order = new[] { parseCall, staleCheck, buildCall, commitCall }.Select(step => (Step: step, At: source.IndexOf(step, StringComparison.Ordinal))).ToArray();
+            Check(order.All(o => o.At >= 0) && order.Zip(order.Skip(1)).All(pair => pair.First.At < pair.Second.At),
+                "apply-intent runs IntentPlan.ParseIntent, then the --expected-revision check, then IntentPlan.Build, then the commit",
+                string.Join("; ", order.Select(o => o.Step + " at " + o.At)));
         }
+        var helperPath = Path.Combine(root, "interfaces", "cli", "IntentPlan.cs");
+        Check(File.Exists(helperPath), "interfaces/cli/IntentPlan.cs (the shared apply-intent/diff-intent plan helper) exists", helperPath);
+        if (File.Exists(helperPath))
+        {
+            var helperText = File.ReadAllText(helperPath);
+            var helper = Code(helperText);
+            var absent = planSteps.Concat(new[] { "IncrementalDiff.OrderOf(set.After)", "EditsInput.LibraryCodes", "IncrementalDiff.BoundExceeded", "ApplyEditsCommand.Internal(" })
+                .Where(step => !helper.Contains(step, StringComparison.Ordinal))
+                .Concat(CodeOf(helperText, blankStrings: false).Contains("== \"invalid_ir\")", StringComparison.Ordinal) ? Array.Empty<string>() : new[] { "== \"invalid_ir\")" }).ToArray();
+            var writes = new[] { "File.", "FileStream", "FileMode.", "Directory.", "ProjectStore", "Commit(", "Initialize(", "BoundedInput" }.Where(api => helper.Contains(api, StringComparison.Ordinal)).ToArray();
+            Check(absent.Length == 0 && writes.Length == 0, "IntentPlan parses the intent, calls FromStored, diffs with OrderOf(set.After) and maps every typed refusal, with no file, store or commit access",
+                "missing [" + string.Join(", ", absent) + "]; forbidden [" + string.Join(", ", writes) + "]");
+        }
+        // The helper is the only interfaces/cli source whose code (not comments) runs the plan steps.
+        var cliDir = Path.Combine(root, "interfaces", "cli");
+        var owners = Directory.GetFiles(cliDir, "*.cs").Where(f => Path.GetFileName(f) != "IntentPlan.cs")
+            .Where(f => { var code = Code(File.ReadAllText(f)); return code.Contains("IntentEdits.FromStored(", StringComparison.Ordinal) || code.Contains("IncrementalDiff.OrderOf(", StringComparison.Ordinal); })
+            .Select(f => Path.GetFileName(f)).ToArray();
+        Check(owners.Length == 0, "no interfaces/cli source other than IntentPlan.cs calls IntentEdits.FromStored or IncrementalDiff.OrderOf", "found in [" + string.Join(", ", owners) + "]");
         Check(Cli("no-such-verb").Out.Contains("apply-intent --store store-directory --intent after.json [--expected-revision n]", StringComparison.Ordinal), "default usage lists apply-intent");
+    }
+
+    // The C# source with every comment (whole-line, trailing and block) removed and, unless blankStrings is false, every
+    // string and char literal emptied, so a static check can match only code: a library call named in prose or inside a
+    // string does not count. Handles regular, verbatim (@"", with "" escapes) and char literals; the checked files use
+    // no raw or interpolated literals with holes.
+    internal static string CodeOf(string text, bool blankStrings = true)
+    {
+        var output = new StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            var next = i + 1 < text.Length ? text[i + 1] : '\0';
+            if (c == '/' && next == '/') { while (i < text.Length && text[i] != '\n') i++; output.Append('\n'); continue; }
+            if (c == '/' && next == '*') { var close = text.IndexOf("*/", i + 2, StringComparison.Ordinal); i = close < 0 ? text.Length : close + 1; output.Append(' '); continue; }
+            if (c == '"' || c == '\'' || (c == '@' && next == '"'))
+            {
+                var start = i;
+                var verbatim = c == '@';
+                if (verbatim) i++;
+                var quote = text[i];
+                i++;
+                while (i < text.Length)
+                {
+                    if (!verbatim && text[i] == '\\') { i += 2; continue; }
+                    if (text[i] == quote)
+                    {
+                        if (verbatim && i + 1 < text.Length && text[i + 1] == '"') { i += 2; continue; }
+                        break;
+                    }
+                    i++;
+                }
+                var last = Math.Min(i, text.Length - 1);
+                if (blankStrings) output.Append(quote).Append(quote);
+                else output.Append(text, start, last - start + 1);
+                i = last;
+                continue;
+            }
+            output.Append(c);
+        }
+        return output.ToString();
     }
 }

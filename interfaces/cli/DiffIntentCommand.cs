@@ -14,7 +14,8 @@ namespace Bim.Cli;
 //                 IntentJson.MaxInputChars characters, depth and list bounds, unknown and duplicate members refused).
 // Bounded input: both files go through BoundedInput.ReadText (8 MiB cap, regular files only, links refused; its input_*
 // codes); at most IncrementalDiff.MaxEdits edits (edit_bound_exceeded, checked after the compile as in apply-intent).
-// Plan: exactly apply-intent's path, IntentEdits.FromStored(head, intent) and then
+// Plan: exactly apply-intent's path, the shared helper interfaces/cli/IntentPlan.cs (P3-13):
+// IntentEdits.FromStored(head, intent) and then
 // IncrementalDiff.Diff(head, set.Edits, createOrder: IncrementalDiff.OrderOf(set.After)).Plan, so stdout is byte-equal to
 // the "plan" member apply-intent prints on a store whose head is this project, for the same intent, in any head
 // element order. It is also byte-identical to Compiler.Diff(head, compile(intent)) whenever the head is in compile order
@@ -41,7 +42,6 @@ internal static class DiffIntentCommand
     public const string ProjectInvalid = "diff_intent_project_invalid";
     public const string IntentInvalid = "diff_intent_intent_invalid";
     public const string IntentRefused = "diff_intent_intent_refused";
-    const string InvalidIdentity = "invalid_project_identity";
 
     public static void Run(string[] args)
     {
@@ -54,31 +54,9 @@ internal static class DiffIntentCommand
         }
         catch (InputRejectedException error) { ApplyEditsCommand.Fail(error.Message); return; }
         if (ParseProject(projectText) is not { } head) { ApplyEditsCommand.Fail(ProjectInvalid); return; }
-        LayoutIntent intent;
-        try { intent = IntentJson.Parse(intentText); }
-        catch (IntentException error)
-        {
-            Refuse(JsonSerializer.Serialize(new { status = "failed", code = IntentInvalid, reason = error.Code, field = error.Field }));
-            return;
-        }
-        catch (Exception error) { ApplyEditsCommand.Internal(Verb, error); return; }
-        IntentEditSet set;
-        try { set = IntentEdits.FromStored(head, intent); }
-        catch (IntentException error)
-        {
-            var issues = error.Issues.Count > 0 ? error.Issues : new[] { new IntentIssue(error.Code, error.Field ?? "", error.Detail ?? "") };
-            Refuse(JsonSerializer.Serialize(new { status = "failed", code = IntentRefused, refusals = issues.Select(i => new { code = i.Code, subject = i.Key, detail = i.Detail }) }));
-            return;
-        }
-        catch (ArgumentException error) when (error.Message is IncrementalDiff.BoundExceeded or InvalidIdentity) { ApplyEditsCommand.Fail(error.Message); return; }
-        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { ApplyEditsCommand.Fail("invalid_ir"); return; }
-        catch (Exception error) { ApplyEditsCommand.Internal(Verb, error); return; }
-        ExecutionPlan plan;
-        try { plan = IncrementalDiff.Diff(head, set.Edits, createOrder: IncrementalDiff.OrderOf(set.After)).Plan; }
-        catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { ApplyEditsCommand.Fail(error.Message); return; }
-        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { ApplyEditsCommand.Fail("invalid_ir"); return; }
-        catch (Exception error) { ApplyEditsCommand.Internal(Verb, error); return; }
-        Console.WriteLine(JsonSerializer.Serialize(plan));
+        if (IntentPlan.ParseIntent(intentText, Verb, IntentInvalid) is not { } intent) return;
+        if (IntentPlan.Build(head, intent, Verb, IntentRefused) is not { } result) return;
+        Console.WriteLine(JsonSerializer.Serialize(result.Plan));
     }
 
     // Exactly --project <p> and --intent <i>, each once with a non-empty value that is not flag-shaped ("--..."), in
@@ -110,11 +88,5 @@ internal static class DiffIntentCommand
         catch (JsonException) { return null; }
         if (project?.Elements is null || project.Elements.Any(e => e is null || e.GeometryMetres is null || e.Dependencies is null)) return null;
         return project;
-    }
-
-    static void Refuse(string envelope)
-    {
-        Console.WriteLine(envelope);
-        Environment.ExitCode = 1;
     }
 }

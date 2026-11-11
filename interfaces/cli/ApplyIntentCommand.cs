@@ -1,5 +1,4 @@
 #nullable enable
-using System.Text.Json;
 using Bim.Core;
 
 namespace Bim.Cli;
@@ -45,6 +44,8 @@ namespace Bim.Cli;
 // MaxWallTypes, MaxRooms and MaxOpenings, checked by IntentJson.Parse before compiling), not by IncrementalDiff.MaxEdits:
 // edit_bound_exceeded is checked only after the compile and the edit set are built. Reading, ParseHead and the diff are
 // O(store head), as in apply-edits.
+// Plan: the intent parse, edit set, diff and their refusal envelopes are interfaces/cli/IntentPlan.cs (P3-13), shared
+// with diff-intent, so the plan member here and diff-intent's stdout are one code path.
 // Precedence: usage, then both files are read (store first), then the store is parsed, then the intent, then the
 // expected revision, then the compile and edit set, then the diff, then the commit; the first failure is the only one.
 internal static class ApplyIntentCommand
@@ -56,7 +57,6 @@ internal static class ApplyIntentCommand
     public const string IntentInvalid = "apply_intent_intent_invalid";
     public const string IntentRefused = "apply_intent_intent_refused";
     public const string StaleHead = "apply_intent_stale_head";
-    const string InvalidIdentity = "invalid_project_identity";
 
     public static void Run(string[] args)
     {
@@ -69,37 +69,9 @@ internal static class ApplyIntentCommand
         }
         catch (InputRejectedException error) { ApplyEditsCommand.Fail(error.Message); return; }
         if (ApplyEditsCommand.ParseHead(stateText) is not { } head) { ApplyEditsCommand.Fail(StoreInvalid); return; }
-        LayoutIntent intent;
-        try { intent = IntentJson.Parse(intentText); }
-        catch (IntentException error)
-        {
-            Print(JsonSerializer.Serialize(new { status = "failed", code = IntentInvalid, reason = error.Code, field = error.Field }));
-            return;
-        }
-        catch (Exception error) { ApplyEditsCommand.Internal(Verb, error); return; }
+        if (IntentPlan.ParseIntent(intentText, Verb, IntentInvalid) is not { } intent) return;
         if (expectedRevision is { } expected && expected != head.Revision) { ApplyEditsCommand.Fail(StaleHead); return; }
-        IntentEditSet set;
-        try { set = IntentEdits.FromStored(head, intent); }
-        catch (IntentException error)
-        {
-            var issues = error.Issues.Count > 0 ? error.Issues : new[] { new IntentIssue(error.Code, error.Field ?? "", error.Detail ?? "") };
-            Print(JsonSerializer.Serialize(new { status = "failed", code = IntentRefused, refusals = issues.Select(i => new { code = i.Code, subject = i.Key, detail = i.Detail }) }));
-            return;
-        }
-        catch (ArgumentException error) when (error.Message is IncrementalDiff.BoundExceeded or InvalidIdentity) { ApplyEditsCommand.Fail(error.Message); return; }
-        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { ApplyEditsCommand.Fail("invalid_ir"); return; }
-        catch (Exception error) { ApplyEditsCommand.Internal(Verb, error); return; }
-        IncrementalDiffResult result;
-        try { result = IncrementalDiff.Diff(head, set.Edits, createOrder: IncrementalDiff.OrderOf(set.After)); }
-        catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { ApplyEditsCommand.Fail(error.Message); return; }
-        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { ApplyEditsCommand.Fail("invalid_ir"); return; }
-        catch (Exception error) { ApplyEditsCommand.Internal(Verb, error); return; }
+        if (IntentPlan.Build(head, intent, Verb, IntentRefused) is not { } result) return;
         ApplyEditsCommand.Commit(storePath, result, Verb);
-    }
-
-    static void Print(string envelope)
-    {
-        Console.WriteLine(envelope);
-        Environment.ExitCode = 1;
     }
 }
