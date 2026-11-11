@@ -284,7 +284,7 @@ try {
         $tAsm = (@($tParsed.assemblies) | ForEach-Object { "$($_.path)=$($_.license)@$(if ($_.PSObject.Properties['package']) { $_.package } else { '-' })" }) -join '; '
         $tAsmWant = 'cli/Alpha.Json.dll=MIT@Alpha.Json@1.2.3; cli/Beta.Core.Extensions.dll=Apache-2.0@Beta.Core@2.0.0; cli/Beta.Core.dll=Apache-2.0@Beta.Core@2.0.0; cli/Bim.Cli.dll=NOASSERTION@-; cli/Delta.Lib.dll=BSD-3-Clause@Delta.Lib@3.0.0; cli/runtimes/win-x64/native/gamma.dll=NOASSERTION@Gamma.Native@1.0.0'
         Assert ($tAsm -ceq $tAsmWant) "P10-14: every shipped third-party assembly must carry its package (id@version) and licence; Bim.* stays NOASSERTION without a package: got '$tAsm' want '$tAsmWant'"
-        $tRefLine = @($tSbom.Split("`n") | Where-Object { $_.Contains('"name": "Beta.Core"') })
+        $tRefLine = @($tSbom.Split("`n") | Where-Object { $_.StartsWith('    { "name": "Beta.Core", ') })
         Assert ($tRefLine.Count -eq 1 -and $tRefLine[0].Contains('"dependency": "transitive"') -and $tRefLine[0].Contains('"assemblies": ["Beta.Core.Extensions.dll", "Beta.Core.dll"]')) "P10-14: an sbom reference must record whether it is direct or transitive and which assembly files it ships: '$($tRefLine -join ' ')'"
         $tClean = Invoke-Script $verifier @('-PackageDirectory', $tPkg)
         Assert ($tClean.Code -eq 0) "P10-14: a package whose third-party assemblies are all attributed must verify: $(Get-Tail $tClean.Output)"
