@@ -23,17 +23,23 @@ namespace Bim.Generative;
 // the resolution. In step 3, a snap pre-pass without its own rules (options.Snap { Rules: null }, which would check the
 // snapped rooms against the fixed PrototypeTemplates.Rules) checks them against the composed planner rules instead, so
 // the pipeline result's options (and their JSON) carry those snap rules. With the option off it is Run(resolution).
-// P5-15: RunComposed(pack, request, options, skills) is the composed-rules path for callers without a SkillResolution.
-// It builds a catalog of exactly the typology pack, options.Pack (the facade gate's code pack) and the extra manifests (a
-// manifest passed more than once by reference counts once; a null extra is a programming error), requests every one of
-// them ("*") and resolves them with SkillResolver (no precedence order), then runs Run(resolution, request, options,
+// P5-15: RunComposed(pack, request, options, skills, precedence) is the composed-rules path for callers without a
+// SkillResolution. A pack that is not of kind typology is refused up front, as Run(SkillManifest, ...) refuses it: the
+// TypologyBrief.Generate(pack, request) refusals (typology_kind_mismatch on the pack id, then the request refusals), then
+// the option refusals, nothing resolved. Otherwise it builds a catalog of exactly the typology pack, options.Pack (the
+// facade gate's code pack) and the extra manifests, requests every one of them ("*") and resolves them with SkillResolver,
+// forwarding the optional precedence order (earlier wins among equal priorities; without it equal-priority skills with
+// different values for one default key are a default_conflict), then runs Run(resolution, request, options,
 // { ComposedRules: true }), so a successful resolution gives exactly that overload's result and bytes (CABA + typology
-// keeps the P5-14 pin). Two different manifests with one id are refused as id_duplicate (SkillCodes) instead of throwing.
-// A failed resolution refuses the result with each resolution issue passed through typed (its own SkillCodes code,
-// subject and detail, hard and unsatisfied), then the request refusals of TypologyRules.Generate (without its
-// typology_resolution_failed summary), then the PrototypePipeline option refusals; there is no pack mismatch check (the
-// code pack is always composed), Typology is the TypologyRules.Generate result of the failed resolution (programme pack
-// id ""), Composed is set with a null rule set and there are no alternatives.
+// keeps the P5-14 pin). Manifests with one id, one version and equal contents (the same reference, a `with` copy or a
+// re-parse) count once, the first kept; a null extra is a programming error. Manifests with one id and other contents
+// (another version or not) are refused as one id_duplicate (SkillCodes) per id, subject the id, the versions listed in
+// SkillVersion order, instead of throwing. A failed resolution refuses the result with each resolution issue passed
+// through typed (its own SkillCodes code, subject and detail, hard and unsatisfied), then the request refusals, then the
+// PrototypePipeline option refusals; there is no pack mismatch check (the code pack is always composed). Typology is the
+// TypologyRules.Generate result of the failed resolution (programme pack id ""): its own Refusals keep the
+// typology_resolution_failed summary, and only the pipeline refusals (TypologyPipelineResult.Refusals) drop it, since
+// the typed issues replace it. Every refused RunComposed result has Composed set with a null rule set and no alternatives.
 // Gaps: without the option the planner rules are the fixed PrototypeTemplates.Rules of TypologyBrief; one
 // level; each accepted alternative gets its own BIM-IR with the same project identity; nothing is committed. The
 // SkillResolution overload does not check that options.Pack is the code pack composed in the resolution: the facade gate
@@ -84,10 +90,18 @@ public static class TypologyPipeline
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Pack);
+        if (pack.Kind != SkillKind.Typology)
+        {
+            var refused = TypologyBrief.Generate(pack, request);
+            var kindRefusals = refused.Refusals.ToList();
+            kindRefusals.AddRange(PrototypePipeline.OptionRefusals(options));
+            return new TypologyPipelineResult(refused, new PrototypePipelineResult(PrototypePipelineStatus.Refused, options, null, null, kindRefusals.AsReadOnly(),
+                Array.Empty<PrototypePipelineAlternative>()), new TypologyComposedRules(null));
+        }
         var manifests = new List<SkillManifest>();
         void Add(SkillManifest manifest)
         {
-            if (!manifests.Any(known => ReferenceEquals(known, manifest))) manifests.Add(manifest);
+            if (!manifests.Any(known => SameManifest(known, manifest))) manifests.Add(manifest);
         }
         Add(pack);
         Add(options.Pack);
@@ -101,7 +115,8 @@ public static class TypologyPipeline
         }
         var duplicates = manifests.GroupBy(manifest => manifest.Id, StringComparer.Ordinal).Where(group => group.Count() > 1).OrderBy(group => group.Key, StringComparer.Ordinal)
             .Select(group => new SkillIssue(SkillCodes.IdDuplicate, group.Key, "skill " + group.Key + " is passed as " + group.Count().ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " different manifests (versions " + string.Join(", ", group.Select(manifest => manifest.Version.ToString())) + "); pass each skill once"))
+                + " manifests with different contents (versions " + string.Join(", ", group.Select(manifest => manifest.Version).Order().Select(version => version.ToString()))
+                + "); pass each skill once"))
             .ToArray();
         var resolution = duplicates.Length > 0
             ? new SkillResolution(Array.Empty<SkillManifest>(), Array.Empty<SkillSetting>(), Array.Empty<SkillEffectiveParameter>(), Array.Empty<SkillEffectiveRule>(), duplicates)
@@ -115,6 +130,18 @@ public static class TypologyPipeline
         return new TypologyPipelineResult(typology.Result, new PrototypePipelineResult(PrototypePipelineStatus.Refused, options, null, null, refusals.AsReadOnly(),
             Array.Empty<PrototypePipelineAlternative>()), new TypologyComposedRules(typology.Rules));
     }
+
+    // Equal manifest contents, member by member (SkillManifest's record equality compares its lists by reference).
+    static bool SameManifest(SkillManifest a, SkillManifest b) =>
+        ReferenceEquals(a, b) || (a.ManifestVersion == b.ManifestVersion && string.Equals(a.Id, b.Id, StringComparison.Ordinal) && a.Version == b.Version && a.Kind == b.Kind
+            && string.Equals(a.Description, b.Description, StringComparison.Ordinal) && a.Priority == b.Priority
+            && a.Requires.Select(requirement => requirement.Id + " " + requirement.Range.Text).SequenceEqual(b.Requires.Select(requirement => requirement.Id + " " + requirement.Range.Text), StringComparer.Ordinal)
+            && a.ConflictsWith.SequenceEqual(b.ConflictsWith, StringComparer.Ordinal) && a.Parameters.SequenceEqual(b.Parameters) && a.Defaults.SequenceEqual(b.Defaults)
+            && a.Rules.Count == b.Rules.Count && a.Rules.Zip(b.Rules).All(pair => SameRule(pair.First, pair.Second)));
+
+    static bool SameRule(SkillRule a, SkillRule b) =>
+        (a with { Check = b.Check }) == b && (a.Check with { Values = null }) == (b.Check with { Values = null })
+        && (a.Check.Values ?? Array.Empty<SkillValue>()).SequenceEqual(b.Check.Values ?? Array.Empty<SkillValue>()) && (a.Check.Values is null) == (b.Check.Values is null);
 
     static TypologyPipelineResult Gate(TypologyBriefResult typology, PrototypePipelineOptions options, IReadOnlyList<PlanConstraint>? extra = null)
     {
