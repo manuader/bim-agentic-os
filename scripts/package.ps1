@@ -4,6 +4,8 @@
 #   cli/                         dotnet publish of interfaces/cli (run with: dotnet cli/Bim.Cli.dll)
 #   mcp/                         dotnet publish of interfaces/mcp (run with: dotnet mcp/Bim.Mcp.dll)
 #   revit/Bim.addin.template     add-in manifest template only; no Bim.Revit.dll and never any Revit assembly
+#   sbom.json                    P10-13 SBOM: every shipped .dll/.exe (name, version, SPDX licence, SHA-256) and the
+#                                runtime NuGet references of the shipped csproj closure (build-only/vendor ones never)
 #   manifest.json                relative path, size and SHA-256 of every other file, sorted ordinally
 # Reproducible: tracked sources are copied into a fresh temp tree (no stale bin/obj), compiled with
 # Deterministic=true, PathMap of that tree to /_/, no symbols, no platform apphost and an explicit SourceRevisionId.
@@ -31,6 +33,8 @@ $projects = [ordered]@{ cli = 'interfaces/cli/Bim.Cli.csproj'; mcp = 'interfaces
 $sourceDirectories = @('core/Bim.Core', 'core/Bim.Generative', 'evaluation/Bim.Evaluation', 'adapters/ifc/Bim.Ifc.Compiler', 'adapters/gltf/Bim.Gltf', 'adapters/cad/Bim.Cad', 'interfaces/cli', 'interfaces/mcp')
 $rootFiles = @('Directory.Build.props', 'global.json', '.editorconfig')
 $addinTemplate = 'runtimes/revit-native/Bim.addin.template'
+# P10-13: shipped NuGet references allowed to ship without a nuspec licence expression (each entry needs a reviewed reason).
+$sbomLicenseAllowlist = [string[]]@()
 
 $ErrorActionPreference = 'Continue'
 $trackedRaw = (& git -C $root ls-files -z -- @($sourceDirectories + $rootFiles)) -join "`n"
@@ -73,6 +77,11 @@ try {
 
     $forbidden = @(Find-PackageForbidden $staging)
     if ($forbidden.Count) { throw "forbidden content would be packaged: $($forbidden -join ', ')" }
+    # P10-13: sbom.json from the shipped assemblies and the NuGet references of the shipped csproj closure.
+    $packagesRoot = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.nuget/packages' }
+    $references = @(Get-PackageNuGetReferences -Root $build -Projects @($projects.Values) -PackagesRoot $packagesRoot)
+    Assert-PackageReferenceLicenses -References $references -Allowlist $sbomLicenseAllowlist
+    Write-PackageText (Join-Path $staging 'sbom.json') (New-PackageSbomText $staging $version $commit $references)
     Write-PackageText (Join-Path $staging 'manifest.json') (New-PackageManifestText $staging $version $commit $dirty)
     $problems = @(Test-PackageManifest $staging)
     if ($problems.Count) { throw "staged package failed verification: $($problems -join '; ')" }

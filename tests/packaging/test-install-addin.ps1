@@ -44,6 +44,7 @@ function New-SyntheticPackage([string]$Directory, [switch]$WithAssembly) {
     Write-PackageText (Join-Path $Directory 'VERSION') "1.2.3`n"
     Write-PackageText (Join-Path $Directory 'revit/Bim.addin.template') (([IO.File]::ReadAllText($templateSource)) -replace "`r`n", "`n")
     if ($WithAssembly) { Write-PackageText (Join-Path $Directory 'revit/Bim.Revit.dll') 'not a real assembly' }
+    Write-PackageText (Join-Path $Directory 'sbom.json') (New-PackageSbomText $Directory '1.2.3' ('a' * 40) @())
     Write-PackageText (Join-Path $Directory 'manifest.json') (New-PackageManifestText $Directory '1.2.3' ('a' * 40) $false)
     return [IO.Path]::GetFullPath($Directory)
 }
