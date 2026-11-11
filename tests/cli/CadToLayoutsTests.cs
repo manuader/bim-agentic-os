@@ -9,9 +9,8 @@ using Bim.Generative;
 
 // P6-13 DXF to ranked layouts end to end: tests/cad/fixtures/brief-plan.dxf goes through the real Release CLI chain
 //   cad-brief brief-plan.dxf draft.json
-//   cad-plan-brief draft.json planner.json --site-width 10 --site-depth 8 --name "Brief plan"
-//   (the planner document's "brief" member, its raw bytes unchanged, saved as brief.json: plan-layouts reads a bare
-//    P6-03 brief, not the cad-plan-brief envelope)
+//   cad-plan-brief draft.json brief.json --site-width 10 --site-depth 8 --name "Brief plan" --brief-only
+//   (P6-14: --brief-only writes the bare P6-03 planner brief, so no byte-copy step sits between the verbs)
 //   plan-layouts brief.json layouts.json --alternatives 3 --seed 7
 // Oracles:
 //   1. layouts.json is byte-identical to the in-process run BriefExtract.FromDxf(DxfReader.Parse(bytes)) ->
@@ -20,7 +19,7 @@ using Bim.Generative;
 //      ProjectBrief object (no JSON round trip on the oracle side).
 //   2. Its SHA-256 equals the pinned digest below, and the set is ranked with at least one alternative.
 //   3. A second full chain run writes the same bytes; the in-process run under de-DE current culture is the same too;
-//      the planner document's brief member equals BriefSerializer.Serialize of the in-process planner brief (so a
+//      the --brief-only file equals the UTF-8 bytes of BriefSerializer.Serialize of the in-process planner brief (so a
 //      difference is localised to the cad stages before plan-layouts).
 // Cultures: the de-DE culture data must exist on Linux CI (OperatingSystem.IsLinux() and CI=true): a missing culture
 // there FAILS, elsewhere it is a counted skip. The child-process run sets LANG/LC_ALL=de_DE.UTF-8, which .NET reads
@@ -92,27 +91,25 @@ internal static class CadToLayoutsTests
             var dir = Path.Combine(scratch, (++runs).ToString(CultureInfo.InvariantCulture) + "-" + label);
             Directory.CreateDirectory(dir);
             var draftPath = Path.Combine(dir, "draft.json");
-            var plannerPath = Path.Combine(dir, "planner.json");
             var briefPath = Path.Combine(dir, "brief.json");
             var layoutsPath = Path.Combine(dir, "layouts.json");
             var a = Cli(environment, "cad-brief", dxfPath, draftPath);
             Check(a.Exit == 0 && File.Exists(draftPath), label + ": cad-brief writes the draft from brief-plan.dxf", R(a));
             if (!File.Exists(draftPath)) return Array.Empty<byte>();
-            var b = Cli(environment, "cad-plan-brief", draftPath, plannerPath, "--site-width", "10", "--site-depth", "8", "--name", Name);
-            Check(b.Exit == 0 && File.Exists(plannerPath), label + ": cad-plan-brief writes the sited planner brief", R(b));
-            if (!File.Exists(plannerPath)) return Array.Empty<byte>();
-            string? briefText = null;
+            var b = Cli(environment, "cad-plan-brief", draftPath, briefPath, "--site-width", "10", "--site-depth", "8", "--name", Name, "--brief-only");
+            var briefOnly = false;
             try
             {
-                using var planner = JsonDocument.Parse(File.ReadAllBytes(plannerPath));
-                if (planner.RootElement.GetProperty("valid").GetBoolean()) briefText = planner.RootElement.GetProperty("brief").GetRawText();
+                using var envelope = JsonDocument.Parse(b.Out);
+                briefOnly = envelope.RootElement.ValueKind == JsonValueKind.Object && envelope.RootElement.TryGetProperty("brief_only", out var flag) && flag.ValueKind == JsonValueKind.True
+                    && envelope.RootElement.TryGetProperty("valid", out var valid) && valid.ValueKind == JsonValueKind.True;
             }
-            catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException) { Check(false, label + ": the planner document parses", e.Message); }
-            Check(briefText is not null, label + ": the planner document is valid and carries a brief member", Encoding.UTF8.GetString(Read(plannerPath)));
-            if (briefText is null) return Array.Empty<byte>();
-            Check(briefText == expectedBriefText, label + ": the planner brief member equals BriefSerializer.Serialize of the in-process planner brief",
-                "cli " + (briefText.Length > 400 ? briefText[..400] + "..." : briefText) + " in-process " + (expectedBriefText.Length > 400 ? expectedBriefText[..400] + "..." : expectedBriefText));
-            File.WriteAllBytes(briefPath, Utf8(briefText));
+            catch (JsonException) { }
+            Check(b.Exit == 0 && File.Exists(briefPath) && briefOnly, label + ": cad-plan-brief --brief-only writes the sited planner brief (envelope brief_only and valid true)", R(b));
+            if (!File.Exists(briefPath)) return Array.Empty<byte>();
+            var briefBytes = Read(briefPath);
+            Check(briefBytes.SequenceEqual(Utf8(expectedBriefText)), label + ": the --brief-only file equals BriefSerializer.Serialize of the in-process planner brief",
+                "cli " + Encoding.UTF8.GetString(briefBytes.Length > 400 ? briefBytes[..400] : briefBytes) + " in-process " + (expectedBriefText.Length > 400 ? expectedBriefText[..400] + "..." : expectedBriefText));
             var c = Cli(environment, "plan-layouts", briefPath, layoutsPath, "--alternatives", Alternatives.ToString(CultureInfo.InvariantCulture), "--seed", Seed.ToString(CultureInfo.InvariantCulture));
             var written = Read(layoutsPath);
             Check(c.Exit == 0 && written.Length > 0, label + ": plan-layouts writes the ranked layouts", R(c));
