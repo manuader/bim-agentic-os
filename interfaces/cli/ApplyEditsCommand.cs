@@ -41,6 +41,7 @@ namespace Bim.Cli;
 // revision, then the library, then the commit; the first failure is the only one reported.
 internal static class ApplyEditsCommand
 {
+    public const string Verb = "apply-edits";
     public const string Usage = "usage: apply-edits --store store-directory --edits edits.json [--expected-revision n]";
     public const string UsageCode = "apply_edits_usage";
     public const string StoreInvalid = "apply_edits_store_invalid";
@@ -52,7 +53,7 @@ internal static class ApplyEditsCommand
 
     public static void Run(string[] args)
     {
-        if (!TryParse(args, out var storePath, out var editsPath, out var expectedRevision)) { Fail(UsageCode); return; }
+        if (!TryParse(args, "--edits", out var storePath, out var editsPath, out var expectedRevision)) { Fail(UsageCode); return; }
         string stateText, editsText;
         try
         {
@@ -67,32 +68,42 @@ internal static class ApplyEditsCommand
         try { result = IncrementalDiff.Diff(head, edits); }
         catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { Fail(error.Message); return; }
         catch (InvalidOperationException error) when (error.Message == "invalid_ir") { Fail("invalid_ir"); return; }
-        catch (Exception error) { Internal(error); return; }
+        catch (Exception error) { Internal(Verb, error); return; }
+        Commit(storePath, result, Verb);
+    }
+
+    // The commit path shared with apply-intent (P3-11, interfaces/cli/ApplyIntentCommand.cs): ProjectStore.Commit of
+    // result.After with result.Plan under a per-run idempotency key "<verb>:<rev>:<random guid>", the refusals above with
+    // the verb's prefix (verb "apply-edits" gives exactly the apply_edits_* codes), and the success envelope on stdout.
+    internal static void Commit(string storePath, IncrementalDiffResult result, string verb)
+    {
+        var prefix = verb.Replace('-', '_');
         var plan = result.Plan;
-        var key = string.Create(CultureInfo.InvariantCulture, $"apply-edits:{plan.ExpectedRevision}:{Guid.NewGuid():N}");
+        var key = string.Create(CultureInfo.InvariantCulture, $"{verb}:{plan.ExpectedRevision}:{Guid.NewGuid():N}");
         Project committed;
         try { committed = new ProjectStore(storePath).Commit(result.After, plan, key); }
-        catch (InvalidOperationException error) when (error.Message is "revision_conflict" or "idempotency_conflict") { Fail(StaleHead); return; }
+        catch (InvalidOperationException error) when (error.Message is "revision_conflict" or "idempotency_conflict") { Fail(prefix + "_stale_head"); return; }
         catch (InvalidOperationException error) when (error.Message == "invalid_ir") { Fail("invalid_ir"); return; }
         // The incremental plan disagreeing with the full diff is a defect, refused by Commit before its first write.
-        catch (InvalidOperationException error) when (error.Message == "plan_mismatch") { Internal(error); return; }
-        catch (IOException error) when (error.Message == ProjectStore.StoreLocked) { Fail(StoreUnavailable); return; }
+        catch (InvalidOperationException error) when (error.Message == "plan_mismatch") { Internal(verb, error); return; }
+        catch (IOException error) when (error.Message == ProjectStore.StoreLocked) { Fail(prefix + "_store_unavailable"); return; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine("apply-edits commit incomplete: " + error.GetType().FullName + ": " + error.Message);
-            Fail(CommitIncomplete);
+            Console.Error.WriteLine(verb + " commit incomplete: " + error.GetType().FullName + ": " + error.Message);
+            Fail(prefix + "_commit_incomplete");
             return;
         }
-        catch (Exception error) { Internal(error); return; }
+        catch (Exception error) { Internal(verb, error); return; }
         // Commit returns the head unchanged, without writing, only for a key it already holds; a fresh random key never
         // matches, so this is a defensive check that this call wrote the revision it reports.
-        if (committed.Revision != plan.ExpectedRevision + 1) { Fail(StaleHead); return; }
+        if (committed.Revision != plan.ExpectedRevision + 1) { Fail(prefix + "_stale_head"); return; }
         Console.WriteLine(JsonSerializer.Serialize(new { status = "succeeded", scope = "intended_state_only", native_verification = "unverified", revision = committed.Revision, plan }));
     }
 
-    // --store <s> and --edits <e> once each, optional --expected-revision <n> once, each with a non-empty value that is
-    // not flag-shaped ("--..."), in any order; nothing else. n is decimal digits only, within int.
-    static bool TryParse(string[] args, out string storePath, out string editsPath, out int? expectedRevision)
+    // --store <s> and <inputFlag> <e> (--edits here, --intent for apply-intent) once each, optional --expected-revision <n>
+    // once, each with a non-empty value that is not flag-shaped ("--..."), in any order; nothing else. n is decimal digits
+    // only, within int.
+    internal static bool TryParse(string[] args, string inputFlag, out string storePath, out string editsPath, out int? expectedRevision)
     {
         storePath = ""; editsPath = ""; expectedRevision = null;
         if (args.Length != 5 && args.Length != 7) return false;
@@ -102,7 +113,7 @@ internal static class ApplyEditsCommand
             var value = args[i + 1];
             if (value.Length == 0 || value.StartsWith("--", StringComparison.Ordinal)) return false;
             if (args[i] == "--store" && store is null) store = value;
-            else if (args[i] == "--edits" && edits is null) edits = value;
+            else if (args[i] == inputFlag && edits is null) edits = value;
             else if (args[i] == "--expected-revision" && revision is null) revision = value;
             else return false;
         }
@@ -116,7 +127,7 @@ internal static class ApplyEditsCommand
         return true;
     }
 
-    static Project? ParseHead(string text)
+    internal static Project? ParseHead(string text)
     {
         ProjectStore.State? state;
         try { state = JsonSerializer.Deserialize<ProjectStore.State>(text); }
@@ -127,13 +138,13 @@ internal static class ApplyEditsCommand
         return project;
     }
 
-    static void Internal(Exception error)
+    internal static void Internal(string verb, Exception error)
     {
-        Console.Error.WriteLine("apply-edits internal error: " + error.GetType().FullName + ": " + error.Message);
-        Fail(InternalError);
+        Console.Error.WriteLine(verb + " internal error: " + error.GetType().FullName + ": " + error.Message);
+        Fail(verb.Replace('-', '_') + "_internal_error");
     }
 
-    static void Fail(string code)
+    internal static void Fail(string code)
     {
         Console.WriteLine(JsonSerializer.Serialize(new { status = "failed", code }));
         Environment.ExitCode = 1;

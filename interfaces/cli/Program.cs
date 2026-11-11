@@ -21,6 +21,7 @@ try {
         case "skills-lock": SkillLockCommand.Run(args); break;
         case "diff-edits": DiffEditsCommand.Run(args); break;
         case "apply-edits": ApplyEditsCommand.Run(args); break;
+        case "apply-intent": ApplyIntentCommand.Run(args); break;
         case "doc-update": DocUpdateCommand.Run(args); break;
         case "catalogue-report": CatalogueReportCommand.Run(args); break;
         case "generate-prototypes": GenerateCommand.Run(args); break;
