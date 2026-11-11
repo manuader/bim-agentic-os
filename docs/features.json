@@ -1433,10 +1433,12 @@
       "evidence": [
         "interfaces/cli/GenerateCommand.cs",
         "tests/cli/GeneratePrototypesTests.cs",
-        "scripts/package.ps1"
+        "scripts/package.ps1",
+        "interfaces/cli/SkillPackLookup.cs",
+        "tests/packaging/test-package.ps1"
       ],
-      "blocker": "repo-only: the packaged CLI has no skills/ and refuses generate_prototypes_repository_not_found (P7-12); stage options (circulation/facade/IR pack parameters) keep defaults; derived project id covers the pack id, not the manifest content.",
-      "scope": "P7-09: `generate-prototypes request.json output.json` parses a strict snake_case request (typology, lot, alternatives, seed, weights, fixed rooms/walls, pack, project_id, revision, circulation/facade weights, snap), reads skills/<pack>/skill.json bounded, runs PrototypePipeline.Run and writes PrototypePipelineSerializer bytes never-overwrite; default project id = v8 UUID from SHA-256 of the canonical request (-0→0, full weights object, [] for absent lists); typed generate_prototypes_* / output_* / input_* refusals incl. lone surrogates; byte-equal to the in-process run. CI red 42778985107, green 42781456410, review red 42800136898, green 42801508178."
+      "blocker": "stage options (circulation/facade/IR pack parameters) keep defaults; derived project id covers the pack id, not the manifest content; package root detected by markers (cli/ + VERSION + manifest.json + skills/), not their content; the package ships every tracked skill pack; plan-layouts --pack stays repository-only.",
+      "scope": "P7-09: `generate-prototypes request.json output.json` parses a strict snake_case request (typology, lot, alternatives, seed, weights, fixed rooms/walls, pack, project_id, revision, circulation/facade weights, snap), reads skills/<pack>/skill.json bounded, runs PrototypePipeline.Run and writes PrototypePipelineSerializer bytes never-overwrite; default project id = v8 UUID from SHA-256 of the canonical request (-0→0, full weights object, [] for absent lists); typed generate_prototypes_* / output_* / input_* refusals incl. lone surrogates; byte-equal to the in-process run. CI red 42778985107, green 42781456410, review red 42800136898, green 42801508178. P7-12: the release package ships every git-tracked skills/ file byte-exact next to cli/ (manifest/checksums cover them; tracked entries other than mode 100644/100755 refused skills_entry_not_regular); the verb looks in <package>/skills first when the binary folder is cli/ beside VERSION, manifest.json and skills/, then the repository walk; package-layout run byte-equal to the repo run, package pack wins over a different repo pack, a stray skills/ next to a non-package binary is ignored, a package without skills/ still refuses generate_prototypes_repository_not_found. CI red 43007834744, green 43009419027, review red 43013468121, green 43014850081."
     },
     {
       "id": "typology-brief-prototypes",
@@ -1445,7 +1447,7 @@
         "core/Bim.Generative/TypologyBrief.cs",
         "tests/generative/TypologyBriefTests.cs"
       ],
-      "blocker": "whole-lot, one level, no fixed rooms/walls; gated through circulation/facade/IR by TypologyPipeline (P5-12) but still with the fixed PrototypeTemplates.Rules (composed rules: P5-14); PrototypeGenerator.Generate still takes only ApartmentTypology.",
+      "blocker": "whole-lot, one level, no fixed rooms/walls; gated through circulation/facade/IR by TypologyPipeline (P5-12) with the fixed PrototypeTemplates.Rules by default (composed rules opt-in since P5-14); PrototypeGenerator.Generate still takes only ApartmentTypology.",
       "scope": "P5-11: TypologyBrief.Brief/Generate turn a SkillTypology programme (pack or SkillResolution + family size) into a P6-03 brief with the lot as site and plan ranked whole-lot SpacePlanner candidates (seeds Seed+i unchecked, PrototypeTemplates.Rules, AlternativeRanker); typology_* issues and PrototypeGenerator request codes as typed refusals; family sizes 1–8 rank on 16x16; pinned SHA-256 85102ea0…b513 (family 4, 12x12, 6 alternatives, seed 0); apartment generator pinned digest unchanged. CI red 42787338649, green 42788507940, review red 42803818216, green 42805199628."
     },
     {
@@ -1616,10 +1618,12 @@
         "core/Bim.Generative/TypologyPipeline.cs",
         "core/Bim.Generative/TypologyPipelineModel.cs",
         "core/Bim.Generative/TypologyPipelineSerializer.cs",
-        "tests/generative/TypologyPipelineTests.cs"
+        "tests/generative/TypologyPipelineTests.cs",
+        "core/Bim.Generative/TypologyPipelineOptions.cs",
+        "tests/generative/TypologyPipelineRulesTests.cs"
       ],
-      "blocker": "Plans with the fixed PrototypeTemplates.Rules, not the P5-13 composed TypologyRules (P5-14); one level; each accepted alternative gets its own BIM-IR under the same project id, nothing committed; SkillResolution overload does not check options.Pack against the resolution's code pack; on 12x12/16x16 lots many candidates are duplicates or fail facade_ir_entrance_overlap / facade_edge_too_short@dining; no CLI (P7-14).",
-      "scope": "P5-12: TypologyPipeline.Run(pack|SkillResolution, TypologyBriefRequest, PrototypePipelineOptions) runs TypologyBrief.Generate candidates through the unchanged PrototypePipeline.Rank circulation → facade → BIM-IR window gates with the request weights (strategy whole_lot); refusals typology-first then options; TypologyPipelineSerializer canonical JSON. Pinned SHA-256 3a55177415f42f4d324cf3e4bd298223595c429006595a635aa12e9fb1a3d20b (family 4, 12x12, 6 alt, seed 0, Infeasible) and eb8720c1a98a749048df6ac69f1794b965e833efc963eb9ddfe58db0ae886f4e (family 3, 16x16, 4 alt, seed 0, Ranked), identical on Linux and Windows; rejections matched code@subject against independently recomputed gates; P7-07 and P5-11 pins unchanged. CI red 42942656762, green 42945770818, review green 42949856832."
+      "blocker": "one level; each accepted alternative gets its own BIM-IR under the same project id, nothing committed; composed rules only through the SkillResolution overload; pack check compares Id/Version, not content; on 12x12/16x16 lots many candidates are duplicates or fail facade_ir_entrance_overlap / facade_edge_too_short@dining; no CLI (P7-14).",
+      "scope": "P5-12: TypologyPipeline.Run(pack|SkillResolution, TypologyBriefRequest, PrototypePipelineOptions) runs TypologyBrief.Generate candidates through the unchanged PrototypePipeline.Rank circulation → facade → BIM-IR window gates with the request weights (strategy whole_lot); refusals typology-first then options; TypologyPipelineSerializer canonical JSON. Pinned SHA-256 3a55177415f42f4d324cf3e4bd298223595c429006595a635aa12e9fb1a3d20b (family 4, 12x12, 6 alt, seed 0, Infeasible) and eb8720c1a98a749048df6ac69f1794b965e833efc963eb9ddfe58db0ae886f4e (family 3, 16x16, 4 alt, seed 0, Ranked), identical on Linux and Windows; rejections matched code@subject against independently recomputed gates; P7-07 and P5-11 pins unchanged. CI red 42942656762, green 42945770818, review green 42949856832. P5-14: opt-in TypologyPipelineOptions(ComposedRules) plans with TypologyRules.Generate (composed pack + SkillResolution rules), snap without its own rules validates against the composed rules, options.Pack must match a resolution skill by Id/Version (typology_pipeline_pack_mismatch), result JSON adds a rules member (planner_rules, traces) only in composed mode; default output byte-identical (both P5-12 pins); composed pin a8c62da59e0eee2d25af4d27bc37fcf2f67ae366e7e48446f1edfe3c87f7c0dd (CABA+typology, family 3, 16x16, 4 alt, seed 0) on Linux and Windows; typology_minimum_conflict passes through. CI red 43007881318, pin 43008867735, green 43010911469, review red 43020311373, green 43021645045."
     },
     {
       "id": "plan-layouts-pack-rules",
@@ -1640,8 +1644,18 @@
         "interfaces/cli/ApplyEditsCommand.cs",
         "tests/cli/ApplyIntentTests.cs"
       ],
-      "blocker": "Intended state only, no native verification; plan equals diff-edits byte for byte only when every create sorts after the survivors (otherwise same operations/BeforeHash/DirtyIds, different order and AfterHash — tested); FromStored deletes any head element the intent does not produce; a no-change rerun without --expected-revision commits an empty revision; no apply-intent-specific concurrency race test (shared commit path race-tested via apply-edits); no read-only diff-intent verb yet (P3-12).",
+      "blocker": "Intended state only, no native verification; plan equals diff-edits byte for byte only when every create sorts after the survivors (otherwise same operations/BeforeHash/DirtyIds, different order and AfterHash — tested); FromStored deletes any head element the intent does not produce; a no-change rerun without --expected-revision commits an empty revision; no apply-intent-specific concurrency race test (shared commit path race-tested via apply-edits); read-only preview is diff-intent (P3-12).",
       "scope": "P3-11: `apply-intent --store <dir> --intent after.json [--expected-revision n]` builds edits with IntentEdits.FromStored on the store head, plans with IncrementalDiff.Diff(head, edits, OrderOf(set.After)) (equal to Compiler.Diff(head, compile(intent))) and commits through the apply-edits commit path shared by refactor (apply-edits bytes/codes/keys unchanged); idempotency key apply-intent:<rev>:<guid>; refusals apply_intent_{usage,store_invalid,stale_head,store_unavailable,commit_incomplete,internal_error,intent_invalid(reason,field),intent_refused(refusals)}, input_*, invalid_ir, invalid_project_identity, edit_bound_exceeded; store and intent untouched on every refusal except commit_incomplete; de_DE identical. CI red 42942878532, green 42944305451, review green 42954721581."
+    },
+    {
+      "id": "diff-intent-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/DiffIntentCommand.cs",
+        "tests/cli/DiffIntentTests.cs"
+      ],
+      "blocker": "Intended state only, no native verification; plan logic duplicated from apply-intent (byte equality tested, not shared by construction); equals Compiler.Diff(head, compile(intent)) only when the head is in compile order; de_DE check skips without culture data; diff_intent_internal_error untested.",
+      "scope": "P3-12: `diff-intent --project project.json --intent after.json` prints IncrementalDiff.Diff(head, IntentEdits.FromStored(head, intent).Edits, OrderOf(set.After)).Plan, byte-equal to apply-intent's plan member on the same head and intent (incl. out-of-compile-order heads), writes nothing (input dirs and store byte/mtime unchanged); BoundedInput 8 MiB; refusals diff_intent_{usage,project_invalid,intent_invalid(reason,field),intent_refused(refusals),internal_error}, input_*, invalid_ir, invalid_project_identity, edit_bound_exceeded, cross-checked against apply-intent; de_DE identical. CI red 43007872834, green 43009808461, review green 43017474972."
     },
     {
       "id": "revit-command-pipe-read-timeout",

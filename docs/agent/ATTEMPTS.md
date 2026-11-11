@@ -279,3 +279,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P1-16: 2 failed attempts, distinct causes, oracle unchanged — (1) run 42984292322 (b9da113): ubuntu fake-pipe parity check threw ArgumentOutOfRangeException, Unix socket path > 108 chars under verify.ps1's long TMPDIR; TMPDIR pointed at /tmp for that section (restored in finally) → green 42986703668; (2) run 42996302277 (468707c): page-cap byte check called Direct(...) before reading the "exactly 1000 sent" counter, counting Direct's own requests; count taken first → green 42997716419. Red 42983336938; review red 42994986316.
 - P2-14: no failed attempts (red 42983599263 = deliberately inverted second-drift check → green 42985259803; review hardening green 42999991673).
 - P6-14: no failed attempts (red 42983360377 → green 42984926046; review placeholder-pin red 42989848662 → green 42992146562).
+
+### Relay190 (2026-11-11, cloud)
+- P7-12: no failed attempts (red 43007834744 → green 43009419027; review red 43013468121 → green 43014850081).
+- P3-12: no failed attempts (red 43007872834 → green 43009808461; review tests already green 43017474972, no red because behaviour was already correct).
+- P5-14: no failed attempts (red 43007881318 compile → placeholder-pin red 43008867735 → green 43010911469; review red 43020311373 compile → green 43021645045).
