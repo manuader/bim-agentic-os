@@ -304,7 +304,7 @@ public static class PrototypePipeline
         return null;
     }
 
-    static List<PlanConstraint> OptionRefusals(PrototypePipelineOptions options)
+    internal static List<PlanConstraint> OptionRefusals(PrototypePipelineOptions options)
     {
         var refusals = new List<PlanConstraint>();
         if (options.ProjectId == Guid.Empty) refusals.Add(Refusal(PrototypePipelineCodes.ProjectInvalid, "project_id", "a non-empty project id is required for the BIM-IR prototypes"));
