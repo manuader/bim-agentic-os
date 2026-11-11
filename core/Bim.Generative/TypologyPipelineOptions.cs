@@ -9,3 +9,10 @@ public sealed record TypologyPipelineOptions(bool ComposedRules = false)
 {
     public static TypologyPipelineOptions Default { get; } = new();
 }
+
+public static class TypologyPipelineCodes
+{
+    // Composed-rules mode only: options.Pack (the code pack of the facade gate) is not, by id and version, one of the
+    // skills of the resolution whose rules planned the candidates (subject pack).
+    public const string PackMismatch = "typology_pipeline_pack_mismatch";
+}

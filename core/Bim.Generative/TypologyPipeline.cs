@@ -18,11 +18,16 @@ namespace Bim.Generative;
 // TypologyRules.Generate(resolution, request) instead (the P5-13 composed pack rules plan the candidates; the same
 // programme and request refusals, then its rule refusals such as typology_rule_pattern_unsupported and
 // typology_minimum_conflict) and keeps the rule set in the result (TypologyPipelineResult.Rules, null when the programme
-// or request was refused before a brief existed). Steps 2 and 3 are unchanged. With the option off it is Run(resolution).
+// or request was refused before a brief existed). Step 2 also refuses, after the option refusals,
+// typology_pipeline_pack_mismatch when options.Pack (the facade gate's code pack) is not, by id and version, a skill of
+// the resolution. In step 3, a snap pre-pass without its own rules (options.Snap { Rules: null }, which would check the
+// snapped rooms against the fixed PrototypeTemplates.Rules) checks them against the composed planner rules instead, so
+// the pipeline result's options (and their JSON) carry those snap rules. With the option off it is Run(resolution).
 // Gaps: without the option the planner rules are the fixed PrototypeTemplates.Rules of TypologyBrief; one
 // level; each accepted alternative gets its own BIM-IR with the same project identity; nothing is committed. The
 // SkillResolution overload does not check that options.Pack is the code pack composed in the resolution: the facade gate
-// always uses options.Pack, whatever the resolution holds.
+// always uses options.Pack, whatever the resolution holds (refused in composed-rules mode when its id and version are
+// not in the resolution; a same id and version with other contents is not detected).
 public static class TypologyPipeline
 {
     public static TypologyPipelineResult Run(SkillManifest pack, TypologyBriefRequest request, PrototypePipelineOptions options)
@@ -52,13 +57,20 @@ public static class TypologyPipeline
         ArgumentNullException.ThrowIfNull(typology);
         if (!typology.ComposedRules) return Gate(TypologyBrief.Generate(resolution, request), options);
         var composed = TypologyRules.Generate(resolution, request);
-        return Gate(composed.Result, options) with { ComposedRules = true, Rules = composed.Rules };
+        var pack = options.Pack;
+        var extra = resolution.Skills.Any(skill => string.Equals(skill.Id, pack.Id, StringComparison.Ordinal) && skill.Version == pack.Version)
+            ? Array.Empty<PlanConstraint>()
+            : new[] { new PlanConstraint(TypologyPipelineCodes.PackMismatch, "pack", true, false, "options pack " + pack.Id + " " + pack.Version.ToString()
+                + " is not a skill of the resolution whose rules plan the candidates; the facade gate must use a composed code pack") };
+        var gated = options.Snap is { Rules: null } snap && composed.Rules is { Succeeded: true } set ? options with { Snap = snap with { Rules = set.Rules } } : options;
+        return Gate(composed.Result, gated, extra) with { Composed = new TypologyComposedRules(composed.Rules) };
     }
 
-    static TypologyPipelineResult Gate(TypologyBriefResult typology, PrototypePipelineOptions options)
+    static TypologyPipelineResult Gate(TypologyBriefResult typology, PrototypePipelineOptions options, IReadOnlyList<PlanConstraint>? extra = null)
     {
         var refusals = typology.Refusals.ToList();
         refusals.AddRange(PrototypePipeline.OptionRefusals(options));
+        if (extra is not null) refusals.AddRange(extra);
         if (refusals.Count > 0 || typology.Brief is null || typology.Alternatives is null)
             return new TypologyPipelineResult(typology, new PrototypePipelineResult(PrototypePipelineStatus.Refused, options, null, null, refusals.AsReadOnly(),
                 Array.Empty<PrototypePipelineAlternative>()));
