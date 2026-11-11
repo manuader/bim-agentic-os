@@ -21,9 +21,10 @@ using Bim.Generative;
 //      SpacePlanner.Plan(brief, 7 + i), i = 0..2 -> AlternativeRanker.Rank -> AlternativeSetSerializer.Serialize (UTF-8,
 //      no BOM), and its SHA-256 equals that form's pinned digest; the --brief-only file equals BriefSerializer.Serialize
 //      of the in-process planner brief.
-//   2. The fixture bytes have a pinned SHA-256, and on Linux the generator rewrites exactly those bytes (python3
-//      required on Linux CI, a counted skip elsewhere or when absent off CI).
-//   3. Twin: both drafts propose 7 rooms; for each scale form the PDF planner brief has the same rooms (ids, names,
+//   2. The fixture bytes have a pinned SHA-256, and on Linux and macOS the generator rewrites exactly those bytes
+//      (python3 required on Linux CI; a counted skip on Windows or when python3 is absent elsewhere).
+//   3. Twin: both drafts propose 7 rooms with the same sorted uncertainty codes and the same room ids and confidences;
+//      the planner keeps and drops the pinned rooms (KeptRooms, DroppedRooms); for each scale form the PDF planner brief has the same rooms (ids, names,
 //      counts, target areas within 1e-9 m2) as the brief-plan.dxf planner brief (provenance references differ by design:
 //      file name, PDF operator vs DXF handle), and the in-process PDF layouts are byte-identical to the brief-plan.dxf
 //      layouts, so both pins equal the P6-13 CadToLayoutsTests digest.
@@ -40,6 +41,9 @@ internal static class CadPdfToLayoutsTests
     // Both equal the brief-plan.dxf digest pinned in CadToLayoutsTests (P6-13): layouts carry no drawing provenance.
     const string PinnedCalibrated = "566058984bb381768338f79137a18078bcc5ef6cfdfee0698226a7b84a86408a";
     const string PinnedMetresPerUnit = "566058984bb381768338f79137a18078bcc5ef6cfdfee0698226a7b84a86408a";
+    // The planner decision for both scale forms (and brief-plan.dxf): kept room ids in order, dropped id:unconfirmed reasons.
+    const string KeptRooms = "dormitorio-1,cocina,living-room,bano-2,lavadero,hall";
+    const string DroppedRooms = "bano:area-mismatch,low-confidence";
     const string Name = "Brief plan";
     const int Alternatives = 3;
     const int Seed = 7;
@@ -85,10 +89,11 @@ internal static class CadPdfToLayoutsTests
         var pdfBytes = File.ReadAllBytes(pdfPath);
         var linux = OperatingSystem.IsLinux();
         var linuxCi = linux && Environment.GetEnvironmentVariable("CI") == "true";
+        var unix = linux || OperatingSystem.IsMacOS();
 
         // ---- the fixture and its generator ----
         Check(Hex(pdfBytes) == FixtureDigest, "brief-plan.pdf SHA-256 equals the pinned fixture digest", "actual " + Hex(pdfBytes) + " pinned " + FixtureDigest);
-        if (linux)
+        if (unix)
         {
             var regenerated = Path.Combine(scratch, "regenerated.pdf");
             (int Exit, string Out, string Err)? py = null;
@@ -97,27 +102,27 @@ internal static class CadPdfToLayoutsTests
             if (py is null)
             {
                 if (linuxCi) Check(false, "python3 is available on Linux CI to rerun the fixture generator");
-                else skip("cad-pdf-to-layouts: fixture generator rerun", "python3 not found");
+                else skip("cad-pdf-to-layouts: fixture generator rerun", "python3 not found (required on Linux CI only)");
             }
             else Check(py.Value.Exit == 0 && Read(regenerated).SequenceEqual(pdfBytes), "brief-plan-pdf.py rewrites brief-plan.pdf byte for byte", R(py.Value) + " sha256 " + Hex(Read(regenerated)));
         }
-        else skip("cad-pdf-to-layouts: fixture generator rerun", "run on Linux only (python3 launcher differs elsewhere)");
+        else skip("cad-pdf-to-layouts: fixture generator rerun", "run on Linux and macOS only (the python3 launcher differs on Windows)");
 
         // ---- in process: BriefExtract.FromPdf -> BriefPlanner (sited) -> SpacePlanner seeds 7..9 -> AlternativeRanker ----
         static PdfCalibration Calibration() => PdfCalibration.FromKnownDimension(new Bim.Cad.Point2(100, 150), new Bim.Cad.Point2(300, 150), 4000);
-        static (byte[] Bytes, AlternativeSet Set, ProjectBrief Brief) Plan(BriefDraft draft)
+        static (byte[] Bytes, AlternativeSet Set, ProjectBrief Brief, BriefPlannerResult Planned) Plan(BriefDraft draft)
         {
             var constraints = draft.Brief.Constraints with { Site = new BriefSite(new BriefValue<double>(10), new BriefValue<double>(8)) };
             var planned = BriefPlanner.ToPlannerBrief(draft, new BriefPlannerOptions { Constraints = constraints, Name = Name });
             var plans = new SpacePlan[Alternatives];
             for (var index = 0; index < Alternatives; index++) plans[index] = SpacePlanner.Plan(planned.Brief, unchecked(Seed + index));
             var set = AlternativeRanker.Rank(planned.Brief, plans);
-            return (Utf8(AlternativeSetSerializer.Serialize(set)), set, planned.Brief);
+            return (Utf8(AlternativeSetSerializer.Serialize(set)), set, planned.Brief, planned);
         }
-        static (byte[] Bytes, AlternativeSet Set, ProjectBrief Brief) InProcess(byte[] pdf, bool calibrated) =>
-            Plan(calibrated
-                ? BriefExtract.FromPdf(PdfReader.Parse(pdf, "brief-plan.pdf"), 1, Calibration(), new BriefExtractOptions())
-                : BriefExtract.FromPdf(PdfReader.Parse(pdf, "brief-plan.pdf"), 1, null, new BriefExtractOptions { MetresPerUnit = 0.02 }));
+        static BriefDraft Draft(byte[] pdf, bool calibrated) => calibrated
+            ? BriefExtract.FromPdf(PdfReader.Parse(pdf, "brief-plan.pdf"), 1, Calibration(), new BriefExtractOptions())
+            : BriefExtract.FromPdf(PdfReader.Parse(pdf, "brief-plan.pdf"), 1, null, new BriefExtractOptions { MetresPerUnit = 0.02 });
+        static (byte[] Bytes, AlternativeSet Set, ProjectBrief Brief, BriefPlannerResult Planned) InProcess(byte[] pdf, bool calibrated) => Plan(Draft(pdf, calibrated));
 
         var calibrated = InProcess(pdfBytes, true);
         var perUnit = InProcess(pdfBytes, false);
@@ -127,10 +132,18 @@ internal static class CadPdfToLayoutsTests
 
         // ---- twin: the same draft rooms, planner rooms and layouts as brief-plan.dxf ----
         var dxfDraft = BriefExtract.FromDxf(DxfReader.Parse(File.ReadAllBytes(Path.Combine(fixtures, "brief-plan.dxf")), "brief-plan.dxf"));
-        var pdfDraft = BriefExtract.FromPdf(PdfReader.Parse(pdfBytes, "brief-plan.pdf"), 1, Calibration(), new BriefExtractOptions());
         var dxf = Plan(dxfDraft);
-        Check(dxfDraft.Rooms.Count == 7 && pdfDraft.Rooms.Count == 7, "the brief-plan.dxf and calibrated brief-plan.pdf drafts both propose 7 rooms",
-            "dxf " + dxfDraft.Rooms.Count.ToString(CultureInfo.InvariantCulture) + " pdf " + pdfDraft.Rooms.Count.ToString(CultureInfo.InvariantCulture));
+        static string Codes(BriefDraft draft) => string.Join(",", draft.Uncertainties.Select(u => u.Code).OrderBy(c => c, StringComparer.Ordinal));
+        static string Confidences(BriefDraft draft) => string.Join("; ", draft.Rooms.Select(r => r.Id + "=" + r.Confidence.ToString("R", CultureInfo.InvariantCulture)));
+        foreach (var (label, pdfDraft) in new[] { ("calibrated", Draft(pdfBytes, true)), ("metres-per-unit", Draft(pdfBytes, false)) })
+        {
+            Check(dxfDraft.Rooms.Count == 7 && pdfDraft.Rooms.Count == 7, label + ": the brief-plan.dxf and brief-plan.pdf drafts both propose 7 rooms",
+                "dxf " + dxfDraft.Rooms.Count.ToString(CultureInfo.InvariantCulture) + " pdf " + pdfDraft.Rooms.Count.ToString(CultureInfo.InvariantCulture));
+            Check(Codes(pdfDraft) == Codes(dxfDraft) && pdfDraft.Uncertainties.Count > 0, label + ": the PDF draft's sorted uncertainty codes equal the brief-plan.dxf draft's",
+                "pdf " + Codes(pdfDraft) + " dxf " + Codes(dxfDraft));
+            Check(Confidences(pdfDraft) == Confidences(dxfDraft), label + ": each PDF draft room has the brief-plan.dxf room's id and confidence (exact)",
+                "pdf " + Confidences(pdfDraft) + " dxf " + Confidences(dxfDraft));
+        }
         static string Rooms(ProjectBrief brief) => string.Join("; ", brief.Rooms.Select(r => r.Id + "|" + r.Name + "|" + r.EffectiveCount.ToString(CultureInfo.InvariantCulture) + "|"
             + (r.TargetAreaSquareMetres?.Value.ToString("R", CultureInfo.InvariantCulture) ?? "-")));
         foreach (var (label, run) in new[] { ("calibrated", calibrated), ("metres-per-unit", perUnit) })
@@ -141,6 +154,10 @@ internal static class CadPdfToLayoutsTests
                 && (p.First.TargetAreaSquareMetres is null || Math.Abs(p.First.TargetAreaSquareMetres.Value - p.Second.TargetAreaSquareMetres!.Value) <= 1e-9));
             Check(twin, label + ": the PDF planner brief has the brief-plan.dxf planner brief's rooms (ids, names, counts, target areas)",
                 "pdf " + Rooms(run.Brief) + " dxf " + Rooms(dxf.Brief));
+            var kept = string.Join(",", run.Planned.Kept.Select(r => r.Id));
+            var dropped = string.Join("; ", run.Planned.Dropped.Select(r => r.Id + ":" + string.Join(",", r.Unconfirmed)));
+            Check(kept == KeptRooms, label + ": the planner keeps exactly the pinned rooms", "actual " + kept + " pinned " + KeptRooms);
+            Check(dropped == DroppedRooms, label + ": the planner drops exactly the pinned rooms with their unconfirmed reasons", "actual " + dropped + " pinned " + DroppedRooms);
             Check(run.Bytes.SequenceEqual(dxf.Bytes), label + ": the in-process PDF layouts are byte-identical to the in-process brief-plan.dxf layouts (P6-13)",
                 "pdf sha256 " + Hex(run.Bytes) + " dxf sha256 " + Hex(dxf.Bytes));
         }
@@ -202,7 +219,7 @@ internal static class CadPdfToLayoutsTests
             if (File.Exists(briefOutput) && Envelope(File.ReadAllText(briefOutput)) is { } d && d.TryGetProperty("source", out var source) && d.TryGetProperty("uncertainties", out var uncertainties))
                 reportsUncalibrated = source.TryGetProperty("scale", out var s) && s.GetString() == "none"
                     && source.TryGetProperty("metres_per_unit", out var m) && m.ValueKind == JsonValueKind.Null
-                    && uncertainties.ValueKind == JsonValueKind.Array && uncertainties.EnumerateArray().Any(x => x.GetRawText().Contains("\"uncalibrated\"", StringComparison.Ordinal));
+                    && uncertainties.ValueKind == JsonValueKind.Array && uncertainties.EnumerateArray().Any(x => x.ValueKind == JsonValueKind.Object && x.TryGetProperty("Code", out var c) && c.ValueKind == JsonValueKind.String && c.GetString() == "uncalibrated");
             Check(u.Exit == 0 && reportsUncalibrated, "cad-brief brief-plan.pdf without a scale is not a refusal but reports scale none, metres_per_unit null and the uncalibrated uncertainty", R(u));
         }
 
