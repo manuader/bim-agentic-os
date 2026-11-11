@@ -27,17 +27,19 @@ using System.Text.Json;
 //   2. Three external edits through the CLI (element.move of wall B, wall.create of wall C, element.delete of wall A) are
 //      reported as exactly three findings, each external_edit with its journal evidence: B changed (journal:1:external),
 //      C extra (journal:2:external), A missing (journal:3:external:deleted_id_match); evidence complete; every proposal
-//      recommends adopt (update, create, delete).
+//      recommends adopt (update, create, delete). Core's MirrorDrift.ParseJournal reads the hand-built reply as three
+//      external entries. Negative: the same edits with a reply that has no entries after sequence 3 give B and A
+//      unknown and C out of scope (no external_edit); the P2-14 run (no journal) asserts its finding unknown.
 //   3. mirror-drift-select {adopt x3} writes three operations, one map add (C) and one map removal (A); mirror-drift-adopt
 //      commits revision 2: B at the Revit geometry, C created under its snapshot id (Revit geometry, Level 1 dependency,
 //      adopt provenance), A gone, the levels untouched; replay prints replayed; the revision-1 mirror is refused stale.
 //   4. A fresh query.snapshot against the mirror at revision 2 (map updated from the selection's map_adds/map_removals,
-//      journal_after_sequence at the last entry) reports no drift at all.
+//      and a fresh peek reply after sequence 3 with no entries) reports no drift at all, evidence complete, no notes.
 //   5. The fake add-in serves exactly the ten expected requests and exits 0; two runs are byte-identical.
 // The journal is written by this test: the fake add-in's journal.read answers no entries (as the production recorder, it
 // skips the add-in's own transactions, and every edit here reaches the fake through the add-in pipe), and the CLI has no
 // journal verb. Its deletion entry carries the element id Revit's UniqueId convention puts in the hex suffix.
-// Bounded: 5 minutes per run, 60 s per process, the fake add-in gives up after 120 s. Needs pwsh (BIM_PWSH, set by
+// Bounded: 5 minutes per run, 60 s per process, the fake add-in gives up after the run budget. Needs pwsh (BIM_PWSH, set by
 // scripts/verify.ps1, else pwsh on PATH; a bare local run without pwsh skips, verify.ps1 and CI fail) and the built
 // CLI (scripts/verify.ps1 builds interfaces/cli before this project). No Revit is involved: a
 // passing run is unit-tested evidence only.
@@ -76,7 +78,7 @@ static class MirrorDriftLoopChecks
     // Bounds: the whole run, each CLI or pwsh process, and the fake add-in's own lifetime.
     static readonly TimeSpan RunBudget = TimeSpan.FromMinutes(5);
     const int CallTimeoutMs = 60000;
-    const int FakeTimeoutSeconds = 120;
+    static readonly int FakeTimeoutSeconds = (int)RunBudget.TotalSeconds;
 
     static void Checks()
     {
@@ -337,6 +339,10 @@ static class MirrorDriftLoopChecks
                 && findings[0].GetProperty("kind").GetString() == "changed" && findings[0].GetProperty("unique_id").GetString() == uidB
                 && findings[0].GetProperty("core_id").GetString() == coreB.ToString("D"),
                 "mirror-drift reports exactly one changed finding: wall B, by UniqueId and Core id", Head(drift1Text));
+            var summary1 = reportElement.GetProperty("summary");
+            Check(findings.Length == 1 && findings[0].GetProperty("classification").GetString() == MirrorDriftClasses.Unknown
+                && summary1.GetProperty("unknown").GetInt32() == 1 && summary1.GetProperty("external_edit").GetInt32() == 0,
+                "without a journal the finding is unknown (no external_edit)", summary1.GetRawText());
             Check(proposals.Length == 1 && proposals[0].GetProperty("unique_id").GetString() == uidB
                 && proposals[0].GetProperty("adopt").GetProperty("status").GetString() == MirrorDriftResolveStatus.Proposed
                 && proposals[0].GetProperty("adopt").GetProperty("action").GetString() == MirrorDriftAdoptActions.Update,
@@ -432,7 +438,7 @@ static class MirrorDriftLoopChecks
         var init = h.Cli("init", store, h.Write("project-r1", JsonSerializer.Serialize(project)));
         if (init.Exit != 0 || Status(init.Out) != "succeeded") { Check(false, "the CLI init verb seeds the store at revision 1", R(init)); return null; }
         var baseline = h.Cli("mirror-drift", store, h.Write("snapshot-0", snapshot0.Out),
-            h.Write("mirror-baseline", MirrorJson(document, 1, map, levelNames, JournalReply(document, 0, Array.Empty<string>()), 0)), h.NewPath("drift-baseline"));
+            h.Write("mirror-baseline", MirrorJson(document, 1, map, levelNames, JournalReply(document, 0, 0, Array.Empty<string>()), 0)), h.NewPath("drift-baseline"));
         Check(baseline.Exit == 0 && Number(baseline.Out, "drift") == 0 && Number(baseline.Out, "proposals") == 0,
             "baseline with an empty journal: the store built from the first snapshot has no drift", R(baseline));
 
@@ -453,12 +459,25 @@ static class MirrorDriftLoopChecks
             "the edited snapshot reports B 500 mm east, the new wall C and no wall A", string.Join(",", observedB) + " | " + string.Join(",", observedC));
 
         // ---- The journal the add-in recorder would report for those edits (external origin, after sequence 0) ----
-        var journal = JournalReply(document, 3, new[]
+        // Revit's UniqueId convention: the text after the last '-' is the element id in hex.
+        if (!long.TryParse(uidA[(uidA.LastIndexOf('-') + 1)..], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var deletedA) || deletedA <= 0)
+        { Check(false, "wall A's UniqueId ends with a hex element id", uidA); return null; }
+        var journal = JournalReply(document, 3, 0, new[]
         {
             JournalEntry(1, "Move", modified: uidB),
             JournalEntry(2, "Wall", added: uidC),
-            JournalEntry(3, "Delete", deletedId: long.Parse(uidA[37..], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture)),
+            JournalEntry(3, "Delete", deletedId: deletedA),
         });
+        // Core's journal reader reads the hand-built reply as the recorder's format: a change there shows up here.
+        var read = MirrorDrift.ParseJournal(journal);
+        var entries = read.Entries;
+        Check(entries.Count == 3 && entries.All(entry => entry.Origin == MirrorJournalOrigins.External && entry.DocumentUid == DocumentUid)
+            && entries.Select(entry => entry.Sequence).SequenceEqual(new long[] { 1, 2, 3 })
+            && entries[0].ModifiedUids.SequenceEqual(new[] { uidB }) && entries[0].AddedUids.Count == 0 && entries[0].DeletedIds.Count == 0
+            && entries[1].AddedUids.SequenceEqual(new[] { uidC }) && entries[1].ModifiedUids.Count == 0 && entries[1].DeletedIds.Count == 0
+            && entries[2].DeletedIds.SequenceEqual(new[] { deletedA }) && entries[2].AddedUids.Count == 0 && entries[2].ModifiedUids.Count == 0
+            && read.Complete && read.Peek && read.Attached && !read.HasMore && read.AfterSequence == 0 && read.CurrentSequence == 3,
+            "MirrorDrift.ParseJournal reads the hand-built journal as three external entries (B modified, C added, A's id deleted), complete, peek, attached");
         var mirror1 = h.Write("mirror-r1", MirrorJson(document, 1, map, levelNames, journal, 0));
 
         // ---- mirror-drift: three findings, all external_edit, all recommending adopt ----
@@ -500,6 +519,25 @@ static class MirrorDriftLoopChecks
         }
         Check(new ProjectStore(store).Read().Revision == 1, "mirror-drift leaves the store at revision 1");
 
+        // ---- Negative: the same edits with a journal that has nothing after sequence 3 give no external_edit ----
+        // Without evidence, map_only scope leaves the unowned wall C out of scope; B and A are unknown.
+        var noNews = JournalReply(document, 3, 3, Array.Empty<string>());
+        var barePath = h.NewPath("drift-no-news");
+        var bare = h.Cli("mirror-drift", store, snapshot1Path, h.Write("mirror-r1-no-news", MirrorJson(document, 1, map, levelNames, noNews, 3)), barePath);
+        if (bare.Exit != 0 || !File.Exists(barePath)) { Check(false, "mirror-drift with an empty journal after sequence 3 succeeds", R(bare)); return null; }
+        using (var parsed = JsonDocument.Parse(File.ReadAllText(barePath, Utf8)))
+        {
+            var reportElement = parsed.RootElement.GetProperty("report");
+            var summary = reportElement.GetProperty("summary");
+            int S(string name) => summary.GetProperty(name).GetInt32();
+            var classes = reportElement.GetProperty("findings").EnumerateArray()
+                .Select(finding => finding.GetProperty("unique_id").GetString() + ":" + finding.GetProperty("kind").GetString() + ":" + finding.GetProperty("classification").GetString()).Order(StringComparer.Ordinal).ToArray();
+            var outOfScope = reportElement.GetProperty("out_of_scope").EnumerateArray().Select(entry => entry.GetProperty("unique_id").GetString()).ToArray();
+            Check(classes.SequenceEqual(new[] { uidA + ":missing:unknown", uidB + ":changed:unknown" }.Order(StringComparer.Ordinal)) && outOfScope.SequenceEqual(new[] { uidC })
+                && S("external_edit") == 0 && S("unknown") == 2 && S("out_of_scope") == 1 && !reportElement.GetProperty("evidence").GetProperty("incomplete").GetBoolean(),
+                "negative: with no journal entries after the commit point B and A are unknown and C is out of scope (no external_edit)", string.Join(",", classes) + " | " + summary.GetRawText());
+        }
+
         // ---- mirror-drift-select: adopt all three; the selection names the map changes ----
         var selectionPath = h.NewPath("selection");
         var select = h.Cli("mirror-drift-select", store, snapshot1Path, mirror1, h.Write("choices", Choices(uidB, uidC, uidA)), selectionPath);
@@ -531,7 +569,7 @@ static class MirrorDriftLoopChecks
         var head = new ProjectStore(store).Read();
         var adoptedB = head.Elements.SingleOrDefault(element => element.Id == coreB);
         var adoptedC = snapC is { } c ? head.Elements.SingleOrDefault(element => element.Id == c) : null;
-        Check(head.Revision == 2 && head.Elements.Length == project.Elements.Length, "the store head is revision 2 with one wall deleted and one created", head.Elements.Length.ToString(CultureInfo.InvariantCulture));
+        Check(head.Revision == 2 && head.Elements.Length == project.Elements.Length, "the store head is revision 2 and keeps the element count (one wall deleted, one created)", head.Elements.Length.ToString(CultureInfo.InvariantCulture));
         Check(adoptedB is not null && adoptedB.Kind == "wall" && adoptedB.GeometryMetres.SequenceEqual(observedB) && adoptedB.Dependencies.SequenceEqual(new[] { coreLevel }) && adoptedB.Provenance == MirrorDriftResolve.AdoptProvenance,
             "update adopt: the head holds wall B at the Revit geometry under its Core id with the adopt provenance", adoptedB is null ? "missing" : string.Join(",", adoptedB.GeometryMetres));
         Check(adoptedC is not null && adoptedC.Kind == "wall" && adoptedC.GeometryMetres.SequenceEqual(observedC) && adoptedC.Dependencies.SequenceEqual(new[] { coreLevel }) && adoptedC.Provenance == MirrorDriftResolve.AdoptProvenance,
@@ -549,7 +587,8 @@ static class MirrorDriftLoopChecks
         var snapshot2 = h.Command("p2-16-snapshot-2", "query.snapshot", _ => { });
         if (!Succeeded(snapshot2)) { Check(false, "the query.snapshot after the adopt succeeds", R(snapshot2)); return null; }
         Check(Readback(snapshot2.Out) == Readback(snapshot1.Out), "the Revit side is unchanged by the adopt (same snapshot readback)");
-        var mirror2 = h.Write("mirror-r2", MirrorJson(document, 2, nextMap, levelNames, journal, 3));
+        // The next journal.read (peek, after sequence 3) has no entries: nothing happened in Revit since the adopt.
+        var mirror2 = h.Write("mirror-r2", MirrorJson(document, 2, nextMap, levelNames, JournalReply(document, 3, 3, Array.Empty<string>()), 3));
         var drift2Path = h.NewPath("drift-2");
         var drift2 = h.Cli("mirror-drift", store, h.Write("snapshot-2", snapshot2.Out), mirror2, drift2Path);
         if (drift2.Exit != 0 || !File.Exists(drift2Path)) { Check(false, "the second mirror-drift succeeds", R(drift2)); return null; }
@@ -562,6 +601,8 @@ static class MirrorDriftLoopChecks
                 && summary.GetProperty("out_of_scope").GetInt32() == 0 && summary.GetProperty("not_comparable").GetInt32() == 0
                 && parsed.RootElement.GetProperty("resolution").GetProperty("proposals").GetArrayLength() == 0 && parsed.RootElement.GetProperty("core_store").GetProperty("revision").GetInt32() == 2,
                 "the second mirror-drift reports no drift: every head element (B, C, levels) unchanged, no proposals, store at revision 2", summary.GetRawText());
+            var evidence = reportElement.GetProperty("evidence");
+            Check(!evidence.GetProperty("incomplete").GetBoolean() && evidence.GetProperty("notes").GetArrayLength() == 0, "the second pass journal evidence is complete with no notes", evidence.GetRawText());
         }
         Check(Number(drift2.Out, "drift") == 0 && Number(drift2.Out, "proposals") == 0, "the second mirror-drift prints drift 0 and proposals 0", R(drift2));
         Check(uidA != uidB && uidC != uidA && uidC != uidB, "three distinct walls were created");
@@ -611,8 +652,8 @@ static class MirrorDriftLoopChecks
         return Utf8.GetString(buffer.ToArray());
     }
 
-    // A journal.read reply (peek, read after sequence 0, complete, recorder attached) holding the given entries.
-    static string JournalReply(string documentPath, long current, IReadOnlyList<string> entries)
+    // A journal.read reply (peek, read after sequence `after`, complete, recorder attached) holding the given entries.
+    static string JournalReply(string documentPath, long current, long after, IReadOnlyList<string> entries)
     {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -629,9 +670,9 @@ static class MirrorDriftLoopChecks
             writer.WriteNumber("journal_version", 1);
             writer.WriteString("document_unique_id", DocumentUid);
             writer.WriteString("document_path", documentPath);
-            writer.WriteNumber("baseline_sequence", 0);
+            writer.WriteNumber("baseline_sequence", after);
             writer.WriteNumber("current_sequence", current);
-            writer.WriteNumber("after_sequence", 0);
+            writer.WriteNumber("after_sequence", after);
             writer.WriteBoolean("baseline_existed", true);
             writer.WriteBoolean("peek", true);
             writer.WriteBoolean("journal_complete", true);
