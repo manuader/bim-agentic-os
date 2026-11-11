@@ -97,6 +97,12 @@ internal static class ApplyIntentTests
         static string[] JournalLines(SortedDictionary<string, (byte[] Bytes, DateTime Time)> snapshot) =>
             snapshot.TryGetValue("journal.jsonl", out var journal) ? Encoding.UTF8.GetString(journal.Bytes).Split('\n', StringSplitOptions.RemoveEmptyEntries) : Array.Empty<string>();
         static string Raw(JsonElement? element, string name) => element is { ValueKind: JsonValueKind.Object } e && e.TryGetProperty(name, out var value) ? value.GetRawText() : "<missing " + name + ">";
+        static ExecutionPlan? PlanOf(string stdout)
+        {
+            var raw = Raw(Json(stdout), "plan");
+            try { return raw.StartsWith('{') ? JsonSerializer.Deserialize<ExecutionPlan>(raw) : null; }
+            catch (JsonException) { return null; }
+        }
         static string ParseRefusal(string text)
         {
             try { IntentJson.Parse(text); return "<accepted>"; }
@@ -206,9 +212,30 @@ internal static class ApplyIntentTests
             var appended = IncrementalDiff.Diff(head1, set2.Edits);
             Check(set2.Edits.Any(e => e.Action == "create") && JsonSerializer.Serialize(appended.After.Elements) != JsonSerializer.Serialize(set2.After.Elements),
                 "fixture: step 2 creates elements that sort before survivors (appending them would leave compile order)");
+            var head1Path = Input("step2.head.json", JsonSerializer.Serialize(head1));
+            var edits2Path = Input("step2.edits.json", JsonSerializer.Serialize(set2.Edits));
+            var plan2 = PlanOf(Applies("step 2 add a room", chain, step2, createsLast: false, expectedRevision: "1"));
+            // Local, not a rebuild: r1's space is updated in place and the only deletion is r1's east wall, which becomes
+            // the shared wall r1|r2; every other wall, the level, the spaces and the openings of r0 and r1 survive.
+            var r1East = IntentCompiler.Id(ProjectId, IntentCompiler.WallKey("r1", IntentSide.East));
+            var deleted = plan2?.Operations.Where(o => o.Action == "delete").Select(o => o.Element.Id).ToArray() ?? Array.Empty<Guid>();
+            Check(plan2 is not null && plan2.Operations.Any(o => o.Action == "update") && deleted.SequenceEqual(new[] { r1East }),
+                "step 2 updates at least one element and deletes only r1's east wall (no rebuild of r0/r1)",
+                plan2 is null ? "<no plan>" : JsonSerializer.Serialize(plan2.Operations.Select(o => o.Action + ":" + o.Element.Id)));
+            // The documented deviation from diff-edits, checked: same operation set, BeforeHash, DirtyIds and identity;
+            // only the operation order and AfterHash differ (diff-edits appends the creates).
+            var diffEdits = Cli("diff-edits", "--project", head1Path, "--edits", edits2Path);
+            var appendedPlan = diffEdits.Exit == 0 ? PlanOf("{\"plan\":" + diffEdits.Out + "}") : null;
+            static string OperationSet(ExecutionPlan plan) => JsonSerializer.Serialize(plan.Operations.OrderBy(o => o.Element.Id).ThenBy(o => o.Action, StringComparer.Ordinal).ToArray());
+            Check(plan2 is not null && appendedPlan is not null && OperationSet(plan2) == OperationSet(appendedPlan) && plan2.BeforeHash == appendedPlan.BeforeHash
+                && plan2.DirtyIds.SequenceEqual(appendedPlan.DirtyIds) && plan2.ProjectId == appendedPlan.ProjectId && plan2.ExpectedRevision == appendedPlan.ExpectedRevision,
+                "step 2: diff-edits on the same head and edits has the same operation set, BeforeHash, DirtyIds and identity", D(diffEdits));
+            Check(plan2 is not null && appendedPlan is not null && JsonSerializer.Serialize(plan2.Operations) != JsonSerializer.Serialize(appendedPlan.Operations) && plan2.AfterHash != appendedPlan.AfterHash,
+                "step 2: only the operation order and AfterHash differ from diff-edits (creates at compile position vs appended)", D(diffEdits));
         }
-        Applies("step 2 add a room", chain, step2, createsLast: false, expectedRevision: "1");
-        Applies("step 2 again (no change)", chain, step2, createsLast: true);
+        var noOp = PlanOf(Applies("step 2 again (no change)", chain, step2, createsLast: true));
+        Check(noOp is not null && noOp.Operations.Length == 0 && noOp.DirtyIds.Length == 0 && noOp.BeforeHash == noOp.AfterHash,
+            "the no-change apply prints an empty plan: no operations, no dirty ids, BeforeHash equals AfterHash", noOp is null ? "<no plan>" : JsonSerializer.Serialize(noOp));
         Check(new ProjectStore(chain).Read().Revision == 3, "three applies advance the store to revision 3");
 
         // 2. Replay and stale expected head: refused typed, nothing written (the chain store is at revision 3).

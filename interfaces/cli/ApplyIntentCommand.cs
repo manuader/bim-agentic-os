@@ -38,6 +38,13 @@ namespace Bim.Cli;
 //   {"status":"failed","code":"apply_intent_intent_refused","refusals":[{"code","subject","detail"}...]} when
 //     IntentCompiler refuses the intent: every issue of its IntentException (sorted by code, key, detail), subject being
 //     the issue's key.
+// Unreachable library refusals: IntentCompiler's null_intent_item (ArgumentException; IntentJson.Parse never yields a
+// null list item) and its internal invariant intent_stretch_unbounded (InvalidOperationException) are not mapped to a
+// code; if either ever surfaced it would print apply_intent_internal_error (with its type and message on stderr).
+// Cost: the compile of the intent is bounded by the intent caps (IntentJson.MaxInputChars, LayoutIntent.MaxLevels,
+// MaxWallTypes, MaxRooms and MaxOpenings, checked by IntentJson.Parse before compiling), not by IncrementalDiff.MaxEdits:
+// edit_bound_exceeded is checked only after the compile and the edit set are built. Reading, ParseHead and the diff are
+// O(store head), as in apply-edits.
 // Precedence: usage, then both files are read (store first), then the store is parsed, then the intent, then the
 // expected revision, then the compile and edit set, then the diff, then the commit; the first failure is the only one.
 internal static class ApplyIntentCommand

@@ -47,9 +47,6 @@ internal static class ApplyEditsCommand
     public const string StoreInvalid = "apply_edits_store_invalid";
     public const string EditsInvalid = "apply_edits_edits_invalid";
     public const string StaleHead = "apply_edits_stale_head";
-    public const string StoreUnavailable = "apply_edits_store_unavailable";
-    public const string CommitIncomplete = "apply_edits_commit_incomplete";
-    public const string InternalError = "apply_edits_internal_error";
 
     public static void Run(string[] args)
     {
