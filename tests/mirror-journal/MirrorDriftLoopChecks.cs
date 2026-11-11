@@ -279,7 +279,7 @@ static class MirrorDriftLoopChecks
             {
                 var reportElement = parsed.RootElement.GetProperty("report");
                 var summary = reportElement.GetProperty("summary");
-                Check(reportElement.GetProperty("findings").EnumerateArray().Any(finding => finding.GetProperty("unique_id").GetString() == uidB),
+                Check(!reportElement.GetProperty("findings").EnumerateArray().Any(finding => finding.GetProperty("unique_id").GetString() == uidB),
                     "the second mirror-drift reports no drift for the adopted wall B", drift2Text.Length > 1500 ? drift2Text[..1500] : drift2Text);
                 Check(summary.GetProperty("drift").GetInt32() == 0 && summary.GetProperty("unchanged").GetInt32() == project.Elements.Length
                     && parsed.RootElement.GetProperty("resolution").GetProperty("proposals").GetArrayLength() == 0 && parsed.RootElement.GetProperty("core_store").GetProperty("revision").GetInt32() == 2,
