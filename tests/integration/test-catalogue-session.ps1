@@ -739,7 +739,7 @@ $server = $null
 try {
     $pwsh = (Get-Process -Id $PID).Path
     $start = [Diagnostics.ProcessStartInfo]::new($pwsh)
-    foreach ($argument in @('-NoProfile', '-File', "$PSScriptRoot/fake-revit-command-pipe.ps1", '-PipeName', $pipeName, '-DocumentUid', $documentUid, '-ReadyFile', $ready, '-LogFile', $log, '-MaxRequests', '2000', '-TimeoutSeconds', '900')) { $start.ArgumentList.Add($argument) }
+    foreach ($argument in @('-NoProfile', '-File', "$PSScriptRoot/fake-revit-command-pipe.ps1", '-PipeName', $pipeName, '-DocumentUid', $documentUid, '-ReadyFile', $ready, '-LogFile', $log, '-MaxRequests', '5000', '-TimeoutSeconds', '900')) { $start.ArgumentList.Add($argument) }
     $start.UseShellExecute = $false
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
