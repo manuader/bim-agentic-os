@@ -411,6 +411,60 @@ Check(IsError(stalled) && FailureCode(stalled)==McpServer.QueryAllDeadlineExceed
     allPipeThread?.Join(TimeSpan.FromSeconds(10));
     if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR",allTmpDir);
 }
+// P1-20: the server option --read-timeout-seconds n (whole seconds 1-86400) is the real pipe read timeout. Through the
+// real Release Bim.Mcp.dll (verify.ps1 builds interfaces/mcp first): a bad option is a typed refusal on stderr (the
+// RevitCommandResponse shape, field args[i], exit 1) before stdin or any pipe is read, with nothing on stdout; with
+// --read-timeout-seconds 1 a revit_* call on a stalled add-in pipe (StalledAddIn, tests/revit-commands/PipeReadTimeout.cs)
+// is pipe_read_timeout after 1000 ms; without the option stdout is today's bytes.
+var mcpDll=Path.Combine(root,"interfaces","mcp","bin","Release","net8.0","Bim.Mcp.dll");
+if(!File.Exists(mcpDll)) throw new Exception("MCP binary missing: "+mcpDll+" (build interfaces/mcp --configuration Release first, as scripts/verify.ps1 does)");
+(int Exit,string Out,string Err,long Ms) RunMcp(string stdin,params string[] arguments) {
+    var start=new System.Diagnostics.ProcessStartInfo(dotnet){RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,UseShellExecute=false,
+        StandardInputEncoding=new System.Text.UTF8Encoding(false),StandardOutputEncoding=new System.Text.UTF8Encoding(false),StandardErrorEncoding=new System.Text.UTF8Encoding(false)};
+    start.ArgumentList.Add(mcpDll);
+    foreach(var argument in arguments) start.ArgumentList.Add(argument);
+    var watch=System.Diagnostics.Stopwatch.StartNew();
+    using var process=System.Diagnostics.Process.Start(start) ?? throw new Exception("MCP process did not start: "+dotnet);
+    var stdout=process.StandardOutput.ReadToEndAsync();
+    var stderr=process.StandardError.ReadToEndAsync();
+    try { process.StandardInput.Write(stdin); process.StandardInput.Close(); } catch(IOException) { }
+    if(!process.WaitForExit(120000)) { process.Kill(true); throw new Exception("MCP server timed out: "+string.Join(" ",arguments)); }
+    process.WaitForExit();
+    watch.Stop();
+    return (process.ExitCode,stdout.Result.TrimEnd('\r','\n'),stderr.Result.TrimEnd('\r','\n'),watch.ElapsedMilliseconds);
+}
+const string McpUsage="usage: Bim.Mcp.dll [--read-timeout-seconds n]";
+string McpRefusal(string code,int index,string detail)=>RevitCommandResponse.Failure(code,"args["+index.ToString(System.Globalization.CultureInfo.InvariantCulture)+"]",detail+"; "+McpUsage).ToJson();
+var toolsList=Request(30,"tools/list",null)+"\n";
+foreach(var (label,value) in new[]{("zero","0"),("negative","-1"),("over 24 h","86401"),("fractional","1.5"),("not a number","abc"),("empty","")}) {
+    var refused=RunMcp(toolsList,"--read-timeout-seconds",value);
+    Check(refused.Exit==1 && refused.Out.Length==0 && refused.Err==McpRefusal("read_timeout_invalid",1,"--read-timeout-seconds takes whole seconds from 1 to 86400, got "+value),
+        "Bim.Mcp --read-timeout-seconds "+label+" is refused read_timeout_invalid on stderr before serving | exit "+refused.Exit+" out "+refused.Out+" err "+refused.Err);
+}
+var mcpNoValue=RunMcp(toolsList,"--read-timeout-seconds");
+Check(mcpNoValue.Exit==1 && mcpNoValue.Out.Length==0 && mcpNoValue.Err==McpRefusal("read_timeout_invalid",0,"--read-timeout-seconds needs a value"),"Bim.Mcp --read-timeout-seconds without a value is refused at the flag | "+mcpNoValue.Err);
+var mcpUnknown=RunMcp(toolsList,"--bogus");
+Check(mcpUnknown.Exit==1 && mcpUnknown.Out.Length==0 && mcpUnknown.Err==McpRefusal("mcp_option_unknown",0,"unknown option --bogus"),"Bim.Mcp refuses an unknown option by name | "+mcpUnknown.Err);
+var mcpRepeated=RunMcp(toolsList,"--read-timeout-seconds","5","--read-timeout-seconds","6");
+Check(mcpRepeated.Exit==1 && mcpRepeated.Out.Length==0 && mcpRepeated.Err==McpRefusal("mcp_option_unknown",2,"repeated option --read-timeout-seconds"),"Bim.Mcp refuses a repeated option at the repeat | "+mcpRepeated.Err);
+var mcpPlain=RunMcp(toolsList);
+var mcpFlagged=RunMcp(toolsList,"--read-timeout-seconds","86400");
+Check(mcpPlain.Exit==0 && Node(mcpPlain.Out)["id"]!.GetValue<int>()==30 && mcpFlagged.Exit==0 && mcpFlagged.Out==mcpPlain.Out && mcpFlagged.Err.Length==0,"Bim.Mcp with --read-timeout-seconds 86400 serves the same bytes as without it");
+var stallTmpDir=Environment.GetEnvironmentVariable("TMPDIR");
+if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR","/tmp/");
+try {
+    var stallPipe="bim-agentic-os-2025-"+Random.Shared.Next(100000000,999999999).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    using var stallAddIn=new StalledAddIn(stallPipe);
+    var levelsCall=Request(31,"tools/call",new JsonObject{["name"]="revit_query_levels",["arguments"]=new JsonObject{["pipe_name"]=stallPipe,["operation_id"]="op-p1-20",["document"]=new JsonObject{["path"]=McpReal,["unique_id"]=McpUid},["args"]=new JsonObject()}})+"\n";
+    var mcpStalled=RunMcp(levelsCall,"--read-timeout-seconds","1");
+    var stalledText=mcpStalled.Exit==0 ? Text(Node(mcpStalled.Out).AsObject()) : "";
+    var stalledResponse=stalledText.Length>0 ? RevitCommandResponse.Parse(stalledText) : null;
+    Check(stalledResponse is {Code:RevitCommandCodes.PipeReadTimeout,Field:"pipe_name",Detail:{} mcpStallDetail} && mcpStallDetail.StartsWith("no reply within 1000 ms; read-only",StringComparison.Ordinal) && IsError(Node(mcpStalled.Out).AsObject()),
+        "Bim.Mcp --read-timeout-seconds 1: a revit_* call on a stalled add-in pipe is pipe_read_timeout after 1000 ms | "+mcpStalled.Out+" "+mcpStalled.Err);
+    Check(mcpStalled.Ms>=1000 && mcpStalled.Ms<30000 && stallAddIn.WaitForRequests(1) && stallAddIn.Received.Count==1,"the stalled MCP call is sent once and ends within the bound | "+mcpStalled.Ms+" ms");
+} finally {
+    if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR",stallTmpDir);
+}
 // P9-02: the structure commands are generated tools with the same read/write split and guards.
 Check(RevitCommandCatalogue.Structure.Select(spec=>spec.Name).SequenceEqual(new[]{"query.grids","query.structural_types","grid.create","structural_column.create","structural_beam.create","foundation.create_isolated","foundation.create_wall"}) && RevitCommandCatalogue.Structure.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the P9-02 structure commands, all in the catalogue enumeration");
 foreach(var (tool,readOnly) in new[]{("revit_query_grids",true),("revit_query_structural_types",true),("revit_grid_create",false),("revit_structural_column_create",false),("revit_structural_beam_create",false),("revit_foundation_create_isolated",false),("revit_foundation_create_wall",false)}) {
