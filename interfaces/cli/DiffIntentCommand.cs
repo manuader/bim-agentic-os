@@ -14,7 +14,8 @@ namespace Bim.Cli;
 //                 IntentJson.MaxInputChars characters, depth and list bounds, unknown and duplicate members refused).
 // Bounded input: both files go through BoundedInput.ReadText (8 MiB cap, regular files only, links refused; its input_*
 // codes); at most IncrementalDiff.MaxEdits edits (edit_bound_exceeded, checked after the compile as in apply-intent).
-// Plan: exactly apply-intent's path, the shared helper interfaces/cli/IntentPlan.cs (P3-13): IntentEdits.FromStored(head, intent) and then
+// Plan: exactly apply-intent's path, the shared helper interfaces/cli/IntentPlan.cs (P3-13):
+// IntentEdits.FromStored(head, intent) and then
 // IncrementalDiff.Diff(head, set.Edits, createOrder: IncrementalDiff.OrderOf(set.After)).Plan, so stdout is byte-equal to
 // the "plan" member apply-intent prints on a store whose head is this project, for the same intent, in any head
 // element order. It is also byte-identical to Compiler.Diff(head, compile(intent)) whenever the head is in compile order

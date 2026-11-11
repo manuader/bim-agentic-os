@@ -5,18 +5,21 @@ using Bim.Core;
 namespace Bim.Cli;
 
 // P3-13: the one plan path shared by apply-intent (interfaces/cli/ApplyIntentCommand.cs) and diff-intent
-// (interfaces/cli/DiffIntentCommand.cs), so the plan apply-intent commits and the plan diff-intent prints are byte-equal by
-// construction rather than by two copies kept in step. Both verbs read their files themselves (BoundedInput) and parse their
-// head themselves (a store state or a bare Project); everything from the intent text to the plan happens here:
-//   ParseIntent  IntentJson.Parse; an IntentException prints {"status":"failed","code":<verb>_intent_invalid,"reason","field"}.
+// (interfaces/cli/DiffIntentCommand.cs), so the plan apply-intent commits and the plan diff-intent prints are
+// byte-equal by construction rather than by two copies kept in step. Both verbs read their files themselves
+// (BoundedInput) and parse their head themselves (a store state or a bare Project); everything from the intent text to
+// the plan happens here:
+//   ParseIntent  IntentJson.Parse; an IntentException prints
+//                {"status":"failed","code":<verb>_intent_invalid,"reason","field"}.
 //   Build        IntentEdits.FromStored(head, intent), then IncrementalDiff.Diff(head, set.Edits,
 //                createOrder: IncrementalDiff.OrderOf(set.After)). An IntentCompiler refusal prints
-//                {"status":"failed","code":<verb>_intent_refused,"refusals":[{"code","subject","detail"}...]}; the library's
-//                edit_bound_exceeded, invalid_project_identity, invalid_ir and the diff's EditsInput.LibraryCodes print
-//                {"status":"failed","code":c}; anything else is <verb>_internal_error (ApplyEditsCommand.Internal).
-// They are two calls, not one, because apply-intent checks --expected-revision between parsing the intent and compiling it
-// (its documented precedence). Every refusal exits 1 and the method returns null; the caller then stops. Nothing here reads
-// or writes a file or a store.
+//                {"status":"failed","code":<verb>_intent_refused,"refusals":[{"code","subject","detail"}...]};
+//                the library's edit_bound_exceeded, invalid_project_identity, invalid_ir and the diff's
+//                EditsInput.LibraryCodes print {"status":"failed","code":c}; anything else is <verb>_internal_error
+//                (ApplyEditsCommand.Internal).
+// They are two calls, not one, because apply-intent checks --expected-revision between parsing the intent and
+// compiling it (its documented precedence). Every refusal exits 1 and the method returns null; the caller then stops.
+// Nothing here reads or writes a file or a store.
 internal static class IntentPlan
 {
     const string InvalidIdentity = "invalid_project_identity";
