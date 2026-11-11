@@ -206,6 +206,22 @@ internal static class MirrorDriftAdoptTests
         Refused("a null operations array", MirrorDriftAdoptCodes.SelectionInvalid, fresh, File_(System.Text.RegularExpressions.Regex.Replace(adoptAllText, "\"operations\":\\[.*?\\],\"map_adds\"", "\"operations\":null,\"map_adds\"")));
         Refused("a restore plan bound to another revision", MirrorDriftAdoptCodes.SelectionInvalid, fresh, M("\"expected_revision\":3", "\"expected_revision\":2"));
         Refused("a deeply nested value", MirrorDriftAdoptCodes.SelectionInvalid, fresh, File_(new string('[', 200) + new string(']', 200)));
+        // Non-canonical number forms of the same values (review 5): an exponent on the first geometry number, a 3.0 revision.
+        var firstNumber = System.Text.RegularExpressions.Regex.Match(adoptAllText, "\"geometry_metres\":\\[(-?[0-9][0-9.eE+-]*)");
+        Check(firstNumber.Success, "fixture: the selection has a geometry number", adoptAllText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (firstNumber.Success)
+            Refused("a non-canonical number form (" + firstNumber.Groups[1].Value + "e0)", MirrorDriftAdoptCodes.SelectionInvalid, fresh,
+                File_(adoptAllText[..firstNumber.Groups[1].Index] + firstNumber.Groups[1].Value + "e0" + adoptAllText[(firstNumber.Groups[1].Index + firstNumber.Groups[1].Length)..]));
+        Refused("a core_revision written 3.0", MirrorDriftAdoptCodes.SelectionInvalid, fresh, M("\"core_revision\":3", "\"core_revision\":3.0"));
+        // Only UTF-8 (optionally with its BOM) is a selection file (review 4): UTF-16 and UTF-32 with a BOM, and invalid UTF-8, are refused.
+        string Encoded(string stem, byte[] bytes) { var path = Next(stem) + ".json"; File.WriteAllBytes(path, bytes); return path; }
+        Refused("a UTF-16 LE selection with its BOM", MirrorDriftAdoptCodes.SelectionInvalid, fresh, Encoded("selection-utf16", [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(adoptAllText)]));
+        Refused("a UTF-16 BE selection with its BOM", MirrorDriftAdoptCodes.SelectionInvalid, fresh, Encoded("selection-utf16be", [.. Encoding.BigEndianUnicode.GetPreamble(), .. Encoding.BigEndianUnicode.GetBytes(adoptAllText)]));
+        Refused("a UTF-32 LE selection with its BOM", MirrorDriftAdoptCodes.SelectionInvalid, fresh, Encoded("selection-utf32", [.. Encoding.UTF32.GetPreamble(), .. Encoding.UTF32.GetBytes(adoptAllText)]));
+        var invalidUtf8 = Encoding.UTF8.GetBytes(adoptAllText);
+        var docAt = adoptAllText.IndexOf(Doc, StringComparison.Ordinal);
+        invalidUtf8[docAt] = 0xFF;
+        Refused("a selection with an invalid UTF-8 byte", MirrorDriftAdoptCodes.SelectionInvalid, fresh, Encoded("selection-bad-utf8", invalidUtf8));
 
         // ---- 6. Bounded input: typed input_* codes with detail selection or store ----
         void Input(string name, string code, string detail, string storeDirectory, string selection)
@@ -229,6 +245,14 @@ internal static class MirrorDriftAdoptTests
         Directory.CreateDirectory(empty);
         Input("a store without project.json", "input_not_found", "store", empty, adoptAllPath);
         Input("an empty store path", "input_path_invalid", "store", "", adoptAllPath);
+        // Review 1: a blank store path is refused only when there is something to commit; restore-only and empty
+        // selections never use the store (as MirrorDriftAdoptCommit.Commit), so a blank store is nothing_to_adopt.
+        Input("a whitespace store path", "input_path_invalid", "store", "   ", adoptAllPath);
+        foreach (var (label, blank) in new[] { ("an empty", ""), ("a whitespace", "   ") })
+        {
+            var r = Cli("mirror-drift-adopt", blank, restoreOnlyPath);
+            Check(r.Exit == 0 && r.Out == Succeeded("nothing_to_adopt", 3, null), label + " store path with a restore-only selection is nothing_to_adopt", R(r));
+        }
         if (linked)
         {
             var linkStore = Next("store-link");
@@ -253,6 +277,9 @@ internal static class MirrorDriftAdoptTests
                 "the selection is read only through BoundedInput");
             Check(text.Contains("MirrorDriftAdoptCommit.Commit(", StringComparison.Ordinal) && !text.Contains("new ProjectStore(", StringComparison.Ordinal) && !text.Contains("PlanRunner", StringComparison.Ordinal) && !text.Contains("RevitCommandService", StringComparison.Ordinal),
                 "the verb commits only through MirrorDriftAdoptCommit.Commit and never runs a plan or talks to Revit");
+            // Review 2: an unexpected exception is reported by its type name only (as MirrorDriftTool), never its message.
+            Check(!text.Contains("e.Message", StringComparison.Ordinal) && !text.Contains("error.Message", StringComparison.Ordinal) && text.Contains("GetType().Name", StringComparison.Ordinal),
+                "unexpected exceptions are reported by type name only, never by message");
         }
     }
 }
