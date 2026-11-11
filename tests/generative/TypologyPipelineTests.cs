@@ -19,8 +19,9 @@ static class TypologyPipelineTests
     const string Pack = "bim.typology.vivienda-unifamiliar";
     const string Caba = "ar.caba.codigo-edificacion";
     // SHA-256 of TypologyPipelineSerializer output for the pack, family 4, the 12 x 12 m lot, 6 alternatives, seed 0, the
-    // CABA pack and ProjectId with default stage options (regression pin).
-    const string PinnedSha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+    // CABA pack and ProjectId with default stage options (regression pin; every candidate is rejected: two at the BIM-IR
+    // gate with facade_ir_entrance_overlap, four duplicates at the prototype gate).
+    const string PinnedSha256 = "3a55177415f42f4d324cf3e4bd298223595c429006595a635aa12e9fb1a3d20b";
     // TypologyBriefTests.PinnedSha256 (P5-11): the same request through TypologyBrief alone.
     const string TypologyBriefPinnedSha256 = "85102ea05864ea67a8dad79bed06b2ce4a643056a09d8aee7d8044127340b513";
     // PrototypePipelineTests.PinnedRunSha256 (P7-07): the 2-bedroom apartment pipeline run on the 8.66 x 20 m lot.
@@ -68,32 +69,54 @@ static class TypologyPipelineTests
             "the ranking the gates start from is CirculationRanker with RequireValid over the typology plans");
 
         // ---- independent recomputation of every gate ----
-        var origins = AlternativeRanker.Rank(brief, plans, new ScoringWeights(1, 1, 1, 1, 1, 1)).Alternatives.ToDictionary(a => a.Index);
-        foreach (var alternative in run.Alternatives)
+        void Gates(TypologyPipelineResult result, string context, SkillManifest code)
         {
-            var label = "candidate " + Text(alternative.Index);
-            var plan = plans[alternative.Index];
-            var gate = ExpectedGate(brief, plan, origins[alternative.Index], caba, out var failures, out var project);
-            Check(alternative.Plan == plan && alternative.RejectedAt == gate, label + " stops at the gate an independent recomputation gives (" + (gate?.ToString() ?? "accepted") + ")",
-                Describe(alternative) + " | expected " + (gate?.ToString() ?? "accepted") + " " + string.Join("; ", failures));
-            if (alternative.Accepted)
-                Check(alternative.Rank >= 1 && alternative.Criteria.Count == 7 && alternative.Total > 0 && alternative.Total <= 1 && alternative.Project is not null
-                    && Compiler.Validate(alternative.Project).Length == 0 && project is not null && Json(alternative.Project) == Json(project)
-                    && alternative.Project.Elements.Count(e => e.Kind == "window") == alternative.Ir!.Windows.Count && alternative.Ir.Windows.Count > 0,
-                    label + " is accepted with seven criteria and a clean BIM-IR with its hosted windows equal to FacadeIrBuilder's", Describe(alternative));
-            else
-                Check(alternative.Rank == 0 && alternative.Total == 0 && alternative.Criteria.Count == 0 && alternative.Ir is null && alternative.Rejections.Count > 0
-                    && alternative.Rejections.All(r => r.Gate == alternative.RejectedAt && r.Code.Length > 0 && r.Detail.Length > 0)
-                    && (gate is PrototypePipelineGate.Prototype or PrototypePipelineGate.FacadeIr || alternative.Rejections.All(r => failures.Contains(r.Code + "@" + r.Subject))),
-                    label + " rejection is explained by the failed checks of its gate", Describe(alternative) + " | " + string.Join("; ", failures));
+            var gatedBrief = result.Typology.Brief!;
+            var gatedPlans = result.Typology.Alternatives!.Alternatives.OrderBy(a => a.Index).Select(a => a.Plan).ToArray();
+            var origins = AlternativeRanker.Rank(gatedBrief, gatedPlans, new ScoringWeights(1, 1, 1, 1, 1, 1)).Alternatives.ToDictionary(a => a.Index);
+            foreach (var alternative in result.Alternatives)
+            {
+                var label = context + " candidate " + Text(alternative.Index);
+                var plan = gatedPlans[alternative.Index];
+                var gate = ExpectedGate(gatedBrief, plan, origins[alternative.Index], code, out var failures, out var project);
+                Check(alternative.Plan == plan && alternative.RejectedAt == gate, label + " stops at the gate an independent recomputation gives (" + (gate?.ToString() ?? "accepted") + ")",
+                    Describe(alternative) + " | expected " + (gate?.ToString() ?? "accepted") + " " + string.Join("; ", failures));
+                if (alternative.Accepted)
+                    Check(alternative.Rank >= 1 && alternative.Criteria.Count == 7 && alternative.Total > 0 && alternative.Total <= 1 && alternative.Project is not null
+                        && Compiler.Validate(alternative.Project).Length == 0 && project is not null && Json(alternative.Project) == Json(project)
+                        && alternative.Project.Elements.Count(e => e.Kind == "window") == alternative.Ir!.Windows.Count && alternative.Ir.Windows.Count > 0,
+                        label + " is accepted with seven criteria and a clean BIM-IR with its hosted windows equal to FacadeIrBuilder's", Describe(alternative));
+                else
+                    Check(alternative.Rank == 0 && alternative.Total == 0 && alternative.Criteria.Count == 0 && alternative.Ir is null && alternative.Rejections.Count > 0
+                        && alternative.Rejections.All(r => r.Gate == alternative.RejectedAt && r.Code.Length > 0 && r.Detail.Length > 0)
+                        && (gate is PrototypePipelineGate.Prototype or PrototypePipelineGate.FacadeIr || alternative.Rejections.All(r => failures.Contains(r.Code + "@" + r.Subject))),
+                        label + " rejection is explained by the failed checks of its gate", Describe(alternative) + " | " + string.Join("; ", failures));
+            }
+            var accepted = result.Alternatives.Where(a => a.Accepted).ToArray();
+            var rejected = result.Alternatives.Where(a => !a.Accepted).ToArray();
+            Check(result.Alternatives.SequenceEqual(accepted.Concat(rejected)) && accepted.Select(a => a.Rank).SequenceEqual(Enumerable.Range(1, accepted.Length))
+                && accepted.Zip(accepted.Skip(1)).All(pair => pair.First.Total > pair.Second.Total || (pair.First.Total == pair.Second.Total && pair.First.Index < pair.Second.Index))
+                && rejected.Select(a => a.Index).SequenceEqual(rejected.Select(a => a.Index).OrderBy(i => i))
+                && result.Status == (accepted.Length > 0 ? PrototypePipelineStatus.Ranked : PrototypePipelineStatus.Infeasible) && result.Best == accepted.FirstOrDefault(),
+                context + ": accepted alternatives are ranked 1..k by total (ties by generation index), the rejected follow in generation order", Describe(result.Pipeline));
+            Check(PrototypePipelineSerializer.Serialize(result.Pipeline) == PrototypePipelineSerializer.Serialize(WithStrategy(PrototypePipeline.Rank(gatedBrief, gatedPlans, result.Pipeline.Options,
+                result.Typology.Request.Weights))), context + ": the gates and ranking are PrototypePipeline.Rank of the typology plans, bit for bit");
         }
-        var accepted = run.Alternatives.Where(a => a.Accepted).ToArray();
-        var rejected = run.Alternatives.Where(a => !a.Accepted).ToArray();
-        Check(run.Alternatives.SequenceEqual(accepted.Concat(rejected)) && accepted.Select(a => a.Rank).SequenceEqual(Enumerable.Range(1, accepted.Length))
-            && accepted.Zip(accepted.Skip(1)).All(pair => pair.First.Total > pair.Second.Total || (pair.First.Total == pair.Second.Total && pair.First.Index < pair.Second.Index))
-            && rejected.Select(a => a.Index).SequenceEqual(rejected.Select(a => a.Index).OrderBy(i => i))
-            && run.Status == (accepted.Length > 0 ? PrototypePipelineStatus.Ranked : PrototypePipelineStatus.Infeasible) && run.Best == accepted.FirstOrDefault(),
-            "accepted alternatives are ranked 1..k by total (ties by generation index), the rejected follow in generation order", Describe(run.Pipeline));
+        Gates(run, "family 4 on 12 x 12 m", caba);
+        // Families 1..4 on a 16 x 16 m lot each give at least one accepted typology prototype with a hosted-window BIM-IR.
+        var bigLot = new PrototypeLot(16, 16);
+        var counts = new List<string>();
+        for (var family = 1; family <= 4; family++)
+        {
+            var size = family;
+            var big = Safe(() => TypologyPipeline.Run(pack, new TypologyBriefRequest(size, bigLot, 4), options), ref error);
+            Check(big is { Status: PrototypePipelineStatus.Ranked } && big.Accepted.Count >= 1 && big.Best is { Rank: 1, Strategy: PrototypeStrategies.WholeLot, Project: not null },
+                "family " + Text(size) + " on a 16 x 16 m lot gives at least one accepted typology prototype", big is null ? error ?? "" : Summary(big));
+            if (big is null || big.Status == PrototypePipelineStatus.Refused) continue;
+            Gates(big, "family " + Text(size) + " on 16 x 16 m", caba);
+            counts.Add("f" + Text(size) + " " + Summary(big));
+        }
+        Console.WriteLine("::notice::generative typology pipeline on 16 x 16 m: " + string.Join(" / ", counts));
 
         // ---- opt-in stage options pass through unchanged ----
         var facadeOptions = options with { FacadeWeight = 1 };
@@ -124,7 +147,7 @@ static class TypologyPipelineTests
         Check(again is not null && reparsed is not null && resolved is not null && TypologyPipelineSerializer.Serialize(again) == canonical
             && TypologyPipelineSerializer.Serialize(reparsed) == canonical && TypologyPipelineSerializer.Serialize(resolved) == canonical && german == canonical,
             "same pack + family size + lot + seed give byte-identical canonical JSON across runs, re-parses, skill resolutions and cultures", error ?? "");
-        Check(Sha(canonical) == PinnedSha256, "family-4 12 x 12 m seed-0 typology pipeline JSON matches its pinned SHA-256", "actual " + Sha(canonical) + " | " + Summary(run) + " | sweep " + Sweep(pack, options));
+        Check(Sha(canonical) == PinnedSha256, "family-4 12 x 12 m seed-0 typology pipeline JSON matches its pinned SHA-256", "actual " + Sha(canonical) + " | " + Summary(run));
         var shifted = Safe(() => TypologyPipeline.Run(pack, request with { Seed = 6 }, options), ref error);
         Check(shifted is not null && shifted.Alternatives.Select(a => a.Seed).OrderBy(s => s).SequenceEqual(Enumerable.Range(6, 6))
             && Sha(TypologyPipelineSerializer.Serialize(shifted)) != Sha(canonical), "another seed gives other candidates and another digest", error ?? "");
@@ -213,19 +236,6 @@ static class TypologyPipelineTests
 
     static PrototypePipelineResult WithStrategy(PrototypePipelineResult result) =>
         result with { Alternatives = result.Alternatives.Select(a => a with { Strategy = PrototypeStrategies.WholeLot }).ToArray() };
-
-    // Families 1..5 on a 16 x 16 m lot, 4 candidates each: accepted count and the gates of the rejected (diagnostics).
-    static string Sweep(SkillManifest pack, PrototypePipelineOptions options)
-    {
-        var parts = new List<string>();
-        for (var family = 1; family <= 5; family++)
-        {
-            string? error = null;
-            var result = Safe(() => TypologyPipeline.Run(pack, new TypologyBriefRequest(family, new PrototypeLot(16, 16), 4), options), ref error);
-            parts.Add("f" + Text(family) + " " + (result is null ? "error" : Summary(result)));
-        }
-        return string.Join(" / ", parts);
-    }
 
     static string Summary(TypologyPipelineResult result) => result.Status + " accepted " + Text(result.Accepted.Count) + " rejected "
         + string.Join(",", result.Alternatives.Where(a => !a.Accepted).Select(a => a.RejectedAt + ":" + string.Join("+", a.Rejections.Select(r => r.Code + "@" + r.Subject).Distinct().Take(3))));
