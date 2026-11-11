@@ -36,6 +36,18 @@ namespace Bim.Mcp;
 // first; the policy is the repository's .bim/native-runs plus every directory root listed in the owner file
 // .bim/revit-enabled-roots.txt (re-read when it changes, no restart needed), never a tool call. The MCP server does not apply the per-document enablement or the
 // per-actor grants of PermissionPolicy, and writes no audit log.
+// P1-16: revit_query_elements also takes the optional boolean all (a tool argument beside args, never sent to the add-in).
+// all:true pages the listing with RevitElementQueryPaging.All over the same transport, each page through
+// RevitCommandService.Run (RevitServiceTransport, as the CLI revit-command --all verb), and its text is the
+// ElementQueryAllResult JSON, byte-equal to that verb's stdout; refusals (cursor_loop, page_limit_exceeded,
+// listing_too_large and the early ones) are isError in the same listing shape. Absent or false, the call is unchanged.
+// The permission level stays read. Because this server is long-lived, all:true has tighter caps than the CLI: at most
+// DefaultQueryAllBytes (32 MiB) of element JSON (listing_too_large beyond it; CLI byte-equality holds for listings under
+// this cap, the CLI allowing 256 MiB) and an overall deadline DefaultQueryAllDeadline (1800 s, the CLI's per-page read
+// timeout) for the whole listing: a page due after it is not sent, and on the real pipe each page's read timeout is
+// cut to the time left, both reported as query_all_deadline_exceeded in the listing shape (the CLI has no overall
+// deadline). Known difference: the CLI reads the owner policy files even for this read-only command (a malformed owner
+// file refuses it); here, as without all, they are not read.
 public sealed class McpServer
 {
     public const int MaxLineChars = 8 * 1024 * 1024;
@@ -93,6 +105,18 @@ public sealed class McpServer
     readonly Func<string, string, string?> revitTransport;
     readonly RevitFileSystemProbe revitProbe;
 
+    // Caps of revit_query_elements all:true: the core page and element caps, a 32 MiB element-JSON cap (below the
+    // CLI's 256 MiB) and an overall deadline on QueryAllClock. Tests lower them and inject the clock.
+    public const long DefaultQueryAllBytes = 32L * 1024 * 1024;
+    public static readonly TimeSpan DefaultQueryAllDeadline = RevitCommandService.DefaultReadTimeout;
+    public const string QueryAllDeadlineExceeded = "query_all_deadline_exceeded";
+    internal (int Pages, int Elements, long Bytes) QueryAllCaps { get; init; } =
+        (RevitElementQueryPaging.MaxPages, RevitElementQueryPaging.MaxElements, DefaultQueryAllBytes);
+    internal TimeSpan QueryAllDeadline { get; init; } = DefaultQueryAllDeadline;
+    internal Func<DateTimeOffset> QueryAllClock { get; init; } = () => DateTimeOffset.UtcNow;
+    // True when revitTransport is the real process pipe, whose read timeout all:true can cut to the time left.
+    readonly bool realPipe;
+
     // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), re-read whenever the owner files change
     // (RevitCommandPolicySource: one stat per write call), the real process pipe and file system. A malformed owner
     // file enables no write at all: writes answer allowlist_invalid until it is fixed; reads keep working.
@@ -110,6 +134,7 @@ public sealed class McpServer
         ArgumentNullException.ThrowIfNull(revitPolicy);
         this.revitPolicy = revitPolicy;
         this.revitTransport = revitTransport ?? RevitCommandService.PipeTransport;
+        realPipe = revitTransport is null;
         this.revitProbe = revitProbe ?? RevitFileSystemProbe.Real;
         ArgumentNullException.ThrowIfNull(catalogue);
         // Names first, so a collision is reported as such before any entry is classified.
@@ -148,12 +173,17 @@ public sealed class McpServer
             : RevitCommandCatalogue.WritesFiles(spec.Name)
                 ? "read-only for the model: allowed on any document, writing image files only under the repository .bim/exports; with visual_style it gets the write rule (document under .bim/native-runs or a directory root listed in .bim/revit-enabled-roots.txt)."
                 : "read-only: allowed on any document."),
-        [new ParameterSpec("pipe_name", "string", ""), new ParameterSpec("operation_id", "string", ""), new ParameterSpec("document", "object", ""), new ParameterSpec("args", "object", "")],
+        [new ParameterSpec("pipe_name", "string", ""), new ParameterSpec("operation_id", "string", ""), new ParameterSpec("document", "object", ""), new ParameterSpec("args", "object", ""),
+            .. (Pageable(spec) ? new[] { new ParameterSpec(AllParameter, "boolean", "", Required: false) } : Array.Empty<ParameterSpec>())],
         arguments => RevitCall(spec, arguments),
         RevitInputSchema(spec),
         LevelOnCopy(spec),
         RevitCommandCatalogue.IsDestructive(spec.Name),
         RevitCommandCatalogue.WritesFiles(spec.Name));
+
+    const string AllParameter = "all";
+
+    static bool Pageable(RevitCommandSpec spec) => spec.Name == RevitElementQueryPaging.Command;
 
     public const string PermissionMetaKey = "bim-agentic-os/permission_level";
 
@@ -192,21 +222,70 @@ public sealed class McpServer
             ["required"] = new JsonArray("pipe_name", "operation_id", "document", "args"),
             ["additionalProperties"] = false,
         };
+        if (Pageable(spec))
+            schema["properties"]!.AsObject()[AllParameter] = new JsonObject
+            {
+                ["type"] = "boolean",
+                ["description"] = "true: follow next_cursor until the listing is complete (one query.elements request per page, like the CLI revit-command --all) and return the concatenated listing {status, code, field, detail, pages, matched, returned, elements}; refused with cursor_loop, page_limit_exceeded (more than " + RevitElementQueryPaging.MaxPages.ToString(System.Globalization.CultureInfo.InvariantCulture) + " pages) or listing_too_large, without partial elements",
+            };
         return schema.ToJsonString();
     }
 
     // Raw argument values are copied into the envelope unchanged, so the CLI reading the same envelope agrees byte for byte.
     (string Text, bool IsError) RevitCall(RevitCommandSpec spec, JsonElement arguments)
     {
-        try { return RevitCallChecked(spec, arguments); }
+        var all = Pageable(spec) && arguments.TryGetProperty(AllParameter, out var allElement) && allElement.GetBoolean();
+        try { return all ? RevitCallAll(arguments) : RevitCallChecked(spec, arguments); }
         catch (Exception error) when (error is InvalidOperationException or ArgumentException)
         {
             // A lone surrogate in a tool argument cannot be read as a string.
-            return (RevitCommandResponse.Failure(RevitCommandCodes.EnvelopeInvalid, null, error.Message).ToJson(), true);
+            return (all ? ElementQueryAllResult.Refusal(RevitCommandCodes.EnvelopeInvalid, null, error.Message).ToJson()
+                : RevitCommandResponse.Failure(RevitCommandCodes.EnvelopeInvalid, null, error.Message).ToJson(), true);
         }
     }
 
-    (string Text, bool IsError) RevitCallChecked(RevitCommandSpec spec, JsonElement arguments)
+    // all:true, in the CLI revit-command --all order: the pipe name first (an early refusal in the listing shape), then
+    // RevitElementQueryPaging.All on the envelope, every page through RevitCommandService.Run. query.elements never
+    // needs the write guard, so the policy is None.
+    (string Text, bool IsError) RevitCallAll(JsonElement arguments)
+    {
+        var pipeName = arguments.GetProperty("pipe_name").GetString() ?? "";
+        if (RevitCommandService.RejectPipe(pipeName) is { } rejected)
+        {
+            var refusal = RevitCommandResponse.Parse(rejected.Line);
+            return (ElementQueryAllResult.Refusal(refusal.Code, refusal.Field, refusal.Detail).ToJson(), true);
+        }
+        var (pages, elements, bytes) = QueryAllCaps;
+        var transport = new DeadlineTransport(pipeName, revitTransport, realPipe, revitProbe, QueryAllClock, QueryAllDeadline);
+        var listing = RevitElementQueryPaging.All(CommandEnvelope(RevitElementQueryPaging.Command, arguments), transport, pages, elements, bytes);
+        return (listing.ToJson(), !listing.IsSuccess);
+    }
+
+    // Each page through RevitCommandService.Run (as RevitServiceTransport), within one overall deadline from its creation:
+    // a page due after the deadline is answered query_all_deadline_exceeded without being sent, and on the real pipe a
+    // page's read timeout is the time left when that is below the default, its pipe_read_timeout reported as the deadline.
+    sealed class DeadlineTransport(string pipeName, Func<string, string, string?> transport, bool realPipe, RevitFileSystemProbe probe, Func<DateTimeOffset> clock, TimeSpan deadline) : IRevitCommandTransport
+    {
+        readonly DateTimeOffset start = clock();
+
+        string Exceeded() => RevitCommandResponse.Failure(QueryAllDeadlineExceeded, null,
+            "the all:true listing took longer than its " + ((long)deadline.TotalMilliseconds).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor").ToJson();
+
+        public string? Send(string envelopeJson)
+        {
+            var left = deadline - (clock() - start);
+            if (left <= TimeSpan.Zero) return Exceeded();
+            var cut = realPipe && left < RevitCommandService.DefaultReadTimeout;
+            var line = RevitCommandService.Run(pipeName, envelopeJson, RevitCommandPolicy.None, cut ? RevitCommandService.PipeTransportWithReadTimeout(left) : transport, probe).Line;
+            if (!cut) return line;
+            try { return RevitCommandResponse.Parse(line).Code == RevitCommandCodes.PipeReadTimeout ? Exceeded() : line; }
+            catch (RevitCommandException) { return line; }
+        }
+    }
+
+    // The command envelope from the tool arguments, raw values copied unchanged.
+    static string CommandEnvelope(string command, JsonElement arguments)
     {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -217,18 +296,24 @@ public sealed class McpServer
             arguments.GetProperty("operation_id").WriteTo(writer);
             writer.WritePropertyName("document");
             arguments.GetProperty("document").WriteTo(writer);
-            writer.WriteString("command", spec.Name);
+            writer.WriteString("command", command);
             writer.WritePropertyName("args");
             arguments.GetProperty("args").WriteTo(writer);
             writer.WriteEndObject();
         }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    (string Text, bool IsError) RevitCallChecked(RevitCommandSpec spec, JsonElement arguments)
+    {
+        var envelope = CommandEnvelope(spec.Name, arguments);
         // The policy matters only for requests with the write guard (writes and exports with a visual_style; other
         // read-only commands are allowed on any document), so only those stat the owner files. A malformed owner file
         // refuses them as allowlist_invalid.
         RevitCommandPolicy policy;
         try { policy = RevitCommandCatalogue.NeedsWriteGuard(spec, arguments.GetProperty("args")) ? revitPolicy() : RevitCommandPolicy.None; }
         catch (RevitCommandException error) { return (RevitCommandResponse.Failure(error.Code, error.Field, error.Detail).ToJson(), true); }
-        var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", Encoding.UTF8.GetString(buffer.ToArray()), policy, revitTransport, revitProbe);
+        var result = RevitCommandService.Run(arguments.GetProperty("pipe_name").GetString() ?? "", envelope, policy, revitTransport, revitProbe);
         return (result.Line, result.IsError);
     }
 
