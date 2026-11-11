@@ -323,7 +323,7 @@ internal static class ApplyEditsTests
             Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal) && source.Contains("IncrementalDiff", StringComparison.Ordinal) && source.Contains(".Commit(", StringComparison.Ordinal)
                 && !source.Contains("Compiler.Diff", StringComparison.Ordinal) && new[] { "File.", "FileStream", "FileMode.", "Directory.", "Initialize(" }.All(api => !source.Contains(api, StringComparison.Ordinal)),
                 "apply-edits reads through BoundedInput, diffs through IncrementalDiff and writes only through ProjectStore.Commit");
-            Check(source.Contains("Console.Error.WriteLine(", StringComparison.Ordinal) && source.Contains("InternalError", StringComparison.Ordinal), "apply-edits writes the type and message of an internal error to stderr");
+            Check(source.Contains("Console.Error.WriteLine(", StringComparison.Ordinal) && source.Contains("Internal(", StringComparison.Ordinal) && source.Contains("_internal_error", StringComparison.Ordinal), "apply-edits writes the type and message of an internal error to stderr");
         }
         // The edits parser is shared with diff-edits, not copied.
         var diffEditsSource = Path.Combine(root, "interfaces", "cli", "DiffEditsCommand.cs");
