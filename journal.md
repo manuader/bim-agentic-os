@@ -1379,3 +1379,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay185 — 2026-11-10T23:54:01Z (Claude, cloud scheduled)
 - 23:54Z LOCK taken (was FREE; relay184 released 2026-11-10T23:06:35Z).
+- 00:38Z picked P1-19 (phase 1), P2-13 (phase 2), P6-13 (phase 6) — oldest-touched (relay181/183). Workers green: P1-19 6abf4c4 (red 42927364048, green 42930825232; 1 attempt: fake server request budget too small for 200-run stress), P2-13 8aa178d (red 42927683523, green 42930250939; 0 attempts; one core rerun on the P1-19 flake), P6-13 f3c313c (red 42927416675, green 42929293306; 0 attempts). Next: independent reviews.
