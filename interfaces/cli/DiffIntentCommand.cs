@@ -16,8 +16,11 @@ namespace Bim.Cli;
 // codes); at most IncrementalDiff.MaxEdits edits (edit_bound_exceeded, checked after the compile as in apply-intent).
 // Plan: exactly apply-intent's path, IntentEdits.FromStored(head, intent) and then
 // IncrementalDiff.Diff(head, set.Edits, createOrder: IncrementalDiff.OrderOf(set.After)).Plan, so stdout is byte-equal to
-// the "plan" member apply-intent prints on a store whose head is this project, for the same intent (and to
-// Compiler.Diff(head, compile(intent))). An intent that changes nothing prints an empty plan.
+// the "plan" member apply-intent prints on a store whose head is this project, for the same intent, in any head
+// element order. It is also byte-identical to Compiler.Diff(head, compile(intent)) whenever the head is in compile order
+// (it is after init from a compile and after every apply-intent); on a head in another order survivors keep the head's
+// order, so the operation order and AfterHash can differ from that full diff. An intent that changes nothing prints an
+// empty plan.
 // Success: stdout is the plan JSON, exit 0. Every refusal exits 1:
 //   {"status":"failed","code":c} for diff_intent_usage, input_* (project or intent), diff_intent_project_invalid,
 //     invalid_ir (the head is not Compiler.Validate-clean, or the diff refuses the result), invalid_project_identity (the
@@ -34,7 +37,6 @@ namespace Bim.Cli;
 internal static class DiffIntentCommand
 {
     public const string Verb = "diff-intent";
-    public const string Usage = "usage: diff-intent --project project.json --intent after.json";
     public const string UsageCode = "diff_intent_usage";
     public const string ProjectInvalid = "diff_intent_project_invalid";
     public const string IntentInvalid = "diff_intent_intent_invalid";

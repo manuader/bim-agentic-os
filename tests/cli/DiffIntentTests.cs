@@ -7,9 +7,11 @@ using Bim.Core;
 // P3-12 `diff-intent --project <head.json> --intent <after.json>`: the read-only plan apply-intent would commit on that
 // head (IntentEdits.FromStored, then IncrementalDiff.Diff with IncrementalDiff.OrderOf(set.After) create placement).
 // Oracles, all against the real Release CLI process:
-//   1. stdout is byte-identical to the in-process library plan, to Compiler.Diff(head, compile(intent)) and to the "plan"
-//      member apply-intent prints on a store whose head is the same project, for the same intent (checked before that
-//      apply-intent commits, on every success case: creates last, creates before survivors, no change, an empty head).
+//   1. stdout is byte-identical to the in-process library plan and to the "plan" member apply-intent prints on a store
+//      whose head is the same project, for the same intent (checked before that apply-intent commits, on every success
+//      case: creates last, creates before survivors, no change, an empty head, a head out of compile order); it is also
+//      byte-identical to Compiler.Diff(head, compile(intent)) when the head is in compile order and differs from it on
+//      the reversed head (the fixture really exercises the order).
 //   2. diff-intent writes nothing: the directory holding the project file and the intent file, and the store the
 //      project was read from, are byte-, name- and mtime-unchanged after every run, success or refusal.
 //   3. Every refusal prints a typed envelope and exits 1: diff_intent_usage, input_*, diff_intent_project_invalid,
@@ -133,15 +135,18 @@ internal static class DiffIntentTests
             return r;
         }
 
-        // A successful plan on the head of `store`: equals the library plan, Compiler.Diff and, run before it,
-        // apply-intent's plan member on that store; nothing written by diff-intent. Then apply-intent commits (when
-        // commit is true) so the store moves on. Returns diff-intent's stdout.
-        string Plans(string name, string store, LayoutIntent intent, bool commit = true)
+        // A successful plan on the head of `store`: equals the library plan and, run before it, apply-intent's plan member
+        // on that store; nothing written by diff-intent. It equals Compiler.Diff(head, compile(intent)) when the head is
+        // in compile order and differs from it otherwise. Then apply-intent commits (when commit is true) so the store
+        // moves on. Returns diff-intent's stdout.
+        string Plans(string name, string store, LayoutIntent intent, bool commit = true, bool compileOrder = true)
         {
             var head = new ProjectStore(store).Read();
             var set = IntentEdits.FromStored(head, intent);
             var libraryPlan = JsonSerializer.Serialize(IncrementalDiff.Diff(head, set.Edits, createOrder: IncrementalDiff.OrderOf(set.After)).Plan);
-            Check(libraryPlan == JsonSerializer.Serialize(Compiler.Diff(head, set.After)), "fixture: the ordered incremental plan equals Compiler.Diff(head, compile(intent)) (" + name + ")");
+            var fullPlan = JsonSerializer.Serialize(Compiler.Diff(head, set.After));
+            if (compileOrder) Check(libraryPlan == fullPlan, "fixture: the ordered incremental plan equals Compiler.Diff(head, compile(intent)) (" + name + ")");
+            else Check(libraryPlan != fullPlan, "fixture: on a head out of compile order the plan differs from Compiler.Diff(head, compile(intent)) (" + name + ")");
             var projectPath = ProjectFile(name, head);
             var intentPath = IntentFile(name, intent);
             var r = Unwritten(name, new[] { Parent(projectPath)!, Parent(intentPath)!, store }, "diff-intent", "--project", projectPath, "--intent", intentPath);
@@ -195,6 +200,15 @@ internal static class DiffIntentTests
         var many = Intent(Enumerable.Range(0, 205).Select(i => Room("r" + i.ToString("000", CultureInfo.InvariantCulture), i * 10, 0, 4, 3)).ToArray(), Array.Empty<IntentOpening>());
         var fewer = many with { Rooms = many.Rooms.Take(204).ToArray() };
         Plans("204 new rooms on an empty head", NewStore(empty), fewer);
+        // A head out of compile order (the compiled base reversed; Compiler.Validate does not depend on order): the plan
+        // still equals apply-intent's on the same head, and differs from Compiler.Diff(head, compile(intent)).
+        {
+            var compiled = IntentCompiler.Compile(ProjectId, 0, baseIntent);
+            var reversed = compiled with { Elements = Enumerable.Reverse(compiled.Elements).ToArray() };
+            Check(Compiler.Validate(reversed).Length == 0 && JsonSerializer.Serialize(reversed) != JsonSerializer.Serialize(compiled), "fixture: the reversed base head is Validate-clean and out of compile order");
+            Plans("step 1 on a reversed head", NewStore(reversed), step1, compileOrder: false);
+            Plans("step 2 on a reversed head", NewStore(reversed), step2, compileOrder: false);
+        }
 
         // A refusal: exact stdout, exit 1, nothing written around the project, the intent or the extra directories.
         void Refused(string name, string expected, string? projectPath, string? intentPath, string[]? extra = null, string[]? arguments = null)
@@ -255,12 +269,24 @@ internal static class DiffIntentTests
             var level = head0.Elements[0];
             var invalidHead = head0 with { Elements = head0.Elements.Append(new Element(Guid.Parse("00000000-0000-0000-0000-0000000000f1"), "plan", Array.Empty<double>(), new[] { Guid.Parse("00000000-0000-0000-0000-0000000000f2"), level.Id }, Source)).ToArray() };
             Check(LibraryRefusal(invalidHead, baseIntent) == "invalid_ir", "fixture: FromStored refuses a head with a dangling dependency as invalid_ir", LibraryRefusal(invalidHead, baseIntent));
-            Refused("a head with a dangling dependency", FailedCode("invalid_ir"), ProjectFile("dangling", invalidHead), IntentFile("on-dangling", baseIntent));
+            var danglingPath = ProjectFile("dangling", invalidHead);
+            Refused("a head with a dangling dependency", FailedCode("invalid_ir"), danglingPath, IntentFile("on-dangling", baseIntent));
+            // Precedence: the intent is parsed before the head is checked, so a malformed intent wins over invalid_ir.
+            Refused("an invalid_ir head and a malformed intent", ParseRefusal("{"), danglingPath, Input("bad-on-dangling.intent.json", "{"));
             var anonymous = new Project(Guid.Empty, 0, Array.Empty<Element>());
             Check(LibraryRefusal(anonymous, baseIntent) == "invalid_project_identity", "fixture: FromStored refuses an empty project id as invalid_project_identity");
             Refused("a head whose project id is empty", FailedCode("invalid_project_identity"), ProjectFile("anonymous", anonymous), IntentFile("on-anonymous", baseIntent));
+            var negative = new Project(ProjectId, -1, Array.Empty<Element>());
+            Check(LibraryRefusal(negative, baseIntent) == "invalid_project_identity", "fixture: FromStored refuses revision -1 as invalid_project_identity", LibraryRefusal(negative, baseIntent));
+            Refused("a project with \"Revision\":-1", FailedCode("invalid_project_identity"), Input("negative.project.json", "{\"Id\":\"00000000-0000-0000-0000-0000000000b2\",\"Revision\":-1,\"Elements\":[]}"), IntentFile("on-negative", baseIntent));
             Check(LibraryRefusal(empty, many) == IncrementalDiff.BoundExceeded, "fixture: 205 new rooms exceed IncrementalDiff.MaxEdits", LibraryRefusal(empty, many));
-            Refused("an intent needing more than IncrementalDiff.MaxEdits edits", FailedCode(IncrementalDiff.BoundExceeded), ProjectFile("empty", empty), IntentFile("too-many", many));
+            var tooMany = IntentFile("too-many", many);
+            Refused("an intent needing more than IncrementalDiff.MaxEdits edits", FailedCode(IncrementalDiff.BoundExceeded), ProjectFile("empty", empty), tooMany);
+            var boundStore = NewStore(empty);
+            var boundDiff = Cli("diff-intent", "--project", ProjectFile("empty-again", new ProjectStore(boundStore).Read()), "--intent", tooMany);
+            var boundApply = Cli("apply-intent", "--store", boundStore, "--intent", tooMany);
+            Check(boundApply.Exit == 1 && boundDiff.Exit == 1 && boundApply.Out == boundDiff.Out && boundDiff.Out == FailedCode(IncrementalDiff.BoundExceeded),
+                "edit_bound_exceeded prints the same bytes from apply-intent and diff-intent on the same head and intent", D(boundDiff) + " / " + D(boundApply));
         }
 
         // 5. Bounded and missing inputs (BoundedInput's codes), then the project's shape.
@@ -285,6 +311,10 @@ internal static class DiffIntentTests
             Refused("a project that is " + label, FailedCode("diff_intent_project_invalid"), Input("bad-" + label + ".project.json", text), okIntent);
         // Precedence: a malformed project is reported before a malformed intent.
         Refused("a malformed project and a malformed intent", FailedCode("diff_intent_project_invalid"), Input("bad.project.json", "{"), Input("bad.intent.json", "{"));
+        // Both files are read before either is parsed: a read failure of the intent wins over a malformed project, and a
+        // read failure of the project wins over one of the intent.
+        Refused("a malformed project and a missing intent", FailedCode("input_not_found"), Input("bad-then-missing.project.json", "{"), Path.Combine(scratch, "absent-2.intent.json"));
+        Refused("a missing project and an intent over 8 MiB", FailedCode("input_not_found"), Path.Combine(scratch, "absent-2.project.json"), InputBytes("over-cap-2.intent.json", overCap));
 
         // 6. Usage: --project and --intent once each, nothing else; checked before any file is read.
         foreach (var bad in new[]
