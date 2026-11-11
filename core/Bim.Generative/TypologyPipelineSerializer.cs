@@ -8,7 +8,10 @@ namespace Bim.Generative;
 // order, numbers as shortest round-trip invariant-culture doubles (-0 as 0, non-finite as null). It writes the request
 // (family size, lot, count, seed, requested rooms in their canonical sorted order, door width, ranking weights or null),
 // the typology stage (its status, the canonical brief JSON, the candidates and the canonical alternative set JSON, null
-// when refused) and the pipeline result as canonical prototype pipeline v1 JSON. The same result always gives the same
+// when refused) and the pipeline result as canonical prototype pipeline v1 JSON. P5-14: only when the result was planned
+// with composed rules, a rules member follows the request: null, or the rule set (succeeded, the planner rules with room
+// id, name pattern, minimum area and side and reference, and the traces with planner rule index, property, threshold,
+// pack rule, parameter source and reference); without composed rules the bytes are the P5-12 ones. The same result always gives the same
 // bytes, whatever the culture.
 public static class TypologyPipelineSerializer
 {
@@ -57,6 +60,12 @@ public static class TypologyPipelineSerializer
             }
             else writer.WriteNull("weights");
             writer.WriteEndObject();
+            if (result.ComposedRules)
+            {
+                writer.WritePropertyName("rules");
+                if (result.Rules is { } rules) Rules(writer, rules);
+                else writer.WriteNullValue();
+            }
             writer.WriteStartObject("typology");
             writer.WriteString("status", typology.Status switch
             {
@@ -86,6 +95,50 @@ public static class TypologyPipelineSerializer
             writer.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    static void Rules(Utf8JsonWriter writer, TypologyRuleSet set)
+    {
+        writer.WriteStartObject();
+        writer.WriteBoolean("succeeded", set.Succeeded);
+        writer.WriteStartArray("planner_rules");
+        foreach (var rule in set.Rules.Rules)
+        {
+            writer.WriteStartObject();
+            Text(writer, "room_id", rule.RoomId);
+            Text(writer, "name_pattern", rule.NamePattern);
+            Number(writer, "min_area_m2", rule.MinAreaSquareMetres);
+            Number(writer, "min_side_m", rule.MinSideMetres);
+            Text(writer, "reference", rule.Reference);
+            writer.WriteEndObject();
+        }
+        writer.WriteEndArray();
+        writer.WriteStartArray("traces");
+        foreach (var trace in set.Traces)
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("planner_rule", trace.PlannerRuleIndex);
+            writer.WriteString("property", trace.Property);
+            Number(writer, "threshold", trace.Threshold);
+            Text(writer, "rule", trace.Rule?.ToString());
+            Text(writer, "threshold_source", trace.ThresholdSource?.ToString());
+            Text(writer, "reference", trace.Reference);
+            writer.WriteEndObject();
+        }
+        writer.WriteEndArray();
+        writer.WriteEndObject();
+    }
+
+    static void Text(Utf8JsonWriter writer, string name, string? value)
+    {
+        if (value is null) writer.WriteNull(name);
+        else writer.WriteString(name, value);
+    }
+
+    static void Number(Utf8JsonWriter writer, string name, double? value)
+    {
+        if (value is { } number) Number(writer, name, number);
+        else writer.WriteNull(name);
     }
 
     static string Status(PrototypePipelineStatus status) => status switch

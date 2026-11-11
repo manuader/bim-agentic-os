@@ -9,7 +9,10 @@ namespace Bim.Generative;
 // plans in generation order, with the request's ranking weights and the given options), its alternatives carrying the
 // candidates' strategy (whole_lot). When the typology request or the options are refused, Pipeline is a refused result
 // listing every refusal (the typology refusals first, then the option refusals) with no alternatives.
-public sealed record TypologyPipelineResult(TypologyBriefResult Typology, PrototypePipelineResult Pipeline)
+// P5-14: ComposedRules is true when TypologyPipelineOptions.ComposedRules planned the candidates with the composed
+// TypologyRules; Rules is then that rule set (null when the programme or request was refused before a brief existed).
+// Both stay false/null otherwise, and the canonical JSON then has no rules member.
+public sealed record TypologyPipelineResult(TypologyBriefResult Typology, PrototypePipelineResult Pipeline, bool ComposedRules = false, TypologyRuleSet? Rules = null)
 {
     public const int CurrentVersion = 1;
     public PrototypePipelineStatus Status => Pipeline.Status;

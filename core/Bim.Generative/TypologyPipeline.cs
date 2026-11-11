@@ -14,7 +14,12 @@ namespace Bim.Generative;
 //    weights, count) refuse the result. The only change is that each alternative carries its candidate's strategy.
 // Everything is deterministic and sequential and nothing depends on culture, so the same pack + family size + lot + seed
 // and options give the same result and the same canonical JSON (TypologyPipelineSerializer).
-// Gaps: the planner rules are the fixed PrototypeTemplates.Rules of TypologyBrief (not the P5-13 composed rules); one
+// P5-14: the SkillResolution overload with TypologyPipelineOptions { ComposedRules: true } runs step 1 as
+// TypologyRules.Generate(resolution, request) instead (the P5-13 composed pack rules plan the candidates; the same
+// programme and request refusals, then its rule refusals such as typology_rule_pattern_unsupported and
+// typology_minimum_conflict) and keeps the rule set in the result (TypologyPipelineResult.Rules, null when the programme
+// or request was refused before a brief existed). Steps 2 and 3 are unchanged. With the option off it is Run(resolution).
+// Gaps: without the option the planner rules are the fixed PrototypeTemplates.Rules of TypologyBrief; one
 // level; each accepted alternative gets its own BIM-IR with the same project identity; nothing is committed. The
 // SkillResolution overload does not check that options.Pack is the code pack composed in the resolution: the facade gate
 // always uses options.Pack, whatever the resolution holds.
@@ -36,6 +41,18 @@ public static class TypologyPipeline
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Pack);
         return Gate(TypologyBrief.Generate(resolution, request), options);
+    }
+
+    public static TypologyPipelineResult Run(SkillResolution resolution, TypologyBriefRequest request, PrototypePipelineOptions options, TypologyPipelineOptions typology)
+    {
+        ArgumentNullException.ThrowIfNull(resolution);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(options.Pack);
+        ArgumentNullException.ThrowIfNull(typology);
+        if (!typology.ComposedRules) return Gate(TypologyBrief.Generate(resolution, request), options);
+        var composed = TypologyRules.Generate(resolution, request);
+        return Gate(composed.Result, options) with { ComposedRules = true, Rules = composed.Rules };
     }
 
     static TypologyPipelineResult Gate(TypologyBriefResult typology, PrototypePipelineOptions options)
