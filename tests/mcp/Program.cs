@@ -435,6 +435,15 @@ if(!File.Exists(mcpDll)) throw new Exception("MCP binary missing: "+mcpDll+" (bu
 }
 const string McpUsage="usage: Bim.Mcp.dll [--read-timeout-seconds n]";
 string McpRefusal(string code,int index,string detail)=>RevitCommandResponse.Failure(code,"args["+index.ToString(System.Globalization.CultureInfo.InvariantCulture)+"]",detail+"; "+McpUsage).ToJson();
+Check(new McpServer(RevitCommandPolicy.None).ReadTimeout==RevitCommandService.DefaultReadTimeout && new McpServer(RevitCommandPolicy.None){ReadTimeout=TimeSpan.FromSeconds(5)}.ReadTimeout==TimeSpan.FromSeconds(5),"McpServer.ReadTimeout defaults to the 1800 s core default and takes another value");
+foreach(var badTimeout in new[]{TimeSpan.Zero,TimeSpan.FromSeconds(-1),Timeout.InfiniteTimeSpan,RevitCommandService.MaxReadTimeout+TimeSpan.FromTicks(1)}) {
+    var refusedTimeout=false;
+    try { _=new McpServer(RevitCommandPolicy.None){ReadTimeout=badTimeout}; } catch(ArgumentOutOfRangeException) { refusedTimeout=true; }
+    Check(refusedTimeout,"McpServer.ReadTimeout "+badTimeout+" is refused (RevitCommandService range)");
+}
+Check(McpServer.ParseOptions(Array.Empty<string>(),out var noOptionTimeout)==null && noOptionTimeout==RevitCommandService.DefaultReadTimeout
+    && McpServer.ParseOptions(new[]{"--read-timeout-seconds","86400"},out var maxOptionTimeout)==null && maxOptionTimeout==RevitCommandService.MaxReadTimeout
+    && McpServer.ParseOptions(new[]{"--read-timeout-seconds","1"},out var minOptionTimeout)==null && minOptionTimeout==TimeSpan.FromSeconds(1),"McpServer.ParseOptions: none keeps the default; 1 and 86400 seconds are accepted");
 var toolsList=Request(30,"tools/list",null)+"\n";
 foreach(var (label,value) in new[]{("zero","0"),("negative","-1"),("over 24 h","86401"),("fractional","1.5"),("not a number","abc"),("empty","")}) {
     var refused=RunMcp(toolsList,"--read-timeout-seconds",value);

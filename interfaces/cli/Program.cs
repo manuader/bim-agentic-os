@@ -68,13 +68,11 @@ try {
             // fresh on every run through the same RevitCommandPolicySource the MCP server keeps current.
             // --all (P1-15): a query.elements envelope is paged with RevitElementQueryPaging.All, each page through the
             // same RevitCommandService path; every --all outcome, early refusals included, is ElementQueryAllResult JSON.
-            // Any other 4th (or further) argument keeps the explicit_process_pipe_required refusal (the call is not the
-            // explicit pipe form; tests/revit-commands pins that code) but names the argument and the usage.
-            if(args.Length>=4 && (args[3]!="--all" || args.Length>4)) {
-                var revitExtra=args[3]!="--all" ? 3 : 4;
-                Console.WriteLine(RevitCommandResponse.Failure(RevitCommandCodes.ExplicitProcessPipeRequired,"args["+revitExtra+"]",(revitExtra==3 ? "unknown option " : "unexpected argument ")+args[revitExtra]+"; usage: revit-command envelope.json process-pipe-name [--all]").ToJson()); Environment.ExitCode=1; break;
-            }
-            var revitAll=args.Length==4;
+            // --read-timeout-seconds n (P1-20): the pipe read timeout of every request (default 1800 s). The options
+            // (RevitCommandOptions) are checked first; an unknown, repeated or bad one is a single-command refusal.
+            var revitOptions=RevitCommandOptions.Parse(args,out var revitOptionRefusal);
+            if(revitOptions is null) { Console.WriteLine(revitOptionRefusal); Environment.ExitCode=1; break; }
+            var revitAll=revitOptions.All;
             string RevitEarly(string code,string? field,string? detail) => revitAll ? ElementQueryAllResult.Refusal(code,field,detail).ToJson() : RevitCommandResponse.Failure(code,field,detail).ToJson();
             var revitPipe=args.Length>=3 ? args[2] : null;
             if(RevitCommandService.RejectPipe(revitPipe) is {} revitRejected) { var revitRefusal=RevitCommandResponse.Parse(revitRejected.Line); Console.WriteLine(RevitEarly(revitRefusal.Code,revitRefusal.Field,revitRefusal.Detail)); Environment.ExitCode=1; break; }
@@ -85,10 +83,10 @@ try {
             try { revitEnvelope=BoundedInput.ReadText(args[1]); }
             catch(IOException e) { Console.WriteLine(RevitEarly(RevitCommandCodes.EnvelopeInvalid,"envelope",e.Message)); Environment.ExitCode=1; break; }
             if(revitAll) {
-                var revitListing=RevitElementQueryPaging.All(revitEnvelope,new RevitServiceTransport(revitPipe!,revitPolicy,RevitCommandService.PipeTransport));
+                var revitListing=RevitElementQueryPaging.All(revitEnvelope,new RevitServiceTransport(revitPipe!,revitPolicy,revitOptions.Transport));
                 Console.WriteLine(revitListing.ToJson()); if(!revitListing.IsSuccess)Environment.ExitCode=1; break;
             }
-            var revitResult=RevitCommandService.Run(revitPipe!,revitEnvelope,revitPolicy,RevitCommandService.PipeTransport);
+            var revitResult=RevitCommandService.Run(revitPipe!,revitEnvelope,revitPolicy,revitOptions.Transport);
             Console.WriteLine(revitResult.Line); if(revitResult.IsError)Environment.ExitCode=1; break;
         case "open-project-check":
             // Owner project mode preflight (scripts/owner-open-project.ps1): may this .rvt be opened in a new child Revit
@@ -99,6 +97,6 @@ try {
             catch(RevitCommandException e) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Code,detail=e.Field+": "+e.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
             if(OwnerProjectGuard.Check(args[1],projectPolicy,RevitFileSystemProbe.Real) is {} projectRefusal) { Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=projectRefusal.Code,detail=projectRefusal.Detail,document_path=args[1]})); Environment.ExitCode=1; break; }
             Console.WriteLine(JsonSerializer.Serialize(new {status="succeeded",document_path=args[1],enabled_root=RevitCopiesGuard.MatchingRoot(args[1],projectPolicy)})); break;
-        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | export-gltf project.json output.glb|output.gltf | cad-draft input.dxf|input.pdf output.json [options] | cad-brief input.dxf|input.pdf output.json [options] | cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]... [--site-width w --site-depth d] [--name text] [--brief-only] | mirror-drift store-directory snapshot.json mirror.json output.json | mirror-drift-select store-directory snapshot.json mirror.json choices.json output.json | mirror-drift-adopt store-directory selection.json | skills-lock pin|verify|update|unpin skills-directory lock.json [pack-id...] | diff-edits --project project.json --edits edits.json | apply-edits --store store-directory --edits edits.json [--expected-revision n] | apply-intent --store store-directory --intent after.json [--expected-revision n] | diff-intent --project project.json --intent after.json | doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json | --probe-dependents process-pipe-name [--accept uid]... [--execute --expected-document plan-sha256]] (--output: a new file) | catalogue-report --run .bim/native-runs/<run> | generate-prototypes request.json output.json | plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id] | audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json] | native request.json process-pipe-name | revit-command envelope.json process-pipe-name [--all] | open-project-check absolute-path.rvt");
+        default:throw new ArgumentException("usage: room project-guid revision intent.json | diff before.json after.json | validate project.json | export-gltf project.json output.glb|output.gltf | cad-draft input.dxf|input.pdf output.json [options] | cad-brief input.dxf|input.pdf output.json [options] | cad-plan-brief draft.json output.json [--min-confidence x] [--confirm id]... [--confirm-reason code]... [--site-width w --site-depth d] [--name text] [--brief-only] | mirror-drift store-directory snapshot.json mirror.json output.json | mirror-drift-select store-directory snapshot.json mirror.json choices.json output.json | mirror-drift-adopt store-directory selection.json | skills-lock pin|verify|update|unpin skills-directory lock.json [pack-id...] | diff-edits --project project.json --edits edits.json | apply-edits --store store-directory --edits edits.json [--expected-revision n] | apply-intent --store store-directory --intent after.json [--expected-revision n] | diff-intent --project project.json --intent after.json | doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json | --probe-dependents process-pipe-name [--accept uid]... [--execute --expected-document plan-sha256]] (--output: a new file) | catalogue-report --run .bim/native-runs/<run> | generate-prototypes request.json output.json | plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id] | audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json] | native request.json process-pipe-name | revit-command envelope.json process-pipe-name [--all] [--read-timeout-seconds n] | open-project-check absolute-path.rvt");
     }
 } catch(Exception e) {Console.WriteLine(JsonSerializer.Serialize(new {status="failed",code=e.Message}));Environment.ExitCode=1;}

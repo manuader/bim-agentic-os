@@ -112,6 +112,7 @@ public sealed class McpServer
     readonly Func<RevitCommandPolicy> revitPolicy;
     readonly Func<string, string, string?> revitTransport;
     readonly RevitFileSystemProbe revitProbe;
+    readonly TimeSpan readTimeout = RevitCommandService.DefaultReadTimeout;
 
     // Caps of revit_query_elements all:true: the core page and element caps, a 32 MiB element-JSON cap (below the
     // CLI's 256 MiB) and an overall deadline on QueryAllClock. Tests lower them and inject the clock.
@@ -124,6 +125,55 @@ public sealed class McpServer
     internal Func<DateTimeOffset> QueryAllClock { get; init; } = () => DateTimeOffset.UtcNow;
     // True when revitTransport is the real process pipe, whose read timeout all:true can cut to the time left.
     readonly bool realPipe;
+
+    // P1-20: the read timeout of the real process pipe (server option --read-timeout-seconds n), greater than zero and at
+    // most RevitCommandService.MaxReadTimeout, checked by PipeTransportWithReadTimeout (ArgumentOutOfRangeException);
+    // default RevitCommandService.DefaultReadTimeout. An injected test transport is kept as it is.
+    public TimeSpan ReadTimeout
+    {
+        get => readTimeout;
+        init
+        {
+            var timed = RevitCommandService.PipeTransportWithReadTimeout(value);
+            readTimeout = value;
+            if (realPipe) revitTransport = timed;
+        }
+    }
+
+    public const string ReadTimeoutOption = "--read-timeout-seconds";
+    public const string ReadTimeoutInvalid = "read_timeout_invalid";
+    public const string OptionUnknown = "mcp_option_unknown";
+    public const string OptionsUsage = "usage: Bim.Mcp.dll [--read-timeout-seconds n]";
+
+    // The server options (Program args): none, or --read-timeout-seconds n once, n whole seconds from 1 to 86400.
+    // Returns null and the read timeout (the default when absent), or the typed refusal line (RevitCommandResponse
+    // shape, field args[i]) that Program writes to stderr before serving.
+    public static string? ParseOptions(IReadOnlyList<string> args, out TimeSpan readTimeout)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        readTimeout = RevitCommandService.DefaultReadTimeout;
+        var seen = false;
+        for (var index = 0; index < args.Count; index++)
+        {
+            if (args[index] != ReadTimeoutOption) return OptionRefusal(OptionUnknown, index, "unknown option " + args[index]);
+            if (seen) return OptionRefusal(OptionUnknown, index, "repeated option " + ReadTimeoutOption);
+            seen = true;
+            if (index + 1 >= args.Count) return OptionRefusal(ReadTimeoutInvalid, index, ReadTimeoutOption + " needs a value");
+            index++;
+            var valid = int.TryParse(args[index], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var seconds);
+            if (valid)
+            {
+                try { _ = RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromSeconds(seconds)); }
+                catch (ArgumentOutOfRangeException) { valid = false; }
+            }
+            if (!valid) return OptionRefusal(ReadTimeoutInvalid, index, ReadTimeoutOption + " takes whole seconds from 1 to 86400, got " + args[index]);
+            readTimeout = TimeSpan.FromSeconds(seconds);
+        }
+        return null;
+    }
+
+    static string OptionRefusal(string code, int index, string detail) =>
+        RevitCommandResponse.Failure(code, "args[" + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + "]", detail + "; " + OptionsUsage).ToJson();
 
     // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), re-read whenever the owner files change
     // (RevitCommandPolicySource: one stat per write call), the real process pipe and file system. A malformed owner
@@ -264,15 +314,15 @@ public sealed class McpServer
             return (ElementQueryAllResult.Refusal(refusal.Code, refusal.Field, refusal.Detail).ToJson(), true);
         }
         var (pages, elements, bytes) = QueryAllCaps;
-        var transport = new DeadlineTransport(pipeName, revitTransport, realPipe, revitProbe, QueryAllClock, QueryAllDeadline);
+        var transport = new DeadlineTransport(pipeName, revitTransport, realPipe, readTimeout, revitProbe, QueryAllClock, QueryAllDeadline);
         var listing = RevitElementQueryPaging.All(CommandEnvelope(RevitElementQueryPaging.Command, arguments), transport, pages, elements, bytes);
         return (listing.ToJson(), !listing.IsSuccess);
     }
 
     // Each page through RevitCommandService.Run (as RevitServiceTransport), within one overall deadline from its creation:
     // a page due after the deadline is answered query_all_deadline_exceeded without being sent, and on the real pipe a
-    // page's read timeout is the time left when that is below the default, its pipe_read_timeout reported as the deadline.
-    sealed class DeadlineTransport(string pipeName, Func<string, string, string?> transport, bool realPipe, RevitFileSystemProbe probe, Func<DateTimeOffset> clock, TimeSpan deadline) : IRevitCommandTransport
+    // page's read timeout is the time left when that is below the server read timeout, its pipe_read_timeout reported as the deadline.
+    sealed class DeadlineTransport(string pipeName, Func<string, string, string?> transport, bool realPipe, TimeSpan readTimeout, RevitFileSystemProbe probe, Func<DateTimeOffset> clock, TimeSpan deadline) : IRevitCommandTransport
     {
         readonly DateTimeOffset start = clock();
 
@@ -284,7 +334,7 @@ public sealed class McpServer
         {
             var left = deadline - (clock() - start);
             if (left <= TimeSpan.Zero) return Exceeded();
-            var cut = realPipe && left < RevitCommandService.DefaultReadTimeout;
+            var cut = realPipe && left < readTimeout;
             var line = RevitCommandService.Run(pipeName, envelopeJson, RevitCommandPolicy.None, cut ? RevitCommandService.PipeTransportWithReadTimeout(left) : transport, probe).Line;
             if (!cut) return line;
             try { return RevitCommandResponse.Parse(line).Code == RevitCommandCodes.PipeReadTimeout ? Exceeded() : line; }
