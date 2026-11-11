@@ -558,7 +558,7 @@ static class MirrorDriftLoopChecks
         {
             var reportElement = parsed.RootElement.GetProperty("report");
             var summary = reportElement.GetProperty("summary");
-            Check(summary.GetProperty("drift").GetInt32() == 3 && reportElement.GetProperty("findings").GetArrayLength() == 0 && summary.GetProperty("unchanged").GetInt32() == head.Elements.Length
+            Check(summary.GetProperty("drift").GetInt32() == 0 && reportElement.GetProperty("findings").GetArrayLength() == 0 && summary.GetProperty("unchanged").GetInt32() == head.Elements.Length
                 && summary.GetProperty("out_of_scope").GetInt32() == 0 && summary.GetProperty("not_comparable").GetInt32() == 0
                 && parsed.RootElement.GetProperty("resolution").GetProperty("proposals").GetArrayLength() == 0 && parsed.RootElement.GetProperty("core_store").GetProperty("revision").GetInt32() == 2,
                 "the second mirror-drift reports no drift: every head element (B, C, levels) unchanged, no proposals, store at revision 2", summary.GetRawText());
