@@ -62,7 +62,8 @@ static class PipeReadTimeoutChecks
                 "a " + label + " read timeout is refused before connecting", watch.ElapsedMilliseconds + " ms");
         }
         var timeoutError = new RevitPipeReadTimeoutException(TimeSpan.FromMilliseconds(250));
-        Check(timeoutError is IOException && timeoutError is not TimeoutException && timeoutError.Timeout == TimeSpan.FromMilliseconds(250) && timeoutError.Message == RevitCommandCodes.PipeReadTimeout,
+        Exception asException = timeoutError;
+        Check(asException is IOException && asException is not TimeoutException && timeoutError.Timeout == TimeSpan.FromMilliseconds(250) && timeoutError.Message == RevitCommandCodes.PipeReadTimeout,
             "the read timeout exception is an IOException carrying its timeout, never a connect TimeoutException");
 
         // ---- Fake transport that throws the read timeout ----
