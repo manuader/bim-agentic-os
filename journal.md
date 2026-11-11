@@ -1420,3 +1420,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 10:52Z LOCK taken (was FREE; relay188 released 2026-11-11T10:36:00Z).
 - 10:53Z picked P7-12 (phase 7), P3-12 (phase 3), P5-14 (phase 5) — oldest-touched (relay186). Workers starting on relay190-<ID>.
 - 11:33Z workers green: P7-12 a74c9c0 (red 43007834744, green 43009419027; 0 attempts), P3-12 60fd485 (red 43007872834, green 43009808461; 0 attempts), P5-14 f3f54f0 (red 43007881318, placeholder pin 43008867735, green 43010911469; 0 attempts; composed pin a8c62da5…). Next: independent reviews.
+- 11:35Z reviews: 0 blockers. P7-12 2 should-fix (stray skills/ next to binary hijacks lookup; package-before-repo order untested) + nits; P3-12 2 should-fix (non-compile-order head equality untested; comment overclaims Compiler.Diff equality) + nits; P5-14 2 should-fix (snap validates fixed rules in composed mode; facade pack vs resolution unchecked) + nits. Fixers started.
