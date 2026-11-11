@@ -9,16 +9,20 @@ using System.Text.Json;
 //   revit-command query.snapshot -> mirror-drift -> mirror-drift-select -> mirror-drift-adopt -> revit-command query.snapshot
 //   -> mirror-drift
 // runs over files exactly as an operator would. Oracles:
-//   1. Baseline: walls created through the CLI, a Core store built from that first snapshot (own Core ids, a map
-//      Core id -> UniqueId) and mirror-drift reports no drift (the fixture is consistent).
+//   1. Baseline: walls created through the CLI, a Core store seeded with the CLI init verb from that first snapshot (own
+//      Core ids, a map Core id -> UniqueId) and mirror-drift reports no drift (the fixture is consistent).
 //   2. An external edit (element.move of one wall through the CLI) is reported as one changed finding with an adopt
 //      proposal; mirror-drift-select with {adopt} writes one BIM-IR operation; mirror-drift-adopt commits revision 2.
 //   3. The store head is the adopted state: the moved wall's Core element has the Revit geometry, every other element
 //      is untouched; a replay prints replayed; the pre-adopt mirror is refused stale.
 //   4. A fresh query.snapshot (same readback as before the adopt) against the mirror at the new revision reports no drift
 //      for the adopted element (no drift at all).
-//   5. Deterministic: a second complete run (new fake add-in, new store) produces byte-identical files and outputs.
-// Needs pwsh and the built CLI (scripts/verify.ps1 builds interfaces/cli before this project). No Revit is involved: a
+//   5. The fake add-in serves exactly the eight expected requests (operation ids in order) and exits 0 by itself.
+//   6. Deterministic: a second complete run (new fake add-in, new store) produces byte-identical snapshot readbacks,
+//      files and outputs.
+// Bounded: 5 minutes per run, 60 s per process, the fake add-in gives up after 120 s. Needs pwsh (BIM_PWSH, set by
+// scripts/verify.ps1, else pwsh on PATH; a bare local run without pwsh skips, verify.ps1 and CI fail) and the built
+// CLI (scripts/verify.ps1 builds interfaces/cli before this project). No Revit is involved: a
 // passing run is unit-tested evidence only.
 static class MirrorDriftLoopChecks
 {
@@ -46,7 +50,14 @@ static class MirrorDriftLoopChecks
     }
 
     // What one complete run leaves behind, compared byte for byte between two runs.
-    sealed record Loop(string Snapshot1, string Drift1, string Selection, string Adopt, string ProjectJson, string Drift2);
+    sealed record Loop(string Snapshot0, string Snapshot1, string Drift1, string Selection, string Adopt, string ProjectJson, string Snapshot2, string Drift2);
+
+    // The fake add-in serves exactly these requests, in this order, and then exits by itself.
+    static readonly string[] ExpectedRequests = { "p2-14-levels", "p2-14-wall-types", "p2-14-wall-a", "p2-14-wall-b", "p2-14-snapshot-0", "p2-14-move-b", "p2-14-snapshot-1", "p2-14-snapshot-2" };
+    // Bounds: the whole run, each CLI or pwsh process, and the fake add-in's own lifetime.
+    static readonly TimeSpan RunBudget = TimeSpan.FromMinutes(5);
+    const int CallTimeoutMs = 60000;
+    const int FakeTimeoutSeconds = 120;
 
     static void Checks()
     {
@@ -54,10 +65,13 @@ static class MirrorDriftLoopChecks
         var cliDll = Path.Combine(root, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
         if (!File.Exists(cliDll)) { Check(false, "CLI binary present (build interfaces/cli --configuration Release first, as scripts/verify.ps1 does)", cliDll); return; }
         var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
-        if (!PwshAvailable(out var why))
+        // scripts/verify.ps1 sets BIM_PWSH to the pwsh running it; otherwise pwsh on PATH.
+        var configured = Environment.GetEnvironmentVariable("BIM_PWSH") is { Length: > 0 } configuredPwsh ? configuredPwsh : null;
+        var pwsh = configured ?? "pwsh";
+        if (!PwshAvailable(pwsh, out var why))
         {
-            // Every CI runner has pwsh: there the loop must run.
-            if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true") Check(false, "pwsh available on CI", why);
+            // Under verify.ps1 (BIM_PWSH set) and on every CI runner the loop must run; only a bare local run may skip.
+            if (configured is not null || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true") Check(false, "pwsh runnable (" + pwsh + ")", why);
             else Console.WriteLine("SKIP drift-loop: pwsh not found (" + why + ")");
             return;
         }
@@ -65,9 +79,11 @@ static class MirrorDriftLoopChecks
         // runs name the same document path (it is in every restore envelope), one after the other.
         var runDirectory = Path.Combine(root, ".bim", "native-runs", "mirror-drift-loop-" + Guid.NewGuid().ToString("N"));
         Temporary.Add(runDirectory);
-        var first = RunLoop(root, dotnet, cliDll, runDirectory, 1, report: true);
-        var second = RunLoop(root, dotnet, cliDll, runDirectory, 2, report: false);
+        var first = RunLoop(root, dotnet, pwsh, cliDll, runDirectory, 1, report: true);
+        var second = RunLoop(root, dotnet, pwsh, cliDll, runDirectory, 2, report: false);
         if (first is null || second is null) { Check(false, "both runs completed", first is null ? "run 1 stopped" : "run 2 stopped"); return; }
+        Check(first.Snapshot0 == second.Snapshot0, "deterministic: the first query.snapshot readback is identical in both runs");
+        Check(first.Snapshot2 == second.Snapshot2, "deterministic: the post-adopt query.snapshot readback is identical in both runs");
         Check(first.Snapshot1 == second.Snapshot1, "deterministic: the edited query.snapshot readback is identical in both runs");
         Check(first.Drift1 == second.Drift1, "deterministic: the mirror-drift file is byte-identical in both runs");
         Check(first.Selection == second.Selection, "deterministic: the mirror-drift-select file is byte-identical in both runs");
@@ -76,24 +92,38 @@ static class MirrorDriftLoopChecks
         Check(first.Drift2 == second.Drift2, "deterministic: the second mirror-drift file is byte-identical in both runs");
     }
 
-    static bool PwshAvailable(out string why)
+    static bool PwshAvailable(string pwsh, out string why)
     {
         why = "";
         try
         {
-            var start = new ProcessStartInfo("pwsh") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            var start = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             foreach (var argument in new[] { "-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major" }) start.ArgumentList.Add(argument);
             using var process = Process.Start(start);
             if (process is null) { why = "pwsh did not start"; return false; }
-            process.StandardOutput.ReadToEnd();
-            if (!process.WaitForExit(60000)) { process.Kill(true); why = "pwsh timed out"; return false; }
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(CallTimeoutMs)) { Kill(process); why = "pwsh timed out"; return false; }
+            process.WaitForExit();
+            if (process.ExitCode != 0) why = "exit " + process.ExitCode + " " + stdout.Result.Trim() + " " + stderr.Result.ReplaceLineEndings(" ").Trim();
             return process.ExitCode == 0;
         }
         catch (System.ComponentModel.Win32Exception error) { why = error.Message; return false; }
     }
 
-    static Loop? RunLoop(string root, string dotnet, string cliDll, string runDirectory, int run, bool report)
+    // Best effort: the process may already have exited (or never be killable); a failed kill is not a test result.
+    static void Kill(Process process)
     {
+        try { if (!process.HasExited) process.Kill(true); }
+        catch (InvalidOperationException) { }
+        catch (System.ComponentModel.Win32Exception) { }
+        catch (NotSupportedException) { }
+    }
+
+    static Loop? RunLoop(string root, string dotnet, string pwsh, string cliDll, string runDirectory, int run, bool report)
+    {
+        var runDeadline = DateTime.UtcNow + RunBudget;
+        int Budget() => (int)Math.Max(0, Math.Min(CallTimeoutMs, (runDeadline - DateTime.UtcNow).TotalMilliseconds));
         void Check(bool condition, string name, string detail = "") { if (report || !condition) MirrorDriftLoopChecks.Check(condition, "run " + run + ": " + name, detail); }
         var scratch = Path.Combine(Path.GetTempPath(), "bim-drift-loop-" + Guid.NewGuid().ToString("N"));
         Temporary.Add(scratch);
@@ -118,7 +148,7 @@ static class MirrorDriftLoopChecks
             using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>", ""); }
+            if (!process.WaitForExit(Budget())) { Kill(process); return (-1, "<timed out (60 s per call, 5 min per run)>", ""); }
             process.WaitForExit();
             return (process.ExitCode, stdout.Result.TrimEnd('\r', '\n'), stderr.Result.ReplaceLineEndings(" ").Trim());
         }
@@ -150,17 +180,16 @@ static class MirrorDriftLoopChecks
         // ---- The fake add-in behind a real pipe ----
         var ready = Path.Combine(scratch, "ready.txt");
         var log = Path.Combine(scratch, "received.txt");
-        var serverStart = new ProcessStartInfo("pwsh") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        var serverStart = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var argument in new[] { "-NoProfile", "-File", Path.Combine(root, "tests", "integration", "fake-revit-command-pipe.ps1"), "-PipeName", pipe, "-DocumentUid", DocumentUid,
-            "-ReadyFile", ready, "-LogFile", log, "-MaxRequests", "40", "-TimeoutSeconds", "600" }) serverStart.ArgumentList.Add(argument);
+            "-ReadyFile", ready, "-LogFile", log, "-MaxRequests", ExpectedRequests.Length.ToString(CultureInfo.InvariantCulture), "-TimeoutSeconds", FakeTimeoutSeconds.ToString(CultureInfo.InvariantCulture) }) serverStart.ArgumentList.Add(argument);
         Environment_(serverStart);
         using var server = Process.Start(serverStart) ?? throw new InvalidOperationException("fake add-in pipe did not start");
         var serverOut = server.StandardOutput.ReadToEndAsync();
         var serverErr = server.StandardError.ReadToEndAsync();
         try
         {
-            var deadline = DateTime.UtcNow.AddSeconds(90);
-            while (!File.Exists(ready) && DateTime.UtcNow < deadline && !server.HasExited) Thread.Sleep(100);
+            while (!File.Exists(ready) && Budget() > 0 && !server.HasExited) Thread.Sleep(100);
             if (!File.Exists(ready)) { Check(false, "fake add-in pipe ready", server.HasExited ? serverErr.Result : "timed out"); return null; }
 
             // ---- Seed the fake document through the CLI: two walls on Level 1 ----
@@ -192,7 +221,9 @@ static class MirrorDriftLoopChecks
             var (project, map, levelNames) = CoreFrom(snapshot0.Out, levels.Out);
             var coreB = map.Single(pair => pair.Value == uidB).Key;
             var store = Path.Combine(scratch, "store");
-            new ProjectStore(store).Initialize(project);
+            var init = Cli("init", store, File_("project-r1", JsonSerializer.Serialize(project)));
+            if (init.Exit != 0 || Status(init.Out) != "succeeded") { Check(false, "the CLI init verb seeds the store at revision 1", R(init)); return null; }
+            Check(new ProjectStore(store).Read() is { Revision: 1 } seeded && seeded.Elements.Length == project.Elements.Length, "the CLI init verb seeds the store at revision 1");
             string Mirror(int revision) => MirrorJson(document, revision, map, levelNames);
             var mirror1 = File_("mirror-r1", Mirror(1));
             var snapshot0Path = File_("snapshot-0", snapshot0.Out);
@@ -287,11 +318,20 @@ static class MirrorDriftLoopChecks
             }
             Check(Number(drift2.Out, "drift") == 0 && Number(drift2.Out, "proposals") == 0, "the second mirror-drift prints drift 0 and proposals 0", R(drift2));
             Check(uidA != uidB, "two distinct walls were created");
-            return new Loop(Readback(snapshot1.Out), drift1Text, selectionText, adopt.Out, projectJson, drift2Text);
+
+            // ---- The fake add-in served exactly the expected requests and exited by itself ----
+            var exited = server.WaitForExit(30000);
+            if (exited) server.WaitForExit();
+            Check(exited && server.ExitCode == 0, "the fake add-in exits 0 after exactly " + ExpectedRequests.Length + " requests",
+                exited ? "exit " + server.ExitCode + " " + serverErr.Result.ReplaceLineEndings(" ").Trim() : "still running");
+            var received = File.Exists(log) ? File.ReadAllLines(log) : Array.Empty<string>();
+            Check(received.SequenceEqual(ExpectedRequests), "the fake add-in received the expected operation ids in order", string.Join(",", received));
+            return new Loop(Readback(snapshot0.Out), Readback(snapshot1.Out), drift1Text, selectionText, adopt.Out, projectJson, Readback(snapshot2.Out), drift2Text);
         }
         finally
         {
-            if (!server.HasExited) { try { server.Kill(true); } catch (InvalidOperationException) { } }
+            // Only a failed run leaves the fake add-in running.
+            Kill(server);
             server.WaitForExit(10000);
             _ = serverOut.Wait(5000);
             _ = serverErr.Wait(5000);

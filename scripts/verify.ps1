@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
 $evidence = Join-Path $root ('.bim/verification/' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))
 $pwsh = (Get-Process -Id $PID).Path
+$env:BIM_PWSH = $pwsh  # tests/mirror-journal drift loop: the fake add-in runs on this pwsh; missing pwsh fails
 try {
     Invoke-EvidenceCommand harness $pwsh @('-NoProfile','-File',"$root/tests/harness/Program.ps1") $evidence
     Invoke-EvidenceCommand static $pwsh @('-NoProfile','-File',"$PSScriptRoot/harness-check.ps1") $evidence
