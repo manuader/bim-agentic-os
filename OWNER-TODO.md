@@ -236,3 +236,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay190 (2026-11-11, cloud)
 - No new required owner action. `git pull` (main is now 89fa0dd): release packages now ship skills/ so `generate-prototypes` works from an extracted package; new read-only `diff-intent --project p --intent i` (previews what apply-intent would commit); TypologyPipeline can plan with the composed pack rules (opt-in, library only).
 - Still open: ADR0010 (P2-11) / ADR0011 (P9-03) decisions (recommended A); one 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then catalogue-report; N21 `... -Runs 1`; optional repo licence; delete stray branches relay184-P10-12-red and relay181-P4-10b.
+
+## Relay191 (2026-11-11, cloud)
+- No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) then catalogue-report; 🔒 N21 `... -Runs 1`; `git pull` (main 06fd2a6). Optional: a repository licence (first-party sbom lines stay NOASSERTION until then).
