@@ -244,6 +244,15 @@ internal static class GenerateTypologyTests
             ("a lone surrogate pack", good.Replace(TypologyPack, "\\ud800", StringComparison.Ordinal), "pack"),
             ("a lone surrogate project id", good.Replace(Id, "\\ud800", StringComparison.Ordinal), "project_id"),
             ("a lone surrogate member name", good[..^1] + ",\"\\ud800\":1}", "request"),
+            ("an exponent alternative count", good.Replace("\"alternatives\":4", "\"alternatives\":4e0", StringComparison.Ordinal), "alternatives"),
+            ("a 3.0 family size", good.Replace("\"family_size\":3", "\"family_size\":3.0", StringComparison.Ordinal), "family_size"),
+            ("a duplicate written with an escaped name", good.Replace("\"family_size\":3", "\"family_size\":3,\"\\u0066amily_size\":3", StringComparison.Ordinal), "request.family_size"),
+            ("a duplicate lot member", good.Replace("\"depth_m\":16", "\"depth_m\":16,\"width_m\":16", StringComparison.Ordinal), "lot.width_m"),
+            ("a duplicate weight", good[..^1] + ",\"weights\":{\"area_fit\":0.3,\"area_fit\":0.3}}", "weights.area_fit"),
+            ("null weights", good[..^1] + ",\"weights\":null}", "weights"),
+            ("a null pack", good.Replace("\"" + TypologyPack + "\"", "null", StringComparison.Ordinal), "pack"),
+            ("an int32-overflow family size", good.Replace("\"family_size\":3", "\"family_size\":2147483648", StringComparison.Ordinal), "family_size"),
+            ("an int32-underflow alternative count", good.Replace("\"alternatives\":4", "\"alternatives\":-2147483649", StringComparison.Ordinal), "alternatives"),
         };
         foreach (var member in new[] { "pack", "family_size", "lot", "alternatives", "seed", "project_id" }) malformed.Add(("a missing " + member, Without(member), member));
         foreach (var (label, text, detail) in malformed)
@@ -317,8 +326,23 @@ internal static class GenerateTypologyTests
                     "a CLI in the package layout (cli/ beside skills/, outside any repository) writes the repository run's bytes and stdout", D(packaged) + " under " + outsideBase);
                 var badPackOut = Output();
                 var badPack = CliAt(packageDll, null, "generate-typology", Input("bad-pack.json", good.Replace(TypologyPack, "zz.test.bad-json", StringComparison.Ordinal)), badPackOut);
-                Check(badPack.Exit == 1 && Str(Parse(badPack.Out), "code") == "generate_typology_pack_invalid" && !File.Exists(badPackOut),
-                    "a malformed pack manifest -> generate_typology_pack_invalid, exit 1, no file", D(badPack));
+                Check(badPack.Exit == 1 && Str(Parse(badPack.Out), "code") == "generate_typology_pack_invalid" && Str(Parse(badPack.Out), "detail") == "json_invalid" && !File.Exists(badPackOut),
+                    "a malformed pack manifest -> generate_typology_pack_invalid (json_invalid), exit 1, no file", D(badPack));
+                Directory.CreateDirectory(Path.Combine(packageRoot, "skills", "zz.test.other-id"));
+                File.Copy(Path.Combine(root, "skills", TypologyPack, "skill.json"), Path.Combine(packageRoot, "skills", "zz.test.other-id", "skill.json"));
+                var otherIdOut = Output();
+                var otherId = CliAt(packageDll, null, "generate-typology", Input("other-id-pack.json", good.Replace(TypologyPack, "zz.test.other-id", StringComparison.Ordinal)), otherIdOut);
+                Check(otherId.Exit == 1 && Str(Parse(otherId.Out), "code") == "generate_typology_pack_invalid" && Str(Parse(otherId.Out), "detail") == "id" && !File.Exists(otherIdOut),
+                    "a manifest naming another pack id -> generate_typology_pack_invalid (detail id), exit 1, no file", D(otherId));
+                File.WriteAllText(Path.Combine(packageRoot, "skills", CodePack, "skill.json"), "{");
+                var badCodeOut = Output();
+                var badCode = CliAt(packageDll, null, "generate-typology", acceptedRequest, badCodeOut);
+                Check(badCode.Exit == 1 && Str(Parse(badCode.Out), "code") == "generate_typology_code_pack_invalid" && Str(Parse(badCode.Out), "detail") == "json_invalid" && !File.Exists(badCodeOut),
+                    "a malformed code pack manifest -> generate_typology_code_pack_invalid (json_invalid), exit 1, no file", D(badCode));
+                var bothBadOut = Output();
+                var bothBad = CliAt(packageDll, null, "generate-typology", Input("both-bad-pack.json", good.Replace(TypologyPack, "zz.test.bad-json", StringComparison.Ordinal)), bothBadOut);
+                Check(bothBad.Exit == 1 && Str(Parse(bothBad.Out), "code") == "generate_typology_pack_invalid" && Str(Parse(bothBad.Out), "detail") == "json_invalid" && !File.Exists(bothBadOut),
+                    "with both manifests malformed the typology pack refusal wins (generate_typology_pack_invalid), exit 1, no file", D(bothBad));
                 File.Delete(Path.Combine(packageRoot, "skills", CodePack, "skill.json"));
                 var noCodeOut = Output();
                 var noCode = CliAt(packageDll, null, "generate-typology", acceptedRequest, noCodeOut);
