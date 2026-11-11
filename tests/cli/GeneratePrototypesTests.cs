@@ -235,6 +235,9 @@ internal static class GeneratePrototypesTests
             try
             {
                 var packageDll = CopyCli(Path.Combine(packageRoot, "cli"));
+                // The package markers scripts/package.ps1 writes at the package root (their content is not read by the lookup).
+                File.WriteAllText(Path.Combine(packageRoot, "VERSION"), "0.0.0-test\n");
+                File.WriteAllText(Path.Combine(packageRoot, "manifest.json"), "{}\n");
                 var repoSkills = Path.Combine(root, "skills");
                 foreach (var file in Directory.GetFiles(repoSkills, "*", SearchOption.AllDirectories))
                 {
@@ -263,6 +266,13 @@ internal static class GeneratePrototypesTests
                 var plan = CliAt(packageDll, "plan-layouts", briefPath, planOut, "--alternatives", "1", "--pack", PackId);
                 Check(plan.Exit == 1 && Str(Parse(plan.Out), "code") == "plan_layouts_pack_repository_not_found" && !File.Exists(planOut),
                     "plan-layouts --pack in the package layout is unchanged: plan_layouts_pack_repository_not_found, no file", D(plan));
+                // Without a package marker the folder is not a package root: the repository walk follows (none here).
+                File.Move(Path.Combine(packageRoot, "manifest.json"), Path.Combine(packageRoot, "manifest.json.off"));
+                var noMarkerOut = Output();
+                var noMarker = CliAt(packageDll, "generate-prototypes", twoBedRequest, noMarkerOut);
+                Check(noMarker.Exit == 1 && Str(Parse(noMarker.Out), "code") == "generate_prototypes_repository_not_found" && !File.Exists(noMarkerOut),
+                    "cli/ next to skills/ without manifest.json is not a package root: generate_prototypes_repository_not_found, no file", D(noMarker));
+                File.Move(Path.Combine(packageRoot, "manifest.json.off"), Path.Combine(packageRoot, "manifest.json"));
                 Directory.Delete(Path.Combine(packageRoot, "skills"), true);
                 var noSkillsOut = Output();
                 var noSkills = CliAt(packageDll, "generate-prototypes", twoBedRequest, noSkillsOut);
@@ -282,7 +292,37 @@ internal static class GeneratePrototypesTests
         Pack("zz.test.caba-copy", WithId("zz.test.caba-copy"));
         Pack("zz.test.bad-json", "{");
         Pack("zz.test.mismatch", WithId("zz.test.other"));
+        Pack(PackId, cabaText);
         var fakeDll = CopyCli(Path.Combine(fakeRepo, "cli"));
+
+        // P7-12 review SF1: a stray skills/ beside a binary folder that is not a package (tests/out next to the C# test
+        // project tests/skills, no package markers) never takes over: the repository's skills/ is read.
+        Directory.CreateDirectory(Path.Combine(fakeRepo, "tests", "skills"));
+        var strayDll = CopyCli(Path.Combine(fakeRepo, "tests", "out"));
+        var strayOut = Output();
+        var stray = CliAt(strayDll, "generate-prototypes", twoBedRequest, strayOut);
+        Check(stray.Exit == 0 && File.Exists(strayOut) && File.ReadAllBytes(strayOut).SequenceEqual(written1) && stray.Out == run1.Out,
+            "a CLI in <repo>/tests/out beside an empty <repo>/tests/skills reads <repo>/skills (no stray package root): the repository run's bytes and stdout", D(stray));
+
+        // P7-12 review SF2: the package root is checked before the repository walk. <repo>/dist is a package (cli/, skills/,
+        // VERSION, manifest.json) whose zz.test.mismatch is valid where the repository's names another id, and whose
+        // zz.test.package-only is absent from the repository.
+        var dist = Path.Combine(fakeRepo, "dist");
+        var distDll = CopyCli(Path.Combine(dist, "cli"));
+        File.WriteAllText(Path.Combine(dist, "VERSION"), "0.0.0-test\n");
+        File.WriteAllText(Path.Combine(dist, "manifest.json"), "{}\n");
+        void DistPack(string id) { Directory.CreateDirectory(Path.Combine(dist, "skills", id)); File.WriteAllText(Path.Combine(dist, "skills", id, "skill.json"), WithId(id)); }
+        DistPack("zz.test.mismatch");
+        DistPack("zz.test.package-only");
+        foreach (var distId in new[] { "zz.test.mismatch", "zz.test.package-only" })
+        {
+            var distPackId = DerivedId(canonical.Replace("\"pack\":\"ar.caba.codigo-edificacion\"", "\"pack\":\"" + distId + "\"", StringComparison.Ordinal));
+            var distLibrary = PrototypePipeline.Run(new PrototypeRequest(ApartmentTypology.OneBedroom, new PrototypeLot(7, 12), 2, 0), new PrototypePipelineOptions(SkillParser.Parse(WithId(distId)), distPackId));
+            var distOut = Output();
+            var distRun = CliAt(distDll, "generate-prototypes", Input("dist-" + distId + ".json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"pack\":\"" + distId + "\"}"), distOut);
+            Check(distRun.Exit == 0 && File.Exists(distOut) && File.ReadAllBytes(distOut).SequenceEqual(Utf8(PrototypePipelineSerializer.Serialize(distLibrary))) && Str(Parse(distRun.Out), "project_id") == distPackId.ToString("D"),
+                "a package inside a repository reads its own skills/" + distId + " before the repository's (output equal to the in-process run with the package's manifest)", D(distRun));
+        }
         var copyPack = SkillParser.Parse(WithId("zz.test.caba-copy"));
         var copyCanonical = canonical.Replace("\"pack\":\"ar.caba.codigo-edificacion\"", "\"pack\":\"zz.test.caba-copy\"", StringComparison.Ordinal);
         var copyId = DerivedId(copyCanonical);

@@ -8,7 +8,8 @@
 # P10-13: sbom.json (shipped assemblies with SHA-256, NuGet references of the shipped csproj closure, build-only
 # references such as Nice3point never listed) is listed in manifest.json; package-verify refuses a missing/edited sbom.
 # P7-12: skills/ (every tracked skills file) ships next to cli/; the packaged generate-prototypes, copied outside any
-# repository, reads its pack from there byte-equal to the repository run, and refuses repository_not_found without it.
+# repository, reads its pack from there byte-equal to the repository run, and refuses repository_not_found without it;
+# a tracked skills/ entry that is not a regular file (symlink, submodule) is refused (skills_entry_not_regular).
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -209,6 +210,35 @@ try {
         }
     } catch { $failures.Add("SBOM review checks threw: $($_.Exception.Message)") }
 
+    # --- P7-12 review: a tracked skills/ entry that is not a regular file (mode other than 100644/100755, e.g. a
+    # symlink 120000 or a submodule 160000) is refused before any build; the index entry is staged with --cacheinfo so
+    # no file system symlink is needed on any OS ---
+    try {
+        $modeRepo = Join-Path $work 'skills mode repo'
+        foreach ($name in 'scripts/package.ps1', 'scripts/package-common.ps1', 'scripts/package.version') {
+            $target = Join-Path $modeRepo $name
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $root $name) -Destination $target
+        }
+        foreach ($name in 'Directory.Build.props', 'global.json', '.editorconfig', 'interfaces/cli/Placeholder.cs', 'skills/zz.ok.pack/skill.json') {
+            $target = Join-Path $modeRepo $name
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            [IO.File]::WriteAllText($target, "x`n")
+        }
+        $ErrorActionPreference = 'Continue'
+        & git -C $modeRepo init -q 2>&1 | Out-Null
+        & git -C $modeRepo add -A 2>&1 | Out-Null
+        $blob = [string](& git -C $modeRepo hash-object -w (Join-Path $modeRepo 'skills/zz.ok.pack/skill.json'))
+        & git -C $modeRepo update-index --add --cacheinfo "120000,$($blob.Trim()),skills/zz.link.pack/skill.json" 2>&1 | Out-Null
+        & git -C $modeRepo -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false commit -q -m fixture 2>&1 | Out-Null
+        $staged = [string]((& git -C $modeRepo ls-files -s -- skills/zz.link.pack/skill.json) -join ' ')
+        $ErrorActionPreference = 'Stop'
+        Assert ($staged.StartsWith('120000 ', [StringComparison]::Ordinal)) "skills mode fixture must stage a 120000 entry: '$staged'"
+        $modeOut = Join-Path $work 'skills mode out'
+        $modeRun = Invoke-Script (Join-Path $modeRepo 'scripts/package.ps1') @('-OutputDirectory', $modeOut, '-Dotnet', $Dotnet)
+        Assert ($modeRun.Code -ne 0 -and $modeRun.Output -match 'skills_entry_not_regular' -and $modeRun.Output -match [regex]::Escape('skills/zz.link.pack/skill.json') -and !(Test-Path -LiteralPath $modeOut)) "package.ps1 must refuse a tracked skills/ symlink entry (skills_entry_not_regular, no output): exit $($modeRun.Code) $(Get-Tail $modeRun.Output)"
+    } catch { $failures.Add("P7-12 skills mode checks threw: $($_.Exception.Message)") }
+
     # --- Two independent clean builds ---
     $outA = Join-Path $work 'release A'
     $outB = Join-Path $work 'release B'
@@ -344,7 +374,11 @@ try {
                 $packaged = Invoke-Generate (Join-Path $outsidePackage 'cli/Bim.Cli.dll') $packagedOut
                 Assert ($packaged.Code -eq 0 -and (Test-Path -LiteralPath $packagedOut -PathType Leaf) -and $packaged.Output -match '"status":"succeeded"') "packaged generate-prototypes outside a repository must read skills/<pack>/skill.json from the package (exit $($packaged.Code)): $(Get-Tail $packaged.Output)"
                 $repoCli = Join-Path $root 'interfaces/cli/bin/Release/net8.0/Bim.Cli.dll'
-                if (!(Test-Path -LiteralPath $repoCli -PathType Leaf)) { Write-Host "SKIP packaging generate-prototypes byte-equality: repository CLI not built ($repoCli)" }
+                if (!(Test-Path -LiteralPath $repoCli -PathType Leaf)) {
+                    # On CI (RUNNER_TEMP set) scripts/verify.ps1 always builds the Release CLI first: missing is a failure there.
+                    if ($env:RUNNER_TEMP) { $failures.Add("packaging generate-prototypes byte-equality: repository Release CLI not built on CI ($repoCli)") }
+                    else { Write-Host "SKIP packaging generate-prototypes byte-equality: repository CLI not built ($repoCli)" }
+                }
                 else {
                     $repoOut = Join-Path $work 'generate-repository.json'
                     $repoRun = Invoke-Generate $repoCli $repoOut
