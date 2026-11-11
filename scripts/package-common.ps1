@@ -191,15 +191,36 @@ function Get-PackageNuGetReferences([string]$Root, [string[]]$Projects, [string]
     return $result.ToArray()
 }
 
+# Version of a shipped assembly read from its own bytes (managed metadata: AssemblyInformationalVersion without
+# '+build' metadata, else the assembly version), so it does not depend on the OS, the file path or Win32 version APIs.
 function Get-PackageAssemblyVersion([string]$Path) {
+    $pe = $null
     try {
-        $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
-        foreach ($candidate in [string]$info.ProductVersion, [string]$info.FileVersion) {
-            $value = $candidate.Split('+')[0].Trim()
+        $bytes = [IO.File]::ReadAllBytes($Path)
+        $pe = [Reflection.PortableExecutable.PEReader]::new([Collections.Immutable.ImmutableArray]::Create([byte[]]$bytes))
+        if (!$pe.HasMetadata) { return 'NOASSERTION' }
+        $md = [Reflection.Metadata.PEReaderExtensions]::GetMetadataReader($pe)
+        if (!$md.IsAssembly) { return 'NOASSERTION' }
+        $assembly = $md.GetAssemblyDefinition()
+        foreach ($handle in $assembly.GetCustomAttributes()) {
+            $attribute = $md.GetCustomAttribute($handle)
+            $ctor = $attribute.Constructor
+            if ($ctor.Kind -eq [Reflection.Metadata.HandleKind]::MemberReference) {
+                $member = $md.GetMemberReference([Reflection.Metadata.MemberReferenceHandle]$ctor)
+                if ($member.Parent.Kind -ne [Reflection.Metadata.HandleKind]::TypeReference) { continue }
+                $type = $md.GetTypeReference([Reflection.Metadata.TypeReferenceHandle]$member.Parent)
+            } elseif ($ctor.Kind -eq [Reflection.Metadata.HandleKind]::MethodDefinition) {
+                $type = $md.GetTypeDefinition($md.GetMethodDefinition([Reflection.Metadata.MethodDefinitionHandle]$ctor).GetDeclaringType())
+            } else { continue }
+            if ($md.GetString($type.Namespace) -cne 'System.Reflection' -or $md.GetString($type.Name) -cne 'AssemblyInformationalVersionAttribute') { continue }
+            $blob = $md.GetBlobReader($attribute.Value)
+            if ($blob.ReadUInt16() -ne 1) { continue }
+            $value = ([string]$blob.ReadSerializedString()).Split('+')[0].Trim()
             if ($value -cmatch '\A[0-9A-Za-z][0-9A-Za-z.-]*\z') { return $value }
         }
-    } catch { }
-    return 'NOASSERTION'
+        return $assembly.Version.ToString()
+    } catch { return 'NOASSERTION' }
+    finally { if ($pe) { $pe.Dispose() } }
 }
 
 # Canonical sbom.json: fixed key order, LF endings, assemblies (.dll/.exe) in ordinal path order, references sorted.
@@ -276,7 +297,12 @@ function Test-PackageSbom([string]$Directory, $Manifest) {
             elseif ($listed[$assembly] -cne (Get-FileHash -LiteralPath (Join-Path $base $assembly) -Algorithm SHA256).Hash.ToLowerInvariant()) { $details.Add("sha256 differs for $assembly") }
         }
         if ([string]$sbom.version -cne [string]$Manifest.version -or [string]$sbom.source_commit -cne [string]$Manifest.source_commit) { $details.Add('version/source_commit differ from manifest.json') }
-        if ($details.Count -eq 0) { $details.Add('not the canonical sbom for this package') }
+        if ($details.Count -eq 0) {
+            $have = $text.Split("`n"); $want = $expected.Split("`n"); $line = 0
+            while ($line -lt $have.Length -and $line -lt $want.Length -and $have[$line] -ceq $want[$line]) { $line++ }
+            $got = if ($line -lt $have.Length) { $have[$line].Replace("`r", '\r') } else { '<end>' }; $exp = if ($line -lt $want.Length) { $want[$line] } else { '<end>' }
+            $details.Add("not the canonical sbom for this package (line $($line + 1): got '$(if ($got.Length -gt 200) { $got.Substring(0, 200) } else { $got })' expected '$(if ($exp.Length -gt 200) { $exp.Substring(0, 200) } else { $exp })')")
+        }
         $problems.Add("sbom_mismatch: sbom.json does not describe the package: $($details -join '; ')")
     }
     return $problems.ToArray()
