@@ -1762,6 +1762,41 @@
       ],
       "blocker": "No third-party NuGet package ships today (synthetic fixtures only); include/exclude flags on transitive edges not modelled (may over-list); SDK-implicit packages not walked (their binaries refused as unattributed); first-party detection needs the folder's deps.json; file-name matching.",
       "scope": "P10-14: sbom attributes every shipped .dll/.exe/.so/.dylib to a direct or transitive NuGet package from each entry project's own project.assets.json (dependency, assemblies, natives, nuspec SPDX licence, package Id@Version per the folder's deps.json); sbom_unattributed / sbom_attribution_ambiguous refusals; first-party = deps.json project entries; real package bytes unchanged. CI red 43033968042/43054876471, green 43058280336."
+    },
+    {
+      "id": "revit-command-read-timeout-option",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/RevitCommandOptions.cs",
+        "interfaces/cli/Program.cs",
+        "interfaces/mcp/McpServer.cs",
+        "interfaces/mcp/Program.cs",
+        "core/Bim.Core/RevitCommands.cs",
+        "tests/cli/RevitCommandReadTimeoutTests.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "No Revit run; CLI and MCP option parsers are separate copies (P1-22); MCP all:true overall deadline stays 1800 s whatever the read timeout; refusal wording for repeated/stray revit-command options changed (code unchanged).",
+      "scope": "P1-20: `revit-command … [--all] --read-timeout-seconds n` and `Bim.Mcp.dll --read-timeout-seconds n` (McpServer.ReadTimeout) pass a 1..86400 s timeout to RevitCommandService.PipeTransportWithReadTimeout; typed read_timeout_invalid / mcp_option_unknown (RevitCommandCodes.ClientSide) before any I/O; stalled fake pipe gives pipe_read_timeout within the bound (CLI single and --all, MCP single and all:true page cut); absent flag keeps PipeTransport and today's bytes. CI red 43073359788, green 43075435525; review red 43083652387, green 43086519631."
+    },
+    {
+      "id": "mirror-drift-loop-journal-create-delete",
+      "status": "unit-tested",
+      "evidence": [
+        "tests/mirror-journal/MirrorDriftLoopChecks.cs"
+      ],
+      "blocker": "Journal hand-built by the test (fake add-in journal.read always empty; P2-18); add-in map update simulated from map_adds/map_removals; hosted dependents and restore choices not covered; fake add-in only.",
+      "scope": "P2-16: real-CLI fake add-in loop, twice byte-identical: external move/create/delete classified external_edit from the mirror request journal (changed/extra/missing, journal evidence incl. deleted_id_match), adopt all three → revision 2 head with provenance, replay/stale refusals, second drift with a fresh peek reply drift 0; negative without journal entries → unknown and created wall out_of_scope; P2-14 run now asserts unknown classification. CI red 43073561189 (deliberate pinned wrong expectation), green 43075645689; review green 43089718042."
+    },
+    {
+      "id": "cad-pdf-to-layouts-e2e",
+      "status": "unit-tested",
+      "evidence": [
+        "tests/cad/fixtures/brief-plan-pdf.py",
+        "tests/cad/fixtures/brief-plan.pdf",
+        "tests/cli/CadPdfToLayoutsTests.cs"
+      ],
+      "blocker": "Uncompressed content stream, no Form XObject, no ToUnicode/font encodings (P6-16, P6-17); generator rerun skipped on Windows; cad-brief itself never refuses without a scale (P6-07 contract), refusal asserted on cad-draft.",
+      "scope": "P6-15: vector PDF twin of brief-plan.dxf (stdlib deterministic generator, 20 mm per page unit) runs cad-brief (--calibrate or --metres-per-unit) → cad-plan-brief --brief-only → plan-layouts through the real CLI byte-equal to in-process and to the DXF chain, pinned 566058984bb381768338f79137a18078bcc5ef6cfdfee0698226a7b84a86408a; kept/dropped planner rooms pinned; draft codes and room confidences equal to the DXF twin; cad_uncalibrated on cad-draft without a scale; de-DE culture. CI red 43076754909 (placeholder pin), green 43079861293; review green 43092611434."
     }
   ]
 }
