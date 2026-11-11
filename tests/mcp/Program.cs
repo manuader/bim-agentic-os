@@ -314,6 +314,11 @@ var inspectAll=Node(allServer.Handle(Request(16,"tools/call",new JsonObject{["na
 Check(ErrorCode(inspectAll)==-32602 && inspectAll["error"]!["message"]!.GetValue<string>()=="invalid_params: unexpected argument all" && AllSent()==allBefore,"all is not an argument of other revit_* tools (-32602)");
 // The real CLI and the MCP server on the same fake add-in process pipe (one connection per page; the next listening
 // instance exists before the current one is disposed, like tests/integration/fake-revit-command-pipe.ps1).
+// On Unix a .NET pipe is a Unix domain socket under Path.GetTempPath(), whose path must fit 108 characters; verify.ps1
+// points TMPDIR at a long evidence directory, so this section (and the CLI it starts, which inherits the environment)
+// uses /tmp/ and restores TMPDIR afterwards.
+var allTmpDir=Environment.GetEnvironmentVariable("TMPDIR");
+if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR","/tmp/");
 var allPipeName="bim-agentic-os-2025-"+Random.Shared.Next(100000000,999999999).ToString(System.Globalization.CultureInfo.InvariantCulture);
 System.IO.Pipes.NamedPipeServerStream NewAllListener()=>new(allPipeName,System.IO.Pipes.PipeDirection.InOut,2,System.IO.Pipes.PipeTransmissionMode.Byte,System.IO.Pipes.PipeOptions.Asynchronous);
 var allListener=NewAllListener();
@@ -352,6 +357,7 @@ allMode="page";
 Check(IsError(pipedLoop) && FailureCode(pipedLoop)==RevitElementQueryPagingCodes.CursorLoop && Text(pipedLoop)==cliLoop,"revit_query_elements all:true cursor_loop on the fake process pipe is byte-equal to the CLI --all stdout");
 var cliBadPipe=Cli("revit-command",allEnvelopePath,"not-a-process-pipe","--all");
 Check(Text(allBadPipe)==cliBadPipe,"revit_query_elements all:true pipe refusal is byte-equal to the CLI --all early refusal");
+if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR",allTmpDir);
 // P9-02: the structure commands are generated tools with the same read/write split and guards.
 Check(RevitCommandCatalogue.Structure.Select(spec=>spec.Name).SequenceEqual(new[]{"query.grids","query.structural_types","grid.create","structural_column.create","structural_beam.create","foundation.create_isolated","foundation.create_wall"}) && RevitCommandCatalogue.Structure.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the P9-02 structure commands, all in the catalogue enumeration");
 foreach(var (tool,readOnly) in new[]{("revit_query_grids",true),("revit_query_structural_types",true),("revit_grid_create",false),("revit_structural_column_create",false),("revit_structural_beam_create",false),("revit_foundation_create_isolated",false),("revit_foundation_create_wall",false)}) {
