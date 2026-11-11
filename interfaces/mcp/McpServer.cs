@@ -41,8 +41,13 @@ namespace Bim.Mcp;
 // RevitCommandService.Run (RevitServiceTransport, as the CLI revit-command --all verb), and its text is the
 // ElementQueryAllResult JSON, byte-equal to that verb's stdout; refusals (cursor_loop, page_limit_exceeded,
 // listing_too_large and the early ones) are isError in the same listing shape. Absent or false, the call is unchanged.
-// The permission level stays read. Known difference: the CLI reads the owner policy files even for this read-only
-// command (a malformed owner file refuses it); here, as without all, they are not read.
+// The permission level stays read. Because this server is long-lived, all:true has tighter caps than the CLI: at most
+// DefaultQueryAllBytes (32 MiB) of element JSON (listing_too_large beyond it; CLI byte-equality holds for listings under
+// this cap, the CLI allowing 256 MiB) and an overall deadline DefaultQueryAllDeadline (1800 s, the CLI's per-page read
+// timeout) for the whole listing: a page due after it is not sent, and on the real pipe each page's read timeout is
+// cut to the time left, both reported as query_all_deadline_exceeded in the listing shape (the CLI has no overall
+// deadline). Known difference: the CLI reads the owner policy files even for this read-only command (a malformed owner
+// file refuses it); here, as without all, they are not read.
 public sealed class McpServer
 {
     public const int MaxLineChars = 8 * 1024 * 1024;
@@ -100,9 +105,17 @@ public sealed class McpServer
     readonly Func<string, string, string?> revitTransport;
     readonly RevitFileSystemProbe revitProbe;
 
-    // Caps of revit_query_elements all:true; the core RevitElementQueryPaging defaults (the CLI's). Tests lower them.
+    // Caps of revit_query_elements all:true: the core page and element caps, a 32 MiB element-JSON cap (below the
+    // CLI's 256 MiB) and an overall deadline on QueryAllClock. Tests lower them and inject the clock.
+    public const long DefaultQueryAllBytes = 32L * 1024 * 1024;
+    public static readonly TimeSpan DefaultQueryAllDeadline = RevitCommandService.DefaultReadTimeout;
+    public const string QueryAllDeadlineExceeded = "query_all_deadline_exceeded";
     internal (int Pages, int Elements, long Bytes) QueryAllCaps { get; init; } =
-        (RevitElementQueryPaging.MaxPages, RevitElementQueryPaging.MaxElements, RevitElementQueryPaging.MaxListingBytes);
+        (RevitElementQueryPaging.MaxPages, RevitElementQueryPaging.MaxElements, DefaultQueryAllBytes);
+    internal TimeSpan QueryAllDeadline { get; init; } = DefaultQueryAllDeadline;
+    internal Func<DateTimeOffset> QueryAllClock { get; init; } = () => DateTimeOffset.UtcNow;
+    // True when revitTransport is the real process pipe, whose read timeout all:true can cut to the time left.
+    readonly bool realPipe;
 
     // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), re-read whenever the owner files change
     // (RevitCommandPolicySource: one stat per write call), the real process pipe and file system. A malformed owner
@@ -121,6 +134,7 @@ public sealed class McpServer
         ArgumentNullException.ThrowIfNull(revitPolicy);
         this.revitPolicy = revitPolicy;
         this.revitTransport = revitTransport ?? RevitCommandService.PipeTransport;
+        realPipe = revitTransport is null;
         this.revitProbe = revitProbe ?? RevitFileSystemProbe.Real;
         ArgumentNullException.ThrowIfNull(catalogue);
         // Names first, so a collision is reported as such before any entry is classified.
@@ -242,8 +256,32 @@ public sealed class McpServer
             return (ElementQueryAllResult.Refusal(refusal.Code, refusal.Field, refusal.Detail).ToJson(), true);
         }
         var (pages, elements, bytes) = QueryAllCaps;
-        var listing = RevitElementQueryPaging.All(CommandEnvelope(RevitElementQueryPaging.Command, arguments), new RevitServiceTransport(pipeName, RevitCommandPolicy.None, revitTransport), pages, elements, bytes);
+        var transport = new DeadlineTransport(pipeName, revitTransport, realPipe, revitProbe, QueryAllClock, QueryAllDeadline);
+        var listing = RevitElementQueryPaging.All(CommandEnvelope(RevitElementQueryPaging.Command, arguments), transport, pages, elements, bytes);
         return (listing.ToJson(), !listing.IsSuccess);
+    }
+
+    // Each page through RevitCommandService.Run (as RevitServiceTransport), within one overall deadline from its creation:
+    // a page due after the deadline is answered query_all_deadline_exceeded without being sent, and on the real pipe a
+    // page's read timeout is the time left when that is below the default, its pipe_read_timeout reported as the deadline.
+    sealed class DeadlineTransport(string pipeName, Func<string, string, string?> transport, bool realPipe, RevitFileSystemProbe probe, Func<DateTimeOffset> clock, TimeSpan deadline) : IRevitCommandTransport
+    {
+        readonly DateTimeOffset start = clock();
+
+        string Exceeded() => RevitCommandResponse.Failure(QueryAllDeadlineExceeded, null,
+            "the all:true listing took longer than its " + ((long)deadline.TotalMilliseconds).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor").ToJson();
+
+        public string? Send(string envelopeJson)
+        {
+            var left = deadline - (clock() - start);
+            if (left <= TimeSpan.Zero) return Exceeded();
+            var cut = realPipe && left < RevitCommandService.DefaultReadTimeout;
+            var line = RevitCommandService.Run(pipeName, envelopeJson, RevitCommandPolicy.None, cut ? RevitCommandService.PipeTransportWithReadTimeout(left) : transport, probe).Line;
+            if (!cut) return line;
+            try { return RevitCommandResponse.Parse(line).Code == RevitCommandCodes.PipeReadTimeout ? Exceeded() : line; }
+            catch (RevitCommandException) { return line; }
+        }
     }
 
     // The command envelope from the tool arguments, raw values copied unchanged.
