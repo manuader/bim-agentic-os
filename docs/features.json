@@ -1684,6 +1684,37 @@
       ],
       "blocker": "Shipped projects have no PackageReference today, so nuget_references is [] and the reference/licence path is exercised on synthetic trees only; transitive packages not attributed (P10-14); first-party Bim.* licence NOASSERTION (no LICENSE in the repo); not CycloneDX/SPDX; unsigned, so a consistent sbom+manifest rewrite still verifies (vendor entries always refused).",
       "scope": "P10-13: package.ps1 writes canonical sbom.json (schema bim-agentic-os/package-sbom/v1, version, source_commit; assemblies: every shipped dll/exe ordinal-sorted with path, name, version read via System.Reflection.Metadata, licence, sha256; nuget_references: direct PackageReferences of the cli/mcp ProjectReference closure + Directory.Build.props, normalised pinned versions, nuspec SPDX expression, projects) before manifest.json, which lists it; build-only (Include/ExcludeAssets, case-insensitive) and Nice3point/Revit/Autodesk never listed; package refuses unpinned versions and sbom_license_unknown (allowlist in script); package-verify refuses sbom_missing, sbom_invalid, sbom_build_only, sbom_mismatch (unlisted dll, hash/version/commit, non-canonical text or references). CI red 42962728184, green 42966315083, review red 42974651912, green 42974975958."
+    },
+    {
+      "id": "mcp-query-elements-all",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/mcp/McpServer.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "Never run in Revit; MCP caps are tighter than the CLI (32 MiB vs 256 MiB, 1800 s overall deadline vs none) so byte-equality holds only under the MCP caps; with an injected transport the deadline is checked between pages only; owner policy files are not read (CLI reads them).",
+      "scope": "P1-16: MCP revit_query_elements optional boolean `all` runs RevitElementQueryPaging.All over the same transport and returns ElementQueryAllResult JSON byte-equal to CLI `revit-command … --all` on a real fake process pipe; typed cursor_loop, page_limit_exceeded, listing_too_large, query_all_deadline_exceeded, envelope_invalid in the listing shape; absent/false keeps today's bytes; read label unchanged. CI red 42983336938, green 42986703668, review red 42994986316, green 42997716419."
+    },
+    {
+      "id": "mirror-drift-loop-e2e",
+      "status": "unit-tested",
+      "evidence": [
+        "tests/mirror-journal/MirrorDriftLoopChecks.cs",
+        "scripts/verify.ps1"
+      ],
+      "blocker": "Fake add-in only, never Revit; mirror request carries no journal so findings classify unknown, not external_edit; update adopt only (create/delete adopts: P2-16).",
+      "scope": "P2-14: real Release CLI over the pwsh fake add-in pipe: init → query.snapshot → element.move → mirror-drift → mirror-drift-select → mirror-drift-adopt (revision 2 with the adopted geometry and provenance, replay, stale refusal) → second mirror-drift reports no drift; two runs byte-identical; fake request log asserted. CI red 42983599263 (deliberate), green 42985259803, review green 42999991673."
+    },
+    {
+      "id": "cad-plan-brief-brief-only",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/CadPlanBriefCommand.cs",
+        "tests/cli/CadPlanBriefTests.cs",
+        "tests/cli/CadToLayoutsTests.cs"
+      ],
+      "blocker": "Bare output drops kept/dropped/issues/source details (run without the flag for them); synthetic DXF fixtures only.",
+      "scope": "P6-14: `cad-plan-brief … --brief-only` writes exactly the full document's `brief` member bytes (no BOM, no trailing newline), fed directly to plan-layouts; envelope adds brief_only:true; without the flag file and envelope bytes pinned; refusals and never-overwrite unchanged; CadToLayoutsTests drops the copy step and keeps digest 566058984bb3…. CI red 42983360377, green 42984926046, review red 42989848662, green 42992146562."
     }
   ]
 }
