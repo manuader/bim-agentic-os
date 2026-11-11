@@ -70,7 +70,7 @@ namespace Bim.Cli;
 // the dry summary. Without --execute nothing changes: the dry plan, its bytes and its summary are those above.
 internal static class DocUpdateCommand
 {
-    public const string Usage = "usage: doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json | --probe-dependents process-pipe-name [--accept uid]... [--execute --expected-document sha256]]";
+    public const string Usage = "usage: doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json | --probe-dependents process-pipe-name [--accept uid]... [--execute --expected-document plan-sha256]] (--output: a new file, never overwritten; plan-sha256: the sha256 a dry run printed)";
     public const string UsageCode = "doc_update_usage";
     public const string ProjectInvalid = "doc_update_project_invalid";
     public const string RealizedInvalid = "doc_update_realized_invalid";
