@@ -99,6 +99,9 @@ internal static class PlanLayoutsTests
             && usageDetail.Contains("[--pack id]", StringComparison.Ordinal) && usageDetail.Contains("skills/<id>/skill.json", StringComparison.Ordinal),
             "the usage text documents the verb, its options (with --pack and the repository skills/<id>/skill.json lookup) and the alternatives bound", usageDetail);
 
+        var verbList = Cli("no-such-verb");
+        Check(verbList.Out.Contains("plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id]", StringComparison.Ordinal), "the CLI's default usage lists plan-layouts with --pack", D(verbList));
+
         // ---- success: equals the in-process run, canonical bytes, deterministic ----
         var exampleText = File.ReadAllText(Path.Combine(root, "examples", "brief", "apartment-2br.json"));
         var example = BriefParser.Parse(exampleText);
@@ -370,6 +373,22 @@ internal static class PlanLayoutsTests
         var q3 = Never(); ExpectFailure("an unknown pack with a brief without a site", "plan_layouts_site_required", q3, "plan-layouts",
             Input("nosite.json", small.Replace("\"site\":{\"width_m\":6,\"depth_m\":8},", "", StringComparison.Ordinal)), q3, "--pack", "xx.no-such.pack");
 
+        // An existing output is refused before the (unknown) pack is looked up, and keeps its bytes.
+        var keptOut = Output("kept.json");
+        File.WriteAllBytes(keptOut, sentinel);
+        var kept = Cli("plan-layouts", smallPath, keptOut, "--pack", "xx.no-such.pack");
+        Check(kept.Exit == 1 && Str(Parse(kept.Out), "code") == "output_exists" && File.ReadAllBytes(keptOut).SequenceEqual(sentinel),
+            "an existing output with an unknown --pack -> output_exists, the file byte-identical", D(kept));
+        // SkillPackLookup.Load guards its id itself (callers check first): a non-id is Invalid "id", nothing read.
+        foreach (var badId in new[] { "../x", "", "ar.caba/x", "..", "Ar.Caba" })
+        {
+            Bim.Cli.SkillPackException? lookupError = null;
+            try { Bim.Cli.SkillPackLookup.Load(badId); }
+            catch (Bim.Cli.SkillPackException error) { lookupError = error; }
+            Check(lookupError is { Problem: Bim.Cli.SkillPackProblem.Invalid, Detail: "id" }, "SkillPackLookup.Load('" + badId + "') refuses Invalid with detail id",
+                lookupError is null ? "<no refusal>" : lookupError.Problem + " " + lookupError.Detail);
+        }
+
         // A scratch repository with its own skills/ (the CLI copied under it finds it as the repository).
         var cliDirectory = Path.GetDirectoryName(cliDll)!;
         string CopyCli(string target)
@@ -390,8 +409,14 @@ internal static class PlanLayoutsTests
         static string MinRule(string id, string severity, string room, string property, string threshold) =>
             "{\"id\":\"" + id + "\",\"severity\":\"" + severity + "\",\"target\":{\"room\":\"" + room + "\"},\"check\":{\"op\":\"min\",\"property\":\"" + property + "\"," + threshold + "},\"message\":\"m\"}";
         var strictText = Manifest1("zz.test.strict", MinRule("living-side", "error", "living*", "min_side_m", "\"value\":3.2") + "," + MinRule("living-area", "error", "living*", "area_m2", "\"value\":16")
-            + "," + MinRule("bath-side", "error", "bath*", "min_side_m", "\"value\":1.25") + "," + MinRule("bed-area", "error", "bedroom*", "area_m2", "\"value\":8"));
+            + "," + MinRule("living-area-2", "error", "living*", "area_m2", "\"value\":12") + "," + MinRule("bath-side", "error", "bath*", "min_side_m", "\"value\":1.25") + "," + MinRule("bed-area", "error", "bedroom*", "area_m2", "\"value\":8"));
         FakePack("zz.test.strict", Utf8(strictText));
+        // The larger area minimum second (the group keeps the largest whatever the order) and a parameter threshold 1.25.
+        var ascendingText = Manifest1("zz.test.ascending", MinRule("a1", "error", "living*", "area_m2", "\"value\":10") + "," + MinRule("a2", "error", "living*", "area_m2", "\"value\":14"));
+        FakePack("zz.test.ascending", Utf8(ascendingText));
+        var paramText = Manifest1("zz.test.param", MinRule("side", "error", "living*", "min_side_m", "\"parameter\":\"p\""))
+            .Replace("\"rules\":[", "\"parameters\":[{\"name\":\"p\",\"type\":\"number\",\"default\":1.25}],\"rules\":[", StringComparison.Ordinal);
+        FakePack("zz.test.param", Utf8(paramText));
         FakePack("zz.test.bad-json", Utf8("{"));
         FakePack("zz.test.mismatch", Utf8(Manifest1("zz.test.other", MinRule("r", "error", "living*", "area_m2", "\"value\":9"))));
         FakePack("zz.test.zero", Utf8(Manifest1("zz.test.zero", MinRule("ok", "error", "living*", "area_m2", "\"value\":9") + "," + MinRule("zero-side", "error", "office*", "min_side_m", "\"value\":0"))));
@@ -400,13 +425,55 @@ internal static class PlanLayoutsTests
         Directory.CreateDirectory(Path.Combine(fakeRepo, "skills", "zz.test.empty-dir"));
         var fakeDll = CopyCli(Path.Combine(fakeRepo, "cli"));
         var strictPack = SkillParser.Parse(strictText);
-        var strictRules = new[] { Rule("living*", 16, 3.2, "zz.test.strict living-side living-area"), Rule("bath*", null, 1.25, "zz.test.strict bath-side") };
+        var strictRules = new[] { Rule("living*", 16, 3.2, "zz.test.strict living-side living-area living-area-2"), Rule("bath*", null, 1.25, "zz.test.strict bath-side") };
         Check(CoreRules(strictPack, smallBrief).SequenceEqual(strictRules), "a repository pack's rules (largest minimums per glob, rule ids in pack order) equal TypologyRules.From", Rules(CoreRules(strictPack, smallBrief)));
         var strictOut = Output();
         var pack8 = CliAt(fakeDll, null, "plan-layouts", smallPath, strictOut, "--alternatives", "2", "--pack", "zz.test.strict");
         var expectedStrict = ExpectedWith(smallBrief, 2, 0, strictRules);
         Check(pack8.Exit == 0 && Written(strictOut).SequenceEqual(expectedStrict) && Int(Parse(pack8.Out), "pack_rules") == 2,
             "a pack from the repository's skills/ (found from the CLI binary) plans with its rules, equal to the in-process run", D(pack8) + Sizes(Written(strictOut), expectedStrict));
+        // Max of group with the larger value second.
+        var ascendingRules = new[] { Rule("living*", 14, null, "zz.test.ascending a1 a2") };
+        Check(CoreRules(SkillParser.Parse(ascendingText), smallBrief).SequenceEqual(ascendingRules), "a group keeps the largest area minimum when it comes second (TypologyRules.From)",
+            Rules(CoreRules(SkillParser.Parse(ascendingText), smallBrief)));
+        var ascendingOut = Output();
+        var pack9 = CliAt(fakeDll, null, "plan-layouts", smallPath, ascendingOut, "--alternatives", "1", "--pack", "zz.test.ascending");
+        var expectedAscending = ExpectedWith(smallBrief, 1, 0, ascendingRules);
+        Check(pack9.Exit == 0 && Written(ascendingOut).SequenceEqual(expectedAscending) && Int(Parse(pack9.Out), "pack_rules") == 1,
+            "--pack with the larger area minimum second plans with the largest (14 m2), equal to the in-process run", D(pack9) + Sizes(Written(ascendingOut), expectedAscending));
+        // A parameter default 1.25 is traced as "(p 1.25)", invariantly under de_DE too.
+        var paramRules = new[] { Rule("living*", null, 1.25, "zz.test.param side (p 1.25)") };
+        Check(CoreRules(SkillParser.Parse(paramText), smallBrief).SequenceEqual(paramRules), "a parameter default 1.25 is traced as '(p 1.25)' like TypologyRules.From",
+            Rules(CoreRules(SkillParser.Parse(paramText), smallBrief)));
+        var expectedParam = ExpectedWith(smallBrief, 1, 0, paramRules);
+        var paramOut = Output();
+        var pack10 = CliAt(fakeDll, null, "plan-layouts", smallPath, paramOut, "--alternatives", "1", "--pack", "zz.test.param");
+        Check(pack10.Exit == 0 && Written(paramOut).SequenceEqual(expectedParam) && Encoding.UTF8.GetString(Written(paramOut)).Contains("zz.test.param side (p 1.25)", StringComparison.Ordinal),
+            "--pack with a parameter default 1.25 equals the in-process run and the file cites '(p 1.25)'", D(pack10) + Sizes(Written(paramOut), expectedParam));
+        {
+            var german = false;
+            try { german = CultureInfo.GetCultureInfo("de-DE").NumberFormat.NumberDecimalSeparator == ","; }
+            catch (CultureNotFoundException) { }
+            if (!german) Console.WriteLine("SKIP plan-layouts: de-DE culture data unavailable (invariant globalization); --pack parameter culture check not run");
+            else
+            {
+                var germanOut = Output();
+                var pack11 = CliAt(fakeDll, new Dictionary<string, string> { ["LANG"] = "de_DE.UTF-8", ["LC_ALL"] = "de_DE.UTF-8" }, "plan-layouts", smallPath, germanOut, "--alternatives", "1", "--pack", "zz.test.param");
+                Check(pack11.Exit == 0 && Written(germanOut).SequenceEqual(expectedParam) && pack11.Out == pack10.Out, "under de_DE the '(p 1.25)' trace and the bytes are invariant", D(pack11));
+            }
+        }
+        // A pack minimum above a brief room's maximum is the planner's area_range_conflict: an infeasible set, written.
+        const string capped = "{\"brief_version\":1,\"name\":\"Capped\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"
+            + "\"rooms\":[{\"id\":\"living\",\"name\":\"Living\",\"target_area_m2\":11,\"min_area_m2\":10,\"max_area_m2\":12},{\"id\":\"bath\",\"name\":\"Bath\",\"target_area_m2\":4,\"min_area_m2\":3}]}";
+        var cappedBrief = BriefParser.Parse(capped);
+        var cappedOut = Output();
+        var pack12 = CliAt(fakeDll, null, "plan-layouts", Input("capped.json", capped), cappedOut, "--alternatives", "2", "--pack", "zz.test.strict");
+        var expectedCapped = ExpectedWith(cappedBrief, 2, 0, strictRules);
+        var cappedText = Encoding.UTF8.GetString(Written(cappedOut));
+        Check(pack12.Exit == 0 && Str(Parse(pack12.Out), "set_status") == "infeasible" && Written(cappedOut).SequenceEqual(expectedCapped)
+            && cappedText.Contains(PlanCodes.AreaRangeConflict, StringComparison.Ordinal) && cappedText.Contains("rules[0] zz.test.strict living-side living-area living-area-2", StringComparison.Ordinal),
+            "a pack minimum (16 m2) above the brief maximum (12 m2) writes the infeasible set with area_range_conflict citing rules[0], equal to the in-process run",
+            D(pack12) + Sizes(Written(cappedOut), expectedCapped) + " " + (cappedText.Length > 600 ? cappedText[..600] : cappedText));
         var plainFakeOut = Output();
         var plainFake = CliAt(fakeDll, null, "plan-layouts", smallPath, plainFakeOut, "--alternatives", "2");
         Check(plainFake.Exit == 0 && Written(plainFakeOut).SequenceEqual(Expected(smallBrief, 2, 0)), "without --pack the repository's packs are not read", D(plainFake));
