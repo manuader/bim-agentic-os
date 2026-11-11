@@ -19,8 +19,15 @@ using Bim.Generative;
 //      AlternativeRanker.Rank -> AlternativeSetSerializer.Serialize (UTF-8, no BOM), computed on the library's own
 //      ProjectBrief object (no JSON round trip on the oracle side).
 //   2. Its SHA-256 equals the pinned digest below, and the set is ranked with at least one alternative.
-//   3. A second full chain run, and a run with the child processes under a comma-decimal culture (de_DE, when the
-//      culture data exists), write the same bytes; the in-process run under de-DE current culture is the same too.
+//   3. A second full chain run writes the same bytes; the in-process run under de-DE current culture is the same too;
+//      the planner document's brief member equals BriefSerializer.Serialize of the in-process planner brief (so a
+//      difference is localised to the cad stages before plan-layouts).
+// Cultures: the de-DE culture data must exist on Linux CI (OperatingSystem.IsLinux() and CI=true): a missing culture
+// there FAILS, elsewhere it is a counted skip. The child-process run sets LANG/LC_ALL=de_DE.UTF-8, which .NET reads
+// for CurrentCulture only on Unix; on Windows it has no effect, so that check is a counted skip there. No existing CLI
+// verb echoes its current culture, so there is no cheap positive probe that the child really ran under de-DE: the
+// evidence is the in-process de-DE separator check (the ICU data exists for the same runtime) plus .NET's documented
+// Unix behaviour (LC_ALL > LANG selects CurrentCulture).
 internal static class CadToLayoutsTests
 {
     // SHA-256 (lower-case hex) of layouts.json for brief-plan.dxf, site 10 x 8, name "Brief plan", 3 alternatives, seed 7.
@@ -29,7 +36,7 @@ internal static class CadToLayoutsTests
     const int Alternatives = 3;
     const int Seed = 7;
 
-    public static void Run(string root, string work, string dotnet, string cliDll, Action<bool, string, string> check)
+    public static void Run(string root, string work, string dotnet, string cliDll, Action<bool, string, string> check, Action<string, string> skip)
     {
         var scratch = Path.Combine(work, "cad-to-layouts");
         Directory.CreateDirectory(scratch);
@@ -44,7 +51,11 @@ internal static class CadToLayoutsTests
             using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(180000)) { process.Kill(true); return (-1, "<timed out>", ""); }
+            if (!process.WaitForExit(180000))
+            {
+                try { process.Kill(true); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { }
+                return (-1, "<timed out>", "");
+            }
             process.WaitForExit();
             var text = stdout.Result.TrimEnd('\n', '\r');
             return (process.ExitCode, text, stderr.Result.ReplaceLineEndings(" ").Trim());
@@ -58,7 +69,7 @@ internal static class CadToLayoutsTests
         var dxfBytes = File.ReadAllBytes(dxfPath);
 
         // ---- in process: BriefExtract -> BriefPlanner (sited) -> SpacePlanner seeds 7..9 -> AlternativeRanker ----
-        static (byte[] Bytes, AlternativeSet Set) InProcessSet(byte[] dxf)
+        static (byte[] Bytes, AlternativeSet Set, ProjectBrief Brief) InProcessSet(byte[] dxf)
         {
             var draft = BriefExtract.FromDxf(DxfReader.Parse(dxf, "brief-plan.dxf"));
             var constraints = draft.Brief.Constraints with { Site = new BriefSite(new BriefValue<double>(10), new BriefValue<double>(8)) };
@@ -66,10 +77,11 @@ internal static class CadToLayoutsTests
             var plans = new SpacePlan[Alternatives];
             for (var index = 0; index < Alternatives; index++) plans[index] = SpacePlanner.Plan(planned.Brief, unchecked(Seed + index));
             var set = AlternativeRanker.Rank(planned.Brief, plans);
-            return (Utf8(AlternativeSetSerializer.Serialize(set)), set);
+            return (Utf8(AlternativeSetSerializer.Serialize(set)), set, planned.Brief);
         }
         static byte[] InProcess(byte[] dxf) => InProcessSet(dxf).Bytes;
-        var (expected, expectedSet) = InProcessSet(dxfBytes);
+        var (expected, expectedSet, expectedBrief) = InProcessSet(dxfBytes);
+        var expectedBriefText = BriefSerializer.Serialize(expectedBrief);
         Check(expectedSet.Status == AlternativeSetStatus.Ranked && expectedSet.Ranked.Count >= 1, "oracle: the in-process run ranks at least one alternative",
             expectedSet.Status + " ranked " + expectedSet.Ranked.Count.ToString(CultureInfo.InvariantCulture));
 
@@ -98,6 +110,8 @@ internal static class CadToLayoutsTests
             catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException) { Check(false, label + ": the planner document parses", e.Message); }
             Check(briefText is not null, label + ": the planner document is valid and carries a brief member", Encoding.UTF8.GetString(Read(plannerPath)));
             if (briefText is null) return Array.Empty<byte>();
+            Check(briefText == expectedBriefText, label + ": the planner brief member equals BriefSerializer.Serialize of the in-process planner brief",
+                "cli " + (briefText.Length > 400 ? briefText[..400] + "..." : briefText) + " in-process " + (expectedBriefText.Length > 400 ? expectedBriefText[..400] + "..." : expectedBriefText));
             File.WriteAllBytes(briefPath, Utf8(briefText));
             var c = Cli(environment, "plan-layouts", briefPath, layoutsPath, "--alternatives", Alternatives.ToString(CultureInfo.InvariantCulture), "--seed", Seed.ToString(CultureInfo.InvariantCulture));
             var written = Read(layoutsPath);
@@ -130,7 +144,14 @@ internal static class CadToLayoutsTests
         var german = false;
         try { german = CultureInfo.GetCultureInfo("de-DE").NumberFormat.NumberDecimalSeparator == ","; }
         catch (CultureNotFoundException) { }
-        if (!german) { Console.WriteLine("SKIP cad-to-layouts: de-DE culture data unavailable (invariant globalization); culture checks not run"); return; }
+        var linuxCi = OperatingSystem.IsLinux() && Environment.GetEnvironmentVariable("CI") == "true";
+        if (!german)
+        {
+            if (linuxCi) Check(false, "de-DE culture data with a comma decimal separator exists on Linux CI", "CultureInfo.GetCultureInfo(\"de-DE\") unavailable or not comma-decimal");
+            else skip("cad-to-layouts: culture checks", "de-DE culture data unavailable (invariant globalization)");
+            return;
+        }
+        Check(true, "de-DE culture data with a comma decimal separator exists");
         try
         {
             CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
@@ -139,6 +160,11 @@ internal static class CadToLayoutsTests
             Check(inGerman.SequenceEqual(expected), "the in-process run under de-DE current culture is byte-identical", "sha256 " + Hex(inGerman));
         }
         finally { CultureInfo.CurrentCulture = previous; CultureInfo.CurrentUICulture = previousUi; }
+        if (OperatingSystem.IsWindows())
+        {
+            skip("cad-to-layouts: child-process de_DE chain", "LANG/LC_ALL do not select the .NET culture on Windows");
+            return;
+        }
         var env = new Dictionary<string, string> { ["LANG"] = "de_DE.UTF-8", ["LC_ALL"] = "de_DE.UTF-8" };
         var germanChain = Chain("de_DE", env);
         Check(germanChain.Length > 0 && germanChain.SequenceEqual(first), "the chain with every child process under de_DE writes byte-identical layouts", "sha256 " + Hex(germanChain));
