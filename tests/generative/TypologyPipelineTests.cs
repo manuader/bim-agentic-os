@@ -24,7 +24,7 @@ static class TypologyPipelineTests
     const string PinnedSha256 = "3a55177415f42f4d324cf3e4bd298223595c429006595a635aa12e9fb1a3d20b";
     // SHA-256 of TypologyPipelineSerializer output for the pack, family 3, the 16 x 16 m lot, 4 alternatives, seed 0, the
     // CABA pack and ProjectId with default stage options: a ranked case with an accepted prototype (regression pin).
-    const string PinnedAcceptedSha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+    const string PinnedAcceptedSha256 = "eb8720c1a98a749048df6ac69f1794b965e833efc963eb9ddfe58db0ae886f4e";
     // TypologyBriefTests.PinnedSha256 (P5-11): the same request through TypologyBrief alone.
     const string TypologyBriefPinnedSha256 = "85102ea05864ea67a8dad79bed06b2ce4a643056a09d8aee7d8044127340b513";
     // PrototypePipelineTests.PinnedRunSha256 (P7-07): the 2-bedroom apartment pipeline run on the 8.66 x 20 m lot.
