@@ -217,3 +217,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] Decide: P4-11 accepts up to 2 untracked dependents of the freshly made test section (its plan marker). OK as is, or require an OST_Viewers category check?
 - [ ] Delete stray remote branch `relay184-P10-12-red` (test-only red evidence; the cloud could not delete it): `git push origin --delete relay184-P10-12-red`. Same for `relay181-P4-10b`.
 - Still open: ADR0010 (P2-11) and ADR0011 (P9-03), recommended option A; N21 run 3.
+
+## Relay185 (2026-11-11, cloud)
+- No new owner action. `git pull` (main is now f2a6091): the intermittent Linux CI failure in `revit-command --all` (fake pipe) is fixed; new CLI verb `mirror-drift-adopt`. Still open: ADR0010/ADR0011 decisions, one 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once), N21 `... -Runs 1`, delete stray branches relay184-P10-12-red and relay181-P4-10b.
