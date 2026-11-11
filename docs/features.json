@@ -1445,7 +1445,7 @@
         "core/Bim.Generative/TypologyBrief.cs",
         "tests/generative/TypologyBriefTests.cs"
       ],
-      "blocker": "whole-lot, one level, no fixed rooms/walls; not yet through the circulation/facade/IR gates (P5-12); PrototypeGenerator.Generate still takes only ApartmentTypology.",
+      "blocker": "whole-lot, one level, no fixed rooms/walls; gated through circulation/facade/IR by TypologyPipeline (P5-12) but still with the fixed PrototypeTemplates.Rules (composed rules: P5-14); PrototypeGenerator.Generate still takes only ApartmentTypology.",
       "scope": "P5-11: TypologyBrief.Brief/Generate turn a SkillTypology programme (pack or SkillResolution + family size) into a P6-03 brief with the lot as site and plan ranked whole-lot SpacePlanner candidates (seeds Seed+i unchecked, PrototypeTemplates.Rules, AlternativeRanker); typology_* issues and PrototypeGenerator request codes as typed refusals; family sizes 1–8 rank on 16x16; pinned SHA-256 85102ea0…b513 (family 4, 12x12, 6 alternatives, seed 0); apartment generator pinned digest unchanged. CI red 42787338649, green 42788507940, review red 42803818216, green 42805199628."
     },
     {
@@ -1522,7 +1522,7 @@
         "core/Bim.Generative/TypologyBrief.cs",
         "tests/generative/TypologyRulesTests.cs"
       ],
-      "blocker": "Only error-severity area_m2/min_side_m min rules with room-glob targets reach the planner (warnings ignored); composed area minimums above the programme minimum are still refused as typology_minimum_conflict (P5-07), so mostly side rules change plans; hall rule special-cases CABA corredor-side-min 1.00 m to keep the template 0.95 m narrow-lot value; not through the circulation/facade/IR gates (P5-12); no CLI.",
+      "blocker": "Only error-severity area_m2/min_side_m min rules with room-glob targets reach the planner (warnings ignored); composed area minimums above the programme minimum are still refused as typology_minimum_conflict (P5-07), so mostly side rules change plans; hall rule special-cases CABA corredor-side-min 1.00 m to keep the template 0.95 m narrow-lot value; not yet used by TypologyPipeline (P5-14); no CLI (P7-14).",
       "scope": "P5-13: TypologyRules.From(SkillResolution, brief, lot) maps composed min area/side rules (grouped by skill+glob in resolver order, max wins, traced per pack/rule id with threshold source) plus hall/laundry template rules into PlannerRules; TypologyRules.Generate plans TypologyBrief candidates with them through a shared internal TypologyBrief.Plan (refusal parity table with TypologyBrief.Generate); typed typology_rule_pattern_unsupported, typology_rule_threshold_invalid, typology_minimum_conflict when side² exceeds the programme maximum; corridor rule (corredor_lado_min_m) drives the hall; defaults reproduce the P5-11 digest 85102ea0…; stricter 3.2 m bedroom side changes plans. CI red 42880542772, green 42882779700, review red 42889236815, green 42889460850."
     },
     {
@@ -1542,7 +1542,7 @@
         "interfaces/cli/PlanLayoutsCommand.cs",
         "tests/cli/PlanLayoutsTests.cs"
       ],
-      "blocker": "No skill pack rules applied (P7-13); default planner options and weights only; no MCP tool.",
+      "blocker": "--pack reads one pack (requires not resolved/combined, no template hall/laundry rules; minimums above a brief maximum give an infeasible set, not a refusal); default planner options and weights only; no MCP tool.",
       "scope": "P7-11: `plan-layouts brief.json output.json [--alternatives n] [--seed s]` (n 1..64 default 4, s int32 default 0) parses a P6-03 brief (BoundedInput 8 MiB, BriefParser, site required, validator errors refused), runs AlternativeGenerator (SpacePlanner seeds s+i wrapping, AlternativeRanker) and writes AlternativeSetSerializer bytes never-overwrite (CreateNew); infeasible sets written exit 0; typed plan_layouts_* / output_* / input_* refusals exit 1 no file; byte-equal to the in-process run. CI red 42880375102, green 42882133062 (Linux core rerun ×3 on flaky catalogue-session-cli, P1-19), review green 42894097712."
     },
     {
@@ -1553,7 +1553,7 @@
         "core/Bim.Core/IncrementalDiffAdvance.cs",
         "tests/local-validation/IntentEditsTests.cs"
       ],
-      "blocker": "No apply-intent CLI yet (P3-11); IntentEdits has no wrapper (callers pass IncrementalDiff.OrderOf(set.After)); assembly still O(n).",
+      "blocker": "IntentEdits has no wrapper (apply-intent passes IncrementalDiff.OrderOf(set.After)); assembly still O(n).",
       "scope": "P3-10: optional createOrder comparer on IncrementalDiff.Diff / IncrementalDiffIndex.Diff and IncrementalDiff.OrderOf(target); survivors keep before order, creates merged at sorted position; plan always byte-identical to Compiler.Diff(before, result.After) and, with OrderOf(compile(after)), to Compiler.Diff(compile(before), compile(after)) on every P3-09 corpus step (600 seeded steps); null order = P3-05 bytes; work counters unchanged; Advance re-sorts dependents by next position; comparer exceptions typed edit_create_order_failed before anything is issued; edits snapshotted before placement (mutating comparer → edit_result_mutated). CI red 42900155912, green 42900943413, review green 42915932076."
     },
     {
@@ -1608,6 +1608,40 @@
       ],
       "blocker": "plan-layouts reads only a bare brief: the chain copies the cad-plan-brief document's brief member bytes between verbs (P6-14 adds --brief-only); DXF only (PDF in P6-15); child culture not directly probed (LANG/LC_ALL documented .NET rule).",
       "scope": "P6-13: brief-plan.dxf → cad-brief → cad-plan-brief (--site-width 10 --site-depth 8 --name \"Brief plan\") → plan-layouts (--alternatives 3 --seed 7) through the real CLI is byte-equal to the in-process DxfReader → BriefExtract → BriefPlanner → SpacePlanner ×3 → AlternativeRanker run; pinned sha256 566058984bb381768338f79137a18078bcc5ef6cfdfee0698226a7b84a86408a on ubuntu, windows and macos; rerun identical; de-DE in-process and (Linux, required on Linux CI) child-process runs identical. CI red 42927416675, green 42929293306, review green 42937560412."
+    },
+    {
+      "id": "typology-pipeline",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Generative/TypologyPipeline.cs",
+        "core/Bim.Generative/TypologyPipelineModel.cs",
+        "core/Bim.Generative/TypologyPipelineSerializer.cs",
+        "tests/generative/TypologyPipelineTests.cs"
+      ],
+      "blocker": "Plans with the fixed PrototypeTemplates.Rules, not the P5-13 composed TypologyRules (P5-14); one level; each accepted alternative gets its own BIM-IR under the same project id, nothing committed; SkillResolution overload does not check options.Pack against the resolution's code pack; on 12x12/16x16 lots many candidates are duplicates or fail facade_ir_entrance_overlap / facade_edge_too_short@dining; no CLI (P7-14).",
+      "scope": "P5-12: TypologyPipeline.Run(pack|SkillResolution, TypologyBriefRequest, PrototypePipelineOptions) runs TypologyBrief.Generate candidates through the unchanged PrototypePipeline.Rank circulation → facade → BIM-IR window gates with the request weights (strategy whole_lot); refusals typology-first then options; TypologyPipelineSerializer canonical JSON. Pinned SHA-256 3a55177415f42f4d324cf3e4bd298223595c429006595a635aa12e9fb1a3d20b (family 4, 12x12, 6 alt, seed 0, Infeasible) and eb8720c1a98a749048df6ac69f1794b965e833efc963eb9ddfe58db0ae886f4e (family 3, 16x16, 4 alt, seed 0, Ranked), identical on Linux and Windows; rejections matched code@subject against independently recomputed gates; P7-07 and P5-11 pins unchanged. CI red 42942656762, green 42945770818, review green 42949856832."
+    },
+    {
+      "id": "plan-layouts-pack-rules",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/PlanLayoutsCommand.cs",
+        "interfaces/cli/SkillPackLookup.cs",
+        "tests/cli/PlanLayoutsTests.cs"
+      ],
+      "blocker": "One pack only (requires not resolved); template hall/laundry rules not added; minimums above a brief room maximum give area_range_conflict (infeasible), not typology_minimum_conflict; '?' glob branch defensive (unreachable from skill.json); de_DE checks skip when culture data is missing; planner/skill glob case folding differ on rare non-ASCII letters (inherited).",
+      "scope": "P7-13: `plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id]` loads skills/<id>/skill.json via the shared SkillPackLookup (repository root from the binary, BoundedInput 8 MiB, SkillParser, id match, id guard against traversal; generate-prototypes refactored onto it unchanged) and plans with the pack's error-severity min area_m2/min_side_m room-glob rules grouped per glob (max per property, parameter defaults traced as '(p v)'); stdout adds pack/pack_rules; absent --pack byte-identical; refusals plan_layouts_pack_{id_invalid,repository_not_found,unavailable,invalid,rules_none,rule_invalid}, nothing written. Byte-equal to in-process SpacePlanner runs with literal rule lists cross-checked against TypologyRules.From. CI red 42942742275, green 42943881517, review red 42951916888, green 42952935652."
+    },
+    {
+      "id": "apply-intent-cli",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/ApplyIntentCommand.cs",
+        "interfaces/cli/ApplyEditsCommand.cs",
+        "tests/cli/ApplyIntentTests.cs"
+      ],
+      "blocker": "Intended state only, no native verification; plan equals diff-edits byte for byte only when every create sorts after the survivors (otherwise same operations/BeforeHash/DirtyIds, different order and AfterHash — tested); FromStored deletes any head element the intent does not produce; a no-change rerun without --expected-revision commits an empty revision; no apply-intent-specific concurrency race test (shared commit path race-tested via apply-edits); no read-only diff-intent verb yet (P3-12).",
+      "scope": "P3-11: `apply-intent --store <dir> --intent after.json [--expected-revision n]` builds edits with IntentEdits.FromStored on the store head, plans with IncrementalDiff.Diff(head, edits, OrderOf(set.After)) (equal to Compiler.Diff(head, compile(intent))) and commits through the apply-edits commit path shared by refactor (apply-edits bytes/codes/keys unchanged); idempotency key apply-intent:<rev>:<guid>; refusals apply_intent_{usage,store_invalid,stale_head,store_unavailable,commit_incomplete,internal_error,intent_invalid(reason,field),intent_refused(refusals)}, input_*, invalid_ir, invalid_project_identity, edit_bound_exceeded; store and intent untouched on every refusal except commit_incomplete; de_DE identical. CI red 42942878532, green 42944305451, review green 42954721581."
     }
   ]
 }

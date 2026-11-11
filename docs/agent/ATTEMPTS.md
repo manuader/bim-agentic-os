@@ -264,3 +264,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P1-19: 1 failed attempt (run 42928840973, head ef4a429). Hypothesis: a 2000-request fake-server budget suffices for 200 stress runs — wrong (11 walls × 200 runs ≈ 2200 page requests), the server stopped at its limit and run ~170 got pipe_connect_timeout on Linux and Windows; no pipe_io_error before that → budget 5000, later computed as 1000 + runs × 20 → green 42930825232. Red evidence 42927364048 (1/50 runs pipe_io_error without the fix). Review green 42935480549.
 - P2-13: no failed attempts (red 42927683523 → green 42930250939; one core run 42928615491 failed only on the then-unfixed P1-19 flake and was re-triggered). Review red 42933487880 → green 42933556749.
 - P6-13: no failed attempts (red 42927416675 = pinned-digest placeholder → green 42929293306; review green 42937560412).
+
+### Relay186 (2026-11-11, cloud)
+- P5-12: no failed attempts (red 42942656762 → placeholder-pin read 42943922405 → green 42945770818; review placeholder-pin read 42948017660 → green 42949856832).
+- P7-13: no failed attempts (red 42942742275 → green 42943881517; review red 42951916888 → green 42952935652).
+- P3-11: no failed attempts (red 42942878532 → green 42944305451; review green 42954721581).
