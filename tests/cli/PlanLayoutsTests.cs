@@ -6,7 +6,7 @@ using System.Text.Json;
 using Bim.Core;
 using Bim.Generative;
 
-// P7-11 `plan-layouts brief.json output.json [--alternatives n] [--seed s]`: a P6-03 brief planned into ranked
+// P7-11 `plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id]`: a P6-03 brief planned into ranked
 // alternatives, the canonical AlternativeSetSerializer JSON written to a new file. Oracles, all against the real Release
 // CLI process:
 //   1. The output file is byte-identical to AlternativeSetSerializer.Serialize(AlternativeRanker.Rank(brief, plans)) of
@@ -17,6 +17,12 @@ using Bim.Generative;
 //   4. Every failure (usage, options, output path, oversize/missing input, malformed brief, missing site, invalid brief)
 //      prints a typed {"status":"failed","code":...} envelope, exits 1 and leaves no output file, with the documented
 //      precedence (options and output path before the input is read).
+//   5. P7-13 --pack id: the pack's error-severity area_m2 / min_side_m minimum room rules become SpacePlanner rules
+//      (grouped per room glob, traced in the Reference that the planner cites in its constraint details); the file is
+//      byte-identical to AlternativeGenerator.Generate with exactly those PlannerRules in process, and the rules equal
+//      both a literal expectation and the pack part (name-pattern rules) of TypologyRules.From for the same pack and
+//      brief. Without --pack the bytes are today's. Pack refusals are typed plan_layouts_pack_* envelopes (exit 1, no
+//      file); a scratch repository with its own skills/ covers malformed, mismatched, oversized and rule-less packs.
 internal static class PlanLayoutsTests
 {
     public static void Run(string root, string work, string dotnet, string cliDll, byte[] overCap, Action<bool, string, string> check)
@@ -25,10 +31,12 @@ internal static class PlanLayoutsTests
         Directory.CreateDirectory(scratch);
         void Check(bool condition, string name, string detail = "") => check(condition, "plan-layouts: " + name, detail);
 
-        (int Exit, string Out, string Err) Cli(params string[] arguments)
+        (int Exit, string Out, string Err) Cli(params string[] arguments) => CliAt(cliDll, null, arguments);
+        (int Exit, string Out, string Err) CliAt(string dll, Dictionary<string, string>? environment, params string[] arguments)
         {
             var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
-            start.ArgumentList.Add(cliDll);
+            if (environment is not null) foreach (var (key, value) in environment) start.Environment[key] = value;
+            start.ArgumentList.Add(dll);
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
             using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
             var stdout = process.StandardOutput.ReadToEndAsync();
@@ -87,8 +95,9 @@ internal static class PlanLayoutsTests
         ExpectFailure("one argument", "plan_layouts_usage", usageOut, "plan-layouts", Input("one.json", "{}"));
         ExpectFailure("an option in place of the output path", "plan_layouts_usage", usageOut, "plan-layouts", Input("two.json", "{}"), "--seed", "1");
         var usageDetail = Str(usageEnvelope, "detail") ?? "";
-        Check(usageDetail.Contains("plan-layouts brief.json output.json [--alternatives n] [--seed s]", StringComparison.Ordinal) && usageDetail.Contains("1..64", StringComparison.Ordinal),
-            "the usage text documents the verb, its options and the alternatives bound", usageDetail);
+        Check(usageDetail.Contains("plan-layouts brief.json output.json [--alternatives n] [--seed s]", StringComparison.Ordinal) && usageDetail.Contains("1..64", StringComparison.Ordinal)
+            && usageDetail.Contains("[--pack id]", StringComparison.Ordinal) && usageDetail.Contains("skills/<id>/skill.json", StringComparison.Ordinal),
+            "the usage text documents the verb, its options (with --pack and the repository skills/<id>/skill.json lookup) and the alternatives bound", usageDetail);
 
         // ---- success: equals the in-process run, canonical bytes, deterministic ----
         var exampleText = File.ReadAllText(Path.Combine(root, "examples", "brief", "apartment-2br.json"));
@@ -238,5 +247,210 @@ internal static class PlanLayoutsTests
         Brief("a brief without a site", small.Replace("\"site\":{\"width_m\":6,\"depth_m\":8},", "", StringComparison.Ordinal), "plan_layouts_site_required", "constraints.site");
         Brief("a negative site width", small.Replace("\"width_m\":6", "\"width_m\":-6", StringComparison.Ordinal), "plan_layouts_brief_invalid", BriefCodes.SiteDimensionNonPositive + " at constraints.site.width_m");
         Brief("an adjacency naming an unknown room", small.Replace("\"b\":\"bath\"", "\"b\":\"kitchen\"", StringComparison.Ordinal), "plan_layouts_brief_invalid", BriefCodes.AdjacencyRoomUnknown + " at adjacencies[0].b");
+
+        // ---- P7-13 --pack id: skill pack minimum rules as traced SpacePlanner rules ----
+        const string Caba = "ar.caba.codigo-edificacion";
+        static PlannerRule Rule(string pattern, double? area, double? side, string reference) => new(NamePattern: pattern, MinAreaSquareMetres: area, MinSideMetres: side, Reference: reference);
+        static byte[] ExpectedWith(ProjectBrief brief, int count, int seed, IReadOnlyList<PlannerRule> rules) =>
+            Utf8(AlternativeSetSerializer.Serialize(AlternativeGenerator.Generate(brief, new AlternativeOptions(count, seed, new PlannerOptions(Rules: new PlannerRules(rules))))));
+        // The core mapping of composed pack rules (P5-13) for the same single pack and brief, without the typology
+        // template's room-id rules (hall, laundry): the CLI plans arbitrary briefs, not typology programmes.
+        static PlannerRule[] CoreRules(SkillManifest pack, ProjectBrief brief)
+        {
+            var resolution = SkillResolver.Resolve(new SkillCatalog(new[] { pack }), new[] { new SkillRequest(pack.Id) });
+            var site = brief.Constraints.Site!;
+            var set = TypologyRules.From(resolution, brief, new PrototypeLot(site.WidthMetres.Value, site.DepthMetres.Value));
+            return set.Rules.Rules.Where(rule => rule.RoomId is null).ToArray();
+        }
+        string Rules(IEnumerable<PlannerRule> rules) => string.Join(" | ", rules.Select(rule => rule.ToString()));
+        SkillManifest Manifest(string id) => SkillParser.Parse(File.ReadAllText(Path.Combine(root, "skills", id, "skill.json")));
+        var cabaPack = Manifest(Caba);
+
+        // Success on the small brief (Living, Bath): the CABA living* and bath* minimums, in pack order.
+        var smallCaba = new[]
+        {
+            Rule("living*", 9, 2.8, Caba + " living-area-min living-side-min"),
+            Rule("bath*", 1.4, 0.9, Caba + " bathroom-area-min bathroom-side-min"),
+        };
+        Check(CoreRules(cabaPack, smallBrief).SequenceEqual(smallCaba), "the literal CABA rules of the small brief equal the pack part of TypologyRules.From", Rules(CoreRules(cabaPack, smallBrief)));
+        var packOut = Output();
+        var pack1 = Cli("plan-layouts", smallPath, packOut, "--pack", Caba, "--alternatives", "2", "--seed", "3");
+        var expectedPack = ExpectedWith(smallBrief, 2, 3, smallCaba);
+        var packText = Encoding.UTF8.GetString(Written(packOut));
+        Check(pack1.Exit == 0 && Written(packOut).SequenceEqual(expectedPack), "--pack: the output equals AlternativeGenerator.Generate with the pack's PlannerRules in process, byte for byte",
+            D(pack1) + Sizes(Written(packOut), expectedPack));
+        Check(!expectedPack.SequenceEqual(Expected(smallBrief, 2, 3)), "--pack changes the plans of the small brief (the rules are applied)");
+        Check(packText.Contains("rules[0] " + Caba + " living-area-min living-side-min", StringComparison.Ordinal),
+            "--pack: the planner's constraint details trace the pack rule ids (rules[0] " + Caba + " living-area-min living-side-min)", packText.Length > 400 ? packText[..400] : packText);
+        var packEnvelope = Parse(pack1.Out);
+        Check(Str(packEnvelope, "status") == "succeeded" && Str(packEnvelope, "kind") == "plan-layouts" && Str(packEnvelope, "pack") == Caba && Int(packEnvelope, "pack_rules") == 2
+            && Int(packEnvelope, "requested") == 2 && Int(packEnvelope, "seed") == 3 && Str(packEnvelope, "sha256") == Hex(expectedPack) && Int(packEnvelope, "bytes") == expectedPack.LongLength,
+            "--pack: stdout adds the pack id and the planner rule count to the success envelope", D(pack1));
+        var plainEnvelope = Parse(run3.Out);
+        Check(plainEnvelope is { } plain && !plain.TryGetProperty("pack", out _) && !plain.TryGetProperty("pack_rules", out _),
+            "without --pack the success envelope has no pack members (today's stdout)", D(run3));
+        var pack2Out = Output();
+        var pack2 = Cli("plan-layouts", smallPath, pack2Out, "--seed", "3", "--pack", Caba, "--alternatives", "2");
+        Check(pack2.Exit == 0 && Written(pack2Out).SequenceEqual(expectedPack) && pack2.Out == pack1.Out, "--pack in another option order writes the same bytes and stdout", D(pack2));
+
+        // The example brief: Living-dining, Kitchen and Bathroom match (Main/Second bedroom do not match bedroom*; the
+        // brief's hall and laundry ids get no template rule).
+        var exampleCaba = new[]
+        {
+            Rule("living*", 9, 2.8, Caba + " living-area-min living-side-min"),
+            Rule("bath*", 1.4, 0.9, Caba + " bathroom-area-min bathroom-side-min"),
+            Rule("kitchen*", 3, 1.5, Caba + " kitchen-area-min kitchen-side-min"),
+        };
+        Check(CoreRules(cabaPack, example).SequenceEqual(exampleCaba), "the literal CABA rules of the example brief equal the pack part of TypologyRules.From", Rules(CoreRules(cabaPack, example)));
+        var exampleOut = Output();
+        var pack3 = Cli("plan-layouts", exampleBrief, exampleOut, "--alternatives", "2", "--seed", "1", "--pack", Caba);
+        var expectedExample = ExpectedWith(example, 2, 1, exampleCaba);
+        Check(pack3.Exit == 0 && Written(exampleOut).SequenceEqual(expectedExample) && Int(Parse(pack3.Out), "pack_rules") == 3,
+            "--pack on the example brief equals the in-process run with the three matching CABA rules", D(pack3) + Sizes(Written(exampleOut), expectedExample));
+
+        // A parameter threshold is traced with its parameter (CABA corredor_lado_min_m) under a comma-decimal culture too.
+        const string corridor = "{\"brief_version\":1,\"name\":\"Corridor\",\"constraints\":{\"site\":{\"width_m\":7,\"depth_m\":8},\"levels\":1},"
+            + "\"rooms\":[{\"id\":\"living\",\"name\":\"Living\",\"target_area_m2\":20,\"min_area_m2\":15},{\"id\":\"pasillo\",\"name\":\"Pasillo\",\"target_area_m2\":4,\"min_area_m2\":2}],"
+            + "\"adjacencies\":[{\"a\":\"living\",\"b\":\"pasillo\",\"kind\":\"required\"}]}";
+        var corridorBrief = BriefParser.Parse(corridor);
+        var corridorPath = Input("corridor.json", corridor);
+        var corridorRules = new[]
+        {
+            Rule("living*", 9, 2.8, Caba + " living-area-min living-side-min"),
+            Rule("pasillo*", null, 1, Caba + " pasillo-side-min (corredor_lado_min_m 1)"),
+        };
+        Check(CoreRules(cabaPack, corridorBrief).SequenceEqual(corridorRules), "a parameter threshold is traced as '<rule> (<parameter> <value>)' like TypologyRules", Rules(CoreRules(cabaPack, corridorBrief)));
+        var corridorOut = Output();
+        var pack4 = Cli("plan-layouts", corridorPath, corridorOut, "--alternatives", "1", "--pack", Caba);
+        var expectedCorridor = ExpectedWith(corridorBrief, 1, 0, corridorRules);
+        Check(pack4.Exit == 0 && Written(corridorOut).SequenceEqual(expectedCorridor), "--pack with a parameter threshold equals the in-process run", D(pack4) + Sizes(Written(corridorOut), expectedCorridor));
+        {
+            var german = false;
+            try { german = CultureInfo.GetCultureInfo("de-DE").NumberFormat.NumberDecimalSeparator == ","; }
+            catch (CultureNotFoundException) { }
+            if (!german) Console.WriteLine("SKIP plan-layouts: de-DE culture data unavailable (invariant globalization); --pack culture check not run");
+            else
+            {
+                var env = new Dictionary<string, string> { ["LANG"] = "de_DE.UTF-8", ["LC_ALL"] = "de_DE.UTF-8" };
+                var germanOut = Output();
+                var pack5 = CliAt(cliDll, env, "plan-layouts", corridorPath, germanOut, "--alternatives", "1", "--pack", Caba);
+                Check(pack5.Exit == 0 && Written(germanOut).SequenceEqual(expectedCorridor) && pack5.Out == pack4.Out, "under de_DE the --pack run writes the same invariant bytes and stdout", D(pack5));
+            }
+        }
+
+        // Another real pack (the fictitious example code): only living* area 10 matches the small brief.
+        var examplePack = Manifest("xx.example.codigo-ejemplo");
+        var exampleRules = new[] { Rule("living*", 10, null, "xx.example.codigo-ejemplo living-area-min") };
+        Check(CoreRules(examplePack, smallBrief).SequenceEqual(exampleRules), "the example pack's rule for the small brief equals TypologyRules.From", Rules(CoreRules(examplePack, smallBrief)));
+        var otherOut = Output();
+        var pack6 = Cli("plan-layouts", smallPath, otherOut, "--alternatives", "1", "--pack", "xx.example.codigo-ejemplo");
+        Check(pack6.Exit == 0 && Written(otherOut).SequenceEqual(ExpectedWith(smallBrief, 1, 0, exampleRules)) && Int(Parse(pack6.Out), "pack_rules") == 1,
+            "--pack xx.example.codigo-ejemplo plans with its living* area minimum", D(pack6));
+        // A pack with planner rules none of which matches a brief room plans with no rules: today's bytes, pack_rules 0.
+        const string unmatched = "{\"brief_version\":1,\"name\":\"Unmatched\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"
+            + "\"rooms\":[{\"id\":\"office\",\"name\":\"Office\",\"target_area_m2\":20,\"min_area_m2\":15}]}";
+        var unmatchedOut = Output();
+        var pack7 = Cli("plan-layouts", Input("unmatched.json", unmatched), unmatchedOut, "--alternatives", "1", "--pack", "xx.example.codigo-ejemplo");
+        Check(pack7.Exit == 0 && Written(unmatchedOut).SequenceEqual(Expected(BriefParser.Parse(unmatched), 1, 0)) && Int(Parse(pack7.Out), "pack_rules") == 0 && Str(Parse(pack7.Out), "pack") == "xx.example.codigo-ejemplo",
+            "a pack whose rules match no brief room plans with no rules (the no-pack bytes) and reports pack_rules 0", D(pack7));
+
+        // ---- pack refusals ----
+        Option("--pack without a value", "plan_layouts_option_value_missing", "--pack", "--pack");
+        Option("a repeated --pack", "plan_layouts_option_duplicate", "--pack", "--pack", Caba, "--pack", Caba);
+        Option("a malformed pack id", "plan_layouts_pack_id_invalid", "../skills", "--pack", "../skills");
+        Option("an empty pack id", "plan_layouts_pack_id_invalid", "", "--pack", "");
+        Option("a pack id with a path separator", "plan_layouts_pack_id_invalid", "ar.caba/x", "--pack", "ar.caba/x");
+        Option("--pack followed by another option", "plan_layouts_pack_id_invalid", "--seed", "--pack", "--seed", "3");
+        Option("an unknown pack", "plan_layouts_pack_unavailable", "input_not_found", "--pack", "xx.no-such.pack");
+        Option("a pack with no planner minimum rules", "plan_layouts_pack_rules_none", "bim.typology.vivienda-unifamiliar", "--pack", "bim.typology.vivienda-unifamiliar");
+        Option("a pack with only warning minimums", "plan_layouts_pack_rules_none", "bim.typology.dwelling", "--pack", "bim.typology.dwelling");
+        // Precedence: the pack id syntax is an option (before the output path and the input); the pack is read after the brief.
+        var q1 = Path.Combine(scratch, "pack-out.txt"); ExpectFailure("a malformed pack id with a bad output and a missing brief", "plan_layouts_pack_id_invalid", q1, "plan-layouts", missing, q1, "--pack", "../x");
+        var q2 = Never(); ExpectFailure("an unknown pack with a missing brief", "input_not_found", q2, "plan-layouts", missing, q2, "--pack", "xx.no-such.pack");
+        var q3 = Never(); ExpectFailure("an unknown pack with a brief without a site", "plan_layouts_site_required", q3, "plan-layouts",
+            Input("nosite.json", small.Replace("\"site\":{\"width_m\":6,\"depth_m\":8},", "", StringComparison.Ordinal)), q3, "--pack", "xx.no-such.pack");
+
+        // A scratch repository with its own skills/ (the CLI copied under it finds it as the repository).
+        var cliDirectory = Path.GetDirectoryName(cliDll)!;
+        string CopyCli(string target)
+        {
+            foreach (var file in Directory.GetFiles(cliDirectory, "*", SearchOption.AllDirectories))
+            {
+                var destination = Path.Combine(target, Path.GetRelativePath(cliDirectory, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(file, destination);
+            }
+            return Path.Combine(target, Path.GetFileName(cliDll));
+        }
+        var fakeRepo = Path.Combine(scratch, "fake-repo");
+        Directory.CreateDirectory(fakeRepo);
+        File.WriteAllText(Path.Combine(fakeRepo, "global.json"), "{}");
+        void FakePack(string folder, byte[] bytes) { Directory.CreateDirectory(Path.Combine(fakeRepo, "skills", folder)); File.WriteAllBytes(Path.Combine(fakeRepo, "skills", folder, "skill.json"), bytes); }
+        static string Manifest1(string id, string rules) => "{\"manifest_version\":1,\"id\":\"" + id + "\",\"version\":\"0.0.1\",\"kind\":\"code\",\"description\":\"test pack\",\"priority\":100,\"rules\":[" + rules + "]}";
+        static string MinRule(string id, string severity, string room, string property, string threshold) =>
+            "{\"id\":\"" + id + "\",\"severity\":\"" + severity + "\",\"target\":{\"room\":\"" + room + "\"},\"check\":{\"op\":\"min\",\"property\":\"" + property + "\"," + threshold + "},\"message\":\"m\"}";
+        var strictText = Manifest1("zz.test.strict", MinRule("living-side", "error", "living*", "min_side_m", "\"value\":3.2") + "," + MinRule("living-area", "error", "living*", "area_m2", "\"value\":16")
+            + "," + MinRule("bath-side", "error", "bath*", "min_side_m", "\"value\":1.25") + "," + MinRule("bed-area", "error", "bedroom*", "area_m2", "\"value\":8"));
+        FakePack("zz.test.strict", Utf8(strictText));
+        FakePack("zz.test.bad-json", Utf8("{"));
+        FakePack("zz.test.mismatch", Utf8(Manifest1("zz.test.other", MinRule("r", "error", "living*", "area_m2", "\"value\":9"))));
+        FakePack("zz.test.zero", Utf8(Manifest1("zz.test.zero", MinRule("ok", "error", "living*", "area_m2", "\"value\":9") + "," + MinRule("zero-side", "error", "office*", "min_side_m", "\"value\":0"))));
+        FakePack("zz.test.over-parser", Utf8(Manifest1("zz.test.over-parser", MinRule("r", "error", "living*", "area_m2", "\"value\":9")).Replace("\"test pack\"", "\"" + new string('x', SkillParser.MaxInputChars) + "\"", StringComparison.Ordinal)));
+        FakePack("zz.test.over-cap", overCap);
+        Directory.CreateDirectory(Path.Combine(fakeRepo, "skills", "zz.test.empty-dir"));
+        var fakeDll = CopyCli(Path.Combine(fakeRepo, "cli"));
+        var strictPack = SkillParser.Parse(strictText);
+        var strictRules = new[] { Rule("living*", 16, 3.2, "zz.test.strict living-side living-area"), Rule("bath*", null, 1.25, "zz.test.strict bath-side") };
+        Check(CoreRules(strictPack, smallBrief).SequenceEqual(strictRules), "a repository pack's rules (largest minimums per glob, rule ids in pack order) equal TypologyRules.From", Rules(CoreRules(strictPack, smallBrief)));
+        var strictOut = Output();
+        var pack8 = CliAt(fakeDll, null, "plan-layouts", smallPath, strictOut, "--alternatives", "2", "--pack", "zz.test.strict");
+        var expectedStrict = ExpectedWith(smallBrief, 2, 0, strictRules);
+        Check(pack8.Exit == 0 && Written(strictOut).SequenceEqual(expectedStrict) && Int(Parse(pack8.Out), "pack_rules") == 2,
+            "a pack from the repository's skills/ (found from the CLI binary) plans with its rules, equal to the in-process run", D(pack8) + Sizes(Written(strictOut), expectedStrict));
+        var plainFakeOut = Output();
+        var plainFake = CliAt(fakeDll, null, "plan-layouts", smallPath, plainFakeOut, "--alternatives", "2");
+        Check(plainFake.Exit == 0 && Written(plainFakeOut).SequenceEqual(Expected(smallBrief, 2, 0)), "without --pack the repository's packs are not read", D(plainFake));
+        void FakeRefusal(string label, string pack, string code, string detail)
+        {
+            var output = Never();
+            var result = CliAt(fakeDll, null, "plan-layouts", smallPath, output, "--alternatives", "1", "--pack", pack);
+            var envelope = Parse(result.Out);
+            Check(result.Exit == 1 && Str(envelope, "status") == "failed" && Str(envelope, "code") == code && Str(envelope, "detail") == detail && !File.Exists(output),
+                label + " -> " + code + " (detail " + detail + "), exit 1, no output file", D(result));
+        }
+        FakeRefusal("a malformed pack manifest", "zz.test.bad-json", "plan_layouts_pack_invalid", SkillCodes.JsonInvalid);
+        FakeRefusal("a manifest naming another pack id", "zz.test.mismatch", "plan_layouts_pack_invalid", "id");
+        FakeRefusal("a manifest over the skill parser's character cap", "zz.test.over-parser", "plan_layouts_pack_invalid", SkillCodes.InputTooLarge);
+        FakeRefusal("a manifest over the 8 MiB read cap", "zz.test.over-cap", "plan_layouts_pack_unavailable", "input_too_large");
+        FakeRefusal("a pack folder without skill.json", "zz.test.empty-dir", "plan_layouts_pack_unavailable", "input_not_found");
+        FakeRefusal("a pack with a zero side minimum (even on a room the brief lacks)", "zz.test.zero", "plan_layouts_pack_rule_invalid", TypologyRuleCodes.ThresholdInvalid + " at zz.test.zero/zero-side");
+
+        // A CLI copy outside any repository: --pack refuses, a run without it still plans.
+        static bool UnderRepository(string directory)
+        {
+            for (var dir = new DirectoryInfo(directory); dir is not null; dir = dir.Parent)
+                if (File.Exists(Path.Combine(dir.FullName, "global.json"))) return true;
+            return false;
+        }
+        var outsideBase = new[] { Environment.GetEnvironmentVariable("RUNNER_TEMP"), Path.GetTempPath(), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), OperatingSystem.IsWindows() ? null : "/tmp" }
+            .FirstOrDefault(candidate => !string.IsNullOrEmpty(candidate) && Directory.Exists(candidate) && !UnderRepository(candidate));
+        if (outsideBase is null) Console.WriteLine("SKIP plan-layouts: no writable directory outside a repository for the copied CLI");
+        else
+        {
+            var outsideRoot = Path.Combine(outsideBase, "bim-plan-layouts-outside-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var outsideDll = CopyCli(Path.Combine(outsideRoot, "cli"));
+                var outsideOut = Never();
+                var outside = CliAt(outsideDll, null, "plan-layouts", smallPath, outsideOut, "--alternatives", "1", "--pack", Caba);
+                Check(outside.Exit == 1 && Str(Parse(outside.Out), "code") == "plan_layouts_pack_repository_not_found" && !File.Exists(outsideOut),
+                    "--pack from a CLI copy outside any repository -> plan_layouts_pack_repository_not_found, exit 1, no file", D(outside) + " copy under " + outsideBase);
+                var outsidePlainOut = Output();
+                var outsidePlain = CliAt(outsideDll, null, "plan-layouts", smallPath, outsidePlainOut, "--alternatives", "1");
+                Check(outsidePlain.Exit == 0 && Written(outsidePlainOut).SequenceEqual(Expected(smallBrief, 1, 0)), "without --pack a CLI copy outside any repository still plans", D(outsidePlain));
+            }
+            finally { try { Directory.Delete(outsideRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        }
     }
 }
