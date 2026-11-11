@@ -1426,3 +1426,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 13:11Z integration 89fa0dd CI 43024287569 success (9/9) → main fast-forwarded (d062a06..89fa0dd). P7-12, P3-12, P5-14 ✅; new P3-13 (shared intent-plan helper), P5-15 (composed rules from a manifest list), P7-15 (plan-layouts --pack from the package). Progress 147/165 (89.1 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-11T13:11:44Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P4-13/P4-14, P10-14 (relay187; P4-14 and P1-18 share tests/integration/test-catalogue-session.ps1 — serialize); then P1-18/P1-20/P1-21, P2-15/P2-16, P6-15 (relay188; P1-20 and P1-21 share the revit-command flag parser — serialize); then P3-13, P5-15, P7-14/P7-15 (relay190; P7-14 and P7-15 share SkillPackLookup — serialize). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay191 — 2026-11-11T13:53:15Z (Claude, cloud scheduled)
+- 13:53Z LOCK taken (was FREE; relay190 released 2026-11-11T13:11:44Z).
