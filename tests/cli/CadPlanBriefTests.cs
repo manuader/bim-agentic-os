@@ -512,5 +512,109 @@ internal static class CadPlanBriefTests
                 Check(Ok(r, o) && same && Doc(o) is { } dc && dc.GetProperty("options").GetProperty("site_width_m").GetRawText() == "12.5", "under de_DE, --site-width 12.5 is accepted and echoed invariantly", R(r) + " " + why);
             }
         }
+
+        // ---- P6-14 --brief-only: the file is only the bare P6-03 planner brief ----
+        // Definition: the written bytes are exactly the bytes of the full document's "brief" member (BriefSerializer
+        // canonical text, UTF-8, no BOM, compact, no trailing newline), so the file feeds plan-layouts directly. Without
+        // the flag the full document keeps its P6-12 bytes: the two digests below were taken from main's implementation
+        // (red run 42983360377 of this test at fe1d63d, ubuntu/windows/macos agree, before the flag existed) and must not change.
+        {
+            const string PinnedDefaults = "1A092C0BC2ADC6B685D0D85490FAF803FAF0028C9F88614D9DA24002269ABA0F";
+            const string PinnedSited = "69824E31E8B08AAF7B6D6D7E7809A3B165B344FFBB5092B23560705382645153";
+            // The default run's stdout envelope with its machine-specific "output" string blanked (see below); from red run 42989848662 (ubuntu/windows/macos agree).
+            const string PinnedDefaultsEnvelope = "B178D56BE662E41E86985523851ECFA755013FE4DC4395E00091B042E25889E1";
+            static byte[] U(string s) => new UTF8Encoding(false).GetBytes(s);
+            byte[] Member(string path) => Doc(path) is { ValueKind: JsonValueKind.Object } d && d.TryGetProperty("brief", out var b) ? U(b.GetRawText()) : Array.Empty<byte>();
+            byte[] Bytes(string path) => File.Exists(path) ? File.ReadAllBytes(path) : Array.Empty<byte>();
+            bool Bare((int Exit, string Out, string Err) r, string output, bool valid) =>
+                Ok(r, output) && Parse(r.Out) is { } e && e.TryGetProperty("brief_only", out var flag) && flag.ValueKind == JsonValueKind.True && e.GetProperty("valid").GetBoolean() == valid;
+            bool NoFlag((int Exit, string Out, string Err) r) => Parse(r.Out) is { ValueKind: JsonValueKind.Object } e && !e.TryGetProperty("brief_only", out _);
+            string[] SitedArgs = { "--site-width", "10", "--site-depth", "8", "--name", "Casa Ader" };
+
+            // Defaults.
+            var defaults = BriefPlanner.ToPlannerBrief(library);
+            var full = Out(); var rf = Cli("cad-plan-brief", draftPath, full);
+            Check(Ok(rf, full) && NoFlag(rf), "without --brief-only the envelope has no brief_only member", R(rf));
+            // The "output" member is the machine-specific path: that one JSON string value, encoded as the CLI's
+            // Utf8JsonWriter writes it (default encoder, like JsonSerializer), is blanked before hashing.
+            var encodedOutput = "\"output\":" + JsonSerializer.Serialize(full) + ",";
+            var normalized = rf.Out.Split(encodedOutput).Length == 2 ? rf.Out.Replace(encodedOutput, "\"output\":\"\",", StringComparison.Ordinal) : "";
+            Check(Sha(U(normalized)) == PinnedDefaultsEnvelope, "without --brief-only the default stdout envelope keeps its pinned bytes (output path blanked)",
+                "actual " + Sha(U(normalized)) + " pinned " + PinnedDefaultsEnvelope + " envelope " + normalized);
+            Check(Sha(Bytes(full)) == PinnedDefaults, "without --brief-only the default full document keeps its pinned P6-12 bytes", "actual " + Sha(Bytes(full)) + " pinned " + PinnedDefaults);
+            var bare = Out(); var rb = Cli("cad-plan-brief", draftPath, bare, "--brief-only");
+            Check(Bare(rb, bare, true), "--brief-only writes a file and a succeeded envelope with brief_only true", R(rb));
+            Check(Bytes(bare).Length > 0 && Bytes(bare).SequenceEqual(Member(full)), "--brief-only bytes equal the full document's brief member bytes (defaults)",
+                Encoding.UTF8.GetString(Bytes(bare)) + " vs " + Encoding.UTF8.GetString(Member(full)));
+            Check(Bytes(bare).SequenceEqual(U(BriefSerializer.Serialize(defaults.Brief))), "--brief-only bytes equal BriefSerializer.Serialize of the library planner brief (defaults)");
+
+            // Sited and named: the brief plan-layouts accepts.
+            var sited = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Constraints = Sited(library.Brief.Constraints, 10, 8), Name = "Casa Ader" });
+            var fullSited = Out(); var rfs = Cli(new[] { "cad-plan-brief", draftPath, fullSited }.Concat(SitedArgs).ToArray());
+            Check(Ok(rfs, fullSited) && NoFlag(rfs), "the sited full document still writes without brief_only in the envelope", R(rfs));
+            Check(Sha(Bytes(fullSited)) == PinnedSited, "without --brief-only the sited full document keeps its pinned P6-12 bytes", "actual " + Sha(Bytes(fullSited)) + " pinned " + PinnedSited);
+            var bareSited = Out(); var rbs = Cli(new[] { "cad-plan-brief", draftPath, bareSited }.Concat(SitedArgs).Append("--brief-only").ToArray());
+            var bytes = Bytes(bareSited);
+            Check(Bare(rbs, bareSited, true) && Parse(rbs.Out) is { } es && es.GetProperty("kept").GetInt32() == 6 && es.GetProperty("dropped").GetInt32() == 1 && es.GetProperty("issues").GetInt32() == 0,
+                "sited --brief-only envelope keeps the kept/dropped/issues counts", R(rbs));
+            Check(bytes.Length > 0 && bytes.SequenceEqual(Member(fullSited)), "sited --brief-only bytes equal the full document's brief member bytes");
+            Check(bytes.SequenceEqual(U(BriefSerializer.Serialize(sited.Brief))), "sited --brief-only bytes equal BriefSerializer.Serialize of the library planner brief");
+            Check(bytes.Length > 2 && Encoding.UTF8.GetString(bytes).StartsWith("{\"brief_version\":", StringComparison.Ordinal) && bytes[^1] == (byte)'}' && !bytes.Contains((byte)'\n') && !bytes.Contains((byte)'\r'),
+                "the bare brief starts with brief_version, has no BOM, is compact and has no trailing newline", Encoding.UTF8.GetString(bytes));
+            ProjectBrief? parsed = null;
+            try { parsed = BriefParser.Parse(Encoding.UTF8.GetString(bytes)); }
+            catch (BriefException e) { Check(false, "the bare brief parses with the strict P6-03 parser", e.Code); }
+            Check(parsed is not null && U(BriefSerializer.Serialize(parsed)).SequenceEqual(bytes) && BriefValidator.Validate(parsed).Length == 0, "the bare brief is canonical (parse/serialize round trip) and validates");
+            var layouts = Out(); var rl = Cli("plan-layouts", bareSited, layouts, "--alternatives", "2", "--seed", "7");
+            Check(rl.Exit == 0 && File.Exists(layouts) && Parse(rl.Out) is { } el && el.GetProperty("status").GetString() == "succeeded", "plan-layouts reads the --brief-only file directly", R(rl));
+
+            // Flag position and reruns.
+            foreach (var order in new[] { new[] { "--brief-only", "--site-width", "10", "--site-depth", "8", "--name", "Casa Ader" }, new[] { "--site-width", "10", "--brief-only", "--name", "Casa Ader", "--site-depth", "8" } })
+            {
+                var o = Out(); var r = Cli(new[] { "cad-plan-brief", draftPath, o }.Concat(order).ToArray());
+                Check(Bare(r, o, true) && Bytes(o).SequenceEqual(bytes), "--brief-only anywhere among the options writes the same bytes (" + string.Join(" ", order) + ")", R(r));
+            }
+
+            // An invalid planner brief is still written bare, valid:false, exit 0.
+            var node = JsonNode.Parse(File.ReadAllText(draftPath))!;
+            foreach (var room in node["rooms"]!.AsArray()) room!["Confidence"] = 0.1;
+            var low = Input("low-bare.json", node.ToJsonString());
+            var lowExpected = BriefPlanner.ToPlannerBrief(library with { Rooms = library.Rooms.Select(p => p with { Confidence = 0.1 }).ToArray() });
+            var lowFull = Out(); var rlf = Cli("cad-plan-brief", low, lowFull);
+            var lowBare = Out(); var rlb = Cli("cad-plan-brief", low, lowBare, "--brief-only");
+            Check(!lowExpected.IsValid && Bare(rlb, lowBare, false) && Ok(rlf, lowFull) && Bytes(lowBare).SequenceEqual(Member(lowFull)) && Bytes(lowBare).SequenceEqual(U(BriefSerializer.Serialize(lowExpected.Brief))),
+                "an invalid planner brief is written bare with valid false in the envelope and exit 0", R(rlb));
+
+            // Refusals are unchanged with the flag.
+            Expect("--brief-only twice", "cad_option_duplicate", "cad-plan-brief", draftPath, Out(), "--brief-only", "--brief-only");
+            Expect("--brief-only takes no value (the next word is an option)", "cad_option_unknown", "cad-plan-brief", draftPath, Out(), "--brief-only", "true");
+            Expect("--brief-only=true is not the flag", "cad_option_unknown", "cad-plan-brief", draftPath, Out(), "--brief-only=true");
+            Expect("--min-confidence does not take --brief-only as its value", "cad_option_value_invalid", "cad-plan-brief", draftPath, Out(), "--min-confidence", "--brief-only");
+            Expect("--brief-only with a missing site pair", "cad_option_pair_missing", "cad-plan-brief", draftPath, Out(), "--brief-only", "--site-width", "10");
+            Expect("--brief-only with a missing input", "input_not_found", "cad-plan-brief", Path.Combine(scratch, "missing.json"), Out(), "--brief-only");
+            Expect("--brief-only with a non-.json output", "output_extension_unsupported", "cad-plan-brief", draftPath, Out(".txt"), "--brief-only");
+            Expect("--brief-only with a document that is not a cad-brief draft", "cad_plan_brief_input_invalid", "cad-plan-brief", Input("kind-bare.json", File.ReadAllText(draftPath).Replace("\"kind\":\"cad-brief\"", "\"kind\":\"cad-draft\"", StringComparison.Ordinal)), Out(), "--brief-only");
+            var unknown = JsonNode.Parse(File.ReadAllText(draftPath))!;
+            unknown["brief"]!["surprise"] = 1;
+            Expect("--brief-only with a brief parser refusal", "brief_member_unknown", "cad-plan-brief", Input("brief-member-bare.json", unknown.ToJsonString()), Out(), "--brief-only");
+            var existing = Out(); File.WriteAllBytes(existing, new byte[] { 3, 4 });
+            Expect("--brief-only never overwrites", "output_exists", "cad-plan-brief", draftPath, existing, "--brief-only");
+            Check(File.ReadAllBytes(existing).SequenceEqual(new byte[] { 3, 4 }), "--brief-only leaves an existing output untouched");
+            Expect("--brief-only: option refusals come before any I/O", "cad_option_unknown", "cad-plan-brief", Path.Combine(scratch, "missing.json"), existing, "--brief-only", "--nope", "1");
+            // Pinned current behaviour: a value option takes the next word positionally, so --name --brief-only names the
+            // brief "--brief-only" and writes the full document (no flag).
+            {
+                var o = Out(); var r = Cli("cad-plan-brief", draftPath, o, "--name", "--brief-only");
+                var expected = BriefPlanner.ToPlannerBrief(library, new BriefPlannerOptions { Name = "--brief-only" });
+                var same = Matches(o, expected, out var why);
+                Check(Ok(r, o) && NoFlag(r) && same && Doc(o) is { } dn && dn.GetProperty("kind").GetString() == "cad-plan-brief"
+                    && dn.GetProperty("options").GetProperty("name").GetString() == "--brief-only" && dn.GetProperty("brief").GetProperty("name").GetString() == "--brief-only",
+                    "--name --brief-only consumes the word as the name: full document, no brief_only, options.name \"--brief-only\"", R(r) + " " + why);
+            }
+            var ru = Cli("cad-plan-brief");
+            Check(Parse(ru.Out) is { } eu && eu.GetProperty("code").GetString() is { } usage && usage.EndsWith(" [--brief-only]", StringComparison.Ordinal), "the usage names --brief-only", R(ru));
+            var rd = Cli("no-such-verb");
+            Check(rd.Out.Contains("[--site-width w --site-depth d] [--name text] [--brief-only] |", StringComparison.Ordinal), "the default usage names cad-plan-brief --brief-only", rd.Out.Length > 600 ? rd.Out[..600] : rd.Out);
+        }
     }
 }
