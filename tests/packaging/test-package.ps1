@@ -307,6 +307,7 @@ try {
         # Synthetic package: cli from app (Beta.Core 2.1.0), mcp from other (Beta.Core 2.0.0); deps.json names the
         # first-party project files and which Beta.Core version each folder loads.
         $tPkg = Join-Path $work 'sbom transitive pkg'
+        New-Item -ItemType Directory -Force $tPkg | Out-Null
         Write-PackageText (Join-Path $tPkg 'VERSION') "1.2.3`n"
         $tBinaries = 'cli/Alpha.Json.dll', 'cli/en/Alpha.Json.resources.dll', 'cli/Beta.Core.dll', 'cli/Beta.Core.Extensions.dll', 'cli/Delta.Lib.dll', 'cli/Tau.Win.dll',
             'cli/runtimes/win-x64/native/gamma.dll', 'cli/runtimes/linux-x64/native/libgamma.so', 'cli/runtimes/linux-x64/native/libsigma.so.1', 'cli/Bim.Cli.dll', 'cli/Bim.Core.dll',
