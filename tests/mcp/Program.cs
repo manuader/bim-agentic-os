@@ -228,7 +228,9 @@ Check(elementsTool["inputSchema"]!["properties"]!["all"]?["type"]?.GetValue<stri
 Check(revitTools.Where(t=>t!["name"]!.GetValue<string>()!="revit_query_elements").All(t=>t!["inputSchema"]!["properties"]!["all"]==null),"no other revit_* tool advertises all");
 var allModel=Enumerable.Range(0,23).Select(i=>3000L+i*7).ToArray();
 var allMode="page";
+var allFat=false;
 var allLock=new object();
+void AllSet(string mode,bool fat=false) { lock(allLock) { allMode=mode; allFat=fat; } }
 var allForwarded=new List<string>();
 string AllUid(long id)=>"60f91daf-3dd7-4283-a86d-24137b73f3da-"+id.ToString("x8",System.Globalization.CultureInfo.InvariantCulture);
 // The fake add-in: pages allModel (walls) with the real paging rule and cursors; in loop mode every cursor page answers
@@ -241,7 +243,7 @@ string AllReply(string wire) {
         var envelope=RevitCommandProtocol.Parse(command);
         var queryArgs=(ElementQueryArgs)envelope.Args;
         var (selected,truncated)=RevitElementQueryRules.Page(allModel,queryArgs.Limit,queryArgs.Cursor?.After);
-        var rows=selected.Select(id=>new ObservedQueryElement(id,AllUid(id),"Walls","OST_Walls"){TypeName="T"+id.ToString(System.Globalization.CultureInfo.InvariantCulture)}).ToArray();
+        var rows=selected.Select(id=>new ObservedQueryElement(id,AllUid(id),"Walls","OST_Walls"){TypeName=(allFat ? new string('x',1000) : "T")+id.ToString(System.Globalization.CultureInfo.InvariantCulture)}).ToArray();
         var readback=RevitElementQueryJson.Elements(envelope.Document.UniqueId,queryArgs,null,allModel.Length,truncated,rows,selected);
         if(allMode=="loop" && queryArgs.Cursor is not null) {
             var looped=Node(readback).AsObject();
@@ -282,15 +284,15 @@ var singleSent=AllSent()-allBefore;
 var singleFalse=AllCall(allServer,AllInProcessPipe,Walls(5),false);
 var singleDirect=RevitCommandService.Run(AllInProcessPipe,AllEnvelope(Walls(5)).ToJsonString(),RevitCommandPolicy.None,AllTransport);
 Check(!IsError(single) && singleSent==1 && Text(single)==singleDirect.Line && Text(singleFalse)==Text(single) && !IsError(singleFalse) && Node(Text(single))["readback"]?["next_cursor"] is not null,"revit_query_elements without all (or all:false) keeps today's bytes: one request, the single-page RevitCommandService.Run line");
-allMode="loop";
+AllSet("loop");
 var loop=AllCall(allServer,AllInProcessPipe,Walls(5),true);
 Check(IsError(loop) && FailureCode(loop)==RevitElementQueryPagingCodes.CursorLoop && Text(loop)==Direct(Walls(5)) && Node(Text(loop))["elements"]!.AsArray().Count==0 && Node(Text(loop))["returned"]!.GetValue<int>()==0,"revit_query_elements all:true reports cursor_loop (isError, no partial elements), byte-equal to the core paging | "+Text(loop));
-allMode="page";
+AllSet("page");
 var allPages=allModel;
 allModel=Enumerable.Range(0,RevitElementQueryPaging.MaxPages+1).Select(i=>5000L+i).ToArray();
 allBefore=AllSent();
 var tooManyPages=AllCall(allServer,AllInProcessPipe,Walls(1),true);
-Check(IsError(tooManyPages) && FailureCode(tooManyPages)==RevitElementQueryPagingCodes.PageLimitExceeded && Node(Text(tooManyPages))["pages"]!.GetValue<int>()==RevitElementQueryPaging.MaxPages && AllSent()-allBefore==RevitElementQueryPaging.MaxPages && Node(Text(tooManyPages))["elements"]!.AsArray().Count==0,"revit_query_elements all:true stops at the 1000-page cap with page_limit_exceeded (isError, no further page sent, no partial elements)");
+Check(IsError(tooManyPages) && FailureCode(tooManyPages)==RevitElementQueryPagingCodes.PageLimitExceeded && Text(tooManyPages)==Direct(Walls(1)) && Node(Text(tooManyPages))["pages"]!.GetValue<int>()==RevitElementQueryPaging.MaxPages && AllSent()-allBefore==RevitElementQueryPaging.MaxPages && Node(Text(tooManyPages))["elements"]!.AsArray().Count==0,"revit_query_elements all:true stops at the 1000-page cap with page_limit_exceeded (isError, no further page sent, no partial elements)");
 allModel=allPages;
 var capped=new McpServer(RevitCommandCatalogue.All,RevitCommandPolicy.None,AllTransport,null){QueryAllCaps=(2,RevitElementQueryPaging.MaxElements,RevitElementQueryPaging.MaxListingBytes)};
 var cappedPages=AllCall(capped,AllInProcessPipe,Walls(5),true);
@@ -302,12 +304,41 @@ var cappedBytes=new McpServer(RevitCommandCatalogue.All,RevitCommandPolicy.None,
 var tooManyBytes=AllCall(cappedBytes,AllInProcessPipe,Walls(5),true);
 Check(IsError(tooManyBytes) && FailureCode(tooManyBytes)==RevitElementQueryPagingCodes.ListingTooLarge && Text(tooManyBytes)==Direct(Walls(5),maxBytes:100),"revit_query_elements all:true over the byte cap reports listing_too_large");
 var defaultCaps=new McpServer(RevitCommandCatalogue.All,RevitCommandPolicy.None,AllTransport,null);
-Check(defaultCaps.QueryAllCaps==(RevitElementQueryPaging.MaxPages,RevitElementQueryPaging.MaxElements,RevitElementQueryPaging.MaxListingBytes),"the MCP paging caps default to the core RevitElementQueryPaging caps (the CLI's)");
+Check(defaultCaps.QueryAllCaps==(RevitElementQueryPaging.MaxPages,RevitElementQueryPaging.MaxElements,McpServer.DefaultQueryAllBytes) && McpServer.DefaultQueryAllBytes==32L*1024*1024
+    && defaultCaps.QueryAllDeadline==McpServer.DefaultQueryAllDeadline && McpServer.DefaultQueryAllDeadline==RevitCommandService.DefaultReadTimeout,"the MCP paging caps default to the core page and element caps, a 32 MiB element-JSON cap (below the CLI's 256 MiB) and a 1800 s overall deadline");
+// SF2: a 40000-row listing of about 48 MB of element JSON: listing_too_large at the MCP default 32 MiB cap, while the
+// core (CLI) default 256 MiB cap lists it; byte-equal to the core paging with that cap.
+allPages=allModel;
+allModel=Enumerable.Range(0,40000).Select(i=>100000L+i).ToArray();
+AllSet("page",fat:true);
+var overMcpCap=AllCall(defaultCaps,AllInProcessPipe,Walls(5000),true);
+var underCliCap=RevitElementQueryPaging.All(AllEnvelope(Walls(5000)).ToJsonString(),new RevitServiceTransport(AllInProcessPipe,RevitCommandPolicy.None,AllTransport));
+Check(IsError(overMcpCap) && FailureCode(overMcpCap)==RevitElementQueryPagingCodes.ListingTooLarge && Node(Text(overMcpCap))["elements"]!.AsArray().Count==0
+    && Text(overMcpCap)==Direct(Walls(5000),maxBytes:McpServer.DefaultQueryAllBytes) && underCliCap.IsSuccess && underCliCap.Elements.Count==40000,"revit_query_elements all:true over the default 32 MiB cap reports listing_too_large (the CLI's 256 MiB cap lists it) | "+Node(Text(overMcpCap))["detail"]);
+AllSet("page");
+allModel=allPages;
+// SF1: an overall deadline on an injected clock; each page takes one minute, the deadline is three: the fourth page is
+// refused before it is sent, as query_all_deadline_exceeded in the listing shape.
+var allClock=new DateTimeOffset(2026,11,11,0,0,0,TimeSpan.Zero);
+var slowServer=new McpServer(RevitCommandCatalogue.All,RevitCommandPolicy.None,(pipe,line)=>{ lock(allLock) allClock=allClock.AddMinutes(1); return AllReply(line); },null){QueryAllClock=()=>{ lock(allLock) return allClock; },QueryAllDeadline=TimeSpan.FromMinutes(3)};
+allBefore=AllSent();
+var lateListing=AllCall(slowServer,AllInProcessPipe,Walls(5),true);
+Check(IsError(lateListing) && FailureCode(lateListing)==McpServer.QueryAllDeadlineExceeded && McpServer.QueryAllDeadlineExceeded=="query_all_deadline_exceeded" && Node(Text(lateListing))["pages"]!.GetValue<int>()==3
+    && Node(Text(lateListing))["elements"]!.AsArray().Count==0 && AllSent()-allBefore==3,"revit_query_elements all:true past its overall deadline refuses the next page with query_all_deadline_exceeded (isError, no partial elements) | "+Text(lateListing));
+var quickServer=new McpServer(RevitCommandCatalogue.All,RevitCommandPolicy.None,(pipe,line)=>{ lock(allLock) allClock=allClock.AddMinutes(1); return AllReply(line); },null){QueryAllClock=()=>{ lock(allLock) return allClock; },QueryAllDeadline=TimeSpan.FromMinutes(5)};
+Check(!IsError(AllCall(quickServer,AllInProcessPipe,Walls(5),true)),"revit_query_elements all:true within its overall deadline lists every page");
+// Optional 3: like a single read, all:true never reads the owner policy files (a malformed one does not refuse it).
+var brokenPolicy=new McpServer(RevitCommandCatalogue.All,()=>throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid,"policy","malformed"),AllTransport,null);
+Check(Text(AllCall(brokenPolicy,AllInProcessPipe,Walls(5),true))==pagedDirect,"revit_query_elements all:true does not read the owner policy (a malformed owner file does not refuse it; the CLI reads it)");
 allBefore=AllSent();
 var allBadCursor=AllCall(allServer,AllInProcessPipe,new JsonObject{["category"]="wall",["cursor"]="%%%"},true);
 Check(IsError(allBadCursor) && FailureCode(allBadCursor)==RevitCommandCodes.CursorMalformed && Node(Text(allBadCursor))["pages"]!.GetValue<int>()==0 && AllSent()==allBefore,"revit_query_elements all:true refuses a malformed cursor in the listing shape before the pipe");
 var allBadPipe=AllCall(allServer,"not-a-process-pipe",Walls(5),true);
 Check(IsError(allBadPipe) && Text(allBadPipe)==ElementQueryAllResult.Refusal(RevitCommandCodes.ExplicitProcessPipeRequired,"pipe_name","bim-agentic-os-2025-<pid> required").ToJson() && AllSent()==allBefore,"revit_query_elements all:true refuses a non-process pipe in the listing shape before the pipe");
+var allSurrogate=Node(allServer.Handle("{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"revit_query_elements\",\"arguments\":{\"pipe_name\":\"\\ud800\",\"operation_id\":\"op-p1-16\",\"document\":{\"path\":\"C:\\\\x.rvt\",\"unique_id\":\""+McpUid+"\"},\"args\":{\"category\":\"wall\"},\"all\":true}}}")!).AsObject();
+var allSurrogateJson=Node(Text(allSurrogate));
+Check(IsError(allSurrogate) && allSurrogateJson["code"]!.GetValue<string>()==RevitCommandCodes.EnvelopeInvalid && allSurrogateJson["pages"]!.GetValue<int>()==0 && allSurrogateJson["returned"]!.GetValue<int>()==0
+    && allSurrogateJson["elements"]!.AsArray().Count==0 && allSurrogateJson.AsObject().ContainsKey("matched") && AllSent()==allBefore,"revit_query_elements all:true with a lone surrogate is envelope_invalid in the listing shape (pages 0) | "+Text(allSurrogate));
 var allNotBool=AllCall(allServer,AllInProcessPipe,Walls(5),"yes");
 Check(ErrorCode(allNotBool)==-32602 && allNotBool["error"]!["message"]!.GetValue<string>()=="invalid_params: all must be boolean" && AllSent()==allBefore,"revit_query_elements all must be a JSON boolean (-32602)");
 var inspectAll=Node(allServer.Handle(Request(16,"tools/call",new JsonObject{["name"]="revit_query_inspect",["arguments"]=new JsonObject{["pipe_name"]=AllInProcessPipe,["operation_id"]="op-p1-16",["document"]=new JsonObject{["path"]=McpReal,["unique_id"]=McpUid},["args"]=sampleArgs["query.inspect"](),["all"]=true}}))!).AsObject();
@@ -319,25 +350,33 @@ Check(ErrorCode(inspectAll)==-32602 && inspectAll["error"]!["message"]!.GetValue
 // uses /tmp/ and restores TMPDIR afterwards.
 var allTmpDir=Environment.GetEnvironmentVariable("TMPDIR");
 if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR","/tmp/");
+var allStop=new CancellationTokenSource();
+Thread? allPipeThread=null;
+try {
 var allPipeName="bim-agentic-os-2025-"+Random.Shared.Next(100000000,999999999).ToString(System.Globalization.CultureInfo.InvariantCulture);
 System.IO.Pipes.NamedPipeServerStream NewAllListener()=>new(allPipeName,System.IO.Pipes.PipeDirection.InOut,2,System.IO.Pipes.PipeTransmissionMode.Byte,System.IO.Pipes.PipeOptions.Asynchronous);
 var allListener=NewAllListener();
-var allPipeThread=new Thread(()=>{
-    while(true) {
+allPipeThread=new Thread(()=>{
+    while(!allStop.IsCancellationRequested) {
         var current=allListener;
-        current.WaitForConnection();
-        allListener=NewAllListener();
         try {
+            current.WaitForConnectionAsync(allStop.Token).GetAwaiter().GetResult();
+            allListener=NewAllListener();
             using var reader=new StreamReader(current,new System.Text.UTF8Encoding(false),false,4096,leaveOpen:true);
             var request=reader.ReadLine();
-            if(request is not null) {
+            bool stall;
+            lock(allLock) stall=allMode=="stall" && request is not null && Node(request)["Command"]?["args"]?["cursor"] is not null;
+            if(stall) { lock(allLock) allForwarded.Add(request!); reader.ReadLine(); }
+            else if(request is not null) {
                 current.Write(new System.Text.UTF8Encoding(false).GetBytes(AllReply(request)+"\n"));
                 current.Flush();
                 if(OperatingSystem.IsWindows()) current.WaitForPipeDrain();
             }
-        } catch(Exception) { }
+        } catch(OperationCanceledException) { current.Dispose(); break; }
+        catch(Exception) { }
         finally { current.Dispose(); }
     }
+    allListener.Dispose();
 }){IsBackground=true};
 allPipeThread.Start();
 var pipedServer=new McpServer(RevitCommandPolicy.None);
@@ -350,14 +389,26 @@ Check(!IsError(pipedAll) && Node(Text(pipedAll))["pages"]!.GetValue<int>()==5 &&
 var pipedSingle=AllCall(pipedServer,allPipeName,Walls(5),null);
 var cliSingle=Cli("revit-command",allEnvelopePath,allPipeName);
 Check(!IsError(pipedSingle) && Text(pipedSingle)==cliSingle && Text(pipedSingle)==Text(single),"revit_query_elements without all on the fake process pipe is byte-equal to the CLI revit-command stdout (today's bytes)");
-allMode="loop";
+AllSet("loop");
 var pipedLoop=AllCall(pipedServer,allPipeName,Walls(5),true);
 var cliLoop=Cli("revit-command",allEnvelopePath,allPipeName,"--all");
-allMode="page";
+AllSet("page");
 Check(IsError(pipedLoop) && FailureCode(pipedLoop)==RevitElementQueryPagingCodes.CursorLoop && Text(pipedLoop)==cliLoop,"revit_query_elements all:true cursor_loop on the fake process pipe is byte-equal to the CLI --all stdout");
 var cliBadPipe=Cli("revit-command",allEnvelopePath,"not-a-process-pipe","--all");
 Check(Text(allBadPipe)==cliBadPipe,"revit_query_elements all:true pipe refusal is byte-equal to the CLI --all early refusal");
-if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR",allTmpDir);
+// SF1 on the real pipe transport: a stalled page is cut at the remaining overall deadline, not the 1800 s page timeout.
+var deadlinePiped=new McpServer(RevitCommandCatalogue.All,RevitCommandPolicy.None,null,null){QueryAllDeadline=TimeSpan.FromSeconds(3)};
+AllSet("stall");
+var stallWatch=System.Diagnostics.Stopwatch.StartNew();
+var stalled=AllCall(deadlinePiped,allPipeName,Walls(5),true);
+stallWatch.Stop();
+AllSet("page");
+Check(IsError(stalled) && FailureCode(stalled)==McpServer.QueryAllDeadlineExceeded && Node(Text(stalled))["pages"]!.GetValue<int>()==1 && Node(Text(stalled))["elements"]!.AsArray().Count==0 && stallWatch.Elapsed<TimeSpan.FromSeconds(60),"revit_query_elements all:true on the pipe ends a stalled page at the overall deadline with query_all_deadline_exceeded | "+Text(stalled)+" in "+stallWatch.ElapsedMilliseconds+" ms");
+} finally {
+    allStop.Cancel();
+    allPipeThread?.Join(TimeSpan.FromSeconds(10));
+    if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR",allTmpDir);
+}
 // P9-02: the structure commands are generated tools with the same read/write split and guards.
 Check(RevitCommandCatalogue.Structure.Select(spec=>spec.Name).SequenceEqual(new[]{"query.grids","query.structural_types","grid.create","structural_column.create","structural_beam.create","foundation.create_isolated","foundation.create_wall"}) && RevitCommandCatalogue.Structure.All(spec=>sampleArgs.ContainsKey(spec.Name) && RevitCommandCatalogue.All.Contains(spec)),"sample arguments cover the P9-02 structure commands, all in the catalogue enumeration");
 foreach(var (tool,readOnly) in new[]{("revit_query_grids",true),("revit_query_structural_types",true),("revit_grid_create",false),("revit_structural_column_create",false),("revit_structural_beam_create",false),("revit_foundation_create_isolated",false),("revit_foundation_create_wall",false)}) {
