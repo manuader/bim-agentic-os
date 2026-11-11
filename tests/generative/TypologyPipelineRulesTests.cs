@@ -12,7 +12,9 @@ using Bim.Generative;
 // TypologyRules.Generate bit for bit, the pipeline stage PrototypePipeline.Rank of its plans, a resolution equal to the
 // defaults gives the P5-12 bytes plus the rules member, stricter composed minimums reach the gated prototypes, the
 // composed run has its own pinned digest, and the P5-13 refusals (typology_minimum_conflict among them) pass through typed,
-// before the option refusals. Unit-tested evidence only.
+// before the option refusals. Review fixes: a snap pre-pass without its own rules keeps the composed minimums (and echoes
+// them), a facade code pack that is not a skill of the resolution is typology_pipeline_pack_mismatch, ComposedRules and
+// Rules derive from one member, and one composed and one template trace are pinned. Unit-tested evidence only.
 static class TypologyPipelineRulesTests
 {
     const string Pack = "bim.typology.vivienda-unifamiliar";
@@ -154,6 +156,23 @@ static class TypologyPipelineRulesTests
                 "the composed JSON keeps the P5-12 members and embeds the canonical alternative set and pipeline JSON");
         }
 
+        // ---- pinned serialized form of one composed-rule trace and one template-only trace ----
+        var plannerList = run.Rules!.Rules.Rules.ToList();
+        var diningIndex = plannerList.FindIndex(rule => rule.NamePattern == "dining*");
+        var laundryIndex = plannerList.FindIndex(rule => rule.RoomId == "laundry");
+        var diningTrace = "{\"planner_rule\":" + Text(diningIndex) + ",\"property\":\"min_side_m\",\"threshold\":2.8,\"rule\":\"ar.caba.codigo-edificacion:rule:dining-side-min\","
+            + "\"threshold_source\":null,\"reference\":\"ar.caba.codigo-edificacion dining-area-min dining-side-min\"}";
+        var laundryTrace = "{\"planner_rule\":" + Text(laundryIndex) + ",\"property\":\"min_side_m\",\"threshold\":1.2,\"rule\":null,\"threshold_source\":null,"
+            + "\"reference\":\"prototype template laundry minimum side (not a CABA rule)\"}";
+        Check(diningIndex >= 0 && canonical.Contains(diningTrace, StringComparison.Ordinal), "the CABA dining side trace serializes exactly as pinned", diningTrace + " in " + (RulesRaw(canonical) ?? "no rules"));
+        Check(laundryIndex >= 0 && canonical.Contains(laundryTrace, StringComparison.Ordinal), "the template-only laundry trace serializes exactly as pinned, with a null rule",
+            laundryTrace + " in " + (RulesRaw(canonical) ?? "no rules"));
+
+        // ---- the composed-rules state cannot be inconsistent ----
+        Check(run.Composed is { } composition && ReferenceEquals(composition.Rules, run.Rules) && (run with { Composed = null }) is { ComposedRules: false, Rules: null }
+            && !HasTopRules(TypologyPipelineSerializer.Serialize(run with { Composed = null })) && (run with { Composed = new TypologyComposedRules(null) }) is { ComposedRules: true, Rules: null },
+            "ComposedRules and Rules derive from one Composed member: without it there is no rule set and no rules member");
+
         // ---- determinism and the pinned digest ----
         var again = Safe(() => TypologyPipeline.Run(composed, request3, options, composedRules), ref error);
         var reresolved = Safe(() => TypologyPipeline.Run(SkillResolver.Resolve(SkillLoader.LoadDirectory(Path.Combine(root, "skills")), new[] { new SkillRequest(Caba), new SkillRequest(Pack) }),
@@ -190,6 +209,63 @@ static class TypologyPipelineRulesTests
         var strictPlain = Safe(() => TypologyPipeline.Run(strict, request, options), ref error);
         Check(strictPlain is not null && strictRun is not null && BriefDigest(strictPlain.Typology) != BriefDigest(strictRun.Typology),
             "without the option the same stricter resolution plans with the fixed rules (other candidates)");
+
+        Check(strictRun is not null && strictRun.Alternatives.Where(a => a.RejectedAt == PrototypePipelineGate.Prototype).All(a => a.Rejections.Count > 0
+                && a.Rejections.All(r => r.Gate == PrototypePipelineGate.Prototype && r.Code.Length > 0 && r.Detail.Length > 0)
+                && (a.Plan.IsFeasible || a.Plan.Violations.Count == 0 || a.Rejections.Select(r => r.Code + "@" + r.Subject).SequenceEqual(a.Plan.Violations.Select(v => v.Code + "@" + v.Subject))))
+            && strictRun.Alternatives.Where(a => a.Plan.Rooms.Any(room => room.RoomId == "bedroom" && ShortSide(room.Rect) < 3.2 - Tolerance))
+                .All(a => a.RejectedAt == PrototypePipelineGate.Prototype && !a.Plan.IsFeasible),
+            "every prototype-gate rejection of the stricter run is explained (an infeasible plan by its own violations) and every narrower bedroom is an infeasible plan rejected there",
+            strictRun is null ? error ?? "" : Summary(strictRun));
+
+        // ---- the stricter minimum holds on accepted prototypes, with and without the snap pre-pass ----
+        var strictAccepted = new List<PrototypePipelineAlternative>();
+        var snapAccepted = new List<PrototypePipelineAlternative>();
+        var snapNotes = new List<string>();
+        var snapEcho = true;
+        for (var family = 1; family <= 4; family++)
+        {
+            var size = family;
+            var strictBig = Safe(() => TypologyPipeline.Run(strict, new TypologyBriefRequest(size, bigLot, 4), options, composedRules), ref error);
+            var snapBig = Safe(() => TypologyPipeline.Run(strict, new TypologyBriefRequest(size, bigLot, 4), options with { Snap = new PrototypeSnapOptions() }, composedRules), ref error);
+            if (strictBig is not null) strictAccepted.AddRange(strictBig.Accepted);
+            if (snapBig is null) { snapEcho = false; continue; }
+            snapAccepted.AddRange(snapBig.Accepted);
+            snapNotes.Add("f" + Text(size) + " " + Summary(snapBig));
+            if (snapBig.Status == PrototypePipelineStatus.Refused) { snapEcho = false; continue; }
+            var snapJson = TypologyPipelineSerializer.Serialize(snapBig);
+            using var snapDocument = JsonDocument.Parse(snapJson);
+            var echoed = snapDocument.RootElement.GetProperty("pipeline").GetProperty("options").GetProperty("snap").GetProperty("rules");
+            snapEcho &= snapBig.Rules is { Succeeded: true } snapRules && snapBig.Pipeline.Options.Snap?.Rules is { } given && given.Rules.SequenceEqual(snapRules.Rules.Rules)
+                && echoed.GetArrayLength() == snapRules.Rules.Rules.Count
+                && echoed.EnumerateArray().Zip(snapRules.Rules.Rules).All(pair => Num(pair.First, "min_side_m") == pair.Second.MinSideMetres && Str(pair.First, "name_pattern") == pair.Second.NamePattern);
+        }
+        Console.WriteLine("::notice::generative typology pipeline, stricter 3.2 m bedroom pack with snap on 16 x 16 m: " + string.Join(" / ", snapNotes));
+        Check(strictAccepted.Count > 0 && strictAccepted.All(a => a.Plan.Rooms.Where(room => room.RoomId == "bedroom").All(room => ShortSide(room.Rect) >= 3.2 - Tolerance)),
+            "the stricter composed resolution accepts prototypes on 16 x 16 m and every accepted bedroom is at least 3.2 m wide",
+            string.Join(" ", strictAccepted.SelectMany(a => a.Plan.Rooms.Where(room => room.RoomId == "bedroom")).Select(room => F(ShortSide(room.Rect)))));
+        Check(snapAccepted.Count > 0 && snapAccepted.All(a => a.Plan.Rooms.Where(room => room.RoomId == "bedroom").All(room => ShortSide(room.Rect) >= 3.2 - Tolerance)),
+            "with the snap pre-pass (no snap rules of its own) every accepted snapped bedroom keeps the composed 3.2 m side",
+            string.Join(" / ", snapNotes) + " | " + string.Join(" ", snapAccepted.SelectMany(a => a.Plan.Rooms.Where(room => room.RoomId == "bedroom")).Select(room => F(ShortSide(room.Rect)))));
+        Check(snapEcho, "the snap pre-pass checks against the composed planner rules, and the pipeline options JSON echoes them as its snap rules", error ?? "");
+        var ownSnap = new PrototypeSnapOptions(PrototypeTemplates.CabaRules);
+        var ownSnapRun = Safe(() => TypologyPipeline.Run(strict, new TypologyBriefRequest(3, bigLot, 4), options with { Snap = ownSnap }, composedRules), ref error);
+        Check(ownSnapRun is not null && ReferenceEquals(ownSnapRun.Pipeline.Options.Snap, ownSnap), "snap options with their own rules are passed through unchanged", error ?? "");
+
+        // ---- the facade gate's code pack must be a skill of the resolution ----
+        var otherVersion = caba with { Version = new SkillVersion(0, 2, 0) };
+        var mismatch = Safe(() => TypologyPipeline.Run(composed, request3, options with { Pack = otherVersion }, composedRules), ref error);
+        Check(mismatch is { Status: PrototypePipelineStatus.Refused, Alternatives.Count: 0, ComposedRules: true } && mismatch.Refusals.Count == 1
+            && mismatch.Refusals[0] is { Code: TypologyPipelineCodes.PackMismatch, Subject: "pack", Hard: true, Satisfied: false } && mismatch.Refusals[0].Detail.Contains("0.2.0", StringComparison.Ordinal),
+            "a facade code pack whose version is not in the resolution is a typed typology_pipeline_pack_mismatch refusal", Show(mismatch, error));
+        var mismatchBoth = Safe(() => TypologyPipeline.Run(composed, request3, options with { Pack = otherVersion, ProjectId = Guid.Empty }, composedRules), ref error);
+        Check(mismatchBoth is { Status: PrototypePipelineStatus.Refused } && mismatchBoth.Refusals.Select(r => r.Code).SequenceEqual(new[] { PrototypePipelineCodes.ProjectInvalid, TypologyPipelineCodes.PackMismatch }),
+            "the pack mismatch follows the option refusals", Show(mismatchBoth, error));
+        var foreign = Safe(() => TypologyPipeline.Run(typologyOnly, request3, options, composedRules), ref error);
+        Check(foreign is { Status: PrototypePipelineStatus.Refused } && foreign.Refusals.Any(r => r.Code == TypologyPipelineCodes.PackMismatch),
+            "a facade code pack absent from the resolution is refused in composed-rules mode", Show(foreign, error));
+        var mismatchOff = Safe(() => TypologyPipeline.Run(composed, request3, options with { Pack = otherVersion }, TypologyPipelineOptions.Default), ref error);
+        Check(mismatchOff is not null && mismatchOff.Refusals.All(r => r.Code != TypologyPipelineCodes.PackMismatch), "without composed rules the P5-12 behaviour is kept (no pack check)", Show(mismatchOff, error));
 
         // ---- typed refusals pass through (typology_minimum_conflict among them), before the option refusals ----
         var strictArea = strictCatalog.Skills.First(skill => skill.Id == Stricter);
