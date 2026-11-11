@@ -294,3 +294,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P1-20: no failed attempts (red 43073359788 → green 43075435525; review red 43083652387 = contract-doc check for the new ClientSide codes → green 43086519631).
 - P2-16: no failed attempts (red 43073561189 = deliberately pinned wrong expectation, second drift == 3 → green 43075645689; review tests green 43089718042, no red because the behaviour was already correct).
 - P6-15: 1 failed attempt, oracle not relaxed — run 43076754909 (a3d280a): hypothesis "planner brief has 7 rooms" was wrong (BriefPlanner drops `bano` for area-mismatch + low confidence, documented); PDF and DXF room lists were identical; assertion changed to PDF planner rooms == DXF planner rooms, and the review round pinned the exact kept/dropped lists (green 43092611434). Build error 43073136257 (Point2 ambiguity) was a compile fix, not a test attempt.
+
+### Relay193 (2026-11-11, cloud)
+- P3-13: no failed attempts (red 43107221958 = new static checks requiring IntentPlan → green 43109253148; review tests green 43112753940, no red because the behaviour was already correct).
+- P5-15: no failed attempts (red 43107368116 compile, RunComposed missing → green 43109205242; review red 43115474002 compile, 43115509389 assertions → green 43117947248).
+- P7-14: no failed attempts (red 43107527837 verb unknown → green 43109424365; review tests green 43120709470, no red because the behaviour was already correct).
