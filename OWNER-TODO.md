@@ -239,3 +239,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay191 (2026-11-11, cloud)
 - No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) then catalogue-report; 🔒 N21 `... -Runs 1`; `git pull` (main 06fd2a6). Optional: a repository licence (first-party sbom lines stay NOASSERTION until then).
+
+## Relay192 (2026-11-11, cloud)
+- No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) then catalogue-report; 🔒 N21 `... -Runs 1`; `git pull` (main b74af57). Optional: a repository licence. New and optional: `revit-command … --read-timeout-seconds n` / `Bim.Mcp.dll --read-timeout-seconds n` exist if a long Revit step needs more or less than the 1800 s default. Note: the push CI run 43095718636 for relay192-integration stayed queued with no jobs (GitHub side); a workflow_dispatch run on the same head went green.
