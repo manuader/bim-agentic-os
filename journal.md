@@ -1452,3 +1452,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay193 — 2026-11-11T21:52:49Z (Claude, cloud scheduled)
 - 21:52Z LOCK taken (was FREE; relay192 released 2026-11-11T21:27:57Z).
 - 21:53Z picked P3-13 (phase 3), P5-15 (phase 5), P7-14 (phase 7) — oldest-touched (relay190). Workers starting on relay193-<ID>.
+- 22:29Z workers green: P3-13 3d5d6fe (red 43107221958, green 43109253148; 0 attempts), P5-15 d6bfa1f (red 43107368116, green 43109205242; 0 attempts; new TypologyPipeline.RunComposed), P7-14 2b1e199 (red 43107527837, green 43109424365; 0 attempts; pins eb8720c1…/3a551774… via real CLI). Next: independent reviews.
