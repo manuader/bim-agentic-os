@@ -162,7 +162,8 @@ function Read-PackageNuspecLicense([string]$PackagesRoot, [string]$Name, [string
     } catch { }
     return 'NOASSERTION'
 }
-# First licence that resolves across package folders (-PackagesRoot first, then the restore's own packageFolders).
+# First licence that resolves across package folders, in the order given (the caller passes the restore's own
+# packageFolders first, then -PackagesRoot).
 function Resolve-PackageNuspecLicense([string[]]$PackagesRoots, [string]$Name, [string]$Version) {
     foreach ($packagesRoot in @($PackagesRoots | Where-Object { $_ })) {
         $license = Read-PackageNuspecLicense $packagesRoot $Name $Version
@@ -171,61 +172,134 @@ function Resolve-PackageNuspecLicense([string[]]$PackagesRoots, [string]$Name, [
     return 'NOASSERTION'
 }
 
-# P10-14: restore output of a project (obj/project.assets.json beside it), parsed as nested hashtables; $null if absent.
+# --- P10-14 transitive attribution helpers ---
+# Shipped binaries: managed assemblies (.dll/.exe, listed in sbom "assemblies") and native libraries (.so, versioned
+# .so.N, .dylib; recorded per reference as "natives"). Native .dll files count as assemblies, as P10-13 lists them.
+$script:PackageAssemblyPattern = '(?i)\.(dll|exe)\z'
+$script:PackageNativePattern = '(?i)\.(dylib|so(\.[0-9]+)*)\z'
+$script:PackageBinaryPattern = '(?i)\.(dll|exe|dylib|so(\.[0-9]+)*)\z'
+# Keys of a parsed JSON object in ordinal order (ConvertFrom-Json -AsHashtable is unordered on pwsh 7.2); none otherwise.
+function Get-PackageSortedKeys($Dictionary) {
+    if ($Dictionary -isnot [Collections.IDictionary]) { return }
+    $keys = [string[]]@($Dictionary.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($keys, [StringComparer]::Ordinal)
+    $keys
+}
+# A restore packageFolders key as a local directory: trailing separators dropped; on '/' systems a Windows-style key's
+# backslashes become '/'.
+function ConvertTo-PackageFolderPath([string]$Folder) {
+    $path = if ([IO.Path]::DirectorySeparatorChar -eq '/') { $Folder.Replace('\', '/') } else { $Folder }
+    $trimmed = $path.TrimEnd('\', '/')
+    if ($trimmed) { $trimmed } else { $path }
+}
+# Restore output of a project (obj/project.assets.json beside it), parsed as nested hashtables; $null if absent.
 function Read-PackageAssetsFile([string]$ProjectPath, [string]$Base) {
     $path = Join-Path (Split-Path $ProjectPath) 'obj/project.assets.json'
     if (!(Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
     try { return ([IO.File]::ReadAllText($path) | ConvertFrom-Json -AsHashtable -ErrorAction Stop) }
     catch { throw "sbom: restore assets file unreadable: $(Get-PackageRelativePath $Base $path): $($_.Exception.Message)" }
 }
-# Assembly file names (.dll/.exe leaf names) a package target entry deploys at run time: runtime, native, resource and
-# runtimeTargets (RID-specific) assets; NuGet's empty-folder placeholder '_._' and non-assembly files are ignored.
-function Get-PackageTargetAssemblies($Entry) {
+# Leaf names of the binaries a target entry (project.assets.json or *.deps.json) deploys at run time: runtime,
+# native, resource(s) and runtimeTargets (RID-specific) assets. NuGet's '_._' placeholder and non-binaries are ignored.
+function Get-PackageTargetFiles($Entry) {
     $names = [Collections.Generic.List[string]]::new()
-    foreach ($kind in 'runtime', 'native', 'resource', 'runtimeTargets') {
-        $assets = $null
-        foreach ($key in $Entry.Keys) { if ([string]$key -ceq $kind) { $assets = $Entry[$key] } }
-        if ($assets -isnot [Collections.IDictionary]) { continue }
-        foreach ($assetPath in $assets.Keys) {
-            $leaf = ([string]$assetPath).Split('/')[-1]
-            if ($leaf -cne '_._' -and $leaf -match '(?i)\.(dll|exe)\z') { $names.Add($leaf) }
+    foreach ($key in (Get-PackageSortedKeys $Entry)) {
+        if ($key -cnotin 'runtime', 'native', 'resource', 'resources', 'runtimeTargets') { continue }
+        foreach ($assetPath in (Get-PackageSortedKeys $Entry[$key])) {
+            $leaf = $assetPath.Split('/')[-1]
+            if ($leaf -cne '_._' -and $leaf -match $script:PackageBinaryPattern) { $names.Add($leaf) }
         }
     }
-    return $names.ToArray()
+    $names.ToArray()
 }
-# Canonical assembly file list of a reference: unique ignoring case (first spelling kept), ordinal order.
-function Get-PackageReferenceAssemblies($Reference) {
+# Canonical file list of a reference property (Assemblies or Natives): unique ignoring case (first spelling kept), ordinal.
+function Get-PackageReferenceList($Reference, [string]$Property) {
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $list = [Collections.Generic.List[string]]::new()
-    foreach ($name in @($Reference.Assemblies | Where-Object { $_ })) { if ($seen.Add([string]$name)) { $list.Add([string]$name) } }
+    foreach ($name in @($Reference.$Property | Where-Object { $_ })) { if ($seen.Add([string]$name)) { $list.Add([string]$name) } }
     $array = $list.ToArray(); [Array]::Sort($array, [StringComparer]::Ordinal)
     return ,$array
 }
+function Get-PackageReferenceFiles($Reference) {
+    $assemblies = Get-PackageReferenceList $Reference 'Assemblies'
+    $natives = Get-PackageReferenceList $Reference 'Natives'
+    @($assemblies) + @($natives)
+}
 function Get-PackageReferenceDependency($Reference) { if ([string]$Reference.Dependency -ceq 'transitive') { 'transitive' } else { 'direct' } }
-# The NuGet reference a shipped assembly file comes from: the first reference whose assemblies list names the file
-# (ignoring case), else (P10-13, no assets data) the reference with the assembly's name; $null when unattributed.
-function Find-PackageAssemblyReference([object[]]$References, [string]$FileName) {
-    foreach ($ref in $References) { $names = Get-PackageReferenceAssemblies $ref; foreach ($name in $names) { if ($name -ieq $FileName) { return $ref } } }
-    $stem = [IO.Path]::GetFileNameWithoutExtension($FileName)
-    foreach ($ref in $References) { if ([string]$ref.Name -ieq $stem) { return $ref } }
-    return $null
+
+# What each published folder's *.deps.json says about its binaries: leaf names of project (first-party) files, and
+# for package files the lowercase id/version the host loads them from. Keyed by the folder's relative path ('.' = root).
+# An unreadable deps.json contributes nothing (fail-safe: its binaries are then unattributed and refused).
+function Get-PackageDepsIndex([string]$Directory) {
+    $base = [IO.Path]::GetFullPath($Directory)
+    $index = @{}
+    foreach ($relative in @(Get-PackageFiles $base | Where-Object { $_ -match '(?i)\.deps\.json\z' })) {
+        $full = Join-Path $base $relative
+        try { $deps = [IO.File]::ReadAllText($full) | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { continue }
+        if ($deps -isnot [Collections.IDictionary]) { continue }
+        $slash = $relative.LastIndexOf('/')
+        $folder = if ($slash -lt 0) { '.' } else { $relative.Substring(0, $slash) }
+        if (!$index.ContainsKey($folder)) { $index[$folder] = [pscustomobject]@{ FirstParty = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); Packages = @{} } }
+        $info = $index[$folder]
+        $types = @{}
+        foreach ($key in (Get-PackageSortedKeys $deps['libraries'])) { $library = $deps['libraries'][$key]; if ($library -is [Collections.IDictionary]) { $types[$key.ToLowerInvariant()] = [string]$library['type'] } }
+        foreach ($framework in (Get-PackageSortedKeys $deps['targets'])) {
+            $target = $deps['targets'][$framework]
+            foreach ($key in (Get-PackageSortedKeys $target)) {
+                $type = $types[$key.ToLowerInvariant()]
+                foreach ($leaf in (Get-PackageTargetFiles $target[$key])) {
+                    if ($type -ceq 'project') { [void]$info.FirstParty.Add($leaf) }
+                    elseif ($type -ceq 'package') {
+                        $leafKey = $leaf.ToLowerInvariant()
+                        if (!$info.Packages.ContainsKey($leafKey)) { $info.Packages[$leafKey] = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal) }
+                        [void]$info.Packages[$leafKey].Add($key.ToLowerInvariant())
+                    }
+                }
+            }
+        }
+    }
+    return $index
+}
+# Attribution of one shipped binary (package-relative path). First-party when the deepest enclosing folder's deps.json
+# lists the file under a project entry. Otherwise candidates are the references whose assemblies/natives name the file
+# (ignoring case); for a .dll/.exe with no such reference, P10-13 references without file lists (no assets data) are
+# matched by name. When that folder's deps.json names the package(s) the file loads from, only those id/versions
+# count. One candidate attributes the file; several are ambiguous (sbom_attribution_ambiguous); none is unattributed.
+function Resolve-PackageFileAttribution([object[]]$References, [string]$RelativePath, $DepsIndex) {
+    $leaf = $RelativePath.Split('/')[-1]
+    $info = $null; $best = -1
+    foreach ($folder in @($DepsIndex.Keys)) {
+        $prefix = if ($folder -ceq '.') { '' } else { [string]$folder + '/' }
+        if ($RelativePath.StartsWith($prefix, [StringComparison]::Ordinal) -and $prefix.Length -gt $best) { $best = $prefix.Length; $info = $DepsIndex[$folder] }
+    }
+    if ($info -and $info.FirstParty.Contains($leaf)) { return [pscustomobject]@{ Reference = $null; Ambiguous = $false; FirstParty = $true } }
+    $candidates = [Collections.Generic.List[object]]::new()
+    foreach ($ref in $References) { foreach ($name in @(Get-PackageReferenceFiles $ref)) { if ($name -ieq $leaf) { $candidates.Add($ref); break } } }
+    if ($candidates.Count -eq 0 -and $leaf -match $script:PackageAssemblyPattern) {
+        $stem = [IO.Path]::GetFileNameWithoutExtension($leaf)
+        foreach ($ref in $References) { if (@(Get-PackageReferenceFiles $ref).Count -eq 0 -and [string]$ref.Name -ieq $stem) { $candidates.Add($ref) } }
+    }
+    $leafKey = $leaf.ToLowerInvariant()
+    if ($info -and $info.Packages.ContainsKey($leafKey)) {
+        $loaded = $info.Packages[$leafKey]
+        $confirmed = [Collections.Generic.List[object]]::new()
+        foreach ($ref in $candidates) { if ($loaded.Contains(([string]$ref.Name + '/' + [string]$ref.Version).ToLowerInvariant())) { $confirmed.Add($ref) } }
+        $candidates = $confirmed
+    }
+    $reference = if ($candidates.Count -eq 1) { $candidates[0] } else { $null }
+    return [pscustomobject]@{ Reference = $reference; Ambiguous = ($candidates.Count -gt 1); FirstParty = $false }
 }
 
-# NuGet references that ship with the given projects: their ProjectReference closure plus the root
-# Directory.Build.props, runtime references only, vendor packages never. Sorted ordinally by name then version.
-# A shipped reference must be pinned to one literal version; floating, ranged, property or missing versions are refused.
-function Get-PackageNuGetReferences([string]$Root, [string[]]$Projects, [string]$PackagesRoot) {
-    $base = [IO.Path]::GetFullPath($Root)
+# ProjectReference closure of one entry project (full paths, entry first).
+function Get-PackageProjectClosure([string]$Base, [string]$EntryPath) {
     $queue = [Collections.Generic.Queue[string]]::new()
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($project in $Projects) { $queue.Enqueue([IO.Path]::GetFullPath((Join-Path $base $project))) }
     $files = [Collections.Generic.List[string]]::new()
-    $props = Join-Path $base 'Directory.Build.props'
-    if (Test-Path -LiteralPath $props -PathType Leaf) { $files.Add($props) }
+    $queue.Enqueue($EntryPath)
     while ($queue.Count) {
         $path = $queue.Dequeue()
         if (!$seen.Add($path)) { continue }
-        if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "sbom: project not found: $(Get-PackageRelativePath $base $path)" }
+        if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "sbom: project not found: $(Get-PackageRelativePath $Base $path)" }
         $files.Add($path)
         $xml = [xml]::new(); $xml.XmlResolver = $null; $xml.Load($path)
         foreach ($reference in $xml.GetElementsByTagName('ProjectReference')) {
@@ -233,80 +307,113 @@ function Get-PackageNuGetReferences([string]$Root, [string[]]$Projects, [string]
             if ($include) { $queue.Enqueue([IO.Path]::GetFullPath((Join-Path (Split-Path $path) $include.Replace('\', '/')))) }
         }
     }
-    $byKey = [ordered]@{}
-    $declared = @{}
-    foreach ($file in $files) {
-        $relative = Get-PackageRelativePath $base $file
-        $declared[$file] = [Collections.Generic.List[string]]::new()
-        $xml = [xml]::new(); $xml.XmlResolver = $null; $xml.Load($file)
-        foreach ($reference in $xml.GetElementsByTagName('PackageReference')) {
-            $name = Get-PackageXmlValue $reference 'Include'
-            if (!$name -or $name -match $script:PackageVendorPattern -or !(Test-PackageReferenceShipped $reference)) { continue }
-            $raw = Get-PackageXmlValue $reference 'Version'
-            $pinned = if ($raw -cmatch '\A\[([^,\[\]()]+)\]\z') { $Matches[1].Trim() } else { [string]$raw }
-            $version = ConvertTo-PackageNuGetVersion $pinned
-            if (!$version) { throw "sbom: shipped reference $name in $relative is not pinned to one version: '$raw'" }
-            $key = $name.ToLowerInvariant() + '@' + $version.ToLowerInvariant()
-            if (!$byKey.Contains($key)) { $byKey[$key] = [pscustomobject]@{ Name = $name; Version = $version; Dependency = 'direct'; Projects = [Collections.Generic.List[string]]::new(); Assemblies = [Collections.Generic.List[string]]::new() } }
-            if (!$byKey[$key].Projects.Contains($relative)) { $byKey[$key].Projects.Add($relative) }
-            $declared[$file].Add($name)
-        }
+    return $files.ToArray()
+}
+# Shipped (runtime, non-vendor) PackageReferences declared in one csproj/props file, each pinned to one version.
+function Read-PackageDeclaredReferences([string]$Base, [string]$File) {
+    $relative = Get-PackageRelativePath $Base $File
+    $result = [Collections.Generic.List[object]]::new()
+    $xml = [xml]::new(); $xml.XmlResolver = $null; $xml.Load($File)
+    foreach ($reference in $xml.GetElementsByTagName('PackageReference')) {
+        $name = Get-PackageXmlValue $reference 'Include'
+        if (!$name -or $name -match $script:PackageVendorPattern -or !(Test-PackageReferenceShipped $reference)) { continue }
+        $raw = Get-PackageXmlValue $reference 'Version'
+        $pinned = if ($raw -cmatch '\A\[([^,\[\]()]+)\]\z') { $Matches[1].Trim() } else { [string]$raw }
+        $version = ConvertTo-PackageNuGetVersion $pinned
+        if (!$version) { throw "sbom: shipped reference $name in $relative is not pinned to one version: '$raw'" }
+        $result.Add([pscustomobject]@{ Name = $name; Version = $version })
     }
-    # P10-14: walk each shipped project's restore graph (obj/project.assets.json) from its shipped direct references
-    # (its own and the root Directory.Build.props ones), so transitive packages are attributed too. Vendor packages
-    # are neither listed nor descended; transitive packages without a runtime assembly are not listed. A project
-    # without an assets file contributes its direct references only (P10-13 behaviour); any third-party assembly left
-    # unattributed is still refused by Test-PackageSbom (sbom_unattributed).
-    $packagesRoots = [Collections.Generic.List[string]]::new()
-    if ($PackagesRoot) { $packagesRoots.Add($PackagesRoot) }
-    foreach ($file in $files) {
-        if ($file -ceq $props) { continue }
-        $relative = Get-PackageRelativePath $base $file
-        $assets = Read-PackageAssetsFile $file $base
+    return $result.ToArray()
+}
+function New-PackageReferenceItem([string]$Name, [string]$Version, [string]$Dependency) {
+    [pscustomobject]@{ Name = $Name; Version = $Version; Dependency = $Dependency; Projects = [Collections.Generic.List[string]]::new()
+        Assemblies = [Collections.Generic.List[string]]::new(); Natives = [Collections.Generic.List[string]]::new() }
+}
+
+# NuGet references that ship with the given entry projects, sorted ordinally by name then version.
+# Direct (P10-13): runtime references declared in each entry's ProjectReference closure plus the root
+# Directory.Build.props, vendor packages never; each must be pinned to one literal version (floating, ranged, property
+# or missing versions are refused); "projects" are the declaring files.
+# Transitive (P10-14): each entry project's own restore graph (its obj/project.assets.json, every target framework and
+# RID target) is walked from those direct references; the entry's graph is what its published folder loads, so
+# non-entry projects' assets files are not read. A direct reference restored at another version than declared is
+# refused. Vendor packages are neither listed nor walked (their dependencies are build-only by policy; fail-safe: any
+# binary they would ship is refused as unattributed). Each package records the assembly and native file names it
+# deploys; transitive packages without any are not listed, and their "projects" are the entry projects reaching them.
+# Without an assets file an entry contributes its direct references only, with no file lists.
+# Licences come from the nuspec, looked up in the restores' packageFolders first, then -PackagesRoot.
+function Get-PackageNuGetReferences([string]$Root, [string[]]$Projects, [string]$PackagesRoot) {
+    $base = [IO.Path]::GetFullPath($Root)
+    $props = Join-Path $base 'Directory.Build.props'
+    $hasProps = Test-Path -LiteralPath $props -PathType Leaf
+    $declared = @{}
+    $byKey = [ordered]@{}
+    $restoreFolders = [Collections.Generic.List[string]]::new()
+    foreach ($project in $Projects) {
+        $entryPath = [IO.Path]::GetFullPath((Join-Path $base $project))
+        $closure = @(Get-PackageProjectClosure $base $entryPath)
+        $entryRelative = Get-PackageRelativePath $base $entryPath
+        $declaringFiles = [Collections.Generic.List[string]]::new()
+        if ($hasProps) { $declaringFiles.Add($props) }
+        foreach ($file in $closure) { $declaringFiles.Add($file) }
+        $rootVersions = @{}
+        foreach ($file in $declaringFiles) {
+            if (!$declared.ContainsKey($file)) { $declared[$file] = @(Read-PackageDeclaredReferences $base $file) }
+            $relative = Get-PackageRelativePath $base $file
+            foreach ($ref in $declared[$file]) {
+                $key = $ref.Name.ToLowerInvariant() + '@' + $ref.Version.ToLowerInvariant()
+                if (!$byKey.Contains($key)) { $byKey[$key] = New-PackageReferenceItem $ref.Name $ref.Version 'direct' }
+                $item = $byKey[$key]
+                if ($item.Dependency -ceq 'transitive') { $item.Dependency = 'direct'; $item.Projects.Clear() }
+                if (!$item.Projects.Contains($relative)) { $item.Projects.Add($relative) }
+                $lower = $ref.Name.ToLowerInvariant()
+                if (!$rootVersions.ContainsKey($lower)) { $rootVersions[$lower] = [Collections.Generic.List[string]]::new() }
+                if (!$rootVersions[$lower].Contains($ref.Version)) { $rootVersions[$lower].Add($ref.Version) }
+            }
+        }
+        $assets = Read-PackageAssetsFile $entryPath $base
         if ($null -eq $assets) { continue }
-        if ($assets['packageFolders'] -is [Collections.IDictionary]) { foreach ($folder in $assets['packageFolders'].Keys) { if (!$packagesRoots.Contains([string]$folder)) { $packagesRoots.Add([string]$folder) } } }
-        $roots = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($name in $declared[$file]) { [void]$roots.Add($name) }
-        if ($declared.ContainsKey($props)) { foreach ($name in $declared[$props]) { [void]$roots.Add($name) } }
-        if ($roots.Count -eq 0 -or $assets['targets'] -isnot [Collections.IDictionary]) { continue }
-        $frameworks = [string[]]@($assets['targets'].Keys); [Array]::Sort($frameworks, [StringComparer]::Ordinal)
-        foreach ($framework in $frameworks) {
+        foreach ($folder in (Get-PackageSortedKeys $assets['packageFolders'])) { $path = ConvertTo-PackageFolderPath $folder; if (!$restoreFolders.Contains($path)) { $restoreFolders.Add($path) } }
+        $rootNames = [string[]]@($rootVersions.Keys); [Array]::Sort($rootNames, [StringComparer]::Ordinal)
+        if ($rootNames.Length -eq 0) { continue }
+        foreach ($framework in (Get-PackageSortedKeys $assets['targets'])) {
             $target = $assets['targets'][$framework]
             if ($target -isnot [Collections.IDictionary]) { continue }
             $index = @{}
-            foreach ($entryKey in $target.Keys) { $slash = ([string]$entryKey).LastIndexOf('/'); if ($slash -gt 0) { $index[([string]$entryKey).Substring(0, $slash).ToLowerInvariant()] = [string]$entryKey } }
+            foreach ($entryKey in (Get-PackageSortedKeys $target)) { $slash = $entryKey.LastIndexOf('/'); if ($slash -gt 0) { $index[$entryKey.Substring(0, $slash).ToLowerInvariant()] = $entryKey } }
             $pending = [Collections.Generic.Queue[string]]::new()
-            foreach ($name in $roots) { $pending.Enqueue($name) }
+            foreach ($name in $rootNames) { $pending.Enqueue($name) }
             $visited = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
             while ($pending.Count) {
-                $current = $pending.Dequeue()
-                if (!$visited.Add($current) -or !$index.ContainsKey($current.ToLowerInvariant())) { continue }
-                $entryKey = $index[$current.ToLowerInvariant()]
+                $current = $pending.Dequeue().ToLowerInvariant()
+                if (!$visited.Add($current) -or !$index.ContainsKey($current)) { continue }
+                $entryKey = $index[$current]
                 $entry = $target[$entryKey]
                 if ($entry -isnot [Collections.IDictionary] -or [string]$entry['type'] -cne 'package') { continue }
                 $slash = $entryKey.LastIndexOf('/')
                 $name = $entryKey.Substring(0, $slash)
+                # Vendor packages and everything only they depend on are intentionally not walked (see above).
                 if ($name -match $script:PackageVendorPattern) { continue }
                 $version = ConvertTo-PackageNuGetVersion $entryKey.Substring($slash + 1)
-                if (!$version) { throw "sbom: restore assets of $relative list $entryKey with an unreadable version" }
-                $key = $name.ToLowerInvariant() + '@' + $version.ToLowerInvariant()
-                $isRoot = $roots.Contains($name)
-                if ($isRoot -and !$byKey.Contains($key)) {
-                    $declaredVersions = @($byKey.Values | Where-Object { $_.Name -ieq $name } | ForEach-Object { $_.Version }) -join ', '
-                    throw "sbom: $name restored as $version for $relative but declared as $declaredVersions; pin the shipped reference to the restored version"
+                if (!$version) { throw "sbom: restore assets of $entryRelative list $entryKey with an unreadable version" }
+                if ($rootVersions.ContainsKey($current)) {
+                    $other = @($rootVersions[$current] | Where-Object { $_ -ine $version })
+                    if ($other.Count) { throw "sbom: $name restored as $version for $entryRelative but declared as $($other -join ', ') in its project closure; pin every shipped reference to the restored version" }
                 }
-                if (!$byKey.Contains($key)) { $byKey[$key] = [pscustomobject]@{ Name = $name; Version = $version; Dependency = 'transitive'; Projects = [Collections.Generic.List[string]]::new(); Assemblies = [Collections.Generic.List[string]]::new() } }
+                $key = $current + '@' + $version.ToLowerInvariant()
+                if (!$byKey.Contains($key)) { $byKey[$key] = New-PackageReferenceItem $name $version 'transitive' }
                 $item = $byKey[$key]
-                if ($item.Dependency -ceq 'transitive' -and !$item.Projects.Contains($relative)) { $item.Projects.Add($relative) }
-                foreach ($assembly in (Get-PackageTargetAssemblies $entry)) { $item.Assemblies.Add($assembly) }
-                if ($entry['dependencies'] -is [Collections.IDictionary]) { foreach ($dependency in $entry['dependencies'].Keys) { $pending.Enqueue([string]$dependency) } }
+                if ($item.Dependency -ceq 'transitive' -and !$item.Projects.Contains($entryRelative)) { $item.Projects.Add($entryRelative) }
+                foreach ($file in (Get-PackageTargetFiles $entry)) { if ($file -match $script:PackageNativePattern) { $item.Natives.Add($file) } else { $item.Assemblies.Add($file) } }
+                foreach ($dependency in (Get-PackageSortedKeys $entry['dependencies'])) { $pending.Enqueue($dependency) }
             }
         }
     }
+    $licenseRoots = [Collections.Generic.List[string]]::new($restoreFolders)
+    if ($PackagesRoot) { $licenseRoots.Add($PackagesRoot) }
     $bySortKey = @{}
     foreach ($entry in $byKey.Values) {
-        $entryAssemblies = Get-PackageReferenceAssemblies $entry
-        if ($entry.Dependency -ceq 'transitive' -and $entryAssemblies.Length -eq 0) { continue }
+        if ($entry.Dependency -ceq 'transitive' -and @(Get-PackageReferenceFiles $entry).Count -eq 0) { continue }
         $bySortKey[$entry.Name + "`0" + $entry.Version] = $entry
     }
     $sortKeys = [string[]]@($bySortKey.Keys)
@@ -315,9 +422,10 @@ function Get-PackageNuGetReferences([string]$Root, [string[]]$Projects, [string]
     foreach ($sortKey in $sortKeys) {
         $entry = $bySortKey[$sortKey]
         $projectArray = $entry.Projects.ToArray(); [Array]::Sort($projectArray, [StringComparer]::Ordinal)
-        $entryAssemblies = Get-PackageReferenceAssemblies $entry
-        $result.Add([pscustomobject]@{ Name = $entry.Name; Version = $entry.Version; License = (Resolve-PackageNuspecLicense $packagesRoots.ToArray() $entry.Name $entry.Version); Projects = $projectArray
-            Dependency = $entry.Dependency; Assemblies = [string[]]$entryAssemblies })
+        $entryAssemblies = Get-PackageReferenceList $entry 'Assemblies'
+        $entryNatives = Get-PackageReferenceList $entry 'Natives'
+        $result.Add([pscustomobject]@{ Name = $entry.Name; Version = $entry.Version; License = (Resolve-PackageNuspecLicense $licenseRoots.ToArray() $entry.Name $entry.Version); Projects = $projectArray
+            Dependency = $entry.Dependency; Assemblies = [string[]]$entryAssemblies; Natives = [string[]]$entryNatives })
     }
     return $result.ToArray()
 }
@@ -362,10 +470,10 @@ function Get-PackageAssemblyVersion([string]$Path) {
 }
 
 # Canonical sbom.json: fixed key order, LF endings, assemblies (.dll/.exe) in ordinal path order, references sorted.
-# An assembly takes the licence of the NuGet reference that ships its file (P10-14: the reference's assemblies list,
-# else the reference with its name) and then also names that "package" (id@version); an unattributed assembly
-# (first-party Bim.*) declares NOASSERTION with no package field, so its line is the P10-13 one. References carry
-# "dependency" (direct/transitive) and "assemblies" (shipped file names) after "projects" (additive P10-14 fields).
+# An assembly attributed to a NuGet reference (Resolve-PackageFileAttribution) takes its licence and names that
+# "package" (id@version); a first-party, ambiguous or unattributed assembly declares NOASSERTION with no package field,
+# so its line is the P10-13 one. References carry "dependency" (direct/transitive), "assemblies" and "natives"
+# (shipped file names) after "projects" (additive P10-14 fields).
 function New-PackageSbomText([string]$Directory, [string]$Version, [string]$Commit, [object[]]$References) {
     $base = [IO.Path]::GetFullPath($Directory)
     $refs = @($References | Where-Object { $null -ne $_ })
@@ -374,13 +482,14 @@ function New-PackageSbomText([string]$Directory, [string]$Version, [string]$Comm
     $lines.Add('  "schema": ' + (ConvertTo-PackageJsonString $script:PackageSbomSchema) + ',')
     $lines.Add('  "version": ' + (ConvertTo-PackageJsonString $Version) + ',')
     $lines.Add('  "source_commit": ' + (ConvertTo-PackageJsonString $Commit) + ',')
-    $assemblies = [string[]]@(Get-PackageFiles $base | Where-Object { $_ -match '(?i)\.(dll|exe)$' })
+    $assemblies = [string[]]@(Get-PackageFiles $base | Where-Object { $_ -match $script:PackageAssemblyPattern })
+    $depsIndex = Get-PackageDepsIndex $base
     if ($assemblies.Length -eq 0) { $lines.Add('  "assemblies": [],') } else {
         $lines.Add('  "assemblies": [')
         for ($i = 0; $i -lt $assemblies.Length; $i++) {
             $full = Join-Path $base $assemblies[$i]
             $name = [IO.Path]::GetFileNameWithoutExtension($assemblies[$i])
-            $owner = Find-PackageAssemblyReference $refs ([IO.Path]::GetFileName($assemblies[$i]))
+            $owner = (Resolve-PackageFileAttribution $refs $assemblies[$i] $depsIndex).Reference
             $license = if ($owner) { [string]$owner.License } else { 'NOASSERTION' }
             $package = if ($owner) { ', "package": ' + (ConvertTo-PackageJsonString ([string]$owner.Name + '@' + [string]$owner.Version)) } else { '' }
             $hash = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -394,12 +503,14 @@ function New-PackageSbomText([string]$Directory, [string]$Version, [string]$Comm
         $lines.Add('  "nuget_references": [')
         for ($i = 0; $i -lt $refs.Count; $i++) {
             $projectText = (@($refs[$i].Projects) | ForEach-Object { ConvertTo-PackageJsonString ([string]$_) }) -join ', '
-            $refAssemblies = Get-PackageReferenceAssemblies $refs[$i]
+            $refAssemblies = Get-PackageReferenceList $refs[$i] 'Assemblies'
             $assemblyText = (@($refAssemblies) | ForEach-Object { ConvertTo-PackageJsonString ([string]$_) }) -join ', '
+            $refNatives = Get-PackageReferenceList $refs[$i] 'Natives'
+            $nativeText = (@($refNatives) | ForEach-Object { ConvertTo-PackageJsonString ([string]$_) }) -join ', '
             $comma = if ($i -lt $refs.Count - 1) { ',' } else { '' }
             $lines.Add('    { "name": ' + (ConvertTo-PackageJsonString ([string]$refs[$i].Name)) + ', "version": ' + (ConvertTo-PackageJsonString ([string]$refs[$i].Version)) +
                 ', "license": ' + (ConvertTo-PackageJsonString ([string]$refs[$i].License)) + ', "projects": [' + $projectText + ']' +
-                ', "dependency": "' + (Get-PackageReferenceDependency $refs[$i]) + '", "assemblies": [' + $assemblyText + '] }' + $comma)
+                ', "dependency": "' + (Get-PackageReferenceDependency $refs[$i]) + '", "assemblies": [' + $assemblyText + '], "natives": [' + $nativeText + '] }' + $comma)
         }
         $lines.Add('  ]')
     }
@@ -407,7 +518,9 @@ function New-PackageSbomText([string]$Directory, [string]$Version, [string]$Comm
     return ($lines -join "`n") + "`n"
 }
 
-# Typed SBOM problems (sbom_missing, sbom_invalid, sbom_build_only, sbom_mismatch). The sbom is re-rendered from the
+# Typed SBOM problems (sbom_missing, sbom_invalid, sbom_build_only, sbom_mismatch; P10-14 sbom_unattributed for a
+# shipped binary (.dll/.exe/.so[.N]/.dylib) that is neither first-party (a project entry of its folder's *.deps.json)
+# nor attributed to one listed reference, sbom_attribution_ambiguous when several listed references claim it). The sbom is re-rendered from the
 # package files and its own reference list and must match byte for byte, and the references must be canonical
 # (ordinal name/version order, unique, sorted projects), with each assembly carrying its same-name reference's
 # licence. Reference data itself (versions, licences, projects) cannot be checked without the sources and NuGet
@@ -431,10 +544,12 @@ function Test-PackageSbom([string]$Directory, $Manifest) {
         }
         $dependency = if ($ref.PSObject.Properties['dependency']) { [string]$ref.dependency } else { 'direct' }
         $refAssemblies = [string[]]@($ref.assemblies | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+        $refNatives = [string[]]@($ref.natives | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
         if ($dependency -cne 'direct' -and $dependency -cne 'transitive') { $problems.Add("sbom_invalid: nuget reference '$name' dependency '$dependency' is not direct or transitive"); continue }
         $badAssembly = @($refAssemblies | Where-Object { $_ -cnotmatch '\A[A-Za-z0-9_][A-Za-z0-9_.+-]*\.([Dd][Ll][Ll]|[Ee][Xx][Ee])\z' })
-        if ($badAssembly.Count) { $problems.Add("sbom_invalid: nuget reference '$name' lists malformed assembly file names: $($badAssembly -join ', ')"); continue }
-        $references.Add([pscustomobject]@{ Name = $name; Version = [string]$ref.version; License = [string]$ref.license; Projects = [string[]]@($ref.projects | ForEach-Object { [string]$_ }); Dependency = $dependency; Assemblies = $refAssemblies })
+        $badNative = @($refNatives | Where-Object { $_ -cnotmatch '\A[A-Za-z0-9_][A-Za-z0-9_.+-]*\z' -or $_ -notmatch $script:PackageNativePattern })
+        if ($badAssembly.Count -or $badNative.Count) { $problems.Add("sbom_invalid: nuget reference '$name' lists malformed assembly/native file names: $(@($badAssembly) + @($badNative) -join ', ')"); continue }
+        $references.Add([pscustomobject]@{ Name = $name; Version = [string]$ref.version; License = [string]$ref.license; Projects = [string[]]@($ref.projects | ForEach-Object { [string]$_ }); Dependency = $dependency; Assemblies = $refAssemblies; Natives = $refNatives })
     }
     $order = [Collections.Generic.List[string]]::new()
     $unique = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -450,20 +565,23 @@ function Test-PackageSbom([string]$Directory, $Manifest) {
     foreach ($component in @($sbom.assemblies | Where-Object { $null -ne $_ })) {
         if ([string]$component.name -match $script:PackageVendorPattern) { $problems.Add("sbom_build_only: vendor assembly listed as shipped: $($component.path)") }
     }
-    # P10-14: every shipped third-party assembly (not first-party Bim.*) must be attributed to a listed NuGet package.
+    # P10-14: every shipped binary that is not first-party must be attributed to exactly one listed NuGet package.
     $unattributed = [Collections.Generic.List[string]]::new()
-    foreach ($assembly in @(Get-PackageFiles $base | Where-Object { $_ -match '(?i)\.(dll|exe)$' })) {
-        $leaf = [IO.Path]::GetFileName($assembly)
-        if ($leaf -cmatch '\ABim\.') { continue }
-        if (!(Find-PackageAssemblyReference $references.ToArray() $leaf)) { $unattributed.Add($assembly) }
+    $ambiguous = [Collections.Generic.List[string]]::new()
+    $depsIndex = Get-PackageDepsIndex $base
+    foreach ($binary in @(Get-PackageFiles $base | Where-Object { $_ -match $script:PackageBinaryPattern })) {
+        $attribution = Resolve-PackageFileAttribution $references.ToArray() $binary $depsIndex
+        if ($attribution.FirstParty) { continue }
+        if ($attribution.Ambiguous) { $ambiguous.Add($binary) } elseif ($null -eq $attribution.Reference) { $unattributed.Add($binary) }
     }
-    if ($unattributed.Count) { $problems.Add("sbom_unattributed: third-party assemblies not attributed to a NuGet package (direct or transitive) in sbom.json: $($unattributed -join ', ')") }
+    if ($unattributed.Count) { $problems.Add("sbom_unattributed: third-party binaries not attributed to a NuGet package (direct or transitive) in sbom.json: $($unattributed -join ', ')") }
+    if ($ambiguous.Count) { $problems.Add("sbom_attribution_ambiguous: several listed NuGet packages claim these shipped binaries and no deps.json disambiguates them: $($ambiguous -join ', ')") }
     $expected = New-PackageSbomText $base ([string]$Manifest.version) ([string]$Manifest.source_commit) $references.ToArray()
     if ($text -cne $expected) {
         $listed = @{}
         foreach ($component in @($sbom.assemblies | Where-Object { $null -ne $_ })) { $listed[[string]$component.path] = [string]$component.sha256 }
         $details = [Collections.Generic.List[string]]::new()
-        foreach ($assembly in @(Get-PackageFiles $base | Where-Object { $_ -match '(?i)\.(dll|exe)$' })) {
+        foreach ($assembly in @(Get-PackageFiles $base | Where-Object { $_ -match $script:PackageAssemblyPattern })) {
             if (!$listed.ContainsKey($assembly)) { $details.Add("unlisted assembly $assembly") }
             elseif ($listed[$assembly] -cne (Get-FileHash -LiteralPath (Join-Path $base $assembly) -Algorithm SHA256).Hash.ToLowerInvariant()) { $details.Add("sha256 differs for $assembly") }
         }
