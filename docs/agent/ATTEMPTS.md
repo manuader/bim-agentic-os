@@ -284,3 +284,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P7-12: no failed attempts (red 43007834744 → green 43009419027; review red 43013468121 → green 43014850081).
 - P3-12: no failed attempts (red 43007872834 → green 43009808461; review tests already green 43017474972, no red because behaviour was already correct).
 - P5-14: no failed attempts (red 43007881318 compile → placeholder-pin red 43008867735 → green 43010911469; review red 43020311373 compile → green 43021645045).
+
+### Relay191 (2026-11-11, cloud)
+- P4-13: 1 failed attempt, oracle unchanged — run 43043459838 (f1e2a2e): review-round test compile error, a text replacement also rewrote the `From` helper's own definition (self-call with 3 arguments); fixed in 879bfa5 → valid red 43044249333 → green 43045934229. First round red 43033957185 → green 43036029825.
+- P2-15: no failed attempts (red 43033953076 → green 43035023695; review tests green 43048882203, no red because the behaviour was already correct).
+- P10-14: 3 failed attempts on distinct tests/causes, oracle unchanged — (1) run 43036494962 (67153ea): test line selector `"name": "Beta.Core"` also matched the assembly line; selector anchored to the reference line; (2) run 43052859027 (ceeaa0e): review-round red masked later assertions because the test wrote VERSION before creating the package folder; folder created first → clean red 43054876471; (3) run 43054937163 (c5496d4): tests/packaging/test-install-addin.ps1 synthetic `revit/Bim.Revit.dll` had no deps.json and the new first-party rule refused it as sbom_unattributed; fixture given the deps.json a real build emits (rule not weakened) → green 43058280336.

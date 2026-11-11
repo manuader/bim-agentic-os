@@ -1598,7 +1598,7 @@
         "interfaces/cli/MirrorDriftAdoptCommand.cs",
         "tests/cli/MirrorDriftAdoptTests.cs"
       ],
-      "blocker": "No MCP tool yet (P2-15; engine to move into interfaces/mcp then); not chained with real mirror-drift/mirror-drift-select binaries (P2-14); no restore plan executed, no map/provenance written (P2-11); drift_adopt_commit_incomplete and internal_error only covered in-process; internal_error from the catch-all gives no nothing-written guarantee.",
+      "blocker": "MCP tool mirror_drift_adopt since P2-15 (one engine); not chained with real mirror-drift/mirror-drift-select binaries (P2-14); no restore plan executed, no map/provenance written (P2-11); drift_adopt_commit_incomplete and internal_error only covered in-process; internal_error from the catch-all gives no nothing-written guarantee.",
       "scope": "P2-13: `mirror-drift-adopt store-directory selection.json` reads the P2-10 selection bounded (8 MiB, regular file, no links) as strict UTF-8 (optional UTF-8 BOM; UTF-16/32 and invalid UTF-8 refused) and accepts only the canonical MirrorDriftSelection.ToJson text; runs MirrorDriftAdoptCommit.Commit; prints {status,outcome committed|replayed|nothing_to_adopt,revision,key}; Core refusals as typed drift_adopt_* envelopes (exit 1) with the store byte-identical (names, bytes, mtimes); store input errors input_* detail store; blank store path refused only when there are adopt operations. CI red 42927683523, green 42930250939, review red 42933487880, green 42933556749."
     },
     {
@@ -1696,7 +1696,7 @@
         "tests/packaging/test-install-addin.ps1",
         "tests/packaging/test-package-archive.ps1"
       ],
-      "blocker": "Shipped projects have no PackageReference today, so nuget_references is [] and the reference/licence path is exercised on synthetic trees only; transitive packages not attributed (P10-14); first-party Bim.* licence NOASSERTION (no LICENSE in the repo); not CycloneDX/SPDX; unsigned, so a consistent sbom+manifest rewrite still verifies (vendor entries always refused).",
+      "blocker": "Shipped projects have no PackageReference today, so nuget_references is [] and the reference/licence path (direct and, since P10-14, transitive) is exercised on synthetic trees only; first-party Bim.* licence NOASSERTION (no LICENSE in the repo); not CycloneDX/SPDX; unsigned, so a consistent sbom+manifest rewrite still verifies (vendor entries always refused).",
       "scope": "P10-13: package.ps1 writes canonical sbom.json (schema bim-agentic-os/package-sbom/v1, version, source_commit; assemblies: every shipped dll/exe ordinal-sorted with path, name, version read via System.Reflection.Metadata, licence, sha256; nuget_references: direct PackageReferences of the cli/mcp ProjectReference closure + Directory.Build.props, normalised pinned versions, nuspec SPDX expression, projects) before manifest.json, which lists it; build-only (Include/ExcludeAssets, case-insensitive) and Nice3point/Revit/Autodesk never listed; package refuses unpinned versions and sbom_license_unknown (allowlist in script); package-verify refuses sbom_missing, sbom_invalid, sbom_build_only, sbom_mismatch (unlisted dll, hash/version/commit, non-canonical text or references). CI red 42962728184, green 42966315083, review red 42974651912, green 42974975958."
     },
     {
@@ -1729,6 +1729,39 @@
       ],
       "blocker": "Bare output drops kept/dropped/issues/source details (run without the flag for them); synthetic DXF fixtures only.",
       "scope": "P6-14: `cad-plan-brief … --brief-only` writes exactly the full document's `brief` member bytes (no BOM, no trailing newline), fed directly to plan-layouts; envelope adds brief_only:true; without the flag file and envelope bytes pinned; refusals and never-overwrite unchanged; CadToLayoutsTests drops the copy step and keeps digest 566058984bb3…. CI red 42983360377, green 42984926046, review red 42989848662, green 42992146562."
+    },
+    {
+      "id": "doc-realized-map-from-run-record",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/DocRealized.cs",
+        "tests/doc-regeneration/Realized.cs"
+      ],
+      "blocker": "No CLI verb or owner-script wiring yet; caller supplies the step → source assignment (the run record does not say which BIM-IR element a step made); only a step's first created UniqueId is used; deleted dependents beyond the add-in's listing cap are not detected; C# fixtures mirror the record writer, never a real -Catalogue record.",
+      "scope": "P4-13: DocRealized.FromRecord(fixture, run record, assignments, expected document id) → key→UniqueId map doc-update --realized reads; strict/bounded, typed realized_* codes (step unknown/not succeeded/no created, unique id duplicate/deleted, document mismatch, fixture invalid); journal.read replies without created accepted; canonical ordinal JSON; round trip through DocUpdate.Plan. CI red 43033957185, green 43036029825; review red 43044249333, green 43045934229."
+    },
+    {
+      "id": "mcp-mirror-drift-adopt",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/mcp/MirrorDriftAdoptTool.cs",
+        "interfaces/mcp/McpServer.cs",
+        "interfaces/cli/MirrorDriftAdoptCommand.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "Permission label 'write' is outside the P10-03 levels; no actor grant or audit log enforced; plan is a snapshot (confirmed call re-checks); plan-mode store reader duplicates Core's private reader; restore plan not run, no map/provenance (P2-11).",
+      "scope": "P2-15: MCP tool mirror_drift_adopt {store_path, selection text, confirm?}; plan-only without confirm:true (no lock, no store entry touched, timestamps asserted); confirm:true text byte-equal to the CLI stdout and stores byte-identical; typed refusals identical in both modes and to the CLI; tools/list order, schema, label and annotations asserted. CI red 43033953076, green 43035023695; review green 43048882203."
+    },
+    {
+      "id": "package-sbom-transitive-attribution",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/package-common.ps1",
+        "tests/packaging/test-package.ps1",
+        "tests/packaging/test-install-addin.ps1"
+      ],
+      "blocker": "No third-party NuGet package ships today (synthetic fixtures only); include/exclude flags on transitive edges not modelled (may over-list); SDK-implicit packages not walked (their binaries refused as unattributed); first-party detection needs the folder's deps.json; file-name matching.",
+      "scope": "P10-14: sbom attributes every shipped .dll/.exe/.so/.dylib to a direct or transitive NuGet package from each entry project's own project.assets.json (dependency, assemblies, natives, nuspec SPDX licence, package Id@Version per the folder's deps.json); sbom_unattributed / sbom_attribution_ambiguous refusals; first-party = deps.json project entries; real package bytes unchanged. CI red 43033968042/43054876471, green 43058280336."
     }
   ]
 }
