@@ -22,6 +22,9 @@ static class TypologyPipelineTests
     // CABA pack and ProjectId with default stage options (regression pin; every candidate is rejected: two at the BIM-IR
     // gate with facade_ir_entrance_overlap, four duplicates at the prototype gate).
     const string PinnedSha256 = "3a55177415f42f4d324cf3e4bd298223595c429006595a635aa12e9fb1a3d20b";
+    // SHA-256 of TypologyPipelineSerializer output for the pack, family 3, the 16 x 16 m lot, 4 alternatives, seed 0, the
+    // CABA pack and ProjectId with default stage options: a ranked case with an accepted prototype (regression pin).
+    const string PinnedAcceptedSha256 = "0000000000000000000000000000000000000000000000000000000000000000";
     // TypologyBriefTests.PinnedSha256 (P5-11): the same request through TypologyBrief alone.
     const string TypologyBriefPinnedSha256 = "85102ea05864ea67a8dad79bed06b2ce4a643056a09d8aee7d8044127340b513";
     // PrototypePipelineTests.PinnedRunSha256 (P7-07): the 2-bedroom apartment pipeline run on the 8.66 x 20 m lot.
@@ -89,7 +92,7 @@ static class TypologyPipelineTests
                 else
                     Check(alternative.Rank == 0 && alternative.Total == 0 && alternative.Criteria.Count == 0 && alternative.Ir is null && alternative.Rejections.Count > 0
                         && alternative.Rejections.All(r => r.Gate == alternative.RejectedAt && r.Code.Length > 0 && r.Detail.Length > 0)
-                        && (gate is PrototypePipelineGate.Prototype or PrototypePipelineGate.FacadeIr || alternative.Rejections.All(r => failures.Contains(r.Code + "@" + r.Subject))),
+                        && alternative.Rejections.All(r => failures.Contains(r.Code + "@" + r.Subject)),
                         label + " rejection is explained by the failed checks of its gate", Describe(alternative) + " | " + string.Join("; ", failures));
             }
             var accepted = result.Alternatives.Where(a => a.Accepted).ToArray();
@@ -118,16 +121,39 @@ static class TypologyPipelineTests
         }
         Console.WriteLine("::notice::generative typology pipeline on 16 x 16 m: " + string.Join(" / ", counts));
 
-        // ---- opt-in stage options pass through unchanged ----
+        // ---- a ranked case: family 3 on 16 x 16 m, pinned ----
+        var request3 = new TypologyBriefRequest(3, bigLot, 4);
+        var run3 = Safe(() => TypologyPipeline.Run(pack, request3, options), ref error);
+        var canonical3 = run3 is null ? "" : TypologyPipelineSerializer.Serialize(run3);
+        Check(run3 is { Status: PrototypePipelineStatus.Ranked } && run3.Accepted.Count >= 1 && Sha(canonical3) == PinnedAcceptedSha256,
+            "family-3 16 x 16 m seed-0 typology pipeline is ranked with an accepted prototype and matches its pinned SHA-256",
+            "actual " + Sha(canonical3) + " | " + (run3 is null ? error ?? "" : Summary(run3)));
+        if (run3 is null || run3.Typology.Brief is null || run3.Typology.Alternatives is null) return;
+        var brief3 = run3.Typology.Brief;
+        var plans3 = run3.Typology.Alternatives.Alternatives.OrderBy(a => a.Index).Select(a => a.Plan).ToArray();
+
+        // ---- opt-in stage options pass through unchanged (on the ranked case) ----
         var facadeOptions = options with { FacadeWeight = 1 };
-        var facadeRun = Safe(() => TypologyPipeline.Run(pack, request, facadeOptions), ref error);
-        Check(facadeRun is not null && PrototypePipelineSerializer.Serialize(facadeRun.Pipeline) == PrototypePipelineSerializer.Serialize(WithStrategy(PrototypePipeline.Rank(brief, plans, facadeOptions, request.Weights))),
+        var facadeRun = Safe(() => TypologyPipeline.Run(pack, request3, facadeOptions), ref error);
+        Check(facadeRun is not null && PrototypePipelineSerializer.Serialize(facadeRun.Pipeline) == PrototypePipelineSerializer.Serialize(WithStrategy(PrototypePipeline.Rank(brief3, plans3, facadeOptions, request3.Weights))),
             "the P7-10 facade weight option gives the PrototypePipeline.Rank result with the same options", error ?? "");
-        var weighted = new TypologyBriefRequest(4, lot, 6, Weights: new ScoringWeights(1, 0, 0, 0, 0, 0));
+        Check(facadeRun is { Status: PrototypePipelineStatus.Ranked } && facadeRun.Accepted.Count >= 1
+            && facadeRun.Accepted.All(a => a.Criteria.Count == 8 && a.Criteria[7].Criterion == PrototypePipelineCodes.FacadeCriterion && a.Criteria[6].Criterion == CirculationCodes.Criterion)
+            && facadeRun.Alternatives.All(a => a.Strategy == PrototypeStrategies.WholeLot),
+            "with a facade weight every accepted typology prototype carries the eighth criterion facade and every alternative the whole_lot strategy",
+            facadeRun is null ? error ?? "" : Describe(facadeRun.Pipeline));
+        var weightsW = new ScoringWeights(1, 0, 0, 0, 0, 0);
+        var weighted = request3 with { Weights = weightsW };
         var weightedRun = Safe(() => TypologyPipeline.Run(pack, weighted, options), ref error);
-        Check(weightedRun is not null && weightedRun.Typology.Request.Weights == weighted.Weights
-            && PrototypePipelineSerializer.Serialize(weightedRun.Pipeline) == PrototypePipelineSerializer.Serialize(WithStrategy(PrototypePipeline.Rank(brief, plans, options, weighted.Weights))),
-            "the request's ranking weights are the pipeline ranking weights", error ?? "");
+        var independent = CirculationRanker.Rank(brief3, plans3, new CirculationScoring(weightsW, CirculationScoring.DefaultCirculationWeight, true, null)).Alternatives.ToDictionary(a => a.Index);
+        Check(weightedRun is { Status: PrototypePipelineStatus.Ranked } && weightedRun.Typology.Request.Weights == weightsW && weightedRun.Accepted.Count >= 1
+            && weightedRun.Accepted.All(a => a.Total == independent[a.Index].Total && a.Criteria.SequenceEqual(independent[a.Index].Criteria)),
+            "the accepted totals and criteria of a weighted request are an independent CirculationRanker.Rank with the request weights",
+            weightedRun is null ? error ?? "" : Describe(weightedRun.Pipeline));
+        Check(weightedRun is not null && weightedRun.Accepted.All(a => run3.Accepted.FirstOrDefault(d => d.Index == a.Index) is { } plain
+            && plain.Total != a.Total && !plain.Criteria.Select(c => c.Weight).SequenceEqual(a.Criteria.Select(c => c.Weight))),
+            "the request weights change the accepted totals and criterion weights from the default weights",
+            weightedRun is null ? "" : Describe(weightedRun.Pipeline) + " vs " + Describe(run3.Pipeline));
 
         // ---- determinism and the pinned digest ----
         var canonical = TypologyPipelineSerializer.Serialize(run);
@@ -150,7 +176,10 @@ static class TypologyPipelineTests
         Check(Sha(canonical) == PinnedSha256, "family-4 12 x 12 m seed-0 typology pipeline JSON matches its pinned SHA-256", "actual " + Sha(canonical) + " | " + Summary(run));
         var shifted = Safe(() => TypologyPipeline.Run(pack, request with { Seed = 6 }, options), ref error);
         Check(shifted is not null && shifted.Alternatives.Select(a => a.Seed).OrderBy(s => s).SequenceEqual(Enumerable.Range(6, 6))
-            && Sha(TypologyPipelineSerializer.Serialize(shifted)) != Sha(canonical), "another seed gives other candidates and another digest", error ?? "");
+            && Sha(TypologyPipelineSerializer.Serialize(shifted)) != Sha(canonical) && PrototypePipelineSerializer.Serialize(shifted.Pipeline) != PrototypePipelineSerializer.Serialize(run.Pipeline)
+            && shifted.Typology.Alternatives is not null && !shifted.Typology.Alternatives.Alternatives.Select(a => SpacePlanSerializer.Serialize(a.Plan))
+                .SequenceEqual(run.Typology.Alternatives!.Alternatives.Select(a => SpacePlanSerializer.Serialize(a.Plan))),
+            "another seed gives other candidates, other plans, other pipeline JSON and another digest", error ?? "");
         using (var document = JsonDocument.Parse(canonical))
         {
             var top = document.RootElement;
@@ -185,7 +214,8 @@ static class TypologyPipelineTests
             && refusedJson.Contains("\"alternatives\":null", StringComparison.Ordinal), "a refused result serializes with a null brief and alternative set", refusedJson.Length > 300 ? refusedJson[..300] : refusedJson);
         Check(Throws(() => TypologyPipeline.Run((SkillManifest)null!, request, options)) && Throws(() => TypologyPipeline.Run(pack, null!, options))
             && Throws(() => TypologyPipeline.Run(pack, request, null!)) && Throws(() => TypologyPipeline.Run((SkillResolution)null!, request, options))
-            && Throws(() => TypologyPipelineSerializer.Serialize(null!)), "null arguments are programming errors (ArgumentNullException)");
+            && Throws(() => TypologyPipelineSerializer.Serialize(null!)) && Throws(() => TypologyPipeline.Run(pack, request, options with { Pack = null! }))
+            && Throws(() => TypologyPipeline.Run(SkillResolver.Resolve(catalog, new[] { new SkillRequest(Pack) }), request, options with { Pack = null! })), "null arguments (and a null options.Pack) are programming errors (ArgumentNullException)");
 
         // ---- the existing pipelines are untouched ----
         var apartment = PrototypePipelineSerializer.Serialize(PrototypePipeline.Run(new PrototypeRequest(ApartmentTypology.TwoBedroom, new PrototypeLot(8.66, 20), 6, Seed: 0), options));
@@ -201,7 +231,14 @@ static class TypologyPipelineTests
         project = null;
         if (origin.Status != AlternativeStatus.Ranked)
         {
-            failures.AddRange(origin.Reasons);
+            // An infeasible plan is explained by its own violations, otherwise by the code@subject prefix of the ranker's reasons.
+            failures.AddRange(origin.Plan.Violations.Select(c => c.Code + "@" + c.Subject));
+            foreach (var reason in origin.Reasons)
+            {
+                var colon = reason.IndexOf(": ", StringComparison.Ordinal);
+                var at = reason.IndexOf('@', StringComparison.Ordinal);
+                failures.Add(at > 0 && colon > at ? reason[..colon] : "rejected@plan");
+            }
             return PrototypePipelineGate.Prototype;
         }
         var circulation = CirculationAnalyzer.Analyze(brief, plan);
@@ -227,9 +264,20 @@ static class TypologyPipelineTests
             project = ir.Project;
             return null;
         }
-        catch (Exception error) when (error is IntentException or ArgumentException or InvalidOperationException)
+        catch (IntentException error)
         {
-            failures.Add(error.GetType().Name + ": " + error.Message);
+            failures.AddRange(error.Issues.Count > 0 ? error.Issues.Select(issue => issue.Code + "@" + issue.Key) : new[] { error.Code + "@" + (error.Field ?? "plan") });
+            return PrototypePipelineGate.FacadeIr;
+        }
+        catch (ArgumentException error)
+        {
+            var colon = error.Message.IndexOf(": ", StringComparison.Ordinal);
+            failures.Add((colon > 0 ? error.Message[..colon] : error.Message) + "@plan");
+            return PrototypePipelineGate.FacadeIr;
+        }
+        catch (InvalidOperationException)
+        {
+            failures.Add(PrototypePipelineCodes.IrCompileFailed + "@plan");
             return PrototypePipelineGate.FacadeIr;
         }
     }

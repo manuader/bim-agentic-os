@@ -15,7 +15,9 @@ namespace Bim.Generative;
 // Everything is deterministic and sequential and nothing depends on culture, so the same pack + family size + lot + seed
 // and options give the same result and the same canonical JSON (TypologyPipelineSerializer).
 // Gaps: the planner rules are the fixed PrototypeTemplates.Rules of TypologyBrief (not the P5-13 composed rules); one
-// level; each accepted alternative gets its own BIM-IR with the same project identity; nothing is committed.
+// level; each accepted alternative gets its own BIM-IR with the same project identity; nothing is committed. The
+// SkillResolution overload does not check that options.Pack is the code pack composed in the resolution: the facade gate
+// always uses options.Pack, whatever the resolution holds.
 public static class TypologyPipeline
 {
     public static TypologyPipelineResult Run(SkillManifest pack, TypologyBriefRequest request, PrototypePipelineOptions options)
