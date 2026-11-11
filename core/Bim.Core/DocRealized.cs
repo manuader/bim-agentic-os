@@ -41,7 +41,8 @@ namespace Bim.Core;
 // byte-identical for the same map whatever its order; refuses a key that is not a valid source (realized_source_invalid),
 // a value that is not a UniqueId (realized_unique_id_invalid) or a UniqueId on two sources (realized_unique_id_duplicate),
 // detail the key. Deterministic, vendor-free, BCL only; no BIM-IR or persisted format change.
-public sealed record DocRealizedStep(string Key, bool Succeeded, IReadOnlyList<string> Created);
+public sealed record DocRealizedStep(string Key, bool Succeeded, IReadOnlyList<string> Created, IReadOnlyList<string> Deleted);
+public sealed record DocRealizedRecord(string DocumentUniqueId, IReadOnlyList<DocRealizedStep> Steps);
 
 public static class DocRealizedCodes
 {
@@ -56,6 +57,9 @@ public static class DocRealizedCodes
     public const string SourceUnknown = "realized_source_unknown";
     public const string UniqueIdInvalid = "realized_unique_id_invalid";
     public const string UniqueIdDuplicate = "realized_unique_id_duplicate";
+    public const string UniqueIdDeleted = "realized_unique_id_deleted";
+    public const string DocumentMismatch = "realized_document_mismatch";
+    public const string FixtureInvalid = "realized_fixture_invalid";
 }
 
 public sealed class DocRealizedException(string code, string? detail = null) : ArgumentException(code)
@@ -71,9 +75,12 @@ public static class DocRealized
     public const int MaxCreated = 10_000;
     public const int MaxAssignments = 100_000;
     public const int MaxStepKeyChars = 128;
+    public const int MaxCanonicalBytes = 8 * 1024 * 1024;
 
     const string DocPrefix = "doc:";
     const string ElementPrefix = "element:";
+
+    public static DocRealizedRecord Read(string record) => new("", Steps(record));
 
     public static IReadOnlyList<DocRealizedStep> Steps(string record)
     {
@@ -126,7 +133,7 @@ public static class DocRealized
                 }
             }
             if (!keys.Add(key)) throw Refuse(DocRealizedCodes.StepDuplicate, key);
-            result.Add(new DocRealizedStep(key, passed && !blocked && status == "succeeded", new ReadOnlyCollection<string>(created.ToArray())));
+            result.Add(new DocRealizedStep(key, passed && !blocked && status == "succeeded", new ReadOnlyCollection<string>(created.ToArray()), Array.Empty<string>()));
             i++;
         }
         return new ReadOnlyCollection<DocRealizedStep>(result.ToArray());
@@ -186,7 +193,7 @@ public static class DocRealized
         return Sorted(map);
     }
 
-    public static IReadOnlyDictionary<string, string> FromRecord(Project fixture, string record, string assignments)
+    public static IReadOnlyDictionary<string, string> FromRecord(Project fixture, string record, string assignments, string expectedDocumentUniqueId)
     {
         ArgumentNullException.ThrowIfNull(fixture);
         return Build(fixture, Steps(record), Assignments(assignments));
