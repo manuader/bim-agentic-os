@@ -12,7 +12,7 @@ using System.Text.RegularExpressions;
 // facade windows into the prototype BIM-IR in FacadeIrTests.cs, P7-07 the prototype pipeline with circulation and facade gates in
 // PrototypePipelineTests.cs, P7-08 the stagger snap pre-pass in PrototypeSnapTests.cs, P5-11 the typology programme as planner brief in
 // TypologyBriefTests.cs, P5-13 composed pack rules for the typology planner in TypologyRulesTests.cs, P5-12 typology prototypes through the
-// pipeline gates in TypologyPipelineTests.cs.
+// pipeline gates in TypologyPipelineTests.cs, P5-14 the typology pipeline with composed pack rules in TypologyPipelineRulesTests.cs.
 // Unit-tested evidence only.
 int passed = 0, failed = 0;
 
@@ -541,6 +541,9 @@ try
 
     // ---- P5-12 typology prototypes through the pipeline gates (TypologyPipelineTests.cs) ----
     TypologyPipelineTests.Run(Check, root);
+
+    // ---- P5-14 typology pipeline with composed pack rules (TypologyPipelineRulesTests.cs) ----
+    TypologyPipelineRulesTests.Run(Check, root);
 }
 catch (Exception error)
 {
