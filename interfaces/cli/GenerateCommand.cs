@@ -22,11 +22,14 @@ namespace Bim.Cli;
 //                  absent taking its ScoringWeights default ({} and an absent member both mean the default weights)
 //   fixed_rooms    [{"room_id": string, "x","y","width","depth": numbers}]   absent = [] (no approved rooms)
 //   fixed_walls    [{"id": string, "x0","y0","x1","y1": numbers}]             absent = [] (no approved walls)
-//   pack           skill id of the code pack, default ar.caba.codigo-edificacion, read from <repository>/skills/<id>/skill.json
-//                  through BoundedInput. Repository-only in v1: the repository is the first ancestor directory of the
-//                  CLI binary holding global.json, so a CLI copied or packaged outside a repository checkout (the
-//                  release package ships no global.json or skills/) refuses every request with
-//                  generate_prototypes_repository_not_found.
+//   pack           skill id of the code pack, default ar.caba.codigo-edificacion, read from <root>/skills/<id>/skill.json
+//                  through BoundedInput. The root (P7-12) is first the release package root: the parent of the CLI
+//                  binary's directory when that is named cli and the parent holds VERSION, manifest.json and a skills/
+//                  directory (SkillPackLookup.PackageRoot; scripts/package.ps1 writes those and ships every
+//                  tracked skills file there, listed in manifest.json); else the repository, the first ancestor
+//                  directory of the CLI binary holding global.json. A CLI with neither (copied outside a repository
+//                  without a skills/ beside its directory) refuses every request with generate_prototypes_repository_not_found.
+//                  The same request gives byte-identical output from the package and from the repository.
 //   project_id     GUID string ("D" form); default derived (below)        revision  integer, default 0
 //   circulation_weight number, default 0.15   facade_weight number, default 0   snap boolean, default false
 //                  (true = PrototypeSnapOptions() with its default rules)
@@ -67,7 +70,8 @@ namespace Bim.Cli;
 internal static class GenerateCommand
 {
     public const string Usage = "usage: generate-prototypes request.json output.json (default project_id: UUIDv8 from the first 16 bytes of "
-        + "SHA-256(\"bim-agentic-os/generate-prototypes/v1\\n\" + canonical request JSON without project_id); repository-only: the pack is read from "
+        + "SHA-256(\"bim-agentic-os/generate-prototypes/v1\\n\" + canonical request JSON without project_id); the pack is read from "
+        + "<package>/skills/<pack>/skill.json when the release package root (the parent of the CLI's cli/ directory, holding VERSION and manifest.json) holds skills/, else from "
         + "<repository>/skills/<pack>/skill.json, the repository being the first ancestor of the CLI holding global.json, else generate_prototypes_repository_not_found)";
     public const string UsageCode = "generate_prototypes_usage";
     public const string RequestInvalid = "generate_prototypes_request_invalid";
@@ -111,9 +115,10 @@ internal static class GenerateCommand
         var parsed = Parse(text);
         var projectId = parsed.ProjectId ?? DerivedId(Canonical(parsed));
 
-        // Repository, bounded manifest read, parse, id (SkillPackLookup, shared with plan-layouts --pack).
+        // Package root, then repository; bounded manifest read, parse, id (SkillPackLookup, shared with plan-layouts --pack,
+        // which keeps the repository-only lookup).
         SkillManifest pack;
-        try { pack = SkillPackLookup.Load(parsed.Pack); }
+        try { pack = SkillPackLookup.Load(parsed.Pack, packageFirst: true); }
         catch (SkillPackException error)
         {
             throw error.Problem switch

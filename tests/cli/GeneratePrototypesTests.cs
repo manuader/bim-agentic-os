@@ -17,6 +17,9 @@ using Bim.Generative;
 //   4. Every failure (usage, output path, oversize/missing/malformed request, unknown pack, pipeline refusal) prints a
 //      typed {"status":"failed","code":...} envelope, exits 1 and leaves no output file; a pipeline refusal carries the
 //      library's refusals exactly.
+//   5. P7-12: a CLI in the release package layout (<package>/cli next to <package>/skills, outside any repository) reads
+//      <package>/skills/<pack>/skill.json and writes the repository run's bytes and stdout; without skills/ it still
+//      refuses generate_prototypes_repository_not_found; plan-layouts --pack keeps its repository-only lookup.
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -83,8 +86,9 @@ internal static class GeneratePrototypesTests
         var usageDetail = Str(Parse(usage.Out), "detail") ?? "";
         Check(usageDetail.Contains("generate-prototypes request.json output.json", StringComparison.Ordinal) && usageDetail.Contains("project_id", StringComparison.Ordinal)
             && usageDetail.Contains("SHA-256", StringComparison.Ordinal) && usageDetail.Contains("UUIDv8", StringComparison.Ordinal)
-            && usageDetail.Contains("repository", StringComparison.Ordinal) && usageDetail.Contains("generate_prototypes_repository_not_found", StringComparison.Ordinal),
-            "the usage text documents the verb, the deterministic default project id rule and the repository-only pack lookup", D(usage));
+            && usageDetail.Contains("repository", StringComparison.Ordinal) && usageDetail.Contains("generate_prototypes_repository_not_found", StringComparison.Ordinal)
+            && usageDetail.Contains("package", StringComparison.Ordinal),
+            "the usage text documents the verb, the deterministic default project id rule and the package-then-repository pack lookup", D(usage));
 
         // ---- success: equals the in-process pipeline, canonical bytes, deterministic ----
         var explicitId = Guid.Parse("00000000-0000-4000-8000-0000000007a9");
@@ -224,6 +228,58 @@ internal static class GeneratePrototypesTests
                     "a CLI copy outside any repository refuses with generate_prototypes_repository_not_found, exit 1, no file", D(outside) + " copy under " + outsideBase);
             }
             finally { try { Directory.Delete(outsideRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+
+            // P7-12: the release package layout (<package>/cli next to <package>/skills, no global.json anywhere above):
+            // the pack is read from <package>/skills/<id>/skill.json and the run is byte-equal to the repository run.
+            var packageRoot = Path.Combine(outsideBase, "bim-generate-package-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var packageDll = CopyCli(Path.Combine(packageRoot, "cli"));
+                // The package markers scripts/package.ps1 writes at the package root (their content is not read by the lookup).
+                File.WriteAllText(Path.Combine(packageRoot, "VERSION"), "0.0.0-test\n");
+                File.WriteAllText(Path.Combine(packageRoot, "manifest.json"), "{}\n");
+                var repoSkills = Path.Combine(root, "skills");
+                foreach (var file in Directory.GetFiles(repoSkills, "*", SearchOption.AllDirectories))
+                {
+                    var destination = Path.Combine(packageRoot, "skills", Path.GetRelativePath(repoSkills, file));
+                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    File.Copy(file, destination);
+                }
+                var packagedOut = Output();
+                var packaged = CliAt(packageDll, "generate-prototypes", twoBedRequest, packagedOut);
+                Check(!UnderRepository(packageRoot) && packaged.Exit == 0 && File.Exists(packagedOut) && File.ReadAllBytes(packagedOut).SequenceEqual(written1) && packaged.Out == run1.Out,
+                    "a CLI in the package layout (cli/ next to skills/, outside any repository) reads skills/<pack>/skill.json and writes the repository run's bytes and stdout",
+                    D(packaged) + " package under " + outsideBase);
+                var packagedDerivedOut = Output();
+                var packagedDerived = CliAt(packageDll, "generate-prototypes", minimal, packagedDerivedOut);
+                Check(packagedDerived.Exit == 0 && File.Exists(packagedDerivedOut) && File.ReadAllBytes(packagedDerivedOut).SequenceEqual(derivedBytes) && packagedDerived.Out == run3.Out,
+                    "the package layout derives the same default project id and bytes as the repository run", D(packagedDerived));
+                var packagedMissingOut = Output();
+                var packagedMissing = CliAt(packageDll, "generate-prototypes", Input("package-unknown-pack.json", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"pack\":\"xx.no-such.pack\"}"), packagedMissingOut);
+                Check(packagedMissing.Exit == 1 && Str(Parse(packagedMissing.Out), "code") == "generate_prototypes_pack_unavailable" && Str(Parse(packagedMissing.Out), "detail") == "input_not_found" && !File.Exists(packagedMissingOut),
+                    "a pack absent from the package's skills/ -> generate_prototypes_pack_unavailable (input_not_found), no file", D(packagedMissing));
+                // plan-layouts --pack keeps its repository-only lookup (SkillPackLookup.Load without the package root).
+                var briefPath = Input("package-brief.json", "{\"brief_version\":1,\"name\":\"Small studio\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"
+                    + "\"rooms\":[{\"id\":\"living\",\"name\":\"Living\",\"target_area_m2\":20,\"min_area_m2\":15},{\"id\":\"bath\",\"name\":\"Bath\",\"target_area_m2\":4,\"min_area_m2\":3}],"
+                    + "\"adjacencies\":[{\"a\":\"living\",\"b\":\"bath\",\"kind\":\"required\"}]}");
+                var planOut = Output();
+                var plan = CliAt(packageDll, "plan-layouts", briefPath, planOut, "--alternatives", "1", "--pack", PackId);
+                Check(plan.Exit == 1 && Str(Parse(plan.Out), "code") == "plan_layouts_pack_repository_not_found" && !File.Exists(planOut),
+                    "plan-layouts --pack in the package layout is unchanged: plan_layouts_pack_repository_not_found, no file", D(plan));
+                // Without a package marker the folder is not a package root: the repository walk follows (none here).
+                File.Move(Path.Combine(packageRoot, "manifest.json"), Path.Combine(packageRoot, "manifest.json.off"));
+                var noMarkerOut = Output();
+                var noMarker = CliAt(packageDll, "generate-prototypes", twoBedRequest, noMarkerOut);
+                Check(noMarker.Exit == 1 && Str(Parse(noMarker.Out), "code") == "generate_prototypes_repository_not_found" && !File.Exists(noMarkerOut),
+                    "cli/ next to skills/ without manifest.json is not a package root: generate_prototypes_repository_not_found, no file", D(noMarker));
+                File.Move(Path.Combine(packageRoot, "manifest.json.off"), Path.Combine(packageRoot, "manifest.json"));
+                Directory.Delete(Path.Combine(packageRoot, "skills"), true);
+                var noSkillsOut = Output();
+                var noSkills = CliAt(packageDll, "generate-prototypes", twoBedRequest, noSkillsOut);
+                Check(noSkills.Exit == 1 && Str(Parse(noSkills.Out), "code") == "generate_prototypes_repository_not_found" && !File.Exists(noSkillsOut),
+                    "the package layout without its skills/ folder still refuses generate_prototypes_repository_not_found, no file", D(noSkills));
+            }
+            finally { try { Directory.Delete(packageRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
         }
 
         var fakeRepo = Path.Combine(scratch, "fake-repo");
@@ -236,7 +292,37 @@ internal static class GeneratePrototypesTests
         Pack("zz.test.caba-copy", WithId("zz.test.caba-copy"));
         Pack("zz.test.bad-json", "{");
         Pack("zz.test.mismatch", WithId("zz.test.other"));
+        Pack(PackId, cabaText);
         var fakeDll = CopyCli(Path.Combine(fakeRepo, "cli"));
+
+        // P7-12 review SF1: a stray skills/ beside a binary folder that is not a package (tests/out next to the C# test
+        // project tests/skills, no package markers) never takes over: the repository's skills/ is read.
+        Directory.CreateDirectory(Path.Combine(fakeRepo, "tests", "skills"));
+        var strayDll = CopyCli(Path.Combine(fakeRepo, "tests", "out"));
+        var strayOut = Output();
+        var stray = CliAt(strayDll, "generate-prototypes", twoBedRequest, strayOut);
+        Check(stray.Exit == 0 && File.Exists(strayOut) && File.ReadAllBytes(strayOut).SequenceEqual(written1) && stray.Out == run1.Out,
+            "a CLI in <repo>/tests/out beside an empty <repo>/tests/skills reads <repo>/skills (no stray package root): the repository run's bytes and stdout", D(stray));
+
+        // P7-12 review SF2: the package root is checked before the repository walk. <repo>/dist is a package (cli/, skills/,
+        // VERSION, manifest.json) whose zz.test.mismatch is valid where the repository's names another id, and whose
+        // zz.test.package-only is absent from the repository.
+        var dist = Path.Combine(fakeRepo, "dist");
+        var distDll = CopyCli(Path.Combine(dist, "cli"));
+        File.WriteAllText(Path.Combine(dist, "VERSION"), "0.0.0-test\n");
+        File.WriteAllText(Path.Combine(dist, "manifest.json"), "{}\n");
+        void DistPack(string id) { Directory.CreateDirectory(Path.Combine(dist, "skills", id)); File.WriteAllText(Path.Combine(dist, "skills", id, "skill.json"), WithId(id)); }
+        DistPack("zz.test.mismatch");
+        DistPack("zz.test.package-only");
+        foreach (var distId in new[] { "zz.test.mismatch", "zz.test.package-only" })
+        {
+            var distPackId = DerivedId(canonical.Replace("\"pack\":\"ar.caba.codigo-edificacion\"", "\"pack\":\"" + distId + "\"", StringComparison.Ordinal));
+            var distLibrary = PrototypePipeline.Run(new PrototypeRequest(ApartmentTypology.OneBedroom, new PrototypeLot(7, 12), 2, 0), new PrototypePipelineOptions(SkillParser.Parse(WithId(distId)), distPackId));
+            var distOut = Output();
+            var distRun = CliAt(distDll, "generate-prototypes", Input("dist-" + distId + ".json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"pack\":\"" + distId + "\"}"), distOut);
+            Check(distRun.Exit == 0 && File.Exists(distOut) && File.ReadAllBytes(distOut).SequenceEqual(Utf8(PrototypePipelineSerializer.Serialize(distLibrary))) && Str(Parse(distRun.Out), "project_id") == distPackId.ToString("D"),
+                "a package inside a repository reads its own skills/" + distId + " before the repository's (output equal to the in-process run with the package's manifest)", D(distRun));
+        }
         var copyPack = SkillParser.Parse(WithId("zz.test.caba-copy"));
         var copyCanonical = canonical.Replace("\"pack\":\"ar.caba.codigo-edificacion\"", "\"pack\":\"zz.test.caba-copy\"", StringComparison.Ordinal);
         var copyId = DerivedId(copyCanonical);

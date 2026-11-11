@@ -7,6 +7,9 @@
 # P10-08: runs tests/packaging/test-package-archive.ps1 against both clean builds (archives must be byte-identical).
 # P10-13: sbom.json (shipped assemblies with SHA-256, NuGet references of the shipped csproj closure, build-only
 # references such as Nice3point never listed) is listed in manifest.json; package-verify refuses a missing/edited sbom.
+# P7-12: skills/ (every tracked skills file) ships next to cli/; the packaged generate-prototypes, copied outside any
+# repository, reads its pack from there byte-equal to the repository run, and refuses repository_not_found without it;
+# a tracked skills/ entry that is not a regular file (symlink, submodule) is refused (skills_entry_not_regular).
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -207,6 +210,35 @@ try {
         }
     } catch { $failures.Add("SBOM review checks threw: $($_.Exception.Message)") }
 
+    # --- P7-12 review: a tracked skills/ entry that is not a regular file (mode other than 100644/100755, e.g. a
+    # symlink 120000 or a submodule 160000) is refused before any build; the index entry is staged with --cacheinfo so
+    # no file system symlink is needed on any OS ---
+    try {
+        $modeRepo = Join-Path $work 'skills mode repo'
+        foreach ($name in 'scripts/package.ps1', 'scripts/package-common.ps1', 'scripts/package.version') {
+            $target = Join-Path $modeRepo $name
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $root $name) -Destination $target
+        }
+        foreach ($name in 'Directory.Build.props', 'global.json', '.editorconfig', 'interfaces/cli/Placeholder.cs', 'skills/zz.ok.pack/skill.json') {
+            $target = Join-Path $modeRepo $name
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            [IO.File]::WriteAllText($target, "x`n")
+        }
+        $ErrorActionPreference = 'Continue'
+        & git -C $modeRepo init -q 2>&1 | Out-Null
+        & git -C $modeRepo add -A 2>&1 | Out-Null
+        $blob = [string](& git -C $modeRepo hash-object -w (Join-Path $modeRepo 'skills/zz.ok.pack/skill.json'))
+        & git -C $modeRepo update-index --add --cacheinfo "120000,$($blob.Trim()),skills/zz.link.pack/skill.json" 2>&1 | Out-Null
+        & git -C $modeRepo -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false commit -q -m fixture 2>&1 | Out-Null
+        $staged = [string]((& git -C $modeRepo ls-files -s -- skills/zz.link.pack/skill.json) -join ' ')
+        $ErrorActionPreference = 'Stop'
+        Assert ($staged.StartsWith('120000 ', [StringComparison]::Ordinal)) "skills mode fixture must stage a 120000 entry: '$staged'"
+        $modeOut = Join-Path $work 'skills mode out'
+        $modeRun = Invoke-Script (Join-Path $modeRepo 'scripts/package.ps1') @('-OutputDirectory', $modeOut, '-Dotnet', $Dotnet)
+        Assert ($modeRun.Code -ne 0 -and $modeRun.Output -match 'skills_entry_not_regular' -and $modeRun.Output -match [regex]::Escape('skills/zz.link.pack/skill.json') -and !(Test-Path -LiteralPath $modeOut)) "package.ps1 must refuse a tracked skills/ symlink entry (skills_entry_not_regular, no output): exit $($modeRun.Code) $(Get-Tail $modeRun.Output)"
+    } catch { $failures.Add("P7-12 skills mode checks threw: $($_.Exception.Message)") }
+
     # --- Two independent clean builds ---
     $outA = Join-Path $work 'release A'
     $outB = Join-Path $work 'release B'
@@ -301,6 +333,67 @@ try {
     $ErrorActionPreference = 'Stop'
     # An unknown command makes the CLI answer with its JSON failure envelope, which proves the runtime loaded.
     Assert ($cliCode -eq 1 -and (($cliOut -join "`n") -match '"status":"failed"')) "packaged CLI did not start from the release layout (exit $cliCode): $(Get-Tail ($cliOut -join "`n"))"
+
+    # --- P7-12 skills/ ships next to cli/ (every tracked skills file, byte-identical, listed in manifest.json) and the
+    # packaged generate-prototypes reads its pack from there, outside any repository, byte-equal to the repository run ---
+    try {
+        $ErrorActionPreference = 'Continue'
+        $skillsRaw = (& git -C $root ls-files -z -- skills) -join "`n"
+        $ErrorActionPreference = 'Stop'
+        $trackedSkills = [string[]]@($skillsRaw.Split([char]0) | Where-Object { $_ })
+        [Array]::Sort($trackedSkills, [StringComparer]::Ordinal)
+        $packagedSkills = [string[]]@($paths | Where-Object { $_.StartsWith('skills/', [StringComparison]::Ordinal) })
+        Assert ($trackedSkills.Count -gt 0 -and $trackedSkills -ccontains 'skills/ar.caba.codigo-edificacion/skill.json') "repository skills/ must be tracked (git ls-files skills): [$($trackedSkills -join ', ')]"
+        Assert (($packagedSkills -join "`n") -ceq ($trackedSkills -join "`n")) "package skills/ must be exactly the tracked skills files, listed in manifest.json: package=[$($packagedSkills -join ', ')] tracked=[$($trackedSkills -join ', ')]"
+        foreach ($skill in $trackedSkills) {
+            $packagedFile = Join-Path $outA $skill
+            if (Test-Path -LiteralPath $packagedFile -PathType Leaf) {
+                Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes($packagedFile)) -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $skill)))) "packaged $skill must be byte-identical to the repository file"
+            }
+        }
+
+        function Test-UnderRepository([string]$Directory) {
+            for ($dir = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath($Directory)); $dir; $dir = $dir.Parent) { if (Test-Path -LiteralPath (Join-Path $dir.FullName 'global.json') -PathType Leaf) { return $true } }
+            return $false
+        }
+        $outsideBase = @($env:RUNNER_TEMP, [IO.Path]::GetTempPath(), [Environment]::GetFolderPath('LocalApplicationData'), [Environment]::GetFolderPath('UserProfile'), $(if (!$IsWindows) { '/tmp' })) |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and !(Test-UnderRepository $_) } | Select-Object -First 1
+        if (!$outsideBase) { Write-Host 'SKIP packaging generate-prototypes: no writable directory outside a repository for the package copy' }
+        else {
+            $outsidePackage = Join-Path $outsideBase ('bim-package-generate-' + [Guid]::NewGuid().ToString('N'))
+            try {
+                Copy-Item -LiteralPath $outA -Destination $outsidePackage -Recurse
+                $request = Join-Path $work 'generate-request.json'
+                Write-PackageText $request '{"typology":2,"lot":{"width_m":8.66,"depth_m":20},"alternatives":2,"seed":0}'
+                function Invoke-Generate([string]$Dll, [string]$Output) {
+                    $ErrorActionPreference = 'Continue'
+                    $text = & $Dotnet $Dll 'generate-prototypes' $request $Output 2>&1 | ForEach-Object { "$_" }
+                    return [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($text -join "`n") }
+                }
+                $packagedOut = Join-Path $work 'generate-packaged.json'
+                $packaged = Invoke-Generate (Join-Path $outsidePackage 'cli/Bim.Cli.dll') $packagedOut
+                Assert ($packaged.Code -eq 0 -and (Test-Path -LiteralPath $packagedOut -PathType Leaf) -and $packaged.Output -match '"status":"succeeded"') "packaged generate-prototypes outside a repository must read skills/<pack>/skill.json from the package (exit $($packaged.Code)): $(Get-Tail $packaged.Output)"
+                $repoCli = Join-Path $root 'interfaces/cli/bin/Release/net8.0/Bim.Cli.dll'
+                if (!(Test-Path -LiteralPath $repoCli -PathType Leaf)) {
+                    # On CI (RUNNER_TEMP set) scripts/verify.ps1 always builds the Release CLI first: missing is a failure there.
+                    if ($env:RUNNER_TEMP) { $failures.Add("packaging generate-prototypes byte-equality: repository Release CLI not built on CI ($repoCli)") }
+                    else { Write-Host "SKIP packaging generate-prototypes byte-equality: repository CLI not built ($repoCli)" }
+                }
+                else {
+                    $repoOut = Join-Path $work 'generate-repository.json'
+                    $repoRun = Invoke-Generate $repoCli $repoOut
+                    Assert ($repoRun.Code -eq 0 -and (Test-Path -LiteralPath $repoOut -PathType Leaf)) "repository generate-prototypes failed (exit $($repoRun.Code)): $(Get-Tail $repoRun.Output)"
+                    if ((Test-Path -LiteralPath $packagedOut -PathType Leaf) -and (Test-Path -LiteralPath $repoOut -PathType Leaf)) {
+                        Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes($packagedOut)) -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($repoOut)) -and $packaged.Output -ceq $repoRun.Output) "packaged generate-prototypes must be byte-equal to the repository run (file and stdout): packaged '$(Get-Tail $packaged.Output)' repository '$(Get-Tail $repoRun.Output)'"
+                    }
+                }
+                Remove-Item -LiteralPath (Join-Path $outsidePackage 'skills') -Recurse -Force -ErrorAction SilentlyContinue
+                $noSkillsOut = Join-Path $work 'generate-no-skills.json'
+                $noSkills = Invoke-Generate (Join-Path $outsidePackage 'cli/Bim.Cli.dll') $noSkillsOut
+                Assert ($noSkills.Code -eq 1 -and $noSkills.Output -match '"code":"generate_prototypes_repository_not_found"' -and !(Test-Path -LiteralPath $noSkillsOut)) "a package without skills/ outside a repository must refuse generate_prototypes_repository_not_found (exit $($noSkills.Code)): $(Get-Tail $noSkills.Output)"
+            } finally { if (Test-Path -LiteralPath $outsidePackage) { Remove-Item -LiteralPath $outsidePackage -Recurse -Force -ErrorAction SilentlyContinue } }
+        }
+    } catch { $failures.Add("P7-12 packaged skills/generate-prototypes checks threw: $($_.Exception.Message)") }
 
     # --- Verifier: clean package passes; tamper, missing, extra and forbidden files are detected ---
     $ok = Invoke-Script $verifier @('-PackageDirectory', $outA)
