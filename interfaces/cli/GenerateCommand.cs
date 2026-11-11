@@ -111,14 +111,18 @@ internal static class GenerateCommand
         var parsed = Parse(text);
         var projectId = parsed.ProjectId ?? DerivedId(Canonical(parsed));
 
-        var repository = RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory) ?? throw new Refusal(RepositoryNotFound);
-        string packText;
-        try { packText = BoundedInput.ReadText(Path.Combine(repository, "skills", parsed.Pack, SkillLoader.ManifestFileName)); }
-        catch (InputRejectedException error) { throw new Refusal(PackUnavailable, error.Message); }
+        // Repository, bounded manifest read, parse, id (SkillPackLookup, shared with plan-layouts --pack).
         SkillManifest pack;
-        try { pack = SkillParser.Parse(packText); }
-        catch (SkillException error) { throw new Refusal(PackInvalid, error.Code); }
-        if (pack.Id != parsed.Pack) throw new Refusal(PackInvalid, "id");
+        try { pack = SkillPackLookup.Load(parsed.Pack); }
+        catch (SkillPackException error)
+        {
+            throw error.Problem switch
+            {
+                SkillPackProblem.RepositoryNotFound => new Refusal(RepositoryNotFound),
+                SkillPackProblem.Unavailable => new Refusal(PackUnavailable, error.Detail),
+                _ => new Refusal(PackInvalid, error.Detail),
+            };
+        }
 
         var options = new PrototypePipelineOptions(pack, projectId, parsed.Revision, parsed.CirculationWeight,
             Snap: parsed.Snap ? new PrototypeSnapOptions() : null, FacadeWeight: parsed.FacadeWeight);
