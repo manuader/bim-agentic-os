@@ -69,6 +69,7 @@ function New-SyntheticPackage([string]$Directory, [switch]$Forbidden) {
     for ($i = 0; $i -lt $binary.Length; $i++) { $binary[$i] = [byte](($i * 31 + ($i -shr 7)) % 256) }
     [IO.File]::WriteAllBytes((Join-Path $Directory 'cli/data.bin'), $binary)
     if ($Forbidden) { Write-PackageText (Join-Path $Directory 'revit/RevitAPI.dll') 'x' }
+    Write-PackageText (Join-Path $Directory 'sbom.json') (New-PackageSbomText $Directory '1.2.3' ('a' * 40) @())
     Write-PackageText (Join-Path $Directory 'manifest.json') (New-PackageManifestText $Directory '1.2.3' ('a' * 40) $false)
     return [IO.Path]::GetFullPath($Directory)
 }

@@ -4,6 +4,8 @@
 #   cli/                         dotnet publish of interfaces/cli (run with: dotnet cli/Bim.Cli.dll)
 #   mcp/                         dotnet publish of interfaces/mcp (run with: dotnet mcp/Bim.Mcp.dll)
 #   revit/Bim.addin.template     add-in manifest template only; no Bim.Revit.dll and never any Revit assembly
+#   sbom.json                    P10-13 SBOM: every shipped .dll/.exe (name, version, SPDX licence, SHA-256) and the
+#                                runtime NuGet references of the shipped csproj closure (build-only/vendor ones never)
 #   manifest.json                relative path, size and SHA-256 of every other file, sorted ordinally
 # Reproducible: tracked sources are copied into a fresh temp tree (no stale bin/obj), compiled with
 # Deterministic=true, PathMap of that tree to /_/, no symbols, no platform apphost and an explicit SourceRevisionId.
@@ -73,6 +75,10 @@ try {
 
     $forbidden = @(Find-PackageForbidden $staging)
     if ($forbidden.Count) { throw "forbidden content would be packaged: $($forbidden -join ', ')" }
+    # P10-13: sbom.json from the shipped assemblies and the NuGet references of the shipped csproj closure.
+    $packagesRoot = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.nuget/packages' }
+    $references = @(Get-PackageNuGetReferences -Root $build -Projects @($projects.Values) -PackagesRoot $packagesRoot)
+    Write-PackageText (Join-Path $staging 'sbom.json') (New-PackageSbomText $staging $version $commit $references)
     Write-PackageText (Join-Path $staging 'manifest.json') (New-PackageManifestText $staging $version $commit $dirty)
     $problems = @(Test-PackageManifest $staging)
     if ($problems.Count) { throw "staged package failed verification: $($problems -join '; ')" }
