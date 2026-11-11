@@ -24,7 +24,7 @@ using Bim.Generative;
 internal static class CadToLayoutsTests
 {
     // SHA-256 (lower-case hex) of layouts.json for brief-plan.dxf, site 10 x 8, name "Brief plan", 3 alternatives, seed 7.
-    const string PinnedDigest = "pending-first-ci-run";
+    const string PinnedDigest = "566058984bb381768338f79137a18078bcc5ef6cfdfee0698226a7b84a86408a";
     const string Name = "Brief plan";
     const int Alternatives = 3;
     const int Seed = 7;
