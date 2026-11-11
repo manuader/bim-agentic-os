@@ -232,3 +232,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay188 (2026-11-11, cloud)
 - No new required owner action. `git pull` (main is now d062a06): MCP `revit_query_elements` accepts `all: true` (pages the whole listing; 32 MiB / 30 min caps), `cad-plan-brief ... --brief-only` writes a brief that `plan-layouts` reads directly, and a new end-to-end drift-loop test (needs pwsh; verify.ps1 passes its own path via BIM_PWSH).
 - Still open: ADR0010 (P2-11) / ADR0011 (P9-03) decisions (recommended A); one 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then catalogue-report; N21 `... -Runs 1`; optional repo licence; delete stray branches relay184-P10-12-red and relay181-P4-10b.
+
+## Relay190 (2026-11-11, cloud)
+- No new required owner action. `git pull` (main is now 89fa0dd): release packages now ship skills/ so `generate-prototypes` works from an extracted package; new read-only `diff-intent --project p --intent i` (previews what apply-intent would commit); TypologyPipeline can plan with the composed pack rules (opt-in, library only).
+- Still open: ADR0010 (P2-11) / ADR0011 (P9-03) decisions (recommended A); one 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then catalogue-report; N21 `... -Runs 1`; optional repo licence; delete stray branches relay184-P10-12-red and relay181-P4-10b.
