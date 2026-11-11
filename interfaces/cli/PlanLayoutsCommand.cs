@@ -32,9 +32,11 @@ namespace Bim.Cli;
 // become SpacePlanner rules the way TypologyRules.From (P5-13) maps one pack, without the typology template rules:
 // 1. Candidates are the pack's rules with severity error, op min, property area_m2 or min_side_m and a room target;
 //    the threshold is the literal value or the default of the named parameter. A pack with no candidate is
-//    plan_layouts_pack_rules_none (detail: the pack id). A candidate whose room glob holds '?' or whose threshold is not
-//    a positive finite number is plan_layouts_pack_rule_invalid (detail "<TypologyRuleCodes code> at <pack>/<rule>",
-//    the first such rule in pack order; checked on every candidate, matching a brief room or not).
+//    plan_layouts_pack_rules_none (detail: the pack id). A candidate whose threshold is not a positive finite number is
+//    plan_layouts_pack_rule_invalid (detail "typology_rule_threshold_invalid at <pack>/<rule>", the first such rule in
+//    pack order; checked on every candidate, matching a brief room or not). A room glob holding '?' would be
+//    "typology_rule_pattern_unsupported at <pack>/<rule>" like TypologyRules, but SkillParser already refuses '?' in
+//    room globs, so that branch is a defensive check unreachable from a skill.json.
 // 2. Candidates whose glob matches no brief room name (SkillTarget.MatchesRoom) are dropped; the rest are grouped by
 //    glob in pack order, each group one PlannerRule(NamePattern: glob, the largest area and side minimums of the
 //    group, Reference "<pack> <rule id> <rule id>", a parameter threshold adding " (<parameter> <value>)" after its
@@ -214,6 +216,7 @@ internal static class PlanLayoutsCommand
                 parameter = name;
                 threshold = pack.Parameters.FirstOrDefault(item => item.Name == name)?.Default;
             }
+            // Defensive: SkillParser refuses '?' in room globs (TypologyRules refuses it for manifests built in code).
             if (pattern.Contains('?', StringComparison.Ordinal)) { invalid ??= TypologyRuleCodes.PatternUnsupported + " at " + pack.Id + "/" + rule.Id; continue; }
             if (threshold is not { Kind: SkillValueKind.Number } number || !(double.IsFinite(number.Number) && number.Number > 0))
             {
