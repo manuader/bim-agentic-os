@@ -114,8 +114,9 @@ public static class RevitCommandService
         using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         pipe.Connect(ConnectTimeoutMs);
         var utf8 = new UTF8Encoding(false);
-        using var writer = new StreamWriter(pipe, utf8, 4096, leaveOpen: true) { AutoFlush = true };
-        writer.WriteLine(line);
+        // The same bytes StreamWriter.WriteLine sent before, without a writer whose disposal would flush a pipe the
+        // add-in already closed (IOException "Pipe is broken" on Windows instead of no_response).
+        pipe.Write(utf8.GetBytes(line + Environment.NewLine));
         using var reader = new StreamReader(pipe, utf8, false, 4096, leaveOpen: true);
         using var cancel = new CancellationTokenSource();
         var read = reader.ReadLineAsync(cancel.Token).AsTask();
