@@ -67,9 +67,10 @@ try {
             // roots come only from the repository (.bim/native-runs and the owner file .bim/revit-enabled-roots.txt), read
             // fresh on every run through the same RevitCommandPolicySource the MCP server keeps current.
             // --all (P1-15): a query.elements envelope is paged with RevitElementQueryPaging.All, each page through the
-            // same RevitCommandService path; every --all outcome, early refusals included, is ElementQueryAllResult JSON.
-            // --read-timeout-seconds n (P1-20): the pipe read timeout of every request (default 1800 s). The options
-            // (RevitCommandOptions) are checked first; an unknown, repeated or bad one is a single-command refusal.
+            // same RevitCommandService path; its outcomes and early refusals (pipe name, policy, envelope read) are
+            // ElementQueryAllResult JSON. --read-timeout-seconds n (P1-20): the pipe read timeout of every request
+            // (default 1800 s). The options (RevitCommandOptions) are checked first, before any I/O; an unknown, repeated
+            // or bad option is refused in the single-command RevitCommandResponse shape, with or without --all.
             var revitOptions=RevitCommandOptions.Parse(args,out var revitOptionRefusal);
             if(revitOptions is null) { Console.WriteLine(revitOptionRefusal); Environment.ExitCode=1; break; }
             var revitAll=revitOptions.All;

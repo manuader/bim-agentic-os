@@ -14,7 +14,6 @@ public sealed record RevitCommandOptions(bool All, TimeSpan ReadTimeout, Func<st
 {
     public const string Usage = "usage: revit-command envelope.json process-pipe-name [--all] [--read-timeout-seconds n]";
     public const string ReadTimeoutOption = "--read-timeout-seconds";
-    public const string ReadTimeoutInvalid = "read_timeout_invalid";
     const int FirstOption = 3;
 
     public static RevitCommandOptions? Parse(IReadOnlyList<string> args, out string? refusal)
@@ -30,9 +29,9 @@ public sealed record RevitCommandOptions(bool All, TimeSpan ReadTimeout, Func<st
             if (seen is null) { refusal = Refuse(RevitCommandCodes.ExplicitProcessPipeRequired, index, "unknown option " + option); return null; }
             if (seen.Value) { refusal = Refuse(RevitCommandCodes.ExplicitProcessPipeRequired, index, "repeated option " + option); return null; }
             if (option == "--all") { all = true; continue; }
-            if (index + 1 >= args.Count) { refusal = Refuse(ReadTimeoutInvalid, index, ReadTimeoutOption + " needs a value"); return null; }
+            if (index + 1 >= args.Count) { refusal = Refuse(RevitCommandCodes.ReadTimeoutInvalid, index, ReadTimeoutOption + " needs a value"); return null; }
             index++;
-            if (ReadTimeoutTransport(args[index]) is not { } timed) { refusal = Refuse(ReadTimeoutInvalid, index, ReadTimeoutOption + " takes whole seconds from 1 to 86400, got " + args[index]); return null; }
+            if (ReadTimeoutTransport(args[index]) is not { } timed) { refusal = Refuse(RevitCommandCodes.ReadTimeoutInvalid, index, ReadTimeoutOption + " takes whole seconds from 1 to 86400, got " + args[index]); return null; }
             (readTimeout, transport) = timed;
         }
         refusal = null;

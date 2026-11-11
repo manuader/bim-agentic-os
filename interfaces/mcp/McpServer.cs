@@ -141,8 +141,6 @@ public sealed class McpServer
     }
 
     public const string ReadTimeoutOption = "--read-timeout-seconds";
-    public const string ReadTimeoutInvalid = "read_timeout_invalid";
-    public const string OptionUnknown = "mcp_option_unknown";
     public const string OptionsUsage = "usage: Bim.Mcp.dll [--read-timeout-seconds n]";
 
     // The server options (Program args): none, or --read-timeout-seconds n once, n whole seconds from 1 to 86400.
@@ -155,10 +153,10 @@ public sealed class McpServer
         var seen = false;
         for (var index = 0; index < args.Count; index++)
         {
-            if (args[index] != ReadTimeoutOption) return OptionRefusal(OptionUnknown, index, "unknown option " + args[index]);
-            if (seen) return OptionRefusal(OptionUnknown, index, "repeated option " + ReadTimeoutOption);
+            if (args[index] != ReadTimeoutOption) return OptionRefusal(RevitCommandCodes.McpOptionUnknown, index, "unknown option " + args[index]);
+            if (seen) return OptionRefusal(RevitCommandCodes.McpOptionUnknown, index, "repeated option " + ReadTimeoutOption);
             seen = true;
-            if (index + 1 >= args.Count) return OptionRefusal(ReadTimeoutInvalid, index, ReadTimeoutOption + " needs a value");
+            if (index + 1 >= args.Count) return OptionRefusal(RevitCommandCodes.ReadTimeoutInvalid, index, ReadTimeoutOption + " needs a value");
             index++;
             var valid = int.TryParse(args[index], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var seconds);
             if (valid)
@@ -166,7 +164,7 @@ public sealed class McpServer
                 try { _ = RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromSeconds(seconds)); }
                 catch (ArgumentOutOfRangeException) { valid = false; }
             }
-            if (!valid) return OptionRefusal(ReadTimeoutInvalid, index, ReadTimeoutOption + " takes whole seconds from 1 to 86400, got " + args[index]);
+            if (!valid) return OptionRefusal(RevitCommandCodes.ReadTimeoutInvalid, index, ReadTimeoutOption + " takes whole seconds from 1 to 86400, got " + args[index]);
             readTimeout = TimeSpan.FromSeconds(seconds);
         }
         return null;

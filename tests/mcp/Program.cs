@@ -444,6 +444,8 @@ foreach(var badTimeout in new[]{TimeSpan.Zero,TimeSpan.FromSeconds(-1),Timeout.I
 Check(McpServer.ParseOptions(Array.Empty<string>(),out var noOptionTimeout)==null && noOptionTimeout==RevitCommandService.DefaultReadTimeout
     && McpServer.ParseOptions(new[]{"--read-timeout-seconds","86400"},out var maxOptionTimeout)==null && maxOptionTimeout==RevitCommandService.MaxReadTimeout
     && McpServer.ParseOptions(new[]{"--read-timeout-seconds","1"},out var minOptionTimeout)==null && minOptionTimeout==TimeSpan.FromSeconds(1),"McpServer.ParseOptions: none keeps the default; 1 and 86400 seconds are accepted");
+Check(RevitCommandCodes.ReadTimeoutInvalid=="read_timeout_invalid" && RevitCommandCodes.McpOptionUnknown=="mcp_option_unknown" && RevitCommandCodes.ClientSide.Contains(RevitCommandCodes.ReadTimeoutInvalid)
+    && RevitCommandCodes.ClientSide.Contains(RevitCommandCodes.McpOptionUnknown),"read_timeout_invalid and mcp_option_unknown are client-side RevitCommandCodes");
 var toolsList=Request(30,"tools/list",null)+"\n";
 foreach(var (label,value) in new[]{("zero","0"),("negative","-1"),("over 24 h","86401"),("fractional","1.5"),("not a number","abc"),("empty","")}) {
     var refused=RunMcp(toolsList,"--read-timeout-seconds",value);
@@ -471,6 +473,24 @@ try {
     Check(stalledResponse is {Code:RevitCommandCodes.PipeReadTimeout,Field:"pipe_name",Detail:{} mcpStallDetail} && mcpStallDetail.StartsWith("no reply within 1000 ms; read-only",StringComparison.Ordinal) && IsError(Node(mcpStalled.Out).AsObject()),
         "Bim.Mcp --read-timeout-seconds 1: a revit_* call on a stalled add-in pipe is pipe_read_timeout after 1000 ms | "+mcpStalled.Out+" "+mcpStalled.Err);
     Check(mcpStalled.Ms>=1000 && mcpStalled.Ms<30000 && stallAddIn.WaitForRequests(1) && stallAddIn.Received.Count==1,"the stalled MCP call is sent once and ends within the bound | "+mcpStalled.Ms+" ms");
+    // all:true: a page's read timeout is the server read timeout while that is below the time left of the 1800 s overall
+    // deadline, so a stalled page ends with the page's pipe_read_timeout (listing shape), not after the deadline.
+    var allStallCall=Request(32,"tools/call",new JsonObject{["name"]="revit_query_elements",["arguments"]=new JsonObject{["pipe_name"]=stallPipe,["operation_id"]="op-p1-20-all",["document"]=new JsonObject{["path"]=McpReal,["unique_id"]=McpUid},["args"]=Walls(5),["all"]=true}})+"\n";
+    var mcpAllStalled=RunMcp(allStallCall,"--read-timeout-seconds","1");
+    var allStalledResponse=mcpAllStalled.Exit==0 ? Node(mcpAllStalled.Out).AsObject() : null;
+    var allStalledListing=allStalledResponse is null ? null : Node(Text(allStalledResponse)).AsObject();
+    Check(allStalledResponse is not null && IsError(allStalledResponse) && allStalledListing is not null && allStalledListing["status"]!.GetValue<string>()=="failed"
+        && allStalledListing["code"]!.GetValue<string>()==RevitCommandCodes.PipeReadTimeout && allStalledListing["pages"]!.GetValue<int>()==0 && allStalledListing["elements"]!.AsArray().Count==0
+        && allStalledListing["detail"]?.GetValue<string>() is {} allStallDetail && allStallDetail.Contains("1000 ms",StringComparison.Ordinal),
+        "Bim.Mcp --read-timeout-seconds 1: revit_query_elements all:true on a stalled pipe is pipe_read_timeout after 1000 ms in the listing shape | "+mcpAllStalled.Out+" "+mcpAllStalled.Err);
+    Check(mcpAllStalled.Ms>=1000 && mcpAllStalled.Ms<30000 && stallAddIn.WaitForRequests(2) && stallAddIn.Received.Count==2,"the stalled all:true page is sent once and ends within the bound | "+mcpAllStalled.Ms+" ms");
+    // Reverse: an overall deadline below the server read timeout cuts the stalled page to the time left (query_all_deadline_exceeded).
+    var cutServer=new McpServer(RevitCommandCatalogue.All,RevitCommandPolicy.None,null,null){ReadTimeout=TimeSpan.FromSeconds(120),QueryAllDeadline=TimeSpan.FromSeconds(2)};
+    var cutWatch=System.Diagnostics.Stopwatch.StartNew();
+    var cutStalled=AllCall(cutServer,stallPipe,Walls(5),true);
+    cutWatch.Stop();
+    Check(IsError(cutStalled) && FailureCode(cutStalled)==McpServer.QueryAllDeadlineExceeded && Node(Text(cutStalled))["pages"]!.GetValue<int>()==0 && cutWatch.Elapsed<TimeSpan.FromSeconds(30)
+        && stallAddIn.WaitForRequests(3) && stallAddIn.Received.Count==3,"a 2 s all:true deadline under a 120 s server read timeout ends the stalled page with query_all_deadline_exceeded | "+Text(cutStalled)+" in "+cutWatch.ElapsedMilliseconds+" ms");
 } finally {
     if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR",stallTmpDir);
 }

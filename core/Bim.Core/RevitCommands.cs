@@ -58,6 +58,10 @@ public static class RevitCommandCodes
     public const string NoResponse = "no_response";
     // A reply that is malformed or answers another request.
     public const string ResponseInvalid = "response_invalid";
+    // P1-20: a bad --read-timeout-seconds value (CLI revit-command and the MCP server option), and an unknown or
+    // repeated MCP server option; both refused before any I/O.
+    public const string ReadTimeoutInvalid = "read_timeout_invalid";
+    public const string McpOptionUnknown = "mcp_option_unknown";
     // Reserved for the add-in executor; never produced by the client.
     public const string OperationIdConflict = "operation_id_conflict";
     public const string DocumentConflict = "document_conflict";
@@ -71,6 +75,7 @@ public static class RevitCommandCodes
         BoundaryTooFewPoints, BoundaryEdgeTooShort, BoundaryZeroArea, BoundarySelfIntersecting, LevelsNotDistinct,
         DocumentNotEnabled, DocumentLinkRefused, AllowlistInvalid, FamilySourceRefused, SaveCopyRefused, SaveAsRefused,
         CursorMalformed, CursorTampered, CursorStale, CursorForeignDocument, CursorFilterMismatch, ExplicitProcessPipeRequired, RequestTooLarge, PipeConnectTimeout, PipeIoError, PipeReadTimeout, NoResponse, ResponseInvalid,
+        ReadTimeoutInvalid, McpOptionUnknown,
     };
 
     public static IReadOnlyList<string> ExecutorReserved { get; } = new[] { OperationIdConflict, DocumentConflict, ReferenceNotFound, TransactionFailed };
