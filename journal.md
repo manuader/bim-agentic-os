@@ -1410,3 +1410,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 07:53Z LOCK taken (was FREE; relay187 released 2026-11-11T07:22:22Z).
 - 07:53Z picked P1-16 (phase 1), P2-14 (phase 2), P6-14 (phase 6) — oldest-touched (relay185). Workers starting on relay188-<ID>.
 - 08:44Z workers green: P1-16 3f627c5 (red 42983336938, green 42986703668; 1 attempt: Unix socket path >108 chars under long TMPDIR), P2-14 296b012 (red 42983599263 deliberate broken expectation, green 42985259803; 0 attempts), P6-14 7e9cbb4 (red 42983360377, green 42984926046; 0 attempts). Next: independent reviews.
+
+## Relay189 — 2026-11-11T09:55:39Z (Claude, cloud scheduled)
+- 09:55Z LOCK taken over from relay188 (stale: last_heartbeat 08:44:05Z, >45 min). Continuing relay188 work: P1-16/P2-14/P6-14 reviews + integration.
