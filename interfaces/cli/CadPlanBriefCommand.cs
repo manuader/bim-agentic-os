@@ -99,48 +99,50 @@ internal static class CadPlanBriefCommand
         byte[] written;
         if (briefOnly) written = new System.Text.UTF8Encoding(false).GetBytes(briefJson);
         else
-        using (var buffer = new MemoryStream())
         {
-            using (var writer = new Utf8JsonWriter(buffer))
+            using (var buffer = new MemoryStream())
             {
-                writer.WriteStartObject();
-                writer.WriteString("kind", "cad-plan-brief");
-                writer.WriteNumber("version", 1);
-                writer.WriteBoolean("persisted", false);
-                writer.WriteStartObject("source");
-                writer.WriteString("file", Path.GetFileName(input));
-                writer.WriteNumber("bytes", raw.LongLength);
-                writer.WriteString("sha256", Convert.ToHexString(SHA256.HashData(raw)));
-                writer.WriteString("drawing_file", drawingFile);
-                writer.WriteString("drawing_sha256", drawingSha);
-                writer.WriteEndObject();
-                writer.WriteStartObject("options");
-                writer.WriteNumber("min_confidence", options.MinConfidence);
-                Strings(writer, "confirmed_rooms", options.ConfirmedRooms);
-                Strings(writer, "confirmed_reasons", options.ConfirmedReasons);
-                if (site is not null)
+                using (var writer = new Utf8JsonWriter(buffer))
                 {
-                    writer.WriteNumber("site_width_m", site.WidthMetres.Value);
-                    writer.WriteNumber("site_depth_m", site.DepthMetres.Value);
+                    writer.WriteStartObject();
+                    writer.WriteString("kind", "cad-plan-brief");
+                    writer.WriteNumber("version", 1);
+                    writer.WriteBoolean("persisted", false);
+                    writer.WriteStartObject("source");
+                    writer.WriteString("file", Path.GetFileName(input));
+                    writer.WriteNumber("bytes", raw.LongLength);
+                    writer.WriteString("sha256", Convert.ToHexString(SHA256.HashData(raw)));
+                    writer.WriteString("drawing_file", drawingFile);
+                    writer.WriteString("drawing_sha256", drawingSha);
+                    writer.WriteEndObject();
+                    writer.WriteStartObject("options");
+                    writer.WriteNumber("min_confidence", options.MinConfidence);
+                    Strings(writer, "confirmed_rooms", options.ConfirmedRooms);
+                    Strings(writer, "confirmed_reasons", options.ConfirmedReasons);
+                    if (site is not null)
+                    {
+                        writer.WriteNumber("site_width_m", site.WidthMetres.Value);
+                        writer.WriteNumber("site_depth_m", site.DepthMetres.Value);
+                    }
+                    if (options.Name is { } name) writer.WriteString("name", name);
+                    writer.WriteEndObject();
+                    writer.WriteBoolean("valid", result.IsValid);
+                    writer.WritePropertyName("brief");
+                    writer.WriteRawValue(briefJson);
+                    writer.WritePropertyName("kept");
+                    JsonSerializer.Serialize(writer, result.Kept, Json);
+                    writer.WritePropertyName("dropped");
+                    JsonSerializer.Serialize(writer, result.Dropped, Json);
+                    writer.WritePropertyName("unknown_confirmed_rooms");
+                    JsonSerializer.Serialize(writer, result.UnknownConfirmedRooms, Json);
+                    writer.WritePropertyName("unknown_confirmed_reasons");
+                    JsonSerializer.Serialize(writer, result.UnknownConfirmedReasons, Json);
+                    writer.WritePropertyName("issues");
+                    JsonSerializer.Serialize(writer, result.Issues, Json);
+                    writer.WriteEndObject();
                 }
-                if (options.Name is { } name) writer.WriteString("name", name);
-                writer.WriteEndObject();
-                writer.WriteBoolean("valid", result.IsValid);
-                writer.WritePropertyName("brief");
-                writer.WriteRawValue(briefJson);
-                writer.WritePropertyName("kept");
-                JsonSerializer.Serialize(writer, result.Kept, Json);
-                writer.WritePropertyName("dropped");
-                JsonSerializer.Serialize(writer, result.Dropped, Json);
-                writer.WritePropertyName("unknown_confirmed_rooms");
-                JsonSerializer.Serialize(writer, result.UnknownConfirmedRooms, Json);
-                writer.WritePropertyName("unknown_confirmed_reasons");
-                JsonSerializer.Serialize(writer, result.UnknownConfirmedReasons, Json);
-                writer.WritePropertyName("issues");
-                JsonSerializer.Serialize(writer, result.Issues, Json);
-                writer.WriteEndObject();
+                written = buffer.ToArray();
             }
-            written = buffer.ToArray();
         }
 
         try { GltfExporter.WriteNew(written, output); }

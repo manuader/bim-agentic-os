@@ -521,8 +521,8 @@ internal static class CadPlanBriefTests
         {
             const string PinnedDefaults = "1A092C0BC2ADC6B685D0D85490FAF803FAF0028C9F88614D9DA24002269ABA0F";
             const string PinnedSited = "69824E31E8B08AAF7B6D6D7E7809A3B165B344FFBB5092B23560705382645153";
-            // The default run's stdout envelope with its machine-specific "output" string blanked (see below).
-            const string PinnedDefaultsEnvelope = "PIN-FROM-RED-RUN-ENVELOPE";
+            // The default run's stdout envelope with its machine-specific "output" string blanked (see below); from red run 42989848662 (ubuntu/windows/macos agree).
+            const string PinnedDefaultsEnvelope = "B178D56BE662E41E86985523851ECFA755013FE4DC4395E00091B042E25889E1";
             static byte[] U(string s) => new UTF8Encoding(false).GetBytes(s);
             byte[] Member(string path) => Doc(path) is { ValueKind: JsonValueKind.Object } d && d.TryGetProperty("brief", out var b) ? U(b.GetRawText()) : Array.Empty<byte>();
             byte[] Bytes(string path) => File.Exists(path) ? File.ReadAllBytes(path) : Array.Empty<byte>();
