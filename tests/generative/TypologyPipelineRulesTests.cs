@@ -26,8 +26,9 @@ static class TypologyPipelineRulesTests
     // TypologyBriefTests.PinnedSha256 (P5-11): family 4, 12 x 12 m lot, 6 alternatives, seed 0 under PrototypeTemplates.Rules.
     const string P511PinnedSha256 = "85102ea05864ea67a8dad79bed06b2ce4a643056a09d8aee7d8044127340b513";
     // SHA-256 of TypologyPipelineSerializer output for the CABA + typology resolution with ComposedRules, family 3, the
-    // 16 x 16 m lot, 4 alternatives, seed 0, the CABA pack and ProjectId with default stage options (regression pin).
-    const string PinnedComposedSha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+    // 16 x 16 m lot, 4 alternatives, seed 0, the CABA pack and ProjectId with default stage options (regression pin, identical on Linux and Windows CI; ranked, two accepted
+    // where the fixed rules accept one).
+    const string PinnedComposedSha256 = "a8c62da59e0eee2d25af4d27bc37fcf2f67ae366e7e48446f1edfe3c87f7c0dd";
     static readonly Guid ProjectId = Guid.Parse("00000000-0000-4000-8000-0000000007a7");
 
     // A code pack whose minimum rules are exactly PrototypeTemplates.CabaRules (TypologyRulesTests.DefaultsPack).
