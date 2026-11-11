@@ -7,6 +7,8 @@
 # P10-08: runs tests/packaging/test-package-archive.ps1 against both clean builds (archives must be byte-identical).
 # P10-13: sbom.json (shipped assemblies with SHA-256, NuGet references of the shipped csproj closure, build-only
 # references such as Nice3point never listed) is listed in manifest.json; package-verify refuses a missing/edited sbom.
+# P10-14: transitive NuGet packages from the shipped projects' obj/project.assets.json are listed (direct/transitive,
+# shipped assembly file names); every shipped third-party assembly carries its package or is refused (sbom_unattributed).
 # P7-12: skills/ (every tracked skills file) ships next to cli/; the packaged generate-prototypes, copied outside any
 # repository, reads its pack from there byte-equal to the repository run, and refuses repository_not_found without it;
 # a tracked skills/ entry that is not a regular file (symlink, submodule) is refused (skills_entry_not_regular).
@@ -210,6 +212,105 @@ try {
         }
     } catch { $failures.Add("SBOM review checks threw: $($_.Exception.Message)") }
 
+    # --- P10-14 transitive NuGet attribution: every shipped third-party assembly is attributed to its package (direct
+    # or transitive) from the shipped projects' obj/project.assets.json; first-party Bim.* stay NOASSERTION ---
+    try {
+        $tSrc = Join-Path $work 'sbom transitive src'
+        $tAlt = Join-Path $work 'sbom transitive alt nuget'
+        $tFiles = [ordered]@{
+            'app/App.csproj' = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../lib/Lib.csproj" /><PackageReference Include="Alpha.Json" Version="1.2.3" /><PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="[2025.0.2]" ExcludeAssets="runtime" PrivateAssets="all" /></ItemGroup></Project>'
+            'lib/Lib.csproj' = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Delta.Lib" Version="3.0.0" /></ItemGroup></Project>'
+            'nuget/alpha.json/1.2.3/alpha.json.nuspec' = '<?xml version="1.0"?><package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><id>Alpha.Json</id><version>1.2.3</version><license type="expression">MIT</license></metadata></package>'
+            'nuget/beta.core/2.0.0/beta.core.nuspec' = '<?xml version="1.0"?><package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><id>Beta.Core</id><version>2.0.0</version><licenseUrl>https://licenses.nuget.org/Apache-2.0</licenseUrl></metadata></package>'
+            'nuget/gamma.native/1.0.0/gamma.native.nuspec' = '<?xml version="1.0"?><package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><id>Gamma.Native</id><version>1.0.0</version><license type="file">LICENSE.txt</license><licenseUrl>https://example.invalid/license</licenseUrl></metadata></package>'
+        }
+        foreach ($name in $tFiles.Keys) {
+            $path = Join-Path $tSrc $name
+            New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
+            [IO.File]::WriteAllText($path, $tFiles[$name])
+        }
+        # Delta.Lib's nuspec lives only in the restore's own packageFolders (lib's assets file), not under -PackagesRoot.
+        New-Item -ItemType Directory -Force (Join-Path $tAlt 'delta.lib/3.0.0') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $tAlt 'delta.lib/3.0.0/delta.lib.nuspec'), '<?xml version="1.0"?><package><metadata><id>Delta.Lib</id><version>3.0.0</version><license type="expression">BSD-3-Clause</license></metadata></package>')
+        $none = [ordered]@{}
+        $appAssets = [ordered]@{
+            version = 3
+            targets = [ordered]@{
+                'net8.0' = [ordered]@{
+                    'Alpha.Json/1.2.3' = [ordered]@{ type = 'package'; dependencies = [ordered]@{ 'Beta.Core' = '[2.0.0, )'; 'Meta.Only' = '1.0.0' }; compile = [ordered]@{ 'lib/net8.0/Alpha.Json.dll' = $none }; runtime = [ordered]@{ 'lib/net8.0/Alpha.Json.dll' = $none } }
+                    'Beta.Core/2.0.0' = [ordered]@{ type = 'package'; dependencies = [ordered]@{ 'gamma.native' = '1.0.0' }; runtime = [ordered]@{ 'lib/net8.0/Beta.Core.dll' = $none; 'lib/net8.0/Beta.Core.Extensions.dll' = $none } }
+                    'Gamma.Native/1.0.0' = [ordered]@{ type = 'package'; runtimeTargets = [ordered]@{ 'runtimes/win-x64/native/gamma.dll' = [ordered]@{ assetType = 'native'; rid = 'win-x64' }; 'runtimes/linux-x64/native/libgamma.so' = [ordered]@{ assetType = 'native'; rid = 'linux-x64' } } }
+                    'Meta.Only/1.0.0' = [ordered]@{ type = 'package'; compile = [ordered]@{ 'lib/net8.0/_._' = $none }; runtime = [ordered]@{ 'lib/net8.0/_._' = $none } }
+                    'Nice3point.Revit.Api.RevitAPI/2025.0.2' = [ordered]@{ type = 'package'; dependencies = [ordered]@{ 'Vendor.Transitive' = '1.0.0' }; compile = [ordered]@{ 'ref/RevitAPI.dll' = $none } }
+                    'Vendor.Transitive/1.0.0' = [ordered]@{ type = 'package'; runtime = [ordered]@{ 'lib/net8.0/Vendor.Transitive.dll' = $none } }
+                    'Lib/1.0.0' = [ordered]@{ type = 'project'; dependencies = [ordered]@{ 'Delta.Lib' = '3.0.0' } }
+                }
+            }
+            packageFolders = [ordered]@{ ((Join-Path $work 'no packages') + '/') = $none }
+        }
+        $libAssets = [ordered]@{
+            version = 3
+            targets = [ordered]@{
+                'net8.0' = [ordered]@{
+                    'Delta.Lib/3.0.0' = [ordered]@{ type = 'package'; dependencies = [ordered]@{ 'Beta.Core' = '2.0.0' }; runtime = [ordered]@{ 'lib/net8.0/Delta.Lib.dll' = $none } }
+                    'Beta.Core/2.0.0' = [ordered]@{ type = 'package'; dependencies = [ordered]@{ 'Gamma.Native' = '1.0.0' }; runtime = [ordered]@{ 'lib/net8.0/Beta.Core.dll' = $none; 'lib/net8.0/Beta.Core.Extensions.dll' = $none } }
+                    'Gamma.Native/1.0.0' = [ordered]@{ type = 'package'; runtimeTargets = [ordered]@{ 'runtimes/win-x64/native/gamma.dll' = [ordered]@{ assetType = 'native'; rid = 'win-x64' } } }
+                }
+            }
+            packageFolders = [ordered]@{ ($tAlt + '/') = $none }
+        }
+        New-Item -ItemType Directory -Force (Join-Path $tSrc 'app/obj'), (Join-Path $tSrc 'lib/obj') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $tSrc 'app/obj/project.assets.json'), ($appAssets | ConvertTo-Json -Depth 20))
+        [IO.File]::WriteAllText((Join-Path $tSrc 'lib/obj/project.assets.json'), ($libAssets | ConvertTo-Json -Depth 20))
+
+        $tRefs = @(Get-PackageNuGetReferences -Root $tSrc -Projects @('app/App.csproj') -PackagesRoot (Join-Path $tSrc 'nuget'))
+        $tText = ($tRefs | ForEach-Object { "$($_.Name)@$($_.Version) $($_.License) $($_.Dependency) [$(@($_.Projects) -join ',')] {$(@($_.Assemblies) -join ',')}" }) -join '; '
+        $tWant = 'Alpha.Json@1.2.3 MIT direct [app/App.csproj] {Alpha.Json.dll}; Beta.Core@2.0.0 Apache-2.0 transitive [app/App.csproj,lib/Lib.csproj] {Beta.Core.Extensions.dll,Beta.Core.dll}; Delta.Lib@3.0.0 BSD-3-Clause direct [lib/Lib.csproj] {Delta.Lib.dll}; Gamma.Native@1.0.0 NOASSERTION transitive [app/App.csproj,lib/Lib.csproj] {gamma.dll}'
+        Assert ($tText -ceq $tWant) "P10-14: SBOM references must include transitive packages from obj/project.assets.json with their shipped assembly file names and nuspec licence (expression, licenses.nuget.org licenseUrl, restore packageFolders): got '$tText' want '$tWant'"
+        foreach ($excluded in 'Meta.Only', 'Nice3point', 'Vendor.Transitive') { Assert (!($tText -match [regex]::Escape($excluded))) "P10-14: $excluded (no runtime asset, or only reachable through a build-only vendor reference) must not be listed as shipped: '$tText'" }
+        $threw = $null
+        try { Assert-PackageReferenceLicenses -References $tRefs -Allowlist @() } catch { $threw = $_.Exception.Message }
+        Assert ($threw -match 'sbom_license_unknown' -and $threw -match 'Gamma\.Native@1\.0\.0' -and $threw -notmatch 'Beta\.Core') "P10-14: a transitive package whose licence is not an SPDX expression must be refused like a direct one: '$threw'"
+
+        # Synthetic package: third-party assemblies (one transitive, one native, one whose file name differs from its id) and a first-party Bim.* one.
+        $tPkg = Join-Path $work 'sbom transitive pkg'
+        New-Item -ItemType Directory -Force (Join-Path $tPkg 'cli/runtimes/win-x64/native') | Out-Null
+        Write-PackageText (Join-Path $tPkg 'VERSION') "1.2.3`n"
+        foreach ($dll in 'cli/Alpha.Json.dll', 'cli/Beta.Core.dll', 'cli/Beta.Core.Extensions.dll', 'cli/Delta.Lib.dll', 'cli/runtimes/win-x64/native/gamma.dll', 'cli/Bim.Cli.dll') { Write-PackageText (Join-Path $tPkg $dll) "not a real assembly $dll" }
+        $tSbom = New-PackageSbomText $tPkg '1.2.3' ('a' * 40) $tRefs
+        Write-PackageText (Join-Path $tPkg 'sbom.json') $tSbom
+        Write-PackageText (Join-Path $tPkg 'manifest.json') (New-PackageManifestText $tPkg '1.2.3' ('a' * 40) $false)
+        $tParsed = $tSbom | ConvertFrom-Json
+        $tAsm = (@($tParsed.assemblies) | ForEach-Object { "$($_.path)=$($_.license)@$(if ($_.PSObject.Properties['package']) { $_.package } else { '-' })" }) -join '; '
+        $tAsmWant = 'cli/Alpha.Json.dll=MIT@Alpha.Json@1.2.3; cli/Beta.Core.Extensions.dll=Apache-2.0@Beta.Core@2.0.0; cli/Beta.Core.dll=Apache-2.0@Beta.Core@2.0.0; cli/Bim.Cli.dll=NOASSERTION@-; cli/Delta.Lib.dll=BSD-3-Clause@Delta.Lib@3.0.0; cli/runtimes/win-x64/native/gamma.dll=NOASSERTION@Gamma.Native@1.0.0'
+        Assert ($tAsm -ceq $tAsmWant) "P10-14: every shipped third-party assembly must carry its package (id@version) and licence; Bim.* stays NOASSERTION without a package: got '$tAsm' want '$tAsmWant'"
+        $tRefLine = @($tSbom.Split("`n") | Where-Object { $_.Contains('"name": "Beta.Core"') })
+        Assert ($tRefLine.Count -eq 1 -and $tRefLine[0].Contains('"dependency": "transitive"') -and $tRefLine[0].Contains('"assemblies": ["Beta.Core.Extensions.dll", "Beta.Core.dll"]')) "P10-14: an sbom reference must record whether it is direct or transitive and which assembly files it ships: '$($tRefLine -join ' ')'"
+        $tClean = Invoke-Script $verifier @('-PackageDirectory', $tPkg)
+        Assert ($tClean.Code -eq 0) "P10-14: a package whose third-party assemblies are all attributed must verify: $(Get-Tail $tClean.Output)"
+
+        # An unattributed third-party assembly is refused even with a canonical sbom and a re-hashed manifest.
+        $tStray = Join-Path $work 'sbom transitive stray'
+        Copy-Item -LiteralPath $tPkg -Destination $tStray -Recurse
+        Write-PackageText (Join-Path $tStray 'cli/Stray.Thing.dll') 'not a real assembly stray'
+        Write-PackageText (Join-Path $tStray 'sbom.json') (New-PackageSbomText $tStray '1.2.3' ('a' * 40) $tRefs)
+        Write-PackageText (Join-Path $tStray 'manifest.json') (New-PackageManifestText $tStray '1.2.3' ('a' * 40) $false)
+        $tRun = Invoke-Script $verifier @('-PackageDirectory', $tStray)
+        Assert ($tRun.Code -ne 0 -and $tRun.Output -match 'sbom_unattributed' -and $tRun.Output -match 'cli/Stray\.Thing\.dll' -and $tRun.Output -notmatch 'Bim\.Cli\.dll') "P10-14: package-verify must refuse a third-party assembly not attributed to a NuGet package (sbom_unattributed), never a first-party Bim.* one: $(Get-Tail $tRun.Output)"
+
+        # Dropping a file from a reference's assemblies list (sbom and manifest rewritten) un-attributes it and is refused.
+        $tDrop = Join-Path $work 'sbom transitive drop'
+        Copy-Item -LiteralPath $tPkg -Destination $tDrop -Recurse
+        Write-PackageText (Join-Path $tDrop 'sbom.json') ($tSbom.Replace('"assemblies": ["Beta.Core.Extensions.dll", "Beta.Core.dll"]', '"assemblies": ["Beta.Core.dll"]'))
+        Write-PackageText (Join-Path $tDrop 'manifest.json') (New-PackageManifestText $tDrop '1.2.3' ('a' * 40) $false)
+        $tRun = Invoke-Script $verifier @('-PackageDirectory', $tDrop)
+        Assert ($tRun.Code -ne 0 -and $tRun.Output -match 'sbom_unattributed' -and $tRun.Output -match 'Beta\.Core\.Extensions\.dll') "P10-14: package-verify must refuse an sbom whose reference no longer attributes a shipped assembly: $(Get-Tail $tRun.Output)"
+
+        # Without an assets file (or with no NuGet references) the P10-13 behaviour is unchanged: direct references only.
+        $refsNoAssets = @(Get-PackageNuGetReferences -Root $sbomSrc -Projects @('app/App.csproj') -PackagesRoot (Join-Path $sbomSrc 'nuget'))
+        Assert ((($refsNoAssets | ForEach-Object { "$($_.Name):$($_.Dependency):$(@($_.Assemblies).Count)" }) -join ',') -ceq 'Alpha.Json:direct:0,Zeta.Lib:direct:0') "P10-14: without project.assets.json references stay direct with no recorded assemblies: $(($refsNoAssets | ForEach-Object { "$($_.Name):$($_.Dependency):$(@($_.Assemblies).Count)" }) -join ',')"
+    } catch { $failures.Add("P10-14 transitive SBOM checks threw: $($_.Exception.Message)") }
+
     # --- P7-12 review: a tracked skills/ entry that is not a regular file (mode other than 100644/100755, e.g. a
     # symlink 120000 or a submodule 160000) is refused before any build; the index entry is staged with --cacheinfo so
     # no file system symlink is needed on any OS ---
@@ -323,6 +424,12 @@ try {
             $sbomRefs = @($sbom.nuget_references)
             Assert ((($sbomRefs | ForEach-Object { "$($_.name)@$($_.version)" }) -join ',') -ceq (($expectedRefs | ForEach-Object { "$($_.Name)@$($_.Version)" }) -join ',')) "sbom nuget_references must be the shipped csproj references: sbom=[$(($sbomRefs | ForEach-Object name) -join ', ')]"
             Assert (@($sbomRefs | Where-Object { $_.name -match '(?i)^(Nice3point|Revit|Autodesk)' }).Count -eq 0) 'sbom lists a Nice3point/Revit reference as shipped'
+            # P10-14: the real package ships only first-party Bim.* assemblies today; they stay NOASSERTION with no package
+            # attribution, so the P10-13 assembly line format is unchanged.
+            foreach ($component in @($sbom.assemblies)) {
+                Assert ([string]$component.name -cmatch '\ABim\.' -and [string]$component.license -ceq 'NOASSERTION' -and !$component.PSObject.Properties['package']) "P10-14: real package assembly $($component.path) must be first-party Bim.* with NOASSERTION and no package (got name '$($component.name)' licence '$($component.license)')"
+            }
+            Assert ($sbomRefs.Count -eq 0) "P10-14: the real package has no NuGet references today: [$(($sbomRefs | ForEach-Object name) -join ', ')]"
         } catch { $failures.Add("sbom.json checks threw: $($_.Exception.Message)") }
     }
 
