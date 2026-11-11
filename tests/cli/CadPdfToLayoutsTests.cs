@@ -23,8 +23,10 @@ using Bim.Generative;
 //      of the in-process planner brief.
 //   2. The fixture bytes have a pinned SHA-256, and on Linux the generator rewrites exactly those bytes (python3
 //      required on Linux CI, a counted skip elsewhere or when absent off CI).
-//   3. Twin: the calibrated PDF planner brief has the same rooms (ids, names, counts, target areas within 1e-9 m2) as the
-//      brief-plan.dxf planner brief; provenance references differ by design (file name, PDF operator vs DXF handle).
+//   3. Twin: both drafts propose 7 rooms; for each scale form the PDF planner brief has the same rooms (ids, names,
+//      counts, target areas within 1e-9 m2) as the brief-plan.dxf planner brief (provenance references differ by design:
+//      file name, PDF operator vs DXF handle), and the in-process PDF layouts are byte-identical to the brief-plan.dxf
+//      layouts, so both pins equal the P6-13 CadToLayoutsTests digest.
 //   4. Without a scale: cad-draft brief-plan.pdf refuses with cad_uncalibrated and writes nothing; cad-brief is not a
 //      refusal there (P6-07 contract: an uncalibrated PDF brief is allowed) but reports scale "none", metres_per_unit
 //      null and the always-reported uncalibrated uncertainty.
@@ -35,8 +37,9 @@ internal static class CadPdfToLayoutsTests
     // SHA-256 (lower-case hex) of tests/cad/fixtures/brief-plan.pdf as brief-plan-pdf.py writes it.
     const string FixtureDigest = "8af67cbaea8564f70de185ea7e1103557f839cc7d7afe2d729a54759af313146";
     // SHA-256 of layouts.json for brief-plan.pdf, site 10 x 8, name "Brief plan", 3 alternatives, seed 7.
-    const string PinnedCalibrated = "0000000000000000000000000000000000000000000000000000000000000000";
-    const string PinnedMetresPerUnit = "0000000000000000000000000000000000000000000000000000000000000000";
+    // Both equal the brief-plan.dxf digest pinned in CadToLayoutsTests (P6-13): layouts carry no drawing provenance.
+    const string PinnedCalibrated = "566058984bb381768338f79137a18078bcc5ef6cfdfee0698226a7b84a86408a";
+    const string PinnedMetresPerUnit = "566058984bb381768338f79137a18078bcc5ef6cfdfee0698226a7b84a86408a";
     const string Name = "Brief plan";
     const int Alternatives = 3;
     const int Seed = 7;
@@ -122,16 +125,25 @@ internal static class CadPdfToLayoutsTests
             Check(run.Set.Status == AlternativeSetStatus.Ranked && run.Set.Ranked.Count >= 1, "oracle: the in-process " + label + " run ranks at least one alternative",
                 run.Set.Status + " ranked " + run.Set.Ranked.Count.ToString(CultureInfo.InvariantCulture));
 
-        // ---- twin: the same rooms as the brief-plan.dxf planner brief ----
-        var dxfBrief = Plan(BriefExtract.FromDxf(DxfReader.Parse(File.ReadAllBytes(Path.Combine(fixtures, "brief-plan.dxf")), "brief-plan.dxf"))).Brief;
+        // ---- twin: the same draft rooms, planner rooms and layouts as brief-plan.dxf ----
+        var dxfDraft = BriefExtract.FromDxf(DxfReader.Parse(File.ReadAllBytes(Path.Combine(fixtures, "brief-plan.dxf")), "brief-plan.dxf"));
+        var pdfDraft = BriefExtract.FromPdf(PdfReader.Parse(pdfBytes, "brief-plan.pdf"), 1, Calibration(), new BriefExtractOptions());
+        var dxf = Plan(dxfDraft);
+        Check(dxfDraft.Rooms.Count == 7 && pdfDraft.Rooms.Count == 7, "the brief-plan.dxf and calibrated brief-plan.pdf drafts both propose 7 rooms",
+            "dxf " + dxfDraft.Rooms.Count.ToString(CultureInfo.InvariantCulture) + " pdf " + pdfDraft.Rooms.Count.ToString(CultureInfo.InvariantCulture));
         static string Rooms(ProjectBrief brief) => string.Join("; ", brief.Rooms.Select(r => r.Id + "|" + r.Name + "|" + r.EffectiveCount.ToString(CultureInfo.InvariantCulture) + "|"
             + (r.TargetAreaSquareMetres?.Value.ToString("R", CultureInfo.InvariantCulture) ?? "-")));
-        var twin = dxfBrief.Rooms.Count == 7 && calibrated.Brief.Rooms.Count == dxfBrief.Rooms.Count && calibrated.Brief.Rooms.Zip(dxfBrief.Rooms).All(p =>
-            p.First.Id == p.Second.Id && p.First.Name == p.Second.Name && p.First.EffectiveCount == p.Second.EffectiveCount
-            && (p.First.TargetAreaSquareMetres is null) == (p.Second.TargetAreaSquareMetres is null)
-            && (p.First.TargetAreaSquareMetres is null || Math.Abs(p.First.TargetAreaSquareMetres.Value - p.Second.TargetAreaSquareMetres!.Value) <= 1e-9));
-        Check(twin, "the calibrated PDF planner brief has the brief-plan.dxf planner brief's 7 rooms (ids, names, counts, target areas)",
-            "pdf " + Rooms(calibrated.Brief) + " dxf " + Rooms(dxfBrief));
+        foreach (var (label, run) in new[] { ("calibrated", calibrated), ("metres-per-unit", perUnit) })
+        {
+            var twin = run.Brief.Rooms.Count > 0 && run.Brief.Rooms.Count == dxf.Brief.Rooms.Count && run.Brief.Rooms.Zip(dxf.Brief.Rooms).All(p =>
+                p.First.Id == p.Second.Id && p.First.Name == p.Second.Name && p.First.EffectiveCount == p.Second.EffectiveCount
+                && (p.First.TargetAreaSquareMetres is null) == (p.Second.TargetAreaSquareMetres is null)
+                && (p.First.TargetAreaSquareMetres is null || Math.Abs(p.First.TargetAreaSquareMetres.Value - p.Second.TargetAreaSquareMetres!.Value) <= 1e-9));
+            Check(twin, label + ": the PDF planner brief has the brief-plan.dxf planner brief's rooms (ids, names, counts, target areas)",
+                "pdf " + Rooms(run.Brief) + " dxf " + Rooms(dxf.Brief));
+            Check(run.Bytes.SequenceEqual(dxf.Bytes), label + ": the in-process PDF layouts are byte-identical to the in-process brief-plan.dxf layouts (P6-13)",
+                "pdf sha256 " + Hex(run.Bytes) + " dxf sha256 " + Hex(dxf.Bytes));
+        }
 
         // ---- the real CLI chain ----
         var runs = 0;
