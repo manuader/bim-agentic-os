@@ -938,7 +938,7 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     const string w2="60f91daf-3dd7-4283-a86d-24137b73f3da-00001002";
     var adoptRoot=Path.Combine(cliDir,"adopt"); Directory.CreateDirectory(adoptRoot);
     string NewStore(string name,Project project) { var path=Path.Combine(adoptRoot,name); new ProjectStore(path).Initialize(project); return path; }
-    string Listing(string store)=>string.Join(",",Directory.GetFileSystemEntries(store).Select(entry=>Path.GetFileName(entry)+":"+(File.Exists(entry)?Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(entry))):"dir")).Order(StringComparer.Ordinal));
+    string Listing(string store)=>string.Join(",",Directory.GetFileSystemEntries(store).Select(entry=>Path.GetFileName(entry)+":"+(Path.GetFileName(entry)=="lock"?"lock"+new FileInfo(entry).Length.ToString(System.Globalization.CultureInfo.InvariantCulture):File.Exists(entry)?Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(entry))):"dir")).Order(StringComparer.Ordinal));
     var drifted=Node(snapshotText).AsObject();
     foreach(var element in drifted["elements"]!.AsArray().ToArray())
         if((string?)element!["Id"]=="db98eeb5-3a66-7972-29a5-494ec813984a") { element!["GeometryMetres"]![0]=5.05; element!["GeometryMetres"]![2]=5.05; }
@@ -1042,6 +1042,35 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     var malformedStore=Path.Combine(adoptRoot,"malformed-store"); Directory.CreateDirectory(malformedStore);
     File.WriteAllText(Path.Combine(malformedStore,"project.json"),"{\"Project\":null,\"Receipts\":{}}");
     Refused("store with a null project","drift_adopt_store_invalid",malformedStore,adoptSelection,adoptPath);
+    // Review: the duplicated read-only store reader agrees with Commit's, and Core's operation checks reach both modes.
+    string RawStore(string name,byte[] bytes) { var path=Path.Combine(adoptRoot,name); Directory.CreateDirectory(path); File.WriteAllBytes(Path.Combine(path,"project.json"),bytes); return path; }
+    Refused("store whose project.json is not UTF-8","drift_adopt_store_invalid",RawStore("not-utf8-store",new byte[]{0x7B,0xC3,0x28,0xFF,0xFE,0x00,0x7D}),adoptSelection,adoptPath);
+    Refused("store whose project.json is not JSON","drift_adopt_store_invalid",RawStore("not-json-store",System.Text.Encoding.UTF8.GetBytes("not json")),adoptSelection,adoptPath);
+    var utf16State=JsonSerializer.Serialize(new ProjectStore.State(committed.Project with { Revision=2 },new Dictionary<string,string>()));
+    Refused("UTF-16 (BOM) store at another revision","drift_adopt_stale_revision",RawStore("utf16-store",System.Text.Encoding.Unicode.GetPreamble().Concat(System.Text.Encoding.Unicode.GetBytes(utf16State)).ToArray()),adoptSelection,adoptPath);
+    var existing=new ProjectStore(cliStore).Read().Elements.First(element=>element.Id!=selection.Operations[0].Element.Id);
+    var createExisting=(selection with { Operations=new[]{ new Operation("create",existing) } }).ToJson();
+    Refused("create of an element the head has","drift_adopt_selection_invalid",NewStore("create-store",committed.Project),createExisting,Input("adopt-create-existing.json",createExisting));
+    var danglingElement=selection.Operations[0].Element with { Dependencies=new[]{ Guid.Parse("d0000000-0000-4000-8000-0000000000ff") } };
+    var invalidIr=(selection with { Operations=new[]{ new Operation(selection.Operations[0].Action,danglingElement) } }).ToJson();
+    Refused("selection whose adopted model fails validation","drift_adopt_invalid_ir",NewStore("invalid-ir-store",committed.Project),invalidIr,Input("adopt-invalid-ir.json",invalidIr));
+
+    // Review: the plan takes no store lock and touches no entry (names, bytes and LastWriteTimeUtc); a held lock blocks only the commit.
+    var lockedStore=NewStore("locked-store",committed.Project);
+    string Times(string store)=>string.Join(",",Directory.GetFileSystemEntries(store).Order(StringComparer.Ordinal).Select(entry=>Path.GetFileName(entry)+"@"+File.GetLastWriteTimeUtc(entry).Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+    var lockedListing=Listing(lockedStore); var lockedTimes=Times(lockedStore);
+    using(var held=new FileStream(Path.Combine(lockedStore,"lock"),FileMode.Open,FileAccess.ReadWrite,FileShare.None)) {
+        var lockedPlan=Adopt(lockedStore,adoptSelection,null);
+        Check(!IsError(lockedPlan) && Text(lockedPlan)==expectedPlan,"mirror_drift_adopt plan while the store lock is held is still would_commit (no lock taken) | "+Text(lockedPlan));
+        Check(Listing(lockedStore)==lockedListing && Times(lockedStore)==lockedTimes,"mirror_drift_adopt plan changes no store entry (names, bytes, LastWriteTimeUtc)");
+        var lockedCommit=Adopt(lockedStore,adoptSelection,true);
+        Check(IsError(lockedCommit) && Code(lockedCommit)=="drift_adopt_store_unavailable" && Listing(lockedStore)==lockedListing,"mirror_drift_adopt confirm:true while the store lock is held is drift_adopt_store_unavailable, nothing written | "+Text(lockedCommit));
+    }
+    var unlocked=Adopt(lockedStore,adoptSelection,true);
+    Check(!IsError(unlocked) && Text(unlocked)==committedCli,"mirror_drift_adopt confirm:true after the lock is released commits as the CLI did | "+Text(unlocked));
+    var timesAfter=Times(mcpStore);
+    Adopt(mcpStore,adoptSelection,null);
+    Check(Times(mcpStore)==timesAfter,"mirror_drift_adopt would_replay plan changes no LastWriteTimeUtc");
     var blank=Adopt("   ",adoptSelection,null);
     Check(IsError(blank) && Text(blank)==JsonSerializer.Serialize(new { status="failed", code="input_path_invalid", detail="store" }) && Text(Adopt("   ",adoptSelection,true))==Cli("mirror-drift-adopt","   ",adoptPath),"mirror_drift_adopt blank store_path is input_path_invalid (store) in both modes, byte-equal to the CLI | "+Text(blank));
     var surrogate=Call("{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"tools/call\",\"params\":{\"name\":\"mirror_drift_adopt\",\"arguments\":{\"store_path\":"+JsonSerializer.Serialize(mcpStore)+",\"selection\":\"\\ud800\",\"confirm\":true}}}");
@@ -1053,6 +1082,8 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=adoptSelection,["confirm"]="true"}))==-32602,"mirror_drift_adopt with a non-boolean confirm returns -32602");
     Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=adoptSelection,["confirm"]=1}))==-32602,"mirror_drift_adopt with a numeric confirm returns -32602");
     Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=adoptSelection,["force"]=true}))==-32602,"mirror_drift_adopt with an unknown argument returns -32602");
+    Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=adoptSelection,["confirm"]=null}))==-32602,"mirror_drift_adopt with confirm:null returns -32602");
+    Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=5,["selection"]=adoptSelection,["confirm"]=true}))==-32602,"mirror_drift_adopt with a non-string store_path returns -32602");
     Check(new ProjectStore(mcpStore).Read().Revision==4 && Listing(mcpStore)==afterCommit,"mirror_drift_adopt refusals and rejected calls left the committed store unchanged");
 }
 
