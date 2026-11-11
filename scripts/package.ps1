@@ -4,6 +4,8 @@
 #   cli/                         dotnet publish of interfaces/cli (run with: dotnet cli/Bim.Cli.dll)
 #   mcp/                         dotnet publish of interfaces/mcp (run with: dotnet mcp/Bim.Mcp.dll)
 #   revit/Bim.addin.template     add-in manifest template only; no Bim.Revit.dll and never any Revit assembly
+#   skills/                      P7-12: every tracked skills/ file, byte for byte (skills/** is -text), so the packaged
+#                                generate-prototypes reads skills/<id>/skill.json beside cli/ (the package root)
 #   sbom.json                    P10-13 SBOM: every shipped .dll/.exe (name, version, SPDX licence, SHA-256) and the
 #                                runtime NuGet references of the shipped csproj closure (build-only/vendor ones never)
 #   manifest.json                relative path, size and SHA-256 of every other file, sorted ordinally
@@ -33,16 +35,21 @@ $projects = [ordered]@{ cli = 'interfaces/cli/Bim.Cli.csproj'; mcp = 'interfaces
 $sourceDirectories = @('core/Bim.Core', 'core/Bim.Generative', 'evaluation/Bim.Evaluation', 'adapters/ifc/Bim.Ifc.Compiler', 'adapters/gltf/Bim.Gltf', 'adapters/cad/Bim.Cad', 'interfaces/cli', 'interfaces/mcp')
 $rootFiles = @('Directory.Build.props', 'global.json', '.editorconfig')
 $addinTemplate = 'runtimes/revit-native/Bim.addin.template'
+$skillsDirectory = 'skills'
 # P10-13: shipped NuGet references allowed to ship without a nuspec licence expression (each entry needs a reviewed reason).
 $sbomLicenseAllowlist = [string[]]@()
 
 $ErrorActionPreference = 'Continue'
 $trackedRaw = (& git -C $root ls-files -z -- @($sourceDirectories + $rootFiles)) -join "`n"
 $trackedCode = $LASTEXITCODE
-$dirtyLines = @(& git -C $root status --porcelain --untracked-files=no -- @($sourceDirectories + $rootFiles + $addinTemplate + 'scripts/package.version'))
+$skillsRaw = (& git -C $root ls-files -z -- $skillsDirectory) -join "`n"
+$skillsCode = $LASTEXITCODE
+$dirtyLines = @(& git -C $root status --porcelain --untracked-files=no -- @($sourceDirectories + $rootFiles + $addinTemplate + $skillsDirectory + 'scripts/package.version'))
 $ErrorActionPreference = 'Stop'
 $tracked = @($trackedRaw.Split([char]0) | Where-Object { $_ })
 if ($trackedCode -ne 0 -or $tracked.Count -eq 0) { Stop-Package 'git ls-files failed for the packaged sources' }
+$skillFiles = @($skillsRaw.Split([char]0) | Where-Object { $_ })
+if ($skillsCode -ne 0 -or $skillFiles.Count -eq 0) { Stop-Package 'git ls-files failed for the packaged skills/' }
 foreach ($required in $rootFiles) { if ($tracked -cnotcontains $required) { Stop-Package "$required must be tracked; it bounds the build tree against inherited MSBuild files" } }
 $dirty = $dirtyLines.Count -gt 0
 
@@ -74,6 +81,11 @@ try {
     $template = ([IO.File]::ReadAllText((Join-Path $root $addinTemplate))) -replace "`r`n", "`n"
     Write-PackageText (Join-Path $revit 'Bim.addin.template') $template
     Write-PackageText (Join-Path $staging 'VERSION') ($version + "`n")
+    foreach ($relative in $skillFiles) {
+        $target = Join-Path $staging $relative
+        [void][IO.Directory]::CreateDirectory((Split-Path $target))
+        [IO.File]::WriteAllBytes($target, [IO.File]::ReadAllBytes((Join-Path $root $relative)))
+    }
 
     $forbidden = @(Find-PackageForbidden $staging)
     if ($forbidden.Count) { throw "forbidden content would be packaged: $($forbidden -join ', ')" }
