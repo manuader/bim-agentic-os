@@ -72,7 +72,7 @@ Check(server.Handle("""{"jsonrpc":"2.0","method":"notifications/unknown","params
 
 var list=Call(Request(2,"tools/list",null));
 var tools=list["result"]!["tools"]!.AsArray();
-Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,skills_lock_verify,audit_verify,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, mirror_drift_select, skills_lock_verify, audit_verify, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
+Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, mirror_drift_select, mirror_drift_adopt, skills_lock_verify, audit_verify, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
 Check(RevitCommandCatalogue.V1.Select(c=>c.ToolName).SequenceEqual(new[]{"revit_query_levels","revit_query_wall_types","revit_query_floor_types","revit_query_family_symbols","revit_wall_create","revit_opening_place","revit_floor_create","revit_room_create"}),"catalogue v1 tool names are the eight ADR0009 commands");
 Check(tools.All(t=>t!["inputSchema"]!["type"]!.GetValue<string>()=="object" && t!["inputSchema"]!["properties"] is JsonObject && t!["inputSchema"]!["required"] is JsonArray && !string.IsNullOrWhiteSpace(t!["description"]!.GetValue<string>())),"every tool has a JSON Schema object inputSchema and description");
 string Required(string tool)=>string.Join(",",tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!["inputSchema"]!["required"]!.AsArray().Select(x=>x!.GetValue<string>()));
@@ -118,7 +118,7 @@ foreach(var spec in RevitCommandCatalogue.All) {
     else if(writesFiles) Check(annotations!.Count==3 && annotations["destructiveHint"]?.GetValue<bool>()==false && annotations["idempotentHint"]?.GetValue<bool>()==false,spec.ToolName+" writes new files on every call: destructiveHint false, idempotentHint false");
     else Check(annotations!.Count==1,spec.ToolName+" read annotations carry only readOnlyHint");
 }
-Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal) && t!["name"]!.GetValue<string>()!="audit_verify").All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools other than audit_verify carry no permission level or annotations");
+Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal) && t!["name"]!.GetValue<string>()!="audit_verify" && t!["name"]!.GetValue<string>()!="mirror_drift_adopt").All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools other than audit_verify and mirror_drift_adopt carry no permission level or annotations");
 Check(McpServer.PermissionLevelName(PermissionLevel.Read)=="read" && McpServer.PermissionLevelName(PermissionLevel.WriteCopies)=="write-copies" && McpServer.PermissionLevelName(PermissionLevel.WriteRealProject)=="write-real-project","PermissionLevelName names the three P10-03 levels");
 var outOfRange=false;
 try { McpServer.PermissionLevelName((PermissionLevel)99); } catch(ArgumentOutOfRangeException) { outOfRange=true; }
@@ -130,7 +130,7 @@ string? BuildError(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpS
 string? NameError(params string[] names) { try { McpServer.CheckToolNames(names); return null; } catch(InvalidOperationException error) { return error.Message; } }
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)}) is null,"an injected catalogue with distinct valid names builds");
 var syntheticServer=new McpServer(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)},RevitCommandPolicy.None,null,null);
-Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,skills_lock_verify,audit_verify,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
+Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
 Check(BuildError(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")})=="tool_name_duplicate: revit_a_b_c","colliding tool names (a.b_c vs a_b.c) fail closed at construction");
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("query.levels")})=="tool_name_duplicate: revit_query_levels","a duplicated command fails closed at construction");
 Check(BuildError(new[]{Synthetic("a b")})=="tool_name_invalid: revit_a b","a tool name outside [a-zA-Z0-9_-] fails closed at construction");
@@ -925,6 +925,168 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
             "mirror_drift_select requires_incomplete envelope (proposal_id, missing) byte-equal to the CLI | "+Text(incomplete)+" | "+incompleteCli);
 }
 
+// P2-15 mirror_drift_adopt: confirm-gated write. Without confirm:true it returns the plan only and writes nothing; with
+// confirm:true it runs the CLI mirror-drift-adopt engine (MirrorDriftAdoptTool) and its text equals that verb's stdout byte
+// for byte, success and refusal alike. selection is the canonical selection JSON text (mirror_drift_select's text).
+// Listed with permission label write.
+{
+    var adoptFixtures=Path.Combine(root,"tests","mirror-journal","fixtures","drift");
+    var committedText=File.ReadAllText(Path.Combine(adoptFixtures,"committed.json"));
+    var snapshotText=File.ReadAllText(Path.Combine(adoptFixtures,"snapshot.json"));
+    var committed=MirrorCommittedModel.Parse(committedText);
+    const string adoptDoc="60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b";
+    const string w2="60f91daf-3dd7-4283-a86d-24137b73f3da-00001002";
+    var adoptRoot=Path.Combine(cliDir,"adopt"); Directory.CreateDirectory(adoptRoot);
+    string NewStore(string name,Project project) { var path=Path.Combine(adoptRoot,name); new ProjectStore(path).Initialize(project); return path; }
+    string Listing(string store)=>string.Join(",",Directory.GetFileSystemEntries(store).Select(entry=>Path.GetFileName(entry)+":"+(Path.GetFileName(entry)=="lock"?"lock"+new FileInfo(entry).Length.ToString(System.Globalization.CultureInfo.InvariantCulture):File.Exists(entry)?Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(entry))):"dir")).Order(StringComparer.Ordinal));
+    var drifted=Node(snapshotText).AsObject();
+    foreach(var element in drifted["elements"]!.AsArray().ToArray())
+        if((string?)element!["Id"]=="db98eeb5-3a66-7972-29a5-494ec813984a") { element!["GeometryMetres"]![0]=5.05; element!["GeometryMetres"]![2]=5.05; }
+    var driftedText=drifted.ToJsonString();
+    JsonObject Mirror() => new JsonObject {
+        ["document"]=new JsonObject{["path"]=@"C:\Repo\.bim\native-runs\p2-15\copy.rvt",["unique_id"]=adoptDoc},
+        ["core_project_id"]=committed.Project.Id.ToString("D"),
+        ["core_revision"]=3,
+        ["map"]=Node(committedText)["map"]!.DeepClone(),
+        ["wall_types"]=new JsonArray(new JsonObject{["thickness_metres"]=0.2,["type"]="Generic - 200mm"}),
+        ["door_symbol"]="Single-Flush: 0915 x 2134mm",
+    };
+    JsonObject Choices(string action)=>new JsonObject{["choices"]=new JsonArray(new JsonObject{["proposal_id"]=w2,["action"]=action})};
+    var mcpStore=NewStore("mcp-store",committed.Project);
+    var cliStore=NewStore("cli-store",committed.Project);
+    string SelectText(string action) {
+        var response=ToolCall("mirror_drift_select",new JsonObject{["store_path"]=mcpStore,["snapshot"]=Node(driftedText),["mirror"]=Mirror(),["choices"]=Choices(action)});
+        if(IsError(response)) throw new Exception("mirror_drift_select fixture failed: "+Text(response));
+        return Text(response);
+    }
+    var adoptSelection=SelectText("adopt");
+    var restoreSelection=SelectText("restore");
+    var adoptPath=Input("adopt-selection.json",adoptSelection);
+    var restorePath=Input("adopt-restore-selection.json",restoreSelection);
+    JsonObject Adopt(string store,string selection,JsonNode? confirm)=>ToolCall("mirror_drift_adopt",confirm is null
+        ? new JsonObject{["store_path"]=store,["selection"]=selection}
+        : new JsonObject{["store_path"]=store,["selection"]=selection,["confirm"]=confirm});
+    string Code(JsonObject response)=>JsonDocument.Parse(Text(response)).RootElement.TryGetProperty("code",out var code) ? code.GetString() ?? "" : "";
+    string Status(JsonObject response)=>JsonDocument.Parse(Text(response)).RootElement.GetProperty("status").GetString() ?? "";
+
+    // Listing: name, schema, permission label write, write annotations.
+    var adoptTool=tools.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="mirror_drift_adopt");
+    Check(adoptTool is not null,"mirror_drift_adopt is listed");
+    var adoptDescription=adoptTool!["description"]!.GetValue<string>();
+    Check(adoptDescription.Contains("mirror-drift-adopt",StringComparison.Ordinal) && adoptDescription.Contains("confirm",StringComparison.Ordinal),"mirror_drift_adopt description names the CLI verb and the confirm gate | "+adoptDescription);
+    Check(Required("mirror_drift_adopt")=="store_path,selection","mirror_drift_adopt requires store_path and selection (confirm optional)");
+    var adoptSchema=adoptTool["inputSchema"]!;
+    Check(adoptSchema["properties"]!["store_path"]!["type"]!.GetValue<string>()=="string" && adoptSchema["properties"]!["selection"]!["type"]!.GetValue<string>()=="string"
+        && adoptSchema["properties"]!["confirm"]!["type"]!.GetValue<string>()=="boolean" && adoptSchema["properties"]!.AsObject().Count==3 && adoptSchema["additionalProperties"]!.GetValue<bool>()==false,
+        "mirror_drift_adopt schema: store_path string, selection string, confirm boolean, nothing else | "+adoptSchema.ToJsonString());
+    Check(adoptTool["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="write" && adoptTool["permission_level"]==null,"mirror_drift_adopt lists _meta bim-agentic-os/permission_level write | "+adoptTool.ToJsonString());
+    var adoptAnnotations=adoptTool["annotations"]?.AsObject();
+    Check(adoptAnnotations is not null && adoptAnnotations.Count==3 && adoptAnnotations["readOnlyHint"]?.GetValue<bool>()==false && adoptAnnotations["destructiveHint"]?.GetValue<bool>()==true && adoptAnnotations["idempotentHint"]?.GetValue<bool>()==true,
+        "mirror_drift_adopt annotations: readOnlyHint false, destructiveHint true (updates and deletes elements), idempotentHint true (replay by key)");
+
+    // Expected plan, straight from Core.
+    var bindings=new RevitBindings(new RevitDocumentRef(@"C:\Repo\.bim\native-runs\p2-15\copy.rvt",adoptDoc),new Dictionary<Guid,string>(),new[]{new RevitWallTypeBinding(0.2,"Generic - 200mm")},"Single-Flush: 0915 x 2134mm",null);
+    var parsedSnapshot=MirrorDrift.ParseSnapshot(driftedText);
+    var resolution=MirrorDriftResolve.Plan(MirrorDrift.Compare(parsedSnapshot,committed,(IReadOnlyList<MirrorJournalEntry>?)null,new MirrorDriftOptions()),parsedSnapshot,committed,bindings);
+    var selection=MirrorDriftSelect.Select(resolution,new[]{new MirrorDriftChoice(w2,"adopt")});
+    Check(selection.ToJson()==adoptSelection,"fixture: the mirror_drift_select text is the Core selection");
+    var adoptKey=MirrorDriftAdoptCommit.Key(selection);
+    var expectedPlan=JsonSerializer.Serialize(new { status="planned", applied=false, outcome="would_commit", revision=4, key=adoptKey, plan=MirrorDriftAdoptCommit.Plan(new ProjectStore(mcpStore).Read(),selection).Plan });
+
+    // Without confirm (absent or false): the plan only, nothing written (no file added, changed or removed; no lock file).
+    var before=Listing(mcpStore);
+    var planned=Adopt(mcpStore,adoptSelection,null);
+    Check(!IsError(planned) && HasType(planned) && Text(planned)==expectedPlan,"mirror_drift_adopt without confirm returns the plan only | "+Text(planned)+" | "+expectedPlan);
+    Check(Listing(mcpStore)==before,"mirror_drift_adopt without confirm writes nothing to the store");
+    var plannedFalse=Adopt(mcpStore,adoptSelection,false);
+    Check(!IsError(plannedFalse) && Text(plannedFalse)==expectedPlan && Listing(mcpStore)==before,"mirror_drift_adopt with confirm:false returns the same plan and writes nothing");
+
+    // With confirm:true: the CLI engine, byte-equal to its stdout; both stores end byte-identical.
+    var committedCall=Adopt(mcpStore,adoptSelection,true);
+    var committedCli=Cli("mirror-drift-adopt",cliStore,adoptPath);
+    Check(!IsError(committedCall) && Text(committedCall)==committedCli,"mirror_drift_adopt confirm:true text byte-equal to the CLI mirror-drift-adopt stdout | "+Text(committedCall)+" | "+committedCli);
+    Check(Text(committedCall)==JsonSerializer.Serialize(new { status="succeeded", outcome="committed", revision=4, key=adoptKey }),"mirror_drift_adopt confirm:true commits revision 4 under the adopt key");
+    Check(new ProjectStore(mcpStore).Read().Revision==4 && Listing(mcpStore)==Listing(cliStore),"mirror_drift_adopt confirm:true leaves the store byte-identical to the CLI's | "+Listing(mcpStore)+" | "+Listing(cliStore));
+
+    // Replay: confirmed again is replayed (byte-equal to the CLI); the plan says would_replay; nothing written.
+    var afterCommit=Listing(mcpStore);
+    var replay=Adopt(mcpStore,adoptSelection,true);
+    var replayCli=Cli("mirror-drift-adopt",cliStore,adoptPath);
+    Check(!IsError(replay) && Text(replay)==replayCli && Status(replay)=="succeeded" && JsonDocument.Parse(Text(replay)).RootElement.GetProperty("outcome").GetString()=="replayed","mirror_drift_adopt replay is replayed, byte-equal to the CLI | "+Text(replay));
+    var replayPlan=Adopt(mcpStore,adoptSelection,null);
+    Check(!IsError(replayPlan) && Text(replayPlan)==JsonSerializer.Serialize(new { status="planned", applied=false, outcome="would_replay", revision=4, key=adoptKey, plan=(ExecutionPlan?)null }) && Listing(mcpStore)==afterCommit,
+        "mirror_drift_adopt plan after the commit is would_replay with no plan, nothing written | "+Text(replayPlan));
+
+    // Restore-only selection: nothing_to_adopt in both modes, the store never opened.
+    var nothingPlan=Adopt(mcpStore,restoreSelection,null);
+    Check(!IsError(nothingPlan) && Text(nothingPlan)==JsonSerializer.Serialize(new { status="planned", applied=false, outcome="nothing_to_adopt", revision=3, key=(string?)null, plan=(ExecutionPlan?)null }),"mirror_drift_adopt plan of a restore-only selection is nothing_to_adopt | "+Text(nothingPlan));
+    var nothing=Adopt(Path.Combine(adoptRoot,"never"),restoreSelection,true);
+    Check(!IsError(nothing) && Text(nothing)==Cli("mirror-drift-adopt",Path.Combine(adoptRoot,"never"),restorePath) && !Directory.Exists(Path.Combine(adoptRoot,"never")),"mirror_drift_adopt confirmed restore-only selection is nothing_to_adopt, byte-equal to the CLI, store never opened | "+Text(nothing));
+
+    // Typed refusals, the same text in plan and confirm mode, byte-equal to the CLI, store unchanged.
+    void Refused(string label,string code,string store,string selectionText,string selectionPath) {
+        var listing=Directory.Exists(store) ? Listing(store) : null;
+        var planCall=Adopt(store,selectionText,null);
+        var confirmed=Adopt(store,selectionText,true);
+        var cli=Cli("mirror-drift-adopt",store,selectionPath);
+        Check(IsError(planCall) && IsError(confirmed) && Status(confirmed)=="failed" && Code(confirmed)==code && Text(planCall)==Text(confirmed) && Text(confirmed)==cli,
+            "mirror_drift_adopt "+label+" is "+code+" in both modes, byte-equal to the CLI | "+Text(planCall)+" | "+Text(confirmed)+" | "+cli);
+        Check(Directory.Exists(store) ? Listing(store)==listing : listing is null && !Directory.Exists(store),"mirror_drift_adopt "+label+" writes nothing");
+    }
+    Refused("stale revision","drift_adopt_stale_revision",NewStore("stale-store",committed.Project with { Revision=2 }),adoptSelection,adoptPath);
+    Refused("another project","drift_adopt_project_mismatch",NewStore("other-store",committed.Project with { Id=Guid.Parse("b0000000-0000-4000-8000-000000000000") }),adoptSelection,adoptPath);
+    var spaced=adoptSelection+" ";
+    Refused("non-canonical selection","drift_adopt_selection_invalid",NewStore("spaced-store",committed.Project),spaced,Input("adopt-spaced.json",spaced));
+    Refused("non-JSON selection","drift_adopt_selection_invalid",NewStore("garbage-store",committed.Project),"not json",Input("adopt-garbage.json","not json"));
+    Refused("missing store","input_not_found",Path.Combine(adoptRoot,"missing-store"),adoptSelection,adoptPath);
+    var malformedStore=Path.Combine(adoptRoot,"malformed-store"); Directory.CreateDirectory(malformedStore);
+    File.WriteAllText(Path.Combine(malformedStore,"project.json"),"{\"Project\":null,\"Receipts\":{}}");
+    Refused("store with a null project","drift_adopt_store_invalid",malformedStore,adoptSelection,adoptPath);
+    // Review: the duplicated read-only store reader agrees with Commit's, and Core's operation checks reach both modes.
+    string RawStore(string name,byte[] bytes) { var path=Path.Combine(adoptRoot,name); Directory.CreateDirectory(path); File.WriteAllBytes(Path.Combine(path,"project.json"),bytes); return path; }
+    Refused("store whose project.json is not UTF-8","drift_adopt_store_invalid",RawStore("not-utf8-store",new byte[]{0x7B,0xC3,0x28,0xFF,0xFE,0x00,0x7D}),adoptSelection,adoptPath);
+    Refused("store whose project.json is not JSON","drift_adopt_store_invalid",RawStore("not-json-store",System.Text.Encoding.UTF8.GetBytes("not json")),adoptSelection,adoptPath);
+    var utf16State=JsonSerializer.Serialize(new ProjectStore.State(committed.Project with { Revision=2 },new Dictionary<string,string>()));
+    Refused("UTF-16 (BOM) store at another revision","drift_adopt_stale_revision",RawStore("utf16-store",System.Text.Encoding.Unicode.GetPreamble().Concat(System.Text.Encoding.Unicode.GetBytes(utf16State)).ToArray()),adoptSelection,adoptPath);
+    var existing=new ProjectStore(cliStore).Read().Elements.First(element=>element.Id!=selection.Operations[0].Element.Id);
+    var createExisting=(selection with { Operations=new[]{ new Operation("create",existing) } }).ToJson();
+    Refused("create of an element the head has","drift_adopt_selection_invalid",NewStore("create-store",committed.Project),createExisting,Input("adopt-create-existing.json",createExisting));
+    var danglingElement=selection.Operations[0].Element with { Dependencies=new[]{ Guid.Parse("d0000000-0000-4000-8000-0000000000ff") } };
+    var invalidIr=(selection with { Operations=new[]{ new Operation(selection.Operations[0].Action,danglingElement) } }).ToJson();
+    Refused("selection whose adopted model fails validation","drift_adopt_invalid_ir",NewStore("invalid-ir-store",committed.Project),invalidIr,Input("adopt-invalid-ir.json",invalidIr));
+
+    // Review: the plan takes no store lock and touches no entry (names, bytes and LastWriteTimeUtc); a held lock blocks only the commit.
+    var lockedStore=NewStore("locked-store",committed.Project);
+    string Times(string store)=>string.Join(",",Directory.GetFileSystemEntries(store).Order(StringComparer.Ordinal).Select(entry=>Path.GetFileName(entry)+"@"+File.GetLastWriteTimeUtc(entry).Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+    var lockedListing=Listing(lockedStore); var lockedTimes=Times(lockedStore);
+    using(var held=new FileStream(Path.Combine(lockedStore,"lock"),FileMode.Open,FileAccess.ReadWrite,FileShare.None)) {
+        var lockedPlan=Adopt(lockedStore,adoptSelection,null);
+        Check(!IsError(lockedPlan) && Text(lockedPlan)==expectedPlan,"mirror_drift_adopt plan while the store lock is held is still would_commit (no lock taken) | "+Text(lockedPlan));
+        Check(Listing(lockedStore)==lockedListing && Times(lockedStore)==lockedTimes,"mirror_drift_adopt plan changes no store entry (names, bytes, LastWriteTimeUtc)");
+        var lockedCommit=Adopt(lockedStore,adoptSelection,true);
+        Check(IsError(lockedCommit) && Code(lockedCommit)=="drift_adopt_store_unavailable" && Listing(lockedStore)==lockedListing,"mirror_drift_adopt confirm:true while the store lock is held is drift_adopt_store_unavailable, nothing written | "+Text(lockedCommit));
+    }
+    var unlocked=Adopt(lockedStore,adoptSelection,true);
+    Check(!IsError(unlocked) && Text(unlocked)==committedCli,"mirror_drift_adopt confirm:true after the lock is released commits as the CLI did | "+Text(unlocked));
+    var timesAfter=Times(mcpStore);
+    Adopt(mcpStore,adoptSelection,null);
+    Check(Times(mcpStore)==timesAfter,"mirror_drift_adopt would_replay plan changes no LastWriteTimeUtc");
+    var blank=Adopt("   ",adoptSelection,null);
+    Check(IsError(blank) && Text(blank)==JsonSerializer.Serialize(new { status="failed", code="input_path_invalid", detail="store" }) && Text(Adopt("   ",adoptSelection,true))==Cli("mirror-drift-adopt","   ",adoptPath),"mirror_drift_adopt blank store_path is input_path_invalid (store) in both modes, byte-equal to the CLI | "+Text(blank));
+    var surrogate=Call("{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"tools/call\",\"params\":{\"name\":\"mirror_drift_adopt\",\"arguments\":{\"store_path\":"+JsonSerializer.Serialize(mcpStore)+",\"selection\":\"\\ud800\",\"confirm\":true}}}");
+    Check(IsError(surrogate) && Code(surrogate)=="drift_adopt_selection_invalid" && new ProjectStore(mcpStore).Read().Revision==4,"mirror_drift_adopt selection that is not text (lone surrogate) is drift_adopt_selection_invalid | "+Text(surrogate));
+
+    // Argument shape: -32602 before anything runs.
+    Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore}))==-32602,"mirror_drift_adopt without selection returns -32602");
+    Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=Node(adoptSelection)}))==-32602,"mirror_drift_adopt with an object selection returns -32602 (selection is the JSON text)");
+    Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=adoptSelection,["confirm"]="true"}))==-32602,"mirror_drift_adopt with a non-boolean confirm returns -32602");
+    Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=adoptSelection,["confirm"]=1}))==-32602,"mirror_drift_adopt with a numeric confirm returns -32602");
+    Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=adoptSelection,["force"]=true}))==-32602,"mirror_drift_adopt with an unknown argument returns -32602");
+    Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=adoptSelection,["confirm"]=null}))==-32602,"mirror_drift_adopt with confirm:null returns -32602");
+    Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=5,["selection"]=adoptSelection,["confirm"]=true}))==-32602,"mirror_drift_adopt with a non-string store_path returns -32602");
+    Check(new ProjectStore(mcpStore).Read().Revision==4 && Listing(mcpStore)==afterCommit,"mirror_drift_adopt refusals and rejected calls left the committed store unchanged");
+}
+
 // P5-09 skills_lock_verify: the read-only verify of the CLI skills-lock verb (one engine, SkillLockTool). The tool text
 // equals the CLI stdout byte for byte, success and refusal alike; it reports skill_lock_drift / skill_lock_missing per
 // pack and never writes the lock or anything beside it.
@@ -1148,6 +1310,8 @@ Check(!output.ToString().Contains('\r'),"stdio responses are newline-delimited")
 Console.WriteLine(JsonSerializer.Serialize(new {passed=count, mcp_contract=true, native_verified=false}));
 } catch(Exception exception) {
     Console.Error.WriteLine(exception);
+    // A GitHub Actions annotation, so the failing check is visible without the log.
+    Console.WriteLine("::error title=mcp-contract::"+exception.Message.Replace("\r"," ").Replace("\n"," "));
     Environment.ExitCode=1;
 } finally {
     if(Directory.Exists(storeDir)) Directory.Delete(storeDir,true);

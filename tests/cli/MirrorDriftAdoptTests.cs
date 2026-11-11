@@ -268,11 +268,13 @@ internal static class MirrorDriftAdoptTests
         var extra = Cli("mirror-drift-adopt", bounded, adoptAllPath, "--force");
         Check(extra.Exit == 1 && Code(extra.Out) is { } x && x.StartsWith("usage: mirror-drift-adopt", StringComparison.Ordinal) && new ProjectStore(bounded).Read().Revision == 3, "an extra argument prints the usage and commits nothing", R(extra));
         Check(Cli("no-such-verb").Out.Contains("mirror-drift-adopt store-directory selection.json", StringComparison.Ordinal), "the default usage lists mirror-drift-adopt");
+        // P2-15: the engine moved to interfaces/mcp/MirrorDriftAdoptTool.cs (shared with the MCP tool); the guards cover both files.
         var source = Path.Combine(root, "interfaces", "cli", "MirrorDriftAdoptCommand.cs");
-        Check(File.Exists(source), "interfaces/cli/MirrorDriftAdoptCommand.cs exists");
-        if (File.Exists(source))
+        var engine = Path.Combine(root, "interfaces", "mcp", "MirrorDriftAdoptTool.cs");
+        Check(File.Exists(source) && File.Exists(engine), "interfaces/cli/MirrorDriftAdoptCommand.cs and interfaces/mcp/MirrorDriftAdoptTool.cs exist");
+        if (File.Exists(source) && File.Exists(engine))
         {
-            var text = File.ReadAllText(source);
+            var text = File.ReadAllText(source) + "\n" + File.ReadAllText(engine);
             Check(text.Contains("BoundedInput.ReadText", StringComparison.Ordinal) && !text.Contains("File.ReadAll", StringComparison.Ordinal) && !text.Contains("File.OpenRead", StringComparison.Ordinal),
                 "the selection is read only through BoundedInput");
             Check(text.Contains("MirrorDriftAdoptCommit.Commit(", StringComparison.Ordinal) && !text.Contains("new ProjectStore(", StringComparison.Ordinal) && !text.Contains("PlanRunner", StringComparison.Ordinal) && !text.Contains("RevitCommandService", StringComparison.Ordinal),
