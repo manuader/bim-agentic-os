@@ -37,28 +37,36 @@ try {
             if (!$wait.Wait($remaining)) { break }
             # Listen for the next connection before this one is answered and closed.
             if ($served + 1 -lt $MaxRequests) { $next = & $newServer }
-            $reader = [IO.StreamReader]::new($server, $utf8, $false, 4096, $true)
-            $writer = [IO.StreamWriter]::new($server, $utf8, 4096, $true)
-            $writer.AutoFlush = $true
-            $line = $reader.ReadLine()
-            if ($null -eq $line) { continue }
-            # WireLine writes Command last, verbatim: {"DocumentPath":...,"Operation":"revit.command",...,"Command":<envelope>}
-            $marker = '"Command":'
-            $at = $line.LastIndexOf($marker, [StringComparison]::Ordinal)
-            $outer = $line | ConvertFrom-Json
-            if ($outer.Operation -eq 'journal.read') {
-                $response = Invoke-FakeRevitWire $state $line
-                [IO.File]::AppendAllText($LogFile, "journal.read`n")
+            # A client that vanishes mid-request (killed, timed out) costs only its own connection.
+            try {
+                $reader = [IO.StreamReader]::new($server, $utf8, $false, 4096, $true)
+                $writer = [IO.StreamWriter]::new($server, $utf8, 4096, $true)
+                $writer.AutoFlush = $true
+                $line = $reader.ReadLine()
+                if ($null -eq $line) { continue }
+                # WireLine writes Command last, verbatim: {"DocumentPath":...,"Operation":"revit.command",...,"Command":<envelope>}
+                $marker = '"Command":'
+                $at = $line.LastIndexOf($marker, [StringComparison]::Ordinal)
+                $outer = $line | ConvertFrom-Json
+                if ($outer.Operation -eq 'journal.read') {
+                    $response = Invoke-FakeRevitWire $state $line
+                    [IO.File]::AppendAllText($LogFile, "journal.read`n")
+                }
+                elseif ($at -lt 0 -or $outer.Operation -ne 'revit.command' -or !$line.EndsWith('}')) { $response = ConvertTo-FakeResponseJson (New-FakeFailure 'envelope_invalid' $null 'not a revit.command wire line') }
+                else {
+                    $commandText = $line.Substring($at + $marker.Length, $line.Length - $at - $marker.Length - 1)
+                    $response = Invoke-FakeRevitCommand $state $commandText
+                    [IO.File]::AppendAllText($LogFile, $state.Received[$state.Received.Count - 1] + "`n")
+                }
+                $writer.WriteLine($response)
+                if ($IsWindows) { $server.WaitForPipeDrain() }
+                $reader.Dispose(); $writer.Dispose()
+            } catch {
+                $io = $_.Exception
+                while ($null -ne $io -and $io -isnot [IO.IOException]) { $io = $io.InnerException }
+                if ($null -eq $io) { throw }
+                [Console]::Error.WriteLine('fake pipe: connection dropped: ' + $io.GetType().Name)
             }
-            elseif ($at -lt 0 -or $outer.Operation -ne 'revit.command' -or !$line.EndsWith('}')) { $response = ConvertTo-FakeResponseJson (New-FakeFailure 'envelope_invalid' $null 'not a revit.command wire line') }
-            else {
-                $commandText = $line.Substring($at + $marker.Length, $line.Length - $at - $marker.Length - 1)
-                $response = Invoke-FakeRevitCommand $state $commandText
-                [IO.File]::AppendAllText($LogFile, $state.Received[$state.Received.Count - 1] + "`n")
-            }
-            $writer.WriteLine($response)
-            if ($IsWindows) { $server.WaitForPipeDrain() }
-            $reader.Dispose(); $writer.Dispose()
         } finally { $server.Dispose() }
         if ($null -eq $next) { break }
     }
