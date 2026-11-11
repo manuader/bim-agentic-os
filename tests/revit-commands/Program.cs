@@ -726,7 +726,7 @@ try
     Check(absentExit == 1 && FailureCode(absentOut) == RevitCommandCodes.PipeConnectTimeout, "CLI with no add-in listening is pipe_connect_timeout", absentOut);
 
     // ---- Pipe read timeout (P1-17): a stalled add-in pipe, on its own process-pipe-shaped name ----
-    PipeReadTimeoutChecks.Run((condition, name, detail) => Check(condition, name, detail), pipeName + "7");
+    PipeReadTimeoutChecks.Run((condition, name, detail) => Check(condition, name, detail), pipeName + "7", repository);
 }
 catch (Exception error)
 {

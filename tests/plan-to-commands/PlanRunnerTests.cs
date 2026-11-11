@@ -298,6 +298,11 @@ static class PlanRunnerTests
             "any other transport exception fails the step as pipe_io_error with only its type name", ShowSafe(odd, oddError));
         var slow = Throwing(0, new TimeoutException("no listener"), out _, out var slowError);
         Check(slow is { Status: RevitPlanRunStatus.Failed, Failed: { Code: RevitCommandCodes.PipeConnectTimeout, Detail: "TimeoutException" }, Completed.Count: 0 }, "a transport timeout is pipe_connect_timeout", ShowSafe(slow, slowError));
+        var stalled = Throwing(1, new RevitPipeReadTimeoutException(TimeSpan.FromMilliseconds(250)), out var stalledTransport, out var stalledError);
+        Check(stalled is { Status: RevitPlanRunStatus.Failed, Failed: { Code: RevitCommandCodes.PipeReadTimeout, Detail: { } stalledDetail, OperationId: var stalledOperation }, Completed.Count: 1 }
+            && stalledOperation == writes[1] && stalledDetail.StartsWith("outcome_unknown: no reply within 250 ms", StringComparison.Ordinal) && stalledDetail.Contains("same operation_id", StringComparison.Ordinal)
+            && stalledTransport.Executed.Count == 1,
+            "a raw transport read timeout on a write is pipe_read_timeout, outcome unknown, and the run stops", ShowSafe(stalled, stalledError));
         var cut = Throwing(1, new IOException("broken pipe"), out _, out var cutError);
         Check(cut is { Status: RevitPlanRunStatus.Failed, Failed: { Code: RevitCommandCodes.PipeIoError, Detail: "IOException" }, Completed.Count: 1 }, "a transport IOException is pipe_io_error", ShowSafe(cut, cutError));
 

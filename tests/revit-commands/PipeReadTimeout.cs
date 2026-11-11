@@ -43,9 +43,22 @@ static class PipeReadTimeoutChecks
 
     static RevitCommandResponse Parse(RevitCommandResult result) => RevitCommandResponse.Parse(result.Line);
 
-    public static void Run(Action<bool, string, string> check, string pipeName)
+    static string DryRunDelete() => Envelope("element.delete", new JsonObject
+    {
+        ["element_uids"] = new JsonArray("60f91daf-3dd7-4283-a86d-24137b73f3da-0002a1c3"),
+        ["dry_run"] = true,
+    });
+
+    public static void Run(Action<bool, string, string> check, string pipeName, string repository)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, name, detail);
+
+        // ---- Contract: every client-side code is documented in docs/contracts/module-contracts.md ----
+        var contracts = File.ReadAllText(Path.Combine(repository, "docs", "contracts", "module-contracts.md"));
+        var undocumented = RevitCommandCodes.ClientSide.Where(code => !contracts.Contains("`" + code + "`", StringComparison.Ordinal)).ToArray();
+        Check(undocumented.Length == 0, "every RevitCommandCodes.ClientSide code appears in module-contracts.md", string.Join(",", undocumented));
+        Check(contracts.Contains("`pipe_read_timeout`", StringComparison.Ordinal) && contracts.Contains("1800 s", StringComparison.Ordinal),
+            "module-contracts.md documents pipe_read_timeout and its 1800 s default");
 
         // ---- Code, default and bounds ----
         Check(RevitCommandCodes.PipeReadTimeout == "pipe_read_timeout" && RevitCommandCodes.ClientSide.Contains(RevitCommandCodes.PipeReadTimeout)
@@ -74,16 +87,22 @@ static class PipeReadTimeoutChecks
         Check(read.IsError && read.Forwarded && readReply.Code == RevitCommandCodes.PipeReadTimeout && readReply.Field == "pipe_name" && sent.Count == 1,
             "a read-only command whose reply times out is pipe_read_timeout, sent once", read.Line);
         Check(readReply.Detail is { } readDetail && readDetail.Contains("250 ms", StringComparison.Ordinal) && readDetail.Contains("read-only", StringComparison.Ordinal)
-            && !readDetail.Contains("outcome_unknown", StringComparison.Ordinal), "the read-only timeout detail names the timeout and says nothing was written", readReply.Detail ?? "");
+            && !readDetail.Contains("outcome_unknown", StringComparison.Ordinal) && readDetail.Contains("retry later", StringComparison.Ordinal), "the read-only timeout detail names the timeout and says nothing was written", readReply.Detail ?? "");
         sent.Clear();
         var write = RevitCommandService.Run(FakePipe, WallWrite(), Policy, Stalled, NoLinks);
         var writeReply = Parse(write);
         Check(write.IsError && write.Forwarded && writeReply.Code == RevitCommandCodes.PipeReadTimeout && writeReply.Field == "pipe_name" && sent.Count == 1,
             "a write whose reply times out is pipe_read_timeout and is never retried", write.Line + " sent " + sent.Count);
         Check(writeReply.Detail is { } writeDetail && writeDetail.StartsWith("outcome_unknown:", StringComparison.Ordinal) && writeDetail.Contains("250 ms", StringComparison.Ordinal)
-            && writeDetail.Contains("not retried", StringComparison.Ordinal) && writeDetail.Contains("same operation_id", StringComparison.Ordinal),
-            "the write timeout detail says outcome unknown, not retried, and how to replay", writeReply.Detail ?? "");
+            && writeDetail.Contains("not retried", StringComparison.Ordinal) && writeDetail.Contains("same operation_id", StringComparison.Ordinal)
+            && writeDetail.Contains("one request at a time", StringComparison.Ordinal) && writeDetail.Contains("pipe_connect_timeout: retry later", StringComparison.Ordinal),
+            "the write timeout detail says outcome unknown, not retried, how to replay, and that a busy add-in may refuse an immediate resend", writeReply.Detail ?? "");
         Check(writeReply.Created.Count == 0 && writeReply.Receipt is null, "a timed-out write reports nothing created and no receipt");
+        var dryRun = Parse(RevitCommandService.Run(FakePipe, DryRunDelete(), Policy, Stalled, NoLinks));
+        Check(dryRun.Code == RevitCommandCodes.PipeReadTimeout && dryRun.Detail is { } dryDetail && !dryDetail.StartsWith("outcome_unknown", StringComparison.Ordinal),
+            "a dry-run delete whose reply times out is not reported as an unknown write", dryRun.Detail ?? "");
+        Check(RevitCommandService.ReadTimeoutDetail(RevitCommandProtocol.Parse(WallWrite()), TimeSpan.FromSeconds(1800)).StartsWith("outcome_unknown: no reply within 1800000 ms", StringComparison.Ordinal),
+            "ReadTimeoutDetail names the timeout in whole milliseconds");
         // A plain TimeoutException from the transport is still the connect timeout (unchanged).
         var connect = Parse(RevitCommandService.Run(FakePipe, WallWrite(), Policy, (_, _) => throw new TimeoutException(), NoLinks));
         Check(connect.Code == RevitCommandCodes.PipeConnectTimeout, "a transport TimeoutException stays pipe_connect_timeout");
@@ -111,6 +130,14 @@ static class PipeReadTimeoutChecks
         Check(direct is not null && direct.Timeout == TimeSpan.FromMilliseconds(300) && watchDirect.ElapsedMilliseconds >= 250 && watchDirect.ElapsedMilliseconds < 15000,
             "PipeTransport throws RevitPipeReadTimeoutException on a stalled pipe", watchDirect.ElapsedMilliseconds + " ms");
         Check(addIn.WaitForRequests(2) && addIn.Received.Count == 2 && addIn.Received[1] == "ping", "the direct request reached the stalled add-in");
+
+        // ---- Wire bytes: exactly UTF-8 (no BOM) of the wire line plus Environment.NewLine, as StreamWriter.WriteLine sent ----
+        addIn.RecordBytes = true;
+        try { RevitCommandService.PipeTransport(pipeName, wire, TimeSpan.FromMilliseconds(300)); } catch (RevitPipeReadTimeoutException) { }
+        var expected = new UTF8Encoding(false).GetBytes(wire + Environment.NewLine);
+        Check(addIn.WaitForBytes(1) && addIn.RawRequests[0].AsSpan().SequenceEqual(expected), "the request bytes on the pipe are UTF-8 without BOM of the wire line plus Environment.NewLine",
+            addIn.RawRequests.Count == 0 ? "none" : addIn.RawRequests[0].Length + " vs " + expected.Length + " bytes");
+        addIn.RecordBytes = false;
 
         // ---- Replies within the timeout are unchanged ----
         addIn.Reply = line => "pong:" + line;
@@ -144,6 +171,17 @@ sealed class StalledAddIn : IDisposable
     public Func<string, string>? Reply { get; set; }
     public TimeSpan Delay { get; set; } = TimeSpan.Zero;
     public bool CloseWithoutReply { get; set; }
+    // Record the raw bytes of the request (up to and including the first '\n') instead of a decoded line, then stall.
+    public bool RecordBytes { get; set; }
+    public IReadOnlyList<byte[]> RawRequests { get { lock (gate) return rawRequests.ToArray(); } }
+    readonly List<byte[]> rawRequests = new();
+
+    public bool WaitForBytes(int count)
+    {
+        var watch = Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < 5000 && RawRequests.Count < count) Thread.Sleep(10);
+        return RawRequests.Count >= count;
+    }
     public IReadOnlyList<string> Received { get { lock (gate) return received.ToArray(); } }
 
     public bool WaitForRequests(int count)
@@ -181,6 +219,19 @@ sealed class StalledAddIn : IDisposable
         var utf8 = new UTF8Encoding(false);
         try
         {
+            if (RecordBytes)
+            {
+                var bytes = new List<byte>();
+                var one = new byte[1];
+                while (await server.ReadAsync(one, stop.Token) == 1)
+                {
+                    bytes.Add(one[0]);
+                    if (one[0] == (byte)'\n') break;
+                }
+                lock (gate) rawRequests.Add(bytes.ToArray());
+                while (await server.ReadAsync(one, stop.Token) > 0) { }
+                return;
+            }
             using var reader = new StreamReader(server, utf8, false, 4096, leaveOpen: true);
             using var writer = new StreamWriter(server, utf8, 4096, leaveOpen: true) { AutoFlush = true };
             var line = await reader.ReadLineAsync(stop.Token);
