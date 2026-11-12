@@ -505,7 +505,10 @@ foreach ($group in (Get-CatalogueGroups)) {
     foreach ($spec in $group.Steps) {
         $key = [string]$spec.Key
         $isWire = $spec.ContainsKey('Wire') -and $spec.Wire
+        $isDocUpdate = $spec.ContainsKey('DocUpdate') -and $spec.DocUpdate
         if ($isWire) { Assert ($spec.Command -eq 'journal.read') "[$($group.Key)] ${key}: only journal.read goes as a wire line" }
+        # P4-14: a doc-update step is one call of the CLI verb, not a catalogue envelope.
+        elseif ($isDocUpdate) { Assert ($spec.Command -eq 'doc-update' -and $key -in $docUpCalls) "[$($group.Key)] ${key}: only the P4-14 calls go through doc-update" }
         else { Assert ($catalogue.Contains([string]$spec.Command)) "[$($group.Key)] ${key}: $($spec.Command) is not a catalogue command" }
         if ($spec.Expect.ContainsKey('Code')) { Assert ($spec.Expect.Status -eq 'failed' -and $codes.Contains([string]$spec.Expect.Code)) "[$($group.Key)] ${key}: expected code $($spec.Expect.Code) is not a Core refusal code" }
         else { Assert ($spec.Expect.Status -eq 'succeeded') "[$($group.Key)] ${key}: a failure must name its code" }
@@ -602,7 +605,7 @@ Assert ((Test-Path -LiteralPath $copyPath -PathType Leaf) -and !(Test-Path -Lite
 $saveIndex = [int](Get-StepField $full 'c-save' 'index')
 $saveAsIndex = [int](Get-StepField $full 'c-as-save' 'index')
 $wrongDocument = @($full.steps | Where-Object { $null -ne $_.request } | Where-Object {
-    $named = if ($_.command -eq 'journal.read') { [string](Get-CatalogueMember $_.request 'DocumentPath') } else { [string](Get-CataloguePath $_.request 'document.path') }
+    $named = if ($_.command -eq 'journal.read') { [string](Get-CatalogueMember $_.request 'DocumentPath') } elseif ($_.command -eq 'doc-update') { [string](Get-CataloguePath $_.request 'bindings.document.path') } else { [string](Get-CataloguePath $_.request 'document.path') }
     $wanted = if ($_.index -gt $saveAsIndex -and $_.key -notin 'c-as-save-again', 'c-as-levels-previous') { $saveAsPath }
     elseif ($_.index -gt $saveIndex -and $_.key -notin 'c-save-again', 'c-levels-source') { $copyPath } else { $documentPath }
     $named -ne $wanted })
@@ -772,7 +775,7 @@ function Get-WallY($Result, [string]$Key, [string]$State) { [double]@(Get-Catalo
 foreach ($key in $docUpCalls) {
     $request = Get-StepField $full $key 'request'
     $levels = Get-CataloguePath $request 'bindings.levels'
-    Assert ((Get-CataloguePath $request 'bindings.document.path') -eq $documentPath -and (Get-CataloguePath $request 'bindings.document.unique_id') -eq $documentUid -and (Get-CatalogueMember $levels $script:CatalogueDocUpdateLevelId) -eq $full.picked['level'] -and @($levels.PSObject.Properties).Count -eq 1 -and @(Get-CatalogueList $request 'accept').Count -eq 0) "P4-14 $key names the test document, binds the fixture level to the picked level and accepts nothing"
+    Assert ((Get-CataloguePath $request 'bindings.document.path') -eq $documentPath -and (Get-CataloguePath $request 'bindings.document.unique_id') -eq $documentUid -and (Get-CatalogueMember $levels $script:CatalogueDocUpdateLevelId) -eq $full.picked['level'] -and @($levels.PSObject.Properties).Count -eq 1 -and (Get-CatalogueList $request 'accept').Count -eq 0) "P4-14 $key names the test document, binds the fixture level to the picked level and accepts nothing"
 }
 # Each --execute names the sha256 its own dry run printed, with byte-for-byte the same inputs.
 foreach ($pair in @(@('doc-up-realize-plan', 'doc-up-realize'), @('doc-up-update-plan', 'doc-up-update'))) {
