@@ -15,16 +15,36 @@ namespace Bim.Cli;
 // drift_adopt_selection_invalid), then MirrorDriftAdoptTool.Run(store, text, confirm: true).
 // Success prints {"status":"succeeded","outcome":"committed"|"replayed"|"nothing_to_adopt","revision":n,"key":k|null}
 // and exits 0. Every refusal prints one {"status":"failed","code"[,"detail"]} envelope and exits 1.
+//
+// P2-19 `mirror-drift-adopt store-directory selection.json --preview`: the same selection read, then
+// MirrorDriftAdoptTool.Run(store, text, confirm: false), the MCP plan mode (Core's read-only MirrorDriftAdoptCommit.Preview:
+// no lock, nothing written), so stdout is byte-equal to the MCP mirror_drift_adopt text without confirm on the same store
+// and selection text; {"status":"planned",...} exits 0, a refusal exits 1. Flags follow the two positionals: only the
+// exact "--preview", once; any other "--..." argument is drift_adopt_option_unknown and a repeated --preview
+// drift_adopt_option_duplicate (detail: the flag), both refused before any input is read; a non-flag extra argument (or
+// fewer than two positionals) is the usage. Without the flag the P2-13/P2-15 bytes are unchanged.
 internal static class MirrorDriftAdoptCommand
 {
-    public const string Usage = "usage: mirror-drift-adopt store-directory selection.json";
+    public const string Usage = "usage: mirror-drift-adopt store-directory selection.json [--preview]";
+    public const string PreviewFlag = "--preview";
+    public const string OptionUnknown = "drift_adopt_option_unknown";
+    public const string OptionDuplicate = "drift_adopt_option_duplicate";
     static readonly System.Text.UTF8Encoding StrictUtf8 = new(false, true);
 
     public static void Run(string[] args)
     {
-        if (args.Length != 3) throw new ArgumentException(Usage);
+        if (args.Length < 3) throw new ArgumentException(Usage);
+        var preview = false;
+        for (var i = 3; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (!arg.StartsWith("--", StringComparison.Ordinal)) throw new ArgumentException(Usage);
+            if (!string.Equals(arg, PreviewFlag, StringComparison.Ordinal)) { Fail(MirrorDriftTool.Failure(OptionUnknown, arg)); return; }
+            if (preview) { Fail(MirrorDriftTool.Failure(OptionDuplicate, arg)); return; }
+            preview = true;
+        }
         if (!ReadSelection(args[2], out var text)) return;
-        var outcome = MirrorDriftAdoptTool.Run(args[1], text, confirm: true);
+        var outcome = MirrorDriftAdoptTool.Run(args[1], text, confirm: !preview);
         Console.WriteLine(outcome.Text);
         if (!outcome.Succeeded) Environment.ExitCode = 1;
     }
