@@ -447,7 +447,8 @@ Check(McpServer.ParseOptions(Array.Empty<string>(),out var noOptionTimeout)==nul
 Check(RevitCommandCodes.ReadTimeoutInvalid=="read_timeout_invalid" && RevitCommandCodes.McpOptionUnknown=="mcp_option_unknown" && RevitCommandCodes.ClientSide.Contains(RevitCommandCodes.ReadTimeoutInvalid)
     && RevitCommandCodes.ClientSide.Contains(RevitCommandCodes.McpOptionUnknown),"read_timeout_invalid and mcp_option_unknown are client-side RevitCommandCodes");
 var toolsList=Request(30,"tools/list",null)+"\n";
-foreach(var (label,value) in new[]{("zero","0"),("negative","-1"),("over 24 h","86401"),("fractional","1.5"),("not a number","abc"),("empty","")}) {
+// P1-22: the MCP refusal set is the CLI's (tests/cli/RevitCommandReadTimeoutTests.cs): signed, padded and overflowing too.
+foreach(var (label,value) in new[]{("zero","0"),("negative","-1"),("over 24 h","86401"),("fractional","1.5"),("not a number","abc"),("empty",""),("signed","+5"),("padded"," 5"),("overflowing","99999999999999999999")}) {
     var refused=RunMcp(toolsList,"--read-timeout-seconds",value);
     Check(refused.Exit==1 && refused.Out.Length==0 && refused.Err==McpRefusal("read_timeout_invalid",1,"--read-timeout-seconds takes whole seconds from 1 to 86400, got "+value),
         "Bim.Mcp --read-timeout-seconds "+label+" is refused read_timeout_invalid on stderr before serving | exit "+refused.Exit+" out "+refused.Out+" err "+refused.Err);
@@ -458,6 +459,48 @@ var mcpUnknown=RunMcp(toolsList,"--bogus");
 Check(mcpUnknown.Exit==1 && mcpUnknown.Out.Length==0 && mcpUnknown.Err==McpRefusal("mcp_option_unknown",0,"unknown option --bogus"),"Bim.Mcp refuses an unknown option by name | "+mcpUnknown.Err);
 var mcpRepeated=RunMcp(toolsList,"--read-timeout-seconds","5","--read-timeout-seconds","6");
 Check(mcpRepeated.Exit==1 && mcpRepeated.Out.Length==0 && mcpRepeated.Err==McpRefusal("mcp_option_unknown",2,"repeated option --read-timeout-seconds"),"Bim.Mcp refuses a repeated option at the repeat | "+mcpRepeated.Err);
+Check(McpServer.ParseOptions(new[]{"--read-timeout-seconds","0030"},out var paddedZeroTimeout)==null && paddedZeroTimeout==TimeSpan.FromSeconds(30),"McpServer.ParseOptions accepts 0030 as 30 s, as revit-command does");
+foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
+    Check(McpServer.ParseOptions(new[]{"--read-timeout-seconds",value},out var refusedValueTimeout)==McpRefusal("read_timeout_invalid",1,"--read-timeout-seconds takes whole seconds from 1 to 86400, got "+value) && refusedValueTimeout==RevitCommandService.DefaultReadTimeout,
+        "McpServer.ParseOptions refuses --read-timeout-seconds "+value.Replace("\u0665","<arabic-indic 5>")+" read_timeout_invalid and keeps the default");
+}
+// P1-22: one option grammar. McpServer.ParseOptions parses no value itself: it calls the value parser and refusal format of
+// interfaces/cli/RevitCommandOptions.cs (RevitOptionGrammar), linked into the server and its test projects, so the
+// accepted grammar, the range and the refusal lines of revit-command and Bim.Mcp cannot drift.
+{
+    var serverSource=File.ReadAllText(Path.Combine(root,"interfaces","mcp","McpServer.cs"));
+    // The ParseOptions body: from its signature to the brace matching the first '{' after it (no layout assumption).
+    var p122Start=serverSource.IndexOf("static string? ParseOptions(",StringComparison.Ordinal);
+    var p122Open=p122Start<0 ? -1 : serverSource.IndexOf('{',p122Start);
+    var p122End=-1;
+    for(int p122At=Math.Max(p122Open,0),p122Depth=0;p122Open>=0 && p122At<serverSource.Length;p122At++) {
+        if(serverSource[p122At]=='{') p122Depth++;
+        else if(serverSource[p122At]=='}' && --p122Depth==0) { p122End=p122At+1; break; }
+    }
+    var parseBody=p122End<0 ? "" : serverSource[p122Start..p122End];
+    Check(parseBody.Length>0 && parseBody.Contains("RevitOptionGrammar.ReadTimeout(",StringComparison.Ordinal),"McpServer.ParseOptions reads --read-timeout-seconds through the shared RevitOptionGrammar.ReadTimeout");
+    var ownGrammar=new[]{"TryParse","NumberStyles","PipeTransportWithReadTimeout","takes whole seconds","needs a value","unknown option","repeated option","\"args[\"","Failure("}.Where(token=>parseBody.Contains(token,StringComparison.Ordinal)).ToArray();
+    Check(parseBody.Length>0 && ownGrammar.Length==0,"McpServer.ParseOptions has no value grammar, range or refusal text of its own ["+string.Join(", ",ownGrammar)+"]");
+    Check(!serverSource.Contains("OptionRefusal(",StringComparison.Ordinal),"McpServer.cs keeps no private option refusal helper");
+    // Each project compiles the shared file itself (a Compile Include resolving to interfaces/cli/RevitCommandOptions.cs,
+    // either path separator), read as XML so attribute order and layout do not matter.
+    var p122Shared=Path.GetFullPath(Path.Combine(root,"interfaces","cli","RevitCommandOptions.cs"));
+    foreach(var p122Project in new[]{Path.Combine(root,"interfaces","mcp","Bim.Mcp.csproj"),Path.Combine(root,"tests","mcp","Bim.Mcp.Tests.csproj"),
+        Path.Combine(root,"tests","revit-commands","Bim.RevitCommands.Tests.csproj"),Path.Combine(root,"tests","cli","Bim.Cli.Tests.csproj")}) {
+        var p122Dir=Path.GetDirectoryName(p122Project)!;
+        var p122Linked=System.Xml.Linq.XDocument.Load(p122Project).Descendants().Where(e=>e.Name.LocalName=="Compile")
+            .Select(e=>(string?)e.Attribute("Include")).Where(include=>include is not null)
+            .Any(include=>string.Equals(Path.GetFullPath(Path.Combine(p122Dir,include!.Replace('\\','/').Replace('/',Path.DirectorySeparatorChar))),p122Shared,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
+        Check(p122Linked,Path.GetFileName(p122Project)+" compiles interfaces/cli/RevitCommandOptions.cs (shared source, not a copy)");
+    }
+}
+// Pinned literally, independent of RevitCommandResponse.Failure and its escaping: the padded value " 5".
+Check(McpServer.ParseOptions(new[]{"--read-timeout-seconds"," 5"},out _)=="""{"status":"failed","code":"read_timeout_invalid","field":"args[1]","detail":"--read-timeout-seconds takes whole seconds from 1 to 86400, got  5; usage: Bim.Mcp.dll [--read-timeout-seconds n]","created":[],"modified":[],"deleted":[],"readback":null,"receipt":null,"warnings":[]}""",
+    "McpServer.ParseOptions refuses --read-timeout-seconds ' 5' with the literal pinned line");
+// The server exposes only --read-timeout-seconds: --deadline-seconds is an unknown server option (MCP deadline sharing is P1-23).
+Check(McpServer.ParseOptions(new[]{"--deadline-seconds","5"},out var p122DeadlineTimeout)==McpRefusal("mcp_option_unknown",0,"unknown option --deadline-seconds") && p122DeadlineTimeout==RevitCommandService.DefaultReadTimeout,
+    "McpServer.ParseOptions refuses --deadline-seconds as mcp_option_unknown (the server has no deadline option)");
 var mcpPlain=RunMcp(toolsList);
 var mcpFlagged=RunMcp(toolsList,"--read-timeout-seconds","86400");
 Check(mcpPlain.Exit==0 && Node(mcpPlain.Out)["id"]!.GetValue<int>()==30 && mcpFlagged.Exit==0 && mcpFlagged.Out==mcpPlain.Out && mcpFlagged.Err.Length==0,"Bim.Mcp with --read-timeout-seconds 86400 serves the same bytes as without it");

@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Bim.Core;
+using RevitOptionGrammar = Bim.Cli.RevitOptionGrammar;
 
 namespace Bim.Mcp;
 
@@ -146,12 +147,14 @@ public sealed class McpServer
         }
     }
 
-    public const string ReadTimeoutOption = "--read-timeout-seconds";
+    public const string ReadTimeoutOption = RevitOptionGrammar.ReadTimeoutOption;
     public const string OptionsUsage = "usage: Bim.Mcp.dll [--read-timeout-seconds n]";
 
     // The server options (Program args): none, or --read-timeout-seconds n once, n whole seconds from 1 to 86400.
     // Returns null and the read timeout (the default when absent), or the typed refusal line (RevitCommandResponse
-    // shape, field args[i]) that Program writes to stderr before serving.
+    // shape, field args[i]) that Program writes to stderr before serving. P1-22: the value grammar, range and refusal
+    // lines are revit-command's (RevitOptionGrammar, interfaces/cli/RevitCommandOptions.cs linked into this server);
+    // only the usage and the unknown/repeated code (mcp_option_unknown) are the server's own.
     public static string? ParseOptions(IReadOnlyList<string> args, out TimeSpan readTimeout)
     {
         ArgumentNullException.ThrowIfNull(args);
@@ -159,25 +162,14 @@ public sealed class McpServer
         var seen = false;
         for (var index = 0; index < args.Count; index++)
         {
-            if (args[index] != ReadTimeoutOption) return OptionRefusal(RevitCommandCodes.McpOptionUnknown, index, "unknown option " + args[index]);
-            if (seen) return OptionRefusal(RevitCommandCodes.McpOptionUnknown, index, "repeated option " + ReadTimeoutOption);
+            if (args[index] != ReadTimeoutOption) return RevitOptionGrammar.Unknown(RevitCommandCodes.McpOptionUnknown, index, args[index], OptionsUsage);
+            if (seen) return RevitOptionGrammar.Repeated(RevitCommandCodes.McpOptionUnknown, index, ReadTimeoutOption, OptionsUsage);
             seen = true;
-            if (index + 1 >= args.Count) return OptionRefusal(RevitCommandCodes.ReadTimeoutInvalid, index, ReadTimeoutOption + " needs a value");
-            index++;
-            var valid = int.TryParse(args[index], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var seconds);
-            if (valid)
-            {
-                try { _ = RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromSeconds(seconds)); }
-                catch (ArgumentOutOfRangeException) { valid = false; }
-            }
-            if (!valid) return OptionRefusal(RevitCommandCodes.ReadTimeoutInvalid, index, ReadTimeoutOption + " takes whole seconds from 1 to 86400, got " + args[index]);
-            readTimeout = TimeSpan.FromSeconds(seconds);
+            if (RevitOptionGrammar.ReadTimeout(args, ref index, OptionsUsage, out var refusal) is not { } timed) return refusal;
+            readTimeout = timed.Timeout;
         }
         return null;
     }
-
-    static string OptionRefusal(string code, int index, string detail) =>
-        RevitCommandResponse.Failure(code, "args[" + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + "]", detail + "; " + OptionsUsage).ToJson();
 
     // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), re-read whenever the owner files change
     // (RevitCommandPolicySource: one stat per write call), the real process pipe and file system. A malformed owner
