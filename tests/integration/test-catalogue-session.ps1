@@ -465,7 +465,8 @@ Assert (@($saveChecks | Where-Object { $_.check -like '*sha256*' -and $_.ok }).C
 Assert ((Test-Path -LiteralPath $copyPath -PathType Leaf) -and !(Test-Path -LiteralPath $outsidePath)) 'the copy exists next to the test document and nothing was written outside .bim/native-runs'
 $saveIndex = [int](Get-StepField $full 'c-save' 'index')
 $saveAsIndex = [int](Get-StepField $full 'c-as-save' 'index')
-$wrongDocument = @($full.steps | Where-Object { $null -ne $_.request } | Where-Object {
+# P4-16: doc-realized (offline, on the run record) names no document path, only the document UniqueId (checked below).
+$wrongDocument = @($full.steps | Where-Object { $null -ne $_.request -and $_.command -ne 'doc-realized' } | Where-Object {
     $named = if ($_.command -eq 'journal.read') { [string](Get-CatalogueMember $_.request 'DocumentPath') } elseif ($_.command -eq 'doc-update') { [string](Get-CataloguePath $_.request 'bindings.document.path') } else { [string](Get-CataloguePath $_.request 'document.path') }
     $wanted = if ($_.index -gt $saveAsIndex -and $_.key -notin 'c-as-save-again', 'c-as-levels-previous') { $saveAsPath }
     elseif ($_.index -gt $saveIndex -and $_.key -notin 'c-save-again', 'c-levels-source') { $copyPath } else { $documentPath }
@@ -487,7 +488,7 @@ Assert ((Test-Path -LiteralPath $saveAsPath -PathType Leaf) -and (Test-Path -Lit
 Assert ($full.picked['document_switched_by'] -eq 'c-as-save' -and $full.picked['document_path'] -eq $saveAsPath -and $full.picked['save_as_path'] -eq $saveAsPath -and $full.picked['save_as_previous'] -eq $copyPath) "the evidence records the switch to the new file: $($full.picked['document_switched_by']) $($full.picked['document_path'])"
 $bimRoot = $inProcessBim + [IO.Path]::DirectorySeparatorChar
 $runsRoot = [IO.Path]::Combine($inProcessBim, 'native-runs') + [IO.Path]::DirectorySeparatorChar
-$pathsNamed = @($full.steps | Where-Object { $null -ne $_.request -and $_.command -ne 'journal.read' } | ForEach-Object { if ($_.command -eq 'doc-update') { [string](Get-CataloguePath $_.request 'bindings.document.path') } else { [string](Get-CataloguePath $_.request 'document.path') }; if ($_.command -in 'document.save_copy', 'document.save_as') { [string](Get-CataloguePath $_.request 'args.path') } })
+$pathsNamed = @($full.steps | Where-Object { $null -ne $_.request -and $_.command -notin 'journal.read', 'doc-realized' } | ForEach-Object { if ($_.command -eq 'doc-update') { [string](Get-CataloguePath $_.request 'bindings.document.path') } else { [string](Get-CataloguePath $_.request 'document.path') }; if ($_.command -in 'document.save_copy', 'document.save_as') { [string](Get-CataloguePath $_.request 'args.path') } })
 $badPaths = @($pathsNamed | Where-Object { [IO.Path]::GetFileName($_) -cnotmatch '\ABIM-Agentic-Test[A-Za-z0-9._-]*\.rvt\z' -or (!([IO.Path]::GetFullPath($_)).StartsWith($runsRoot, [StringComparison]::Ordinal) -and $_ -ne $outsidePath -and $_ -ne $asOutsidePath) })
 Assert ($pathsNamed.Count -gt 0 -and $badPaths.Count -eq 0) "every path a request names is a BIM-Agentic-Test*.rvt under .bim/native-runs (or one of the two refused outside targets): $($badPaths -join ', ')"
 Assert ($outsidePath.StartsWith($bimRoot, [StringComparison]::Ordinal)) 'the refused save_copy target lies directly under .bim'
@@ -653,11 +654,13 @@ foreach ($pair in @(@('doc-up-realize-plan', 'doc-up-realize'), @('doc-up-update
 $elementsStep = Get-Step $full 'doc-up-elements'
 $elementsRequest = Get-CatalogueMember $elementsStep 'request'
 $elementsRecord = Get-CatalogueMember $elementsRequest 'record'
-$recordKeys = @(Get-CatalogueList $elementsRecord 'steps' | ForEach-Object { [string](Get-CatalogueMember $_ 'key') })
+# Get-CatalogueList writes its list as one object: enumerate it from a variable.
+$recordSteps = Get-CatalogueList $elementsRecord 'steps'
+$recordKeys = @($recordSteps | ForEach-Object { [string](Get-CatalogueMember $_ 'key') })
 $priorKeys = @($full.steps | Where-Object { $_.index -lt [int](Get-CatalogueMember $elementsStep 'index') } | ForEach-Object { $_.key })
-$recordIndexes = @(Get-CatalogueList $elementsRecord 'steps' | ForEach-Object { [int](Get-CatalogueMember $_ 'index') })
+$recordIndexes = @($recordSteps | ForEach-Object { [int](Get-CatalogueMember $_ 'index') })
 Assert ($null -ne $elementsStep -and (Get-CatalogueMember $elementsStep 'command') -eq 'doc-realized' -and $null -eq (Get-CatalogueMember $elementsStep 'operation_id') -and (($fullRun.DocUpdate.Realized) -join ',') -eq 'doc-up-elements') "P4-16: doc-up-elements is the one doc-realized call: $(($fullRun.DocUpdate.Realized) -join ',')"
-Assert ([int](Get-CatalogueMember $elementsRecord 'schema_version') -eq 1 -and (Get-CatalogueMember $elementsRecord 'document_unique_id') -eq $documentUid -and (Get-CatalogueMember $elementsRequest 'document') -eq $documentUid -and $recordKeys.Count -gt 100 -and ($recordKeys -join ',') -eq ($priorKeys -join ',') -and ($recordIndexes -join ',') -eq ((1..$recordKeys.Count) -join ',')) "P4-16: doc-realized reads the run's own record (every earlier step, in order) for the test document: $($recordKeys.Count) steps"
+Assert ([int](Get-CatalogueMember $elementsRecord 'schema_version') -eq 1 -and (Get-CatalogueMember $elementsRecord 'document_unique_id') -eq $documentUid -and (Get-CatalogueMember $elementsRequest 'document') -eq $documentUid -and $recordKeys.Count -gt 17 -and ($recordKeys -join ',') -eq ($priorKeys -join ',') -and ($recordIndexes -join ',') -eq ((1..$recordKeys.Count) -join ',')) "P4-16: doc-realized reads the run's own record (every earlier step, in order) for the test document: $($recordKeys.Count) steps"
 Assert ((Get-CatalogueMapText (Get-CatalogueMember $elementsRequest 'assignments')) -eq (Get-CatalogueMapText ([ordered]@{ ('element:' + $script:CatalogueDocUpdateWallId) = 'doc-up-wall'; ('element:' + $script:CatalogueDocUpdateDoorId) = 'doc-up-door' })) -and (ConvertTo-Json -InputObject (Get-CatalogueMember $elementsRequest 'fixture') -Depth 20 -Compress) -ceq (ConvertTo-Json -InputObject (Get-RequestValue $full 'doc-up-realize-plan' 'before') -Depth 20 -Compress)) 'P4-16: doc-realized assigns the wall and door sources to their own steps on the fixture of the first plan'
 $elementsFile = [string](Get-CataloguePath (Get-CatalogueMember $elementsStep 'response') 'output')
 $elementsSha = [string](Get-CataloguePath (Get-CatalogueMember $elementsStep 'response') 'sha256')
@@ -756,7 +759,8 @@ foreach ($case in @(@{ Code = 'realized_unique_id_duplicate'; Stops = $true }, @
 
 $noDoc = (Invoke-FakeSequence -All -NoDocUpdate).Result
 $noDocSent = @($noDoc.steps | Where-Object { $_.key -in $docUpExpected -and $_.key -notin 'doc-up-wall', 'doc-up-door' -and $null -ne $_.request })
-Assert ([string](Get-StepField $noDoc 'doc-up-realize-plan' 'reason') -like '*falta el canal doc-update*' -and $noDocSent.Count -eq 0 -and $null -eq $noDoc.aborted -and (Get-GroupField $noDoc 'documentacion' 'failed') -eq 8 -and [string](Get-StepField $noDoc 'doc-up-elements' 'reason') -like '*falta el canal doc-update*' -and (Get-GroupField $noDoc 'modificar' 'failed') -eq 0) "P4-14 without a doc-update channel none of the update is sent and later groups run: $(Get-FailedSteps $noDoc)"
+# P4-16: doc-up-elements is the first step that needs the channel; the doc-update calls then lack its map.
+Assert ([string](Get-StepField $noDoc 'doc-up-realize-plan' 'reason') -like '*falta doc_up_elements*' -and $noDocSent.Count -eq 0 -and $null -eq $noDoc.aborted -and (Get-GroupField $noDoc 'documentacion' 'failed') -eq 8 -and [string](Get-StepField $noDoc 'doc-up-elements' 'reason') -like '*falta el canal doc-update*' -and (Get-GroupField $noDoc 'modificar' 'failed') -eq 0) "P4-14 without a doc-update channel none of the update is sent and later groups run: $(Get-FailedSteps $noDoc)"
 # Review B1: the owner session passes the doc-update invoker (CLI doc-update on the child's pipe, its requests in the run
 # folder, an --execute-sized timeout of its own) to Invoke-CatalogueSequence, and its announcement names the update.
 $sessionText = [IO.File]::ReadAllText((Join-Path $root 'scripts/owner-native-session.ps1'))
@@ -873,8 +877,9 @@ try {
         $realizedOutput = [IO.File]::ReadAllBytes((Join-Path $realizedFolder 'realized.json'))
         $realRecord = [IO.File]::ReadAllText((Join-Path $realizedFolder 'record.json')) | ConvertFrom-Json
         $realElementsText = Get-CatalogueMapText ([ordered]@{ ('element:' + $script:CatalogueDocUpdateWallId) = (Get-CatalogueFirstCreated (Get-StepField $real 'doc-up-wall' 'response')); ('element:' + $script:CatalogueDocUpdateDoorId) = (Get-CatalogueFirstCreated (Get-StepField $real 'doc-up-door' 'response')) })
-        Assert ((Get-CatalogueMember $realElements 'passed') -and (ConvertTo-Json -InputObject $realizedKept -Depth 20 -Compress) -ceq (ConvertTo-Json -InputObject (Get-CatalogueMember $realElements 'response') -Depth 20 -Compress) -and [IO.Path]::GetFullPath([string]$realizedKept.output) -eq [IO.Path]::GetFullPath((Join-Path $realizedFolder 'realized.json')) -and [int]$realizedKept.entries -eq 2 -and [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($realizedOutput)) -eq [string]$realizedKept.sha256) "P4-16 the real doc-realized line is the step's response and names its output: $(Get-CatalogueMember $realElements 'reason') $(Get-CatalogueMember $realElements 'raw_response')"
-        Assert ((Get-CatalogueMapText ([Text.UTF8Encoding]::new($false).GetString($realizedOutput) | ConvertFrom-Json)) -eq $realElementsText -and @(Get-CatalogueList $realRecord 'steps').Count -eq $realElementsIndex - 1 -and [string](Get-CatalogueMember $realRecord 'document_unique_id') -eq $documentUid) "P4-16 the real doc-realized map is the wall and door the run made, from a record of the $($realElementsIndex - 1) earlier steps"
+        $keptOutput = [string](Get-CatalogueMember $realizedKept 'output')
+        Assert ((Get-CatalogueMember $realElements 'passed') -and (ConvertTo-Json -InputObject $realizedKept -Depth 20 -Compress) -ceq (ConvertTo-Json -InputObject (Get-CatalogueMember $realElements 'response') -Depth 20 -Compress) -and $keptOutput -and [IO.Path]::GetFullPath($keptOutput) -eq [IO.Path]::GetFullPath((Join-Path $realizedFolder 'realized.json')) -and [int](Get-CatalogueMember $realizedKept 'entries') -eq 2 -and [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($realizedOutput)) -eq [string](Get-CatalogueMember $realizedKept 'sha256')) "P4-16 the real doc-realized line is the step's response and names its output: $(Get-CatalogueMember $realElements 'reason') $(Get-CatalogueMember $realElements 'raw_response')"
+        Assert ((Get-CatalogueMapText ([Text.UTF8Encoding]::new($false).GetString($realizedOutput) | ConvertFrom-Json)) -eq $realElementsText -and (Get-CatalogueList $realRecord 'steps').Count -eq $realElementsIndex - 1 -and [string](Get-CatalogueMember $realRecord 'document_unique_id') -eq $documentUid) "P4-16 the real doc-realized map is the wall and door the run made, from a record of the $($realElementsIndex - 1) earlier steps"
         foreach ($key in 'doc-up-realize-plan', 'doc-up-realize') {
             $fed = Join-Path $requests ('{0:D2}-{1}.doc-update/realized.json' -f [int](Get-StepField $real $key 'index'), $key)
             $fedBytes = if (Test-Path -LiteralPath $fed -PathType Leaf) { [IO.File]::ReadAllBytes($fed) } else { [byte[]]@() }
@@ -892,6 +897,9 @@ try {
         $tampered.assignments.('element:' + $script:CatalogueDocUpdateDoorId) = 'doc-up-wall'
         Invoke-CatalogueDocUpdate -Dotnet $Dotnet -CliDll $CliDll -PipeName $pipeName -RequestDirectory $tamperRequests -Index $index -Key $key -Json ($tampered | ConvertTo-Json -Depth 64 -Compress) -TimeoutSeconds 120
     }
+    # The in-process tree was removed when the in-process checks ended: the fake sequence gets its test document back.
+    New-Item -ItemType Directory -Force $inProcessDirectory | Out-Null
+    [IO.File]::WriteAllBytes($documentPath, [byte[]]@())
     $tamperRun = Invoke-FakeSequence -All -DocWrap $tamperWrap
     $tamperResult = $tamperRun.Result
     $tamperStep = Get-Step $tamperResult 'doc-up-elements'
