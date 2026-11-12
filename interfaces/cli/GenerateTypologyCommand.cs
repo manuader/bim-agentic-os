@@ -104,42 +104,39 @@ internal static class GenerateTypologyCommand
         catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail, refusal.Skill); }
     }
 
+    // P5-17: the request-to-document path shared with the MCP generate_typology tool (interfaces/mcp/GenerateTypologyTool.cs
+    // links this file): the request file read like the CLI reads it, then the same Parse, pack loads and pipeline as the
+    // verb (Generate). Writes nothing. Succeeded: Text is the canonical document, exactly the string whose UTF-8 bytes the
+    // verb writes to its output file. Otherwise Text is the verb's failure stdout line without its newline (the verb
+    // would exit 1). There is no output path, so no generate_typology_usage or output_* refusal comes from here.
+    internal static (bool Succeeded, string Text) Document(string requestPath)
+    {
+        try
+        {
+            var generated = Generate(ReadRequest(requestPath));
+            return generated.RefusedLine is { } refused ? (false, refused) : (true, generated.Json);
+        }
+        catch (Refusal refusal) { return (false, FailureLine(refusal.Code, refusal.Detail, refusal.Skill)); }
+    }
+
+    // RefusedLine is the generate_typology_refused stdout line when the pipeline refused (Json is then empty).
+    sealed record Generated(Parsed Parsed, TypologyPipelineResult Result, string Json, string? RefusedLine);
+
     static void Execute(string[] args)
     {
         if (args.Length != 3 || args[1].Length == 0 || args[2].Length == 0) throw new Refusal(UsageCode, Usage);
         var output = args[2];
         if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string badOutput) throw new Refusal(badOutput);
-        string text;
-        try { text = BoundedInput.ReadText(args[1]); }
-        catch (InputRejectedException error) { throw new Refusal(error.Message); }
-        var parsed = Parse(text);
-        var pack = Load(parsed.Pack, PackUnavailable, PackInvalid);
-        var code = Load(CodePack, CodePackUnavailable, CodePackInvalid);
-        var extras = new List<SkillManifest>();
-        foreach (var id in parsed.Skills ?? Array.Empty<string>()) extras.Add(Load(id, SkillUnavailable, SkillInvalid, id));
-
-        var options = new PrototypePipelineOptions(code, parsed.ProjectId);
-        TypologyPipelineResult result;
-        string json;
-        try
+        var generated = Generate(ReadRequest(args[1]));
+        if (generated.RefusedLine is { } refused)
         {
-            result = parsed.Composed
-                ? TypologyPipeline.RunComposed(pack, parsed.Request, options, extras, parsed.Precedence)
-                : TypologyPipeline.Run(pack, parsed.Request, options);
-            json = result.Status == PrototypePipelineStatus.Refused ? "" : TypologyPipelineSerializer.Serialize(result);
-        }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine("generate-typology internal error: " + error.GetType().FullName + ": " + error.Message);
-            throw new Refusal(InternalError);
-        }
-        if (result.Status == PrototypePipelineStatus.Refused)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(new { status = "failed", code = Refused, refusals = result.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) }));
+            Console.WriteLine(refused);
             Environment.ExitCode = 1;
             return;
         }
-        var bytes = new UTF8Encoding(false).GetBytes(json);
+        var parsed = generated.Parsed;
+        var result = generated.Result;
+        var bytes = new UTF8Encoding(false).GetBytes(generated.Json);
         try { GltfExporter.WriteNew(bytes, output); }
         catch (GltfExportException error) { throw new Refusal(error.Code); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
@@ -181,6 +178,43 @@ internal static class GenerateTypologyCommand
             bytes = bytes.LongLength,
             sha256,
         }));
+    }
+
+    // The request file through BoundedInput (8 MiB cap); its input_* code is the refusal.
+    static string ReadRequest(string path)
+    {
+        try { return BoundedInput.ReadText(path); }
+        catch (InputRejectedException error) { throw new Refusal(error.Message); }
+    }
+
+    // Parse, typology pack, code pack, extra skills (request order), pipeline: everything after the request read and
+    // before the write, in the verb's precedence order. Throws Refusal; a pipeline refusal is returned as RefusedLine.
+    static Generated Generate(string text)
+    {
+        var parsed = Parse(text);
+        var pack = Load(parsed.Pack, PackUnavailable, PackInvalid);
+        var code = Load(CodePack, CodePackUnavailable, CodePackInvalid);
+        var extras = new List<SkillManifest>();
+        foreach (var id in parsed.Skills ?? Array.Empty<string>()) extras.Add(Load(id, SkillUnavailable, SkillInvalid, id));
+
+        var options = new PrototypePipelineOptions(code, parsed.ProjectId);
+        TypologyPipelineResult result;
+        string json;
+        try
+        {
+            result = parsed.Composed
+                ? TypologyPipeline.RunComposed(pack, parsed.Request, options, extras, parsed.Precedence)
+                : TypologyPipeline.Run(pack, parsed.Request, options);
+            json = result.Status == PrototypePipelineStatus.Refused ? "" : TypologyPipelineSerializer.Serialize(result);
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine("generate-typology internal error: " + error.GetType().FullName + ": " + error.Message);
+            throw new Refusal(InternalError);
+        }
+        if (result.Status == PrototypePipelineStatus.Refused)
+            return new Generated(parsed, result, "", JsonSerializer.Serialize(new { status = "failed", code = Refused, refusals = result.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) }));
+        return new Generated(parsed, result, json, null);
     }
 
     // Package root, then repository; bounded manifest read, parse, id (SkillPackLookup, shared with generate-prototypes).
@@ -296,8 +330,11 @@ internal static class GenerateTypologyCommand
 
     static void Fail(string code, string? detail, string? skill = null)
     {
-        Console.WriteLine(skill is not null ? JsonSerializer.Serialize(new { status = "failed", code, detail, skill })
-            : detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail }));
+        Console.WriteLine(FailureLine(code, detail, skill));
         Environment.ExitCode = 1;
     }
+
+    static string FailureLine(string code, string? detail, string? skill) =>
+        skill is not null ? JsonSerializer.Serialize(new { status = "failed", code, detail, skill })
+            : detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail });
 }

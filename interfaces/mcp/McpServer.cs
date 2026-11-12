@@ -33,6 +33,9 @@ namespace Bim.Mcp;
 // diff_intent (P3-14) is read-only: its text is the CLI diff-intent stdout for the same project and intent files, from the
 // verb's own code (DiffIntentTool.cs runs DiffIntentCommand.Run, which plans through the shared IntentPlan helper); listed
 // with permission level read (readOnlyHint true). apply-intent stays CLI-only.
+// generate_typology (P5-17) is read-only: its text is the document the CLI generate-typology verb writes for the same
+// request file, or that verb's refusal line, from the verb's own parser and pipeline path (GenerateTypologyTool.cs runs
+// GenerateTypologyCommand.Document); listed with permission level read (readOnlyHint true); it takes no output path.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -109,6 +112,9 @@ public sealed class McpServer
         new ToolSpec(DiffIntentTool.Name, "Read-only plan (P3-12) that apply-intent would commit on a head Project for a canonical layout intent v1: the ExecutionPlan JSON (IntentEdits.FromStored, then IncrementalDiff with OrderOf create placement, through the shared IntentPlan helper), or the typed diff_intent_* refusal; never writes or commits (CLI: diff-intent --project project.json --intent after.json).",
             [new ParameterSpec(DiffIntentTool.ProjectParameter, "string", "Head Project IR file (project.json), read only"), new ParameterSpec(DiffIntentTool.IntentParameter, "string", "Canonical layout intent v1 file (after.json), read only")],
             DiffIntentTool.Execute, Permission: PermissionLevel.Read),
+        new ToolSpec(GenerateTypologyTool.Name, "Read-only typology prototypes (P7-14/P5-16) for a generate-typology request file (pack, family_size, lot, alternatives, seed, project_id, optional weights, skills and precedence, the last two running the composed pack rules): returns the canonical document the CLI writes, byte for byte, or the typed generate_typology_* / input_* refusal; writes nothing (CLI: generate-typology request.json output.json).",
+            [new ParameterSpec(GenerateTypologyTool.RequestParameter, "string", "generate-typology request JSON file, read only")],
+            GenerateTypologyTool.Execute, Permission: PermissionLevel.Read),
     ];
 
     const string AuditInputSchema = """{"type":"object","properties":{"log_path":{"type":"string","description":"Audit log (JSONL), read only"},"anchor_path":{"type":"string","description":"Head anchor file {kind audit-anchor, version 1, sequence, hash}, read only"},"actors":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Known actor ids; an entry by any other actor is audit_actor_unknown"},"summary":{"type":"boolean","description":"Return the decision summary instead of the report"}},"required":["log_path"],"additionalProperties":false}""";
