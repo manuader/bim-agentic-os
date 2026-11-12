@@ -474,7 +474,9 @@ try {
             @{ Name = 'Mach-O CFFAEDFE'; Path = 'cli/runtimes/osx-x64/native/libmach64le.dat'; Bytes = $magic.MachO64LE },
             @{ Name = 'fat CAFEBABE'; Path = 'skills/payload.json'; Bytes = $magic.Fat },
             @{ Name = 'fat BEBAFECA'; Path = 'cli/runtimes/osx-x64/native/libfatle'; Bytes = $magic.FatLE },
-            @{ Name = 'Java class CAFEBABE'; Path = 'cli/Payload.class'; Bytes = $magic.Fat }
+            @{ Name = 'Java class CAFEBABE'; Path = 'cli/Payload.class'; Bytes = $magic.Fat },
+            # Deliberate: PE detection is the two-byte "MZ" signature, so text whose first two bytes are "MZ" is refused.
+            @{ Name = 'text starting MZ'; Path = 'cli/readme.txt'; Bytes = [Text.Encoding]::ASCII.GetBytes('MZ is literally how this readme starts') }
         )
         foreach ($case in $uCases) {
             $copy = Join-Path $work ('sbom unclassified case ' + $case.Name)
@@ -484,13 +486,14 @@ try {
             $want = 'sbom_binary_unclassified: [^\r\n]*(: |, )' + [regex]::Escape($case.Path) + '(,|\r|\n|$)'
             Assert ($run.Code -ne 0 -and $run.Output -match $want) "P10-16: package-verify must refuse $($case.Name) with sbom_binary_unclassified naming $($case.Path): $(Get-Tail $run.Output)"
         }
-        # Two unclassified payloads are both named in one problem; classified binaries with real magic and text that
-        # merely starts like a magic number (or is shorter than it) are accepted.
-        $copy = Join-Path $work 'sbom unclassified case two payloads'
+        # Several unclassified payloads are all named in one problem in ordinal order (uppercase before lowercase, unlike
+        # culture order); classified binaries with real magic and text that merely starts like a magic number (or is
+        # shorter than it) are accepted.
+        $copy = Join-Path $work 'sbom unclassified case several payloads'
         Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
-        Write-TestBytes $copy 'cli/a.bin' $magic.ELF; Write-TestBytes $copy 'mcp/b.dat' $magic.PE; Write-TestSbom $copy $tRefs
+        Write-TestBytes $copy 'cli/a.bin' $magic.ELF; Write-TestBytes $copy 'cli/B.bin' $magic.ELF; Write-TestBytes $copy 'mcp/b.dat' $magic.PE; Write-TestSbom $copy $tRefs
         $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
-        Assert ($run.Code -ne 0 -and $run.Output -match 'sbom_binary_unclassified: [^\r\n]*cli/a\.bin, mcp/b\.dat') "P10-16: package-verify must name every unclassified payload in ordinal order: $(Get-Tail $run.Output)"
+        Assert ($run.Code -ne 0 -and $run.Output -match 'sbom_binary_unclassified: [^\r\n]*: cli/B\.bin, cli/a\.bin, mcp/b\.dat(\r|\n|$)') "P10-16: package-verify must name every unclassified payload in ordinal order (cli/B.bin, cli/a.bin, mcp/b.dat): $(Get-Tail $run.Output)"
         $copy = Join-Path $work 'sbom unclassified case classified'
         Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
         Write-TestBytes $copy 'cli/runtimes/linux-x64/native/libgamma.so' $magic.ELF
@@ -504,8 +507,39 @@ try {
         Write-PackageText (Join-Path $copy 'cli/elfish.txt') "ELF without the 0x7f byte`n"
         Write-TestSbom $copy $tRefs
         $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
-        Assert ($run.Output -notmatch 'sbom_binary_unclassified' -and $run.Output -notmatch 'notes\.txt|elfish\.txt|short\.bin|empty\.dat') "P10-16: classified binaries with real magic and non-binary text must not be reported unclassified: $(Get-Tail $run.Output)"
+        Assert ($run.Code -eq 0 -and $run.Output -notmatch 'sbom_binary_unclassified' -and $run.Output -notmatch 'notes\.txt|elfish\.txt|short\.bin|empty\.dat') "P10-16: classified binaries with real magic and non-binary text must not be reported unclassified: $(Get-Tail $run.Output)"
         Assert ($tClean.Output -notmatch 'sbom_binary_unclassified') "P10-16: a consistent synthetic package must not report sbom_binary_unclassified: $(Get-Tail $tClean.Output)"
+        # A dangling file symlink is reported as a symlink and never opened (no PowerShell exception escapes).
+        $copy = Join-Path $work 'sbom unclassified case dangling link'
+        Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+        $linkMade = $false
+        try { New-Item -ItemType SymbolicLink -Path (Join-Path $copy 'cli/gone.bin') -Target (Join-Path $work 'no such payload target.bin') -ErrorAction Stop | Out-Null; $linkMade = $true }
+        catch { Write-Host "SKIP P10-16 dangling symlink case: symlinks cannot be created here: $($_.Exception.Message)" }
+        if ($linkMade) {
+            $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
+            Assert ($run.Code -ne 0 -and $run.Output -match 'symlink or reparse point in package: cli/gone\.bin' -and $run.Output -notmatch '(?i)exception|could not find|FullyQualifiedErrorId|sbom_binary_unreadable') "P10-16: a dangling file symlink must be refused as a symlink without opening it or a PowerShell exception: $(Get-Tail $run.Output)"
+        }
+        # A regular file that cannot be read is a typed sbom_binary_unreadable problem naming it, not an exception
+        # (unlisted here, so no other check opens it). Needs a POSIX mode the runner user cannot read through.
+        $copy = Join-Path $work 'sbom unclassified case unreadable'
+        Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+        $locked = Join-Path $copy 'cli/locked.bin'
+        Write-TestBytes $copy 'cli/locked.bin' $magic.ELF
+        if (!$IsWindows) {
+            & chmod 000 $locked
+            $stillReadable = $true
+            try { [IO.File]::OpenRead($locked).Dispose() } catch { $stillReadable = $false }
+            if ($stillReadable) { Write-Host 'SKIP P10-16 unreadable case: a mode-000 file is still readable here (root?)' }
+            else {
+                try {
+                    $found = Find-PackageUnclassifiedBinaries $copy
+                    Assert ((@($found.Unreadable) -join ',') -ceq 'cli/locked.bin' -and @($found.Unclassified) -notcontains 'cli/locked.bin') "P10-16: Find-PackageUnclassifiedBinaries must report an unreadable file as Unreadable: unreadable '$(@($found.Unreadable) -join ',')' unclassified '$(@($found.Unclassified) -join ',')'"
+                } catch { $failures.Add("P10-16: Find-PackageUnclassifiedBinaries threw on an unreadable file: $($_.Exception.Message)") }
+                $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
+                Assert ($run.Code -ne 0 -and $run.Output -match 'sbom_binary_unreadable: [^\r\n]*: cli/locked\.bin(\r|\n|$)' -and $run.Output -notmatch '(?i)exception|FullyQualifiedErrorId') "P10-16: package-verify must report an unreadable shipped file as sbom_binary_unreadable naming it, not throw: $(Get-Tail $run.Output)"
+            }
+            & chmod 644 $locked
+        }
         Assert ($tClean.Output -notmatch 'sbom_manifest_mismatch') "P10-15: a consistent synthetic package (including a first-party native named only by its deps.json project entry) must not report sbom_manifest_mismatch: $(Get-Tail $tClean.Output)"
 
         # Without an assets file the P10-13 behaviour is unchanged: direct references only, no recorded files.
@@ -710,6 +744,10 @@ try {
     Assert ($ok.Code -eq 0) "package-verify rejected a clean package: $(Get-Tail $ok.Output)"
     Assert ($ok.Output -notmatch 'sbom_manifest_mismatch') "P10-15: the real package's manifest.json and sbom.json must agree on every shipped binary: $(Get-Tail $ok.Output)"
     Assert ($ok.Output -notmatch 'sbom_binary_unclassified') "P10-16: the real package must ship no PE/ELF/Mach-O payload outside the binary pattern: $(Get-Tail $ok.Output)"
+    try {
+        Assert (Test-PackageExecutableMagic (Join-Path $outA 'cli/Bim.Cli.dll')) 'P10-16: the real cli/Bim.Cli.dll must be detected as an executable image (MZ)'
+        Assert (!(Test-PackageExecutableMagic (Join-Path $outA 'cli/Bim.Cli.runtimeconfig.json'))) 'P10-16: the real cli/Bim.Cli.runtimeconfig.json must not be detected as an executable image'
+    } catch { $failures.Add("P10-16 real-package magic checks threw: $($_.Exception.Message)") }
 
     # --- P10-07 add-in install/uninstall (temp Addins folders only), including this real package ---
     $install = Invoke-Script (Join-Path $PSScriptRoot 'test-install-addin.ps1') @('-PackageDirectory', $outA)
@@ -743,6 +781,8 @@ try {
         # P10-15: a shipped binary in manifest.json without its sbom.json line, and an sbom.json line whose binary has no
         # manifest.json entry, are refused (sbom_manifest_mismatch naming the path) even with a re-hashed manifest.
         @{ Name = 'sbom line dropped rehashed'; Expect = 'sbom_manifest_mismatch'; Direction = 'without an sbom.json line'; Path = 'cli/Bim.Core.dll'; Act = { param($d) Edit-CaseSbom $d { param($t) $t -replace '(?m)^    \{ "path": "cli/Bim\.Core\.dll", [^\n]*,\n', '' }; Update-CaseManifest $d } },
+        # P10-16: a real shipped assembly renamed outside the binary pattern, with a re-hashed manifest, is refused.
+        @{ Name = 'real dll renamed to dat rehashed'; Expect = 'sbom_binary_unclassified'; Direction = 'so sbom attribution cannot cover them'; Path = 'cli/Bim.Gltf.dat'; Act = { param($d) Move-Item -LiteralPath (Join-Path $d 'cli/Bim.Gltf.dll') -Destination (Join-Path $d 'cli/Bim.Gltf.dat'); Update-CaseManifest $d } },
         @{ Name = 'manifest entry dropped rehashed'; Expect = 'sbom_manifest_mismatch'; Direction = 'without a manifest.json entry'; Path = 'cli/Bim.Gltf.dll'; Act = { param($d) Remove-Item -LiteralPath (Join-Path $d 'cli/Bim.Gltf.dll'); Update-CaseManifest $d } }
     )
     function Update-CaseManifest([string]$Directory) {
