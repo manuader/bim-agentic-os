@@ -1159,6 +1159,58 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     var surrogate=Call("{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"tools/call\",\"params\":{\"name\":\"mirror_drift_adopt\",\"arguments\":{\"store_path\":"+JsonSerializer.Serialize(mcpStore)+",\"selection\":\"\\ud800\",\"confirm\":true}}}");
     Check(IsError(surrogate) && Code(surrogate)=="drift_adopt_selection_invalid" && new ProjectStore(mcpStore).Read().Revision==4,"mirror_drift_adopt selection that is not text (lone surrogate) is drift_adopt_selection_invalid | "+Text(surrogate));
 
+    // P2-17 MirrorDriftAdoptCommit.Preview: Core's read-only entry behind the plan mode. Core's own store reader, Commit's
+    // order and refusals; no lock taken or created; no store entry written or touched (names, bytes, LastWriteTimeUtc).
+    string Stamped(string store) { foreach(var file in Directory.GetFiles(store)) File.SetLastWriteTimeUtc(file,new DateTime(2001,2,3,4,5,6,DateTimeKind.Utc)); return Listing(store)+"|"+Times(store); }
+    string Unchanged(string store)=>Listing(store)+"|"+Times(store);
+    string PlanJson(ExecutionPlan? plan)=>JsonSerializer.Serialize(plan);
+    string Refusal(Func<MirrorDriftAdoptResult> call) { try { var result=call(); return "no refusal: "+result.Outcome; } catch(MirrorDriftAdoptException refusal) { return refusal.Message; } }
+    var previewSource=NewStore("preview-source",committed.Project);
+    var corePlan=MirrorDriftAdoptCommit.Plan(new ProjectStore(previewSource).Read(),selection).Plan;
+    var bareStore=Path.Combine(adoptRoot,"preview-bare-store"); Directory.CreateDirectory(bareStore);
+    File.Copy(Path.Combine(previewSource,"project.json"),Path.Combine(bareStore,"project.json"));
+    var bareBefore=Stamped(bareStore);
+    var preview=MirrorDriftAdoptCommit.Preview(bareStore,selection);
+    Check(preview.Outcome=="would_commit" && preview.Outcome==MirrorDriftAdoptOutcomes.WouldCommit && preview.Revision==4 && preview.Key==adoptKey && preview.Head?.Revision==3 && PlanJson(preview.Plan)==PlanJson(corePlan),
+        "MirrorDriftAdoptCommit.Preview is would_commit: revision 4, the adopt key, the head as read and MirrorDriftAdoptCommit.Plan's plan | "+preview.Outcome+" "+preview.Revision+" "+preview.Key+" "+PlanJson(preview.Plan));
+    Check(Unchanged(bareStore)==bareBefore && !File.Exists(Path.Combine(bareStore,"lock")),"MirrorDriftAdoptCommit.Preview creates no lock file and changes no store entry (names, bytes, LastWriteTimeUtc) | "+Unchanged(bareStore)+" | "+bareBefore);
+    var heldStore=NewStore("preview-held-store",committed.Project);
+    var heldBefore=Stamped(heldStore);
+    using(var held=new FileStream(Path.Combine(heldStore,"lock"),FileMode.Open,FileAccess.ReadWrite,FileShare.None)) {
+        var heldPreview=MirrorDriftAdoptCommit.Preview(heldStore,selection);
+        Check(heldPreview.Outcome==MirrorDriftAdoptOutcomes.WouldCommit && heldPreview.Revision==4 && PlanJson(heldPreview.Plan)==PlanJson(corePlan),"MirrorDriftAdoptCommit.Preview while the store lock is held is would_commit (no lock taken) | "+heldPreview.Outcome);
+    }
+    Check(Unchanged(heldStore)==heldBefore,"MirrorDriftAdoptCommit.Preview under a held lock changes no store entry (names, bytes, LastWriteTimeUtc)");
+    var replayBefore=Stamped(mcpStore);
+    var replayPreview=MirrorDriftAdoptCommit.Preview(mcpStore,selection);
+    Check(replayPreview.Outcome==MirrorDriftAdoptOutcomes.WouldReplay && replayPreview.Outcome=="would_replay" && replayPreview.Revision==4 && replayPreview.Key==adoptKey && replayPreview.Head?.Revision==4 && replayPreview.Plan is null && Unchanged(mcpStore)==replayBefore,
+        "MirrorDriftAdoptCommit.Preview after the commit is would_replay at the current head, no plan, nothing touched | "+replayPreview.Outcome+" "+replayPreview.Revision);
+    var restoreCore=MirrorDriftSelect.Select(resolution,new[]{new MirrorDriftChoice(w2,"restore")});
+    Check(restoreCore.ToJson()==restoreSelection,"fixture: the restore mirror_drift_select text is the Core selection");
+    var neverPreview=Path.Combine(adoptRoot,"preview-never");
+    var nothingPreview=MirrorDriftAdoptCommit.Preview(neverPreview,restoreCore);
+    Check(nothingPreview.Outcome==MirrorDriftAdoptOutcomes.NothingToAdopt && nothingPreview.Revision==3 && nothingPreview.Key is null && nothingPreview.Head is null && nothingPreview.Plan is null && !Directory.Exists(neverPreview),
+        "MirrorDriftAdoptCommit.Preview of a restore-only selection is nothing_to_adopt, store never opened");
+    void SameRefusal(string label,string code,string store) {
+        var stamp=Stamped(store);
+        var previewed=Refusal(()=>MirrorDriftAdoptCommit.Preview(store,selection));
+        Check(Unchanged(store)==stamp,"MirrorDriftAdoptCommit.Preview refusal ("+label+") changes no store entry");
+        var commitRefusal=Refusal(()=>MirrorDriftAdoptCommit.Commit(store,selection));
+        Check(previewed.StartsWith(code+" ",StringComparison.Ordinal) && previewed==commitRefusal,"MirrorDriftAdoptCommit.Preview refusal ("+label+") is "+code+", the same text as Commit's | "+previewed+" | "+commitRefusal);
+    }
+    SameRefusal("stale revision","drift_adopt_stale_revision",NewStore("preview-stale-store",committed.Project with { Revision=2 }));
+    SameRefusal("another project","drift_adopt_project_mismatch",NewStore("preview-other-store",committed.Project with { Id=Guid.Parse("b0000000-0000-4000-8000-000000000000") }));
+    SameRefusal("not UTF-8","drift_adopt_store_invalid",RawStore("preview-not-utf8-store",new byte[]{0x7B,0xC3,0x28,0xFF,0xFE,0x00,0x7D}));
+    SameRefusal("not JSON","drift_adopt_store_invalid",RawStore("preview-not-json-store",System.Text.Encoding.UTF8.GetBytes("not json")));
+    var noProject=Path.Combine(adoptRoot,"preview-empty-store"); Directory.CreateDirectory(noProject);
+    var noProjectRefusal=Refusal(()=>MirrorDriftAdoptCommit.Preview(noProject,selection));
+    Check(noProjectRefusal=="drift_adopt_store_invalid the store has no project.json" && noProjectRefusal==Refusal(()=>MirrorDriftAdoptCommit.Commit(noProject,selection)) && Directory.GetFileSystemEntries(noProject).Length==0,
+        "MirrorDriftAdoptCommit.Preview of a store without project.json is drift_adopt_store_invalid as Commit, nothing created | "+noProjectRefusal);
+    // The MCP plan mode is that entry: no second store reader in interfaces/mcp.
+    var adoptToolSource=File.ReadAllText(Path.Combine(root,"interfaces","mcp","MirrorDriftAdoptTool.cs"));
+    Check(adoptToolSource.Contains("MirrorDriftAdoptCommit.Preview(",StringComparison.Ordinal) && !adoptToolSource.Contains("ProjectStore.State",StringComparison.Ordinal) && !adoptToolSource.Contains("project.json is not",StringComparison.Ordinal),
+        "mirror_drift_adopt plan mode calls MirrorDriftAdoptCommit.Preview and has no store reader of its own");
+
     // Argument shape: -32602 before anything runs.
     Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore}))==-32602,"mirror_drift_adopt without selection returns -32602");
     Check(ErrorCode(ToolCall("mirror_drift_adopt",new JsonObject{["store_path"]=mcpStore,["selection"]=Node(adoptSelection)}))==-32602,"mirror_drift_adopt with an object selection returns -32602 (selection is the JSON text)");
