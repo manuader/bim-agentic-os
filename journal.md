@@ -1469,3 +1469,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 03:28Z integration 076e571 CI 43146224612 success (9/9) → main fast-forwarded (c539c6e..076e571). P4-15, P2-17, P10-15 ✅; new P2-19 (mirror-drift-adopt --preview), P4-16 (owner step uses doc-realized, ⛔ P4-14), P10-16 (unclassified native payload by magic bytes). Progress 159/178 (89.3 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-12T03:28:38Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P1-18/P1-21/P1-22, P2-18, P6-16/P6-17 (relay192; P1-21 before P1-22, same parser; P6-16/P6-17 share PDF fixtures — serialize); then P3-14, P5-16/P7-16, P7-15 (relay193; P5-16 and P7-16 share GenerateTypologyCommand — serialize); then P4-14, P2-19, P10-16 (relay194; P4-14 and P1-18 share tests/integration/test-catalogue-session.ps1 — serialize). If a CI job hangs > 40 min with the rest green, cancel and workflow_dispatch the same head. ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay195 — 2026-11-12T03:53:21Z (Claude, cloud scheduled)
+- 03:53Z LOCK taken (was FREE; relay194 released 2026-11-12T03:28:38Z).
