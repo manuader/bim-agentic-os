@@ -21,8 +21,8 @@ namespace Bim.Cli;
 // no lock, nothing written), so stdout is byte-equal to the MCP mirror_drift_adopt text without confirm on the same store
 // and selection text; {"status":"planned",...} exits 0, a refusal exits 1. Flags follow the two positionals: only the
 // exact "--preview", once; any other "--..." argument is drift_adopt_option_unknown and a repeated --preview
-// drift_adopt_option_duplicate (detail: the flag), both refused before any input is read; a non-flag extra argument (or
-// fewer than two positionals) is the usage. Without the flag the P2-13/P2-15 bytes are unchanged.
+// drift_adopt_option_duplicate (detail: the flag), both refused before any input is read; a positional that starts with
+// "--" (a misplaced flag), a non-flag extra argument or fewer than two positionals is the usage. Without the flag the P2-13/P2-15 bytes are unchanged.
 internal static class MirrorDriftAdoptCommand
 {
     public const string Usage = "usage: mirror-drift-adopt store-directory selection.json [--preview]";
@@ -33,7 +33,8 @@ internal static class MirrorDriftAdoptCommand
 
     public static void Run(string[] args)
     {
-        if (args.Length < 3) throw new ArgumentException(Usage);
+        // A flag-shaped positional (`store --preview`, `--preview selection.json`) is a misplaced flag: the usage, before any read.
+        if (args.Length < 3 || args[1].StartsWith("--", StringComparison.Ordinal) || args[2].StartsWith("--", StringComparison.Ordinal)) throw new ArgumentException(Usage);
         var preview = false;
         for (var i = 3; i < args.Length; i++)
         {

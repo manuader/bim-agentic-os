@@ -16,6 +16,8 @@ using Bim.Core;
 //      (file names, bytes and mtimes).
 internal static class MirrorDriftAdoptTests
 {
+    // P2-19: the verb's usage envelope, pinned literally (its bytes changed when --preview was added).
+    const string UsageEnvelope = "{\"status\":\"failed\",\"code\":\"usage: mirror-drift-adopt store-directory selection.json [--preview]\"}";
     const string P = "60f91daf-3dd7-4283-a86d-24137b73f3da-";
     const string W1 = P + "00001001";
     const string W2 = P + "00001002";
@@ -264,13 +266,13 @@ internal static class MirrorDriftAdoptTests
 
         // ---- 7. Usage and static guards ----
         var usage = Cli("mirror-drift-adopt", bounded);
-        Check(usage.Exit == 1 && Code(usage.Out) is { } u && u.StartsWith("usage: mirror-drift-adopt store-directory selection.json", StringComparison.Ordinal), "a missing argument prints the usage", R(usage));
+        Check(usage.Exit == 1 && usage.Out == UsageEnvelope, "a missing argument prints exactly the usage envelope", R(usage));
         var extra = Cli("mirror-drift-adopt", bounded, adoptAllPath, "extra");
-        Check(extra.Exit == 1 && Code(extra.Out) is { } x && x.StartsWith("usage: mirror-drift-adopt", StringComparison.Ordinal) && new ProjectStore(bounded).Read().Revision == 3, "an extra non-flag argument prints the usage and commits nothing", R(extra));
-        Check(Cli("no-such-verb").Out.Contains("mirror-drift-adopt store-directory selection.json", StringComparison.Ordinal), "the default usage lists mirror-drift-adopt");
+        Check(extra.Exit == 1 && extra.Out == UsageEnvelope && new ProjectStore(bounded).Read().Revision == 3, "an extra non-flag argument prints exactly the usage envelope and commits nothing", R(extra));
+        Check(Cli("no-such-verb").Out.Contains("| mirror-drift-adopt store-directory selection.json [--preview] |", StringComparison.Ordinal), "the default usage lists mirror-drift-adopt store-directory selection.json [--preview]");
 
         // ---- 8. P2-19 --preview: the MCP plan mode (mirror_drift_adopt without confirm) on the CLI, read-only ----
-        Preview(scratch, head, adoptAllText, adoptAllPath, partialPath, restoreOnlyPath, bomPath, key, Store, File_, Files, Same, Names, Cli, R, Code, Succeeded, Check);
+        Preview(dotnet, cliDll, scratch, head, adoptAllText, adoptAllPath, partialPath, restoreOnlyPath, bomPath, key, Store, File_, Files, Same, Names, Cli, R, Code, Succeeded, Check);
         // P2-15: the engine moved to interfaces/mcp/MirrorDriftAdoptTool.cs (shared with the MCP tool); the guards cover both files.
         var source = Path.Combine(root, "interfaces", "cli", "MirrorDriftAdoptCommand.cs");
         var engine = Path.Combine(root, "interfaces", "mcp", "MirrorDriftAdoptTool.cs");
@@ -294,7 +296,7 @@ internal static class MirrorDriftAdoptTests
     // bytes and mtimes and its directory mtime; a held store lock does not block it (no lock taken); without the flag the
     // P2-15 bytes are unchanged; an unknown or repeated flag is a typed envelope, refused before any input is read.
     delegate (int Exit, string Out, string Err) CliRun(params string[] arguments);
-    static void Preview(string scratch, Project head, string adoptAllText, string adoptAllPath, string partialPath, string restoreOnlyPath, string bomPath, string key,
+    static void Preview(string dotnet, string cliDll, string scratch, Project head, string adoptAllText, string adoptAllPath, string partialPath, string restoreOnlyPath, string bomPath, string key,
         Func<Project, string> Store, Func<string, string, string> File_, Func<string, SortedDictionary<string, (byte[] Bytes, DateTime Time)>> Files,
         Func<SortedDictionary<string, (byte[] Bytes, DateTime Time)>, SortedDictionary<string, (byte[] Bytes, DateTime Time)>, bool> Same,
         Func<SortedDictionary<string, (byte[] Bytes, DateTime Time)>, string> Names, CliRun Cli, Func<(int Exit, string Out, string Err), string> R,
@@ -346,11 +348,15 @@ internal static class MirrorDriftAdoptTests
         var commit = Cli("mirror-drift-adopt", store, adoptAllPath);
         Check(commit.Exit == 0 && commit.Out == Succeeded("committed", 4, key), "without --preview the P2-15 bytes: committed revision 4 after the preview", R(commit));
         // would_replay after the commit; the BOM file is the same selection text.
-        Equal("a committed store", store, adoptAllPath, adoptAllText, "planned/would_replay");
-        Equal("a UTF-8 BOM selection file", store, bomPath, adoptAllText, "planned/would_replay");
+        var wouldReplay = JsonSerializer.Serialize(new { status = "planned", applied = false, outcome = "would_replay", revision = 4, key, plan = (object?)null });
+        var replayed = Equal("a committed store", store, adoptAllPath, adoptAllText, "planned/would_replay");
+        Check(replayed == wouldReplay, "a committed store previews exactly would_replay, revision 4, the key, plan null", replayed + " expected " + wouldReplay);
+        Check(Equal("a UTF-8 BOM selection file", store, bomPath, adoptAllText, "planned/would_replay") == wouldReplay, "a UTF-8 BOM selection file previews exactly would_replay");
         // nothing_to_adopt: the store is never opened or created.
         var never = Path.Combine(scratch, "preview-never");
-        Equal("a restore-only selection on a missing store", never, restoreOnlyPath, File.ReadAllText(restoreOnlyPath), "planned/nothing_to_adopt");
+        var nothing = Equal("a restore-only selection on a missing store", never, restoreOnlyPath, File.ReadAllText(restoreOnlyPath), "planned/nothing_to_adopt");
+        var nothingExpected = JsonSerializer.Serialize(new { status = "planned", applied = false, outcome = "nothing_to_adopt", revision = 3, key = (string?)null, plan = (object?)null });
+        Check(nothing == nothingExpected, "a restore-only selection previews exactly nothing_to_adopt, revision 3, key null, plan null", nothing + " expected " + nothingExpected);
         Check(!Directory.Exists(never), "a restore-only preview never creates the store");
         // A held store lock does not block the preview (no lock taken); it still says would_commit.
         var locked = Store(head);
@@ -363,13 +369,24 @@ internal static class MirrorDriftAdoptTests
         Equal("a stale selection", store, partialPath, File.ReadAllText(partialPath), "failed/");
         Check(Code(Cli("mirror-drift-adopt", store, partialPath, "--preview").Out) == MirrorDriftAdoptCodes.StaleRevision, "a stale selection previews drift_adopt_stale_revision");
         var other = Store(head with { Id = Guid.Parse("c0000000-0000-4000-8000-0000000000ab") });
-        Equal("another project's store", other, adoptAllPath, adoptAllText, "failed/");
+        var otherId = Guid.Parse("c0000000-0000-4000-8000-0000000000ab");
+        var mismatch = Equal("another project's store", other, adoptAllPath, adoptAllText, "failed/");
+        var mismatchExpected = JsonSerializer.Serialize(new { status = "failed", code = MirrorDriftAdoptCodes.ProjectMismatch, detail = "head project " + otherId.ToString("D") + " is not the selection's " + head.Id.ToString("D") });
+        Check(mismatch == mismatchExpected, "another project's store previews exactly drift_adopt_project_mismatch with the Core detail", mismatch + " expected " + mismatchExpected);
         var fresh = Store(head);
         var notCanonical = File_(adoptAllText + "\n", "selection");
-        Equal("a non-canonical selection", fresh, notCanonical, adoptAllText + "\n", "failed/");
+        var nonCanonical = Equal("a non-canonical selection", fresh, notCanonical, adoptAllText + "\n", "failed/");
+        var nonCanonicalExpected = JsonSerializer.Serialize(new { status = "failed", code = MirrorDriftAdoptCodes.SelectionInvalid, detail = "not the canonical selection JSON that mirror-drift-select writes" });
+        Check(nonCanonical == nonCanonicalExpected, "a non-canonical selection previews exactly drift_adopt_selection_invalid", nonCanonical + " expected " + nonCanonicalExpected);
         var empty = Path.Combine(scratch, "preview-empty-store");
         Directory.CreateDirectory(empty);
-        Equal("a store without project.json", empty, adoptAllPath, adoptAllText, "failed/");
+        var storeNotFound = JsonSerializer.Serialize(new { status = "failed", code = "input_not_found", detail = "store" });
+        var emptyOut = Equal("a store without project.json", empty, adoptAllPath, adoptAllText, "failed/");
+        Check(emptyOut == storeNotFound, "a store without project.json previews exactly input_not_found (detail store)", emptyOut);
+        // A missing store directory with adopt operations: input_not_found (detail store), the directory never created.
+        var absent = Path.Combine(scratch, "preview-absent-store");
+        var absentOut = Equal("a missing store directory", absent, adoptAllPath, adoptAllText, "failed/");
+        Check(absentOut == storeNotFound && !Directory.Exists(absent), "a missing store directory previews exactly input_not_found (detail store) and is not created", absentOut);
         // Selection-file refusals are the CLI's own bounded-input envelopes (as without the flag).
         var missing = Cli("mirror-drift-adopt", fresh, Path.Combine(scratch, "preview-missing.json"), "--preview");
         Check(missing.Exit == 1 && missing.Out == JsonSerializer.Serialize(new { status = "failed", code = "input_not_found", detail = "selection" }), "a missing selection file is input_not_found (detail selection)", R(missing));
@@ -389,10 +406,35 @@ internal static class MirrorDriftAdoptTests
         Flag("an unknown flag with a missing selection is refused before reading", "drift_adopt_option_unknown", "--force", flags, Path.Combine(scratch, "preview-missing.json"), "--force");
         Flag("a repeated --preview", "drift_adopt_option_duplicate", "--preview", flags, adoptAllPath, "--preview", "--preview");
         Flag("an unknown flag after --preview", "drift_adopt_option_unknown", "--force", flags, adoptAllPath, "--preview", "--force");
-        var stray = Cli("mirror-drift-adopt", flags, adoptAllPath, "--preview", "extra");
-        Check(stray.Exit == 1 && Code(stray.Out) is { } s && s.StartsWith("usage: mirror-drift-adopt store-directory selection.json", StringComparison.Ordinal) && Same(flagFiles, Files(flags)), "a non-flag argument after --preview prints the usage", R(stray));
-        var front = Cli("mirror-drift-adopt", "--preview", flags, adoptAllPath);
-        Check(front.Exit == 1 && Code(front.Out) is { } f && f.StartsWith("usage: mirror-drift-adopt", StringComparison.Ordinal) && Same(flagFiles, Files(flags)), "--preview before the positionals prints the usage (flags follow store and selection)", R(front));
+        // Misplaced flags: any flag-shaped positional is the usage envelope, before any input is read (never input_not_found).
+        void Usage_(string name, params string[] arguments)
+        {
+            var r = Cli(["mirror-drift-adopt", .. arguments]);
+            Check(r.Exit == 1 && r.Out == UsageEnvelope && Same(flagFiles, Files(flags)), name + " prints exactly the usage envelope", R(r));
+        }
+        Usage_("a non-flag argument after --preview", flags, adoptAllPath, "--preview", "extra");
+        Usage_("--preview before the positionals", "--preview", flags, adoptAllPath);
+        Usage_("`store --preview` (no selection)", flags, "--preview");
+        Usage_("`--preview selection.json` (no store)", "--preview", adoptAllPath);
+        Usage_("an unknown flag in the selection position", flags, "--force");
+
+        // Raw stdout bytes: exactly UTF-8 (no BOM) of the MCP text plus one Environment.NewLine.
+        var rawStore = Store(head);
+        var start = new System.Diagnostics.ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var argument in new[] { cliDll, "mirror-drift-adopt", rawStore, adoptAllPath, "--preview" }) start.ArgumentList.Add(argument);
+        byte[] raw;
+        using (var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start"))
+        {
+            var stderr = process.StandardError.ReadToEndAsync();
+            using var buffer = new MemoryStream();
+            process.StandardOutput.BaseStream.CopyTo(buffer);
+            if (!process.WaitForExit(120000)) process.Kill(true);
+            process.WaitForExit();
+            _ = stderr.Result;
+            raw = buffer.ToArray();
+        }
+        var rawExpected = new UTF8Encoding(false).GetBytes(Mcp(rawStore, adoptAllText).Text + Environment.NewLine);
+        Check(raw.AsSpan().SequenceEqual(rawExpected), "raw stdout bytes are UTF-8 (no BOM) of the MCP text plus Environment.NewLine", raw.Length + " bytes vs " + rawExpected.Length);
         Check(new ProjectStore(flags).Read().Revision == 3, "no flag refusal committed anything");
     }
 }
