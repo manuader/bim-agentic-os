@@ -16,15 +16,20 @@ namespace Bim.Mcp;
 // The text is the CLI stdout line without its newline, byte for byte: the ExecutionPlan JSON on success, or the CLI's
 // typed refusal envelope (diff_intent_usage, input_*, diff_intent_project_invalid, diff_intent_intent_invalid,
 // diff_intent_intent_refused, invalid_ir, invalid_project_identity, edit_bound_exceeded, the diff's library codes,
-// diff_intent_internal_error). isError is true exactly when the CLI would exit 1. An empty or flag-shaped path is
-// diff_intent_usage, as on the CLI; a path that is not valid text (a lone surrogate) is passed as "" and refused the same
-// way. An exception escaping the verb (none is expected) reaches McpServer.CallTool, which prints the CLI top-level
+// diff_intent_internal_error). isError is true exactly when the CLI would exit 1. A flag-shaped path ("--...") is
+// diff_intent_usage, as on the CLI.
+// MCP-only refusal, checked before the verb runs (project_path first, then intent_path): a path that is blank, contains
+// NUL, is longer than MaxPathChars, is rejected by Path.GetFullPath or is not valid text (a lone surrogate) is
+// {"status":"failed","code":"diff_intent_path_invalid","detail":"project"|"intent"} (the audit_verify_path_invalid and
+// skills_lock_path_invalid rule). An exception escaping the verb (none is expected) reaches McpServer.CallTool, which prints the CLI top-level
 // handler's {"status":"failed","code":message}.
 // Read-only: the verb reads both files through BoundedInput and never writes, commits or opens a store; there is no
 // apply_intent tool.
 // The verb writes its line with Console.WriteLine and sets Environment.ExitCode. Run captures Console.Out into a buffer
-// for the call and restores both Console.Out and the exit code afterwards, under a lock (the server handles one request
-// at a time; the lock also serializes direct callers). The stdio server writes JSON-RPC to its own stream (Program.cs),
+// for the call and restores both Console.Out and the exit code afterwards, under a lock. Limit: Console.Out is
+// process-wide, so this is correct only while one request runs at a time in the process. The stdio server handles one
+// request at a time and the lock serializes callers of Run, but any other thread writing Console.Out during a call
+// would have its output captured into the tool text (and would see the exit code set to 0). The stdio server writes JSON-RPC to its own stream (Program.cs),
 // so nothing the verb prints reaches the protocol stream. Its stderr detail for diff_intent_internal_error goes to the
 // server's stderr, as on the CLI.
 internal static class DiffIntentTool
@@ -32,6 +37,8 @@ internal static class DiffIntentTool
     public const string Name = "diff_intent";
     public const string ProjectParameter = "project_path";
     public const string IntentParameter = "intent_path";
+    public const string PathInvalid = "diff_intent_path_invalid";
+    public const int MaxPathChars = 4096;
 
     public sealed record Outcome(bool Succeeded, string Text);
 
@@ -48,6 +55,8 @@ internal static class DiffIntentTool
     {
         ArgumentNullException.ThrowIfNull(projectPath);
         ArgumentNullException.ThrowIfNull(intentPath);
+        if (PathProblem(projectPath)) return new Outcome(false, Failure(PathInvalid, "project"));
+        if (PathProblem(intentPath)) return new Outcome(false, Failure(PathInvalid, "intent"));
         lock (Gate)
         {
             var previousOut = Console.Out;
@@ -68,6 +77,28 @@ internal static class DiffIntentTool
             }
             return new Outcome(exit == 0, Line(captured.ToString()));
         }
+    }
+
+    static bool PathProblem(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path.IndexOf('\0') >= 0 || path.Length > MaxPathChars) return true;
+        try { Path.GetFullPath(path); }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { return true; }
+        return false;
+    }
+
+    static string Failure(string code, string detail)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("status", "failed");
+            writer.WriteString("code", code);
+            writer.WriteString("detail", detail);
+            writer.WriteEndObject();
+        }
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
 
     // The single line the verb printed, without its line terminator.
