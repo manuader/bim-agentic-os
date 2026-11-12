@@ -639,6 +639,36 @@ function Test-PackageSbom([string]$Directory, $Manifest) {
     return $problems.ToArray()
 }
 
+# P10-16: shipped files whose first bytes are an executable image (PE "MZ", ELF 7F 45 4C 46, Mach-O FEEDFACE/FEEDFACF
+# and fat CAFEBABE, each in both byte orders) but whose extension is outside $script:PackageBinaryPattern escape sbom
+# attribution, so they are refused (typed sbom_binary_unclassified naming each path, ordinal order). CAFEBABE is
+# also the Java class-file magic; a .class file is refused the same way (the package ships no Java). Files shorter
+# than a magic number are not executable images of that format.
+$script:PackageExecutableMagics = @(
+    [byte[]](0x4D, 0x5A), [byte[]](0x7F, 0x45, 0x4C, 0x46),
+    [byte[]](0xFE, 0xED, 0xFA, 0xCE), [byte[]](0xCE, 0xFA, 0xED, 0xFE), [byte[]](0xFE, 0xED, 0xFA, 0xCF), [byte[]](0xCF, 0xFA, 0xED, 0xFE),
+    [byte[]](0xCA, 0xFE, 0xBA, 0xBE), [byte[]](0xBE, 0xBA, 0xFE, 0xCA)
+)
+function Test-PackageExecutableMagic([string]$Path) {
+    $head = [byte[]]::new(4)
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $read = 0
+        while ($read -lt $head.Length) { $n = $stream.Read($head, $read, $head.Length - $read); if ($n -le 0) { break }; $read += $n }
+    } finally { $stream.Dispose() }
+    foreach ($magic in $script:PackageExecutableMagics) {
+        if ($read -lt $magic.Length) { continue }
+        $match = $true
+        for ($i = 0; $i -lt $magic.Length; $i++) { if ($head[$i] -ne $magic[$i]) { $match = $false; break } }
+        if ($match) { return $true }
+    }
+    return $false
+}
+function Find-PackageUnclassifiedBinaries([string]$Directory) {
+    $base = [IO.Path]::GetFullPath($Directory)
+    return @(Get-PackageFiles $base | Where-Object { $_ -notmatch $script:PackageBinaryPattern -and (Test-PackageExecutableMagic (Join-Path $base $_)) })
+}
+
 function Write-PackageText([string]$Path, [string]$Text) {
     [IO.File]::WriteAllBytes($Path, [Text.UTF8Encoding]::new($false).GetBytes($Text))
 }
@@ -663,6 +693,8 @@ function Test-PackageManifest([string]$Directory) {
     }
     try { foreach ($problem in @(Test-PackageSbom $base $manifest)) { $problems.Add($problem) } }
     catch { $problems.Add("sbom_invalid: sbom.json could not be checked: $($_.Exception.Message)") }
+    $unclassified = @(Find-PackageUnclassifiedBinaries $base)
+    if ($unclassified.Count) { $problems.Add("sbom_binary_unclassified: executable images (PE/ELF/Mach-O by first bytes) whose extension is not .dll/.exe/.so[.N]/.dylib, so sbom attribution cannot cover them: $($unclassified -join ', ')") }
     $listed = [Collections.Generic.List[string]]::new()
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($entry in @($manifest.files)) {
