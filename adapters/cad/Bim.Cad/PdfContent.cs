@@ -6,6 +6,12 @@ namespace Bim.Cad;
 // path painting (S, s, f, F, f*, B, B*, b, b*, n; W/W* clipping is ignored), text (BT/ET, Tf, TL, Ts, Td, TD, Tm, T*,
 // Tj, TJ, ', ") and Form XObjects (Do). Colour, dash, marked-content and other state operators are accepted and
 // ignored; inline images are skipped. Operand errors are warnings and the operator is skipped.
+// P6-16: Tf resolves the font in the current resources; a font with a /ToUnicode CMap (simple or Type0) decodes shown
+// strings through it (PdfFontDecoder). A Type0 font without one (tounicode-missing) or with an unusable one
+// (tounicode-invalid, as for a simple font; a dangling reference is invalid, /ToUnicode null is absent) keeps the
+// default decoding; both warn once per font and page at the Tf. With a CMap, decoded characters are charged to
+// MaxInterpretedBytes as well as the shown bytes.
+// A Type0 code missing from the CMap becomes U+FFFD with tounicode-unmapped on the showing operator.
 internal sealed class PdfContentInterpreter
 {
     private readonly PdfFile file;
@@ -13,9 +19,10 @@ internal sealed class PdfContentInterpreter
     private readonly List<PdfElement> elements = new();
     private readonly Stack<GraphicsState> stack = new();
     private readonly HashSet<int> activeForms = new();
+    private readonly Dictionary<object, PdfFontDecoder?> fontDecoders = new(ReferenceEqualityComparer.Instance);
     private List<PdfSubpath> subpaths = new();
     private List<PdfSegment> segments = new();
-    private GraphicsState state = new(PdfMatrix.Identity, 1, "", 0, 0, 0);
+    private GraphicsState state = new(PdfMatrix.Identity, 1, "", 0, 0, 0, null);
     private Point2? subpathStart;
     private Point2? current;
     private int stackFloor;
@@ -32,7 +39,7 @@ internal sealed class PdfContentInterpreter
 
     public IReadOnlyList<PdfElement> Elements => elements;
 
-    private readonly record struct GraphicsState(PdfMatrix Ctm, double LineWidth, string FontName, double FontSize, double Leading, double Rise);
+    private readonly record struct GraphicsState(PdfMatrix Ctm, double LineWidth, string FontName, double FontSize, double Leading, double Rise, PdfFontDecoder? Decoder);
 
     // Interprets content as one stream. A page's /Contents array is concatenated (with a white-space byte between
     // parts) as the PDF specification requires, so a path or a token may continue from one part into the next; each
@@ -229,7 +236,8 @@ internal sealed class PdfContentInterpreter
                 inText = false;
                 break;
             case "Tf":
-                if (operands.Count == 2 && operands[0] is PdfName font && operands[1] is PdfNumber size) state = state with { FontName = font.Value, FontSize = size.Value };
+                if (operands.Count == 2 && operands[0] is PdfName font && operands[1] is PdfNumber size)
+                    state = state with { FontName = font.Value, FontSize = size.Value, Decoder = FontDecoder(font.Value, resources, objectNumber, operatorIndex) };
                 else Warn("operand-error", objectNumber, operatorIndex, "Tf expects a font name and a size");
                 break;
             case "TL":
@@ -284,11 +292,20 @@ internal sealed class PdfContentInterpreter
                     // Strings are decoded one by one; an adjustment below -200 thousandths of an em reads as a word space.
                     var joined = new StringBuilder();
                     long byteCount = 0;
+                    var unmapped = false;
                     foreach (var item in pieces)
                     {
-                        if (item is PdfString piece) { joined.Append(DecodeText(piece.Bytes)); byteCount += piece.Bytes.Length; }
+                        if (item is PdfString piece)
+                        {
+                            var decoded = Decode(piece.Bytes, out var missing);
+                            if (state.Decoder is not null) file.ChargeInterpreted(decoded.Length);
+                            joined.Append(decoded);
+                            unmapped |= missing;
+                            byteCount += piece.Bytes.Length;
+                        }
                         else if (item is PdfNumber adjustment && adjustment.Value < -200 && joined.Length > 0 && joined[^1] != ' ') joined.Append(' ');
                     }
+                    if (unmapped) WarnUnmapped(objectNumber, operatorIndex, op);
                     Show(joined.ToString(), byteCount, objectNumber, operatorIndex, op);
                 }
                 else Warn("operand-error", objectNumber, operatorIndex, "TJ expects an array");
@@ -369,7 +386,50 @@ internal sealed class PdfContentInterpreter
     private void Show(byte[] bytes, int objectNumber, int operatorIndex, string op)
     {
         file.ChargeInterpreted(bytes.Length);
-        Show(DecodeText(bytes), 0, objectNumber, operatorIndex, op);
+        var text = Decode(bytes, out var unmapped);
+        if (state.Decoder is not null) file.ChargeInterpreted(text.Length);
+        if (unmapped) WarnUnmapped(objectNumber, operatorIndex, op);
+        Show(text, 0, objectNumber, operatorIndex, op);
+    }
+
+    private string Decode(byte[] bytes, out bool unmapped)
+    {
+        unmapped = false;
+        return state.Decoder is { } decoder ? decoder.Decode(bytes, out unmapped) : DecodeText(bytes);
+    }
+
+    private void WarnUnmapped(int objectNumber, int operatorIndex, string op) =>
+        Warn("tounicode-unmapped", objectNumber, operatorIndex, op + " shows codes that the ToUnicode CMap of font /" + state.FontName + " does not map (U+FFFD)");
+
+    // The decoder of the named font in the current resources, cached per font dictionary for the page; null keeps the
+    // default decoding. Warnings are given once, when the font is first selected on the page.
+    private PdfFontDecoder? FontDecoder(string name, Dictionary<string, object>? resources, int objectNumber, int operatorIndex)
+    {
+        var fonts = file.Resolve(PdfFile.Get(resources, "Font")) as Dictionary<string, object>;
+        var reference = PdfFile.Get(fonts, name);
+        if (file.Resolve(reference) is not Dictionary<string, object> font) return null;
+        if (fontDecoders.TryGetValue(font, out var cached)) return cached;
+        var composite = file.IsName(font, "Subtype", "Type0");
+        var identity = file.Resolve(PdfFile.Get(font, "Encoding")) is PdfName { Value: "Identity-H" or "Identity-V" };
+        var label = "font /" + name + (reference is PdfRef r ? " (object " + r.Number.ToString(CultureInfo.InvariantCulture) + ")" : "");
+        PdfFontDecoder? decoder = null;
+        var toUnicode = PdfFile.Get(font, "ToUnicode");
+        if (toUnicode is null or PdfNull)
+        {
+            if (composite) Warn("tounicode-missing", objectNumber, operatorIndex, label + " is a Type0 font without /ToUnicode; its codes are read as text bytes");
+        }
+        else
+        {
+            var error = "/ToUnicode is not a stream";
+            var cmap = file.Resolve(toUnicode) is PdfStream stream ? file.ToUnicode(stream, page, out error) : null;
+            if (cmap is null)
+            {
+                Warn("tounicode-invalid", objectNumber, operatorIndex, label + " has an unusable /ToUnicode CMap: " + error + "; its codes are read as text bytes");
+            }
+            else decoder = new PdfFontDecoder(composite, identity, cmap);
+        }
+        fontDecoders[font] = decoder;
+        return decoder;
     }
 
     private void Show(string text, long byteCount, int objectNumber, int operatorIndex, string op)

@@ -67,6 +67,7 @@ internal sealed class PdfFile
     private readonly Dictionary<int, int> positions = new();
     private readonly List<Dictionary<string, object>> trailers = new();
     private readonly Dictionary<int, byte[]?> decodedCache = new();
+    private readonly Dictionary<int, (PdfToUnicode? Map, string Error)> toUnicodeCache = new();
     private readonly List<PdfWarning> warnings = new();
     private int objectCount;
     private long decodedTotal;
@@ -441,6 +442,26 @@ internal sealed class PdfFile
     }
 
     // ---------- stream decoding ----------
+
+    // The parsed ToUnicode CMap of a stream (cached per object for the whole document, so each is lexed and charged to
+    // MaxInterpretedBytes once), or null with the reason it is unusable.
+    public PdfToUnicode? ToUnicode(PdfStream stream, int page, out string error)
+    {
+        if (!toUnicodeCache.TryGetValue(stream.ObjectNumber, out var entry))
+        {
+            var content = Decode(stream, page);
+            if (content is null) entry = (null, "its stream cannot be decoded");
+            else
+            {
+                if (content.Length <= PdfToUnicode.MaxBytes) ChargeInterpreted(content.Length);
+                var map = PdfToUnicode.Parse(content, Options.MaxDepth, Budget, out var reason);
+                entry = (map, reason);
+            }
+            toUnicodeCache[stream.ObjectNumber] = entry;
+        }
+        error = entry.Error;
+        return entry.Map;
+    }
 
     // The decoded data of a stream, or null (with a warning) when its filter is unsupported or its data is corrupt.
     public byte[]? Decode(PdfStream stream, int page)
