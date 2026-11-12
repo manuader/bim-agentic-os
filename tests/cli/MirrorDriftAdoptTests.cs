@@ -320,17 +320,20 @@ internal static class MirrorDriftAdoptTests
         }
         // One preview: CLI stdout == MCP text (computed after the CLI run, same store state), exit 0 iff the MCP call is not an error,
         // the store and its directory unchanged by the CLI run.
-        string Equal(string name, string store, string selectionPath, string selectionText, string expectStatus)
+        // lockHeld: the test holds the store lock (FileShare.None), so the store is snapshotted by the caller around the hold.
+        string Equal(string name, string store, string selectionPath, string selectionText, string expectStatus, bool lockHeld = false)
         {
-            var before = Files(store);
+            var before = lockHeld ? null : Files(store);
             var beforeDir = DirTime(store);
             var r = Cli("mirror-drift-adopt", store, selectionPath, "--preview");
-            var afterFiles = Files(store);
+            var afterFiles = lockHeld ? null : Files(store);
             var afterDir = DirTime(store);
             var mcp = Mcp(store, selectionText);
             Check(r.Out == mcp.Text && r.Exit == (mcp.IsError ? 1 : 0), name + ": stdout byte-equal to MCP mirror_drift_adopt without confirm", R(r) + " | mcp " + mcp.Text);
             Check(Outcome(r.Out) == expectStatus, name + ": " + expectStatus, R(r));
-            Check(Same(before, afterFiles) && beforeDir == afterDir, name + ": store file names, bytes, mtimes and directory mtime unchanged", Names(before) + " -> " + Names(afterFiles));
+            if (before is not null && afterFiles is not null)
+                Check(Same(before, afterFiles) && beforeDir == afterDir, name + ": store file names, bytes, mtimes and directory mtime unchanged", Names(before) + " -> " + Names(afterFiles));
+            else Check(beforeDir == afterDir, name + ": store directory mtime unchanged");
             return r.Out;
         }
 
@@ -351,8 +354,11 @@ internal static class MirrorDriftAdoptTests
         Check(!Directory.Exists(never), "a restore-only preview never creates the store");
         // A held store lock does not block the preview (no lock taken); it still says would_commit.
         var locked = Store(head);
+        var lockedBefore = Files(locked);
+        var lockedDir = DirTime(locked);
         using (new FileStream(Path.Combine(locked, "lock"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-            Equal("a store whose lock is held", locked, adoptAllPath, adoptAllText, "planned/would_commit");
+            Equal("a store whose lock is held", locked, adoptAllPath, adoptAllText, "planned/would_commit", lockHeld: true);
+        Check(Same(lockedBefore, Files(locked)) && lockedDir == DirTime(locked), "a store whose lock is held: file names, bytes, mtimes and directory mtime unchanged after the hold", Names(Files(locked)));
         // Refusals: the plan-mode text, exit 1, store unchanged.
         Equal("a stale selection", store, partialPath, File.ReadAllText(partialPath), "failed/");
         Check(Code(Cli("mirror-drift-adopt", store, partialPath, "--preview").Out) == MirrorDriftAdoptCodes.StaleRevision, "a stale selection previews drift_adopt_stale_revision");
