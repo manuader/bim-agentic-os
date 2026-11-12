@@ -26,8 +26,10 @@ namespace Bim.Cli;
 // Input: read through BoundedInput (8 MiB cap, input_* codes), then BriefParser.Parse (its own 262144-character cap).
 // The brief must have constraints.site (the planner's footprint) and no BriefValidator error.
 //
-// Pack (P7-13, only with --pack): the manifest is found by the repository-only SkillPackLookup.Load(id) (generate-prototypes
-// alone tries the release package root first, P7-12): <repository>/skills/<id>/skill.json, the repository being the first ancestor of the CLI binary holding global.json;
+// Pack (P7-13, only with --pack): the manifest is found by SkillPackLookup.Load(id, packageFirst: true), as generate-prototypes
+// reads its pack (P7-15): <package>/skills/<id>/skill.json when the CLI binary's directory is <package>/cli and <package>
+// holds the VERSION and manifest.json markers and a skills/ directory (a stray skills/ elsewhere is ignored), else
+// <repository>/skills/<id>/skill.json, the repository being the first ancestor of the CLI binary holding global.json;
 // BoundedInput 8 MiB read, SkillParser 65536-character cap, the manifest's id must be the requested one). Its rules
 // become SpacePlanner rules the way TypologyRules.From (P5-13) maps one pack, without the typology template rules:
 // 1. Candidates are the pack's rules with severity error, op min, property area_m2 or min_side_m and a room target;
@@ -44,7 +46,7 @@ namespace Bim.Cli;
 //    "rules[<index>] <Reference>" in the area_min / side_min constraint details of the written plans (the trace).
 // A pack whose candidates match no brief room plans with no rules (today's bytes) and reports pack_rules 0. Minimums
 // above a brief room's maximum are the planner's area_range_conflict (an infeasible set), not a refusal.
-// Without --pack nothing is read from the repository and the file and stdout are byte-identical to P7-11.
+// Without --pack nothing is read from the package or repository and the file and stdout are byte-identical to P7-11.
 //
 // Success: the file is written and stdout is {"status":"succeeded","kind":"plan-layouts","scope":"proposal_only",
 // "persisted":false,"set_status":"ranked"|"infeasible","requested":n,"seed":s,"ranked":k,"alternatives":m,"bytes":b,
@@ -57,18 +59,18 @@ namespace Bim.Cli;
 //   --pack is plan_layouts_option_duplicate, a missing value plan_layouts_option_value_missing), output_* (GltfExportCommand.OutputProblem with .json; output_exists
 //   and output_io_error at the write), input_* (BoundedInput), plan_layouts_brief_invalid (detail: "<BriefCodes code> at
 //   <field>" from BriefParser or the first BriefValidator error), plan_layouts_site_required,
-//   plan_layouts_pack_repository_not_found, plan_layouts_pack_unavailable (detail: the manifest's input_* code, e.g.
+//   plan_layouts_pack_repository_not_found (neither a package root with skills/ nor a repository), plan_layouts_pack_unavailable (detail: the manifest's input_* code, e.g.
 //   input_not_found for an unknown pack), plan_layouts_pack_invalid (detail: the SkillCodes code, or "id"),
 //   plan_layouts_pack_rules_none, plan_layouts_pack_rule_invalid,
 //   plan_layouts_refused (with "refusals":[{"code","subject","detail"}], the set's refusals; unreachable with the bounds
 //   above), plan_layouts_internal_error (stderr gets the exception type and message).
-// Precedence: usage, options, output path, input read, brief parse, site, brief validation, pack (repository, read,
+// Precedence: usage, options, output path, input read, brief parse, site, brief validation, pack (package or repository, read,
 // parse, id, rules), planning, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
 internal static class PlanLayoutsCommand
 {
     public const string Usage = "usage: plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id] (n in 1..64, default 4; s an int32, default 0; "
-        + "seeds s+i; the brief needs constraints.site; --pack plans with the error-severity area_m2/min_side_m room minimums of <repository>/skills/<id>/skill.json)";
+        + "seeds s+i; the brief needs constraints.site; --pack plans with the error-severity area_m2/min_side_m room minimums of skills/<id>/skill.json in the release package, else the repository)";
     public const string UsageCode = "plan_layouts_usage";
     public const string OptionUnknown = "plan_layouts_option_unknown";
     public const string OptionDuplicate = "plan_layouts_option_duplicate";
@@ -123,7 +125,7 @@ internal static class PlanLayoutsCommand
         if (packId is not null)
         {
             SkillManifest pack;
-            try { pack = SkillPackLookup.Load(packId); }
+            try { pack = SkillPackLookup.Load(packId, packageFirst: true); }
             catch (SkillPackException error)
             {
                 throw error.Problem switch
