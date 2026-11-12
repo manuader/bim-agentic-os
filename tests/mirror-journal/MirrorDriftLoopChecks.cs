@@ -121,6 +121,7 @@ static class MirrorDriftLoopChecks
         var journalFirst = RunJournalLoop(root, dotnet, pwsh, cliDll, runDirectory, 1, report: true);
         var journalSecond = RunJournalLoop(root, dotnet, pwsh, cliDll, runDirectory, 2, report: false);
         Same(journalFirst, journalSecond, "journal: ");
+        FakeOptionChecks(root, pwsh);
     }
 
     static void Same(Loop? first, Loop? second, string scenario)
@@ -166,7 +167,10 @@ static class MirrorDriftLoopChecks
     }
 
     // .NET pipes on Unix are sockets under the temp directory; both processes use the same short one (108-byte limit).
-    static void Unix(ProcessStartInfo start) { if (!OperatingSystem.IsWindows()) start.Environment["TMPDIR"] = "/tmp"; }
+    const string UnixTemp = "/tmp";
+    // .NET names a pipe's Unix socket <temp>/CoreFxPipe_<name>; with TMPDIR=UnixTemp both sides agree on it.
+    const string UnixPipePrefix = UnixTemp + "/CoreFxPipe_";
+    static void Unix(ProcessStartInfo start) { if (!OperatingSystem.IsWindows()) start.Environment["TMPDIR"] = UnixTemp; }
 
     // One run's processes and files: a scratch directory, an empty document under the run directory, the fake add-in
     // behind a fresh pipe (serving exactly maxRequests requests and logging their operation ids) and the CLI calls, all
@@ -275,20 +279,29 @@ static class MirrorDriftLoopChecks
                 writer.WriteEndObject();
                 writer.WriteEndObject();
             }
-            var line = Utf8.GetString(buffer.ToArray());
+            return Raw(Utf8.GetString(buffer.ToArray()));
+        }
+
+        // Any wire line as it is; a transport failure (no listener, broken pipe, timeout) answers a "<wire failed: ...>"
+        // marker instead of throwing, so the check that reads the reply fails by name.
+        public string Raw(string line)
+        {
             Write("journal-read", line);
-            var reply = Wire(line);
+            string reply;
+            try { reply = Wire(line); }
+            catch (Exception error) when (error is IOException or SocketException or TimeoutException or UnauthorizedAccessException or InvalidOperationException)
+            { reply = "<wire failed: " + error.GetType().Name + ": " + error.Message + ">"; }
             Write("journal-reply", reply);
             return reply;
         }
 
         // One line out, one line back. Windows: the named pipe through Core's transport. Elsewhere .NET pipes are Unix
-        // sockets named <temp>/CoreFxPipe_<name>; the fake listens under TMPDIR=/tmp (Unix above), so connect there.
+        // sockets named <temp>/CoreFxPipe_<name>; the fake listens under TMPDIR=UnixTemp (Unix above), so connect there.
         string Wire(string line)
         {
             var wait = TimeSpan.FromMilliseconds(Math.Max(1, Budget()));
             if (OperatingSystem.IsWindows()) return RevitCommandService.PipeTransport(pipe, line, wait) ?? "";
-            var endpoint = new UnixDomainSocketEndPoint("/tmp/CoreFxPipe_" + pipe);
+            var endpoint = new UnixDomainSocketEndPoint(UnixPipePrefix + pipe);
             var until = DateTime.UtcNow.AddSeconds(5);
             while (true)
             {
@@ -696,18 +709,23 @@ static class MirrorDriftLoopChecks
         Check(uidA != uidB && uidC != uidA && uidC != uidB, "three distinct walls were created");
 
         // ---- The fake's journal.read options: paging, baseline moves only without peek, after_sequence bound ----
-        var page1 = MirrorDrift.ParseJournal(Journal(0, maxEntries: 2));
+        var page1Reply = Journal(0, maxEntries: 2);
+        var page1 = MirrorDrift.ParseJournal(page1Reply);
         var page2 = MirrorDrift.ParseJournal(Journal(2, maxEntries: 2));
         Check(page1.Entries.Select(entry => entry.Sequence).SequenceEqual(new long[] { 1, 2 }) && page1.HasMore && page1.Complete
             && page2.Entries.Select(entry => entry.Sequence).SequenceEqual(new long[] { 3 }) && !page2.HasMore && page2.AfterSequence == 2,
             "max_entries 2 pages the journal: sequences 1-2 with has_more, then 3 from after_sequence 2");
-        Check(Member(Journal(0, maxEntries: 2), "next_after_sequence") == 2, "a capped reply's next_after_sequence is its last entry's sequence");
+        Check(Member(page1Reply, "next_after_sequence") == 2, "a capped reply's next_after_sequence is its last entry's sequence");
         var consume = Journal(null, peek: false);
         Check(MirrorDrift.ParseJournal(consume) is { Entries.Count: 3, Peek: false, AfterSequence: 0 } && Member(consume, "baseline_sequence") == 0 && Flag(consume, "baseline_existed") == false,
             "a read without peek and without after_sequence starts at the (absent) baseline: all three entries, baseline_existed false", Head(consume));
         var after = Journal(null, peek: false);
         Check(MirrorDrift.ParseJournal(after) is { Entries.Count: 0, AfterSequence: 3, CurrentSequence: 3 } && Member(after, "baseline_sequence") == 3 && Flag(after, "baseline_existed") == true,
             "the next read without peek starts at the moved baseline (sequence 3): no entries, baseline_existed true", Head(after));
+        // Duplicate option names are refused like MirrorJournalReadOptions.Parse, and the fake keeps serving (next read).
+        var duplicate = h.Raw("{\"DocumentPath\":" + JsonSerializer.Serialize(document) + ",\"Operation\":\"journal.read\",\"UniqueId\":null,\"Metres\":[],\"Journal\":{\"peek\":true,\"peek\":true}}");
+        replies.Append(duplicate).Append('\n');
+        Check(Text(duplicate, "status") == "failed" && Text(duplicate, "code") == "journal_options_invalid duplicate peek", "a Journal with a duplicate member answers journal_options_invalid duplicate peek", duplicate);
         var past = Journal(4);
         Check(Text(past, "status") == "failed" && Text(past, "code") == "journal_after_sequence_invalid", "after_sequence past the journal's last sequence is refused journal_after_sequence_invalid like JournalRecorder", past);
 
@@ -716,7 +734,81 @@ static class MirrorDriftLoopChecks
         Check(finished, "the fake add-in exits 0 after exactly " + JournalRequests.Length + " requests", how);
         var received = h.Received();
         Check(received.SequenceEqual(JournalRequests), "the fake add-in received the expected operation ids in order", string.Join(",", received));
+        // A journal read with no fake listening answers the wire-failure marker within the 5 s connect bound, no throw.
+        var clock = Stopwatch.StartNew();
+        var gone = h.Journal(0);
+        clock.Stop();
+        Check(gone.StartsWith("<wire failed: ", StringComparison.Ordinal) && clock.Elapsed < TimeSpan.FromSeconds(6.5),
+            "a journal read after the fake add-in exited answers <wire failed: ...> within about 6 s", gone + " after " + clock.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture) + " s");
         return new Loop(Readback(snapshot0.Out), Readback(snapshot1.Out), drift1Text, selectionText, adopt.Out, projectJson, Readback(snapshot2.Out), drift2Text, replies.ToString());
+    }
+
+    // P2-18 review: the fake executor in process (dot-sourced into one pwsh), for branches the pipe loop does not reach:
+    // -ExternalEdits with no ids is off (an after_sequence is ignored, as without the option); option names are exact
+    // case, a non-object Journal and duplicate names are refused with MirrorJournalReadOptions.Parse's codes (no throw);
+    // a dry run of an external id records nothing, a replay records nothing more, and element.set_parameter under an
+    // external id answers fake_external_unsupported.
+    const string OptionScript = """
+        param([string]$Executor, [string]$DocumentUid)
+        $ErrorActionPreference = 'Stop'
+        . $Executor
+        $document = '/fake/Drift-Options.rvt'
+        function Line([string]$Journal) { '{"DocumentPath":"' + $document + '","Operation":"journal.read","UniqueId":null,"Metres":[],"Journal":' + $Journal + '}' }
+        function Env([string]$Id, [string]$Command, [string]$Arguments) { '{"protocol_version":1,"operation_id":"' + $Id + '","document":{"path":"' + $document + '","unique_id":"' + $DocumentUid + '"},"command":"' + $Command + '","args":' + $Arguments + '}' }
+        function Wire($State, [string]$Line) { try { Invoke-FakeRevitWire $State $Line } catch { '<threw: ' + $_.Exception.Message + '>' } }
+        function Member([string]$Reply, [string]$Name) { try { $value = ($Reply | ConvertFrom-Json).$Name; if ($null -eq $value) { '' } else { [string]$value } } catch { $Reply } }
+        $r = [ordered]@{}
+        foreach ($case in @(@{ Key = 'empty_array'; Ids = [string[]]@() }, @{ Key = 'empty_string'; Ids = [string[]]@('') }, @{ Key = 'blank'; Ids = [string[]]@(' ', '') })) {
+            $s = New-FakeRevitState $DocumentUid @{} $case.Ids
+            $reply = Wire $s (Line '{"peek":true,"after_sequence":5}')
+            $r[$case.Key] = (Member $reply 'status') + '/' + $(try { [string]($reply | ConvertFrom-Json).report.after_sequence } catch { $reply }) + '/' + [string]($null -eq $s.ExternalEdits)
+        }
+        $s = New-FakeRevitState $DocumentUid @{} @('ext-move', 'ext-delete', 'ext-param')
+        $r.case_name = Member (Wire $s (Line '{"Peek":true}')) 'code'
+        $r.non_object = Member (Wire $s (Line '5')) 'code'
+        $r.duplicate = Member (Wire $s (Line '{"peek":true,"peek":false}')) 'code'
+        $r.after_refusals = Member (Wire $s (Line '{"peek":true}')) 'status'
+        $wall = Invoke-FakeRevitCommand $s (Env 'seed-wall' 'wall.create' '{"level":"L1","type":"T1","height_mm":3000,"curve":{"kind":"line","start":[0,0],"end":[1000,0]}}')
+        $uid = [string]@(($wall | ConvertFrom-Json).created)[0]
+        $dry = Invoke-FakeRevitCommand $s (Env 'ext-delete' 'element.delete' ('{"element_uids":["' + $uid + '"],"dry_run":true}'))
+        $r.dry = (Member $dry 'status') + '/' + $s.Journal.Count
+        $move = Env 'ext-move' 'element.move' ('{"element_uids":["' + $uid + '"],"vector_mm":[500,0,0]}')
+        $first = Invoke-FakeRevitCommand $s $move
+        $again = Invoke-FakeRevitCommand $s $move
+        $r.replay = (Member $first 'status') + '/' + [string]($again | ConvertFrom-Json).receipt.replayed + '/' + $s.Journal.Count
+        $param = Invoke-FakeRevitCommand $s (Env 'ext-param' 'element.set_parameter' ('{"element_uid":"' + $uid + '","parameter":{"name":"Comments"},"value":{"kind":"text","text":"x"}}'))
+        $r.set_parameter = (Member $param 'code') + '/' + $s.Journal.Count + '/' + $s.SkippedAddIn
+        $r | ConvertTo-Json -Compress
+        """;
+
+    static void FakeOptionChecks(string root, string pwsh)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "fake options: " + name, detail);
+        var scratch = Path.Combine(Path.GetTempPath(), "bim-drift-options-" + Guid.NewGuid().ToString("N"));
+        Temporary.Add(scratch);
+        Directory.CreateDirectory(scratch);
+        var script = Path.Combine(scratch, "options.ps1");
+        File.WriteAllText(script, OptionScript, Utf8);
+        var start = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = Utf8 };
+        foreach (var argument in new[] { "-NoProfile", "-File", script, "-Executor", Path.Combine(root, "tests", "integration", "fake-revit-command-executor.ps1"), "-DocumentUid", DocumentUid }) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("pwsh did not start");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(CallTimeoutMs)) { Kill(process); Check(false, "the in-process option script finishes", "timed out"); return; }
+        process.WaitForExit();
+        var output = stdout.Result.Trim();
+        if (process.ExitCode != 0 || !output.StartsWith('{')) { Check(false, "the in-process option script runs", "exit " + process.ExitCode + " " + output + " " + stderr.Result.ReplaceLineEndings(" ")); return; }
+        using var parsed = JsonDocument.Parse(output);
+        string R(string name) => parsed.RootElement.TryGetProperty(name, out var value) ? value.GetString() ?? "" : "<missing>";
+        foreach (var key in new[] { "empty_array", "empty_string", "blank" })
+            Check(R(key) == "succeeded/0/True", "-ExternalEdits with no ids (" + key + ") is off: after_sequence 5 ignored as without the option", R(key));
+        Check(R("case_name") == "journal_options_invalid Peek", "option names are exact case: Peek is refused journal_options_invalid Peek", R("case_name"));
+        Check(R("non_object") == "journal_options_invalid options must be an object", "a non-object Journal (5) is refused journal_options_invalid options must be an object", R("non_object"));
+        Check(R("duplicate") == "journal_options_invalid duplicate peek", "a duplicate option name is a typed refusal, not a throw", R("duplicate"));
+        Check(R("after_refusals") == "succeeded", "the fake answers a valid read after the refusals", R("after_refusals"));
+        Check(R("dry") == "succeeded/0", "a dry run under an external id records no journal entry", R("dry"));
+        Check(R("replay") == "succeeded/True/1", "an external move and its replay leave exactly one journal entry (the replay is flagged replayed)", R("replay"));
+        Check(R("set_parameter") == "fake_external_unsupported/1/1", "element.set_parameter under an external id answers fake_external_unsupported and records nothing", R("set_parameter"));
     }
 
     static readonly JsonSerializerOptions Relaxed = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
