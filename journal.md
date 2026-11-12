@@ -1499,3 +1499,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 09:52Z LOCK taken (was FREE; relay197 released 2026-11-12T09:41:15Z).
 - 09:53Z picked P4-14 (phase 4), P2-19 (phase 2), P10-16 (phase 10) — oldest-touched (relay194); P1-18 waits (shares test-catalogue-session.ps1 with P4-14). Workers starting on relay198-<ID>.
 - 11:05Z workers green: P2-19 8fbc54e (red 43195815206, green 43199978494; 1 attempt: test held lock FileShare.None vs its own snapshot), P10-16 00315a5 (red 43195694182, green 43201257316; 1 attempt: own MZ-text fixture contradicted spec), P4-14 3fe764f (red 43198296774, green 43202889177; 3 test-harness attempts; also touched tests/cli/catalogue-report-record.ps1). Next: independent reviews.
+- 11:08Z reviews: P4-14 1 blocker (owner-native-session.ps1 never passes -InvokeDocUpdate) + 5 should-fix; P2-19 0 blockers, 2 should-fix; P10-16 0 blockers, 4 should-fix. Fixes sent to workers.
