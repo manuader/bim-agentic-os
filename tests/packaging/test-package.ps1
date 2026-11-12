@@ -14,6 +14,9 @@
 # repository, reads its pack from there byte-equal to the repository run, and refuses repository_not_found without it;
 # a tracked skills/ entry that is not a regular file (symlink, submodule) is refused (skills_entry_not_regular).
 # P10-16: a PE/ELF/Mach-O file (first bytes) outside .dll/.exe/.so[.N]/.dylib is refused (sbom_binary_unclassified).
+# P10-17: a manifest-listed file that cannot be read is manifest_file_unreadable (never an exception); a FIFO or socket
+# is refused by file type before any open (package_special_file), with every such run time-bounded so a regression
+# fails instead of hanging; mkfifo/socket cases are counted SKIPs where unavailable (Windows).
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -52,6 +55,24 @@ function Invoke-ScriptWithTemp([string]$TempDirectory, [string]$Script, [string[
     finally { foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') } }
 }
 function Get-BuildTrees([string]$Directory) { @(Get-ChildItem -LiteralPath $Directory -Force -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'bim-package-src-*' }) }
+# Like Invoke-Script but bounded: a child still running after $TimeoutSeconds (e.g. blocked opening a FIFO) is killed
+# and reported as TimedOut instead of hanging the whole test run.
+function Invoke-ScriptBounded([string]$Script, [string[]]$Arguments, [int]$TimeoutSeconds = 90) {
+    $info = [Diagnostics.ProcessStartInfo]::new($pwsh)
+    foreach ($argument in @('-NoProfile', '-File', $Script) + @($Arguments)) { $info.ArgumentList.Add($argument) }
+    $info.UseShellExecute = $false; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($info)
+    try {
+        $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+        if (!$process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill($true) } catch { }
+            [void]$process.WaitForExit(10000)
+            return [pscustomobject]@{ Code = -1; TimedOut = $true; Output = "timed out after $TimeoutSeconds s (killed)" }
+        }
+        $process.WaitForExit()
+        return [pscustomobject]@{ Code = $process.ExitCode; TimedOut = $false; Output = ($stdout.Result + "`n" + $stderr.Result) }
+    } finally { $process.Dispose() }
+}
 function Get-Tail([string]$Text) { $t = $Text -replace '[\r\n]+', ' | '; if ($t.Length -gt 600) { $t.Substring($t.Length - 600) } else { $t } }
 function Get-Inventory([string]$Directory) {
     $base = [IO.Path]::GetFullPath($Directory)
@@ -540,6 +561,85 @@ try {
             }
             & chmod 644 $locked
         }
+        # P10-17: a manifest-listed file that cannot be read to hash it is a typed manifest_file_unreadable problem naming
+        # it, never a PowerShell exception, whatever other check would also open it (.bin: the P10-16 magic scan; .json:
+        # the forbidden-content scan). Needs a POSIX mode the runner user cannot read through.
+        Write-Host "P10-17 pwsh $($PSVersionTable.PSVersion) on $([Runtime.InteropServices.RuntimeInformation]::OSDescription)"
+        $p17Run = 0; $p17Skip = 0; $p17FifoSkip = 0
+        foreach ($listed in @('cli/listed-locked.bin', 'skills/listed-locked.json')) {
+            if ($IsWindows) { $p17Skip++; Write-Host "SKIP P10-17 listed unreadable $listed`: no POSIX file modes on Windows"; continue }
+            $copy = Join-Path $work ('special case unreadable ' + ($listed -replace '[/.]', ' '))
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            $locked = Join-Path $copy $listed
+            try { Write-TestBytes $copy $listed ([Text.Encoding]::ASCII.GetBytes('listed')); Write-TestSbom $copy $tRefs } catch { $failures.Add("P10-17 listed unreadable $listed setup failed: $($_.Exception.Message)"); continue }
+            & chmod 000 $locked
+            $stillReadable = $true
+            try { [IO.File]::OpenRead($locked).Dispose() } catch { $stillReadable = $false }
+            if ($stillReadable) { $p17Skip++; Write-Host "SKIP P10-17 listed unreadable $listed`: a mode-000 file is still readable here (root?)" }
+            else {
+                $p17Run++
+                $run = Invoke-ScriptBounded $verifier @('-PackageDirectory', $copy)
+                $want = 'manifest_file_unreadable: [^\r\n]*(: |, )' + [regex]::Escape($listed) + '(,|\r|\n|$)'
+                Assert (!$run.TimedOut -and $run.Code -eq 1 -and $run.Output -match $want -and $run.Output -notmatch '(?i)exception|FullyQualifiedErrorId' -and $run.Output -notmatch ('sha256 mismatch: ' + [regex]::Escape($listed))) "P10-17: package-verify must report a manifest-listed unreadable file as manifest_file_unreadable naming $listed, not throw: $(Get-Tail $run.Output)"
+            }
+            & chmod 644 $locked
+        }
+        # Non-regular files are refused by file type (lstat-style metadata) before anything opens them: opening a FIFO
+        # for read blocks until a writer appears, so each run is bounded and a hang is a failure. Fixtures sit where each
+        # existing check would open them: .bin (P10-16 magic scan), .json (forbidden-content scan), .dll (sbom hashing),
+        # and a manifest-listed path (manifest hashing: a regular file listed, then replaced by a FIFO).
+        $mkfifo = if (!$IsWindows) { Get-Command mkfifo -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source }
+        $fifoCases = @(
+            @{ Name = 'unlisted bin'; Paths = @('cli/pipe.bin'); Listed = $false },
+            @{ Name = 'unlisted json'; Paths = @('skills/pipe.json'); Listed = $false },
+            @{ Name = 'unlisted dll'; Paths = @('cli/Pipe.Thing.dll'); Listed = $false },
+            @{ Name = 'manifest listed'; Paths = @('cli/listed-pipe.dat'); Listed = $true },
+            @{ Name = 'several ordinal'; Paths = @('cli/a.pipe', 'cli/B.pipe'); Listed = $false; Expect = 'cli/B\.pipe \(fifo\), cli/a\.pipe \(fifo\)' }
+        )
+        foreach ($case in $fifoCases) {
+            if (!$mkfifo) { $p17Skip++; $p17FifoSkip++; Write-Host "SKIP P10-17 fifo $($case.Name): mkfifo is not available here"; continue }
+            $copy = Join-Path $work ('special case fifo ' + $case.Name)
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            $made = [Collections.Generic.List[string]]::new()
+            try {
+                if ($case.Listed) { foreach ($path in $case.Paths) { Write-TestBytes $copy $path ([byte[]]@()) }; Write-TestSbom $copy $tRefs }
+                foreach ($path in $case.Paths) {
+                    $full = Join-Path $copy $path
+                    New-Item -ItemType Directory -Force (Split-Path $full) | Out-Null
+                    if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Force }
+                    & $mkfifo $full
+                    if ($LASTEXITCODE -ne 0) { throw "mkfifo $path exited $LASTEXITCODE" }
+                    $made.Add($full)
+                }
+            } catch { $failures.Add("P10-17 fifo $($case.Name) setup failed: $($_.Exception.Message)"); foreach ($full in $made) { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }; continue }
+            $p17Run++
+            $run = Invoke-ScriptBounded $verifier @('-PackageDirectory', $copy)
+            $named = if ($case.Expect) { $case.Expect } else { [regex]::Escape($case.Paths[0]) + ' \(fifo\)' }
+            Assert (!$run.TimedOut -and $run.Code -eq 1 -and $run.Output -match ('package_special_file: [^\r\n]*(: |, )' + $named + '(,|\r|\n|$)') -and $run.Output -notmatch '(?i)exception|FullyQualifiedErrorId') "P10-17: package-verify must refuse fifo $($case.Name) as package_special_file naming $($case.Paths -join ', ') without opening it (timed out: $($run.TimedOut)): $(Get-Tail $run.Output)"
+            # Unlink the FIFOs so no later recursive traversal of the work tree can open one.
+            foreach ($full in $made) { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }
+        }
+        # A Unix domain socket file (BCL Socket.Bind) is refused the same way; opening one fails rather than blocks.
+        if ($IsWindows) { $p17Skip++; Write-Host 'SKIP P10-17 socket: Windows AF_UNIX sockets are reparse points, already refused as links' }
+        else {
+            $copy = Join-Path $work 'special case socket'
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            $full = Join-Path $copy 'cli/sock.bin'
+            $socket = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::Unix, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Unspecified)
+            try {
+                $bound = $false
+                try { $socket.Bind([Net.Sockets.UnixDomainSocketEndPoint]::new($full)); $bound = $true }
+                catch { $p17Skip++; Write-Host "SKIP P10-17 socket: cannot bind a Unix domain socket at $full`: $($_.Exception.Message)" }
+                if ($bound) {
+                    $p17Run++
+                    $run = Invoke-ScriptBounded $verifier @('-PackageDirectory', $copy)
+                    Assert (!$run.TimedOut -and $run.Code -eq 1 -and $run.Output -match 'package_special_file: [^\r\n]*(: |, )cli/sock\.bin \(socket\)(,|\r|\n|$)' -and $run.Output -notmatch '(?i)exception|FullyQualifiedErrorId') "P10-17: package-verify must refuse a socket file as package_special_file naming cli/sock.bin (socket): $(Get-Tail $run.Output)"
+                }
+            } finally { $socket.Dispose(); Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }
+        }
+        Write-Host "P10-17 unreadable/special-file cases: $p17Run run, $p17Skip skipped"
+        if ($IsLinux -and $env:GITHUB_ACTIONS -eq 'true') { Assert ($p17FifoSkip -eq 0) "P10-17: mkfifo must be available on the Linux CI runner (fifo cases skipped: $p17FifoSkip)" }
+        Assert ($tClean.Output -notmatch 'package_special_file|manifest_file_unreadable') "P10-17: a consistent synthetic package must not report package_special_file or manifest_file_unreadable: $(Get-Tail $tClean.Output)"
         Assert ($tClean.Output -notmatch 'sbom_manifest_mismatch') "P10-15: a consistent synthetic package (including a first-party native named only by its deps.json project entry) must not report sbom_manifest_mismatch: $(Get-Tail $tClean.Output)"
 
         # Without an assets file the P10-13 behaviour is unchanged: direct references only, no recorded files.
