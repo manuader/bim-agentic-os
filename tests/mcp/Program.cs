@@ -72,7 +72,7 @@ Check(server.Handle("""{"jsonrpc":"2.0","method":"notifications/unknown","params
 
 var list=Call(Request(2,"tools/list",null));
 var tools=list["result"]!["tools"]!.AsArray();
-Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, mirror_drift_select, mirror_drift_adopt, skills_lock_verify, audit_verify, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
+Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,diff_intent,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, mirror_drift_select, mirror_drift_adopt, skills_lock_verify, audit_verify, diff_intent, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
 Check(RevitCommandCatalogue.V1.Select(c=>c.ToolName).SequenceEqual(new[]{"revit_query_levels","revit_query_wall_types","revit_query_floor_types","revit_query_family_symbols","revit_wall_create","revit_opening_place","revit_floor_create","revit_room_create"}),"catalogue v1 tool names are the eight ADR0009 commands");
 Check(tools.All(t=>t!["inputSchema"]!["type"]!.GetValue<string>()=="object" && t!["inputSchema"]!["properties"] is JsonObject && t!["inputSchema"]!["required"] is JsonArray && !string.IsNullOrWhiteSpace(t!["description"]!.GetValue<string>())),"every tool has a JSON Schema object inputSchema and description");
 string Required(string tool)=>string.Join(",",tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!["inputSchema"]!["required"]!.AsArray().Select(x=>x!.GetValue<string>()));
@@ -118,7 +118,7 @@ foreach(var spec in RevitCommandCatalogue.All) {
     else if(writesFiles) Check(annotations!.Count==3 && annotations["destructiveHint"]?.GetValue<bool>()==false && annotations["idempotentHint"]?.GetValue<bool>()==false,spec.ToolName+" writes new files on every call: destructiveHint false, idempotentHint false");
     else Check(annotations!.Count==1,spec.ToolName+" read annotations carry only readOnlyHint");
 }
-Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal) && t!["name"]!.GetValue<string>()!="audit_verify" && t!["name"]!.GetValue<string>()!="mirror_drift_adopt").All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools other than audit_verify and mirror_drift_adopt carry no permission level or annotations");
+Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal) && t!["name"]!.GetValue<string>()!="audit_verify" && t!["name"]!.GetValue<string>()!="diff_intent" && t!["name"]!.GetValue<string>()!="mirror_drift_adopt").All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools other than audit_verify, diff_intent and mirror_drift_adopt carry no permission level or annotations");
 Check(McpServer.PermissionLevelName(PermissionLevel.Read)=="read" && McpServer.PermissionLevelName(PermissionLevel.WriteCopies)=="write-copies" && McpServer.PermissionLevelName(PermissionLevel.WriteRealProject)=="write-real-project","PermissionLevelName names the three P10-03 levels");
 var outOfRange=false;
 try { McpServer.PermissionLevelName((PermissionLevel)99); } catch(ArgumentOutOfRangeException) { outOfRange=true; }
@@ -130,7 +130,7 @@ string? BuildError(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpS
 string? NameError(params string[] names) { try { McpServer.CheckToolNames(names); return null; } catch(InvalidOperationException error) { return error.Message; } }
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)}) is null,"an injected catalogue with distinct valid names builds");
 var syntheticServer=new McpServer(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)},RevitCommandPolicy.None,null,null);
-Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
+Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,diff_intent,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
 Check(BuildError(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")})=="tool_name_duplicate: revit_a_b_c","colliding tool names (a.b_c vs a_b.c) fail closed at construction");
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("query.levels")})=="tool_name_duplicate: revit_query_levels","a duplicated command fails closed at construction");
 Check(BuildError(new[]{Synthetic("a b")})=="tool_name_invalid: revit_a b","a tool name outside [a-zA-Z0-9_-] fails closed at construction");
@@ -1433,6 +1433,153 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
         Check(string.Join(",",McpServer.CoreParameterNames(core,true))==Required(core) && McpServer.CoreParameterNames(core,true).SequenceEqual(McpServer.CoreParameterNames(core,false)),core+" requires all of its parameters, as listed");
     var auditWriter=ToolCall("audit_write_anchor",new JsonObject());
     Check(IsError(auditWriter) && Text(auditWriter)=="""{"status":"failed","code":"unknown_tool"}""","MCP exposes no anchor writer");
+}
+
+// P3-14 diff_intent: the read-only MCP face of the P3-12 CLI verb diff-intent, built on the very same code path
+// (interfaces/cli/DiffIntentCommand.cs and its P3-13 shared helper interfaces/cli/IntentPlan.cs, linked into the server,
+// no copied plan logic). The tool text equals the CLI stdout byte for byte on the same project and intent files, for
+// plans and for every typed diff_intent_* / input_* / library refusal; isError exactly when the CLI exits 1; it never
+// writes the project, the intent or anything beside them; tools/list labels it permission level read.
+{
+    var diRoot=Path.Combine(cliDir,"diff-intent"); Directory.CreateDirectory(diRoot);
+    var diExit=Environment.ExitCode;
+    var diProjectId=Guid.Parse("00000000-0000-0000-0000-0000000000c3");
+    var diSource=new Provenance("mcp diff_intent fixture","specified");
+    IntentRoom DiRoom(string key,double x,double y,double width,double depth,string level="l0")=>new(key,"Room "+key,level,"a",x,y,width,depth);
+    IntentOpening DiWindow(string key,IntentHost host,double offset,double width=1.2)=>new(key,IntentOpeningKind.Window,host,offset,width,1.2,0.9);
+    IntentOpening DiDoor(string key,IntentHost host,double offset)=>new(key,IntentOpeningKind.Door,host,offset,0.9,2.1,0);
+    LayoutIntent DiIntent(IntentRoom[] rooms,IntentOpening[] openings)=>new(LayoutIntent.CurrentVersion,diSource,new[]{new IntentLevel("l0","Ground",0)},new[]{new IntentWallType("a","A",0.2,2.8)},rooms,openings);
+    var diBase=DiIntent(new[]{DiRoom("r0",0,0,4,3),DiRoom("r1",4,0,3,3)},
+        new[]{DiDoor("d0",new IntentSharedWall("r0","r1"),0.8),DiWindow("w0",new IntentRoomSide("r0",IntentSide.South),1.0),DiWindow("w1",new IntentRoomSide("r1",IntentSide.North),0.8,1.0)});
+    var diStep1=diBase with { Openings=new[]{DiDoor("d0",new IntentSharedWall("r0","r1"),0.8),DiWindow("w0",new IntentRoomSide("r0",IntentSide.South),1.5),DiWindow("zz",new IntentRoomSide("r0",IntentSide.West),0.8)} };
+    var diStep2=diStep1 with { Rooms=new[]{DiRoom("r0",0,0,4,3),DiRoom("r1",4,0,3,3),DiRoom("r2",7,0,4,3)} };
+    var diCounter=0;
+    // Every input in its own directory, so "nothing written" covers the whole directory around it.
+    string DiFile(string name,string content) {
+        var directory=Path.Combine(diRoot,"in-"+(++diCounter).ToString(System.Globalization.CultureInfo.InvariantCulture)); Directory.CreateDirectory(directory);
+        var path=Path.Combine(directory,name); File.WriteAllText(path,content); return path;
+    }
+    string DiProject(string name,Project project)=>DiFile(name+".project.json",JsonSerializer.Serialize(project));
+    string DiIntentFile(string name,LayoutIntent intent)=>DiFile(name+".intent.json",IntentJson.Serialize(intent));
+    string DiListing() {
+        var entries=Directory.GetFileSystemEntries(diRoot,"*",SearchOption.AllDirectories).Order(StringComparer.Ordinal)
+            .Select(e=>Path.GetRelativePath(diRoot,e)+(File.Exists(e)?":"+Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(e)))+":"+File.GetLastWriteTimeUtc(e).Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture):"/"));
+        return string.Join("\n",entries);
+    }
+    JsonObject DiCall(string projectPath,string intentPath)=>ToolCall("diff_intent",new JsonObject{["project_path"]=projectPath,["intent_path"]=intentPath});
+    string DiLibrary(Project head,LayoutIntent intent) {
+        var set=IntentEdits.FromStored(head,intent);
+        return JsonSerializer.Serialize(IncrementalDiff.Diff(head,set.Edits,createOrder:IncrementalDiff.OrderOf(set.After)).Plan);
+    }
+
+    var diList=Call(Request(2,"tools/list",null))["result"]!["tools"]!.AsArray();
+    var diTool=diList.SingleOrDefault(t=>t!["name"]!.GetValue<string>()=="diff_intent");
+    Check(diTool is not null && diTool["description"]!.GetValue<string>().Contains("read-only",StringComparison.OrdinalIgnoreCase) && diTool["description"]!.GetValue<string>().Contains("diff-intent",StringComparison.Ordinal),"diff_intent is listed, read-only, naming the CLI verb diff-intent");
+    Check(diTool!["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>()=="read" && diTool["annotations"]?["readOnlyHint"]?.GetValue<bool>()==true && diTool["annotations"]!.AsObject().Count==1,"diff_intent lists _meta permission_level read and annotations readOnlyHint true only");
+    Check(string.Join(",",diTool["inputSchema"]!["required"]!.AsArray().Select(x=>x!.GetValue<string>()))=="project_path,intent_path" && diTool["inputSchema"]!["properties"]!.AsObject().Count==2 && diTool["inputSchema"]!["additionalProperties"]!.GetValue<bool>()==false,"diff_intent schema: exactly project_path and intent_path, both required");
+
+    // 1. Plans: byte-equal to the CLI stdout and to the library plan, on creates last, creates before survivors, no change,
+    //    an empty head and a head out of compile order; nothing written; the process exit code and Console.Out untouched.
+    var diHead0=IntentCompiler.Compile(diProjectId,0,diBase);
+    var diHead1=IntentEdits.FromStored(diHead0,diStep1).After;
+    var diReversed=diHead0 with { Elements=Enumerable.Reverse(diHead0.Elements).ToArray() };
+    var diEmpty=new Project(diProjectId,0,Array.Empty<Element>());
+    foreach(var (label,head,intent) in new (string,Project,LayoutIntent)[]{
+        ("step 1 move, delete, create last",diHead0,diStep1),("step 2 creates before survivors",diHead1,diStep2),("no change",diHead1,diStep1),
+        ("an empty head",diEmpty,diBase),("a head out of compile order",diReversed,diStep2)}) {
+        var projectPath=DiProject("plan",head); var intentFile=DiIntentFile("plan",intent);
+        var before=DiListing(); var stdout=Console.Out;
+        var response=DiCall(projectPath,intentFile);
+        Check(!IsError(response) && HasType(response) && Environment.ExitCode==diExit && ReferenceEquals(Console.Out,stdout),"diff_intent succeeds ("+label+"), leaving the exit code and Console.Out untouched | "+Text(response));
+        Check(Text(response)==DiLibrary(head,intent),"diff_intent text is the shared-path library plan ("+label+")");
+        Check(Text(response)==Cli("diff-intent","--project",projectPath,"--intent",intentFile),"diff_intent text is byte-equal to the CLI diff-intent stdout ("+label+")");
+        Check(DiListing()==before,"diff_intent writes nothing ("+label+")");
+    }
+    Check(DiLibrary(diReversed,diStep2)!=JsonSerializer.Serialize(Compiler.Diff(diReversed,IntentEdits.FromStored(diReversed,diStep2).After)),"fixture: the reversed head really exercises survivor order (plan differs from the full diff)");
+
+    // 2. Refusals: isError, the exact CLI stdout, nothing written, exit code restored.
+    void DiRefused(string label,string projectPath,string intentFile,string? expected=null) {
+        var before=DiListing();
+        var response=DiCall(projectPath,intentFile);
+        var cli=Cli("diff-intent","--project",projectPath,"--intent",intentFile);
+        Check(IsError(response) && Text(response)==cli && (expected is null || cli==expected) && Environment.ExitCode==diExit,"diff_intent refuses "+label+" byte-equal to the CLI | "+Text(response)+" / "+cli);
+        Check(DiListing()==before,"diff_intent writes nothing when refusing "+label);
+    }
+    string DiCode(string code)=>JsonSerializer.Serialize(new{status="failed",code});
+    var diHeadPath=DiProject("head0",diHead0); var diOkIntent=DiIntentFile("ok",diStep1);
+    DiRefused("a malformed intent",diHeadPath,DiFile("bad.intent.json","{"));
+    DiRefused("an intent with an unknown member",diHeadPath,DiFile("unknown.intent.json",IntentJson.Serialize(diBase).Replace("\"levels\":","\"levelz\":[],\"levels\":",StringComparison.Ordinal)));
+    var diOverlap=DiIntentFile("overlap",diBase with { Rooms=new[]{DiRoom("r0",0,0,4,3),DiRoom("r1",3,0,3,3)},Openings=Array.Empty<IntentOpening>() });
+    DiRefused("overlapping rooms (compiler refusal)",diHeadPath,diOverlap);
+    Check(Text(DiCall(diHeadPath,diOverlap)).Contains("\"code\":\"diff_intent_intent_refused\"",StringComparison.Ordinal),"diff_intent compiler refusal carries diff_intent_intent_refused");
+    var diLevel=diHead0.Elements[0];
+    var diDangling=diHead0 with { Elements=diHead0.Elements.Append(new Element(Guid.Parse("00000000-0000-0000-0000-0000000000f1"),"plan",Array.Empty<double>(),new[]{Guid.Parse("00000000-0000-0000-0000-0000000000f2"),diLevel.Id},diSource)).ToArray() };
+    DiRefused("a head with a dangling dependency",DiProject("dangling",diDangling),diOkIntent,DiCode("invalid_ir"));
+    DiRefused("a head with an empty project id",DiProject("anonymous",new Project(Guid.Empty,0,Array.Empty<Element>())),diOkIntent,DiCode("invalid_project_identity"));
+    var diMany=DiIntent(Enumerable.Range(0,205).Select(i=>DiRoom("r"+i.ToString("000",System.Globalization.CultureInfo.InvariantCulture),i*10,0,4,3)).ToArray(),Array.Empty<IntentOpening>());
+    DiRefused("an intent over IncrementalDiff.MaxEdits edits",DiProject("empty",diEmpty),DiIntentFile("many",diMany),DiCode(IncrementalDiff.BoundExceeded));
+    DiRefused("a project that is not JSON",DiFile("bad.project.json","{"),diOkIntent,DiCode("diff_intent_project_invalid"));
+    DiRefused("a missing project",Path.Combine(diRoot,"absent.project.json"),diOkIntent,DiCode("input_not_found"));
+    DiRefused("a missing intent",diHeadPath,Path.Combine(diRoot,"absent.intent.json"),DiCode("input_not_found"));
+    Check(!File.Exists(Path.Combine(diRoot,"absent.project.json")) && !File.Exists(Path.Combine(diRoot,"absent.intent.json")),"diff_intent creates no missing input");
+    var diDirectory=Path.Combine(diRoot,"a-directory.json"); Directory.CreateDirectory(diDirectory);
+    DiRefused("a directory as intent",diHeadPath,diDirectory,DiCode("input_not_regular_file"));
+    // A flag-shaped path is the CLI usage refusal (the same argument rule), never a crash.
+    {
+        var response=DiCall("--intent",diOkIntent);
+        Check(IsError(response) && Text(response)==DiCode("diff_intent_usage") && Environment.ExitCode==diExit,"diff_intent refuses a flag-shaped project_path as diff_intent_usage | "+Text(response));
+    }
+    // MCP-only path guard (like audit_verify_path_invalid): blank, NUL, over 4096 characters or rejected by
+    // Path.GetFullPath is diff_intent_path_invalid with detail project or intent, checked before the verb runs (project
+    // first); the exit code and Console.Out are untouched.
+    string DiPathInvalid(string detail)=>"{\"status\":\"failed\",\"code\":\"diff_intent_path_invalid\",\"detail\":\""+detail+"\"}";
+    foreach(var (label,bad) in new[]{("empty",""),("blank","   "),("with NUL","a\0b"),("of 5000 characters",new string('x',5000))}) {
+        foreach(var (side,projectPath,intentFile) in new[]{("project",bad,diOkIntent),("intent",diHeadPath,bad)}) {
+            var stdout=Console.Out; var before=DiListing();
+            var response=DiCall(projectPath,intentFile);
+            Check(IsError(response) && Text(response)==DiPathInvalid(side) && Environment.ExitCode==diExit && ReferenceEquals(Console.Out,stdout) && DiListing()==before,
+                "diff_intent refuses a "+side+"_path "+label+" as diff_intent_path_invalid ("+side+"), exit code and Console.Out untouched | "+Text(response));
+        }
+    }
+    Check(Text(DiCall("",""))==DiPathInvalid("project"),"diff_intent checks project_path before intent_path");
+    foreach(var side in new[]{"project","intent"}) {
+        var arguments=side=="project"?"{\"project_path\":\"\\ud800\",\"intent_path\":"+JsonSerializer.Serialize(diOkIntent)+"}":"{\"project_path\":"+JsonSerializer.Serialize(diHeadPath)+",\"intent_path\":\"\\ud800\"}";
+        var surrogate=Call("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"diff_intent\",\"arguments\":"+arguments+"}}");
+        Check(IsError(surrogate) && Text(surrogate)==DiPathInvalid(side) && Environment.ExitCode==diExit,"diff_intent "+side+"_path with a lone surrogate is diff_intent_path_invalid ("+side+"), never a crash | "+Text(surrogate));
+    }
+    Check(ErrorCode(ToolCall("diff_intent",new JsonObject{["project_path"]=diHeadPath}))==-32602,"diff_intent without intent_path returns -32602");
+    Check(ErrorCode(ToolCall("diff_intent",new JsonObject{["project_path"]=diHeadPath,["intent_path"]=1}))==-32602,"diff_intent with a non-string intent_path returns -32602");
+    Check(ErrorCode(ToolCall("diff_intent",new JsonObject{["project_path"]=diHeadPath,["intent_path"]=diOkIntent,["store_path"]=diRoot}))==-32602,"diff_intent takes no store_path (-32602): it never commits");
+    var diApply=ToolCall("apply_intent",new JsonObject());
+    Check(IsError(diApply) && Text(diApply)=="""{"status":"failed","code":"unknown_tool"}""","MCP exposes no apply_intent writer");
+
+    // 3. Static: the tool runs the CLI verb's own code (DiffIntentCommand.Run, which plans only through IntentPlan), linked
+    //    rather than copied; it inlines no plan step and has no file, store or commit access of its own.
+    // Comments stripped: /* */ blocks first, then // to end of line.
+    string DiCodeOf(string text)=>string.Join("\n",System.Text.RegularExpressions.Regex.Replace(text,@"/\*.*?\*/","",System.Text.RegularExpressions.RegexOptions.Singleline).Split('\n').Select(line=>{ var at=line.IndexOf("//",StringComparison.Ordinal); return at<0?line:line[..at]; }));
+    Check(DiCodeOf("a /* ProjectStore\n x */ b // ProjectStore\nc")=="a  b \nc","fixture: DiCodeOf strips block and line comments");
+    var diToolPath=Path.Combine(root,"interfaces","mcp","DiffIntentTool.cs");
+    Check(File.Exists(diToolPath),"interfaces/mcp/DiffIntentTool.cs exists");
+    var diToolCode=DiCodeOf(File.ReadAllText(diToolPath));
+    Check(diToolCode.Contains("DiffIntentCommand.Run(",StringComparison.Ordinal),"diff_intent runs the CLI verb's shared path DiffIntentCommand.Run");
+    var diInlined=new[]{"IntentJson.Parse(","IntentEdits.FromStored(","IncrementalDiff.Diff(","IncrementalDiff.OrderOf(","IntentException","IntentCompiler","Compiler.Diff(","JsonSerializer.Serialize(","File.","FileStream","Directory.","ProjectStore","Commit(","BoundedInput"}.Where(api=>diToolCode.Contains(api,StringComparison.Ordinal)).ToArray();
+    Check(diInlined.Length==0,"diff_intent inlines no plan step, serializer or file/store access ["+string.Join(", ",diInlined)+"]");
+    var diCommandCode=DiCodeOf(File.ReadAllText(Path.Combine(root,"interfaces","cli","DiffIntentCommand.cs")));
+    Check(diCommandCode.Contains("IntentPlan.ParseIntent(",StringComparison.Ordinal) && diCommandCode.Contains("IntentPlan.Build(",StringComparison.Ordinal),"the verb the tool runs plans through the shared IntentPlan helper");
+    foreach(var project in new[]{Path.Combine(root,"interfaces","mcp","Bim.Mcp.csproj"),Path.Combine(root,"tests","mcp","Bim.Mcp.Tests.csproj")}) {
+        var csproj=File.ReadAllText(project);
+        Check(new[]{"cli/IntentPlan.cs","cli/DiffIntentCommand.cs"}.All(file=>csproj.Contains(file,StringComparison.Ordinal)),Path.GetFileName(project)+" links the CLI IntentPlan.cs and DiffIntentCommand.cs (shared source, not a copy)");
+    }
+    var diOwners=Directory.GetFiles(Path.Combine(root,"interfaces","mcp"),"*.cs").Where(f=>new[]{"IntentEdits.FromStored(","IncrementalDiff.OrderOf(","IntentJson.Parse("}.Any(api=>DiCodeOf(File.ReadAllText(f)).Contains(api,StringComparison.Ordinal))).Select(f=>Path.GetFileName(f)).ToArray();
+    Check(diOwners.Length==0,"no interfaces/mcp source builds an intent plan itself ["+string.Join(", ",diOwners)+"]");
+    // No MCP source reaches the CLI write verbs (apply-edits' Run/Commit, apply-intent); the linked CLI files are only the
+    // read-only diff-intent path. ProjectStore is banned in DiffIntentTool.cs above (McpServer's plan tool and the
+    // mirror_drift tools use it by design).
+    var diWriters=Directory.GetFiles(Path.Combine(root,"interfaces","mcp"),"*.cs").SelectMany(f=>new[]{"ApplyEditsCommand.Run(","ApplyEditsCommand.Commit(","ApplyIntentCommand"}
+        .Where(api=>DiCodeOf(File.ReadAllText(f)).Contains(api,StringComparison.Ordinal)).Select(api=>Path.GetFileName(f)+": "+api)).ToArray();
+    Check(diWriters.Length==0,"no interfaces/mcp source calls ApplyEditsCommand.Run/Commit or ApplyIntentCommand ["+string.Join(", ",diWriters)+"]");
+    var diMcpProject=File.ReadAllText(Path.Combine(root,"interfaces","mcp","Bim.Mcp.csproj"));
+    Check(!diMcpProject.Contains("ApplyIntentCommand.cs",StringComparison.Ordinal),"Bim.Mcp.csproj does not link the apply-intent verb");
 }
 
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
