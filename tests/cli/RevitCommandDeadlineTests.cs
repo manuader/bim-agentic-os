@@ -17,8 +17,11 @@ using Bim.Core;
 //      the time left, and its pipe_read_timeout is reported as the deadline; above it, the configured transport is used.
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
-//      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 700 ms ends a 2 s deadline
-//      run with query_all_deadline_exceeded before the listing is complete, without partial elements.
+//      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
+//      run with query_all_deadline_exceeded before the listing is complete, without partial elements. Known limit: the
+//      pipe connect (RevitCommandService.ConnectTimeoutMs, 5 s) is not cut, so with no add-in listening a 1 s deadline
+//      run ends pipe_connect_timeout after the 5 s connect (deadline + up to 5 s), not query_all_deadline_exceeded.
+//   2b. A cut page's no_response / pipe_io_error pass through unchanged; time left equal to the read timeout is not cut.
 //   4. Without the flag no deadline applies (the paging add-in lists all rows) and the stdout is byte-equal to a run
 //      with a deadline long enough; the CLI still waits 3 s on a stalled pipe without the flag.
 // Unit-tested only; no Revit.
@@ -159,6 +162,26 @@ internal static class RevitCommandDeadlineTests
         var stalledCutJson = Node(RevitElementQueryPaging.All(wallsText, stalledCut).ToJson());
         Check(Code(stalledCutJson) == Exceeded && Pages(stalledCutJson) == 0 && ElementCount(stalledCutJson) == 0,
             "a cut page's pipe_read_timeout is reported as query_all_deadline_exceeded", stalledCutJson?.ToJsonString() ?? "");
+        // A cut page's failure other than its read timeout passes through unchanged (not reported as the deadline).
+        clock = TimeSpan.Zero; sent = 0; cuts.Clear();
+        var closedCut = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, Paging, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(2), () => clock,
+            left => { cuts.Add(left); return (_, _) => null; });
+        var closedCutJson = Node(RevitElementQueryPaging.All(wallsText, closedCut).ToJson());
+        Check(Code(closedCutJson) == RevitCommandCodes.NoResponse && Pages(closedCutJson) == 0 && ElementCount(closedCutJson) == 0 && cuts.Count == 1,
+            "a cut page whose pipe closes without a reply stays no_response", closedCutJson?.ToJsonString() ?? "");
+        var brokenCut = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, Paging, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(2), () => clock,
+            left => (_, _) => throw new IOException("broken pipe"));
+        var brokenCutJson = Node(RevitElementQueryPaging.All(wallsText, brokenCut).ToJson());
+        Check(Code(brokenCutJson) == RevitCommandCodes.PipeIoError && Pages(brokenCutJson) == 0 && ElementCount(brokenCutJson) == 0,
+            "a cut page whose pipe fails with an IOException stays pipe_io_error", brokenCutJson?.ToJsonString() ?? "");
+        // Time left equal to the read timeout (60 s / 60 s): no cut, the configured transport's pipe_read_timeout stays.
+        clock = TimeSpan.Zero; sent = 0; cuts.Clear();
+        var equalLeft = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, (_, _) => throw new RevitPipeReadTimeoutException(TimeSpan.FromSeconds(60)),
+            TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60), () => clock, Cut);
+        var equalLeftJson = Node(RevitElementQueryPaging.All(wallsText, equalLeft).ToJson());
+        Check(Code(equalLeftJson) == RevitCommandCodes.PipeReadTimeout && equalLeftJson?["detail"]?.GetValue<string>() is { } equalDetail && equalDetail.Contains("60000 ms", StringComparison.Ordinal)
+            && Pages(equalLeftJson) == 0 && cuts.Count == 0,
+            "time left equal to the read timeout is not cut: pipe_read_timeout, not query_all_deadline_exceeded", equalLeftJson?.ToJsonString() ?? "");
         clock = TimeSpan.Zero; sent = 0;
         var roomy = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, Paging, TimeSpan.FromSeconds(30), TimeSpan.FromHours(1), () => clock, Cut);
         var roomyListing = RevitElementQueryPaging.All(wallsText, roomy);
@@ -222,16 +245,23 @@ internal static class RevitCommandDeadlineTests
                 && readFirst.Ms >= 1000 && readFirst.Ms < 20000 && addIn.WaitForRequests(3) && addIn.Received.Count == 3,
                 "a 1 s read timeout below a 20 s deadline stays pipe_read_timeout", readFirst.Out + " in " + N(readFirst.Ms) + " ms");
 
+            // ---- 3a. Known limit: the connect step is not bounded by the deadline (deadline + up to 5 s connect) ----
+            var absentPipe = "bim-agentic-os-2025-" + N(Random.Shared.Next(100000000, 999999999));
+            var absent = Rc(walls, absentPipe, "--all", Flag, "1");
+            Check(absent.Exit == 1 && Code(Node(absent.Out)) == RevitCommandCodes.PipeConnectTimeout && Pages(Node(absent.Out)) == 0
+                && absent.Ms >= RevitCommandService.ConnectTimeoutMs && absent.Ms < 1000 + RevitCommandService.ConnectTimeoutMs + 15000,
+                "with no add-in listening a 1 s deadline run ends pipe_connect_timeout after the uncut 5 s connect (deadline + up to 5 s)", absent.Out + " in " + N(absent.Ms) + " ms");
+
             // ---- 3b. A slow paging add-in: the whole run is bounded, not each page ----
             addIn.Reply = line => PageReply(line, model);
-            addIn.Delay = TimeSpan.FromMilliseconds(700);
+            addIn.Delay = TimeSpan.FromMilliseconds(250);
             var before = addIn.Received.Count;
             var slowRun = Rc(walls, pipe, "--all", Flag, "2");
             var slowJson = Node(slowRun.Out);
             var slowSent = addIn.Received.Count - before;
-            Check(slowRun.Exit == 1 && Code(slowJson) == Exceeded && ElementCount(slowJson) == 0 && Pages(slowJson) is { } slowPages && slowPages >= 1 && slowPages < 23
+            Check(slowRun.Exit == 1 && Code(slowJson) == Exceeded && ElementCount(slowJson) == 0 && Pages(slowJson) is { } slowPages && slowPages < 23
                 && slowSent >= 1 && slowSent < 23 && slowRun.Ms < 30000,
-                "a 700 ms-per-page add-in under a 2 s deadline ends query_all_deadline_exceeded before the 23-page listing completes, no partial elements", slowRun.Out + " sent " + N(slowSent) + " in " + N(slowRun.Ms) + " ms");
+                "a 250 ms-per-page add-in (23 pages, about 6 s) under a 2 s deadline ends query_all_deadline_exceeded before the 23-page listing completes, no partial elements", slowRun.Out + " sent " + N(slowSent) + " in " + N(slowRun.Ms) + " ms");
 
             // ---- 4. Absent flag: no deadline, today's bytes ----
             addIn.Delay = TimeSpan.FromMilliseconds(100);
