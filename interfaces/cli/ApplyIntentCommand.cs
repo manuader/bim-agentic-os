@@ -69,9 +69,9 @@ internal static class ApplyIntentCommand
         }
         catch (InputRejectedException error) { ApplyEditsCommand.Fail(error.Message); return; }
         if (ApplyEditsCommand.ParseHead(stateText) is not { } head) { ApplyEditsCommand.Fail(StoreInvalid); return; }
-        if (IntentPlan.ParseIntent(intentText, Verb, IntentInvalid) is not { } intent) return;
+        if (!IntentPlan.ParseIntent(intentText, Verb, IntentInvalid).TryGet(out var intent, out var refused)) { refused.Print(); return; }
         if (expectedRevision is { } expected && expected != head.Revision) { ApplyEditsCommand.Fail(StaleHead); return; }
-        if (IntentPlan.Build(head, intent, Verb, IntentRefused) is not { } result) return;
+        if (!IntentPlan.Build(head, intent, Verb, IntentRefused).TryGet(out var result, out refused)) { refused.Print(); return; }
         ApplyEditsCommand.Commit(storePath, result, Verb);
     }
 }
