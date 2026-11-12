@@ -318,13 +318,14 @@ internal static class MirrorDriftAdoptTests
         }
     }
 
-    // P2-21 literal guard: comments removed, then every string-literal token that looks like an error code, plus any
+    // P2-21 literal guard: whole-line comments removed (the file has no trailing ones, so a "//" inside a literal stays),
+    // then every quoted token with an underscore and no whitespace (any case, split or interpolated), plus any
     // "drift_adopt_" substring left in the code.
-    static string StripComments(string source) => System.Text.RegularExpressions.Regex.Replace(source, "//[^\n]*", "");
+    static string StripComments(string source) => System.Text.RegularExpressions.Regex.Replace(source, "(?m)^\\s*//.*$", "");
     static string[] CodeLiterals(string source)
     {
         var code = StripComments(source);
-        var hits = System.Text.RegularExpressions.Regex.Matches(code, "\"[a-z0-9]+(?:_[a-z0-9]+)+\"").Select(match => match.Value).ToList();
+        var hits = System.Text.RegularExpressions.Regex.Matches(code, "\"[^\"\\s]*_[^\"\\s]*\"").Select(match => match.Value).ToList();
         if (code.Contains("drift_adopt_", StringComparison.Ordinal)) hits.Add("drift_adopt_ substring");
         return hits.ToArray();
     }
