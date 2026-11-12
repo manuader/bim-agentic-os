@@ -16,7 +16,10 @@ param(
     [ValidateRange(1, 10000)][int]$MaxRequests = 400,
     [ValidateRange(5, 1800)][int]$TimeoutSeconds = 600,
     # Test-only (P2-18): comma-separated operation ids the fake records as external edits (journal.read entries).
-    [string]$ExternalEdits
+    [string]$ExternalEdits,
+    # Test-only (P4-14): a write of this catalogue command (not a dry run) runs, then its connection is closed without a
+    # reply (the reply is lost after the write happened).
+    [string]$DropReplyCommand
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/fake-revit-command-executor.ps1"
@@ -66,6 +69,12 @@ try {
                     $commandText = $line.Substring($at + $marker.Length, $line.Length - $at - $marker.Length - 1)
                     $response = Invoke-FakeRevitCommand $state $commandText
                     [IO.File]::AppendAllText($LogFile, $state.Received[$state.Received.Count - 1] + "`n")
+                    if ($DropReplyCommand) {
+                        $sent = $null
+                        try { $sent = $commandText | ConvertFrom-Json } catch { $sent = $null }
+                        $dryRun = $null -ne $sent -and $null -ne $sent.args -and $null -ne $sent.args.PSObject.Properties['dry_run'] -and [bool]$sent.args.dry_run
+                        if ($null -ne $sent -and [string]$sent.command -eq $DropReplyCommand -and !$dryRun) { $reader.Dispose(); $writer.Dispose(); continue }
+                    }
                 }
                 $writer.WriteLine($response)
                 if ($IsWindows) { $server.WaitForPipeDrain() }

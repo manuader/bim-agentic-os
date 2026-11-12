@@ -101,9 +101,9 @@ Assert $rejected 'empty level list accepted'
 
 # --- Sequence against the in-process fake ---
 # -All runs every group (the owner one-run sequence); default is v1 only. -NoWire leaves out the journal.read invoker,
-# -NoDocUpdate the doc-update stand-in. -Wrap / -WireWrap (param index, key, json, inner) can stand in front of the fake
+# -NoDocUpdate the doc-update stand-in. -Wrap / -WireWrap / -DocWrap (param index, key, json, inner) can stand in front of the fake
 # CLI / wire invoker. Returns @{ Result; Fake; DocUpdate } (the fake add-in and doc-update states).
-function Invoke-FakeSequence([hashtable]$Faults = @{}, [switch]$All, [switch]$NoWire, [switch]$NoDocUpdate, [scriptblock]$Wrap, [scriptblock]$WireWrap) {
+function Invoke-FakeSequence([hashtable]$Faults = @{}, [switch]$All, [switch]$NoWire, [switch]$NoDocUpdate, [scriptblock]$Wrap, [scriptblock]$WireWrap, [scriptblock]$DocWrap) {
     $fake = New-FakeRevitState $documentUid $Faults
     $fake.DocumentPath = $documentPath
     $docFake = New-FakeDocUpdate $fake $inProcessDirectory $Faults
@@ -113,7 +113,10 @@ function Invoke-FakeSequence([hashtable]$Faults = @{}, [switch]$All, [switch]$No
     if ($WireWrap) { $innerWire = $wire; $wire = { param($index, $key, $line) & $WireWrap $index $key $line $innerWire } }
     $parameters = @{ Stamp = $stamp; Run = 1; DocumentPath = $documentPath; DocumentUid = $documentUid; Invoke = $invoke; V1Only = !$All }
     if (!$NoWire) { $parameters['InvokeWire'] = $wire }
-    if (!$NoDocUpdate) { $parameters['InvokeDocUpdate'] = { param($index, $key, $json) Invoke-FakeDocUpdate $docFake $index $key $json } }
+    $docInvoke = { param($index, $key, $json) Invoke-FakeDocUpdate $docFake $index $key $json }
+    # -DocWrap (param index, key, json, inner) can stand in front of the doc-update stand-in.
+    if ($DocWrap) { $innerDoc = $docInvoke; $docInvoke = { param($index, $key, $json) & $DocWrap $index $key $json $innerDoc } }
+    if (!$NoDocUpdate) { $parameters['InvokeDocUpdate'] = $docInvoke }
     $result = Invoke-CatalogueSequence @parameters
     return @{ Result = $result; Fake = $fake; DocUpdate = $docFake }
 }
@@ -677,9 +680,45 @@ foreach ($case in @(
     Assert (@($refused.Fake.Received | Where-Object { $_ -like 'docdel.*' }).Count -eq 0 -and @($refused.Fake.Received | Where-Object { $_ -like 'docnew.*' }).Count -eq 9 -and $refused.DocUpdate.Calls.Count -eq $case.Calls -and $null -eq (Get-StepField $refusedResult 'doc-up-stale-gone' 'request') -and $null -eq (Get-StepField $refusedResult 'doc-up-tag-new' 'request')) "P4-14 after $($case.Code) no write of the update is sent: $(@($refused.Fake.Received | Where-Object { $_ -like 'doc*' }) -join ',')"
     Assert ((Get-GroupField $refusedResult 'modificar' 'failed') -eq 0 -and (Get-GroupField $refusedResult 'copia' 'failed') -eq 0 -and (Get-GroupField $refusedResult 'diario' 'failed') -eq 0) "P4-14 later groups still run after $($case.Code): $(Get-FailedSteps $refusedResult)"
 }
+# Review S1: an --execute call whose CLI line is lost (a crash: no output, exit 134) may have sent writes: the run
+# stops and nothing more is sent. The same loss on a dry run (it sends no write) fails only that step.
+$crashLine = { param($index, $key, $json, $inner) $reply = & $inner $index $key $json; if ($key -eq $crashKey.Key) { return @{ output = ''; exit_code = 134; timed_out = $false } }; $reply }
+$crashKey = @{ Key = 'doc-up-realize' }
+$crash = (Invoke-FakeSequence -All -DocWrap $crashLine).Result
+Assert ($crash.aborted -like '*doc-up-realize*doc-update*' -and @(Get-SentAfter $crash 'doc-up-realize').Count -eq 0 -and $crash.overall.not_sent -eq $crash.overall.total - [int](Get-StepField $crash 'doc-up-realize' 'index')) "P4-14 an --execute without a usable CLI line stops the run: $($crash.aborted)"
+$crashKey.Key = 'doc-up-realize-plan'
+$crashDry = (Invoke-FakeSequence -All -DocWrap $crashLine).Result
+Assert ($null -eq $crashDry.aborted -and !(Get-StepField $crashDry 'doc-up-realize-plan' 'passed') -and $null -eq (Get-StepField $crashDry 'doc-up-realize' 'request') -and (Get-GroupField $crashDry 'modificar' 'failed') -eq 0) "P4-14 a dry run without a usable CLI line fails only the update: $(Get-FailedSteps $crashDry)"
+# Review S2: the reply_lost entry alone stops the run, whatever the top-level code (here neither is a transport code
+# the sequence knows): an entry response_invalid under a top-level response_invalid, and an entry pipe_read_timeout
+# under doc_update_internal_error (the CLI's report rebuilt after a library exception).
+function Set-TestLostEntry([string]$Output, [string]$TopCode, [string]$EntryCode) {
+    $line = $Output | ConvertFrom-Json
+    $line.status = 'failed'; $line.applied = $false; $line.run = 'failed'
+    Add-Member -InputObject $line -NotePropertyName code -NotePropertyValue $TopCode -Force
+    if ($null -ne $line.PSObject.Properties['realized']) { $line.PSObject.Properties.Remove('realized') }
+    $entries = @($line.report)
+    for ($n = 0; $n -lt $entries.Count; $n++) {
+        if ($n -eq 2) { $entries[$n].status = 'failed'; foreach ($pair in @(@('code', $EntryCode), @('field', $null), @('detail', 'reply is not a well-formed response'), @('reply_lost', $true))) { Add-Member -InputObject $entries[$n] -NotePropertyName $pair[0] -NotePropertyValue $pair[1] -Force } }
+        elseif ($n -gt 2) { $entries[$n].status = 'not_sent' }
+    }
+    return ($line | ConvertTo-Json -Depth 20 -Compress)
+}
+foreach ($case in @(@{ Top = 'response_invalid'; Entry = 'response_invalid' }, @{ Top = 'doc_update_internal_error'; Entry = 'pipe_read_timeout' })) {
+    $lostCodes = $case
+    $rewritten = (Invoke-FakeSequence -All -DocWrap { param($index, $key, $json, $inner) $reply = & $inner $index $key $json; if ($key -eq 'doc-up-realize') { $reply.output = Set-TestLostEntry $reply.output $lostCodes.Top $lostCodes.Entry; $reply.exit_code = 1 }; $reply }).Result
+    Assert ($rewritten.aborted -like "*doc-update perdió la respuesta*$($case.Entry)*" -and @(Get-SentAfter $rewritten 'doc-up-realize').Count -eq 0) "P4-14 a reply_lost $($case.Entry) entry under $($case.Top) stops the run: $($rewritten.aborted)"
+}
+
 $noDoc = (Invoke-FakeSequence -All -NoDocUpdate).Result
 $noDocSent = @($noDoc.steps | Where-Object { $_.key -in $docUpExpected -and $_.key -notin 'doc-up-wall', 'doc-up-door' -and $null -ne $_.request })
 Assert ([string](Get-StepField $noDoc 'doc-up-realize-plan' 'reason') -like '*falta el canal doc-update*' -and $noDocSent.Count -eq 0 -and $null -eq $noDoc.aborted -and (Get-GroupField $noDoc 'documentacion' 'failed') -eq 7 -and (Get-GroupField $noDoc 'modificar' 'failed') -eq 0) "P4-14 without a doc-update channel none of the update is sent and later groups run: $(Get-FailedSteps $noDoc)"
+# Review B1: the owner session passes the doc-update invoker (CLI doc-update on the child's pipe, its requests in the run
+# folder, an --execute-sized timeout of its own) to Invoke-CatalogueSequence, and its announcement names the update.
+$sessionText = [IO.File]::ReadAllText((Join-Path $root 'scripts/owner-native-session.ps1'))
+$sessionCall = [regex]::Match($sessionText, '\$sequence = Invoke-CatalogueSequence [^\r\n]*').Value
+$sessionDocInvoker = [regex]::Match($sessionText, '\$catalogueDocUpdate = \{[^\r\n]*\}').Value
+Assert ($sessionCall -match '-InvokeDocUpdate \$catalogueDocUpdate\b' -and $sessionDocInvoker -match '\bInvoke-CatalogueDocUpdate -Dotnet \$dotnet -CliDll \$cli -PipeName \$boot\.pipeName -RequestDirectory \$catalogueRequests -Index \$index -Key \$key -Json \$json -TimeoutSeconds \$DocUpdateTimeoutSeconds\b' -and $sessionText -match '\[ValidateRange\(\d+, *3600\)\]\[int\]\$DocUpdateTimeoutSeconds = 3600' -and $sessionText -notmatch 'corte, etiqueta y cota obsoletos' -and $sessionText -match 'doc-update') "P4-14: the owner session wires -InvokeDocUpdate with its own timeout: $sessionCall | $sessionDocInvoker"
 
 } finally {
     if ([IO.Path]::GetFileName($inProcessTree).StartsWith('bim-catalogue-session-', [StringComparison]::Ordinal) -and $inProcessTree.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::Ordinal)) { Remove-Item -LiteralPath $inProcessTree -Recurse -Force -ErrorAction SilentlyContinue }
@@ -775,7 +814,7 @@ try {
         $reportFile = Join-Path $folder 'report.json'
         $kept = $null
         try { $kept = [IO.File]::ReadAllText($reportFile) | ConvertFrom-Json } catch { $kept = $null }
-        $files = @('before.json', 'after.json', 'realized.json', 'bindings.json', 'plan.json' | Where-Object { !(Test-Path -LiteralPath (Join-Path $folder $_) -PathType Leaf) })
+        $files = @('before.json', 'after.json', 'realized.json', 'bindings.json', 'plan.json', 'stderr.txt' | Where-Object { !(Test-Path -LiteralPath (Join-Path $folder $_) -PathType Leaf) })
         Assert ($null -ne $kept -and (ConvertTo-Json -InputObject $kept -Depth 20 -Compress) -ceq (ConvertTo-Json -InputObject $step.response -Depth 20 -Compress) -and $files.Count -eq 0 -and [IO.Path]::GetFullPath([string]$step.response.output) -eq [IO.Path]::GetFullPath((Join-Path $folder 'plan.json'))) "P4-14 $key keeps its inputs, plan and report in the run folder ($folder): missing $($files -join ',')"
     }
     # The client-side refusals (collinear arc, crossed outline, closed roof profile, zero move, full turn, save_copy
@@ -856,6 +895,43 @@ try {
     $stressWatch.Stop()
     Assert ($stressBad.Count -eq 0) "revit-command --all stress: $($stressBad.Count) failures in $stressDone/$stressRuns paged runs ($([int]$stressWatch.Elapsed.TotalSeconds)s): $(@($stressBad | Select-Object -First 3) -join ' | ')"
     if ($failures.Count -and $server.HasExited) { $failures.Add('fake pipe server stderr: ' + $serverErr.GetAwaiter().GetResult()) }
+    # Review S2, through the real CLI: an add-in pipe that runs the first write of an --execute and drops its reply. The
+    # CLI reports that step failed with reply_lost true and the rest not_sent, and never sends it again (the session
+    # stops on such an entry: in-process cases above). A fresh fake pipe of its own; the plan comes from its dry run.
+    $dropPipe = 'bim-agentic-os-2025-' + (Get-Random -Minimum 100000 -Maximum 999999)
+    $dropReady = Join-Path $work 'drop-ready.txt'
+    $dropLog = Join-Path $work 'drop-received.txt'
+    $dropStart = [Diagnostics.ProcessStartInfo]::new($pwsh)
+    foreach ($argument in @('-NoProfile', '-File', "$PSScriptRoot/fake-revit-command-pipe.ps1", '-PipeName', $dropPipe, '-DocumentUid', $documentUid, '-ReadyFile', $dropReady, '-LogFile', $dropLog, '-MaxRequests', '50', '-TimeoutSeconds', '300', '-DropReplyCommand', 'view.create_plan')) { $dropStart.ArgumentList.Add($argument) }
+    $dropStart.UseShellExecute = $false
+    $dropStart.RedirectStandardOutput = $true
+    $dropStart.RedirectStandardError = $true
+    $dropServer = [Diagnostics.Process]::Start($dropStart)
+    try {
+        $null = $dropServer.StandardOutput.ReadToEndAsync()
+        $dropErr = $dropServer.StandardError.ReadToEndAsync()
+        $dropDeadline = [DateTime]::UtcNow.AddSeconds(60)
+        while (!(Test-Path -LiteralPath $dropReady) -and [DateTime]::UtcNow -lt $dropDeadline -and !$dropServer.HasExited) { Start-Sleep -Milliseconds 100 }
+        if (!(Test-Path -LiteralPath $dropReady)) { throw "drop-reply fake pipe did not start: $(if ($dropServer.HasExited) { $dropErr.GetAwaiter().GetResult() })" }
+        $picked = @{ level = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-0000d000' }
+        $dropRequest = New-CatalogueDocUpdateRequest 0 0 ([ordered]@{ ('element:' + $script:CatalogueDocUpdateWallId) = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-0000d001'; ('element:' + $script:CatalogueDocUpdateDoorId) = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-0000d002' }) $null
+        $dropRequest['bindings']['document'] = [ordered]@{ path = [IO.Path]::GetFullPath($document); unique_id = $documentUid }
+        $dropRequests = Join-Path $work 'requests-drop'
+        $dropDry = Invoke-CatalogueDocUpdate -Dotnet $Dotnet -CliDll $CliDll -PipeName $dropPipe -RequestDirectory $dropRequests -Index 1 -Key 'drop-plan' -Json ($dropRequest | ConvertTo-Json -Depth 20 -Compress) -TimeoutSeconds 120
+        $dropDryLine = $null
+        try { $dropDryLine = $dropDry.output | ConvertFrom-Json } catch { $dropDryLine = $null }
+        $dropSha = [string](Get-CatalogueMember $dropDryLine 'sha256')
+        $dropRequest['expected_document'] = $dropSha
+        $dropRun = Invoke-CatalogueDocUpdate -Dotnet $Dotnet -CliDll $CliDll -PipeName $dropPipe -RequestDirectory $dropRequests -Index 2 -Key 'drop-run' -Json ($dropRequest | ConvertTo-Json -Depth 20 -Compress) -TimeoutSeconds 120
+        $dropLine = $null
+        try { $dropLine = $dropRun.output | ConvertFrom-Json } catch { $dropLine = $null }
+        $dropEntries = @(Get-CatalogueList $dropLine 'report' | ForEach-Object { $_ })
+        $dropLost = @($dropEntries | Where-Object { (Get-CatalogueMember $_ 'reply_lost') -eq $true })
+        $dropReceived = @(Get-Content -LiteralPath $dropLog -ErrorAction SilentlyContinue)
+        $dropLostId = [string](Get-CatalogueMember (Get-CatalogueFirst $dropLost) 'operation_id')
+        Assert ($dropSha -match '\A[0-9A-F]{64}\z' -and $dropRun.exit_code -eq 1 -and [string](Get-CatalogueMember $dropLine 'status') -eq 'failed' -and $dropEntries.Count -eq 9 -and $dropLost.Count -eq 1 -and [string](Get-CatalogueMember (Get-CatalogueFirst $dropEntries) 'command') -eq 'view.create_plan' -and (Get-CatalogueMember (Get-CatalogueFirst $dropEntries) 'reply_lost') -eq $true -and @($dropEntries | Select-Object -Skip 1 | Where-Object { (Get-CatalogueMember $_ 'status') -ne 'not_sent' }).Count -eq 0) "P4-14 through the real CLI a dropped reply is reported reply_lost and nothing after it is sent: $($dropRun.output)"
+        Assert ($dropLostId -and @($dropReceived | Where-Object { $_ -eq $dropLostId }).Count -eq 1 -and @($dropReceived | Where-Object { $_ -like 'docnew.*' }).Count -eq 1) "P4-14 the write whose reply was dropped reached the pipe exactly once: $($dropReceived -join ',')"
+    } finally { if (!$dropServer.HasExited) { $dropServer.Kill() }; $dropServer.Dispose() }
     # Dead pipe: the add-in is gone, the CLI cannot connect, the run stops after the first step.
     if (!$server.HasExited) { $server.Kill(); $null = $server.WaitForExit(10000) }
     $deadRequests = Join-Path $work 'requests-dead'
