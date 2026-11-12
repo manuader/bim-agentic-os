@@ -35,7 +35,7 @@ using System.Text.Json;
 //      reported as exactly three findings, each external_edit with its journal evidence: B changed (journal:1:external),
 //      C extra (journal:2:external), A missing (journal:3:external:deleted_id_match); evidence complete; every proposal
 //      recommends adopt (update, create, delete). Core's MirrorDrift.ParseJournal reads the fake's reply as three
-//      external entries, and the reply equals, member for member apart from the snapshot diff, the production
+//      external entries, and the reply equals, member for member with the snapshot diff included (P2-20), the production
 //      serializer (RevitJournalQuery.RawRead over a Core MirrorJournal holding the same changes). Negative: the same
 //      edits with the fake's reply after sequence 3 (no entries) give B and A unknown and C out of scope (no
 //      external_edit); the P2-14 run (no journal) asserts its finding unknown.
@@ -814,16 +814,23 @@ static class MirrorDriftLoopChecks
 
     // P2-20: the fake executor in process, for the journal.read report.diff. With -ExternalEdits the fake's diff must be
     // MirrorSnapshotDiffer.Compare over the same before/after snapshots (its query.snapshot readbacks): a baseline read
-    // (non-peek, no baseline: every element added), five external edits (move wall B, which also moves its hosted door;
-    // create wall C; delete straight wall A and the curved, unmapped wall D; a 0.0004 mm nudge of wall E, within the
-    // differ's 1e-3 mm tolerance), then a peek read, a non-peek read and a read after the moved baseline (empty diff).
-    // Each reply is compared whole with RevitJournalQuery.RawRead over a Core MirrorJournal and tracker holding the same
-    // changes. Without -ExternalEdits the replies are the pre-P2-20 ones, byte for byte (legacy diff: snapshot-order adds,
-    // changed always empty).
+    // (non-peek, no baseline: every element added), six external edits (move wall B 333.3333 mm, which also moves its
+    // hosted door; create wall C; delete straight wall A and the curved, unmapped wall D; a 0.0004 mm nudge of wall E,
+    // within the differ's 1e-3 mm tolerance, and a 0.002 mm nudge of wall F, beyond it), then a peek read, a non-peek read
+    // and a read after the moved baseline (empty diff), all under de-DE as the current culture. Each reply is compared
+    // whole with RevitJournalQuery.RawRead over a Core MirrorJournal and tracker holding the same changes. A
+    // SnapshotUnstable run compares the diff of its two stored baselines (the unmapped entry's detail changes), and
+    // hand-built snapshot pairs (diffCases) drive Get-FakeSnapshotDiff directly for the field branches the fake snapshot
+    // cannot reach (mapped to unmapped, kind, kind case, geometry length, unnamed geometry, dependencies, reason, category,
+    // UniqueId case, duplicate and blank UniqueIds, the tolerance edge), each against MirrorSnapshotDiffer over the same
+    // JSON. The fake's tolerance equals MirrorSnapshotDiffer.ToleranceMetres. Without -ExternalEdits the replies are the
+    // pre-P2-20 ones, byte for byte (legacy diff: snapshot-order adds, changed always empty).
     const string DiffScript = """
-        param([string]$Executor, [string]$DocumentUid)
+        param([string]$Executor, [string]$DocumentUid, [string]$Cases)
         $ErrorActionPreference = 'Stop'
         . $Executor
+        # Culture-independent output: everything below runs with a comma decimal separator as the current culture.
+        [Globalization.CultureInfo]::CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo('de-DE')
         $document = '/fake/Drift-Diff.rvt'
         function Line([string]$Journal) { '{"DocumentPath":"' + $document + '","Operation":"journal.read","UniqueId":null,"Metres":[],"Journal":' + $Journal + '}' }
         function Env([string]$Id, [string]$Command, [string]$Arguments) { '{"protocol_version":1,"operation_id":"' + $Id + '","document":{"path":"' + $document + '","unique_id":"' + $DocumentUid + '"},"command":"' + $Command + '","args":' + $Arguments + '}' }
@@ -837,20 +844,22 @@ static class MirrorDriftLoopChecks
         function Created([string]$Reply) { [string]@(($Reply | ConvertFrom-Json).created)[0] }
         function Level($State) { [string]@((Ok $State 'levels' 'query.levels' '{}' | ConvertFrom-Json).readback.levels)[0].unique_id }
         $r = [ordered]@{}
-        $s = New-FakeRevitState $DocumentUid @{} @('x-move-b', 'x-wall-c', 'x-delete-a', 'x-delete-d', 'x-nudge-e')
+        $s = New-FakeRevitState $DocumentUid @{} @('x-move-b', 'x-wall-c', 'x-delete-a', 'x-delete-d', 'x-nudge-e', 'x-nudge-f')
         $level = Level $s
         $r.a = Created (Ok $s 'wall-a' 'wall.create' (Wall $level (Straight 0 0 5000 0)))
         $r.b = Created (Ok $s 'wall-b' 'wall.create' (Wall $level (Straight 5000 0 5000 4000)))
         $r.d = Created (Ok $s 'wall-d' 'wall.create' (Wall $level '{"kind":"arc","start":[0,-1000],"end":[1000,-1000],"radius_mm":600,"center":[500,-1000]}'))
         $r.e = Created (Ok $s 'wall-e' 'wall.create' (Wall $level (Straight 0 8000 3000 8000)))
+        $r.f = Created (Ok $s 'wall-f' 'wall.create' (Wall $level (Straight 0 12000 3000 12000)))
         $r.door = Created (Ok $s 'door-b' 'opening.place' ('{"host_wall_uid":"' + $r.b + '","category":"door","symbol":"S1","position_along_mm":1000}'))
         $r.s0 = Ok $s 'snapshot-0' 'query.snapshot' '{}'
         $r.r0 = Invoke-FakeRevitWire $s (Line 'null')
-        $null = Ok $s 'x-move-b' 'element.move' ('{"element_uids":["' + $r.b + '"],"vector_mm":[500,0,0]}')
+        $null = Ok $s 'x-move-b' 'element.move' ('{"element_uids":["' + $r.b + '"],"vector_mm":[333.3333,0,0]}')
         $r.c = Created (Ok $s 'x-wall-c' 'wall.create' (Wall $level (Straight 0 4000 5500 4000)))
         $null = Ok $s 'x-delete-a' 'element.delete' ('{"element_uids":["' + $r.a + '"]}')
         $null = Ok $s 'x-delete-d' 'element.delete' ('{"element_uids":["' + $r.d + '"]}')
         $null = Ok $s 'x-nudge-e' 'element.move' ('{"element_uids":["' + $r.e + '"],"vector_mm":[0.0004,0,0]}')
+        $null = Ok $s 'x-nudge-f' 'element.move' ('{"element_uids":["' + $r.f + '"],"vector_mm":[0.002,0,0]}')
         $r.s1 = Ok $s 'snapshot-1' 'query.snapshot' '{}'
         $r.r1 = Invoke-FakeRevitWire $s (Line '{"peek":true}')
         $r.r2 = Invoke-FakeRevitWire $s (Line 'null')
@@ -861,6 +870,25 @@ static class MirrorDriftLoopChecks
         $r.d0 = Invoke-FakeRevitWire $t (Line 'null')
         $null = Ok $t 'default-move' 'element.move' ('{"element_uids":["' + $r.default_wall + '"],"vector_mm":[500,0,0]}')
         $r.d1 = Invoke-FakeRevitWire $t (Line 'null')
+        $null = Ok $t 'default-delete' 'element.delete' ('{"element_uids":["' + $r.default_wall + '"]}')
+        $r.d2 = Invoke-FakeRevitWire $t (Line '{"peek":true}')
+        $r.d3 = Invoke-FakeRevitWire $t (Line 'null')
+        # SnapshotUnstable: every snapshot's unmapped entry 'unstable' has a new detail; the two stored baselines are the
+        # snapshots the second non-peek read compared.
+        $u = New-FakeRevitState $DocumentUid @{ SnapshotUnstable = $true } @('u-move')
+        $uLevel = Level $u
+        $r.u_wall = Created (Ok $u 'u-wall' 'wall.create' (Wall $uLevel (Straight 0 0 1000 0)))
+        $null = Invoke-FakeRevitWire $u (Line 'null')
+        $r.u_before = $u.JournalBaseline | ConvertTo-Json -Depth 20 -Compress
+        $null = Ok $u 'u-move' 'element.move' ('{"element_uids":["' + $r.u_wall + '"],"vector_mm":[0,250,0]}')
+        $r.u_reply = Invoke-FakeRevitWire $u (Line 'null')
+        $r.u_after = $u.JournalBaseline | ConvertTo-Json -Depth 20 -Compress
+        # Hand-built snapshot pairs straight through Get-FakeSnapshotDiff.
+        $cases = [ordered]@{}
+        foreach ($case in @(Get-Content -Raw -LiteralPath $Cases | ConvertFrom-Json -AsHashtable)) { $cases[[string]$case['name']] = ConvertTo-FakeResponseJson (Get-FakeSnapshotDiff $DocumentUid $case['before'] $case['after']) }
+        $r.cases = $cases | ConvertTo-Json -Compress
+        $r.tolerance = ([double]$script:FakeDiffToleranceMetres).ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+        $r.culture = [Globalization.CultureInfo]::CurrentCulture.Name + ' ' + (1.5).ToString()
         $r | ConvertTo-Json -Compress
         """;
 
@@ -872,8 +900,11 @@ static class MirrorDriftLoopChecks
         Directory.CreateDirectory(scratch);
         var script = Path.Combine(scratch, "diff.ps1");
         File.WriteAllText(script, DiffScript, Utf8);
+        var casesPath = Path.Combine(scratch, "cases.json");
+        var cases = DiffCases();
+        File.WriteAllText(casesPath, "[" + string.Join(",", cases.Select(item => "{\"name\":\"" + item.Name + "\",\"before\":" + item.Before + ",\"after\":" + item.After + "}")) + "]", Utf8);
         var start = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = Utf8 };
-        foreach (var argument in new[] { "-NoProfile", "-File", script, "-Executor", Path.Combine(root, "tests", "integration", "fake-revit-command-executor.ps1"), "-DocumentUid", DocumentUid }) start.ArgumentList.Add(argument);
+        foreach (var argument in new[] { "-NoProfile", "-File", script, "-Executor", Path.Combine(root, "tests", "integration", "fake-revit-command-executor.ps1"), "-DocumentUid", DocumentUid, "-Cases", casesPath }) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("pwsh did not start");
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
@@ -884,24 +915,28 @@ static class MirrorDriftLoopChecks
         using var parsed = JsonDocument.Parse(output);
         string R(string name) => parsed.RootElement.TryGetProperty(name, out var value) ? value.GetString() ?? "" : "<missing>";
         const string path = "/fake/Drift-Diff.rvt";
-        string uidA = R("a"), uidB = R("b"), uidC = R("c"), uidD = R("d"), uidE = R("e"), door = R("door");
+        string uidA = R("a"), uidB = R("b"), uidC = R("c"), uidD = R("d"), uidE = R("e"), uidF = R("f"), door = R("door");
+        Check(R("culture") == "de-DE 1,5", "the diff script ran with de-DE as the current culture", R("culture"));
+        Check(R("tolerance") == MirrorSnapshotDiffer.ToleranceMetres.ToString("R", CultureInfo.InvariantCulture) && MirrorSnapshotDiffer.ToleranceMetres == MirrorSnapshotMapper.ToleranceMm / 1000,
+            "the fake's diff tolerance equals MirrorSnapshotDiffer.ToleranceMetres (MirrorSnapshotMapper.ToleranceMm in metres)", R("tolerance") + " vs " + MirrorSnapshotDiffer.ToleranceMetres.ToString("R", CultureInfo.InvariantCulture));
         static MirrorSnapshot Snap(string response) { using var reply = JsonDocument.Parse(response); return MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText()); }
         static long Native(string uid) => long.Parse(uid[(uid.LastIndexOf('-') + 1)..], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
         var s0 = Snap(R("s0"));
         var s1 = Snap(R("s1"));
-        // The production side of the same session: five add-in writes (skipped), the baseline read, five external commits.
+        // The production side of the same session: six add-in writes (skipped), the baseline read, six external commits.
         var tick = 0;
         var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
         var tracker = new MirrorJournalTracker(journal);
         void Record(string name, string[] added, string[] modified, long[] deleted, bool addIn = false) =>
             journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { name }, added, modified, deleted, addIn) { DocumentPath = path });
-        foreach (var _ in Enumerable.Range(0, 5)) Record("BIM Agentic OS wall.create", new[] { "x" }, Array.Empty<string>(), Array.Empty<long>(), true);
+        foreach (var _ in Enumerable.Range(0, 6)) Record("BIM Agentic OS wall.create", new[] { "x" }, Array.Empty<string>(), Array.Empty<long>(), true);
         var p0 = RevitJournalQuery.RawRead(tracker, true, s0, path, new MirrorJournalReadOptions());
         Record("Move", Array.Empty<string>(), new[] { uidB }, Array.Empty<long>());
         Record("Wall", new[] { uidC }, Array.Empty<string>(), Array.Empty<long>());
         Record("Delete", Array.Empty<string>(), Array.Empty<string>(), new[] { Native(uidA) });
         Record("Delete", Array.Empty<string>(), Array.Empty<string>(), new[] { Native(uidD) });
         Record("Move", Array.Empty<string>(), new[] { uidE }, Array.Empty<long>());
+        Record("Move", Array.Empty<string>(), new[] { uidF }, Array.Empty<long>());
         var p1 = RevitJournalQuery.RawRead(tracker, true, s1, path, new MirrorJournalReadOptions(null, true));
         var p2 = RevitJournalQuery.RawRead(tracker, true, s1, path, new MirrorJournalReadOptions());
         var p3 = RevitJournalQuery.RawRead(tracker, true, s1, path, new MirrorJournalReadOptions());
@@ -910,8 +945,9 @@ static class MirrorDriftLoopChecks
         var expected = MirrorSnapshotDiffer.Compare(s0, s1);
         var changed = expected.Changed.Select(change => change.UniqueId + ":" + string.Join("|", change.Fields.Select(field => field.Field))).ToArray();
         Check(expected.Added.Select(item => item.UniqueId).SequenceEqual(new[] { uidC }) && expected.Removed.Select(item => item.UniqueId + ":" + item.Category).SequenceEqual(new[] { uidA + ":wall", uidD + ":wall" })
-            && changed.SequenceEqual(new[] { uidB + ":ax|bx", door + ":ax|bx" }.Order(StringComparer.Ordinal)),
-            "MirrorSnapshotDiffer over the fake's snapshots: C added, A and the curved D removed, B and its door moved (ax, bx), the 0.0004 mm nudge of E within tolerance", expected.ToJson());
+            && changed.SequenceEqual(new[] { uidB + ":ax|bx", door + ":ax|bx", uidF + ":ax|bx" }.Order(StringComparer.Ordinal))
+            && expected.Changed.Single(change => change.UniqueId == uidB).Fields[0].After == (5333.3333 / 1000).ToString("R", CultureInfo.InvariantCulture),
+            "MirrorSnapshotDiffer over the fake's snapshots: C added, A and the curved D removed, B (333.3333 mm) and its door moved (ax, bx), the 0.0004 mm nudge of E within tolerance, the 0.002 mm nudge of F beyond it (ax, bx)", expected.ToJson());
         string Diff(string reply)
         {
             try { using var document = JsonDocument.Parse(reply); return Uniform(document.RootElement.GetProperty("report").GetProperty("diff").GetRawText()); }
@@ -928,14 +964,79 @@ static class MirrorDriftLoopChecks
 
         // Without -ExternalEdits: the pre-P2-20 reply, byte for byte (legacy diff: adds in snapshot order, changed always empty).
         const string level1 = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-00001001", level2 = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-00001002", wall = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-00001003";
-        string Default(int skipped, bool existed, string added) => "{\"status\":\"succeeded\",\"verification\":\"unverified\",\"attached\":true,\"dropped\":0,\"skipped_add_in\":" + skipped
+        string Default(int skipped, bool existed, string added, bool peek = false, string removed = "") => "{\"status\":\"succeeded\",\"verification\":\"unverified\",\"attached\":true,\"dropped\":0,\"skipped_add_in\":" + skipped
             + ",\"failures\":0,\"unidentified\":0,\"report\":{\"journal_version\":1,\"document_unique_id\":\"" + DocumentUid + "\",\"document_path\":\"" + path + "\",\"baseline_sequence\":0,\"current_sequence\":0,\"after_sequence\":0,"
-            + "\"baseline_existed\":" + (existed ? "true" : "false") + ",\"peek\":false,\"journal_complete\":true,\"failures_since_baseline\":0,\"has_more\":false,\"next_after_sequence\":0,\"entries\":[],"
-            + "\"diff\":{\"diff_version\":1,\"document_unique_id\":\"" + DocumentUid + "\",\"added\":[" + added + "],\"removed\":[],\"changed\":[]}}}";
+            + "\"baseline_existed\":" + (existed ? "true" : "false") + ",\"peek\":" + (peek ? "true" : "false") + ",\"journal_complete\":true,\"failures_since_baseline\":0,\"has_more\":false,\"next_after_sequence\":0,\"entries\":[],"
+            + "\"diff\":{\"diff_version\":1,\"document_unique_id\":\"" + DocumentUid + "\",\"added\":[" + added + "],\"removed\":[" + removed + "],\"changed\":[]}}}";
         static string Item(string uid, string category) => "{\"unique_id\":\"" + uid + "\",\"category\":\"" + category + "\"}";
         Check(R("default_wall") == wall, "the default run's wall has the third fake UniqueId", R("default_wall"));
         Check(R("d0") == Default(1, false, Item(level1, "level") + "," + Item(level2, "level") + "," + Item(wall, "wall")), "without -ExternalEdits the first non-peek read is the pre-P2-20 reply byte for byte (every element added, changed empty)", R("d0"));
         Check(R("d1") == Default(2, true, ""), "without -ExternalEdits a read after an add-in move is the pre-P2-20 reply byte for byte (changed stays empty)", R("d1"));
+        Check(R("d2") == Default(3, true, "", peek: true, removed: Item(wall, "wall")), "without -ExternalEdits a peek read after an add-in delete is the pre-P2-20 reply byte for byte (removed names the wall)", R("d2"));
+        Check(R("d3") == Default(3, true, "", removed: Item(wall, "wall")), "without -ExternalEdits the peek kept the legacy baseline: the next non-peek read is the pre-P2-20 reply byte for byte", R("d3"));
+
+        // SnapshotUnstable: the fake's diff between its two stored baselines is MirrorSnapshotDiffer's over them.
+        try
+        {
+            var before = MirrorDrift.ParseSnapshot(R("u_before"));
+            var after = MirrorDrift.ParseSnapshot(R("u_after"));
+            var unstable = MirrorSnapshotDiffer.Compare(before, after);
+            var fields = unstable.Changed.Select(change => change.UniqueId + ":" + string.Join("|", change.Fields.Select(field => field.Field))).ToArray();
+            Check(fields.SequenceEqual(new[] { R("u_wall") + ":ay|by", "unstable:detail" }), "SnapshotUnstable: the differ sees the wall moved (ay, by) and the unmapped entry's detail changed", unstable.ToJson());
+            Check(Diff(R("u_reply")) == Uniform(unstable.ToJson()), "SnapshotUnstable: report.diff is MirrorSnapshotDiffer.Compare over the two stored baselines (detail field)", Diff(R("u_reply")) + " vs " + unstable.ToJson());
+        }
+        catch (ArgumentException error) { Check(false, "SnapshotUnstable: the stored baselines parse as snapshots", error.Message + " | " + Head(R("u_before"))); }
+
+        // Hand-built snapshot pairs: Get-FakeSnapshotDiff equals MirrorSnapshotDiffer over the same JSON.
+        JsonDocument? caseReplies = null;
+        try { caseReplies = JsonDocument.Parse(R("cases")); } catch (JsonException) { }
+        using (caseReplies)
+            foreach (var item in cases)
+            {
+                var fake = caseReplies is not null && caseReplies.RootElement.TryGetProperty(item.Name, out var value) && value.ValueKind == JsonValueKind.String ? Uniform(value.GetString()!) : "<missing> " + Head(R("cases"));
+                string production;
+                try { production = MirrorSnapshotDiffer.Compare(MirrorDrift.ParseSnapshot(item.Before), MirrorDrift.ParseSnapshot(item.After)).ToJson(); }
+                catch (ArgumentException error) { production = "<differ refused: " + error.Message + ">"; }
+                Check(production.Contains("\"changed\":[{", StringComparison.Ordinal) || production.Contains("\"added\":[{", StringComparison.Ordinal), "case " + item.Name + ": the differ reports a change (the case is not vacuous)", production);
+                Check(fake == Uniform(production), "case " + item.Name + ": Get-FakeSnapshotDiff equals MirrorSnapshotDiffer.Compare over the same snapshots", fake + " vs " + production);
+            }
+    }
+
+    // Snapshot pairs (MirrorSnapshot.ToJson shape) for the differ's field branches the fake's own snapshots never reach.
+    static (string Name, string Before, string After)[] DiffCases()
+    {
+        const string l1 = "11111111-1111-4111-8111-111111111111", l2 = "22222222-2222-4222-8222-222222222222";
+        const string e1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", e2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", e3 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        static string N(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+        static string E(string id, string kind, double[] geometry, params string[] dependencies) => "{\"Id\":\"" + id + "\",\"Kind\":\"" + kind + "\",\"GeometryMetres\":[" + string.Join(",", geometry.Select(N))
+            + "],\"Dependencies\":[" + string.Join(",", dependencies.Select(dependency => "\"" + dependency + "\"")) + "],\"Provenance\":{\"Source\":\"revit-snapshot\",\"Approval\":\"observed\"}}";
+        static string S(string id, string uid, string category) => "{\"id\":\"" + id + "\",\"unique_id\":\"" + uid + "\",\"category\":\"" + category + "\"}";
+        static string U(string category, string uid, string reason, string detail) => "{\"category\":\"" + category + "\",\"unique_id\":\"" + uid + "\",\"reason\":\"" + reason + "\",\"detail\":\"" + detail + "\"}";
+        static string Snap(string[] elements, string[] sources, params string[] unmapped) => "{\"snapshot_version\":1,\"document_unique_id\":\"" + DocumentUid + "\",\"units\":\"m\",\"elements\":[" + string.Join(",", elements)
+            + "],\"sources\":[" + string.Join(",", sources) + "],\"unmapped\":[" + string.Join(",", unmapped) + "]}";
+        double[] wall = { 0, 0, 5, 0, 3, 0.2 };
+        var level = E(l1, "level", new double[] { 0 });
+        var levelSource = S(l1, "u-level", "level");
+        return new[]
+        {
+            ("mapped_to_unmapped", Snap(new[] { level, E(e1, "wall", wall, l1) }, new[] { levelSource, S(e1, "u-wall", "wall") }),
+                Snap(new[] { level }, new[] { levelSource }, U("wall", "u-wall", "curved_wall_unsupported", "curved wall"))),
+            ("kind_change", Snap(new[] { E(e1, "wall", wall, l1) }, new[] { S(e1, "u-1", "wall") }), Snap(new[] { E(e1, "door", new double[] { 1, 0, 2, 0, 0, 2.1 }, l1, e2) }, new[] { S(e1, "u-1", "door") })),
+            ("kind_case", Snap(new[] { E(e1, "Wall", wall, l1) }, new[] { S(e1, "u-1", "wall") }), Snap(new[] { E(e1, "Wall", new double[] { 0.5, 0, 5, 0, 3, 0.2 }, l1) }, new[] { S(e1, "u-1", "wall") })),
+            ("geometry_length", Snap(new[] { E(e1, "wall", wall, l1) }, new[] { S(e1, "u-1", "wall") }), Snap(new[] { E(e1, "wall", new double[] { 0, 0, 5, 0, 3 }, l1) }, new[] { S(e1, "u-1", "wall") })),
+            ("unnamed_geometry", Snap(new[] { E(e1, "beam", new double[] { 1, 2 }), E(e2, "wall", new double[] { 0, 0, 5, 0, 3 }) }, new[] { S(e1, "u-1", "beam"), S(e2, "u-2", "wall") }),
+                Snap(new[] { E(e1, "beam", new double[] { 1, 3 }), E(e2, "wall", new double[] { 0, 1, 5, 0, 3 }) }, new[] { S(e1, "u-1", "beam"), S(e2, "u-2", "wall") })),
+            ("dependencies", Snap(new[] { E(e1, "wall", wall, l1), E(e2, "wall", wall, l1) }, new[] { S(e1, "u-1", "wall"), S(e2, "u-2", "wall") }),
+                Snap(new[] { E(e1, "wall", wall, l2, l1), E(e2, "wall", wall, l1.ToUpperInvariant()) }, new[] { S(e1, "u-1", "wall"), S(e2, "u-2", "wall") })),
+            ("reason_detail", Snap(Array.Empty<string>(), Array.Empty<string>(), U("wall", "u-5", "curved_wall_unsupported", "curved wall"), U("floor", "u-6", "no_bim_ir_kind", "first")),
+                Snap(Array.Empty<string>(), Array.Empty<string>(), U("wall", "u-5", "curtain_wall_unsupported", "curved wall"), U("floor", "u-6", "no_bim_ir_kind", "second"))),
+            ("category", Snap(new[] { E(e1, "wall", wall, l1) }, new[] { S(e1, "u-1", "wall") }), Snap(new[] { E(e1, "wall", wall, l1) }, new[] { S(e1, "u-1", "generic") })),
+            ("uid_case_duplicates_blank", Snap(new[] { E(e1, "wall", wall, l1), E(e2, "wall", wall, l1) }, new[] { S(e1, "U-B", "wall"), S(e2, "a-1", "wall") }, U("wall", "", "missing_data", "no id")),
+                Snap(new[] { E(e1, "wall", new double[] { 0, 0, 6, 0, 3, 0.2 }, l1), E(e3, "wall", wall, l1) }, new[] { S(e1, "u-b", "wall"), S(e3, "A-0", "wall") },
+                    U("wall", "u-b", "curved_wall_unsupported", "duplicate of a mapped UniqueId"), U("wall", " ", "missing_data", "blank id"))),
+            ("tolerance_edge", Snap(new[] { E(e1, "wall", new double[] { 1, 2, 0, 0, 3, 0.2 }, l1) }, new[] { S(e1, "u-1", "wall") }),
+                Snap(new[] { E(e1, "wall", new double[] { 1.000001, 2.000002, 0.000001, 0.0000011, 3.0000009, 0.2000011 }, l1) }, new[] { S(e1, "u-1", "wall") })),
+        };
     }
 
     static readonly JsonSerializerOptions Relaxed = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
