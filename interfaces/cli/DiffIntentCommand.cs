@@ -33,6 +33,8 @@ namespace Bim.Cli;
 //     IntentCompiler refuses the intent (every issue of its IntentException, subject being the issue's key).
 // These are apply-intent's envelopes with the diff_intent_ prefix; diff-intent has no store, so it has no stale-head,
 // lock or commit codes.
+// Output: Plan returns the stdout line and exit status (IntentEnvelope, P3-15); Run prints it. The MCP diff_intent tool
+// returns Plan's envelope without touching Console.
 // Precedence: usage, then both files are read (project first), then the project is parsed, then the intent, then the
 // compile and edit set, then the diff; the first failure is the only one reported.
 internal static class DiffIntentCommand
@@ -43,20 +45,25 @@ internal static class DiffIntentCommand
     public const string IntentInvalid = "diff_intent_intent_invalid";
     public const string IntentRefused = "diff_intent_intent_refused";
 
-    public static void Run(string[] args)
+    // The CLI verb: prints the envelope Plan returns (IntentEnvelope.Print: the line, exit 1 on a refusal).
+    public static void Run(string[] args) => Plan(args).Print();
+
+    // P3-15: the verb's stdout line and exit status, returned instead of written, so the MCP diff_intent tool
+    // (interfaces/mcp/DiffIntentTool.cs) uses it directly; it writes nothing to Console and leaves Environment.ExitCode.
+    public static IntentEnvelope Plan(string[] args)
     {
-        if (!TryParse(args, out var projectPath, out var intentPath)) { ApplyEditsCommand.Fail(UsageCode); return; }
+        if (!TryParse(args, out var projectPath, out var intentPath)) return IntentPlan.Failed(UsageCode);
         string projectText, intentText;
         try
         {
             projectText = BoundedInput.ReadText(projectPath);
             intentText = BoundedInput.ReadText(intentPath);
         }
-        catch (InputRejectedException error) { ApplyEditsCommand.Fail(error.Message); return; }
-        if (ParseProject(projectText) is not { } head) { ApplyEditsCommand.Fail(ProjectInvalid); return; }
-        if (IntentPlan.ParseIntent(intentText, Verb, IntentInvalid) is not { } intent) return;
-        if (IntentPlan.Build(head, intent, Verb, IntentRefused) is not { } result) return;
-        Console.WriteLine(JsonSerializer.Serialize(result.Plan));
+        catch (InputRejectedException error) { return IntentPlan.Failed(error.Message); }
+        if (ParseProject(projectText) is not { } head) return IntentPlan.Failed(ProjectInvalid);
+        if (!IntentPlan.ParseIntent(intentText, Verb, IntentInvalid).TryGet(out var intent, out var refused)) return refused;
+        if (!IntentPlan.Build(head, intent, Verb, IntentRefused).TryGet(out var result, out refused)) return refused;
+        return new IntentEnvelope(JsonSerializer.Serialize(result.Plan), 0);
     }
 
     // Exactly --project <p> and --intent <i>, each once with a non-empty value that is not flag-shaped ("--..."), in

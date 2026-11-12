@@ -1,5 +1,4 @@
 #nullable enable
-using System.Globalization;
 using System.Text.Json;
 using Bim.Cli;
 
@@ -7,14 +6,15 @@ namespace Bim.Mcp;
 
 // P3-14: the read-only MCP tool diff_intent, the MCP face of the P3-12 CLI verb `diff-intent --project project.json
 // --intent after.json` (interfaces/cli/DiffIntentCommand.cs). It has no plan logic of its own: it runs the verb's own
-// code, DiffIntentCommand.Run, compiled into this server from the CLI sources (Bim.Mcp.csproj links
-// DiffIntentCommand.cs, the P3-13 shared helper IntentPlan.cs and their ApplyEditsCommand.cs / EditsInput.cs /
-// BoundedInput.cs), so the plan is built through IntentPlan (IntentJson.Parse, IntentEdits.FromStored,
-// IncrementalDiff.Diff with IncrementalDiff.OrderOf placement) exactly as the CLI and apply-intent build it.
+// code, DiffIntentCommand.Plan (the envelope DiffIntentCommand.Run prints), compiled into this server from the CLI
+// sources (Bim.Mcp.csproj links DiffIntentCommand.cs, the P3-13 shared helper IntentPlan.cs and their
+// ApplyEditsCommand.cs / EditsInput.cs / BoundedInput.cs), so the plan is built through IntentPlan (IntentJson.Parse,
+// IntentEdits.FromStored, IncrementalDiff.Diff with IncrementalDiff.OrderOf placement) exactly as the CLI and
+// apply-intent build it.
 //   project_path  a Project JSON file (the head), read like the CLI reads --project.
 //   intent_path   a canonical layout intent v1 file, read like the CLI reads --intent.
-// The text is the CLI stdout line without its newline, byte for byte: the ExecutionPlan JSON on success, or the CLI's
-// typed refusal envelope (diff_intent_usage, input_*, diff_intent_project_invalid, diff_intent_intent_invalid,
+// The text is the CLI stdout line without its newline, byte for byte (the envelope's Line): the ExecutionPlan JSON on
+// success, or the CLI's typed refusal envelope (diff_intent_usage, input_*, diff_intent_project_invalid, diff_intent_intent_invalid,
 // diff_intent_intent_refused, invalid_ir, invalid_project_identity, edit_bound_exceeded, the diff's library codes,
 // diff_intent_internal_error). isError is true exactly when the CLI would exit 1. A flag-shaped path ("--...") is
 // diff_intent_usage, as on the CLI.
@@ -25,13 +25,11 @@ namespace Bim.Mcp;
 // handler's {"status":"failed","code":message}.
 // Read-only: the verb reads both files through BoundedInput and never writes, commits or opens a store; there is no
 // apply_intent tool.
-// The verb writes its line with Console.WriteLine and sets Environment.ExitCode. Run captures Console.Out into a buffer
-// for the call and restores both Console.Out and the exit code afterwards, under a lock. Limit: Console.Out is
-// process-wide, so this is correct only while one request runs at a time in the process. The stdio server handles one
-// request at a time and the lock serializes callers of Run, but any other thread writing Console.Out during a call
-// would have its output captured into the tool text (and would see the exit code set to 0). The stdio server writes JSON-RPC to its own stream (Program.cs),
-// so nothing the verb prints reaches the protocol stream. Its stderr detail for diff_intent_internal_error goes to the
-// server's stderr, as on the CLI.
+// P3-15: Plan returns the line, the exit status and the stderr detail of diff_intent_internal_error instead of writing
+// Console.Out or setting Environment.ExitCode, so the tool uses the envelope directly: no Console.Out capture, no lock,
+// and concurrent calls (or other threads writing Console.Out) cannot see each other's output. The detail goes to the
+// server's stderr, as on the CLI; the stdio server writes JSON-RPC to its own stream (Program.cs), so nothing reaches
+// the protocol stream.
 internal static class DiffIntentTool
 {
     public const string Name = "diff_intent";
@@ -41,8 +39,6 @@ internal static class DiffIntentTool
     public const int MaxPathChars = 4096;
 
     public sealed record Outcome(bool Succeeded, string Text);
-
-    static readonly object Gate = new();
 
     // McpServer's handler: the two string arguments (checked present and typed by CallTool) to the verb.
     public static (string Text, bool IsError) Execute(JsonElement arguments)
@@ -57,26 +53,9 @@ internal static class DiffIntentTool
         ArgumentNullException.ThrowIfNull(intentPath);
         if (PathProblem(projectPath)) return new Outcome(false, Failure(PathInvalid, "project"));
         if (PathProblem(intentPath)) return new Outcome(false, Failure(PathInvalid, "intent"));
-        lock (Gate)
-        {
-            var previousOut = Console.Out;
-            var previousExit = Environment.ExitCode;
-            using var captured = new StringWriter(CultureInfo.InvariantCulture);
-            int exit;
-            try
-            {
-                Console.SetOut(captured);
-                Environment.ExitCode = 0;
-                DiffIntentCommand.Run([DiffIntentCommand.Verb, "--project", projectPath, "--intent", intentPath]);
-                exit = Environment.ExitCode;
-            }
-            finally
-            {
-                Console.SetOut(previousOut);
-                Environment.ExitCode = previousExit;
-            }
-            return new Outcome(exit == 0, Line(captured.ToString()));
-        }
+        var envelope = DiffIntentCommand.Plan([DiffIntentCommand.Verb, "--project", projectPath, "--intent", intentPath]);
+        if (envelope.Diagnostic is { } detail) Console.Error.WriteLine(detail);
+        return new Outcome(envelope.Succeeded, envelope.Line);
     }
 
     static bool PathProblem(string path)
@@ -99,15 +78,6 @@ internal static class DiffIntentTool
             writer.WriteEndObject();
         }
         return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
-    }
-
-    // The single line the verb printed, without its line terminator.
-    static string Line(string printed)
-    {
-        if (printed.EndsWith(Environment.NewLine, StringComparison.Ordinal)) return printed[..^Environment.NewLine.Length];
-        if (printed.EndsWith('\n')) printed = printed[..^1];
-        if (printed.EndsWith('\r')) printed = printed[..^1];
-        return printed;
     }
 
     static string? Text(JsonElement element)
