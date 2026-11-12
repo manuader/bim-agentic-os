@@ -3,17 +3,19 @@ using Bim.Core;
 
 namespace Bim.Cli;
 
-// The repository-only skill pack lookup shared by generate-prototypes (P7-09) and plan-layouts --pack (P7-13): the
-// repository is RevitCommandPolicy.RepositoryRoot of the CLI binary (the first ancestor holding global.json); the pack
-// manifest <repository>/skills/<id>/skill.json is read through BoundedInput (8 MiB cap, input_* codes) and parsed by
-// SkillParser (its own 65536-character cap); a manifest naming another id is refused. Checks in that order, after a guard:
-// an id that is not SkillParser.IsId (callers refuse those first) is Invalid "id" before any file system access, so the
-// path never leaves skills/.
-// P7-12: with packageFirst (generate-prototypes only) the release package root is tried before the repository walk: the
-// parent directory of the CLI binary's directory when that directory is named "cli" (ordinal) and the parent holds the
-// markers scripts/package.ps1 writes (the files VERSION and manifest.json) and a skills/ directory; then the manifest is
-// <package>/skills/<id>/skill.json, read and checked exactly as above. Without skills/ there the repository walk follows
-// (RepositoryNotFound when it finds none). Load(id) without packageFirst (plan-layouts --pack) is unchanged.
+// The skill pack lookup shared by every production caller: generate-prototypes (P7-09/P7-12), generate-typology (P7-14)
+// and plan-layouts --pack (P7-13/P7-15), all through Load(id, packageFirst: true). Load(id) without packageFirst (the
+// repository walk alone) is a legacy overload kept for tests; no production caller uses it.
+// Checks in order, after a guard: an id that is not SkillParser.IsId (callers refuse those first) is Invalid "id" before
+// any file system access, on either path, so the path never leaves skills/.
+// With packageFirst the release package root is tried before the repository walk: the parent directory of the CLI
+// binary's directory when that directory is named "cli" (ordinal) and the parent holds both markers scripts/package.ps1
+// writes (the files VERSION and manifest.json) and a skills/ directory (a stray skills/ with one or no marker is not a
+// package); then the manifest is <package>/skills/<id>/skill.json, with no fallback to the repository once the package
+// root is chosen. Otherwise (no package root, or packageFirst false) the repository is RevitCommandPolicy.RepositoryRoot of
+// the CLI binary (the first ancestor holding global.json), RepositoryNotFound when there is none, and the manifest is
+// <repository>/skills/<id>/skill.json. The manifest is read through BoundedInput (8 MiB cap, input_* codes) and parsed by
+// SkillParser (its own 65536-character cap); a manifest naming another id is refused.
 internal enum SkillPackProblem { RepositoryNotFound, Unavailable, Invalid }
 
 // Detail: null for RepositoryNotFound, the BoundedInput input_* code for Unavailable, the SkillCodes code (or "id" for a

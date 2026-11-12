@@ -23,6 +23,9 @@ using Bim.Generative;
 //      both a literal expectation and the pack part (name-pattern rules) of TypologyRules.From for the same pack and
 //      brief. Without --pack the bytes are today's. Pack refusals are typed plan_layouts_pack_* envelopes (exit 1, no
 //      file); a scratch repository with its own skills/ covers malformed, mismatched, oversized and rule-less packs.
+//   6. P7-15: --pack finds the pack like generate-prototypes (SkillPackLookup.Load(id, packageFirst: true)): from the
+//      release package layout (outside any repository) the run is byte-equal to the repository run; a package inside a
+//      repository is read before it; a stray skills/ beside a non-package binary folder is ignored.
 internal static class PlanLayoutsTests
 {
     public static void Run(string root, string work, string dotnet, string cliDll, byte[] overCap, Action<bool, string, string> check)
@@ -379,14 +382,24 @@ internal static class PlanLayoutsTests
         var kept = Cli("plan-layouts", smallPath, keptOut, "--pack", "xx.no-such.pack");
         Check(kept.Exit == 1 && Str(Parse(kept.Out), "code") == "output_exists" && File.ReadAllBytes(keptOut).SequenceEqual(sentinel),
             "an existing output with an unknown --pack -> output_exists, the file byte-identical", D(kept));
-        // SkillPackLookup.Load guards its id itself (callers check first): a non-id is Invalid "id", nothing read.
+        // SkillPackLookup.Load guards its id itself (callers check first): a non-id is Invalid "id", nothing read, on the
+        // package-first path every production caller takes and on the repository-only overload.
+        foreach (var packageFirst in new[] { true, false })
         foreach (var badId in new[] { "../x", "", "ar.caba/x", "..", "Ar.Caba" })
         {
             Bim.Cli.SkillPackException? lookupError = null;
-            try { Bim.Cli.SkillPackLookup.Load(badId); }
+            try { Bim.Cli.SkillPackLookup.Load(badId, packageFirst); }
             catch (Bim.Cli.SkillPackException error) { lookupError = error; }
-            Check(lookupError is { Problem: Bim.Cli.SkillPackProblem.Invalid, Detail: "id" }, "SkillPackLookup.Load('" + badId + "') refuses Invalid with detail id",
+            Check(lookupError is { Problem: Bim.Cli.SkillPackProblem.Invalid, Detail: "id" },
+                "SkillPackLookup.Load('" + badId + "', packageFirst: " + (packageFirst ? "true" : "false") + ") refuses Invalid with detail id",
                 lookupError is null ? "<no refusal>" : lookupError.Problem + " " + lookupError.Detail);
+        }
+        {
+            Bim.Cli.SkillPackException? legacyError = null;
+            try { Bim.Cli.SkillPackLookup.Load("../x"); }
+            catch (Bim.Cli.SkillPackException error) { legacyError = error; }
+            Check(legacyError is { Problem: Bim.Cli.SkillPackProblem.Invalid, Detail: "id" }, "SkillPackLookup.Load('../x') (the legacy overload) refuses Invalid with detail id",
+                legacyError is null ? "<no refusal>" : legacyError.Problem + " " + legacyError.Detail);
         }
 
         // A scratch repository with its own skills/ (the CLI copied under it finds it as the repository).
@@ -492,6 +505,46 @@ internal static class PlanLayoutsTests
         FakeRefusal("a pack folder without skill.json", "zz.test.empty-dir", "plan_layouts_pack_unavailable", "input_not_found");
         FakeRefusal("a pack with a zero side minimum (even on a room the brief lacks)", "zz.test.zero", "plan_layouts_pack_rule_invalid", TypologyRuleCodes.ThresholdInvalid + " at zz.test.zero/zero-side");
 
+        // P7-15: --pack uses SkillPackLookup.Load(id, packageFirst: true) like generate-prototypes (P7-12).
+        // A stray skills/ beside a cli/ folder that is not a package never takes over: <repo>/<case>/cli beside
+        // <repo>/<case>/skills (its zz.test.strict malformed) with no package marker, only VERSION, or only manifest.json
+        // (a package root needs both) reads <repo>/skills: the repository run's bytes and stdout.
+        foreach (var (label, markers) in new[] { ("no-markers", Array.Empty<string>()), ("version-only", new[] { "VERSION" }), ("manifest-only", new[] { "manifest.json" }) })
+        {
+            var strayRoot = Path.Combine(fakeRepo, "stray-" + label);
+            Directory.CreateDirectory(Path.Combine(strayRoot, "skills", "zz.test.strict"));
+            File.WriteAllText(Path.Combine(strayRoot, "skills", "zz.test.strict", "skill.json"), "{");
+            foreach (var marker in markers) File.WriteAllText(Path.Combine(strayRoot, marker), marker == "VERSION" ? "0.0.0-test\n" : "{}\n");
+            var strayDll = CopyCli(Path.Combine(strayRoot, "cli"));
+            var strayOut = Output();
+            var stray = CliAt(strayDll, null, "plan-layouts", smallPath, strayOut, "--alternatives", "2", "--pack", "zz.test.strict");
+            Check(stray.Exit == 0 && Written(strayOut).SequenceEqual(expectedStrict) && stray.Out == pack8.Out,
+                "--pack from cli/ beside a malformed skills/ with " + (markers.Length == 0 ? "no package marker" : "only " + markers[0]) + " reads <repo>/skills: the repository run's bytes and stdout", D(stray));
+        }
+        // A package inside the repository (<repo>/dist: cli/, skills/, VERSION, manifest.json) is read before the repository:
+        // its zz.test.mismatch is valid (the repository's names another id), its zz.test.package-only is absent from the
+        // repository, and a pack only the repository has is not looked up there (no fallback once the package has skills/).
+        var dist = Path.Combine(fakeRepo, "dist");
+        var distDll = CopyCli(Path.Combine(dist, "cli"));
+        File.WriteAllText(Path.Combine(dist, "VERSION"), "0.0.0-test\n");
+        File.WriteAllText(Path.Combine(dist, "manifest.json"), "{}\n");
+        foreach (var distId in new[] { "zz.test.mismatch", "zz.test.package-only" })
+        {
+            Directory.CreateDirectory(Path.Combine(dist, "skills", distId));
+            File.WriteAllBytes(Path.Combine(dist, "skills", distId, "skill.json"), Utf8(strictText.Replace("\"id\":\"zz.test.strict\"", "\"id\":\"" + distId + "\"", StringComparison.Ordinal)));
+            var distRules = new[] { Rule("living*", 16, 3.2, distId + " living-side living-area living-area-2"), Rule("bath*", null, 1.25, distId + " bath-side") };
+            var distOut = Output();
+            var distRun = CliAt(distDll, null, "plan-layouts", smallPath, distOut, "--alternatives", "2", "--pack", distId);
+            var expectedDist = ExpectedWith(smallBrief, 2, 0, distRules);
+            Check(distRun.Exit == 0 && Written(distOut).SequenceEqual(expectedDist) && Str(Parse(distRun.Out), "pack") == distId && Int(Parse(distRun.Out), "pack_rules") == 2,
+                "--pack from a package inside a repository reads the package's skills/" + distId + " before the repository's (equal to the in-process run with its rules)",
+                D(distRun) + Sizes(Written(distOut), expectedDist));
+        }
+        var distMissingOut = Never();
+        var distMissing = CliAt(distDll, null, "plan-layouts", smallPath, distMissingOut, "--alternatives", "1", "--pack", "zz.test.strict");
+        Check(distMissing.Exit == 1 && Str(Parse(distMissing.Out), "code") == "plan_layouts_pack_unavailable" && Str(Parse(distMissing.Out), "detail") == "input_not_found" && !File.Exists(distMissingOut),
+            "--pack absent from the package's skills/ (present in the repository) -> plan_layouts_pack_unavailable (input_not_found), no file", D(distMissing));
+
         // A CLI copy outside any repository: --pack refuses, a run without it still plans.
         static bool UnderRepository(string directory)
         {
@@ -518,6 +571,39 @@ internal static class PlanLayoutsTests
                 Check(outsidePlain.Exit == 0 && Written(outsidePlainOut).SequenceEqual(Expected(smallBrief, 1, 0)), "without --pack a CLI copy outside any repository still plans", D(outsidePlain));
             }
             finally { try { Directory.Delete(outsideRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+
+            // P7-15: the release package layout (<package>/cli beside <package>/skills with VERSION and manifest.json, no
+            // global.json anywhere above): --pack reads <package>/skills/<id>/skill.json and the run is byte-equal to the
+            // repository run (bytes and stdout).
+            var packageRoot = Path.Combine(outsideBase, "bim-plan-layouts-package-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var packageDll = CopyCli(Path.Combine(packageRoot, "cli"));
+                File.WriteAllText(Path.Combine(packageRoot, "VERSION"), "0.0.0-test\n");
+                File.WriteAllText(Path.Combine(packageRoot, "manifest.json"), "{}\n");
+                var repoSkills = Path.Combine(root, "skills");
+                foreach (var file in Directory.GetFiles(repoSkills, "*", SearchOption.AllDirectories))
+                {
+                    var destination = Path.Combine(packageRoot, "skills", Path.GetRelativePath(repoSkills, file));
+                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    File.Copy(file, destination);
+                }
+                var packagedOut = Output();
+                var packaged = CliAt(packageDll, null, "plan-layouts", smallPath, packagedOut, "--pack", Caba, "--alternatives", "2", "--seed", "3");
+                Check(!UnderRepository(packageRoot) && packaged.Exit == 0 && Written(packagedOut).SequenceEqual(expectedPack) && packaged.Out == pack1.Out,
+                    "--pack from a CLI in the package layout (cli/ beside skills/, outside any repository) writes the repository run's bytes and stdout",
+                    D(packaged) + Sizes(Written(packagedOut), expectedPack) + " package under " + outsideBase);
+                var packagedMissingOut = Never();
+                var packagedMissing = CliAt(packageDll, null, "plan-layouts", smallPath, packagedMissingOut, "--alternatives", "1", "--pack", "xx.no-such.pack");
+                Check(packagedMissing.Exit == 1 && Str(Parse(packagedMissing.Out), "code") == "plan_layouts_pack_unavailable" && Str(Parse(packagedMissing.Out), "detail") == "input_not_found"
+                    && !File.Exists(packagedMissingOut), "--pack absent from the package's skills/ -> plan_layouts_pack_unavailable (input_not_found), no file", D(packagedMissing));
+                Directory.Delete(Path.Combine(packageRoot, "skills"), true);
+                var noSkillsOut = Never();
+                var noSkills = CliAt(packageDll, null, "plan-layouts", smallPath, noSkillsOut, "--alternatives", "1", "--pack", Caba);
+                Check(noSkills.Exit == 1 && Str(Parse(noSkills.Out), "code") == "plan_layouts_pack_repository_not_found" && !File.Exists(noSkillsOut),
+                    "the package layout without its skills/ folder (outside any repository) -> plan_layouts_pack_repository_not_found, no file", D(noSkills));
+            }
+            finally { try { Directory.Delete(packageRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
         }
     }
 }

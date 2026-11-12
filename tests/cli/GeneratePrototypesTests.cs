@@ -258,14 +258,16 @@ internal static class GeneratePrototypesTests
                 var packagedMissing = CliAt(packageDll, "generate-prototypes", Input("package-unknown-pack.json", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"pack\":\"xx.no-such.pack\"}"), packagedMissingOut);
                 Check(packagedMissing.Exit == 1 && Str(Parse(packagedMissing.Out), "code") == "generate_prototypes_pack_unavailable" && Str(Parse(packagedMissing.Out), "detail") == "input_not_found" && !File.Exists(packagedMissingOut),
                     "a pack absent from the package's skills/ -> generate_prototypes_pack_unavailable (input_not_found), no file", D(packagedMissing));
-                // plan-layouts --pack keeps its repository-only lookup (SkillPackLookup.Load without the package root).
+                // P7-15: plan-layouts --pack reads the package's skills/ too (SkillPackLookup.Load with packageFirst), byte-equal to the repository run.
                 var briefPath = Input("package-brief.json", "{\"brief_version\":1,\"name\":\"Small studio\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"
                     + "\"rooms\":[{\"id\":\"living\",\"name\":\"Living\",\"target_area_m2\":20,\"min_area_m2\":15},{\"id\":\"bath\",\"name\":\"Bath\",\"target_area_m2\":4,\"min_area_m2\":3}],"
                     + "\"adjacencies\":[{\"a\":\"living\",\"b\":\"bath\",\"kind\":\"required\"}]}");
                 var planOut = Output();
                 var plan = CliAt(packageDll, "plan-layouts", briefPath, planOut, "--alternatives", "1", "--pack", PackId);
-                Check(plan.Exit == 1 && Str(Parse(plan.Out), "code") == "plan_layouts_pack_repository_not_found" && !File.Exists(planOut),
-                    "plan-layouts --pack in the package layout is unchanged: plan_layouts_pack_repository_not_found, no file", D(plan));
+                var repoPlanOut = Output();
+                var repoPlan = Cli("plan-layouts", briefPath, repoPlanOut, "--alternatives", "1", "--pack", PackId);
+                Check(repoPlan.Exit == 0 && plan.Exit == 0 && File.Exists(planOut) && File.Exists(repoPlanOut) && File.ReadAllBytes(planOut).SequenceEqual(File.ReadAllBytes(repoPlanOut)) && plan.Out == repoPlan.Out,
+                    "plan-layouts --pack in the package layout reads the package's skills/ and writes the repository run's bytes and stdout", D(plan) + " repository " + D(repoPlan));
                 // Without a package marker the folder is not a package root: the repository walk follows (none here).
                 File.Move(Path.Combine(packageRoot, "manifest.json"), Path.Combine(packageRoot, "manifest.json.off"));
                 var noMarkerOut = Output();
