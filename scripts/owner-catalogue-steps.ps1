@@ -895,7 +895,9 @@ function Get-CatalogueDocumentationSteps {
 #      element:<wall id> -> doc-up-wall and element:<door id> -> doc-up-door and the test document's UniqueId, through
 #      the same -InvokeDocUpdate channel (a request with a record member). Its output file (the two model elements:
 #      "element:<id>" -> the first UniqueId each step created) is checked against the printed sha256 and the created
-#      UniqueIds and is what 1 and 2 pass to doc-update --realized (realized_file, realized_sha256). A realized_*
+#      UniqueIds and is what 1 and 2 pass to doc-update --realized (realized_file, realized_sha256; no realized member;
+#      the step keeps a stub of its request: record_steps, record_document_unique_id, fixture, assignments, document,
+#      record_file = the record the invoker kept, never the record itself). A realized_*
 #      refusal (the record does not say what the session believes it made) stops the whole run, its envelope kept in
 #      the run folder; any other doc-realized failure fails only the update;
 #   1. doc-up-realize-plan: a dry run (no --execute) with before = after = the fixture and the realized map of 0 (the
@@ -973,18 +975,15 @@ function Get-CatalogueDocUpdateElements {
 
 # One doc-update request: before/after fixtures, realized map, bindings (the sequence fills bindings.document with the
 # step's document), --accept values (none) and expected_document ($null: dry run; a sha256: --execute). P4-16:
-# $RealizedFile (with its $RealizedSha) names the doc-realized output that doc-update --realized reads instead of the
-# realized member (which then holds that file's map, for the record).
+# $RealizedFile (with its $RealizedSha) names the doc-realized output that doc-update --realized reads; the request
+# then has no realized member (one source of truth) and $Realized is ignored.
 function New-CatalogueDocUpdateRequest([double]$BeforeShiftMm, [double]$AfterShiftMm, $Realized, $Expected, [string]$RealizedFile, [string]$RealizedSha) {
-    $request = [ordered]@{
-        before = (New-CatalogueDocUpdateProject $BeforeShiftMm)
-        after = (New-CatalogueDocUpdateProject $AfterShiftMm)
-        realized = $Realized
-        bindings = [ordered]@{ document = $null; levels = [ordered]@{ $script:CatalogueDocUpdateLevelId = [string]$picked['level'] } }
-        accept = @()
-        expected_document = $Expected
-    }
+    $request = [ordered]@{ before = (New-CatalogueDocUpdateProject $BeforeShiftMm); after = (New-CatalogueDocUpdateProject $AfterShiftMm) }
     if ($RealizedFile) { $request['realized_file'] = $RealizedFile; $request['realized_sha256'] = $RealizedSha }
+    else { $request['realized'] = $Realized }
+    $request['bindings'] = [ordered]@{ document = $null; levels = [ordered]@{ $script:CatalogueDocUpdateLevelId = [string]$picked['level'] } }
+    $request['accept'] = @()
+    $request['expected_document'] = $Expected
     return $request
 }
 
@@ -1017,7 +1016,7 @@ function Test-CatalogueDocUpdateLine($Response, $ExitCode, [hashtable]$Expect, [
 
 # P4-16, step 0: the doc-realized output. The file it names must hash to the printed sha256 and bytes and hold exactly
 # the two element sources -> the first UniqueId the wall and door steps created; records doc_up_elements = @{ File;
-# Sha; Map } (the map as read from that file).
+# Sha } (the file doc-update --realized reads, and its sha256).
 function Test-CatalogueDocRealizedElements($Response) {
     $path = [string](Get-CatalogueMember $Response 'output')
     if (!$path -or !(Test-Path -LiteralPath $path -PathType Leaf)) { return (Test-CatalogueCondition 'archivo del mapa realizado escrito' 'presente' $path $false) }
@@ -1033,7 +1032,7 @@ function Test-CatalogueDocRealizedElements($Response) {
         (Test-CatalogueSame 'bytes del mapa realizado' $bytes.Length (Get-CatalogueMember $Response 'bytes')),
         (Test-CatalogueSame 'entradas del mapa realizado' 2 (Get-CatalogueMember $Response 'entries')),
         (Test-CatalogueSame 'mapa realizado (doc-realized): el muro y la puerta = lo que crearon sus pasos' (Get-CatalogueMapText (Get-CatalogueDocUpdateElements)) (Get-CatalogueMapText $map)))
-    if ($null -eq $reason) { $picked['doc_up_elements'] = @{ File = $path; Sha = $printed; Map = $map } }
+    if ($null -eq $reason) { $picked['doc_up_elements'] = @{ File = $path; Sha = $printed } }
     return $reason
 }
 
@@ -1226,10 +1225,10 @@ function Get-CatalogueDocUpdateSteps {
         Build = { $null = Created 'doc-up-wall'; $null = Created 'doc-up-door'; New-CatalogueDocRealizedRequest }
         Check = { param($r) Test-CatalogueDocRealizedElements $r } })
     $steps.Add(@{ Key = 'doc-up-realize-plan'; Es = 'Actualización: doc-update en simulacro de la documentación por defecto del modelo BIM-IR (9 elementos sin realizar)'; Command = 'doc-update'; DocUpdate = $true; Expect = @{ Status = 'succeeded' }
-        Build = { Need 'level', 'doc_up_elements'; $elements = $picked['doc_up_elements']; New-CatalogueDocUpdateRequest 0 0 $elements.Map $null $elements.File $elements.Sha }
+        Build = { Need 'level', 'doc_up_elements'; $elements = $picked['doc_up_elements']; New-CatalogueDocUpdateRequest 0 0 $null $null $elements.File $elements.Sha }
         Check = { param($r) Test-CatalogueDocUpdateRealizePlan $r } })
     $steps.Add(@{ Key = 'doc-up-realize'; Es = 'Actualización: doc-update --execute del plan revisado (crea planta, láminas, tablas, colocaciones y la etiqueta de la puerta)'; Command = 'doc-update'; DocUpdate = $true; Expect = @{ Status = 'succeeded' }
-        Build = { Need 'doc_up_elements', 'doc_up_realize_plan'; $elements = $picked['doc_up_elements']; New-CatalogueDocUpdateRequest 0 0 $elements.Map $picked['doc_up_realize_plan'].Sha $elements.File $elements.Sha }
+        Build = { Need 'doc_up_elements', 'doc_up_realize_plan'; $elements = $picked['doc_up_elements']; New-CatalogueDocUpdateRequest 0 0 $null $picked['doc_up_realize_plan'].Sha $elements.File $elements.Sha }
         Check = { param($r) Test-CatalogueDocUpdateRealize $r } })
     $steps.Add(@{ Key = 'doc-up-move'; Es = "Actualización: mover el muro (0, $shift, 0) mm; la etiqueta de la puerta queda obsoleta"; Command = 'element.move'; Expect = @{ Status = 'succeeded'; Created = 0 }
         Build = { Need 'doc_up_realized'; [ordered]@{ element_uids = @(Created 'doc-up-wall'); vector_mm = @(0, $script:CatalogueDocUpdateShiftMm, 0) } }
@@ -2046,10 +2045,14 @@ function Invoke-CatalogueSequence {
             $requestText = New-CatalogueEnvelope $operationId $stepDocument $DocumentUid $spec.Command $stepArgs
             $invoker = $Invoke
         }
-        $record.request = $requestText | ConvertFrom-Json
+        # P4-16: the doc-realized step records a stub of its request; the run record it sent is the invoker's record_file.
+        $record.request = if ($docRealized) {
+            [ordered]@{ record_steps = $stepArgs['record']['steps'].Count; record_document_unique_id = $DocumentUid; fixture = $stepArgs['fixture']; assignments = $stepArgs['assignments']; document = $DocumentUid; record_file = $null } | ConvertTo-Json -Depth 20 -Compress | ConvertFrom-Json
+        } else { $requestText | ConvertFrom-Json }
         $watch = [Diagnostics.Stopwatch]::StartNew()
         try { $result = & $invoker $index $spec.Key $requestText } catch { $watch.Stop(); $aborted = 'error al ejecutar la CLI: ' + $_.Exception.Message; $record.reason = $aborted; continue }
         $watch.Stop()
+        if ($docRealized -and $result -is [Collections.IDictionary] -and $result.Contains('record_file')) { $record.request.record_file = [string]$result['record_file'] }
         $record.elapsed_ms = [Math]::Round($watch.Elapsed.TotalMilliseconds, 1)
         $record.exit_code = $result.exit_code
         $record.timed_out = [bool]$result.timed_out
@@ -2057,6 +2060,10 @@ function Invoke-CatalogueSequence {
         $text = ([string]$result.output).Trim()
         $parsed = $null
         try { $parsed = $text | ConvertFrom-Json -ErrorAction Stop } catch { $parsed = $null }
+        # P4-16: only a JSON object is a reply; anything else ("x", [1], 2) is kept as raw_response like non-JSON text, so
+        # the run record keeps response null or an object (as doc-realized reads it).
+        $notObject = $null -ne $parsed -and $parsed -isnot [Management.Automation.PSCustomObject]
+        if ($notObject) { $parsed = $null }
         # P4-14: an --execute call may have sent writes; without its usable line (a crash, a cut output, an exit code
         # the CLI never uses) their outcome is unknown, so nothing more is sent. A dry run sends no write: only the step fails.
         $executing = $docUpdate -and $null -ne (Get-CatalogueMember $stepArgs 'expected_document')
@@ -2068,7 +2075,7 @@ function Invoke-CatalogueSequence {
             $record.reason = $aborted
             continue
         }
-        if ($null -eq $parsed) { $record.raw_response = $text; $record.reason = 'response is not JSON'; continue }
+        if ($null -eq $parsed) { $record.raw_response = $text; $record.reason = $(if ($notObject) { 'response is not a JSON object' } else { 'response is not JSON' }); continue }
         $record.response = $parsed
         $responses[$spec.Key] = $parsed
         $rawText[$spec.Key] = $text
@@ -2322,7 +2329,7 @@ function Invoke-CatalogueDocUpdate {
 # doc-realized --record ... --fixture ... --assignments ... --document <UniqueId> --output NN-key.doc-realized/realized.json"
 # with a bounded wait (on timeout only that CLI process is stopped). The CLI's one stdout line (success or a typed
 # refusal envelope) is kept as NN-key.doc-realized/report.json, its stderr as stderr.txt; the output path is returned
-# as realized_file.
+# as realized_file, the record file as record_file.
 function Invoke-CatalogueDocRealized {
     param(
         [Parameter(Mandatory)][string]$Dotnet,
@@ -2372,7 +2379,7 @@ function Invoke-CatalogueDocRealized {
         $stderr = $err.GetAwaiter().GetResult()
         if ($text.Trim()) { Write-NewText $report $text.Trim() }
         Write-NewText (Join-Path $folder 'stderr.txt') $stderr
-        return @{ output = $text; stderr = $stderr; exit_code = $(if ($exited) { $process.ExitCode } else { $null }); timed_out = !$exited; request_file = $file; realized_file = $output; report_file = $report }
+        return @{ output = $text; stderr = $stderr; exit_code = $(if ($exited) { $process.ExitCode } else { $null }); timed_out = !$exited; request_file = $file; realized_file = $output; report_file = $report; record_file = $inputs['record'] }
     } finally { $process.Dispose() }
 }
 
