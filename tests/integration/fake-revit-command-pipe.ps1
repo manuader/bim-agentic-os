@@ -14,11 +14,14 @@ param(
     [Parameter(Mandatory)][string]$ReadyFile,
     [Parameter(Mandatory)][string]$LogFile,
     [ValidateRange(1, 10000)][int]$MaxRequests = 400,
-    [ValidateRange(5, 1800)][int]$TimeoutSeconds = 600
+    [ValidateRange(5, 1800)][int]$TimeoutSeconds = 600,
+    # Test-only (P2-18): comma-separated operation ids the fake records as external edits (journal.read entries).
+    [string]$ExternalEdits
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/fake-revit-command-executor.ps1"
-$state = New-FakeRevitState $DocumentUid
+$external = if ($PSBoundParameters.ContainsKey('ExternalEdits')) { [string[]]@($ExternalEdits -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { $null }
+$state = New-FakeRevitState $DocumentUid @{} $external
 # Behind the real CLI: a client-side case that arrives here answers fake_client_side_leak.
 $state.BehindCli = $true
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
