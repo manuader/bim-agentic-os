@@ -1067,6 +1067,9 @@ function Test-CatalogueDocUpdateRealizePlan($Response) {
 # What every --execute line must say: applied, completed, the reviewed plan (same sha256), nothing gone, $Count report
 # entries, each done, sent once and executed in this invocation (not replayed). Returns @{ Reason; Report }.
 function Test-CatalogueDocUpdateRun($Response, [string]$PlanPick, [int]$Count) {
+    # The plan file of the --execute call still hashes to what it printed (the reviewed sha256, checked below).
+    $file = Read-CatalogueDocUpdatePlanFile $Response
+    if ($file.Reason) { return @{ Reason = $file.Reason; Report = @() } }
     $report = Get-CatalogueList $Response 'report'
     $bad = @($report | Where-Object { [string](Get-CatalogueMember $_ 'status') -ne 'done' -or [string](Get-CatalogueMember $_ 'sent') -ne '1' -or (Get-CatalogueMember $_ 'replayed') -ne $false })
     $reason = Join-CatalogueReasons @(
@@ -1991,6 +1994,17 @@ function Invoke-CatalogueSequence {
         $text = ([string]$result.output).Trim()
         $parsed = $null
         try { $parsed = $text | ConvertFrom-Json -ErrorAction Stop } catch { $parsed = $null }
+        # P4-14: an --execute call may have sent writes; without its usable line (a crash, a cut output, an exit code
+        # the CLI never uses) their outcome is unknown, so nothing more is sent. A dry run sends no write: only the step fails.
+        $executing = $docUpdate -and $null -ne (Get-CatalogueMember $stepArgs 'expected_document')
+        $unusable = $null -eq $parsed -or ($executing -and ($result.exit_code -notin 0, 1 -or $null -eq (Get-CatalogueMember $parsed 'status') -or ([string](Get-CatalogueMember $parsed 'code') -eq 'doc_update_internal_error' -and $null -eq (Get-CatalogueMember $parsed 'report'))))
+        if ($executing -and $unusable) {
+            $record.raw_response = $text
+            if ($null -ne $parsed) { $record.response = $parsed }
+            $aborted = "doc-update --execute del paso $index ($($spec.Key)) terminó sin una línea utilizable de doc-update (código de salida $($result.exit_code)); pudo haber escrito, no se sabe qué: no se envía nada más"
+            $record.reason = $aborted
+            continue
+        }
         if ($null -eq $parsed) { $record.raw_response = $text; $record.reason = 'response is not JSON'; continue }
         $record.response = $parsed
         $responses[$spec.Key] = $parsed
@@ -2018,7 +2032,13 @@ function Invoke-CatalogueSequence {
             $record.reason = $aborted
             continue
         }
-        $reason = if ($wire) { Test-CatalogueWireResponse $parsed $result.exit_code } elseif ($docUpdate) { Test-CatalogueDocUpdateLine $parsed $result.exit_code $spec.Expect } else { Test-CatalogueResponse $parsed $result.exit_code $operationId $spec.Expect }
+        $reason = if ($wire) { Test-CatalogueWireResponse $parsed $result.exit_code } elseif ($docUpdate) {
+            $line = Test-CatalogueDocUpdateLine $parsed $result.exit_code $spec.Expect
+            # The plan file the CLI names must be the one the invoker asked for (when it says which).
+            $printed = [string](Get-CatalogueMember $parsed 'output')
+            if ($null -eq $line -and $result -is [Collections.IDictionary] -and $result.Contains('plan_file') -and $printed -and [IO.Path]::GetFullPath($printed) -ne [IO.Path]::GetFullPath([string]$result['plan_file'])) { $line = "doc-update: plan file $printed, expected $($result['plan_file'])" }
+            $line
+        } else { Test-CatalogueResponse $parsed $result.exit_code $operationId $spec.Expect }
         if ($null -eq $reason) {
             $script:CatalogueComparisons = $record.comparisons
             try { $reason = & $spec.Check $parsed } catch { $reason = $_.Exception.Message } finally { $script:CatalogueComparisons = $null }
@@ -2128,7 +2148,8 @@ function Invoke-CatalogueCli {
 # --output NN-key.doc-update/plan.json --probe-dependents <pipe> [--accept uid]... [--execute --expected-document
 # <sha256>]" (--execute only when expected_document is a string) with a bounded wait. On timeout only that CLI process
 # is stopped (never Revit) and the step counts as unknown completion. The CLI's one stdout line (the dry summary, a
-# refusal, or the per-step report of an --execute run) is kept in the run folder as NN-key.doc-update/report.json.
+# refusal, or the per-step report of an --execute run) is kept in the run folder as NN-key.doc-update/report.json, its
+# stderr as NN-key.doc-update/stderr.txt.
 function Invoke-CatalogueDocUpdate {
     param(
         [Parameter(Mandatory)][string]$Dotnet,
@@ -2184,8 +2205,10 @@ function Invoke-CatalogueDocUpdate {
         if (!$exited) { $process.Kill($true); $null = $process.WaitForExit(10000) }
         else { $process.WaitForExit() }
         $output = $out.GetAwaiter().GetResult()
+        $stderr = $err.GetAwaiter().GetResult()
         if ($output.Trim()) { Write-NewText $report $output.Trim() }
-        return @{ output = $output; stderr = $err.GetAwaiter().GetResult(); exit_code = $(if ($exited) { $process.ExitCode } else { $null }); timed_out = !$exited; request_file = $file; plan_file = $plan; report_file = $report }
+        Write-NewText (Join-Path $folder 'stderr.txt') $stderr
+        return @{ output = $output; stderr = $stderr; exit_code = $(if ($exited) { $process.ExitCode } else { $null }); timed_out = !$exited; request_file = $file; plan_file = $plan; report_file = $report }
     } finally { $process.Dispose() }
 }
 
