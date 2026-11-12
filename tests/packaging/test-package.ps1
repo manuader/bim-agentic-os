@@ -613,7 +613,7 @@ try {
                 }
             } catch { $failures.Add("P10-17 fifo $($case.Name) setup failed: $($_.Exception.Message)"); foreach ($full in $made) { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }; continue }
             if ($case.Name -ceq 'unlisted bin') {
-                # The provider's UnixMode (when present) and the POSIX test fallback both classify a FIFO without opening it.
+                # The file type classifier (POSIX test via /bin/sh) recognises a FIFO without opening it; UnixMode is printed only as a diagnostic.
                 $fifoItem = Get-Item -LiteralPath $made[0] -Force
                 Write-Host "P10-17 fifo UnixMode '$($fifoItem.UnixMode)' UnixStat.ItemType '$($fifoItem.UnixStat.ItemType)'"
                 Assert ((Get-PackageSpecialFileKind $fifoItem) -ceq 'fifo') "P10-17: Get-PackageSpecialFileKind must classify a FIFO as fifo: '$(Get-PackageSpecialFileKind $fifoItem)'"

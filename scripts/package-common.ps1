@@ -88,42 +88,51 @@ function Test-PackageReadFailure($ErrorRecord) {
 }
 
 # P10-17: non-regular files (FIFO, socket, character or block device) are never packaged. They are recognised by file
-# type from metadata alone (lstat-style, like `ls -l`), never by opening them: opening a FIFO for read blocks until a
-# writer appears. PowerShell's UnixMode (first character p/s/c/b) or UnixStat.ItemType is used when the file system
-# provider supplies it; otherwise POSIX `test -p/-S/-c/-b` (via /bin/sh, which only stats) decides. Windows has no such
-# file system entries (its AF_UNIX sockets are reparse points, refused by Find-PackageLinks). Links are not classified.
-function Get-PackagePosixFileKind([string]$Path) {
-    $info = [Diagnostics.ProcessStartInfo]::new('/bin/sh')
-    foreach ($argument in '-c', 'if [ -p "$1" ]; then echo fifo; elif [ -S "$1" ]; then echo socket; elif [ -c "$1" ]; then echo character device; elif [ -b "$1" ]; then echo block device; fi', 'sh', $Path) { $info.ArgumentList.Add($argument) }
-    $info.UseShellExecute = $false; $info.RedirectStandardOutput = $true
-    $process = [Diagnostics.Process]::Start($info)
-    try { $kind = $process.StandardOutput.ReadToEnd().Trim(); $process.WaitForExit() } finally { $process.Dispose() }
-    if ($kind) { return $kind } else { return $null }
+# type from metadata alone, never by opening them: opening a FIFO for read blocks until a writer appears. The type comes
+# from POSIX `test -p/-S/-c/-b` run by /bin/sh (stat only, symlinks already excluded), one shell per batch of paths;
+# PowerShell's UnixMode/UnixStat is not relied on (on the Ubuntu CI runner it did not classify a FIFO). Windows has no such
+# file system entries (its AF_UNIX sockets are reparse points, refused by Find-PackageLinks), so nothing is special there.
+# Returns one kind per input path ('fifo', 'socket', 'character device', 'block device' or $null), in input order.
+function Get-PackagePosixFileKinds([string[]]$Paths) {
+    $kinds = [object[]]::new($Paths.Length)
+    if ($IsWindows -or $Paths.Length -eq 0) { return ,$kinds }
+    $shell = 'i=0; for f in "$@"; do i=$((i+1)); if [ -p "$f" ]; then echo "$i fifo"; elif [ -S "$f" ]; then echo "$i socket"; elif [ -c "$f" ]; then echo "$i character device"; elif [ -b "$f" ]; then echo "$i block device"; fi; done'
+    for ($offset = 0; $offset -lt $Paths.Length; $offset += 500) {
+        $count = [Math]::Min(500, $Paths.Length - $offset)
+        $info = [Diagnostics.ProcessStartInfo]::new('/bin/sh')
+        foreach ($argument in @('-c', $shell, 'sh') + @($Paths[$offset..($offset + $count - 1)])) { $info.ArgumentList.Add($argument) }
+        $info.UseShellExecute = $false; $info.RedirectStandardOutput = $true
+        $process = [Diagnostics.Process]::Start($info)
+        try { $output = $process.StandardOutput.ReadToEnd(); $process.WaitForExit(); $code = $process.ExitCode } finally { $process.Dispose() }
+        if ($code -ne 0) { throw "package file type check (/bin/sh test) exited $code" }
+        foreach ($line in $output.Split("`n", [StringSplitOptions]::RemoveEmptyEntries)) {
+            if ($line -cmatch '\A([0-9]+) (fifo|socket|character device|block device)\z') { $kinds[$offset + [int]$Matches[1] - 1] = $Matches[2] }
+            else { throw "package file type check (/bin/sh test) printed an unexpected line: $line" }
+        }
+    }
+    return ,$kinds
 }
-function Get-PackageSpecialFileKind($Item) {
-    if ($IsWindows) { return $null }
-    $mode = $Item.PSObject.Properties['UnixMode']
-    if ($mode -and ([string]$mode.Value).Length -ge 10) {
-        switch -CaseSensitive (([string]$mode.Value).Substring(0, 1)) { 'p' { return 'fifo' } 's' { return 'socket' } 'c' { return 'character device' } 'b' { return 'block device' } default { return $null } }
+function Get-PackagePosixFileKind([string]$Path) { return (Get-PackagePosixFileKinds @($Path))[0] }
+function Get-PackageSpecialFileKind($Item) { return Get-PackagePosixFileKind $Item.FullName }
+# Package-relative path -> kind of every non-regular, non-link file under the package (ordinal keys).
+function Get-PackageSpecialFileMap([string]$Directory) {
+    $base = [IO.Path]::GetFullPath($Directory)
+    $map = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    if ($IsWindows) { return ,$map }
+    $full = [Collections.Generic.List[string]]::new()
+    foreach ($item in Get-ChildItem -LiteralPath $base -Recurse -Force) {
+        if ($item.PSIsContainer -or $item.LinkType -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        $full.Add($item.FullName)
     }
-    $stat = $Item.PSObject.Properties['UnixStat']
-    if ($stat -and $null -ne $stat.Value -and $stat.Value.PSObject.Properties['ItemType']) {
-        switch ([string]$stat.Value.ItemType) { 'NamedPipe' { return 'fifo' } 'Socket' { return 'socket' } 'CharacterDevice' { return 'character device' } 'BlockDevice' { return 'block device' } default { return $null } }
-    }
-    return Get-PackagePosixFileKind $Item.FullName
+    $kinds = Get-PackagePosixFileKinds $full.ToArray()
+    for ($i = 0; $i -lt $full.Count; $i++) { if ($kinds[$i]) { $map[(Get-PackageRelativePath $base $full[$i])] = [string]$kinds[$i] } }
+    return ,$map
 }
 # Package-relative paths of non-regular files with their kind ("cli/x.bin (fifo)"), in ordinal path order.
 function Find-PackageSpecialFiles([string]$Directory) {
-    $base = [IO.Path]::GetFullPath($Directory)
-    if ($IsWindows) { return [string[]]@() }
-    $kinds = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
-    foreach ($item in Get-ChildItem -LiteralPath $base -Recurse -Force) {
-        if ($item.PSIsContainer -or $item.LinkType -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
-        $kind = Get-PackageSpecialFileKind $item
-        if ($kind) { $kinds[(Get-PackageRelativePath $base $item.FullName)] = $kind }
-    }
-    $paths = [string[]]@($kinds.Keys); [Array]::Sort($paths, [StringComparer]::Ordinal)
-    return [string[]]@($paths | ForEach-Object { "$_ ($($kinds[$_]))" })
+    $map = Get-PackageSpecialFileMap $Directory
+    $paths = [string[]]@($map.Keys); [Array]::Sort($paths, [StringComparer]::Ordinal)
+    return [string[]]@($paths | Where-Object { $_ } | ForEach-Object { "$_ ($($map[$_]))" })
 }
 # Lowercase hex SHA-256 of a file (same value as Get-FileHash), throwing the underlying .NET I/O exception on failure.
 function Get-PackageFileSha256([string]$Path) {
@@ -729,13 +738,14 @@ function Find-PackageUnclassifiedBinaries([string]$Directory) {
     $base = [IO.Path]::GetFullPath($Directory)
     $unclassified = [Collections.Generic.List[string]]::new()
     $unreadable = [Collections.Generic.List[string]]::new()
+    $special = Get-PackageSpecialFileMap $base
     foreach ($relative in @(Get-PackageFiles $base)) {
         if ($relative -match $script:PackageBinaryPattern) { continue }
         $full = Join-Path $base $relative
         $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
         if ($null -eq $item -or $item.LinkType -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
         # P10-17: a FIFO, socket or device is never opened (package_special_file reports it).
-        if (Get-PackageSpecialFileKind $item) { continue }
+        if ($special.ContainsKey($relative)) { continue }
         try { if (Test-PackageExecutableMagic $full) { $unclassified.Add($relative) } }
         catch {
             $exception = $_.Exception
