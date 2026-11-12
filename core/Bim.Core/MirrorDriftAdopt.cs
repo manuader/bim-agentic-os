@@ -140,7 +140,17 @@ public static class MirrorDriftAdoptCommit
 
     // Read-only: no lock, no write. Outcome would_commit (Revision head + 1, Head the current head, Plan the plan),
     // would_replay (Revision and Head the current head, Plan null) or nothing_to_adopt (as Commit). Commit's refusals.
-    public static MirrorDriftAdoptResult Preview(string storeDirectory, MirrorDriftSelection selection) => throw new NotImplementedException("P2-17 RED stub");
+    public static MirrorDriftAdoptResult Preview(string storeDirectory, MirrorDriftSelection selection)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(storeDirectory);
+        CheckSelection(selection);
+        if (selection.Operations.Count == 0) return new(MirrorDriftAdoptOutcomes.NothingToAdopt, selection.CoreRevision, null, null, null);
+        var key = Key(selection);
+        var state = ReadState(storeDirectory);
+        if (state.Receipts.ContainsKey(key)) return new(MirrorDriftAdoptOutcomes.WouldReplay, state.Project.Revision, key, state.Project, null);
+        var (_, plan) = Plan(state.Project, selection);
+        return new(MirrorDriftAdoptOutcomes.WouldCommit, plan.ExpectedRevision + 1, key, state.Project, plan);
+    }
 
     public static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection) => Commit(storeDirectory, selection, null);
 

@@ -25,12 +25,12 @@ namespace Bim.Mcp;
 // confirm false (the tool without confirm:true): the plan only, nothing written (no lock taken, no file created):
 // {"status":"planned","applied":false,"outcome":"would_commit"|"would_replay"|"nothing_to_adopt","revision":n,"key":k|null,
 // "plan":ExecutionPlan|null}, where revision is what the confirmed call would report (head + 1, the current head, or
-// the selection's revision) and plan is MirrorDriftAdoptCommit.Plan's Compiler.Diff plan (would_commit only). The
-// store is read once, read-only and without the store lock (a held lock does not block the plan; the confirmed call
-// is then drift_adopt_store_unavailable), as Commit reads it (strict UTF-8 project.json, same drift_adopt_store_* codes), then
-// the receipt (would_replay), then MirrorDriftAdoptCommit.Plan (project, revision, hash, operations, validation), in
-// Commit's order, so a plan refusal is the text the confirmed call would give on that store. The plan is a snapshot:
-// the store may move before a confirmed call, which re-checks everything.
+// the selection's revision) and plan is MirrorDriftAdoptCommit.Plan's Compiler.Diff plan (would_commit only). Since
+// P2-17 the plan is Core's read-only MirrorDriftAdoptCommit.Preview (no reader of its own here): the store is read once
+// by Commit's own reader, without the store lock (a held lock does not block the plan; the confirmed call is then
+// drift_adopt_store_unavailable), then the receipt (would_replay), then MirrorDriftAdoptCommit.Plan (project, revision,
+// hash, operations, validation), in Commit's order, so a plan refusal is the text the confirmed call would give on that
+// store. The plan is a snapshot: the store may move before a confirmed call, which re-checks everything.
 // Every refusal is one {"status":"failed","code"[,"detail"]} envelope (Succeeded false). A typed drift_adopt_* refusal
 // other than drift_adopt_commit_incomplete leaves the store unchanged (MirrorDriftAdoptCommit's contract). An
 // unexpected exception is drift_adopt_internal_error with only its type name as detail (as MirrorDriftTool); one raised
@@ -40,9 +40,8 @@ internal static class MirrorDriftAdoptTool
 {
     public const string InputPathInvalid = "input_path_invalid";
     public const string Planned = "planned";
-    public const string WouldCommit = "would_commit";
-    public const string WouldReplay = "would_replay";
-    static readonly System.Text.UTF8Encoding StrictUtf8 = new(false, true);
+    public const string WouldCommit = MirrorDriftAdoptOutcomes.WouldCommit;
+    public const string WouldReplay = MirrorDriftAdoptOutcomes.WouldReplay;
 
     public sealed record Outcome(bool Succeeded, string Text);
 
@@ -66,47 +65,16 @@ internal static class MirrorDriftAdoptTool
             var projectPath = Path.Combine(storeDirectory, "project.json");
             try { BoundedInput.ReadText(projectPath, FileShare.ReadWrite | FileShare.Delete); }
             catch (InputRejectedException rejected) { return Refuse(rejected.Message, "store"); }
-            if (!confirm) return Preview(projectPath, selection);
+            if (!confirm)
+            {
+                var preview = MirrorDriftAdoptCommit.Preview(storeDirectory, selection);
+                return Plan(preview.Outcome, preview.Revision, preview.Key, preview.Plan);
+            }
             var result = MirrorDriftAdoptCommit.Commit(storeDirectory, selection);
             return Succeed(result.Outcome, result.Revision, result.Key);
         }
         catch (MirrorDriftAdoptException refusal) { return Refuse(refusal.Code, Detail(refusal)); }
         catch (Exception unexpected) { return Refuse(MirrorDriftAdoptCodes.InternalError, unexpected.GetType().Name); }
-    }
-
-    // The read-only half of Commit: its store read (same codes and details), receipt check and Plan; nothing written.
-    static Outcome Preview(string projectPath, MirrorDriftSelection selection)
-    {
-        var key = MirrorDriftAdoptCommit.Key(selection);
-        var state = ReadState(projectPath);
-        if (state.Receipts.ContainsKey(key)) return Plan(WouldReplay, state.Project.Revision, key, null);
-        var (_, plan) = MirrorDriftAdoptCommit.Plan(state.Project, selection);
-        return Plan(WouldCommit, plan.ExpectedRevision + 1, key, plan);
-    }
-
-    // As MirrorDriftAdoptCommit's store read: a StreamReader over strict UTF-8 (byte order marks detected), bounded. The
-    // file was checked through BoundedInput just before; if it changes in between, a vanished file is drift_adopt_store_invalid
-    // and any other rejection drift_adopt_store_unavailable, as Commit's own read would report them.
-    static ProjectStore.State ReadState(string projectPath)
-    {
-        byte[] bytes;
-        try { bytes = BoundedInput.ReadBytes(projectPath, BoundedInput.MaxBytes, FileShare.ReadWrite | FileShare.Delete); }
-        catch (InputRejectedException rejected) when (rejected.Message == BoundedInput.NotFound) { throw new MirrorDriftAdoptException(MirrorDriftAdoptCodes.StoreInvalid, "the store has no project.json"); }
-        catch (InputRejectedException rejected) { throw new MirrorDriftAdoptException(MirrorDriftAdoptCodes.StoreUnavailable, nameof(InputRejectedException) + ": " + rejected.Message); }
-        string text;
-        try
-        {
-            using var reader = new StreamReader(new MemoryStream(bytes), StrictUtf8);
-            text = reader.ReadToEnd();
-        }
-        catch (System.Text.DecoderFallbackException) { throw new MirrorDriftAdoptException(MirrorDriftAdoptCodes.StoreInvalid, "project.json is not UTF-8"); }
-        ProjectStore.State? state;
-        try { state = JsonSerializer.Deserialize<ProjectStore.State>(text); }
-        catch (JsonException) { throw new MirrorDriftAdoptException(MirrorDriftAdoptCodes.StoreInvalid, "project.json is not a store state"); }
-        var project = state?.Project;
-        if (state?.Receipts is null || project?.Elements is null || project.Elements.Any(element => element is null || element.GeometryMetres is null || element.Dependencies is null))
-            throw new MirrorDriftAdoptException(MirrorDriftAdoptCodes.StoreInvalid, "project.json has a null project, element, geometry, dependencies or receipts");
-        return state;
     }
 
     static Outcome Succeed(string outcome, int revision, string? key) =>
