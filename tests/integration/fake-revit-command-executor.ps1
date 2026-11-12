@@ -27,8 +27,10 @@
 # max_entries paging, current_sequence, baseline_sequence; options are read as MirrorJournalReadOptions.Parse reads them
 # (exact-case names, an object or null, no duplicates, the same journal_options_invalid codes). Fidelity is semantic:
 # replies parse to the production members and values, not the same escaping bytes (ConvertTo-Json, not Utf8JsonWriter).
-# The baseline is one per fake state (global), not per document as in MirrorJournalTracker. An -ExternalEdits list with
-# no ids is off. Without it every reply is the pre-P2-18 one, byte for byte.
+# The baseline is one per fake state (global), not per document as in MirrorJournalTracker. P2-20: with ExternalEdits the
+# baseline is the last non-peek read's snapshot and report.diff is MirrorSnapshotDiffer.Compare(baseline or none, current
+# snapshot), member for member (Get-FakeSnapshotDiff). An -ExternalEdits list with no ids is off. Without it every reply
+# is the pre-P2-18 one (diff included), byte for byte.
 # It proves nothing about Revit.
 Set-StrictMode -Version Latest
 
@@ -869,6 +871,92 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
     return ConvertTo-FakeResponseJson $response
 }
 
+# P2-20: MirrorSnapshotDiffer.Compare over two fake snapshots (Get-FakeSnapshot shape), member for member: every element
+# and every unmapped entry with a UniqueId keyed by its lower-cased UniqueId (first one wins), added / removed / changed in
+# ordinal key order, a changed element's fields in the differ's order (category, mapped, kind, the named geometry values
+# beyond the 1e-3 mm tolerance or the whole geometry, dependencies, reason, detail), values as invariant "R" text in
+# metres or null where a field does not apply.
+# Field names per BIM-IR kind (MirrorSnapshotDiffer.FieldNames), looked up by ordinal (case-sensitive) kind as there.
+$script:FakeDiffFieldNames = [Collections.Generic.Dictionary[string, string[]]]::new([StringComparer]::Ordinal)
+$script:FakeDiffFieldNames.Add('level', [string[]]@('elevation'))
+$script:FakeDiffFieldNames.Add('wall', [string[]]@('ax', 'ay', 'bx', 'by', 'height', 'thickness'))
+$script:FakeDiffFieldNames.Add('door', [string[]]@('ax', 'ay', 'bx', 'by', 'sill', 'height'))
+$script:FakeDiffFieldNames.Add('window', [string[]]@('ax', 'ay', 'bx', 'by', 'sill', 'height'))
+$script:FakeDiffFieldNames.Add('space', [string[]]@('x', 'y', 'width', 'depth'))
+# MirrorSnapshotDiffer.ToleranceMetres = MirrorSnapshotMapper.ToleranceMm (core/Bim.Core/MirrorMapper.cs, 1e-3 mm) / 1000;
+# tests/mirror-journal (FakeDiffChecks) asserts the two values agree.
+$script:FakeDiffToleranceMetres = 1e-3 / 1000
+
+function Get-FakeDiffStates($Snapshot) {
+    $states = [Collections.Generic.SortedDictionary[string, object]]::new([StringComparer]::Ordinal)
+    if ($null -eq $Snapshot) { return , $states }
+    $sources = @{}
+    foreach ($source in @($Snapshot['sources'])) { $sources[[string]$source['id']] = $source }
+    foreach ($element in @($Snapshot['elements'])) {
+        $source = $sources[[string]$element['Id']]
+        $key = ([string]$source['unique_id']).ToLowerInvariant()
+        if (!$states.ContainsKey($key)) { $states[$key] = @{ UniqueId = [string]$source['unique_id']; Category = [string]$source['category']; Element = $element; Unmapped = $null } }
+    }
+    foreach ($entry in @($Snapshot['unmapped'])) {
+        if ([string]::IsNullOrWhiteSpace([string]$entry['unique_id'])) { continue }
+        $key = ([string]$entry['unique_id']).ToLowerInvariant()
+        if (!$states.ContainsKey($key)) { $states[$key] = @{ UniqueId = [string]$entry['unique_id']; Category = [string]$entry['category']; Element = $null; Unmapped = $entry } }
+    }
+    return , $states
+}
+
+function Get-FakeDiffNumber([double]$Value) { $Value.ToString('R', [Globalization.CultureInfo]::InvariantCulture) }
+
+function Add-FakeDiffField($Fields, [string]$Field, $Before, $After) {
+    $same = if ($null -eq $Before) { $null -eq $After } else { $null -ne $After -and [string]::Equals([string]$Before, [string]$After, [StringComparison]::Ordinal) }
+    if (!$same) { $Fields.Add([ordered]@{ field = $Field; before = $Before; after = $After }) }
+}
+
+function Get-FakeDiffFields($Before, $After) {
+    $fields = [Collections.Generic.List[object]]::new()
+    $a = $Before.Element; $b = $After.Element
+    Add-FakeDiffField $fields 'category' $Before.Category $After.Category
+    Add-FakeDiffField $fields 'mapped' $(if ($null -eq $a) { 'false' } else { 'true' }) $(if ($null -eq $b) { 'false' } else { 'true' })
+    Add-FakeDiffField $fields 'kind' $(if ($null -eq $a) { $null } else { [string]$a['Kind'] }) $(if ($null -eq $b) { $null } else { [string]$b['Kind'] })
+    # Assigned directly, not from an if (which would unroll a one-value array into a scalar).
+    $ga = @(); if ($null -ne $a) { $ga = @($a['GeometryMetres']) }
+    $gb = @(); if ($null -ne $b) { $gb = @($b['GeometryMetres']) }
+    if ($null -ne $a -and $null -ne $b -and [string]$a['Kind'] -ceq [string]$b['Kind'] -and $ga.Count -eq $gb.Count) {
+        $names = $null
+        $known = $null
+        if ($script:FakeDiffFieldNames.TryGetValue([string]$a['Kind'], [ref]$known) -and $known.Length -eq $ga.Count) { $names = $known }
+        for ($i = 0; $i -lt $ga.Count; $i++) {
+            $x = [double]$ga[$i]; $y = [double]$gb[$i]
+            if ($x -eq $y -or [Math]::Abs($x - $y) -le $script:FakeDiffToleranceMetres) { continue }
+            $name = if ($null -ne $names) { [string]$names[$i] } else { "geometry[$i]" }
+            $fields.Add([ordered]@{ field = $name; before = (Get-FakeDiffNumber $x); after = (Get-FakeDiffNumber $y) })
+        }
+    }
+    else {
+        Add-FakeDiffField $fields 'geometry' $(if ($null -eq $a) { $null } else { @($ga | ForEach-Object { Get-FakeDiffNumber ([double]$_) }) -join ',' }) $(if ($null -eq $b) { $null } else { @($gb | ForEach-Object { Get-FakeDiffNumber ([double]$_) }) -join ',' })
+    }
+    Add-FakeDiffField $fields 'dependencies' $(if ($null -eq $a) { $null } else { @(@($a['Dependencies']) | ForEach-Object { [guid]::Parse([string]$_).ToString('D') }) -join ',' }) $(if ($null -eq $b) { $null } else { @(@($b['Dependencies']) | ForEach-Object { [guid]::Parse([string]$_).ToString('D') }) -join ',' })
+    Add-FakeDiffField $fields 'reason' $(if ($null -eq $Before.Unmapped) { $null } else { [string]$Before.Unmapped['reason'] }) $(if ($null -eq $After.Unmapped) { $null } else { [string]$After.Unmapped['reason'] })
+    Add-FakeDiffField $fields 'detail' $(if ($null -eq $Before.Unmapped) { $null } else { [string]$Before.Unmapped['detail'] }) $(if ($null -eq $After.Unmapped) { $null } else { [string]$After.Unmapped['detail'] })
+    return , $fields
+}
+
+function Get-FakeSnapshotDiff([string]$DocumentUid, $Before, $After) {
+    $old = Get-FakeDiffStates $Before
+    $new = Get-FakeDiffStates $After
+    $added = [Collections.Generic.List[object]]::new()
+    $removed = [Collections.Generic.List[object]]::new()
+    $changed = [Collections.Generic.List[object]]::new()
+    foreach ($key in @($new.Keys)) {
+        $state = $new[$key]
+        if (!$old.ContainsKey($key)) { $added.Add([ordered]@{ unique_id = $state.UniqueId; category = $state.Category }); continue }
+        $fields = Get-FakeDiffFields $old[$key] $state
+        if ($fields.Count -gt 0) { $changed.Add([ordered]@{ unique_id = $state.UniqueId; category = $state.Category; fields = $fields.ToArray() }) }
+    }
+    foreach ($key in @($old.Keys)) { if (!$new.ContainsKey($key)) { $state = $old[$key]; $removed.Add([ordered]@{ unique_id = $state.UniqueId; category = $state.Category }) } }
+    return [ordered]@{ diff_version = 1; document_unique_id = $DocumentUid; added = $added.ToArray(); removed = $removed.ToArray(); changed = $changed.ToArray() }
+}
+
 # The journal.read wire line ({"DocumentPath","Operation","Journal"}), answered like JournalRecorder.Read: add-in writes
 # are counted in skipped_add_in (never entries), and the diff compares the snapshot sources with the last non-peek read.
 # The last member of a System.Text.Json object with exactly this name (the add-in's Request binding), or $null.
@@ -942,17 +1030,26 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
             $entries = $page.ToArray()
             if (!$peek) { $State.JournalBaselineSequence = $last }
         }
-        $current = [ordered]@{}
-        foreach ($source in (Get-FakeSnapshot $State).sources) { $current[[string]$source.unique_id] = [string]$source.category }
         $baselineExisted = $null -ne $State.JournalBaseline
-        $base = [ordered]@{}
-        if ($baselineExisted) { $base = $State.JournalBaseline }
-        $added = @(foreach ($uid in @($current.Keys)) { if (!$base.Contains($uid)) { [ordered]@{ unique_id = $uid; category = $current[$uid] } } })
-        $removed = @(foreach ($uid in @($base.Keys)) { if (!$current.Contains($uid)) { [ordered]@{ unique_id = $uid; category = $base[$uid] } } })
-        if (!$peek) { $State.JournalBaseline = $current }
+        if ($null -ne $State.ExternalEdits) {
+            # P2-20: MirrorSnapshotDiffer.Compare(baseline snapshot or none, current snapshot); the baseline is the snapshot.
+            $snapshot = Get-FakeSnapshot $State
+            $diff = Get-FakeSnapshotDiff $State.DocumentUid $(if ($baselineExisted) { $State.JournalBaseline } else { $null }) $snapshot
+            if (!$peek) { $State.JournalBaseline = $snapshot }
+        }
+        else {
+            # Pre-P2-20 diff (unchanged replies): sources only, snapshot order, changed always empty.
+            $current = [ordered]@{}
+            foreach ($source in (Get-FakeSnapshot $State).sources) { $current[[string]$source.unique_id] = [string]$source.category }
+            $base = [ordered]@{}
+            if ($baselineExisted) { $base = $State.JournalBaseline }
+            $added = @(foreach ($uid in @($current.Keys)) { if (!$base.Contains($uid)) { [ordered]@{ unique_id = $uid; category = $current[$uid] } } })
+            $removed = @(foreach ($uid in @($base.Keys)) { if (!$current.Contains($uid)) { [ordered]@{ unique_id = $uid; category = $base[$uid] } } })
+            if (!$peek) { $State.JournalBaseline = $current }
+            $diff = [ordered]@{ diff_version = 1; document_unique_id = $State.DocumentUid; added = $added; removed = $removed; changed = @() }
+        }
         $report = [ordered]@{ journal_version = 1; document_unique_id = $State.DocumentUid; document_path = $path; baseline_sequence = $baselineSequence; current_sequence = $currentSequence; after_sequence = $afterSequence; baseline_existed = $baselineExisted; peek = $peek
-            journal_complete = $true; failures_since_baseline = 0; has_more = $hasMore; next_after_sequence = $nextAfter; entries = $entries
-            diff = [ordered]@{ diff_version = 1; document_unique_id = $State.DocumentUid; added = $added; removed = $removed; changed = @() } }
+            journal_complete = $true; failures_since_baseline = 0; has_more = $hasMore; next_after_sequence = $nextAfter; entries = $entries; diff = $diff }
         return ConvertTo-FakeResponseJson ([ordered]@{ status = 'succeeded'; verification = 'unverified'; attached = $true; dropped = 0; skipped_add_in = $State.SkippedAddIn; failures = 0; unidentified = 0; report = $report })
     } finally { if ($null -ne $document) { $document.Dispose() } }
 }
