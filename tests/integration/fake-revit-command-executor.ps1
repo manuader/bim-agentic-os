@@ -876,8 +876,15 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
 # ordinal key order, a changed element's fields in the differ's order (category, mapped, kind, the named geometry values
 # beyond the 1e-3 mm tolerance or the whole geometry, dependencies, reason, detail), values as invariant "R" text in
 # metres or null where a field does not apply.
-$script:FakeDiffFieldNames = @{ level = @('elevation'); wall = @('ax', 'ay', 'bx', 'by', 'height', 'thickness'); door = @('ax', 'ay', 'bx', 'by', 'sill', 'height')
-    window = @('ax', 'ay', 'bx', 'by', 'sill', 'height'); space = @('x', 'y', 'width', 'depth') }
+# Field names per BIM-IR kind (MirrorSnapshotDiffer.FieldNames), looked up by ordinal (case-sensitive) kind as there.
+$script:FakeDiffFieldNames = [Collections.Generic.Dictionary[string, string[]]]::new([StringComparer]::Ordinal)
+$script:FakeDiffFieldNames.Add('level', [string[]]@('elevation'))
+$script:FakeDiffFieldNames.Add('wall', [string[]]@('ax', 'ay', 'bx', 'by', 'height', 'thickness'))
+$script:FakeDiffFieldNames.Add('door', [string[]]@('ax', 'ay', 'bx', 'by', 'sill', 'height'))
+$script:FakeDiffFieldNames.Add('window', [string[]]@('ax', 'ay', 'bx', 'by', 'sill', 'height'))
+$script:FakeDiffFieldNames.Add('space', [string[]]@('x', 'y', 'width', 'depth'))
+# MirrorSnapshotDiffer.ToleranceMetres = MirrorSnapshotMapper.ToleranceMm (core/Bim.Core/MirrorMapper.cs, 1e-3 mm) / 1000;
+# tests/mirror-journal (FakeDiffChecks) asserts the two values agree.
 $script:FakeDiffToleranceMetres = 1e-3 / 1000
 
 function Get-FakeDiffStates($Snapshot) {
@@ -916,7 +923,8 @@ function Get-FakeDiffFields($Before, $After) {
     $gb = @(); if ($null -ne $b) { $gb = @($b['GeometryMetres']) }
     if ($null -ne $a -and $null -ne $b -and [string]$a['Kind'] -ceq [string]$b['Kind'] -and $ga.Count -eq $gb.Count) {
         $names = $null
-        if ($script:FakeDiffFieldNames.ContainsKey([string]$a['Kind']) -and @($script:FakeDiffFieldNames[[string]$a['Kind']]).Count -eq $ga.Count) { $names = @($script:FakeDiffFieldNames[[string]$a['Kind']]) }
+        $known = $null
+        if ($script:FakeDiffFieldNames.TryGetValue([string]$a['Kind'], [ref]$known) -and $known.Length -eq $ga.Count) { $names = $known }
         for ($i = 0; $i -lt $ga.Count; $i++) {
             $x = [double]$ga[$i]; $y = [double]$gb[$i]
             if ($x -eq $y -or [Math]::Abs($x - $y) -le $script:FakeDiffToleranceMetres) { continue }
@@ -927,7 +935,7 @@ function Get-FakeDiffFields($Before, $After) {
     else {
         Add-FakeDiffField $fields 'geometry' $(if ($null -eq $a) { $null } else { @($ga | ForEach-Object { Get-FakeDiffNumber ([double]$_) }) -join ',' }) $(if ($null -eq $b) { $null } else { @($gb | ForEach-Object { Get-FakeDiffNumber ([double]$_) }) -join ',' })
     }
-    Add-FakeDiffField $fields 'dependencies' $(if ($null -eq $a) { $null } else { @(@($a['Dependencies']) | Where-Object { $null -ne $_ } | ForEach-Object { [guid]::Parse([string]$_).ToString('D') }) -join ',' }) $(if ($null -eq $b) { $null } else { @(@($b['Dependencies']) | Where-Object { $null -ne $_ } | ForEach-Object { [guid]::Parse([string]$_).ToString('D') }) -join ',' })
+    Add-FakeDiffField $fields 'dependencies' $(if ($null -eq $a) { $null } else { @(@($a['Dependencies']) | ForEach-Object { [guid]::Parse([string]$_).ToString('D') }) -join ',' }) $(if ($null -eq $b) { $null } else { @(@($b['Dependencies']) | ForEach-Object { [guid]::Parse([string]$_).ToString('D') }) -join ',' })
     Add-FakeDiffField $fields 'reason' $(if ($null -eq $Before.Unmapped) { $null } else { [string]$Before.Unmapped['reason'] }) $(if ($null -eq $After.Unmapped) { $null } else { [string]$After.Unmapped['reason'] })
     Add-FakeDiffField $fields 'detail' $(if ($null -eq $Before.Unmapped) { $null } else { [string]$Before.Unmapped['detail'] }) $(if ($null -eq $After.Unmapped) { $null } else { [string]$After.Unmapped['detail'] })
     return , $fields
