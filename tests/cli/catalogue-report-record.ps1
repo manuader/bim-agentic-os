@@ -3,7 +3,8 @@
 # document.save_copy and document.save_as), <Root>/<scenario>/.bim/revit-enabled-roots.txt (an owner folder for the
 # save_as outside_copies_root refusal) and <Root>/<scenario>/.bim/native-sessions/<stamp>/{summary.json,catalogue-run1.json}:
 #   - the sequence is scripts/owner-catalogue-steps.ps1 Invoke-CatalogueSequence against the in-process fake executor of
-#     tests/integration/fake-revit-command-executor.ps1 (the same harness as tests/integration/test-catalogue-session.ps1);
+#     tests/integration/fake-revit-command-executor.ps1 and the doc-update stand-in of tests/integration/fake-doc-update.ps1
+#     (the same harness as tests/integration/test-catalogue-session.ps1);
 #   - the record is written by the record writer block of scripts/owner-native-session.ps1 itself (extracted from that
 #     file and run with the variables the session sets), so a change of the record format reaches this test;
 #   - summary.json has the session's shape (mode, catalogue_scope, runs[] with index, run_directory and catalogue).
@@ -16,6 +17,7 @@ Set-StrictMode -Version Latest
 $repo = Split-Path (Split-Path $PSScriptRoot)
 . "$repo/scripts/owner-catalogue-steps.ps1"
 . "$repo/tests/integration/fake-revit-command-executor.ps1"
+. "$repo/tests/integration/fake-doc-update.ps1"
 $sessionScript = Get-Content -LiteralPath "$repo/scripts/owner-native-session.ps1" -Raw
 $found = [regex]::Match($sessionScript, '(?s)\$cataloguePath = Join-Path \$session "catalogue-run\$i\.json"\r?\n(?<writer>\s*\[ordered\]@\{.*?\| ConvertTo-Json -Depth 24 \| Set-Content -LiteralPath \$cataloguePath)')
 if (!$found.Success) { throw 'the catalogue record writer of scripts/owner-native-session.ps1 was not found' }
@@ -43,7 +45,10 @@ foreach ($name in @($scenarios.Keys)) {
     $fake.DocumentPath = $documentPath
     $invoke = { param($index, $key, $json) $text = Invoke-FakeRevitCommand $fake $json; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
     $wire = { param($index, $key, $line) $text = Invoke-FakeRevitWire $fake $line; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
-    $sequence = Invoke-CatalogueSequence -Stamp $stamp -Run 1 -DocumentPath $documentPath -DocumentUid $documentUid -Invoke $invoke -InvokeWire $wire -V1Only:$scenario.V1Only
+    # P4-14: the documentation update's doc-update calls through the stand-in (plan files outside the run folder).
+    $docFake = New-FakeDocUpdate $fake ([IO.Path]::GetFullPath((Join-Path $Root "$name/doc-update"))) $scenario.Faults
+    $docUpdate = { param($index, $key, $json) Invoke-FakeDocUpdate $docFake $index $key $json }
+    $sequence = Invoke-CatalogueSequence -Stamp $stamp -Run 1 -DocumentPath $documentPath -DocumentUid $documentUid -Invoke $invoke -InvokeWire $wire -InvokeDocUpdate $docUpdate -V1Only:$scenario.V1Only
     # The variables the session's writer reads, set as scripts/owner-native-session.ps1 sets them for run 1.
     $i = 1
     $summary = [ordered]@{ schema_version = 1; mode = 'catalogue'; catalogue_scope = $(if ($scenario.V1Only) { 'v1_only' } else { 'one_run_all_groups' }); started_utc = '2026-11-05T12:00:00.0000000Z'; session = $session; head = 'e2e0001'; protected_revit_pids = @(); source_check = 'skipped'; builds = [ordered]@{}; runs = @(); finished_utc = $null; outcome = 'incomplete' }
