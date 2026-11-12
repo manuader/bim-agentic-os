@@ -65,6 +65,9 @@ public static class MirrorDriftAdoptCodes
     public const string StoreUnavailable = "drift_adopt_store_unavailable";
     public const string CommitIncomplete = "drift_adopt_commit_incomplete";
     public const string InternalError = "drift_adopt_internal_error";
+    // P2-21: the mirror-drift-adopt CLI flag refusals (P2-19), raised by the verb before any input is read, never by Core.
+    public const string OptionUnknown = "drift_adopt_option_unknown";
+    public const string OptionDuplicate = "drift_adopt_option_duplicate";
 }
 
 public static class MirrorDriftAdoptOutcomes
