@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-11",
+  "updated": "2026-11-12",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -1737,7 +1737,7 @@
         "core/Bim.Core/DocRealized.cs",
         "tests/doc-regeneration/Realized.cs"
       ],
-      "blocker": "No CLI verb or owner-script wiring yet; caller supplies the step → source assignment (the run record does not say which BIM-IR element a step made); only a step's first created UniqueId is used; deleted dependents beyond the add-in's listing cap are not detected; C# fixtures mirror the record writer, never a real -Catalogue record.",
+      "blocker": "CLI verb doc-realized since P4-15; no owner-script wiring yet (P4-16); caller supplies the step → source assignment (the run record does not say which BIM-IR element a step made); only a step's first created UniqueId is used; deleted dependents beyond the add-in's listing cap are not detected; C# fixtures mirror the record writer, never a real -Catalogue record.",
       "scope": "P4-13: DocRealized.FromRecord(fixture, run record, assignments, expected document id) → key→UniqueId map doc-update --realized reads; strict/bounded, typed realized_* codes (step unknown/not succeeded/no created, unique id duplicate/deleted, document mismatch, fixture invalid); journal.read replies without created accepted; canonical ordinal JSON; round trip through DocUpdate.Plan. CI red 43033957185, green 43036029825; review red 43044249333, green 43045934229."
     },
     {
@@ -1749,7 +1749,7 @@
         "interfaces/cli/MirrorDriftAdoptCommand.cs",
         "tests/mcp/Program.cs"
       ],
-      "blocker": "Permission label 'write' is outside the P10-03 levels; no actor grant or audit log enforced; plan is a snapshot (confirmed call re-checks); plan-mode store reader duplicates Core's private reader; restore plan not run, no map/provenance (P2-11).",
+      "blocker": "Permission label 'write' is outside the P10-03 levels; no actor grant or audit log enforced; plan is a snapshot (confirmed call re-checks); plan-mode store reader duplicates Core's private reader; restore plan not run, no map/provenance (P2-11). Plan mode is MirrorDriftAdoptCommit.Preview since P2-17 (no MCP-side store reader).",
       "scope": "P2-15: MCP tool mirror_drift_adopt {store_path, selection text, confirm?}; plan-only without confirm:true (no lock, no store entry touched, timestamps asserted); confirm:true text byte-equal to the CLI stdout and stores byte-identical; typed refusals identical in both modes and to the CLI; tools/list order, schema, label and annotations asserted. CI red 43033953076, green 43035023695; review green 43048882203."
     },
     {
@@ -1831,6 +1831,38 @@
       ],
       "blocker": "Proposal only, nothing committed; fixed code pack ar.caba.codigo-edificacion; no include, code_pack or composed-rules members (P7-16, P5-16); project_id required; packaged generate-typology not run by tests/packaging.",
       "scope": "P7-14: `generate-typology request.json output.json` reads a bounded strict snake_case request (pack, family_size, lot{width_m,depth_m}, alternatives, seed, project_id, optional partial weights), loads both packs with SkillPackLookup.Load(id, packageFirst: true) and writes TypologyPipelineSerializer bytes byte-equal to the in-process TypologyPipeline.Run (pins eb8720c1…/3a551774… through the real CLI); never-overwrite (CreateNew), typed generate_typology_* refusals with precedence usage → output → input → request → repository → pack → code pack → pipeline → write, nothing written on refusal; de_DE byte-identical; release package layout byte-equal. CI red 43107527837, green 43109424365; review green 43120709470."
+    },
+    {
+      "id": "cli-doc-realized",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/DocRealizedCommand.cs",
+        "interfaces/cli/Program.cs",
+        "tests/cli/DocRealizedTests.cs"
+      ],
+      "blocker": "Owner -Catalogue script not wired yet (P4-16); caller still supplies the step → source assignments; never run on a real owner run record; success summary does not echo the document id.",
+      "scope": "P4-15: `doc-realized --record r.json --fixture ir.json --assignments a.json --document <UniqueId> --output realized.json` writes UTF-8(DocRealized.Canonical(DocRealized.FromRecord(...))) byte-equal to the in-process builder (flag order, assignment order, document case irrelevant); `doc-update --realized` accepts it with a plan byte-equal to in-process DocUpdate.Plan; record/assignments read to DocRealized.MaxRecordBytes (32 MiB, BOM stripped), fixture 8 MiB; never-overwrite (OutputProblem + WriteNew); typed doc_realized_usage/output_*/input_*/realized_* envelopes, doc_realized_internal_error. CI red 43130960366, green 43132233200; review red 43141602918, green 43143266206."
+    },
+    {
+      "id": "mirror-drift-adopt-preview",
+      "status": "unit-tested",
+      "evidence": [
+        "core/Bim.Core/MirrorDriftAdopt.cs",
+        "interfaces/mcp/MirrorDriftAdoptTool.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "Snapshot only: refusals raised inside ProjectStore.Commit (lock, revision_conflict, plan_mismatch, write IO) cannot be predicted; Core's reader is unbounded (MCP keeps its 8 MiB pre-check, and a file swapped between pre-check and read reports Core's reader text); no CLI preview flag (P2-19).",
+      "scope": "P2-17: MirrorDriftAdoptCommit.Preview(store, selection) follows Commit's order, reader and refusal texts and returns would_commit (head+1, plan) / would_replay (current head) / nothing_to_adopt; takes no lock, creates no lock file or directory, store file bytes and file/dir LastWriteTimeUtc unchanged (asserted, incl. with the lock held elsewhere); MCP mirror_drift_adopt plan mode uses it and the duplicated reader is gone; P2-15 plan-mode bytes and refusal texts unchanged. CI red 43130822808, green 43132966479; review green 43142673384."
+    },
+    {
+      "id": "package-sbom-manifest-agreement",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/package-common.ps1",
+        "tests/packaging/test-package.ps1"
+      ],
+      "blocker": "Binaries with an extension outside the PE/ELF/Mach-O name pattern (e.g. .bin, .node) are not classified (P10-16); natives matched by leaf name across references (any folder); reference name lists are restore data and are not required to ship; no third-party NuGet package ships today (synthetic fixtures).",
+      "scope": "P10-15: package-verify and package.ps1's staging check cross-check manifest.json with sbom.json — every manifest .dll/.exe (any case) needs an sbom assemblies line with the same path, every .so[.N]/.dylib a reference natives name or a deps.json project asset, every sbom assemblies path a manifest entry; typed sbom_manifest_mismatch naming each path and its direction; pathless sbom assemblies entries → named sbom_invalid; reads the manifest (manifest-only tampers tested), synthetic and real-package tampers in both directions; real package unchanged. CI red 43130808434, green 43138707648; review red 43141685293, green 43143789557."
     }
   ]
 }

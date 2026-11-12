@@ -299,3 +299,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P3-13: no failed attempts (red 43107221958 = new static checks requiring IntentPlan → green 43109253148; review tests green 43112753940, no red because the behaviour was already correct).
 - P5-15: no failed attempts (red 43107368116 compile, RunComposed missing → green 43109205242; review red 43115474002 compile, 43115509389 assertions → green 43117947248).
 - P7-14: no failed attempts (red 43107527837 verb unknown → green 43109424365; review tests green 43120709470, no red because the behaviour was already correct).
+
+### Relay194 (2026-11-12, cloud)
+- P4-15: no failed attempts (red 43130960366 verb unknown → green 43132233200; review red 43141602918 = 8 MiB CLI cap vs 32 MiB record bound → green 43143266206).
+- P2-17: 1 failed attempt, oracle unchanged — review round run 43141581931 (1bf4676): test compile error CS0136, new local `missingStore` clashed with an existing local; renamed `previewMissingStore` → green 43142673384. First round red 43130822808 (Preview stub) → green 43132966479.
+- P10-15: no failed attempts (red 43130808434 → green 43138707648 by workflow_dispatch, push run 43132715553 core-windows hung > 50 min with every other job green, cancelled; review red 43141685293 pathless sbom entries → green 43143789557). One red-round fixture setup bug (last-array-element sbom line without trailing comma) fixed in a separate test commit, no assertion loosened.
