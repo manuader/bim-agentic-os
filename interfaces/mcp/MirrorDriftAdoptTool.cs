@@ -31,6 +31,9 @@ namespace Bim.Mcp;
 // drift_adopt_store_unavailable), then the receipt (would_replay), then MirrorDriftAdoptCommit.Plan (project, revision,
 // hash, operations, validation), in Commit's order, so a plan refusal is the text the confirmed call would give on that
 // store. The plan is a snapshot: the store may move before a confirmed call, which re-checks everything.
+// The BoundedInput pre-check and Core's read are two reads: a project.json swapped (removed, replaced, grown) between
+// them is refused in plan mode with Core's reader text (the same text the confirmed call gives), not with a
+// drift_adopt_store_unavailable InputRejectedException detail; the pre-check's bound does not cover Core's read.
 // Every refusal is one {"status":"failed","code"[,"detail"]} envelope (Succeeded false). A typed drift_adopt_* refusal
 // other than drift_adopt_commit_incomplete leaves the store unchanged (MirrorDriftAdoptCommit's contract). An
 // unexpected exception is drift_adopt_internal_error with only its type name as detail (as MirrorDriftTool); one raised
