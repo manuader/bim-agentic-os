@@ -1477,3 +1477,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay196 — 2026-11-12T05:53:10Z (Claude, cloud scheduled)
 - 05:53Z LOCK taken (was TAKEN by relay195, heartbeat 04:40:19Z stale > 45 min). Relay195 stopped after workers green, before reviews; continuing its branches relay195-P1-21/P2-18/P6-16.
+- 05:55Z relay196 YIELDS: relay195 is still alive (pushed relay195-P1-21 4f93ca0 at 05:44Z, CI 43163347980 in progress; P2-18 0da551d and P6-16 ae1208f review fixes green) despite stale heartbeat. LOCK restored to relay195 unchanged; no other writes.
+**NEXT STEP:** relay195 finishes its integration (P1-21, P2-18, P6-16) and releases the LOCK; relays should refresh last_heartbeat at every push.
