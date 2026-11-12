@@ -1,7 +1,9 @@
 using Bim.Core;
 using System.Diagnostics;
 using System.Globalization;
+using System.Net.Sockets;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 // P2-14 / P2-16 drift loop end to end on the fake add-in: real processes only. A fake add-in pipe
 // (tests/integration/fake-revit-command-pipe.ps1, the headless stand-in the catalogue session test uses) answers the real
@@ -18,27 +20,36 @@ using System.Text.Json;
 //      is untouched; a replay prints replayed; the pre-adopt mirror is refused stale.
 //   4. A fresh query.snapshot (same readback as before the adopt) against the mirror at the new revision reports no drift
 //      for the adopted element (no drift at all).
-//   5. The fake add-in serves exactly the eight expected requests (operation ids in order) and exits 0 by itself.
+//   5. The fake add-in serves exactly the nine expected requests (operation ids in order, one journal.read wire line)
+//      and exits 0 by itself. Its journal.read without the external-edit option is the pre-P2-18 reply: no entries,
+//      sequences 0 (after_sequence ignored), every CLI write counted in skipped_add_in.
 //   6. Deterministic: a second complete run (new fake add-in, new store) produces byte-identical snapshot readbacks,
 //      files and outputs.
-// P2-16 (journal; update, create and delete adopts). The mirror request carries a journal.read reply (peek, complete,
-// attached) naming the external edits; options.journal_after_sequence is the commit point. Oracles:
+// P2-16 / P2-18 (journal; update, create and delete adopts). The mirror request carries the journal.read reply the fake
+// add-in answers through its pipe (peek, complete, attached) naming the external edits; options.journal_after_sequence
+// is the commit point. The fake is started with -ExternalEdits naming the three edit operation ids, so it records them
+// as external journal entries (as Revit's DocumentChanged would for edits made in Revit) instead of add-in writes.
+// Oracles:
 //   1. Baseline as above, with an empty journal: no drift.
 //   2. Three external edits through the CLI (element.move of wall B, wall.create of wall C, element.delete of wall A) are
 //      reported as exactly three findings, each external_edit with its journal evidence: B changed (journal:1:external),
 //      C extra (journal:2:external), A missing (journal:3:external:deleted_id_match); evidence complete; every proposal
-//      recommends adopt (update, create, delete). Core's MirrorDrift.ParseJournal reads the hand-built reply as three
-//      external entries. Negative: the same edits with a reply that has no entries after sequence 3 give B and A
-//      unknown and C out of scope (no external_edit); the P2-14 run (no journal) asserts its finding unknown.
+//      recommends adopt (update, create, delete). Core's MirrorDrift.ParseJournal reads the fake's reply as three
+//      external entries, and the reply equals, member for member apart from the snapshot diff, the production
+//      serializer (RevitJournalQuery.RawRead over a Core MirrorJournal holding the same changes). Negative: the same
+//      edits with the fake's reply after sequence 3 (no entries) give B and A unknown and C out of scope (no
+//      external_edit); the P2-14 run (no journal) asserts its finding unknown.
 //   3. mirror-drift-select {adopt x3} writes three operations, one map add (C) and one map removal (A); mirror-drift-adopt
 //      commits revision 2: B at the Revit geometry, C created under its snapshot id (Revit geometry, Level 1 dependency,
 //      adopt provenance), A gone, the levels untouched; replay prints replayed; the revision-1 mirror is refused stale.
 //   4. A fresh query.snapshot against the mirror at revision 2 (map updated from the selection's map_adds/map_removals,
 //      and a fresh peek reply after sequence 3 with no entries) reports no drift at all, evidence complete, no notes.
-//   5. The fake add-in serves exactly the ten expected requests and exits 0; two runs are byte-identical.
-// The journal is written by this test: the fake add-in's journal.read answers no entries (as the production recorder, it
-// skips the add-in's own transactions, and every edit here reaches the fake through the add-in pipe), and the CLI has no
-// journal verb. Its deletion entry carries the element id Revit's UniqueId convention puts in the hex suffix.
+//   5. The fake's journal.read pages (max_entries, has_more, next_after_sequence), moves its baseline only without peek
+//      (baseline_sequence, baseline_existed) and refuses an after_sequence past its last sequence like JournalRecorder.
+//   6. The fake add-in serves exactly the expected requests (journal.read wire lines included) and exits 0; two runs are
+//      byte-identical (journal replies included).
+// The CLI has no journal verb: the test sends the journal.read wire line ({"DocumentPath","Operation","Journal"}) to the
+// fake's pipe itself. The deletion entry carries the element id Revit's UniqueId convention puts in the hex suffix.
 // Bounded: 5 minutes per run, 60 s per process, the fake add-in gives up after the run budget. Needs pwsh (BIM_PWSH, set by
 // scripts/verify.ps1, else pwsh on PATH; a bare local run without pwsh skips, verify.ps1 and CI fail) and the built
 // CLI (scripts/verify.ps1 builds interfaces/cli before this project). No Revit is involved: a
@@ -70,11 +81,15 @@ static class MirrorDriftLoopChecks
     }
 
     // What one complete run leaves behind, compared byte for byte between two runs.
-    sealed record Loop(string Snapshot0, string Snapshot1, string Drift1, string Selection, string Adopt, string ProjectJson, string Snapshot2, string Drift2);
+    sealed record Loop(string Snapshot0, string Snapshot1, string Drift1, string Selection, string Adopt, string ProjectJson, string Snapshot2, string Drift2, string Journal = "");
 
     // The fake add-in serves exactly these requests, in this order, and then exits by itself.
-    static readonly string[] ExpectedRequests = { "p2-14-levels", "p2-14-wall-types", "p2-14-wall-a", "p2-14-wall-b", "p2-14-snapshot-0", "p2-14-move-b", "p2-14-snapshot-1", "p2-14-snapshot-2" };
-    static readonly string[] JournalRequests = { "p2-16-levels", "p2-16-wall-types", "p2-16-wall-a", "p2-16-wall-b", "p2-16-snapshot-0", "p2-16-move-b", "p2-16-wall-c", "p2-16-delete-a", "p2-16-snapshot-1", "p2-16-snapshot-2" };
+    const string JournalWire = "journal.read";
+    static readonly string[] ExpectedRequests = { "p2-14-levels", "p2-14-wall-types", "p2-14-wall-a", "p2-14-wall-b", "p2-14-snapshot-0", "p2-14-move-b", "p2-14-snapshot-1", JournalWire, "p2-14-snapshot-2" };
+    // The three operations the fake add-in records as external edits (its -ExternalEdits option).
+    static readonly string[] ExternalEdits = { "p2-16-move-b", "p2-16-wall-c", "p2-16-delete-a" };
+    static readonly string[] JournalRequests = { "p2-16-levels", "p2-16-wall-types", "p2-16-wall-a", "p2-16-wall-b", "p2-16-snapshot-0", JournalWire, "p2-16-move-b", "p2-16-wall-c", "p2-16-delete-a",
+        "p2-16-snapshot-1", JournalWire, JournalWire, "p2-16-snapshot-2", JournalWire, JournalWire, JournalWire, JournalWire, JournalWire, JournalWire, JournalWire };
     // Bounds: the whole run, each CLI or pwsh process, and the fake add-in's own lifetime.
     static readonly TimeSpan RunBudget = TimeSpan.FromMinutes(5);
     const int CallTimeoutMs = 60000;
@@ -119,6 +134,7 @@ static class MirrorDriftLoopChecks
         Check(first.Adopt == second.Adopt, scenario + "deterministic: mirror-drift-adopt prints the same outcome, revision and key", first.Adopt + " vs " + second.Adopt);
         Check(first.ProjectJson == second.ProjectJson, scenario + "deterministic: the adopted store project.json is byte-identical in both runs");
         Check(first.Drift2 == second.Drift2, scenario + "deterministic: the second mirror-drift file is byte-identical in both runs");
+        Check(first.Journal == second.Journal, scenario + "deterministic: the fake add-in's journal.read replies are byte-identical in both runs");
     }
 
     static bool PwshAvailable(string pwsh, out string why)
@@ -166,7 +182,7 @@ static class MirrorDriftLoopChecks
         public string Document { get; }
         public string Scratch { get; }
 
-        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests)
+        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null)
         {
             this.dotnet = dotnet;
             this.cliDll = cliDll;
@@ -181,6 +197,8 @@ static class MirrorDriftLoopChecks
             var serverStart = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             foreach (var argument in new[] { "-NoProfile", "-File", Path.Combine(root, "tests", "integration", "fake-revit-command-pipe.ps1"), "-PipeName", pipe, "-DocumentUid", DocumentUid,
                 "-ReadyFile", ready, "-LogFile", log, "-MaxRequests", maxRequests.ToString(CultureInfo.InvariantCulture), "-TimeoutSeconds", FakeTimeoutSeconds.ToString(CultureInfo.InvariantCulture) }) serverStart.ArgumentList.Add(argument);
+            // Test-only: the operation ids the fake records as external journal entries (comma-separated).
+            if (externalEdits is not null) { serverStart.ArgumentList.Add("-ExternalEdits"); serverStart.ArgumentList.Add(externalEdits); }
             Unix(serverStart);
             server = Process.Start(serverStart) ?? throw new InvalidOperationException("fake add-in pipe did not start");
             serverOut = server.StandardOutput.ReadToEndAsync();
@@ -237,6 +255,52 @@ static class MirrorDriftLoopChecks
 
         public (int Exit, string Out, string Err) Command(string operationId, string command, Action<Utf8JsonWriter> args) =>
             Cli("revit-command", Write("envelope-" + command, Envelope(operationId, command, args)), pipe);
+
+        // The journal.read wire line (the add-in Request record, as scripts/owner-catalogue-steps.ps1 New-CatalogueWireLine
+        // writes it) with the Journal options, sent straight to the fake's pipe; returns the one reply line.
+        public string Journal(long? after, bool peek = true, int? maxEntries = null)
+        {
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("DocumentPath", Document);
+                writer.WriteString("Operation", JournalWire);
+                writer.WriteNull("UniqueId");
+                writer.WriteStartArray("Metres"); writer.WriteEndArray();
+                writer.WriteStartObject("Journal");
+                writer.WriteBoolean("peek", peek);
+                if (after is { } a) writer.WriteNumber("after_sequence", a);
+                if (maxEntries is { } m) writer.WriteNumber("max_entries", m);
+                writer.WriteEndObject();
+                writer.WriteEndObject();
+            }
+            var line = Utf8.GetString(buffer.ToArray());
+            Write("journal-read", line);
+            var reply = Wire(line);
+            Write("journal-reply", reply);
+            return reply;
+        }
+
+        // One line out, one line back. Windows: the named pipe through Core's transport. Elsewhere .NET pipes are Unix
+        // sockets named <temp>/CoreFxPipe_<name>; the fake listens under TMPDIR=/tmp (Unix above), so connect there.
+        string Wire(string line)
+        {
+            var wait = TimeSpan.FromMilliseconds(Math.Max(1, Budget()));
+            if (OperatingSystem.IsWindows()) return RevitCommandService.PipeTransport(pipe, line, wait) ?? "";
+            var endpoint = new UnixDomainSocketEndPoint("/tmp/CoreFxPipe_" + pipe);
+            var until = DateTime.UtcNow.AddSeconds(5);
+            while (true)
+            {
+                var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+                try { socket.Connect(endpoint); }
+                catch (SocketException) when (DateTime.UtcNow < until) { socket.Dispose(); Thread.Sleep(50); continue; }
+                using var stream = new NetworkStream(socket, true) { ReadTimeout = (int)wait.TotalMilliseconds };
+                stream.Write(Utf8.GetBytes(line + "\n"));
+                using var reader = new StreamReader(stream, Utf8, false, 4096, leaveOpen: true);
+                return reader.ReadLine() ?? "";
+            }
+        }
 
         // The fake add-in exits 0 by itself after its last request; the detail says how it ended otherwise.
         public (bool Ok, string Detail) Finish()
@@ -324,6 +388,14 @@ static class MirrorDriftLoopChecks
         var snapshot1Path = h.Write("snapshot-1", snapshot1.Out);
         var observedB = SnapshotGeometry(snapshot1.Out, uidB);
         Check(observedB.SequenceEqual(new[] { 5.5, 0, 5.5, 4, 3, 0.2 }), "the edited snapshot reports wall B 500 mm east", string.Join(",", observedB));
+        // P2-18 default: without -ExternalEdits the fake's journal.read is the pre-P2-18 reply, byte for byte up to the
+        // diff: no entries, every sequence 0 (the after_sequence asked for is ignored), the three CLI writes skipped as add-in.
+        var defaultJournal = h.Journal(5);
+        var defaultExpected = "{\"status\":\"succeeded\",\"verification\":\"unverified\",\"attached\":true,\"dropped\":0,\"skipped_add_in\":3,\"failures\":0,\"unidentified\":0,"
+            + "\"report\":{\"journal_version\":1,\"document_unique_id\":\"" + DocumentUid + "\",\"document_path\":" + JsonSerializer.Serialize(document, Relaxed)
+            + ",\"baseline_sequence\":0,\"current_sequence\":0,\"after_sequence\":0,\"baseline_existed\":false,\"peek\":true,\"journal_complete\":true,\"failures_since_baseline\":0,"
+            + "\"has_more\":false,\"next_after_sequence\":0,\"entries\":[],\"diff\":{";
+        Check(defaultJournal.StartsWith(defaultExpected, StringComparison.Ordinal), "without -ExternalEdits the fake's journal.read reply is unchanged: no entries, sequences 0, skipped_add_in 3", Head(defaultJournal));
 
         // ---- mirror-drift: one changed finding, an adopt proposal for wall B ----
         var drift1Path = h.NewPath("drift-1");
@@ -413,7 +485,9 @@ static class MirrorDriftLoopChecks
     static Loop? RunJournalLoop(string root, string dotnet, string pwsh, string cliDll, string runDirectory, int run, bool report)
     {
         void Check(bool condition, string name, string detail = "") { if (report || !condition) MirrorDriftLoopChecks.Check(condition, "journal run " + run + ": " + name, detail); }
-        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Journal.rvt", JournalRequests.Length);
+        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Journal.rvt", JournalRequests.Length, string.Join(",", ExternalEdits));
+        var replies = new StringBuilder();
+        string Journal(long? after, bool peek = true, int? maxEntries = null) { var reply = h.Journal(after, peek, maxEntries); replies.Append(reply).Append('\n'); return reply; }
         var document = h.Document;
         if (!h.WaitReady(out var notReady)) { Check(false, "fake add-in pipe ready", notReady); return null; }
 
@@ -437,8 +511,13 @@ static class MirrorDriftLoopChecks
         var store = Path.Combine(h.Scratch, "store");
         var init = h.Cli("init", store, h.Write("project-r1", JsonSerializer.Serialize(project)));
         if (init.Exit != 0 || Status(init.Out) != "succeeded") { Check(false, "the CLI init verb seeds the store at revision 1", R(init)); return null; }
+        // The fake's journal before any external edit: peek after sequence 0, no entries.
+        var journal0 = Journal(0);
+        var read0 = MirrorDrift.ParseJournal(journal0);
+        Check(read0.Entries.Count == 0 && read0.Complete && read0.Peek && read0.Attached && read0.AfterSequence == 0 && read0.CurrentSequence == 0,
+            "the fake's journal.read before the edits has no entries (the CLI's own writes are add-in), current_sequence 0", Head(journal0));
         var baseline = h.Cli("mirror-drift", store, h.Write("snapshot-0", snapshot0.Out),
-            h.Write("mirror-baseline", MirrorJson(document, 1, map, levelNames, JournalReply(document, 0, 0, Array.Empty<string>()), 0)), h.NewPath("drift-baseline"));
+            h.Write("mirror-baseline", MirrorJson(document, 1, map, levelNames, journal0, 0)), h.NewPath("drift-baseline"));
         Check(baseline.Exit == 0 && Number(baseline.Out, "drift") == 0 && Number(baseline.Out, "proposals") == 0,
             "baseline with an empty journal: the store built from the first snapshot has no drift", R(baseline));
 
@@ -458,17 +537,12 @@ static class MirrorDriftLoopChecks
         Check(observedB.SequenceEqual(new[] { 5.5, 0, 5.5, 4, 3, 0.2 }) && observedC.SequenceEqual(new[] { 0, 4, 5.5, 4, 3, 0.2 }) && SnapshotId(snapshot1.Out, uidA) is null,
             "the edited snapshot reports B 500 mm east, the new wall C and no wall A", string.Join(",", observedB) + " | " + string.Join(",", observedC));
 
-        // ---- The journal the add-in recorder would report for those edits (external origin, after sequence 0) ----
+        // ---- The journal the fake add-in recorded for those edits, read through its pipe (peek, after sequence 0) ----
         // Revit's UniqueId convention: the text after the last '-' is the element id in hex.
         if (!long.TryParse(uidA[(uidA.LastIndexOf('-') + 1)..], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var deletedA) || deletedA <= 0)
         { Check(false, "wall A's UniqueId ends with a hex element id", uidA); return null; }
-        var journal = JournalReply(document, 3, 0, new[]
-        {
-            JournalEntry(1, "Move", modified: uidB),
-            JournalEntry(2, "Wall", added: uidC),
-            JournalEntry(3, "Delete", deletedId: deletedA),
-        });
-        // Core's journal reader reads the hand-built reply as the recorder's format: a change there shows up here.
+        var journal = Journal(0);
+        // Core's journal reader reads the fake's reply as the recorder's format: a change there shows up here.
         var read = MirrorDrift.ParseJournal(journal);
         var entries = read.Entries;
         Check(entries.Count == 3 && entries.All(entry => entry.Origin == MirrorJournalOrigins.External && entry.DocumentUid == DocumentUid)
@@ -477,7 +551,15 @@ static class MirrorDriftLoopChecks
             && entries[1].AddedUids.SequenceEqual(new[] { uidC }) && entries[1].ModifiedUids.Count == 0 && entries[1].DeletedIds.Count == 0
             && entries[2].DeletedIds.SequenceEqual(new[] { deletedA }) && entries[2].AddedUids.Count == 0 && entries[2].ModifiedUids.Count == 0
             && read.Complete && read.Peek && read.Attached && !read.HasMore && read.AfterSequence == 0 && read.CurrentSequence == 3,
-            "MirrorDrift.ParseJournal reads the hand-built journal as three external entries (B modified, C added, A's id deleted), complete, peek, attached");
+            "MirrorDrift.ParseJournal reads the fake's journal.read reply as three external entries (B modified, C added, A's id deleted), complete, peek, attached", Head(journal));
+        Check(entries.Count == 3 && entries.Select(entry => string.Join("|", entry.TransactionNames)).SequenceEqual(new[] { "Move", "Wall", "Delete" })
+            && entries.All(entry => entry.Operation == "TransactionCommitted" && string.Equals(entry.DocumentPath, document, StringComparison.OrdinalIgnoreCase) && !entry.Truncated),
+            "the fake's entries are committed transactions Move, Wall, Delete of this document path", Head(journal));
+        // The production serializer over the same changes (two add-in walls skipped, three external edits) gives the same
+        // reply, member for member; only the snapshot diff (the fake's own) is left out of the comparison.
+        var production = ProductionJournal(document, snapshot1.Out, uidB, uidC, deletedA);
+        Check(WithoutDiff(journal) == WithoutDiff(production), "the fake's journal.read reply has the production format (RevitJournalQuery.RawRead), diff aside",
+            WithoutDiff(journal) + " vs " + WithoutDiff(production));
         var mirror1 = h.Write("mirror-r1", MirrorJson(document, 1, map, levelNames, journal, 0));
 
         // ---- mirror-drift: three findings, all external_edit, all recommending adopt ----
@@ -521,7 +603,10 @@ static class MirrorDriftLoopChecks
 
         // ---- Negative: the same edits with a journal that has nothing after sequence 3 give no external_edit ----
         // Without evidence, map_only scope leaves the unowned wall C out of scope; B and A are unknown.
-        var noNews = JournalReply(document, 3, 3, Array.Empty<string>());
+        var noNews = Journal(3);
+        var readNoNews = MirrorDrift.ParseJournal(noNews);
+        Check(readNoNews.Entries.Count == 0 && readNoNews.AfterSequence == 3 && readNoNews.CurrentSequence == 3 && readNoNews.Complete && readNoNews.Peek,
+            "the fake's journal.read after sequence 3 has no entries, current_sequence 3", Head(noNews));
         var barePath = h.NewPath("drift-no-news");
         var bare = h.Cli("mirror-drift", store, snapshot1Path, h.Write("mirror-r1-no-news", MirrorJson(document, 1, map, levelNames, noNews, 3)), barePath);
         if (bare.Exit != 0 || !File.Exists(barePath)) { Check(false, "mirror-drift with an empty journal after sequence 3 succeeds", R(bare)); return null; }
@@ -588,7 +673,10 @@ static class MirrorDriftLoopChecks
         if (!Succeeded(snapshot2)) { Check(false, "the query.snapshot after the adopt succeeds", R(snapshot2)); return null; }
         Check(Readback(snapshot2.Out) == Readback(snapshot1.Out), "the Revit side is unchanged by the adopt (same snapshot readback)");
         // The next journal.read (peek, after sequence 3) has no entries: nothing happened in Revit since the adopt.
-        var mirror2 = h.Write("mirror-r2", MirrorJson(document, 2, nextMap, levelNames, JournalReply(document, 3, 3, Array.Empty<string>()), 3));
+        var journal2 = Journal(3);
+        Check(MirrorDrift.ParseJournal(journal2) is { Entries.Count: 0, AfterSequence: 3, CurrentSequence: 3, Complete: true } && WithoutDiff(journal2) == WithoutDiff(noNews),
+            "the fake's journal.read after the adopt (peek, after sequence 3) has no entries: nothing happened in Revit since", Head(journal2));
+        var mirror2 = h.Write("mirror-r2", MirrorJson(document, 2, nextMap, levelNames, journal2, 3));
         var drift2Path = h.NewPath("drift-2");
         var drift2 = h.Cli("mirror-drift", store, h.Write("snapshot-2", snapshot2.Out), mirror2, drift2Path);
         if (drift2.Exit != 0 || !File.Exists(drift2Path)) { Check(false, "the second mirror-drift succeeds", R(drift2)); return null; }
@@ -607,12 +695,86 @@ static class MirrorDriftLoopChecks
         Check(Number(drift2.Out, "drift") == 0 && Number(drift2.Out, "proposals") == 0, "the second mirror-drift prints drift 0 and proposals 0", R(drift2));
         Check(uidA != uidB && uidC != uidA && uidC != uidB, "three distinct walls were created");
 
+        // ---- The fake's journal.read options: paging, baseline moves only without peek, after_sequence bound ----
+        var page1 = MirrorDrift.ParseJournal(Journal(0, maxEntries: 2));
+        var page2 = MirrorDrift.ParseJournal(Journal(2, maxEntries: 2));
+        Check(page1.Entries.Select(entry => entry.Sequence).SequenceEqual(new long[] { 1, 2 }) && page1.HasMore && page1.Complete
+            && page2.Entries.Select(entry => entry.Sequence).SequenceEqual(new long[] { 3 }) && !page2.HasMore && page2.AfterSequence == 2,
+            "max_entries 2 pages the journal: sequences 1-2 with has_more, then 3 from after_sequence 2");
+        Check(Member(Journal(0, maxEntries: 2), "next_after_sequence") == 2, "a capped reply's next_after_sequence is its last entry's sequence");
+        var consume = Journal(null, peek: false);
+        Check(MirrorDrift.ParseJournal(consume) is { Entries.Count: 3, Peek: false, AfterSequence: 0 } && Member(consume, "baseline_sequence") == 0 && Flag(consume, "baseline_existed") == false,
+            "a read without peek and without after_sequence starts at the (absent) baseline: all three entries, baseline_existed false", Head(consume));
+        var after = Journal(null, peek: false);
+        Check(MirrorDrift.ParseJournal(after) is { Entries.Count: 0, AfterSequence: 3, CurrentSequence: 3 } && Member(after, "baseline_sequence") == 3 && Flag(after, "baseline_existed") == true,
+            "the next read without peek starts at the moved baseline (sequence 3): no entries, baseline_existed true", Head(after));
+        var past = Journal(4);
+        Check(Text(past, "status") == "failed" && Text(past, "code") == "journal_after_sequence_invalid", "after_sequence past the journal's last sequence is refused journal_after_sequence_invalid like JournalRecorder", past);
+
         // ---- The fake add-in served exactly the expected requests and exited by itself ----
         var (finished, how) = h.Finish();
         Check(finished, "the fake add-in exits 0 after exactly " + JournalRequests.Length + " requests", how);
         var received = h.Received();
         Check(received.SequenceEqual(JournalRequests), "the fake add-in received the expected operation ids in order", string.Join(",", received));
-        return new Loop(Readback(snapshot0.Out), Readback(snapshot1.Out), drift1Text, selectionText, adopt.Out, projectJson, Readback(snapshot2.Out), drift2Text);
+        return new Loop(Readback(snapshot0.Out), Readback(snapshot1.Out), drift1Text, selectionText, adopt.Out, projectJson, Readback(snapshot2.Out), drift2Text, replies.ToString());
+    }
+
+    static readonly JsonSerializerOptions Relaxed = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    // The journal.read reply the production code path (JournalRecorder.Read -> RevitJournalQuery.RawRead) gives for the
+    // same session: the CLI's two wall.create writes inside the add-in dispatch (skipped), then the three external
+    // commits move B, create C, delete A, recorded at the fake's deterministic clock; peek read after sequence 0.
+    static string ProductionJournal(string documentPath, string snapshotResponse, string uidB, string uidC, long deletedA)
+    {
+        var tick = 0;
+        var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
+        foreach (var _ in new[] { 1, 2 }) journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "BIM Agentic OS wall.create" }, new[] { "x" }, Array.Empty<string>(), Array.Empty<long>(), true) { DocumentPath = documentPath });
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "Move" }, Array.Empty<string>(), new[] { uidB }, Array.Empty<long>()) { DocumentPath = documentPath });
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "Wall" }, new[] { uidC }, Array.Empty<string>(), Array.Empty<long>()) { DocumentPath = documentPath });
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "Delete" }, Array.Empty<string>(), Array.Empty<string>(), new[] { deletedA }) { DocumentPath = documentPath });
+        using var parsed = JsonDocument.Parse(snapshotResponse);
+        var snapshot = MirrorDrift.ParseSnapshot(parsed.RootElement.GetProperty("readback").GetRawText());
+        return RevitJournalQuery.RawRead(new MirrorJournalTracker(journal), true, snapshot, documentPath, new MirrorJournalReadOptions(0, true));
+    }
+
+    // A reply re-serialized uniformly (member order kept) with report.diff removed.
+    static string WithoutDiff(string reply)
+    {
+        try
+        {
+            using var parsed = JsonDocument.Parse(reply);
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                void Copy(JsonElement element, bool inReport)
+                {
+                    if (element.ValueKind != JsonValueKind.Object) { element.WriteTo(writer); return; }
+                    writer.WriteStartObject();
+                    foreach (var member in element.EnumerateObject())
+                    {
+                        if (inReport && member.Name == "diff") continue;
+                        writer.WritePropertyName(member.Name);
+                        Copy(member.Value, member.Name == "report");
+                    }
+                    writer.WriteEndObject();
+                }
+                Copy(parsed.RootElement, false);
+            }
+            return Utf8.GetString(buffer.ToArray());
+        }
+        catch (JsonException) { return "<not JSON> " + reply; }
+    }
+
+    static long? Member(string reply, string member)
+    {
+        try { using var parsed = JsonDocument.Parse(reply); return parsed.RootElement.TryGetProperty("report", out var report) && report.TryGetProperty(member, out var value) && value.TryGetInt64(out var number) ? number : null; }
+        catch (JsonException) { return null; }
+    }
+
+    static bool? Flag(string reply, string member)
+    {
+        try { using var parsed = JsonDocument.Parse(reply); return parsed.RootElement.TryGetProperty("report", out var report) && report.TryGetProperty(member, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False ? value.GetBoolean() : null; }
+        catch (JsonException) { return null; }
     }
 
     // Every element of before other than the changed ids is in after, identical.
@@ -625,68 +787,6 @@ static class MirrorDriftLoopChecks
 
     static string Choices(params string[] uids) =>
         "{\"choices\":[" + string.Join(",", uids.Select(uid => "{\"proposal_id\":" + JsonSerializer.Serialize(uid) + ",\"action\":\"adopt\"}")) + "]}";
-
-    // One journal_version 1 entry as JournalRecorder writes it, external origin, for this test's document.
-    static string JournalEntry(long sequence, string transaction, string? added = null, string? modified = null, long? deletedId = null)
-    {
-        using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteNumber("sequence", sequence);
-            writer.WriteString("recorded_at", "2026-11-11T12:00:0" + sequence.ToString(CultureInfo.InvariantCulture) + ".000Z");
-            writer.WriteString("document_unique_id", DocumentUid);
-            writer.WriteString("document_path", "");
-            writer.WriteString("operation", "TransactionCommitted");
-            writer.WriteString("origin", MirrorJournalOrigins.External);
-            writer.WriteStartArray("transaction_names"); writer.WriteStringValue(transaction); writer.WriteEndArray();
-            writer.WriteStartArray("added"); if (added is not null) writer.WriteStringValue(added); writer.WriteEndArray();
-            writer.WriteStartArray("modified"); if (modified is not null) writer.WriteStringValue(modified); writer.WriteEndArray();
-            writer.WriteStartArray("deleted_element_ids"); if (deletedId is { } id) writer.WriteNumberValue(id); writer.WriteEndArray();
-            writer.WriteNumber("added_total", added is null ? 0 : 1);
-            writer.WriteNumber("modified_total", modified is null ? 0 : 1);
-            writer.WriteNumber("deleted_total", deletedId is null ? 0 : 1);
-            writer.WriteBoolean("truncated", false);
-            writer.WriteEndObject();
-        }
-        return Utf8.GetString(buffer.ToArray());
-    }
-
-    // A journal.read reply (peek, read after sequence `after`, complete, recorder attached) holding the given entries.
-    static string JournalReply(string documentPath, long current, long after, IReadOnlyList<string> entries)
-    {
-        using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("status", "succeeded");
-            writer.WriteString("verification", "unverified");
-            writer.WriteBoolean("attached", true);
-            writer.WriteNumber("dropped", 0);
-            writer.WriteNumber("skipped_add_in", 0);
-            writer.WriteNumber("failures", 0);
-            writer.WriteNumber("unidentified", 0);
-            writer.WriteStartObject("report");
-            writer.WriteNumber("journal_version", 1);
-            writer.WriteString("document_unique_id", DocumentUid);
-            writer.WriteString("document_path", documentPath);
-            writer.WriteNumber("baseline_sequence", after);
-            writer.WriteNumber("current_sequence", current);
-            writer.WriteNumber("after_sequence", after);
-            writer.WriteBoolean("baseline_existed", true);
-            writer.WriteBoolean("peek", true);
-            writer.WriteBoolean("journal_complete", true);
-            writer.WriteNumber("failures_since_baseline", 0);
-            writer.WriteBoolean("has_more", false);
-            writer.WriteNumber("next_after_sequence", current);
-            writer.WriteStartArray("entries");
-            foreach (var entry in entries) writer.WriteRawValue(entry);
-            writer.WriteEndArray();
-            writer.WriteEndObject();
-            writer.WriteEndObject();
-        }
-        return Utf8.GetString(buffer.ToArray());
-    }
 
     // ---- Small JSON helpers over CLI output ----
     static string? Status(string json) => Text(json, "status");
