@@ -1524,3 +1524,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 20:00Z integration 7307c51 CI 43291445490 success (9/9) → main fast-forwarded (1def804..7307c51). P3-15, P5-17, P7-17 ✅; new P3-16 (ApplyEditsCommand returns IntentEnvelope), P5-18 (packaged mcp/ server finds skill packs), P10-18 (macOS package SBOM attribution, ⛔ P10-17); P7-16 now after P5-17. Progress 174/193 (90.2 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-12T20:00:28Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P4-16/P4-17, P2-21, P10-17 (relay198; P4-16/P4-17 share owner-session files with P1-18 — serialize); then P1-23 (then P1-24, same McpServer file), P2-22, P6-18 (then P6-19, PDF fixtures) (relay199); then P3-16, P5-18 or P7-16 (P5-18 shares PackageLayoutPackTests with P7-17 work; P7-16 edits GenerateTypologyCommand), P10-18 after P10-17 (relay200). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay201 — 2026-11-12T20:53:07Z (Claude, cloud scheduled)
+- 20:53Z LOCK taken (was FREE; relay200 released 2026-11-12T20:00:28Z).
