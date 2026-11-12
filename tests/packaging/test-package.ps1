@@ -566,7 +566,7 @@ try {
         # the forbidden-content scan). Needs a POSIX mode the runner user cannot read through.
         Write-Host "P10-17 pwsh $($PSVersionTable.PSVersion) on $([Runtime.InteropServices.RuntimeInformation]::OSDescription)"
         $p17Run = 0; $p17Skip = 0; $p17FifoSkip = 0
-        foreach ($listed in @('cli/listed-locked.bin', 'skills/listed-locked.json')) {
+        foreach ($listed in @('cli/listed-locked.bin', 'skills/listed-locked.json', 'cli/Listed.Locked.dll')) {
             if ($IsWindows) { $p17Skip++; Write-Host "SKIP P10-17 listed unreadable $listed`: no POSIX file modes on Windows"; continue }
             $copy = Join-Path $work ('special case unreadable ' + ($listed -replace '[/.]', ' '))
             Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
@@ -581,6 +581,8 @@ try {
                 $run = Invoke-ScriptBounded $verifier @('-PackageDirectory', $copy)
                 $want = 'manifest_file_unreadable: [^\r\n]*(: |, )' + [regex]::Escape($listed) + '(,|\r|\n|$)'
                 Assert (!$run.TimedOut -and $run.Code -eq 1 -and $run.Output -match $want -and $run.Output -notmatch '(?i)exception|FullyQualifiedErrorId' -and $run.Output -notmatch ('sha256 mismatch: ' + [regex]::Escape($listed))) "P10-17: package-verify must report a manifest-listed unreadable file as manifest_file_unreadable naming $listed, not throw: $(Get-Tail $run.Output)"
+                # An unreadable listed .dll stops the sbom check, but no misleading sbom_* problem is added on top.
+                if ($listed -like '*.dll') { Assert ($run.Output -notmatch 'sbom_') "P10-17: an unreadable listed .dll must be reported only as manifest_file_unreadable, without an sbom_* problem: $(Get-Tail $run.Output)" }
             }
             & chmod 644 $locked
         }
@@ -648,6 +650,56 @@ try {
                     Assert (!$run.TimedOut -and $run.Code -eq 1 -and $run.Output -match 'package_special_file: [^\r\n]*(: |, )cli/sock\.bin \(socket\)(,|\r|\n|$)' -and $run.Output -notmatch '(?i)exception|FullyQualifiedErrorId') "P10-17: package-verify must refuse a socket file as package_special_file naming cli/sock.bin (socket): $(Get-Tail $run.Output)"
                 }
             } finally { $socket.Dispose(); Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }
+        }
+        # P10-17 review: a symlink whose target is a FIFO outside the package (as a manifest-listed path, as sbom.json and
+        # as manifest.json) is refused as a link and nothing is read through it: verification stops at link problems.
+        $outsideFifoDir = Join-Path $work 'p17 outside fifo'
+        New-Item -ItemType Directory -Force $outsideFifoDir | Out-Null
+        $outsideFifo = Join-Path $outsideFifoDir 'target.fifo'
+        $outsideMade = $false
+        if ($mkfifo) { & $mkfifo $outsideFifo; $outsideMade = ($LASTEXITCODE -eq 0) }
+        foreach ($linkCase in @(@{ Path = 'cli/listed-link.dat'; Listed = $true }, @{ Path = 'sbom.json'; Listed = $false }, @{ Path = 'manifest.json'; Listed = $false })) {
+            if (!$outsideMade) { $p17Skip++; $p17FifoSkip++; Write-Host "SKIP P10-17 symlink to fifo $($linkCase.Path): mkfifo is not available here"; continue }
+            $copy = Join-Path $work ('special case link to fifo ' + ($linkCase.Path -replace '[/.]', ' '))
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            $linkFull = Join-Path $copy $linkCase.Path
+            try {
+                if ($linkCase.Listed) { Write-TestBytes $copy $linkCase.Path ([byte[]]@()); Write-TestSbom $copy $tRefs }
+                if (Test-Path -LiteralPath $linkFull) { Remove-Item -LiteralPath $linkFull -Force }
+                New-Item -ItemType SymbolicLink -Path $linkFull -Target $outsideFifo -ErrorAction Stop | Out-Null
+            } catch { $p17Skip++; Write-Host "SKIP P10-17 symlink to fifo $($linkCase.Path): $($_.Exception.Message)"; continue }
+            $p17Run++
+            $run = Invoke-ScriptBounded $verifier @('-PackageDirectory', $copy)
+            Assert (!$run.TimedOut -and $run.Code -eq 1 -and $run.Output -match ('symlink or reparse point in package: ' + [regex]::Escape($linkCase.Path) + '(\r|\n|$)') -and $run.Output -notmatch '(?i)exception|FullyQualifiedErrorId') "P10-17: package-verify must refuse a symlink to a FIFO at $($linkCase.Path) as a link without reading through it (timed out: $($run.TimedOut)): $(Get-Tail $run.Output)"
+            Remove-Item -LiteralPath $linkFull -Force -ErrorAction SilentlyContinue
+        }
+        if ($outsideMade) { Remove-Item -LiteralPath $outsideFifo -Force -ErrorAction SilentlyContinue }
+        # P10-17 review: a file type check that cannot run (shell missing, non-zero exit, unexpected output) is a typed
+        # package_special_file_check_failed problem that stops verification, never an exception (shell injected in-process).
+        if ($IsWindows) { $p17Skip++; Write-Host 'SKIP P10-17 type check failures: no POSIX type check on Windows' }
+        else {
+            $copy = Join-Path $work 'special case check failures'
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            $falseTool = Get-Command false -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+            $echoTool = Get-Command echo -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+            $savedShell = Get-Variable -Name PackageShellPath -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            foreach ($shellCase in @(@{ Name = 'missing shell'; Path = (Join-Path $work 'no such shell') }, @{ Name = 'non-zero exit'; Path = $falseTool }, @{ Name = 'unexpected output'; Path = $echoTool })) {
+                if (!$shellCase.Path) { $p17Skip++; Write-Host "SKIP P10-17 type check $($shellCase.Name): tool not found"; continue }
+                $p17Run++
+                $script:PackageShellPath = $shellCase.Path
+                try {
+                    $checked = @(Test-PackageManifest $copy)
+                    Assert (($checked -join "`n") -match 'package_special_file_check_failed: ' -and ($checked -join "`n") -notmatch 'sbom_|manifest_file_unreadable') "P10-17: a $($shellCase.Name) type check must be a typed package_special_file_check_failed problem that stops verification: $($checked -join ' | ')"
+                } catch { $failures.Add("P10-17: Test-PackageManifest threw on a $($shellCase.Name) type check: $($_.Exception.Message)") }
+                finally { $script:PackageShellPath = $savedShell }
+            }
+            # Batches are bounded by argv bytes as well as count (macOS ARG_MAX): 1100 paths of ~4000 bytes each.
+            $longNull = '/dev/' + ('./' * 1995) + 'null'
+            try {
+                $many = Get-PackagePosixFileKinds ([string[]]@(1..1100 | ForEach-Object { $longNull }))
+                Assert (@($many).Count -eq 1100 -and @($many | Where-Object { $_ -ceq 'character device' }).Count -eq 1100) "P10-17: the type check must classify 1100 long paths in argv-bounded batches: $(@($many | Where-Object { $_ -ceq 'character device' }).Count) of $(@($many).Count)"
+            } catch { $failures.Add("P10-17: the type check threw on 1100 long paths (argv not bounded by bytes?): $($_.Exception.Message)") }
+            Assert ((Get-PackagePosixFileKind '/dev/null') -ceq 'character device') "P10-17: /dev/null must classify as a character device: '$(Get-PackagePosixFileKind '/dev/null')'"
         }
         Write-Host "P10-17 unreadable/special-file cases: $p17Run run, $p17Skip skipped"
         if ($IsLinux -and $env:GITHUB_ACTIONS -eq 'true') { Assert ($p17Skip -eq 0) "P10-17: no unreadable/fifo/socket case may be skipped on the Linux CI runner (skipped: $p17Skip, fifo: $p17FifoSkip)" }
