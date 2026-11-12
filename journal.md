@@ -1509,3 +1509,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay199 — 2026-11-12T12:54:19Z (Claude, cloud scheduled)
 - 12:54Z LOCK taken (was FREE; relay198 released 2026-11-12T12:50:42Z).
 - 13:39Z workers green: P1-22 cdc7009 (red 43222777518, green 43224422380; 0 attempts; RevitOptionGrammar shared), P2-20 2a69c0e (red 43223243005, green 43225256279; 0 attempts), P6-17 24a73e0 (red 43223308971, green 43225242821; 0 attempts; no production change). Next: independent reviews.
+- 15:23Z reviews: 0 blockers. P1-22 4 nits closed 10de695 (green 43239443477; XML csproj link check, scoped body search, literal " 5" pin, MCP --deadline-seconds unknown pinned); P2-20 3 should-fix (tolerance from above, untested field branches, stale comment) + nits closed 5605a7e (red 43233228746 kind case, green 43235982933; 1 failed attempt: $cases shadowed -Cases); P6-17 3 nits closed 73f5ce6 (green 43243827436). Next: integration.
