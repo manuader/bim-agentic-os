@@ -21,13 +21,24 @@ namespace Bim.Cli;
 //   weights        optional {"area_fit","adjacency","proportions","compactness","perimeter","compliance"}: numbers, each
 //                  one absent taking its ScoringWeights default ({}, explicit defaults and an absent member all mean the
 //                  default weights, passed to the pipeline as null so the bytes are the same)
+//   skills         optional array of at most 64 skill id strings (P5-16): extra packs, each read like the typology pack
+//   precedence     optional array of at most 64 skill id strings (P5-16): the resolver's precedence order (earlier
+//                  wins among equal priorities), each entry a well-formed skill id (else request_invalid precedence[i]),
+//                  passed through in order; an id that is not a composed skill or one listed twice is the resolver's
+//                  typed precedence_unknown / precedence_duplicate refusal
 // Every number must be a finite JSON number (-0 is read as 0); integers must be JSON integer literals in the int32 range;
 // strings holding an unpaired UTF-16 surrogate escape are refused like any malformed member. Value ranges (family size,
 // lot sides, count, weights, an all-zero project id, a non-typology pack) are left to TypologyPipeline, whose refusals
 // are reported. Not in v1 (refused as unknown members): include (optional rooms), the code pack, revision, circulation /
-// facade weights, snap and the composed-rules mode; the pipeline gets PrototypePipelineOptions(code pack, project_id)
+// facade weights and snap; the pipeline gets PrototypePipelineOptions(code pack, project_id)
 // with every other option at its default, so the output is TypologyPipeline.Run(pack, request, options) of the P5-12
 // in-process API.
+// P5-16 composed rules: when skills or precedence is present (even as []), the pipeline is instead
+// TypologyPipeline.RunComposed(pack, request, options, extra manifests in request order, precedence or null) of the P5-15
+// in-process API: the typology pack, the code pack and the extras are resolved (SkillResolver) and the composed pack rules
+// plan the candidates, so "skills":[] gives the CABA + typology composed bytes (pin a8c62da5...). Its resolution refusals
+// (skill_conflict, dependency_missing, precedence_unknown, default_conflict, ...) are generate_typology_refused with the
+// typed issues exactly as RunComposed returns them. With both members absent the output and stdout are the P7-14 ones.
 // Packs: the typology pack and the fixed code pack ar.caba.codigo-edificacion (the facade gate's) are each read with
 // SkillPackLookup.Load(id, packageFirst: true), as generate-prototypes reads its pack: <package>/skills/<id>/skill.json
 // when the CLI sits in the release package layout, else <repository>/skills/<id>/skill.json.
@@ -41,16 +52,20 @@ namespace Bim.Cli;
 //   generate_typology_request_invalid (detail: the offending member), generate_typology_repository_not_found,
 //   generate_typology_pack_unavailable / generate_typology_code_pack_unavailable (detail: the manifest's input_* code),
 //   generate_typology_pack_invalid / generate_typology_code_pack_invalid (detail: the skill code, or "id" when the
-//   manifest names another pack), generate_typology_refused (with "refusals":[{"code","subject","detail"}] =
+//   manifest names another pack), generate_typology_skill_unavailable / generate_typology_skill_invalid (an extra skill;
+//   detail as for the packs, plus "skill": the extra id), generate_typology_refused (with "refusals":[{"code","subject","detail"}] =
 //   TypologyPipelineResult.Refusals in order, no detail), generate_typology_internal_error (stderr: exception type, message).
-// Precedence: usage, output path, request read, request parse, repository, typology pack, code pack, pipeline, write.
+// Composed-mode stdout adds "rules":"composed" and "skills":[the extra ids as given].
+// Precedence: usage, output path, request read, request parse, repository, typology pack, code pack, extra skills (in
+// request order), pipeline, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
 // Everything is culture-invariant: the same request gives the same bytes and stdout under any current culture.
 internal static class GenerateTypologyCommand
 {
     public const string CodePack = "ar.caba.codigo-edificacion";
     public const string Usage = "usage: generate-typology request.json output.json (request: {\"pack\": typology skill id, \"family_size\": int, "
-        + "\"lot\": {\"width_m\", \"depth_m\"}, \"alternatives\": int, \"seed\": int, \"project_id\": GUID, optional \"weights\"}; the facade code pack is "
+        + "\"lot\": {\"width_m\", \"depth_m\"}, \"alternatives\": int, \"seed\": int, \"project_id\": GUID, optional \"weights\", optional \"skills\": [at most 64 extra skill ids] "
+        + "and \"precedence\": [at most 64 skill ids], either of which runs the composed pack rules}; the facade code pack is "
         + CodePack + "; packs are read from <package>/skills/<id>/skill.json in the release package layout, else from <repository>/skills/<id>/skill.json, "
         + "else generate_typology_repository_not_found; the output must be a new .json file)";
     public const string UsageCode = "generate_typology_usage";
@@ -60,25 +75,33 @@ internal static class GenerateTypologyCommand
     public const string PackInvalid = "generate_typology_pack_invalid";
     public const string CodePackUnavailable = "generate_typology_code_pack_unavailable";
     public const string CodePackInvalid = "generate_typology_code_pack_invalid";
+    public const string SkillUnavailable = "generate_typology_skill_unavailable";
+    public const string SkillInvalid = "generate_typology_skill_invalid";
     public const string Refused = "generate_typology_refused";
+    public const int MaxListEntries = 64;
     public const string InternalError = "generate_typology_internal_error";
 
-    static readonly string[] RootMembers = { "pack", "family_size", "lot", "alternatives", "seed", "project_id", "weights" };
+    static readonly string[] RootMembers = { "pack", "family_size", "lot", "alternatives", "seed", "project_id", "weights", "skills", "precedence" };
     static readonly string[] LotMembers = { "width_m", "depth_m" };
     static readonly string[] WeightMembers = { "area_fit", "adjacency", "proportions", "compactness", "perimeter", "compliance" };
 
-    sealed class Refusal(string code, string? detail = null) : Exception(code)
+    sealed class Refusal(string code, string? detail = null, string? skill = null) : Exception(code)
     {
         public string Code { get; } = code;
         public string? Detail { get; } = detail;
+        public string? Skill { get; } = skill;
     }
 
-    sealed record Parsed(string Pack, TypologyBriefRequest Request, Guid ProjectId);
+    // Skills and Precedence are null when absent; Composed when either is present.
+    sealed record Parsed(string Pack, TypologyBriefRequest Request, Guid ProjectId, IReadOnlyList<string>? Skills, IReadOnlyList<string>? Precedence)
+    {
+        public bool Composed => Skills is not null || Precedence is not null;
+    }
 
     public static void Run(string[] args)
     {
         try { Execute(args); }
-        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
+        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail, refusal.Skill); }
     }
 
     static void Execute(string[] args)
@@ -92,13 +115,17 @@ internal static class GenerateTypologyCommand
         var parsed = Parse(text);
         var pack = Load(parsed.Pack, PackUnavailable, PackInvalid);
         var code = Load(CodePack, CodePackUnavailable, CodePackInvalid);
+        var extras = new List<SkillManifest>();
+        foreach (var id in parsed.Skills ?? Array.Empty<string>()) extras.Add(Load(id, SkillUnavailable, SkillInvalid, id));
 
         var options = new PrototypePipelineOptions(code, parsed.ProjectId);
         TypologyPipelineResult result;
         string json;
         try
         {
-            result = TypologyPipeline.Run(pack, parsed.Request, options);
+            result = parsed.Composed
+                ? TypologyPipeline.RunComposed(pack, parsed.Request, options, extras, parsed.Precedence)
+                : TypologyPipeline.Run(pack, parsed.Request, options);
             json = result.Status == PrototypePipelineStatus.Refused ? "" : TypologyPipelineSerializer.Serialize(result);
         }
         catch (Exception error)
@@ -116,24 +143,48 @@ internal static class GenerateTypologyCommand
         try { GltfExporter.WriteNew(bytes, output); }
         catch (GltfExportException error) { throw new Refusal(error.Code); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
+        var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var pipelineStatus = result.Status == PrototypePipelineStatus.Ranked ? "ranked" : "infeasible";
+        var projectId = parsed.ProjectId.ToString("D", CultureInfo.InvariantCulture);
+        var acceptedCount = result.Alternatives.Count(alternative => alternative.Accepted);
+        if (parsed.Composed)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                status = "succeeded",
+                scope = "proposal_only",
+                persisted = false,
+                pipeline_status = pipelineStatus,
+                rules = "composed",
+                pack = parsed.Pack,
+                code_pack = CodePack,
+                skills = parsed.Skills ?? Array.Empty<string>(),
+                project_id = projectId,
+                alternatives = result.Alternatives.Count,
+                accepted = acceptedCount,
+                bytes = bytes.LongLength,
+                sha256,
+            }));
+            return;
+        }
         Console.WriteLine(JsonSerializer.Serialize(new
         {
             status = "succeeded",
             scope = "proposal_only",
             persisted = false,
-            pipeline_status = result.Status == PrototypePipelineStatus.Ranked ? "ranked" : "infeasible",
+            pipeline_status = pipelineStatus,
             pack = parsed.Pack,
             code_pack = CodePack,
-            project_id = parsed.ProjectId.ToString("D", CultureInfo.InvariantCulture),
+            project_id = projectId,
             alternatives = result.Alternatives.Count,
-            accepted = result.Alternatives.Count(alternative => alternative.Accepted),
+            accepted = acceptedCount,
             bytes = bytes.LongLength,
-            sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+            sha256,
         }));
     }
 
     // Package root, then repository; bounded manifest read, parse, id (SkillPackLookup, shared with generate-prototypes).
-    static SkillManifest Load(string id, string unavailable, string invalid)
+    static SkillManifest Load(string id, string unavailable, string invalid, string? skill = null)
     {
         try { return SkillPackLookup.Load(id, packageFirst: true); }
         catch (SkillPackException error)
@@ -141,8 +192,8 @@ internal static class GenerateTypologyCommand
             throw error.Problem switch
             {
                 SkillPackProblem.RepositoryNotFound => new Refusal(RepositoryNotFound),
-                SkillPackProblem.Unavailable => new Refusal(unavailable, error.Detail),
-                _ => new Refusal(invalid, error.Detail),
+                SkillPackProblem.Unavailable => new Refusal(unavailable, error.Detail, skill),
+                _ => new Refusal(invalid, error.Detail, skill),
             };
         }
     }
@@ -173,7 +224,9 @@ internal static class GenerateTypologyCommand
                 throw new Refusal(RequestInvalid, "project_id");
             var weights = root.TryGetValue("weights", out var weightsElement) ? Weights(weightsElement) : new ScoringWeights();
             var request = new TypologyBriefRequest(familySize, lotValue, alternatives, seed, Weights: weights == new ScoringWeights() ? null : weights);
-            return new Parsed(pack, request, projectId);
+            var skills = root.TryGetValue("skills", out var skillsElement) ? Strings(skillsElement, "skills") : null;
+            var precedence = root.TryGetValue("precedence", out var precedenceElement) ? Strings(precedenceElement, "precedence") : null;
+            return new Parsed(pack, request, projectId, skills, precedence);
         }
     }
 
@@ -214,6 +267,24 @@ internal static class GenerateTypologyCommand
         catch (InvalidOperationException) { throw new Refusal(RequestInvalid, at); }
     }
 
+    // A JSON array of at most MaxListEntries skill id strings (SkillParser.IsId), offending entries reported as at[i].
+    static IReadOnlyList<string> Strings(JsonElement element, string at)
+    {
+        if (element.ValueKind != JsonValueKind.Array || element.GetArrayLength() > MaxListEntries) throw new Refusal(RequestInvalid, at);
+        var values = new List<string>();
+        var index = 0;
+        foreach (var item in element.EnumerateArray())
+        {
+            var name = at + "[" + index.ToString(CultureInfo.InvariantCulture) + "]";
+            if (item.ValueKind != JsonValueKind.String) throw new Refusal(RequestInvalid, name);
+            var value = StringValue(item, name);
+            if (!SkillParser.IsId(value)) throw new Refusal(RequestInvalid, name);
+            values.Add(value);
+            index++;
+        }
+        return values.AsReadOnly();
+    }
+
     static ScoringWeights Weights(JsonElement element)
     {
         var members = Members(element, "weights", WeightMembers);
@@ -223,9 +294,10 @@ internal static class GenerateTypologyCommand
             W("compactness", defaults.Compactness), W("perimeter", defaults.Perimeter), W("compliance", defaults.Compliance));
     }
 
-    static void Fail(string code, string? detail)
+    static void Fail(string code, string? detail, string? skill = null)
     {
-        Console.WriteLine(detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail }));
+        Console.WriteLine(skill is not null ? JsonSerializer.Serialize(new { status = "failed", code, detail, skill })
+            : detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail }));
         Environment.ExitCode = 1;
     }
 }

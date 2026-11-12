@@ -27,6 +27,18 @@ internal static class GenerateTypologyTests
     const string PinnedAcceptedSha256 = "eb8720c1a98a749048df6ac69f1794b965e833efc963eb9ddfe58db0ae886f4e";
     const string PinnedInfeasibleSha256 = "3a55177415f42f4d324cf3e4bd298223595c429006595a635aa12e9fb1a3d20b";
     const string Id = "00000000-0000-4000-8000-0000000007a7";
+    // P5-16: TypologyPipelineManifestsTests.PinnedComposedSha256 (P5-14/P5-15): CABA + typology, ComposedRules, family 3, 16 x 16 m, 4 alternatives, seed 0.
+    const string PinnedComposedSha256 = "a8c62da59e0eee2d25af4d27bc37fcf2f67ae366e7e48446f1edfe3c87f7c0dd";
+    const string CompactStyle = "bim.style.compact-modern";
+    const string MasonryStyle = "bim.style.warm-masonry";
+    // TypologyPipelineManifestsTests.StricterPack: bedrooms at least 3.2 m on their short side (written into the package layout).
+    const string StricterPack = """
+    {"manifest_version":1,"id":"xx.test.stricter-bedroom","version":"1.0.0","kind":"code","description":"test pack with a stricter bedroom side","priority":100,
+     "parameters":[{"name":"bedroom_side_min_m","type":"number","default":3.2}],
+     "rules":[
+      {"id":"bedroom-side-min","severity":"error","target":{"room":"bedroom*"},"check":{"op":"min","property":"min_side_m","parameter":"bedroom_side_min_m"},"message":"m"}
+     ]}
+    """;
 
     public static void Run(string root, string work, string dotnet, string cliDll, byte[] overCap, Action<bool, string, string> check)
     {
@@ -105,6 +117,8 @@ internal static class GenerateTypologyTests
             && usageDetail.Contains("project_id", StringComparison.Ordinal) && usageDetail.Contains(CodePack, StringComparison.Ordinal)
             && usageDetail.Contains("generate_typology_repository_not_found", StringComparison.Ordinal),
             "the usage text documents the verb, the request members, the fixed code pack and the pack lookup refusal", D(usage));
+        Check(usageDetail.Contains("\"skills\"", StringComparison.Ordinal) && usageDetail.Contains("\"precedence\"", StringComparison.Ordinal),
+            "the usage text documents the optional skills and precedence members (P5-16)", D(usage));
 
         // ---- success: the in-process pipeline, the P5-12 pinned digests, deterministic ----
         var acceptedRequest = Input("family-3.json", Request(TypologyPack, 3, 16, 16, 4, 0));
@@ -148,6 +162,106 @@ internal static class GenerateTypologyTests
         var tunedExpected = Library(pack, new TypologyBriefRequest(3, new PrototypeLot(16, 16), 4, 2, Weights: new ScoringWeights(0.5, 0.25, 0.15, 0.1, 0.1, 0.2)), projectId);
         Check(tunedRun.Exit == 0 && Read(tuned).SequenceEqual(tunedExpected) && !tunedExpected.SequenceEqual(acceptedBytes),
             "partial weights in any member order and another seed: output equal to the in-process run with those ScoringWeights", D(tunedRun));
+        Check(!accepted.Out.Contains("\"rules\"", StringComparison.Ordinal) && !accepted.Out.Contains("\"skills\"", StringComparison.Ordinal),
+            "without skills and precedence stdout is the P7-14 envelope (no rules or skills members)", D(accepted));
+
+        // ---- P5-16: optional skills / precedence run TypologyPipeline.RunComposed (composed pack rules) ----
+        SkillManifest Skill(string id) => SkillParser.Parse(File.ReadAllText(Path.Combine(root, "skills", id, "skill.json")));
+        TypologyPipelineResult Composed(SkillManifest typology, TypologyBriefRequest request, IReadOnlyList<SkillManifest>? extras, IReadOnlyList<string>? precedence) =>
+            TypologyPipeline.RunComposed(typology, request, new PrototypePipelineOptions(caba, projectId), extras, precedence);
+        static string Ids(params string[] ids) => "[" + string.Join(",", ids.Select(id => "\"" + id + "\"")) + "]";
+        var request3 = new TypologyBriefRequest(3, new PrototypeLot(16, 16), 4, 0);
+        var request4 = new TypologyBriefRequest(4, new PrototypeLot(12, 12), 6, 0);
+        var compact = Skill(CompactStyle);
+        var masonry = Skill(MasonryStyle);
+        var composedExpected = Utf8(TypologyPipelineSerializer.Serialize(Composed(pack, request3, null, null)));
+        var composedRequest = Input("composed.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":[]"));
+        var composedOut = Output();
+        var composed = Cli("generate-typology", composedRequest, composedOut);
+        var composedBytes = Read(composedOut);
+        Check(composed.Exit == 0 && composedBytes.Length > 0 && composedBytes.SequenceEqual(composedExpected),
+            "\"skills\":[] runs RunComposed: the output is TypologyPipelineSerializer.Serialize(TypologyPipeline.RunComposed(pack, request, options)) byte for byte",
+            D(composed) + " written " + composedBytes.Length.ToString(CultureInfo.InvariantCulture) + " expected " + composedExpected.Length.ToString(CultureInfo.InvariantCulture));
+        Check(Hex(composedBytes) == PinnedComposedSha256 && !composedBytes.SequenceEqual(acceptedBytes),
+            "CABA + typology through the CLI has the P5-14/P5-15 pinned SHA-256 a8c62da5... and differs from the P7-14 bytes", Hex(composedBytes));
+        var composedEnvelope = Parse(composed.Out);
+        Check(Str(composedEnvelope, "status") == "succeeded" && Str(composedEnvelope, "rules") == "composed" && Str(composedEnvelope, "pack") == TypologyPack
+            && Str(composedEnvelope, "code_pack") == CodePack && composedEnvelope is { } ce && ce.TryGetProperty("skills", out var skillsOut) && skillsOut.ValueKind == JsonValueKind.Array
+            && skillsOut.GetArrayLength() == 0 && Int(composedEnvelope, "bytes") == composedExpected.LongLength && Str(composedEnvelope, "sha256") == Hex(composedExpected),
+            "a composed run's stdout reports rules composed, the extra skills, the byte count and the SHA-256", D(composed));
+        var composedAgainOut = Output();
+        var composedAgain = Cli("generate-typology", composedRequest, composedAgainOut);
+        Check(composedAgain.Exit == 0 && Read(composedAgainOut).SequenceEqual(composedBytes) && composedAgain.Out == composed.Out, "a second composed run is byte-identical", D(composedAgain));
+
+        void ExpectComposed(string label, string text, SkillManifest typology, TypologyBriefRequest request, IReadOnlyList<SkillManifest>? extras, IReadOnlyList<string>? precedence,
+            string? refusalCode = null, byte[]? same = null, string? sameAs = null)
+        {
+            var library = Composed(typology, request, extras, precedence);
+            var output = Output();
+            var result = Cli("generate-typology", Input("composed-case.json", text), output);
+            if (library.Status == PrototypePipelineStatus.Refused)
+            {
+                var envelope = RefusedEnvelope(library);
+                Check((refusalCode is null || library.Refusals.Any(refusal => refusal.Code == refusalCode)) && result.Exit == 1 && result.Out == envelope && !File.Exists(output),
+                    label + ": refused as generate_typology_refused with RunComposed's typed refusals exactly" + (refusalCode is null ? "" : " (" + refusalCode + ")") + ", no output file",
+                    D(result) + " expected " + envelope);
+            }
+            else
+            {
+                var expected = Utf8(TypologyPipelineSerializer.Serialize(library));
+                Check(refusalCode is null && result.Exit == 0 && Read(output).SequenceEqual(expected) && Str(Parse(result.Out), "sha256") == Hex(expected),
+                    label + ": the output is the in-process RunComposed bytes", D(result) + " expected sha " + Hex(expected));
+                // Every success case states how it relates to a reference run, so no case is silently redundant.
+                if (same is not null)
+                    Check(expected.SequenceEqual(same) && Read(output).SequenceEqual(same), label + ": expected to equal " + sameAs + " byte for byte", Hex(expected) + " vs " + Hex(same));
+            }
+            if (same is null && refusalCode is null && library.Status != PrototypePipelineStatus.Refused)
+                Check(false, label + ": a success case must name the reference run it equals", "");
+        }
+        var compactOne = Utf8(TypologyPipelineSerializer.Serialize(Composed(pack, request3, new[] { compact }, null)));
+        var tunedRequest = new TypologyBriefRequest(3, new PrototypeLot(16, 16), 4, 2, Weights: new ScoringWeights(0.5, 0.25, 0.15, 0.1, 0.1, 0.2));
+        var family4Composed = Utf8(TypologyPipelineSerializer.Serialize(Composed(pack, request4, null, null)));
+        var tunedComposed = Utf8(TypologyPipelineSerializer.Serialize(Composed(pack, tunedRequest, null, null)));
+        Check(!tunedComposed.SequenceEqual(composedBytes) && !family4Composed.SequenceEqual(composedBytes),
+            "the family-4 and tuned-weights reference runs differ from the CABA + typology pin (so equality with them is not equality with the pin)");
+        ExpectComposed("skills naming the typology and code packs", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CodePack, TypologyPack)), pack, request3,
+            new[] { caba, pack }, null, same: composedBytes, sameAs: "the CABA + typology pin (the composed packs counted once)");
+        // compact-modern has no minimum area/side planner rules, so it composes to the CABA + typology planner rules: the
+        // same bytes as no extras (on 16 x 16 the pin itself). The stricter package pack below is the rule-changing case.
+        ExpectComposed("an extra style pack without planner rules", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle)), pack, request3, new[] { compact }, null,
+            same: composedBytes, sameAs: "the CABA + typology pin (compact-modern adds no planner rule)");
+        ExpectComposed("an extra style pack on the family-4 lot", Request(TypologyPack, 4, 12, 12, 6, 0, ",\"skills\":" + Ids(CompactStyle)), pack, request4, new[] { compact }, null,
+            same: family4Composed, sameAs: "the family-4 run without extras (compact-modern adds no planner rule)");
+        ExpectComposed("an extra named twice", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle, CompactStyle)), pack, request3, new[] { compact, compact }, null,
+            same: compactOne, sameAs: "the extra named once");
+        ExpectComposed("64 skills (the limit, one pack repeated)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(Enumerable.Repeat(CompactStyle, 64).ToArray())), pack, request3,
+            Enumerable.Repeat(compact, 64).ToArray(), null, same: compactOne, sameAs: "the extra named once");
+        ExpectComposed("a precedence order alone (no equal-priority tie to rank)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids(TypologyPack, CodePack)), pack, request3, null,
+            new[] { TypologyPack, CodePack }, same: composedBytes, sameAs: "the CABA + typology pin (precedence only ranks ties, and these packs have none)");
+        var sixtyFour = Enumerable.Range(0, 64).Select(i => "xx.test.p" + ((char)('a' + i / 26)).ToString() + ((char)('a' + i % 26)).ToString()).ToArray();
+        ExpectComposed("64 precedence entries (the limit) are accepted and resolved", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids(sixtyFour)), pack, request3, null,
+            sixtyFour, SkillCodes.PrecedenceUnknown);
+        ExpectComposed("a duplicate precedence entry", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids(TypologyPack, CodePack, TypologyPack)), pack, request3, null,
+            new[] { TypologyPack, CodePack, TypologyPack }, SkillCodes.PrecedenceDuplicate);
+        ExpectComposed("skills and precedence with tuned weights", Request(TypologyPack, 3, 16, 16, 4, 2, ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5},\"precedence\":"
+            + Ids(CompactStyle, TypologyPack) + ",\"skills\":" + Ids(CompactStyle)), pack,
+            tunedRequest, new[] { compact }, new[] { CompactStyle, TypologyPack }, same: tunedComposed, sameAs: "the tuned-weights run without extras (compact-modern adds no planner rule)");
+        ExpectComposed("two conflicting style packs", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle, MasonryStyle)), pack, request3,
+            new[] { compact, masonry }, null, SkillCodes.SkillConflict);
+        ExpectComposed("a precedence entry that is not a composed skill", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids("xx.no-such.skill")), pack, request3,
+            null, new[] { "xx.no-such.skill" }, SkillCodes.PrecedenceUnknown);
+        ExpectComposed("a conflict plus a request refusal", Request(TypologyPack, 0, 16, 16, 4, 0, ",\"skills\":" + Ids(MasonryStyle, CompactStyle)), pack,
+            new TypologyBriefRequest(0, new PrototypeLot(16, 16), 4, 0), new[] { masonry, compact }, null, SkillCodes.SkillConflict);
+        ExpectComposed("a code pack named as the typology pack in composed mode", Request(CodePack, 3, 16, 16, 4, 0, ",\"skills\":[]"), caba, request3, Array.Empty<SkillManifest>(), null);
+        var unknownSkillOut = Output();
+        var unknownSkill = Cli("generate-typology", Input("unknown-skill.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle, "xx.no-such.skill"))), unknownSkillOut);
+        Check(unknownSkill.Exit == 1 && Str(Parse(unknownSkill.Out), "code") == "generate_typology_skill_unavailable" && Str(Parse(unknownSkill.Out), "detail") == "input_not_found"
+            && Str(Parse(unknownSkill.Out), "skill") == "xx.no-such.skill" && !File.Exists(unknownSkillOut),
+            "an unknown extra skill id -> generate_typology_skill_unavailable (input_not_found, skill id), exit 1, no file", D(unknownSkill));
+        var bothUnknownOut = Output();
+        var bothUnknown = Cli("generate-typology", Input("both-unknown.json", Request("xx.no-such.pack", 3, 16, 16, 4, 0, ",\"skills\":" + Ids("xx.no-such.skill"))), bothUnknownOut);
+        Check(bothUnknown.Exit == 1 && Str(Parse(bothUnknown.Out), "code") == "generate_typology_pack_unavailable" && !File.Exists(bothUnknownOut),
+            "the typology pack is read before the extra skills (generate_typology_pack_unavailable wins)", D(bothUnknown));
 
         // ---- culture: a de_DE child writes the same bytes and prints the same stdout ----
         {
@@ -171,6 +285,15 @@ internal static class GenerateTypologyTests
                 var germanTunedOut = Output();
                 var germanTuned = CliAt(cliDll, env, "generate-typology", Input("family-3-tuned-de.json", Request(TypologyPack, 3, 16, 16, 4, 2, ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5}")), germanTunedOut);
                 Check(germanTuned.Exit == 0 && Read(germanTunedOut).SequenceEqual(tunedExpected), "under de_DE fractional weights give byte-identical output", D(germanTuned));
+                var germanComposedOut = Output();
+                var germanComposed = CliAt(cliDll, env, "generate-typology", composedRequest, germanComposedOut);
+                Check(germanComposed.Exit == 0 && Read(germanComposedOut).SequenceEqual(composedBytes) && Hex(Read(germanComposedOut)) == PinnedComposedSha256 && germanComposed.Out == composed.Out,
+                    "under de_DE the composed run (skills) writes byte-identical output and the same stdout", D(germanComposed));
+                var germanConflictText = Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle, MasonryStyle));
+                var germanConflictOut = Output();
+                var germanConflict = CliAt(cliDll, env, "generate-typology", Input("conflict-de.json", germanConflictText), germanConflictOut);
+                Check(germanConflict.Exit == 1 && germanConflict.Out == RefusedEnvelope(Composed(pack, request3, new[] { compact, masonry }, null)) && !File.Exists(germanConflictOut),
+                    "under de_DE a resolution refusal prints RunComposed's typed refusals byte for byte", D(germanConflict));
                 var refusedText = Request(TypologyPack, 3, 2.5, 16, 4, 0);
                 var refusedLibrary = TypologyPipeline.Run(pack, new TypologyBriefRequest(3, new PrototypeLot(2.5, 16), 4, 0), new PrototypePipelineOptions(caba, projectId));
                 var germanRefusedOut = Output();
@@ -252,6 +375,19 @@ internal static class GenerateTypologyTests
             ("null weights", good[..^1] + ",\"weights\":null}", "weights"),
             ("a null pack", good.Replace("\"" + TypologyPack + "\"", "null", StringComparison.Ordinal), "pack"),
             ("an int32-overflow family size", good.Replace("\"family_size\":3", "\"family_size\":2147483648", StringComparison.Ordinal), "family_size"),
+            ("a string skills member", good[..^1] + ",\"skills\":\"" + CompactStyle + "\"}", "skills"),
+            ("null skills", good[..^1] + ",\"skills\":null}", "skills"),
+            ("a non-string skill", good[..^1] + ",\"skills\":[7]}", "skills[0]"),
+            ("a malformed skill id", good[..^1] + ",\"skills\":[\"" + CompactStyle + "\",\"../skills\"]}", "skills[1]"),
+            ("a lone surrogate skill", good[..^1] + ",\"skills\":[\"\\ud800\"]}", "skills[0]"),
+            ("more than 64 skills", good[..^1] + ",\"skills\":" + Ids(Enumerable.Repeat(CompactStyle, 65).ToArray()) + "}", "skills"),
+            ("a duplicate skills member", good[..^1] + ",\"skills\":[],\"skills\":[]}", "request.skills"),
+            ("an object precedence", good[..^1] + ",\"precedence\":{}}", "precedence"),
+            ("a non-string precedence entry", good[..^1] + ",\"precedence\":[\"" + TypologyPack + "\",1]}", "precedence[1]"),
+            ("a non-id precedence entry", good[..^1] + ",\"precedence\":[\"" + TypologyPack + "\",\"Not An Id\"]}", "precedence[1]"),
+            ("an oversize precedence entry", good[..^1] + ",\"precedence\":[\"xx." + new string('a', 200) + "\"]}", "precedence[0]"),
+            ("a lone surrogate precedence entry", good[..^1] + ",\"precedence\":[\"\\ud800\"]}", "precedence[0]"),
+            ("more than 64 precedence entries", good[..^1] + ",\"precedence\":" + Ids(Enumerable.Repeat(TypologyPack, 65).ToArray()) + "}", "precedence"),
             ("an int32-underflow alternative count", good.Replace("\"alternatives\":4", "\"alternatives\":-2147483649", StringComparison.Ordinal), "alternatives"),
         };
         foreach (var member in new[] { "pack", "family_size", "lot", "alternatives", "seed", "project_id" }) malformed.Add(("a missing " + member, Without(member), member));
@@ -324,6 +460,30 @@ internal static class GenerateTypologyTests
                 var packaged = CliAt(packageDll, null, "generate-typology", acceptedRequest, packagedOut);
                 Check(!UnderRepository(packageRoot) && packaged.Exit == 0 && Read(packagedOut).SequenceEqual(acceptedBytes) && packaged.Out == accepted.Out,
                     "a CLI in the package layout (cli/ beside skills/, outside any repository) writes the repository run's bytes and stdout", D(packaged) + " under " + outsideBase);
+                var packagedComposedOut = Output();
+                var packagedComposed = CliAt(packageDll, null, "generate-typology", composedRequest, packagedComposedOut);
+                Check(packagedComposed.Exit == 0 && Read(packagedComposedOut).SequenceEqual(composedBytes) && packagedComposed.Out == composed.Out,
+                    "a packaged CLI composed run writes the repository composed bytes and stdout", D(packagedComposed));
+                var stricter = SkillParser.Parse(StricterPack);
+                Directory.CreateDirectory(Path.Combine(packageRoot, "skills", stricter.Id));
+                File.WriteAllText(Path.Combine(packageRoot, "skills", stricter.Id, "skill.json"), StricterPack, new UTF8Encoding(false));
+                var strictLibrary = Composed(pack, request4, new[] { stricter }, null);
+                var strictNone = Composed(pack, request4, null, null);
+                var strictOut = Output();
+                var strict = CliAt(packageDll, null, "generate-typology", Input("stricter.json", Request(TypologyPack, 4, 12, 12, 6, 0, ",\"skills\":" + Ids(stricter.Id))), strictOut);
+                var strictExpected = strictLibrary.Status == PrototypePipelineStatus.Refused ? Array.Empty<byte>() : Utf8(TypologyPipelineSerializer.Serialize(strictLibrary));
+                Check(strictLibrary.Rules is { } strictRules && strictRules.Traces.Any(trace => trace.Rule?.ToString() == stricter.Id + ":rule:bedroom-side-min")
+                    && TypologyPipelineSerializer.Serialize(strictLibrary) != TypologyPipelineSerializer.Serialize(strictNone)
+                    && (strictLibrary.Status == PrototypePipelineStatus.Refused
+                        ? strict.Exit == 1 && strict.Out == RefusedEnvelope(strictLibrary)
+                        : strict.Exit == 0 && Read(strictOut).SequenceEqual(strictExpected) && Str(Parse(strict.Out), "skills") is null && Parse(strict.Out) is { } so
+                            && so.TryGetProperty("skills", out var strictSkills) && strictSkills.GetArrayLength() == 1 && strictSkills[0].GetString() == stricter.Id),
+                    "an extra stricter pack read from the package skills/ is RunComposed with that manifest (traced to its rule, unlike CABA + typology)", D(strict));
+                var badSkillOut = Output();
+                var badSkill = CliAt(packageDll, null, "generate-typology", Input("bad-skill.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids("zz.test.bad-json"))), badSkillOut);
+                Check(badSkill.Exit == 1 && Str(Parse(badSkill.Out), "code") == "generate_typology_skill_invalid" && Str(Parse(badSkill.Out), "detail") == "json_invalid"
+                    && Str(Parse(badSkill.Out), "skill") == "zz.test.bad-json" && !File.Exists(badSkillOut),
+                    "a malformed extra skill manifest -> generate_typology_skill_invalid (json_invalid, skill id), exit 1, no file", D(badSkill));
                 var badPackOut = Output();
                 var badPack = CliAt(packageDll, null, "generate-typology", Input("bad-pack.json", good.Replace(TypologyPack, "zz.test.bad-json", StringComparison.Ordinal)), badPackOut);
                 Check(badPack.Exit == 1 && Str(Parse(badPack.Out), "code") == "generate_typology_pack_invalid" && Str(Parse(badPack.Out), "detail") == "json_invalid" && !File.Exists(badPackOut),
