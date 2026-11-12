@@ -194,7 +194,7 @@ internal static class GenerateTypologyTests
         Check(composedAgain.Exit == 0 && Read(composedAgainOut).SequenceEqual(composedBytes) && composedAgain.Out == composed.Out, "a second composed run is byte-identical", D(composedAgain));
 
         void ExpectComposed(string label, string text, SkillManifest typology, TypologyBriefRequest request, IReadOnlyList<SkillManifest>? extras, IReadOnlyList<string>? precedence,
-            string? refusalCode = null)
+            string? refusalCode = null, byte[]? same = null, string? sameAs = null)
         {
             var library = Composed(typology, request, extras, precedence);
             var output = Output();
@@ -211,18 +211,41 @@ internal static class GenerateTypologyTests
                 var expected = Utf8(TypologyPipelineSerializer.Serialize(library));
                 Check(refusalCode is null && result.Exit == 0 && Read(output).SequenceEqual(expected) && Str(Parse(result.Out), "sha256") == Hex(expected),
                     label + ": the output is the in-process RunComposed bytes", D(result) + " expected sha " + Hex(expected));
+                // Every success case states how it relates to a reference run, so no case is silently redundant.
+                if (same is not null)
+                    Check(expected.SequenceEqual(same) && Read(output).SequenceEqual(same), label + ": expected to equal " + sameAs + " byte for byte", Hex(expected) + " vs " + Hex(same));
             }
+            if (same is null && refusalCode is null && library.Status != PrototypePipelineStatus.Refused)
+                Check(false, label + ": a success case must name the reference run it equals", "");
         }
+        var compactOne = Utf8(TypologyPipelineSerializer.Serialize(Composed(pack, request3, new[] { compact }, null)));
+        var tunedRequest = new TypologyBriefRequest(3, new PrototypeLot(16, 16), 4, 2, Weights: new ScoringWeights(0.5, 0.25, 0.15, 0.1, 0.1, 0.2));
+        var family4Composed = Utf8(TypologyPipelineSerializer.Serialize(Composed(pack, request4, null, null)));
+        var tunedComposed = Utf8(TypologyPipelineSerializer.Serialize(Composed(pack, tunedRequest, null, null)));
+        Check(!tunedComposed.SequenceEqual(composedBytes) && !family4Composed.SequenceEqual(composedBytes),
+            "the family-4 and tuned-weights reference runs differ from the CABA + typology pin (so equality with them is not equality with the pin)");
         ExpectComposed("skills naming the typology and code packs", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CodePack, TypologyPack)), pack, request3,
-            new[] { caba, pack }, null);
-        ExpectComposed("an extra style pack", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle)), pack, request3, new[] { compact }, null);
-        ExpectComposed("an extra style pack on the family-4 lot", Request(TypologyPack, 4, 12, 12, 6, 0, ",\"skills\":" + Ids(CompactStyle)), pack, request4, new[] { compact }, null);
-        ExpectComposed("an extra named twice", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle, CompactStyle)), pack, request3, new[] { compact, compact }, null);
-        ExpectComposed("a precedence order alone", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids(TypologyPack, CodePack)), pack, request3, null,
-            new[] { TypologyPack, CodePack });
+            new[] { caba, pack }, null, same: composedBytes, sameAs: "the CABA + typology pin (the composed packs counted once)");
+        // compact-modern has no minimum area/side planner rules, so it composes to the CABA + typology planner rules: the
+        // same bytes as no extras (on 16 x 16 the pin itself). The stricter package pack below is the rule-changing case.
+        ExpectComposed("an extra style pack without planner rules", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle)), pack, request3, new[] { compact }, null,
+            same: composedBytes, sameAs: "the CABA + typology pin (compact-modern adds no planner rule)");
+        ExpectComposed("an extra style pack on the family-4 lot", Request(TypologyPack, 4, 12, 12, 6, 0, ",\"skills\":" + Ids(CompactStyle)), pack, request4, new[] { compact }, null,
+            same: family4Composed, sameAs: "the family-4 run without extras (compact-modern adds no planner rule)");
+        ExpectComposed("an extra named twice", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle, CompactStyle)), pack, request3, new[] { compact, compact }, null,
+            same: compactOne, sameAs: "the extra named once");
+        ExpectComposed("64 skills (the limit, one pack repeated)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(Enumerable.Repeat(CompactStyle, 64).ToArray())), pack, request3,
+            Enumerable.Repeat(compact, 64).ToArray(), null, same: compactOne, sameAs: "the extra named once");
+        ExpectComposed("a precedence order alone (no equal-priority tie to rank)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids(TypologyPack, CodePack)), pack, request3, null,
+            new[] { TypologyPack, CodePack }, same: composedBytes, sameAs: "the CABA + typology pin (precedence only ranks ties, and these packs have none)");
+        var sixtyFour = Enumerable.Range(0, 64).Select(i => "xx.test.p" + ((char)('a' + i / 26)).ToString() + ((char)('a' + i % 26)).ToString()).ToArray();
+        ExpectComposed("64 precedence entries (the limit) are accepted and resolved", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids(sixtyFour)), pack, request3, null,
+            sixtyFour, SkillCodes.PrecedenceUnknown);
+        ExpectComposed("a duplicate precedence entry", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids(TypologyPack, CodePack, TypologyPack)), pack, request3, null,
+            new[] { TypologyPack, CodePack, TypologyPack }, SkillCodes.PrecedenceDuplicate);
         ExpectComposed("skills and precedence with tuned weights", Request(TypologyPack, 3, 16, 16, 4, 2, ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5},\"precedence\":"
             + Ids(CompactStyle, TypologyPack) + ",\"skills\":" + Ids(CompactStyle)), pack,
-            new TypologyBriefRequest(3, new PrototypeLot(16, 16), 4, 2, Weights: new ScoringWeights(0.5, 0.25, 0.15, 0.1, 0.1, 0.2)), new[] { compact }, new[] { CompactStyle, TypologyPack });
+            tunedRequest, new[] { compact }, new[] { CompactStyle, TypologyPack }, same: tunedComposed, sameAs: "the tuned-weights run without extras (compact-modern adds no planner rule)");
         ExpectComposed("two conflicting style packs", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle, MasonryStyle)), pack, request3,
             new[] { compact, masonry }, null, SkillCodes.SkillConflict);
         ExpectComposed("a precedence entry that is not a composed skill", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids("xx.no-such.skill")), pack, request3,
@@ -361,6 +384,8 @@ internal static class GenerateTypologyTests
             ("a duplicate skills member", good[..^1] + ",\"skills\":[],\"skills\":[]}", "request.skills"),
             ("an object precedence", good[..^1] + ",\"precedence\":{}}", "precedence"),
             ("a non-string precedence entry", good[..^1] + ",\"precedence\":[\"" + TypologyPack + "\",1]}", "precedence[1]"),
+            ("a non-id precedence entry", good[..^1] + ",\"precedence\":[\"" + TypologyPack + "\",\"Not An Id\"]}", "precedence[1]"),
+            ("an oversize precedence entry", good[..^1] + ",\"precedence\":[\"xx." + new string('a', 200) + "\"]}", "precedence[0]"),
             ("a lone surrogate precedence entry", good[..^1] + ",\"precedence\":[\"\\ud800\"]}", "precedence[0]"),
             ("more than 64 precedence entries", good[..^1] + ",\"precedence\":" + Ids(Enumerable.Repeat(TypologyPack, 65).ToArray()) + "}", "precedence"),
             ("an int32-underflow alternative count", good.Replace("\"alternatives\":4", "\"alternatives\":-2147483649", StringComparison.Ordinal), "alternatives"),
