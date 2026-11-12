@@ -62,7 +62,8 @@ public sealed record RevitCommandOptions(bool All, TimeSpan ReadTimeout, Func<st
 // only, so no sign, space, fraction, other digits or Int32 overflow), ranges and the refusal line (RevitCommandResponse
 // shape, field args[i], detail "; " usage). Each caller passes its own usage and its unknown/repeated code
 // (explicit_process_pipe_required for revit-command, mcp_option_unknown for the server); a bad or missing value is
-// read_timeout_invalid / deadline_invalid for both.
+// read_timeout_invalid / deadline_invalid for both. The MCP server exposes only --read-timeout-seconds: its
+// --deadline-seconds is an unknown option (mcp_option_unknown), and its all:true deadline sharing is P1-23.
 public static class RevitOptionGrammar
 {
     public const string ReadTimeoutOption = "--read-timeout-seconds";
