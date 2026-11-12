@@ -118,7 +118,7 @@ foreach(var spec in RevitCommandCatalogue.All) {
     else if(writesFiles) Check(annotations!.Count==3 && annotations["destructiveHint"]?.GetValue<bool>()==false && annotations["idempotentHint"]?.GetValue<bool>()==false,spec.ToolName+" writes new files on every call: destructiveHint false, idempotentHint false");
     else Check(annotations!.Count==1,spec.ToolName+" read annotations carry only readOnlyHint");
 }
-Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal) && t!["name"]!.GetValue<string>()!="audit_verify" && t!["name"]!.GetValue<string>()!="diff_intent" && t!["name"]!.GetValue<string>()!="mirror_drift_adopt").All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools other than audit_verify, diff_intent and mirror_drift_adopt carry no permission level or annotations");
+Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal) && t!["name"]!.GetValue<string>()!="audit_verify" && t!["name"]!.GetValue<string>()!="diff_intent" && t!["name"]!.GetValue<string>()!="generate_typology" && t!["name"]!.GetValue<string>()!="mirror_drift_adopt").All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools other than audit_verify, diff_intent and mirror_drift_adopt carry no permission level or annotations");
 Check(McpServer.PermissionLevelName(PermissionLevel.Read)=="read" && McpServer.PermissionLevelName(PermissionLevel.WriteCopies)=="write-copies" && McpServer.PermissionLevelName(PermissionLevel.WriteRealProject)=="write-real-project","PermissionLevelName names the three P10-03 levels");
 var outOfRange=false;
 try { McpServer.PermissionLevelName((PermissionLevel)99); } catch(ArgumentOutOfRangeException) { outOfRange=true; }
@@ -1625,6 +1625,8 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     Check(!diMcpProject.Contains("ApplyIntentCommand.cs",StringComparison.Ordinal),"Bim.Mcp.csproj does not link the apply-intent verb");
 }
 
+// P5-17 generate_typology (tests/mcp/GenerateTypologyToolTests.cs).
+GenerateTypologyToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
     var unknown=ToolCall(hidden,new JsonObject());
     Check(IsError(unknown) && Text(unknown)=="""{"status":"failed","code":"unknown_tool"}""","tool "+hidden+" is not exposed and returns isError");
