@@ -1517,3 +1517,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay200 — 2026-11-12T15:53:00Z (Claude, cloud scheduled)
 - 15:53Z LOCK taken (was FREE; relay199 released 2026-11-12T15:51:49Z).
+- 17:47Z picked P3-15 (phase 3), P5-17 (phase 5), P7-17 (phase 7) — oldest-touched (relay197); P7-16 waits (shares generate-typology parser with P5-17).
+- 17:47Z workers green: P3-15 de442f2 (red 43253372709, green 43255429352; 0 attempts), P5-17 be9828a (red 43253601980, green 43259222759; 1 attempt: tools/list pins missed new tool), P7-17 9054acc (red 43253277222 temporary negative check, green 43262717876; 0 attempts; macOS package.ps1 sbom_unattributed → counted SKIP on macOS only). Next: independent reviews.
