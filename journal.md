@@ -1505,3 +1505,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 12:50Z integration a7fc6d9 CI 43218460939 success (9/9) → main fast-forwarded (da82863..a7fc6d9). P4-14, P2-19, P10-16 ✅; P4-16 ⏳; new P2-21 (option codes in Core), P4-17 (DocDefaults name collisions before doc-up-realize), P10-17 (unreadable manifest/special files). Progress 168/187 (89.8 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-12T12:50:42Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P1-18/P1-22, P2-20, P6-17/P6-18 (relay195; P1-18 shares scripts/owner-native-session.ps1 + tests/integration/test-catalogue-session.ps1 with P4-16/P4-17 — serialize; P6-17/P6-18 share PDF fixtures; P1-23 after P1-22); then P3-15, P5-17/P7-16, P7-17 (relay197; P5-17 and P7-16 share the generate-typology parser); then P4-16/P4-17, P2-21, P10-17 (relay198). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay199 — 2026-11-12T12:54:19Z (Claude, cloud scheduled)
+- 12:54Z LOCK taken (was FREE; relay198 released 2026-11-12T12:50:42Z).
