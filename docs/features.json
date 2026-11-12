@@ -1578,7 +1578,7 @@
         "tests/integration/test-catalogue-session.ps1",
         "tests/integration/fake-revit-command-executor.ps1"
       ],
-      "blocker": "Owner -Catalogue run pending (🔒): assumes Revit's dry-run delete of a fresh section reports ≤2 dependents (its plan marker), empty created/modified on dry runs and deleted == target + dependents; sends the P4-09 algorithm step by step (the CLI `doc-update --execute` exists since P4-12; switching the owner step to it is P4-14); no OST_Viewers category check on the baseline.",
+      "blocker": "Owner -Catalogue run pending (🔒): assumes Revit's dry-run delete of a fresh section reports ≤2 dependents (its plan marker), empty created/modified on dry runs and deleted == target + dependents (P4-11 path, now replaced by P4-14); no OST_Viewers category check on the baseline.",
       "scope": "P4-11: documentacion group gains 20 doc-up-* steps (group 35 steps, clean -Catalogue run 129): test wall + reference wall, section with a dry-run dependents baseline (≤2, none kept), tag, dimension; move the wall 1000 mm; probe, confirm and real element.delete of the stale dimension/tag/section in DocReplace order with exact confirm_dependents (only the baseline accepted; dependent_kept/planned/unknown/changed refused, strict readbacks incl. duplicates, non-UniqueIds, exact deleted set); re-create and read back section, tag (head moved, not orphaned) and dimension (+1000 mm), stale tag reference_not_found. In-process fake and real-CLI pass. CI red 42901043322, green 42904609025, review red 42909552877, green 42909679196."
     },
     {
@@ -1852,7 +1852,7 @@
         "interfaces/mcp/MirrorDriftAdoptTool.cs",
         "tests/mcp/Program.cs"
       ],
-      "blocker": "Snapshot only: refusals raised inside ProjectStore.Commit (lock, revision_conflict, plan_mismatch, write IO) cannot be predicted; Core's reader is unbounded (MCP keeps its 8 MiB pre-check, and a file swapped between pre-check and read reports Core's reader text); no CLI preview flag (P2-19).",
+      "blocker": "Snapshot only: refusals raised inside ProjectStore.Commit (lock, revision_conflict, plan_mismatch, write IO) cannot be predicted; Core's reader is unbounded (MCP keeps its 8 MiB pre-check, and a file swapped between pre-check and read reports Core's reader text); CLI preview flag since P2-19 (mirror-drift-adopt-cli-preview).",
       "scope": "P2-17: MirrorDriftAdoptCommit.Preview(store, selection) follows Commit's order, reader and refusal texts and returns would_commit (head+1, plan) / would_replay (current head) / nothing_to_adopt; takes no lock, creates no lock file or directory, store file bytes and file/dir LastWriteTimeUtc unchanged (asserted, incl. with the lock held elsewhere); MCP mirror_drift_adopt plan mode uses it and the duplicated reader is gone; P2-15 plan-mode bytes and refusal texts unchanged. CI red 43130822808, green 43132966479; review green 43142673384."
     },
     {
@@ -1862,7 +1862,7 @@
         "scripts/package-common.ps1",
         "tests/packaging/test-package.ps1"
       ],
-      "blocker": "Binaries with an extension outside the PE/ELF/Mach-O name pattern (e.g. .bin, .node) are not classified (P10-16); natives matched by leaf name across references (any folder); reference name lists are restore data and are not required to ship; no third-party NuGet package ships today (synthetic fixtures).",
+      "blocker": "Binaries with an extension outside the PE/ELF/Mach-O name pattern (e.g. .bin, .node) are classified by first bytes since P10-16 (package-unclassified-native-payload); natives matched by leaf name across references (any folder); reference name lists are restore data and are not required to ship; no third-party NuGet package ships today (synthetic fixtures).",
       "scope": "P10-15: package-verify and package.ps1's staging check cross-check manifest.json with sbom.json — every manifest .dll/.exe (any case) needs an sbom assemblies line with the same path, every .so[.N]/.dylib a reference natives name or a deps.json project asset, every sbom assemblies path a manifest entry; typed sbom_manifest_mismatch naming each path and its direction; pathless sbom assemblies entries → named sbom_invalid; reads the manifest (manifest-only tampers tested), synthetic and real-package tampers in both directions; real package unchanged. CI red 43130808434, green 43138707648; review red 43141685293, green 43143789557."
     },
     {
@@ -1923,6 +1923,42 @@
       ],
       "blocker": "Only a stricter package pack changes the output among tested extras (shipped style packs add no planner rule on the tested lots); composed stdout does not echo precedence; not exposed over MCP (P5-17).",
       "scope": "P5-16: generate-typology request members skills (≤ 64 skill ids, SkillPackLookup.Load(id, packageFirst: true), request order) and precedence (≤ 64 skill ids) run TypologyPipeline.RunComposed; \"skills\":[] byte-equal to in-process RunComposed (pin a8c62da5…, de_DE, package layout); resolver refusals (skill_conflict, precedence_unknown, precedence_duplicate, kind mismatch) as generate_typology_refused; generate_typology_skill_unavailable/_invalid with skill; absent members keep the P7-14 bytes and stdout. CI red 43171602064, green 43173255032, review red 43181804179, green 43184471713."
+    },
+    {
+      "id": "owner-session-doc-update-execute",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/owner-catalogue-steps.ps1",
+        "scripts/owner-native-session.ps1",
+        "tests/integration/test-catalogue-session.ps1",
+        "tests/integration/fake-doc-update.ps1",
+        "tests/integration/fake-revit-command-pipe.ps1",
+        "tests/cli/catalogue-report-record.ps1"
+      ],
+      "blocker": "Owner -Catalogue run pending (🔒), never run in Revit; DocDefaults creates fixed names (Level 1 Plan, A101/A900, Door/Room Schedule; English UI schedules) that may collide in a template (P4-17); the owner run no longer exercises dependents > 0 (covered by P4-12 tests in tests/cli); first realized map still hand-built (P4-16).",
+      "scope": "P4-14: the -Catalogue documentation group realizes the fixture's default documentation (9 forced creates), moves the wall and regenerates the door tag through doc-update dry run then --execute --expected-document <sha256 of its own plan.json> (printed path = plan_file, re-hashed after execute); run folder keeps NN-key.doc-update/ inputs, plan.json, report.json, stderr.txt; a reply_lost entry or an unusable --execute line stops the run; typed refusals fail only the update; owner session wires -InvokeDocUpdate with -DocUpdateTimeoutSeconds. In-process stand-in and real CLI on the fake pipe (incl. dropped reply: op received once, rest not_sent). CI red 43198296774, green 43202889177; review red 43206935234, green 43207050532."
+    },
+    {
+      "id": "mirror-drift-adopt-cli-preview",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/MirrorDriftAdoptCommand.cs",
+        "interfaces/cli/Program.cs",
+        "tests/cli/MirrorDriftAdoptTests.cs",
+        "docs/contracts/module-contracts.md"
+      ],
+      "blocker": "Snapshot only (P2-17 limits); option codes live in the CLI, not Core (P2-21); a store or selection path beginning with -- is now refused with the usage envelope.",
+      "scope": "P2-19: mirror-drift-adopt store selection.json --preview prints the MCP mirror_drift_adopt plan-mode text (MirrorDriftAdoptTool.Run confirm false) — raw stdout bytes equal UTF-8 MCP text + newline against a real McpServer tools/call on the same store/selection for would_commit, would_replay, nothing_to_adopt and typed refusals; store bytes/mtimes unchanged, held lock does not block, missing store not created; drift_adopt_option_unknown / _duplicate before any read; usage envelope pinned; no flag keeps P2-15 bytes. CI red 43195815206, green 43199978494; review green 43210710717."
+    },
+    {
+      "id": "package-unclassified-native-payload",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/package-common.ps1",
+        "tests/packaging/test-package.ps1"
+      ],
+      "blocker": "PE detection is the 2-byte MZ signature only (a text file starting with MZ is refused by design); CAFEBABF fat-64 and archives (.zip/.nupkg/.a) not inspected; a manifest-listed unreadable file still throws in manifest hashing and FIFOs/special files are opened (P10-17).",
+      "scope": "P10-16: package-verify and package.ps1's staging check read ≤ 4 first bytes of each shipped file (links never opened) and refuse PE/ELF/Mach-O/fat (both byte orders; CAFEBABE also Java .class) outside .dll/.exe/.so[.N]/.dylib as sbom_binary_unclassified (ordinal paths), unreadable files as sbom_binary_unreadable; synthetic renamed payloads and a real .dll renamed .dat refused, real package passes on ubuntu + windows. CI red 43195694182, green 43201257316; review red 43214415283, green 43214567594."
     }
   ]
 }

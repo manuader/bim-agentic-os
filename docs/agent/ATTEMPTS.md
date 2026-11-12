@@ -314,3 +314,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P3-14: no failed attempts (red 43171708125 diff_intent missing from tools/list → green 43173176518; review red 43176571475 empty path still diff_intent_usage → green 43178665401).
 - P5-16: no failed attempts (red 43171602064 skills/precedence refused as unknown members → green 43173255032; review red 43181804179 non-id/oversize precedence came back precedence_unknown → green 43184471713).
 - P7-15: no failed attempts (red 43171474254 six package checks → green 43172800830; review tests+comments green 43187267711 first try).
+
+### Relay198 (2026-11-12, cloud)
+- P4-14: 3 failed pushes, each a distinct test-harness defect, oracle unchanged (red 43198296774 missing -InvokeDocUpdate → 43199097526 strict-mode $_.reply_lost read; 43199729320 step-contract loop / bindings.document.path / @() count; 43200417392 catalogue-report-record.ps1 had no doc-update channel → green 43202889177). Review red 43206935234 (owner session not wired, unusable --execute did not abort) → green 43207050532, no failures.
+- P2-19: 1 failed attempt (43197687058: test held the store lock FileShare.None while its own snapshot read the lock file; snapshot moved outside the hold) — red 43195815206 → green 43199978494; review green 43210710717 first try.
+- P10-16: 1 failed attempt (43198258616: worker's own accepted-text fixture began with literal MZ, contradicting the spec; fixture changed, detection unchanged and the MZ-text refusal later pinned) — red 43195694182 → green 43201257316; review red 43214415283 (dangling link / unreadable file threw) → green 43214567594.
