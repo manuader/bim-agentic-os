@@ -1462,3 +1462,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay194 — 2026-11-12T00:52:23Z (Claude, cloud scheduled)
 - 00:52Z LOCK taken (was FREE; relay193 released 2026-11-12T00:13:01Z).
 - 00:52Z picked P4-15 (phase 4), P2-17 (phase 2), P10-15 (phase 10) — oldest-touched (relay191). Workers starting on relay194-<ID>.
+- 02:23Z workers green: P4-15 81789d5 (red 43130960366, green 43132233200; 0 attempts), P2-17 3f251fc (red 43130822808, green 43132966479; 0 attempts), P10-15 1b44a83 (red 43130808434, green 43138707648 workflow_dispatch after push run core-windows hung >50 min; 0 attempts). Next: independent reviews.
