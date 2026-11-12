@@ -122,6 +122,7 @@ static class MirrorDriftLoopChecks
         var journalSecond = RunJournalLoop(root, dotnet, pwsh, cliDll, runDirectory, 2, report: false);
         Same(journalFirst, journalSecond, "journal: ");
         FakeOptionChecks(root, pwsh);
+        FakeDiffChecks(root, pwsh);
     }
 
     static void Same(Loop? first, Loop? second, string scenario)
@@ -569,10 +570,10 @@ static class MirrorDriftLoopChecks
             && entries.All(entry => entry.Operation == "TransactionCommitted" && string.Equals(entry.DocumentPath, document, StringComparison.OrdinalIgnoreCase) && !entry.Truncated),
             "the fake's entries are committed transactions Move, Wall, Delete of this document path", Head(journal));
         // The production serializer over the same changes (two add-in walls skipped, three external edits) gives the same
-        // reply, member for member; only the snapshot diff (the fake's own) is left out of the comparison.
+        // reply, member for member, the snapshot diff included (P2-20: the fake's diff is MirrorSnapshotDiffer's).
         var production = ProductionJournal(document, snapshot1.Out, uidB, uidC, deletedA);
-        Check(WithoutDiff(journal) == WithoutDiff(production), "the fake's journal.read reply has the production format (RevitJournalQuery.RawRead), diff aside",
-            WithoutDiff(journal) + " vs " + WithoutDiff(production));
+        Check(Uniform(journal) == Uniform(production), "the fake's journal.read reply has the production format (RevitJournalQuery.RawRead), report.diff included",
+            Uniform(journal) + " vs " + Uniform(production));
         var mirror1 = h.Write("mirror-r1", MirrorJson(document, 1, map, levelNames, journal, 0));
 
         // ---- mirror-drift: three findings, all external_edit, all recommending adopt ----
@@ -811,6 +812,132 @@ static class MirrorDriftLoopChecks
         Check(R("set_parameter") == "fake_external_unsupported/1/1", "element.set_parameter under an external id answers fake_external_unsupported and records nothing", R("set_parameter"));
     }
 
+    // P2-20: the fake executor in process, for the journal.read report.diff. With -ExternalEdits the fake's diff must be
+    // MirrorSnapshotDiffer.Compare over the same before/after snapshots (its query.snapshot readbacks): a baseline read
+    // (non-peek, no baseline: every element added), five external edits (move wall B, which also moves its hosted door;
+    // create wall C; delete straight wall A and the curved, unmapped wall D; a 0.0004 mm nudge of wall E, within the
+    // differ's 1e-3 mm tolerance), then a peek read, a non-peek read and a read after the moved baseline (empty diff).
+    // Each reply is compared whole with RevitJournalQuery.RawRead over a Core MirrorJournal and tracker holding the same
+    // changes. Without -ExternalEdits the replies are the pre-P2-20 ones, byte for byte (legacy diff: snapshot-order adds,
+    // changed always empty).
+    const string DiffScript = """
+        param([string]$Executor, [string]$DocumentUid)
+        $ErrorActionPreference = 'Stop'
+        . $Executor
+        $document = '/fake/Drift-Diff.rvt'
+        function Line([string]$Journal) { '{"DocumentPath":"' + $document + '","Operation":"journal.read","UniqueId":null,"Metres":[],"Journal":' + $Journal + '}' }
+        function Env([string]$Id, [string]$Command, [string]$Arguments) { '{"protocol_version":1,"operation_id":"' + $Id + '","document":{"path":"' + $document + '","unique_id":"' + $DocumentUid + '"},"command":"' + $Command + '","args":' + $Arguments + '}' }
+        function Straight($Ax, $Ay, $Bx, $By) { '{"kind":"line","start":[' + $Ax + ',' + $Ay + '],"end":[' + $Bx + ',' + $By + ']}' }
+        function Wall([string]$Level, [string]$Curve) { '{"level":"' + $Level + '","type":"T1","height_mm":3000,"curve":' + $Curve + '}' }
+        function Ok($State, [string]$Id, [string]$Command, [string]$Arguments) {
+            $reply = Invoke-FakeRevitCommand $State (Env $Id $Command $Arguments)
+            if (($reply | ConvertFrom-Json).status -ne 'succeeded') { throw "$Id ($Command) did not succeed: $reply" }
+            return $reply
+        }
+        function Created([string]$Reply) { [string]@(($Reply | ConvertFrom-Json).created)[0] }
+        function Level($State) { [string]@((Ok $State 'levels' 'query.levels' '{}' | ConvertFrom-Json).readback.levels)[0].unique_id }
+        $r = [ordered]@{}
+        $s = New-FakeRevitState $DocumentUid @{} @('x-move-b', 'x-wall-c', 'x-delete-a', 'x-delete-d', 'x-nudge-e')
+        $level = Level $s
+        $r.a = Created (Ok $s 'wall-a' 'wall.create' (Wall $level (Straight 0 0 5000 0)))
+        $r.b = Created (Ok $s 'wall-b' 'wall.create' (Wall $level (Straight 5000 0 5000 4000)))
+        $r.d = Created (Ok $s 'wall-d' 'wall.create' (Wall $level '{"kind":"arc","start":[0,-1000],"end":[1000,-1000],"radius_mm":600,"center":[500,-1000]}'))
+        $r.e = Created (Ok $s 'wall-e' 'wall.create' (Wall $level (Straight 0 8000 3000 8000)))
+        $r.door = Created (Ok $s 'door-b' 'opening.place' ('{"host_wall_uid":"' + $r.b + '","category":"door","symbol":"S1","position_along_mm":1000}'))
+        $r.s0 = Ok $s 'snapshot-0' 'query.snapshot' '{}'
+        $r.r0 = Invoke-FakeRevitWire $s (Line 'null')
+        $null = Ok $s 'x-move-b' 'element.move' ('{"element_uids":["' + $r.b + '"],"vector_mm":[500,0,0]}')
+        $r.c = Created (Ok $s 'x-wall-c' 'wall.create' (Wall $level (Straight 0 4000 5500 4000)))
+        $null = Ok $s 'x-delete-a' 'element.delete' ('{"element_uids":["' + $r.a + '"]}')
+        $null = Ok $s 'x-delete-d' 'element.delete' ('{"element_uids":["' + $r.d + '"]}')
+        $null = Ok $s 'x-nudge-e' 'element.move' ('{"element_uids":["' + $r.e + '"],"vector_mm":[0.0004,0,0]}')
+        $r.s1 = Ok $s 'snapshot-1' 'query.snapshot' '{}'
+        $r.r1 = Invoke-FakeRevitWire $s (Line '{"peek":true}')
+        $r.r2 = Invoke-FakeRevitWire $s (Line 'null')
+        $r.r3 = Invoke-FakeRevitWire $s (Line 'null')
+        $t = New-FakeRevitState $DocumentUid
+        $tLevel = Level $t
+        $r.default_wall = Created (Ok $t 'default-wall' 'wall.create' (Wall $tLevel (Straight 0 0 5000 0)))
+        $r.d0 = Invoke-FakeRevitWire $t (Line 'null')
+        $null = Ok $t 'default-move' 'element.move' ('{"element_uids":["' + $r.default_wall + '"],"vector_mm":[500,0,0]}')
+        $r.d1 = Invoke-FakeRevitWire $t (Line 'null')
+        $r | ConvertTo-Json -Compress
+        """;
+
+    static void FakeDiffChecks(string root, string pwsh)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "fake diff: " + name, detail);
+        var scratch = Path.Combine(Path.GetTempPath(), "bim-drift-diff-" + Guid.NewGuid().ToString("N"));
+        Temporary.Add(scratch);
+        Directory.CreateDirectory(scratch);
+        var script = Path.Combine(scratch, "diff.ps1");
+        File.WriteAllText(script, DiffScript, Utf8);
+        var start = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = Utf8 };
+        foreach (var argument in new[] { "-NoProfile", "-File", script, "-Executor", Path.Combine(root, "tests", "integration", "fake-revit-command-executor.ps1"), "-DocumentUid", DocumentUid }) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("pwsh did not start");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(CallTimeoutMs)) { Kill(process); Check(false, "the in-process diff script finishes", "timed out"); return; }
+        process.WaitForExit();
+        var output = stdout.Result.Trim();
+        if (process.ExitCode != 0 || !output.StartsWith('{')) { Check(false, "the in-process diff script runs", "exit " + process.ExitCode + " " + Head(output) + " " + Head(stderr.Result.ReplaceLineEndings(" "))); return; }
+        using var parsed = JsonDocument.Parse(output);
+        string R(string name) => parsed.RootElement.TryGetProperty(name, out var value) ? value.GetString() ?? "" : "<missing>";
+        const string path = "/fake/Drift-Diff.rvt";
+        string uidA = R("a"), uidB = R("b"), uidC = R("c"), uidD = R("d"), uidE = R("e"), door = R("door");
+        static MirrorSnapshot Snap(string response) { using var reply = JsonDocument.Parse(response); return MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText()); }
+        static long Native(string uid) => long.Parse(uid[(uid.LastIndexOf('-') + 1)..], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
+        var s0 = Snap(R("s0"));
+        var s1 = Snap(R("s1"));
+        // The production side of the same session: five add-in writes (skipped), the baseline read, five external commits.
+        var tick = 0;
+        var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
+        var tracker = new MirrorJournalTracker(journal);
+        void Record(string name, string[] added, string[] modified, long[] deleted, bool addIn = false) =>
+            journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { name }, added, modified, deleted, addIn) { DocumentPath = path });
+        foreach (var _ in Enumerable.Range(0, 5)) Record("BIM Agentic OS wall.create", new[] { "x" }, Array.Empty<string>(), Array.Empty<long>(), true);
+        var p0 = RevitJournalQuery.RawRead(tracker, true, s0, path, new MirrorJournalReadOptions());
+        Record("Move", Array.Empty<string>(), new[] { uidB }, Array.Empty<long>());
+        Record("Wall", new[] { uidC }, Array.Empty<string>(), Array.Empty<long>());
+        Record("Delete", Array.Empty<string>(), Array.Empty<string>(), new[] { Native(uidA) });
+        Record("Delete", Array.Empty<string>(), Array.Empty<string>(), new[] { Native(uidD) });
+        Record("Move", Array.Empty<string>(), new[] { uidE }, Array.Empty<long>());
+        var p1 = RevitJournalQuery.RawRead(tracker, true, s1, path, new MirrorJournalReadOptions(null, true));
+        var p2 = RevitJournalQuery.RawRead(tracker, true, s1, path, new MirrorJournalReadOptions());
+        var p3 = RevitJournalQuery.RawRead(tracker, true, s1, path, new MirrorJournalReadOptions());
+
+        // The production differ over the same snapshots holds what the scenario is about (so the comparisons are not vacuous).
+        var expected = MirrorSnapshotDiffer.Compare(s0, s1);
+        var changed = expected.Changed.Select(change => change.UniqueId + ":" + string.Join("|", change.Fields.Select(field => field.Field))).ToArray();
+        Check(expected.Added.Select(item => item.UniqueId).SequenceEqual(new[] { uidC }) && expected.Removed.Select(item => item.UniqueId + ":" + item.Category).SequenceEqual(new[] { uidA + ":wall", uidD + ":wall" })
+            && changed.SequenceEqual(new[] { uidB + ":ax|bx", door + ":ax|bx" }.Order(StringComparer.Ordinal)),
+            "MirrorSnapshotDiffer over the fake's snapshots: C added, A and the curved D removed, B and its door moved (ax, bx), the 0.0004 mm nudge of E within tolerance", expected.ToJson());
+        string Diff(string reply)
+        {
+            try { using var document = JsonDocument.Parse(reply); return Uniform(document.RootElement.GetProperty("report").GetProperty("diff").GetRawText()); }
+            catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException) { return "<no report.diff> " + Head(reply); }
+        }
+        Check(Diff(R("r0")) == Uniform(MirrorSnapshotDiffer.Compare(null, s0).ToJson()), "the first non-peek read (no baseline): report.diff is MirrorSnapshotDiffer.Compare(null, snapshot 0), every element added in ordinal UniqueId order",
+            Diff(R("r0")) + " vs " + MirrorSnapshotDiffer.Compare(null, s0).ToJson());
+        Check(Diff(R("r1")) == Uniform(expected.ToJson()), "after the edits (peek): report.diff is MirrorSnapshotDiffer.Compare(snapshot 0, snapshot 1), moved/created/deleted ids and fields in production member order",
+            Diff(R("r1")) + " vs " + expected.ToJson());
+        Check(Diff(R("r2")) == Uniform(expected.ToJson()), "the peek read kept the baseline: the next non-peek read has the same report.diff", Diff(R("r2")) + " vs " + expected.ToJson());
+        Check(Diff(R("r3")) == Uniform(MirrorSnapshotDiffer.Compare(s1, s1).ToJson()), "after the non-peek read the baseline is snapshot 1: report.diff is empty", Diff(R("r3")));
+        foreach (var (name, reply, production) in new[] { ("r0", R("r0"), p0), ("r1", R("r1"), p1), ("r2", R("r2"), p2), ("r3", R("r3"), p3) })
+            Check(Uniform(reply) == Uniform(production), "reply " + name + " equals RevitJournalQuery.RawRead over the same journal and snapshots, member for member (diff included)", Uniform(reply) + " vs " + Uniform(production));
+
+        // Without -ExternalEdits: the pre-P2-20 reply, byte for byte (legacy diff: adds in snapshot order, changed always empty).
+        const string level1 = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-00001001", level2 = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-00001002", wall = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-00001003";
+        string Default(int skipped, bool existed, string added) => "{\"status\":\"succeeded\",\"verification\":\"unverified\",\"attached\":true,\"dropped\":0,\"skipped_add_in\":" + skipped
+            + ",\"failures\":0,\"unidentified\":0,\"report\":{\"journal_version\":1,\"document_unique_id\":\"" + DocumentUid + "\",\"document_path\":\"" + path + "\",\"baseline_sequence\":0,\"current_sequence\":0,\"after_sequence\":0,"
+            + "\"baseline_existed\":" + (existed ? "true" : "false") + ",\"peek\":false,\"journal_complete\":true,\"failures_since_baseline\":0,\"has_more\":false,\"next_after_sequence\":0,\"entries\":[],"
+            + "\"diff\":{\"diff_version\":1,\"document_unique_id\":\"" + DocumentUid + "\",\"added\":[" + added + "],\"removed\":[],\"changed\":[]}}}";
+        static string Item(string uid, string category) => "{\"unique_id\":\"" + uid + "\",\"category\":\"" + category + "\"}";
+        Check(R("default_wall") == wall, "the default run's wall has the third fake UniqueId", R("default_wall"));
+        Check(R("d0") == Default(1, false, Item(level1, "level") + "," + Item(level2, "level") + "," + Item(wall, "wall")), "without -ExternalEdits the first non-peek read is the pre-P2-20 reply byte for byte (every element added, changed empty)", R("d0"));
+        Check(R("d1") == Default(2, true, ""), "without -ExternalEdits a read after an add-in move is the pre-P2-20 reply byte for byte (changed stays empty)", R("d1"));
+    }
+
     static readonly JsonSerializerOptions Relaxed = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     // The journal.read reply the production code path (JournalRecorder.Read -> RevitJournalQuery.RawRead) gives for the
@@ -830,7 +957,10 @@ static class MirrorDriftLoopChecks
     }
 
     // A reply re-serialized uniformly (member order kept) with report.diff removed.
-    static string WithoutDiff(string reply)
+    static string WithoutDiff(string reply) => Uniform(reply, dropDiff: true);
+
+    // A reply re-serialized uniformly (member order kept, one escaping), optionally without report.diff.
+    static string Uniform(string reply, bool dropDiff = false)
     {
         try
         {
@@ -844,7 +974,7 @@ static class MirrorDriftLoopChecks
                     writer.WriteStartObject();
                     foreach (var member in element.EnumerateObject())
                     {
-                        if (inReport && member.Name == "diff") continue;
+                        if (dropDiff && inReport && member.Name == "diff") continue;
                         writer.WritePropertyName(member.Name);
                         Copy(member.Value, member.Name == "report");
                     }
