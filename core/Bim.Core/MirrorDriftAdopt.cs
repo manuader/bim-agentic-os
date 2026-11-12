@@ -24,6 +24,11 @@ namespace Bim.Core;
 //                     selection derived again from a later observation (other restore operation ids, other omitted
 //                     proposals) is another key and is refused as stale once the head has moved;
 //   nothing_to_adopt  the selection has no adopt operations (restore-only or empty): the store is not opened at all.
+// Preview (P2-17): the read-only half of Commit, in Commit's order and with Commit's refusals (codes and texts): the
+// selection checks, nothing_to_adopt (store never opened), the same store read (ReadState: FileShare.ReadWrite|Delete,
+// strict UTF-8), the receipt (would_replay: the current head), then Plan (would_commit: Revision = head + 1, Plan the
+// plan Commit would commit). It takes no store lock (a held lock does not block it; Commit is then store_unavailable),
+// creates no lock file and writes or touches nothing. A snapshot: the store may move before a Commit, which re-checks all.
 // Refusals (MirrorDriftAdoptException, Code = the first word of the message, MirrorDriftAdoptCodes):
 //   drift_adopt_selection_invalid  a malformed selection (null parts, an unknown action, two operations on one
 //                                  element, a create of an existing element, an update or delete of a missing one, a
@@ -67,6 +72,9 @@ public static class MirrorDriftAdoptOutcomes
     public const string Committed = "committed";
     public const string Replayed = "replayed";
     public const string NothingToAdopt = "nothing_to_adopt";
+    // Preview outcomes: what Commit would report on the store as read.
+    public const string WouldCommit = "would_commit";
+    public const string WouldReplay = "would_replay";
 }
 
 public sealed class MirrorDriftAdoptException(string code, string detail, Exception? inner = null)
@@ -77,6 +85,7 @@ public sealed class MirrorDriftAdoptException(string code, string detail, Except
 
 // Revision: the store head after the call (for nothing_to_adopt, the selection's revision). Key: null for
 // nothing_to_adopt. Head: the store head (null for nothing_to_adopt). Plan: the committed plan (committed only).
+// From Preview: Revision is what Commit would report, Head the head as read, Plan the would_commit plan.
 public sealed record MirrorDriftAdoptResult(string Outcome, int Revision, string? Key, Project? Head, ExecutionPlan? Plan);
 
 public static class MirrorDriftAdoptCommit
@@ -127,6 +136,20 @@ public static class MirrorDriftAdoptCommit
         try { plan = Compiler.Diff(head, desired); }
         catch (InvalidOperationException error) when (error.Message == "invalid_ir") { throw Fail(MirrorDriftAdoptCodes.StoreInvalid, "the head fails validation"); }
         return (desired, plan);
+    }
+
+    // Read-only: no lock, no write. Outcome would_commit (Revision head + 1, Head the current head, Plan the plan),
+    // would_replay (Revision and Head the current head, Plan null) or nothing_to_adopt (as Commit). Commit's refusals.
+    public static MirrorDriftAdoptResult Preview(string storeDirectory, MirrorDriftSelection selection)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(storeDirectory);
+        CheckSelection(selection);
+        if (selection.Operations.Count == 0) return new(MirrorDriftAdoptOutcomes.NothingToAdopt, selection.CoreRevision, null, null, null);
+        var key = Key(selection);
+        var state = ReadState(storeDirectory);
+        if (state.Receipts.ContainsKey(key)) return new(MirrorDriftAdoptOutcomes.WouldReplay, state.Project.Revision, key, state.Project, null);
+        var (_, plan) = Plan(state.Project, selection);
+        return new(MirrorDriftAdoptOutcomes.WouldCommit, plan.ExpectedRevision + 1, key, state.Project, plan);
     }
 
     public static MirrorDriftAdoptResult Commit(string storeDirectory, MirrorDriftSelection selection) => Commit(storeDirectory, selection, null);
