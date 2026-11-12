@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Bim.Cad;
 using Bim.Core;
 using Bim.Generative;
@@ -33,6 +34,20 @@ using Bim.Generative;
 //      null and the always-reported uncalibrated uncertainty.
 //   5. A second calibrated chain writes the same bytes; the in-process runs under de-DE are the same; on Linux the
 //      calibrated chain with every child under LANG/LC_ALL=de_DE.UTF-8 is the same (culture data required on Linux CI).
+// P6-17 compressed and Form XObject twin: tests/cad/fixtures/brief-plan-xobject.pdf (brief-plan-pdf.py --variant
+// xobject-flate) draws the same regions in a FlateDecode page content stream (object 4) and shows every text from the
+// FlateDecode Form XObject /Labels (object 6, /Matrix [1 0 0 1 100 150]) invoked by the page's operator 49.
+//   6. The variant bytes have a pinned SHA-256 and the generator rewrites them on Linux and macOS; no text, path or Do
+//      operator is readable in the raw file (both streams FlateDecode) and the form is a /Subtype /Form.
+//   7. The parsed page has brief-plan.pdf's texts (value, origin, height, size) and paths at the same points; every
+//      text carries XObjectPath ["o4:i49"] and object 6, every path an empty XObjectPath; the warning codes are equal.
+//   8. For each scale form the variant draft has the brief-plan.pdf draft's uncertainty codes and room ids and
+//      confidences; each room label (and text area) source has InsertPath ["o4:i49"] and a handle "p1:o6:i{n}@o4:i49",
+//      each region source an empty InsertPath; the planner keeps and drops the pinned rooms; the planner brief equals the
+//      brief-plan.pdf planner brief once provenance references are removed, and every room reference names the
+//      XObject path; the layouts are byte-identical to brief-plan.pdf's and equal the same pinned digest.
+//   9. Through the real CLI chain the variant layouts equal the in-process bytes and the pinned digest, the --brief-only
+//      file equals the in-process planner brief, and draft.json / brief.json carry the XObject path.
 internal static class CadPdfToLayoutsTests
 {
     // SHA-256 (lower-case hex) of tests/cad/fixtures/brief-plan.pdf as brief-plan-pdf.py writes it.
@@ -44,6 +59,12 @@ internal static class CadPdfToLayoutsTests
     // The planner decision for both scale forms (and brief-plan.dxf): kept room ids in order, dropped id:unconfirmed reasons.
     const string KeptRooms = "dormitorio-1,cocina,living-room,bano-2,lavadero,hall";
     const string DroppedRooms = "bano:area-mismatch,low-confidence";
+    // SHA-256 of tests/cad/fixtures/brief-plan-xobject.pdf as brief-plan-pdf.py --variant xobject-flate writes it (P6-17).
+    const string VariantFixtureDigest = "13b8e667c519b0d2222eb8f57549d61a595d1ec5eb5b32525a451fd5fc455551";
+    const string VariantFile = "brief-plan-xobject.pdf";
+    // The invoking Do operator of the labels form: page content object 4, operator index 49 (1 w, then 8 x 6 path operators).
+    const string VariantXObjectPath = "o4:i49";
+    const int VariantFormObject = 6;
     const string Name = "Brief plan";
     const int Alternatives = 3;
     const int Seed = 7;
@@ -164,16 +185,19 @@ internal static class CadPdfToLayoutsTests
 
         // ---- the real CLI chain ----
         var runs = 0;
-        byte[] Chain(string label, string[] scale, ProjectBrief expectedBrief, IReadOnlyDictionary<string, string>? environment)
+        var lastChainDir = "";
+        byte[] Chain(string label, string[] scale, ProjectBrief expectedBrief, IReadOnlyDictionary<string, string>? environment, string? input = null)
         {
+            var source = input ?? pdfPath;
             var dir = Path.Combine(scratch, (++runs).ToString(CultureInfo.InvariantCulture) + "-" + label);
             Directory.CreateDirectory(dir);
+            lastChainDir = dir;
             var draftPath = Path.Combine(dir, "draft.json");
             var briefPath = Path.Combine(dir, "brief.json");
             var layoutsPath = Path.Combine(dir, "layouts.json");
-            var a = Cli(environment, new[] { "cad-brief", pdfPath, draftPath }.Concat(scale).ToArray());
+            var a = Cli(environment, new[] { "cad-brief", source, draftPath }.Concat(scale).ToArray());
             Check(a.Exit == 0 && File.Exists(draftPath) && Envelope(a.Out) is { } ae && ae.TryGetProperty("format", out var format) && format.GetString() == "pdf",
-                label + ": cad-brief " + string.Join(" ", scale) + " writes the draft from brief-plan.pdf", R(a));
+                label + ": cad-brief " + string.Join(" ", scale) + " writes the draft from " + Path.GetFileName(source), R(a));
             if (!File.Exists(draftPath)) return Array.Empty<byte>();
             var b = Cli(environment, "cad-plan-brief", draftPath, briefPath, "--site-width", "10", "--site-depth", "8", "--name", Name, "--brief-only");
             var briefOnly = Envelope(b.Out) is { } be && be.TryGetProperty("brief_only", out var flag) && flag.ValueKind == JsonValueKind.True
@@ -205,6 +229,156 @@ internal static class CadPdfToLayoutsTests
         var first = Read(Path.Combine(scratch, "1-calibrated", "layouts.json"));
         var second = Chain("rerun", Calibrate, calibrated.Brief, null);
         Check(second.Length > 0 && second.SequenceEqual(first), "a second calibrated chain run writes byte-identical layouts", "sha256 " + Hex(second));
+
+        // ---- P6-17: the FlateDecode / Form XObject variant brief-plan-xobject.pdf ----
+        {
+            var variantPath = Path.Combine(fixtures, VariantFile);
+            var variantBytes = Read(variantPath);
+            Check(Hex(variantBytes) == VariantFixtureDigest, "xobject: brief-plan-xobject.pdf SHA-256 equals the pinned fixture digest", "actual " + Hex(variantBytes) + " pinned " + VariantFixtureDigest);
+            if (unix)
+            {
+                // The flag after the output path, then before it: both forms write the pinned bytes.
+                foreach (var (order, flagFirst) in new[] { ("output then flag", false), ("flag then output", true) })
+                {
+                    var regeneratedVariant = Path.Combine(scratch, flagFirst ? "regenerated-xobject-flag-first.pdf" : "regenerated-xobject.pdf");
+                    var script = Path.Combine(fixtures, "brief-plan-pdf.py");
+                    var generatorArguments = flagFirst
+                        ? new[] { "-I", script, "--variant", "xobject-flate", regeneratedVariant }
+                        : new[] { "-I", script, regeneratedVariant, "--variant", "xobject-flate" };
+                    (int Exit, string Out, string Err)? generator = null;
+                    try { generator = Exec("python3", null, generatorArguments); }
+                    catch (Win32Exception) { }
+                    if (generator is null)
+                    {
+                        if (linuxCi) Check(false, "xobject: python3 is available on Linux CI to rerun the fixture generator (" + order + ")");
+                        else skip("cad-pdf-to-layouts: xobject fixture generator rerun (" + order + ")", "python3 not found (required on Linux CI only)");
+                    }
+                    else Check(generator.Value.Exit == 0 && Hex(Read(regeneratedVariant)) == VariantFixtureDigest,
+                        "xobject: brief-plan-pdf.py --variant xobject-flate (" + order + ") writes the pinned brief-plan-xobject.pdf bytes", R(generator.Value) + " sha256 " + Hex(Read(regeneratedVariant)));
+                }
+            }
+            else
+            {
+                skip("cad-pdf-to-layouts: xobject fixture generator rerun (output then flag)", "run on Linux and macOS only (the python3 launcher differs on Windows)");
+                skip("cad-pdf-to-layouts: xobject fixture generator rerun (flag then output)", "run on Linux and macOS only (the python3 launcher differs on Windows)");
+            }
+
+            var raw = Encoding.Latin1.GetString(variantBytes);
+            static int CountOf(string text, string part) => text.Split(part).Length - 1;
+            Check(variantBytes.Length > 0 && CountOf(raw, "/FlateDecode") == 2 && CountOf(raw, "/Subtype /Form") == 1
+                && !raw.Contains("DORMITORIO", StringComparison.Ordinal) && !raw.Contains(" Tj", StringComparison.Ordinal)
+                && !raw.Contains(" Do", StringComparison.Ordinal) && !raw.Contains(" l\n", StringComparison.Ordinal),
+                "xobject: both content streams are FlateDecode (no text, path or Do operator readable in the raw file) and the labels stream is a Form XObject",
+                "FlateDecode " + CountOf(raw, "/FlateDecode").ToString(CultureInfo.InvariantCulture) + " Form " + CountOf(raw, "/Subtype /Form").ToString(CultureInfo.InvariantCulture));
+            Check(variantBytes.Length > 0, "xobject: the fixture brief-plan-xobject.pdf is present and not empty", variantPath);
+            if (variantBytes.Length > 0)
+            {
+
+                // The parsed page: brief-plan.pdf's elements, texts drawn through the form.
+                var plainDocument = PdfReader.Parse(pdfBytes, "brief-plan.pdf");
+                var variantDocument = PdfReader.Parse(variantBytes, VariantFile);
+                var plainPage = plainDocument.Pages.First(pg => pg.Number == 1);
+                var variantPage = variantDocument.Pages.FirstOrDefault(pg => pg.Number == 1);
+                static string Warnings(PdfDocument document) => string.Join(",", document.Warnings.Select(w => w.Code).OrderBy(code => code, StringComparer.Ordinal));
+                Check(Warnings(variantDocument) == Warnings(plainDocument), "xobject: the variant's warning codes equal brief-plan.pdf's",
+                    "variant [" + string.Join("; ", variantDocument.Warnings.Select(w => w.Code + " " + w.Message)) + "] plain [" + Warnings(plainDocument) + "]");
+                var plainTexts = plainPage.Elements.OfType<PdfText>().ToList();
+                var variantTexts = variantPage?.Elements.OfType<PdfText>().ToList() ?? new List<PdfText>();
+                static string TextKey(PdfText t) => t.Value + "|" + t.Origin.X.ToString("R", CultureInfo.InvariantCulture) + "," + t.Origin.Y.ToString("R", CultureInfo.InvariantCulture)
+                    + "|" + t.Height.ToString("R", CultureInfo.InvariantCulture) + "|" + t.FontSize.ToString("R", CultureInfo.InvariantCulture) + "|" + t.RotationDegrees.ToString("R", CultureInfo.InvariantCulture);
+                Check(plainTexts.Count == 16 && string.Join("; ", variantTexts.Select(TextKey)) == string.Join("; ", plainTexts.Select(TextKey)),
+                    "xobject: the page shows brief-plan.pdf's 16 texts in order with the same value, page origin, height, font size and rotation",
+                    "variant " + string.Join("; ", variantTexts.Select(TextKey)) + " plain " + string.Join("; ", plainTexts.Select(TextKey)));
+                Check(variantTexts.Count == 16 && variantTexts.All(t => t.Provenance.XObjectPath.SequenceEqual(new[] { VariantXObjectPath }) && t.Provenance.ObjectNumber == VariantFormObject && t.Provenance.Operator == "Tj"),
+                    "xobject: every text carries XObjectPath [" + VariantXObjectPath + "] and the form's object number",
+                    string.Join("; ", variantTexts.Select(t => t.Provenance.ObjectNumber.ToString(CultureInfo.InvariantCulture) + ":" + t.Provenance.OperatorIndex.ToString(CultureInfo.InvariantCulture) + "@" + string.Join(">", t.Provenance.XObjectPath))));
+                var plainPaths = plainPage.Elements.OfType<PdfPath>().ToList();
+                var variantPaths = variantPage?.Elements.OfType<PdfPath>().ToList() ?? new List<PdfPath>();
+                static string PathKey(PdfPath path) => string.Join(" ", path.Subpaths.Select(sp => string.Join(",", sp.Flatten(1).Select(pt => pt.X.ToString("R", CultureInfo.InvariantCulture) + " " + pt.Y.ToString("R", CultureInfo.InvariantCulture))) + (sp.Closed ? " h" : "")));
+                Check(plainPaths.Count > 0 && string.Join("; ", variantPaths.Select(PathKey)) == string.Join("; ", plainPaths.Select(PathKey))
+                    && variantPaths.All(path => path.Provenance.XObjectPath.Count == 0 && path.Provenance.ObjectNumber == 4),
+                    "xobject: the page paths are brief-plan.pdf's, drawn by the page content (object 4) with an empty XObjectPath",
+                    "variant " + variantPaths.Count.ToString(CultureInfo.InvariantCulture) + " plain " + plainPaths.Count.ToString(CultureInfo.InvariantCulture));
+
+                // Drafts, planner briefs and layouts in process.
+                static BriefDraft VariantDraft(byte[] pdf, bool calibrated) => calibrated
+                    ? BriefExtract.FromPdf(PdfReader.Parse(pdf, VariantFile), 1, Calibration(), new BriefExtractOptions())
+                    : BriefExtract.FromPdf(PdfReader.Parse(pdf, VariantFile), 1, null, new BriefExtractOptions { MetresPerUnit = 0.02 });
+                static string StripReferences(string json)
+                {
+                    var node = JsonNode.Parse(json);
+                    void Walk(JsonNode? current)
+                    {
+                        if (current is JsonObject obj)
+                        {
+                            obj.Remove("reference");
+                            foreach (var child in obj.Select(pair => pair.Value).ToList()) Walk(child);
+                        }
+                        else if (current is JsonArray array) foreach (var child in array.ToList()) Walk(child);
+                    }
+                    Walk(node);
+                    return node?.ToJsonString() ?? "";
+                }
+                var expectedPath = new[] { VariantXObjectPath };
+                var handleSuffix = "@" + VariantXObjectPath;
+                var variantRuns = new List<(string Label, string[] Scale, string Pinned, (byte[] Bytes, AlternativeSet Set, ProjectBrief Brief, BriefPlannerResult Planned) Run)>();
+                foreach (var (vLabel, vCalibrated, vScale, vPlain, vPinned) in new[] { ("calibrated", true, Calibrate, calibrated, PinnedCalibrated), ("metres-per-unit", false, MetresPerUnit, perUnit, PinnedMetresPerUnit) })
+                {
+                    var variantDraft = VariantDraft(variantBytes, vCalibrated);
+                    var plainDraft = Draft(pdfBytes, vCalibrated);
+                    Check(variantDraft.Rooms.Count == 7 && Codes(variantDraft) == Codes(plainDraft) && Confidences(variantDraft) == Confidences(plainDraft),
+                        "xobject " + vLabel + ": the variant draft has brief-plan.pdf's 7 rooms (ids, confidences) and sorted uncertainty codes",
+                        "variant " + Codes(variantDraft) + " / " + Confidences(variantDraft) + " plain " + Codes(plainDraft) + " / " + Confidences(plainDraft));
+                    var labelsInForm = variantDraft.Rooms.All(room => room.Label.InsertPath.SequenceEqual(expectedPath)
+                        && room.Label.Handle is { } handle && handle.StartsWith("p1:o6:i", StringComparison.Ordinal) && handle.EndsWith(handleSuffix, StringComparison.Ordinal)
+                        && (room.Area is null || (room.Area.InsertPath.SequenceEqual(expectedPath) && room.Area.Handle is { } areaHandle && areaHandle.EndsWith(handleSuffix, StringComparison.Ordinal)))
+                        && (room.Region is null || (room.Region.InsertPath.Count == 0 && room.Region.Handle is { } regionHandle && !regionHandle.Contains('@', StringComparison.Ordinal))));
+                    Check(variantDraft.Rooms.Count > 0 && labelsInForm && variantDraft.Rooms.Any(room => room.Region is not null),
+                        "xobject " + vLabel + ": every room label and area source carries InsertPath [" + VariantXObjectPath + "] and handle p1:o6:i{n}" + handleSuffix + ", every region source none",
+                        string.Join("; ", variantDraft.Rooms.Select(room => room.Id + " label " + room.Label.Handle + " [" + string.Join(">", room.Label.InsertPath) + "] area " + (room.Area?.Handle ?? "-") + " region " + (room.Region?.Handle ?? "-"))));
+                    var variantRun = Plan(variantDraft);
+                    var vKept = string.Join(",", variantRun.Planned.Kept.Select(r => r.Id));
+                    var vDropped = string.Join("; ", variantRun.Planned.Dropped.Select(r => r.Id + ":" + string.Join(",", r.Unconfirmed)));
+                    Check(vKept == KeptRooms && vDropped == DroppedRooms, "xobject " + vLabel + ": the planner keeps and drops exactly the pinned rooms", "kept " + vKept + " dropped " + vDropped);
+                    Check(Rooms(variantRun.Brief) == Rooms(vPlain.Brief) && variantRun.Brief.Rooms.Count > 0, "xobject " + vLabel + ": the planner brief has brief-plan.pdf's rooms (ids, names, counts, target areas)",
+                        "variant " + Rooms(variantRun.Brief) + " plain " + Rooms(vPlain.Brief));
+                    var variantText = BriefSerializer.Serialize(variantRun.Brief);
+                    var plainText = BriefSerializer.Serialize(vPlain.Brief);
+                    Check(StripReferences(variantText) == StripReferences(plainText) && variantText != plainText,
+                        "xobject " + vLabel + ": the planner brief equals brief-plan.pdf's once provenance references are removed",
+                        "variant " + StripReferences(variantText) + " plain " + StripReferences(plainText));
+                    Check(variantRun.Brief.Rooms.All(room => room.Provenance?.Reference is { } reference && reference.StartsWith(VariantFile + " page 1 handle p1:o6:i", StringComparison.Ordinal) && reference.Contains(handleSuffix + " PDF-TEXT", StringComparison.Ordinal))
+                        && vPlain.Brief.Rooms.All(room => room.Provenance?.Reference is { } reference && !reference.Contains('@', StringComparison.Ordinal)),
+                        "xobject " + vLabel + ": every planner room's provenance reference names the variant file and the XObject path (brief-plan.pdf's none)",
+                        string.Join("; ", variantRun.Brief.Rooms.Select(room => room.Provenance?.Reference ?? "-")));
+                    Check(variantRun.Bytes.SequenceEqual(vPlain.Bytes) && Hex(variantRun.Bytes) == vPinned, "xobject " + vLabel + ": the in-process layouts are byte-identical to brief-plan.pdf's and equal the pinned digest",
+                        "variant sha256 " + Hex(variantRun.Bytes) + " pinned " + vPinned);
+                    variantRuns.Add((vLabel, vScale, vPinned, variantRun));
+                }
+
+                // The real CLI chain on the variant.
+                foreach (var (vLabel, vScale, vPinned, variantRun) in variantRuns)
+                {
+                    var vWritten = Chain("xobject-" + vLabel, vScale, variantRun.Brief, null, variantPath);
+                    Check(vWritten.SequenceEqual(variantRun.Bytes) && Hex(vWritten) == vPinned, "xobject " + vLabel + ": the CLI chain's layouts.json equals the in-process bytes and the pinned digest",
+                        "written sha256 " + Hex(vWritten) + " expected " + Hex(variantRun.Bytes) + " pinned " + vPinned);
+                    var draftJson = Envelope(Encoding.UTF8.GetString(Read(Path.Combine(lastChainDir, "draft.json"))));
+                    var draftCarries = draftJson is { } dj && dj.TryGetProperty("rooms", out var draftRooms) && draftRooms.ValueKind == JsonValueKind.Array && draftRooms.GetArrayLength() == 7
+                        && draftRooms.EnumerateArray().All(room => room.ValueKind == JsonValueKind.Object && room.TryGetProperty("Label", out var label) && label.ValueKind == JsonValueKind.Object
+                            && label.TryGetProperty("InsertPath", out var insertPath) && insertPath.ValueKind == JsonValueKind.Array && insertPath.GetArrayLength() == 1
+                            && insertPath[0].ValueKind == JsonValueKind.String && insertPath[0].GetString() == VariantXObjectPath
+                            && label.TryGetProperty("Handle", out var labelHandle) && labelHandle.ValueKind == JsonValueKind.String && (labelHandle.GetString() ?? "").EndsWith(handleSuffix, StringComparison.Ordinal));
+                    Check(draftCarries, "xobject " + vLabel + ": the cad-brief draft.json room labels carry InsertPath [" + VariantXObjectPath + "] and the XObject handle suffix",
+                        draftJson?.ToString() is { } dt && dt.Length > 600 ? dt[..600] + "..." : draftJson?.ToString() ?? "<no draft.json>");
+                    var briefJson = Envelope(Encoding.UTF8.GetString(Read(Path.Combine(lastChainDir, "brief.json"))));
+                    var briefCarries = briefJson is { } bj && bj.TryGetProperty("rooms", out var briefRooms) && briefRooms.ValueKind == JsonValueKind.Array && briefRooms.GetArrayLength() > 0
+                        && briefRooms.EnumerateArray().All(room => room.ValueKind == JsonValueKind.Object && room.TryGetProperty("provenance", out var provenance) && provenance.ValueKind == JsonValueKind.Object
+                            && provenance.TryGetProperty("reference", out var reference) && reference.ValueKind == JsonValueKind.String && (reference.GetString() ?? "").Contains(handleSuffix + " PDF-TEXT", StringComparison.Ordinal));
+                    Check(briefCarries, "xobject " + vLabel + ": every room of the --brief-only brief.json has a provenance reference with the XObject path",
+                        briefJson?.ToString() is { } bt && bt.Length > 600 ? bt[..600] + "..." : briefJson?.ToString() ?? "<no brief.json>");
+                }
+            }
+        }
 
         // ---- without a scale ----
         {
