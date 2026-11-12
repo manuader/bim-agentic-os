@@ -884,9 +884,10 @@ static class MirrorDriftLoopChecks
         $r.u_reply = Invoke-FakeRevitWire $u (Line 'null')
         $r.u_after = $u.JournalBaseline | ConvertTo-Json -Depth 20 -Compress
         # Hand-built snapshot pairs straight through Get-FakeSnapshotDiff.
-        $cases = [ordered]@{}
-        foreach ($case in @(Get-Content -Raw -LiteralPath $Cases | ConvertFrom-Json -AsHashtable)) { $cases[[string]$case['name']] = ConvertTo-FakeResponseJson (Get-FakeSnapshotDiff $DocumentUid $case['before'] $case['after']) }
-        $r.cases = $cases | ConvertTo-Json -Compress
+        # (PowerShell names ignore case: $caseDiffs, not a name that would overwrite the $Cases parameter.)
+        $caseDiffs = [ordered]@{}
+        foreach ($case in @(Get-Content -Raw -LiteralPath $Cases | ConvertFrom-Json -AsHashtable)) { $caseDiffs[[string]$case['name']] = ConvertTo-FakeResponseJson (Get-FakeSnapshotDiff $DocumentUid $case['before'] $case['after']) }
+        $r.cases = $caseDiffs | ConvertTo-Json -Compress
         $r.tolerance = ([double]$script:FakeDiffToleranceMetres).ToString('R', [Globalization.CultureInfo]::InvariantCulture)
         $r.culture = [Globalization.CultureInfo]::CurrentCulture.Name + ' ' + (1.5).ToString()
         $r | ConvertTo-Json -Compress
