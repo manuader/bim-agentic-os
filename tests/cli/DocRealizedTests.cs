@@ -229,11 +229,63 @@ internal static class DocRealizedTests
         // Output path, checked before any input is read.
         { var o = Output("realized.txt"); ExpectFailure("output extension", "output_extension_unsupported", null, o, Args(missing, missing, missing, RecordDocument, o)); }
         { var o = Path.Combine(scratch, "no-such-dir", "realized.json"); ExpectFailure("output directory missing", "output_directory_not_found", null, o, Args(recordPath, fixturePath, assignmentsPath, RecordDocument, o)); }
-        // Bounded inputs (8 MiB + 1 byte, missing), in the order record, fixture, assignments.
+        // Bounded inputs. The fixture keeps the CLI's 8 MiB cap (BoundedInput.MaxBytes); record and assignments are read up
+        // to the library's own bound DocRealized.MaxRecordBytes (32 MiB), so the CLI accepts exactly what the in-process
+        // builder accepts. A file one byte over that bound is refused at read time (input_too_large, detail the input);
+        // the same text handed to the library in process is realized_bound_exceeded — the two caps coincide.
         var oversized = Bytes("over-cap.json", overCap);
-        { var o = Output(); ExpectFailure("oversized record", "input_too_large", "record", o, Args(oversized, fixturePath, assignmentsPath, RecordDocument, o)); }
-        { var o = Output(); ExpectFailure("oversized fixture", "input_too_large", "fixture", o, Args(recordPath, oversized, assignmentsPath, RecordDocument, o)); }
-        { var o = Output(); ExpectFailure("oversized assignments", "input_too_large", "assignments", o, Args(recordPath, fixturePath, oversized, RecordDocument, o)); }
+        { var o = Output(); ExpectFailure("oversized fixture (8 MiB + 1)", "input_too_large", "fixture", o, Args(recordPath, oversized, assignmentsPath, RecordDocument, o)); }
+        {
+            // An 8 MiB + 1 record is no longer an input refusal: the library judges it (a padded Project, not a run record).
+            string decoded;
+            using (var reader = new StreamReader(new MemoryStream(overCap, writable: false), Encoding.UTF8, detectEncodingFromByteOrderMarks: true)) decoded = reader.ReadToEnd();
+            var refusal = LibraryRefusal(fixture, decoded, assignmentsText, RecordDocument);
+            Check(refusal is not null, "fixture: in process, the 8 MiB + 1 Project is refused as a record", refusal ?? "accepted");
+            if (refusal is not null)
+            {
+                var bar = refusal.IndexOf('|');
+                var o = Output();
+                ExpectFailure("8 MiB + 1 record reaches the library", refusal[..bar], bar + 1 == refusal.Length ? null : refusal[(bar + 1)..], o, Args(oversized, fixturePath, assignmentsPath, RecordDocument, o));
+            }
+        }
+        // A schema-valid record padded in an ignored member (raw_response) to an exact UTF-8 size.
+        static string Padded(string record, int bytes)
+        {
+            const string member = "\"raw_response\":null";
+            var at = record.IndexOf(member, StringComparison.Ordinal);
+            var fill = bytes - Encoding.UTF8.GetByteCount(record) + member.Length - "\"raw_response\":\"\"".Length;
+            return record[..at] + "\"raw_response\":\"" + new string('x', fill) + "\"" + record[(at + member.Length)..];
+        }
+        void Accepted(string name, string record, string assignments)
+        {
+            var o = Output();
+            var run = Cli(Args(record, fixturePath, assignments, RecordDocument, o));
+            Check(run.Exit == 0 && File.Exists(o) && File.ReadAllBytes(o).AsSpan().SequenceEqual(expected), name + " writes the in-process builder's bytes", D(run));
+        }
+        var nineMiB = 9 * 1024 * 1024;
+        var record9 = Padded(recordText, nineMiB);
+        Check(Encoding.UTF8.GetByteCount(record9) == nineMiB && Utf8(DocRealized.Canonical(DocRealized.FromRecord(fixture, record9, assignmentsText, RecordDocument))).AsSpan().SequenceEqual(expected),
+            "fixture: the 9 MiB padded record is schema-valid in process with the same map");
+        Accepted("a 9 MiB record (over the 8 MiB CLI cap, under DocRealized.MaxRecordBytes)", Input("record-9mib.json", record9), assignmentsPath);
+        var recordAtCap = Padded(recordText, DocRealized.MaxRecordBytes);
+        Accepted("a record of exactly DocRealized.MaxRecordBytes", Input("record-at-cap.json", recordAtCap), assignmentsPath);
+        var bom = new byte[] { 0xEF, 0xBB, 0xBF };
+        Accepted("a BOM-prefixed record", Bytes("record-bom.json", bom.Concat(Utf8(recordText)).ToArray()), assignmentsPath);
+        Accepted("a BOM-prefixed record of exactly DocRealized.MaxRecordBytes bytes", Bytes("record-bom-at-cap.json", bom.Concat(Utf8(Padded(recordText, DocRealized.MaxRecordBytes - 3))).ToArray()), assignmentsPath);
+        Accepted("a 9 MiB assignments file", recordPath, Input("assignments-9mib.json", assignmentsText + new string(' ', nineMiB - Encoding.UTF8.GetByteCount(assignmentsText))));
+        Accepted("BOM-prefixed assignments", recordPath, Bytes("assignments-bom.json", bom.Concat(Utf8(assignmentsText)).ToArray()));
+        {
+            var overRecord = Padded(recordText, DocRealized.MaxRecordBytes + 1);
+            Check(LibraryRefusal(fixture, overRecord, assignmentsText, RecordDocument) == DocRealizedCodes.BoundExceeded + "|record", "fixture: in process, a record of MaxRecordBytes + 1 is realized_bound_exceeded \"record\"");
+            var o = Output();
+            ExpectFailure("record of MaxRecordBytes + 1", "input_too_large", "record", o, Args(Input("record-over.json", overRecord), fixturePath, assignmentsPath, RecordDocument, o));
+        }
+        {
+            var overAssignments = assignmentsText + new string(' ', DocRealized.MaxRecordBytes + 1 - Encoding.UTF8.GetByteCount(assignmentsText));
+            Check(LibraryRefusal(fixture, recordText, overAssignments, RecordDocument) == DocRealizedCodes.BoundExceeded + "|assignments", "fixture: in process, assignments of MaxRecordBytes + 1 are realized_bound_exceeded \"assignments\"");
+            var o = Output();
+            ExpectFailure("assignments of MaxRecordBytes + 1", "input_too_large", "assignments", o, Args(recordPath, fixturePath, Input("assignments-over.json", overAssignments), RecordDocument, o));
+        }
         { var o = Output(); ExpectFailure("missing record", "input_not_found", "record", o, Args(missing, fixturePath, assignmentsPath, RecordDocument, o)); }
         { var o = Output(); ExpectFailure("missing fixture", "input_not_found", "fixture", o, Args(recordPath, missing, assignmentsPath, RecordDocument, o)); }
         { var o = Output(); ExpectFailure("missing assignments", "input_not_found", "assignments", o, Args(recordPath, fixturePath, missing, RecordDocument, o)); }
@@ -273,6 +325,26 @@ internal static class DocRealizedTests
         Library("two sources on one step", fixture, fixtureText, recordText, MapJson(new[] { new KeyValuePair<string, string>(sources[0], "doc-up-0"), new KeyValuePair<string, string>(sources[1], "doc-up-0") }), RecordDocument, DocRealizedCodes.UniqueIdDuplicate);
         var noLevel = new Project(projectId, 0, fixture.Elements.Where(e => e.Kind != "level").ToArray());
         Library("fixture without a level", noLevel, JsonSerializer.Serialize(noLevel), recordText, assignmentsText, RecordDocument, DocRealizedCodes.FixtureInvalid);
+        Library("one step with MaxCreated + 1 created ids", fixture, fixtureText,
+            Record(steps.Concat(new[] { new S("doc-up-many", true, false, "succeeded", Enumerable.Range(0, DocRealized.MaxCreated + 1).Select(i => Uid("many:" + i.ToString(CultureInfo.InvariantCulture))).ToArray()) })),
+            assignmentsText, RecordDocument, DocRealizedCodes.BoundExceeded);
+        Library("a later step deletes an assigned UniqueId", fixture, fixtureText,
+            Record(steps.Concat(new[] { new S("doc-up-delete", true, false, "succeeded", Array.Empty<string>(), new[] { Uid("created:" + sources[0]) }) })),
+            assignmentsText, RecordDocument, DocRealizedCodes.UniqueIdDeleted);
+        // Precedence: the fixture is parsed before the library reads the record; the library reads the record before it
+        // validates the fixture.
+        {
+            var o = Output();
+            ExpectFailure("bad record + fixture not JSON", DocRealizedCodes.FixtureInvalid, "json", o, Args(Input("bad-record.json", "{oops"), Input("bad-ir.json", "{not json"), assignmentsPath, RecordDocument, o));
+        }
+        {
+            var refusal = LibraryRefusal(noLevel, "{oops", assignmentsText, RecordDocument);
+            Check(refusal is not null && refusal.StartsWith(DocRealizedCodes.RecordInvalid + "|", StringComparison.Ordinal), "fixture: in process, a bad record wins over a fixture without a level", refusal ?? "accepted");
+            var bar = refusal?.IndexOf('|') ?? -1;
+            var o = Output();
+            ExpectFailure("bad record + fixture without a level", DocRealizedCodes.RecordInvalid, bar >= 0 && bar + 1 < refusal!.Length ? refusal[(bar + 1)..] : null, o,
+                Args(Input("bad-record.json", "{oops"), Input("no-level-ir.json", JsonSerializer.Serialize(noLevel)), assignmentsPath, RecordDocument, o));
+        }
 
         // ---- the verb's shape: bounded reads, the P4-13 builder, exclusive write, no transport ----
         var sourcePath = Path.Combine(root, "interfaces", "cli", "DocRealizedCommand.cs");
@@ -280,10 +352,10 @@ internal static class DocRealizedTests
         if (File.Exists(sourcePath))
         {
             var source = File.ReadAllText(sourcePath);
-            Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal) && source.Contains("DocRealized.FromRecord(", StringComparison.Ordinal)
+            Check(source.Contains("BoundedInput.", StringComparison.Ordinal) && source.Contains("DocRealized.MaxRecordBytes", StringComparison.Ordinal) && source.Contains("DocRealized.FromRecord(", StringComparison.Ordinal)
                 && source.Contains("DocRealized.Canonical(", StringComparison.Ordinal) && source.Contains("GltfExporter.WriteNew(", StringComparison.Ordinal)
                 && new[] { "Transport", "NamedPipe", "File.", "FileStream", "FileMode.", "Directory.", "ProjectStore" }.All(api => !source.Contains(api, StringComparison.Ordinal)),
-                "doc-realized reads only through BoundedInput, builds with DocRealized.FromRecord/Canonical, writes only through GltfExporter.WriteNew and never runs a transport");
+                "doc-realized reads only through BoundedInput (record/assignments at DocRealized.MaxRecordBytes), builds with DocRealized.FromRecord/Canonical, writes only through GltfExporter.WriteNew and never runs a transport");
         }
         Check(Cli("no-such-verb").Out.Contains("doc-realized --record", StringComparison.Ordinal), "default usage lists doc-realized");
     }
