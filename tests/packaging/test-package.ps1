@@ -367,6 +367,43 @@ try {
             Assert ($run.Code -ne 0 -and $run.Output -match $case.Expect -and $run.Output -match [regex]::Escape($case.Path) -and $run.Output -notmatch 'Bim\.Cli\.dll|Bim\.Core\.dll|Bim\.Mcp\.dll') "P10-14: package-verify must refuse $($case.Name) with $($case.Expect) naming $($case.Path), never a first-party file: $(Get-Tail $run.Output)"
         }
 
+        # P10-15: manifest.json and sbom.json must agree on the shipped binaries in both directions (every manifest
+        # .dll/.exe has an sbom assemblies line, every manifest .so/.dylib is named by a listed reference or is
+        # first-party, and every sbom assemblies line has a manifest entry), typed sbom_manifest_mismatch naming the path.
+        $xCases = @(
+            @{ Name = 'manifest dll without sbom line'; Path = 'cli/Tau.Win.dll'; Act = { param($d) Remove-TestSbomLine $d '    { "path": "cli/Tau.Win.dll", '; Update-TestManifest $d } },
+            @{ Name = 'manifest exe without sbom line'; Path = 'mcp/Omega.Tool.exe'; Act = { param($d) Remove-TestSbomLine $d '    { "path": "mcp/Omega.Tool.exe", '; Update-TestManifest $d } },
+            @{ Name = 'manifest native without sbom name'; Path = 'cli/runtimes/linux-x64/native/libsigma.so.1'; Act = { param($d)
+                $f = Join-Path $d 'sbom.json'; $t = [IO.File]::ReadAllText($f)
+                $old = '"dependency": "transitive", "assemblies": [], "natives": ["libsigma.so.1"] }'
+                if (!$t.Contains($old)) { throw 'test setup: Sigma.Native natives not found' }
+                Write-PackageText $f $t.Replace($old, '"dependency": "transitive", "assemblies": [], "natives": [] }'); Update-TestManifest $d } },
+            @{ Name = 'sbom line without manifest entry'; Path = 'cli/Ghost.Thing.dll'; Act = { param($d)
+                $f = Join-Path $d 'sbom.json'; $lines = [Collections.Generic.List[string]]([IO.File]::ReadAllText($f).Split("`n"))
+                $i = $lines.FindIndex([Predicate[string]]{ param($l) $l.StartsWith('    { "path": "cli/Tau.Win.dll", ', [StringComparison]::Ordinal) })
+                if ($i -lt 0) { throw 'test setup: cli/Tau.Win.dll sbom line not found' }
+                $lines.Insert($i + 1, $lines[$i].Replace('"path": "cli/Tau.Win.dll", "name": "Tau.Win"', '"path": "cli/Ghost.Thing.dll", "name": "Ghost.Thing"'))
+                Write-PackageText $f ($lines -join "`n"); Update-TestManifest $d } },
+            @{ Name = 'binary removed from manifest only'; Path = 'cli/Delta.Lib.dll'; Act = { param($d) Remove-Item -LiteralPath (Join-Path $d 'cli/Delta.Lib.dll'); Update-TestManifest $d } }
+        )
+        function Update-TestManifest([string]$Directory) { Write-PackageText (Join-Path $Directory 'manifest.json') (New-PackageManifestText $Directory '1.2.3' ('a' * 40) $false) }
+        function Remove-TestSbomLine([string]$Directory, [string]$Prefix) {
+            $f = Join-Path $Directory 'sbom.json'
+            $lines = [Collections.Generic.List[string]]([IO.File]::ReadAllText($f).Split("`n"))
+            $i = $lines.FindIndex([Predicate[string]]{ param($l) $l.StartsWith($Prefix, [StringComparison]::Ordinal) })
+            if ($i -lt 0 -or !$lines[$i].EndsWith(',')) { throw "test setup: no non-final sbom line starting '$Prefix'" }
+            $lines.RemoveAt($i)
+            Write-PackageText $f ($lines -join "`n")
+        }
+        foreach ($case in $xCases) {
+            $copy = Join-Path $work ('sbom manifest case ' + $case.Name)
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            try { & $case.Act $copy } catch { $failures.Add("P10-15 $($case.Name) setup failed: $($_.Exception.Message)"); continue }
+            $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
+            Assert ($run.Code -ne 0 -and $run.Output -match ('sbom_manifest_mismatch:[^\r\n]*' + [regex]::Escape($case.Path))) "P10-15: package-verify must refuse $($case.Name) with sbom_manifest_mismatch naming $($case.Path): $(Get-Tail $run.Output)"
+        }
+        Assert ($tClean.Output -notmatch 'sbom_manifest_mismatch') "P10-15: a consistent synthetic package must not report sbom_manifest_mismatch: $(Get-Tail $tClean.Output)"
+
         # Without an assets file the P10-13 behaviour is unchanged: direct references only, no recorded files.
         $refsNoAssets = @(Get-PackageNuGetReferences -Root $sbomSrc -Projects @('app/App.csproj') -PackagesRoot (Join-Path $sbomSrc 'nuget'))
         $noAssetsText = ($refsNoAssets | ForEach-Object { "$($_.Name):$($_.Dependency):$(@($_.Assemblies).Count):$(@($_.Natives).Count)" }) -join ','
@@ -567,6 +604,7 @@ try {
     # --- Verifier: clean package passes; tamper, missing, extra and forbidden files are detected ---
     $ok = Invoke-Script $verifier @('-PackageDirectory', $outA)
     Assert ($ok.Code -eq 0) "package-verify rejected a clean package: $(Get-Tail $ok.Output)"
+    Assert ($ok.Output -notmatch 'sbom_manifest_mismatch') "P10-15: the real package's manifest.json and sbom.json must agree on every shipped binary: $(Get-Tail $ok.Output)"
 
     # --- P10-07 add-in install/uninstall (temp Addins folders only), including this real package ---
     $install = Invoke-Script (Join-Path $PSScriptRoot 'test-install-addin.ps1') @('-PackageDirectory', $outA)
@@ -596,7 +634,11 @@ try {
         @{ Name = 'sbom hash rehashed'; Expect = 'sbom_mismatch'; Act = { param($d) Edit-CaseSbom $d { param($t) ([regex]'"sha256": "[0-9a-f]{64}"').Replace($t, ('"sha256": "' + ('0' * 64) + '"'), 1) }; Update-CaseManifest $d } },
         @{ Name = 'sbom noncanonical rehashed'; Expect = 'sbom_mismatch'; Act = { param($d) Edit-CaseSbom $d { param($t) $t.Replace("`n", "`r`n") }; Update-CaseManifest $d } },
         @{ Name = 'sbom build-only rehashed'; Expect = 'sbom_build_only'; Act = { param($d) Add-CaseSbomReference $d ([pscustomobject]@{ Name = 'Nice3point.Revit.Api.RevitAPI'; Version = '2025.0.2'; License = 'MIT'; Projects = [string[]]@('runtimes/revit-native/Bim.Revit.csproj') }); Update-CaseManifest $d } },
-        @{ Name = 'sbom unlisted assembly'; Expect = 'sbom_mismatch'; Act = { param($d) Copy-Item -LiteralPath (Join-Path $d 'cli/Bim.Core.dll') -Destination (Join-Path $d 'cli/Extra.Component.dll'); Update-CaseManifest $d } }
+        @{ Name = 'sbom unlisted assembly'; Expect = 'sbom_mismatch'; Act = { param($d) Copy-Item -LiteralPath (Join-Path $d 'cli/Bim.Core.dll') -Destination (Join-Path $d 'cli/Extra.Component.dll'); Update-CaseManifest $d } },
+        # P10-15: a shipped binary in manifest.json without its sbom.json line, and an sbom.json line whose binary has no
+        # manifest.json entry, are refused (sbom_manifest_mismatch naming the path) even with a re-hashed manifest.
+        @{ Name = 'sbom line dropped rehashed'; Expect = 'sbom_manifest_mismatch'; Path = 'cli/Bim.Core.dll'; Act = { param($d) Edit-CaseSbom $d { param($t) $t -replace '(?m)^    \{ "path": "cli/Bim\.Core\.dll", [^\n]*,\n', '' }; Update-CaseManifest $d } },
+        @{ Name = 'manifest entry dropped rehashed'; Expect = 'sbom_manifest_mismatch'; Path = 'cli/Bim.Gltf.dll'; Act = { param($d) Remove-Item -LiteralPath (Join-Path $d 'cli/Bim.Gltf.dll'); Update-CaseManifest $d } }
     )
     function Update-CaseManifest([string]$Directory) {
         $m = [IO.File]::ReadAllText((Join-Path $Directory 'manifest.json')) | ConvertFrom-Json
@@ -627,6 +669,7 @@ try {
         $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
         Assert ($run.Code -ne 0) "package-verify accepted a $($case.Name) package"
         Assert ($run.Output -match [regex]::Escape($case.Expect)) "package-verify $($case.Name) must report '$($case.Expect)': $(Get-Tail $run.Output)"
+        if ($case.ContainsKey('Path')) { Assert ($run.Output -match ([regex]::Escape($case.Expect) + '[^\r\n]*' + [regex]::Escape($case.Path))) "package-verify $($case.Name) must name $($case.Path) in its '$($case.Expect)' problem: $(Get-Tail $run.Output)" }
     }
 
     # --- Symlinks/reparse points anywhere in the tree are refused (never followed or hashed through) ---
