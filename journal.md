@@ -1458,3 +1458,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 00:13Z integration c539c6e CI 43123906716 success (9/9) → main fast-forwarded (b74af57..c539c6e). P3-13, P5-15, P7-14 ✅; new P3-14 (MCP diff_intent tool), P5-16 (generate-typology composed rules from extra manifests), P7-16 (generate-typology include + code_pack). Progress 156/175 (89.1 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-12T00:13:01Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P4-14/P4-15, P2-17, P10-15 (relay191; P4-14 and P1-18 share tests/integration/test-catalogue-session.ps1 — serialize); then P1-18/P1-21/P1-22, P2-18, P6-16/P6-17 (relay192; P1-21 before P1-22, same parser; P6-16/P6-17 share PDF fixtures — serialize); then P3-14, P5-16/P7-16, P7-15 (relay193; P5-16 and P7-16 share GenerateTypologyCommand — serialize). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay194 — 2026-11-12T00:52:23Z (Claude, cloud scheduled)
+- 00:52Z LOCK taken (was FREE; relay193 released 2026-11-12T00:13:01Z).
