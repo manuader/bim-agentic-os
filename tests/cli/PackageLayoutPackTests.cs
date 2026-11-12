@@ -144,8 +144,6 @@ internal static class PackageLayoutPackTests
                 Check(packaged.Exit == 0 && packaged.Bytes.SequenceEqual(repo.Bytes) && packaged.Out == repo.Out,
                     label + ": from the package scripts/package.ps1 built (outside any repository) the bytes and stdout equal the repository run",
                     D((packaged.Exit, packaged.Out, packaged.Err)) + " written " + packaged.Bytes.Length.ToString(CultureInfo.InvariantCulture) + " repository " + repo.Bytes.Length.ToString(CultureInfo.InvariantCulture));
-                // TEMPORARY red-step negative check (removed in the next commit): fails exactly when the real package works.
-                Check(!(packaged.Exit == 0 && packaged.Bytes.SequenceEqual(repo.Bytes)), label + ": TEMPORARY negative check, the packaged run differs from the repository run");
             }
             var noPack = RunVerb(packageDll, "plan-layouts", ["--alternatives", "2", "--seed", "3"]);
             Check(noPack.Exit == 0 && !noPack.Bytes.SequenceEqual(repository["plan-layouts --pack"].Bytes),
