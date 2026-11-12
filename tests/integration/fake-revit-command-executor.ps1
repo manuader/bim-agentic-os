@@ -24,7 +24,11 @@
 # element.delete requests external edits, as if made in Revit by the user: they still apply and answer as before, but are
 # recorded as journal entries (origin external, not counted in skipped_add_in) and journal.read then answers like
 # JournalRecorder.Read (RevitJournalQuery.RawRead): entries after after_sequence (default the baseline sequence), peek,
-# max_entries paging, current_sequence, baseline_sequence. Without it every reply is the pre-P2-18 one, byte for byte.
+# max_entries paging, current_sequence, baseline_sequence; options are read as MirrorJournalReadOptions.Parse reads them
+# (exact-case names, an object or null, no duplicates, the same journal_options_invalid codes). Fidelity is semantic:
+# replies parse to the production members and values, not the same escaping bytes (ConvertTo-Json, not Utf8JsonWriter).
+# The baseline is one per fake state (global), not per document as in MirrorJournalTracker. An -ExternalEdits list with
+# no ids is off. Without it every reply is the pre-P2-18 one, byte for byte.
 # It proves nothing about Revit.
 Set-StrictMode -Version Latest
 
@@ -32,8 +36,10 @@ $script:FakeBuiltInCategories = @{ wall = 'OST_Walls'; door = 'OST_Doors'; windo
 $script:FakeCategoryNames = @{ wall = 'Walls'; door = 'Doors'; window = 'Windows'; floor = 'Floors'; room = 'Rooms'; roof = 'Roofs'; stair = 'Stairs'; grid = 'Grids' }
 
 function New-FakeRevitState([string]$DocumentUid, [hashtable]$Faults = @{}, [string[]]$ExternalEdits = $null) {
+    # Trimmed, blanks dropped; no id left means the option is off (as if absent).
     $external = $null
-    if ($null -ne $ExternalEdits) { $external = [Collections.Generic.HashSet[string]]::new([string[]]@($ExternalEdits | Where-Object { $_ }), [StringComparer]::Ordinal) }
+    $ids = [string[]]@(@($ExternalEdits) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    if ($ids.Count -gt 0) { $external = [Collections.Generic.HashSet[string]]::new($ids, [StringComparer]::Ordinal) }
     @{ DocumentUid = $DocumentUid; Receipts = @{}; Received = [Collections.Generic.List[string]]::new(); Next = 0; Faults = $Faults; Episode = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0'
         Elements = [ordered]@{}; Cache = @{}; Placed = @{}; ElementNumber = 100000; SkippedAddIn = 0; JournalBaseline = $null; Snapshots = 0; DocumentPath = $null
         Copies = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -865,56 +871,88 @@ function Invoke-FakeRevitCommand($State, [string]$CommandText) {
 
 # The journal.read wire line ({"DocumentPath","Operation","Journal"}), answered like JournalRecorder.Read: add-in writes
 # are counted in skipped_add_in (never entries), and the diff compares the snapshot sources with the last non-peek read.
+# The last member of a System.Text.Json object with exactly this name (the add-in's Request binding), or $null.
+function Get-FakeWireMember($Element, [string]$Name) {
+    $found = $null
+    if ([string]$Element.ValueKind -eq 'Object') { foreach ($member in $Element.EnumerateObject()) { if ($member.Name -ceq $Name) { $found = $member.Value } } }
+    return $found
+}
+
+function Get-FakeWireText($Element, [string]$Name) {
+    $value = Get-FakeWireMember $Element $Name
+    if ($null -eq $value -or [string]$value.ValueKind -eq 'Null') { return '' }
+    if ([string]$value.ValueKind -eq 'String') { return $value.GetString() }
+    return $value.GetRawText()
+}
+
+function New-FakeJournalFailure([string]$Code) { ConvertTo-FakeResponseJson ([ordered]@{ status = 'failed'; code = $Code; verification = 'unverified' }) }
+
 function Invoke-FakeRevitWire($State, [string]$Line) {
-    $request = $Line | ConvertFrom-Json
     $State.Received.Add('journal.read')
-    if ([string]$request.Operation -ne 'journal.read') { return '{"status":"failed","code":"unsupported_capability"}' }
-    if ($null -ne $State.DocumentPath -and ![string]::Equals([string]$request.DocumentPath, $State.DocumentPath, [StringComparison]::OrdinalIgnoreCase)) { return '{"status":"failed","code":"document_conflict"}' }
-    $options = Get-FakeArg $request 'Journal'
-    $peek = [bool](Get-FakeArg $options 'peek')
-    # Pre-P2-18 values (no ExternalEdits): no entries, every sequence 0, options other than peek ignored.
-    $baselineSequence = 0; $currentSequence = 0; $afterSequence = 0; $hasMore = $false; $nextAfter = 0; $entries = @()
-    if ($null -ne $State.ExternalEdits) {
-        # MirrorJournalReadOptions.Parse, then MirrorJournalTracker.Report; failures as App.Execute answers an exception.
-        $after = $null; $maxEntries = 256
-        if ($null -ne $options) {
-            foreach ($member in $options.PSObject.Properties) {
-                $value = $member.Value
-                $integer = $value -is [long] -or $value -is [int]
-                if ($member.Name -eq 'after_sequence' -and $integer -and $value -ge 0) { $after = [long]$value }
-                elseif ($member.Name -eq 'peek' -and $value -is [bool]) { }
-                elseif ($member.Name -eq 'max_entries' -and $integer -and $value -ge 1 -and $value -le 256) { $maxEntries = [int]$value }
-                else { return ConvertTo-FakeResponseJson ([ordered]@{ status = 'failed'; code = "journal_options_invalid $($member.Name)"; verification = 'unverified' }) }
+    # ConvertFrom-Json for the pre-P2-18 path (unchanged replies); System.Text.Json, which reads duplicate and
+    # differently cased members the way the add-in does, when ConvertFrom-Json refuses the line or with ExternalEdits.
+    $request = try { $Line | ConvertFrom-Json -ErrorAction Stop } catch { $null }
+    $document = $null
+    try { $document = [Text.Json.JsonDocument]::Parse($Line, [Text.Json.JsonDocumentOptions]::new()) } catch { }
+    if ($null -eq $request -and $null -eq $document) { return New-FakeJournalFailure 'request_invalid' }
+    try {
+        if ($null -ne $request -and $null -eq $State.ExternalEdits) { $operation = [string]$request.Operation; $path = [string]$request.DocumentPath }
+        elseif ($null -ne $document) { $operation = Get-FakeWireText $document.RootElement 'Operation'; $path = Get-FakeWireText $document.RootElement 'DocumentPath' }
+        else { return New-FakeJournalFailure 'request_invalid' }
+        if ($operation -ne 'journal.read') { return '{"status":"failed","code":"unsupported_capability"}' }
+        if ($null -ne $State.DocumentPath -and ![string]::Equals($path, $State.DocumentPath, [StringComparison]::OrdinalIgnoreCase)) { return '{"status":"failed","code":"document_conflict"}' }
+        $peek = $false
+        if ($null -ne $request) { $peek = [bool](Get-FakeArg (Get-FakeArg $request 'Journal') 'peek') }
+        # Pre-P2-18 values (no ExternalEdits): no entries, every sequence 0, options other than peek ignored.
+        $baselineSequence = 0; $currentSequence = 0; $afterSequence = 0; $hasMore = $false; $nextAfter = 0; $entries = @()
+        if ($null -ne $State.ExternalEdits) {
+            if ($null -eq $document) { return New-FakeJournalFailure 'request_invalid' }
+            # MirrorJournalReadOptions.Parse, then MirrorJournalTracker.Report; failures as App.Execute answers an exception.
+            $after = $null; $maxEntries = 256; $peek = $false
+            $options = Get-FakeWireMember $document.RootElement 'Journal'
+            if ($null -ne $options -and [string]$options.ValueKind -ne 'Null') {
+                if ([string]$options.ValueKind -ne 'Object') { return New-FakeJournalFailure 'journal_options_invalid options must be an object' }
+                $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+                foreach ($member in $options.EnumerateObject()) {
+                    if (!$seen.Add($member.Name)) { return New-FakeJournalFailure "journal_options_invalid duplicate $($member.Name)" }
+                    $value = $member.Value
+                    $kind = [string]$value.ValueKind
+                    $long = [long]0; $int = [int]0
+                    if ($member.Name -ceq 'after_sequence' -and $kind -eq 'Number' -and $value.TryGetInt64([ref]$long) -and $long -ge 0) { $after = $long }
+                    elseif ($member.Name -ceq 'peek' -and $kind -in 'True', 'False') { $peek = $value.GetBoolean() }
+                    elseif ($member.Name -ceq 'max_entries' -and $kind -eq 'Number' -and $value.TryGetInt32([ref]$int) -and $int -ge 1 -and $int -le 256) { $maxEntries = $int }
+                    else { return New-FakeJournalFailure "journal_options_invalid $($member.Name)" }
+                }
             }
+            $last = [long]$State.JournalSequence
+            $since = if ($null -ne $State.JournalBaseline) { [long]$State.JournalBaselineSequence } else { [long]0 }
+            if ($null -eq $after) { $after = $since }
+            if ($after -gt $last) { return New-FakeJournalFailure 'journal_after_sequence_invalid' }
+            $candidates = @($State.Journal | Where-Object { $_.sequence -gt $after -and [string]::Equals($_.document_path, $path, [StringComparison]::OrdinalIgnoreCase) })
+            $page = [Collections.Generic.List[object]]::new()
+            $ids = 0
+            foreach ($entry in $candidates) {
+                $count = $entry.added.Count + $entry.modified.Count + $entry.deleted_element_ids.Count
+                if ($page.Count -gt 0 -and ($page.Count -ge $maxEntries -or $ids + $count -gt 20000)) { break }
+                $page.Add($entry); $ids += $count
+            }
+            $hasMore = $page.Count -lt $candidates.Count
+            $baselineSequence = $since; $currentSequence = $last; $afterSequence = $after
+            $nextAfter = if ($hasMore) { $page[$page.Count - 1].sequence } else { $last }
+            $entries = $page.ToArray()
+            if (!$peek) { $State.JournalBaselineSequence = $last }
         }
-        $last = [long]$State.JournalSequence
-        $since = if ($null -ne $State.JournalBaseline) { [long]$State.JournalBaselineSequence } else { [long]0 }
-        if ($null -eq $after) { $after = $since }
-        if ($after -gt $last) { return ConvertTo-FakeResponseJson ([ordered]@{ status = 'failed'; code = 'journal_after_sequence_invalid'; verification = 'unverified' }) }
-        $candidates = @($State.Journal | Where-Object { $_.sequence -gt $after -and [string]::Equals($_.document_path, [string]$request.DocumentPath, [StringComparison]::OrdinalIgnoreCase) })
-        $page = [Collections.Generic.List[object]]::new()
-        $ids = 0
-        foreach ($entry in $candidates) {
-            $count = $entry.added.Count + $entry.modified.Count + $entry.deleted_element_ids.Count
-            if ($page.Count -gt 0 -and ($page.Count -ge $maxEntries -or $ids + $count -gt 20000)) { break }
-            $page.Add($entry); $ids += $count
-        }
-        $hasMore = $page.Count -lt $candidates.Count
-        $baselineSequence = $since; $currentSequence = $last; $afterSequence = $after
-        $nextAfter = if ($hasMore) { $page[$page.Count - 1].sequence } else { $last }
-        $entries = $page.ToArray()
-        if (!$peek) { $State.JournalBaselineSequence = $last }
-    }
-    $current = [ordered]@{}
-    foreach ($source in (Get-FakeSnapshot $State).sources) { $current[[string]$source.unique_id] = [string]$source.category }
-    $baselineExisted = $null -ne $State.JournalBaseline
-    $base = [ordered]@{}
-    if ($baselineExisted) { $base = $State.JournalBaseline }
-    $added = @(foreach ($uid in @($current.Keys)) { if (!$base.Contains($uid)) { [ordered]@{ unique_id = $uid; category = $current[$uid] } } })
-    $removed = @(foreach ($uid in @($base.Keys)) { if (!$current.Contains($uid)) { [ordered]@{ unique_id = $uid; category = $base[$uid] } } })
-    if (!$peek) { $State.JournalBaseline = $current }
-    $report = [ordered]@{ journal_version = 1; document_unique_id = $State.DocumentUid; document_path = [string]$request.DocumentPath; baseline_sequence = $baselineSequence; current_sequence = $currentSequence; after_sequence = $afterSequence; baseline_existed = $baselineExisted; peek = $peek
-        journal_complete = $true; failures_since_baseline = 0; has_more = $hasMore; next_after_sequence = $nextAfter; entries = $entries
-        diff = [ordered]@{ diff_version = 1; document_unique_id = $State.DocumentUid; added = $added; removed = $removed; changed = @() } }
-    return ConvertTo-FakeResponseJson ([ordered]@{ status = 'succeeded'; verification = 'unverified'; attached = $true; dropped = 0; skipped_add_in = $State.SkippedAddIn; failures = 0; unidentified = 0; report = $report })
+        $current = [ordered]@{}
+        foreach ($source in (Get-FakeSnapshot $State).sources) { $current[[string]$source.unique_id] = [string]$source.category }
+        $baselineExisted = $null -ne $State.JournalBaseline
+        $base = [ordered]@{}
+        if ($baselineExisted) { $base = $State.JournalBaseline }
+        $added = @(foreach ($uid in @($current.Keys)) { if (!$base.Contains($uid)) { [ordered]@{ unique_id = $uid; category = $current[$uid] } } })
+        $removed = @(foreach ($uid in @($base.Keys)) { if (!$current.Contains($uid)) { [ordered]@{ unique_id = $uid; category = $base[$uid] } } })
+        if (!$peek) { $State.JournalBaseline = $current }
+        $report = [ordered]@{ journal_version = 1; document_unique_id = $State.DocumentUid; document_path = $path; baseline_sequence = $baselineSequence; current_sequence = $currentSequence; after_sequence = $afterSequence; baseline_existed = $baselineExisted; peek = $peek
+            journal_complete = $true; failures_since_baseline = 0; has_more = $hasMore; next_after_sequence = $nextAfter; entries = $entries
+            diff = [ordered]@{ diff_version = 1; document_unique_id = $State.DocumentUid; added = $added; removed = $removed; changed = @() } }
+        return ConvertTo-FakeResponseJson ([ordered]@{ status = 'succeeded'; verification = 'unverified'; attached = $true; dropped = 0; skipped_add_in = $State.SkippedAddIn; failures = 0; unidentified = 0; report = $report })
+    } finally { if ($null -ne $document) { $document.Dispose() } }
 }

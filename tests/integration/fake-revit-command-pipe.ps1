@@ -50,12 +50,18 @@ try {
                 # WireLine writes Command last, verbatim: {"DocumentPath":...,"Operation":"revit.command",...,"Command":<envelope>}
                 $marker = '"Command":'
                 $at = $line.LastIndexOf($marker, [StringComparison]::Ordinal)
-                $outer = $line | ConvertFrom-Json
-                if ($outer.Operation -eq 'journal.read') {
+                # The Operation as System.Text.Json reads it (last member of that exact name): a line ConvertFrom-Json refuses
+                # (duplicate or differently cased members) still gets a reply instead of stopping the fake.
+                $operation = $null
+                try {
+                    $parsed = [Text.Json.JsonDocument]::Parse($line, [Text.Json.JsonDocumentOptions]::new())
+                    try { $operation = Get-FakeWireText $parsed.RootElement 'Operation' } finally { $parsed.Dispose() }
+                } catch { $operation = $null }
+                if ($operation -eq 'journal.read') {
                     $response = Invoke-FakeRevitWire $state $line
                     [IO.File]::AppendAllText($LogFile, "journal.read`n")
                 }
-                elseif ($at -lt 0 -or $outer.Operation -ne 'revit.command' -or !$line.EndsWith('}')) { $response = ConvertTo-FakeResponseJson (New-FakeFailure 'envelope_invalid' $null 'not a revit.command wire line') }
+                elseif ($at -lt 0 -or $operation -ne 'revit.command' -or !$line.EndsWith('}')) { $response = ConvertTo-FakeResponseJson (New-FakeFailure 'envelope_invalid' $null 'not a revit.command wire line') }
                 else {
                     $commandText = $line.Substring($at + $marker.Length, $line.Length - $at - $marker.Length - 1)
                     $response = Invoke-FakeRevitCommand $state $commandText
