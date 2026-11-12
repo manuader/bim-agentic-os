@@ -309,3 +309,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P1-21: no failed attempts (red 43151595118 CS2001 missing RevitDeadlineTransport.cs → green 43152122711; review tests pinned existing behaviour, green 43163347980, comments 43165743640).
 - P2-18: no failed attempts (red 43151779386 pipe script lacked -ExternalEdits → green 43153831165; review red 43159370704 blank option/case/object/duplicate parsing → green 43161374794).
 - P6-16: no failed attempts (red 43151778821 CIDs as Latin-1, no rooms, warnings absent → green 43153070188; review red 43156979215 document-wide bound, decoded-length charge, codespace cap, surrogate carry, /ToUnicode null → green 43157029343). Superseded red 43156955649 (7d19314) had a wrong expected character in a new test, corrected in 0f326a1 before the implementation; no assertion loosened.
+
+### Relay197 (2026-11-12, cloud)
+- P3-14: no failed attempts (red 43171708125 diff_intent missing from tools/list → green 43173176518; review red 43176571475 empty path still diff_intent_usage → green 43178665401).
+- P5-16: no failed attempts (red 43171602064 skills/precedence refused as unknown members → green 43173255032; review red 43181804179 non-id/oversize precedence came back precedence_unknown → green 43184471713).
+- P7-15: no failed attempts (red 43171474254 six package checks → green 43172800830; review tests+comments green 43187267711 first try).

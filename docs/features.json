@@ -1437,7 +1437,7 @@
         "interfaces/cli/SkillPackLookup.cs",
         "tests/packaging/test-package.ps1"
       ],
-      "blocker": "stage options (circulation/facade/IR pack parameters) keep defaults; derived project id covers the pack id, not the manifest content; package root detected by markers (cli/ + VERSION + manifest.json + skills/), not their content; the package ships every tracked skill pack; plan-layouts --pack stays repository-only.",
+      "blocker": "stage options (circulation/facade/IR pack parameters) keep defaults; derived project id covers the pack id, not the manifest content; package root detected by markers (cli/ + VERSION + manifest.json + skills/), not their content; the package ships every tracked skill pack; plan-layouts --pack and generate-typology use the same package-first lookup (P7-15, P5-16).",
       "scope": "P7-09: `generate-prototypes request.json output.json` parses a strict snake_case request (typology, lot, alternatives, seed, weights, fixed rooms/walls, pack, project_id, revision, circulation/facade weights, snap), reads skills/<pack>/skill.json bounded, runs PrototypePipeline.Run and writes PrototypePipelineSerializer bytes never-overwrite; default project id = v8 UUID from SHA-256 of the canonical request (-0→0, full weights object, [] for absent lists); typed generate_prototypes_* / output_* / input_* refusals incl. lone surrogates; byte-equal to the in-process run. CI red 42778985107, green 42781456410, review red 42800136898, green 42801508178. P7-12: the release package ships every git-tracked skills/ file byte-exact next to cli/ (manifest/checksums cover them; tracked entries other than mode 100644/100755 refused skills_entry_not_regular); the verb looks in <package>/skills first when the binary folder is cli/ beside VERSION, manifest.json and skills/, then the repository walk; package-layout run byte-equal to the repo run, package pack wins over a different repo pack, a stray skills/ next to a non-package binary is ignored, a package without skills/ still refuses generate_prototypes_repository_not_found. CI red 43007834744, green 43009419027, review red 43013468121, green 43014850081."
     },
     {
@@ -1524,7 +1524,7 @@
         "core/Bim.Generative/TypologyBrief.cs",
         "tests/generative/TypologyRulesTests.cs"
       ],
-      "blocker": "Only error-severity area_m2/min_side_m min rules with room-glob targets reach the planner (warnings ignored); composed area minimums above the programme minimum are still refused as typology_minimum_conflict (P5-07), so mostly side rules change plans; hall rule special-cases CABA corredor-side-min 1.00 m to keep the template 0.95 m narrow-lot value; used by TypologyPipeline since P5-14 (RunComposed manifest-list entry since P5-15); not reachable from the generate-typology CLI yet (P5-16).",
+      "blocker": "Only error-severity area_m2/min_side_m min rules with room-glob targets reach the planner (warnings ignored); composed area minimums above the programme minimum are still refused as typology_minimum_conflict (P5-07), so mostly side rules change plans; hall rule special-cases CABA corredor-side-min 1.00 m to keep the template 0.95 m narrow-lot value; used by TypologyPipeline since P5-14 (RunComposed manifest-list entry since P5-15); reachable from the generate-typology CLI through request members skills/precedence since P5-16.",
       "scope": "P5-13: TypologyRules.From(SkillResolution, brief, lot) maps composed min area/side rules (grouped by skill+glob in resolver order, max wins, traced per pack/rule id with threshold source) plus hall/laundry template rules into PlannerRules; TypologyRules.Generate plans TypologyBrief candidates with them through a shared internal TypologyBrief.Plan (refusal parity table with TypologyBrief.Generate); typed typology_rule_pattern_unsupported, typology_rule_threshold_invalid, typology_minimum_conflict when side² exceeds the programme maximum; corridor rule (corredor_lado_min_m) drives the hall; defaults reproduce the P5-11 digest 85102ea0…; stricter 3.2 m bedroom side changes plans. CI red 42880542772, green 42882779700, review red 42889236815, green 42889460850."
     },
     {
@@ -1622,7 +1622,7 @@
         "core/Bim.Generative/TypologyPipelineOptions.cs",
         "tests/generative/TypologyPipelineRulesTests.cs"
       ],
-      "blocker": "one level; each accepted alternative gets its own BIM-IR under the same project id, nothing committed; composed rules through the SkillResolution overload or RunComposed (P5-15); pack check compares Id/Version, not content; on 12x12/16x16 lots many candidates are duplicates or fail facade_ir_entrance_overlap / facade_edge_too_short@dining; CLI generate-typology since P7-14 (fixed code pack, no include/composed members yet: P5-16, P7-16).",
+      "blocker": "one level; each accepted alternative gets its own BIM-IR under the same project id, nothing committed; composed rules through the SkillResolution overload or RunComposed (P5-15); pack check compares Id/Version, not content; on 12x12/16x16 lots many candidates are duplicates or fail facade_ir_entrance_overlap / facade_edge_too_short@dining; CLI generate-typology since P7-14 (fixed code pack, composed skills/precedence members since P5-16; no include/code_pack members yet: P7-16).",
       "scope": "P5-12: TypologyPipeline.Run(pack|SkillResolution, TypologyBriefRequest, PrototypePipelineOptions) runs TypologyBrief.Generate candidates through the unchanged PrototypePipeline.Rank circulation → facade → BIM-IR window gates with the request weights (strategy whole_lot); refusals typology-first then options; TypologyPipelineSerializer canonical JSON. Pinned SHA-256 3a55177415f42f4d324cf3e4bd298223595c429006595a635aa12e9fb1a3d20b (family 4, 12x12, 6 alt, seed 0, Infeasible) and eb8720c1a98a749048df6ac69f1794b965e833efc963eb9ddfe58db0ae886f4e (family 3, 16x16, 4 alt, seed 0, Ranked), identical on Linux and Windows; rejections matched code@subject against independently recomputed gates; P7-07 and P5-11 pins unchanged. CI red 42942656762, green 42945770818, review green 42949856832. P5-14: opt-in TypologyPipelineOptions(ComposedRules) plans with TypologyRules.Generate (composed pack + SkillResolution rules), snap without its own rules validates against the composed rules, options.Pack must match a resolution skill by Id/Version (typology_pipeline_pack_mismatch), result JSON adds a rules member (planner_rules, traces) only in composed mode; default output byte-identical (both P5-12 pins); composed pin a8c62da59e0eee2d25af4d27bc37fcf2f67ae366e7e48446f1edfe3c87f7c0dd (CABA+typology, family 3, 16x16, 4 alt, seed 0) on Linux and Windows; typology_minimum_conflict passes through. CI red 43007881318, pin 43008867735, green 43010911469, review red 43020311373, green 43021645045."
     },
     {
@@ -1631,10 +1631,11 @@
       "evidence": [
         "interfaces/cli/PlanLayoutsCommand.cs",
         "interfaces/cli/SkillPackLookup.cs",
-        "tests/cli/PlanLayoutsTests.cs"
+        "tests/cli/PlanLayoutsTests.cs",
+        "tests/cli/GeneratePrototypesTests.cs"
       ],
-      "blocker": "One pack only (requires not resolved); template hall/laundry rules not added; minimums above a brief room maximum give area_range_conflict (infeasible), not typology_minimum_conflict; '?' glob branch defensive (unreachable from skill.json); de_DE checks skip when culture data is missing; planner/skill glob case folding differ on rare non-ASCII letters (inherited).",
-      "scope": "P7-13: `plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id]` loads skills/<id>/skill.json via the shared SkillPackLookup (repository root from the binary, BoundedInput 8 MiB, SkillParser, id match, id guard against traversal; generate-prototypes refactored onto it unchanged) and plans with the pack's error-severity min area_m2/min_side_m room-glob rules grouped per glob (max per property, parameter defaults traced as '(p v)'); stdout adds pack/pack_rules; absent --pack byte-identical; refusals plan_layouts_pack_{id_invalid,repository_not_found,unavailable,invalid,rules_none,rule_invalid}, nothing written. Byte-equal to in-process SpacePlanner runs with literal rule lists cross-checked against TypologyRules.From. CI red 42942742275, green 42943881517, review red 42951916888, green 42952935652."
+      "blocker": "One pack only (requires not resolved); template hall/laundry rules not added; minimums above a brief room maximum give area_range_conflict (infeasible), not typology_minimum_conflict; '?' glob branch defensive (unreachable from skill.json); de_DE checks skip when culture data is missing; planner/skill glob case folding differ on rare non-ASCII letters (inherited). No test against a package built by scripts/package.ps1 (P7-17).",
+      "scope": "P7-13: `plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id]` loads skills/<id>/skill.json via the shared SkillPackLookup (package root first since P7-15, else repository root from the binary, BoundedInput 8 MiB, SkillParser, id match, id guard against traversal; generate-prototypes refactored onto it unchanged) and plans with the pack's error-severity min area_m2/min_side_m room-glob rules grouped per glob (max per property, parameter defaults traced as '(p v)'); stdout adds pack/pack_rules; absent --pack byte-identical; refusals plan_layouts_pack_{id_invalid,repository_not_found,unavailable,invalid,rules_none,rule_invalid}, nothing written. Byte-equal to in-process SpacePlanner runs with literal rule lists cross-checked against TypologyRules.From. CI red 42942742275, green 42943881517, review red 42951916888, green 42952935652. P7-15: --pack uses SkillPackLookup.Load(id, packageFirst: true) like generate-prototypes — package outside a repository byte-equal to the repository run, package inside a repository read first with no fallback, package without skills/ refused plan_layouts_pack_repository_not_found, stray skills/ with no or partial markers ignored. CI red 43171474254, green 43172800830, review green 43187267711."
     },
     {
       "id": "apply-intent-cli",
@@ -1818,7 +1819,7 @@
         "core/Bim.Generative/TypologyPipeline.cs",
         "tests/generative/TypologyPipelineManifestsTests.cs"
       ],
-      "blocker": "No CLI option yet (P5-16); programme pack id is empty when the resolution is refused; only the given manifests form the catalog (no repository lookup).",
+      "blocker": "CLI generate-typology skills/precedence since P5-16; programme pack id is empty when the resolution is refused; only the given manifests form the catalog (no repository lookup).",
       "scope": "P5-15: TypologyPipeline.RunComposed(pack, request, options, skills?, precedence?) resolves the typology pack + options.Pack + extra manifests (content-equal manifests deduped, differing same-id manifests → one id_duplicate per id with versions in SkillVersion order) and returns the composed-rules Run(resolution, …) bytes (CABA+typology pin a8c62da5… unchanged); non-typology pack → typology_kind_mismatch; resolver issues (skill_conflict, dependency_missing, version_mismatch, parameter_unknown, default_conflict, precedence_unknown) passed through typed; culture independent. CI red 43107368116, green 43109205242; review red 43115474002/43115509389, green 43117947248."
     },
     {
@@ -1829,7 +1830,7 @@
         "interfaces/cli/Program.cs",
         "tests/cli/GenerateTypologyTests.cs"
       ],
-      "blocker": "Proposal only, nothing committed; fixed code pack ar.caba.codigo-edificacion; no include, code_pack or composed-rules members (P7-16, P5-16); project_id required; packaged generate-typology not run by tests/packaging.",
+      "blocker": "Proposal only, nothing committed; fixed code pack ar.caba.codigo-edificacion; no include or code_pack members (P7-16); composed skills/precedence since P5-16; project_id required; packaged generate-typology not run by tests/packaging.",
       "scope": "P7-14: `generate-typology request.json output.json` reads a bounded strict snake_case request (pack, family_size, lot{width_m,depth_m}, alternatives, seed, project_id, optional partial weights), loads both packs with SkillPackLookup.Load(id, packageFirst: true) and writes TypologyPipelineSerializer bytes byte-equal to the in-process TypologyPipeline.Run (pins eb8720c1…/3a551774… through the real CLI); never-overwrite (CreateNew), typed generate_typology_* refusals with precedence usage → output → input → request → repository → pack → code pack → pipeline → write, nothing written on refusal; de_DE byte-identical; release package layout byte-equal. CI red 43107527837, green 43109424365; review green 43120709470."
     },
     {
@@ -1900,6 +1901,28 @@
       ],
       "blocker": "Simple fonts without ToUnicode still decode as Latin-1 (/Differences glyph names → P6-18); usecmap ignored; non-Identity Type0 CMaps only split codes through the ToUnicode codespace; BMP bfrange stops at U+FFFF; cad-brief CLI not run end to end on tounicode.pdf (compressed/XObject CLI twin → P6-17).",
       "scope": "P6-16: ToUnicode CMaps (codespace ≤100 ranges, bfchar, bfrange incrementing incl. surrogate carry and array form; Flate streams; BCL only) decode Type0 Identity-H/V, non-Identity multi-byte and simple fonts in Tj/TJ/'/\"; Form XObjects use their own font resources, q/Q restores the decoder; brief extraction reads Dormitorio 1 / Baño / Cocina with areas from a deterministic generated fixture (sha pinned); typed warnings tounicode-missing / tounicode-invalid / tounicode-unmapped keep the old decoding; mapped codes charged to the document-wide MaxParsedElements (element-limit), decoded text to MaxInterpretedBytes (interpret-limit); existing PDF pins unchanged. CI red 43151778821, green 43153070188; review red 43156979215, green 43157029343."
+    },
+    {
+      "id": "mcp-diff-intent",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/mcp/DiffIntentTool.cs",
+        "interfaces/mcp/McpServer.cs",
+        "interfaces/mcp/Bim.Mcp.csproj",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "Takes file paths, not inline JSON; captures process-wide Console.Out/Environment.ExitCode around the CLI verb (correct only one request at a time, the stdio server model; removal → P3-15); de_DE not repeated for MCP; not run against a live MCP client.",
+      "scope": "P3-14: MCP tool diff_intent {project_path, intent_path} (permission read, readOnlyHint) runs the linked CLI DiffIntentCommand.Run → IntentPlan.ParseIntent/Build (no copied plan logic); text byte-equal to the real CLI process and to the library plan on five plan shapes; every CLI refusal byte-equal, isError iff the CLI exits 1; diff_intent_path_invalid (blank, NUL, > 4096, GetFullPath, lone surrogate) before any I/O; no writes (SHA+mtime tree snapshot); static checks require the shared path and ban ApplyEditsCommand.Run/Commit and ApplyIntentCommand in interfaces/mcp. CI red 43171708125, green 43173176518, review red 43176571475, green 43178665401."
+    },
+    {
+      "id": "cli-generate-typology-composed",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/GenerateTypologyCommand.cs",
+        "tests/cli/GenerateTypologyTests.cs"
+      ],
+      "blocker": "Only a stricter package pack changes the output among tested extras (shipped style packs add no planner rule on the tested lots); composed stdout does not echo precedence; not exposed over MCP (P5-17).",
+      "scope": "P5-16: generate-typology request members skills (≤ 64 skill ids, SkillPackLookup.Load(id, packageFirst: true), request order) and precedence (≤ 64 skill ids) run TypologyPipeline.RunComposed; \"skills\":[] byte-equal to in-process RunComposed (pin a8c62da5…, de_DE, package layout); resolver refusals (skill_conflict, precedence_unknown, precedence_duplicate, kind mismatch) as generate_typology_refused; generate_typology_skill_unavailable/_invalid with skill; absent members keep the P7-14 bytes and stdout. CI red 43171602064, green 43173255032, review red 43181804179, green 43184471713."
     }
   ]
 }
