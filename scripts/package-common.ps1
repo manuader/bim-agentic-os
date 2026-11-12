@@ -518,12 +518,14 @@ function New-PackageSbomText([string]$Directory, [string]$Version, [string]$Comm
     return ($lines -join "`n") + "`n"
 }
 
-# P10-15 bidirectional manifest/sbom agreement over the shipped binaries, independent of the files on disk (typed
-# sbom_manifest_mismatch naming each offending path): every manifest.json .dll/.exe has an sbom "assemblies" line with
-# the same path; every manifest.json .so[.N]/.dylib is named (ignoring case) in a listed reference's "natives" or is
-# first-party (a project entry of its folder's *.deps.json), natives having no per-path sbom line; and every sbom
-# "assemblies" path is a manifest.json binary entry. Reference "assemblies"/"natives" name lists are restore data
-# (every RID and culture) and are not required to ship.
+# P10-15 bidirectional manifest/sbom agreement over the shipped binaries, read from manifest.json and sbom.json rather
+# than from the files on disk (typed sbom_manifest_mismatch naming each offending path in the message of its direction):
+# every manifest.json .dll/.exe has an sbom "assemblies" line with the same path; every manifest.json .so[.N]/.dylib is
+# named (ignoring case) in a listed reference's "natives" or is first-party (a project entry of its folder's *.deps.json,
+# the one input read from disk, via $DepsIndex), natives having no per-path sbom line; and every sbom "assemblies" path
+# is a manifest.json binary entry. An sbom "assemblies" entry without a path is sbom_invalid naming "<missing path>" and
+# the entry's name. Reference "assemblies"/"natives" name lists are restore data (every RID and culture) and are not
+# required to ship.
 function Test-PackageSbomManifestAgreement($Manifest, $Sbom, [object[]]$References, $DepsIndex) {
     $problems = [Collections.Generic.List[string]]::new()
     $shipped = [Collections.Generic.List[string]]::new()
@@ -534,8 +536,10 @@ function Test-PackageSbomManifestAgreement($Manifest, $Sbom, [object[]]$Referenc
     }
     $lined = [Collections.Generic.List[string]]::new()
     $linedSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $pathless = [Collections.Generic.List[string]]::new()
     foreach ($component in @($Sbom.assemblies | Where-Object { $null -ne $_ })) {
         $path = [string]$component.path
+        if (!$path) { $pathless.Add("<missing path> (name '$(if ([string]$component.name) { [string]$component.name } else { '<missing name>' })')"); continue }
         if ($linedSet.Add($path)) { $lined.Add($path) }
     }
     $nativeNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -549,12 +553,13 @@ function Test-PackageSbomManifestAgreement($Manifest, $Sbom, [object[]]$Referenc
     }
     $orphans = [Collections.Generic.List[string]]::new()
     foreach ($path in $lined) { if (!$shippedSet.Contains($path)) { $orphans.Add($path) } }
+    if ($pathless.Count) { $problems.Add("sbom_invalid: sbom.json assemblies entries without a path: $($pathless -join ', ')") }
     if ($unlined.Count) { $problems.Add("sbom_manifest_mismatch: shipped binaries in manifest.json without an sbom.json line: $($unlined -join ', ')") }
     if ($orphans.Count) { $problems.Add("sbom_manifest_mismatch: sbom.json assemblies lines without a manifest.json entry: $($orphans -join ', ')") }
     return $problems.ToArray()
 }
 
-# Typed SBOM problems (sbom_missing,sbom_invalid, sbom_build_only, sbom_mismatch; P10-14 sbom_unattributed for a
+# Typed SBOM problems (sbom_missing, sbom_invalid, sbom_build_only, sbom_mismatch; P10-14 sbom_unattributed for a
 # shipped binary (.dll/.exe/.so[.N]/.dylib) that is neither first-party (a project entry of its folder's *.deps.json)
 # nor attributed to one listed reference, sbom_attribution_ambiguous when several listed references claim it). The sbom is re-rendered from the
 # package files and its own reference list and must match byte for byte, and the references must be canonical
@@ -613,7 +618,7 @@ function Test-PackageSbom([string]$Directory, $Manifest) {
     if ($unattributed.Count) { $problems.Add("sbom_unattributed: third-party binaries not attributed to a NuGet package (direct or transitive) in sbom.json: $($unattributed -join ', ')") }
     if ($ambiguous.Count) { $problems.Add("sbom_attribution_ambiguous: several listed NuGet packages claim these shipped binaries and no deps.json disambiguates them: $($ambiguous -join ', ')") }
     foreach ($problem in @(Test-PackageSbomManifestAgreement $Manifest $sbom $references.ToArray() $depsIndex)) { $problems.Add($problem) }
-    $expected =New-PackageSbomText $base ([string]$Manifest.version) ([string]$Manifest.source_commit) $references.ToArray()
+    $expected = New-PackageSbomText $base ([string]$Manifest.version) ([string]$Manifest.source_commit) $references.ToArray()
     if ($text -cne $expected) {
         $listed = @{}
         foreach ($component in @($sbom.assemblies | Where-Object { $null -ne $_ })) { $listed[[string]$component.path] = [string]$component.sha256 }
