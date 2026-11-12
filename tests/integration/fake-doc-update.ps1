@@ -14,21 +14,73 @@
 # Faults (in the sequence's $Faults): DocUpdateLoseReplyOf = '<step key>|<command>' (that write runs, its reply is lost:
 # failed no_response with reply_lost, the rest not_sent); DocUpdateDrift = '<step key>' (that call plans other bytes);
 # DocUpdateDependents = @{ '<step key>' = uids } (its collect dry runs report them).
+# P4-16: a request with a record member is the session's doc-realized call (same channel, -InvokeDocUpdate): see
+# Invoke-FakeDocRealized; its calls are listed in Realized, not in Calls.
 function Get-FakeDocSha([string]$Text) { [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.UTF8Encoding]::new($false).GetBytes($Text))).ToLowerInvariant() }
 function New-FakeDocUpdate($Fake, [string]$Directory, [hashtable]$Faults = @{}) {
     $directory = Join-Path $Directory ('doc-update-' + [guid]::NewGuid())
     New-Item -ItemType Directory -Force $directory | Out-Null
-    return @{ Fake = $Fake; Directory = $directory; Faults = $Faults; Calls = [Collections.Generic.List[string]]::new() }
+    return @{ Fake = $Fake; Directory = $directory; Faults = $Faults; Calls = [Collections.Generic.List[string]]::new(); Realized = [Collections.Generic.List[string]]::new() }
 }
 function Get-FakeDocElement($Project, [string]$Kind) {
     $elements = Get-CatalogueList $Project 'Elements'
     foreach ($element in $elements) { if ((Get-CatalogueMember $element 'Kind') -eq $Kind) { return $element } }
     return $null
 }
+# P4-16: stand-in for the CLI doc-realized verb (interfaces/cli/DocRealizedCommand.cs over core DocRealized.FromRecord)
+# for the session's request {record, fixture, assignments, document}. Mirrors only what the session can meet: the
+# record's schema_version, steps (index i+1) and document_unique_id (realized_document_mismatch); per source in ordinal
+# order: element sources of the fixture only (else realized_source_unknown), the assigned step (realized_step_unknown),
+# passed, not blocked and status succeeded (realized_step_not_succeeded), its first created UniqueId
+# (realized_step_no_created), not in any succeeded step's deleted[] (realized_unique_id_deleted), not realized twice
+# (realized_unique_id_duplicate). Writes the compact map sorted by source to a new file and prints the CLI's line
+# {status, output, entries, bytes, sha256}; a refusal prints {status: failed, code, detail}, exit 1, no file.
+function Invoke-FakeDocRealized($State, [int]$Index, [string]$Key, $Request) {
+    $State.Realized.Add($Key)
+    function Line($Value, [int]$Exit) { @{ output = ($Value | ConvertTo-Json -Depth 20 -Compress); exit_code = $Exit; timed_out = $false } }
+    function Refuse([string]$Code, [string]$Detail) { Line ([ordered]@{ status = 'failed'; code = $Code; detail = $Detail }) 1 }
+    $record = Get-CatalogueMember $Request 'record'
+    if ((Get-CatalogueMember $record 'schema_version') -ne 1) { return Refuse 'realized_record_invalid' 'schema_version' }
+    $documentUid = [string](Get-CatalogueMember $record 'document_unique_id')
+    $steps = Get-CatalogueList $record 'steps'
+    if (!$steps.Count) { return Refuse 'realized_record_invalid' 'steps' }
+    for ($i = 0; $i -lt $steps.Count; $i++) { if ([int](Get-CatalogueMember $steps[$i] 'index') -ne $i + 1) { return Refuse 'realized_record_invalid' "steps[$i].index" } }
+    if (![string]::Equals([string](Get-CatalogueMember $Request 'document'), $documentUid, [StringComparison]::OrdinalIgnoreCase)) { return Refuse 'realized_document_mismatch' 'document_unique_id' }
+    $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($element in (Get-CatalogueList (Get-CatalogueMember $Request 'fixture') 'Elements')) { $null = $ids.Add([string](Get-CatalogueMember $element 'Id')) }
+    $succeeded = { param($Step) (Get-CatalogueMember $Step 'passed') -eq $true -and (Get-CatalogueMember $Step 'blocked') -ne $true -and [string](Get-CatalogueMember (Get-CatalogueMember $Step 'response') 'status') -eq 'succeeded' }
+    $deleted = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($step in $steps) { if ([string](Get-CatalogueMember (Get-CatalogueMember $step 'response') 'status') -eq 'succeeded') { foreach ($uid in (Get-CatalogueList (Get-CatalogueMember $step 'response') 'deleted')) { $null = $deleted.Add([string]$uid) } } }
+    $assignments = Get-CatalogueMember $Request 'assignments'
+    $sources = [string[]]@(if ($assignments -is [Collections.IDictionary]) { $assignments.Keys } else { $assignments.PSObject.Properties | ForEach-Object { $_.Name } })
+    [Array]::Sort($sources, [StringComparer]::Ordinal)
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $map = [ordered]@{}
+    foreach ($source in $sources) {
+        $stepKey = [string](Get-CatalogueMember $assignments $source)
+        if (!$source.StartsWith('element:', [StringComparison]::Ordinal) -or !$ids.Contains($source.Substring(8))) { return Refuse 'realized_source_unknown' $source }
+        $step = @($steps | Where-Object { [string](Get-CatalogueMember $_ 'key') -ceq $stepKey }) | Select-Object -First 1
+        if ($null -eq $step) { return Refuse 'realized_step_unknown' $source }
+        if (!(& $succeeded $step)) { return Refuse 'realized_step_not_succeeded' $source }
+        $created = Get-CatalogueList (Get-CatalogueMember $step 'response') 'created'
+        if (!$created.Count) { return Refuse 'realized_step_no_created' $source }
+        $uid = [string]$created[0]
+        if ($deleted.Contains($uid)) { return Refuse 'realized_unique_id_deleted' $source }
+        if (!$seen.Add($uid)) { return Refuse 'realized_unique_id_duplicate' $source }
+        $map[$source] = $uid
+    }
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $map -Compress))
+    $output = Join-Path $State.Directory ('{0:D2}-{1}.realized.json' -f $Index, $Key)
+    [IO.File]::WriteAllBytes($output, $bytes)
+    $reply = Line ([ordered]@{ status = 'succeeded'; output = $output; entries = $map.Count; bytes = $bytes.Length; sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)) }) 0
+    $reply['realized_file'] = $output
+    return $reply
+}
 function Invoke-FakeDocUpdate($State, [int]$Index, [string]$Key, [string]$Json) {
+    $request = $Json | ConvertFrom-Json
+    if ($null -ne (Get-CatalogueMember $request 'record')) { return Invoke-FakeDocRealized $State $Index $Key $request }
     $State.Calls.Add($Key)
     $faults = $State.Faults
-    $request = $Json | ConvertFrom-Json
     $bindings = Get-CatalogueMember $request 'bindings'
     $document = Get-CatalogueMember $bindings 'document'
     $docPath = [string](Get-CatalogueMember $document 'path')

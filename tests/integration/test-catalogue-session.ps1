@@ -13,7 +13,9 @@
 # verb (a dry run, then --execute --expected-document with that plan's sha256; first realizing the default
 # documentation of a BIM-IR fixture of the wall and its door, then the move regenerating the door tag), its requests,
 # plan files and reports, against an in-process stand-in for doc-update (fake-doc-update.ps1); a reply_lost entry stops
-# the run, a refusal (dependent_unknown, doc_update_plan_changed) stops only the update.
+# the run, a refusal (dependent_unknown, doc_update_plan_changed) stops only the update. P4-16: the first realized map
+# (the wall and door) comes from the CLI doc-realized verb on the run's own record (stand-in in fake-doc-update.ps1)
+# and its output file is what doc-update --realized reads; a realized_* refusal stops the run.
 # Runs in CI through
 # scripts/verify.ps1 (catalogue-session, and catalogue-session-cli with the real CLI); never Revit.
 # With -Dotnet and -CliDll: the whole one-run sequence through the real CLI
@@ -173,7 +175,8 @@ Assert ($clean.Result.groups.Count -eq 1 -and (Format-CatalogueSummary $clean.Re
 $groupKeys = @('v1', 'v2', 'vistas', 'snapshot', 'consultas', 'estructura', 'documentacion', 'diario', 'formas', 'extrusion', 'transformar', 'copia', 'modificar')
 # P4-14: the documentation update at the end of the documentation group; its deletes run inside the doc-update verb
 # (no element.delete step of the session), its four doc-update calls are steps of their own.
-$docUpExpected = @('doc-up-wall', 'doc-up-door', 'doc-up-realize-plan', 'doc-up-realize', 'doc-up-move', 'doc-up-update-plan', 'doc-up-update', 'doc-up-stale-gone', 'doc-up-tag-new')
+# P4-16: doc-up-elements runs doc-realized on the run's own record before the first doc-update.
+$docUpExpected = @('doc-up-wall', 'doc-up-door', 'doc-up-elements', 'doc-up-realize-plan', 'doc-up-realize', 'doc-up-move', 'doc-up-update-plan', 'doc-up-update', 'doc-up-stale-gone', 'doc-up-tag-new')
 $docUpCalls = @('doc-up-realize-plan', 'doc-up-realize', 'doc-up-update-plan', 'doc-up-update')
 function Get-FailedSteps($Result) { (@($Result.steps | Where-Object { !$_.passed } | ForEach-Object { "[$($_.group)] $($_.key): $($_.reason)" }) -join '; ') }
 function Get-Group($Result, [string]$Key) { @($Result.groups | Where-Object { $_.key -eq $Key })[0] }
@@ -360,9 +363,13 @@ foreach ($group in (Get-CatalogueGroups)) {
         $key = [string]$spec.Key
         $isWire = $spec.ContainsKey('Wire') -and $spec.Wire
         $isDocUpdate = $spec.ContainsKey('DocUpdate') -and $spec.DocUpdate
+        $isDocRealized = $spec.ContainsKey('DocRealized') -and $spec.DocRealized
+        Assert (!($isDocUpdate -and $isDocRealized) -and !($isWire -and $isDocRealized)) "[$($group.Key)] ${key}: one channel per step"
         if ($isWire) { Assert ($spec.Command -eq 'journal.read') "[$($group.Key)] ${key}: only journal.read goes as a wire line" }
         # P4-14: a doc-update step is one call of the CLI verb, not a catalogue envelope.
         elseif ($isDocUpdate) { Assert ($spec.Command -eq 'doc-update' -and $key -in $docUpCalls) "[$($group.Key)] ${key}: only the P4-14 calls go through doc-update" }
+        # P4-16: the doc-realized call (offline CLI verb on the run record) is the one step before the first doc-update.
+        elseif ($isDocRealized) { Assert ($spec.Command -eq 'doc-realized' -and $key -eq 'doc-up-elements') "[$($group.Key)] ${key}: only doc-up-elements goes through doc-realized" }
         else { Assert ($catalogue.Contains([string]$spec.Command)) "[$($group.Key)] ${key}: $($spec.Command) is not a catalogue command" }
         if ($spec.Expect.ContainsKey('Code')) { Assert ($spec.Expect.Status -eq 'failed' -and $codes.Contains([string]$spec.Expect.Code)) "[$($group.Key)] ${key}: expected code $($spec.Expect.Code) is not a Core refusal code" }
         else { Assert ($spec.Expect.Status -eq 'succeeded') "[$($group.Key)] ${key}: a failure must name its code" }
@@ -615,8 +622,8 @@ Assert (($docTail -join ',') -eq ($docUpExpected -join ',')) "P4-14: the documen
 foreach ($key in $docUpExpected) {
     $step = Get-Step $full $key
     $response = Get-CatalogueMember $step 'response'
-    $want = if ($key -eq 'doc-up-stale-gone') { 'reference_not_found' } elseif ($key -in $docUpCalls) { 'succeeded' } else { 'ok' }
-    $got = if ($key -in $docUpCalls) { [string](Get-CatalogueMember $response 'status') } else { [string](Get-CatalogueMember $response 'code') }
+    $want = if ($key -eq 'doc-up-stale-gone') { 'reference_not_found' } elseif ($key -in $docUpCalls -or $key -eq 'doc-up-elements') { 'succeeded' } else { 'ok' }
+    $got = if ($key -in $docUpCalls -or $key -eq 'doc-up-elements') { [string](Get-CatalogueMember $response 'status') } else { [string](Get-CatalogueMember $response 'code') }
     Assert ($null -ne $step -and $step.passed -and $got -eq $want) "P4-14 step $key must pass answering ${want}: $(if ($step) { "$got / $($step.reason)" } else { 'missing' })"
 }
 Assert (($fullRun.DocUpdate.Calls -join ',') -eq ($docUpCalls -join ',')) "P4-14: exactly four doc-update calls, in order: $($fullRun.DocUpdate.Calls -join ',')"
@@ -639,6 +646,27 @@ foreach ($pair in @(@('doc-up-realize-plan', 'doc-up-realize'), @('doc-up-update
     $same = @('before', 'after', 'realized', 'bindings', 'accept' | Where-Object { (ConvertTo-Json -InputObject (Get-CatalogueMember $dry $_) -Depth 20 -Compress) -cne (ConvertTo-Json -InputObject (Get-CatalogueMember $run $_) -Depth 20 -Compress) }).Count -eq 0
     Assert ($null -eq (Get-CatalogueMember $dry 'expected_document') -and $printed -match '\A[0-9A-F]{64}\z' -and (Get-CatalogueMember $run 'expected_document') -ceq $printed -and $same) "P4-14 $($pair[1]) runs --execute --expected-document <sha256 of $($pair[0])> on the same inputs"
 }
+# P4-16: doc-up-elements runs doc-realized on the run's own record (every step before it, as the owner session writes
+# the run record: schema_version 1, document_unique_id, steps), the fixture of the first plan, the assignments
+# element:<wall> -> doc-up-wall and element:<door> -> doc-up-door, and the test document's UniqueId; both first
+# doc-update calls read exactly its output file (path and sha256 in the request, map = that file's content).
+$elementsStep = Get-Step $full 'doc-up-elements'
+$elementsRequest = Get-CatalogueMember $elementsStep 'request'
+$elementsRecord = Get-CatalogueMember $elementsRequest 'record'
+$recordKeys = @(Get-CatalogueList $elementsRecord 'steps' | ForEach-Object { [string](Get-CatalogueMember $_ 'key') })
+$priorKeys = @($full.steps | Where-Object { $_.index -lt [int](Get-CatalogueMember $elementsStep 'index') } | ForEach-Object { $_.key })
+$recordIndexes = @(Get-CatalogueList $elementsRecord 'steps' | ForEach-Object { [int](Get-CatalogueMember $_ 'index') })
+Assert ($null -ne $elementsStep -and (Get-CatalogueMember $elementsStep 'command') -eq 'doc-realized' -and $null -eq (Get-CatalogueMember $elementsStep 'operation_id') -and (($fullRun.DocUpdate.Realized) -join ',') -eq 'doc-up-elements') "P4-16: doc-up-elements is the one doc-realized call: $(($fullRun.DocUpdate.Realized) -join ',')"
+Assert ([int](Get-CatalogueMember $elementsRecord 'schema_version') -eq 1 -and (Get-CatalogueMember $elementsRecord 'document_unique_id') -eq $documentUid -and (Get-CatalogueMember $elementsRequest 'document') -eq $documentUid -and $recordKeys.Count -gt 100 -and ($recordKeys -join ',') -eq ($priorKeys -join ',') -and ($recordIndexes -join ',') -eq ((1..$recordKeys.Count) -join ',')) "P4-16: doc-realized reads the run's own record (every earlier step, in order) for the test document: $($recordKeys.Count) steps"
+Assert ((Get-CatalogueMapText (Get-CatalogueMember $elementsRequest 'assignments')) -eq (Get-CatalogueMapText ([ordered]@{ ('element:' + $script:CatalogueDocUpdateWallId) = 'doc-up-wall'; ('element:' + $script:CatalogueDocUpdateDoorId) = 'doc-up-door' })) -and (ConvertTo-Json -InputObject (Get-CatalogueMember $elementsRequest 'fixture') -Depth 20 -Compress) -ceq (ConvertTo-Json -InputObject (Get-RequestValue $full 'doc-up-realize-plan' 'before') -Depth 20 -Compress)) 'P4-16: doc-realized assigns the wall and door sources to their own steps on the fixture of the first plan'
+$elementsFile = [string](Get-CataloguePath (Get-CatalogueMember $elementsStep 'response') 'output')
+$elementsSha = [string](Get-CataloguePath (Get-CatalogueMember $elementsStep 'response') 'sha256')
+$elementsBytes = if ($elementsFile -and (Test-Path -LiteralPath $elementsFile -PathType Leaf)) { [IO.File]::ReadAllBytes($elementsFile) } else { [byte[]]@() }
+Assert ($elementsBytes.Length -gt 0 -and [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($elementsBytes)) -eq $elementsSha -and (Get-CatalogueMapText ([Text.UTF8Encoding]::new($false).GetString($elementsBytes) | ConvertFrom-Json)) -eq $elementsText -and (Get-CatalogueMember $full.picked['doc_up_elements'] 'File') -eq $elementsFile) "P4-16: doc-realized wrote the wall and door map it printed: $elementsFile"
+foreach ($key in 'doc-up-realize-plan', 'doc-up-realize') {
+    Assert ((Get-RequestValue $full $key 'realized_file') -eq $elementsFile -and (Get-RequestValue $full $key 'realized_sha256') -ceq $elementsSha -and (Get-CatalogueMapText (Get-RequestValue $full $key 'realized')) -eq $elementsText) "P4-16 $key feeds the doc-realized output to doc-update --realized"
+}
+foreach ($key in 'doc-up-update-plan', 'doc-up-update') { Assert ($null -eq (Get-RequestValue $full $key 'realized_file')) "P4-16 $key plans on the map the first run printed, not on the doc-realized file" }
 Assert ((Get-CatalogueMapText (Get-RequestValue $full 'doc-up-realize-plan' 'realized')) -eq $elementsText -and (Get-WallY $full 'doc-up-realize-plan' 'before') -eq -6 -and (Get-WallY $full 'doc-up-realize-plan' 'after') -eq -6) 'P4-14: the first plan realizes the documentation of the unmoved fixture from the wall and door only'
 $upRealized = Get-CataloguePath (Get-StepField $full 'doc-up-realize' 'response') 'realized'
 Assert ((Get-CatalogueMapText (Get-RequestValue $full 'doc-up-update-plan' 'realized')) -eq (Get-CatalogueMapText $upRealized) -and @($upRealized.PSObject.Properties).Count -eq 11 -and (Get-WallY $full 'doc-up-update-plan' 'before') -eq -6 -and (Get-WallY $full 'doc-up-update-plan' 'after') -eq -5) 'P4-14: the update plans the moved wall on the realized map the first run printed (2 elements + 9 documentation items)'
@@ -710,9 +738,25 @@ foreach ($case in @(@{ Top = 'response_invalid'; Entry = 'response_invalid' }, @
     Assert ($rewritten.aborted -like "*doc-update perdió la respuesta*$($case.Entry)*" -and @(Get-SentAfter $rewritten 'doc-up-realize').Count -eq 0) "P4-14 a reply_lost $($case.Entry) entry under $($case.Top) stops the run: $($rewritten.aborted)"
 }
 
+# P4-16: a realized_* refusal of doc-realized (the run record does not say what the session believes it made) stops the
+# run: nothing more is sent, the envelope is the step's response. Other doc-realized failures fail only the update.
+foreach ($case in @(@{ Code = 'realized_unique_id_duplicate'; Stops = $true }, @{ Code = 'input_too_large'; Stops = $false })) {
+    $refusal = $case
+    $realizedRefused = Invoke-FakeSequence -All -DocWrap { param($index, $key, $json, $inner) if ($key -eq 'doc-up-elements') { return @{ output = ([ordered]@{ status = 'failed'; code = $refusal.Code; detail = 'element:' + $script:CatalogueDocUpdateDoorId } | ConvertTo-Json -Compress); exit_code = 1; timed_out = $false } }; & $inner $index $key $json }
+    $refusedRun = $realizedRefused.Result
+    $refusedStep = Get-Step $refusedRun 'doc-up-elements'
+    Assert ($null -ne $refusedStep -and !(Get-CatalogueMember $refusedStep 'passed') -and [string](Get-CataloguePath (Get-CatalogueMember $refusedStep 'response') 'code') -eq $case.Code -and $realizedRefused.DocUpdate.Calls.Count -eq 0 -and $null -eq (Get-StepField $refusedRun 'doc-up-realize-plan' 'request')) "P4-16 a doc-realized $($case.Code) fails doc-up-elements and no doc-update is sent: $(Get-CatalogueMember $refusedStep 'reason')"
+    if ($case.Stops) {
+        Assert ($refusedRun.aborted -like "*doc-realized*$($case.Code)*no se envía nada más*" -and @(Get-SentAfter $refusedRun 'doc-up-elements').Count -eq 0 -and $refusedRun.overall.not_sent -eq $refusedRun.overall.total - [int](Get-CatalogueMember $refusedStep 'index') -and (Format-CatalogueSummary $refusedRun) -like '*DETENIDO*doc-realized*') "P4-16 a realized_* refusal stops the run: $($refusedRun.aborted)"
+    }
+    else {
+        Assert ($null -eq $refusedRun.aborted -and (Get-GroupField $refusedRun 'modificar' 'failed') -eq 0 -and (Get-GroupField $refusedRun 'copia' 'failed') -eq 0) "P4-16 a doc-realized $($case.Code) fails only the update: $($refusedRun.aborted) $(Get-FailedSteps $refusedRun)"
+    }
+}
+
 $noDoc = (Invoke-FakeSequence -All -NoDocUpdate).Result
 $noDocSent = @($noDoc.steps | Where-Object { $_.key -in $docUpExpected -and $_.key -notin 'doc-up-wall', 'doc-up-door' -and $null -ne $_.request })
-Assert ([string](Get-StepField $noDoc 'doc-up-realize-plan' 'reason') -like '*falta el canal doc-update*' -and $noDocSent.Count -eq 0 -and $null -eq $noDoc.aborted -and (Get-GroupField $noDoc 'documentacion' 'failed') -eq 7 -and (Get-GroupField $noDoc 'modificar' 'failed') -eq 0) "P4-14 without a doc-update channel none of the update is sent and later groups run: $(Get-FailedSteps $noDoc)"
+Assert ([string](Get-StepField $noDoc 'doc-up-realize-plan' 'reason') -like '*falta el canal doc-update*' -and $noDocSent.Count -eq 0 -and $null -eq $noDoc.aborted -and (Get-GroupField $noDoc 'documentacion' 'failed') -eq 8 -and [string](Get-StepField $noDoc 'doc-up-elements' 'reason') -like '*falta el canal doc-update*' -and (Get-GroupField $noDoc 'modificar' 'failed') -eq 0) "P4-14 without a doc-update channel none of the update is sent and later groups run: $(Get-FailedSteps $noDoc)"
 # Review B1: the owner session passes the doc-update invoker (CLI doc-update on the child's pipe, its requests in the run
 # folder, an --execute-sized timeout of its own) to Invoke-CatalogueSequence, and its announcement names the update.
 $sessionText = [IO.File]::ReadAllText((Join-Path $root 'scripts/owner-native-session.ps1'))
@@ -799,8 +843,8 @@ try {
     # P4-14: the update passes through the real doc-update verb. Its own requests reach the pipe under the CLI's
     # operation ids: 4 dry runs (two passes, in the update's dry run and again in its --execute), then exactly the 11
     # writes its two reports list (9 creates, then 1 delete and 1 create), each once. Every catalogue step reaches it too.
-    $realUpCatalogue = @($realUp | Where-Object { $_.command -ne 'doc-update' })
-    Assert ($realUp.Count -eq 9 -and @($realUp | Where-Object { !$_.passed }).Count -eq 0 -and @($realUpCatalogue | Where-Object { $received -notcontains $_.operation_id }).Count -eq 0) "P4-14: the documentation update passes through the real CLI: $(@($realUp | Where-Object { !$_.passed } | ForEach-Object { "$($_.key): $($_.reason) $($_.raw_response)" }) -join '; ')"
+    $realUpCatalogue = @($realUp | Where-Object { $_.command -notin 'doc-update', 'doc-realized' })
+    Assert ($realUp.Count -eq 10 -and @($realUp | Where-Object { !$_.passed }).Count -eq 0 -and @($realUpCatalogue | Where-Object { $received -notcontains $_.operation_id }).Count -eq 0) "P4-14: the documentation update passes through the real CLI: $(@($realUp | Where-Object { !$_.passed } | ForEach-Object { "$($_.key): $($_.reason) $($_.raw_response)" }) -join '; ')"
     $docLines = @($received | Where-Object { $_ -match '\Adoc(dry|del|new)\.' })
     $reportIds = [string[]]@(foreach ($key in 'doc-up-realize', 'doc-up-update') { Get-CatalogueList (Get-StepField $real $key 'response') 'report' | ForEach-Object { $_ } | ForEach-Object { [string](Get-CatalogueMember $_ 'operation_id') } })
     $writeLines = [string[]]@($docLines | Where-Object { $_ -notlike 'docdry.*' })
@@ -817,13 +861,53 @@ try {
         $files = @('before.json', 'after.json', 'realized.json', 'bindings.json', 'plan.json', 'stderr.txt' | Where-Object { !(Test-Path -LiteralPath (Join-Path $folder $_) -PathType Leaf) })
         Assert ($null -ne $kept -and (ConvertTo-Json -InputObject $kept -Depth 20 -Compress) -ceq (ConvertTo-Json -InputObject $step.response -Depth 20 -Compress) -and $files.Count -eq 0 -and [IO.Path]::GetFullPath([string]$step.response.output) -eq [IO.Path]::GetFullPath((Join-Path $folder 'plan.json'))) "P4-14 $key keeps its inputs, plan and report in the run folder ($folder): missing $($files -join ',')"
     }
+    # P4-16: doc-up-elements ran the real doc-realized verb on this run's own record (every earlier step) and the run
+    # folder keeps its request, inputs, output and line; both first doc-update calls read byte-for-byte that output.
+    $realElements = Get-Step $real 'doc-up-elements'
+    $realElementsIndex = [int](Get-CatalogueMember $realElements 'index')
+    $realizedFolder = Join-Path $requests ('{0:D2}-doc-up-elements.doc-realized' -f $realElementsIndex)
+    $realizedMissing = @('record.json', 'fixture.json', 'assignments.json', 'realized.json', 'report.json', 'stderr.txt' | Where-Object { !(Test-Path -LiteralPath (Join-Path $realizedFolder $_) -PathType Leaf) })
+    Assert ($realizedMissing.Count -eq 0) "P4-16 doc-up-elements keeps its record, fixture, assignments, output, line and stderr in the run folder ($realizedFolder): missing $($realizedMissing -join ',')"
+    if ($realizedMissing.Count -eq 0) {
+        $realizedKept = [IO.File]::ReadAllText((Join-Path $realizedFolder 'report.json')) | ConvertFrom-Json
+        $realizedOutput = [IO.File]::ReadAllBytes((Join-Path $realizedFolder 'realized.json'))
+        $realRecord = [IO.File]::ReadAllText((Join-Path $realizedFolder 'record.json')) | ConvertFrom-Json
+        $realElementsText = Get-CatalogueMapText ([ordered]@{ ('element:' + $script:CatalogueDocUpdateWallId) = (Get-CatalogueFirstCreated (Get-StepField $real 'doc-up-wall' 'response')); ('element:' + $script:CatalogueDocUpdateDoorId) = (Get-CatalogueFirstCreated (Get-StepField $real 'doc-up-door' 'response')) })
+        Assert ((Get-CatalogueMember $realElements 'passed') -and (ConvertTo-Json -InputObject $realizedKept -Depth 20 -Compress) -ceq (ConvertTo-Json -InputObject (Get-CatalogueMember $realElements 'response') -Depth 20 -Compress) -and [IO.Path]::GetFullPath([string]$realizedKept.output) -eq [IO.Path]::GetFullPath((Join-Path $realizedFolder 'realized.json')) -and [int]$realizedKept.entries -eq 2 -and [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($realizedOutput)) -eq [string]$realizedKept.sha256) "P4-16 the real doc-realized line is the step's response and names its output: $(Get-CatalogueMember $realElements 'reason') $(Get-CatalogueMember $realElements 'raw_response')"
+        Assert ((Get-CatalogueMapText ([Text.UTF8Encoding]::new($false).GetString($realizedOutput) | ConvertFrom-Json)) -eq $realElementsText -and @(Get-CatalogueList $realRecord 'steps').Count -eq $realElementsIndex - 1 -and [string](Get-CatalogueMember $realRecord 'document_unique_id') -eq $documentUid) "P4-16 the real doc-realized map is the wall and door the run made, from a record of the $($realElementsIndex - 1) earlier steps"
+        foreach ($key in 'doc-up-realize-plan', 'doc-up-realize') {
+            $fed = Join-Path $requests ('{0:D2}-{1}.doc-update/realized.json' -f [int](Get-StepField $real $key 'index'), $key)
+            $fedBytes = if (Test-Path -LiteralPath $fed -PathType Leaf) { [IO.File]::ReadAllBytes($fed) } else { [byte[]]@() }
+            Assert ($fedBytes.Length -gt 0 -and [Convert]::ToBase64String($fedBytes) -ceq [Convert]::ToBase64String($realizedOutput)) "P4-16 $key feeds doc-update --realized byte-for-byte the doc-realized output ($fed)"
+        }
+    }
+    # P4-16 through the real verb: a run whose record realizes two sources from one step (the door assigned to the
+    # wall's step, as a replayed retry would report it) is refused realized_unique_id_duplicate; the run stops there and
+    # the envelope is kept in the run folder (report.json), with no realized.json. In-process fake add-in, real CLI.
+    $tamperRequests = Join-Path $work 'requests-realized-refused'
+    $tamperWrap = {
+        param($index, $key, $json, $inner)
+        if ($key -ne 'doc-up-elements') { return (& $inner $index $key $json) }
+        $tampered = $json | ConvertFrom-Json
+        $tampered.assignments.('element:' + $script:CatalogueDocUpdateDoorId) = 'doc-up-wall'
+        Invoke-CatalogueDocUpdate -Dotnet $Dotnet -CliDll $CliDll -PipeName $pipeName -RequestDirectory $tamperRequests -Index $index -Key $key -Json ($tampered | ConvertTo-Json -Depth 64 -Compress) -TimeoutSeconds 120
+    }
+    $tamperRun = Invoke-FakeSequence -All -DocWrap $tamperWrap
+    $tamperResult = $tamperRun.Result
+    $tamperStep = Get-Step $tamperResult 'doc-up-elements'
+    $tamperFolder = Join-Path $tamperRequests ('{0:D2}-doc-up-elements.doc-realized' -f [int](Get-CatalogueMember $tamperStep 'index'))
+    $tamperKept = $null
+    try { $tamperKept = [IO.File]::ReadAllText((Join-Path $tamperFolder 'report.json')) | ConvertFrom-Json } catch { $tamperKept = $null }
+    Assert ([string](Get-CatalogueMember $tamperKept 'code') -eq 'realized_unique_id_duplicate' -and [string](Get-CatalogueMember $tamperKept 'status') -eq 'failed' -and (ConvertTo-Json -InputObject $tamperKept -Depth 20 -Compress) -ceq (ConvertTo-Json -InputObject (Get-CatalogueMember $tamperStep 'response') -Depth 20 -Compress) -and !(Test-Path -LiteralPath (Join-Path $tamperFolder 'realized.json'))) "P4-16 the real doc-realized refusal is kept in the run folder: $(ConvertTo-CatalogueText $tamperKept)"
+    Assert ($tamperResult.aborted -like '*doc-realized*realized_unique_id_duplicate*' -and @(Get-SentAfter $tamperResult 'doc-up-elements').Count -eq 0 -and $tamperRun.DocUpdate.Calls.Count -eq 0) "P4-16 a real realized_* refusal stops the run: $($tamperResult.aborted)"
+    if ([IO.Path]::GetFileName($inProcessTree).StartsWith('bim-catalogue-session-', [StringComparison]::Ordinal) -and $inProcessTree.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::Ordinal)) { Remove-Item -LiteralPath $inProcessTree -Recurse -Force -ErrorAction SilentlyContinue }
     # The client-side refusals (collinear arc, crossed outline, closed roof profile, zero move, full turn, save_copy
     # outside the copies root and over an existing file, save_as into an owner folder and over an existing file) are
     # refused by the real CLI before the pipe (off Windows also both save_as targets, args_invalid).
     $clientSteps = @($real.steps | Where-Object { $_.key -in $clientKeys })
     $notForwarded = @($clientKeys) + $(if ($IsWindows) { @() } else { @('c-as-outside', 'c-as-save') })
     $sentSteps = @($real.steps | Where-Object { $null -ne $_.request })
-    $forwardedCount = @($sentSteps | Where-Object { $_.key -notin $notForwarded -and $_.command -ne 'doc-update' }).Count
+    $forwardedCount = @($sentSteps | Where-Object { $_.key -notin $notForwarded -and $_.command -notin 'doc-update', 'doc-realized' }).Count
     $expectedSent = $real.overall.total - $(if ($ownerBlocked) { 1 } else { 0 }) - $(if ($IsWindows) { 0 } else { 2 })
     Assert ($received.Count -eq $forwardedCount + $docLines.Count -and $sentSteps.Count -eq $expectedSent) "pipe must receive every sent step but the client-side refusals ($forwardedCount of $($sentSteps.Count) sent) plus the $($docLines.Count) doc-update requests, got $($received.Count)"
     Assert ($received -notcontains $invalid) 'the collinear arc reached the pipe'
