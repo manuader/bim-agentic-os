@@ -22,9 +22,10 @@ namespace Bim.Cli;
 //                  one absent taking its ScoringWeights default ({}, explicit defaults and an absent member all mean the
 //                  default weights, passed to the pipeline as null so the bytes are the same)
 //   skills         optional array of at most 64 skill id strings (P5-16): extra packs, each read like the typology pack
-//   precedence     optional array of at most 64 strings (P5-16): the resolver's precedence order (earlier wins among
-//                  equal priorities), passed through as given; an entry that is not a composed skill is the resolver's
-//                  typed precedence_unknown refusal
+//   precedence     optional array of at most 64 skill id strings (P5-16): the resolver's precedence order (earlier
+//                  wins among equal priorities), each entry a well-formed skill id (else request_invalid precedence[i]),
+//                  passed through in order; an id that is not a composed skill or one listed twice is the resolver's
+//                  typed precedence_unknown / precedence_duplicate refusal
 // Every number must be a finite JSON number (-0 is read as 0); integers must be JSON integer literals in the int32 range;
 // strings holding an unpaired UTF-16 surrogate escape are refused like any malformed member. Value ranges (family size,
 // lot sides, count, weights, an all-zero project id, a non-typology pack) are left to TypologyPipeline, whose refusals
@@ -63,8 +64,8 @@ internal static class GenerateTypologyCommand
 {
     public const string CodePack = "ar.caba.codigo-edificacion";
     public const string Usage = "usage: generate-typology request.json output.json (request: {\"pack\": typology skill id, \"family_size\": int, "
-        + "\"lot\": {\"width_m\", \"depth_m\"}, \"alternatives\": int, \"seed\": int, \"project_id\": GUID, optional \"weights\", optional \"skills\": [extra skill ids] "
-        + "and \"precedence\": [skill ids], either of which runs the composed pack rules}; the facade code pack is "
+        + "\"lot\": {\"width_m\", \"depth_m\"}, \"alternatives\": int, \"seed\": int, \"project_id\": GUID, optional \"weights\", optional \"skills\": [at most 64 extra skill ids] "
+        + "and \"precedence\": [at most 64 skill ids], either of which runs the composed pack rules}; the facade code pack is "
         + CodePack + "; packs are read from <package>/skills/<id>/skill.json in the release package layout, else from <repository>/skills/<id>/skill.json, "
         + "else generate_typology_repository_not_found; the output must be a new .json file)";
     public const string UsageCode = "generate_typology_usage";
@@ -223,8 +224,8 @@ internal static class GenerateTypologyCommand
                 throw new Refusal(RequestInvalid, "project_id");
             var weights = root.TryGetValue("weights", out var weightsElement) ? Weights(weightsElement) : new ScoringWeights();
             var request = new TypologyBriefRequest(familySize, lotValue, alternatives, seed, Weights: weights == new ScoringWeights() ? null : weights);
-            var skills = root.TryGetValue("skills", out var skillsElement) ? Strings(skillsElement, "skills", ids: true) : null;
-            var precedence = root.TryGetValue("precedence", out var precedenceElement) ? Strings(precedenceElement, "precedence", ids: false) : null;
+            var skills = root.TryGetValue("skills", out var skillsElement) ? Strings(skillsElement, "skills") : null;
+            var precedence = root.TryGetValue("precedence", out var precedenceElement) ? Strings(precedenceElement, "precedence") : null;
             return new Parsed(pack, request, projectId, skills, precedence);
         }
     }
@@ -266,8 +267,8 @@ internal static class GenerateTypologyCommand
         catch (InvalidOperationException) { throw new Refusal(RequestInvalid, at); }
     }
 
-    // A JSON array of at most MaxListEntries strings (skill ids when ids), offending entries reported as at[i].
-    static IReadOnlyList<string> Strings(JsonElement element, string at, bool ids)
+    // A JSON array of at most MaxListEntries skill id strings (SkillParser.IsId), offending entries reported as at[i].
+    static IReadOnlyList<string> Strings(JsonElement element, string at)
     {
         if (element.ValueKind != JsonValueKind.Array || element.GetArrayLength() > MaxListEntries) throw new Refusal(RequestInvalid, at);
         var values = new List<string>();
@@ -277,7 +278,7 @@ internal static class GenerateTypologyCommand
             var name = at + "[" + index.ToString(CultureInfo.InvariantCulture) + "]";
             if (item.ValueKind != JsonValueKind.String) throw new Refusal(RequestInvalid, name);
             var value = StringValue(item, name);
-            if (ids && !SkillParser.IsId(value)) throw new Refusal(RequestInvalid, name);
+            if (!SkillParser.IsId(value)) throw new Refusal(RequestInvalid, name);
             values.Add(value);
             index++;
         }
