@@ -1511,6 +1511,8 @@ try {
 
     // ---- P1-20 revit-command envelope.json process-pipe-name [--all] [--read-timeout-seconds n] (tests/cli/RevitCommandReadTimeoutTests.cs) ----
     RevitCommandReadTimeoutTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
+    // ---- P1-21 revit-command envelope.json process-pipe-name --all [--read-timeout-seconds n] --deadline-seconds n (tests/cli/RevitCommandDeadlineTests.cs) ----
+    RevitCommandDeadlineTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
 
     // ---- P10-11 audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json] (tests/cli/AuditVerifyTests.cs) ----
     AuditVerifyTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
