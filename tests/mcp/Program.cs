@@ -1219,10 +1219,10 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     SameRefusal("null project","drift_adopt_store_invalid",RawStore("preview-null-project-store",System.Text.Encoding.UTF8.GetBytes("{\"Project\":null,\"Receipts\":{}}")));
     // Selection before store: a selection with null parts is refused before the (missing) store is looked at.
     var nullPartsSelection=selection with { Omitted=null! };
-    var missingStore=Path.Combine(adoptRoot,"preview-missing-store");
-    var nullPartsPreview=Refusal(()=>MirrorDriftAdoptCommit.Preview(missingStore,nullPartsSelection));
-    var nullPartsCommit=Refusal(()=>MirrorDriftAdoptCommit.Commit(missingStore,nullPartsSelection));
-    Check(nullPartsPreview.StartsWith("drift_adopt_selection_invalid ",StringComparison.Ordinal) && nullPartsPreview==nullPartsCommit && !Directory.Exists(missingStore),
+    var previewMissingStore=Path.Combine(adoptRoot,"preview-missing-store");
+    var nullPartsPreview=Refusal(()=>MirrorDriftAdoptCommit.Preview(previewMissingStore,nullPartsSelection));
+    var nullPartsCommit=Refusal(()=>MirrorDriftAdoptCommit.Commit(previewMissingStore,nullPartsSelection));
+    Check(nullPartsPreview.StartsWith("drift_adopt_selection_invalid ",StringComparison.Ordinal) && nullPartsPreview==nullPartsCommit && !Directory.Exists(previewMissingStore),
         "MirrorDriftAdoptCommit.Preview of a null-parts selection against a missing store is drift_adopt_selection_invalid (selection before store), the same text as Commit's | "+nullPartsPreview+" | "+nullPartsCommit);
     var noProject=Path.Combine(adoptRoot,"preview-empty-store"); Directory.CreateDirectory(noProject);
     var noProjectRefusal=Refusal(()=>MirrorDriftAdoptCommit.Preview(noProject,selection));
