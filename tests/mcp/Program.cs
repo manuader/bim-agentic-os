@@ -1524,13 +1524,29 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     Check(!File.Exists(Path.Combine(diRoot,"absent.project.json")) && !File.Exists(Path.Combine(diRoot,"absent.intent.json")),"diff_intent creates no missing input");
     var diDirectory=Path.Combine(diRoot,"a-directory.json"); Directory.CreateDirectory(diDirectory);
     DiRefused("a directory as intent",diHeadPath,diDirectory,DiCode("input_not_regular_file"));
-    // An empty or flag-shaped path is the CLI usage refusal (the same argument rule), never a crash.
-    foreach(var (label,projectPath,intentFile) in new[]{("an empty project_path","",diOkIntent),("an empty intent_path",diHeadPath,""),("a flag-shaped project_path","--intent",diOkIntent)}) {
-        var response=DiCall(projectPath,intentFile);
-        Check(IsError(response) && Text(response)==DiCode("diff_intent_usage") && Environment.ExitCode==diExit,"diff_intent refuses "+label+" as diff_intent_usage | "+Text(response));
+    // A flag-shaped path is the CLI usage refusal (the same argument rule), never a crash.
+    {
+        var response=DiCall("--intent",diOkIntent);
+        Check(IsError(response) && Text(response)==DiCode("diff_intent_usage") && Environment.ExitCode==diExit,"diff_intent refuses a flag-shaped project_path as diff_intent_usage | "+Text(response));
     }
-    var diSurrogate=Call("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"diff_intent\",\"arguments\":{\"project_path\":\"\\ud800\",\"intent_path\":"+JsonSerializer.Serialize(diOkIntent)+"}}}");
-    Check(IsError(diSurrogate) && Text(diSurrogate)==DiCode("diff_intent_usage"),"diff_intent project_path with a lone surrogate is diff_intent_usage, never a crash | "+Text(diSurrogate));
+    // MCP-only path guard (like audit_verify_path_invalid): blank, NUL, over 4096 characters or rejected by
+    // Path.GetFullPath is diff_intent_path_invalid with detail project or intent, checked before the verb runs (project
+    // first); the exit code and Console.Out are untouched.
+    string DiPathInvalid(string detail)=>"{\"status\":\"failed\",\"code\":\"diff_intent_path_invalid\",\"detail\":\""+detail+"\"}";
+    foreach(var (label,bad) in new[]{("empty",""),("blank","   "),("with NUL","a\0b"),("of 5000 characters",new string('x',5000))}) {
+        foreach(var (side,projectPath,intentFile) in new[]{("project",bad,diOkIntent),("intent",diHeadPath,bad)}) {
+            var stdout=Console.Out; var before=DiListing();
+            var response=DiCall(projectPath,intentFile);
+            Check(IsError(response) && Text(response)==DiPathInvalid(side) && Environment.ExitCode==diExit && ReferenceEquals(Console.Out,stdout) && DiListing()==before,
+                "diff_intent refuses a "+side+"_path "+label+" as diff_intent_path_invalid ("+side+"), exit code and Console.Out untouched | "+Text(response));
+        }
+    }
+    Check(Text(DiCall("",""))==DiPathInvalid("project"),"diff_intent checks project_path before intent_path");
+    foreach(var side in new[]{"project","intent"}) {
+        var arguments=side=="project"?"{\"project_path\":\"\\ud800\",\"intent_path\":"+JsonSerializer.Serialize(diOkIntent)+"}":"{\"project_path\":"+JsonSerializer.Serialize(diHeadPath)+",\"intent_path\":\"\\ud800\"}";
+        var surrogate=Call("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"diff_intent\",\"arguments\":"+arguments+"}}");
+        Check(IsError(surrogate) && Text(surrogate)==DiPathInvalid(side) && Environment.ExitCode==diExit,"diff_intent "+side+"_path with a lone surrogate is diff_intent_path_invalid ("+side+"), never a crash | "+Text(surrogate));
+    }
     Check(ErrorCode(ToolCall("diff_intent",new JsonObject{["project_path"]=diHeadPath}))==-32602,"diff_intent without intent_path returns -32602");
     Check(ErrorCode(ToolCall("diff_intent",new JsonObject{["project_path"]=diHeadPath,["intent_path"]=1}))==-32602,"diff_intent with a non-string intent_path returns -32602");
     Check(ErrorCode(ToolCall("diff_intent",new JsonObject{["project_path"]=diHeadPath,["intent_path"]=diOkIntent,["store_path"]=diRoot}))==-32602,"diff_intent takes no store_path (-32602): it never commits");
@@ -1539,7 +1555,9 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
 
     // 3. Static: the tool runs the CLI verb's own code (DiffIntentCommand.Run, which plans only through IntentPlan), linked
     //    rather than copied; it inlines no plan step and has no file, store or commit access of its own.
-    string DiCodeOf(string text)=>string.Join("\n",text.Split('\n').Select(line=>{ var at=line.IndexOf("//",StringComparison.Ordinal); return at<0?line:line[..at]; }));
+    // Comments stripped: /* */ blocks first, then // to end of line.
+    string DiCodeOf(string text)=>string.Join("\n",System.Text.RegularExpressions.Regex.Replace(text,@"/\*.*?\*/","",System.Text.RegularExpressions.RegexOptions.Singleline).Split('\n').Select(line=>{ var at=line.IndexOf("//",StringComparison.Ordinal); return at<0?line:line[..at]; }));
+    Check(DiCodeOf("a /* ProjectStore\n x */ b // ProjectStore\nc")=="a  b \nc","fixture: DiCodeOf strips block and line comments");
     var diToolPath=Path.Combine(root,"interfaces","mcp","DiffIntentTool.cs");
     Check(File.Exists(diToolPath),"interfaces/mcp/DiffIntentTool.cs exists");
     var diToolCode=DiCodeOf(File.ReadAllText(diToolPath));
@@ -1554,6 +1572,14 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     }
     var diOwners=Directory.GetFiles(Path.Combine(root,"interfaces","mcp"),"*.cs").Where(f=>new[]{"IntentEdits.FromStored(","IncrementalDiff.OrderOf(","IntentJson.Parse("}.Any(api=>DiCodeOf(File.ReadAllText(f)).Contains(api,StringComparison.Ordinal))).Select(f=>Path.GetFileName(f)).ToArray();
     Check(diOwners.Length==0,"no interfaces/mcp source builds an intent plan itself ["+string.Join(", ",diOwners)+"]");
+    // No MCP source reaches the CLI write verbs (apply-edits' Run/Commit, apply-intent); the linked CLI files are only the
+    // read-only diff-intent path. ProjectStore is banned in DiffIntentTool.cs above (McpServer's plan tool and the
+    // mirror_drift tools use it by design).
+    var diWriters=Directory.GetFiles(Path.Combine(root,"interfaces","mcp"),"*.cs").SelectMany(f=>new[]{"ApplyEditsCommand.Run(","ApplyEditsCommand.Commit(","ApplyIntentCommand"}
+        .Where(api=>DiCodeOf(File.ReadAllText(f)).Contains(api,StringComparison.Ordinal)).Select(api=>Path.GetFileName(f)+": "+api)).ToArray();
+    Check(diWriters.Length==0,"no interfaces/mcp source calls ApplyEditsCommand.Run/Commit or ApplyIntentCommand ["+string.Join(", ",diWriters)+"]");
+    var diMcpProject=File.ReadAllText(Path.Combine(root,"interfaces","mcp","Bim.Mcp.csproj"));
+    Check(!diMcpProject.Contains("ApplyIntentCommand.cs",StringComparison.Ordinal),"Bim.Mcp.csproj does not link the apply-intent verb");
 }
 
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
