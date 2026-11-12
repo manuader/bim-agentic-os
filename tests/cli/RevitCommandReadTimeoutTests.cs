@@ -123,6 +123,26 @@ internal static class RevitCommandReadTimeoutTests
             Check(badOptions is null && badRefusal is { } badLine && RevitCommandResponse.Parse(badLine) is { Code: RevitCommandCodes.ReadTimeoutInvalid, Field: "args[4]" },
                 "RevitCommandOptions refuses " + Flag + " 0 with RevitCommandCodes.ReadTimeoutInvalid", badRefusal ?? "");
 
+            // ---- 0b. P1-22: revit-command and the MCP server option share one grammar (RevitOptionGrammar) ----
+            // Same acceptance and timeout for every value, and the same refusal line up to the index (args[4] here is
+            // the server's args[1]) and the usage.
+            const string McpUsage = "usage: Bim.Mcp.dll [--read-timeout-seconds n]";
+            foreach (var value in new[] { "0", "-1", "86401", "1.5", "+5", " 5", "5 ", "", "abc", "99999999999999999999", "٥", "1", "86400", "0030" })
+            {
+                var cli = Bim.Cli.RevitCommandOptions.Parse(["revit-command", missing, pipe, Flag, value], out var cliRefusal);
+                var mcpRefusal = Bim.Mcp.McpServer.ParseOptions([Flag, value], out var mcpTimeout);
+                var same = cli is null
+                    ? cliRefusal is { } cliLine && mcpTimeout == RevitCommandService.DefaultReadTimeout
+                        && mcpRefusal == cliLine.Replace("\"args[4]\"", "\"args[1]\"", StringComparison.Ordinal).Replace(Usage, McpUsage, StringComparison.Ordinal)
+                    : mcpRefusal is null && mcpTimeout == cli.ReadTimeout;
+                Check(same, "revit-command and Bim.Mcp agree on " + Flag + " '" + value + "' (acceptance, timeout and refusal line)", (cliRefusal ?? "") + " | " + (mcpRefusal ?? ""));
+            }
+            var cliNoValue = Bim.Cli.RevitCommandOptions.Parse(["revit-command", missing, pipe, Flag], out var cliNoValueRefusal);
+            var mcpNoValue = Bim.Mcp.McpServer.ParseOptions([Flag], out _);
+            Check(cliNoValue is null && cliNoValueRefusal is { } cliNoValueLine
+                && mcpNoValue == cliNoValueLine.Replace("\"args[3]\"", "\"args[0]\"", StringComparison.Ordinal).Replace(Usage, McpUsage, StringComparison.Ordinal),
+                "revit-command and Bim.Mcp refuse " + Flag + " without a value with the same line", (cliNoValueRefusal ?? "") + " | " + (mcpNoValue ?? ""));
+
             // ---- 1. Typed refusals before any I/O ----
             foreach (var (label, value) in new[] { ("zero", "0"), ("negative", "-1"), ("over 24 h", "86401"), ("fractional", "1.5"), ("signed", "+5"), ("padded", " 5"),
                 ("empty", ""), ("not a number", "abc"), ("overflowing", "99999999999999999999") })
