@@ -1535,3 +1535,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 23:53Z LOCK taken over (relay201 TAKEN, last heartbeat 22:25:57Z, >45 min stale). Continuing relay201 review fixes on relay201-P4-16, relay201-P2-21, relay201-P10-17.
 - 23:53Z relay202 backs off: relay201 still active (relay201-P2-21 e144665 pushed 23:49Z, CI 43332065936 in progress; P4-16 6ee9430 and P10-17 89decbd review fixes green). LOCK restored to relay201's record unchanged; relay202 did no other work.
 **NEXT STEP:** relay201 finishes its integration and releases; next relay checks LOCK as usual.
+- 23:59Z relay201 resumes after a container restart (heartbeat refreshed; relay202 backed off correctly).
