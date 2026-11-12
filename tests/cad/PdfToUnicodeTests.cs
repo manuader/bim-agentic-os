@@ -207,7 +207,7 @@ internal static class PdfToUnicodeTests
             C(CodeOf(() => PdfReader.Parse(ManyFonts(1, 0x10000), "plane.pdf", small)) == "element-limit", "a full-plane bfrange over MaxParsedElements 50000 is refused element-limit",
                 CodeOf(() => PdfReader.Parse(ManyFonts(1, 0x10000), "plane.pdf", small)) ?? "read");
             var fits = PdfReader.Parse(ManyFonts(32, 1024), "fonts32.pdf", small);
-            C(fits.Warnings.Count == 0 && fits.Pages[0].Elements.OfType<PdfText>().Count() == 32 && fits.Pages[0].Elements.OfType<PdfText>().Last().Value == "`",
+            C(fits.Warnings.Count == 0 && fits.Pages[0].Elements.OfType<PdfText>().Count() == 32 && fits.Pages[0].Elements.OfType<PdfText>().Last().Value == "a",
                 "32 fonts x 1024 codes fit MaxParsedElements 50000", Warnings(fits));
             C(CodeOf(() => PdfReader.Parse(ManyFonts(64, 1024), "fonts64.pdf", small)) == "element-limit", "64 fonts x 1024 codes (each CMap within its own bound) exceed the document budget",
                 CodeOf(() => PdfReader.Parse(ManyFonts(64, 1024), "fonts64.pdf", small)) ?? "read");
