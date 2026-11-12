@@ -382,14 +382,24 @@ internal static class PlanLayoutsTests
         var kept = Cli("plan-layouts", smallPath, keptOut, "--pack", "xx.no-such.pack");
         Check(kept.Exit == 1 && Str(Parse(kept.Out), "code") == "output_exists" && File.ReadAllBytes(keptOut).SequenceEqual(sentinel),
             "an existing output with an unknown --pack -> output_exists, the file byte-identical", D(kept));
-        // SkillPackLookup.Load guards its id itself (callers check first): a non-id is Invalid "id", nothing read.
+        // SkillPackLookup.Load guards its id itself (callers check first): a non-id is Invalid "id", nothing read, on the
+        // package-first path every production caller takes and on the repository-only overload.
+        foreach (var packageFirst in new[] { true, false })
         foreach (var badId in new[] { "../x", "", "ar.caba/x", "..", "Ar.Caba" })
         {
             Bim.Cli.SkillPackException? lookupError = null;
-            try { Bim.Cli.SkillPackLookup.Load(badId); }
+            try { Bim.Cli.SkillPackLookup.Load(badId, packageFirst); }
             catch (Bim.Cli.SkillPackException error) { lookupError = error; }
-            Check(lookupError is { Problem: Bim.Cli.SkillPackProblem.Invalid, Detail: "id" }, "SkillPackLookup.Load('" + badId + "') refuses Invalid with detail id",
+            Check(lookupError is { Problem: Bim.Cli.SkillPackProblem.Invalid, Detail: "id" },
+                "SkillPackLookup.Load('" + badId + "', packageFirst: " + (packageFirst ? "true" : "false") + ") refuses Invalid with detail id",
                 lookupError is null ? "<no refusal>" : lookupError.Problem + " " + lookupError.Detail);
+        }
+        {
+            Bim.Cli.SkillPackException? legacyError = null;
+            try { Bim.Cli.SkillPackLookup.Load("../x"); }
+            catch (Bim.Cli.SkillPackException error) { legacyError = error; }
+            Check(legacyError is { Problem: Bim.Cli.SkillPackProblem.Invalid, Detail: "id" }, "SkillPackLookup.Load('../x') (the legacy overload) refuses Invalid with detail id",
+                legacyError is null ? "<no refusal>" : legacyError.Problem + " " + legacyError.Detail);
         }
 
         // A scratch repository with its own skills/ (the CLI copied under it finds it as the repository).
@@ -496,23 +506,21 @@ internal static class PlanLayoutsTests
         FakeRefusal("a pack with a zero side minimum (even on a room the brief lacks)", "zz.test.zero", "plan_layouts_pack_rule_invalid", TypologyRuleCodes.ThresholdInvalid + " at zz.test.zero/zero-side");
 
         // P7-15: --pack uses SkillPackLookup.Load(id, packageFirst: true) like generate-prototypes (P7-12).
-        // A stray skills/ beside a binary folder that is not a package never takes over: <repo>/tests/out beside
-        // <repo>/tests/skills, and <repo>/stray/cli beside <repo>/stray/skills without the VERSION and manifest.json markers
-        // (its zz.test.strict is malformed), both read <repo>/skills.
-        Directory.CreateDirectory(Path.Combine(fakeRepo, "tests", "skills"));
-        var strayDll = CopyCli(Path.Combine(fakeRepo, "tests", "out"));
-        var strayOut = Output();
-        var stray = CliAt(strayDll, null, "plan-layouts", smallPath, strayOut, "--alternatives", "2", "--pack", "zz.test.strict");
-        Check(stray.Exit == 0 && Written(strayOut).SequenceEqual(expectedStrict) && stray.Out == pack8.Out,
-            "--pack from <repo>/tests/out beside an empty <repo>/tests/skills reads <repo>/skills (no stray package root): the repository run's bytes and stdout", D(stray));
-        var unmarked = Path.Combine(fakeRepo, "stray");
-        Directory.CreateDirectory(Path.Combine(unmarked, "skills", "zz.test.strict"));
-        File.WriteAllText(Path.Combine(unmarked, "skills", "zz.test.strict", "skill.json"), "{");
-        var unmarkedDll = CopyCli(Path.Combine(unmarked, "cli"));
-        var unmarkedOut = Output();
-        var unmarkedRun = CliAt(unmarkedDll, null, "plan-layouts", smallPath, unmarkedOut, "--alternatives", "2", "--pack", "zz.test.strict");
-        Check(unmarkedRun.Exit == 0 && Written(unmarkedOut).SequenceEqual(expectedStrict) && unmarkedRun.Out == pack8.Out,
-            "--pack from cli/ beside a skills/ without the package markers reads <repo>/skills: the repository run's bytes and stdout", D(unmarkedRun));
+        // A stray skills/ beside a cli/ folder that is not a package never takes over: <repo>/<case>/cli beside
+        // <repo>/<case>/skills (its zz.test.strict malformed) with no package marker, only VERSION, or only manifest.json
+        // (a package root needs both) reads <repo>/skills: the repository run's bytes and stdout.
+        foreach (var (label, markers) in new[] { ("no-markers", Array.Empty<string>()), ("version-only", new[] { "VERSION" }), ("manifest-only", new[] { "manifest.json" }) })
+        {
+            var strayRoot = Path.Combine(fakeRepo, "stray-" + label);
+            Directory.CreateDirectory(Path.Combine(strayRoot, "skills", "zz.test.strict"));
+            File.WriteAllText(Path.Combine(strayRoot, "skills", "zz.test.strict", "skill.json"), "{");
+            foreach (var marker in markers) File.WriteAllText(Path.Combine(strayRoot, marker), marker == "VERSION" ? "0.0.0-test\n" : "{}\n");
+            var strayDll = CopyCli(Path.Combine(strayRoot, "cli"));
+            var strayOut = Output();
+            var stray = CliAt(strayDll, null, "plan-layouts", smallPath, strayOut, "--alternatives", "2", "--pack", "zz.test.strict");
+            Check(stray.Exit == 0 && Written(strayOut).SequenceEqual(expectedStrict) && stray.Out == pack8.Out,
+                "--pack from cli/ beside a malformed skills/ with " + (markers.Length == 0 ? "no package marker" : "only " + markers[0]) + " reads <repo>/skills: the repository run's bytes and stdout", D(stray));
+        }
         // A package inside the repository (<repo>/dist: cli/, skills/, VERSION, manifest.json) is read before the repository:
         // its zz.test.mismatch is valid (the repository's names another id), its zz.test.package-only is absent from the
         // repository, and a pack only the repository has is not looked up there (no fallback once the package has skills/).
