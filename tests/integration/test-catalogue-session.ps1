@@ -807,7 +807,7 @@ foreach ($case in @(@{ Key = 'doc-up-update'; Command = 'tag.create'; New = 10; 
     $lost = Invoke-FakeSequence @{ DocUpdateLoseReplyOf = "$($case.Key)|$($case.Command)" } -All
     $lostResult = $lost.Result
     $lostIndex = [int](Get-StepField $lostResult $case.Key 'index')
-    $lostEntries = @(Get-CatalogueList (Get-StepField $lostResult $case.Key 'response') 'report' | ForEach-Object { $_ } | Where-Object { $_.reply_lost -eq $true })
+    $lostEntries = @(Get-CatalogueList (Get-StepField $lostResult $case.Key 'response') 'report' | ForEach-Object { $_ } | Where-Object { (Get-CatalogueMember $_ 'reply_lost') -eq $true })
     Assert ($lostResult.aborted -like "*doc-update perdió la respuesta de $($case.Command)*no se envía nada más*" -and !(Get-StepField $lostResult $case.Key 'passed') -and $lostEntries.Count -eq 1) "P4-14 a reply_lost entry in $($case.Key) stops the run: $($lostResult.aborted)"
     Assert (@(Get-SentAfter $lostResult $case.Key).Count -eq 0 -and $lostResult.overall.not_sent -eq $lostResult.overall.total - $lostIndex -and (Format-CatalogueSummary $lostResult) -like '*DETENIDO*doc-update perdió la respuesta*') "P4-14 after a lost reply in $($case.Key) nothing more is sent, in any group: $(@(Get-SentAfter $lostResult $case.Key | ForEach-Object { $_.key }) -join ',')"
     Assert (@($lost.Fake.Received | Where-Object { $_ -like 'docnew.*' }).Count -eq $case.New -and @($lost.Fake.Received | Where-Object { $_ -like 'docdel.*' }).Count -eq $case.Deleted -and $lost.DocUpdate.Calls[$lost.DocUpdate.Calls.Count - 1] -eq $case.Key) "P4-14 the write whose reply was lost is sent once, never again: $(@($lost.Fake.Received | Where-Object { $_ -like 'doc*' }) -join ',')"
