@@ -19,9 +19,13 @@ namespace Bim.Cli;
 //                 (ignoring case), else realized_document_mismatch.
 // Output: the file holds exactly UTF-8(DocRealized.Canonical(DocRealized.FromRecord(fixture, record, assignments,
 // document))) (compact, sorted by key, no BOM, no trailing newline): byte-identical to the in-process builder.
-// Bounded input: every file goes through BoundedInput.ReadText (8 MiB, regular files only, links refused; input_* codes
-// with detail "record", "fixture" or "assignments"); the library's own bounds (MaxSteps, MaxCreated, MaxAssignments,
-// MaxCanonicalBytes) are realized_bound_exceeded.
+// Bounded input: every file goes through BoundedInput (regular files only, links refused; input_* codes with detail
+// "record", "fixture" or "assignments"). The fixture keeps the CLI cap (BoundedInput.MaxBytes, 8 MiB); record and
+// assignments are read up to the library's own bound DocRealized.MaxRecordBytes (32 MiB) and decoded exactly as
+// BoundedInput.ReadText decodes (UTF-8, byte order marks detected and stripped), so the CLI accepts every record the
+// in-process builder accepts. A file over that bound is refused at read time as input_too_large (detail the input): the
+// read cap equals the library cap, which would refuse the same text as realized_bound_exceeded. The library's other
+// bounds (MaxSteps, MaxCreated, MaxAssignments, MaxCanonicalBytes) are realized_bound_exceeded.
 // Never-overwrite: the output path follows GltfExportCommand.OutputProblem with extension .json (never an existing file,
 // directory or link; checked before any input is read) and is created exclusively (GltfExporter.WriteNew).
 // Success prints {"status":"succeeded","output","entries","bytes","sha256"} (sha256 upper-case hex of the file, as
@@ -55,9 +59,9 @@ internal static class DocRealizedCommand
         if (!TryParse(args, out var values)) throw new Refusal(UsageCode);
         var output = values["--output"];
         if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string badOutput) throw new Refusal(badOutput);
-        var recordText = Read(values["--record"], "record");
-        var fixtureText = Read(values["--fixture"], "fixture");
-        var assignmentsText = Read(values["--assignments"], "assignments");
+        var recordText = Read(values["--record"], "record", DocRealized.MaxRecordBytes);
+        var fixtureText = Read(values["--fixture"], "fixture", BoundedInput.MaxBytes);
+        var assignmentsText = Read(values["--assignments"], "assignments", DocRealized.MaxRecordBytes);
         var fixture = ParseFixture(fixtureText);
 
         IReadOnlyDictionary<string, string> realized;
@@ -103,11 +107,15 @@ internal static class DocRealizedCommand
         return Flags.All(values.ContainsKey);
     }
 
-    static string Read(string path, string name)
+    // BoundedInput.ReadBytes with the given cap, decoded exactly as BoundedInput.ReadText (UTF-8, BOMs detected and stripped).
+    static string Read(string path, string name, int maxBytes)
     {
         if (path.IndexOf('\0') >= 0) throw new Refusal("input_path_invalid", name);
-        try { return BoundedInput.ReadText(path); }
+        byte[] bytes;
+        try { bytes = BoundedInput.ReadBytes(path, maxBytes); }
         catch (InputRejectedException e) { throw new Refusal(e.Message, name); }
+        using var reader = new StreamReader(new MemoryStream(bytes, writable: false), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return reader.ReadToEnd();
     }
 
     static Project ParseFixture(string text)
