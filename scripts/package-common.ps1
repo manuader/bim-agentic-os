@@ -69,7 +69,8 @@ function Find-PackageForbidden([string]$Directory) {
             $name -match '(?i)^(\.env(\..*)?|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|\.npmrc|\.netrc|\.pypirc)$'
         $isLink = $file.LinkType -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)
         if (!$forbidden -and !$isLink -and $file.Length -le 4MB -and $file.Extension -match '(?i)^\.(json|txt|xml|config|template|addin|md|ini|yml|yaml|props|targets)$') {
-            $text = [IO.File]::ReadAllText($file.FullName)
+            # P10-17: a file that cannot be read is not scanned here; the manifest check reports it (manifest_file_unreadable).
+            try { $text = [IO.File]::ReadAllText($file.FullName) } catch { if (Test-PackageReadFailure $_) { continue } else { throw } }
             $forbidden = $text -match '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|sk-proj-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}'
         }
         if ($forbidden) { $hits.Add((Get-PackageRelativePath $base $file.FullName)) }
@@ -77,6 +78,60 @@ function Find-PackageForbidden([string]$Directory) {
     $array = $hits.ToArray()
     [Array]::Sort($array, [StringComparer]::Ordinal)
     return $array
+}
+
+# P10-17: true when an error record is an I/O or access failure reading a file (unwrapping .NET method-call wrappers).
+function Test-PackageReadFailure($ErrorRecord) {
+    $exception = $ErrorRecord.Exception
+    while ($exception -is [Management.Automation.MethodInvocationException] -and $exception.InnerException) { $exception = $exception.InnerException }
+    return ($exception -is [IO.IOException] -or $exception -is [UnauthorizedAccessException])
+}
+
+# P10-17: non-regular files (FIFO, socket, character or block device) are never packaged. They are recognised by file
+# type from metadata alone (lstat-style, like `ls -l`), never by opening them: opening a FIFO for read blocks until a
+# writer appears. PowerShell's UnixMode (first character p/s/c/b) or UnixStat.ItemType is used when the file system
+# provider supplies it; otherwise POSIX `test -p/-S/-c/-b` (via /bin/sh, which only stats) decides. Windows has no such
+# file system entries (its AF_UNIX sockets are reparse points, refused by Find-PackageLinks). Links are not classified.
+function Get-PackagePosixFileKind([string]$Path) {
+    $info = [Diagnostics.ProcessStartInfo]::new('/bin/sh')
+    foreach ($argument in '-c', 'if [ -p "$1" ]; then echo fifo; elif [ -S "$1" ]; then echo socket; elif [ -c "$1" ]; then echo character device; elif [ -b "$1" ]; then echo block device; fi', 'sh', $Path) { $info.ArgumentList.Add($argument) }
+    $info.UseShellExecute = $false; $info.RedirectStandardOutput = $true
+    $process = [Diagnostics.Process]::Start($info)
+    try { $kind = $process.StandardOutput.ReadToEnd().Trim(); $process.WaitForExit() } finally { $process.Dispose() }
+    if ($kind) { return $kind } else { return $null }
+}
+function Get-PackageSpecialFileKind($Item) {
+    if ($IsWindows) { return $null }
+    $mode = $Item.PSObject.Properties['UnixMode']
+    if ($mode -and ([string]$mode.Value).Length -ge 10) {
+        switch -CaseSensitive (([string]$mode.Value).Substring(0, 1)) { 'p' { return 'fifo' } 's' { return 'socket' } 'c' { return 'character device' } 'b' { return 'block device' } default { return $null } }
+    }
+    $stat = $Item.PSObject.Properties['UnixStat']
+    if ($stat -and $null -ne $stat.Value -and $stat.Value.PSObject.Properties['ItemType']) {
+        switch ([string]$stat.Value.ItemType) { 'NamedPipe' { return 'fifo' } 'Socket' { return 'socket' } 'CharacterDevice' { return 'character device' } 'BlockDevice' { return 'block device' } default { return $null } }
+    }
+    return Get-PackagePosixFileKind $Item.FullName
+}
+# Package-relative paths of non-regular files with their kind ("cli/x.bin (fifo)"), in ordinal path order.
+function Find-PackageSpecialFiles([string]$Directory) {
+    $base = [IO.Path]::GetFullPath($Directory)
+    if ($IsWindows) { return [string[]]@() }
+    $kinds = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    foreach ($item in Get-ChildItem -LiteralPath $base -Recurse -Force) {
+        if ($item.PSIsContainer -or $item.LinkType -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        $kind = Get-PackageSpecialFileKind $item
+        if ($kind) { $kinds[(Get-PackageRelativePath $base $item.FullName)] = $kind }
+    }
+    $paths = [string[]]@($kinds.Keys); [Array]::Sort($paths, [StringComparer]::Ordinal)
+    return [string[]]@($paths | ForEach-Object { "$_ ($($kinds[$_]))" })
+}
+# Lowercase hex SHA-256 of a file (same value as Get-FileHash), throwing the underlying .NET I/O exception on failure.
+function Get-PackageFileSha256([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { return [Convert]::ToHexString($sha.ComputeHash($stream)).ToLowerInvariant() } finally { $sha.Dispose() }
+    } finally { $stream.Dispose() }
 }
 
 # ConvertTo-Json on a single string yields its quoted, escaped JSON form (generic JsonSerializer overloads do not bind).
@@ -679,6 +734,8 @@ function Find-PackageUnclassifiedBinaries([string]$Directory) {
         $full = Join-Path $base $relative
         $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
         if ($null -eq $item -or $item.LinkType -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        # P10-17: a FIFO, socket or device is never opened (package_special_file reports it).
+        if (Get-PackageSpecialFileKind $item) { continue }
         try { if (Test-PackageExecutableMagic $full) { $unclassified.Add($relative) } }
         catch {
             $exception = $_.Exception
@@ -698,6 +755,13 @@ function Test-PackageManifest([string]$Directory) {
     $base = [IO.Path]::GetFullPath($Directory)
     $problems = [Collections.Generic.List[string]]::new()
     foreach ($link in @(Find-PackageLinks $base)) { $problems.Add("symlink or reparse point in package: $link") }
+    # P10-17: every later check reads file contents, and opening a FIFO blocks, so non-regular files stop verification
+    # here, refused by file type before any open.
+    $special = @(Find-PackageSpecialFiles $base)
+    if ($special.Count) {
+        $problems.Add("package_special_file: non-regular files (FIFO, socket or device) are never packaged; refused by file type without opening them, remaining checks skipped: $($special -join ', ')")
+        return $problems.ToArray()
+    }
     foreach ($hit in (Find-PackageForbidden $base)) { $problems.Add("forbidden file in package: $hit") }
     $manifestPath = Join-Path $base 'manifest.json'
     if (!(Test-Path -LiteralPath $manifestPath -PathType Leaf)) { $problems.Add('manifest.json missing'); return $problems.ToArray() }
@@ -718,6 +782,7 @@ function Test-PackageManifest([string]$Directory) {
     if ($magic.Unclassified.Count) { $problems.Add("sbom_binary_unclassified: executable images (PE/ELF/Mach-O by first bytes) whose extension is not .dll/.exe/.so[.N]/.dylib, so sbom attribution cannot cover them: $($magic.Unclassified -join ', ')") }
     if ($magic.Unreadable.Count) { $problems.Add("sbom_binary_unreadable: shipped files whose first bytes could not be read to classify them: $($magic.Unreadable -join ', ')") }
     $listed = [Collections.Generic.List[string]]::new()
+    $unreadable = [Collections.Generic.List[string]]::new()
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($entry in @($manifest.files)) {
         $path = [string]$entry.path
@@ -727,8 +792,11 @@ function Test-PackageManifest([string]$Directory) {
         $full = Join-Path $base $path
         if (!(Test-Path -LiteralPath $full -PathType Leaf)) { $problems.Add("missing file listed in manifest: $path"); continue }
         if ((Get-Item -LiteralPath $full).Length -ne [long]$entry.size) { $problems.Add("size mismatch: $path") }
-        if ((Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) { $problems.Add("sha256 mismatch: $path") }
+        # P10-17: a listed file that cannot be read to hash it is typed manifest_file_unreadable, never an exception.
+        try { $hash = Get-PackageFileSha256 $full } catch { if (Test-PackageReadFailure $_) { $unreadable.Add($path); continue } else { throw } }
+        if ($hash -cne [string]$entry.sha256) { $problems.Add("sha256 mismatch: $path") }
     }
+    if ($unreadable.Count) { $problems.Add("manifest_file_unreadable: manifest-listed files could not be read to verify their sha256: $($unreadable -join ', ')") }
     $sorted = $listed.ToArray(); [Array]::Sort($sorted, [StringComparer]::Ordinal)
     if (($sorted -join "`n") -cne ($listed -join "`n")) { $problems.Add('manifest files are not sorted ordinally') }
     $set = [Collections.Generic.HashSet[string]]::new([string[]]$listed.ToArray(), [StringComparer]::Ordinal)

@@ -612,6 +612,14 @@ try {
                     $made.Add($full)
                 }
             } catch { $failures.Add("P10-17 fifo $($case.Name) setup failed: $($_.Exception.Message)"); foreach ($full in $made) { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }; continue }
+            if ($case.Name -ceq 'unlisted bin') {
+                # The provider's UnixMode (when present) and the POSIX test fallback both classify a FIFO without opening it.
+                $fifoItem = Get-Item -LiteralPath $made[0] -Force
+                Write-Host "P10-17 fifo UnixMode '$($fifoItem.UnixMode)' UnixStat.ItemType '$($fifoItem.UnixStat.ItemType)'"
+                Assert ((Get-PackageSpecialFileKind $fifoItem) -ceq 'fifo') "P10-17: Get-PackageSpecialFileKind must classify a FIFO as fifo: '$(Get-PackageSpecialFileKind $fifoItem)'"
+                Assert ((Get-PackagePosixFileKind $made[0]) -ceq 'fifo') "P10-17: the POSIX fallback must classify a FIFO as fifo: '$(Get-PackagePosixFileKind $made[0])'"
+                Assert ($null -eq (Get-PackagePosixFileKind (Join-Path $copy 'cli/Bim.Cli.deps.json'))) 'P10-17: the POSIX fallback must not classify a regular file as special'
+            }
             $p17Run++
             $run = Invoke-ScriptBounded $verifier @('-PackageDirectory', $copy)
             $named = if ($case.Expect) { $case.Expect } else { [regex]::Escape($case.Paths[0]) + ' \(fifo\)' }
@@ -627,9 +635,13 @@ try {
             $full = Join-Path $copy 'cli/sock.bin'
             $socket = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::Unix, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Unspecified)
             try {
-                $bound = $false
-                try { $socket.Bind([Net.Sockets.UnixDomainSocketEndPoint]::new($full)); $bound = $true }
+                # sun_path holds ~104-108 bytes and the CI work tree is deeper, so bind a path relative to the process
+                # working directory (the .NET one, not $PWD), restored right after.
+                $bound = $false; $savedDirectory = [Environment]::CurrentDirectory
+                try { [Environment]::CurrentDirectory = (Split-Path $full); $socket.Bind([Net.Sockets.UnixDomainSocketEndPoint]::new('sock.bin')); $bound = $true }
                 catch { $p17Skip++; Write-Host "SKIP P10-17 socket: cannot bind a Unix domain socket at $full`: $($_.Exception.Message)" }
+                finally { [Environment]::CurrentDirectory = $savedDirectory }
+                if ($bound -and !(Test-Path -LiteralPath $full)) { $failures.Add("P10-17 socket setup failed: bound socket file not at $full"); $bound = $false }
                 if ($bound) {
                     $p17Run++
                     $run = Invoke-ScriptBounded $verifier @('-PackageDirectory', $copy)
@@ -638,7 +650,7 @@ try {
             } finally { $socket.Dispose(); Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }
         }
         Write-Host "P10-17 unreadable/special-file cases: $p17Run run, $p17Skip skipped"
-        if ($IsLinux -and $env:GITHUB_ACTIONS -eq 'true') { Assert ($p17FifoSkip -eq 0) "P10-17: mkfifo must be available on the Linux CI runner (fifo cases skipped: $p17FifoSkip)" }
+        if ($IsLinux -and $env:GITHUB_ACTIONS -eq 'true') { Assert ($p17Skip -eq 0) "P10-17: no unreadable/fifo/socket case may be skipped on the Linux CI runner (skipped: $p17Skip, fifo: $p17FifoSkip)" }
         Assert ($tClean.Output -notmatch 'package_special_file|manifest_file_unreadable') "P10-17: a consistent synthetic package must not report package_special_file or manifest_file_unreadable: $(Get-Tail $tClean.Output)"
         Assert ($tClean.Output -notmatch 'sbom_manifest_mismatch') "P10-15: a consistent synthetic package (including a first-party native named only by its deps.json project entry) must not report sbom_manifest_mismatch: $(Get-Tail $tClean.Output)"
 
