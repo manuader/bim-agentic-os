@@ -257,3 +257,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay198 (2026-11-12, cloud)
 - No new owner action. main is a7fc6d9 (`git pull`). The 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run now also drives `doc-update --execute` in its documentation group (new optional `-DocUpdateTimeoutSeconds`, default 3600); on a test copy whose template already has sheets A101/A900, "Level 1 Plan" or Door/Room Schedule, that step may fail (P4-17 will check first). New: `mirror-drift-adopt store selection.json --preview`; package-verify refuses disguised native binaries. Still open: ADR0010 / ADR0011 decisions, 🔒 N21 `... -Runs 1`.
+
+## Relay199 (2026-11-12, cloud)
+- No new owner action. main is 1def804 (`git pull`): revit-command and the MCP server now share one option grammar (same refusal bytes); fake add-in journal diff matches production; PDF Flate/Form XObject twin pinned. Still open: ADR0010 / ADR0011 decisions, 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once), 🔒 N21 `... -Runs 1`.
