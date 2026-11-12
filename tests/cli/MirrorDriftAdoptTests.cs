@@ -288,6 +288,19 @@ internal static class MirrorDriftAdoptTests
             Check(!text.Contains("e.Message", StringComparison.Ordinal) && !text.Contains("error.Message", StringComparison.Ordinal) && text.Contains("GetType().Name", StringComparison.Ordinal),
                 "unexpected exceptions are reported by type name only, never by message");
         }
+        // P2-21: the option codes are Core MirrorDriftAdoptCodes constants (exact strings pinned) and the CLI verb keeps no
+        // error-code string literal of its own outside comments (every code it prints comes from a codes class).
+        string? CoreCode(string field) => typeof(MirrorDriftAdoptCodes).GetField(field, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)?.GetRawConstantValue() as string;
+        Check(CoreCode("OptionUnknown") == "drift_adopt_option_unknown" && CoreCode("OptionDuplicate") == "drift_adopt_option_duplicate",
+            "MirrorDriftAdoptCodes.OptionUnknown/OptionDuplicate are the Core constants drift_adopt_option_unknown/drift_adopt_option_duplicate");
+        if (File.Exists(source))
+        {
+            var commandCode = System.Text.RegularExpressions.Regex.Replace(File.ReadAllText(source), "//[^\n]*", "");
+            var literals = System.Text.RegularExpressions.Regex.Matches(commandCode, "\"[a-z0-9]+(?:_[a-z0-9]+)+\"").Select(match => match.Value).ToArray();
+            Check(literals.Length == 0 && !commandCode.Contains("drift_adopt_", StringComparison.Ordinal), "interfaces/cli/MirrorDriftAdoptCommand.cs holds no error-code string literal", string.Join(", ", literals));
+            Check(commandCode.Contains("MirrorDriftAdoptCodes.OptionUnknown", StringComparison.Ordinal) && commandCode.Contains("MirrorDriftAdoptCodes.OptionDuplicate", StringComparison.Ordinal),
+                "the verb refuses flags with MirrorDriftAdoptCodes.OptionUnknown/OptionDuplicate");
+        }
     }
 
     // P2-19 oracles: `mirror-drift-adopt store selection.json --preview` stdout is byte-equal to the text of the MCP tool
