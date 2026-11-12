@@ -1,13 +1,13 @@
 # C04 owner smoke of Revit command catalogue v1 and, after it, the P1-06 one-run verification groups (catalogue v2,
-# views, snapshot, element queries, structure, documentation (ending with the P4-11 two-pass documentation update of a
-# moved wall: dry-run deletes, replan, confirm dry runs, then the real deletes of its own stale items), journal, then the
+# views, snapshot, element queries, structure, documentation (ending with the P4-14 documentation update of a moved wall
+# through the CLI doc-update verb: a dry run, then --execute of that plan's sha256, twice), journal, then the
 # P1-11 groups: DirectShapes, extrusion roofs, move/copy/rotate/mirror, document.save_copy and document.save_as, and
 # last modify/delete): the scripted step lists, envelope
 # building, picking references from query results and checking each response with requested vs observed rows.
 # Dot-sourced by scripts/owner-native-session.ps1 -Catalogue (which passes an invoker that runs the CLI
-# "revit-command" verb against the child Revit's pipe and a wire invoker for journal.read) and by
-# tests/integration/test-catalogue-session.ps1 (which passes fakes). Everything here except Invoke-CatalogueCli and
-# Invoke-CatalogueWire is pure (the save_copy and save_as checks read the saved file to hash it, and the save_as steps
+# "revit-command" verb against the child Revit's pipe, a wire invoker for journal.read and a doc-update invoker) and by
+# tests/integration/test-catalogue-session.ps1 (which passes fakes). Everything here except Invoke-CatalogueCli,
+# Invoke-CatalogueDocUpdate and Invoke-CatalogueWire is pure (the save_copy and save_as checks read the saved file to hash it, and the save_as steps
 # read .bim/revit-enabled-roots.txt); nothing here starts or stops Revit, and the only saves are the document.save_copy
 # step, a new BIM-Agentic-Test-c04-*-copia.rvt next to the test copy, and the document.save_as step, a new
 # BIM-Agentic-Test-c04-*-guardado.rvt next to it (the save_as into an owner folder is refused by the CLI before the pipe).
@@ -879,254 +879,310 @@ function Get-CatalogueDocumentationSteps {
     $steps.Add(@{ Key = 'doc-place-plan-again'; Es = 'Colocar otra vez la misma planta (debe rechazarse nombrando la lámina)'; Command = 'sheet.place_view'; Expect = @{ Status = 'failed'; Code = 'args_invalid' }
         Build = { [ordered]@{ sheet_uid = (Created 'doc-sheet'); view_uid = (Created 'doc-plan'); center = @(200, 200) } }
         Check = { param($r) $detail = [string](Get-CatalogueMember $r 'detail'); Test-CatalogueCondition 'el rechazo nombra la lámina' "C04-r$Run-A101" $detail ($detail -like "*C04-r$Run-A101*") } })
-    # P4-11: the two-pass documentation update of a moved wall, last in this group (see Get-CatalogueDocUpdateSteps).
+    # P4-14: the documentation update of a moved wall through doc-update --execute, last in this group (see Get-CatalogueDocUpdateSteps).
     foreach ($step in (Get-CatalogueDocUpdateSteps)) { $steps.Add($step) }
     return , $steps.ToArray()
 }
 
-# --- P4-11: a two-pass documentation update (P4-09) at the end of the documentation group ---
-# Its own wall (-9000,-6000)-(-6000,-6000) and a parallel reference wall 3000 mm south (both drawn west to east, so one
-# wall_face is on the same side of both), a section along the wall, a tag of it in doc-plan with its head 500 mm north
-# of the wall's midpoint and a wall-to-wall dimension in doc-plan. The wall is moved (0, 1000, 0) and the stale
-# dimension, tag and section are replaced the way core DocUpdateDependents (P4-09) and DocReplace plan it, one
-# catalogue request per step on the test copy:
-#   1. first pass: a dry run (element.delete dry_run, rolled back) of each stale target alone, in DocReplace delete order
-#      (dimension, tag, view), its readback read strictly (that target alone, dependents listed, count and sha256
-#      agreeing); the first refusal stops the pass;
-#   2. replan: each dependent classified (Resolve-CatalogueDocUpdateDependents): the stale instance of a key deleted
-#      earlier is gone by then (dropped from confirm_dependents); the stale of the same or a later key, an element the
-#      run keeps, or an untracked one are refused dependent_is_target / dependent_planned / dependent_kept /
-#      dependent_unknown. The only untracked ids ever accepted (the P4-10 --accept) are the view's baseline: what a dry
-#      run of the new section reported right after it was made, before anything else of the update existed (its plan
-#      marker; at most two, none an element the run keeps). An element made by a step whose check failed is not
-#      tracked (only passed steps are), so as a dependent it is refused dependent_unknown;
-#   3. confirm pass: a dry run of each planned delete (its planned args plus dry_run) must report the same full set as
-#      its first dry run, else dependents_changed;
-#   4. run: only then the real deletes with exactly the planned confirm_dependents (the executor refuses any other
-#      set), then the re-creations in create order (view, tag, dimension) on the moved wall, each read back; the stale
-#      tag then reads back reference_not_found. Any failure leaves the rest unsent, as PlanRunner would: each step Needs
-#      the picks or Created elements its predecessors record only when they pass.
-# Readbacks are read as strictly as core: dependents distinct UniqueIds, a dry run creates, modifies and deletes nothing,
-# a real delete deletes exactly its target plus the planned dependents.
-# The doc-update CLI verb (P4-10) plans this from a BIM-IR before/after and a realized map, which the test copy has not
-# (its elements come from catalogue commands), and no CLI verb runs a DocUpdatePlan, so the session drives the same
-# requests itself. Writes: only elements this group made, on the test copy the session already uses.
+# --- P4-14: the documentation update of a moved wall through `doc-update --execute` (P4-12), end of documentation ---
+# The update is no longer a hand-built plan sent step by step (P4-11): the CLI verb plans it from a BIM-IR before and
+# after and runs it over the same pipe. The session makes its own wall (-9000,-6000)-(-6000,-6000) and a door hosted on
+# it (centre 1450 mm along it), describes both in a small BIM-IR fixture (one level, the wall, the door [offset 1.0 m,
+# width 0.9 m]: New-CatalogueDocUpdateProject) and runs four doc-update calls, each a step of the sequence sent with
+# the -InvokeDocUpdate invoker (owner: Invoke-CatalogueDocUpdate; the CLI writes the plan file and prints one line):
+#   1. doc-up-realize-plan: a dry run (no --execute) with before = after = the fixture and the realized map of the two
+#      model elements only ("element:<id>" -> the UniqueIds the wall and door steps created). Every default documentation
+#      item of the fixture (DocDefaults: level plan, its sheet and placement, the door tag, door and room schedules, the
+#      schedules sheet and both placements: 9 keys) has no realization, so all 9 are forced (created). The plan file must
+#      hash to the printed sha256; its keys, command counts, plan level and tag (door, head at the door centre) checked;
+#   2. doc-up-realize: the same request with --execute --expected-document <sha256 of 1> (the plan sha from its own dry
+#      run): every step done, sent once, not replayed, one new UniqueId each; the printed realized map is the element
+#      entries plus doc:<key> = the created UniqueId of that key's step;
+#   3. doc-up-move: element.move of the wall (0, 1000, 0) in Revit (the door goes with it);
+#   4. doc-up-update-plan: a dry run with after = the fixture with the wall 1000 mm north and the realized map of 2. Only
+#      the door tag reads the moved wall (its head follows the host axis), so exactly tag-door is regenerated: a dry-run
+#      probe of its stale tag (two passes inside the CLI, no dependents), then one element.delete of the stale tag and
+#      one tag.create on the realized plan for the door at the moved head;
+#   5. doc-up-update: --execute --expected-document <sha256 of 4>: delete then create done, the realized map of 2 with
+#      only doc:tag-door changed to the new tag;
+#   6. doc-up-stale-gone / doc-up-tag-new: query.inspect of the stale tag (reference_not_found) and of the new one.
+# A doc-update refusal (any typed envelope, e.g. dependent_unknown, doc_update_plan_changed) fails its step; what needs
+# it is not sent (Need). A per-step report entry with reply_lost (no_response, pipe_io_error, pipe_read_timeout,
+# response_invalid: the write may have run, its reply is missing) stops the whole run like a lost pipe: nothing more
+# is sent. The CLI never re-sends such a write (P4-12) and this session never retries it.
+# Writes: only the documentation set of this fixture and the session's own wall and door, on the test copy. Names:
+# "Level 1 Plan", sheets A101 and A900, "Door Schedule", "Room Schedule" (DocDefaults' defaults, unchanged).
+$script:CatalogueDocUpdateProjectId = '5f1c0e2a-4b3d-4c5e-8f60-7a8b9c0d1e20'
+$script:CatalogueDocUpdateLevelId = '5f1c0e2a-4b3d-4c5e-8f60-7a8b9c0d1e21'
+$script:CatalogueDocUpdateWallId = '5f1c0e2a-4b3d-4c5e-8f60-7a8b9c0d1e22'
+$script:CatalogueDocUpdateDoorId = '5f1c0e2a-4b3d-4c5e-8f60-7a8b9c0d1e23'
 $script:CatalogueDocUpdateWall = @(@(-9000, -6000), @(-6000, -6000))
-$script:CatalogueDocUpdateReference = @(@(-9000, -9000), @(-6000, -9000))
 $script:CatalogueDocUpdateShiftMm = 1000
-# DocReplace delete order; AcceptBaseline: the section's baseline dependents are accepted for that key only.
-$script:CatalogueDocUpdateItems = @(
-    @{ Key = 'dimension'; Stale = 'doc-up-dim'; Es = 'la cota obsoleta'; AcceptBaseline = $false },
-    @{ Key = 'tag'; Stale = 'doc-up-tag'; Es = 'la etiqueta obsoleta'; AcceptBaseline = $false },
-    @{ Key = 'section'; Stale = 'doc-up-section'; Es = 'el corte obsoleto'; AcceptBaseline = $true })
-# At most this many baseline dependents of the new section (its plan marker).
-$script:CatalogueDocUpdateBaselineMax = 2
+$script:CatalogueDocUpdateDoorOffsetMm = 1000
+$script:CatalogueDocUpdateDoorWidthMm = 900
+$script:CatalogueDocUpdateWallThicknessMm = 200
+# The catalogue commands of the first (forced) plan, by count.
+$script:CatalogueDocUpdateCommands = [ordered]@{ 'schedule.create' = 2; 'sheet.create' = 2; 'sheet.place_view' = 3; 'tag.create' = 1; 'view.create_plan' = 1 }
 $script:CatalogueUniqueIdPattern = '\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-[0-9a-fA-F]{8}\z'
 
-# The section line along the update wall, shifted north by $Shift mm.
-function Get-CatalogueDocUpdateLine([double]$Shift) {
-    $y = [double]$script:CatalogueDocUpdateWall[0][1] + $Shift
-    return [ordered]@{ start = @([double]$script:CatalogueDocUpdateWall[0][0], $y); end = @([double]$script:CatalogueDocUpdateWall[1][0], $y) }
+# A DocDefaults key: prefix + the BIM-IR id in "N" form.
+function Get-CatalogueDocUpdateKey([string]$Prefix, [string]$Id) { return $Prefix + $Id.Replace('-', '').ToLowerInvariant() }
+
+# The 9 default documentation keys of the fixture, sorted ordinally.
+function Get-CatalogueDocUpdateKeys {
+    $level = $script:CatalogueDocUpdateLevelId
+    $keys = [string[]]@((Get-CatalogueDocUpdateKey 'place-plan-' $level), 'place-schedule-doors', 'place-schedule-rooms', (Get-CatalogueDocUpdateKey 'plan-' $level),
+        'schedule-doors', 'schedule-rooms', (Get-CatalogueDocUpdateKey 'sheet-' $level), 'sheet-schedules', (Get-CatalogueDocUpdateKey 'tag-door-' $script:CatalogueDocUpdateDoorId))
+    [Array]::Sort($keys, [StringComparer]::Ordinal)
+    return , $keys
 }
 
-# UniqueIds as P4-09 compares them: lower case, sorted ordinally, joined by newlines.
-function Get-CatalogueUidSetText($Uids) {
-    $lower = [string[]]@(@($Uids) | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
-    [Array]::Sort($lower, [StringComparer]::Ordinal)
-    return ($lower -join "`n")
-}
-
-function Get-CatalogueTextSha256([string]$Text) {
-    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.UTF8Encoding]::new($false).GetBytes($Text))).ToLowerInvariant()
-}
-
-# The stale realizations by key, in delete order (Created of the running sequence).
-function Get-CatalogueDocUpdateStale {
-    $stale = [ordered]@{}
-    foreach ($entry in $script:CatalogueDocUpdateItems) { $stale[$entry.Key] = Created $entry.Stale }
-    return $stale
-}
-
-# One element.delete readback of a single stale target, read strictly as DocUpdateDependents does; records the rows.
-# Returns @{ Reason; Dependents; Text } (Text: Get-CatalogueUidSetText of the dependents).
-function Read-CatalogueDeleteReadback($Response, [string]$Target, [bool]$DryRun) {
-    $delete = Get-CataloguePath $Response 'readback.delete'
-    # Get-CatalogueList writes its list as one object: enumerate it from a variable.
-    $listed = Get-CatalogueList $delete 'dependents'
-    $dependents = [string[]]@($listed | ForEach-Object { [string]$_ })
-    $text = Get-CatalogueUidSetText $dependents
-    $named = Get-CatalogueList $delete 'targets'
-    $targets = @($named | ForEach-Object { [string]$_ })
-    $count = Get-CatalogueMember $delete 'dependents_count'
-    $deleted = Get-CatalogueList $Response 'deleted'
-    $created = Get-CatalogueList $Response 'created'
-    $modified = Get-CatalogueList $Response 'modified'
-    $distinct = @($dependents | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique).Count
-    $malformed = @($dependents | Where-Object { $_ -notmatch $script:CatalogueUniqueIdPattern })
-    $deletedText = Get-CatalogueUidSetText $deleted
-    $wantDeleted = Get-CatalogueUidSetText (@($Target) + $dependents)
-    $reason = Join-CatalogueReasons @(
-        (Test-CatalogueCondition 'dependientes sin duplicados' $dependents.Count $distinct ($distinct -eq $dependents.Count)),
-        (Test-CatalogueCondition 'dependientes con forma de UniqueId' 'todos' $malformed ($malformed.Count -eq 0)),
-        (Test-CatalogueSame 'simulacro (dry_run)' $DryRun (Get-CatalogueMember $delete 'dry_run')),
-        (Test-CatalogueCondition 'objetivo: solo el elemento obsoleto' $Target $targets ($targets.Count -eq 1 -and [string]::Equals($targets[0], $Target, [StringComparison]::OrdinalIgnoreCase))),
-        (Test-CatalogueSame 'dependents_listed' $true (Get-CatalogueMember $delete 'dependents_listed')),
-        (Test-CatalogueCondition 'dependents_count = dependientes listados' $dependents.Count $count ($null -ne $count -and [string]$count -eq [string]$dependents.Count)),
-        (Test-CatalogueSame 'dependents_sha256 de los dependientes listados' (Get-CatalogueTextSha256 $text) (Get-CatalogueMember $delete 'dependents_sha256')),
-        $(if ($DryRun) { Test-CatalogueCondition 'simulacro sin created, modified ni deleted' 0 ($created.Count + $modified.Count + $deleted.Count) (($created.Count + $modified.Count + $deleted.Count) -eq 0) } else { Test-CatalogueCondition 'deleted = objetivo + dependientes, sin repetir' $wantDeleted $deletedText ($deletedText -ceq $wantDeleted -and $deleted.Count -eq $dependents.Count + 1) }))
-    return @{ Reason = $reason; Dependents = $dependents; Text = $text }
-}
-
-# P4-09 step 3 for the first dry run of key $Key: each dependent must be the stale instance of a key deleted earlier in
-# $Stale's order (dropped: gone by then); else the stale of this key (dependent_is_target) or of a later one
-# (dependent_planned), an element in $Kept (dependent_kept), or untracked: dependent_unknown unless it is in $Accepted
-# (then confirmed). UniqueIds compared ignoring case. Returns @{ Reason; Confirm } (Confirm sorted ordinally).
-function Resolve-CatalogueDocUpdateDependents([string]$Key, [string[]]$Dependents, $Stale, [string[]]$Kept, [string[]]$Accepted) {
-    $order = @($Stale.Keys)
-    $position = [Array]::IndexOf($order, $Key)
-    $confirm = [Collections.Generic.List[string]]::new()
-    foreach ($uid in @($Dependents | Where-Object { $_ })) {
-        $owner = @($order | Where-Object { [string]::Equals([string]$Stale[$_], $uid, [StringComparison]::OrdinalIgnoreCase) }) | Select-Object -First 1
-        if ($null -ne $owner -and $owner -eq $Key) { return @{ Reason = "dependent_is_target: $uid es el propio objetivo ($Key)"; Confirm = [string[]]@() } }
-        if ($null -ne $owner) {
-            if ([Array]::IndexOf($order, $owner) -gt $position) { return @{ Reason = "dependent_planned: $uid es el obsoleto de $owner, que se borra después de $Key"; Confirm = [string[]]@() } }
-            continue
-        }
-        if (@($Kept | Where-Object { [string]::Equals([string]$_, $uid, [StringComparison]::OrdinalIgnoreCase) }).Count) { return @{ Reason = "dependent_kept: $uid es un elemento que la actualización conserva ($Key)"; Confirm = [string[]]@() } }
-        if (!@(@($Accepted) | Where-Object { $_ -and [string]::Equals([string]$_, $uid, [StringComparison]::OrdinalIgnoreCase) }).Count) { return @{ Reason = "dependent_unknown: $uid no es un obsoleto de la actualización ni de la línea base del corte ($Key)"; Confirm = [string[]]@() } }
-        $confirm.Add($uid)
+# The BIM-IR fixture (Project JSON members as System.Text.Json reads them) with the wall $ShiftMm north.
+function New-CatalogueDocUpdateProject([double]$ShiftMm) {
+    $provenance = [ordered]@{ Source = 'catalogue-c04-p4-14'; Approval = 'owner-test-copy' }
+    $y = ([double]$script:CatalogueDocUpdateWall[0][1] + $ShiftMm) / 1000
+    $wall = @(([double]$script:CatalogueDocUpdateWall[0][0] / 1000), $y, ([double]$script:CatalogueDocUpdateWall[1][0] / 1000), $y, ($script:CatalogueWallHeightMm / 1000), ($script:CatalogueDocUpdateWallThicknessMm / 1000))
+    return [ordered]@{
+        Id = $script:CatalogueDocUpdateProjectId
+        Revision = 0
+        Elements = @(
+            [ordered]@{ Id = $script:CatalogueDocUpdateLevelId; Kind = 'level'; GeometryMetres = @([double]0); Dependencies = @(); Provenance = $provenance },
+            [ordered]@{ Id = $script:CatalogueDocUpdateWallId; Kind = 'wall'; GeometryMetres = $wall; Dependencies = @($script:CatalogueDocUpdateLevelId); Provenance = $provenance },
+            [ordered]@{ Id = $script:CatalogueDocUpdateDoorId; Kind = 'door'; GeometryMetres = @(($script:CatalogueDocUpdateDoorOffsetMm / 1000), ($script:CatalogueDocUpdateDoorWidthMm / 1000)); Dependencies = @($script:CatalogueDocUpdateWallId); Provenance = $provenance })
     }
-    $sorted = [string[]]$confirm.ToArray()
-    [Array]::Sort($sorted, [StringComparer]::Ordinal)
-    return @{ Reason = $null; Confirm = $sorted }
 }
 
-# The args of one planned delete: the stale target, confirm_dependents when there are any, dry_run for a dry run.
-function New-CatalogueDocUpdateDelete([string]$Target, $Confirm, [bool]$DryRun) {
-    $request = [ordered]@{ element_uids = @($Target) }
-    $list = @(@($Confirm) | Where-Object { $_ } | ForEach-Object { [string]$_ })
-    if ($list.Count) { $request['confirm_dependents'] = $list }
-    if ($DryRun) { $request['dry_run'] = $true }
-    return $request
+# The door tag head DocRegeneration computes: the door centre on the wall axis, $ShiftMm north (mm).
+function Get-CatalogueDocUpdateHead([double]$ShiftMm) {
+    return [double[]]@(([double]$script:CatalogueDocUpdateWall[0][0] + $script:CatalogueDocUpdateDoorOffsetMm + $script:CatalogueDocUpdateDoorWidthMm / 2), ([double]$script:CatalogueDocUpdateWall[0][1] + $ShiftMm))
 }
 
-# Baseline of the new section (right after it is made, before the tag, the dimension or the move): a dry run of its
-# delete; its dependents (its plan marker) are the only untracked ids the update may confirm. At most
-# CatalogueDocUpdateBaselineMax, none an element the run keeps; records doc_up_section_baseline = @{ Uids }.
-function Test-CatalogueDocUpdateBaseline($Response) {
-    $section = Created 'doc-up-section'
-    $read = Read-CatalogueDeleteReadback $Response $section $true
-    if ($read.Reason) { return $read.Reason }
-    $kept = [string[]]@(@(@($createdBy.Values) + @($picked.Values | Where-Object { $_ -is [string] })) | Where-Object { $_ -and $_ -ne $section })
-    $known = @($read.Dependents | Where-Object { $kept -contains $_ })
-    $reason = Join-CatalogueReasons @(
-        (Test-CatalogueCondition "línea base: como mucho $($script:CatalogueDocUpdateBaselineMax) dependientes (su marca en planta)" "<= $($script:CatalogueDocUpdateBaselineMax)" $read.Dependents.Count ($read.Dependents.Count -le $script:CatalogueDocUpdateBaselineMax)),
-        (Test-CatalogueCondition 'línea base: ningún elemento que la sesión conserva' 'ninguno' $known ($known.Count -eq 0)))
-    if ($null -eq $reason) { $picked['doc_up_section_baseline'] = @{ Uids = [string[]]@($read.Dependents) } }
-    return $reason
+# The realized model elements: "element:<BIM-IR id>" -> the UniqueId its catalogue step created.
+function Get-CatalogueDocUpdateElements {
+    return [ordered]@{ ('element:' + $script:CatalogueDocUpdateWallId) = (Created 'doc-up-wall'); ('element:' + $script:CatalogueDocUpdateDoorId) = (Created 'doc-up-door') }
 }
 
-# First pass (collect) and replan for one key; on success records doc_up_probe_<key> = @{ Reported; Confirm }.
-function Test-CatalogueDocUpdateProbe($Response, $Item) {
-    $stale = Get-CatalogueDocUpdateStale
-    $read = Read-CatalogueDeleteReadback $Response $stale[$Item.Key] $true
-    if ($read.Reason) { return $read.Reason }
-    $staleUids = @($stale.Values)
-    $kept = [string[]]@(@(@($createdBy.Values) + @($picked.Values | Where-Object { $_ -is [string] })) | Where-Object { $_ -and $staleUids -notcontains $_ })
-    $accepted = if ($Item.AcceptBaseline) { [string[]]@($picked['doc_up_section_baseline'].Uids) } else { [string[]]@() }
-    $plan = Resolve-CatalogueDocUpdateDependents $Item.Key $read.Dependents $stale $kept $accepted
-    $reason = Test-CatalogueCondition "replan (P4-09): dependientes de $($Item.Es) conocidos o aceptados" 'ninguno rechazado' $(if ($plan.Reason) { $plan.Reason } else { 'ninguno rechazado' }) ($null -eq $plan.Reason)
-    if ($reason) { return $reason }
-    $null = Test-CatalogueCondition "dependientes a confirmar en el borrado de $($Item.Es)" ($plan.Confirm -join ',') ($plan.Confirm -join ',') $true
-    $picked["doc_up_probe_$($Item.Key)"] = @{ Reported = $read.Text; Confirm = $plan.Confirm }
+# One doc-update request: before/after fixtures, realized map, bindings (the sequence fills bindings.document with the
+# step's document), --accept values (none) and expected_document ($null: dry run; a sha256: --execute).
+function New-CatalogueDocUpdateRequest([double]$BeforeShiftMm, [double]$AfterShiftMm, $Realized, $Expected) {
+    return [ordered]@{
+        before = (New-CatalogueDocUpdateProject $BeforeShiftMm)
+        after = (New-CatalogueDocUpdateProject $AfterShiftMm)
+        realized = $Realized
+        bindings = [ordered]@{ document = $null; levels = [ordered]@{ $script:CatalogueDocUpdateLevelId = [string]$picked['level'] } }
+        accept = @()
+        expected_document = $Expected
+    }
+}
+
+# Status and exit code of one doc-update line against $Expect (Status, Code).
+function Test-CatalogueDocUpdateLine($Response, $ExitCode, [hashtable]$Expect) {
+    if ($null -eq $Response) { return 'no JSON response' }
+    $status = Get-CatalogueMember $Response 'status'
+    $code = Get-CatalogueMember $Response 'code'
+    if ($Expect.Status -eq 'failed') {
+        if ($status -ne 'failed') { return "doc-update: expected failure $($Expect.Code), got status $status" }
+        if ($code -ne $Expect.Code) { return "doc-update: expected code $($Expect.Code), got $code" }
+        if ($ExitCode -eq 0) { return 'doc-update: failure reported with exit code 0' }
+        return $null
+    }
+    if ($status -ne 'succeeded') { return "doc-update: expected success, got ${status}/${code}: $(Get-CatalogueMember $Response 'field') $(Get-CatalogueMember $Response 'detail')" }
+    if ($ExitCode -ne 0) { return "doc-update: success reported with exit code $ExitCode" }
     return $null
 }
 
-# Confirm pass for one key: the same full dependent set as its first dry run; records doc_up_confirmed_<key>.
-function Test-CatalogueDocUpdateConfirm($Response, $Item) {
-    $stale = Get-CatalogueDocUpdateStale
-    $read = Read-CatalogueDeleteReadback $Response $stale[$Item.Key] $true
-    if ($read.Reason) { return $read.Reason }
-    $first = [string]$picked["doc_up_probe_$($Item.Key)"].Reported
-    $reason = Test-CatalogueCondition "dependents_changed: el segundo simulacro de $($Item.Es) informa los mismos dependientes que el primero" $first $read.Text ($first -ceq $read.Text)
-    if ($null -eq $reason) { $picked["doc_up_confirmed_$($Item.Key)"] = $true }
-    return $reason
-}
-
-# Real delete for one key: confirmed, the target deleted and exactly the planned dependents; records doc_up_deleted_<key>.
-function Test-CatalogueDocUpdateDelete($Response, $Item) {
-    $stale = Get-CatalogueDocUpdateStale
-    $read = Read-CatalogueDeleteReadback $Response $stale[$Item.Key] $false
-    $planned = Get-CatalogueUidSetText $picked["doc_up_probe_$($Item.Key)"].Confirm
+# The plan file a doc-update line names: it must exist and hash to the printed sha256 and bytes. Returns @{ Reason; Plan }.
+function Read-CatalogueDocUpdatePlanFile($Response) {
+    $path = [string](Get-CatalogueMember $Response 'output')
+    if (!$path -or !(Test-Path -LiteralPath $path -PathType Leaf)) { return @{ Reason = (Test-CatalogueCondition 'archivo del plan escrito' 'presente' $path $false); Plan = $null } }
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $fileSha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
+    $printed = [string](Get-CatalogueMember $Response 'sha256')
+    $plan = $null
+    try { $plan = [Text.UTF8Encoding]::new($false).GetString($bytes) | ConvertFrom-Json -ErrorAction Stop } catch { $plan = $null }
     $reason = Join-CatalogueReasons @(
-        $read.Reason,
-        (Test-CatalogueSame 'dependientes confirmados' $true (Get-CataloguePath $Response 'readback.delete.confirmed')),
-        (Test-CatalogueCondition "Revit borra con $($Item.Es) exactamente los dependientes del plan" $planned $read.Text ($planned -ceq $read.Text)))
-    if ($null -eq $reason) { $picked["doc_up_deleted_$($Item.Key)"] = $true }
+        (Test-CatalogueCondition 'sha256 del archivo del plan = sha256 informado' $printed $fileSha ($printed -match '\A[0-9a-fA-F]{64}\z' -and [string]::Equals($printed, $fileSha, [StringComparison]::OrdinalIgnoreCase))),
+        (Test-CatalogueSame 'bytes del archivo del plan' $bytes.Length (Get-CatalogueMember $Response 'bytes')),
+        (Test-CatalogueCondition 'archivo del plan: JSON' 'JSON' $(if ($null -ne $plan) { 'JSON' } else { 'no JSON' }) ($null -ne $plan)))
+    return @{ Reason = $reason; Plan = $plan }
+}
+
+# The dry summary counts of a doc-update line; applied false.
+function Test-CatalogueDocUpdateSummary($Response, [hashtable]$Expected) {
+    $rows = @(foreach ($name in 'regenerated', 'steps', 'forced', 'retired', 'probed', 'dependents') { Test-CatalogueSame "resumen: $name" $Expected[$name] (Get-CatalogueMember $Response $name) })
+    return Join-CatalogueReasons (@($rows) + @(Test-CatalogueSame 'applied (simulacro, nada escrito)' $false (Get-CatalogueMember $Response 'applied')))
+}
+
+# The plan's steps (Replacement.Commands.Steps) with their args parsed: @{ Command; Args; OperationId }.
+function Get-CatalogueDocUpdatePlanSteps($Plan) {
+    # Get-CatalogueArray writes its list as one object: enumerate it from a variable.
+    $raw = Get-CatalogueArray $Plan 'Replacement.Commands.Steps'
+    $steps = [Collections.Generic.List[hashtable]]::new()
+    foreach ($step in $raw) {
+        $text = [string](Get-CatalogueMember $step 'ArgsJson')
+        $parsed = $null
+        try { $parsed = $text | ConvertFrom-Json -ErrorAction Stop } catch { $parsed = $null }
+        $steps.Add(@{ Command = [string](Get-CatalogueMember $step 'Command'); Args = $parsed; OperationId = [string](Get-CatalogueMember $step 'OperationId') })
+    }
+    return , $steps.ToArray()
+}
+
+# "command=count" of a list of commands, sorted ordinally.
+function Get-CatalogueCommandCounts([string[]]$Commands) {
+    $names = [string[]]@($Commands | Select-Object -Unique)
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    return (@($names | ForEach-Object { $name = $_; "$name=$(@($Commands | Where-Object { $_ -ceq $name }).Count)" }) -join ',')
+}
+
+# A realized map (dictionary or parsed JSON object) as "source=UniqueId" lines sorted by source.
+function Get-CatalogueMapText($Map) {
+    $pairs = if ($Map -is [Collections.IDictionary]) { @($Map.Keys | ForEach-Object { "$_=$($Map[$_])" }) } elseif ($null -ne $Map) { @($Map.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) } else { @() }
+    $sorted = [string[]]$pairs
+    [Array]::Sort($sorted, [StringComparer]::Ordinal)
+    return ($sorted -join "`n")
+}
+
+# Step 1: the forced realization plan of the whole default documentation; records doc_up_realize_plan = @{ Sha }.
+function Test-CatalogueDocUpdateRealizePlan($Response) {
+    $file = Read-CatalogueDocUpdatePlanFile $Response
+    if ($file.Reason) { return $file.Reason }
+    $keys = Get-CatalogueDocUpdateKeys
+    $steps = Get-CatalogueDocUpdatePlanSteps $file.Plan
+    $expected = Get-CatalogueCommandCounts ([string[]]@(foreach ($entry in $script:CatalogueDocUpdateCommands.GetEnumerator()) { for ($i = 0; $i -lt $entry.Value; $i++) { $entry.Key } }))
+    $tag = @($steps | Where-Object { $_.Command -eq 'tag.create' }) | Select-Object -First 1
+    $view = @($steps | Where-Object { $_.Command -eq 'view.create_plan' }) | Select-Object -First 1
+    $reason = Join-CatalogueReasons @(
+        (Test-CatalogueDocUpdateSummary $Response @{ regenerated = $keys.Count; steps = $keys.Count; forced = $keys.Count; retired = 0; probed = 0; dependents = 0 }),
+        (Test-CatalogueSame 'claves regeneradas: la documentación por defecto del modelo BIM-IR' ($keys -join ',') ((Get-CatalogueArray $file.Plan 'Regeneration.Regenerated') -join ',')),
+        (Test-CatalogueSame 'claves forzadas: toda la documentación sin realizar' ($keys -join ',') ((Get-CatalogueArray $file.Plan 'Forced') -join ',')),
+        (Test-CatalogueSame 'sin claves retiradas' '' ((Get-CatalogueArray $file.Plan 'Retired') -join ',')),
+        (Test-CatalogueSame 'órdenes del plan (solo creaciones)' $expected (Get-CatalogueCommandCounts ([string[]]@($steps | ForEach-Object { $_.Command })))),
+        (Test-CatalogueSame 'planta: el nivel elegido' $picked['level'] (Get-CatalogueMember $(if ($view) { $view.Args }) 'level')),
+        (Test-CatalogueSame 'etiqueta: la puerta de la actualización' (Created 'doc-up-door') (Get-CatalogueMember $(if ($tag) { $tag.Args }) 'element_uid')),
+        (Test-CataloguePoint 'etiqueta: cabeza en el centro de la puerta (mm)' (Get-CatalogueDocUpdateHead 0) (Get-CatalogueMember $(if ($tag) { $tag.Args }) 'head') 0.5))
+    if ($null -eq $reason) { $picked['doc_up_realize_plan'] = @{ Sha = [string](Get-CatalogueMember $Response 'sha256') } }
     return $reason
 }
 
-# The section along the update wall (shifted $Shift mm north), its readback.
-function Test-CatalogueDocUpdateSection($Response, [double]$Shift) {
-    $view = Get-CataloguePath $Response 'readback.view'
-    $section = Get-CatalogueMember $view 'section'
-    return Join-CatalogueReasons @(
-        (Test-CatalogueSame 'vista = primer elemento creado' (Get-CatalogueFirstCreated $Response) (Get-CatalogueMember $view 'unique_id')),
-        (Test-CatalogueSame 'tipo de vista' 'Section' (Get-CatalogueMember $view 'view_type')),
-        (Test-CatalogueSame 'nombre' (Get-CatalogueViewName 'corte actualizado') (Get-CatalogueMember $view 'name')),
-        (Test-CataloguePoint 'dirección derecha (a lo largo del muro)' @(1, 0, 0) (Get-CatalogueMember $section 'right_direction') 0.000001),
-        (Test-CatalogueNumber 'origen: y sobre el eje del muro (mm)' ([double]$script:CatalogueDocUpdateWall[0][1] + $Shift) (Get-CatalogueFirst (Get-CatalogueArray $section 'origin') 1) 0.5))
+# What every --execute line must say: applied, completed, the reviewed plan (same sha256), nothing gone, $Count report
+# entries, each done, sent once and executed in this invocation (not replayed). Returns @{ Reason; Report }.
+function Test-CatalogueDocUpdateRun($Response, [string]$PlanPick, [int]$Count) {
+    # The plan file of the --execute call still hashes to what it printed (the reviewed sha256, checked below).
+    $file = Read-CatalogueDocUpdatePlanFile $Response
+    if ($file.Reason) { return @{ Reason = $file.Reason; Report = @() } }
+    $report = Get-CatalogueList $Response 'report'
+    $bad = @($report | Where-Object { [string](Get-CatalogueMember $_ 'status') -ne 'done' -or [string](Get-CatalogueMember $_ 'sent') -ne '1' -or (Get-CatalogueMember $_ 'replayed') -ne $false })
+    $reason = Join-CatalogueReasons @(
+        (Test-CatalogueSame 'applied' $true (Get-CatalogueMember $Response 'applied')),
+        (Test-CatalogueSame 'run' 'completed' (Get-CatalogueMember $Response 'run')),
+        (Test-CatalogueCondition 'sha256 = el del simulacro revisado' $picked[$PlanPick].Sha (Get-CatalogueMember $Response 'sha256') ([string]::Equals([string]$picked[$PlanPick].Sha, [string](Get-CatalogueMember $Response 'sha256'), [StringComparison]::OrdinalIgnoreCase))),
+        (Test-CatalogueSame 'gone (nada ya borrado)' '' ((Get-CatalogueList $Response 'gone') -join ',')),
+        (Test-CatalogueSame 'pasos en el informe' $Count $report.Count),
+        (Test-CatalogueCondition 'cada paso done, enviado una vez, ejecutado ahora (no replayed)' 'todos' @($bad | ForEach-Object { "$(Get-CatalogueMember $_ 'key') $(Get-CatalogueMember $_ 'command') $(Get-CatalogueMember $_ 'status')/$(Get-CatalogueMember $_ 'code')" }) ($bad.Count -eq 0)))
+    return @{ Reason = $reason; Report = $report }
 }
 
-# The tag of the update wall in doc-plan, head 500 mm north of its midpoint (shifted $Shift mm north), its readback.
-function Test-CatalogueDocUpdateTag($Response, [double]$Shift) {
-    $tag = Get-CataloguePath $Response 'readback.tag'
-    return Join-CatalogueReasons @(
-        (Test-CatalogueSame 'etiqueta = primer elemento creado' (Get-CatalogueFirstCreated $Response) (Get-CatalogueMember $tag 'unique_id')),
-        (Test-CatalogueSame 'vista de la etiqueta' (Created 'doc-plan') (Get-CatalogueMember $tag 'view_unique_id')),
-        (Test-CatalogueSame 'etiqueta solo del muro de la actualización' (Created 'doc-up-wall') ((Get-CatalogueList $tag 'tagged_unique_ids') -join ',')),
-        (Test-CataloguePoint 'cabeza (mm)' @(-7500, (-5500 + $Shift)) (Get-CatalogueMember $tag 'head') 1),
-        (Test-CatalogueSame 'no huérfana' $false (Get-CatalogueMember $tag 'orphaned')))
+# Step 2: the realization run; records doc_up_realized = the printed realized map (ordered by source).
+function Test-CatalogueDocUpdateRealize($Response) {
+    $keys = Get-CatalogueDocUpdateKeys
+    $run = Test-CatalogueDocUpdateRun $Response 'doc_up_realize_plan' $keys.Count
+    if ($run.Reason) { return $run.Reason }
+    $want = Get-CatalogueDocUpdateElements
+    $created = [Collections.Generic.List[string]]::new()
+    foreach ($entry in $run.Report) {
+        $uids = Get-CatalogueList $entry 'created'
+        $created.Add([string](Get-CatalogueFirst $uids))
+        if ($uids.Count -eq 1) { $want['doc:' + [string](Get-CatalogueMember $entry 'key')] = [string]$uids[0] }
+    }
+    $entryKeys = [string[]]@($run.Report | ForEach-Object { [string](Get-CatalogueMember $_ 'key') })
+    [Array]::Sort($entryKeys, [StringComparer]::Ordinal)
+    $malformed = @($created | Where-Object { $_ -notmatch $script:CatalogueUniqueIdPattern })
+    $distinct = @($created | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique).Count
+    $realized = Get-CatalogueMember $Response 'realized'
+    $reason = Join-CatalogueReasons @(
+        (Test-CatalogueSame 'claves del informe' ($keys -join ',') ($entryKeys -join ',')),
+        (Test-CatalogueCondition 'un UniqueId nuevo y distinto por paso' $keys.Count @($created) ($malformed.Count -eq 0 -and $distinct -eq $keys.Count -and @(@($run.Report) | Where-Object { (Get-CatalogueList $_ 'created').Count -ne 1 }).Count -eq 0)),
+        (Test-CatalogueSame 'mapa realizado: los elementos del modelo más doc:<clave> = lo creado' (Get-CatalogueMapText $want) (Get-CatalogueMapText $realized)))
+    if ($null -eq $reason) {
+        $map = [ordered]@{}
+        foreach ($property in $realized.PSObject.Properties) { $map[$property.Name] = [string]$property.Value }
+        $picked['doc_up_realized'] = $map
+    }
+    return $reason
 }
 
-# The dimension between the update wall and the reference wall in doc-plan; $Expected: its value (mm), or $null.
-function Test-CatalogueDocUpdateDimension($Response, $Expected) {
-    $dimension = Get-CataloguePath $Response 'readback.dimension'
-    $references = Get-CatalogueList $dimension 'reference_unique_ids'
-    $value = Get-CatalogueMember $dimension 'value_mm'
-    return Join-CatalogueReasons @(
-        (Test-CatalogueSame 'cota = primer elemento creado' (Get-CatalogueFirstCreated $Response) (Get-CatalogueMember $dimension 'unique_id')),
-        (Test-CatalogueSame 'vista de la cota' (Created 'doc-plan') (Get-CatalogueMember $dimension 'view_unique_id')),
-        (Test-CatalogueContains 'referencia: muro de la actualización' (Created 'doc-up-wall') $references),
-        (Test-CatalogueContains 'referencia: muro de referencia' (Created 'doc-up-wall-ref') $references),
-        $(if ($null -ne $Expected) { Test-CatalogueNumber "valor = cota obsoleta + $($script:CatalogueDocUpdateShiftMm) mm (mm)" ([double]$Expected) $value 0.5 } else { Test-CatalogueCondition 'valor leído' '> 0' $value ((Test-CatalogueNear $value 0 1e12) -and [double]$value -gt 0) }))
+# Step 4: the update plan after the move; records doc_up_update_plan = @{ Sha }.
+function Test-CatalogueDocUpdateUpdatePlan($Response) {
+    $file = Read-CatalogueDocUpdatePlanFile $Response
+    if ($file.Reason) { return $file.Reason }
+    $tagKey = Get-CatalogueDocUpdateKey 'tag-door-' $script:CatalogueDocUpdateDoorId
+    $realized = $picked['doc_up_realized']
+    $steps = Get-CatalogueDocUpdatePlanSteps $file.Plan
+    $delete = Get-CatalogueFirst $steps 0
+    $create = Get-CatalogueFirst $steps 1
+    $deleteArgs = if ($delete) { $delete.Args }
+    $createArgs = if ($create) { $create.Args }
+    $forced = Get-CatalogueArray $file.Plan 'Forced'
+    $retired = Get-CatalogueArray $file.Plan 'Retired'
+    $reason = Join-CatalogueReasons @(
+        (Test-CatalogueDocUpdateSummary $Response @{ regenerated = 1; steps = 2; forced = 0; retired = 0; probed = 1; dependents = 0 }),
+        (Test-CatalogueSame 'regenerada solo la etiqueta de la puerta (lee el muro movido)' $tagKey ((Get-CatalogueArray $file.Plan 'Regeneration.Regenerated') -join ',')),
+        (Test-CatalogueSame 'sin claves forzadas ni retiradas' '' (($forced + $retired) -join ',')),
+        (Test-CatalogueSame 'órdenes: borrar la etiqueta obsoleta y crear la nueva' 'element.delete,tag.create' (@($steps | ForEach-Object { $_.Command }) -join ',')),
+        (Test-CatalogueSame 'borrado: solo la etiqueta obsoleta' $realized["doc:$tagKey"] ((Get-CatalogueList $deleteArgs 'element_uids') -join ',')),
+        (Test-CatalogueSame 'borrado: sin dependientes que confirmar' '' ((Get-CatalogueList $deleteArgs 'confirm_dependents') -join ',')),
+        (Test-CatalogueSame 'etiqueta nueva: en la planta realizada' $realized['doc:' + (Get-CatalogueDocUpdateKey 'plan-' $script:CatalogueDocUpdateLevelId)] (Get-CatalogueMember $createArgs 'view_uid')),
+        (Test-CatalogueSame 'etiqueta nueva: de la puerta' (Created 'doc-up-door') (Get-CatalogueMember $createArgs 'element_uid')),
+        (Test-CataloguePoint "etiqueta nueva: cabeza en el centro de la puerta movida $($script:CatalogueDocUpdateShiftMm) mm (mm)" (Get-CatalogueDocUpdateHead $script:CatalogueDocUpdateShiftMm) (Get-CatalogueMember $createArgs 'head') 0.5))
+    if ($null -eq $reason) { $picked['doc_up_update_plan'] = @{ Sha = [string](Get-CatalogueMember $Response 'sha256') } }
+    return $reason
+}
+
+# Step 5: the update run; records doc_up_updated = @{ Stale; New } (the door tag's UniqueIds).
+function Test-CatalogueDocUpdateUpdate($Response) {
+    $run = Test-CatalogueDocUpdateRun $Response 'doc_up_update_plan' 2
+    if ($run.Reason) { return $run.Reason }
+    $tagKey = Get-CatalogueDocUpdateKey 'tag-door-' $script:CatalogueDocUpdateDoorId
+    $stale = [string]$picked['doc_up_realized']["doc:$tagKey"]
+    $delete = Get-CatalogueFirst $run.Report 0
+    $create = Get-CatalogueFirst $run.Report 1
+    $new = [string](Get-CatalogueFirst (Get-CatalogueList $create 'created'))
+    $want = [ordered]@{}
+    foreach ($entry in $picked['doc_up_realized'].GetEnumerator()) { $want[$entry.Key] = $entry.Value }
+    $want["doc:$tagKey"] = $new
+    $reason = Join-CatalogueReasons @(
+        (Test-CatalogueSame 'informe: borrar y crear la etiqueta de la puerta' "$tagKey element.delete,$tagKey tag.create" (@($run.Report | ForEach-Object { "$(Get-CatalogueMember $_ 'key') $(Get-CatalogueMember $_ 'command')" }) -join ',')),
+        (Test-CatalogueSame 'el borrado no crea nada' 0 (Get-CatalogueList $delete 'created').Count),
+        (Test-CatalogueCondition 'una etiqueta nueva, no la obsoleta' 'otra' $new ($new -match $script:CatalogueUniqueIdPattern -and (Get-CatalogueList $create 'created').Count -eq 1 -and ![string]::Equals($new, $stale, [StringComparison]::OrdinalIgnoreCase))),
+        (Test-CatalogueSame 'mapa realizado: igual salvo doc:tag-door = la etiqueta nueva' (Get-CatalogueMapText $want) (Get-CatalogueMapText (Get-CatalogueMember $Response 'realized'))))
+    if ($null -eq $reason) { $picked['doc_up_updated'] = @{ Stale = $stale; New = $new } }
+    return $reason
 }
 
 function Get-CatalogueDocUpdateSteps {
     $shift = $script:CatalogueDocUpdateShiftMm
-    $items = $script:CatalogueDocUpdateItems
+    $along = $script:CatalogueDocUpdateDoorOffsetMm + $script:CatalogueDocUpdateDoorWidthMm / 2
     $steps = [Collections.Generic.List[hashtable]]::new()
-    $steps.Add(@{ Key = 'doc-up-wall'; Es = 'Actualización de documentación (P4-11): muro propio de (-9000,-6000) a (-6000,-6000)'; Command = 'wall.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
+    $steps.Add(@{ Key = 'doc-up-wall'; Es = 'Actualización de documentación (P4-14, doc-update --execute): muro propio de (-9000,-6000) a (-6000,-6000)'; Command = 'wall.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
         Build = { Need 'level', 'wall_type'; New-CatalogueLineWall $picked['level'] $picked['wall_type'] $script:CatalogueDocUpdateWall[0] $script:CatalogueDocUpdateWall[1] }
         Check = { param($r) Test-CatalogueSame 'muro = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CataloguePath $r 'readback.wall.unique_id') } })
-    $steps.Add(@{ Key = 'doc-up-wall-ref'; Es = 'Actualización: muro de referencia paralelo de (-9000,-9000) a (-6000,-9000)'; Command = 'wall.create'; Expect = @{ Status = 'succeeded'; Created = 1 }
-        Build = { Need 'level', 'wall_type'; New-CatalogueLineWall $picked['level'] $picked['wall_type'] $script:CatalogueDocUpdateReference[0] $script:CatalogueDocUpdateReference[1] }
-        Check = { param($r) Test-CatalogueSame 'muro = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CataloguePath $r 'readback.wall.unique_id') } })
-    $section = { param([double]$Shift) [ordered]@{ line = (Get-CatalogueDocUpdateLine $Shift); depth_mm = 1000; bottom_elevation_mm = -500; top_elevation_mm = 4000; name = (Get-CatalogueViewName 'corte actualizado') } }
-    $steps.Add(@{ Key = 'doc-up-section'; Es = 'Actualización: corte a lo largo del muro (y = -6000)'; Command = 'view.create_section'; Expect = @{ Status = 'succeeded' }; Section = $section
-        Build = { $null = Created 'doc-up-wall'; & $spec.Section 0 }
-        Check = { param($r) Test-CatalogueDocUpdateSection $r 0 } })
-    $steps.Add(@{ Key = 'doc-up-section-baseline'; Es = 'Actualización: simulacro de borrar el corte recién hecho (línea base: su marca en planta, lo único no rastreado que se podrá confirmar)'; Command = 'element.delete'; Expect = @{ Status = 'succeeded' }
-        Build = { New-CatalogueDocUpdateDelete (Created 'doc-up-section') @() $true }
-        Check = { param($r) Test-CatalogueDocUpdateBaseline $r } })
-    $steps.Add(@{ Key = 'doc-up-tag'; Es = 'Actualización: etiqueta del muro en la planta de documentación, cabeza en (-7500,-5500)'; Command = 'tag.create'; Expect = @{ Status = 'succeeded' }
-        Build = { [ordered]@{ view_uid = (Created 'doc-plan'); element_uid = (Created 'doc-up-wall'); head = @(-7500, -5500) } }
-        Check = { param($r) Test-CatalogueDocUpdateTag $r 0 } })
-    $steps.Add(@{ Key = 'doc-up-dim'; Es = 'Actualización: cota entre el muro y el muro de referencia'; Command = 'dimension.create_linear'; Expect = @{ Status = 'succeeded' }
-        Build = { [ordered]@{ view_uid = (Created 'doc-plan'); first_uid = (Created 'doc-up-wall'); second_uid = (Created 'doc-up-wall-ref') } }
-        Check = { param($r) Test-CatalogueDocUpdateDimension $r $null } })
-    $steps.Add(@{ Key = 'doc-up-move'; Es = "Actualización: mover el muro (0, $shift, 0) mm; la cota, la etiqueta y el corte quedan obsoletos"; Command = 'element.move'; Expect = @{ Status = 'succeeded'; Created = 0 }
-        Build = { Need 'doc_up_section_baseline'; $null = Created 'doc-up-dim'; $null = Created 'doc-up-tag'; $null = Created 'doc-up-section'; [ordered]@{ element_uids = @(Created 'doc-up-wall'); vector_mm = @(0, $script:CatalogueDocUpdateShiftMm, 0) } }
+    $steps.Add(@{ Key = 'doc-up-door'; Es = "Actualización: puerta en ese muro, centro a $along mm de su inicio"; Command = 'opening.place'; Expect = @{ Status = 'succeeded'; Created = 1 }
+        Build = { Need 'door'; [ordered]@{ category = 'door'; symbol = $picked['door']; host_wall_uid = (Created 'doc-up-wall'); position_along_mm = ($script:CatalogueDocUpdateDoorOffsetMm + $script:CatalogueDocUpdateDoorWidthMm / 2) } }
+        Check = {
+            param($r)
+            $opening = Get-CataloguePath $r 'readback.opening'
+            Join-CatalogueReasons @(
+                (Test-CatalogueSame 'puerta = primer elemento creado' (Get-CatalogueFirstCreated $r) (Get-CatalogueMember $opening 'unique_id')),
+                (Test-CatalogueSame 'anfitrión: el muro de la actualización' (Created 'doc-up-wall') (Get-CatalogueMember $opening 'host_wall_unique_id')))
+        } })
+    $steps.Add(@{ Key = 'doc-up-realize-plan'; Es = 'Actualización: doc-update en simulacro de la documentación por defecto del modelo BIM-IR (9 elementos sin realizar)'; Command = 'doc-update'; DocUpdate = $true; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'level'; New-CatalogueDocUpdateRequest 0 0 (Get-CatalogueDocUpdateElements) $null }
+        Check = { param($r) Test-CatalogueDocUpdateRealizePlan $r } })
+    $steps.Add(@{ Key = 'doc-up-realize'; Es = 'Actualización: doc-update --execute del plan revisado (crea planta, láminas, tablas, colocaciones y la etiqueta de la puerta)'; Command = 'doc-update'; DocUpdate = $true; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'doc_up_realize_plan'; New-CatalogueDocUpdateRequest 0 0 (Get-CatalogueDocUpdateElements) $picked['doc_up_realize_plan'].Sha }
+        Check = { param($r) Test-CatalogueDocUpdateRealize $r } })
+    $steps.Add(@{ Key = 'doc-up-move'; Es = "Actualización: mover el muro (0, $shift, 0) mm; la etiqueta de la puerta queda obsoleta"; Command = 'element.move'; Expect = @{ Status = 'succeeded'; Created = 0 }
+        Build = { Need 'doc_up_realized'; [ordered]@{ element_uids = @(Created 'doc-up-wall'); vector_mm = @(0, $script:CatalogueDocUpdateShiftMm, 0) } }
         Check = {
             param($r)
             $moved = Get-CatalogueFirst (Get-CatalogueArray $r 'readback.moved')
@@ -1139,52 +1195,18 @@ function Get-CatalogueDocUpdateSteps {
             if ($null -eq $reason) { $picked['doc_up_moved'] = $true }
             $reason
         } })
-    for ($i = 0; $i -lt $items.Count; $i++) {
-        $previous = if ($i) { $items[$i - 1].Key } else { $null }
-        $steps.Add(@{ Key = "doc-up-probe-$($items[$i].Key)"; Es = "Actualización, primera pasada: simulacro de borrar solo $($items[$i].Es) para leer sus dependientes"; Command = 'element.delete'; Expect = @{ Status = 'succeeded' }; DocItem = $items[$i]; Previous = $previous
-            Build = { Need 'doc_up_moved'; if ($spec.Previous) { Need "doc_up_probe_$($spec.Previous)" }; New-CatalogueDocUpdateDelete (Created $spec.DocItem.Stale) @() $true }
-            Check = { param($r) Test-CatalogueDocUpdateProbe $r $spec.DocItem } })
-    }
-    for ($i = 0; $i -lt $items.Count; $i++) {
-        $previous = if ($i) { $items[$i - 1].Key } else { $null }
-        $steps.Add(@{ Key = "doc-up-confirm-$($items[$i].Key)"; Es = "Actualización, segunda pasada: simulacro del borrado planificado de $($items[$i].Es) (mismos dependientes)"; Command = 'element.delete'; Expect = @{ Status = 'succeeded' }; DocItem = $items[$i]; Previous = $previous
-            Build = { Need 'doc_up_probe_dimension', 'doc_up_probe_tag', 'doc_up_probe_section'; if ($spec.Previous) { Need "doc_up_confirmed_$($spec.Previous)" }; New-CatalogueDocUpdateDelete (Created $spec.DocItem.Stale) $picked["doc_up_probe_$($spec.DocItem.Key)"].Confirm $true }
-            Check = { param($r) Test-CatalogueDocUpdateConfirm $r $spec.DocItem } })
-    }
-    for ($i = 0; $i -lt $items.Count; $i++) {
-        $previous = if ($i) { $items[$i - 1].Key } else { $null }
-        $steps.Add(@{ Key = "doc-up-delete-$($items[$i].Key)"; Es = "Actualización: borrar $($items[$i].Es) confirmando exactamente los dependientes del plan"; Command = 'element.delete'; Expect = @{ Status = 'succeeded' }; DocItem = $items[$i]; Previous = $previous
-            Build = { Need 'doc_up_confirmed_dimension', 'doc_up_confirmed_tag', 'doc_up_confirmed_section'; if ($spec.Previous) { Need "doc_up_deleted_$($spec.Previous)" }; New-CatalogueDocUpdateDelete (Created $spec.DocItem.Stale) $picked["doc_up_probe_$($spec.DocItem.Key)"].Confirm $false }
-            Check = { param($r) Test-CatalogueDocUpdateDelete $r $spec.DocItem } })
-    }
-    $steps.Add(@{ Key = 'doc-up-section-new'; Es = "Actualización: corte regenerado a lo largo del muro movido (y = -$(6000 - $shift))"; Command = 'view.create_section'; Expect = @{ Status = 'succeeded' }; Section = $section
-        Build = { Need 'doc_up_deleted_section'; & $spec.Section $script:CatalogueDocUpdateShiftMm }
-        Check = {
-            param($r)
-            Join-CatalogueReasons @(
-                (Test-CatalogueDocUpdateSection $r $script:CatalogueDocUpdateShiftMm),
-                (Test-CatalogueCondition 'vista nueva (no la obsoleta)' 'otra' (Get-CatalogueFirstCreated $r) ([string](Get-CatalogueFirstCreated $r) -ne [string](Created 'doc-up-section'))))
-        } })
-    $steps.Add(@{ Key = 'doc-up-tag-new'; Es = "Actualización: etiqueta regenerada del muro movido, cabeza en (-7500,-$(5500 - $shift))"; Command = 'tag.create'; Expect = @{ Status = 'succeeded' }
-        Build = { $null = Created 'doc-up-section-new'; [ordered]@{ view_uid = (Created 'doc-plan'); element_uid = (Created 'doc-up-wall'); head = @(-7500, (-5500 + $script:CatalogueDocUpdateShiftMm)) } }
-        Check = {
-            param($r)
-            Join-CatalogueReasons @(
-                (Test-CatalogueDocUpdateTag $r $script:CatalogueDocUpdateShiftMm),
-                (Test-CatalogueCondition 'etiqueta nueva (no la obsoleta)' 'otra' (Get-CatalogueFirstCreated $r) ([string](Get-CatalogueFirstCreated $r) -ne [string](Created 'doc-up-tag'))))
-        } })
-    $steps.Add(@{ Key = 'doc-up-dim-new'; Es = "Actualización: cota regenerada entre el muro movido y el de referencia ($shift mm más)"; Command = 'dimension.create_linear'; Expect = @{ Status = 'succeeded' }
-        Build = { $null = Created 'doc-up-tag-new'; [ordered]@{ view_uid = (Created 'doc-plan'); first_uid = (Created 'doc-up-wall'); second_uid = (Created 'doc-up-wall-ref') } }
-        Check = {
-            param($r)
-            $stale = Get-CataloguePath (Response 'doc-up-dim') 'readback.dimension.value_mm'
-            Join-CatalogueReasons @(
-                (Test-CatalogueDocUpdateDimension $r ([double]$stale + $script:CatalogueDocUpdateShiftMm)),
-                (Test-CatalogueCondition 'cota nueva (no la obsoleta)' 'otra' (Get-CatalogueFirstCreated $r) ([string](Get-CatalogueFirstCreated $r) -ne [string](Created 'doc-up-dim'))))
-        } })
+    $steps.Add(@{ Key = 'doc-up-update-plan'; Es = "Actualización: doc-update en simulacro del muro movido $shift mm (dos pasadas de dependientes dentro de la CLI)"; Command = 'doc-update'; DocUpdate = $true; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'doc_up_moved'; New-CatalogueDocUpdateRequest 0 $script:CatalogueDocUpdateShiftMm $picked['doc_up_realized'] $null }
+        Check = { param($r) Test-CatalogueDocUpdateUpdatePlan $r } })
+    $steps.Add(@{ Key = 'doc-up-update'; Es = 'Actualización: doc-update --execute del plan revisado (borra la etiqueta obsoleta y crea la nueva)'; Command = 'doc-update'; DocUpdate = $true; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'doc_up_update_plan'; New-CatalogueDocUpdateRequest 0 $script:CatalogueDocUpdateShiftMm $picked['doc_up_realized'] $picked['doc_up_update_plan'].Sha }
+        Check = { param($r) Test-CatalogueDocUpdateUpdate $r } })
     $steps.Add(@{ Key = 'doc-up-stale-gone'; Es = 'Actualización: inspeccionar la etiqueta obsoleta (debe responder reference_not_found)'; Command = 'query.inspect'; Expect = @{ Status = 'failed'; Code = 'reference_not_found' }
-        Build = { Need 'doc_up_deleted_tag'; [ordered]@{ unique_id = (Created 'doc-up-tag') } }
+        Build = { Need 'doc_up_updated'; [ordered]@{ unique_id = $picked['doc_up_updated'].Stale } }
         Check = { param($r) $null } })
+    $steps.Add(@{ Key = 'doc-up-tag-new'; Es = 'Actualización: inspeccionar la etiqueta nueva'; Command = 'query.inspect'; Expect = @{ Status = 'succeeded' }
+        Build = { Need 'doc_up_updated'; [ordered]@{ unique_id = $picked['doc_up_updated'].New } }
+        Check = { param($r) Test-CatalogueSame 'elemento inspeccionado: la etiqueta nueva' $picked['doc_up_updated'].New (Get-CataloguePath $r 'readback.element.unique_id') } })
     return , $steps.ToArray()
 }
 
@@ -1817,7 +1839,7 @@ function Get-CatalogueGroups([switch]$V1Only) {
         $groups.Add(@{ Key = 'snapshot'; Es = 'Instantánea BIM-IR (P2-01): dos veces idéntica, aberturas sobre el eje, suelo sin mapear'; Steps = (Get-CatalogueSnapshotSteps) })
         $groups.Add(@{ Key = 'consultas'; Es = 'Consultas de elementos (P1-02): query.elements y query.inspect'; Steps = (Get-CatalogueQuerySteps) })
         $groups.Add(@{ Key = 'estructura'; Es = 'Estructura (P9-02): ejes, columna, viga, zapata, cimiento corrido'; Steps = (Get-CatalogueStructureSteps) })
-        $groups.Add(@{ Key = 'documentacion'; Es = 'Documentación (P4-02): cotas, etiquetas, tabla, lámina y vistas en lámina; actualización en dos pasadas tras mover un muro (P4-11)'; Steps = (Get-CatalogueDocumentationSteps) })
+        $groups.Add(@{ Key = 'documentacion'; Es = 'Documentación (P4-02): cotas, etiquetas, tabla, lámina y vistas en lámina; actualización con doc-update --execute tras mover un muro (P4-14)'; Steps = (Get-CatalogueDocumentationSteps) })
         $groups.Add(@{ Key = 'diario'; Es = 'Diario de cambios (P2-03): journal.read'; Steps = (Get-CatalogueJournalSteps) })
         $groups.Add(@{ Key = 'formas'; Es = 'Formas DirectShape (P9-09): caja, extrusión y contorno cruzado'; Steps = (Get-CatalogueDirectShapeSteps) })
         $groups.Add(@{ Key = 'extrusion'; Es = 'Techos por extrusión (P9-07): bóveda en plano alineado, invertido y diagonal; perfil cerrado'; Steps = (Get-CatalogueRoofExtrusionSteps) })
@@ -1853,7 +1875,10 @@ function New-CatalogueWireLine([string]$DocumentPath, [string]$Operation, $Optio
 
 # Runs every step of every group in order. $Invoke (param index, key, envelopeJson; returns @{ output; exit_code;
 # timed_out }) sends catalogue envelopes; $InvokeWire (same shape, with the wire line) sends journal.read; without it
-# those steps are not sent. $Progress (optional) receives one Spanish line per step; $Alive (optional) returns $false
+# those steps are not sent. $InvokeDocUpdate (same shape, with the doc-update request JSON: before, after, realized,
+# bindings, accept, expected_document; owner: Invoke-CatalogueDocUpdate) runs the P4-14 doc-update steps; without it
+# those steps are not sent. A doc-update line whose per-step report has an entry with reply_lost true (a write whose
+# reply is missing) stops the run like a lost pipe. $Progress (optional) receives one Spanish line per step; $Alive (optional) returns $false
 # when the child Revit is gone. A timeout (unknown completion, also pipe_read_timeout), a lost pipe (pipe_connect_timeout, pipe_io_error,
 # no_response), a CLI error or a closed Revit stops the run: the remaining steps of every group are not sent. A failed
 # step or group never stops later groups: a later step that needs something a failed step should have made is not
@@ -1870,6 +1895,7 @@ function Invoke-CatalogueSequence {
         [Parameter(Mandatory)][string]$DocumentUid,
         [Parameter(Mandatory)][scriptblock]$Invoke,
         [scriptblock]$InvokeWire,
+        [scriptblock]$InvokeDocUpdate,
         [scriptblock]$Progress,
         [scriptblock]$Alive,
         [switch]$V1Only
@@ -1921,7 +1947,9 @@ function Invoke-CatalogueSequence {
         $index++
         $spec = $item.Spec
         $wire = $spec.ContainsKey('Wire') -and $spec.Wire
-        $operationId = if ($wire) { $null } else { New-CatalogueOperationId $Stamp $Run $(if ($spec.ContainsKey('ReuseOf')) { $spec.ReuseOf } else { $spec.Key }) }
+        # P4-14: a doc-update step is one CLI verb call; the CLI makes the operation ids of what it sends.
+        $docUpdate = $spec.ContainsKey('DocUpdate') -and $spec.DocUpdate
+        $operationId = if ($wire -or $docUpdate) { $null } else { New-CatalogueOperationId $Stamp $Run $(if ($spec.ContainsKey('ReuseOf')) { $spec.ReuseOf } else { $spec.Key }) }
         $stepDocument = if (($spec.ContainsKey('UseSourceDocument') -and $spec.UseSourceDocument) -or !$picked.ContainsKey('document_path') -or !$picked['document_path']) { $DocumentPath } else { [string]$picked['document_path'] }
         $record = [ordered]@{ index = $index; group = $item.Group; key = $spec.Key; description = $spec.Es; command = $spec.Command; operation_id = $operationId; document_path = $stepDocument; expected = $spec.Expect; request = $null; response = $null; raw_response = $null; exit_code = $null; timed_out = $false; elapsed_ms = $null; passed = $false; blocked = $false; reason = $null; comparisons = [Collections.Generic.List[object]]::new() }
         $records.Add($record)
@@ -1944,6 +1972,13 @@ function Invoke-CatalogueSequence {
             $requestText = New-CatalogueWireLine $stepDocument $spec.Command $stepArgs
             $invoker = $InvokeWire
         }
+        elseif ($docUpdate) {
+            if (!$InvokeDocUpdate) { $record.reason = "no enviado: falta el canal doc-update (CLI) para $($spec.Key)"; continue }
+            # The Revit document the CLI addresses is the one this step names.
+            $stepArgs['bindings']['document'] = [ordered]@{ path = $stepDocument; unique_id = $DocumentUid }
+            $requestText = $stepArgs | ConvertTo-Json -Depth 20 -Compress
+            $invoker = $InvokeDocUpdate
+        }
         else {
             $requestText = New-CatalogueEnvelope $operationId $stepDocument $DocumentUid $spec.Command $stepArgs
             $invoker = $Invoke
@@ -1959,6 +1994,17 @@ function Invoke-CatalogueSequence {
         $text = ([string]$result.output).Trim()
         $parsed = $null
         try { $parsed = $text | ConvertFrom-Json -ErrorAction Stop } catch { $parsed = $null }
+        # P4-14: an --execute call may have sent writes; without its usable line (a crash, a cut output, an exit code
+        # the CLI never uses) their outcome is unknown, so nothing more is sent. A dry run sends no write: only the step fails.
+        $executing = $docUpdate -and $null -ne (Get-CatalogueMember $stepArgs 'expected_document')
+        $unusable = $null -eq $parsed -or ($executing -and ($result.exit_code -notin 0, 1 -or $null -eq (Get-CatalogueMember $parsed 'status') -or ([string](Get-CatalogueMember $parsed 'code') -eq 'doc_update_internal_error' -and $null -eq (Get-CatalogueMember $parsed 'report'))))
+        if ($executing -and $unusable) {
+            $record.raw_response = $text
+            if ($null -ne $parsed) { $record.response = $parsed }
+            $aborted = "doc-update --execute del paso $index ($($spec.Key)) terminó sin una línea utilizable de doc-update (código de salida $($result.exit_code)); pudo haber escrito, no se sabe qué: no se envía nada más"
+            $record.reason = $aborted
+            continue
+        }
         if ($null -eq $parsed) { $record.raw_response = $text; $record.reason = 'response is not JSON'; continue }
         $record.response = $parsed
         $responses[$spec.Key] = $parsed
@@ -1971,12 +2017,28 @@ function Invoke-CatalogueSequence {
             $record.reason = "$aborted ($(Get-CatalogueMember $parsed 'detail'))"
             continue
         }
+        # P4-14: a doc-update write whose reply was lost may have run in Revit: nothing more is sent (never retried).
+        if ($docUpdate) {
+            $lost = @(Get-CatalogueList $parsed 'report' | ForEach-Object { $_ } | Where-Object { (Get-CatalogueMember $_ 'reply_lost') -eq $true })
+            if ($lost.Count) {
+                $first = $lost[0]
+                $aborted = "doc-update perdió la respuesta de $(Get-CatalogueMember $first 'command') ($(Get-CatalogueMember $first 'key'), $(Get-CatalogueMember $first 'operation_id'): $(Get-CatalogueMember $first 'code')) en el paso $index; no se sabe si Revit lo ejecutó y no se envía nada más"
+                $record.reason = $aborted
+                continue
+            }
+        }
         if ($script:CatalogueTransportCodes -contains $code -and $spec.Expect['Code'] -ne $code) {
             $aborted = if ($code -eq 'pipe_read_timeout') { "el paso $index no recibió respuesta a tiempo ($code; no se sabe si terminó)" } else { "se perdió la conexión con el Revit de prueba en el paso $index ($code)" }
             $record.reason = $aborted
             continue
         }
-        $reason = if ($wire) { Test-CatalogueWireResponse $parsed $result.exit_code } else { Test-CatalogueResponse $parsed $result.exit_code $operationId $spec.Expect }
+        $reason = if ($wire) { Test-CatalogueWireResponse $parsed $result.exit_code } elseif ($docUpdate) {
+            $line = Test-CatalogueDocUpdateLine $parsed $result.exit_code $spec.Expect
+            # The plan file the CLI names must be the one the invoker asked for (when it says which).
+            $printed = [string](Get-CatalogueMember $parsed 'output')
+            if ($null -eq $line -and $result -is [Collections.IDictionary] -and $result.Contains('plan_file') -and $printed -and [IO.Path]::GetFullPath($printed) -ne [IO.Path]::GetFullPath([string]$result['plan_file'])) { $line = "doc-update: plan file $printed, expected $($result['plan_file'])" }
+            $line
+        } else { Test-CatalogueResponse $parsed $result.exit_code $operationId $spec.Expect }
         if ($null -eq $reason) {
             $script:CatalogueComparisons = $record.comparisons
             try { $reason = & $spec.Check $parsed } catch { $reason = $_.Exception.Message } finally { $script:CatalogueComparisons = $null }
@@ -2079,6 +2141,76 @@ function Invoke-CatalogueCli {
     } finally { $process.Dispose() }
 }
 
+
+# P4-14: one doc-update call. The request JSON ({before, after, realized, bindings, accept, expected_document}) goes to a
+# new numbered file like the CLI requests (NN-key.json) and each input member, its JSON text exactly as sent, to
+# NN-key.doc-update/<member>.json; then "dotnet Bim.Cli.dll doc-update --before ... --realized ... --bindings ...
+# --output NN-key.doc-update/plan.json --probe-dependents <pipe> [--accept uid]... [--execute --expected-document
+# <sha256>]" (--execute only when expected_document is a string) with a bounded wait. On timeout only that CLI process
+# is stopped (never Revit) and the step counts as unknown completion. The CLI's one stdout line (the dry summary, a
+# refusal, or the per-step report of an --execute run) is kept in the run folder as NN-key.doc-update/report.json, its
+# stderr as NN-key.doc-update/stderr.txt.
+function Invoke-CatalogueDocUpdate {
+    param(
+        [Parameter(Mandatory)][string]$Dotnet,
+        [Parameter(Mandatory)][string]$CliDll,
+        [Parameter(Mandatory)][string]$PipeName,
+        [Parameter(Mandatory)][string]$RequestDirectory,
+        [Parameter(Mandatory)][int]$Index,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$Json,
+        [ValidateRange(1, 3600)][int]$TimeoutSeconds = 300
+    )
+    function Write-NewText([string]$Path, [string]$Text) {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text); $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+    }
+    New-Item -ItemType Directory -Force $RequestDirectory | Out-Null
+    $name = '{0:D2}-{1}' -f $Index, $Key
+    $file = Join-Path $RequestDirectory "$name.json"
+    $folder = Join-Path $RequestDirectory "$name.doc-update"
+    Write-NewText $file $Json
+    New-Item -ItemType Directory $folder -ErrorAction Stop | Out-Null
+    $inputs = [ordered]@{}
+    $accept = [Collections.Generic.List[string]]::new()
+    $expected = $null
+    $document = [Text.Json.JsonDocument]::Parse($Json)
+    try {
+        $root = $document.RootElement
+        foreach ($member in 'before', 'after', 'realized', 'bindings') {
+            $inputs[$member] = Join-Path $folder "$member.json"
+            Write-NewText $inputs[$member] $root.GetProperty($member).GetRawText()
+        }
+        foreach ($item in $root.GetProperty('accept').EnumerateArray()) { $accept.Add($item.GetString()) }
+        $expectedElement = $root.GetProperty('expected_document')
+        if ($expectedElement.ValueKind -eq [Text.Json.JsonValueKind]::String) { $expected = $expectedElement.GetString() }
+    } finally { $document.Dispose() }
+    $plan = Join-Path $folder 'plan.json'
+    $report = Join-Path $folder 'report.json'
+    $arguments = [Collections.Generic.List[string]]::new()
+    foreach ($argument in @($CliDll, 'doc-update', '--before', $inputs['before'], '--after', $inputs['after'], '--realized', $inputs['realized'], '--bindings', $inputs['bindings'], '--output', $plan, '--probe-dependents', $PipeName)) { $arguments.Add($argument) }
+    foreach ($uid in $accept) { $arguments.Add('--accept'); $arguments.Add($uid) }
+    if ($null -ne $expected) { foreach ($argument in @('--execute', '--expected-document', $expected)) { $arguments.Add($argument) } }
+    $start = [Diagnostics.ProcessStartInfo]::new($Dotnet)
+    foreach ($argument in $arguments) { $start.ArgumentList.Add($argument) }
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.CreateNoWindow = $true
+    $process = [Diagnostics.Process]::Start($start)
+    try {
+        $out = $process.StandardOutput.ReadToEndAsync()
+        $err = $process.StandardError.ReadToEndAsync()
+        $exited = $process.WaitForExit($TimeoutSeconds * 1000)
+        if (!$exited) { $process.Kill($true); $null = $process.WaitForExit(10000) }
+        else { $process.WaitForExit() }
+        $output = $out.GetAwaiter().GetResult()
+        $stderr = $err.GetAwaiter().GetResult()
+        if ($output.Trim()) { Write-NewText $report $output.Trim() }
+        Write-NewText (Join-Path $folder 'stderr.txt') $stderr
+        return @{ output = $output; stderr = $stderr; exit_code = $(if ($exited) { $process.ExitCode } else { $null }); timed_out = !$exited; request_file = $file; plan_file = $plan; report_file = $report }
+    } finally { $process.Dispose() }
+}
 
 # One wire line straight to the add-in pipe, for Operations outside the revit.command catalogue (journal.read, which is
 # read-only): the line is saved to a new numbered file like the CLI requests, sent once on the process pipe and one

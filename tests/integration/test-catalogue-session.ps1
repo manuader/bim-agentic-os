@@ -9,21 +9,25 @@
 # document.save_as of the open copy into .bim/native-runs with the hash and post-save path readback, the repeat refused
 # target_exists, a target in an owner-enabled folder refused outside_copies_root (the test lists its own folder in
 # .bim/revit-enabled-roots.txt when that file is absent, and removes it afterwards), the switch to the new file and
-# fault cases. P4-11 (end of documentacion): the two-pass documentation update of a moved test wall (P4-09 on the
-# test copy: dry-run probes, replan, confirm dry runs, real deletes with the planned confirm_dependents, re-created
-# section, tag and dimension read back against the moved wall), its delete order and requests, and the P4-09 refusals
-# (dependent_kept, dependent_unknown, dependent_planned, dependents_changed, a sha256 mismatch) sending no real delete.
+# fault cases. P4-14 (end of documentacion): the documentation update of a moved test wall through the CLI doc-update
+# verb (a dry run, then --execute --expected-document with that plan's sha256; first realizing the default
+# documentation of a BIM-IR fixture of the wall and its door, then the move regenerating the door tag), its requests,
+# plan files and reports, against an in-process stand-in for doc-update (fake-doc-update.ps1); a reply_lost entry stops
+# the run, a refusal (dependent_unknown, doc_update_plan_changed) stops only the update.
 # Runs in CI through
 # scripts/verify.ps1 (catalogue-session, and catalogue-session-cli with the real CLI); never Revit.
 # With -Dotnet and -CliDll: the whole one-run sequence through the real CLI
 # "revit-command" verb (and Invoke-CatalogueWire for journal.read) against a fake add-in pipe, proving every envelope
-# passes the Core schema and guards and that the invalid arc never reaches the pipe, then a dead pipe stopping the run.
+# passes the Core schema and guards and that the invalid arc never reaches the pipe (the P4-14 steps through the real
+# doc-update verb, plans and reports kept in the run folder), then a dead pipe stopping the run.
 # Revit itself is never involved; native behaviour stays unverified until the owner session runs.
 param([string]$Dotnet, [string]$CliDll)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path (Split-Path $PSScriptRoot)
 . "$root/scripts/owner-catalogue-steps.ps1"
 . "$PSScriptRoot/fake-revit-command-executor.ps1"
+# P4-14: the in-process stand-in for the CLI doc-update verb (Invoke-FakeDocUpdate).
+. "$PSScriptRoot/fake-doc-update.ps1"
 $failures = [Collections.Generic.List[string]]::new()
 function Assert([bool]$Condition, [string]$Message) { if (!$Condition) { $failures.Add($Message) } }
 
@@ -96,19 +100,25 @@ $rejected = $false; try { Select-CatalogueLevel ('{"readback":{"levels":[]}}' | 
 Assert $rejected 'empty level list accepted'
 
 # --- Sequence against the in-process fake ---
-# -All runs every group (the owner one-run sequence); default is v1 only. -NoWire leaves out the journal.read invoker.
-# -Wrap / -WireWrap (param index, key, json, inner) can stand in front of the fake CLI / wire invoker.
-function Invoke-FakeSequence([hashtable]$Faults = @{}, [switch]$All, [switch]$NoWire, [scriptblock]$Wrap, [scriptblock]$WireWrap) {
+# -All runs every group (the owner one-run sequence); default is v1 only. -NoWire leaves out the journal.read invoker,
+# -NoDocUpdate the doc-update stand-in. -Wrap / -WireWrap / -DocWrap (param index, key, json, inner) can stand in front of the fake
+# CLI / wire invoker. Returns @{ Result; Fake; DocUpdate } (the fake add-in and doc-update states).
+function Invoke-FakeSequence([hashtable]$Faults = @{}, [switch]$All, [switch]$NoWire, [switch]$NoDocUpdate, [scriptblock]$Wrap, [scriptblock]$WireWrap, [scriptblock]$DocWrap) {
     $fake = New-FakeRevitState $documentUid $Faults
     $fake.DocumentPath = $documentPath
+    $docFake = New-FakeDocUpdate $fake $inProcessDirectory $Faults
     $invoke = { param($index, $key, $json) $text = Invoke-FakeRevitCommand $fake $json; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
     $wire = { param($index, $key, $line) $text = Invoke-FakeRevitWire $fake $line; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
     if ($Wrap) { $inner = $invoke; $invoke = { param($index, $key, $json) & $Wrap $index $key $json $inner } }
     if ($WireWrap) { $innerWire = $wire; $wire = { param($index, $key, $line) & $WireWrap $index $key $line $innerWire } }
     $parameters = @{ Stamp = $stamp; Run = 1; DocumentPath = $documentPath; DocumentUid = $documentUid; Invoke = $invoke; V1Only = !$All }
     if (!$NoWire) { $parameters['InvokeWire'] = $wire }
+    $docInvoke = { param($index, $key, $json) Invoke-FakeDocUpdate $docFake $index $key $json }
+    # -DocWrap (param index, key, json, inner) can stand in front of the doc-update stand-in.
+    if ($DocWrap) { $innerDoc = $docInvoke; $docInvoke = { param($index, $key, $json) & $DocWrap $index $key $json $innerDoc } }
+    if (!$NoDocUpdate) { $parameters['InvokeDocUpdate'] = $docInvoke }
     $result = Invoke-CatalogueSequence @parameters
-    return @{ Result = $result; Fake = $fake }
+    return @{ Result = $result; Fake = $fake; DocUpdate = $docFake }
 }
 $clean = Invoke-FakeSequence
 $counts = $clean.Result.counts
@@ -161,15 +171,14 @@ Assert ($clean.Result.groups.Count -eq 1 -and (Format-CatalogueSummary $clean.Re
 
 # --- P1-06 one-run sequence: v1 first and unchanged, then every later group ---
 $groupKeys = @('v1', 'v2', 'vistas', 'snapshot', 'consultas', 'estructura', 'documentacion', 'diario', 'formas', 'extrusion', 'transformar', 'copia', 'modificar')
-# P4-11: the two-pass documentation update at the end of the documentation group; its element.delete steps (dry runs,
-# confirm dry runs and the real deletes) touch only the stale dimension, tag and section that group made for it.
-$docUpOrder = @('dimension', 'tag', 'section')
-$docUpDeleteKeys = @(foreach ($pass in 'probe', 'confirm', 'delete') { foreach ($name in $docUpOrder) { "doc-up-$pass-$name" } })
-# Plus the baseline dry run of the new section (its plan marker, the only untracked dependent the update may confirm).
-$docUpAllowedDeletes = @('doc-up-section-baseline') + $docUpDeleteKeys
+# P4-14: the documentation update at the end of the documentation group; its deletes run inside the doc-update verb
+# (no element.delete step of the session), its four doc-update calls are steps of their own.
+$docUpExpected = @('doc-up-wall', 'doc-up-door', 'doc-up-realize-plan', 'doc-up-realize', 'doc-up-move', 'doc-up-update-plan', 'doc-up-update', 'doc-up-stale-gone', 'doc-up-tag-new')
+$docUpCalls = @('doc-up-realize-plan', 'doc-up-realize', 'doc-up-update-plan', 'doc-up-update')
 function Get-FailedSteps($Result) { (@($Result.steps | Where-Object { !$_.passed } | ForEach-Object { "[$($_.group)] $($_.key): $($_.reason)" }) -join '; ') }
 function Get-Group($Result, [string]$Key) { @($Result.groups | Where-Object { $_.key -eq $Key })[0] }
-$full = (Invoke-FakeSequence -All).Result
+$fullRun = Invoke-FakeSequence -All
+$full = $fullRun.Result
 Assert ((@($full.groups | ForEach-Object { $_.key }) -join ',') -eq ($groupKeys -join ',')) "group order: $(@($full.groups | ForEach-Object { $_.key }) -join ',')"
 Assert ($full.all_passed -and $full.overall.failed -eq 0 -and $null -eq $full.aborted) "clean one-run fake: $(Get-FailedSteps $full)"
 Assert ($full.counts.total -eq 17 -and $full.counts.passed -eq 17) "v1 counts keep their meaning in a one-run: $($full.counts | ConvertTo-Json -Compress)"
@@ -182,7 +191,7 @@ $summary = Format-CatalogueSummary $full
 $expectedGroups = (@($full.groups | Where-Object { $_.key -ne 'v1' } | ForEach-Object { "$($_.key) $($_.total)/$($_.total)" }) -join ', ')
 Assert ($summary -eq "Catálogo: 17/17 pasos OK; grupos: $expectedGroups; total $($full.overall.total)/$($full.overall.total); resultado: TODO OK") "one-run summary line: $summary"
 $destructive = @($full.steps | Where-Object { $_.command -eq 'element.delete' -or $_.command -eq 'element.set_parameter' })
-Assert ($destructive.Count -ge 5 -and @($destructive | Where-Object { $_.group -ne 'modificar' -and !($_.group -eq 'documentacion' -and $_.key -in $docUpAllowedDeletes) }).Count -eq 0) 'modify/delete steps only in the last group (and the P4-11 documentation update deletes of its own stale items)'
+Assert ($destructive.Count -ge 5 -and @($destructive | Where-Object { $_.group -ne 'modificar' }).Count -eq 0) 'modify/delete steps only in the last group (the P4-14 documentation update deletes only inside doc-update)'
 $lastWrite = @($full.steps | Where-Object { $_.group -ne 'modificar' } | Select-Object -Last 1)[0]
 Assert ($lastWrite.index -lt @($full.steps | Where-Object { $_.group -eq 'modificar' } | Select-Object -First 1)[0].index) 'the destructive group runs last'
 # P1-13: the fake add-in issues query.elements cursors exactly as core RevitElementQueryCursor (pinned vector shared
@@ -217,10 +226,8 @@ foreach ($key in @($groupKeys | Select-Object -Skip 2)) { Assert ((Get-Group $ro
 Assert ((Format-CatalogueSummary $roofFails) -like '*resultado: FALLÓ en v2') "failure summary: $(Format-CatalogueSummary $roofFails)"
 Assert (@($roofFails.steps | Where-Object { $_.key -eq 'v2-roof' })[0].reason -like '*transaction_failed*') 'failure reason carries the code'
 $sectionFails = (Invoke-FakeSequence @{ FailCommands = @('view.create_section') } -All).Result
-# P4-11: the documentation update makes its own section, so its section steps (and what needs them) fail there too.
-$sectionOthers = @($sectionFails.steps | Where-Object { !$_.passed -and $_.key -ne 'views-section' -and $_.key -notlike 'doc-up-*' })
-$upSectionFails = @($sectionFails.steps | Where-Object { $_.key -eq 'doc-up-section' }) | Select-Object -First 1
-Assert ((Get-Group $sectionFails 'vistas').failed -eq 1 -and $sectionOthers.Count -eq 0 -and $null -ne $upSectionFails -and !$upSectionFails.passed -and (Format-CatalogueSummary $sectionFails) -like '*resultado: FALLÓ en vistas, documentacion') "failing section: $(Get-FailedSteps $sectionFails)"
+$sectionOthers = @($sectionFails.steps | Where-Object { !$_.passed -and $_.key -ne 'views-section' })
+Assert ((Get-Group $sectionFails 'vistas').failed -eq 1 -and $sectionOthers.Count -eq 0 -and (Format-CatalogueSummary $sectionFails) -like '*resultado: FALLÓ en vistas') "failing section: $(Get-FailedSteps $sectionFails)"
 $slope = (Invoke-FakeSequence @{ RoofSlopeOff = $true } -All).Result
 $slopeReason = [string]@($slope.steps | Where-Object { $_.key -eq 'v2-roof' })[0].reason
 Assert ($slope.overall.failed -eq 1 -and $slopeReason -like '*se pidió 4*se observó 0*') "readback mismatch reports requested vs observed: $slopeReason"
@@ -352,7 +359,10 @@ foreach ($group in (Get-CatalogueGroups)) {
     foreach ($spec in $group.Steps) {
         $key = [string]$spec.Key
         $isWire = $spec.ContainsKey('Wire') -and $spec.Wire
+        $isDocUpdate = $spec.ContainsKey('DocUpdate') -and $spec.DocUpdate
         if ($isWire) { Assert ($spec.Command -eq 'journal.read') "[$($group.Key)] ${key}: only journal.read goes as a wire line" }
+        # P4-14: a doc-update step is one call of the CLI verb, not a catalogue envelope.
+        elseif ($isDocUpdate) { Assert ($spec.Command -eq 'doc-update' -and $key -in $docUpCalls) "[$($group.Key)] ${key}: only the P4-14 calls go through doc-update" }
         else { Assert ($catalogue.Contains([string]$spec.Command)) "[$($group.Key)] ${key}: $($spec.Command) is not a catalogue command" }
         if ($spec.Expect.ContainsKey('Code')) { Assert ($spec.Expect.Status -eq 'failed' -and $codes.Contains([string]$spec.Expect.Code)) "[$($group.Key)] ${key}: expected code $($spec.Expect.Code) is not a Core refusal code" }
         else { Assert ($spec.Expect.Status -eq 'succeeded') "[$($group.Key)] ${key}: a failure must name its code" }
@@ -449,7 +459,7 @@ Assert ((Test-Path -LiteralPath $copyPath -PathType Leaf) -and !(Test-Path -Lite
 $saveIndex = [int](Get-StepField $full 'c-save' 'index')
 $saveAsIndex = [int](Get-StepField $full 'c-as-save' 'index')
 $wrongDocument = @($full.steps | Where-Object { $null -ne $_.request } | Where-Object {
-    $named = if ($_.command -eq 'journal.read') { [string](Get-CatalogueMember $_.request 'DocumentPath') } else { [string](Get-CataloguePath $_.request 'document.path') }
+    $named = if ($_.command -eq 'journal.read') { [string](Get-CatalogueMember $_.request 'DocumentPath') } elseif ($_.command -eq 'doc-update') { [string](Get-CataloguePath $_.request 'bindings.document.path') } else { [string](Get-CataloguePath $_.request 'document.path') }
     $wanted = if ($_.index -gt $saveAsIndex -and $_.key -notin 'c-as-save-again', 'c-as-levels-previous') { $saveAsPath }
     elseif ($_.index -gt $saveIndex -and $_.key -notin 'c-save-again', 'c-levels-source') { $copyPath } else { $documentPath }
     $named -ne $wanted })
@@ -470,7 +480,7 @@ Assert ((Test-Path -LiteralPath $saveAsPath -PathType Leaf) -and (Test-Path -Lit
 Assert ($full.picked['document_switched_by'] -eq 'c-as-save' -and $full.picked['document_path'] -eq $saveAsPath -and $full.picked['save_as_path'] -eq $saveAsPath -and $full.picked['save_as_previous'] -eq $copyPath) "the evidence records the switch to the new file: $($full.picked['document_switched_by']) $($full.picked['document_path'])"
 $bimRoot = $inProcessBim + [IO.Path]::DirectorySeparatorChar
 $runsRoot = [IO.Path]::Combine($inProcessBim, 'native-runs') + [IO.Path]::DirectorySeparatorChar
-$pathsNamed = @($full.steps | Where-Object { $null -ne $_.request -and $_.command -ne 'journal.read' } | ForEach-Object { [string](Get-CataloguePath $_.request 'document.path'); if ($_.command -in 'document.save_copy', 'document.save_as') { [string](Get-CataloguePath $_.request 'args.path') } })
+$pathsNamed = @($full.steps | Where-Object { $null -ne $_.request -and $_.command -ne 'journal.read' } | ForEach-Object { if ($_.command -eq 'doc-update') { [string](Get-CataloguePath $_.request 'bindings.document.path') } else { [string](Get-CataloguePath $_.request 'document.path') }; if ($_.command -in 'document.save_copy', 'document.save_as') { [string](Get-CataloguePath $_.request 'args.path') } })
 $badPaths = @($pathsNamed | Where-Object { [IO.Path]::GetFileName($_) -cnotmatch '\ABIM-Agentic-Test[A-Za-z0-9._-]*\.rvt\z' -or (!([IO.Path]::GetFullPath($_)).StartsWith($runsRoot, [StringComparison]::Ordinal) -and $_ -ne $outsidePath -and $_ -ne $asOutsidePath) })
 Assert ($pathsNamed.Count -gt 0 -and $badPaths.Count -eq 0) "every path a request names is a BIM-Agentic-Test*.rvt under .bim/native-runs (or one of the two refused outside targets): $($badPaths -join ', ')"
 Assert ($outsidePath.StartsWith($bimRoot, [StringComparison]::Ordinal)) 'the refused save_copy target lies directly under .bim'
@@ -522,10 +532,12 @@ $noOwnerFake = New-FakeRevitState $documentUid
 $noOwnerFake.DocumentPath = $documentPath
 $noOwnerInvoke = { param($index, $key, $json) $text = Invoke-FakeRevitCommand $noOwnerFake $json; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
 $noOwnerWire = { param($index, $key, $line) $text = Invoke-FakeRevitWire $noOwnerFake $line; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
+$noOwnerDoc = New-FakeDocUpdate $noOwnerFake $inProcessDirectory
+$noOwnerDocInvoke = { param($index, $key, $json) Invoke-FakeDocUpdate $noOwnerDoc $index $key $json }
 $savedOwnerRoot = ${function:Get-CatalogueOwnerRoot}
 try {
     ${function:Get-CatalogueOwnerRoot} = { param([string]$Path) $null }
-    $noOwner = Invoke-CatalogueSequence -Stamp $stamp -Run 2 -DocumentPath $documentPath -DocumentUid $documentUid -Invoke $noOwnerInvoke -InvokeWire $noOwnerWire
+    $noOwner = Invoke-CatalogueSequence -Stamp $stamp -Run 2 -DocumentPath $documentPath -DocumentUid $documentUid -Invoke $noOwnerInvoke -InvokeWire $noOwnerWire -InvokeDocUpdate $noOwnerDocInvoke
 } finally { if ($savedOwnerRoot) { ${function:Get-CatalogueOwnerRoot} = $savedOwnerRoot } else { Remove-Item -LiteralPath function:Get-CatalogueOwnerRoot -ErrorAction SilentlyContinue } }
 Assert ((Get-StepField $noOwner 'c-as-outside' 'blocked') -and $null -eq (Get-StepField $noOwner 'c-as-outside' 'request') -and [string](Get-StepField $noOwner 'c-as-outside' 'reason') -like '*revit-enabled-roots.txt*' -and $noOwner.overall.failed -eq 0 -and $noOwner.overall.blocked -eq 1) "no owner-enabled folder blocks only c-as-outside: $(Get-FailedSteps $noOwner)"
 Assert ($null -ne $asOutsideFolder -and !(Test-Path -LiteralPath $asOutsideFolder)) "the c-as-outside target folder does not exist: $asOutsideFolder"
@@ -553,7 +565,9 @@ $existsFake = New-FakeRevitState $documentUid
 $existsFake.DocumentPath = $documentPath
 $existsInvoke = { param($index, $key, $json) $text = Invoke-FakeRevitCommand $existsFake $json; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
 $existsWire = { param($index, $key, $line) $text = Invoke-FakeRevitWire $existsFake $line; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
-$exists = Invoke-CatalogueSequence -Stamp $stamp -Run 3 -DocumentPath $documentPath -DocumentUid $documentUid -Invoke $existsInvoke -InvokeWire $existsWire
+$existsDoc = New-FakeDocUpdate $existsFake $inProcessDirectory
+$existsDocInvoke = { param($index, $key, $json) Invoke-FakeDocUpdate $existsDoc $index $key $json }
+$exists = Invoke-CatalogueSequence -Stamp $stamp -Run 3 -DocumentPath $documentPath -DocumentUid $documentUid -Invoke $existsInvoke -InvokeWire $existsWire -InvokeDocUpdate $existsDocInvoke
 Remove-Item -LiteralPath $existingFolder -Force
 Assert ($null -eq (Get-StepField $exists 'c-as-outside' 'request') -and [string](Get-StepField $exists 'c-as-outside' 'reason') -like '*no enviado*existe*' -and $exists.overall.failed -eq 1 -and (Get-StepField $exists 'c-as-save' 'passed')) "c-as-outside is not sent when its target folder exists: $(Get-FailedSteps $exists)"
 
@@ -592,143 +606,126 @@ Assert ((Get-GroupField $shapeOff 'formas' 'failed') -eq 2 -and $shapeOff.overal
 $rotateOff = (Invoke-FakeSequence @{ RotateWrongWay = $true } -All).Result
 Assert (!(Get-StepField $rotateOff 't-rotate' 'passed') -and $rotateOff.overall.failed -eq 1) "a clockwise turn must fail t-rotate: $(Get-FailedSteps $rotateOff)"
 
-# --- P4-11: a two-pass documentation update in the documentation group (P4-09 on the test copy) ---
-# Its own wall, reference wall, section along the wall, tag and wall-to-wall dimension in doc-plan; the wall moved
-# (0, 1000, 0); then P4-09's two passes over the stale dimension, tag and section in DocReplace delete order: a dry run
-# of each stale target alone (collect), the replan (dependents classified: stale of an earlier delete dropped, kept /
-# later-planned / untracked refused, untracked accepted only for the view), a dry run of each planned delete (confirm,
-# same set), then the real deletes with exactly the planned confirm_dependents and the re-creations in create order
-# (view, tag, dimension), each read back against the moved wall; the stale tag reads back reference_not_found.
-$docUpExpected = @('doc-up-wall', 'doc-up-wall-ref', 'doc-up-section', 'doc-up-section-baseline', 'doc-up-tag', 'doc-up-dim', 'doc-up-move') + $docUpDeleteKeys + @('doc-up-section-new', 'doc-up-tag-new', 'doc-up-dim-new', 'doc-up-stale-gone')
+# --- P4-14: the documentation update through doc-update --execute (end of documentacion) ---
+# Its own wall and door, the default documentation of the BIM-IR fixture realized by a doc-update dry run then
+# --execute of that plan's sha256, the wall moved (0, 1000, 0), the door tag regenerated the same way; the stale tag
+# reads back reference_not_found and the new one exists.
 $docTail = @(@($full.steps | Where-Object { $_.group -eq 'documentacion' } | ForEach-Object { $_.key }) | Select-Object -Last $docUpExpected.Count)
-Assert (($docTail -join ',') -eq ($docUpExpected -join ',')) "P4-11: the documentation group must end with the two-pass update steps in order; got $($docTail -join ',')"
+Assert (($docTail -join ',') -eq ($docUpExpected -join ',')) "P4-14: the documentation group must end with the doc-update steps in order; got $($docTail -join ',')"
 foreach ($key in $docUpExpected) {
     $step = Get-Step $full $key
-    $want = if ($key -eq 'doc-up-stale-gone') { 'reference_not_found' } else { 'ok' }
-    $code = [string](Get-CatalogueMember (Get-CatalogueMember $step 'response') 'code')
-    Assert ($null -ne $step -and $step.passed -and $code -eq $want) "P4-11 step $key must pass answering ${want}: $(if ($step) { "$code / $($step.reason)" } else { 'missing' })"
+    $response = Get-CatalogueMember $step 'response'
+    $want = if ($key -eq 'doc-up-stale-gone') { 'reference_not_found' } elseif ($key -in $docUpCalls) { 'succeeded' } else { 'ok' }
+    $got = if ($key -in $docUpCalls) { [string](Get-CatalogueMember $response 'status') } else { [string](Get-CatalogueMember $response 'code') }
+    Assert ($null -ne $step -and $step.passed -and $got -eq $want) "P4-14 step $key must pass answering ${want}: $(if ($step) { "$got / $($step.reason)" } else { 'missing' })"
 }
+Assert (($fullRun.DocUpdate.Calls -join ',') -eq ($docUpCalls -join ',')) "P4-14: exactly four doc-update calls, in order: $($fullRun.DocUpdate.Calls -join ',')"
+foreach ($key in $docUpCalls) { Assert ($null -eq (Get-StepField $full $key 'operation_id') -and (Get-StepField $full $key 'command') -eq 'doc-update') "P4-14 $key is a doc-update call (the CLI makes the operation ids)" }
 $upWall = Get-CatalogueFirstCreated (Get-StepField $full 'doc-up-wall' 'response')
-$upStale = [ordered]@{ dimension = (Get-CatalogueFirstCreated (Get-StepField $full 'doc-up-dim' 'response')); tag = (Get-CatalogueFirstCreated (Get-StepField $full 'doc-up-tag' 'response')); section = (Get-CatalogueFirstCreated (Get-StepField $full 'doc-up-section' 'response')) }
-Assert ($upWall -and @($upStale.Values | Where-Object { $_ }).Count -eq 3 -and [string](Get-CatalogueFirst (Get-RequestValue $full 'doc-up-move' 'args.element_uids')) -eq $upWall -and ((@(Get-RequestValue $full 'doc-up-move' 'args.vector_mm') | ForEach-Object { [double]$_ }) -join ',') -eq '0,1000,0') 'P4-11: the update moves its own wall (0, 1000, 0) and has its own stale dimension, tag and section'
-$upBaseline = @(Get-CataloguePath (Get-StepField $full 'doc-up-section-baseline' 'response') 'readback.delete.dependents' | Where-Object { $_ })
-$upMarker = if ($upBaseline.Count -eq 1) { [string]$upBaseline[0] } else { 'missing' }
-Assert ($upBaseline.Count -eq 1 -and [string](Get-CatalogueFirst (Get-RequestValue $full 'doc-up-section-baseline' 'args.element_uids')) -eq $upStale['section'] -and (Get-RequestValue $full 'doc-up-section-baseline' 'args.dry_run') -eq $true) "P4-11: the baseline dry run of the new section reads its one plan marker: $($upBaseline -join ',')"
-Assert (@(Get-CatalogueList (Get-StepField $full 'doc-up-delete-section' 'response') 'deleted' | ForEach-Object { $_ }) -contains $upMarker -and (Get-StepField $full 'doc-up-section-new' 'passed') -and (Get-StepField $full 'doc-up-tag-new' 'passed') -and (Get-StepField $full 'doc-up-dim-new' 'passed')) 'P4-11: the baseline marker is accepted, confirmed and deleted with the stale section; the re-creations pass'
-foreach ($name in $docUpOrder) {
-    foreach ($pass in 'probe', 'confirm', 'delete') {
-        $key = "doc-up-$pass-$name"
-        $uids = @(Get-RequestValue $full $key 'args.element_uids')
-        $dry = Get-RequestValue $full $key 'args.dry_run'
-        $dryOk = if ($pass -eq 'delete') { $null -eq $dry } else { $dry -eq $true }
-        # The fake add-in's section has a plan marker (References = the section): the only dependent confirmed, by the
-        # section's confirm dry run and real delete; the first dry runs send only their target.
-        $wantConfirm = if ($name -eq 'section' -and $pass -ne 'probe') { $upMarker } else { '' }
-        $sentConfirm = (@(Get-RequestValue $full $key 'args.confirm_dependents') | Where-Object { $_ }) -join ','
-        Assert ($uids.Count -eq 1 -and [string]$uids[0] -eq [string]$upStale[$name] -and $dryOk -and $sentConfirm -eq $wantConfirm) "P4-11 $key must delete only the stale $name (dry run only before the real delete) confirming '$wantConfirm': $($uids -join ',') dry_run=$dry confirm=$sentConfirm"
-    }
+$upDoor = Get-CatalogueFirstCreated (Get-StepField $full 'doc-up-door' 'response')
+Assert ($upWall -and $upDoor -and (Get-RequestValue $full 'doc-up-door' 'args.host_wall_uid') -eq $upWall -and [double](Get-RequestValue $full 'doc-up-door' 'args.position_along_mm') -eq 1450 -and (Get-RequestValue $full 'doc-up-door' 'args.symbol') -eq $full.picked['door']) 'P4-14: the update makes its own wall and a door on it, centre 1450 mm along it'
+$elementsText = Get-CatalogueMapText ([ordered]@{ ('element:' + $script:CatalogueDocUpdateWallId) = $upWall; ('element:' + $script:CatalogueDocUpdateDoorId) = $upDoor })
+function Get-WallY($Result, [string]$Key, [string]$State) { [double]@(Get-CatalogueMember (@(Get-CatalogueList (Get-RequestValue $Result $Key $State) 'Elements' | ForEach-Object { $_ } | Where-Object { $_.Kind -eq 'wall' })[0]) 'GeometryMetres')[1] }
+foreach ($key in $docUpCalls) {
+    $request = Get-StepField $full $key 'request'
+    $levels = Get-CataloguePath $request 'bindings.levels'
+    Assert ((Get-CataloguePath $request 'bindings.document.path') -eq $documentPath -and (Get-CataloguePath $request 'bindings.document.unique_id') -eq $documentUid -and (Get-CatalogueMember $levels $script:CatalogueDocUpdateLevelId) -eq $full.picked['level'] -and @($levels.PSObject.Properties).Count -eq 1 -and (Get-CatalogueList $request 'accept').Count -eq 0) "P4-14 $key names the test document, binds the fixture level to the picked level and accepts nothing"
 }
-$upIndex = @{}
-foreach ($key in $docUpExpected) { $upIndex[$key] = [int](Get-StepField $full $key 'index') }
-Assert ($upIndex['doc-up-move'] -lt $upIndex['doc-up-probe-dimension'] -and $upIndex['doc-up-confirm-section'] -lt $upIndex['doc-up-delete-dimension'] -and $upIndex['doc-up-delete-section'] -lt $upIndex['doc-up-section-new']) 'P4-11 order: move, every dry run, the real deletes (dimension, tag, view), then the re-creations'
-$newSection = Get-StepField $full 'doc-up-section-new' 'response'
-$newTag = Get-CataloguePath (Get-StepField $full 'doc-up-tag-new' 'response') 'readback.tag'
-$oldValue = Get-CataloguePath (Get-StepField $full 'doc-up-dim' 'response') 'readback.dimension.value_mm'
-$newValue = Get-CataloguePath (Get-StepField $full 'doc-up-dim-new' 'response') 'readback.dimension.value_mm'
-$sectionY = Get-CatalogueFirst (Get-CatalogueArray $newSection 'readback.view.section.origin') 1
-Assert ((Get-CatalogueFirstCreated $newSection) -and (Get-CatalogueFirstCreated $newSection) -ne $upStale['section'] -and $null -ne $sectionY -and [Math]::Abs([double]$sectionY + 5000) -lt 0.01) "P4-11: the regenerated section is a new view on the moved wall line (y = -5000): $sectionY"
-Assert (((Get-CatalogueList $newTag 'tagged_unique_ids') -join ',') -eq $upWall -and ((@(Get-CatalogueMember $newTag 'head') | ForEach-Object { [double]$_ }) -join ',') -eq '-7500,-4500' -and [string](Get-CatalogueMember $newTag 'unique_id') -ne $upStale['tag']) "P4-11: the regenerated tag tags the moved wall at the moved head: $(ConvertTo-CatalogueText $newTag)"
-Assert ($null -ne $oldValue -and $null -ne $newValue -and [Math]::Abs([double]$newValue - [double]$oldValue - 1000) -lt 0.01) "P4-11: the regenerated dimension measures 1000 mm more than the stale one: $oldValue -> $newValue"
-Assert ([string](Get-RequestValue $full 'doc-up-stale-gone' 'args.unique_id') -eq $upStale['tag']) 'P4-11: the stale tag is read back gone'
-foreach ($key in 'doc-up-move', 'doc-up-section-new', 'doc-up-tag-new', 'doc-up-dim-new', 'doc-up-probe-section', 'doc-up-confirm-section', 'doc-up-delete-section') {
+# Each --execute names the sha256 its own dry run printed, with byte-for-byte the same inputs.
+foreach ($pair in @(@('doc-up-realize-plan', 'doc-up-realize'), @('doc-up-update-plan', 'doc-up-update'))) {
+    $dry = Get-StepField $full $pair[0] 'request'
+    $run = Get-StepField $full $pair[1] 'request'
+    $printed = [string](Get-CataloguePath (Get-StepField $full $pair[0] 'response') 'sha256')
+    $same = @('before', 'after', 'realized', 'bindings', 'accept' | Where-Object { (ConvertTo-Json -InputObject (Get-CatalogueMember $dry $_) -Depth 20 -Compress) -cne (ConvertTo-Json -InputObject (Get-CatalogueMember $run $_) -Depth 20 -Compress) }).Count -eq 0
+    Assert ($null -eq (Get-CatalogueMember $dry 'expected_document') -and $printed -match '\A[0-9A-F]{64}\z' -and (Get-CatalogueMember $run 'expected_document') -ceq $printed -and $same) "P4-14 $($pair[1]) runs --execute --expected-document <sha256 of $($pair[0])> on the same inputs"
+}
+Assert ((Get-CatalogueMapText (Get-RequestValue $full 'doc-up-realize-plan' 'realized')) -eq $elementsText -and (Get-WallY $full 'doc-up-realize-plan' 'before') -eq -6 -and (Get-WallY $full 'doc-up-realize-plan' 'after') -eq -6) 'P4-14: the first plan realizes the documentation of the unmoved fixture from the wall and door only'
+$upRealized = Get-CataloguePath (Get-StepField $full 'doc-up-realize' 'response') 'realized'
+Assert ((Get-CatalogueMapText (Get-RequestValue $full 'doc-up-update-plan' 'realized')) -eq (Get-CatalogueMapText $upRealized) -and @($upRealized.PSObject.Properties).Count -eq 11 -and (Get-WallY $full 'doc-up-update-plan' 'before') -eq -6 -and (Get-WallY $full 'doc-up-update-plan' 'after') -eq -5) 'P4-14: the update plans the moved wall on the realized map the first run printed (2 elements + 9 documentation items)'
+$realizeReport = Get-CatalogueList (Get-StepField $full 'doc-up-realize' 'response') 'report'
+$updateReport = Get-CatalogueList (Get-StepField $full 'doc-up-update' 'response') 'report'
+Assert ($realizeReport.Count -eq 9 -and $updateReport.Count -eq 2 -and @(@($realizeReport) + @($updateReport) | Where-Object { $_.status -ne 'done' }).Count -eq 0) "P4-14: every planned step ran: $(ConvertTo-CatalogueText $updateReport)"
+$upTagKey = Get-CatalogueDocUpdateKey 'tag-door-' $script:CatalogueDocUpdateDoorId
+$upStale = [string](Get-CatalogueMember $upRealized "doc:$upTagKey")
+$upNew = [string]$full.picked['doc_up_updated'].New
+Assert ($upStale -and $upNew -and $upStale -ne $upNew -and $full.picked['doc_up_updated'].Stale -eq $upStale -and (Get-RequestValue $full 'doc-up-stale-gone' 'args.unique_id') -eq $upStale -and (Get-RequestValue $full 'doc-up-tag-new' 'args.unique_id') -eq $upNew) 'P4-14: the stale door tag is read back gone and the new one is inspected'
+Assert (!$fullRun.Fake.Elements.Contains($upStale) -and $fullRun.Fake.Elements.Contains($upNew) -and @($fullRun.Fake.Elements[$upNew]['References']) -contains $upDoor) 'P4-14: in the fake add-in the stale tag is gone and the new tag tags the door'
+$upSent = @($fullRun.Fake.Received | Where-Object { $_ -match '\Adoc(dry|del|new)\.' })
+Assert (@($upSent | Where-Object { $_ -like 'docnew.*' }).Count -eq 10 -and @($upSent | Where-Object { $_ -like 'docdel.*' }).Count -eq 1 -and @($upSent | Where-Object { $_ -like 'docdry.*' }).Count -eq 4) "P4-14: the add-in got 9 + 1 creates, 1 delete and 4 dry runs (two passes, dry run and --execute): $($upSent -join ',')"
+foreach ($key in $docUpCalls) {
     $rows = @(Get-StepField $full $key 'comparisons' | Where-Object { $null -ne $_ })
-    Assert ($rows.Count -ge 3 -and @($rows | Where-Object { !$_.ok }).Count -eq 0) "P4-11 $key records requested vs observed rows: $(@($rows | ForEach-Object { $_.check }) -join ' | ')"
+    Assert ($rows.Count -ge 4 -and @($rows | Where-Object { !$_.ok }).Count -eq 0) "P4-14 $key records requested vs observed rows: $(@($rows | ForEach-Object { $_.check }) -join ' | ')"
 }
+foreach ($key in 'doc-up-realize-plan', 'doc-up-update-plan') { Assert (Test-Path -LiteralPath ([string](Get-CataloguePath (Get-StepField $full $key 'response') 'output')) -PathType Leaf) "P4-14 $key wrote its plan file" }
 
-# Fault cases: dependents injected into the delete readbacks of the update (count and sha256 recomputed as the add-in does).
-function Get-TestDependentsSha([string[]]$Uids) {
-    $lower = [string[]]@($Uids | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() })
-    [Array]::Sort($lower, [StringComparer]::Ordinal)
-    [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.UTF8Encoding]::new($false).GetBytes(($lower -join "`n")))).ToLowerInvariant()
-}
-$docUpSeen = @{}
-$docUpInject = @{}
-$docUpBadSha = @{ On = $false }
-$docUpDeletedExtra = @{}
-# 'step:<key>' names the element that step created (in this run); anything else is a literal UniqueId.
-$docUpWrap = {
-    param($index, $key, $json, $inner)
-    $reply = & $inner $index $key $json
-    if ($key -notlike 'doc-up-*') { return $reply }
-    $parsed = $reply.output | ConvertFrom-Json
-    if ($parsed.status -eq 'succeeded' -and @($parsed.created).Count) { $docUpSeen[$key] = [string]@($parsed.created)[0] }
-    if ($docUpInject.ContainsKey($key) -and $parsed.status -eq 'succeeded') {
-        $delete = $parsed.readback.delete
-        $extra = @($docUpInject[$key] | ForEach-Object { if ([string]$_ -like 'step:*') { $docUpSeen[([string]$_).Substring(5)] } else { [string]$_ } })
-        $list = [string[]]@(@(@($delete.dependents) + $extra) | Where-Object { $_ })
-        $delete.dependents = $list
-        $delete.dependents_count = $list.Count
-        $delete.dependents_sha256 = if ($docUpBadSha.On) { '0' * 64 } else { Get-TestDependentsSha $list }
-        $reply.output = $parsed | ConvertTo-Json -Depth 20 -Compress
-    }
-    if ($docUpDeletedExtra.ContainsKey($key) -and $parsed.status -eq 'succeeded') {
-        $parsed.deleted = [string[]]@(@(@($parsed.deleted) + @($docUpDeletedExtra[$key])) | Where-Object { $_ })
-        $reply.output = $parsed | ConvertTo-Json -Depth 20 -Compress
-    }
-    $reply
-}
-function Invoke-DocUpFault([hashtable]$Inject, [switch]$BadSha, [hashtable]$Deleted = @{}) {
-    $docUpSeen.Clear()
-    $docUpInject.Clear()
-    $docUpDeletedExtra.Clear()
-    foreach ($entry in $Inject.GetEnumerator()) { $docUpInject[$entry.Key] = $entry.Value }
-    foreach ($entry in $Deleted.GetEnumerator()) { $docUpDeletedExtra[$entry.Key] = $entry.Value }
-    $docUpBadSha.On = [bool]$BadSha
-    try { return (Invoke-FakeSequence -All -Wrap $docUpWrap).Result } finally { $docUpInject.Clear(); $docUpDeletedExtra.Clear(); $docUpBadSha.On = $false }
+# Faults: a lost reply stops the run; a refusal stops only the update; no doc-update channel sends none of it.
+function Get-SentAfter($Result, [string]$Key) { @($Result.steps | Where-Object { $_.index -gt [int](Get-StepField $Result $Key 'index') -and $null -ne $_.request }) }
+foreach ($case in @(@{ Key = 'doc-up-update'; Command = 'tag.create'; New = 10; Deleted = 1 }, @{ Key = 'doc-up-realize'; Command = 'sheet.create'; New = 4; Deleted = 0 })) {
+    $lost = Invoke-FakeSequence @{ DocUpdateLoseReplyOf = "$($case.Key)|$($case.Command)" } -All
+    $lostResult = $lost.Result
+    $lostIndex = [int](Get-StepField $lostResult $case.Key 'index')
+    $lostEntries = @(Get-CatalogueList (Get-StepField $lostResult $case.Key 'response') 'report' | ForEach-Object { $_ } | Where-Object { (Get-CatalogueMember $_ 'reply_lost') -eq $true })
+    Assert ($lostResult.aborted -like "*doc-update perdió la respuesta de $($case.Command)*no se envía nada más*" -and !(Get-StepField $lostResult $case.Key 'passed') -and $lostEntries.Count -eq 1) "P4-14 a reply_lost entry in $($case.Key) stops the run: $($lostResult.aborted)"
+    Assert (@(Get-SentAfter $lostResult $case.Key).Count -eq 0 -and $lostResult.overall.not_sent -eq $lostResult.overall.total - $lostIndex -and (Format-CatalogueSummary $lostResult) -like '*DETENIDO*doc-update perdió la respuesta*') "P4-14 after a lost reply in $($case.Key) nothing more is sent, in any group: $(@(Get-SentAfter $lostResult $case.Key | ForEach-Object { $_.key }) -join ',')"
+    Assert (@($lost.Fake.Received | Where-Object { $_ -like 'docnew.*' }).Count -eq $case.New -and @($lost.Fake.Received | Where-Object { $_ -like 'docdel.*' }).Count -eq $case.Deleted -and $lost.DocUpdate.Calls[$lost.DocUpdate.Calls.Count - 1] -eq $case.Key) "P4-14 the write whose reply was lost is sent once, never again: $(@($lost.Fake.Received | Where-Object { $_ -like 'doc*' }) -join ',')"
 }
 $untracked = 'abcdef01-2345-6789-abcd-ef0123456789-0000beef'
-$realDeletes = @($docUpOrder | ForEach-Object { "doc-up-delete-$_" })
-function Get-SentAfter($Result, [string]$Key) { @($Result.steps | Where-Object { $_.key -like 'doc-up-*' -and $_.index -gt [int](Get-StepField $Result $Key 'index') -and $null -ne $_.request }) }
-# An honest dry run of the view lists its tag and dimension: stale of earlier deletes, dropped from its confirm_dependents.
-$honest = Invoke-DocUpFault @{ 'doc-up-probe-section' = @('step:doc-up-tag', 'step:doc-up-dim'); 'doc-up-confirm-section' = @('step:doc-up-tag', 'step:doc-up-dim') }
-$honestMarker = [string](Get-CatalogueFirst (@(Get-CataloguePath (Get-StepField $honest 'doc-up-section-baseline' 'response') 'readback.delete.dependents')))
-Assert ($honest.overall.failed -eq 0 -and $honestMarker -and ((@(Get-RequestValue $honest 'doc-up-confirm-section' 'args.confirm_dependents') | Where-Object { $_ }) -join ',') -eq $honestMarker -and ((@(Get-RequestValue $honest 'doc-up-delete-section' 'args.confirm_dependents') | Where-Object { $_ }) -join ',') -eq $honestMarker -and (Get-StepField $honest 'doc-up-section-new' 'passed')) "P4-11: stale dependents of an earlier delete are dropped from the view's confirm_dependents: $(Get-FailedSteps $honest)"
-# Refusals of the first pass: nothing more of the update is sent (no confirm, no real delete), later groups still run.
 foreach ($case in @(
-        @{ What = 'a kept element (the reference wall)'; Key = 'doc-up-probe-tag'; Inject = @{ 'doc-up-probe-tag' = @('step:doc-up-wall-ref') }; Code = 'dependent_kept' },
-        @{ What = 'an untracked element of a tag'; Key = 'doc-up-probe-dimension'; Inject = @{ 'doc-up-probe-dimension' = @($untracked) }; Code = 'dependent_unknown' },
-        @{ What = 'the stale view deleted later'; Key = 'doc-up-probe-dimension'; Inject = @{ 'doc-up-probe-dimension' = @('step:doc-up-section') }; Code = 'dependent_planned' },
-        @{ What = 'a second dry run with another set'; Key = 'doc-up-confirm-tag'; Inject = @{ 'doc-up-confirm-tag' = @($untracked) }; Code = 'dependents_changed' },
-        # Review blocker: an untracked dependent of the view that is not its baseline marker is refused, never confirmed.
-        @{ What = 'an untracked element of the view outside its baseline'; Key = 'doc-up-probe-section'; Inject = @{ 'doc-up-probe-section' = @($untracked); 'doc-up-confirm-section' = @($untracked) }; Code = 'dependent_unknown' },
-        # The last probe and the last confirm gate the real deletes too.
-        @{ What = 'the moved wall as a dependent of the view'; Key = 'doc-up-probe-section'; Inject = @{ 'doc-up-probe-section' = @('step:doc-up-wall') }; Code = 'dependent_kept' },
-        @{ What = 'a second dry run of the view with another set'; Key = 'doc-up-confirm-section'; Inject = @{ 'doc-up-confirm-section' = @($untracked) }; Code = 'dependents_changed' },
-        # Readbacks read as strictly as core: a duplicated dependent (count and sha256 matching) and a non-UniqueId one.
-        @{ What = 'a duplicated dependent'; Key = 'doc-up-probe-dimension'; Inject = @{ 'doc-up-probe-dimension' = @($untracked, $untracked) }; Code = 'duplicados' },
-        @{ What = 'a dependent that is not a UniqueId'; Key = 'doc-up-probe-dimension'; Inject = @{ 'doc-up-probe-dimension' = @('not-a-unique-id') }; Code = 'UniqueId' })) {
-    $faulted = Invoke-DocUpFault $case.Inject
-    $faultReason = [string](Get-StepField $faulted $case.Key 'reason')
-    Assert ($null -ne (Get-StepField $faulted $case.Key 'request') -and !(Get-StepField $faulted $case.Key 'passed') -and $faultReason -like "*$($case.Code)*") "P4-11 $($case.What) must fail $($case.Key) with $($case.Code): $faultReason"
-    Assert (@(Get-SentAfter $faulted $case.Key).Count -eq 0 -and @($realDeletes | Where-Object { $null -ne (Get-StepField $faulted $_ 'request') }).Count -eq 0) "P4-11 after $($case.Code) no later update step and no real delete is sent: $(@(Get-SentAfter $faulted $case.Key | ForEach-Object { $_.key }) -join ',')"
-    Assert ((Get-GroupField $faulted 'modificar' 'failed') -eq 0 -and (Get-GroupField $faulted 'copia' 'failed') -eq 0) "P4-11 later groups still run after $($case.Code): $(Get-FailedSteps $faulted)"
+        @{ What = 'a plan that changed between the dry run and --execute'; Faults = @{ DocUpdateDrift = 'doc-up-update' }; Key = 'doc-up-update'; Code = 'doc_update_plan_changed'; Calls = 4 },
+        @{ What = 'an untracked dependent of the stale tag'; Faults = @{ DocUpdateDependents = @{ 'doc-up-update-plan' = @($untracked) } }; Key = 'doc-up-update-plan'; Code = 'dependent_unknown'; Calls = 3 })) {
+    $refused = Invoke-FakeSequence $case.Faults -All
+    $refusedResult = $refused.Result
+    $refusedReason = [string](Get-StepField $refusedResult $case.Key 'reason')
+    Assert (!(Get-StepField $refusedResult $case.Key 'passed') -and $refusedReason -like "*$($case.Code)*" -and $null -eq $refusedResult.aborted) "P4-14 $($case.What) fails $($case.Key) with $($case.Code) without stopping the run: $refusedReason"
+    Assert (@($refused.Fake.Received | Where-Object { $_ -like 'docdel.*' }).Count -eq 0 -and @($refused.Fake.Received | Where-Object { $_ -like 'docnew.*' }).Count -eq 9 -and $refused.DocUpdate.Calls.Count -eq $case.Calls -and $null -eq (Get-StepField $refusedResult 'doc-up-stale-gone' 'request') -and $null -eq (Get-StepField $refusedResult 'doc-up-tag-new' 'request')) "P4-14 after $($case.Code) no write of the update is sent: $(@($refused.Fake.Received | Where-Object { $_ -like 'doc*' }) -join ',')"
+    Assert ((Get-GroupField $refusedResult 'modificar' 'failed') -eq 0 -and (Get-GroupField $refusedResult 'copia' 'failed') -eq 0 -and (Get-GroupField $refusedResult 'diario' 'failed') -eq 0) "P4-14 later groups still run after $($case.Code): $(Get-FailedSteps $refusedResult)"
 }
-# A dry-run readback whose sha256 does not match its dependents is refused before the replan.
-$badSha = Invoke-DocUpFault @{ 'doc-up-probe-dimension' = @() } -BadSha
-Assert (!(Get-StepField $badSha 'doc-up-probe-dimension' 'passed') -and [string](Get-StepField $badSha 'doc-up-probe-dimension' 'reason') -like '*dependents_sha256*' -and @($realDeletes | Where-Object { $null -ne (Get-StepField $badSha $_ 'request') }).Count -eq 0) "P4-11 a dry-run sha256 mismatch fails the probe: $(Get-StepField $badSha 'doc-up-probe-dimension' 'reason')"
-# A real delete that deletes more than its target and the planned dependents fails; the later deletes are not sent.
-$extraDeleted = Invoke-DocUpFault @{} -Deleted @{ 'doc-up-delete-dimension' = @($untracked) }
-Assert (!(Get-StepField $extraDeleted 'doc-up-delete-dimension' 'passed') -and [string](Get-StepField $extraDeleted 'doc-up-delete-dimension' 'reason') -like '*deleted*' -and @('doc-up-delete-tag', 'doc-up-delete-section', 'doc-up-section-new' | Where-Object { $null -ne (Get-StepField $extraDeleted $_ 'request') }).Count -eq 0) "P4-11 an extra element in the real delete's deleted list fails it: $(Get-StepField $extraDeleted 'doc-up-delete-dimension' 'reason')"
-# The baseline is bounded (at most two markers): a third dependent fails it and the update is never moved or deleted.
-$wideBaseline = Invoke-DocUpFault @{ 'doc-up-section-baseline' = @($untracked, 'abcdef01-2345-6789-abcd-ef0123456789-0000bee2') }
-Assert (!(Get-StepField $wideBaseline 'doc-up-section-baseline' 'passed') -and $null -eq (Get-StepField $wideBaseline 'doc-up-move' 'request') -and @($docUpAllowedDeletes | Where-Object { $_ -ne 'doc-up-section-baseline' -and $null -ne (Get-StepField $wideBaseline $_ 'request') }).Count -eq 0) "P4-11 more than two baseline dependents stop the update before the move: $(Get-StepField $wideBaseline 'doc-up-section-baseline' 'reason')"
+# Review S1: an --execute call whose CLI line is lost (a crash: no output, exit 134) may have sent writes: the run
+# stops and nothing more is sent. The same loss on a dry run (it sends no write) fails only that step.
+$crashLine = { param($index, $key, $json, $inner) $reply = & $inner $index $key $json; if ($key -eq $crashKey.Key) { return @{ output = ''; exit_code = 134; timed_out = $false } }; $reply }
+$crashKey = @{ Key = 'doc-up-realize' }
+$crash = (Invoke-FakeSequence -All -DocWrap $crashLine).Result
+Assert ($crash.aborted -like '*doc-up-realize*doc-update*' -and @(Get-SentAfter $crash 'doc-up-realize').Count -eq 0 -and $crash.overall.not_sent -eq $crash.overall.total - [int](Get-StepField $crash 'doc-up-realize' 'index')) "P4-14 an --execute without a usable CLI line stops the run: $($crash.aborted)"
+$crashKey.Key = 'doc-up-realize-plan'
+$crashDry = (Invoke-FakeSequence -All -DocWrap $crashLine).Result
+Assert ($null -eq $crashDry.aborted -and !(Get-StepField $crashDry 'doc-up-realize-plan' 'passed') -and $null -eq (Get-StepField $crashDry 'doc-up-realize' 'request') -and (Get-GroupField $crashDry 'modificar' 'failed') -eq 0) "P4-14 a dry run without a usable CLI line fails only the update: $(Get-FailedSteps $crashDry)"
+# Review S2: the reply_lost entry alone stops the run, whatever the top-level code (here neither is a transport code
+# the sequence knows): an entry response_invalid under a top-level response_invalid, and an entry pipe_read_timeout
+# under doc_update_internal_error (the CLI's report rebuilt after a library exception).
+function Set-TestLostEntry([string]$Output, [string]$TopCode, [string]$EntryCode) {
+    $line = $Output | ConvertFrom-Json
+    $line.status = 'failed'; $line.applied = $false; $line.run = 'failed'
+    Add-Member -InputObject $line -NotePropertyName code -NotePropertyValue $TopCode -Force
+    if ($null -ne $line.PSObject.Properties['realized']) { $line.PSObject.Properties.Remove('realized') }
+    $entries = @($line.report)
+    for ($n = 0; $n -lt $entries.Count; $n++) {
+        if ($n -eq 2) { $entries[$n].status = 'failed'; foreach ($pair in @(@('code', $EntryCode), @('field', $null), @('detail', 'reply is not a well-formed response'), @('reply_lost', $true))) { Add-Member -InputObject $entries[$n] -NotePropertyName $pair[0] -NotePropertyValue $pair[1] -Force } }
+        elseif ($n -gt 2) { $entries[$n].status = 'not_sent' }
+    }
+    return ($line | ConvertTo-Json -Depth 20 -Compress)
+}
+foreach ($case in @(@{ Top = 'response_invalid'; Entry = 'response_invalid' }, @{ Top = 'doc_update_internal_error'; Entry = 'pipe_read_timeout' })) {
+    $lostCodes = $case
+    $rewritten = (Invoke-FakeSequence -All -DocWrap { param($index, $key, $json, $inner) $reply = & $inner $index $key $json; if ($key -eq 'doc-up-realize') { $reply.output = Set-TestLostEntry $reply.output $lostCodes.Top $lostCodes.Entry; $reply.exit_code = 1 }; $reply }).Result
+    Assert ($rewritten.aborted -like "*doc-update perdió la respuesta*$($case.Entry)*" -and @(Get-SentAfter $rewritten 'doc-up-realize').Count -eq 0) "P4-14 a reply_lost $($case.Entry) entry under $($case.Top) stops the run: $($rewritten.aborted)"
+}
+
+$noDoc = (Invoke-FakeSequence -All -NoDocUpdate).Result
+$noDocSent = @($noDoc.steps | Where-Object { $_.key -in $docUpExpected -and $_.key -notin 'doc-up-wall', 'doc-up-door' -and $null -ne $_.request })
+Assert ([string](Get-StepField $noDoc 'doc-up-realize-plan' 'reason') -like '*falta el canal doc-update*' -and $noDocSent.Count -eq 0 -and $null -eq $noDoc.aborted -and (Get-GroupField $noDoc 'documentacion' 'failed') -eq 7 -and (Get-GroupField $noDoc 'modificar' 'failed') -eq 0) "P4-14 without a doc-update channel none of the update is sent and later groups run: $(Get-FailedSteps $noDoc)"
+# Review B1: the owner session passes the doc-update invoker (CLI doc-update on the child's pipe, its requests in the run
+# folder, an --execute-sized timeout of its own) to Invoke-CatalogueSequence, and its announcement names the update.
+$sessionText = [IO.File]::ReadAllText((Join-Path $root 'scripts/owner-native-session.ps1'))
+$sessionCall = [regex]::Match($sessionText, '\$sequence = Invoke-CatalogueSequence [^\r\n]*').Value
+$sessionDocInvoker = [regex]::Match($sessionText, '\$catalogueDocUpdate = \{[^\r\n]*\}').Value
+Assert ($sessionCall -match '-InvokeDocUpdate \$catalogueDocUpdate\b' -and $sessionDocInvoker -match '\bInvoke-CatalogueDocUpdate -Dotnet \$dotnet -CliDll \$cli -PipeName \$boot\.pipeName -RequestDirectory \$catalogueRequests -Index \$index -Key \$key -Json \$json -TimeoutSeconds \$DocUpdateTimeoutSeconds\b' -and $sessionText -match '\[ValidateRange\(\d+, *3600\)\]\[int\]\$DocUpdateTimeoutSeconds = 3600' -and $sessionText -notmatch 'corte, etiqueta y cota obsoletos' -and $sessionText -match 'doc-update') "P4-14: the owner session wires -InvokeDocUpdate with its own timeout: $sessionCall | $sessionDocInvoker"
 
 } finally {
     if ([IO.Path]::GetFileName($inProcessTree).StartsWith('bim-catalogue-session-', [StringComparison]::Ordinal) -and $inProcessTree.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::Ordinal)) { Remove-Item -LiteralPath $inProcessTree -Recurse -Force -ErrorAction SilentlyContinue }
 }
 if ($failures.Count -and $env:GITHUB_ACTIONS) { '::error title=catalogue session::' + ((@($failures | Select-Object -First 12) | ForEach-Object { $_ -replace '[\r\n]+', ' ' }) -join '%0A') }
 if ($failures.Count) { throw ("catalogue session unit checks failed:`n" + ($failures -join "`n")) }
-'PASS catalogue session: envelopes, picking, 17-step v1 sequence, one-run groups (all pass, failing group, lost pipe), P1-11 groups (direct shapes, extrusion roofs, move/copy/rotate/mirror, save_copy), P1-14 save_as and the P4-11 two-pass documentation update against the Core contracts and fault detection (in-process fake executor)'
+'PASS catalogue session: envelopes, picking, 17-step v1 sequence, one-run groups (all pass, failing group, lost pipe), P1-11 groups (direct shapes, extrusion roofs, move/copy/rotate/mirror, save_copy), P1-14 save_as and the P4-14 doc-update documentation update against the Core contracts and fault detection (in-process fake executor)'
 
 # --- Real CLI and a fake add-in pipe ---
 if (!$Dotnet -and !$CliDll) { 'NOTE real CLI pass skipped: run with -Dotnet and -CliDll'; return }
@@ -766,7 +763,8 @@ try {
     $requests = Join-Path $work 'requests'
     $invoke = { param($index, $key, $json) Invoke-CatalogueCli -Dotnet $Dotnet -CliDll $CliDll -PipeName $pipeName -RequestDirectory $requests -Index $index -Key $key -Json $json -TimeoutSeconds 60 }
     $invokeWire = { param($index, $key, $line) Invoke-CatalogueWire -PipeName $pipeName -Line $line -RequestDirectory $requests -Index $index -Key $key -TimeoutSeconds 60 }
-    $real = Invoke-CatalogueSequence -Stamp $stamp -Run 7 -DocumentPath ([IO.Path]::GetFullPath($document)) -DocumentUid $documentUid -Invoke $invoke -InvokeWire $invokeWire
+    $invokeDocUpdate = { param($index, $key, $json) Invoke-CatalogueDocUpdate -Dotnet $Dotnet -CliDll $CliDll -PipeName $pipeName -RequestDirectory $requests -Index $index -Key $key -Json $json -TimeoutSeconds 120 }
+    $real = Invoke-CatalogueSequence -Stamp $stamp -Run 7 -DocumentPath ([IO.Path]::GetFullPath($document)) -DocumentUid $documentUid -Invoke $invoke -InvokeWire $invokeWire -InvokeDocUpdate $invokeDocUpdate
     $notes = ($real.steps | Where-Object { !$_.passed } | ForEach-Object { "[$($_.group)] $($_.key): $($_.reason) $($_.raw_response)" }) -join '; '
     # P1-14: document.save_as takes only a Windows drive path (C:\...\Name.rvt, RevitSaveAsGuard.PathProblem). On
     # Windows (core-windows) the whole one-run passes through the real CLI; elsewhere the CLI refuses both save_as
@@ -798,18 +796,36 @@ try {
     $received = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue)
     $invalid = ($real.steps | Where-Object { $_.key -eq 'invalid-arc' }).operation_id
     $realUp = @($real.steps | Where-Object { $_.key -like 'doc-up-*' })
-    $realMarker = @(Get-CataloguePath (Get-StepField $real 'doc-up-section-baseline' 'response') 'readback.delete.dependents' | Where-Object { $_ })
-    Assert ($realMarker.Count -eq 1 -and ((@(Get-RequestValue $real 'doc-up-delete-section' 'args.confirm_dependents') | Where-Object { $_ }) -join ',') -eq [string]$realMarker[0]) "P4-11: through the real CLI the section delete confirms exactly its baseline marker: $($realMarker -join ',')"
-    Assert ($realUp.Count -eq 20 -and @($realUp | Where-Object { !$_.passed }).Count -eq 0 -and @($realUp | Where-Object { $received -notcontains $_.operation_id }).Count -eq 0) "P4-11: the two-pass documentation update passes through the real CLI, every step reaching the pipe: $(@($realUp | Where-Object { !$_.passed } | ForEach-Object { "$($_.key): $($_.reason)" }) -join '; ')"
+    # P4-14: the update passes through the real doc-update verb. Its own requests reach the pipe under the CLI's
+    # operation ids: 4 dry runs (two passes, in the update's dry run and again in its --execute), then exactly the 11
+    # writes its two reports list (9 creates, then 1 delete and 1 create), each once. Every catalogue step reaches it too.
+    $realUpCatalogue = @($realUp | Where-Object { $_.command -ne 'doc-update' })
+    Assert ($realUp.Count -eq 9 -and @($realUp | Where-Object { !$_.passed }).Count -eq 0 -and @($realUpCatalogue | Where-Object { $received -notcontains $_.operation_id }).Count -eq 0) "P4-14: the documentation update passes through the real CLI: $(@($realUp | Where-Object { !$_.passed } | ForEach-Object { "$($_.key): $($_.reason) $($_.raw_response)" }) -join '; ')"
+    $docLines = @($received | Where-Object { $_ -match '\Adoc(dry|del|new)\.' })
+    $reportIds = [string[]]@(foreach ($key in 'doc-up-realize', 'doc-up-update') { Get-CatalogueList (Get-StepField $real $key 'response') 'report' | ForEach-Object { $_ } | ForEach-Object { [string](Get-CatalogueMember $_ 'operation_id') } })
+    $writeLines = [string[]]@($docLines | Where-Object { $_ -notlike 'docdry.*' })
+    [Array]::Sort($reportIds, [StringComparer]::Ordinal)
+    [Array]::Sort($writeLines, [StringComparer]::Ordinal)
+    Assert (@($docLines | Where-Object { $_ -like 'docdry.*' }).Count -eq 4 -and $reportIds.Count -eq 11 -and ($writeLines -join ',') -ceq ($reportIds -join ',')) "P4-14: the pipe got 4 dry runs and each reported write once: $($docLines -join ',')"
+    # The run folder keeps, per doc-update step, its request, inputs, plan file and the CLI's line (the per-step report).
+    foreach ($key in $docUpCalls) {
+        $step = Get-Step $real $key
+        $folder = Join-Path $requests ('{0:D2}-{1}.doc-update' -f [int]$step.index, $key)
+        $reportFile = Join-Path $folder 'report.json'
+        $kept = $null
+        try { $kept = [IO.File]::ReadAllText($reportFile) | ConvertFrom-Json } catch { $kept = $null }
+        $files = @('before.json', 'after.json', 'realized.json', 'bindings.json', 'plan.json', 'stderr.txt' | Where-Object { !(Test-Path -LiteralPath (Join-Path $folder $_) -PathType Leaf) })
+        Assert ($null -ne $kept -and (ConvertTo-Json -InputObject $kept -Depth 20 -Compress) -ceq (ConvertTo-Json -InputObject $step.response -Depth 20 -Compress) -and $files.Count -eq 0 -and [IO.Path]::GetFullPath([string]$step.response.output) -eq [IO.Path]::GetFullPath((Join-Path $folder 'plan.json'))) "P4-14 $key keeps its inputs, plan and report in the run folder ($folder): missing $($files -join ',')"
+    }
     # The client-side refusals (collinear arc, crossed outline, closed roof profile, zero move, full turn, save_copy
     # outside the copies root and over an existing file, save_as into an owner folder and over an existing file) are
     # refused by the real CLI before the pipe (off Windows also both save_as targets, args_invalid).
     $clientSteps = @($real.steps | Where-Object { $_.key -in $clientKeys })
     $notForwarded = @($clientKeys) + $(if ($IsWindows) { @() } else { @('c-as-outside', 'c-as-save') })
     $sentSteps = @($real.steps | Where-Object { $null -ne $_.request })
-    $forwardedCount = @($sentSteps | Where-Object { $_.key -notin $notForwarded }).Count
+    $forwardedCount = @($sentSteps | Where-Object { $_.key -notin $notForwarded -and $_.command -ne 'doc-update' }).Count
     $expectedSent = $real.overall.total - $(if ($ownerBlocked) { 1 } else { 0 }) - $(if ($IsWindows) { 0 } else { 2 })
-    Assert ($received.Count -eq $forwardedCount -and $sentSteps.Count -eq $expectedSent) "pipe must receive every sent step but the client-side refusals ($forwardedCount of $($sentSteps.Count) sent), got $($received.Count)"
+    Assert ($received.Count -eq $forwardedCount + $docLines.Count -and $sentSteps.Count -eq $expectedSent) "pipe must receive every sent step but the client-side refusals ($forwardedCount of $($sentSteps.Count) sent) plus the $($docLines.Count) doc-update requests, got $($received.Count)"
     Assert ($received -notcontains $invalid) 'the collinear arc reached the pipe'
     $forwardedIds = @($real.steps | Where-Object { $_.key -notin $clientKeys } | ForEach-Object { $_.operation_id })
     foreach ($step in $clientSteps) { if ($forwardedIds -notcontains $step.operation_id) { Assert ($received -notcontains $step.operation_id) "client-side refusal $($step.key) reached the pipe" } }
@@ -879,6 +895,43 @@ try {
     $stressWatch.Stop()
     Assert ($stressBad.Count -eq 0) "revit-command --all stress: $($stressBad.Count) failures in $stressDone/$stressRuns paged runs ($([int]$stressWatch.Elapsed.TotalSeconds)s): $(@($stressBad | Select-Object -First 3) -join ' | ')"
     if ($failures.Count -and $server.HasExited) { $failures.Add('fake pipe server stderr: ' + $serverErr.GetAwaiter().GetResult()) }
+    # Review S2, through the real CLI: an add-in pipe that runs the first write of an --execute and drops its reply. The
+    # CLI reports that step failed with reply_lost true and the rest not_sent, and never sends it again (the session
+    # stops on such an entry: in-process cases above). A fresh fake pipe of its own; the plan comes from its dry run.
+    $dropPipe = 'bim-agentic-os-2025-' + (Get-Random -Minimum 100000 -Maximum 999999)
+    $dropReady = Join-Path $work 'drop-ready.txt'
+    $dropLog = Join-Path $work 'drop-received.txt'
+    $dropStart = [Diagnostics.ProcessStartInfo]::new($pwsh)
+    foreach ($argument in @('-NoProfile', '-File', "$PSScriptRoot/fake-revit-command-pipe.ps1", '-PipeName', $dropPipe, '-DocumentUid', $documentUid, '-ReadyFile', $dropReady, '-LogFile', $dropLog, '-MaxRequests', '50', '-TimeoutSeconds', '300', '-DropReplyCommand', 'view.create_plan')) { $dropStart.ArgumentList.Add($argument) }
+    $dropStart.UseShellExecute = $false
+    $dropStart.RedirectStandardOutput = $true
+    $dropStart.RedirectStandardError = $true
+    $dropServer = [Diagnostics.Process]::Start($dropStart)
+    try {
+        $null = $dropServer.StandardOutput.ReadToEndAsync()
+        $dropErr = $dropServer.StandardError.ReadToEndAsync()
+        $dropDeadline = [DateTime]::UtcNow.AddSeconds(60)
+        while (!(Test-Path -LiteralPath $dropReady) -and [DateTime]::UtcNow -lt $dropDeadline -and !$dropServer.HasExited) { Start-Sleep -Milliseconds 100 }
+        if (!(Test-Path -LiteralPath $dropReady)) { throw "drop-reply fake pipe did not start: $(if ($dropServer.HasExited) { $dropErr.GetAwaiter().GetResult() })" }
+        $picked = @{ level = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-0000d000' }
+        $dropRequest = New-CatalogueDocUpdateRequest 0 0 ([ordered]@{ ('element:' + $script:CatalogueDocUpdateWallId) = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-0000d001'; ('element:' + $script:CatalogueDocUpdateDoorId) = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-0000d002' }) $null
+        $dropRequest['bindings']['document'] = [ordered]@{ path = [IO.Path]::GetFullPath($document); unique_id = $documentUid }
+        $dropRequests = Join-Path $work 'requests-drop'
+        $dropDry = Invoke-CatalogueDocUpdate -Dotnet $Dotnet -CliDll $CliDll -PipeName $dropPipe -RequestDirectory $dropRequests -Index 1 -Key 'drop-plan' -Json ($dropRequest | ConvertTo-Json -Depth 20 -Compress) -TimeoutSeconds 120
+        $dropDryLine = $null
+        try { $dropDryLine = $dropDry.output | ConvertFrom-Json } catch { $dropDryLine = $null }
+        $dropSha = [string](Get-CatalogueMember $dropDryLine 'sha256')
+        $dropRequest['expected_document'] = $dropSha
+        $dropRun = Invoke-CatalogueDocUpdate -Dotnet $Dotnet -CliDll $CliDll -PipeName $dropPipe -RequestDirectory $dropRequests -Index 2 -Key 'drop-run' -Json ($dropRequest | ConvertTo-Json -Depth 20 -Compress) -TimeoutSeconds 120
+        $dropLine = $null
+        try { $dropLine = $dropRun.output | ConvertFrom-Json } catch { $dropLine = $null }
+        $dropEntries = @(Get-CatalogueList $dropLine 'report' | ForEach-Object { $_ })
+        $dropLost = @($dropEntries | Where-Object { (Get-CatalogueMember $_ 'reply_lost') -eq $true })
+        $dropReceived = @(Get-Content -LiteralPath $dropLog -ErrorAction SilentlyContinue)
+        $dropLostId = [string](Get-CatalogueMember (Get-CatalogueFirst $dropLost) 'operation_id')
+        Assert ($dropSha -match '\A[0-9A-F]{64}\z' -and $dropRun.exit_code -eq 1 -and [string](Get-CatalogueMember $dropLine 'status') -eq 'failed' -and $dropEntries.Count -eq 9 -and $dropLost.Count -eq 1 -and [string](Get-CatalogueMember (Get-CatalogueFirst $dropEntries) 'command') -eq 'view.create_plan' -and (Get-CatalogueMember (Get-CatalogueFirst $dropEntries) 'reply_lost') -eq $true -and @($dropEntries | Select-Object -Skip 1 | Where-Object { (Get-CatalogueMember $_ 'status') -ne 'not_sent' }).Count -eq 0) "P4-14 through the real CLI a dropped reply is reported reply_lost and nothing after it is sent: $($dropRun.output)"
+        Assert ($dropLostId -and @($dropReceived | Where-Object { $_ -eq $dropLostId }).Count -eq 1 -and @($dropReceived | Where-Object { $_ -like 'docnew.*' }).Count -eq 1) "P4-14 the write whose reply was dropped reached the pipe exactly once: $($dropReceived -join ',')"
+    } finally { if (!$dropServer.HasExited) { $dropServer.Kill() }; $dropServer.Dispose() }
     # Dead pipe: the add-in is gone, the CLI cannot connect, the run stops after the first step.
     if (!$server.HasExited) { $server.Kill(); $null = $server.WaitForExit(10000) }
     $deadRequests = Join-Path $work 'requests-dead'
