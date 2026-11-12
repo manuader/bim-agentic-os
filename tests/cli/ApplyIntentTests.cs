@@ -454,7 +454,7 @@ internal static class ApplyIntentTests
         {
             var helperText = File.ReadAllText(helperPath);
             var helper = Code(helperText);
-            var absent = planSteps.Concat(new[] { "IncrementalDiff.OrderOf(set.After)", "EditsInput.LibraryCodes", "IncrementalDiff.BoundExceeded", "ApplyEditsCommand.Internal(" })
+            var absent = planSteps.Concat(new[] { "IncrementalDiff.OrderOf(set.After)", "EditsInput.LibraryCodes", "IncrementalDiff.BoundExceeded", "Internal(verb, error)" })
                 .Where(step => !helper.Contains(step, StringComparison.Ordinal))
                 .Concat(CodeOf(helperText, blankStrings: false).Contains("== \"invalid_ir\")", StringComparison.Ordinal) ? Array.Empty<string>() : new[] { "== \"invalid_ir\")" }).ToArray();
             var writes = new[] { "File.", "FileStream", "FileMode.", "Directory.", "ProjectStore", "Commit(", "Initialize(", "BoundedInput" }.Where(api => helper.Contains(api, StringComparison.Ordinal)).ToArray();

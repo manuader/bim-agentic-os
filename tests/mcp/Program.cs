@@ -1596,19 +1596,24 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     var diApply=ToolCall("apply_intent",new JsonObject());
     Check(IsError(diApply) && Text(diApply)=="""{"status":"failed","code":"unknown_tool"}""","MCP exposes no apply_intent writer");
 
-    // 3. Static: the tool runs the CLI verb's own code (DiffIntentCommand.Run, which plans only through IntentPlan), linked
-    //    rather than copied; it inlines no plan step and has no file, store or commit access of its own.
+    // 3. Static: the tool runs the CLI verb's own code (DiffIntentCommand.Plan, the envelope DiffIntentCommand.Run prints,
+    //    which plans only through IntentPlan), linked rather than copied; it inlines no plan step and has no file, store or
+    //    commit access of its own. P3-15: it takes the returned envelope directly, so it never redirects Console.Out, never
+    //    reads or sets Environment.ExitCode and needs no lock.
     // Comments stripped: /* */ blocks first, then // to end of line.
     string DiCodeOf(string text)=>string.Join("\n",System.Text.RegularExpressions.Regex.Replace(text,@"/\*.*?\*/","",System.Text.RegularExpressions.RegexOptions.Singleline).Split('\n').Select(line=>{ var at=line.IndexOf("//",StringComparison.Ordinal); return at<0?line:line[..at]; }));
     Check(DiCodeOf("a /* ProjectStore\n x */ b // ProjectStore\nc")=="a  b \nc","fixture: DiCodeOf strips block and line comments");
     var diToolPath=Path.Combine(root,"interfaces","mcp","DiffIntentTool.cs");
     Check(File.Exists(diToolPath),"interfaces/mcp/DiffIntentTool.cs exists");
     var diToolCode=DiCodeOf(File.ReadAllText(diToolPath));
-    Check(diToolCode.Contains("DiffIntentCommand.Run(",StringComparison.Ordinal),"diff_intent runs the CLI verb's shared path DiffIntentCommand.Run");
+    Check(diToolCode.Contains("DiffIntentCommand.Plan(",StringComparison.Ordinal),"diff_intent runs the CLI verb's shared path DiffIntentCommand.Plan");
+    var diCapture=new[]{"Console.SetOut","Console.Out","Console.Write","Environment.ExitCode","lock","StringWriter",".Print("}.Where(api=>diToolCode.Contains(api,StringComparison.Ordinal)).ToArray();
+    Check(diCapture.Length==0,"diff_intent uses the returned envelope: no Console.SetOut capture, stdout write, exit-code access or lock ["+string.Join(", ",diCapture)+"]");
     var diInlined=new[]{"IntentJson.Parse(","IntentEdits.FromStored(","IncrementalDiff.Diff(","IncrementalDiff.OrderOf(","IntentException","IntentCompiler","Compiler.Diff(","JsonSerializer.Serialize(","File.","FileStream","Directory.","ProjectStore","Commit(","BoundedInput"}.Where(api=>diToolCode.Contains(api,StringComparison.Ordinal)).ToArray();
     Check(diInlined.Length==0,"diff_intent inlines no plan step, serializer or file/store access ["+string.Join(", ",diInlined)+"]");
     var diCommandCode=DiCodeOf(File.ReadAllText(Path.Combine(root,"interfaces","cli","DiffIntentCommand.cs")));
     Check(diCommandCode.Contains("IntentPlan.ParseIntent(",StringComparison.Ordinal) && diCommandCode.Contains("IntentPlan.Build(",StringComparison.Ordinal),"the verb the tool runs plans through the shared IntentPlan helper");
+    Check(diCommandCode.Contains("Plan(args).Print()",StringComparison.Ordinal),"the CLI verb prints the very envelope the tool returns (Run is Plan(args).Print())");
     foreach(var project in new[]{Path.Combine(root,"interfaces","mcp","Bim.Mcp.csproj"),Path.Combine(root,"tests","mcp","Bim.Mcp.Tests.csproj")}) {
         var csproj=File.ReadAllText(project);
         Check(new[]{"cli/IntentPlan.cs","cli/DiffIntentCommand.cs"}.All(file=>csproj.Contains(file,StringComparison.Ordinal)),Path.GetFileName(project)+" links the CLI IntentPlan.cs and DiffIntentCommand.cs (shared source, not a copy)");
