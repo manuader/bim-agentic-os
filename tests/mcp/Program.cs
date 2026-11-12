@@ -72,7 +72,7 @@ Check(server.Handle("""{"jsonrpc":"2.0","method":"notifications/unknown","params
 
 var list=Call(Request(2,"tools/list",null));
 var tools=list["result"]!["tools"]!.AsArray();
-Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,diff_intent,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, mirror_drift_select, mirror_drift_adopt, skills_lock_verify, audit_verify, diff_intent, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
+Check(string.Join(",",tools.Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,diff_intent,generate_typology,"+string.Join(",",RevitCommandCatalogue.All.Select(c=>c.ToolName)),"tools/list names exactly diff, validate, room, plan, mirror_drift, mirror_drift_select, mirror_drift_adopt, skills_lock_verify, audit_verify, diff_intent, generate_typology, then one revit_* tool per catalogue command (RevitCommandCatalogue.All, in order)");
 Check(RevitCommandCatalogue.V1.Select(c=>c.ToolName).SequenceEqual(new[]{"revit_query_levels","revit_query_wall_types","revit_query_floor_types","revit_query_family_symbols","revit_wall_create","revit_opening_place","revit_floor_create","revit_room_create"}),"catalogue v1 tool names are the eight ADR0009 commands");
 Check(tools.All(t=>t!["inputSchema"]!["type"]!.GetValue<string>()=="object" && t!["inputSchema"]!["properties"] is JsonObject && t!["inputSchema"]!["required"] is JsonArray && !string.IsNullOrWhiteSpace(t!["description"]!.GetValue<string>())),"every tool has a JSON Schema object inputSchema and description");
 string Required(string tool)=>string.Join(",",tools.Single(t=>t!["name"]!.GetValue<string>()==tool)!["inputSchema"]!["required"]!.AsArray().Select(x=>x!.GetValue<string>()));
@@ -118,7 +118,7 @@ foreach(var spec in RevitCommandCatalogue.All) {
     else if(writesFiles) Check(annotations!.Count==3 && annotations["destructiveHint"]?.GetValue<bool>()==false && annotations["idempotentHint"]?.GetValue<bool>()==false,spec.ToolName+" writes new files on every call: destructiveHint false, idempotentHint false");
     else Check(annotations!.Count==1,spec.ToolName+" read annotations carry only readOnlyHint");
 }
-Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal) && t!["name"]!.GetValue<string>()!="audit_verify" && t!["name"]!.GetValue<string>()!="diff_intent" && t!["name"]!.GetValue<string>()!="mirror_drift_adopt").All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools other than audit_verify, diff_intent and mirror_drift_adopt carry no permission level or annotations");
+Check(tools.Where(t=>!t!["name"]!.GetValue<string>().StartsWith(RevitCommandSpec.ToolPrefix,StringComparison.Ordinal) && t!["name"]!.GetValue<string>()!="audit_verify" && t!["name"]!.GetValue<string>()!="diff_intent" && t!["name"]!.GetValue<string>()!="generate_typology" && t!["name"]!.GetValue<string>()!="mirror_drift_adopt").All(t=>t!["_meta"]==null && t!["permission_level"]==null && t!["annotations"]==null),"core tools other than audit_verify, diff_intent, generate_typology and mirror_drift_adopt carry no permission level or annotations");
 Check(McpServer.PermissionLevelName(PermissionLevel.Read)=="read" && McpServer.PermissionLevelName(PermissionLevel.WriteCopies)=="write-copies" && McpServer.PermissionLevelName(PermissionLevel.WriteRealProject)=="write-real-project","PermissionLevelName names the three P10-03 levels");
 var outOfRange=false;
 try { McpServer.PermissionLevelName((PermissionLevel)99); } catch(ArgumentOutOfRangeException) { outOfRange=true; }
@@ -130,7 +130,7 @@ string? BuildError(IReadOnlyList<RevitCommandSpec> catalogue) { try { _=new McpS
 string? NameError(params string[] names) { try { McpServer.CheckToolNames(names); return null; } catch(InvalidOperationException error) { return error.Message; } }
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)}) is null,"an injected catalogue with distinct valid names builds");
 var syntheticServer=new McpServer(new[]{Synthetic("query.levels"),Synthetic("wall.create",true)},RevitCommandPolicy.None,null,null);
-Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,diff_intent,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
+Check(string.Join(",",Node(syntheticServer.Handle(Request(2,"tools/list",null))!)["result"]!["tools"]!.AsArray().Select(t=>t!["name"]!.GetValue<string>()))=="diff,validate,room,plan,mirror_drift,mirror_drift_select,mirror_drift_adopt,skills_lock_verify,audit_verify,diff_intent,generate_typology,revit_query_levels,revit_wall_create","the tool list follows the injected catalogue");
 Check(BuildError(new[]{Synthetic("a.b_c"),Synthetic("a_b.c")})=="tool_name_duplicate: revit_a_b_c","colliding tool names (a.b_c vs a_b.c) fail closed at construction");
 Check(BuildError(new[]{Synthetic("query.levels"),Synthetic("query.levels")})=="tool_name_duplicate: revit_query_levels","a duplicated command fails closed at construction");
 Check(BuildError(new[]{Synthetic("a b")})=="tool_name_invalid: revit_a b","a tool name outside [a-zA-Z0-9_-] fails closed at construction");
@@ -1631,6 +1631,8 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     Check(!diMcpProject.Contains("ApplyIntentCommand.cs",StringComparison.Ordinal),"Bim.Mcp.csproj does not link the apply-intent verb");
 }
 
+// P5-17 generate_typology (tests/mcp/GenerateTypologyToolTests.cs).
+GenerateTypologyToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
     var unknown=ToolCall(hidden,new JsonObject());
     Check(IsError(unknown) && Text(unknown)=="""{"status":"failed","code":"unknown_tool"}""","tool "+hidden+" is not exposed and returns isError");
