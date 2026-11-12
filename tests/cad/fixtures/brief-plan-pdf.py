@@ -166,7 +166,8 @@ def deflate(data):
         position += best_length
     literal_length(writer, 256)
     packed = b"\x78\x01" + writer.finish() + zlib.adler32(data).to_bytes(4, "big")
-    assert zlib.decompress(packed) == data
+    if zlib.decompress(packed) != data:
+        raise SystemExit("deflate round trip failed: the encoded stream does not inflate back to the content")
     return packed
 
 

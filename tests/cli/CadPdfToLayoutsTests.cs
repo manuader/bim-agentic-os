@@ -237,19 +237,31 @@ internal static class CadPdfToLayoutsTests
             Check(Hex(variantBytes) == VariantFixtureDigest, "xobject: brief-plan-xobject.pdf SHA-256 equals the pinned fixture digest", "actual " + Hex(variantBytes) + " pinned " + VariantFixtureDigest);
             if (unix)
             {
-                var regeneratedVariant = Path.Combine(scratch, "regenerated-xobject.pdf");
-                (int Exit, string Out, string Err)? generator = null;
-                try { generator = Exec("python3", null, "-I", Path.Combine(fixtures, "brief-plan-pdf.py"), regeneratedVariant, "--variant", "xobject-flate"); }
-                catch (Win32Exception) { }
-                if (generator is null)
+                // The flag after the output path, then before it: both forms write the pinned bytes.
+                foreach (var (order, flagFirst) in new[] { ("output then flag", false), ("flag then output", true) })
                 {
-                    if (linuxCi) Check(false, "xobject: python3 is available on Linux CI to rerun the fixture generator");
-                    else skip("cad-pdf-to-layouts: xobject fixture generator rerun", "python3 not found (required on Linux CI only)");
+                    var regeneratedVariant = Path.Combine(scratch, flagFirst ? "regenerated-xobject-flag-first.pdf" : "regenerated-xobject.pdf");
+                    var script = Path.Combine(fixtures, "brief-plan-pdf.py");
+                    var generatorArguments = flagFirst
+                        ? new[] { "-I", script, "--variant", "xobject-flate", regeneratedVariant }
+                        : new[] { "-I", script, regeneratedVariant, "--variant", "xobject-flate" };
+                    (int Exit, string Out, string Err)? generator = null;
+                    try { generator = Exec("python3", null, generatorArguments); }
+                    catch (Win32Exception) { }
+                    if (generator is null)
+                    {
+                        if (linuxCi) Check(false, "xobject: python3 is available on Linux CI to rerun the fixture generator (" + order + ")");
+                        else skip("cad-pdf-to-layouts: xobject fixture generator rerun (" + order + ")", "python3 not found (required on Linux CI only)");
+                    }
+                    else Check(generator.Value.Exit == 0 && Hex(Read(regeneratedVariant)) == VariantFixtureDigest,
+                        "xobject: brief-plan-pdf.py --variant xobject-flate (" + order + ") writes the pinned brief-plan-xobject.pdf bytes", R(generator.Value) + " sha256 " + Hex(Read(regeneratedVariant)));
                 }
-                else Check(generator.Value.Exit == 0 && variantBytes.Length > 0 && Read(regeneratedVariant).SequenceEqual(variantBytes),
-                    "xobject: brief-plan-pdf.py --variant xobject-flate rewrites brief-plan-xobject.pdf byte for byte", R(generator.Value) + " sha256 " + Hex(Read(regeneratedVariant)));
             }
-            else skip("cad-pdf-to-layouts: xobject fixture generator rerun", "run on Linux and macOS only (the python3 launcher differs on Windows)");
+            else
+            {
+                skip("cad-pdf-to-layouts: xobject fixture generator rerun (output then flag)", "run on Linux and macOS only (the python3 launcher differs on Windows)");
+                skip("cad-pdf-to-layouts: xobject fixture generator rerun (flag then output)", "run on Linux and macOS only (the python3 launcher differs on Windows)");
+            }
 
             var raw = Encoding.Latin1.GetString(variantBytes);
             static int CountOf(string text, string part) => text.Split(part).Length - 1;
@@ -258,6 +270,7 @@ internal static class CadPdfToLayoutsTests
                 && !raw.Contains(" Do", StringComparison.Ordinal) && !raw.Contains(" l\n", StringComparison.Ordinal),
                 "xobject: both content streams are FlateDecode (no text, path or Do operator readable in the raw file) and the labels stream is a Form XObject",
                 "FlateDecode " + CountOf(raw, "/FlateDecode").ToString(CultureInfo.InvariantCulture) + " Form " + CountOf(raw, "/Subtype /Form").ToString(CultureInfo.InvariantCulture));
+            Check(variantBytes.Length > 0, "xobject: the fixture brief-plan-xobject.pdf is present and not empty", variantPath);
             if (variantBytes.Length > 0)
             {
 
