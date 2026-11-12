@@ -6,21 +6,28 @@ namespace Bim.Cad;
 // A ToUnicode CMap (PDF 32000-1 9.10.3): codespace ranges plus bfchar and bfrange mappings (incrementing and array
 // forms) from character codes of one to four bytes to UTF-16BE destinations. Other CMap operators and PostScript
 // boilerplate are skipped. Bounded: at most MaxBytes of stream data, MaxEntries mapped codes (a bfrange counts every
-// code it covers) and MaxCodespaceRanges ranges; a destination longer than MaxDestinationBytes, of odd length or not a
-// hex string, a source that is not a 1-4 byte string and a reversed or mismatched range are skipped. Lookups are by
-// code value.
+// code it covers) and MaxCodespaceRanges ranges (the CMap block limit of 100) per CMap, and every mapped code is also
+// charged to the document-wide MaxParsedElements budget (element-limit refusal), so many fonts cannot multiply the
+// work; a destination longer than MaxDestinationBytes, of odd length or not a hex string, a source that is not a 1-4
+// byte string and a reversed or mismatched range are skipped. Lookups are by code value only (<41> and <0041> are the
+// same code); the code length comes from the font (one byte for simple fonts) or the codespace. An incrementing
+// bfrange increments the last character of its destination: a surrogate pair as one code point (U+1F7FF is followed by
+// U+1F800), a BMP character up to U+FFFF, after which the remaining codes of the range stay unmapped.
 internal sealed class PdfToUnicode
 {
     public const int MaxBytes = 1 << 20;
     public const int MaxEntries = 65536;
-    public const int MaxCodespaceRanges = 256;
+    public const int MaxCodespaceRanges = 100;
     public const int MaxDestinationBytes = 64;
 
     private readonly Dictionary<uint, string> map = new();
     private readonly List<(int Length, byte[] Low, byte[] High)> codespace = new();
 
-    private PdfToUnicode()
+    private readonly PdfBudget budget;
+
+    private PdfToUnicode(PdfBudget budget)
     {
+        this.budget = budget;
     }
 
     public int Count => map.Count;
@@ -52,7 +59,7 @@ internal sealed class PdfToUnicode
             error = "CMap of " + I(data.Length) + " bytes exceeds " + I(MaxBytes);
             return null;
         }
-        var result = new PdfToUnicode();
+        var result = new PdfToUnicode(budget);
         var lexer = new PdfLexer(data, 0, data.Length, maxDepth, budget);
         try
         {
@@ -153,15 +160,16 @@ internal sealed class PdfToUnicode
                     if (Destination(items[k]) is { } text && !Add(low + (uint)k, text, out error)) return false;
                 continue;
             }
-            if (destination is not PdfString { Bytes.Length: >= 2 and <= MaxDestinationBytes } start || start.Bytes.Length % 2 != 0) continue;
-            var last = (start.Bytes[^2] << 8) | start.Bytes[^1];
-            var units = (byte[])start.Bytes.Clone();
-            for (long k = 0; k < span && last + k <= 0xFFFF; k++)
+            if (Destination(destination) is not { } first) continue;
+            var pair = first.Length >= 2 && char.IsSurrogatePair(first[^2], first[^1]);
+            var prefix = first[..^(pair ? 2 : 1)];
+            long point = pair ? char.ConvertToUtf32(first[^2], first[^1]) : first[^1];
+            var limit = pair ? 0x10FFFF : 0xFFFF;
+            for (long k = 0; k < span && point + k <= limit; k++)
             {
-                var unit = (int)(last + k);
-                units[^2] = (byte)(unit >> 8);
-                units[^1] = (byte)unit;
-                if (!Add(low + (uint)k, Encoding.BigEndianUnicode.GetString(units), out error)) return false;
+                var value = (int)(point + k);
+                var text = prefix + (pair ? char.ConvertFromUtf32(value) : ((char)value).ToString());
+                if (!Add(low + (uint)k, text, out error)) return false;
             }
         }
     }
@@ -169,6 +177,7 @@ internal sealed class PdfToUnicode
     private bool Add(uint code, string text, out string error)
     {
         error = "";
+        budget.Charge(-1);
         if (map.ContainsKey(code)) { map[code] = text; return true; }
         if (map.Count >= MaxEntries) { error = "mapped codes exceed " + I(MaxEntries); return false; }
         map[code] = text;

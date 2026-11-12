@@ -8,7 +8,9 @@ namespace Bim.Cad;
 // ignored; inline images are skipped. Operand errors are warnings and the operator is skipped.
 // P6-16: Tf resolves the font in the current resources; a font with a /ToUnicode CMap (simple or Type0) decodes shown
 // strings through it (PdfFontDecoder). A Type0 font without one (tounicode-missing) or with an unusable one
-// (tounicode-invalid, as for a simple font) keeps the default decoding; both warn once per font and page at the Tf.
+// (tounicode-invalid, as for a simple font; a dangling reference is invalid, /ToUnicode null is absent) keeps the
+// default decoding; both warn once per font and page at the Tf. With a CMap, decoded characters are charged to
+// MaxInterpretedBytes as well as the shown bytes.
 // A Type0 code missing from the CMap becomes U+FFFD with tounicode-unmapped on the showing operator.
 internal sealed class PdfContentInterpreter
 {
@@ -295,7 +297,9 @@ internal sealed class PdfContentInterpreter
                     {
                         if (item is PdfString piece)
                         {
-                            joined.Append(Decode(piece.Bytes, out var missing));
+                            var decoded = Decode(piece.Bytes, out var missing);
+                            if (state.Decoder is not null) file.ChargeInterpreted(decoded.Length);
+                            joined.Append(decoded);
                             unmapped |= missing;
                             byteCount += piece.Bytes.Length;
                         }
@@ -383,6 +387,7 @@ internal sealed class PdfContentInterpreter
     {
         file.ChargeInterpreted(bytes.Length);
         var text = Decode(bytes, out var unmapped);
+        if (state.Decoder is not null) file.ChargeInterpreted(text.Length);
         if (unmapped) WarnUnmapped(objectNumber, operatorIndex, op);
         Show(text, 0, objectNumber, operatorIndex, op);
     }
@@ -409,7 +414,7 @@ internal sealed class PdfContentInterpreter
         var label = "font /" + name + (reference is PdfRef r ? " (object " + r.Number.ToString(CultureInfo.InvariantCulture) + ")" : "");
         PdfFontDecoder? decoder = null;
         var toUnicode = PdfFile.Get(font, "ToUnicode");
-        if (toUnicode is null)
+        if (toUnicode is null or PdfNull)
         {
             if (composite) Warn("tounicode-missing", objectNumber, operatorIndex, label + " is a Type0 font without /ToUnicode; its codes are read as text bytes");
         }

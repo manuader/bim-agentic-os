@@ -79,7 +79,8 @@ public sealed record PdfPath(PdfProvenance Provenance, IReadOnlyList<PdfSubpath>
 
 // A shown string. Origin is the text-space origin through the text matrix (with rise) and the CTM. Glyph widths are not
 // computed (no font metrics), so consecutive strings without repositioning share the origin of the first. Value is
-// decoded as UTF-16BE (with BOM), UTF-8 (with BOM) or else byte-per-character Latin-1; CID fonts are not mapped.
+// decoded through the font's ToUnicode CMap when it has a usable one (simple or Type0 fonts, P6-16), else as UTF-16BE
+// (with BOM), UTF-8 (with BOM) or byte-per-character Latin-1.
 // Height is FontSize scaled by the text matrix and CTM; RotationDegrees is the direction of the text baseline.
 public sealed record PdfText(PdfProvenance Provenance, Point2 Origin, string Value, string FontName, double FontSize, double Height, double RotationDegrees) : PdfElement(Provenance);
 
