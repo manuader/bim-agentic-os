@@ -290,17 +290,43 @@ internal static class MirrorDriftAdoptTests
         }
         // P2-21: the option codes are Core MirrorDriftAdoptCodes constants (exact strings pinned) and the CLI verb keeps no
         // error-code string literal of its own outside comments (every code it prints comes from a codes class).
-        string? CoreCode(string field) => typeof(MirrorDriftAdoptCodes).GetField(field, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)?.GetRawConstantValue() as string;
-        Check(CoreCode("OptionUnknown") == "drift_adopt_option_unknown" && CoreCode("OptionDuplicate") == "drift_adopt_option_duplicate",
+        Check(MirrorDriftAdoptCodes.OptionUnknown == "drift_adopt_option_unknown" && MirrorDriftAdoptCodes.OptionDuplicate == "drift_adopt_option_duplicate",
             "MirrorDriftAdoptCodes.OptionUnknown/OptionDuplicate are the Core constants drift_adopt_option_unknown/drift_adopt_option_duplicate");
+        // The guard itself, on fixtures: a "//" inside a literal is not a comment; split, interpolated and upper-case codes are caught.
+        foreach (var (fixture, caught) in new[]
+        {
+            ("x(\"a://b\", \"drift_adopt_x\");", true),
+            ("x(\"drift_\" + \"adopt_x\");", true),
+            ("x($\"drift_{y}\");", true),
+            ("x(\"Drift_Adopt_X\");", true),
+            ("x(\"ab\", \"c_d\");", true),
+            ("// \"drift_adopt_x\" in a comment\n    // indented \"a_b\"\nx();", false),
+            ("x(\"--preview\", \"selection\", \"usage: a b_c [--x]\");", false),
+        })
+        {
+            var hits = CodeLiterals(fixture);
+            Check(hits.Length > 0 == caught, "the literal guard " + (caught ? "catches " : "ignores ") + fixture, string.Join(", ", hits));
+        }
         if (File.Exists(source))
         {
-            var commandCode = System.Text.RegularExpressions.Regex.Replace(File.ReadAllText(source), "//[^\n]*", "");
-            var literals = System.Text.RegularExpressions.Regex.Matches(commandCode, "\"[a-z0-9]+(?:_[a-z0-9]+)+\"").Select(match => match.Value).ToArray();
-            Check(literals.Length == 0 && !commandCode.Contains("drift_adopt_", StringComparison.Ordinal), "interfaces/cli/MirrorDriftAdoptCommand.cs holds no error-code string literal", string.Join(", ", literals));
+            var commandText = File.ReadAllText(source);
+            var literals = CodeLiterals(commandText);
+            Check(literals.Length == 0, "interfaces/cli/MirrorDriftAdoptCommand.cs holds no error-code string literal", string.Join(", ", literals));
+            var commandCode = StripComments(commandText);
             Check(commandCode.Contains("MirrorDriftAdoptCodes.OptionUnknown", StringComparison.Ordinal) && commandCode.Contains("MirrorDriftAdoptCodes.OptionDuplicate", StringComparison.Ordinal),
                 "the verb refuses flags with MirrorDriftAdoptCodes.OptionUnknown/OptionDuplicate");
         }
+    }
+
+    // P2-21 literal guard: comments removed, then every string-literal token that looks like an error code, plus any
+    // "drift_adopt_" substring left in the code.
+    static string StripComments(string source) => System.Text.RegularExpressions.Regex.Replace(source, "//[^\n]*", "");
+    static string[] CodeLiterals(string source)
+    {
+        var code = StripComments(source);
+        var hits = System.Text.RegularExpressions.Regex.Matches(code, "\"[a-z0-9]+(?:_[a-z0-9]+)+\"").Select(match => match.Value).ToList();
+        if (code.Contains("drift_adopt_", StringComparison.Ordinal)) hits.Add("drift_adopt_ substring");
+        return hits.ToArray();
     }
 
     // P2-19 oracles: `mirror-drift-adopt store selection.json --preview` stdout is byte-equal to the text of the MCP tool
