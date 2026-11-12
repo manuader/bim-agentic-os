@@ -12,7 +12,8 @@ namespace Bim.Cli;
 // PipeTransportWithReadTimeout; absent, Transport is RevitCommandService.PipeTransport (DefaultReadTimeout, 1800 s).
 // --deadline-seconds (P1-21) is the overall deadline of the --all paging run (RevitDeadlineTransport), whole seconds
 // from 1 to 86400, only with --all; a bad or missing value, or the flag without --all, is deadline_invalid with
-// DeadlineUsage. Absent, Deadline is null and the run has no overall deadline (today's bytes). The refusals of the
+// DeadlineUsage. The deadline counts from just before paging and does not cut a page's 5 s pipe connect (deadline
+// + up to 5 s). Absent, Deadline is null and the run has no overall deadline (today's bytes). The refusals of the
 // other options keep Usage unchanged.
 public sealed record RevitCommandOptions(bool All, TimeSpan ReadTimeout, Func<string, string, string?> Transport, TimeSpan? Deadline = null)
 {

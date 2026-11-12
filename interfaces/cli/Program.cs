@@ -72,7 +72,8 @@ try {
             // same RevitCommandService path; its outcomes and early refusals (pipe name, policy, envelope read) are
             // ElementQueryAllResult JSON. --read-timeout-seconds n (P1-20): the pipe read timeout of every request
             // (default 1800 s). --deadline-seconds n (P1-21, --all only): one overall deadline for the paging run
-            // (RevitDeadlineTransport, query_all_deadline_exceeded; absent, no deadline). The options (RevitCommandOptions)
+            // (RevitDeadlineTransport, query_all_deadline_exceeded; absent, no deadline), counted from just before paging;
+            // the 5 s pipe connect of a page is not cut (deadline + up to 5 s). The options (RevitCommandOptions)
             // are checked first, before any I/O; an unknown, repeated or bad option is refused in the single-command
             // RevitCommandResponse shape, with or without --all.
             var revitOptions=RevitCommandOptions.Parse(args,out var revitOptionRefusal);

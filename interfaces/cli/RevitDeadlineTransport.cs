@@ -9,7 +9,12 @@ namespace Bim.Cli;
 // RevitServiceTransport), within one deadline counted from the creation of this transport: a page due after the
 // deadline is answered query_all_deadline_exceeded without being sent, so RevitElementQueryPaging.All reports it in
 // the listing shape without partial elements; a page whose time left is below the read timeout is read with the time
-// left (cut), its pipe_read_timeout reported as the deadline. Tests inject the clock and the cut transport.
+// left (cut), its pipe_read_timeout reported as the deadline; any other outcome of a cut page (no_response,
+// pipe_io_error, a reply) passes through unchanged, and time left equal to the read timeout is not cut.
+// The clock starts when this transport is built: in the CLI after the option, pipe name, policy and envelope reads, just
+// before paging, as the MCP transport starts when its all:true call builds it.
+// Known limit: the pipe connect inside RevitCommandService (ConnectTimeoutMs, 5 s) is not cut, so a run can last the
+// deadline plus up to 5 s, ending pipe_connect_timeout when no add-in is listening. Tests inject the clock and the cut transport.
 public sealed class RevitDeadlineTransport : IRevitCommandTransport
 {
     public const string Code = "query_all_deadline_exceeded";
