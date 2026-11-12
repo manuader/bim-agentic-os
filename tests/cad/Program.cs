@@ -477,5 +477,8 @@ BriefPlannerTests.Run(Check, fixtures);
 // P6-11 non-ASCII room labels in brief extraction (tests/cad/BriefNonAsciiTests.cs).
 BriefNonAsciiTests.Run(Check, fixtures);
 
+// P6-16 PDF ToUnicode text for room labels (tests/cad/PdfToUnicodeTests.cs).
+PdfToUnicodeTests.Run(Check, fixtures);
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
