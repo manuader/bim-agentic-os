@@ -304,3 +304,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P4-15: no failed attempts (red 43130960366 verb unknown → green 43132233200; review red 43141602918 = 8 MiB CLI cap vs 32 MiB record bound → green 43143266206).
 - P2-17: 1 failed attempt, oracle unchanged — review round run 43141581931 (1bf4676): test compile error CS0136, new local `missingStore` clashed with an existing local; renamed `previewMissingStore` → green 43142673384. First round red 43130822808 (Preview stub) → green 43132966479.
 - P10-15: no failed attempts (red 43130808434 → green 43138707648 by workflow_dispatch, push run 43132715553 core-windows hung > 50 min with every other job green, cancelled; review red 43141685293 pathless sbom entries → green 43143789557). One red-round fixture setup bug (last-array-element sbom line without trailing comma) fixed in a separate test commit, no assertion loosened.
+
+### Relay195 (2026-11-12, cloud)
+- P1-21: no failed attempts (red 43151595118 CS2001 missing RevitDeadlineTransport.cs → green 43152122711; review tests pinned existing behaviour, green 43163347980, comments 43165743640).
+- P2-18: no failed attempts (red 43151779386 pipe script lacked -ExternalEdits → green 43153831165; review red 43159370704 blank option/case/object/duplicate parsing → green 43161374794).
+- P6-16: no failed attempts (red 43151778821 CIDs as Latin-1, no rooms, warnings absent → green 43153070188; review red 43156979215 document-wide bound, decoded-length charge, codespace cap, surrogate carry, /ToUnicode null → green 43157029343). Superseded red 43156955649 (7d19314) had a wrong expected character in a new test, corrected in 0f326a1 before the implementation; no assertion loosened.

@@ -1863,6 +1863,43 @@
       ],
       "blocker": "Binaries with an extension outside the PE/ELF/Mach-O name pattern (e.g. .bin, .node) are not classified (P10-16); natives matched by leaf name across references (any folder); reference name lists are restore data and are not required to ship; no third-party NuGet package ships today (synthetic fixtures).",
       "scope": "P10-15: package-verify and package.ps1's staging check cross-check manifest.json with sbom.json — every manifest .dll/.exe (any case) needs an sbom assemblies line with the same path, every .so[.N]/.dylib a reference natives name or a deps.json project asset, every sbom assemblies path a manifest entry; typed sbom_manifest_mismatch naming each path and its direction; pathless sbom assemblies entries → named sbom_invalid; reads the manifest (manifest-only tampers tested), synthetic and real-package tampers in both directions; real package unchanged. CI red 43130808434, green 43138707648; review red 43141685293, green 43143789557."
+    },
+    {
+      "id": "cli-revit-command-all-deadline",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/RevitDeadlineTransport.cs",
+        "interfaces/cli/RevitCommandOptions.cs",
+        "interfaces/cli/Program.cs",
+        "tests/cli/RevitCommandDeadlineTests.cs"
+      ],
+      "blocker": "Pipe connect (5 s) is not cut by the deadline (a run can last deadline + 5 s ending pipe_connect_timeout); deadline rule copied from the MCP private DeadlineTransport (sharing → P1-23); deadline_invalid/query_all_deadline_exceeded live in the CLI, not core RevitCommandCodes; shared Usage line in non-deadline refusals does not mention the flag (P1-22); not run in Revit.",
+      "scope": "P1-21: `revit-command envelope.json pipe --all [--read-timeout-seconds n] --deadline-seconds n` bounds the whole paging run: a page due at/after the deadline answers query_all_deadline_exceeded in the listing shape without being sent, a page with less time left than the read timeout is read with only the time left (its pipe_read_timeout reported as the deadline), other cut failures pass through; 1..86400 whole seconds, typed deadline_invalid (incl. needs --all) before any I/O; absent flag byte-identical to RevitServiceTransport paging; injected-clock, fake stalled-pipe and slow add-in tests through the real CLI. CI red 43151595118, green 43152122711; review green 43163347980/43165743640."
+    },
+    {
+      "id": "fake-addin-external-journal",
+      "status": "unit-tested",
+      "evidence": [
+        "tests/integration/fake-revit-command-executor.ps1",
+        "tests/integration/fake-revit-command-pipe.ps1",
+        "tests/mirror-journal/MirrorDriftLoopChecks.cs"
+      ],
+      "blocker": "Test fake only (no Revit); the fake's report.diff is its own simplified form, excluded from the production comparison (P2-20); one global baseline, not per document; skipped_add_in counts receipts; journal_complete always true; fidelity is parsed-member, not escaping bytes.",
+      "scope": "P2-18: fake-revit-command-pipe.ps1 -ExternalEdits \"opid,…\" (blank = off) journals named successful non-dry-run element.move/wall.create/element.delete as external TransactionCommitted entries (MirrorJournalEntry member order, deterministic recorded_at); journal.read follows RevitJournalQuery.RawRead (peek, after_sequence, max_entries 1..256 with 20000-id cap, has_more, next_after_sequence, baseline moves only without peek; exact-case strict options, journal_options_invalid / journal_after_sequence_invalid in App.Execute's shape); the P2-16 drift loop reads every journal through the pipe and is member-equal to RawRead over a Core MirrorJournal (diff excluded); default replies byte-identical; wire failures become named check failures. CI red 43151779386, green 43153831165; review red 43159370704, green 43161374794."
+    },
+    {
+      "id": "cad-pdf-tounicode",
+      "status": "unit-tested",
+      "evidence": [
+        "adapters/cad/Bim.Cad/PdfToUnicode.cs",
+        "adapters/cad/Bim.Cad/PdfContent.cs",
+        "adapters/cad/Bim.Cad/PdfReader.cs",
+        "tests/cad/PdfToUnicodeTests.cs",
+        "tests/cad/fixtures/tounicode-pdf.py",
+        "tests/cad/fixtures/tounicode.pdf"
+      ],
+      "blocker": "Simple fonts without ToUnicode still decode as Latin-1 (/Differences glyph names → P6-18); usecmap ignored; non-Identity Type0 CMaps only split codes through the ToUnicode codespace; BMP bfrange stops at U+FFFF; cad-brief CLI not run end to end on tounicode.pdf (compressed/XObject CLI twin → P6-17).",
+      "scope": "P6-16: ToUnicode CMaps (codespace ≤100 ranges, bfchar, bfrange incrementing incl. surrogate carry and array form; Flate streams; BCL only) decode Type0 Identity-H/V, non-Identity multi-byte and simple fonts in Tj/TJ/'/\"; Form XObjects use their own font resources, q/Q restores the decoder; brief extraction reads Dormitorio 1 / Baño / Cocina with areas from a deterministic generated fixture (sha pinned); typed warnings tounicode-missing / tounicode-invalid / tounicode-unmapped keep the old decoding; mapped codes charged to the document-wide MaxParsedElements (element-limit), decoded text to MaxInterpretedBytes (interpret-limit); existing PDF pins unchanged. CI red 43151778821, green 43153070188; review red 43156979215, green 43157029343."
     }
   ]
 }
