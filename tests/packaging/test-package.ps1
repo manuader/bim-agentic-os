@@ -13,6 +13,7 @@
 # P7-12: skills/ (every tracked skills file) ships next to cli/; the packaged generate-prototypes, copied outside any
 # repository, reads its pack from there byte-equal to the repository run, and refuses repository_not_found without it;
 # a tracked skills/ entry that is not a regular file (symlink, submodule) is refused (skills_entry_not_regular).
+# P10-16: a PE/ELF/Mach-O file (first bytes) outside .dll/.exe/.so[.N]/.dylib is refused (sbom_binary_unclassified).
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -446,6 +447,63 @@ try {
             Assert ($run.Code -ne 0 -and $run.Output -match ('sbom_invalid: [^\r\n]*<missing path> \(name ''' + [regex]::Escape($nameless.Name) + '''\)')) "P10-15: package-verify must refuse an sbom assemblies entry without a path as sbom_invalid naming <missing path> (name '$($nameless.Name)'): $(Get-Tail $run.Output)"
             Assert ($run.Output -notmatch '(?m)without a manifest\.json entry:([^\r\n]*,)? ?(,|\r?$)') "P10-15: a pathless sbom assemblies entry must not be reported as an empty-name orphan: $(Get-Tail $run.Output)"
         }
+        # P10-16: package-verify reads the first bytes of every shipped file and refuses a PE (MZ), ELF (\x7fELF) or
+        # Mach-O (FEEDFACE/FEEDFACF/CAFEBABE in either byte order) file whose extension is outside the binary pattern
+        # (.dll/.exe/.so[.N]/.dylib), typed sbom_binary_unclassified naming the path, so a renamed native payload cannot
+        # bypass sbom attribution. CAFEBABE is also the Java class magic: a .class file is refused the same way (the
+        # package ships no Java). Fixtures are a few synthetic header bytes, with a canonical sbom and re-hashed manifest.
+        $magic = @{
+            PE = [byte[]](0x4D, 0x5A, 0x90, 0x00); ELF = [byte[]](0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01, 0x01, 0x00)
+            MachO32 = [byte[]](0xFE, 0xED, 0xFA, 0xCE); MachO64 = [byte[]](0xFE, 0xED, 0xFA, 0xCF); MachO32LE = [byte[]](0xCE, 0xFA, 0xED, 0xFE)
+            MachO64LE = [byte[]](0xCF, 0xFA, 0xED, 0xFE); Fat = [byte[]](0xCA, 0xFE, 0xBA, 0xBE); FatLE = [byte[]](0xBE, 0xBA, 0xFE, 0xCA)
+        }
+        function Write-TestBytes([string]$Directory, [string]$Path, [byte[]]$Bytes) {
+            $full = Join-Path $Directory $Path
+            New-Item -ItemType Directory -Force (Split-Path $full) | Out-Null
+            [IO.File]::WriteAllBytes($full, [byte[]]($Bytes + [Text.Encoding]::ASCII.GetBytes(' synthetic payload')))
+        }
+        $uCases = @(
+            @{ Name = 'renamed so to bin'; Path = 'cli/runtimes/linux-x64/native/libhidden.bin'; Bytes = $magic.ELF },
+            @{ Name = 'renamed dll to dat'; Path = 'cli/Hidden.Payload.dat'; Bytes = $magic.PE },
+            @{ Name = 'extensionless ELF'; Path = 'mcp/createdump'; Bytes = $magic.ELF },
+            @{ Name = 'uppercase extension PE'; Path = 'cli/Upper.Payload.BIN'; Bytes = $magic.PE },
+            @{ Name = 'dll with suffix'; Path = 'cli/Sneaky.dll.txt'; Bytes = $magic.PE },
+            @{ Name = 'Mach-O FEEDFACE'; Path = 'cli/runtimes/osx-x64/native/libmach32.bin'; Bytes = $magic.MachO32 },
+            @{ Name = 'Mach-O FEEDFACF'; Path = 'cli/runtimes/osx-x64/native/libmach64.bin'; Bytes = $magic.MachO64 },
+            @{ Name = 'Mach-O CEFAEDFE'; Path = 'cli/runtimes/osx-x64/native/libmach32le.dat'; Bytes = $magic.MachO32LE },
+            @{ Name = 'Mach-O CFFAEDFE'; Path = 'cli/runtimes/osx-x64/native/libmach64le.dat'; Bytes = $magic.MachO64LE },
+            @{ Name = 'fat CAFEBABE'; Path = 'skills/payload.json'; Bytes = $magic.Fat },
+            @{ Name = 'fat BEBAFECA'; Path = 'cli/runtimes/osx-x64/native/libfatle'; Bytes = $magic.FatLE },
+            @{ Name = 'Java class CAFEBABE'; Path = 'cli/Payload.class'; Bytes = $magic.Fat }
+        )
+        foreach ($case in $uCases) {
+            $copy = Join-Path $work ('sbom unclassified case ' + $case.Name)
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            try { Write-TestBytes $copy $case.Path $case.Bytes; Write-TestSbom $copy $tRefs } catch { $failures.Add("P10-16 $($case.Name) setup failed: $($_.Exception.Message)"); continue }
+            $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
+            $want = 'sbom_binary_unclassified: [^\r\n]*(: |, )' + [regex]::Escape($case.Path) + '(,|\r|\n|$)'
+            Assert ($run.Code -ne 0 -and $run.Output -match $want) "P10-16: package-verify must refuse $($case.Name) with sbom_binary_unclassified naming $($case.Path): $(Get-Tail $run.Output)"
+        }
+        # Two unclassified payloads are both named in one problem; classified binaries with real magic and text that
+        # merely starts like a magic number (or is shorter than it) are accepted.
+        $copy = Join-Path $work 'sbom unclassified case two payloads'
+        Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+        Write-TestBytes $copy 'cli/a.bin' $magic.ELF; Write-TestBytes $copy 'mcp/b.dat' $magic.PE; Write-TestSbom $copy $tRefs
+        $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
+        Assert ($run.Code -ne 0 -and $run.Output -match 'sbom_binary_unclassified: [^\r\n]*cli/a\.bin, mcp/b\.dat') "P10-16: package-verify must name every unclassified payload in ordinal order: $(Get-Tail $run.Output)"
+        $copy = Join-Path $work 'sbom unclassified case classified'
+        Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+        Write-TestBytes $copy 'cli/runtimes/linux-x64/native/libgamma.so' $magic.ELF
+        Write-TestBytes $copy 'cli/runtimes/linux-x64/native/libsigma.so.1' $magic.ELF
+        Write-TestBytes $copy 'cli/runtimes/win-x64/native/gamma.dll' $magic.PE
+        [IO.File]::WriteAllBytes((Join-Path $copy 'cli/short.bin'), [byte[]](0x7F, 0x45))
+        [IO.File]::WriteAllBytes((Join-Path $copy 'cli/empty.dat'), [byte[]]@())
+        Write-PackageText (Join-Path $copy 'cli/notes.txt') "MZ is how this note starts but it is plain text`n"
+        Write-PackageText (Join-Path $copy 'cli/elfish.txt') "ELF without the 0x7f byte`n"
+        Write-TestSbom $copy $tRefs
+        $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
+        Assert ($run.Output -notmatch 'sbom_binary_unclassified' -and $run.Output -notmatch 'notes\.txt|elfish\.txt|short\.bin|empty\.dat') "P10-16: classified binaries with real magic and non-binary text must not be reported unclassified: $(Get-Tail $run.Output)"
+        Assert ($tClean.Output -notmatch 'sbom_binary_unclassified') "P10-16: a consistent synthetic package must not report sbom_binary_unclassified: $(Get-Tail $tClean.Output)"
         Assert ($tClean.Output -notmatch 'sbom_manifest_mismatch') "P10-15: a consistent synthetic package (including a first-party native named only by its deps.json project entry) must not report sbom_manifest_mismatch: $(Get-Tail $tClean.Output)"
 
         # Without an assets file the P10-13 behaviour is unchanged: direct references only, no recorded files.
@@ -649,6 +707,7 @@ try {
     $ok = Invoke-Script $verifier @('-PackageDirectory', $outA)
     Assert ($ok.Code -eq 0) "package-verify rejected a clean package: $(Get-Tail $ok.Output)"
     Assert ($ok.Output -notmatch 'sbom_manifest_mismatch') "P10-15: the real package's manifest.json and sbom.json must agree on every shipped binary: $(Get-Tail $ok.Output)"
+    Assert ($ok.Output -notmatch 'sbom_binary_unclassified') "P10-16: the real package must ship no PE/ELF/Mach-O payload outside the binary pattern: $(Get-Tail $ok.Output)"
 
     # --- P10-07 add-in install/uninstall (temp Addins folders only), including this real package ---
     $install = Invoke-Script (Join-Path $PSScriptRoot 'test-install-addin.ps1') @('-PackageDirectory', $outA)
