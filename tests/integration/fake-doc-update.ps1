@@ -44,7 +44,18 @@ function Invoke-FakeDocRealized($State, [int]$Index, [string]$Key, $Request) {
     $documentUid = [string](Get-CatalogueMember $record 'document_unique_id')
     $steps = Get-CatalogueList $record 'steps'
     if (!$steps.Count) { return Refuse 'realized_record_invalid' 'steps' }
-    for ($i = 0; $i -lt $steps.Count; $i++) { if ([int](Get-CatalogueMember $steps[$i] 'index') -ne $i + 1) { return Refuse 'realized_record_invalid' "steps[$i].index" } }
+    # The record's shape rules the session can break: index i+1, a non-empty key, a reply that is null or an object
+    # with a string status, unique keys.
+    $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    for ($i = 0; $i -lt $steps.Count; $i++) {
+        if ([int](Get-CatalogueMember $steps[$i] 'index') -ne $i + 1) { return Refuse 'realized_record_invalid' "steps[$i].index" }
+        $stepKey = [string](Get-CatalogueMember $steps[$i] 'key')
+        if (!$stepKey) { return Refuse 'realized_record_invalid' "steps[$i].key" }
+        $reply = Get-CatalogueMember $steps[$i] 'response'
+        if ($null -ne $reply -and $reply -isnot [Management.Automation.PSCustomObject]) { return Refuse 'realized_record_invalid' "steps[$i].response" }
+        if ($null -ne $reply -and (Get-CatalogueMember $reply 'status') -isnot [string]) { return Refuse 'realized_record_invalid' "steps[$i].response.status" }
+        if (!$keys.Add($stepKey)) { return Refuse 'realized_step_duplicate' $stepKey }
+    }
     if (![string]::Equals([string](Get-CatalogueMember $Request 'document'), $documentUid, [StringComparison]::OrdinalIgnoreCase)) { return Refuse 'realized_document_mismatch' 'document_unique_id' }
     $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($element in (Get-CatalogueList (Get-CatalogueMember $Request 'fixture') 'Elements')) { $null = $ids.Add([string](Get-CatalogueMember $element 'Id')) }
@@ -70,10 +81,14 @@ function Invoke-FakeDocRealized($State, [int]$Index, [string]$Key, $Request) {
         $map[$source] = $uid
     }
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $map -Compress))
+    # The record as received, kept like the owner invoker keeps NN-key.doc-realized/record.json.
+    $recordFile = Join-Path $State.Directory ('{0:D2}-{1}.record.json' -f $Index, $Key)
+    [IO.File]::WriteAllText($recordFile, (ConvertTo-Json -InputObject $record -Depth 64 -Compress), [Text.UTF8Encoding]::new($false))
     $output = Join-Path $State.Directory ('{0:D2}-{1}.realized.json' -f $Index, $Key)
     [IO.File]::WriteAllBytes($output, $bytes)
     $reply = Line ([ordered]@{ status = 'succeeded'; output = $output; entries = $map.Count; bytes = $bytes.Length; sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)) }) 0
     $reply['realized_file'] = $output
+    $reply['record_file'] = $recordFile
     return $reply
 }
 function Invoke-FakeDocUpdate($State, [int]$Index, [string]$Key, [string]$Json) {
@@ -86,8 +101,12 @@ function Invoke-FakeDocUpdate($State, [int]$Index, [string]$Key, [string]$Json) 
     $docPath = [string](Get-CatalogueMember $document 'path')
     $docUid = [string](Get-CatalogueMember $document 'unique_id')
     $level = [string](Get-CatalogueMember (Get-CatalogueMember $bindings 'levels') $script:CatalogueDocUpdateLevelId)
+    # P4-16: like --realized, the map comes from realized_file when the session names one (the doc-realized output),
+    # else from the request's realized member.
+    $realizedFile = [string](Get-CatalogueMember $request 'realized_file')
+    $realizedSource = if ($realizedFile) { [IO.File]::ReadAllText($realizedFile, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json } else { Get-CatalogueMember $request 'realized' }
     $realized = [ordered]@{}
-    foreach ($property in (Get-CatalogueMember $request 'realized').PSObject.Properties) { $realized[$property.Name] = [string]$property.Value }
+    foreach ($property in $realizedSource.PSObject.Properties) { $realized[$property.Name] = [string]$property.Value }
     $before = Get-CatalogueMember $request 'before'
     $after = Get-CatalogueMember $request 'after'
     $g = @(Get-CatalogueMember (Get-FakeDocElement $after 'wall') 'GeometryMetres' | ForEach-Object { [double]$_ })
