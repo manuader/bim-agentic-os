@@ -391,7 +391,12 @@ try {
             $f = Join-Path $Directory 'sbom.json'
             $lines = [Collections.Generic.List[string]]([IO.File]::ReadAllText($f).Split("`n"))
             $i = $lines.FindIndex([Predicate[string]]{ param($l) $l.StartsWith($Prefix, [StringComparison]::Ordinal) })
-            if ($i -lt 0 -or !$lines[$i].EndsWith(',')) { throw "test setup: no non-final sbom line starting '$Prefix'" }
+            if ($i -lt 1) { throw "test setup: no sbom line starting '$Prefix'" }
+            # Removing the last array element drops the separating comma from the element before it.
+            if (!$lines[$i].EndsWith(',')) {
+                if (!$lines[$i - 1].EndsWith(',')) { throw "test setup: sbom line before '$Prefix' is not an array element" }
+                $lines[$i - 1] = $lines[$i - 1].Substring(0, $lines[$i - 1].Length - 1)
+            }
             $lines.RemoveAt($i)
             Write-PackageText $f ($lines -join "`n")
         }
