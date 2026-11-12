@@ -1487,3 +1487,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay197 — 2026-11-12T06:52:58Z (Claude, cloud scheduled)
 - 06:52Z LOCK taken (was FREE; relay195 released 2026-11-12T06:44:19Z).
+- 06:53Z picked P3-14 (phase 3), P5-16 (phase 5), P7-15 (phase 7) — oldest-touched (relay193); P7-16 waits (shares GenerateTypologyCommand with P5-16). Workers starting on relay197-<ID>.
