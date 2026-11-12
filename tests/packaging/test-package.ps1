@@ -498,7 +498,9 @@ try {
         Write-TestBytes $copy 'cli/runtimes/win-x64/native/gamma.dll' $magic.PE
         [IO.File]::WriteAllBytes((Join-Path $copy 'cli/short.bin'), [byte[]](0x7F, 0x45))
         [IO.File]::WriteAllBytes((Join-Path $copy 'cli/empty.dat'), [byte[]]@())
-        Write-PackageText (Join-Path $copy 'cli/notes.txt') "MZ is how this note starts but it is plain text`n"
+        # PE detection is the two-byte "MZ" DOS signature per P10-16, so any file whose first two bytes are literally
+        # "MZ" is refused even if it is text (conservative); text that only resembles a magic number is accepted.
+        Write-PackageText (Join-Path $copy 'cli/notes.txt') "Mz and then MZ later: this note is plain text`n"
         Write-PackageText (Join-Path $copy 'cli/elfish.txt') "ELF without the 0x7f byte`n"
         Write-TestSbom $copy $tRefs
         $run = Invoke-Script $verifier @('-PackageDirectory', $copy)
