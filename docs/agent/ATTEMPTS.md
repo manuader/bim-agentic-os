@@ -324,3 +324,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P1-22: no failed attempts (red 43222777518 static check: McpServer.ParseOptions did not read through RevitOptionGrammar → green 43224422380; review nits green 43239443477 first try). The new MCP +5/" 5"/overflow refusals are regression pins (already held on main).
 - P2-20: 1 failed attempt (43230479175: the new diff script assigned `$cases`, which shadows the script's `-Cases` parameter case-insensitively; renamed `$caseDiffs`, no assertion changed) — red 43223243005 → green 43225256279; review red 43233228746 (kind "Wall" looked up case-insensitively) → green 43235982933.
 - P6-17: no failed attempts (red 43223308971 missing variant fixture / generator flag / no FlateDecode+Form → green 43225242821; review nits green 43243827436).
+
+### Relay200 (2026-11-12, cloud)
+- P3-15: no failed attempts (red 43253372709 compile: IntentPlan.Failed / TryGet missing → green 43255429352; review tests green 43273742972 first try).
+- P5-17: 1 failed attempt (43255878651: the exact tools/list order pins in tests/mcp/Program.cs did not list generate_typology; added after diff_intent, order unchanged) — red 43253601980 (GenerateTypologyTool missing) → green 43259222759; review message fix green 43278984905 (macOS ifc-portable cancelled once, rerun green).
+- P7-17: no failed attempts against the oracle (red 43253277222 by a temporary negative check, one per verb; 43257265603 macOS package.ps1 sbom_unattributed on first-party Bim.*.dll — a packaging defect, recorded as P10-18 and SKIPped on macOS only through a tested predicate; macOS runner not acquired twice, rerun) → green 43262717876; review green 43287543943.

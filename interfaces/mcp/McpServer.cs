@@ -31,7 +31,7 @@ namespace Bim.Mcp;
 // Present-but-null or wrongly typed arguments are -32602; an actors array that is empty or holds a non-string or invalid
 // item (the schema's items/minItems) is the typed tool error audit_verify_actors_invalid, not -32602.
 // diff_intent (P3-14) is read-only: its text is the CLI diff-intent stdout for the same project and intent files, from the
-// verb's own code (DiffIntentTool.cs runs DiffIntentCommand.Run, which plans through the shared IntentPlan helper); listed
+// verb's own code (DiffIntentTool.cs calls DiffIntentCommand.Plan, which plans through the shared IntentPlan helper and returns the envelope); listed
 // with permission level read (readOnlyHint true). apply-intent stays CLI-only.
 // generate_typology (P5-17) is read-only: its text is the document the CLI generate-typology verb writes for the same
 // request file, or that verb's refusal line, from the verb's own parser and pipeline path (GenerateTypologyTool.cs runs

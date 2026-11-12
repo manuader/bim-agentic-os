@@ -1632,10 +1632,11 @@
         "interfaces/cli/PlanLayoutsCommand.cs",
         "interfaces/cli/SkillPackLookup.cs",
         "tests/cli/PlanLayoutsTests.cs",
-        "tests/cli/GeneratePrototypesTests.cs"
+        "tests/cli/GeneratePrototypesTests.cs",
+        "tests/cli/PackageLayoutPackTests.cs"
       ],
       "blocker": "One pack only (requires not resolved); template hall/laundry rules not added; minimums above a brief room maximum give area_range_conflict (infeasible), not typology_minimum_conflict; '?' glob branch defensive (unreachable from skill.json); de_DE checks skip when culture data is missing; planner/skill glob case folding differ on rare non-ASCII letters (inherited). No test against a package built by scripts/package.ps1 (P7-17).",
-      "scope": "P7-13: `plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id]` loads skills/<id>/skill.json via the shared SkillPackLookup (package root first since P7-15, else repository root from the binary, BoundedInput 8 MiB, SkillParser, id match, id guard against traversal; generate-prototypes refactored onto it unchanged) and plans with the pack's error-severity min area_m2/min_side_m room-glob rules grouped per glob (max per property, parameter defaults traced as '(p v)'); stdout adds pack/pack_rules; absent --pack byte-identical; refusals plan_layouts_pack_{id_invalid,repository_not_found,unavailable,invalid,rules_none,rule_invalid}, nothing written. Byte-equal to in-process SpacePlanner runs with literal rule lists cross-checked against TypologyRules.From. CI red 42942742275, green 42943881517, review red 42951916888, green 42952935652. P7-15: --pack uses SkillPackLookup.Load(id, packageFirst: true) like generate-prototypes — package outside a repository byte-equal to the repository run, package inside a repository read first with no fallback, package without skills/ refused plan_layouts_pack_repository_not_found, stray skills/ with no or partial markers ignored. CI red 43171474254, green 43172800830, review green 43187267711."
+      "scope": "P7-13: `plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id]` loads skills/<id>/skill.json via the shared SkillPackLookup (package root first since P7-15, else repository root from the binary, BoundedInput 8 MiB, SkillParser, id match, id guard against traversal; generate-prototypes refactored onto it unchanged) and plans with the pack's error-severity min area_m2/min_side_m room-glob rules grouped per glob (max per property, parameter defaults traced as '(p v)'); stdout adds pack/pack_rules; absent --pack byte-identical; refusals plan_layouts_pack_{id_invalid,repository_not_found,unavailable,invalid,rules_none,rule_invalid}, nothing written. Byte-equal to in-process SpacePlanner runs with literal rule lists cross-checked against TypologyRules.From. CI red 42942742275, green 42943881517, review red 42951916888, green 42952935652. P7-15: --pack uses SkillPackLookup.Load(id, packageFirst: true) like generate-prototypes — package outside a repository byte-equal to the repository run, package inside a repository read first with no fallback, package without skills/ refused plan_layouts_pack_repository_not_found, stray skills/ with no or partial markers ignored. CI red 43171474254, green 43172800830, review green 43187267711. P7-17: tests/cli/PackageLayoutPackTests.cs builds a real package with scripts/package.ps1 outside any repository on Linux and Windows CI: plan-layouts --pack, generate-prototypes --pack and generate-typology with skills byte-equal to the repository runs; markers removed → repository_not_found outside a repository, repository fallback under one; malformed packaged pack read first. macOS: package.ps1 fails sbom_unattributed on first-party Bim.*.dll, counted SKIP through a tested predicate (P10-18). CI red 43253277222, green 43262717876, review green 43287543943."
     },
     {
       "id": "apply-intent-cli",
@@ -1909,10 +1910,12 @@
         "interfaces/mcp/DiffIntentTool.cs",
         "interfaces/mcp/McpServer.cs",
         "interfaces/mcp/Bim.Mcp.csproj",
-        "tests/mcp/Program.cs"
+        "tests/mcp/Program.cs",
+        "interfaces/cli/IntentPlan.cs",
+        "tests/cli/IntentPlanTests.cs"
       ],
-      "blocker": "Takes file paths, not inline JSON; captures process-wide Console.Out/Environment.ExitCode around the CLI verb (correct only one request at a time, the stdio server model; removal → P3-15); de_DE not repeated for MCP; not run against a live MCP client.",
-      "scope": "P3-14: MCP tool diff_intent {project_path, intent_path} (permission read, readOnlyHint) runs the linked CLI DiffIntentCommand.Run → IntentPlan.ParseIntent/Build (no copied plan logic); text byte-equal to the real CLI process and to the library plan on five plan shapes; every CLI refusal byte-equal, isError iff the CLI exits 1; diff_intent_path_invalid (blank, NUL, > 4096, GetFullPath, lone surrogate) before any I/O; no writes (SHA+mtime tree snapshot); static checks require the shared path and ban ApplyEditsCommand.Run/Commit and ApplyIntentCommand in interfaces/mcp. CI red 43171708125, green 43173176518, review red 43176571475, green 43178665401."
+      "blocker": "Takes file paths, not inline JSON; no apply_intent tool; the IntentEnvelope JSON is duplicated between IntentPlan and ApplyEditsCommand, held equal by tests (P3-16); de_DE not repeated for MCP; not run against a live MCP client.",
+      "scope": "P3-14: MCP tool diff_intent {project_path, intent_path} (permission read, readOnlyHint) runs the linked CLI DiffIntentCommand.Run → IntentPlan.ParseIntent/Build (no copied plan logic); text byte-equal to the real CLI process and to the library plan on five plan shapes; every CLI refusal byte-equal, isError iff the CLI exits 1; diff_intent_path_invalid (blank, NUL, > 4096, GetFullPath, lone surrogate) before any I/O; no writes (SHA+mtime tree snapshot); static checks require the shared path and ban ApplyEditsCommand.Run/Commit and ApplyIntentCommand in interfaces/mcp. CI red 43171708125, green 43173176518, review red 43176571475, green 43178665401. P3-15: IntentPlan.ParseIntent/Build return IntentStep<T> (value or IntentEnvelope Line/Exit/Diagnostic); DiffIntentCommand.Plan(args) writes nothing and Run = Plan(args).Print(); the tool calls Plan directly with no Console.Out capture, lock or exit-code save (static ban; Diagnostic still forwarded to stderr); Plan equals a real CLI process in 7 cases; CLI and MCP bytes unchanged. CI red 43253372709, green 43255429352, review green 43273742972."
     },
     {
       "id": "cli-generate-typology-composed",
@@ -1923,6 +1926,20 @@
       ],
       "blocker": "Only a stricter package pack changes the output among tested extras (shipped style packs add no planner rule on the tested lots); composed stdout does not echo precedence; not exposed over MCP (P5-17).",
       "scope": "P5-16: generate-typology request members skills (≤ 64 skill ids, SkillPackLookup.Load(id, packageFirst: true), request order) and precedence (≤ 64 skill ids) run TypologyPipeline.RunComposed; \"skills\":[] byte-equal to in-process RunComposed (pin a8c62da5…, de_DE, package layout); resolver refusals (skill_conflict, precedence_unknown, precedence_duplicate, kind mismatch) as generate_typology_refused; generate_typology_skill_unavailable/_invalid with skill; absent members keep the P7-14 bytes and stdout. CI red 43171602064, green 43173255032, review red 43181804179, green 43184471713."
+    },
+    {
+      "id": "mcp-generate-typology",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/mcp/GenerateTypologyTool.cs",
+        "interfaces/mcp/McpServer.cs",
+        "interfaces/mcp/Bim.Mcp.csproj",
+        "interfaces/cli/GenerateTypologyCommand.cs",
+        "tests/mcp/GenerateTypologyToolTests.cs",
+        "tests/mcp/Program.cs"
+      ],
+      "blocker": "Proposal only, nothing written; takes a request file path, not inline JSON; the packaged mcp/ server cannot find skill packs (SkillPackLookup recognises only a cli/ binary directory, so outside a repository it refuses generate_typology_repository_not_found) (P5-18); malformed-pack refusals not exercised through MCP.",
+      "scope": "P5-17: MCP tool generate_typology {request_path} (permission read, readOnlyHint, no output path) calls GenerateTypologyCommand.Document, which shares ReadRequest/Generate with the CLI verb (skills, precedence, Run/RunComposed); text byte-equal to the in-process pipeline and the CLI output file in 8 cases (pins eb8720c1, 3a551774, a8c62da5), 14 refusals byte-equal to the CLI stdout, generate_typology_path_invalid guard, nothing written, real Release Bim.Mcp.dll over stdio; static: no parser/pipeline/file API in interfaces/mcp. CI red 43253601980, green 43259222759, review green 43278984905."
     },
     {
       "id": "owner-session-doc-update-execute",
