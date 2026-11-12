@@ -16,7 +16,7 @@ using Bim.Core;
 //   2. IntentEnvelope.Print writes the line (and the stderr detail of an internal error) and sets exit 1 on a refusal,
 //      leaving the exit code alone on success, as ApplyEditsCommand.Fail and Console.WriteLine did.
 //   3. DiffIntentCommand.Plan returns, without writing anything, exactly the stdout line and exit status the CLI
-//      diff-intent process produces for the same arguments (success, usage, input, project and intent refusals).
+//      diff-intent process produces for the same arguments (success, usage, input, project and intent refusals, and the library code invalid_project_identity).
 //   4. Static: the IntentPlan class has no Console or Environment.ExitCode access; DiffIntentCommand.Run is
 //      Plan(args).Print() and is its only Console write.
 internal static class IntentPlanTests
@@ -168,12 +168,14 @@ internal static class IntentPlanTests
                 ("an invalid project", new[] { "--project", Input("bad.project.json", "{\"Id\":"), "--intent", Input("ok.intent.json", IntentJson.Serialize(moved)) }),
                 ("an invalid intent", new[] { "--project", projectPath, "--intent", Input("bad.intent.json", "{\"version\":") }),
                 ("a refused intent", new[] { "--project", projectPath, "--intent", Input("refused.intent.json", IntentJson.Serialize(Base(10.5))) }),
+                ("invalid_project_identity", new[] { "--project", Input("anonymous.project.json", JsonSerializer.Serialize(new Project(Guid.Empty, 0, Array.Empty<Element>()))), "--intent", Input("on-anonymous.intent.json", IntentJson.Serialize(moved)) }),
             };
             foreach (var (name, args) in cases)
             {
                 var full = new[] { DiffIntentCommand.Verb }.Concat(args).ToArray();
                 var q = Quiet(() => DiffIntentCommand.Plan(full));
                 var cli = Cli(full);
+                if (name == "invalid_project_identity") Check(cli.Exit == 1 && cli.Out == FailedCode("invalid_project_identity"), "fixture: the CLI refuses an empty project id with the library code invalid_project_identity", "exit " + cli.Exit.ToString(CultureInfo.InvariantCulture) + " " + cli.Out);
                 Check(q.Value.Line == cli.Out && q.Value.Exit == cli.Exit, "DiffIntentCommand.Plan returns the CLI stdout line and exit (" + name + ")", E(q.Value) + " vs CLI exit " + cli.Exit.ToString(CultureInfo.InvariantCulture) + " " + cli.Out);
                 Check(Silent(q), "DiffIntentCommand.Plan writes nothing and leaves the exit code (" + name + ")", Q(q));
             }

@@ -1609,6 +1609,7 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
     Check(diToolCode.Contains("DiffIntentCommand.Plan(",StringComparison.Ordinal),"diff_intent runs the CLI verb's shared path DiffIntentCommand.Plan");
     var diCapture=new[]{"Console.SetOut","Console.Out","Console.Write","Environment.ExitCode","lock","StringWriter",".Print("}.Where(api=>diToolCode.Contains(api,StringComparison.Ordinal)).ToArray();
     Check(diCapture.Length==0,"diff_intent uses the returned envelope: no Console.SetOut capture, stdout write, exit-code access or lock ["+string.Join(", ",diCapture)+"]");
+    Check(diToolCode.Contains("envelope.Diagnostic is { } detail",StringComparison.Ordinal) && diToolCode.Contains("Console.Error.WriteLine(detail)",StringComparison.Ordinal),"diff_intent forwards the envelope's internal-error detail (envelope.Diagnostic) to the server's stderr (Console.Error), as the CLI prints it");
     var diInlined=new[]{"IntentJson.Parse(","IntentEdits.FromStored(","IncrementalDiff.Diff(","IncrementalDiff.OrderOf(","IntentException","IntentCompiler","Compiler.Diff(","JsonSerializer.Serialize(","File.","FileStream","Directory.","ProjectStore","Commit(","BoundedInput"}.Where(api=>diToolCode.Contains(api,StringComparison.Ordinal)).ToArray();
     Check(diInlined.Length==0,"diff_intent inlines no plan step, serializer or file/store access ["+string.Join(", ",diInlined)+"]");
     var diCommandCode=DiCodeOf(File.ReadAllText(Path.Combine(root,"interfaces","cli","DiffIntentCommand.cs")));
