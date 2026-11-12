@@ -260,3 +260,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay199 (2026-11-12, cloud)
 - No new owner action. main is 1def804 (`git pull`): revit-command and the MCP server now share one option grammar (same refusal bytes); fake add-in journal diff matches production; PDF Flate/Form XObject twin pinned. Still open: ADR0010 / ADR0011 decisions, 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once), 🔒 N21 `... -Runs 1`.
+
+## Relay200 (2026-11-12, cloud)
+- No new owner action. `git pull` (main is now 7307c51). Still open: ADR0010 / ADR0011 decisions; 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once); 🔒 N21 `... -Runs 1`.
+- FYI: the new MCP tool generate_typology is available after `pwsh -NoProfile -File scripts/install-mcp.ps1 -Build` (repository checkout; the packaged mcp/ server cannot find skill packs yet → P5-18).
