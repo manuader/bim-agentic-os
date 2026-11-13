@@ -196,33 +196,51 @@ internal sealed class PdfToUnicode
         item is PdfString { Bytes.Length: >= 2 and <= MaxDestinationBytes } text && text.Bytes.Length % 2 == 0 ? Encoding.BigEndianUnicode.GetString(text.Bytes) : null;
 }
 
-// How the strings shown with one font become text. Without a ToUnicode map the reader's default decoding applies
-// (PdfContentInterpreter.DecodeText). A simple font maps every byte through ToUnicode, falling back to Latin-1 for an
-// unmapped byte; a Type0 font splits the string into codes (two bytes for Identity-H/V, else the CMap codespace, else
-// two bytes) and an unmapped code, or a trailing partial code, becomes U+FFFD.
+// How the strings shown with one font become text. Without a ToUnicode map or an encoding the reader's default
+// decoding applies (PdfContentInterpreter.DecodeText). A simple font maps every byte through ToUnicode, then (P6-18)
+// through its /Encoding dictionary (PdfSimpleEncoding), falling back to Latin-1 for a byte neither maps; a byte whose
+// /Differences glyph name is unknown and that ToUnicode does not map is reported in unknownGlyph (the first such name).
+// A Type0 font splits the string into codes (two bytes for Identity-H/V, else the CMap codespace, else two bytes) and
+// an unmapped code, or a trailing partial code, becomes U+FFFD.
 internal sealed class PdfFontDecoder
 {
-    public PdfFontDecoder(bool composite, bool identity, PdfToUnicode? toUnicode)
+    public PdfFontDecoder(bool composite, bool identity, PdfToUnicode? toUnicode, PdfSimpleEncoding? encoding = null)
     {
         Composite = composite;
         Identity = identity;
         ToUnicode = toUnicode;
+        SimpleEncoding = composite ? null : encoding;
     }
 
     public bool Composite { get; }
     public bool Identity { get; }
     public PdfToUnicode? ToUnicode { get; }
+    public PdfSimpleEncoding? SimpleEncoding { get; }
 
-    public string Decode(byte[] bytes, out bool unmapped)
+    public string Decode(byte[] bytes, out bool unmapped) => Decode(bytes, out unmapped, out _);
+
+    public string Decode(byte[] bytes, out bool unmapped, out string? unknownGlyph)
     {
         unmapped = false;
-        if (ToUnicode is not { } cmap) return PdfContentInterpreter.DecodeText(bytes);
+        unknownGlyph = null;
+        var cmap = ToUnicode;
+        if (cmap is null && SimpleEncoding is null) return PdfContentInterpreter.DecodeText(bytes);
         var text = new StringBuilder(bytes.Length);
         if (!Composite)
         {
-            foreach (var b in bytes) text.Append(cmap.TryMap(b, out var mapped) ? mapped : ((char)b).ToString());
+            foreach (var b in bytes)
+            {
+                if (cmap is not null && cmap.TryMap(b, out var mapped)) text.Append(mapped);
+                else if (SimpleEncoding is not null && SimpleEncoding.TryMap(b, out var named)) text.Append(named);
+                else
+                {
+                    if (SimpleEncoding?.UnknownName(b) is { } glyph) unknownGlyph ??= glyph;
+                    text.Append((char)b);
+                }
+            }
             return text.ToString();
         }
+        if (cmap is null) return PdfContentInterpreter.DecodeText(bytes);
         var at = 0;
         while (at < bytes.Length)
         {
