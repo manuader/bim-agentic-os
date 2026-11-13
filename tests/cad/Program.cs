@@ -480,5 +480,8 @@ BriefNonAsciiTests.Run(Check, fixtures);
 // P6-16 PDF ToUnicode text for room labels (tests/cad/PdfToUnicodeTests.cs).
 PdfToUnicodeTests.Run(Check, fixtures);
 
+// P6-18 PDF simple-font /Encoding /Differences glyph names (tests/cad/PdfEncodingTests.cs).
+PdfEncodingTests.Run(Check, fixtures);
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;

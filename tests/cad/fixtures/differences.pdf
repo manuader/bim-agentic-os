@@ -1,0 +1,69 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Resources << /Font << /F1 5 0 R /F2 7 0 R /F3 8 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 504 >>
+stream
+1 w
+100 150 m
+300 150 l
+300 300 l
+100 300 l
+h
+S
+300 150 m
+400 150 l
+400 250 l
+300 250 l
+h
+S
+400 150 m
+550 150 l
+550 300 l
+400 300 l
+h
+S
+BT /F3 10 Tf 1 0 0 1 120 240 Tm (\006\011\012\010\007\013\011\012\007\011\001\004) Tj ET
+BT /F3 10 Tf 1 0 0 1 120 215 Tm (\004\005\002\003\003\001\010\014) Tj ET
+BT /F1 10 Tf 1 0 0 1 320 210 Tm (Ba\200o) Tj ET
+BT /F1 10 Tf 1 0 0 1 320 190 Tm [(4,0) -30 (0 m\201)] TJ ET
+BT /F2 10 Tf 1 0 0 1 420 240 Tm (Cocina) Tj ET
+BT /F2 10 Tf 1 0 0 1 420 215 Tm (9,00 m\001) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 129 /Encoding 6 0 R >>
+endobj
+6 0 obj
+<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [128 /ntilde /twosuperior] >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding /MacRomanEncoding /Differences [1 /twosuperior] >> >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /TrueType /BaseFont /AAAAAD+ArialMT /FirstChar 1 /LastChar 12 /Encoding << /Type /Encoding /BaseEncoding /StandardEncoding /Differences [1 /space /comma /zero /one /two /D /i /m /o /r /t /uni00B2] >> >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000267 00000 n 
+0000000821 00000 n 
+0000000935 00000 n 
+0000001043 00000 n 
+0000001191 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+1433
+%%EOF
