@@ -1589,3 +1589,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay208 — 2026-11-13T15:34:15Z (Claude, cloud scheduled)
 - 15:34Z LOCK taken (was FREE; relay207 released 2026-11-13T14:22:11Z).
 - 15:34Z picked P3-17 (phase 3), P7-18 (phase 7), P4-18 (phase 4) — oldest-touched (relay204, relay205/206). Workers starting on relay208-<ID>.
+- 16:36Z workers green: P3-17 5208175 (red 43454473275, green 43457705408; 0 attempts; core-windows apply-edits race flake rerun once), P7-18 94e21f8 (red 43454272873, green 43456249524; 0 attempts), P4-18 1a97203 (red 43454907676, green 43458261487; 0 attempts). Next: independent reviews.
