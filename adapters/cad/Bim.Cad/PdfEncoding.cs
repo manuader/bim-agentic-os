@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Text;
 namespace Bim.Cad;
 
@@ -10,6 +11,14 @@ namespace Bim.Cad;
 // known name keeps the reader's byte decoding (Latin-1): a code outside /Differences with no or an unknown base
 // encoding or undefined in it, and a /Differences code whose name is unknown (reported by Decode). /Differences codes
 // outside 0-255 and names after a non-integer, negative or out-of-range number are ignored.
+// Deliberate choices: /MacRomanEncoding follows Mac OS Roman, so beyond the PDF Annex D Latin table it also maps the Mac
+// extras (notequal, infinity, lessequal, greaterequal, partialdiff, summation, product, pi, integral, Omega, radical,
+// approxequal, Delta, lozenge; 0xDB is currency as in Annex D, 0xF0 apple stays Latin-1). Without /BaseEncoding the
+// codes outside /Differences fall back to Latin-1 (today's decoding), not to StandardEncoding or the font program's
+// built-in encoding. .notdef and underscore ligature names such as f_f are reported unknown (encoding-glyph-unknown).
+// Each parsed encoding is cached per document by its dictionary (an indirect encoding object is one dictionary for
+// every font and page that uses it) and every /Differences item is charged once to the document-wide
+// MaxParsedElements budget (element-limit refusal).
 internal sealed class PdfSimpleEncoding
 {
     private readonly string?[] map = new string?[256];
@@ -26,7 +35,21 @@ internal sealed class PdfSimpleEncoding
     // The unknown /Differences glyph name of the code, or null.
     public string? UnknownName(byte code) => unknown[code];
 
-    public static PdfSimpleEncoding Parse(PdfFile file, Dictionary<string, object> dictionary)
+    private static readonly ConditionalWeakTable<PdfFile, Dictionary<object, PdfSimpleEncoding>> Cache = new();
+
+    // The parsed encoding of the dictionary, cached for the document.
+    public static PdfSimpleEncoding Get(PdfFile file, Dictionary<string, object> dictionary)
+    {
+        var parsed = Cache.GetValue(file, _ => new Dictionary<object, PdfSimpleEncoding>(ReferenceEqualityComparer.Instance));
+        if (!parsed.TryGetValue(dictionary, out var result))
+        {
+            result = Parse(file, dictionary);
+            parsed[dictionary] = result;
+        }
+        return result;
+    }
+
+    private static PdfSimpleEncoding Parse(PdfFile file, Dictionary<string, object> dictionary)
     {
         var result = new PdfSimpleEncoding();
         var baseName = file.Resolve(PdfFile.Get(dictionary, "BaseEncoding")) is PdfName name ? name.Value : "";
@@ -37,6 +60,7 @@ internal sealed class PdfSimpleEncoding
             var next = -1;
             foreach (var raw in differences)
             {
+                file.Budget.Charge(-1);
                 var item = file.Resolve(raw);
                 if (item is PdfNumber number)
                 {

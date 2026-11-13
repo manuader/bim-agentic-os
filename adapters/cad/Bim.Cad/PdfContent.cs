@@ -440,7 +440,7 @@ internal sealed class PdfContentInterpreter
                 Warn("tounicode-invalid", objectNumber, operatorIndex, label + " has an unusable /ToUnicode CMap: " + error + "; its codes are read as text bytes");
             }
         }
-        var encoding = !composite && file.Resolve(PdfFile.Get(font, "Encoding")) is Dictionary<string, object> encodingDictionary ? PdfSimpleEncoding.Parse(file, encodingDictionary) : null;
+        var encoding = !composite && file.Resolve(PdfFile.Get(font, "Encoding")) is Dictionary<string, object> encodingDictionary ? PdfSimpleEncoding.Get(file, encodingDictionary) : null;
         if (cmap is not null || encoding is not null) decoder = new PdfFontDecoder(composite, identity, cmap, encoding);
         fontDecoders[font] = decoder;
         return decoder;
