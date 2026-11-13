@@ -29,7 +29,8 @@ namespace Bim.Cli;
 //   include        optional array of at most 64 strings (P7-16): optional rooms, TypologyBriefRequest.Include as given (the
 //                  pipeline sorts and de-duplicates them; [] is kept as an empty list, so it is not the absent member's bytes);
 //                  a room kind that is unknown or not offered by the pack is the pipeline's typed typology_room_kind_unknown /
-//                  typology_room_not_offered refusal (generate_typology_refused); a non-string entry is request_invalid include[i]
+//                  typology_room_not_offered refusal (generate_typology_refused); a non-string entry, one over 64 UTF-16 units or one holding a
+//                  control character is request_invalid include[i]
 //   code_pack      optional skill id string (P7-16), default ar.caba.codigo-edificacion: the facade gate's code pack
 //                  (PrototypePipelineOptions.Pack, also the composed code pack); it must be a skill of kind code, else
 //                  generate_typology_code_pack_invalid with detail "kind"; naming the default is the absent member
@@ -87,6 +88,7 @@ internal static class GenerateTypologyCommand
     public const string SkillInvalid = "generate_typology_skill_invalid";
     public const string Refused = "generate_typology_refused";
     public const int MaxListEntries = 64;
+    public const int MaxRoomLength = 64;
     public const string InternalError = "generate_typology_internal_error";
 
     static readonly string[] RootMembers = { "pack", "family_size", "lot", "alternatives", "seed", "project_id", "weights", "skills", "precedence", "include", "code_pack" };
@@ -344,7 +346,10 @@ internal static class GenerateTypologyCommand
         {
             var name = "include[" + values.Count.ToString(CultureInfo.InvariantCulture) + "]";
             if (item.ValueKind != JsonValueKind.String) throw new Refusal(RequestInvalid, name);
-            values.Add(StringValue(item, name));
+            var value = StringValue(item, name);
+            // Bounded and printable, so no long or control-character text is passed on (or echoed in a refusal).
+            if (value.Length > MaxRoomLength || value.Any(char.IsControl)) throw new Refusal(RequestInvalid, name);
+            values.Add(value);
         }
         return values.AsReadOnly();
     }

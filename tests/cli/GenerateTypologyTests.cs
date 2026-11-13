@@ -237,6 +237,8 @@ internal static class GenerateTypologyTests
             SkillTypologyCodes.RoomKindUnknown);
         ExpectRun("include a room kind the programme does not offer", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("storage")), Plain(R3(new[] { "storage" }), caba), CodePack,
             SkillTypologyCodes.RoomNotOffered);
+        ExpectRun("include a 64-character room name (the length limit, unknown to the pipeline)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs(new string('a', 64))),
+            Plain(R3(new[] { new string('a', 64) }), caba), CodePack, SkillTypologyCodes.RoomKindUnknown);
         ExpectRun("include an empty room name", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("study", "")), Plain(R3(new[] { "study", "" }), caba), CodePack,
             SkillTypologyCodes.RoomKindUnknown);
 
@@ -247,8 +249,11 @@ internal static class GenerateTypologyTests
             Plain(R3(new[] { "study" }), example), ExampleCodePack, differsFromP714: true);
         var exampleOut = Output();
         var exampleRun = Cli("generate-typology", Input("example-stdout.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + ExampleCodePack + "\"")), exampleOut);
-        Check(exampleRun.Exit != 0 || (Str(Parse(exampleRun.Out), "code_pack") == ExampleCodePack && !exampleRun.Out.Contains("\"rules\"", StringComparison.Ordinal)),
-            "a plain run with another code pack prints that code_pack and the P7-14 envelope shape", D(exampleRun));
+        var exampleExpected = Utf8(TypologyPipelineSerializer.Serialize(Plain(R3(), example)));
+        Check(exampleRun.Exit == 0 && Read(exampleOut).SequenceEqual(exampleExpected) && Str(Parse(exampleRun.Out), "code_pack") == ExampleCodePack
+            && Str(Parse(exampleRun.Out), "pack") == TypologyPack && Str(Parse(exampleRun.Out), "sha256") == Hex(exampleExpected)
+            && !exampleRun.Out.Contains("\"rules\"", StringComparison.Ordinal) && !exampleRun.Out.Contains("\"skills\"", StringComparison.Ordinal),
+            "a plain run with another code pack succeeds with the in-process bytes and prints that code_pack in the P7-14 envelope shape", D(exampleRun));
         // Composed mode: include and code_pack reach RunComposed too.
         ExpectRun("composed (skills []) with include [study]", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":[],\"include\":" + Strs("study")),
             TypologyPipeline.RunComposed(pack, R3(new[] { "study" }), new PrototypePipelineOptions(caba, projectId), Array.Empty<SkillManifest>(), null), CodePack, differsFromP714: true);
@@ -477,6 +482,9 @@ internal static class GenerateTypologyTests
             ("a null include entry", good[..^1] + ",\"include\":[null]}", "include[0]"),
             ("a lone surrogate include entry", good[..^1] + ",\"include\":[\"\\ud800\"]}", "include[0]"),
             ("more than 64 include entries", good[..^1] + ",\"include\":" + Ids(Enumerable.Repeat("study", 65).ToArray()) + "}", "include"),
+            ("a 65-character include entry", good[..^1] + ",\"include\":[\"" + new string('a', 65) + "\"]}", "include[0]"),
+            ("a control character in an include entry", good[..^1] + ",\"include\":[\"study\",\"gar\\u0001age\"]}", "include[1]"),
+            ("a newline in an include entry", good[..^1] + ",\"include\":[\"study\\n\"]}", "include[0]"),
             ("a duplicate include member", good[..^1] + ",\"include\":[],\"include\":[]}", "request.include"),
             ("a non-string code_pack", good[..^1] + ",\"code_pack\":7}", "code_pack"),
             ("null code_pack", good[..^1] + ",\"code_pack\":null}", "code_pack"),
