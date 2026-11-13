@@ -865,6 +865,77 @@ foreach ($case in @(@{ What = 'a sheet without the Sheet Number parameter (anoth
     $pick = $case.Key.Replace('-', '_')
     Assert (!(Get-StepField $unreadResult $case.Key 'passed') -and $null -eq (Get-StepField $unreadResult 'doc-up-realize' 'request') -and [string](Get-StepField $unreadResult 'doc-up-realize' 'reason') -like "*falta $pick*" -and ($unread.DocUpdate.Calls -join ',') -eq 'doc-up-realize-plan' -and @($unread.Fake.Received | Where-Object { $_ -like 'doc*' }).Count -eq 0 -and $null -eq $unreadResult.aborted -and (Get-GroupField $unreadResult 'modificar' 'failed') -eq 0) "P4-17 $($case.What) fails $($case.Key) and sends no update: $(Get-FailedSteps $unreadResult)"
 }
+# P4-17 review: a listing longer than one page (limit 5000) is read to its end through next_cursor: each later page is
+# the same query.elements with args.cursor and an operation id of its own; a name on a later page still collides.
+# Page n of the wrap answers the rows of $script:testPageRows[n-1] (truncated, next_cursor "page-<n+1>", until the last).
+function Invoke-TestPagedRun([string]$Key, [object[]]$Pages, [switch]$Endless, [switch]$SameCursor) {
+    $script:testPageKey = $Key; $script:testPageRows = $Pages; $script:testPageEndless = [bool]$Endless; $script:testPageSame = [bool]$SameCursor
+    $script:testPageSent = [Collections.Generic.List[object]]::new()
+    return Invoke-FakeSequence -All -Wrap {
+        param($index, $key, $json, $inner)
+        if ($key -ne $script:testPageKey) { return (& $inner $index $key $json) }
+        $script:testPageSent.Add(($json | ConvertFrom-Json))
+        $n = $script:testPageSent.Count
+        # The fake add-in reads no foreign cursor: it answers the page without it (operation id and args otherwise kept).
+        $plain = $json | ConvertFrom-Json
+        if ($plain.args.PSObject.Properties['cursor']) { $plain.args.PSObject.Properties.Remove('cursor') }
+        $reply = & $inner $index $key ($plain | ConvertTo-Json -Depth 20 -Compress)
+        $total = @($script:testPageRows | ForEach-Object { $_ }).Count
+        $rows = @($script:testPageRows[[Math]::Min($n, $script:testPageRows.Count) - 1])
+        $more = $script:testPageEndless -or $n -lt $script:testPageRows.Count
+        $line = $reply.output | ConvertFrom-Json
+        $line.readback.elements = $rows
+        $line.readback.returned = $rows.Count
+        $line.readback.matched = $(if ($script:testPageEndless) { 100000 } else { $total })
+        $line.readback.truncated = $more
+        $line.readback.truncated_reason = $(if ($more) { 'limit' } else { $null })
+        $line.readback.next_cursor = $(if (!$more) { $null } elseif ($script:testPageSame) { 'page-2' } else { "page-$($n + 1)" })
+        $reply.output = $line | ConvertTo-Json -Depth 20 -Compress
+        $reply
+    }
+}
+$paged = Invoke-TestPagedRun 'doc-up-names-sheets' @(@((New-TestNameRow 20 'Sheet Number' 'A1010'), (New-TestNameRow 21 'Sheet Number' 'B1')), @(, (New-TestNameRow 22 'Sheet Number' 'A900')))
+$pagedResult = $paged.Result
+$pagedSent = @($script:testPageSent)
+$pagedStep = Get-Step $pagedResult 'doc-up-names-sheets'
+$pagedPages = @(Get-CatalogueList $pagedStep 'pages')
+Assert ($pagedSent.Count -eq 2 -and $null -eq (Get-CataloguePath $pagedSent[0] 'args.cursor') -and [string](Get-CataloguePath $pagedSent[1] 'args.cursor') -ceq 'page-2' -and [string]$pagedSent[1].operation_id -cne [string]$pagedSent[0].operation_id -and [string]$pagedSent[1].operation_id -like "$($pagedSent[0].operation_id)-*" -and [string](Get-CataloguePath $pagedSent[1] 'args.category') -ceq 'OST_Sheets' -and ((Get-CatalogueList $pagedSent[1].args 'parameters') -join '|') -ceq 'Sheet Number' -and [int](Get-CataloguePath $pagedSent[1] 'args.limit') -eq 5000) "P4-17 review: a truncated listing is followed through next_cursor (same filter, own operation id): $(($pagedSent | ForEach-Object { "$($_.operation_id) $(Get-CataloguePath $_ 'args.cursor')" }) -join '; ')"
+Assert ($null -ne $pagedStep -and $pagedStep.passed -and $pagedPages.Count -eq 1 -and [string](Get-CatalogueMember $pagedPages[0] 'cursor') -ceq 'page-2' -and $pagedSent.Count -eq 2 -and [string](Get-CatalogueMember $pagedPages[0] 'operation_id') -ceq [string]$pagedSent[1].operation_id -and [int](Get-CataloguePath $pagedStep.response 'readback.returned') -eq 3 -and (Get-CataloguePath $pagedStep.response 'readback.truncated') -eq $false) "P4-17 review: the paged listing step passes with every page's rows and records its later pages: $(if ($pagedStep) { $pagedStep.reason })"
+Assert ([string](Get-StepField $pagedResult 'doc-up-realize' 'reason') -like 'no enviado: doc_update_name_collision:*' -and (Get-TestCollisionText $pagedResult) -ceq "sheets|A900|$(Get-TestNameUid 22)" -and ($paged.DocUpdate.Calls -join ',') -eq 'doc-up-realize-plan' -and (Get-GroupField $pagedResult 'modificar' 'failed') -eq 0) "P4-17 review: a name on a later page collides: $(Get-StepField $pagedResult 'doc-up-realize' 'reason')"
+# A listing that never ends (or repeats its cursor) fails closed, saying it was not read to its end; nothing is sent.
+foreach ($case in @(@{ What = 'a listing longer than the session reads'; Same = $false; Like = '*supera*'; Sent = 20 }, @{ What = 'a listing that repeats its cursor'; Same = $true; Like = '*cursor repetido*'; Sent = 2 })) {
+    $endless = Invoke-TestPagedRun 'doc-up-names-views' @(, @(, (New-TestNameRow 30 'View Name' 'Other'))) -Endless -SameCursor:$case.Same
+    $endlessResult = $endless.Result
+    $endlessReason = [string](Get-StepField $endlessResult 'doc-up-names-views' 'reason')
+    Assert (@($script:testPageSent).Count -eq $case.Sent -and !(Get-StepField $endlessResult 'doc-up-names-views' 'passed') -and $endlessReason -like $case.Like -and $null -eq (Get-StepField $endlessResult 'doc-up-realize' 'request') -and ($endless.DocUpdate.Calls -join ',') -eq 'doc-up-realize-plan' -and $null -eq $endlessResult.aborted -and (Get-GroupField $endlessResult 'modificar' 'failed') -eq 0) "P4-17 review: $($case.What) fails closed ($(@($script:testPageSent).Count) pages sent): $endlessReason"
+}
+# P4-17 review: a create of the reviewed plan without its name (view.create_plan name, sheet.create number,
+# schedule.create name) cannot be checked: doc-up-realize is refused with its own code, nothing sent, later groups run.
+foreach ($case in @(@{ Command = 'view.create_plan'; Member = 'name' }, @{ Command = 'sheet.create'; Member = 'number' }, @{ Command = 'schedule.create'; Member = 'name' })) {
+    $script:testUnnamed = $case
+    $unnamed = Invoke-FakeSequence -All -DocWrap {
+        param($index, $key, $json, $inner)
+        $reply = & $inner $index $key $json
+        if ($key -ne 'doc-up-realize-plan') { return $reply }
+        $line = $reply.output | ConvertFrom-Json
+        $plan = [IO.File]::ReadAllText([string]$line.output) | ConvertFrom-Json
+        $target = @($plan.Replacement.Commands.Steps | Where-Object { $_.Command -eq $script:testUnnamed.Command }) | Select-Object -First 1
+        $stepArgs = $target.ArgsJson | ConvertFrom-Json
+        $stepArgs.PSObject.Properties.Remove($script:testUnnamed.Member)
+        $target.ArgsJson = $stepArgs | ConvertTo-Json -Depth 20 -Compress
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($plan | ConvertTo-Json -Depth 64 -Compress))
+        [IO.File]::WriteAllBytes([string]$line.output, $bytes)
+        $line.sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+        $line.bytes = $bytes.Length
+        $reply.output = $line | ConvertTo-Json -Depth 20 -Compress
+        $reply
+    }
+    $unnamedResult = $unnamed.Result
+    $unnamedStep = Get-Step $unnamedResult 'doc-up-realize'
+    $unnamedReason = [string](Get-CatalogueMember $unnamedStep 'reason')
+    Assert ((Get-StepField $unnamedResult 'doc-up-realize-plan' 'passed') -and $null -ne $unnamedStep -and !$unnamedStep.passed -and $null -eq $unnamedStep.request -and $unnamedReason -like 'no enviado: doc_update_plan_unnamed:*' -and $unnamedReason -like "*$($case.Command)*" -and (Get-CatalogueMember $unnamedStep 'code') -ceq 'doc_update_plan_unnamed' -and !$unnamedResult.picked.ContainsKey('doc_up_name_collision')) "P4-17 review: a $($case.Command) without its $($case.Member) refuses doc-up-realize with doc_update_plan_unnamed: code $(Get-CatalogueMember $unnamedStep 'code'), $unnamedReason $(Get-FailedSteps $unnamedResult)"
+    Assert (($unnamed.DocUpdate.Calls -join ',') -eq 'doc-up-realize-plan' -and @($unnamed.Fake.Received | Where-Object { $_ -like 'doc*' }).Count -eq 0 -and $null -eq $unnamedResult.aborted -and (Get-GroupField $unnamedResult 'documentacion' 'failed') -eq 6 -and @($later | Where-Object { (Get-GroupField $unnamedResult $_ 'failed') -ne 0 -or (Get-GroupField $unnamedResult $_ 'not_sent') -ne 0 }).Count -eq 0) "P4-17 review: a $($case.Command) without its $($case.Member): nothing sent, later groups still run: $(Format-CatalogueSummary $unnamedResult) $(Get-FailedSteps $unnamedResult)"
+}
 
 $noDoc = (Invoke-FakeSequence -All -NoDocUpdate).Result
 $noDocSent = @($noDoc.steps | Where-Object { $_.key -in $docUpExpected -and $_.key -notin 'doc-up-wall', 'doc-up-door' -and $null -ne $_.request })
