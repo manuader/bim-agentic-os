@@ -201,10 +201,13 @@ internal static class ApplyEditsEnvelopeTests
                 var envelope = q.Value.Envelope;
                 Check(envelope is not null && envelope.Line == cli.Out && envelope.Exit == cli.Exit, "Execute returns the CLI stdout line and exit (" + name + ")",
                     q.Value.Why + E(envelope) + " vs CLI exit " + cli.Exit.ToString(CultureInfo.InvariantCulture) + " " + (cli.Out.Length > 300 ? cli.Out[..300] + "..." : cli.Out));
+                // The diagnostic names the store's project.tmp; each run has its own store, so both are compared with it as <store>.
+                var inProcessDiagnostic = envelope?.Diagnostic?.Replace(inProcess, "<store>", StringComparison.Ordinal);
+                var cliDiagnostic = cli.Err.Replace(viaCli, "<store>", StringComparison.Ordinal);
                 var sameDiagnostic = name == "an incomplete commit"
-                    ? envelope?.Diagnostic is { } d && d.StartsWith("apply-edits commit incomplete: ", StringComparison.Ordinal) && cli.Err.StartsWith("apply-edits commit incomplete: ", StringComparison.Ordinal)
+                    ? inProcessDiagnostic is { } d && d.StartsWith("apply-edits commit incomplete: System.", StringComparison.Ordinal) && d == cliDiagnostic
                     : envelope is not null && envelope.Diagnostic is null && cli.Err.Length == 0;
-                Check(sameDiagnostic, "Execute's stderr detail matches the CLI stderr (" + name + ")", E(envelope) + " vs CLI stderr [" + cli.Err + "]");
+                Check(sameDiagnostic, "Execute's stderr detail equals the CLI stderr (" + name + ")", "in process [" + (inProcessDiagnostic ?? "<null>") + "] vs CLI stderr [" + cliDiagnostic + "]");
                 Check(Silent(q), "Execute writes nothing and leaves the exit code (" + name + ")", Q(q));
             }
         }
@@ -223,8 +226,50 @@ internal static class ApplyEditsEnvelopeTests
         static int Count(string text, string what) => text.Split(what).Length - 1;
         var literalSource = ApplyIntentTests.CodeOf(sourceText, blankStrings: false);
         var literalHelper = ApplyIntentTests.CodeOf(helperText, blankStrings: false);
+        // A returned envelope must reach the output: in ApplyIntentCommand.cs every envelope-building call is printed
+        // (immediately followed by .Print()) or returned, so a discarded `ApplyEditsCommand.Fail(x); return;` (exit 0,
+        // empty stdout) is caught. The checker is shown to reject synthetic bad sources, so it is not vacuous.
+        var applyIntent = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "ApplyIntentCommand.cs")));
+        var applyIntentCalls = EnvelopeCalls(applyIntent);
+        var discarded = UnprintedEnvelopeCalls(applyIntent);
+        Check(applyIntentCalls >= 5 && discarded.Length == 0, "every ApplyEditsCommand.Fail/Commit and IntentPlan.Failed/Internal call in ApplyIntentCommand.cs is printed or returned",
+            applyIntentCalls.ToString(CultureInfo.InvariantCulture) + " calls; discarded [" + string.Join(" | ", discarded) + "]");
+        foreach (var (label, bad) in new[]
+        {
+            ("a discarded Fail", "{ if (x) { ApplyEditsCommand.Fail(UsageCode); return; } ApplyEditsCommand.Commit(s, r, Verb).Print(); }"),
+            ("a discarded Commit", "{ ApplyEditsCommand.Fail(F(a, b)).Print(); ApplyEditsCommand.Commit(storePath, result, Verb); }"),
+            ("a discarded IntentPlan.Failed", "{ var e = IntentPlan.Failed(c); e.Print(); }"),
+            ("a discarded IntentPlan.Internal", "{ IntentPlan.Internal(Verb, error).Line.ToString(); }"),
+        })
+            Check(UnprintedEnvelopeCalls(bad).Length == 1, "the printed-or-returned checker rejects " + label, "[" + string.Join(" | ", UnprintedEnvelopeCalls(bad)) + "]");
+        var good = "{ if (x) { ApplyEditsCommand.Fail(G(a, (b))).Print(); return; } return IntentPlan.Internal(v, e); }";
+        Check(EnvelopeCalls(good) == 2 && UnprintedEnvelopeCalls(good).Length == 0, "the printed-or-returned checker accepts printed and returned calls", "[" + string.Join(" | ", UnprintedEnvelopeCalls(good)) + "]");
         foreach (var copy in new[] { "status = \"failed\", code }", "\"_internal_error\"", "\" internal error: \"" })
             Check(Count(literalSource, copy) == 0 && Count(literalHelper, copy) == 1, "the envelope JSON piece " + copy + " has one copy, in IntentPlan.cs",
                 "ApplyEditsCommand.cs " + Count(literalSource, copy).ToString(CultureInfo.InvariantCulture) + ", IntentPlan.cs " + Count(literalHelper, copy).ToString(CultureInfo.InvariantCulture));
+    }
+
+    static readonly string[] EnvelopeCallNames = { "ApplyEditsCommand.Fail(", "ApplyEditsCommand.Commit(", "IntentPlan.Failed(", "IntentPlan.Internal(" };
+
+    static int EnvelopeCalls(string code) => EnvelopeCallNames.Sum(call => code.Split(call).Length - 1);
+
+    // Each envelope-building call in comment-stripped code that is neither immediately followed by .Print() nor the
+    // operand of a return statement, as "<call>...)" text.
+    static string[] UnprintedEnvelopeCalls(string code)
+    {
+        var found = new List<string>();
+        foreach (var call in EnvelopeCallNames)
+        {
+            for (var at = code.IndexOf(call, StringComparison.Ordinal); at >= 0; at = code.IndexOf(call, at + call.Length, StringComparison.Ordinal))
+            {
+                var depth = 1;
+                var end = at + call.Length;
+                for (; end < code.Length && depth > 0; end++) depth += code[end] == '(' ? 1 : code[end] == ')' ? -1 : 0;
+                var printed = code[end..].TrimStart().StartsWith(".Print()", StringComparison.Ordinal);
+                var returned = code[..at].TrimEnd().EndsWith("return", StringComparison.Ordinal);
+                if (!printed && !returned) found.Add(code[at..end]);
+            }
+        }
+        return found.ToArray();
     }
 }

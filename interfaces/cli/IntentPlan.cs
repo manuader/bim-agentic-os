@@ -23,8 +23,9 @@ namespace Bim.Cli;
 // P3-15: nothing here writes Console or sets Environment.ExitCode. Each call returns an IntentStep: the value, or the
 // refusal as an IntentEnvelope (the stdout line without its newline, the exit status and, for <verb>_internal_error,
 // the stderr detail). Failed and Internal are the one copy of the refusal envelope JSON; since P3-16
-// ApplyEditsCommand.Fail and ApplyEditsCommand.Internal return them and its Commit returns its envelope too. The CLI verbs print an envelope with IntentEnvelope.Print; the MCP diff_intent tool returns
-// DiffIntentCommand.Plan's envelope directly, without redirecting Console.Out.
+// ApplyEditsCommand.Fail and ApplyEditsCommand.Internal return them and its Commit returns its envelope too. The CLI
+// verbs print an envelope with IntentEnvelope.Print; the MCP diff_intent tool returns DiffIntentCommand.Plan's envelope
+// directly, without redirecting Console.Out.
 // Nothing here reads or writes a file or a store.
 internal static class IntentPlan
 {
