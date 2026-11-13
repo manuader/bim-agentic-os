@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using Bim.Cli;
 using Bim.Core;
 
 // P3-08 `apply-edits --store <dir> --edits <e> [--expected-revision <n>]`: the P3-05 incremental diff committed through
@@ -323,7 +324,10 @@ internal static class ApplyEditsTests
             Check(source.Contains("BoundedInput.ReadText(", StringComparison.Ordinal) && source.Contains("IncrementalDiff", StringComparison.Ordinal) && source.Contains(".Commit(", StringComparison.Ordinal)
                 && !source.Contains("Compiler.Diff", StringComparison.Ordinal) && new[] { "File.", "FileStream", "FileMode.", "Directory.", "Initialize(" }.All(api => !source.Contains(api, StringComparison.Ordinal)),
                 "apply-edits reads through BoundedInput, diffs through IncrementalDiff and writes only through ProjectStore.Commit");
-            Check(source.Contains("Console.Error.WriteLine(", StringComparison.Ordinal) && source.Contains("Internal(", StringComparison.Ordinal) && source.Contains("_internal_error", StringComparison.Ordinal), "apply-edits writes the type and message of an internal error to stderr");
+            // P3-16: the stderr detail is the envelope's Diagnostic, printed by IntentEnvelope.Print (behaviour pinned in
+            // tests/cli/ApplyEditsEnvelopeTests.cs and tests/cli/IntentPlanTests.cs).
+            Check(ApplyIntentTests.CodeOf(source).Contains("IntentPlan.Internal(", StringComparison.Ordinal) && IntentPlan.Internal("apply-edits", new InvalidOperationException("x")).Diagnostic == "apply-edits internal error: System.InvalidOperationException: x",
+                "apply-edits writes the type and message of an internal error to stderr (IntentPlan.Internal's diagnostic)");
         }
         // The edits parser is shared with diff-edits, not copied.
         var diffEditsSource = Path.Combine(root, "interfaces", "cli", "DiffEditsCommand.cs");

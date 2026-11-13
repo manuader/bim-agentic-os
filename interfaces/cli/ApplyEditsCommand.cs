@@ -48,53 +48,57 @@ internal static class ApplyEditsCommand
     public const string EditsInvalid = "apply_edits_edits_invalid";
     public const string StaleHead = "apply_edits_stale_head";
 
-    public static void Run(string[] args)
+    // P3-16: the only print. Everything below returns the IntentEnvelope (interfaces/cli/IntentPlan.cs) the verb ends
+    // with: the stdout line, the exit status and, for commit_incomplete and internal_error, the stderr detail.
+    public static void Run(string[] args) => Execute(args).Print();
+
+    // The apply-edits verb without writing Console or setting Environment.ExitCode (the store is still committed).
+    internal static IntentEnvelope Execute(string[] args)
     {
-        if (!TryParse(args, "--edits", out var storePath, out var editsPath, out var expectedRevision)) { Fail(UsageCode); return; }
+        if (!TryParse(args, "--edits", out var storePath, out var editsPath, out var expectedRevision)) return Fail(UsageCode);
         string stateText, editsText;
         try
         {
             stateText = BoundedInput.ReadText(Path.Combine(storePath, "project.json"), FileShare.ReadWrite | FileShare.Delete);
             editsText = BoundedInput.ReadText(editsPath);
         }
-        catch (InputRejectedException error) { Fail(error.Message); return; }
-        if (ParseHead(stateText) is not { } head) { Fail(StoreInvalid); return; }
-        if (EditsInput.Parse(editsText) is not { } edits) { Fail(EditsInvalid); return; }
-        if (expectedRevision is { } expected && expected != head.Revision) { Fail(StaleHead); return; }
+        catch (InputRejectedException error) { return Fail(error.Message); }
+        if (ParseHead(stateText) is not { } head) return Fail(StoreInvalid);
+        if (EditsInput.Parse(editsText) is not { } edits) return Fail(EditsInvalid);
+        if (expectedRevision is { } expected && expected != head.Revision) return Fail(StaleHead);
         IncrementalDiffResult result;
         try { result = IncrementalDiff.Diff(head, edits); }
-        catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { Fail(error.Message); return; }
-        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { Fail("invalid_ir"); return; }
-        catch (Exception error) { Internal(Verb, error); return; }
-        Commit(storePath, result, Verb);
+        catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { return Fail(error.Message); }
+        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { return Fail("invalid_ir"); }
+        catch (Exception error) { return Internal(Verb, error); }
+        return Commit(storePath, result, Verb);
     }
 
     // The commit path shared with apply-intent (P3-11, interfaces/cli/ApplyIntentCommand.cs): ProjectStore.Commit of
     // result.After with result.Plan under a per-run idempotency key "<verb>:<rev>:<random guid>", the refusals above with
-    // the verb's prefix (verb "apply-edits" gives exactly the apply_edits_* codes), and the success envelope on stdout.
-    internal static void Commit(string storePath, IncrementalDiffResult result, string verb)
+    // the verb's prefix (verb "apply-edits" gives exactly the apply_edits_* codes), and the success envelope (exit 0),
+    // returned for the caller to print.
+    internal static IntentEnvelope Commit(string storePath, IncrementalDiffResult result, string verb)
     {
         var prefix = verb.Replace('-', '_');
         var plan = result.Plan;
         var key = string.Create(CultureInfo.InvariantCulture, $"{verb}:{plan.ExpectedRevision}:{Guid.NewGuid():N}");
         Project committed;
         try { committed = new ProjectStore(storePath).Commit(result.After, plan, key); }
-        catch (InvalidOperationException error) when (error.Message is "revision_conflict" or "idempotency_conflict") { Fail(prefix + "_stale_head"); return; }
-        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { Fail("invalid_ir"); return; }
+        catch (InvalidOperationException error) when (error.Message is "revision_conflict" or "idempotency_conflict") { return Fail(prefix + "_stale_head"); }
+        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { return Fail("invalid_ir"); }
         // The incremental plan disagreeing with the full diff is a defect, refused by Commit before its first write.
-        catch (InvalidOperationException error) when (error.Message == "plan_mismatch") { Internal(verb, error); return; }
-        catch (IOException error) when (error.Message == ProjectStore.StoreLocked) { Fail(prefix + "_store_unavailable"); return; }
+        catch (InvalidOperationException error) when (error.Message == "plan_mismatch") { return Internal(verb, error); }
+        catch (IOException error) when (error.Message == ProjectStore.StoreLocked) { return Fail(prefix + "_store_unavailable"); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine(verb + " commit incomplete: " + error.GetType().FullName + ": " + error.Message);
-            Fail(prefix + "_commit_incomplete");
-            return;
+            return Fail(prefix + "_commit_incomplete") with { Diagnostic = verb + " commit incomplete: " + error.GetType().FullName + ": " + error.Message };
         }
-        catch (Exception error) { Internal(verb, error); return; }
+        catch (Exception error) { return Internal(verb, error); }
         // Commit returns the head unchanged, without writing, only for a key it already holds; a fresh random key never
         // matches, so this is a defensive check that this call wrote the revision it reports.
-        if (committed.Revision != plan.ExpectedRevision + 1) { Fail(prefix + "_stale_head"); return; }
-        Console.WriteLine(JsonSerializer.Serialize(new { status = "succeeded", scope = "intended_state_only", native_verification = "unverified", revision = committed.Revision, plan }));
+        if (committed.Revision != plan.ExpectedRevision + 1) return Fail(prefix + "_stale_head");
+        return new IntentEnvelope(JsonSerializer.Serialize(new { status = "succeeded", scope = "intended_state_only", native_verification = "unverified", revision = committed.Revision, plan }), 0);
     }
 
     // --store <s> and <inputFlag> <e> (--edits here, --intent for apply-intent) once each, optional --expected-revision <n>
@@ -135,15 +139,9 @@ internal static class ApplyEditsCommand
         return project;
     }
 
-    internal static void Internal(string verb, Exception error)
-    {
-        Console.Error.WriteLine(verb + " internal error: " + error.GetType().FullName + ": " + error.Message);
-        Fail(verb.Replace('-', '_') + "_internal_error");
-    }
+    // The refusal envelopes have one copy, in IntentPlan: {"status":"failed","code":c}, exit 1, and the
+    // <verb>_internal_error refusal with its "<verb> internal error: <type>: <message>" stderr detail.
+    internal static IntentEnvelope Internal(string verb, Exception error) => IntentPlan.Internal(verb, error);
 
-    internal static void Fail(string code)
-    {
-        Console.WriteLine(JsonSerializer.Serialize(new { status = "failed", code }));
-        Environment.ExitCode = 1;
-    }
+    internal static IntentEnvelope Fail(string code) => IntentPlan.Failed(code);
 }

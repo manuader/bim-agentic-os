@@ -60,18 +60,18 @@ internal static class ApplyIntentCommand
 
     public static void Run(string[] args)
     {
-        if (!ApplyEditsCommand.TryParse(args, "--intent", out var storePath, out var intentPath, out var expectedRevision)) { ApplyEditsCommand.Fail(UsageCode); return; }
+        if (!ApplyEditsCommand.TryParse(args, "--intent", out var storePath, out var intentPath, out var expectedRevision)) { ApplyEditsCommand.Fail(UsageCode).Print(); return; }
         string stateText, intentText;
         try
         {
             stateText = BoundedInput.ReadText(Path.Combine(storePath, "project.json"), FileShare.ReadWrite | FileShare.Delete);
             intentText = BoundedInput.ReadText(intentPath);
         }
-        catch (InputRejectedException error) { ApplyEditsCommand.Fail(error.Message); return; }
-        if (ApplyEditsCommand.ParseHead(stateText) is not { } head) { ApplyEditsCommand.Fail(StoreInvalid); return; }
+        catch (InputRejectedException error) { ApplyEditsCommand.Fail(error.Message).Print(); return; }
+        if (ApplyEditsCommand.ParseHead(stateText) is not { } head) { ApplyEditsCommand.Fail(StoreInvalid).Print(); return; }
         if (!IntentPlan.ParseIntent(intentText, Verb, IntentInvalid).TryGet(out var intent, out var refused)) { refused.Print(); return; }
-        if (expectedRevision is { } expected && expected != head.Revision) { ApplyEditsCommand.Fail(StaleHead); return; }
+        if (expectedRevision is { } expected && expected != head.Revision) { ApplyEditsCommand.Fail(StaleHead).Print(); return; }
         if (!IntentPlan.Build(head, intent, Verb, IntentRefused).TryGet(out var result, out refused)) { refused.Print(); return; }
-        ApplyEditsCommand.Commit(storePath, result, Verb);
+        ApplyEditsCommand.Commit(storePath, result, Verb).Print();
     }
 }
