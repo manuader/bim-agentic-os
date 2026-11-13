@@ -1050,6 +1050,23 @@ exit 0
     }
     Assert ((Get-BuildTrees $evil).Count -eq 0) 'successful package left a bim-package-src-* build tree in temp'
 
+    # --- P10-18: a temp directory reached through a symlink (macOS TMPDIR /var/folders/... with /var -> /private/var)
+    # still packages its own Bim.* project references as first-party: exit 0 and the clean build's manifest/sbom bytes ---
+    if ($IsWindows) { Write-Host 'SKIP P10-18 symlinked temp: directory symlinks need privileges on Windows (temp is not symlinked there)' } else {
+        $physicalTemp = Join-Path $work 'physical temp'
+        $linkedTemp = Join-Path $work 'linked temp'
+        New-Item -ItemType Directory -Force $physicalTemp | Out-Null
+        New-Item -ItemType SymbolicLink -Path $linkedTemp -Target $physicalTemp | Out-Null
+        $outD = Join-Path $work 'release D'
+        $runD = Invoke-ScriptWithTemp $linkedTemp $packager @('-OutputDirectory', $outD, '-Dotnet', $Dotnet)
+        Assert ($runD.Code -eq 0) "P10-18: package build with TMPDIR behind a symlink exit $($runD.Code): $(Get-Tail $runD.Output)"
+        if ($runD.Code -eq 0) {
+            Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $outD 'manifest.json'))) -eq [Convert]::ToBase64String($bytesA)) 'P10-18: a symlinked temp directory changed the package (manifest differs from clean build)'
+            Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $outD 'sbom.json'))) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $outA 'sbom.json')))) 'P10-18: a symlinked temp directory changed sbom.json'
+        }
+        Assert ((Get-BuildTrees $physicalTemp).Count -eq 0) 'P10-18: package under a symlinked temp left a bim-package-src-* build tree'
+    }
+
     # --- Never overwrite: an existing output (non-empty or empty) is refused before any build and left intact ---
     $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($manifestA))
     $again = Invoke-Script $packager @('-OutputDirectory', $outA, '-Dotnet', $Dotnet)
