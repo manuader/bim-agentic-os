@@ -154,6 +154,14 @@ internal static class GenerateTypologyToolTests
             Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Ids("study") + ",\"code_pack\":\"xx.example.codigo-ejemplo\""),
             Document(TypologyPipeline.Run(pack, new TypologyBriefRequest(3, new PrototypeLot(16, 16), 4, 0, new[] { "study" }), new PrototypePipelineOptions(exampleCode, Guid.Parse(Id)))));
         Check(!includeCode.SequenceEqual(accepted), "the include + code_pack document differs from the P7-14 one (both members really reached)");
+        // P7-18: "include":[] is the absent member through the shared parser (plain and composed pins).
+        var includeEmpty = Expect("\"include\":[] is the absent member (P7-18)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[]"),
+            Document(TypologyPipeline.Run(pack, request3, options)), PinnedAcceptedSha256);
+        Check(includeEmpty.SequenceEqual(accepted), "\"include\":[] gives the P7-14 family-3 document");
+        Expect("\"include\":[] on the infeasible family-4 lot (P7-18)", Request(TypologyPack, 4, 12, 12, 6, 0, ",\"include\":[]"),
+            Document(TypologyPipeline.Run(pack, request4, options)), PinnedInfeasibleSha256);
+        Expect("\"include\":[] with \"skills\":[] (P7-18)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[],\"skills\":[]"),
+            Document(TypologyPipeline.RunComposed(pack, request3, options, Array.Empty<SkillManifest>(), null)), PinnedComposedSha256);
 
         // ---- 2. refusals: isError, byte-equal to the CLI stdout line, no CLI file ----
         string Refused(string label, string requestPath, string? expected = null)

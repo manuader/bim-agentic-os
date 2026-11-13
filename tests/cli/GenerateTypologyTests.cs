@@ -22,6 +22,7 @@ using Bim.Generative;
 //   6. P7-16: optional include (optional rooms) and code_pack reach Run/RunComposed (TypologyBriefRequest.Include,
 //      PrototypePipelineOptions.Pack) byte-equal to the in-process run; absent or default members keep the P7-14 pins;
 //      unknown rooms are the pipeline's typed refusals; a code_pack that is not a code skill is code_pack_invalid (kind).
+//   7. P7-18: "include":[] is normalised to the absent member: the P7-14 pins and stdout, and the composed pin a8c62da5...
 internal static class GenerateTypologyTests
 {
     const string TypologyPack = "bim.typology.vivienda-unifamiliar";
@@ -227,7 +228,19 @@ internal static class GenerateTypologyTests
         if (studyGarageBytes is not null)
             ExpectRun("include [garage, study, study] (another order, a repeat)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("garage", "study", "study")),
                 Plain(R3(new[] { "garage", "study", "study" }), caba), CodePack, same: studyGarageBytes, sameAs: "include [study, garage] (the pipeline sorts and de-duplicates)");
-        ExpectRun("include [] (an empty list, kept as given)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[]"), Plain(R3(Array.Empty<string>()), caba), CodePack, differsFromP714: true);
+        // P7-18: "include":[] is the absent member (normalised before TypologyPipeline.Run): the P7-14 file and stdout.
+        foreach (var (label, text, bytes, pin, stdout) in new[]
+        {
+            ("family 3", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[]"), acceptedBytes, PinnedAcceptedSha256, accepted.Out),
+            ("family 4 (infeasible)", Request(TypologyPack, 4, 12, 12, 6, 0, ",\"include\":[]"), infeasibleBytes, PinnedInfeasibleSha256, infeasible.Out),
+            ("family 3 with the default code pack named", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[],\"code_pack\":\"" + CodePack + "\""), acceptedBytes, PinnedAcceptedSha256, accepted.Out),
+        })
+        {
+            var emptyOut = Output();
+            var empty = Cli("generate-typology", Input("include-empty.json", text), emptyOut);
+            Check(empty.Exit == 0 && Read(emptyOut).SequenceEqual(bytes) && Hex(Read(emptyOut)) == pin && empty.Out == stdout,
+                "\"include\":[] on " + label + " is the absent member: the P7-14 bytes (pin " + pin[..8] + "...) and the same stdout (P7-18)", D(empty) + " " + Hex(Read(emptyOut)));
+        }
         ExpectRun("include with tuned weights and seed 2", Request(TypologyPack, 3, 16, 16, 4, 2, ",\"include\":" + Strs("study") + ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5}"),
             Plain(new TypologyBriefRequest(3, new PrototypeLot(16, 16), 4, 2, new[] { "study" }, new ScoringWeights(0.5, 0.25, 0.15, 0.1, 0.1, 0.2)), caba), CodePack, differsFromP714: true);
         ExpectRun("include 64 entries (the limit, one room repeated)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs(Enumerable.Repeat("study", 64).ToArray())),
@@ -316,6 +329,11 @@ internal static class GenerateTypologyTests
             && Str(composedEnvelope, "code_pack") == CodePack && composedEnvelope is { } ce && ce.TryGetProperty("skills", out var skillsOut) && skillsOut.ValueKind == JsonValueKind.Array
             && skillsOut.GetArrayLength() == 0 && Int(composedEnvelope, "bytes") == composedExpected.LongLength && Str(composedEnvelope, "sha256") == Hex(composedExpected),
             "a composed run's stdout reports rules composed, the extra skills, the byte count and the SHA-256", D(composed));
+        // P7-18: "include":[] in composed mode is the absent member too (pin a8c62da5..., same stdout).
+        var composedEmptyOut = Output();
+        var composedEmpty = Cli("generate-typology", Input("composed-include-empty.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[],\"skills\":[]")), composedEmptyOut);
+        Check(composedEmpty.Exit == 0 && Read(composedEmptyOut).SequenceEqual(composedBytes) && Hex(Read(composedEmptyOut)) == PinnedComposedSha256 && composedEmpty.Out == composed.Out,
+            "\"include\":[] with \"skills\":[] is the composed CABA + typology run: pin a8c62da5... and the same stdout (P7-18)", D(composedEmpty) + " " + Hex(Read(composedEmptyOut)));
         var composedAgainOut = Output();
         var composedAgain = Cli("generate-typology", composedRequest, composedAgainOut);
         Check(composedAgain.Exit == 0 && Read(composedAgainOut).SequenceEqual(composedBytes) && composedAgain.Out == composed.Out, "a second composed run is byte-identical", D(composedAgain));
