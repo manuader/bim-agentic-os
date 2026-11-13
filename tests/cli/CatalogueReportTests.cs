@@ -452,15 +452,23 @@ internal static class CatalogueReportTests
                 ["response"] = response, ["raw_response"] = raw, ["exit_code"] = sent ? (passed ? 0 : 1) : null, ["timed_out"] = false, ["elapsed_ms"] = sent ? 41.5 : null,
                 ["passed"] = passed, ["blocked"] = false, ["reason"] = passed ? null : "doc-realized: rechazado", ["comparisons"] = new JsonArray(),
             }));
-        // realized.json / report.json in the step's folder (null: not written); folder false: no folder at all.
-        Case MakeRealized(string record, byte[]? realized, string? reportLine = null, bool folder = true)
+        // realized.json / report.json in the step's folder (null: not written); folder false: no folder at all. By default
+        // (AutoReport) a succeeded reply is kept as report.json exactly as the owner invoker keeps the CLI line;
+        // NoReport writes none.
+        const string AutoReport = "\u0001auto", NoReport = "\u0001none";
+        Case MakeRealized(string record, byte[]? realized, string? reportLine = AutoReport, bool folder = true)
         {
             var c = Make(record, CopyBytes);
             var directory = Path.Combine(c.Run, "catalogue-requests", realizedFolder);
             if (!folder) return c;
             Directory.CreateDirectory(directory);
             if (realized is not null) File.WriteAllBytes(Path.Combine(directory, "realized.json"), realized);
-            if (reportLine is not null) File.WriteAllText(Path.Combine(directory, "report.json"), reportLine);
+            if (reportLine == AutoReport)
+            {
+                var reply = JsonNode.Parse(record)!["steps"]!.AsArray()[^1]!["response"];
+                reportLine = reply is JsonObject o && (string?)o["status"] == "succeeded" ? o.ToJsonString() : null;
+            }
+            if (reportLine is not null && reportLine != NoReport) File.WriteAllText(Path.Combine(directory, "report.json"), reportLine);
             return c;
         }
         static string Realized(string state, string? detail, int? entries, string? sha, long? bytes, string? code, string? replyStatus, string? replyCode, int? replyEntries, string? replySha, long? replyBytes, string? diskSha, long? diskBytes, bool passed = true)
@@ -468,7 +476,7 @@ internal static class CatalogueReportTests
             static string S(string? v) => v is null ? "null" : "\"" + v + "\"";
             static string N(long? v) => v is null ? "null" : v.Value.ToString(CultureInfo.InvariantCulture);
             return "{\"step\":11,\"passed\":" + (passed ? "true" : "false") + ",\"state\":" + S(state) + ",\"detail\":" + S(detail) + ",\"folder\":\"catalogue-requests/" + realizedFolder + "\",\"entries\":" + N(entries) + ",\"sha256\":" + S(sha) + ",\"bytes\":" + N(bytes)
-                + ",\"code\":" + S(code) + ",\"reply_status\":" + S(replyStatus) + ",\"reply_code\":" + S(replyCode) + ",\"reply_entries\":" + N(replyEntries) + ",\"reply_sha256\":" + S(replySha) + ",\"reply_bytes\":" + N(replyBytes)
+                + ",\"code\":" + S(code) + ",\"reply_status\":" + S(replyStatus) + ",\"reply_code\":" + S(replyCode) + ",\"reply_entries\":" + N(replyEntries) + ",\"reply_sha256\":" + S(replySha?.ToLowerInvariant()) + ",\"reply_bytes\":" + N(replyBytes)
                 + ",\"disk_sha256\":" + S(diskSha) + ",\"disk_bytes\":" + N(diskBytes) + "}";
         }
         string RealizedOf(Case c) { var r = Report(c); return r.Exit == 0 ? Raw(Json(r.Out), "realized") : D(r); }
@@ -519,6 +527,33 @@ internal static class CatalogueReportTests
         Check(RealizedOf(MakeRealized(WithRealized(new JsonObject { ["status"] = "partial" }, passed: false), null)) == Realized("no_reply", "status", null, null, null, null, "partial", null, null, null, null, null, null, passed: false), "a reply that is neither succeeded nor failed is no_reply (status)");
         var otherCommand = Report(MakeRealized(WithRealized(Succeeded(realizedUpper, realizedLength, 2), passed: true, command: "doc-update"), realizedBytes));
         Check(otherCommand.Exit == 0 && otherCommand.Out.EndsWith(",\"copy\":" + passCopy + "}", StringComparison.Ordinal), "a doc-up-elements step that is not doc-realized is not summarized", D(otherCommand));
+        // Review: on a succeeded reply the kept line (report.json) must say what the reply says; else nothing is trusted.
+        string NoDisk(string state, string? detail) => Realized(state, detail, null, null, null, null, "succeeded", null, 2, realizedUpper, realizedLength, null, null);
+        Check(RealizedOf(MakeRealized(okRecord, realizedBytes, NoReport)) == NoDisk("report_mismatch", "report_missing"), "a succeeded step without report.json is report_mismatch (report_missing)");
+        foreach (var (label, line) in new[] { ("not JSON", "{"), ("an array", "[1]"), ("without status", "{\"sha256\":\"" + realizedUpper + "\"}"), ("with a duplicate key", "{\"status\":\"succeeded\",\"status\":\"succeeded\"}") })
+            Check(RealizedOf(MakeRealized(okRecord, realizedBytes, line)) == NoDisk("report_mismatch", "report_invalid"), "a succeeded step whose report.json is " + label + " is report_mismatch (report_invalid)");
+        foreach (var (label, line) in new[] { ("status", Refusal(duplicate).ToJsonString()), ("sha256", Succeeded(new string('A', 64), realizedLength, 2).ToJsonString()), ("entries", Succeeded(realizedUpper, realizedLength, 3).ToJsonString()), ("bytes", Succeeded(realizedUpper, realizedLength + 1, 2).ToJsonString()), ("missing entries", new JsonObject { ["status"] = "succeeded", ["sha256"] = realizedUpper, ["bytes"] = realizedLength }.ToJsonString()) })
+            Check(RealizedOf(MakeRealized(okRecord, realizedBytes, line)) == NoDisk("report_mismatch", "report_differs"), "a succeeded step whose report.json differs in " + label + " is report_mismatch (report_differs)");
+        Check(RealizedOf(MakeRealized(okRecord, realizedBytes, Succeeded(realizedSha, realizedLength, 2).ToJsonString())) == matchExpected, "report.json's sha256 is compared ignoring case");
+        Check(RealizedOf(MakeRealized(okRecord, realizedBytes, new string(' ', 1024 * 1024 + 1))) == NoDisk("unreadable", "input_too_large"), "a report.json over 1 MiB is not read (unreadable, input_too_large)");
+        var lowerRecord = WithRealized(Succeeded(realizedSha, realizedLength, 2), passed: true);
+        Check(RealizedOf(MakeRealized(lowerRecord, realizedBytes)) == matchExpected, "a lower-case reply sha256 matches too; reply_sha256 is printed lower-case");
+        var noEntries = new JsonObject { ["status"] = "succeeded", ["sha256"] = realizedUpper, ["bytes"] = realizedLength };
+        Check(RealizedOf(MakeRealized(WithRealized(noEntries, passed: true), realizedBytes)) == Realized("invalid", "entries", null, null, null, null, "succeeded", null, null, realizedUpper, realizedLength, realizedSha, realizedLength),
+            "a succeeded reply without entries trusts nothing (invalid, entries)");
+        var noBytes = new JsonObject { ["status"] = "succeeded", ["sha256"] = realizedUpper, ["entries"] = 2 };
+        Check(RealizedOf(MakeRealized(WithRealized(noBytes, passed: true), realizedBytes)) == Realized("mismatch", "bytes", null, null, null, null, "succeeded", null, 2, realizedUpper, null, realizedSha, realizedLength),
+            "a succeeded reply without bytes trusts nothing (mismatch, bytes)");
+        string Refused1(string state, string? detail) => Realized(state, detail, null, null, null, null, "failed", duplicate, null, null, null, null, null, passed: false);
+        Check(RealizedOf(MakeRealized(refusedRecord, null, new string(' ', 1024 * 1024 + 1))) == Refused1("unreadable", "input_too_large"), "a refusal whose report.json is over 1 MiB is unreadable (input_too_large)");
+        var reportFolder = MakeRealized(refusedRecord, null);
+        Directory.CreateDirectory(Path.Combine(reportFolder.Run, "catalogue-requests", realizedFolder, "report.json"));
+        Check(RealizedOf(reportFolder) == Refused1("unreadable", "input_not_regular_file"), "a refusal with a folder in place of report.json is unreadable (input_not_regular_file)");
+        var linkedMap = MakeRealized(okRecord, null);
+        var mapTarget = Path.Combine(scratch, "realized-map-target.json");
+        File.WriteAllBytes(mapTarget, realizedBytes);
+        if (Link(Path.Combine(linkedMap.Run, "catalogue-requests", realizedFolder, "realized.json"), mapTarget, false, "a linked realized.json is not read"))
+            Check(RealizedOf(linkedMap) == NoDisk("unreadable", "input_link_rejected"), "a linked realized.json is not read (unreadable, input_link_rejected)");
         var linkedFolder = MakeRealized(okRecord, null, folder: false);
         var folderTarget = Path.Combine(scratch, "realized-folder-target");
         Directory.CreateDirectory(folderTarget);
@@ -627,6 +662,15 @@ internal static class CatalogueReportTests
         var nocopy = Read("nocopy");
         Check(nocopy.Result.Exit == 0 && SameGroups(nocopy.Report, nocopy.Record) && Raw(nocopy.Report, "copy").StartsWith("{\"state\":\"not_saved\",\"file\":null", StringComparison.Ordinal),
             "end to end (nocopy): a failed document.save_copy leaves no copy: not_saved", Raw(nocopy.Report, "copy") + " " + D(nocopy.Result));
+
+        foreach (var (scenario, result) in new[] { ("mixed", mixed), ("nocopy", nocopy) })
+        {
+            var stepOf = Items(result.Record, "steps").FirstOrDefault(s => Str(s, "key") == "doc-up-elements");
+            var map = Path.Combine(result.Run, "catalogue-requests", Raw(stepOf, "index").PadLeft(2, '0') + "-doc-up-elements.doc-realized", "realized.json");
+            var realized = Member(result.Report, "realized");
+            Check(Str(realized, "state") == "match" && Raw(realized, "entries") == "2" && File.Exists(map) && Str(realized, "sha256") == Sha(File.ReadAllBytes(map)) && Str(realized, "reply_sha256") == Str(realized, "sha256"),
+                "end to end (" + scenario + "): the doc-realized step is listed with its realized.json (match, 2 entries)", Raw(result.Report, "realized"));
+        }
 
         var v1 = Read("v1only");
         Check(v1.Result.Exit == 0 && Raw(v1.Report, "scope") == "\"v1_only\"" && Raw(v1.Report, "overall") == Counts(null, 17, 17, 0, 0, 0) && Raw(v1.Report, "copy").StartsWith("{\"state\":\"not_in_run\"", StringComparison.Ordinal),
