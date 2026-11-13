@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Bim.Core;
 using RevitOptionGrammar = Bim.Cli.RevitOptionGrammar;
+using RevitDeadlineTransport = Bim.Cli.RevitDeadlineTransport;
 
 namespace Bim.Mcp;
 
@@ -55,9 +56,9 @@ namespace Bim.Mcp;
 // DefaultQueryAllBytes (32 MiB) of element JSON (listing_too_large beyond it; CLI byte-equality holds for listings under
 // this cap, the CLI allowing 256 MiB) and an overall deadline DefaultQueryAllDeadline (1800 s, the CLI's per-page read
 // timeout) for the whole listing: a page due after it is not sent, and on the real pipe each page's read timeout is
-// cut to the time left, both reported as query_all_deadline_exceeded in the listing shape (the CLI has no overall
-// deadline). Known difference: the CLI reads the owner policy files even for this read-only command (a malformed owner
-// file refuses it); here, as without all, they are not read.
+// cut to the time left, both reported as query_all_deadline_exceeded in the listing shape (the rule of the CLI
+// --all --deadline-seconds n, one shared RevitDeadlineTransport). Known difference: the CLI reads the owner policy
+// files even for this read-only command (a malformed owner file refuses it); here, as without all, they are not read.
 public sealed class McpServer
 {
     public const int MaxLineChars = 8 * 1024 * 1024;
@@ -131,7 +132,7 @@ public sealed class McpServer
     // CLI's 256 MiB) and an overall deadline on QueryAllClock. Tests lower them and inject the clock.
     public const long DefaultQueryAllBytes = 32L * 1024 * 1024;
     public static readonly TimeSpan DefaultQueryAllDeadline = RevitCommandService.DefaultReadTimeout;
-    public const string QueryAllDeadlineExceeded = "query_all_deadline_exceeded";
+    public const string QueryAllDeadlineExceeded = RevitDeadlineTransport.Code;
     internal (int Pages, int Elements, long Bytes) QueryAllCaps { get; init; } =
         (RevitElementQueryPaging.MaxPages, RevitElementQueryPaging.MaxElements, DefaultQueryAllBytes);
     internal TimeSpan QueryAllDeadline { get; init; } = DefaultQueryAllDeadline;
@@ -316,32 +317,13 @@ public sealed class McpServer
             return (ElementQueryAllResult.Refusal(refusal.Code, refusal.Field, refusal.Detail).ToJson(), true);
         }
         var (pages, elements, bytes) = QueryAllCaps;
-        var transport = new DeadlineTransport(pipeName, revitTransport, realPipe, readTimeout, revitProbe, QueryAllClock, QueryAllDeadline);
+        // P1-23: the CLI --all deadline transport (interfaces/cli/RevitDeadlineTransport.cs, linked), one cut/exceeded rule:
+        // a page due after the deadline is not sent; on the real pipe a page whose time left is below the server read
+        // timeout is read with the time left, its pipe_read_timeout reported as the deadline; an injected transport is never cut.
+        var transport = new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, revitTransport, readTimeout, QueryAllDeadline,
+            RevitDeadlineTransport.ElapsedOn(QueryAllClock), listing: RevitDeadlineTransport.McpListing, cutReads: realPipe, probe: revitProbe);
         var listing = RevitElementQueryPaging.All(CommandEnvelope(RevitElementQueryPaging.Command, arguments), transport, pages, elements, bytes);
         return (listing.ToJson(), !listing.IsSuccess);
-    }
-
-    // Each page through RevitCommandService.Run (as RevitServiceTransport), within one overall deadline from its creation:
-    // a page due after the deadline is answered query_all_deadline_exceeded without being sent, and on the real pipe a
-    // page's read timeout is the time left when that is below the server read timeout, its pipe_read_timeout reported as the deadline.
-    sealed class DeadlineTransport(string pipeName, Func<string, string, string?> transport, bool realPipe, TimeSpan readTimeout, RevitFileSystemProbe probe, Func<DateTimeOffset> clock, TimeSpan deadline) : IRevitCommandTransport
-    {
-        readonly DateTimeOffset start = clock();
-
-        string Exceeded() => RevitCommandResponse.Failure(QueryAllDeadlineExceeded, null,
-            "the all:true listing took longer than its " + ((long)deadline.TotalMilliseconds).ToString(System.Globalization.CultureInfo.InvariantCulture)
-            + " ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor").ToJson();
-
-        public string? Send(string envelopeJson)
-        {
-            var left = deadline - (clock() - start);
-            if (left <= TimeSpan.Zero) return Exceeded();
-            var cut = realPipe && left < readTimeout;
-            var line = RevitCommandService.Run(pipeName, envelopeJson, RevitCommandPolicy.None, cut ? RevitCommandService.PipeTransportWithReadTimeout(left) : transport, probe).Line;
-            if (!cut) return line;
-            try { return RevitCommandResponse.Parse(line).Code == RevitCommandCodes.PipeReadTimeout ? Exceeded() : line; }
-            catch (RevitCommandException) { return line; }
-        }
     }
 
     // The command envelope from the tool arguments, raw values copied unchanged.
