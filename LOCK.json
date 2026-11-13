@@ -1,9 +1,3 @@
 {
-  "state": "FREE",
-  "session": null,
-  "taken_by": null,
-  "taken_at": null,
-  "last_heartbeat": null,
-  "released_at": "2026-11-13T12:20:03Z",
-  "released_by": "relay206 claude-cloud"
+  "state": "FREE"
 }
