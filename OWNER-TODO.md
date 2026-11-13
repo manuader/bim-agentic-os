@@ -270,3 +270,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay203 (2026-11-13, cloud)
 - No new owner action. `git pull` (main is now e2a43dc). FYI: PDF room labels in fonts with /Differences encodings (e.g. Baño without ToUnicode) now decode; MCP all:true deadline shares the CLI rule (bytes unchanged). Still open: ADR0010 / ADR0011 decisions; 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once); 🔒 N21 `... -Runs 1`.
+
+## Relay204 (2026-11-13, cloud)
+- No new owner action. `git pull` (main b1240e0). macOS packaging now works (scripts/package.ps1 on a Mac no longer fails with sbom_unattributed). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended A; 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then catalogue-report; 🔒 N21 `... -Runs 1`.
