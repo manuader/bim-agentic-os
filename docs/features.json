@@ -1886,8 +1886,8 @@
         "tests/integration/fake-revit-command-pipe.ps1",
         "tests/mirror-journal/MirrorDriftLoopChecks.cs"
       ],
-      "blocker": "Test fake only (no Revit); report.diff now equals MirrorSnapshotDiffer (P2-20); baseline per (document UniqueId, path) since P2-22; failures always 0 (per-baseline failures → P2-23); skipped_add_in counts receipts; journal_complete always true; fidelity is parsed-member, not escaping bytes.",
-      "scope": "P2-18: fake-revit-command-pipe.ps1 -ExternalEdits \"opid,…\" (blank = off) journals named successful non-dry-run element.move/wall.create/element.delete as external TransactionCommitted entries (MirrorJournalEntry member order, deterministic recorded_at); journal.read follows RevitJournalQuery.RawRead (peek, after_sequence, max_entries 1..256 with 20000-id cap, has_more, next_after_sequence, baseline moves only without peek; exact-case strict options, journal_options_invalid / journal_after_sequence_invalid in App.Execute's shape); the P2-16 drift loop reads every journal through the pipe and is member-equal to RawRead over a Core MirrorJournal (diff excluded); default replies byte-identical; wire failures become named check failures. CI red 43151779386, green 43153831165; review red 43159370704, green 43161374794."
+      "blocker": "Test fake only (no Revit); report.diff now equals MirrorSnapshotDiffer (P2-20); baseline per (document UniqueId, path) since P2-22; recorder failures modelled since P2-23 (in-process test lever only, not behind the named pipe → P2-24); skipped_add_in counts receipts; journal_complete false only from failures (no dropped entries → P2-25); fidelity is parsed-member, not escaping bytes.",
+      "scope": "P2-18: fake-revit-command-pipe.ps1 -ExternalEdits \"opid,…\" (blank = off) journals named successful non-dry-run element.move/wall.create/element.delete as external TransactionCommitted entries (MirrorJournalEntry member order, deterministic recorded_at); journal.read follows RevitJournalQuery.RawRead (peek, after_sequence, max_entries 1..256 with 20000-id cap, has_more, next_after_sequence, baseline moves only without peek; exact-case strict options, journal_options_invalid / journal_after_sequence_invalid in App.Execute's shape); the P2-16 drift loop reads every journal through the pipe and is member-equal to RawRead over a Core MirrorJournal (diff excluded); default replies byte-identical; wire failures become named check failures. CI red 43151779386, green 43153831165; review red 43159370704, green 43161374794. P2-23: -ExternalEdits state keeps JournalFailures; test lever Add-FakeRecorderFailure; each (UniqueId, path) baseline stores the failure count on non-peek reads; journal.read failures / failures_since_baseline / journal_complete equal RevitJournalQuery.RawRead over a Core MirrorJournalTracker with the same RecordFailure calls in 11 reads; replies without failures byte-unchanged. CI red 43431481245, green 43433842666."
     },
     {
       "id": "cad-pdf-tounicode",
@@ -1936,10 +1936,13 @@
         "interfaces/mcp/Bim.Mcp.csproj",
         "interfaces/cli/GenerateTypologyCommand.cs",
         "tests/mcp/GenerateTypologyToolTests.cs",
-        "tests/mcp/Program.cs"
+        "tests/mcp/Program.cs",
+        "interfaces/cli/SkillPackLookup.cs",
+        "tests/mcp/SkillPackPackageRootTests.cs",
+        "tests/cli/PackageLayoutPackTests.cs"
       ],
-      "blocker": "Proposal only, nothing written; takes a request file path, not inline JSON; the packaged mcp/ server cannot find skill packs (SkillPackLookup recognises only a cli/ binary directory, so outside a repository it refuses generate_typology_repository_not_found) (P5-18); malformed-pack refusals not exercised through MCP.",
-      "scope": "P5-17: MCP tool generate_typology {request_path} (permission read, readOnlyHint, no output path) calls GenerateTypologyCommand.Document, which shares ReadRequest/Generate with the CLI verb (skills, precedence, Run/RunComposed); text byte-equal to the in-process pipeline and the CLI output file in 8 cases (pins eb8720c1, 3a551774, a8c62da5), 14 refusals byte-equal to the CLI stdout, generate_typology_path_invalid guard, nothing written, real Release Bim.Mcp.dll over stdio; static: no parser/pipeline/file API in interfaces/mcp. CI red 43253601980, green 43259222759, review green 43278984905."
+      "blocker": "Proposal only, nothing written; takes a request file path, not inline JSON; packaged mcp/ server finds packs since P5-18 (binary directory name matched case-sensitively, as cli/).",
+      "scope": "P5-17: MCP tool generate_typology {request_path} (permission read, readOnlyHint, no output path) calls GenerateTypologyCommand.Document, which shares ReadRequest/Generate with the CLI verb (skills, precedence, Run/RunComposed); text byte-equal to the in-process pipeline and the CLI output file in 8 cases (pins eb8720c1, 3a551774, a8c62da5), 14 refusals byte-equal to the CLI stdout, generate_typology_path_invalid guard, nothing written, real Release Bim.Mcp.dll over stdio; static: no parser/pipeline/file API in interfaces/mcp. CI red 43253601980, green 43259222759, review green 43278984905. P5-18: SkillPackLookup.PackageRoot also accepts a binary directory named mcp; a real scripts/package.ps1 package's mcp/Bim.Mcp.dll over stdio outside any repository returns text byte-equal to the packaged CLI output (pin a8c62da5), and missing-marker / malformed packaged skill.json refusals byte-equal to the CLI envelopes. CI red 43431460027, green 43433910409."
     },
     {
       "id": "owner-session-doc-update-execute",
@@ -2009,8 +2012,20 @@
         "tests/cad/fixtures/brief-plan-xobject.pdf",
         "tests/cli/CadPdfToLayoutsTests.cs"
       ],
-      "blocker": "One non-nested form with translation-only /Matrix; regions inside a form, nested/scaled forms not tested (P6-19); fixed-Huffman deflate only in the fixture (reader dynamic Huffman covered by PdfTests); no predictors/object streams; generator rerun skipped on Windows; variant not run under de_DE.",
+      "blocker": "One non-nested form with translation-only /Matrix; nested/scaled forms and regions inside a form covered by cad-pdf-nested-xobject-twin (P6-19); fixed-Huffman deflate only in the fixture (reader dynamic Huffman covered by PdfTests); no predictors/object streams; generator rerun skipped on Windows; variant not run under de_DE.",
       "scope": "P6-17: brief-plan-xobject.pdf (generator --variant xobject-flate, deterministic, sha pinned) puts regions in a FlateDecode page stream and all labels in a FlateDecode Form XObject; same texts/paths/warnings as brief-plan.pdf with XObjectPath o4:i49 on every text and room reference; planner brief equal once provenance references are removed; real CLI cad-brief → cad-plan-brief --brief-only → plan-layouts byte-equal to in-process and pinned 566058984bb3…; no production change. CI red 43223308971, green 43225242821; review green 43243827436."
+    },
+    {
+      "id": "cad-pdf-nested-xobject-twin",
+      "status": "unit-tested",
+      "evidence": [
+        "tests/cad/fixtures/brief-plan-pdf.py",
+        "tests/cad/fixtures/brief-plan-nested.pdf",
+        "tests/cad/fixtures/brief-plan-nested-regions.pdf",
+        "tests/cli/CadPdfToLayoutsTests.cs"
+      ],
+      "blocker": "Uniform diagonal /Matrix only (no rotation/shear/non-uniform scale); regions-in-form variant checked in process only (cad-brief has no IncludeBlockRegions flag → P6-21); uncompressed fixtures (Flate covered by P6-17); generator rerun skipped on Windows.",
+      "scope": "P6-19: generator variants nested-scaled (brief-plan-nested.pdf f9b7d231…, labels in /Labels inside scaled /Outer [2 0 0 2 100 150]) and nested-scaled-regions (brief-plan-nested-regions.pdf ac1305d0…, regions in scaled /Rooms form); texts and paths land at brief-plan.pdf's page points, provenance XObject paths o4:i49>o6:i1; same draft, brief and pinned layouts digest 56605898… (both scale forms), real CLI chain on the nested variant, IncludeBlockRegions in process for the regions variant. CI red 43431835011, green 43434231951."
     },
     {
       "id": "owner-catalogue-doc-realized-step",
@@ -2053,7 +2068,7 @@
         "tests/cli/GenerateTypologyTests.cs",
         "tests/mcp/GenerateTypologyToolTests.cs"
       ],
-      "blocker": "\"include\":[] records [] and differs from absent (→ P7-18); packaged MCP server still cannot find packs (→ P5-18).",
+      "blocker": "\"include\":[] records [] and differs from absent (→ P7-18); packaged MCP server finds packs since P5-18.",
       "scope": "P7-16: optional request members include (≤ 64 room kinds, ≤ 64 chars each, no control characters) and code_pack (skill id, default ar.caba.codigo-edificacion, kind code or generate_typology_code_pack_invalid/kind) reach TypologyPipeline.Run/RunComposed; byte-equal to in-process runs; absent/default members keep pins eb8720c1/3a551774/a8c62da5; MCP generate_typology byte-equal to the CLI for the new members. relay204, CI red 43368744628, green 43372457353; review green 43381294764."
     },
     {

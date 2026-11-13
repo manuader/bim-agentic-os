@@ -21,9 +21,9 @@ namespace Bim.Mcp;
 // MaxPathChars, is rejected by Path.GetFullPath or is not valid text (a lone surrogate) is
 // {"status":"failed","code":"generate_typology_path_invalid","detail":"request"} (the diff_intent_path_invalid rule).
 // Packs are found from the server binary (SkillPackLookup.Load(id, packageFirst: true) on AppContext.BaseDirectory): the
-// repository walk works for a build inside the repository; the release package root is only recognised beside a cli/
-// directory, so the packaged mcp/ server falls back to the repository walk (generate_typology_repository_not_found outside
-// a repository).
+// repository walk works for a build inside the repository; the release package root is recognised beside a cli/ or (P5-18)
+// mcp/ binary directory, so the packaged mcp/ server reads <package>/skills like the packaged CLI, with no repository
+// fallback while the package markers are present.
 // Document writes nothing to Console.Out (only generate_typology_internal_error's detail goes to stderr, as on the CLI) and
 // does not touch Environment.ExitCode, so no capture is needed.
 internal static class GenerateTypologyTool
