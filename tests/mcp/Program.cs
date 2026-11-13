@@ -544,6 +544,8 @@ Check(McpServer.ParseOptions(new[]{"--read-timeout-seconds"," 5"},out _)=="""{"s
 // The server exposes only --read-timeout-seconds: --deadline-seconds is an unknown server option (MCP deadline sharing is P1-23).
 Check(McpServer.ParseOptions(new[]{"--deadline-seconds","5"},out var p122DeadlineTimeout)==McpRefusal("mcp_option_unknown",0,"unknown option --deadline-seconds") && p122DeadlineTimeout==RevitCommandService.DefaultReadTimeout,
     "McpServer.ParseOptions refuses --deadline-seconds as mcp_option_unknown (the server has no deadline option)");
+// P1-24 one any-order option loop (tests/mcp/RevitOptionLoopTests.cs).
+RevitOptionLoopTests.Run(root,cliDll,mcpDll,Cli,options=>{ var run=RunMcp(toolsList,options); return (run.Exit,run.Out,run.Err); },Check);
 var mcpPlain=RunMcp(toolsList);
 var mcpFlagged=RunMcp(toolsList,"--read-timeout-seconds","86400");
 Check(mcpPlain.Exit==0 && Node(mcpPlain.Out)["id"]!.GetValue<int>()==30 && mcpFlagged.Exit==0 && mcpFlagged.Out==mcpPlain.Out && mcpFlagged.Err.Length==0,"Bim.Mcp with --read-timeout-seconds 86400 serves the same bytes as without it");
