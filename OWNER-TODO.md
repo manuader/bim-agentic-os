@@ -267,3 +267,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay201 (2026-11-13, cloud)
 - No new owner action. `git pull` (main is now e8a5e98). The 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) now also has an offline step doc-up-elements that builds the realized map with `doc-realized` from the run's own record (folder NN-doc-up-elements.doc-realized/ in the run folder). package-verify now refuses FIFOs/sockets/devices and types unreadable files. Still open: ADR0010 / ADR0011 decisions; 🔒 N21 `... -Runs 1`.
+
+## Relay203 (2026-11-13, cloud)
+- No new owner action. `git pull` (main is now e2a43dc). FYI: PDF room labels in fonts with /Differences encodings (e.g. Baño without ToUnicode) now decode; MCP all:true deadline shares the CLI rule (bytes unchanged). Still open: ADR0010 / ADR0011 decisions; 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once); 🔒 N21 `... -Runs 1`.
