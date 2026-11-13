@@ -1570,3 +1570,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay206 — 2026-11-13T10:56:50Z (Claude, cloud scheduled)
 - 10:56Z LOCK taken over (relay205 TAKEN, last heartbeat 09:52:39Z, last branch push 09:56Z — >60 min stale). Continuing relay205: independent reviews + integration of P1-24, P4-17, P10-19.
+- 10:59Z reviews (independent, read-only): P1-24 0 blockers, 1 should-fix (off-disk test-DLL export check depends on build order) + nits; P4-17 0 blockers, 3 should-fix (no cursor paging over 5000, unnamed creates skipped silently, real OST_Views 'View Name' unverified → owner probe) + nits; P10-19 1 blocker (Find-PackageForbidden reads a staged FIFO before the builders' check → package.ps1 can still hang) + 2 should-fix (stale comment, sbom byte check). Fix workers starting on the relay205 branches.
