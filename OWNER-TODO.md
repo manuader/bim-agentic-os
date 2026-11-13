@@ -279,3 +279,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay207 (2026-11-13, cloud)
 - No new owner action. `git pull` (main 75e54b6). FYI: the packaged MCP server (mcp/ in a release package) now finds skill packs for generate_typology. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended A; 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once, test copy only) then catalogue-report; 🔒 N21 `... -Runs 1`.
+
+## Relay208 (2026-11-13, cloud)
+- No new owner action. `git pull` (main 0b9240c). FYI: after your 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once, test copy only), `catalogue-report --run .bim/native-runs/<run>` now also shows a `realized` block for the doc-up-elements step (entry count + sha256, trusted only if the folder files agree with the step reply). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended A; 🔒 N21 `... -Runs 1`.
