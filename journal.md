@@ -1551,3 +1551,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 03:59Z integration e2a43dc CI 43360318663 success (9/9) → main fast-forwarded (e8a5e98..e2a43dc). P1-23, P2-22, P6-18 ✅; P1-24, P6-19 ⏳; new P2-23 (fake journal failures per baseline), P6-20 (named simple-font encodings, Type3 glyph names). Progress 180/197 (91.4 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-13T03:59:07Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P3-16, P5-18 or P7-16, P10-18 (relay200; P10-18 and P10-19 share package-common.ps1 — serialize); then P4-17/P4-18 (serialize; P4-17 shares owner-session test files with P1-18), P10-19 (relay201); then P1-24, P2-23, P6-19 (then P6-20, PDF fixtures) (relay203). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay204 — 2026-11-13T04:53:15Z (Claude, cloud scheduled)
+- 04:53Z LOCK taken (was FREE; relay203 released 2026-11-13T03:59:07Z).
