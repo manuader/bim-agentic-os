@@ -17,6 +17,8 @@
 # P10-17: a manifest-listed file that cannot be read is manifest_file_unreadable (never an exception); a FIFO or socket
 # is refused by file type before any open (package_special_file), with every such run time-bounded so a regression
 # fails instead of hanging; mkfifo/socket cases are counted SKIPs where unavailable (Windows).
+# P10-19: the package.ps1 staging builders (manifest and sbom text) and its forbidden-content scan refuse a FIFO (also behind a file link) by file type
+# before any hash or read (package_special_file), in bounded child runs; a clean real build is byte-unchanged.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -706,6 +708,88 @@ try {
         Assert ($tClean.Output -notmatch 'package_special_file|manifest_file_unreadable') "P10-17: a consistent synthetic package must not report package_special_file or manifest_file_unreadable: $(Get-Tail $tClean.Output)"
         Assert ($tClean.Output -notmatch 'sbom_manifest_mismatch') "P10-15: a consistent synthetic package (including a first-party native named only by its deps.json project entry) must not report sbom_manifest_mismatch: $(Get-Tail $tClean.Output)"
 
+        # P10-19: package.ps1 staging builders (New-PackageManifestText, New-PackageSbomText) classify every staged file
+        # with the P10-17 POSIX type check before any hash or read and throw typed package_special_file naming the path;
+        # a failing check throws package_special_file_check_failed. Each builder runs in a bounded child pwsh (a builder
+        # that opens a FIFO blocks forever) against a synthetic staging folder; counted SKIPs on Windows, none on Linux CI.
+        $p19Run = 0; $p19Skip = 0
+        $p19Script = Join-Path $work 'p19 builder.ps1'
+        [IO.File]::WriteAllText($p19Script, @'
+param([string]$Common, [string]$Directory, [string]$Builder, [string]$Shell)
+$ErrorActionPreference = 'Stop'
+. $Common
+if ($Shell) { $script:PackageShellPath = $Shell }
+try {
+    if ($Builder -ceq 'manifest') { $null = New-PackageManifestText $Directory '1.2.3' ('a' * 40) $false }
+    elseif ($Builder -ceq 'forbidden') { $null = Find-PackageForbidden $Directory }
+    else { $null = New-PackageSbomText $Directory '1.2.3' ('a' * 40) @() }
+    "BUILT $Builder"; exit 0
+} catch { [Console]::Error.WriteLine("builder failed: $($_.Exception.Message)"); exit 1 }
+'@)
+        $p19OutsideDir = Join-Path $work 'p19 outside fifo'
+        New-Item -ItemType Directory -Force $p19OutsideDir | Out-Null
+        $p19OutsideFifo = Join-Path $p19OutsideDir 'target.fifo'
+        $p19Cases = @(
+            @{ Name = 'manifest bin'; Builder = 'manifest'; Fifos = @('cli/pipe.bin') },
+            @{ Name = 'manifest json'; Builder = 'manifest'; Fifos = @('skills/pipe.json') },
+            @{ Name = 'manifest several ordinal'; Builder = 'manifest'; Fifos = @('cli/a.pipe', 'cli/B.pipe'); Expect = 'cli/B\.pipe \(fifo\), cli/a\.pipe \(fifo\)' },
+            @{ Name = 'sbom dll'; Builder = 'sbom'; Fifos = @('cli/Pipe.Thing.dll') },
+            @{ Name = 'sbom deps json'; Builder = 'sbom'; Fifos = @('cli/Pipe.deps.json') },
+            @{ Name = 'sbom non-assembly'; Builder = 'sbom'; Fifos = @('cli/pipe.bin') },
+            @{ Name = 'manifest link to fifo'; Builder = 'manifest'; Links = @('cli/link.dat') },
+            @{ Name = 'sbom link to fifo'; Builder = 'sbom'; Links = @('cli/Link.Thing.dll') },
+            @{ Name = 'forbidden scan json'; Builder = 'forbidden'; Fifos = @('skills/x.json') },
+            @{ Name = 'forbidden scan link to fifo'; Builder = 'forbidden'; Links = @('skills/link.json') }
+        )
+        if (!$IsWindows -and $mkfifo) { & $mkfifo $p19OutsideFifo; if ($LASTEXITCODE -ne 0) { $failures.Add("P10-19 setup failed: mkfifo outside target exited $LASTEXITCODE") } }
+        foreach ($case in $p19Cases) {
+            if ($IsWindows) { $p19Skip++; Write-Host "SKIP P10-19 staging $($case.Name): no FIFOs on Windows"; continue }
+            if (!$mkfifo) { $p19Skip++; Write-Host "SKIP P10-19 staging $($case.Name): mkfifo is not available here"; continue }
+            $copy = Join-Path $work ('p19 staging ' + $case.Name)
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            $made = [Collections.Generic.List[string]]::new()
+            try {
+                foreach ($path in @($case.Fifos | Where-Object { $_ })) {
+                    $full = Join-Path $copy $path
+                    New-Item -ItemType Directory -Force (Split-Path $full) | Out-Null
+                    if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Force }
+                    & $mkfifo $full
+                    if ($LASTEXITCODE -ne 0) { throw "mkfifo $path exited $LASTEXITCODE" }
+                    $made.Add($full)
+                }
+                foreach ($path in @($case.Links | Where-Object { $_ })) {
+                    $full = Join-Path $copy $path
+                    New-Item -ItemType Directory -Force (Split-Path $full) | Out-Null
+                    New-Item -ItemType SymbolicLink -Path $full -Target $p19OutsideFifo -ErrorAction Stop | Out-Null
+                    $made.Add($full)
+                }
+            } catch { $failures.Add("P10-19 staging $($case.Name) setup failed: $($_.Exception.Message)"); foreach ($full in $made) { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }; continue }
+            $p19Run++
+            $run = Invoke-ScriptBounded $p19Script @('-Common', $common, '-Directory', $copy, '-Builder', $case.Builder) 60
+            $first = @(@($case.Fifos) + @($case.Links) | Where-Object { $_ })[0]
+            $named = if ($case.Expect) { $case.Expect } else { [regex]::Escape($first) + ' \(fifo\)' }
+            Assert (!$run.TimedOut -and $run.Code -eq 1 -and $run.Output -match ('builder failed: package_special_file: [^\r\n]*(: |, )' + $named + '(,|\r|\n|$)')) "P10-19: the $($case.Builder) staging builder must refuse $($case.Name) as package_special_file naming the path before any hash (timed out: $($run.TimedOut), exit $($run.Code)): $(Get-Tail $run.Output)"
+            foreach ($full in $made) { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }
+        }
+        if (Test-Path -LiteralPath $p19OutsideFifo) { Remove-Item -LiteralPath $p19OutsideFifo -Force -ErrorAction SilentlyContinue }
+        # A failing type check (non-zero exit) is typed package_special_file_check_failed; a clean staging folder builds.
+        $p19False = if (!$IsWindows) { Get-Command false -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source }
+        # package.ps1 runs the forbidden-content scan (Find-PackageForbidden reads small text files) on the staging folder
+        # before either builder, so it is held to the same type check ('forbidden' cases above and here).
+        foreach ($builder in 'manifest', 'sbom', 'forbidden') {
+            if ($IsWindows) { $p19Skip++; Write-Host "SKIP P10-19 $builder type check failure: no POSIX type check on Windows" }
+            elseif (!$p19False) { $p19Skip++; Write-Host "SKIP P10-19 $builder type check failure: false not found" }
+            else {
+                $p19Run++
+                $run = Invoke-ScriptBounded $p19Script @('-Common', $common, '-Directory', $tPkg, '-Builder', $builder, '-Shell', $p19False) 60
+                Assert (!$run.TimedOut -and $run.Code -eq 1 -and $run.Output -match 'builder failed: package_special_file_check_failed: ') "P10-19: the $builder staging builder must throw package_special_file_check_failed when the type check fails: $(Get-Tail $run.Output)"
+            }
+            $run = Invoke-ScriptBounded $p19Script @('-Common', $common, '-Directory', $tPkg, '-Builder', $builder) 60
+            Assert (!$run.TimedOut -and $run.Code -eq 0 -and $run.Output -match "BUILT $builder") "P10-19: the $builder staging builder must build a clean staging folder: $(Get-Tail $run.Output)"
+        }
+        Write-Host "P10-19 staging special-file cases: $p19Run run, $p19Skip skipped"
+        if ($IsLinux -and $env:GITHUB_ACTIONS -eq 'true') { Assert ($p19Skip -eq 0) "P10-19: no staging special-file case may be skipped on the Linux CI runner (skipped: $p19Skip)" }
+
         # Without an assets file the P10-13 behaviour is unchanged: direct references only, no recorded files.
         $refsNoAssets = @(Get-PackageNuGetReferences -Root $sbomSrc -Projects @('app/App.csproj') -PackagesRoot (Join-Path $sbomSrc 'nuget'))
         $noAssetsText = ($refsNoAssets | ForEach-Object { "$($_.Name):$($_.Dependency):$(@($_.Assemblies).Count):$(@($_.Natives).Count)" }) -join ','
@@ -822,6 +906,23 @@ try {
     $onDisk = [string[]]@($invA | ForEach-Object { $_.Substring(0, $_.LastIndexOf(' ')) } | Where-Object { $_ -ne 'manifest.json' })
     [Array]::Sort($onDisk, [StringComparer]::Ordinal)
     Assert ((@($onDisk) -join "`n") -ceq ($paths -join "`n")) "manifest file list differs from package contents: disk=[$($onDisk -join ', ')] manifest=[$($paths -join ', ')]"
+    # P10-19: the staging type check leaves a clean real build byte-unchanged: manifest.json equals the canonical text
+    # composed here independently of the builder, and re-running the builder (type check included) over the real
+    # package yields the same bytes with no package_special_file.
+    try {
+        $expectedLines = [Collections.Generic.List[string]]::new()
+        $expectedLines.Add('{'); $expectedLines.Add('  "schema": "bim-agentic-os/package-manifest/v1",'); $expectedLines.Add('  "version": "' + $manifest.version + '",')
+        $expectedLines.Add('  "source_commit": "' + $manifest.source_commit + '",'); $expectedLines.Add('  "source_dirty": ' + $(if ($manifest.source_dirty) { 'true' } else { 'false' }) + ','); $expectedLines.Add('  "files": [')
+        for ($i = 0; $i -lt $onDisk.Length; $i++) {
+            $file = Join-Path $outA $onDisk[$i]
+            $expectedLines.Add('    { "path": ' + (ConvertTo-Json -InputObject $onDisk[$i] -Compress) + ', "size": ' + (Get-Item -LiteralPath $file).Length + ', "sha256": "' + (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() + '" }' + $(if ($i -lt $onDisk.Length - 1) { ',' } else { '' }))
+        }
+        $expectedLines.Add('  ]'); $expectedLines.Add('}')
+        $expectedManifest = ($expectedLines -join "`n") + "`n"
+        Assert ([Text.Encoding]::UTF8.GetString($bytesA) -ceq $expectedManifest) 'P10-19: the real manifest.json must be byte-equal to the canonical manifest text composed independently from the files on disk'
+        $rebuilt = New-PackageManifestText $outA ([string]$manifest.version) ([string]$manifest.source_commit) ([bool]$manifest.source_dirty)
+        Assert ($rebuilt -ceq [Text.Encoding]::UTF8.GetString($bytesA)) 'P10-19: re-running New-PackageManifestText (with the staging type check) over the real package must reproduce manifest.json byte for byte'
+    } catch { $failures.Add("P10-19: the clean real package byte check threw: $($_.Exception.Message)") }
 
     # --- Layout: CLI, MCP server, add-in manifest; no apphost, no symbols, no Revit assemblies ---
     foreach ($required in 'VERSION', 'cli/Bim.Cli.dll', 'cli/Bim.Cli.runtimeconfig.json', 'cli/Bim.Cli.deps.json', 'cli/Bim.Core.dll', 'cli/Bim.Gltf.dll', 'cli/Bim.Cad.dll', 'mcp/Bim.Mcp.dll', 'mcp/Bim.Mcp.runtimeconfig.json', 'revit/Bim.addin.template') {
@@ -873,6 +974,12 @@ try {
                 Assert ([string]$component.name -cmatch '\ABim\.' -and [string]$component.license -ceq 'NOASSERTION' -and !$component.PSObject.Properties['package']) "P10-14: real package assembly $($component.path) must be first-party Bim.* with NOASSERTION and no package (got name '$($component.name)' licence '$($component.license)')"
             }
             Assert ($sbomRefs.Count -eq 0) "P10-14: the real package has no NuGet references today: [$(($sbomRefs | ForEach-Object name) -join ', ')]"
+            # P10-19: re-running New-PackageSbomText (with the staging type check) over the real package reproduces
+            # sbom.json byte for byte (no NuGet references today, so none are passed).
+            if ($sbomRefs.Count -eq 0) {
+                $sbomRebuilt = New-PackageSbomText $outA ([string]$sbom.version) ([string]$sbom.source_commit) @()
+                Assert ($sbomRebuilt -ceq [Text.Encoding]::UTF8.GetString($sbomBytes)) 'P10-19: re-running New-PackageSbomText (with the staging type check) over the real package must reproduce sbom.json byte for byte'
+            }
         } catch { $failures.Add("sbom.json checks threw: $($_.Exception.Message)") }
     }
 

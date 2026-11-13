@@ -87,10 +87,15 @@ function Find-PackageLinks([string]$Directory) {
 
 # Revit/Autodesk assemblies (including Nice3point reference packages), Revit models and credential material are
 # never packaged. Names are matched case-insensitively; small text files are also scanned for key material.
+# P10-19: package.ps1 runs this scan on the staging folder before any builder, and reading a FIFO blocks, so every file
+# (links included, followed) is first classified by type and a non-regular one throws typed package_special_file (see
+# Assert-PackageStagedFilesRegular) before anything is read.
 function Find-PackageForbidden([string]$Directory) {
     $base = [IO.Path]::GetFullPath($Directory)
     $hits = [Collections.Generic.List[string]]::new()
-    foreach ($file in Get-ChildItem -LiteralPath $base -Recurse -File -Force) {
+    $files = @(Get-ChildItem -LiteralPath $base -Recurse -File -Force)
+    Assert-PackageStagedFilesRegular $base ([string[]]@($files | ForEach-Object { Get-PackageRelativePath $base $_.FullName }))
+    foreach ($file in $files) {
         $name = $file.Name
         $forbidden = $name -match '(?i)^(Revit[^\\/]*|AdWindows|UIFramework[^\\/]*|Autodesk[^\\/]*|AdskRcConfig[^\\/]*)\.dll$' -or
             $name -match '(?i)^Nice3point' -or
@@ -118,9 +123,10 @@ function Test-PackageReadFailure($ErrorRecord) {
 
 # P10-17: non-regular files (FIFO, socket, character or block device) are never packaged. They are recognised by file
 # type from metadata alone, never by opening them: opening a FIFO for read blocks until a writer appears. The type comes
-# from POSIX `test -p/-S/-c/-b` run by /bin/sh (stat only, symlinks already excluded), one shell per batch of paths;
-# PowerShell's UnixMode/UnixStat is not relied on (on the Ubuntu CI runner it did not classify a FIFO). Windows has no such
-# file system entries (its AF_UNIX sockets are reparse points, refused by Find-PackageLinks), so nothing is special there.
+# from POSIX `test -p/-S/-c/-b` run by /bin/sh (stat only; `test` follows symlinks, so a file link passed in is classified
+# by its target), one shell per batch of paths; PowerShell's UnixMode/UnixStat is not relied on (on the Ubuntu CI runner
+# it did not classify a FIFO). Windows has no such file system entries (its AF_UNIX sockets are reparse points, refused
+# by Find-PackageLinks), so nothing is special there.
 # The type is checked when verification runs; a file swapped for a FIFO after that check (TOCTOU) is not covered.
 # $script:PackageShellPath is the shell used (tests inject failing ones). Batches are bounded by count and by argv bytes
 # (~128 KB, well under macOS ARG_MAX). A check that cannot run (shell missing, non-zero exit, unexpected output) throws.
@@ -181,6 +187,21 @@ function Get-PackageFileSha256([string]$Path) {
     } finally { $stream.Dispose() }
 }
 
+# P10-19: the package.ps1 staging builders hash and read staged files, and opening a FIFO blocks, so they classify every
+# staged file (package-relative $Files under $Base) with the P10-17 POSIX type check before any open. POSIX test follows
+# file links, so a link to a FIFO is refused too (Get-ChildItem does not descend directory links). Throws typed
+# package_special_file naming each path with its kind (ordinal order), or package_special_file_check_failed when the
+# check itself cannot run. Nothing is special on Windows.
+function Assert-PackageStagedFilesRegular([string]$Base, [string[]]$Files) {
+    if ($IsWindows -or $Files.Length -eq 0) { return }
+    $full = [string[]]@($Files | ForEach-Object { Join-Path $Base $_ })
+    try { $kinds = Get-PackagePosixFileKinds $full }
+    catch { throw "package_special_file_check_failed: staged file types could not be checked, so no file is hashed: $($_.Exception.Message)" }
+    $hits = [Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $Files.Length; $i++) { if ($kinds[$i]) { $hits.Add("$($Files[$i]) ($($kinds[$i]))") } }
+    if ($hits.Count) { throw "package_special_file: non-regular staged files (FIFO, socket or device) are never packaged; refused by file type before hashing: $($hits -join ', ')" }
+}
+
 # ConvertTo-Json on a single string yields its quoted, escaped JSON form (generic JsonSerializer overloads do not bind).
 function ConvertTo-PackageJsonString([string]$Value) { return (ConvertTo-Json -InputObject $Value -Compress) }
 
@@ -195,6 +216,7 @@ function New-PackageManifestText([string]$Directory, [string]$Version, [string]$
     $lines.Add('  "source_dirty": ' + $(if ($Dirty) { 'true' } else { 'false' }) + ',')
     $lines.Add('  "files": [')
     $files = [string[]]@(Get-PackageFiles $base)
+    Assert-PackageStagedFilesRegular $base $files
     for ($i = 0; $i -lt $files.Length; $i++) {
         $full = Join-Path $base $files[$i]
         $size = (Get-Item -LiteralPath $full).Length
@@ -584,7 +606,9 @@ function New-PackageSbomText([string]$Directory, [string]$Version, [string]$Comm
     $lines.Add('  "schema": ' + (ConvertTo-PackageJsonString $script:PackageSbomSchema) + ',')
     $lines.Add('  "version": ' + (ConvertTo-PackageJsonString $Version) + ',')
     $lines.Add('  "source_commit": ' + (ConvertTo-PackageJsonString $Commit) + ',')
-    $assemblies = [string[]]@(Get-PackageFiles $base | Where-Object { $_ -match $script:PackageAssemblyPattern })
+    $staged = [string[]]@(Get-PackageFiles $base)
+    Assert-PackageStagedFilesRegular $base $staged
+    $assemblies = [string[]]@($staged | Where-Object { $_ -match $script:PackageAssemblyPattern })
     $depsIndex = Get-PackageDepsIndex $base
     if ($assemblies.Length -eq 0) { $lines.Add('  "assemblies": [],') } else {
         $lines.Add('  "assemblies": [')
