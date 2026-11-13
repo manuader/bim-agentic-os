@@ -16,6 +16,8 @@
 # the run, a refusal (dependent_unknown, doc_update_plan_changed) stops only the update. P4-16: the first realized map
 # (the wall and door) comes from the CLI doc-realized verb on the run's own record (stand-in in fake-doc-update.ps1)
 # and its output file is what doc-update --realized reads; a realized_* refusal stops the run.
+# P4-17: before the first --execute, read-only name queries (views, sheets, schedules); a default documentation name
+# that already exists in the test copy fails doc-up-realize with doc_update_name_collision, nothing sent.
 # Runs in CI through
 # scripts/verify.ps1 (catalogue-session, and catalogue-session-cli with the real CLI); never Revit.
 # With -Dotnet and -CliDll: the whole one-run sequence through the real CLI
@@ -176,7 +178,9 @@ $groupKeys = @('v1', 'v2', 'vistas', 'snapshot', 'consultas', 'estructura', 'doc
 # P4-14: the documentation update at the end of the documentation group; its deletes run inside the doc-update verb
 # (no element.delete step of the session), its four doc-update calls are steps of their own.
 # P4-16: doc-up-elements runs doc-realized on the run's own record before the first doc-update.
-$docUpExpected = @('doc-up-wall', 'doc-up-door', 'doc-up-elements', 'doc-up-realize-plan', 'doc-up-realize', 'doc-up-move', 'doc-up-update-plan', 'doc-up-update', 'doc-up-stale-gone', 'doc-up-tag-new')
+# P4-17: three read-only name queries (views, sheets, schedules) between the reviewed dry run and its --execute.
+$docUpNames = @('doc-up-names-views', 'doc-up-names-sheets', 'doc-up-names-schedules')
+$docUpExpected = @('doc-up-wall', 'doc-up-door', 'doc-up-elements', 'doc-up-realize-plan') + $docUpNames + @('doc-up-realize', 'doc-up-move', 'doc-up-update-plan', 'doc-up-update', 'doc-up-stale-gone', 'doc-up-tag-new')
 $docUpCalls = @('doc-up-realize-plan', 'doc-up-realize', 'doc-up-update-plan', 'doc-up-update')
 function Get-FailedSteps($Result) { (@($Result.steps | Where-Object { !$_.passed } | ForEach-Object { "[$($_.group)] $($_.key): $($_.reason)" }) -join '; ') }
 function Get-Group($Result, [string]$Key) { @($Result.groups | Where-Object { $_.key -eq $Key })[0] }
@@ -788,10 +792,71 @@ $stringStep = Get-Step $stringRun 'wall-arc-conflict'
 Assert ($null -ne $stringStep -and $null -eq (Get-CatalogueMember $stringStep 'response') -and (Get-CatalogueMember $stringStep 'raw_response') -eq '"x"' -and !(Get-CatalogueMember $stringStep 'passed') -and [string](Get-CatalogueMember $stringStep 'reason') -like '*JSON*') "P4-16 a non-object JSON reply keeps no response, only raw_response: $(Get-CatalogueMember $stringStep 'reason')"
 Assert ($null -eq $stringRun.aborted -and (Get-StepField $stringRun 'doc-up-elements' 'passed') -and (Get-GroupField $stringRun 'documentacion' 'failed') -eq 0) "P4-16 after a non-object reply doc-realized still reads the run record: $(Get-StepField $stringRun 'doc-up-elements' 'reason') $($stringRun.aborted)"
 
+# --- P4-17: the default documentation names must not exist yet in the test copy ---
+# Between the reviewed dry run (doc-up-realize-plan) and its --execute, three read-only query.elements steps list the
+# views (OST_Views, "View Name"), sheets (OST_Sheets, "Sheet Number") and schedules (OST_Schedules, "View Name") of the
+# test copy (limit 5000, nothing truncated, the parameter read on every row). The names compared are the ones the
+# reviewed plan creates (DocDefaults: "Level 1 Plan", A101, A900, "Door Schedule", "Room Schedule"), ignoring case. A
+# name that already exists fails doc-up-realize with doc_update_name_collision naming it, before anything is sent;
+# later groups still run. An unreadable listing (truncated, parameter missing: e.g. another Revit language) fails its
+# query step and doc-up-realize is not sent either (fail closed).
+$nameSpecs = [ordered]@{ 'doc-up-names-views' = @('OST_Views', 'View Name'); 'doc-up-names-sheets' = @('OST_Sheets', 'Sheet Number'); 'doc-up-names-schedules' = @('OST_Schedules', 'View Name') }
+foreach ($key in $nameSpecs.Keys) {
+    $nameRequest = Get-StepField $full $key 'request'
+    Assert ((Get-StepField $full $key 'command') -eq 'query.elements' -and (Get-CataloguePath $nameRequest 'args.category') -eq $nameSpecs[$key][0] -and ((Get-CatalogueList (Get-CatalogueMember $nameRequest 'args') 'parameters') -join '|') -ceq $nameSpecs[$key][1] -and [int](Get-CataloguePath $nameRequest 'args.limit') -eq 5000 -and @((Get-CatalogueMember $nameRequest 'args').PSObject.Properties).Count -eq 3 -and (Get-StepField $full $key 'passed')) "P4-17 $key lists $($nameSpecs[$key][0]) reading '$($nameSpecs[$key][1])' (limit 5000): $(Get-StepField $full $key 'reason')"
+}
+$plannedNames = $full.picked['doc_up_realize_plan'].Names
+Assert ($null -ne $plannedNames -and ($plannedNames['views'] -join '|') -ceq 'Level 1 Plan' -and ($plannedNames['sheets'] -join '|') -ceq 'A101|A900' -and ($plannedNames['schedules'] -join '|') -ceq 'Door Schedule|Room Schedule') "P4-17 the names compared are the ones the reviewed plan creates (DocDefaults): $(if ($plannedNames) { $plannedNames | ConvertTo-Json -Compress })"
+Assert ([int](Get-StepField $full 'doc-up-names-sheets' 'index') -gt [int](Get-StepField $full 'doc-up-realize-plan' 'index') -and [int](Get-StepField $full 'doc-up-names-schedules' 'index') + 1 -eq [int](Get-StepField $full 'doc-up-realize' 'index')) 'P4-17 the name queries run after the dry run and right before its --execute'
+function New-TestNameRow([int]$Id, [string]$Parameter, $Value) {
+    [ordered]@{ id = 90000 + $Id; unique_id = ('0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-{0:x8}' -f (0xd100 + $Id)); category = 'Fake'; built_in_category = $null; level = $null; family = $null; type = $null; type_unique_id = $null
+        parameters = @(New-FakeTextParameter $Parameter $null $Value); missing_parameters = @() }
+}
+# Replaces the rows of a query.elements reply (the test copy already holds these views, sheets or schedules).
+function Set-TestNameRows([string]$Output, [object[]]$Rows, [switch]$Truncated) {
+    $line = $Output | ConvertFrom-Json
+    $line.readback.elements = @($Rows)
+    $line.readback.returned = @($Rows).Count
+    $line.readback.matched = @($Rows).Count + $(if ($Truncated) { 1 } else { 0 })
+    if ($Truncated) { $line.readback.truncated = $true; $line.readback.truncated_reason = 'limit' }
+    return ($line | ConvertTo-Json -Depth 20 -Compress)
+}
+function Invoke-TestNameRun([hashtable]$Rows, [switch]$Truncated) {
+    $script:testNameRows = $Rows
+    $script:testNameTruncated = [bool]$Truncated
+    return Invoke-FakeSequence -All -Wrap { param($index, $key, $json, $inner) $reply = & $inner $index $key $json; if ($script:testNameRows.ContainsKey($key)) { $reply.output = Set-TestNameRows $reply.output $script:testNameRows[$key] -Truncated:$script:testNameTruncated }; $reply }
+}
+$later = @('diario', 'formas', 'extrusion', 'transformar', 'copia', 'modificar')
+foreach ($case in @(
+        @{ What = 'a colliding sheet (A900)'; Rows = @{ 'doc-up-names-sheets' = @((New-TestNameRow 1 'Sheet Number' 'A900'), (New-TestNameRow 2 'Sheet Number' 'A1010')) }; Named = @("'A900'"); NotNamed = @('A101', 'A1010', 'Level 1 Plan') },
+        @{ What = 'a view, a sheet and a schedule named like the plan (ignoring case)'; Rows = @{ 'doc-up-names-views' = @((New-TestNameRow 3 'View Name' 'level 1 plan'), (New-TestNameRow 4 'View Name' 'Level 1')); 'doc-up-names-sheets' = @((New-TestNameRow 5 'Sheet Number' 'A101')); 'doc-up-names-schedules' = @((New-TestNameRow 6 'View Name' 'Room Schedule'), (New-TestNameRow 7 'View Name' $null)) }; Named = @("'Level 1 Plan'", "'A101'", "'Room Schedule'"); NotNamed = @('A900', 'Door Schedule') })) {
+    $collide = Invoke-TestNameRun $case.Rows
+    $collideResult = $collide.Result
+    $realizeStep = Get-Step $collideResult 'doc-up-realize'
+    $collideReason = [string](Get-CatalogueMember $realizeStep 'reason')
+    $missingNames = @($case.Named | Where-Object { $collideReason -notlike "*$_*" })
+    $extraNames = @($case.NotNamed | Where-Object { $collideReason -like "*'$_'*" })
+    Assert ($null -ne $realizeStep -and !$realizeStep.passed -and !$realizeStep.blocked -and $null -eq $realizeStep.request -and $collideReason -like 'no enviado: doc_update_name_collision:*' -and $missingNames.Count -eq 0 -and $extraNames.Count -eq 0) "P4-17 $($case.What): doc-up-realize fails doc_update_name_collision naming exactly them, nothing sent: $collideReason"
+    Assert (@($docUpNames | Where-Object { !(Get-StepField $collideResult $_ 'passed') }).Count -eq 0 -and ($collide.DocUpdate.Calls -join ',') -eq 'doc-up-realize-plan' -and @($collide.Fake.Received | Where-Object { $_ -like 'doc*' }).Count -eq 0 -and $null -eq (Get-StepField $collideResult 'doc-up-move' 'request')) "P4-17 $($case.What): no doc-update --execute and no documentation write reach the add-in: $(@($collide.Fake.Received | Where-Object { $_ -like 'doc*' }) -join ',') calls $($collide.DocUpdate.Calls -join ',')"
+    Assert ($null -eq $collideResult.aborted -and (Get-GroupField $collideResult 'documentacion' 'failed') -eq 6 -and @($later | Where-Object { (Get-GroupField $collideResult $_ 'failed') -ne 0 -or (Get-GroupField $collideResult $_ 'not_sent') -ne 0 }).Count -eq 0 -and (Format-CatalogueSummary $collideResult) -like '*resultado: FALLÓ en documentacion') "P4-17 $($case.What): only the update fails, later groups still run: $(Format-CatalogueSummary $collideResult) $(Get-FailedSteps $collideResult)"
+}
+# Names that only look alike (A1010, Level 1, Door Schedule 2) leave the run as clean as before.
+$nearMiss = (Invoke-TestNameRun @{ 'doc-up-names-sheets' = @((New-TestNameRow 8 'Sheet Number' 'A1010')); 'doc-up-names-views' = @((New-TestNameRow 9 'View Name' 'Level 1')); 'doc-up-names-schedules' = @((New-TestNameRow 10 'View Name' 'Door Schedule 2')) }).Result
+Assert ($nearMiss.all_passed -and $null -eq $nearMiss.aborted) "P4-17 names that only look alike do not collide: $(Get-FailedSteps $nearMiss)"
+# Unreadable listings fail closed: the query step fails and doc-up-realize is not sent.
+$missingRow = [ordered]@{ id = 90011; unique_id = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-0000d10b'; category = 'Fake'; built_in_category = $null; level = $null; family = $null; type = $null; type_unique_id = $null; parameters = @(); missing_parameters = @('Sheet Number') }
+foreach ($case in @(@{ What = 'a sheet without the Sheet Number parameter (another Revit language)'; Rows = @{ 'doc-up-names-sheets' = @($missingRow) }; Truncated = $false; Key = 'doc-up-names-sheets' },
+        @{ What = 'a truncated schedule listing'; Rows = @{ 'doc-up-names-schedules' = @((New-TestNameRow 12 'View Name' 'Other')) }; Truncated = $true; Key = 'doc-up-names-schedules' })) {
+    $unread = Invoke-TestNameRun $case.Rows -Truncated:$case.Truncated
+    $unreadResult = $unread.Result
+    $pick = $case.Key.Replace('-', '_')
+    Assert (!(Get-StepField $unreadResult $case.Key 'passed') -and $null -eq (Get-StepField $unreadResult 'doc-up-realize' 'request') -and [string](Get-StepField $unreadResult 'doc-up-realize' 'reason') -like "*falta $pick*" -and ($unread.DocUpdate.Calls -join ',') -eq 'doc-up-realize-plan' -and @($unread.Fake.Received | Where-Object { $_ -like 'doc*' }).Count -eq 0 -and $null -eq $unreadResult.aborted -and (Get-GroupField $unreadResult 'modificar' 'failed') -eq 0) "P4-17 $($case.What) fails $($case.Key) and sends no update: $(Get-FailedSteps $unreadResult)"
+}
+
 $noDoc = (Invoke-FakeSequence -All -NoDocUpdate).Result
 $noDocSent = @($noDoc.steps | Where-Object { $_.key -in $docUpExpected -and $_.key -notin 'doc-up-wall', 'doc-up-door' -and $null -ne $_.request })
 # P4-16: doc-up-elements is the first step that needs the channel; the doc-update calls then lack its map.
-Assert ([string](Get-StepField $noDoc 'doc-up-realize-plan' 'reason') -like '*falta doc_up_elements*' -and $noDocSent.Count -eq 0 -and $null -eq $noDoc.aborted -and (Get-GroupField $noDoc 'documentacion' 'failed') -eq 8 -and [string](Get-StepField $noDoc 'doc-up-elements' 'reason') -like '*falta el canal doc-update*' -and (Get-GroupField $noDoc 'modificar' 'failed') -eq 0) "P4-14 without a doc-update channel none of the update is sent and later groups run: $(Get-FailedSteps $noDoc)"
+Assert ([string](Get-StepField $noDoc 'doc-up-realize-plan' 'reason') -like '*falta doc_up_elements*' -and $noDocSent.Count -eq 0 -and $null -eq $noDoc.aborted -and (Get-GroupField $noDoc 'documentacion' 'failed') -eq 11 -and [string](Get-StepField $noDoc 'doc-up-names-sheets' 'reason') -like '*falta doc_up_realize_plan*' -and [string](Get-StepField $noDoc 'doc-up-elements' 'reason') -like '*falta el canal doc-update*' -and (Get-GroupField $noDoc 'modificar' 'failed') -eq 0) "P4-14 without a doc-update channel none of the update is sent and later groups run: $(Get-FailedSteps $noDoc)"
 # Review B1: the owner session passes the doc-update invoker (CLI doc-update on the child's pipe, its requests in the run
 # folder, an --execute-sized timeout of its own) to Invoke-CatalogueSequence, and its announcement names the update.
 $sessionText = [IO.File]::ReadAllText((Join-Path $root 'scripts/owner-native-session.ps1'))
@@ -879,7 +944,7 @@ try {
     # operation ids: 4 dry runs (two passes, in the update's dry run and again in its --execute), then exactly the 11
     # writes its two reports list (9 creates, then 1 delete and 1 create), each once. Every catalogue step reaches it too.
     $realUpCatalogue = @($realUp | Where-Object { $_.command -notin 'doc-update', 'doc-realized' })
-    Assert ($realUp.Count -eq 10 -and @($realUp | Where-Object { !$_.passed }).Count -eq 0 -and @($realUpCatalogue | Where-Object { $received -notcontains $_.operation_id }).Count -eq 0) "P4-14: the documentation update passes through the real CLI: $(@($realUp | Where-Object { !$_.passed } | ForEach-Object { "$($_.key): $($_.reason) $($_.raw_response)" }) -join '; ')"
+    Assert ($realUp.Count -eq 13 -and @($realUp | Where-Object { !$_.passed }).Count -eq 0 -and @($realUpCatalogue | Where-Object { $received -notcontains $_.operation_id }).Count -eq 0) "P4-14: the documentation update passes through the real CLI: $(@($realUp | Where-Object { !$_.passed } | ForEach-Object { "$($_.key): $($_.reason) $($_.raw_response)" }) -join '; ')"
     $docLines = @($received | Where-Object { $_ -match '\Adoc(dry|del|new)\.' })
     $reportIds = [string[]]@(foreach ($key in 'doc-up-realize', 'doc-up-update') { Get-CatalogueList (Get-StepField $real $key 'response') 'report' | ForEach-Object { $_ } | ForEach-Object { [string](Get-CatalogueMember $_ 'operation_id') } })
     $writeLines = [string[]]@($docLines | Where-Object { $_ -notlike 'docdry.*' })
