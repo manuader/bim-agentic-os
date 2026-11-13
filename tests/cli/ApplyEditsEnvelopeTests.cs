@@ -214,12 +214,12 @@ internal static class ApplyEditsEnvelopeTests
         var helperPath = Path.Combine(root, "interfaces", "cli", "IntentPlan.cs");
         var sourceText = File.ReadAllText(sourcePath);
         var helperText = File.ReadAllText(helperPath);
-        var code = ApplyIntentTests.CodeOf(sourceText);
-        var found = new[] { "Console.", "Environment.ExitCode" }.Where(api => code.Contains(api, StringComparison.Ordinal)).ToArray();
+        var sourceCode = ApplyIntentTests.CodeOf(sourceText);
+        var found = new[] { "Console.", "Environment.ExitCode" }.Where(api => sourceCode.Contains(api, StringComparison.Ordinal)).ToArray();
         Check(found.Length == 0, "ApplyEditsCommand.cs code has no Console or exit-code access (it prints only through IntentEnvelope.Print)", "found [" + string.Join(", ", found) + "]");
-        var prints = code.Split(".Print(").Length - 1;
-        Check(code.Contains("Execute(args).Print()", StringComparison.Ordinal) && prints == 1, "ApplyEditsCommand.Run is Execute(args).Print(), its only print", "prints " + prints.ToString(CultureInfo.InvariantCulture));
-        Check(code.Contains("IntentPlan.Failed(", StringComparison.Ordinal) && code.Contains("IntentPlan.Internal(", StringComparison.Ordinal), "ApplyEditsCommand.Fail / Internal delegate to IntentPlan.Failed / Internal");
+        var prints = sourceCode.Split(".Print(").Length - 1;
+        Check(sourceCode.Contains("Execute(args).Print()", StringComparison.Ordinal) && prints == 1, "ApplyEditsCommand.Run is Execute(args).Print(), its only print", "prints " + prints.ToString(CultureInfo.InvariantCulture));
+        Check(sourceCode.Contains("IntentPlan.Failed(", StringComparison.Ordinal) && sourceCode.Contains("IntentPlan.Internal(", StringComparison.Ordinal), "ApplyEditsCommand.Fail / Internal delegate to IntentPlan.Failed / Internal");
         static int Count(string text, string what) => text.Split(what).Length - 1;
         var literalSource = ApplyIntentTests.CodeOf(sourceText, blankStrings: false);
         var literalHelper = ApplyIntentTests.CodeOf(helperText, blankStrings: false);
