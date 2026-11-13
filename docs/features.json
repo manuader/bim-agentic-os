@@ -2055,10 +2055,12 @@
         "interfaces/cli/ApplyEditsCommand.cs",
         "interfaces/cli/IntentPlan.cs",
         "interfaces/cli/ApplyIntentCommand.cs",
-        "tests/cli/ApplyEditsEnvelopeTests.cs"
+        "tests/cli/ApplyEditsEnvelopeTests.cs",
+        "interfaces/cli/DiffEditsCommand.cs",
+        "tests/cli/ApplyIntentEnvelopeTests.cs"
       ],
-      "blocker": "ApplyIntentCommand still prints per step and DiffEditsCommand keeps its own failed-envelope copy (→ P3-17).",
-      "scope": "P3-16: ApplyEditsCommand.Execute/Commit/Fail/Internal return IntentEnvelope, Run = Execute(args).Print() is the only print; the envelope JSON lives once in IntentPlan.cs; ApplyIntentCommand prints every returned envelope (static check with synthetic bad sources); CLI bytes unchanged; Execute equals a real CLI process in 9 cases. relay204, CI red 43369622514, green 43370990889; review green 43378917834."
+      "blocker": "Since P3-17 apply-intent prints once through Plan(args) and diff-edits Fail delegates to IntentPlan.Failed; the fragment check covers the intent/edits sources only (other verbs keep their own failed-envelope copies); diff-edits internal error still hand-written (→ P3-18).",
+      "scope": "P3-16: ApplyEditsCommand.Execute/Commit/Fail/Internal return IntentEnvelope, Run = Execute(args).Print() is the only print; the envelope JSON lives once in IntentPlan.cs; ApplyIntentCommand prints every returned envelope (static check with synthetic bad sources); CLI bytes unchanged; Execute equals a real CLI process in 9 cases. relay204, CI red 43369622514, green 43370990889; review green 43378917834. P3-17: ApplyIntentCommand.Plan(args) returns one IntentEnvelope, Run = Plan(args).Print(); DiffEditsCommand.Fail = IntentPlan.Failed(code).Print(); Plan equals a real CLI process in 9 cases. relay208, CI red 43454473275, green 43457705408."
     },
     {
       "id": "cli-generate-typology-include-code-pack",
@@ -2068,8 +2070,8 @@
         "tests/cli/GenerateTypologyTests.cs",
         "tests/mcp/GenerateTypologyToolTests.cs"
       ],
-      "blocker": "\"include\":[] records [] and differs from absent (→ P7-18); packaged MCP server finds packs since P5-18.",
-      "scope": "P7-16: optional request members include (≤ 64 room kinds, ≤ 64 chars each, no control characters) and code_pack (skill id, default ar.caba.codigo-edificacion, kind code or generate_typology_code_pack_invalid/kind) reach TypologyPipeline.Run/RunComposed; byte-equal to in-process runs; absent/default members keep pins eb8720c1/3a551774/a8c62da5; MCP generate_typology byte-equal to the CLI for the new members. relay204, CI red 43368744628, green 43372457353; review green 43381294764."
+      "blocker": "Since P7-18 \"include\":[] equals absent at the CLI/MCP parser (library callers building TypologyBriefRequest(Include: []) still record []); packaged MCP server finds packs since P5-18.",
+      "scope": "P7-16: optional request members include (≤ 64 room kinds, ≤ 64 chars each, no control characters) and code_pack (skill id, default ar.caba.codigo-edificacion, kind code or generate_typology_code_pack_invalid/kind) reach TypologyPipeline.Run/RunComposed; byte-equal to in-process runs; absent/default members keep pins eb8720c1/3a551774/a8c62da5; MCP generate_typology byte-equal to the CLI for the new members. relay204, CI red 43368744628, green 43372457353; review green 43381294764. P7-18: \"include\":[] normalised to absent before the pipeline; byte-equal to pins eb8720c1/3a551774 and composed a8c62da5 (file and stdout); MCP byte-equal. relay208, CI red 43454272873, green 43456249524."
     },
     {
       "id": "package-macos-physical-temp-sbom",
@@ -2113,6 +2115,17 @@
       ],
       "blocker": "Linux CI only for FIFO cases (Windows SKIPs; macOS not run by verify.ps1); dangling link fails in Get-FileHash with an exception, not typed; TOCTOU after the check not covered; byte check is self-consistency of the real package, not against origin/main.",
       "scope": "P10-19: Find-PackageForbidden, New-PackageManifestText and New-PackageSbomText run Assert-PackageStagedFilesRegular (P10-17 Get-PackagePosixFileKinds, links followed) before any read or hash: FIFO, link to FIFO, socket refused as package_special_file naming the path, failing check package_special_file_check_failed; bounded 60 s child-pwsh cases, Windows SKIPs, zero skips on Linux; real package manifest.json and sbom.json re-derived byte-equal. relay205/206, CI red 43397435722, green 43401512169; review red 43413538810, green 43416253764."
+    },
+    {
+      "id": "catalogue-report-doc-realized",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/CatalogueReportCommand.cs",
+        "tests/cli/CatalogueReportTests.cs",
+        "tests/cli/catalogue-report-record.ps1"
+      ],
+      "blocker": "Headless fake + real doc-realized CLI only, never a real owner -Catalogue record; the step's recorded request.record_file is not cross-checked against the folder; link-refused checks skip where symbolic links are unavailable.",
+      "scope": "P4-18: catalogue-report adds a realized member after copy only for a doc-up-elements/doc-realized step, read from catalogue-requests/<NN>-doc-up-elements.doc-realized/ through BoundedInput (realized.json ≤ 8 MiB, report.json ≤ 1 MiB, links refused); entries/sha256/bytes trusted only on match (disk sha/bytes equal the reply, report.json agrees, object of text values, entry count); typed not_sent/no_reply/link_refused/missing_folder/missing_file/unreadable/mismatch/invalid/report_mismatch/refused; records without the step byte-unchanged. relay208, CI red 43454907676, green 43458261487; review red 43465011283, green 43468205404."
     }
   ]
 }
