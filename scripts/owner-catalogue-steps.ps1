@@ -123,6 +123,59 @@ function Test-CatalogueResponse($Response, $ExitCode, [string]$OperationId, [has
     return $null
 }
 
+# P4-17 review: a Pages step (query.elements) follows readback.next_cursor until its listing ends. Each later page is the
+# same request with args.cursor, an operation id and invoker key of its own (<id>-p<n>, <key>-p<n>); $Record.pages lists @{ operation_id; cursor }
+# of those pages. The step's reply is the first page with every page's elements (returned = their count) and the last
+# page's matched, truncated and next_cursor. After $script:CataloguePageCap pages, or on a cursor already followed, it
+# stops truncated (truncated_reason page_cap / cursor_repeated), so a check that needs the whole list fails closed. A
+# later page that is not a succeeded reply to its own operation id is returned as it is (the step fails on it).
+function Get-CataloguePageObject($Result) {
+    if ($null -eq $Result -or $Result.timed_out) { return $null }
+    $parsed = $null
+    try { $parsed = ([string]$Result.output).Trim() | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+    if ($parsed -isnot [Management.Automation.PSCustomObject]) { return $null }
+    return $parsed
+}
+function Set-CatalogueMemberValue($Object, [string]$Name, $Value) { $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force }
+function Invoke-CataloguePages([scriptblock]$Invoker, [int]$Index, [string]$Key, [string]$RequestText, [string]$OperationId, [string]$DocumentPath, [string]$DocumentUid, [string]$Command, $Arguments, $Record) {
+    $result = & $Invoker $Index $Key $RequestText
+    $first = Get-CataloguePageObject $result
+    if ($null -eq $first -or (Test-CatalogueResponse $first $result.exit_code $OperationId @{ Status = 'succeeded' }) -or $null -eq (Get-CatalogueMember $first 'readback')) { return $result }
+    $elements = [Collections.Generic.List[object]]::new()
+    foreach ($row in (Get-CatalogueList $first.readback 'elements')) { $elements.Add($row) }
+    $last = $first
+    $pages = [Collections.Generic.List[object]]::new()
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $stop = $null
+    while ($true) {
+        $cursor = [string](Get-CataloguePath $last 'readback.next_cursor')
+        if ((Get-CataloguePath $last 'readback.truncated') -ne $true -or !$cursor) { break }
+        if (!$seen.Add($cursor)) { $stop = 'cursor_repeated'; break }
+        if ($pages.Count + 1 -ge $script:CataloguePageCap) { $stop = 'page_cap'; break }
+        $pageId = "$OperationId-p$($pages.Count + 2)"
+        $pageArgs = [ordered]@{}
+        foreach ($entry in $Arguments.GetEnumerator()) { $pageArgs[$entry.Key] = $entry.Value }
+        $pageArgs['cursor'] = $cursor
+        $pages.Add([ordered]@{ operation_id = $pageId; cursor = $cursor })
+        $Record['pages'] = $pages.ToArray()
+        # Its own invoker key too (<key>-p<n>): the CLI invoker writes each request to a new file named by index and key.
+        $pageResult = & $Invoker $Index "$Key-p$($pages.Count + 1)" (New-CatalogueEnvelope $pageId $DocumentPath $DocumentUid $Command $pageArgs)
+        $page = Get-CataloguePageObject $pageResult
+        if ($null -eq $page -or (Test-CatalogueResponse $page $pageResult.exit_code $pageId @{ Status = 'succeeded' }) -or $null -eq (Get-CatalogueMember $page 'readback')) { return $pageResult }
+        foreach ($row in (Get-CatalogueList $page.readback 'elements')) { $elements.Add($row) }
+        $last = $page
+    }
+    if (!$pages.Count -and !$stop) { return $result }
+    $readback = $first.readback
+    Set-CatalogueMemberValue $readback 'elements' $elements.ToArray()
+    Set-CatalogueMemberValue $readback 'returned' $elements.Count
+    Set-CatalogueMemberValue $readback 'matched' (Get-CataloguePath $last 'readback.matched')
+    Set-CatalogueMemberValue $readback 'truncated' $(if ($stop) { $true } else { Get-CataloguePath $last 'readback.truncated' })
+    Set-CatalogueMemberValue $readback 'truncated_reason' $(if ($stop) { $stop } else { Get-CataloguePath $last 'readback.truncated_reason' })
+    Set-CatalogueMemberValue $readback 'next_cursor' (Get-CataloguePath $last 'readback.next_cursor')
+    return @{ output = ($first | ConvertTo-Json -Depth 64 -Compress); exit_code = 0; timed_out = $false }
+}
+
 # The fixed C04 step list. Build returns the args dictionary (throws when a dependency is missing); Check returns
 # $null or a reason and records picks. Both run inside Invoke-CatalogueSequence, which owns $picked.
 function Get-CatalogueSteps {
@@ -907,7 +960,8 @@ function Get-CatalogueDocumentationSteps {
 #      hash to the printed sha256; its keys, command counts, plan level and tag (door, head at the door centre) checked;
 #   1b. doc-up-names-views / doc-up-names-sheets / doc-up-names-schedules (P4-17): read-only query.elements of the test
 #      copy's views (OST_Views, "View Name"), sheets (OST_Sheets, "Sheet Number") and schedules (OST_Schedules,
-#      "View Name"), limit 5000. Each must read back its category, not truncated, and the parameter on every row (the
+#      "View Name"), limit 5000 per page, read to the end through next_cursor (review: at most 20 pages; more, or a
+#      repeated cursor, fails closed). Each must read back its category, not truncated, and the parameter on every row (the
 #      name as shown in Revit: a Revit in another language has none, so the step fails closed and the update is not
 #      sent; run the owner session in an English Revit until a language-free name query exists); a row with no value
 #      is skipped. The names the reviewed plan of 1 creates (view.create_plan name, sheet.create number,
@@ -917,7 +971,8 @@ function Get-CatalogueDocumentationSteps {
 #      against the sheets listing. A name that exists already fails 2 with code doc_update_name_collision (on the step
 #      record) naming it, before anything is sent (Revit would refuse the duplicate mid-plan, after the earlier
 #      creates); picked.doc_up_name_collision lists @{ kind; name; unique_id } (kind of the planned item, the existing
-#      element's UniqueId); later groups still run;
+#      element's UniqueId); later groups still run. A plan create without its name (fewer names than creates of a
+#      kind) fails 2 with code doc_update_plan_unnamed the same way (review);
 #   2. doc-up-realize: the same request with --execute --expected-document <sha256 of 1> (the plan sha from its own dry
 #      run): every step done, sent once, not replayed, one new UniqueId each; the printed realized map is the element
 #      entries plus doc:<key> = the created UniqueId of that key's step;
@@ -957,6 +1012,13 @@ $script:CatalogueDocUpdateNameQueries = [ordered]@{
 }
 $script:CatalogueDocUpdateNameLimit = 5000
 $script:CatalogueDocUpdateNameCollision = 'doc_update_name_collision'
+# P4-17 review: a create of the reviewed plan that names nothing (no view.create_plan name, sheet.create number or
+# schedule.create name) cannot be checked against the listings: doc-up-realize is refused with this code.
+$script:CatalogueDocUpdatePlanUnnamed = 'doc_update_plan_unnamed'
+# P4-17 review: the codes a step's Build may refuse with; the record carries one when the message starts with it and ':'.
+$script:CatalogueTypedBuildRefusals = @($script:CatalogueDocUpdateNameCollision, $script:CatalogueDocUpdatePlanUnnamed)
+# P4-17 review: a Pages step (query.elements) reads at most this many pages (of its limit each) through next_cursor.
+$script:CataloguePageCap = 20
 # P4-17: which listings a planned name of each kind is checked against (views and schedules share one name space).
 $script:CatalogueDocUpdateNameScopes = @{ views = @('views', 'schedules'); sheets = @('sheets'); schedules = @('views', 'schedules') }
 
@@ -1135,14 +1197,20 @@ function Test-CatalogueDocUpdateRealizePlan($Response) {
     return $reason
 }
 
-# P4-17: what the plan names, per kind of $script:CatalogueDocUpdateNameQueries (sorted ordinally; unnamed items skipped).
+# P4-17: what the plan names, per kind of $script:CatalogueDocUpdateNameQueries (sorted ordinally). A create without
+# its name is not in the list; P4-17 review: Creates[kind] counts every create of that kind, so the session can refuse
+# a plan whose names it could not all read (Get-CatalogueDocUpdateNameRefusal).
 function Get-CatalogueDocUpdatePlanNames($Steps) {
     $names = @{}
+    $creates = @{}
     foreach ($entry in $script:CatalogueDocUpdateNameQueries.GetEnumerator()) {
-        $list = [string[]]@(foreach ($step in @($Steps | Where-Object { $_.Command -eq $entry.Value.Command })) { $name = Get-CatalogueMember $step.Args $entry.Value.Member; if ($null -ne $name -and [string]$name) { [string]$name } })
+        $kindSteps = @($Steps | Where-Object { $_.Command -eq $entry.Value.Command })
+        $list = [string[]]@(foreach ($step in $kindSteps) { $name = Get-CatalogueMember $step.Args $entry.Value.Member; if ($null -ne $name -and [string]$name) { [string]$name } })
         [Array]::Sort($list, [StringComparer]::Ordinal)
         $names[$entry.Key] = $list
+        $creates[$entry.Key] = $kindSteps.Count
     }
+    $names['Creates'] = $creates
     return $names
 }
 
@@ -1162,7 +1230,7 @@ function Test-CatalogueDocUpdateNames($Response, [string]$Kind) {
     }
     $reason = Join-CatalogueReasons @(
         (Test-CatalogueSame 'categoría Revit' $spec.Category (Get-CatalogueMember $readback 'built_in_category')),
-        (Test-CatalogueSame 'truncado (debe leerse la lista entera)' $false (Get-CatalogueMember $readback 'truncated')),
+        (Test-CatalogueDocUpdateWhole $readback),
         (Test-CatalogueSame 'coincidencias = filas leídas' $rows.Count (Get-CatalogueMember $readback 'matched')),
         (Test-CatalogueSame 'returned = filas' $rows.Count (Get-CatalogueMember $readback 'returned')),
         (Test-CatalogueCondition "parámetro '$($spec.Parameter)' leído en cada fila (nombre visible en Revit; sin él no se puede comprobar)" 'todas' @($unread) ($unread.Count -eq 0)))
@@ -1170,14 +1238,40 @@ function Test-CatalogueDocUpdateNames($Response, [string]$Kind) {
     return $reason
 }
 
-# P4-17: the step of one name listing and its query.elements args.
+# P4-17 review: the listing was read to its end (Pages: every page through next_cursor); otherwise why not: more
+# than the session reads ($script:CataloguePageCap pages of the limit), a repeated cursor, or truncated without one.
+function Test-CatalogueDocUpdateWhole($Readback) {
+    $truncated = Get-CatalogueMember $Readback 'truncated'
+    if ($truncated -eq $false) { return Test-CatalogueCondition 'lista entera (truncado)' $false $false $true }
+    $why = switch ([string](Get-CatalogueMember $Readback 'truncated_reason')) {
+        'page_cap' { "la lista supera lo que la sesión lee ($($script:CataloguePageCap) páginas de $($script:CatalogueDocUpdateNameLimit) siguiendo next_cursor)" }
+        'cursor_repeated' { 'el add-in devolvió un cursor repetido (next_cursor ya seguido)' }
+        default { "truncada sin next_cursor para seguir ($(Get-CatalogueMember $Readback 'truncated_reason'))" }
+    }
+    return Test-CatalogueCondition "lista entera (debe leerse completa; $why)" 'no truncada' 'truncada' $false
+}
+
+# P4-17: the step of one name listing and its query.elements args (Pages: read to its end through next_cursor).
 function New-CatalogueDocUpdateNameStep([string]$Kind, [scriptblock]$Build, [scriptblock]$Check) {
     $spec = $script:CatalogueDocUpdateNameQueries[$Kind]
-    return @{ Key = $spec.Key; Es = "Actualización: listar $($spec.Category) ('$($spec.Parameter)') de la copia de prueba; ningún nombre que crea el plan debe existir ya"; Command = 'query.elements'; Expect = @{ Status = 'succeeded' }; Build = $Build; Check = $Check }
+    return @{ Key = $spec.Key; Es = "Actualización: listar $($spec.Category) ('$($spec.Parameter)') de la copia de prueba; ningún nombre que crea el plan debe existir ya"; Command = 'query.elements'; Pages = $true; Expect = @{ Status = 'succeeded' }; Build = $Build; Check = $Check }
 }
 function New-CatalogueDocUpdateNameArgs([string]$Kind) {
     $spec = $script:CatalogueDocUpdateNameQueries[$Kind]
     return [ordered]@{ category = $spec.Category; parameters = @($spec.Parameter); limit = $script:CatalogueDocUpdateNameLimit }
+}
+
+# P4-17 review: a create of the reviewed plan whose name could not be read (fewer names than creates of a kind) is
+# refused before anything is sent; returns the reason (it starts with the code) or $null.
+function Get-CatalogueDocUpdateUnnamed {
+    $plan = $picked['doc_up_realize_plan'].Names
+    $short = @(foreach ($entry in $script:CatalogueDocUpdateNameQueries.GetEnumerator()) {
+        $creates = [int]$plan['Creates'][$entry.Key]
+        $named = @($plan[$entry.Key]).Count
+        if ($named -lt $creates) { "$($entry.Value.Command): $($creates - $named) de $creates sin $($entry.Value.Member)" }
+    })
+    if (!$short.Count) { return $null }
+    return "$($script:CatalogueDocUpdatePlanUnnamed): el plan revisado crea documentación sin nombre ($($short -join ', ')); no se puede comprobar que no exista ya (doc-update --execute no se envía, nada escrito)"
 }
 
 # P4-17: the names the reviewed plan creates that the test copy already has (ignoring case; views and schedules
@@ -1324,7 +1418,7 @@ function Get-CatalogueDocUpdateSteps {
     $steps.Add((New-CatalogueDocUpdateNameStep 'sheets' { Need 'doc_up_realize_plan'; New-CatalogueDocUpdateNameArgs 'sheets' } { param($r) Test-CatalogueDocUpdateNames $r 'sheets' }))
     $steps.Add((New-CatalogueDocUpdateNameStep 'schedules' { Need 'doc_up_realize_plan'; New-CatalogueDocUpdateNameArgs 'schedules' } { param($r) Test-CatalogueDocUpdateNames $r 'schedules' }))
     $steps.Add(@{ Key = 'doc-up-realize'; Es = 'Actualización: doc-update --execute del plan revisado (crea planta, láminas, tablas, colocaciones y la etiqueta de la puerta)'; Command = 'doc-update'; DocUpdate = $true; Expect = @{ Status = 'succeeded' }
-        Build = { Need 'doc_up_elements', 'doc_up_realize_plan', 'doc_up_names_views', 'doc_up_names_sheets', 'doc_up_names_schedules'; if ($collision = Get-CatalogueDocUpdateCollision) { throw $collision }; $elements = $picked['doc_up_elements']; New-CatalogueDocUpdateRequest 0 0 $null $picked['doc_up_realize_plan'].Sha $elements.File $elements.Sha }
+        Build = { Need 'doc_up_elements', 'doc_up_realize_plan', 'doc_up_names_views', 'doc_up_names_sheets', 'doc_up_names_schedules'; if ($unnamedCreate = Get-CatalogueDocUpdateUnnamed) { throw $unnamedCreate }; if ($collision = Get-CatalogueDocUpdateCollision) { throw $collision }; $elements = $picked['doc_up_elements']; New-CatalogueDocUpdateRequest 0 0 $null $picked['doc_up_realize_plan'].Sha $elements.File $elements.Sha }
         Check = { param($r) Test-CatalogueDocUpdateRealize $r } })
     $steps.Add(@{ Key = 'doc-up-move'; Es = "Actualización: mover el muro (0, $shift, 0) mm; la etiqueta de la puerta queda obsoleta"; Command = 'element.move'; Expect = @{ Status = 'succeeded'; Created = 0 }
         Build = { Need 'doc_up_realized'; [ordered]@{ element_uids = @(Created 'doc-up-wall'); vector_mm = @(0, $script:CatalogueDocUpdateShiftMm, 0) } }
@@ -2115,8 +2209,10 @@ function Invoke-CatalogueSequence {
         catch {
             if (Test-CatalogueBlockedMessage $_.Exception.Message) { Block $record $_.Exception.Message 'no enviado, ' }
             else { $record.reason = 'no enviado: ' + $_.Exception.Message }
-            # P4-17: a name collision is typed on the record (code), as a refusal envelope would be.
-            if ($_.Exception.Message.StartsWith($script:CatalogueDocUpdateNameCollision + ':', [StringComparison]::Ordinal)) { $record['code'] = $script:CatalogueDocUpdateNameCollision }
+            # P4-17: a typed Build refusal (name collision, unnamed plan create) puts its code on the record, as a refusal
+            # envelope would; only a message that starts with the code and ':' (anchored, ordinal) is typed.
+            $buildMessage = $_.Exception.Message
+            foreach ($typed in $script:CatalogueTypedBuildRefusals) { if ($buildMessage.StartsWith($typed + ':', [StringComparison]::Ordinal)) { $record['code'] = $typed; break } }
             continue
         }
         if ($wire) {
@@ -2148,7 +2244,8 @@ function Invoke-CatalogueSequence {
             [ordered]@{ record_steps = $stepArgs['record']['steps'].Count; record_document_unique_id = $DocumentUid; fixture = $stepArgs['fixture']; assignments = $stepArgs['assignments']; document = $DocumentUid; record_file = $null } | ConvertTo-Json -Depth 20 -Compress | ConvertFrom-Json
         } else { $requestText | ConvertFrom-Json }
         $watch = [Diagnostics.Stopwatch]::StartNew()
-        try { $result = & $invoker $index $spec.Key $requestText } catch { $watch.Stop(); $aborted = 'error al ejecutar la CLI: ' + $_.Exception.Message; $record.reason = $aborted; continue }
+        $paged = !$wire -and !$docUpdate -and !$docRealized -and $spec.ContainsKey('Pages') -and $spec.Pages
+        try { $result = if ($paged) { Invoke-CataloguePages $invoker $index $spec.Key $requestText $operationId $stepDocument $DocumentUid $spec.Command $stepArgs $record } else { & $invoker $index $spec.Key $requestText } } catch { $watch.Stop(); $aborted = 'error al ejecutar la CLI: ' + $_.Exception.Message; $record.reason = $aborted; continue }
         $watch.Stop()
         if ($docRealized -and $result -is [Collections.IDictionary] -and $result.Contains('record_file')) { $record.request.record_file = [string]$result['record_file'] }
         $record.elapsed_ms = [Math]::Round($watch.Elapsed.TotalMilliseconds, 1)

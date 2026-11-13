@@ -871,10 +871,12 @@ foreach ($case in @(@{ What = 'a sheet without the Sheet Number parameter (anoth
 function Invoke-TestPagedRun([string]$Key, [object[]]$Pages, [switch]$Endless, [switch]$SameCursor) {
     $script:testPageKey = $Key; $script:testPageRows = $Pages; $script:testPageEndless = [bool]$Endless; $script:testPageSame = [bool]$SameCursor
     $script:testPageSent = [Collections.Generic.List[object]]::new()
+    $script:testPageKeys = [Collections.Generic.List[string]]::new()
     return Invoke-FakeSequence -All -Wrap {
         param($index, $key, $json, $inner)
-        if ($key -ne $script:testPageKey) { return (& $inner $index $key $json) }
+        if ($key -cne $script:testPageKey -and $key -notlike "$($script:testPageKey)-p*") { return (& $inner $index $key $json) }
         $script:testPageSent.Add(($json | ConvertFrom-Json))
+        $script:testPageKeys.Add($key)
         $n = $script:testPageSent.Count
         # The fake add-in reads no foreign cursor: it answers the page without it (operation id and args otherwise kept).
         $plain = $json | ConvertFrom-Json
@@ -897,6 +899,8 @@ function Invoke-TestPagedRun([string]$Key, [object[]]$Pages, [switch]$Endless, [
 $paged = Invoke-TestPagedRun 'doc-up-names-sheets' @(@((New-TestNameRow 20 'Sheet Number' 'A1010'), (New-TestNameRow 21 'Sheet Number' 'B1')), @(, (New-TestNameRow 22 'Sheet Number' 'A900')))
 $pagedResult = $paged.Result
 $pagedSent = @($script:testPageSent)
+# Each page is its own invoker call (the CLI invoker writes one new request file per index and key).
+Assert (($script:testPageKeys -join ',') -ceq 'doc-up-names-sheets,doc-up-names-sheets-p2') "P4-17 review: a later page has an invoker key of its own: $($script:testPageKeys -join ',')"
 $pagedStep = Get-Step $pagedResult 'doc-up-names-sheets'
 $pagedPages = @(Get-CatalogueList $pagedStep 'pages')
 Assert ($pagedSent.Count -eq 2 -and $null -eq (Get-CataloguePath $pagedSent[0] 'args.cursor') -and [string](Get-CataloguePath $pagedSent[1] 'args.cursor') -ceq 'page-2' -and [string]$pagedSent[1].operation_id -cne [string]$pagedSent[0].operation_id -and [string]$pagedSent[1].operation_id -like "$($pagedSent[0].operation_id)-*" -and [string](Get-CataloguePath $pagedSent[1] 'args.category') -ceq 'OST_Sheets' -and ((Get-CatalogueList $pagedSent[1].args 'parameters') -join '|') -ceq 'Sheet Number' -and [int](Get-CataloguePath $pagedSent[1] 'args.limit') -eq 5000) "P4-17 review: a truncated listing is followed through next_cursor (same filter, own operation id): $(($pagedSent | ForEach-Object { "$($_.operation_id) $(Get-CataloguePath $_ 'args.cursor')" }) -join '; ')"
