@@ -1536,3 +1536,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 23:53Z relay202 backs off: relay201 still active (relay201-P2-21 e144665 pushed 23:49Z, CI 43332065936 in progress; P4-16 6ee9430 and P10-17 89decbd review fixes green). LOCK restored to relay201's record unchanged; relay202 did no other work.
 **NEXT STEP:** relay201 finishes its integration and releases; next relay checks LOCK as usual.
 - 23:59Z relay201 resumes after a container restart (heartbeat refreshed; relay202 backed off correctly).
+- 00:02Z review fixes green: P4-16 6ee9430 (red 43328761013, green 43328848169; one realized source, re-hash stop, request stub, object-only replies), P10-17 89decbd (red 43320124473, green 43324318365; stop at links, typed check failure, argv byte batches). P2-21 review red 43332065936 confirmed; fix 04df776 pushed (worker lost in container restart; controller finished it). Building integration.
