@@ -1585,3 +1585,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 14:22Z integration 75e54b6 CI 43438371815 success (9/9) → main fast-forwarded (6991358..75e54b6). P2-23, P6-19, P5-18 ✅; new P2-24 (failures behind the named-pipe fake), P2-25 (fake journal retention/dropped entries), P5-19 (packaged MCP parity hardening), P5-20 (skills-lock over a packaged skills dir), P6-21 (cad-brief block-regions flag). Progress 189/207 (91.3 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-13T14:22:11Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P3-17, P7-18 (relay204; P7-18 touches tests/mcp/GenerateTypologyToolTests.cs); then P4-18, P10-20/P10-21/P10-22, P1-18 (relay205/206); then P2-24 (then P2-25, same fake), P5-19 (then P5-20, same PackageLayoutPackTests), P6-20 (serialize with P6-21 on PDF tests). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay208 — 2026-11-13T15:34:15Z (Claude, cloud scheduled)
+- 15:34Z LOCK taken (was FREE; relay207 released 2026-11-13T14:22:11Z).
