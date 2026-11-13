@@ -148,6 +148,12 @@ internal static class GenerateTypologyToolTests
             + Ids(CompactStyle, TypologyPack) + ",\"skills\":" + Ids(CompactStyle)), Document(TypologyPipeline.RunComposed(pack, tunedRequest, options, new[] { compact }, new[] { CompactStyle, TypologyPack })));
         Expect("an extra style pack on the family-4 lot", Request(TypologyPack, 4, 12, 12, 6, 0, ",\"skills\":" + Ids(CompactStyle)),
             Document(TypologyPipeline.RunComposed(pack, request4, options, new[] { compact }, null)));
+        // P7-16: include and code_pack reach TypologyPipeline.Run through the shared parser.
+        var exampleCode = Skill("xx.example.codigo-ejemplo");
+        var includeCode = Expect("include [study] with code_pack xx.example.codigo-ejemplo (P7-16)",
+            Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Ids("study") + ",\"code_pack\":\"xx.example.codigo-ejemplo\""),
+            Document(TypologyPipeline.Run(pack, new TypologyBriefRequest(3, new PrototypeLot(16, 16), 4, 0, new[] { "study" }), new PrototypePipelineOptions(exampleCode, Guid.Parse(Id)))));
+        Check(!includeCode.SequenceEqual(accepted), "the include + code_pack document differs from the P7-14 one (both members really reached)");
 
         // ---- 2. refusals: isError, byte-equal to the CLI stdout line, no CLI file ----
         string Refused(string label, string requestPath, string? expected = null)
@@ -162,13 +168,15 @@ internal static class GenerateTypologyToolTests
         static string RefusedEnvelope(TypologyPipelineResult result) =>
             JsonSerializer.Serialize(new { status = "failed", code = "generate_typology_refused", refusals = result.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) });
         Refused("malformed JSON", Input("bad.json", "{"), Code("generate_typology_request_invalid", "json"));
-        Refused("an unknown member", Input("unknown.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[]")), Code("generate_typology_request_invalid", "request.include"));
+        Refused("an unknown member", Input("unknown.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"revision\":0")), Code("generate_typology_request_invalid", "request.revision"));
         Refused("a missing pack", Input("no-pack.json", "{\"family_size\":3}"), Code("generate_typology_request_invalid", "pack"));
         Refused("skills that is not an array", Input("skills-object.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":{}")), Code("generate_typology_request_invalid", "skills"));
         Refused("a malformed precedence entry", Input("precedence-bad.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":[\"" + TypologyPack + "\",\"Not An Id\"]")),
             Code("generate_typology_request_invalid", "precedence[1]"));
         Refused("65 skills (over the limit)", Input("skills-65.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(Enumerable.Repeat(CompactStyle, 65).ToArray()))),
             Code("generate_typology_request_invalid", "skills"));
+        Refused("a code_pack that is not a code skill (P7-16)", Input("code-pack-kind.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + CompactStyle + "\"")),
+            Code("generate_typology_code_pack_invalid", "kind"));
         Refused("an unknown typology pack", Input("unknown-pack.json", Request("xx.no-such.pack", 3, 16, 16, 4, 0)), Code("generate_typology_pack_unavailable", "input_not_found"));
         Refused("an unknown extra skill", Input("unknown-skill.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle, "xx.no-such.skill"))),
             JsonSerializer.Serialize(new { status = "failed", code = "generate_typology_skill_unavailable", detail = "input_not_found", skill = "xx.no-such.skill" }));
