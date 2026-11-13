@@ -123,6 +123,7 @@ static class MirrorDriftLoopChecks
         Same(journalFirst, journalSecond, "journal: ");
         FakeOptionChecks(root, pwsh);
         FakeDiffChecks(root, pwsh);
+        FakeBaselineChecks(root, pwsh);
     }
 
     static void Same(Loop? first, Loop? second, string scenario)
@@ -879,10 +880,10 @@ static class MirrorDriftLoopChecks
         $uLevel = Level $u
         $r.u_wall = Created (Ok $u 'u-wall' 'wall.create' (Wall $uLevel (Straight 0 0 1000 0)))
         $null = Invoke-FakeRevitWire $u (Line 'null')
-        $r.u_before = $u.JournalBaseline | ConvertTo-Json -Depth 20 -Compress
+        $r.u_before = (Get-FakeJournalBaseline $u $DocumentUid $document).Snapshot | ConvertTo-Json -Depth 20 -Compress
         $null = Ok $u 'u-move' 'element.move' ('{"element_uids":["' + $r.u_wall + '"],"vector_mm":[0,250,0]}')
         $r.u_reply = Invoke-FakeRevitWire $u (Line 'null')
-        $r.u_after = $u.JournalBaseline | ConvertTo-Json -Depth 20 -Compress
+        $r.u_after = (Get-FakeJournalBaseline $u $DocumentUid $document).Snapshot | ConvertTo-Json -Depth 20 -Compress
         # Hand-built snapshot pairs straight through Get-FakeSnapshotDiff.
         # (PowerShell names ignore case: $caseDiffs, not a name that would overwrite the $Cases parameter.)
         $caseDiffs = [ordered]@{}
@@ -1001,6 +1002,164 @@ static class MirrorDriftLoopChecks
                 Check(production.Contains("\"changed\":[{", StringComparison.Ordinal) || production.Contains("\"added\":[{", StringComparison.Ordinal), "case " + item.Name + ": the differ reports a change (the case is not vacuous)", production);
                 Check(fake == Uniform(production), "case " + item.Name + ": Get-FakeSnapshotDiff equals MirrorSnapshotDiffer.Compare over the same snapshots", fake + " vs " + production);
             }
+    }
+
+    // P2-22: the -ExternalEdits fake keeps one journal.read baseline per (document UniqueId, path), as
+    // MirrorJournalTracker does (both compared ignoring case), so switching the fake's document never diffs against
+    // another document's snapshot. One fake state, in process: document A is read (baseline), an external move under A,
+    // a first read of document B (no baseline of its own: baseline_existed false, every element added, no entries), a
+    // peek of A (still A's baseline and A's entry), an external move under B, non-peek reads of A and B (each its own
+    // entry and baseline), a peek of A under an upper-case path (same key), then the fake's DocumentUid switched (a new
+    // document at path A: no baseline), an external move under it, its second read, and back to the first UniqueId
+    // (A's own baseline, not the other document's entry). Every reply equals RevitJournalQuery.RawRead over one Core
+    // MirrorJournalTracker fed the same journal changes and snapshots, member for member (diff included).
+    const string OtherDocumentUid = "5e1f0a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b-0000e2e2";
+
+    const string BaselineScript = """
+        param([string]$Executor, [string]$DocumentUid, [string]$OtherUid)
+        $ErrorActionPreference = 'Stop'
+        . $Executor
+        $a = '/fake/Drift-Doc-A.rvt'; $b = '/fake/Drift-Doc-B.rvt'
+        function Line([string]$Path, [string]$Journal) { '{"DocumentPath":"' + $Path + '","Operation":"journal.read","UniqueId":null,"Metres":[],"Journal":' + $Journal + '}' }
+        function Env([string]$Path, [string]$Id, [string]$Command, [string]$Arguments) { '{"protocol_version":1,"operation_id":"' + $Id + '","document":{"path":"' + $Path + '","unique_id":"' + $DocumentUid + '"},"command":"' + $Command + '","args":' + $Arguments + '}' }
+        function Ok($State, [string]$Path, [string]$Id, [string]$Command, [string]$Arguments) {
+            $reply = Invoke-FakeRevitCommand $State (Env $Path $Id $Command $Arguments)
+            if (($reply | ConvertFrom-Json).status -ne 'succeeded') { throw "$Id ($Command) did not succeed: $reply" }
+            return $reply
+        }
+        function Wire($State, [string]$Line) { try { Invoke-FakeRevitWire $State $Line } catch { '<threw: ' + $_.Exception.Message + '>' } }
+        function MoveWall($State, [string]$Path, [string]$Id, [string]$Uid, [string]$Vector) { $null = Ok $State $Path $Id 'element.move' ('{"element_uids":["' + $Uid + '"],"vector_mm":' + $Vector + '}') }
+        $r = [ordered]@{}
+        $s = New-FakeRevitState $DocumentUid @{} @('x-move-a', 'x-move-b', 'x-move-u', 'x-move-c')
+        $level = [string]@((Ok $s $a 'levels' 'query.levels' '{}' | ConvertFrom-Json).readback.levels)[0].unique_id
+        $r.wall = [string]@((Ok $s $a 'wall-1' 'wall.create' ('{"level":"' + $level + '","type":"T1","height_mm":3000,"curve":{"kind":"line","start":[0,0],"end":[5000,0]}}') | ConvertFrom-Json).created)[0]
+        $r.s0 = Ok $s $a 'snapshot-0' 'query.snapshot' '{}'
+        $r.a0 = Wire $s (Line $a 'null')
+        MoveWall $s $a 'x-move-a' $r.wall '[250,0,0]'
+        $r.s1 = Ok $s $b 'snapshot-1' 'query.snapshot' '{}'
+        $r.b0 = Wire $s (Line $b 'null')
+        $r.a1 = Wire $s (Line $a '{"peek":true}')
+        MoveWall $s $b 'x-move-b' $r.wall '[0,400,0]'
+        $r.s2 = Ok $s $a 'snapshot-2' 'query.snapshot' '{}'
+        $r.a2 = Wire $s (Line $a 'null')
+        $r.b1 = Wire $s (Line $b 'null')
+        $r.a3 = Wire $s (Line $a.ToUpperInvariant() '{"peek":true}')
+        # Test-only lever: the fake has no document.open, so the open document's UniqueId is switched on the state itself.
+        $s.DocumentUid = $OtherUid
+        $r.su0 = Ok $s $a 'snapshot-u0' 'query.snapshot' '{}'
+        $r.u0 = Wire $s (Line $a 'null')
+        MoveWall $s $a 'x-move-u' $r.wall '[100,0,0]'
+        $r.su1 = Ok $s $a 'snapshot-u1' 'query.snapshot' '{}'
+        $r.u1 = Wire $s (Line $a 'null')
+        $s.DocumentUid = $DocumentUid
+        $r.s3 = Ok $s $a 'snapshot-3' 'query.snapshot' '{}'
+        $r.a4 = Wire $s (Line $a 'null')
+        # The entry filter ignores the path's case: a peek from sequence 0 under the upper-case path lists A's entry 1.
+        $r.a5 = Wire $s (Line $a.ToUpperInvariant() '{"peek":true,"after_sequence":0}')
+        # The baseline key ignores the UniqueId's case: the upper-cased UniqueId is A's document (its baseline, its entries).
+        $s.DocumentUid = $DocumentUid.ToUpperInvariant()
+        MoveWall $s $a 'x-move-c' $r.wall '[0,-100,0]'
+        $r.s4 = Ok $s $a 'snapshot-4' 'query.snapshot' '{}'
+        $r.a6 = Wire $s (Line $a 'null')
+        $r | ConvertTo-Json -Compress
+        """;
+
+    static void FakeBaselineChecks(string root, string pwsh)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "fake baseline: " + name, detail);
+        var scratch = Path.Combine(Path.GetTempPath(), "bim-drift-baseline-" + Guid.NewGuid().ToString("N"));
+        Temporary.Add(scratch);
+        Directory.CreateDirectory(scratch);
+        var script = Path.Combine(scratch, "baseline.ps1");
+        File.WriteAllText(script, BaselineScript, Utf8);
+        var start = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = Utf8 };
+        foreach (var argument in new[] { "-NoProfile", "-File", script, "-Executor", Path.Combine(root, "tests", "integration", "fake-revit-command-executor.ps1"), "-DocumentUid", DocumentUid, "-OtherUid", OtherDocumentUid }) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("pwsh did not start");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(CallTimeoutMs)) { Kill(process); Check(false, "the in-process baseline script finishes", "timed out"); return; }
+        process.WaitForExit();
+        var output = stdout.Result.Trim();
+        if (process.ExitCode != 0 || !output.StartsWith('{')) { Check(false, "the in-process baseline script runs", "exit " + process.ExitCode + " " + Head(output) + " " + Head(stderr.Result.ReplaceLineEndings(" "))); return; }
+        using var parsed = JsonDocument.Parse(output);
+        string R(string name) => parsed.RootElement.TryGetProperty(name, out var value) ? value.GetString() ?? "" : "<missing>";
+        const string a = "/fake/Drift-Doc-A.rvt", b = "/fake/Drift-Doc-B.rvt";
+        var wall = R("wall");
+        static MirrorSnapshot Snap(string response) { using var reply = JsonDocument.Parse(response); return MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText()); }
+        MirrorSnapshot s0, s1, s2, su0, su1, s3, s4;
+        try { (s0, s1, s2, su0, su1, s3, s4) = (Snap(R("s0")), Snap(R("s1")), Snap(R("s2")), Snap(R("su0")), Snap(R("su1")), Snap(R("s3")), Snap(R("s4"))); }
+        catch (Exception error) when (error is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "the fake's query.snapshot readbacks parse as snapshots", error.Message + " | " + Head(output)); return; }
+        Check(su0.DocumentUid == OtherDocumentUid && s3.DocumentUid == DocumentUid, "the snapshots after the UniqueId switch name the other document, and the first one again after switching back", su0.DocumentUid + " / " + s3.DocumentUid);
+
+        // The production side: one Core journal and tracker, the same add-in write (skipped), external commits and reads.
+        var tick = 0;
+        var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
+        var tracker = new MirrorJournalTracker(journal);
+        void Record(string uid, string path, string name, string[] modified, bool addIn = false) =>
+            journal.Record(new MirrorJournalChange(uid, "TransactionCommitted", new[] { name }, addIn ? new[] { "x" } : Array.Empty<string>(), modified, Array.Empty<long>(), addIn) { DocumentPath = path });
+        string Read(MirrorSnapshot snapshot, string path, bool peek = false, long? after = null) => RevitJournalQuery.RawRead(tracker, true, snapshot, path, new MirrorJournalReadOptions(after, peek));
+        Record(DocumentUid, a, "BIM Agentic OS wall.create", Array.Empty<string>(), addIn: true);
+        var production = new Dictionary<string, string>();
+        production["a0"] = Read(s0, a);
+        Record(DocumentUid, a, "Move", new[] { wall });
+        production["b0"] = Read(s1, b);
+        production["a1"] = Read(s1, a, peek: true);
+        Record(DocumentUid, b, "Move", new[] { wall });
+        production["a2"] = Read(s2, a);
+        production["b1"] = Read(s2, b);
+        production["a3"] = Read(s2, a.ToUpperInvariant(), peek: true);
+        production["u0"] = Read(su0, a);
+        Record(OtherDocumentUid, a, "Move", new[] { wall });
+        production["u1"] = Read(su1, a);
+        production["a4"] = Read(s3, a);
+        production["a5"] = Read(s3, a.ToUpperInvariant(), peek: true, after: 0);
+        Record(DocumentUid.ToUpperInvariant(), a, "Move", new[] { wall });
+        production["a6"] = Read(s4, a);
+
+        // What each read is about, from the fake's reply: document, baseline_existed, baseline_sequence, entry sequences.
+        string Shape(string reply)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(reply);
+                var report = document.RootElement.GetProperty("report");
+                return report.GetProperty("document_unique_id").GetString()![^4..] + " existed=" + report.GetProperty("baseline_existed").GetBoolean().ToString().ToLowerInvariant()
+                    + " since=" + report.GetProperty("baseline_sequence").GetInt64().ToString(CultureInfo.InvariantCulture)
+                    + " entries=[" + string.Join(",", report.GetProperty("entries").EnumerateArray().Select(entry => entry.GetProperty("sequence").GetInt64().ToString(CultureInfo.InvariantCulture))) + "]";
+            }
+            catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentException) { return "<no report> " + Head(reply); }
+        }
+        string Diff(string reply)
+        {
+            try { using var document = JsonDocument.Parse(reply); return Uniform(document.RootElement.GetProperty("report").GetProperty("diff").GetRawText()); }
+            catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException) { return "<no report.diff> " + Head(reply); }
+        }
+        // The differ holds a change for the reads that compare two different states (the diff checks are not vacuous).
+        Check(MirrorSnapshotDiffer.Compare(s0, s1).Changed.Count == 1 && MirrorSnapshotDiffer.Compare(s1, s2).Changed.Count == 1 && MirrorSnapshotDiffer.Compare(s0, s2).Changed.Count == 1
+            && MirrorSnapshotDiffer.Compare(su0, su1).Changed.Count == 1 && MirrorSnapshotDiffer.Compare(s2, s3).Changed.Count == 1 && MirrorSnapshotDiffer.Compare(s3, s4).Changed.Count == 1, "MirrorSnapshotDiffer sees the wall moved between each pair of snapshots the reads compare",
+            MirrorSnapshotDiffer.Compare(s0, s1).ToJson() + " | " + MirrorSnapshotDiffer.Compare(s2, s3).ToJson());
+        var cases = new (string Name, string Shape, MirrorSnapshot? Before, MirrorSnapshot After, string What)[]
+        {
+            ("a0", "e2e1 existed=false since=0 entries=[]", null, s0, "the first read of document A: no baseline, every element added"),
+            ("b0", "e2e1 existed=false since=0 entries=[]", null, s1, "the first read of document B after A's baseline and A's external move: B has no baseline of its own (not A's), every element added, A's entry not listed"),
+            ("a1", "e2e1 existed=true since=0 entries=[1]", s0, s1, "a peek of A after B's first read: still A's own baseline (snapshot 0, sequence 0) and A's entry"),
+            ("a2", "e2e1 existed=true since=0 entries=[1]", s0, s2, "a non-peek read of A after B's external move: A's baseline, only A's entry"),
+            ("b1", "e2e1 existed=true since=1 entries=[2]", s1, s2, "the second read of B: B's own baseline (snapshot 1, sequence 1), only B's entry"),
+            ("a3", "e2e1 existed=true since=2 entries=[]", s2, s2, "a peek of A under the upper-case path: the same baseline key (case ignored), empty diff"),
+            ("u0", "e2e2 existed=false since=0 entries=[]", null, su0, "the first read after the fake's document UniqueId changed at path A: no baseline for that document, every element added"),
+            ("u1", "e2e2 existed=true since=2 entries=[3]", su0, su1, "the second read of the other document: its own baseline and its own entry"),
+            ("a4", "e2e1 existed=true since=2 entries=[]", s2, s3, "back to the first UniqueId at path A: A's own baseline (snapshot 2, sequence 2), the other document's entry not listed"),
+            ("a5", "e2e1 existed=true since=3 entries=[1]", s3, s3, "a peek from sequence 0 under the upper-case path: the entry filter ignores the path's case and lists A's entry 1"),
+            ("a6", "E2E1 existed=true since=3 entries=[4]", s3, s4, "a read with the fake's UniqueId upper-cased: the same document (case ignored), A's baseline (snapshot 3, sequence 3) and the entry recorded under that UniqueId"),
+        };
+        foreach (var (name, shape, before, after, what) in cases)
+        {
+            var reply = R(name);
+            Check(Shape(reply) == shape, "reply " + name + ": " + what + " (" + shape + ")", Shape(reply));
+            var expected = Uniform(MirrorSnapshotDiffer.Compare(before, after).ToJson());
+            Check(Diff(reply) == expected, "reply " + name + ": report.diff is MirrorSnapshotDiffer.Compare over that document's own baseline", Diff(reply) + " vs " + expected);
+            Check(Uniform(reply) == Uniform(production[name]), "reply " + name + " equals RevitJournalQuery.RawRead over one two-document Core tracker, member for member (diff included)", Uniform(reply) + " vs " + Uniform(production[name]));
+        }
     }
 
     // Snapshot pairs (MirrorSnapshot.ToJson shape) for the differ's field branches the fake's own snapshots never reach.

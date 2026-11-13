@@ -27,10 +27,12 @@
 # max_entries paging, current_sequence, baseline_sequence; options are read as MirrorJournalReadOptions.Parse reads them
 # (exact-case names, an object or null, no duplicates, the same journal_options_invalid codes). Fidelity is semantic:
 # replies parse to the production members and values, not the same escaping bytes (ConvertTo-Json, not Utf8JsonWriter).
-# The baseline is one per fake state (global), not per document as in MirrorJournalTracker. P2-20: with ExternalEdits the
-# baseline is the last non-peek read's snapshot and report.diff is MirrorSnapshotDiffer.Compare(baseline or none, current
-# snapshot), member for member (Get-FakeSnapshotDiff). An -ExternalEdits list with no ids is off. Without it every reply
-# is the pre-P2-18 one (diff included), byte for byte.
+# P2-20: with ExternalEdits the baseline is the last non-peek read's snapshot and report.diff is
+# MirrorSnapshotDiffer.Compare(baseline or none, current snapshot), member for member (Get-FakeSnapshotDiff).
+# P2-22: with ExternalEdits there is one baseline (snapshot and sequence) per (document UniqueId, path), both compared
+# ignoring case, as in MirrorJournalTracker, and entries are those of that document and path; without it the legacy
+# baseline stays one per fake state. An -ExternalEdits list with no ids is off. Without it every reply is the pre-P2-18
+# one (diff included), byte for byte.
 # It proves nothing about Revit.
 Set-StrictMode -Version Latest
 
@@ -45,7 +47,27 @@ function New-FakeRevitState([string]$DocumentUid, [hashtable]$Faults = @{}, [str
     @{ DocumentUid = $DocumentUid; Receipts = @{}; Received = [Collections.Generic.List[string]]::new(); Next = 0; Faults = $Faults; Episode = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0'
         Elements = [ordered]@{}; Cache = @{}; Placed = @{}; ElementNumber = 100000; SkippedAddIn = 0; JournalBaseline = $null; Snapshots = 0; DocumentPath = $null
         Copies = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        ExternalEdits = $external; Journal = [Collections.Generic.List[object]]::new(); JournalSequence = 0; JournalBaselineSequence = 0 }
+        ExternalEdits = $external; Journal = [Collections.Generic.List[object]]::new(); JournalSequence = 0
+        JournalBaselines = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase) }
+}
+
+# P2-22: the ExternalEdits baseline of one document ({ Snapshot; Sequence }) or $null; keyed by UniqueId, then path, each
+# ignoring case (MirrorJournalTracker's DocumentKeyComparer).
+function Get-FakeJournalBaseline($State, [string]$DocumentUid, [string]$DocumentPath) {
+    $paths = $null
+    if (!$State.JournalBaselines.TryGetValue($DocumentUid, [ref]$paths)) { return $null }
+    $baseline = $null
+    if (!$paths.TryGetValue($DocumentPath, [ref]$baseline)) { return $null }
+    return $baseline
+}
+
+function Set-FakeJournalBaseline($State, [string]$DocumentUid, [string]$DocumentPath, $Snapshot, [long]$Sequence) {
+    $paths = $null
+    if (!$State.JournalBaselines.TryGetValue($DocumentUid, [ref]$paths)) {
+        $paths = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+        $State.JournalBaselines[$DocumentUid] = $paths
+    }
+    $paths[$DocumentPath] = @{ Snapshot = $Snapshot; Sequence = $Sequence }
 }
 
 # P2-18: the Revit transaction name a user edit of that kind commits under (what DocumentChanged reports).
@@ -1013,10 +1035,11 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
                 }
             }
             $last = [long]$State.JournalSequence
-            $since = if ($null -ne $State.JournalBaseline) { [long]$State.JournalBaselineSequence } else { [long]0 }
+            $stored = Get-FakeJournalBaseline $State $State.DocumentUid $path
+            $since = if ($null -ne $stored) { [long]$stored.Sequence } else { [long]0 }
             if ($null -eq $after) { $after = $since }
             if ($after -gt $last) { return New-FakeJournalFailure 'journal_after_sequence_invalid' }
-            $candidates = @($State.Journal | Where-Object { $_.sequence -gt $after -and [string]::Equals($_.document_path, $path, [StringComparison]::OrdinalIgnoreCase) })
+            $candidates = @($State.Journal | Where-Object { $_.sequence -gt $after -and [string]::Equals($_.document_unique_id, $State.DocumentUid, [StringComparison]::OrdinalIgnoreCase) -and [string]::Equals($_.document_path, $path, [StringComparison]::OrdinalIgnoreCase) })
             $page = [Collections.Generic.List[object]]::new()
             $ids = 0
             foreach ($entry in $candidates) {
@@ -1028,16 +1051,15 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
             $baselineSequence = $since; $currentSequence = $last; $afterSequence = $after
             $nextAfter = if ($hasMore) { $page[$page.Count - 1].sequence } else { $last }
             $entries = $page.ToArray()
-            if (!$peek) { $State.JournalBaselineSequence = $last }
-        }
-        $baselineExisted = $null -ne $State.JournalBaseline
-        if ($null -ne $State.ExternalEdits) {
             # P2-20: MirrorSnapshotDiffer.Compare(baseline snapshot or none, current snapshot); the baseline is the snapshot.
+            # P2-22: that document's own baseline; a non-peek read stores this snapshot and sequence for it.
+            $baselineExisted = $null -ne $stored
             $snapshot = Get-FakeSnapshot $State
-            $diff = Get-FakeSnapshotDiff $State.DocumentUid $(if ($baselineExisted) { $State.JournalBaseline } else { $null }) $snapshot
-            if (!$peek) { $State.JournalBaseline = $snapshot }
+            $diff = Get-FakeSnapshotDiff $State.DocumentUid $(if ($baselineExisted) { $stored.Snapshot } else { $null }) $snapshot
+            if (!$peek) { Set-FakeJournalBaseline $State $State.DocumentUid $path $snapshot $last }
         }
         else {
+            $baselineExisted = $null -ne $State.JournalBaseline
             # Pre-P2-20 diff (unchanged replies): sources only, snapshot order, changed always empty.
             $current = [ordered]@{}
             foreach ($source in (Get-FakeSnapshot $State).sources) { $current[[string]$source.unique_id] = [string]$source.category }
