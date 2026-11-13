@@ -1576,3 +1576,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 12:20Z integration 6991358 CI 43421285496 success (9/9) → main fast-forwarded (b1240e0..6991358). P1-24, P4-17, P10-19 ✅; Phase 10 next batch P10-20 (bcf-export verb), P10-21 (jurisdiction-resolve verb), P10-22 (typed dangling staged links). Progress 186/202 (92.1 %). Worktrees retired (branches on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-13T12:20:03Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P2-23, P6-19 (then P6-20, PDF fixtures) (relay203); then P3-17, P5-18 or P7-18 (relay204; P5-18 and P7-18 both touch tests/mcp generate_typology tests — serialize); then P4-18, P10-20/P10-21/P10-22, P1-18. ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay207 — 2026-11-13T13:03:29Z (Claude, cloud scheduled)
+- 13:03Z LOCK taken (was FREE; relay206 released 2026-11-13T12:20:03Z).
