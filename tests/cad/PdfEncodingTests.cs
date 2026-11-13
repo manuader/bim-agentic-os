@@ -137,7 +137,7 @@ internal static class PdfEncodingTests
                 Texts(latin) + " " + Warnings(latin));
 
             var unknown = Page("BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\001\\002) Tj (\\006A) Tj [(\\003) -300 (\\004\\005)] TJ (\\006) Tj ET",
-                Font("<< /BaseEncoding /WinAnsiEncoding /Differences [1 /foo /afii10017 /uniD800 /uni00f1 /u110000 /ntilde 65 /bar] >>"));
+                Font("<< /BaseEncoding /WinAnsiEncoding /Differences [1 /foo /afii10017 /uniD800 /uni00f1 /u110000 /ntilde 65 /notaglyph] >>"));
             C(Texts(unknown) == "\\u0001\\u0002|\\u00F1A|\\u0003 \\u0004\\u0005|\\u00F1", "unknown glyph names (afii, surrogate or lower-case uni, past U+10FFFF) keep today's byte decoding",
                 Texts(unknown));
             C(Warnings(unknown) == "encoding-glyph-unknown@1:4:3;encoding-glyph-unknown@1:4:4;encoding-glyph-unknown@1:4:5", "each show of an unknown glyph name warns encoding-glyph-unknown",
