@@ -605,12 +605,16 @@ internal static class CatalogueReportCommand
     // has that step, so every other record keeps its bytes. Nothing recorded is trusted for the map: entries, sha256 and
     // bytes are the file's, given only when it hashes to the step reply (state match). States, in order: not_sent, no_reply
     // (no JSON object reply, or detail "status": neither succeeded nor failed), link_refused (detail catalogue-requests
-    // or folder: never read), missing_folder; for a succeeded reply missing_file, unreadable (detail the input_* code;
+    // or folder: never read), missing_folder; for a succeeded reply first report.json (the kept CLI line): report_mismatch
+    // (detail report_missing; report_invalid: not a JSON object with a text status; report_differs: its status, sha256
+    // [ignoring case], entries or bytes differ from the reply) or unreadable, then realized.json: missing_file, unreadable (detail the input_* code;
     // read up to DocRealized.MaxCanonicalBytes, the doc-update --realized cap), mismatch (detail sha256 or bytes: the file
     // differs from the reply), invalid (detail json: not an object of texts without duplicate keys; entries: another
     // count than replied), match; for a failed reply refused (code = report.json's, equal to the reply's) or
     // report_mismatch (detail output_present, report_missing, report_invalid or report_differs), unreadable for an
-    // unreadable report.json (read up to MaxSummaryBytes).
+    // unreadable report.json (read up to MaxSummaryBytes). reply_sha256 is printed lower-cased. A folder or file swapped
+    // between the link checks and the reads is accepted: it needs write access to the run folder, and BoundedInput still
+    // refuses a link or non-regular file at read time.
     static void WriteRealized(Utf8JsonWriter writer, Step[] steps, string runDirectory)
     {
         var step = steps.FirstOrDefault(s => s.Key == RealizedKey && s.Command == RealizedCommand);
@@ -624,9 +628,7 @@ internal static class CatalogueReportCommand
         {
             replyStatus = StringMember(line, "status");
             replyCode = StringMember(line, "code");
-            if (StringMember(line, "sha256") is { } sha && Sha256Any.IsMatch(sha)) replySha = sha;
-            if (Member(line, "entries") is { ValueKind: JsonValueKind.Number } e && e.TryGetInt32(out var n) && n >= 0) replyEntries = n;
-            if (Member(line, "bytes") is { ValueKind: JsonValueKind.Number } b && b.TryGetInt64(out var m) && m >= 0) replyBytes = m;
+            (replySha, replyEntries, replyBytes) = LineFields(line);
         }
         string state;
         string? detail = null, code = null, sha256 = null, diskSha = null;
@@ -642,8 +644,13 @@ internal static class CatalogueReportCommand
         else if (!Directory.Exists(folder)) state = "missing_folder";
         else if (replyStatus == "succeeded")
         {
-            var (content, problem) = ReadRun(Path.Combine(folder, "realized.json"), DocRealized.MaxCanonicalBytes);
-            if (content is null) { state = problem == BoundedInput.NotFound ? "missing_file" : "unreadable"; if (state == "unreadable") detail = problem; }
+            // The line the invoker kept (report.json) must say what the record's reply says before the map is read.
+            var (kept, keptProblem) = ReadRun(Path.Combine(folder, "report.json"), MaxSummaryBytes);
+            var (content, problem) = kept is null ? (null, null) : ReadRun(Path.Combine(folder, "realized.json"), DocRealized.MaxCanonicalBytes);
+            if (kept is null) { state = keptProblem == BoundedInput.NotFound ? "report_mismatch" : "unreadable"; detail = keptProblem == BoundedInput.NotFound ? "report_missing" : keptProblem; }
+            else if (KeptFields(kept) is not { } keptLine) { state = "report_mismatch"; detail = "report_invalid"; }
+            else if (keptLine != ("succeeded", replySha, replyEntries, replyBytes)) { state = "report_mismatch"; detail = "report_differs"; }
+            else if (content is null) { state = problem == BoundedInput.NotFound ? "missing_file" : "unreadable"; if (state == "unreadable") detail = problem; }
             else
             {
                 diskSha = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
@@ -686,6 +693,29 @@ internal static class CatalogueReportCommand
         WriteText(writer, "disk_sha256", diskSha);
         if (diskBytes is { } v) writer.WriteNumber("disk_bytes", v); else writer.WriteNull("disk_bytes");
         writer.WriteEndObject();
+    }
+
+    // sha256 (64 hex, lower-cased), entries and bytes of a doc-realized line; each null when absent or malformed.
+    static (string? Sha, int? Entries, long? Bytes) LineFields(JsonElement line)
+    {
+        string? sha = StringMember(line, "sha256") is { } text && Sha256Any.IsMatch(text) ? text.ToLowerInvariant() : null;
+        int? entries = Member(line, "entries") is { ValueKind: JsonValueKind.Number } e && e.TryGetInt32(out var n) && n >= 0 ? n : null;
+        long? bytes = Member(line, "bytes") is { ValueKind: JsonValueKind.Number } b && b.TryGetInt64(out var m) && m >= 0 ? m : null;
+        return (sha, entries, bytes);
+    }
+
+    // status, sha256, entries and bytes of a kept line (a JSON object with a text status); null when it is not one.
+    static (string Status, string? Sha, int? Entries, long? Bytes)? KeptFields(byte[] content)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(Decode(content));
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || HasDuplicateKey(root) || StringMember(root, "status") is not { } status) return null;
+            var (sha, entries, bytes) = LineFields(root);
+            return (status, sha, entries, bytes);
+        }
+        catch (JsonException) { return null; }
     }
 
     // A file of the run folder through BoundedInput (regular files only, links refused, bounded): its bytes, or the
