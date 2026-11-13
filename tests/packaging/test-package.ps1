@@ -734,6 +734,22 @@ try {
                 Assert ($resolved -ceq (Join-Path $p18Real 'inner')) "P10-18: $linked must resolve to the physical real/inner: '$resolved'"
             }
             Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'abs/missing')) -ceq (Join-Path $p18Real 'missing')) "P10-18: a missing leaf under a link resolves its existing prefix: '$(Resolve-PackagePhysicalPath (Join-Path $p18 'abs/missing'))'"
+            # '..' after a link steps to the physical parent of the link target (kernel semantics), never a lexical collapse.
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'deep') -Target (Join-Path $p18 'real/inner') | Out-Null
+            foreach ($dotted in @(@('deep/..', $p18Real), @('deep/../inner', (Join-Path $p18Real 'inner')), @('deep/../..', (Split-Path $p18Real)), @('real/./inner/../inner', (Join-Path $p18Real 'inner')))) {
+                $resolved = Resolve-PackagePhysicalPath (Join-Path $p18 $dotted[0])
+                Assert ($resolved -ceq $dotted[1]) "P10-18: $($dotted[0]) must resolve component by component to '$($dotted[1])': '$resolved'"
+            }
+            # A link loop (a -> a) is refused, not followed forever: the resolver throws, and package.ps1 with such a temp
+            # directory is a typed "package failed: temp directory ..." refusal leaving no output or staging directory.
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'loop') -Target 'loop' | Out-Null
+            $loopError = $null
+            try { [void](Resolve-PackagePhysicalPath (Join-Path $p18 'loop/x')) } catch { $loopError = $_.Exception.Message }
+            Assert ($loopError -match 'too many levels of symbolic links') "P10-18: a self-loop link must throw 'too many levels of symbolic links': '$loopError'"
+            $loopOut = Join-Path $p18 'loop release'
+            $loopRun = Invoke-ScriptWithTemp (Join-Path $p18 'loop') $packager @('-OutputDirectory', $loopOut, '-Dotnet', $Dotnet)
+            Assert ($loopRun.Code -eq 1 -and $loopRun.Output -match 'package failed: temp directory .* cannot be resolved to a physical path: too many levels of symbolic links') "P10-18: package.ps1 with a looping temp directory must refuse typed (exit 1, package failed: temp directory ...): exit $($loopRun.Code): $(Get-Tail $loopRun.Output)"
+            Assert (!(Test-Path -LiteralPath $loopOut) -and @(Get-ChildItem -LiteralPath $p18 -Force -Directory | Where-Object { $_.Name -like '*.partial-*' }).Count -eq 0) 'P10-18: a refused looping temp must leave no output or staging directory'
             if ($IsMacOS) { Assert ((Resolve-PackagePhysicalPath '/var/tmp') -ceq '/private/var/tmp') "P10-18: macOS /var/tmp must resolve to /private/var/tmp: '$(Resolve-PackagePhysicalPath '/var/tmp')'" }
         }
     } catch { $failures.Add("P10-18 physical path checks threw: $($_.Exception.Message)") }

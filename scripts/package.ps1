@@ -67,9 +67,13 @@ $id = [Guid]::NewGuid().ToString('N')
 $parent = Split-Path $output
 if ($parent) { [void][IO.Directory]::CreateDirectory($parent) }
 $staging = "$output.partial-$id"
-# P10-18: the build tree at its physical path (macOS temp is reached through /var -> /private/var; see package-common).
-$build = Join-Path (Resolve-PackagePhysicalPath ([IO.Path]::GetTempPath())) "bim-package-src-$id"
+$build = $null
 try {
+    # P10-18: the build tree at its physical path (macOS temp is reached through /var -> /private/var; see package-common).
+    # Inside the try, so an unresolvable temp (a link loop) is a "package failed: temp directory ..." refusal.
+    try { $tempPhysical = Resolve-PackagePhysicalPath ([IO.Path]::GetTempPath()) }
+    catch { throw "temp directory $([IO.Path]::GetTempPath()) cannot be resolved to a physical path: $($_.Exception.Message)" }
+    $build = Join-Path $tempPhysical "bim-package-src-$id"
     foreach ($relative in $tracked) {
         $target = Join-Path $build $relative
         [void][IO.Directory]::CreateDirectory((Split-Path $target))
@@ -114,6 +118,6 @@ try {
     [Console]::Error.WriteLine("package failed: $($_.Exception.Message)")
     exit 1
 } finally {
-    foreach ($path in $staging, $build) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue } }
+    foreach ($path in $staging, $build) { if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue } }
 }
 "PACKAGED $version ($commit$(if ($dirty) { ', dirty' })) -> $output"
