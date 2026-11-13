@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Text.Json;
 
 // P7-17: skill pack lookup against a package really built by scripts/package.ps1 (not a hand-made layout). Oracles,
@@ -15,6 +17,11 @@ using System.Text.Json;
 //      (whose own skills/ are then made malformed), the run falls back to that repository and writes the repository
 //      runs' bytes and stdout again, while the package with both markers reads its malformed skills (*_pack_invalid),
 //      so the fallback is observable.
+//   5. P5-18: the packaged MCP server (mcp/Bim.Mcp.dll over stdio, the same package) finds the packaged skills/ too:
+//      generate_typology returns the packaged CLI output file bytes ("skills":[] gives the pin a8c62da5..., and the
+//      request with skills), every refusal is the packaged CLI stdout line byte for byte (malformed packaged skill.json
+//      with a repository above -> generate_typology_pack_invalid json_invalid; a removed marker -> the repository or
+//      generate_typology_repository_not_found, exactly like the CLI).
 //   4. Skipped (a counted SKIP) only where pwsh is absent; on GitHub Actions on Linux a missing pwsh is a failure. P10-18:
 //      packaging runs on macOS too (its first-party Bim.*.dll attributed through deps.json), so no macOS skip remains.
 internal static class PackageLayoutPackTests
@@ -22,6 +29,8 @@ internal static class PackageLayoutPackTests
     const string Caba = "ar.caba.codigo-edificacion";
     const string TypologyPack = "bim.typology.vivienda-unifamiliar";
     const string CompactStyle = "bim.style.compact-modern";
+    // P5-14/P5-15 composed CABA + typology pin (tests/cli/GenerateTypologyTests.cs PinnedComposedSha256).
+    const string PinnedComposedSha256 = "a8c62da59e0eee2d25af4d27bc37fcf2f67ae366e7e48446f1edfe3c87f7c0dd";
 
     public static void Run(string root, string work, string dotnet, string cliDll, Action<bool, string, string> check, Action<string, string> skip)
     {
@@ -92,6 +101,32 @@ internal static class PackageLayoutPackTests
             return (process.ExitCode, text, stderr.Result.ReplaceLineEndings(" ").Trim());
         }
         (int Exit, string Out, string Err) CliAt(string dll, params string[] arguments) => Exec(dotnet, [dll, .. arguments], 180000);
+        static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        static byte[] Utf8(string text) => new UTF8Encoding(false).GetBytes(text);
+        // P5-18: one generate_typology tools/call line to a real MCP server process over stdio; the first stdout line parsed.
+        (bool Ok, bool IsError, string Text, string Raw) McpTypology(string mcpDll, string requestPath)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+                StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false) };
+            start.ArgumentList.Add(mcpDll);
+            using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("MCP process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            var line = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 18, ["method"] = "tools/call", ["params"] = new JsonObject { ["name"] = "generate_typology", ["arguments"] = new JsonObject { ["request_path"] = requestPath } } }.ToJsonString();
+            try { process.StandardInput.Write(line + "\n"); process.StandardInput.Close(); } catch (IOException) { }
+            if (!process.WaitForExit(180000)) { process.Kill(true); process.WaitForExit(); return (false, true, "", "<timed out>"); }
+            process.WaitForExit();
+            var raw = stdout.Result;
+            var err = stderr.Result.ReplaceLineEndings(" ").Trim();
+            var described = "exit " + process.ExitCode.ToString(CultureInfo.InvariantCulture) + " " + (raw.Length > 600 ? raw[..600] + "..." : raw) + (err.Length > 0 ? " stderr " + (err.Length > 600 ? err[..600] + "..." : err) : "");
+            try
+            {
+                var response = JsonNode.Parse(raw.Split('\n')[0])!.AsObject();
+                var result = response["result"]!.AsObject();
+                return (true, result["isError"]!.GetValue<bool>(), result["content"]![0]!["text"]!.GetValue<string>(), described);
+            }
+            catch (Exception error) when (error is JsonException or NullReferenceException or InvalidOperationException or ArgumentException) { return (false, true, "", described); }
+        }
 
         var caseRoot = Path.Combine(outsideBase, "bim-package-pack-" + Guid.NewGuid().ToString("N"));
         try
@@ -188,6 +223,37 @@ internal static class PackageLayoutPackTests
             Check(noPack.Exit == 0 && !noPack.Bytes.SequenceEqual(repository["plan-layouts --pack"].Bytes),
                 "plan-layouts from the package without --pack differs from the --pack run (the packaged pack is applied)", D((noPack.Exit, noPack.Out, noPack.Err)));
 
+            // ---- 5. P5-18: the packaged MCP server over stdio, against the packaged CLI ----
+            var packageMcp = Path.Combine(package, "mcp", "Bim.Mcp.dll");
+            Check(File.Exists(packageMcp), "P5-18: the package has mcp/Bim.Mcp.dll", packageMcp);
+            var composedRequest = Input("typology-composed.json", "{\"pack\":\"" + TypologyPack + "\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":4,\"seed\":0,"
+                + "\"project_id\":\"00000000-0000-4000-8000-0000000007a7\",\"skills\":[]}");
+            var mcpCases = new (string Label, string Request)[] { ("\"skills\":[] (composed pin)", composedRequest), ("generate-typology with skills", typology) };
+            foreach (var (label, requestPath) in mcpCases)
+            {
+                var output = Output();
+                var cliRun = CliAt(packageDll, "generate-typology", requestPath, output);
+                var cliBytes = Read(output);
+                var mcp = McpTypology(packageMcp, requestPath);
+                Check(cliRun.Exit == 0 && cliBytes.Length > 0, "P5-18 " + label + ": the packaged CLI writes the document", D(cliRun));
+                Check(mcp.Ok && !mcp.IsError && Utf8(mcp.Text).SequenceEqual(cliBytes),
+                    "P5-18 " + label + ": the packaged mcp/Bim.Mcp.dll generate_typology over stdio (outside any repository) returns the packaged CLI output bytes",
+                    "mcp " + mcp.Raw + " | cli " + D(cliRun) + " sha cli " + Hex(cliBytes) + " mcp " + Hex(Utf8(mcp.Text)));
+                if (requestPath == composedRequest)
+                    Check(Hex(cliBytes) == PinnedComposedSha256 && Hex(Utf8(mcp.Text)) == PinnedComposedSha256,
+                        "P5-18: the packaged CLI file and the packaged MCP text have the composed pin a8c62da5...", "cli " + Hex(cliBytes) + " mcp " + Hex(Utf8(mcp.Text)));
+            }
+            // The refusal envelope of the packaged CLI for request (its stdout line) equals the packaged MCP text, isError.
+            void McpEqualsCli(string label, string requestPath, Func<(int Exit, string Out, string Err), bool> expected)
+            {
+                var output = Output();
+                var cliRun = CliAt(packageDll, "generate-typology", requestPath, output);
+                var cliBytes = Read(output);
+                var mcp = McpTypology(packageMcp, requestPath);
+                var same = cliRun.Exit == 0 ? mcp.Ok && !mcp.IsError && Utf8(mcp.Text).SequenceEqual(cliBytes) : mcp.Ok && mcp.IsError && mcp.Text == cliRun.Out;
+                Check(expected(cliRun) && same, "P5-18 " + label, "mcp " + mcp.Raw + " | cli " + D(cliRun));
+            }
+
             // ---- 3. a removed marker: outside any repository there is nothing to fall back to ----
             foreach (var marker in new[] { version, manifest })
             {
@@ -199,6 +265,8 @@ internal static class PackageLayoutPackTests
                     Check(result.Exit == 1 && Str(result.Out, "code") == missingCode && result.Bytes.Length == 0,
                         label + ": without " + Path.GetFileName(marker) + " (outside any repository) the folder is no package root -> " + missingCode + ", no file", D((result.Exit, result.Out, result.Err)));
                 }
+                McpEqualsCli("without " + Path.GetFileName(marker) + " (outside any repository) the packaged MCP text is the packaged CLI envelope generate_typology_repository_not_found",
+                    composedRequest, r => r.Exit == 1 && Str(r.Out, "code") == "generate_typology_repository_not_found");
                 File.Move(aside, marker);
             }
 
@@ -219,6 +287,8 @@ internal static class PackageLayoutPackTests
                 Check(result.Exit == 1 && Str(result.Out, "code") == invalidCode && Str(result.Out, "detail") == "json_invalid" && result.Bytes.Length == 0,
                     label + ": with both markers the package's (malformed) skills/ is read before the repository above it -> " + invalidCode + " (json_invalid), no file", D((result.Exit, result.Out, result.Err)));
             }
+            McpEqualsCli("a malformed packaged skill.json (repository above) is refused by the packaged MCP with the packaged CLI envelope generate_typology_pack_invalid (json_invalid)",
+                composedRequest, r => r.Exit == 1 && Str(r.Out, "code") == "generate_typology_pack_invalid" && Str(r.Out, "detail") == "json_invalid");
             foreach (var marker in new[] { version, manifest })
             {
                 var aside = marker + ".off";
@@ -231,6 +301,8 @@ internal static class PackageLayoutPackTests
                         label + ": without " + Path.GetFileName(marker) + " the lookup falls back to the repository above the package: the repository run's bytes and stdout",
                         D((result.Exit, result.Out, result.Err)) + " written " + result.Bytes.Length.ToString(CultureInfo.InvariantCulture) + " repository " + repo.Bytes.Length.ToString(CultureInfo.InvariantCulture));
                 }
+                McpEqualsCli("without " + Path.GetFileName(marker) + " the packaged MCP falls back to the repository above the package like the packaged CLI (composed pin)",
+                    composedRequest, r => r.Exit == 0);
                 File.Move(aside, marker);
             }
         }
