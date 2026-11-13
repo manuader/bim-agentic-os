@@ -1565,3 +1565,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay205 — 2026-11-13T08:55:34Z (Claude, cloud scheduled)
 - 08:55Z LOCK taken (was FREE; relay204 released 2026-11-13T08:02:39Z).
+- 08:56Z picked P4-17 (phase 4), P10-19 (phase 10), P1-24 (phase 1) — oldest-touched (relay201, relay203); P4-18 waits (serialize with P4-17). Workers starting on relay205-<ID>.
