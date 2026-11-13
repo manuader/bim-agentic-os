@@ -717,12 +717,14 @@ try {
         $p18 = Join-Path $work 'p18 physical'
         New-Item -ItemType Directory -Force (Join-Path $p18 'real/inner') | Out-Null
         $p18Real = Resolve-PackagePhysicalPath (Join-Path $p18 'real')
-        Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'real/inner/')) -ceq (Join-Path $p18Real 'inner')) "P10-18: a path without links must keep its spelling (no trailing separator): '$(Resolve-PackagePhysicalPath (Join-Path $p18 'real/inner/'))'"
-        Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'real/missing/x')) -ceq (Join-Path $p18Real 'missing/x')) 'P10-18: missing components must be kept as written'
         if ($IsWindows) {
-            Assert ((Resolve-PackagePhysicalPath $p18) -ceq [IO.Path]::GetFullPath($p18)) 'P10-18: on Windows the path is GetFullPath unchanged'
+            foreach ($spelling in $p18, (Join-Path $p18 'real/inner/'), (Join-Path $p18 'real/missing/x')) {
+                Assert ((Resolve-PackagePhysicalPath $spelling) -ceq [IO.Path]::GetFullPath($spelling)) "P10-18: on Windows the path is GetFullPath unchanged: '$(Resolve-PackagePhysicalPath $spelling)'"
+            }
             Write-Host 'SKIP P10-18 symlinked components: directory symlinks need privileges on Windows'
         } else {
+            Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'real/inner/')) -ceq (Join-Path $p18Real 'inner')) "P10-18: a path without links must keep its spelling (no trailing separator): '$(Resolve-PackagePhysicalPath (Join-Path $p18 'real/inner/'))'"
+            Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'real/missing/x')) -ceq (Join-Path $p18Real 'missing/x')) 'P10-18: missing components must be kept as written'
             New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'abs') -Target (Join-Path $p18 'real') | Out-Null
             New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'rel') -Target 'real' | Out-Null
             New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'chain') -Target 'abs' | Out-Null
