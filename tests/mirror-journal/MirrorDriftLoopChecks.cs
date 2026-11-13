@@ -124,6 +124,7 @@ static class MirrorDriftLoopChecks
         FakeOptionChecks(root, pwsh);
         FakeDiffChecks(root, pwsh);
         FakeBaselineChecks(root, pwsh);
+        FakeFailureChecks(root, pwsh);
     }
 
     static void Same(Loop? first, Loop? second, string scenario)
@@ -1159,6 +1160,152 @@ static class MirrorDriftLoopChecks
             var expected = Uniform(MirrorSnapshotDiffer.Compare(before, after).ToJson());
             Check(Diff(reply) == expected, "reply " + name + ": report.diff is MirrorSnapshotDiffer.Compare over that document's own baseline", Diff(reply) + " vs " + expected);
             Check(Uniform(reply) == Uniform(production[name]), "reply " + name + " equals RevitJournalQuery.RawRead over one two-document Core tracker, member for member (diff included)", Uniform(reply) + " vs " + Uniform(production[name]));
+        }
+    }
+
+    // P2-23: the -ExternalEdits fake counts recorder failures as MirrorJournal.RecordFailure does and reports them per
+    // (document UniqueId, path) baseline as MirrorJournalTracker does: failures is the running total, failures_since_baseline
+    // the total minus the count stored with that document's baseline (all of them when it has none), and journal_complete
+    // false while that difference is above zero. The test-only lever Add-FakeRecorderFailure injects them (and refuses a
+    // state without -ExternalEdits, whose replies stay the pre-P2-18 ones). One fake state, in process: A is read (no
+    // failure), one failure, a peek of A and a first read of B (both count it), two reads of A (the first stores the count,
+    // the second is complete), a peek of B, two more failures and an external move under A, a read of A under the
+    // upper-case path (the same baseline), a peek of A from sequence 0, a read of B, then the fake's DocumentUid switched (no
+    // baseline: every failure so far) and its peek after a read. Every reply equals RevitJournalQuery.RawRead over one Core
+    // MirrorJournalTracker given the same journal changes, RecordFailure calls and snapshots, member for member.
+    const string FailureScript = """
+        param([string]$Executor, [string]$DocumentUid, [string]$OtherUid)
+        $ErrorActionPreference = 'Stop'
+        . $Executor
+        $a = '/fake/Drift-Doc-A.rvt'; $b = '/fake/Drift-Doc-B.rvt'
+        function Line([string]$Path, [string]$Journal) { '{"DocumentPath":"' + $Path + '","Operation":"journal.read","UniqueId":null,"Metres":[],"Journal":' + $Journal + '}' }
+        function Env([string]$Path, [string]$Id, [string]$Command, [string]$Arguments) { '{"protocol_version":1,"operation_id":"' + $Id + '","document":{"path":"' + $Path + '","unique_id":"' + $DocumentUid + '"},"command":"' + $Command + '","args":' + $Arguments + '}' }
+        function Ok($State, [string]$Path, [string]$Id, [string]$Command, [string]$Arguments) {
+            $reply = Invoke-FakeRevitCommand $State (Env $Path $Id $Command $Arguments)
+            if (($reply | ConvertFrom-Json).status -ne 'succeeded') { throw "$Id ($Command) did not succeed: $reply" }
+            return $reply
+        }
+        function Wire($State, [string]$Line) { try { Invoke-FakeRevitWire $State $Line } catch { '<threw: ' + $_.Exception.Message + '>' } }
+        $r = [ordered]@{}
+        $s = New-FakeRevitState $DocumentUid @{} @('x-move-a')
+        $level = [string]@((Ok $s $a 'levels' 'query.levels' '{}' | ConvertFrom-Json).readback.levels)[0].unique_id
+        $r.wall = [string]@((Ok $s $a 'wall-1' 'wall.create' ('{"level":"' + $level + '","type":"T1","height_mm":3000,"curve":{"kind":"line","start":[0,0],"end":[5000,0]}}') | ConvertFrom-Json).created)[0]
+        $r.s0 = Ok $s $a 'snapshot-0' 'query.snapshot' '{}'
+        $r.a0 = Wire $s (Line $a 'null')
+        Add-FakeRecorderFailure $s
+        $r.a1 = Wire $s (Line $a '{"peek":true}')
+        $r.b0 = Wire $s (Line $b 'null')
+        $r.a2 = Wire $s (Line $a 'null')
+        $r.a3 = Wire $s (Line $a 'null')
+        $r.b1 = Wire $s (Line $b '{"peek":true}')
+        Add-FakeRecorderFailure $s 2
+        $null = Ok $s $a 'x-move-a' 'element.move' ('{"element_uids":["' + $r.wall + '"],"vector_mm":[250,0,0]}')
+        $r.s1 = Ok $s $a 'snapshot-1' 'query.snapshot' '{}'
+        $r.a4 = Wire $s (Line $a.ToUpperInvariant() 'null')
+        $r.a5 = Wire $s (Line $a '{"peek":true,"after_sequence":0}')
+        $r.b2 = Wire $s (Line $b 'null')
+        # Test-only lever: the fake has no document.open, so the open document's UniqueId is switched on the state itself.
+        $s.DocumentUid = $OtherUid
+        $r.su0 = Ok $s $a 'snapshot-u0' 'query.snapshot' '{}'
+        $r.u0 = Wire $s (Line $a 'null')
+        $r.u1 = Wire $s (Line $a '{"peek":true}')
+        # Without -ExternalEdits the lever is refused, so a legacy reply can never carry a failure.
+        $legacy = New-FakeRevitState $DocumentUid
+        $r.legacy = try { Add-FakeRecorderFailure $legacy; 'accepted' } catch { 'refused: ' + $_.Exception.Message }
+        $r.legacy_read = Wire $legacy (Line $a 'null')
+        $r | ConvertTo-Json -Compress
+        """;
+
+    static void FakeFailureChecks(string root, string pwsh)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "fake failures: " + name, detail);
+        var scratch = Path.Combine(Path.GetTempPath(), "bim-drift-failures-" + Guid.NewGuid().ToString("N"));
+        Temporary.Add(scratch);
+        Directory.CreateDirectory(scratch);
+        var script = Path.Combine(scratch, "failures.ps1");
+        File.WriteAllText(script, FailureScript, Utf8);
+        var start = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = Utf8 };
+        foreach (var argument in new[] { "-NoProfile", "-File", script, "-Executor", Path.Combine(root, "tests", "integration", "fake-revit-command-executor.ps1"), "-DocumentUid", DocumentUid, "-OtherUid", OtherDocumentUid }) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("pwsh did not start");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(CallTimeoutMs)) { Kill(process); Check(false, "the in-process failure script finishes", "timed out"); return; }
+        process.WaitForExit();
+        var output = stdout.Result.Trim();
+        if (process.ExitCode != 0 || !output.StartsWith('{')) { Check(false, "the in-process failure script runs (Add-FakeRecorderFailure injects a recorder failure)", "exit " + process.ExitCode + " " + Head(output) + " " + Head(stderr.Result.ReplaceLineEndings(" "))); return; }
+        using var parsed = JsonDocument.Parse(output);
+        string R(string name) => parsed.RootElement.TryGetProperty(name, out var value) ? value.GetString() ?? "" : "<missing>";
+        const string a = "/fake/Drift-Doc-A.rvt", b = "/fake/Drift-Doc-B.rvt";
+        var wall = R("wall");
+        static MirrorSnapshot Snap(string response) { using var reply = JsonDocument.Parse(response); return MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText()); }
+        MirrorSnapshot s0, s1, su0;
+        try { (s0, s1, su0) = (Snap(R("s0")), Snap(R("s1")), Snap(R("su0"))); }
+        catch (Exception error) when (error is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "the fake's query.snapshot readbacks parse as snapshots", error.Message + " | " + Head(output)); return; }
+        Check(su0.DocumentUid == OtherDocumentUid, "the snapshot after the UniqueId switch names the other document", su0.DocumentUid);
+        Check(R("legacy").StartsWith("refused: ", StringComparison.Ordinal), "Add-FakeRecorderFailure refuses a state without -ExternalEdits", R("legacy"));
+        Check(R("legacy_read").Contains("\"failures\":0,", StringComparison.Ordinal) && R("legacy_read").Contains("\"journal_complete\":true,\"failures_since_baseline\":0,", StringComparison.Ordinal),
+            "a legacy state's reply after the refused lever still reports no failure", R("legacy_read"));
+
+        // The production side: one Core journal and tracker, the same add-in write (skipped), failures, commit and reads.
+        var tick = 0;
+        var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
+        var tracker = new MirrorJournalTracker(journal);
+        void Record(string uid, string path, string name, string[] modified, bool addIn = false) =>
+            journal.Record(new MirrorJournalChange(uid, "TransactionCommitted", new[] { name }, addIn ? new[] { "x" } : Array.Empty<string>(), modified, Array.Empty<long>(), addIn) { DocumentPath = path });
+        string Read(MirrorSnapshot snapshot, string path, bool peek = false, long? after = null) => RevitJournalQuery.RawRead(tracker, true, snapshot, path, new MirrorJournalReadOptions(after, peek));
+        Record(DocumentUid, a, "BIM Agentic OS wall.create", Array.Empty<string>(), addIn: true);
+        var production = new Dictionary<string, string>();
+        production["a0"] = Read(s0, a);
+        journal.RecordFailure();
+        production["a1"] = Read(s0, a, peek: true);
+        production["b0"] = Read(s0, b);
+        production["a2"] = Read(s0, a);
+        production["a3"] = Read(s0, a);
+        production["b1"] = Read(s0, b, peek: true);
+        journal.RecordFailure();
+        journal.RecordFailure();
+        Record(DocumentUid, a, "Move", new[] { wall });
+        production["a4"] = Read(s1, a.ToUpperInvariant());
+        production["a5"] = Read(s1, a, peek: true, after: 0);
+        production["b2"] = Read(s1, b);
+        production["u0"] = Read(su0, a);
+        production["u1"] = Read(su0, a, peek: true);
+
+        // What each read says about failures, from the fake's reply.
+        string Shape(string reply)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(reply);
+                var top = document.RootElement;
+                var report = top.GetProperty("report");
+                return report.GetProperty("document_unique_id").GetString()![^4..] + " failures=" + top.GetProperty("failures").GetInt64().ToString(CultureInfo.InvariantCulture)
+                    + " since=" + report.GetProperty("failures_since_baseline").GetInt64().ToString(CultureInfo.InvariantCulture)
+                    + " complete=" + report.GetProperty("journal_complete").GetBoolean().ToString().ToLowerInvariant()
+                    + " existed=" + report.GetProperty("baseline_existed").GetBoolean().ToString().ToLowerInvariant()
+                    + " entries=[" + string.Join(",", report.GetProperty("entries").EnumerateArray().Select(entry => entry.GetProperty("sequence").GetInt64().ToString(CultureInfo.InvariantCulture))) + "]";
+            }
+            catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentException) { return "<no report> " + Head(reply); }
+        }
+        var cases = new (string Name, string Shape, string What)[]
+        {
+            ("a0", "e2e1 failures=0 since=0 complete=true existed=false entries=[]", "the first read of A before any failure: complete, nothing since"),
+            ("a1", "e2e1 failures=1 since=1 complete=false existed=true entries=[]", "a peek of A after one recorder failure: one since A's baseline, incomplete"),
+            ("b0", "e2e1 failures=1 since=1 complete=false existed=false entries=[]", "the first read of B: no baseline, so every failure so far is since it, incomplete"),
+            ("a2", "e2e1 failures=1 since=1 complete=false existed=true entries=[]", "a non-peek read of A after the peek: the failure still counts (the peek stored nothing)"),
+            ("a3", "e2e1 failures=1 since=0 complete=true existed=true entries=[]", "the next read of A: its baseline holds the count, so complete again"),
+            ("b1", "e2e1 failures=1 since=0 complete=true existed=true entries=[]", "a peek of B: B's own baseline (from its first read) holds the count"),
+            ("a4", "e2e1 failures=3 since=2 complete=false existed=true entries=[1]", "a read of A under the upper-case path after two more failures and an external move: A's baseline (case ignored), two since, A's entry"),
+            ("a5", "e2e1 failures=3 since=0 complete=true existed=true entries=[1]", "a peek of A from sequence 0: the baseline the previous read stored, no failure since, the entry re-read"),
+            ("b2", "e2e1 failures=3 since=2 complete=false existed=true entries=[]", "a read of B: two failures since B's own baseline"),
+            ("u0", "e2e2 failures=3 since=3 complete=false existed=false entries=[]", "the first read after the fake's document UniqueId changed: no baseline, all three failures since"),
+            ("u1", "e2e2 failures=3 since=0 complete=true existed=true entries=[]", "a peek of the other document after its read: its own baseline holds the count"),
+        };
+        foreach (var (name, shape, what) in cases)
+        {
+            var reply = R(name);
+            Check(Shape(reply) == shape, "reply " + name + ": " + what + " (" + shape + ")", Shape(reply));
+            Check(Uniform(reply) == Uniform(production[name]), "reply " + name + " equals RevitJournalQuery.RawRead over one Core tracker given the same failures, member for member (diff included)", Uniform(reply) + " vs " + Uniform(production[name]));
         }
     }
 

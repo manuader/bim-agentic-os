@@ -33,6 +33,11 @@
 # ignoring case, as in MirrorJournalTracker, and entries are those of that document and path; without it the legacy
 # baseline stays one per fake state. An -ExternalEdits list with no ids is off. Without it every reply is the pre-P2-18
 # one (diff included), byte for byte.
+# P2-23: with ExternalEdits the fake counts recorder failures like MirrorJournal.RecordFailure; the test-only lever
+# Add-FakeRecorderFailure injects them (a state without ExternalEdits refuses it). journal.read then reports failures (the
+# running total), failures_since_baseline (the total minus the count stored with that (UniqueId, path) baseline, or the
+# total when there is none) and journal_complete (false while that difference is above zero), as MirrorJournalTracker
+# does; a non-peek read stores the count with its baseline. With no failure injected every reply is unchanged.
 # It proves nothing about Revit.
 Set-StrictMode -Version Latest
 
@@ -47,7 +52,7 @@ function New-FakeRevitState([string]$DocumentUid, [hashtable]$Faults = @{}, [str
     @{ DocumentUid = $DocumentUid; Receipts = @{}; Received = [Collections.Generic.List[string]]::new(); Next = 0; Faults = $Faults; Episode = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0'
         Elements = [ordered]@{}; Cache = @{}; Placed = @{}; ElementNumber = 100000; SkippedAddIn = 0; JournalBaseline = $null; Snapshots = 0; DocumentPath = $null
         Copies = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        ExternalEdits = $external; Journal = [Collections.Generic.List[object]]::new(); JournalSequence = 0
+        ExternalEdits = $external; Journal = [Collections.Generic.List[object]]::new(); JournalSequence = 0; JournalFailures = [long]0
         JournalBaselines = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase) }
 }
 
@@ -61,13 +66,21 @@ function Get-FakeJournalBaseline($State, [string]$DocumentUid, [string]$Document
     return $baseline
 }
 
-function Set-FakeJournalBaseline($State, [string]$DocumentUid, [string]$DocumentPath, $Snapshot, [long]$Sequence) {
+function Set-FakeJournalBaseline($State, [string]$DocumentUid, [string]$DocumentPath, $Snapshot, [long]$Sequence, [long]$Failures = 0) {
     $paths = $null
     if (!$State.JournalBaselines.TryGetValue($DocumentUid, [ref]$paths)) {
         $paths = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
         $State.JournalBaselines[$DocumentUid] = $paths
     }
-    $paths[$DocumentPath] = @{ Snapshot = $Snapshot; Sequence = $Sequence }
+    $paths[$DocumentPath] = @{ Snapshot = $Snapshot; Sequence = $Sequence; Failures = $Failures }
+}
+
+# P2-23, test-only lever: $Count recorder failures (MirrorJournal.RecordFailure, e.g. an element the recorder could not
+# read). Only an ExternalEdits state models the recorder; any other state refuses, so its replies never change.
+function Add-FakeRecorderFailure($State, [int]$Count = 1) {
+    if ($null -eq $State.ExternalEdits) { throw 'Add-FakeRecorderFailure needs a state made with -ExternalEdits' }
+    if ($Count -lt 1) { throw 'Add-FakeRecorderFailure needs a count of 1 or more' }
+    $State.JournalFailures = [long]$State.JournalFailures + $Count
 }
 
 # P2-18: the Revit transaction name a user edit of that kind commits under (what DocumentChanged reports).
@@ -1015,6 +1028,7 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
         if ($null -ne $request) { $peek = [bool](Get-FakeArg (Get-FakeArg $request 'Journal') 'peek') }
         # Pre-P2-18 values (no ExternalEdits): no entries, every sequence 0, options other than peek ignored.
         $baselineSequence = 0; $currentSequence = 0; $afterSequence = 0; $hasMore = $false; $nextAfter = 0; $entries = @()
+        $failures = 0; $failuresSince = 0; $complete = $true
         if ($null -ne $State.ExternalEdits) {
             if ($null -eq $document) { return New-FakeJournalFailure 'request_invalid' }
             # MirrorJournalReadOptions.Parse, then MirrorJournalTracker.Report; failures as App.Execute answers an exception.
@@ -1056,7 +1070,12 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
             $baselineExisted = $null -ne $stored
             $snapshot = Get-FakeSnapshot $State
             $diff = Get-FakeSnapshotDiff $State.DocumentUid $(if ($baselineExisted) { $stored.Snapshot } else { $null }) $snapshot
-            if (!$peek) { Set-FakeJournalBaseline $State $State.DocumentUid $path $snapshot $last }
+            # P2-23: failures since that baseline's stored count (all of them without one); complete only when none. The fake
+            # never drops entries, so FirstRetainedSequence <= after + 1 always holds.
+            $failures = [long]$State.JournalFailures
+            $failuresSince = $failures - $(if ($baselineExisted) { [long]$stored.Failures } else { [long]0 })
+            $complete = $failuresSince -eq 0
+            if (!$peek) { Set-FakeJournalBaseline $State $State.DocumentUid $path $snapshot $last $failures }
         }
         else {
             $baselineExisted = $null -ne $State.JournalBaseline
@@ -1071,7 +1090,7 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
             $diff = [ordered]@{ diff_version = 1; document_unique_id = $State.DocumentUid; added = $added; removed = $removed; changed = @() }
         }
         $report = [ordered]@{ journal_version = 1; document_unique_id = $State.DocumentUid; document_path = $path; baseline_sequence = $baselineSequence; current_sequence = $currentSequence; after_sequence = $afterSequence; baseline_existed = $baselineExisted; peek = $peek
-            journal_complete = $true; failures_since_baseline = 0; has_more = $hasMore; next_after_sequence = $nextAfter; entries = $entries; diff = $diff }
-        return ConvertTo-FakeResponseJson ([ordered]@{ status = 'succeeded'; verification = 'unverified'; attached = $true; dropped = 0; skipped_add_in = $State.SkippedAddIn; failures = 0; unidentified = 0; report = $report })
+            journal_complete = $complete; failures_since_baseline = $failuresSince; has_more = $hasMore; next_after_sequence = $nextAfter; entries = $entries; diff = $diff }
+        return ConvertTo-FakeResponseJson ([ordered]@{ status = 'succeeded'; verification = 'unverified'; attached = $true; dropped = 0; skipped_add_in = $State.SkippedAddIn; failures = $failures; unidentified = 0; report = $report })
     } finally { if ($null -ne $document) { $document.Dispose() } }
 }
