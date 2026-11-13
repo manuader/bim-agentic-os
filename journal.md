@@ -1554,3 +1554,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay204 — 2026-11-13T04:53:15Z (Claude, cloud scheduled)
 - 04:53Z LOCK taken (was FREE; relay203 released 2026-11-13T03:59:07Z).
+- 04:53Z picked P3-16 (phase 3), P7-16 (phase 7), P10-18 (phase 10) — oldest-touched (relay200); P5-18 waits (shares PackageLayoutPackTests with P10-18). Workers starting on relay204-<ID>.
