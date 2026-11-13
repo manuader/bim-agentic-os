@@ -8,10 +8,15 @@
 #   - the record is written by the record writer block of scripts/owner-native-session.ps1 itself (extracted from that
 #     file and run with the variables the session sets), so a change of the record format reaches this test;
 #   - summary.json has the session's shape (mode, catalogue_scope, runs[] with index, run_directory and catalogue).
+#   - P4-18: the documentation update's doc-up-elements step runs the REAL doc-realized CLI verb (-Dotnet, -CliDll)
+#     through the owner invoker Invoke-CatalogueDocUpdate (-> Invoke-CatalogueDocRealized, offline: no pipe) into the
+#     run folder's catalogue-requests/NN-doc-up-elements.doc-realized/ (record, fixture, assignments, realized, report,
+#     stderr), as the owner session lays it out; the doc-update calls stay on the stand-in, which reads that realized.json.
 # Scenarios: clean (every group passes), mixed (a failing v2 command, a missing column type blocking two steps, a wrong
-# copy sha256 read back), nocopy (document.save_copy fails, no copy), v1only (-CatalogueV1Only). Writes only under
-# -Root; never Revit. Called by tests/cli/CatalogueReportTests.cs.
-param([Parameter(Mandatory)][string]$Root)
+# copy sha256 read back), nocopy (document.save_copy fails, no copy), v1only (-CatalogueV1Only), realized (the request
+# doc-realized gets assigns the door to the wall's step: the real verb refuses realized_unique_id_duplicate and the run
+# stops). Writes only under -Root; never Revit. Called by tests/cli/CatalogueReportTests.cs.
+param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Dotnet, [Parameter(Mandatory)][string]$CliDll)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repo = Split-Path (Split-Path $PSScriptRoot)
@@ -30,6 +35,7 @@ $scenarios = [ordered]@{
     mixed = @{ Faults = @{ NoStructuralTypes = @('column'); FailCommands = @('roof.create_footprint'); SaveCopyHashOff = $true }; V1Only = $false }
     nocopy = @{ Faults = @{ FailCommands = @('document.save_copy') }; V1Only = $false }
     v1only = @{ Faults = @{}; V1Only = $true }
+    realized = @{ Faults = @{}; V1Only = $false; TamperRealized = $true }
 }
 foreach ($name in @($scenarios.Keys)) {
     $scenario = $scenarios[$name]
@@ -47,7 +53,20 @@ foreach ($name in @($scenarios.Keys)) {
     $wire = { param($index, $key, $line) $text = Invoke-FakeRevitWire $fake $line; @{ output = $text; exit_code = $(if (($text | ConvertFrom-Json).status -eq 'succeeded') { 0 } else { 1 }); timed_out = $false } }
     # P4-14: the documentation update's doc-update calls through the stand-in (plan files outside the run folder).
     $docFake = New-FakeDocUpdate $fake ([IO.Path]::GetFullPath((Join-Path $Root "$name/doc-update"))) $scenario.Faults
-    $docUpdate = { param($index, $key, $json) Invoke-FakeDocUpdate $docFake $index $key $json }
+    # P4-18: the doc-realized call (a request with a record member) goes to the real CLI through the owner invoker, into
+    # this run folder's catalogue-requests (unique variable names: the sequence calls this block from its own scope).
+    $p418Requests = Join-Path $runDir 'catalogue-requests'
+    $p418Tamper = [bool]$scenario['TamperRealized']
+    $docUpdate = {
+        param($index, $key, $json)
+        if ($null -eq (Get-CatalogueMember ($json | ConvertFrom-Json) 'record')) { return (Invoke-FakeDocUpdate $docFake $index $key $json) }
+        if ($p418Tamper) {
+            $tampered = $json | ConvertFrom-Json
+            $tampered.assignments.('element:' + $script:CatalogueDocUpdateDoorId) = 'doc-up-wall'
+            $json = $tampered | ConvertTo-Json -Depth 64 -Compress
+        }
+        Invoke-CatalogueDocUpdate -Dotnet $Dotnet -CliDll $CliDll -PipeName 'bim-agentic-os-unused' -RequestDirectory $p418Requests -Index $index -Key $key -Json $json -TimeoutSeconds 120
+    }
     $sequence = Invoke-CatalogueSequence -Stamp $stamp -Run 1 -DocumentPath $documentPath -DocumentUid $documentUid -Invoke $invoke -InvokeWire $wire -InvokeDocUpdate $docUpdate -V1Only:$scenario.V1Only
     # The variables the session's writer reads, set as scripts/owner-native-session.ps1 sets them for run 1.
     $i = 1
