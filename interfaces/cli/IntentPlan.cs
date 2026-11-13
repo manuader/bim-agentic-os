@@ -22,8 +22,8 @@ namespace Bim.Cli;
 // compiling it (its documented precedence). Every refusal is exit 1.
 // P3-15: nothing here writes Console or sets Environment.ExitCode. Each call returns an IntentStep: the value, or the
 // refusal as an IntentEnvelope (the stdout line without its newline, the exit status and, for <verb>_internal_error,
-// the stderr detail). Failed and Internal build the envelopes ApplyEditsCommand.Fail and ApplyEditsCommand.Internal
-// print, byte for byte. The CLI verbs print an envelope with IntentEnvelope.Print; the MCP diff_intent tool returns
+// the stderr detail). Failed and Internal are the one copy of the refusal envelope JSON; since P3-16
+// ApplyEditsCommand.Fail and ApplyEditsCommand.Internal return them and its Commit returns its envelope too. The CLI verbs print an envelope with IntentEnvelope.Print; the MCP diff_intent tool returns
 // DiffIntentCommand.Plan's envelope directly, without redirecting Console.Out.
 // Nothing here reads or writes a file or a store.
 internal static class IntentPlan
@@ -58,10 +58,10 @@ internal static class IntentPlan
         catch (Exception error) { return IntentStep<IncrementalDiffResult>.Refused(Internal(verb, error)); }
     }
 
-    // {"status":"failed","code":c}, exit 1: the line ApplyEditsCommand.Fail(c) prints.
+    // {"status":"failed","code":c}, exit 1 (also ApplyEditsCommand.Fail(c)).
     public static IntentEnvelope Failed(string code) => new(JsonSerializer.Serialize(new { status = "failed", code }), 1);
 
-    // {"status":"failed","code":<verb>_internal_error}, exit 1, with the stderr detail ApplyEditsCommand.Internal prints.
+    // {"status":"failed","code":<verb>_internal_error}, exit 1, with the stderr detail (also ApplyEditsCommand.Internal).
     public static IntentEnvelope Internal(string verb, Exception error) =>
         new(JsonSerializer.Serialize(new { status = "failed", code = verb.Replace('-', '_') + "_internal_error" }), 1,
             verb + " internal error: " + error.GetType().FullName + ": " + error.Message);
@@ -76,7 +76,7 @@ internal sealed record IntentEnvelope(string Line, int Exit, string? Diagnostic 
     public bool Succeeded => Exit == 0;
 
     // The CLI output: stderr detail (if any), then the line; a refusal sets the process exit code, a success leaves it,
-    // exactly as ApplyEditsCommand.Fail / Internal and Console.WriteLine of a result did.
+    // the bytes the verbs printed before their envelopes were returned (P3-15, P3-16).
     public void Print()
     {
         if (Diagnostic is not null) Console.Error.WriteLine(Diagnostic);
