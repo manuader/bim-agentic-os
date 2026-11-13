@@ -880,10 +880,10 @@ static class MirrorDriftLoopChecks
         $uLevel = Level $u
         $r.u_wall = Created (Ok $u 'u-wall' 'wall.create' (Wall $uLevel (Straight 0 0 1000 0)))
         $null = Invoke-FakeRevitWire $u (Line 'null')
-        $r.u_before = $u.JournalBaseline | ConvertTo-Json -Depth 20 -Compress
+        $r.u_before = (Get-FakeJournalBaseline $u $DocumentUid $document).Snapshot | ConvertTo-Json -Depth 20 -Compress
         $null = Ok $u 'u-move' 'element.move' ('{"element_uids":["' + $r.u_wall + '"],"vector_mm":[0,250,0]}')
         $r.u_reply = Invoke-FakeRevitWire $u (Line 'null')
-        $r.u_after = $u.JournalBaseline | ConvertTo-Json -Depth 20 -Compress
+        $r.u_after = (Get-FakeJournalBaseline $u $DocumentUid $document).Snapshot | ConvertTo-Json -Depth 20 -Compress
         # Hand-built snapshot pairs straight through Get-FakeSnapshotDiff.
         # (PowerShell names ignore case: $caseDiffs, not a name that would overwrite the $Cases parameter.)
         $caseDiffs = [ordered]@{}
