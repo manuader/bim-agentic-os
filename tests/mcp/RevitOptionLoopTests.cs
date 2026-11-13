@@ -138,18 +138,14 @@ internal static class RevitOptionLoopTests
         }
 
         // ---- 3. static: not exported by any linking assembly ----
-        var assemblies = new[]
-        {
-            cliDll, mcpDll, typeof(RevitOptionLoopTests).Assembly.Location,
-            Path.Combine(root, "tests", "cli", "bin", "Release", "net8.0", "Bim.Cli.Tests.dll"),
-            Path.Combine(root, "tests", "revit-commands", "bin", "Release", "net8.0", "Bim.RevitCommands.Tests.dll"),
-        };
+        // Only assemblies this run already depends on (and builds before it); other test projects' bin output may be stale or absent.
+        var assemblies = new[] { cliDll, mcpDll, typeof(RevitOptionLoopTests).Assembly.Location };
         foreach (var assembly in assemblies)
         {
             if (!File.Exists(assembly)) { problems.Add("assembly missing: " + assembly); continue; }
             var exported = Exported(assembly);
             if (Path.GetFileName(assembly) == "Bim.Mcp.dll" && !exported.Contains("Bim.Mcp.McpServer")) problems.Add("Bim.Mcp.dll export list unreadable (no Bim.Mcp.McpServer)");
-            foreach (var type in new[] { "Bim.Cli.RevitOptionGrammar", "Bim.Cli.RevitCommandOptions" })
+            foreach (var type in new[] { "Bim.Cli.RevitOptionGrammar", "Bim.Cli.RevitCommandOptions", "Bim.Cli.RevitOptionValues" })
                 if (exported.Contains(type)) problems.Add(Path.GetFileName(assembly) + " exports " + type);
         }
         check(problems.Count == 0, "P1-24 one RevitOptionGrammar.Options loop used by revit-command and Bim.Mcp, and its types are internal [" + string.Join("; ", problems) + "]");
