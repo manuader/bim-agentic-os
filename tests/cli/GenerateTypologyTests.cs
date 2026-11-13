@@ -19,6 +19,9 @@ using Bim.Generative;
 //   4. A child under LANG/LC_ALL=de_DE.UTF-8 writes the same bytes and prints the same stdout (required on Linux CI).
 //   5. The release package layout (<package>/cli beside <package>/skills, outside any repository) gives the repository
 //      run's bytes and stdout.
+//   6. P7-16: optional include (optional rooms) and code_pack reach Run/RunComposed (TypologyBriefRequest.Include,
+//      PrototypePipelineOptions.Pack) byte-equal to the in-process run; absent or default members keep the P7-14 pins;
+//      unknown rooms are the pipeline's typed refusals; a code_pack that is not a code skill is code_pack_invalid (kind).
 internal static class GenerateTypologyTests
 {
     const string TypologyPack = "bim.typology.vivienda-unifamiliar";
@@ -164,6 +167,123 @@ internal static class GenerateTypologyTests
             "partial weights in any member order and another seed: output equal to the in-process run with those ScoringWeights", D(tunedRun));
         Check(!accepted.Out.Contains("\"rules\"", StringComparison.Ordinal) && !accepted.Out.Contains("\"skills\"", StringComparison.Ordinal),
             "without skills and precedence stdout is the P7-14 envelope (no rules or skills members)", D(accepted));
+
+        // ---- P7-16: optional include (optional rooms) and code_pack (the facade gate's code pack) ----
+        const string ExampleCodePack = "xx.example.codigo-ejemplo";
+        var example = SkillParser.Parse(File.ReadAllText(Path.Combine(root, "skills", ExampleCodePack, "skill.json")));
+        Check(example.Kind == SkillKind.Code && caba.Kind == SkillKind.Code && pack.Kind == SkillKind.Typology, "the P7-16 fixtures: two code packs and a typology pack");
+        Check(usageDetail.Contains("\"include\"", StringComparison.Ordinal) && usageDetail.Contains("\"code_pack\"", StringComparison.Ordinal),
+            "the usage text documents the optional include and code_pack members (P7-16)", D(usage));
+        // One request through the CLI against the in-process run with the same packs: a refused library result must be the
+        // CLI's generate_typology_refused envelope (and refusalCode among its refusals); a success must be the same bytes, with
+        // stdout naming the code pack, and must state the reference it equals (same) or that it differs from the P7-14 bytes.
+        void ExpectRun(string label, string text, TypologyPipelineResult library, string codePackId, string? refusalCode = null, byte[]? same = null, string? sameAs = null,
+            bool differsFromP714 = false)
+        {
+            var output = Output();
+            var result = Cli("generate-typology", Input("p7-16-case.json", text), output);
+            if (library.Status == PrototypePipelineStatus.Refused)
+            {
+                var envelope = RefusedEnvelope(library);
+                Check(result.Exit == 1 && result.Out == envelope && !File.Exists(output) && (refusalCode is null || library.Refusals.Any(refusal => refusal.Code == refusalCode))
+                    && same is null && !differsFromP714,
+                    label + ": refused as generate_typology_refused with the in-process refusals exactly" + (refusalCode is null ? "" : " (" + refusalCode + ")") + ", no output file",
+                    D(result) + " expected " + envelope);
+                return;
+            }
+            var expected = Utf8(TypologyPipelineSerializer.Serialize(library));
+            var envelopeOut = Parse(result.Out);
+            Check(refusalCode is null && result.Exit == 0 && Read(output).SequenceEqual(expected) && Str(envelopeOut, "sha256") == Hex(expected)
+                && Str(envelopeOut, "code_pack") == codePackId && Int(envelopeOut, "bytes") == expected.LongLength,
+                label + ": the output is the in-process bytes and stdout names code_pack " + codePackId, D(result) + " expected sha " + Hex(expected));
+            if (same is not null)
+                Check(expected.SequenceEqual(same) && Read(output).SequenceEqual(same), label + ": expected to equal " + sameAs + " byte for byte", Hex(expected) + " vs " + Hex(same));
+            else if (differsFromP714)
+                Check(!expected.SequenceEqual(acceptedBytes) && !expected.SequenceEqual(infeasibleBytes), label + ": differs from the P7-14 ranked and infeasible bytes", Hex(expected));
+            else Check(false, label + ": a success case must name the reference run it equals or state that it differs", "");
+        }
+        TypologyBriefRequest R3(IReadOnlyCollection<string>? include = null) => new(3, new PrototypeLot(16, 16), 4, 0, include);
+        TypologyPipelineResult Plain(TypologyBriefRequest request, SkillManifest code) => TypologyPipeline.Run(pack, request, new PrototypePipelineOptions(code, projectId));
+        string Strs(params string[] values) => "[" + string.Join(",", values.Select(value => "\"" + value + "\"")) + "]";
+
+        // Absent members keep the P7-14 bytes; an explicit default code pack is the absent one (same file, same stdout).
+        var defaultCodeOut = Output();
+        var defaultCode = Cli("generate-typology", Input("default-code-pack.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + CodePack + "\"")), defaultCodeOut);
+        Check(defaultCode.Exit == 0 && Read(defaultCodeOut).SequenceEqual(acceptedBytes) && Hex(Read(defaultCodeOut)) == PinnedAcceptedSha256 && defaultCode.Out == accepted.Out,
+            "\"code_pack\":\"" + CodePack + "\" (the default) gives the P7-14 ranked bytes (pin eb8720c1...) and the same stdout", D(defaultCode));
+        var defaultCodeInfeasibleOut = Output();
+        var defaultCodeInfeasible = Cli("generate-typology", Input("default-code-pack-4.json", Request(TypologyPack, 4, 12, 12, 6, 0, ",\"code_pack\":\"" + CodePack + "\"")), defaultCodeInfeasibleOut);
+        Check(defaultCodeInfeasible.Exit == 0 && Read(defaultCodeInfeasibleOut).SequenceEqual(infeasibleBytes) && Hex(Read(defaultCodeInfeasibleOut)) == PinnedInfeasibleSha256
+            && defaultCodeInfeasible.Out == infeasible.Out,
+            "the default code pack named explicitly on the family-4 lot gives the P7-14 infeasible bytes (pin 3a551774...) and the same stdout", D(defaultCodeInfeasible));
+
+        // include reaches TypologyPipeline.Run as TypologyBriefRequest.Include.
+        var studyExpected = Utf8(TypologyPipelineSerializer.Serialize(Plain(R3(new[] { "study" }), caba)));
+        ExpectRun("include [study]", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("study")), Plain(R3(new[] { "study" }), caba), CodePack, differsFromP714: true);
+        var studyGarage = Plain(R3(new[] { "study", "garage" }), caba);
+        var studyGarageBytes = studyGarage.Status == PrototypePipelineStatus.Refused ? null : Utf8(TypologyPipelineSerializer.Serialize(studyGarage));
+        ExpectRun("include [study, garage]", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("study", "garage")), studyGarage, CodePack,
+            differsFromP714: studyGarageBytes is not null);
+        if (studyGarageBytes is not null)
+            ExpectRun("include [garage, study, study] (another order, a repeat)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("garage", "study", "study")),
+                Plain(R3(new[] { "garage", "study", "study" }), caba), CodePack, same: studyGarageBytes, sameAs: "include [study, garage] (the pipeline sorts and de-duplicates)");
+        ExpectRun("include [] (an empty list, kept as given)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[]"), Plain(R3(Array.Empty<string>()), caba), CodePack, differsFromP714: true);
+        ExpectRun("include with tuned weights and seed 2", Request(TypologyPack, 3, 16, 16, 4, 2, ",\"include\":" + Strs("study") + ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5}"),
+            Plain(new TypologyBriefRequest(3, new PrototypeLot(16, 16), 4, 2, new[] { "study" }, new ScoringWeights(0.5, 0.25, 0.15, 0.1, 0.1, 0.2)), caba), CodePack, differsFromP714: true);
+        ExpectRun("include 64 entries (the limit, one room repeated)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs(Enumerable.Repeat("study", 64).ToArray())),
+            Plain(R3(Enumerable.Repeat("study", 64).ToArray()), caba), CodePack, same: studyExpected, sameAs: "include [study]");
+        // Unknown rooms are the pipeline's typed refusals.
+        ExpectRun("include an unknown room kind", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("sauna")), Plain(R3(new[] { "sauna" }), caba), CodePack,
+            SkillTypologyCodes.RoomKindUnknown);
+        ExpectRun("include a room kind the programme does not offer", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("storage")), Plain(R3(new[] { "storage" }), caba), CodePack,
+            SkillTypologyCodes.RoomNotOffered);
+        ExpectRun("include an empty room name", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("study", "")), Plain(R3(new[] { "study", "" }), caba), CodePack,
+            SkillTypologyCodes.RoomKindUnknown);
+
+        // code_pack reaches the pipeline as PrototypePipelineOptions.Pack.
+        ExpectRun("code_pack " + ExampleCodePack, Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + ExampleCodePack + "\""), Plain(R3(), example), ExampleCodePack,
+            differsFromP714: true);
+        ExpectRun("code_pack " + ExampleCodePack + " with include [study]", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":" + Strs("study") + ",\"code_pack\":\"" + ExampleCodePack + "\""),
+            Plain(R3(new[] { "study" }), example), ExampleCodePack, differsFromP714: true);
+        var exampleOut = Output();
+        var exampleRun = Cli("generate-typology", Input("example-stdout.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + ExampleCodePack + "\"")), exampleOut);
+        Check(exampleRun.Exit != 0 || (Str(Parse(exampleRun.Out), "code_pack") == ExampleCodePack && !exampleRun.Out.Contains("\"rules\"", StringComparison.Ordinal)),
+            "a plain run with another code pack prints that code_pack and the P7-14 envelope shape", D(exampleRun));
+        // Composed mode: include and code_pack reach RunComposed too.
+        ExpectRun("composed (skills []) with include [study]", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":[],\"include\":" + Strs("study")),
+            TypologyPipeline.RunComposed(pack, R3(new[] { "study" }), new PrototypePipelineOptions(caba, projectId), Array.Empty<SkillManifest>(), null), CodePack, differsFromP714: true);
+        ExpectRun("composed (skills []) with the default code pack named", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + CodePack + "\",\"skills\":[]"),
+            TypologyPipeline.RunComposed(pack, R3(), new PrototypePipelineOptions(caba, projectId), Array.Empty<SkillManifest>(), null), CodePack,
+            same: Utf8(TypologyPipelineSerializer.Serialize(TypologyPipeline.RunComposed(pack, R3(), new PrototypePipelineOptions(caba, projectId), null, null))), sameAs: "the composed CABA + typology run");
+        ExpectRun("composed (skills []) with code_pack " + ExampleCodePack, Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + ExampleCodePack + "\",\"skills\":[]"),
+            TypologyPipeline.RunComposed(pack, R3(), new PrototypePipelineOptions(example, projectId), Array.Empty<SkillManifest>(), null), ExampleCodePack, differsFromP714: true);
+        ExpectRun("composed include of an unknown room", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":[],\"include\":" + Strs("sauna")),
+            TypologyPipeline.RunComposed(pack, R3(new[] { "sauna" }), new PrototypePipelineOptions(caba, projectId), Array.Empty<SkillManifest>(), null), CodePack, SkillTypologyCodes.RoomKindUnknown);
+
+        // A code_pack that is not a code skill, or that cannot be read, is refused before the pipeline runs.
+        void ExpectCodePackRefusal(string label, string text, string code, string detail)
+        {
+            var output = Output();
+            var result = Cli("generate-typology", Input("code-pack-refusal.json", text), output);
+            var envelope = Parse(result.Out);
+            Check(result.Exit == 1 && Str(envelope, "code") == code && Str(envelope, "detail") == detail && !File.Exists(output) && result.Out.Split('\n').Length == 1,
+                label + " -> " + code + " (detail " + detail + "), exit 1, no output file", D(result));
+        }
+        ExpectCodePackRefusal("a style pack as code_pack", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + CompactStyle + "\""), "generate_typology_code_pack_invalid", "kind");
+        ExpectCodePackRefusal("the typology pack as code_pack", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + TypologyPack + "\""), "generate_typology_code_pack_invalid", "kind");
+        ExpectCodePackRefusal("a qa pack as code_pack in composed mode", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"bim.qa.room-basics\",\"skills\":[]"),
+            "generate_typology_code_pack_invalid", "kind");
+        ExpectCodePackRefusal("an unknown code_pack", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"xx.no-such.code\""), "generate_typology_code_pack_unavailable", "input_not_found");
+        ExpectCodePackRefusal("a non-code code_pack with an unknown room (the code pack is checked first)",
+            Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + CompactStyle + "\",\"include\":" + Strs("sauna")), "generate_typology_code_pack_invalid", "kind");
+        var unknownBothOut = Output();
+        var unknownBoth = Cli("generate-typology", Input("unknown-pack-and-code.json", Request("xx.no-such.pack", 3, 16, 16, 4, 0, ",\"code_pack\":\"xx.no-such.code\"")), unknownBothOut);
+        Check(unknownBoth.Exit == 1 && Str(Parse(unknownBoth.Out), "code") == "generate_typology_pack_unavailable" && !File.Exists(unknownBothOut),
+            "the typology pack is read before the code pack (generate_typology_pack_unavailable wins)", D(unknownBoth));
+        var codeBeforeSkillOut = Output();
+        var codeBeforeSkill = Cli("generate-typology", Input("code-before-skill.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + CompactStyle + "\",\"skills\":" + Strs("xx.no-such.skill"))), codeBeforeSkillOut);
+        Check(codeBeforeSkill.Exit == 1 && Str(Parse(codeBeforeSkill.Out), "code") == "generate_typology_code_pack_invalid" && !File.Exists(codeBeforeSkillOut),
+            "the code pack is checked before the extra skills (generate_typology_code_pack_invalid wins)", D(codeBeforeSkill));
 
         // ---- P5-16: optional skills / precedence run TypologyPipeline.RunComposed (composed pack rules) ----
         SkillManifest Skill(string id) => SkillParser.Parse(File.ReadAllText(Path.Combine(root, "skills", id, "skill.json")));
@@ -346,8 +466,23 @@ internal static class GenerateTypologyTests
             ("a non-object request", "[1,2]", "request"),
             ("an unknown member", good[..^1] + ",\"bedrooms\":2}", "request.bedrooms"),
             ("a duplicate member", good.Replace("\"family_size\":3", "\"family_size\":3,\"family_size\":4", StringComparison.Ordinal), "request.family_size"),
-            ("an include member (not in v1)", good[..^1] + ",\"include\":[\"study\"]}", "request.include"),
-            ("a code pack member (not in v1)", good[..^1] + ",\"code_pack\":\"" + CodePack + "\"}", "request.code_pack"),
+            ("a revision member (not in v1)", good[..^1] + ",\"revision\":0}", "request.revision"),
+            ("a snap member (not in v1)", good[..^1] + ",\"snap\":{}}", "request.snap"),
+            ("a string include", good[..^1] + ",\"include\":\"study\"}", "include"),
+            ("null include", good[..^1] + ",\"include\":null}", "include"),
+            ("an object include", good[..^1] + ",\"include\":{}}", "include"),
+            ("a non-string include entry", good[..^1] + ",\"include\":[\"study\",7]}", "include[1]"),
+            ("a null include entry", good[..^1] + ",\"include\":[null]}", "include[0]"),
+            ("a lone surrogate include entry", good[..^1] + ",\"include\":[\"\\ud800\"]}", "include[0]"),
+            ("more than 64 include entries", good[..^1] + ",\"include\":" + Ids(Enumerable.Repeat("study", 65).ToArray()) + "}", "include"),
+            ("a duplicate include member", good[..^1] + ",\"include\":[],\"include\":[]}", "request.include"),
+            ("a non-string code_pack", good[..^1] + ",\"code_pack\":7}", "code_pack"),
+            ("null code_pack", good[..^1] + ",\"code_pack\":null}", "code_pack"),
+            ("an array code_pack", good[..^1] + ",\"code_pack\":[\"" + CodePack + "\"]}", "code_pack"),
+            ("a malformed code_pack id", good[..^1] + ",\"code_pack\":\"../skills\"}", "code_pack"),
+            ("an empty code_pack", good[..^1] + ",\"code_pack\":\"\"}", "code_pack"),
+            ("a lone surrogate code_pack", good[..^1] + ",\"code_pack\":\"\\ud800\"}", "code_pack"),
+            ("a duplicate code_pack member", good[..^1] + ",\"code_pack\":\"" + CodePack + "\",\"code_pack\":\"" + CodePack + "\"}", "request.code_pack"),
             ("a string family size", good.Replace("\"family_size\":3", "\"family_size\":\"3\"", StringComparison.Ordinal), "family_size"),
             ("a fractional family size", good.Replace("\"family_size\":3", "\"family_size\":3.5", StringComparison.Ordinal), "family_size"),
             ("a fractional alternative count", good.Replace("\"alternatives\":4", "\"alternatives\":2.5", StringComparison.Ordinal), "alternatives"),
