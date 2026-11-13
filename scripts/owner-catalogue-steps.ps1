@@ -905,6 +905,14 @@ function Get-CatalogueDocumentationSteps {
 #      item of the fixture (DocDefaults: level plan, its sheet and placement, the door tag, door and room schedules, the
 #      schedules sheet and both placements: 9 keys) has no realization, so all 9 are forced (created). The plan file must
 #      hash to the printed sha256; its keys, command counts, plan level and tag (door, head at the door centre) checked;
+#   1b. doc-up-names-views / doc-up-names-sheets / doc-up-names-schedules (P4-17): read-only query.elements of the test
+#      copy's views (OST_Views, "View Name"), sheets (OST_Sheets, "Sheet Number") and schedules (OST_Schedules,
+#      "View Name"), limit 5000. Each must read back its category, not truncated, and the parameter on every row (the
+#      name as shown in Revit: a Revit in another language has none and the step fails, fail closed); a row with no
+#      value is skipped. Their names are compared with the ones the reviewed plan of 1 creates (view.create_plan name,
+#      sheet.create number, schedule.create name: DocDefaults' "Level 1 Plan", A101, A900, "Door Schedule", "Room
+#      Schedule"), ignoring case. A name that exists already fails 2 with doc_update_name_collision naming it, before
+#      anything is sent (Revit would refuse the duplicate mid-plan, after the earlier creates); later groups still run;
 #   2. doc-up-realize: the same request with --execute --expected-document <sha256 of 1> (the plan sha from its own dry
 #      run): every step done, sent once, not replayed, one new UniqueId each; the printed realized map is the element
 #      entries plus doc:<key> = the created UniqueId of that key's step;
@@ -934,6 +942,15 @@ $script:CatalogueDocUpdateWallThicknessMm = 200
 # The catalogue commands of the first (forced) plan, by count.
 $script:CatalogueDocUpdateCommands = [ordered]@{ 'schedule.create' = 2; 'sheet.create' = 2; 'sheet.place_view' = 3; 'tag.create' = 1; 'view.create_plan' = 1 }
 $script:CatalogueUniqueIdPattern = '\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-[0-9a-fA-F]{8}\z'
+# P4-17: the name queries before the first --execute: per kind, its step key, Revit category, the parameter that holds
+# the name, the plan command and argument that name what the plan creates, and its Spanish label.
+$script:CatalogueDocUpdateNameQueries = [ordered]@{
+    views = @{ Key = 'doc-up-names-views'; Category = 'OST_Views'; Parameter = 'View Name'; Command = 'view.create_plan'; Member = 'name'; Es = 'vista' }
+    sheets = @{ Key = 'doc-up-names-sheets'; Category = 'OST_Sheets'; Parameter = 'Sheet Number'; Command = 'sheet.create'; Member = 'number'; Es = 'lámina' }
+    schedules = @{ Key = 'doc-up-names-schedules'; Category = 'OST_Schedules'; Parameter = 'View Name'; Command = 'schedule.create'; Member = 'name'; Es = 'tabla' }
+}
+$script:CatalogueDocUpdateNameLimit = 5000
+$script:CatalogueDocUpdateNameCollision = 'doc_update_name_collision'
 
 # A DocDefaults key: prefix + the BIM-IR id in "N" form.
 function Get-CatalogueDocUpdateKey([string]$Prefix, [string]$Id) { return $Prefix + $Id.Replace('-', '').ToLowerInvariant() }
@@ -1105,8 +1122,68 @@ function Test-CatalogueDocUpdateRealizePlan($Response) {
         (Test-CatalogueSame 'planta: el nivel elegido' $picked['level'] (Get-CatalogueMember $(if ($view) { $view.Args }) 'level')),
         (Test-CatalogueSame 'etiqueta: la puerta de la actualización' (Created 'doc-up-door') (Get-CatalogueMember $(if ($tag) { $tag.Args }) 'element_uid')),
         (Test-CataloguePoint 'etiqueta: cabeza en el centro de la puerta (mm)' (Get-CatalogueDocUpdateHead 0) (Get-CatalogueMember $(if ($tag) { $tag.Args }) 'head') 0.5))
-    if ($null -eq $reason) { $picked['doc_up_realize_plan'] = @{ Sha = [string](Get-CatalogueMember $Response 'sha256') } }
+    if ($null -eq $reason) { $picked['doc_up_realize_plan'] = @{ Sha = [string](Get-CatalogueMember $Response 'sha256'); Names = (Get-CatalogueDocUpdatePlanNames $steps) } }
     return $reason
+}
+
+# P4-17: what the plan names, per kind of $script:CatalogueDocUpdateNameQueries (sorted ordinally; unnamed items skipped).
+function Get-CatalogueDocUpdatePlanNames($Steps) {
+    $names = @{}
+    foreach ($entry in $script:CatalogueDocUpdateNameQueries.GetEnumerator()) {
+        $list = [string[]]@(foreach ($step in @($Steps | Where-Object { $_.Command -eq $entry.Value.Command })) { $name = Get-CatalogueMember $step.Args $entry.Value.Member; if ($null -ne $name -and [string]$name) { [string]$name } })
+        [Array]::Sort($list, [StringComparer]::Ordinal)
+        $names[$entry.Key] = $list
+    }
+    return $names
+}
+
+# P4-17: one name listing (query.elements of a kind): its category, nothing truncated, the name parameter on every row;
+# records doc_up_names_<kind> = @{ Names } (rows without a value skipped).
+function Test-CatalogueDocUpdateNames($Response, [string]$Kind) {
+    $spec = $script:CatalogueDocUpdateNameQueries[$Kind]
+    $readback = Get-CatalogueMember $Response 'readback'
+    $rows = Get-CatalogueList $readback 'elements'
+    $names = [Collections.Generic.List[string]]::new()
+    $unread = [Collections.Generic.List[string]]::new()
+    foreach ($row in $rows) {
+        $parameter = @((Get-CatalogueList $row 'parameters') | Where-Object { [string](Get-CatalogueMember $_ 'name') -ceq $spec.Parameter }) | Select-Object -First 1
+        if ($null -eq $parameter) { $unread.Add([string](Get-CatalogueMember $row 'unique_id')); continue }
+        $value = Get-CatalogueMember $parameter 'value'
+        if ((Get-CatalogueMember $parameter 'has_value') -eq $true -and $null -ne $value -and [string]$value) { $names.Add([string]$value) }
+    }
+    $reason = Join-CatalogueReasons @(
+        (Test-CatalogueSame 'categoría Revit' $spec.Category (Get-CatalogueMember $readback 'built_in_category')),
+        (Test-CatalogueSame 'truncado (debe leerse la lista entera)' $false (Get-CatalogueMember $readback 'truncated')),
+        (Test-CatalogueSame 'coincidencias = filas leídas' $rows.Count (Get-CatalogueMember $readback 'matched')),
+        (Test-CatalogueSame 'returned = filas' $rows.Count (Get-CatalogueMember $readback 'returned')),
+        (Test-CatalogueCondition "parámetro '$($spec.Parameter)' leído en cada fila (nombre visible en Revit; sin él no se puede comprobar)" 'todas' @($unread) ($unread.Count -eq 0)))
+    if ($null -eq $reason) { $picked["doc_up_names_$Kind"] = @{ Names = $names.ToArray() } }
+    return $reason
+}
+
+# P4-17: the step of one name listing and its query.elements args.
+function New-CatalogueDocUpdateNameStep([string]$Kind, [scriptblock]$Build, [scriptblock]$Check) {
+    $spec = $script:CatalogueDocUpdateNameQueries[$Kind]
+    return @{ Key = $spec.Key; Es = "Actualización: listar $($spec.Category) ('$($spec.Parameter)') de la copia de prueba; ningún nombre que crea el plan debe existir ya"; Command = 'query.elements'; Expect = @{ Status = 'succeeded' }; Build = $Build; Check = $Check }
+}
+function New-CatalogueDocUpdateNameArgs([string]$Kind) {
+    $spec = $script:CatalogueDocUpdateNameQueries[$Kind]
+    return [ordered]@{ category = $spec.Category; parameters = @($spec.Parameter); limit = $script:CatalogueDocUpdateNameLimit }
+}
+
+# P4-17: the names the reviewed plan creates that the test copy already has (ignoring case), as "<label> '<name>'";
+# $null when none.
+function Get-CatalogueDocUpdateCollision {
+    $found = [Collections.Generic.List[string]]::new()
+    foreach ($entry in $script:CatalogueDocUpdateNameQueries.GetEnumerator()) {
+        $existing = @($picked["doc_up_names_$($entry.Key)"].Names)
+        foreach ($name in @($picked['doc_up_realize_plan'].Names[$entry.Key])) {
+            if (@($existing | Where-Object { [string]::Equals([string]$_, $name, [StringComparison]::OrdinalIgnoreCase) }).Count) { $found.Add("$($entry.Value.Es) '$name'") }
+        }
+    }
+    if (!$found.Count) { return $null }
+    $picked['doc_up_name_collision'] = $found.ToArray()
+    return "$($script:CatalogueDocUpdateNameCollision): la copia de prueba ya tiene $($found -join ', '); la documentación por defecto no se crea (doc-update --execute no se envía, nada escrito)"
 }
 
 # What every --execute line must say: applied, completed, the reviewed plan (same sha256), nothing gone, $Count report
@@ -1227,8 +1304,13 @@ function Get-CatalogueDocUpdateSteps {
     $steps.Add(@{ Key = 'doc-up-realize-plan'; Es = 'Actualización: doc-update en simulacro de la documentación por defecto del modelo BIM-IR (9 elementos sin realizar)'; Command = 'doc-update'; DocUpdate = $true; Expect = @{ Status = 'succeeded' }
         Build = { Need 'level', 'doc_up_elements'; $elements = $picked['doc_up_elements']; New-CatalogueDocUpdateRequest 0 0 $null $null $elements.File $elements.Sha }
         Check = { param($r) Test-CatalogueDocUpdateRealizePlan $r } })
+    # P4-17: read-only name listings of the test copy, compared with the plan's names before its --execute (literal
+    # kinds: a step's Build and Check run in the sequence's scope, where Need and $picked live, so no closures).
+    $steps.Add((New-CatalogueDocUpdateNameStep 'views' { Need 'doc_up_realize_plan'; New-CatalogueDocUpdateNameArgs 'views' } { param($r) Test-CatalogueDocUpdateNames $r 'views' }))
+    $steps.Add((New-CatalogueDocUpdateNameStep 'sheets' { Need 'doc_up_realize_plan'; New-CatalogueDocUpdateNameArgs 'sheets' } { param($r) Test-CatalogueDocUpdateNames $r 'sheets' }))
+    $steps.Add((New-CatalogueDocUpdateNameStep 'schedules' { Need 'doc_up_realize_plan'; New-CatalogueDocUpdateNameArgs 'schedules' } { param($r) Test-CatalogueDocUpdateNames $r 'schedules' }))
     $steps.Add(@{ Key = 'doc-up-realize'; Es = 'Actualización: doc-update --execute del plan revisado (crea planta, láminas, tablas, colocaciones y la etiqueta de la puerta)'; Command = 'doc-update'; DocUpdate = $true; Expect = @{ Status = 'succeeded' }
-        Build = { Need 'doc_up_elements', 'doc_up_realize_plan'; $elements = $picked['doc_up_elements']; New-CatalogueDocUpdateRequest 0 0 $null $picked['doc_up_realize_plan'].Sha $elements.File $elements.Sha }
+        Build = { Need 'doc_up_elements', 'doc_up_realize_plan', 'doc_up_names_views', 'doc_up_names_sheets', 'doc_up_names_schedules'; if ($collision = Get-CatalogueDocUpdateCollision) { throw $collision }; $elements = $picked['doc_up_elements']; New-CatalogueDocUpdateRequest 0 0 $null $picked['doc_up_realize_plan'].Sha $elements.File $elements.Sha }
         Check = { param($r) Test-CatalogueDocUpdateRealize $r } })
     $steps.Add(@{ Key = 'doc-up-move'; Es = "Actualización: mover el muro (0, $shift, 0) mm; la etiqueta de la puerta queda obsoleta"; Command = 'element.move'; Expect = @{ Status = 'succeeded'; Created = 0 }
         Build = { Need 'doc_up_realized'; [ordered]@{ element_uids = @(Created 'doc-up-wall'); vector_mm = @(0, $script:CatalogueDocUpdateShiftMm, 0) } }
