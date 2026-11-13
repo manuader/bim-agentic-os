@@ -114,7 +114,7 @@ internal static class PackageLayoutPackTests
             var packageDll = Path.Combine(package, "cli", Path.GetFileName(cliDll));
             Check(built.Exit == 0 && built.Out.Contains("PACKAGED ", StringComparison.Ordinal) && File.Exists(packageDll),
                 "scripts/package.ps1 builds a package (exit 0, PACKAGED, cli/" + Path.GetFileName(cliDll) + ")",
-                "exit " + built.Exit.ToString(CultureInfo.InvariantCulture) + " stdout tail " + buildTail.ReplaceLineEndings(" | ") + (built.Err.Length > 0 ? " stderr " + (built.Err.Length > 4000 ? built.Err[^4000..] : built.Err) : ""));
+                "exit " + built.Exit.ToString(CultureInfo.InvariantCulture) + " stdout tail " + buildTail.ReplaceLineEndings(" | ") + (built.Err.Length > 0 ? " stderr " + (built.Err.Length > 900 ? built.Err[^900..] : built.Err) : ""));
             if (built.Exit != 0 || !File.Exists(packageDll)) return;
             var version = Path.Combine(package, "VERSION");
             var manifest = Path.Combine(package, "manifest.json");
@@ -122,6 +122,32 @@ internal static class PackageLayoutPackTests
             Check(File.Exists(version) && File.Exists(manifest) && File.Exists(Path.Combine(packageSkills, Caba, "skill.json"))
                 && File.Exists(Path.Combine(packageSkills, TypologyPack, "skill.json")) && File.Exists(Path.Combine(packageSkills, CompactStyle, "skill.json")) && !UnderRepository(package),
                 "the package has VERSION, manifest.json and skills/ (CABA, typology, compact-modern) and no global.json above it", package);
+            // P10-18: the shipped Bim.* assemblies are first-party on every OS (macOS included): project entries of each
+            // folder's deps.json, and NOASSERTION sbom.json lines without a "package" field.
+            foreach (var (depsFolder, depsEntry) in new[] { ("cli", "Bim.Cli"), ("mcp", "Bim.Mcp") })
+            {
+                var depsPath = Path.Combine(package, depsFolder, depsEntry + ".deps.json");
+                var notProject = new List<string>();
+                if (File.Exists(depsPath))
+                {
+                    using var depsDocument = JsonDocument.Parse(File.ReadAllText(depsPath));
+                    foreach (var depsLibrary in depsDocument.RootElement.GetProperty("libraries").EnumerateObject())
+                        if (depsLibrary.Name.StartsWith("Bim.", StringComparison.Ordinal) && (!depsLibrary.Value.TryGetProperty("type", out var depsType) || depsType.GetString() != "project"))
+                            notProject.Add(depsLibrary.Name);
+                }
+                Check(File.Exists(depsPath) && notProject.Count == 0, "P10-18: " + depsFolder + "/" + depsEntry + ".deps.json lists every Bim.* library as a project", string.Join(", ", notProject));
+            }
+            var sbomPath = Path.Combine(package, "sbom.json");
+            var bimLines = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            using (var sbomDocument = JsonDocument.Parse(File.Exists(sbomPath) ? File.ReadAllText(sbomPath) : "{\"assemblies\":[]}"))
+                foreach (var sbomAssembly in sbomDocument.RootElement.GetProperty("assemblies").EnumerateArray())
+                    if (sbomAssembly.TryGetProperty("path", out var sbomPathValue) && sbomPathValue.GetString() is { } shipped
+                        && System.Text.RegularExpressions.Regex.IsMatch(shipped, @"^(cli|mcp)/Bim\.[A-Za-z.]+\.dll\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+                        bimLines[shipped] = sbomAssembly.Clone();
+            var requiredFirstParty = new[] { "cli/Bim.Cad.dll", "cli/Bim.Cli.dll", "cli/Bim.Core.dll", "cli/Bim.Evaluation.dll", "cli/Bim.Generative.dll", "cli/Bim.Gltf.dll", "cli/Bim.Ifc.Compiler.dll", "mcp/Bim.Core.dll", "mcp/Bim.Mcp.dll" };
+            var notFirstParty = requiredFirstParty.Where(required => !bimLines.ContainsKey(required))
+                .Concat(bimLines.Where(pair => !pair.Value.TryGetProperty("license", out var license) || license.GetString() != "NOASSERTION" || pair.Value.TryGetProperty("package", out _)).Select(pair => pair.Key)).ToArray();
+            Check(notFirstParty.Length == 0, "P10-18: sbom.json lists every cli/ and mcp/ Bim.* assembly (Cad, Cli, Core, Evaluation, Generative, Gltf, Ifc.Compiler; Core, Mcp) first-party: NOASSERTION without a package", string.Join(", ", notFirstParty));
 
             // ---- 2. the same inputs through the repository CLI and the packaged CLI ----
             const string small = "{\"brief_version\":1,\"name\":\"Small studio\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"

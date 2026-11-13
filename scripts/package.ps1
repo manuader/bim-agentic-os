@@ -67,7 +67,8 @@ $id = [Guid]::NewGuid().ToString('N')
 $parent = Split-Path $output
 if ($parent) { [void][IO.Directory]::CreateDirectory($parent) }
 $staging = "$output.partial-$id"
-$build = Join-Path ([IO.Path]::GetTempPath()) "bim-package-src-$id"
+# P10-18: the build tree at its physical path (macOS temp is reached through /var -> /private/var; see package-common).
+$build = Join-Path (Resolve-PackagePhysicalPath ([IO.Path]::GetTempPath())) "bim-package-src-$id"
 try {
     foreach ($relative in $tracked) {
         $target = Join-Path $build $relative

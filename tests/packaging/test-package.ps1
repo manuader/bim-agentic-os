@@ -712,6 +712,30 @@ try {
         Assert ($noAssetsText -ceq 'Alpha.Json:direct:0:0,Zeta.Lib:direct:0:0') "P10-14: without project.assets.json references stay direct with no recorded files: $noAssetsText"
     } catch { $failures.Add("P10-14 transitive SBOM checks threw: $($_.Exception.Message)") }
 
+    # --- P10-18: the build tree's physical path (every symlinked component resolved; Windows paths as GetFullPath) ---
+    try {
+        $p18 = Join-Path $work 'p18 physical'
+        New-Item -ItemType Directory -Force (Join-Path $p18 'real/inner') | Out-Null
+        $p18Real = Resolve-PackagePhysicalPath (Join-Path $p18 'real')
+        Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'real/inner/')) -ceq (Join-Path $p18Real 'inner')) "P10-18: a path without links must keep its spelling (no trailing separator): '$(Resolve-PackagePhysicalPath (Join-Path $p18 'real/inner/'))'"
+        Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'real/missing/x')) -ceq (Join-Path $p18Real 'missing/x')) 'P10-18: missing components must be kept as written'
+        if ($IsWindows) {
+            Assert ((Resolve-PackagePhysicalPath $p18) -ceq [IO.Path]::GetFullPath($p18)) 'P10-18: on Windows the path is GetFullPath unchanged'
+            Write-Host 'SKIP P10-18 symlinked components: directory symlinks need privileges on Windows'
+        } else {
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'abs') -Target (Join-Path $p18 'real') | Out-Null
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'rel') -Target 'real' | Out-Null
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'chain') -Target 'abs' | Out-Null
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'real/up') -Target '../real/inner' | Out-Null
+            foreach ($linked in 'abs/inner', 'rel/inner', 'chain/inner', 'abs/up', 'chain/up/') {
+                $resolved = Resolve-PackagePhysicalPath (Join-Path $p18 $linked)
+                Assert ($resolved -ceq (Join-Path $p18Real 'inner')) "P10-18: $linked must resolve to the physical real/inner: '$resolved'"
+            }
+            Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'abs/missing')) -ceq (Join-Path $p18Real 'missing')) "P10-18: a missing leaf under a link resolves its existing prefix: '$(Resolve-PackagePhysicalPath (Join-Path $p18 'abs/missing'))'"
+            if ($IsMacOS) { Assert ((Resolve-PackagePhysicalPath '/var/tmp') -ceq '/private/var/tmp') "P10-18: macOS /var/tmp must resolve to /private/var/tmp: '$(Resolve-PackagePhysicalPath '/var/tmp')'" }
+        }
+    } catch { $failures.Add("P10-18 physical path checks threw: $($_.Exception.Message)") }
+
     # --- P7-12 review: a tracked skills/ entry that is not a regular file (mode other than 100644/100755, e.g. a
     # symlink 120000 or a submodule 160000) is refused before any build; the index entry is staged with --cacheinfo so
     # no file system symlink is needed on any OS ---

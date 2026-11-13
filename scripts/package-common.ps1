@@ -28,6 +28,29 @@ function Get-PackageRelativePath([string]$Base, [string]$Path) {
     return [IO.Path]::GetRelativePath($Base, $Path).Replace('\', '/')
 }
 
+# P10-18: the physical form of a directory path, every symlinked component resolved (what getcwd reports). The build
+# tree must live at its physical path: on macOS the temp directory /var/folders/... is reached through /var ->
+# /private/var, and a build tree under the symlinked spelling publishes deps.json files that list the referenced Bim.*
+# projects as "reference" instead of "project" entries, so package.ps1 refused them as sbom_unattributed. Components
+# that do not exist are kept as written. Windows paths are returned as GetFullPath gives them (its temp is not linked).
+function Resolve-PackagePhysicalPath([string]$Path, [int]$Depth = 0) {
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($IsWindows) { return $full }
+    if ($Depth -gt 40) { throw "too many levels of symbolic links resolving $Path" }
+    $current = '/'
+    foreach ($part in $full.Split('/', [StringSplitOptions]::RemoveEmptyEntries)) {
+        $next = Join-Path $current $part
+        $item = Get-Item -LiteralPath $next -Force -ErrorAction SilentlyContinue
+        if ($item -and $item.LinkTarget) {
+            $target = [string]$item.LinkTarget
+            if (![IO.Path]::IsPathRooted($target)) { $target = Join-Path $current $target }
+            $next = Resolve-PackagePhysicalPath $target ($Depth + 1)
+        }
+        $current = $next
+    }
+    return $current
+}
+
 # Relative paths of every file in the package except the root manifest, sorted ordinally.
 function Get-PackageFiles([string]$Directory) {
     $base = [IO.Path]::GetFullPath($Directory)
@@ -688,17 +711,7 @@ function Test-PackageSbom([string]$Directory, $Manifest) {
         if ($attribution.FirstParty) { continue }
         if ($attribution.Ambiguous) { $ambiguous.Add($binary) } elseif ($null -eq $attribution.Reference) { $unattributed.Add($binary) }
     }
-    if ($unattributed.Count) { $problems.Add("sbom_unattributed: third-party binaries not attributed to a NuGet package (direct or transitive) in sbom.json: $($unattributed -join ', ')") 
-        if ($IsMacOS) { # TEMP P10-18 diagnostic
-            $diag = foreach ($rel in @(Get-PackageFiles $base | Where-Object { $_ -match '(?i)\.deps\.json\z' })) {
-                $d = [IO.File]::ReadAllText((Join-Path $base $rel)) | ConvertFrom-Json -AsHashtable
-                $libs = (Get-PackageSortedKeys $d['libraries'] | Where-Object { $_ -match '(?i)^bim' } | ForEach-Object { "$_=$($d['libraries'][$_]['type'])" }) -join ','
-                $tg = foreach ($fw in (Get-PackageSortedKeys $d['targets'])) { "$fw{" + ((Get-PackageSortedKeys $d['targets'][$fw] | Where-Object { $_ -match '(?i)^bim' } | ForEach-Object { "$_>" + ((Get-PackageSortedKeys $d['targets'][$fw][$_]) -join '+') + ':' + ((Get-PackageSortedKeys $d['targets'][$fw][$_]['runtime']) -join '+') }) -join ',') + '}' }
-                "$rel libs[$libs] targets[$($tg -join ' ')]"
-            }
-            $problems[$problems.Count - 1] += ' DIAG ' + ($diag -join ' || ') + ' TMP ' + [IO.Path]::GetTempPath() + ' BASE ' + $base
-        }
-    }
+    if ($unattributed.Count) { $problems.Add("sbom_unattributed: third-party binaries not attributed to a NuGet package (direct or transitive) in sbom.json: $($unattributed -join ', ')") }
     if ($ambiguous.Count) { $problems.Add("sbom_attribution_ambiguous: several listed NuGet packages claim these shipped binaries and no deps.json disambiguates them: $($ambiguous -join ', ')") }
     foreach ($problem in @(Test-PackageSbomManifestAgreement $Manifest $sbom $references.ToArray() $depsIndex)) { $problems.Add($problem) }
     $expected = New-PackageSbomText $base ([string]$Manifest.version) ([string]$Manifest.source_commit) $references.ToArray()
