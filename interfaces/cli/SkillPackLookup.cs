@@ -8,8 +8,9 @@ namespace Bim.Cli;
 // repository walk alone) is a legacy overload kept for tests; no production caller uses it.
 // Checks in order, after a guard: an id that is not SkillParser.IsId (callers refuse those first) is Invalid "id" before
 // any file system access, on either path, so the path never leaves skills/.
-// With packageFirst the release package root is tried before the repository walk: the parent directory of the CLI
-// binary's directory when that directory is named "cli" (ordinal) and the parent holds both markers scripts/package.ps1
+// With packageFirst the release package root is tried before the repository walk: the parent directory of the binary's
+// directory when that directory is named "cli" or (P5-18, the packaged MCP server, which links this file) "mcp" (ordinal)
+// and the parent holds both markers scripts/package.ps1
 // writes (the files VERSION and manifest.json) and a skills/ directory (a stray skills/ with one or no marker is not a
 // package); then the manifest is <package>/skills/<id>/skill.json, with no fallback to the repository once the package
 // root is chosen. Otherwise (no package root, or packageFirst false) the repository is RevitCommandPolicy.RepositoryRoot of
@@ -45,12 +46,14 @@ internal static class SkillPackLookup
         return pack;
     }
 
-    // The release package root of a CLI binary directory <package>/cli: the parent when the directory is named "cli" and
-    // the parent holds VERSION, manifest.json and skills/ (a stray skills/ beside any other folder is not a package), else null.
+    // The release package root of a packaged binary directory <package>/cli or <package>/mcp: the parent when the directory
+    // is named "cli" or "mcp" (ordinal) and the parent holds VERSION, manifest.json and skills/ (a stray skills/ beside any
+    // other folder is not a package), else null.
     public static string? PackageRoot(string binaryDirectory)
     {
         var directory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(binaryDirectory));
-        if (!string.Equals(Path.GetFileName(directory), "cli", StringComparison.Ordinal)) return null;
+        var name = Path.GetFileName(directory);
+        if (!string.Equals(name, "cli", StringComparison.Ordinal) && !string.Equals(name, "mcp", StringComparison.Ordinal)) return null;
         var parent = Path.GetDirectoryName(directory);
         return parent is not null && File.Exists(Path.Combine(parent, "VERSION")) && File.Exists(Path.Combine(parent, "manifest.json"))
             && Directory.Exists(Path.Combine(parent, "skills")) ? parent : null;
