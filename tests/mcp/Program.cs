@@ -1680,6 +1680,8 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
 
 // P5-17 generate_typology (tests/mcp/GenerateTypologyToolTests.cs).
 GenerateTypologyToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
+// P5-18 the package root from a cli/ or mcp/ binary directory (tests/mcp/SkillPackPackageRootTests.cs).
+SkillPackPackageRootTests.Run(cliDir,Check);
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
     var unknown=ToolCall(hidden,new JsonObject());
     Check(IsError(unknown) && Text(unknown)=="""{"status":"failed","code":"unknown_tool"}""","tool "+hidden+" is not exposed and returns isError");
