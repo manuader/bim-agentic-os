@@ -17,8 +17,8 @@
 # P10-17: a manifest-listed file that cannot be read is manifest_file_unreadable (never an exception); a FIFO or socket
 # is refused by file type before any open (package_special_file), with every such run time-bounded so a regression
 # fails instead of hanging; mkfifo/socket cases are counted SKIPs where unavailable (Windows).
-# P10-19: the package.ps1 staging builders (manifest and sbom text) refuse a FIFO (also behind a file link) by file type
-# before any hash (package_special_file), in bounded child runs; a clean real build is byte-unchanged.
+# P10-19: the package.ps1 staging builders (manifest and sbom text) and its forbidden-content scan refuse a FIFO (also behind a file link) by file type
+# before any hash or read (package_special_file), in bounded child runs; a clean real build is byte-unchanged.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -721,6 +721,7 @@ $ErrorActionPreference = 'Stop'
 if ($Shell) { $script:PackageShellPath = $Shell }
 try {
     if ($Builder -ceq 'manifest') { $null = New-PackageManifestText $Directory '1.2.3' ('a' * 40) $false }
+    elseif ($Builder -ceq 'forbidden') { $null = Find-PackageForbidden $Directory }
     else { $null = New-PackageSbomText $Directory '1.2.3' ('a' * 40) @() }
     "BUILT $Builder"; exit 0
 } catch { [Console]::Error.WriteLine("builder failed: $($_.Exception.Message)"); exit 1 }
@@ -736,7 +737,9 @@ try {
             @{ Name = 'sbom deps json'; Builder = 'sbom'; Fifos = @('cli/Pipe.deps.json') },
             @{ Name = 'sbom non-assembly'; Builder = 'sbom'; Fifos = @('cli/pipe.bin') },
             @{ Name = 'manifest link to fifo'; Builder = 'manifest'; Links = @('cli/link.dat') },
-            @{ Name = 'sbom link to fifo'; Builder = 'sbom'; Links = @('cli/Link.Thing.dll') }
+            @{ Name = 'sbom link to fifo'; Builder = 'sbom'; Links = @('cli/Link.Thing.dll') },
+            @{ Name = 'forbidden scan json'; Builder = 'forbidden'; Fifos = @('skills/x.json') },
+            @{ Name = 'forbidden scan link to fifo'; Builder = 'forbidden'; Links = @('skills/link.json') }
         )
         if (!$IsWindows -and $mkfifo) { & $mkfifo $p19OutsideFifo; if ($LASTEXITCODE -ne 0) { $failures.Add("P10-19 setup failed: mkfifo outside target exited $LASTEXITCODE") } }
         foreach ($case in $p19Cases) {
@@ -770,7 +773,9 @@ try {
         if (Test-Path -LiteralPath $p19OutsideFifo) { Remove-Item -LiteralPath $p19OutsideFifo -Force -ErrorAction SilentlyContinue }
         # A failing type check (non-zero exit) is typed package_special_file_check_failed; a clean staging folder builds.
         $p19False = if (!$IsWindows) { Get-Command false -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source }
-        foreach ($builder in 'manifest', 'sbom') {
+        # package.ps1 runs the forbidden-content scan (Find-PackageForbidden reads small text files) on the staging folder
+        # before either builder, so it is held to the same type check ('forbidden' cases above and here).
+        foreach ($builder in 'manifest', 'sbom', 'forbidden') {
             if ($IsWindows) { $p19Skip++; Write-Host "SKIP P10-19 $builder type check failure: no POSIX type check on Windows" }
             elseif (!$p19False) { $p19Skip++; Write-Host "SKIP P10-19 $builder type check failure: false not found" }
             else {
@@ -968,6 +973,12 @@ try {
                 Assert ([string]$component.name -cmatch '\ABim\.' -and [string]$component.license -ceq 'NOASSERTION' -and !$component.PSObject.Properties['package']) "P10-14: real package assembly $($component.path) must be first-party Bim.* with NOASSERTION and no package (got name '$($component.name)' licence '$($component.license)')"
             }
             Assert ($sbomRefs.Count -eq 0) "P10-14: the real package has no NuGet references today: [$(($sbomRefs | ForEach-Object name) -join ', ')]"
+            # P10-19: re-running New-PackageSbomText (with the staging type check) over the real package reproduces
+            # sbom.json byte for byte (no NuGet references today, so none are passed).
+            if ($sbomRefs.Count -eq 0) {
+                $sbomRebuilt = New-PackageSbomText $outA ([string]$sbom.version) ([string]$sbom.source_commit) @()
+                Assert ($sbomRebuilt -ceq [Text.Encoding]::UTF8.GetString($sbomBytes)) 'P10-19: re-running New-PackageSbomText (with the staging type check) over the real package must reproduce sbom.json byte for byte'
+            }
         } catch { $failures.Add("sbom.json checks threw: $($_.Exception.Message)") }
     }
 
