@@ -1622,7 +1622,7 @@
         "core/Bim.Generative/TypologyPipelineOptions.cs",
         "tests/generative/TypologyPipelineRulesTests.cs"
       ],
-      "blocker": "one level; each accepted alternative gets its own BIM-IR under the same project id, nothing committed; composed rules through the SkillResolution overload or RunComposed (P5-15); pack check compares Id/Version, not content; on 12x12/16x16 lots many candidates are duplicates or fail facade_ir_entrance_overlap / facade_edge_too_short@dining; CLI generate-typology since P7-14 (fixed code pack, composed skills/precedence members since P5-16; no include/code_pack members yet: P7-16).",
+      "blocker": "one level; each accepted alternative gets its own BIM-IR under the same project id, nothing committed; composed rules through the SkillResolution overload or RunComposed (P5-15); pack check compares Id/Version, not content; on 12x12/16x16 lots many candidates are duplicates or fail facade_ir_entrance_overlap / facade_edge_too_short@dining; CLI generate-typology since P7-14 (fixed code pack, composed skills/precedence members since P5-16; include/code_pack members since P7-16).",
       "scope": "P5-12: TypologyPipeline.Run(pack|SkillResolution, TypologyBriefRequest, PrototypePipelineOptions) runs TypologyBrief.Generate candidates through the unchanged PrototypePipeline.Rank circulation → facade → BIM-IR window gates with the request weights (strategy whole_lot); refusals typology-first then options; TypologyPipelineSerializer canonical JSON. Pinned SHA-256 3a55177415f42f4d324cf3e4bd298223595c429006595a635aa12e9fb1a3d20b (family 4, 12x12, 6 alt, seed 0, Infeasible) and eb8720c1a98a749048df6ac69f1794b965e833efc963eb9ddfe58db0ae886f4e (family 3, 16x16, 4 alt, seed 0, Ranked), identical on Linux and Windows; rejections matched code@subject against independently recomputed gates; P7-07 and P5-11 pins unchanged. CI red 42942656762, green 42945770818, review green 42949856832. P5-14: opt-in TypologyPipelineOptions(ComposedRules) plans with TypologyRules.Generate (composed pack + SkillResolution rules), snap without its own rules validates against the composed rules, options.Pack must match a resolution skill by Id/Version (typology_pipeline_pack_mismatch), result JSON adds a rules member (planner_rules, traces) only in composed mode; default output byte-identical (both P5-12 pins); composed pin a8c62da59e0eee2d25af4d27bc37fcf2f67ae366e7e48446f1edfe3c87f7c0dd (CABA+typology, family 3, 16x16, 4 alt, seed 0) on Linux and Windows; typology_minimum_conflict passes through. CI red 43007881318, pin 43008867735, green 43010911469, review red 43020311373, green 43021645045."
     },
     {
@@ -1831,7 +1831,7 @@
         "interfaces/cli/Program.cs",
         "tests/cli/GenerateTypologyTests.cs"
       ],
-      "blocker": "Proposal only, nothing committed; fixed code pack ar.caba.codigo-edificacion; no include or code_pack members (P7-16); composed skills/precedence since P5-16; project_id required; packaged generate-typology not run by tests/packaging.",
+      "blocker": "Proposal only, nothing committed; default code pack ar.caba.codigo-edificacion, include and code_pack members since P7-16; composed skills/precedence since P5-16; project_id required; packaged generate-typology not run by tests/packaging.",
       "scope": "P7-14: `generate-typology request.json output.json` reads a bounded strict snake_case request (pack, family_size, lot{width_m,depth_m}, alternatives, seed, project_id, optional partial weights), loads both packs with SkillPackLookup.Load(id, packageFirst: true) and writes TypologyPipelineSerializer bytes byte-equal to the in-process TypologyPipeline.Run (pins eb8720c1…/3a551774… through the real CLI); never-overwrite (CreateNew), typed generate_typology_* refusals with precedence usage → output → input → request → repository → pack → code pack → pipeline → write, nothing written on refusal; de_DE byte-identical; release package layout byte-equal. CI red 43107527837, green 43109424365; review green 43120709470."
     },
     {
@@ -2032,6 +2032,41 @@
       ],
       "blocker": "Linux CI only (verify.ps1 does not run on macOS CI; Windows SKIPs every case); no device fixture (mknod needs root; /dev/null classifier assert only); package.ps1 staging (New-PackageManifestText) still hashes without a type check (→ P10-19); TOCTOU after the check not covered.",
       "scope": "P10-17: package-verify stops at links, then classifies every file by POSIX test -p/-S/-c/-b via /bin/sh (argv-only, batched by count and ~128 KB) and refuses FIFO/socket/device as package_special_file (ordinal) before any open; a failing type check is package_special_file_check_failed; a manifest-listed file it cannot hash is manifest_file_unreadable naming the path (never an exception); bounded 90 s test runs. relay201, CI red 43305452588, green 43315327377; review red 43320124473, green 43324318365."
+    },
+    {
+      "id": "cli-apply-edits-envelope",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/ApplyEditsCommand.cs",
+        "interfaces/cli/IntentPlan.cs",
+        "interfaces/cli/ApplyIntentCommand.cs",
+        "tests/cli/ApplyEditsEnvelopeTests.cs"
+      ],
+      "blocker": "ApplyIntentCommand still prints per step and DiffEditsCommand keeps its own failed-envelope copy (→ P3-17).",
+      "scope": "P3-16: ApplyEditsCommand.Execute/Commit/Fail/Internal return IntentEnvelope, Run = Execute(args).Print() is the only print; the envelope JSON lives once in IntentPlan.cs; ApplyIntentCommand prints every returned envelope (static check with synthetic bad sources); CLI bytes unchanged; Execute equals a real CLI process in 9 cases. relay204, CI red 43369622514, green 43370990889; review green 43378917834."
+    },
+    {
+      "id": "cli-generate-typology-include-code-pack",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/GenerateTypologyCommand.cs",
+        "tests/cli/GenerateTypologyTests.cs",
+        "tests/mcp/GenerateTypologyToolTests.cs"
+      ],
+      "blocker": "\"include\":[] records [] and differs from absent (→ P7-18); packaged MCP server still cannot find packs (→ P5-18).",
+      "scope": "P7-16: optional request members include (≤ 64 room kinds, ≤ 64 chars each, no control characters) and code_pack (skill id, default ar.caba.codigo-edificacion, kind code or generate_typology_code_pack_invalid/kind) reach TypologyPipeline.Run/RunComposed; byte-equal to in-process runs; absent/default members keep pins eb8720c1/3a551774/a8c62da5; MCP generate_typology byte-equal to the CLI for the new members. relay204, CI red 43368744628, green 43372457353; review green 43381294764."
+    },
+    {
+      "id": "package-macos-physical-temp-sbom",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/package-common.ps1",
+        "scripts/package.ps1",
+        "tests/packaging/test-package.ps1",
+        "tests/cli/PackageLayoutPackTests.cs"
+      ],
+      "blocker": "macOS covered by the ifc-portable PackageLayoutPackTests run only (test-package.ps1 runs on Linux/Windows); Windows symlink cases are counted SKIPs; a link swapped in after resolution is not covered.",
+      "scope": "P10-18: package.ps1 builds under Resolve-PackagePhysicalPath (component-by-component readlink; link loops refused typed inside try) so dotnet publish keeps Bim.* as project entries in deps.json; macOS package.ps1 exits 0 with first-party Bim.* in sbom.json and the macOS SKIP is gone; Linux symlinked-TMPDIR build byte-equal to a clean build; Linux/Windows bytes unchanged. relay204, CI red 43368648383/43371055614, green 43375835744; review green 43383892581."
     }
   ]
 }
