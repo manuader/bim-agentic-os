@@ -26,11 +26,18 @@ namespace Bim.Cli;
 //                  wins among equal priorities), each entry a well-formed skill id (else request_invalid precedence[i]),
 //                  passed through in order; an id that is not a composed skill or one listed twice is the resolver's
 //                  typed precedence_unknown / precedence_duplicate refusal
+//   include        optional array of at most 64 strings (P7-16): optional rooms, TypologyBriefRequest.Include as given (the
+//                  pipeline sorts and de-duplicates them; [] is kept as an empty list, so it is not the absent member's bytes);
+//                  a room kind that is unknown or not offered by the pack is the pipeline's typed typology_room_kind_unknown /
+//                  typology_room_not_offered refusal (generate_typology_refused); a non-string entry is request_invalid include[i]
+//   code_pack      optional skill id string (P7-16), default ar.caba.codigo-edificacion: the facade gate's code pack
+//                  (PrototypePipelineOptions.Pack, also the composed code pack); it must be a skill of kind code, else
+//                  generate_typology_code_pack_invalid with detail "kind"; naming the default is the absent member
 // Every number must be a finite JSON number (-0 is read as 0); integers must be JSON integer literals in the int32 range;
 // strings holding an unpaired UTF-16 surrogate escape are refused like any malformed member. Value ranges (family size,
 // lot sides, count, weights, an all-zero project id, a non-typology pack) are left to TypologyPipeline, whose refusals
-// are reported. Not in v1 (refused as unknown members): include (optional rooms), the code pack, revision, circulation /
-// facade weights and snap; the pipeline gets PrototypePipelineOptions(code pack, project_id)
+// are reported. Not in v1 (refused as unknown members): revision, circulation / facade weights and snap; the pipeline gets
+// PrototypePipelineOptions(code pack, project_id)
 // with every other option at its default, so the output is TypologyPipeline.Run(pack, request, options) of the P5-12
 // in-process API.
 // P5-16 composed rules: when skills or precedence is present (even as []), the pipeline is instead
@@ -39,12 +46,13 @@ namespace Bim.Cli;
 // plan the candidates, so "skills":[] gives the CABA + typology composed bytes (pin a8c62da5...). Its resolution refusals
 // (skill_conflict, dependency_missing, precedence_unknown, default_conflict, ...) are generate_typology_refused with the
 // typed issues exactly as RunComposed returns them. With both members absent the output and stdout are the P7-14 ones.
-// Packs: the typology pack and the fixed code pack ar.caba.codigo-edificacion (the facade gate's) are each read with
+// With include and code_pack absent the output and stdout are the P7-14 ones (pins eb8720c1... / 3a551774...).
+// Packs: the typology pack and the code pack (code_pack, default ar.caba.codigo-edificacion: the facade gate's) are each read with
 // SkillPackLookup.Load(id, packageFirst: true), as generate-prototypes reads its pack: <package>/skills/<id>/skill.json
 // when the CLI sits in the release package layout, else <repository>/skills/<id>/skill.json.
 //
 // Success: the file is written and stdout is {"status":"succeeded","scope":"proposal_only","persisted":false,
-// "pipeline_status":"ranked"|"infeasible","pack","code_pack","project_id","alternatives":n,"accepted":k,"bytes":n,
+// "pipeline_status":"ranked"|"infeasible","pack","code_pack" (the code pack used),"project_id","alternatives":n,"accepted":k,"bytes":n,
 // "sha256":lower-case hex of the file}; exit 0. An infeasible result is a result: it is written with its rejections.
 // Failures print one {"status":"failed","code":...[,"detail"]} line, exit 1 and leave no output file:
 //   generate_typology_usage (detail: the usage text), output_* (GltfExportCommand.OutputProblem with .json, checked
@@ -52,7 +60,7 @@ namespace Bim.Cli;
 //   generate_typology_request_invalid (detail: the offending member), generate_typology_repository_not_found,
 //   generate_typology_pack_unavailable / generate_typology_code_pack_unavailable (detail: the manifest's input_* code),
 //   generate_typology_pack_invalid / generate_typology_code_pack_invalid (detail: the skill code, or "id" when the
-//   manifest names another pack), generate_typology_skill_unavailable / generate_typology_skill_invalid (an extra skill;
+//   manifest names another pack; "kind" when the code pack is not a code skill), generate_typology_skill_unavailable / generate_typology_skill_invalid (an extra skill;
 //   detail as for the packs, plus "skill": the extra id), generate_typology_refused (with "refusals":[{"code","subject","detail"}] =
 //   TypologyPipelineResult.Refusals in order, no detail), generate_typology_internal_error (stderr: exception type, message).
 // Composed-mode stdout adds "rules":"composed" and "skills":[the extra ids as given].
@@ -65,8 +73,8 @@ internal static class GenerateTypologyCommand
     public const string CodePack = "ar.caba.codigo-edificacion";
     public const string Usage = "usage: generate-typology request.json output.json (request: {\"pack\": typology skill id, \"family_size\": int, "
         + "\"lot\": {\"width_m\", \"depth_m\"}, \"alternatives\": int, \"seed\": int, \"project_id\": GUID, optional \"weights\", optional \"skills\": [at most 64 extra skill ids] "
-        + "and \"precedence\": [at most 64 skill ids], either of which runs the composed pack rules}; the facade code pack is "
-        + CodePack + "; packs are read from <package>/skills/<id>/skill.json in the release package layout, else from <repository>/skills/<id>/skill.json, "
+        + "and \"precedence\": [at most 64 skill ids], either of which runs the composed pack rules, optional \"include\": [at most 64 optional room kinds] "
+        + "and optional \"code_pack\": a code skill id}; the facade code pack defaults to " + CodePack + "; packs are read from <package>/skills/<id>/skill.json in the release package layout, else from <repository>/skills/<id>/skill.json, "
         + "else generate_typology_repository_not_found; the output must be a new .json file)";
     public const string UsageCode = "generate_typology_usage";
     public const string RequestInvalid = "generate_typology_request_invalid";
@@ -81,7 +89,7 @@ internal static class GenerateTypologyCommand
     public const int MaxListEntries = 64;
     public const string InternalError = "generate_typology_internal_error";
 
-    static readonly string[] RootMembers = { "pack", "family_size", "lot", "alternatives", "seed", "project_id", "weights", "skills", "precedence" };
+    static readonly string[] RootMembers = { "pack", "family_size", "lot", "alternatives", "seed", "project_id", "weights", "skills", "precedence", "include", "code_pack" };
     static readonly string[] LotMembers = { "width_m", "depth_m" };
     static readonly string[] WeightMembers = { "area_fit", "adjacency", "proportions", "compactness", "perimeter", "compliance" };
 
@@ -92,8 +100,8 @@ internal static class GenerateTypologyCommand
         public string? Skill { get; } = skill;
     }
 
-    // Skills and Precedence are null when absent; Composed when either is present.
-    sealed record Parsed(string Pack, TypologyBriefRequest Request, Guid ProjectId, IReadOnlyList<string>? Skills, IReadOnlyList<string>? Precedence)
+    // Skills and Precedence are null when absent; Composed when either is present. CodePack is the default when absent.
+    sealed record Parsed(string Pack, TypologyBriefRequest Request, Guid ProjectId, IReadOnlyList<string>? Skills, IReadOnlyList<string>? Precedence, string CodePack)
     {
         public bool Composed => Skills is not null || Precedence is not null;
     }
@@ -154,7 +162,7 @@ internal static class GenerateTypologyCommand
                 pipeline_status = pipelineStatus,
                 rules = "composed",
                 pack = parsed.Pack,
-                code_pack = CodePack,
+                code_pack = parsed.CodePack,
                 skills = parsed.Skills ?? Array.Empty<string>(),
                 project_id = projectId,
                 alternatives = result.Alternatives.Count,
@@ -171,7 +179,7 @@ internal static class GenerateTypologyCommand
             persisted = false,
             pipeline_status = pipelineStatus,
             pack = parsed.Pack,
-            code_pack = CodePack,
+            code_pack = parsed.CodePack,
             project_id = projectId,
             alternatives = result.Alternatives.Count,
             accepted = acceptedCount,
@@ -193,7 +201,8 @@ internal static class GenerateTypologyCommand
     {
         var parsed = Parse(text);
         var pack = Load(parsed.Pack, PackUnavailable, PackInvalid);
-        var code = Load(CodePack, CodePackUnavailable, CodePackInvalid);
+        var code = Load(parsed.CodePack, CodePackUnavailable, CodePackInvalid);
+        if (code.Kind != SkillKind.Code) throw new Refusal(CodePackInvalid, "kind");
         var extras = new List<SkillManifest>();
         foreach (var id in parsed.Skills ?? Array.Empty<string>()) extras.Add(Load(id, SkillUnavailable, SkillInvalid, id));
 
@@ -257,10 +266,17 @@ internal static class GenerateTypologyCommand
             if (idElement.ValueKind != JsonValueKind.String || !Guid.TryParseExact(StringValue(idElement, "project_id"), "D", out var projectId))
                 throw new Refusal(RequestInvalid, "project_id");
             var weights = root.TryGetValue("weights", out var weightsElement) ? Weights(weightsElement) : new ScoringWeights();
-            var request = new TypologyBriefRequest(familySize, lotValue, alternatives, seed, Weights: weights == new ScoringWeights() ? null : weights);
+            var include = root.TryGetValue("include", out var includeElement) ? Rooms(includeElement) : null;
+            var request = new TypologyBriefRequest(familySize, lotValue, alternatives, seed, include, weights == new ScoringWeights() ? null : weights);
             var skills = root.TryGetValue("skills", out var skillsElement) ? Strings(skillsElement, "skills") : null;
             var precedence = root.TryGetValue("precedence", out var precedenceElement) ? Strings(precedenceElement, "precedence") : null;
-            return new Parsed(pack, request, projectId, skills, precedence);
+            var codePack = CodePack;
+            if (root.TryGetValue("code_pack", out var codeElement))
+            {
+                codePack = codeElement.ValueKind == JsonValueKind.String ? StringValue(codeElement, "code_pack") : "";
+                if (!SkillParser.IsId(codePack)) throw new Refusal(RequestInvalid, "code_pack");
+            }
+            return new Parsed(pack, request, projectId, skills, precedence, codePack);
         }
     }
 
@@ -315,6 +331,20 @@ internal static class GenerateTypologyCommand
             if (!SkillParser.IsId(value)) throw new Refusal(RequestInvalid, name);
             values.Add(value);
             index++;
+        }
+        return values.AsReadOnly();
+    }
+
+    // P7-16 include: a JSON array of at most MaxListEntries strings, in request order; the room kinds are the pipeline's.
+    static IReadOnlyList<string> Rooms(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Array || element.GetArrayLength() > MaxListEntries) throw new Refusal(RequestInvalid, "include");
+        var values = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            var name = "include[" + values.Count.ToString(CultureInfo.InvariantCulture) + "]";
+            if (item.ValueKind != JsonValueKind.String) throw new Refusal(RequestInvalid, name);
+            values.Add(StringValue(item, name));
         }
         return values.AsReadOnly();
     }
