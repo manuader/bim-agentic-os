@@ -688,7 +688,17 @@ function Test-PackageSbom([string]$Directory, $Manifest) {
         if ($attribution.FirstParty) { continue }
         if ($attribution.Ambiguous) { $ambiguous.Add($binary) } elseif ($null -eq $attribution.Reference) { $unattributed.Add($binary) }
     }
-    if ($unattributed.Count) { $problems.Add("sbom_unattributed: third-party binaries not attributed to a NuGet package (direct or transitive) in sbom.json: $($unattributed -join ', ')") }
+    if ($unattributed.Count) { $problems.Add("sbom_unattributed: third-party binaries not attributed to a NuGet package (direct or transitive) in sbom.json: $($unattributed -join ', ')") 
+        if ($IsMacOS) { # TEMP P10-18 diagnostic
+            $diag = foreach ($rel in @(Get-PackageFiles $base | Where-Object { $_ -match '(?i)\.deps\.json\z' })) {
+                $d = [IO.File]::ReadAllText((Join-Path $base $rel)) | ConvertFrom-Json -AsHashtable
+                $libs = (Get-PackageSortedKeys $d['libraries'] | Where-Object { $_ -match '(?i)^bim' } | ForEach-Object { "$_=$($d['libraries'][$_]['type'])" }) -join ','
+                $tg = foreach ($fw in (Get-PackageSortedKeys $d['targets'])) { "$fw{" + ((Get-PackageSortedKeys $d['targets'][$fw] | Where-Object { $_ -match '(?i)^bim' } | ForEach-Object { "$_>" + ((Get-PackageSortedKeys $d['targets'][$fw][$_]) -join '+') + ':' + ((Get-PackageSortedKeys $d['targets'][$fw][$_]['runtime']) -join '+') }) -join ',') + '}' }
+                "$rel libs[$libs] targets[$($tg -join ' ')]"
+            }
+            $problems[$problems.Count - 1] += ' DIAG ' + ($diag -join ' || ') + ' TMP ' + [IO.Path]::GetTempPath() + ' BASE ' + $base
+        }
+    }
     if ($ambiguous.Count) { $problems.Add("sbom_attribution_ambiguous: several listed NuGet packages claim these shipped binaries and no deps.json disambiguates them: $($ambiguous -join ', ')") }
     foreach ($problem in @(Test-PackageSbomManifestAgreement $Manifest $sbom $references.ToArray() $depsIndex)) { $problems.Add($problem) }
     $expected = New-PackageSbomText $base ([string]$Manifest.version) ([string]$Manifest.source_commit) $references.ToArray()
