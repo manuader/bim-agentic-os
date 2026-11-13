@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-12",
+  "updated": "2026-11-13",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -1739,7 +1739,7 @@
         "core/Bim.Core/DocRealized.cs",
         "tests/doc-regeneration/Realized.cs"
       ],
-      "blocker": "CLI verb doc-realized since P4-15; no owner-script wiring yet (P4-16); caller supplies the step → source assignment (the run record does not say which BIM-IR element a step made); only a step's first created UniqueId is used; deleted dependents beyond the add-in's listing cap are not detected; C# fixtures mirror the record writer, never a real -Catalogue record.",
+      "blocker": "CLI verb doc-realized since P4-15; owner -Catalogue documentation step wired through doc-realized since P4-16 (headless only); caller supplies the step → source assignment (the run record does not say which BIM-IR element a step made); only a step's first created UniqueId is used; deleted dependents beyond the add-in's listing cap are not detected; C# fixtures mirror the record writer, never a real -Catalogue record.",
       "scope": "P4-13: DocRealized.FromRecord(fixture, run record, assignments, expected document id) → key→UniqueId map doc-update --realized reads; strict/bounded, typed realized_* codes (step unknown/not succeeded/no created, unique id duplicate/deleted, document mismatch, fixture invalid); journal.read replies without created accepted; canonical ordinal JSON; round trip through DocUpdate.Plan. CI red 43033957185, green 43036029825; review red 43044249333, green 43045934229."
     },
     {
@@ -1842,7 +1842,7 @@
         "interfaces/cli/Program.cs",
         "tests/cli/DocRealizedTests.cs"
       ],
-      "blocker": "Owner -Catalogue script not wired yet (P4-16); caller still supplies the step → source assignments; never run on a real owner run record; success summary does not echo the document id.",
+      "blocker": "Owner -Catalogue step doc-up-elements runs it since P4-16 (headless fake + real CLI; never in a Revit session); caller still supplies the step → source assignments; never run on a real owner run record; success summary does not echo the document id.",
       "scope": "P4-15: `doc-realized --record r.json --fixture ir.json --assignments a.json --document <UniqueId> --output realized.json` writes UTF-8(DocRealized.Canonical(DocRealized.FromRecord(...))) byte-equal to the in-process builder (flag order, assignment order, document case irrelevant); `doc-update --realized` accepts it with a plan byte-equal to in-process DocUpdate.Plan; record/assignments read to DocRealized.MaxRecordBytes (32 MiB, BOM stripped), fixture 8 MiB; never-overwrite (OutputProblem + WriteNew); typed doc_realized_usage/output_*/input_*/realized_* envelopes, doc_realized_internal_error. CI red 43130960366, green 43132233200; review red 43141602918, green 43143266206."
     },
     {
@@ -1959,12 +1959,13 @@
       "id": "mirror-drift-adopt-cli-preview",
       "status": "unit-tested",
       "evidence": [
+        "core/Bim.Core/MirrorDriftAdopt.cs",
+        "docs/contracts/module-contracts.md",
         "interfaces/cli/MirrorDriftAdoptCommand.cs",
         "interfaces/cli/Program.cs",
-        "tests/cli/MirrorDriftAdoptTests.cs",
-        "docs/contracts/module-contracts.md"
+        "tests/cli/MirrorDriftAdoptTests.cs"
       ],
-      "blocker": "Snapshot only (P2-17 limits); option codes live in the CLI, not Core (P2-21); a store or selection path beginning with -- is now refused with the usage envelope.",
+      "blocker": "Snapshot only (P2-17 limits); option codes are Core MirrorDriftAdoptCodes.OptionUnknown/OptionDuplicate since P2-21 (CLI-only, never thrown by Core); a store or selection path beginning with -- is now refused with the usage envelope.",
       "scope": "P2-19: mirror-drift-adopt store selection.json --preview prints the MCP mirror_drift_adopt plan-mode text (MirrorDriftAdoptTool.Run confirm false) — raw stdout bytes equal UTF-8 MCP text + newline against a real McpServer tools/call on the same store/selection for would_commit, would_replay, nothing_to_adopt and typed refusals; store bytes/mtimes unchanged, held lock does not block, missing store not created; drift_adopt_option_unknown / _duplicate before any read; usage envelope pinned; no flag keeps P2-15 bytes. CI red 43195815206, green 43199978494; review green 43210710717."
     },
     {
@@ -2010,6 +2011,27 @@
       ],
       "blocker": "One non-nested form with translation-only /Matrix; regions inside a form, nested/scaled forms not tested (P6-19); fixed-Huffman deflate only in the fixture (reader dynamic Huffman covered by PdfTests); no predictors/object streams; generator rerun skipped on Windows; variant not run under de_DE.",
       "scope": "P6-17: brief-plan-xobject.pdf (generator --variant xobject-flate, deterministic, sha pinned) puts regions in a FlateDecode page stream and all labels in a FlateDecode Form XObject; same texts/paths/warnings as brief-plan.pdf with XObjectPath o4:i49 on every text and room reference; planner brief equal once provenance references are removed; real CLI cad-brief → cad-plan-brief --brief-only → plan-layouts byte-equal to in-process and pinned 566058984bb3…; no production change. CI red 43223308971, green 43225242821; review green 43243827436."
+    },
+    {
+      "id": "owner-catalogue-doc-realized-step",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/owner-catalogue-steps.ps1",
+        "tests/integration/test-catalogue-session.ps1",
+        "tests/integration/fake-doc-update.ps1"
+      ],
+      "blocker": "Headless only (fake + real CLI), never run in a Revit session (owner -Catalogue run 🔒); doc-up-update-plan/doc-up-update still use the realized map doc-update prints; one doc-realized realized_* refusal stops every later group; catalogue-report does not surface the doc-realized step (→ P4-18).",
+      "scope": "P4-16: new offline step doc-up-elements runs `doc-realized` on the session's own run record (schema 1, document UniqueId, earlier steps), the fixture and element:<wall>/element:<door> assignments; its output bytes (sha256-checked) are the only --realized source of doc-up-realize-plan/doc-up-realize; NN-key.doc-realized/ keeps record/fixture/assignments/realized/report/stderr; a realized_* refusal stops the run with report.json kept; recorded request is a stub; non-object replies kept as raw_response. relay201, CI red 43305770454, green 43311249336; review red 43328761013, green 43328848169."
+    },
+    {
+      "id": "package-special-and-unreadable-files",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/package-common.ps1",
+        "tests/packaging/test-package.ps1"
+      ],
+      "blocker": "Linux CI only (verify.ps1 does not run on macOS CI; Windows SKIPs every case); no device fixture (mknod needs root; /dev/null classifier assert only); package.ps1 staging (New-PackageManifestText) still hashes without a type check (→ P10-19); TOCTOU after the check not covered.",
+      "scope": "P10-17: package-verify stops at links, then classifies every file by POSIX test -p/-S/-c/-b via /bin/sh (argv-only, batched by count and ~128 KB) and refuses FIFO/socket/device as package_special_file (ordinal) before any open; a failing type check is package_special_file_check_failed; a manifest-listed file it cannot hash is manifest_file_unreadable naming the path (never an exception); bounded 90 s test runs. relay201, CI red 43305452588, green 43315327377; review red 43320124473, green 43324318365."
     }
   ]
 }
