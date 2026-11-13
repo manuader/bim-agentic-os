@@ -1,0 +1,116 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1200 1200] /Resources << /Font << /F1 5 0 R >> /XObject << /Outer 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 366 >>
+stream
+1 w
+100 150 m
+300 150 l
+300 300 l
+100 300 l
+h
+S
+300 150 m
+450 150 l
+450 300 l
+300 300 l
+h
+S
+450 150 m
+550 150 l
+550 250 l
+450 250 l
+h
+S
+100 300 m
+400 300 l
+400 550 l
+100 550 l
+h
+S
+400 300 m
+550 300 l
+550 550 l
+400 550 l
+h
+S
+550 150 m
+650 150 l
+650 250 l
+550 250 l
+h
+S
+650 150 m
+750 150 l
+750 300 l
+650 300 l
+h
+S
+200 250 m
+215 250 l
+215 265 l
+200 265 l
+h
+S
+/Outer Do
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Type /XObject /Subtype /Form /BBox [-50 -75 550 525] /Matrix [2 0 0 2 100 150] /Resources << /XObject << /Labels 7 0 R >> >> /Length 15 >>
+stream
+q
+/Labels Do
+Q
+
+endstream
+endobj
+7 0 obj
+<< /Type /XObject /Subtype /Form /BBox [-55 -70 545 530] /Matrix [1 0 0 1 5 -5] /Resources << /Font << /F1 5 0 R >> >> /Length 801 >>
+stream
+BT /F1 5 Tf 1 0 0 1 20 50 Tm (DORMITORIO 1) Tj ET
+BT /F1 5 Tf 1 0 0 1 20 37.5 Tm (12,00 m\262) Tj ET
+BT /F1 5 Tf 1 0 0 1 20 50 Tm (DORMITORIO 1) Tj ET
+BT /F1 5 Tf 1 0 0 1 120 42.5 Tm (COCINA\n9,5 m\262) Tj ET
+BT /F1 5 Tf 1 0 0 1 182.5 42.5 Tm (BA\321O) Tj ET
+BT /F1 5 Tf 1 0 0 1 182.5 30 Tm (Sup. 6.50 m2) Tj ET
+BT /F1 5 Tf 1 0 0 1 20 155 Tm (Living room) Tj ET
+BT /F1 5 Tf 1 0 0 1 20 142.5 Tm (30 m2) Tj ET
+BT /F1 5 Tf 1 0 0 1 232.5 42.5 Tm (Ba\361o) Tj ET
+BT /F1 5 Tf 1 0 0 1 232.5 30 Tm (4,00 m\262) Tj ET
+BT /F1 5 Tf 1 0 0 1 370 5 Tm (Lavadero) Tj ET
+BT /F1 5 Tf 1 0 0 1 370 -7.5 Tm (3,2 m\262) Tj ET
+BT /F1 5 Tf 1 0 0 1 282.5 42.5 Tm (Hall) Tj ET
+BT /F1 5 Tf 1 0 0 1 495 505 Tm (25,0 m\262) Tj ET
+BT /F1 10 Tf 1 0 0 1 -5 -45 Tm (PLANTA BAJA) Tj ET
+BT /F1 5 Tf 1 0 0 1 -5 -60 Tm (ESC 1:100) Tj ET
+
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000277 00000 n 
+0000000694 00000 n 
+0000000791 00000 n 
+0000000982 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1950
+%%EOF

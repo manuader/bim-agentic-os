@@ -2,8 +2,8 @@
 """Deterministic generator for tests/cad/fixtures/brief-plan.pdf (P6-15), the vector PDF twin of brief-plan.dxf.
 
 Python 3 standard library only; no clock, no randomness, no locale: the output bytes depend only on this file.
-Usage: python3 brief-plan-pdf.py [output.pdf] [--variant xobject-flate]   (the flag may also come first)
-       (default output: brief-plan.pdf, or brief-plan-xobject.pdf for the variant, next to this script)
+Usage: python3 brief-plan-pdf.py [output.pdf] [--variant xobject-flate|nested-scaled|nested-scaled-regions]
+       (the flag may also come first; default output: brief-plan.pdf, or the variant's file below, next to this script)
 
 Mapping from the DXF (millimetres, $INSUNITS 4) to the page: x_page = x_mm / 20 + 100, y_page = y_mm / 20 + 150, so one
 page unit is 20 mm (--metres-per-unit 0.02, or --calibrate 100,150,300,150,4000: the bottom edge of the first room is
@@ -19,7 +19,20 @@ y_mm / 20 and lands on the same page point as in brief-plan.pdf. Both streams ar
 written by the small fixed-Huffman deflate encoder below (greedy LZ77, nearest longest match) rather than by the zlib
 module, whose compressed bytes depend on the zlib build (zlib, zlib-ng, Apple zlib); zlib is used only for the
 Adler-32 checksum and to assert that the data inflates back to the content.
+
+Variant nested-scaled (P6-19, brief-plan-nested.pdf): uncompressed streams. The page content (object 4) holds the
+regions exactly as in brief-plan.pdf and then "/Outer Do" (operator index 49). The Form XObject /Outer (object 6,
+/Matrix [2 0 0 2 100 150], a scaled form) holds "q /Labels Do Q" (the Do is its operator index 1), and every text sits
+in the nested Form XObject /Labels (object 7, /Matrix [1 0 0 1 5 -5]) at x_mm / 40 - 5, y_mm / 40 + 5 with half the
+font size (5, or 10 for the 400 mm title). The page maps a label point p to (p + (5, -5)) * 2 + (100, 150), the inner
+matrix first as PDF requires, so every text lands on its brief-plan.pdf page point with the same text height; all
+coordinates are multiples of 1/2, so the products are exact in binary floating point.
+Variant nested-scaled-regions (P6-19, brief-plan-nested-regions.pdf): the same forms, but the regions are drawn by the
+Form XObject /Rooms (object 8, /Matrix [2 0 0 2 100 150]) at x_mm / 40, y_mm / 40; the page content is
+"1 w /Rooms Do /Outer Do" (the Do operators are its indices 1 and 2). A brief extractor sees these regions only when it
+reads regions drawn through forms (BriefExtractOptions.IncludeBlockRegions).
 """
+from fractions import Fraction
 import os
 import sys
 import zlib
@@ -172,7 +185,7 @@ def deflate(data):
 
 
 def stream_object(dictionary, data):
-    return b"<< " + dictionary + b" /Length %d >>\nstream\n" % len(data) + data + b"\nendstream"
+    return b"<< " + (dictionary + b" " if dictionary else b"") + b"/Length %d >>\nstream\n" % len(data) + data + b"\nendstream"
 
 
 def variant_content():
@@ -194,6 +207,76 @@ def labels_form():
         size = height * FONT_SIZE // 200
         lines.append(b"BT /F1 %d Tf 1 0 0 1 %d %d Tm %s Tj ET" % (size, px - OFFSET_X, py - OFFSET_Y, pdf_string(text)))
     return b"\n".join(lines) + b"\n"
+
+
+def pdf_number(value):
+    value = Fraction(value)
+    assert (value * 4).denominator == 1, value  # quarters at most: exact in binary and in a short decimal
+    if value.denominator == 1:
+        return b"%d" % value.numerator
+    return ("%.2f" % float(value)).rstrip("0").encode("ascii")
+
+
+NESTED_SCALE = 2  # /Outer and /Rooms /Matrix scale
+INNER_SHIFT = (5, -5)  # /Labels /Matrix translation
+
+
+def form_point(x, y):
+    # A drawing point in millimetres as /Rooms coordinates (x_mm / 40, y_mm / 40); page = 2 * form + (100, 150).
+    fx, fy = Fraction(x, SCALE_MM * NESTED_SCALE), Fraction(y, SCALE_MM * NESTED_SCALE)
+    assert (fx * NESTED_SCALE + OFFSET_X, fy * NESTED_SCALE + OFFSET_Y) == tuple(Fraction(v) for v in page_point(x, y)), (x, y)
+    return fx, fy
+
+
+def nested_page_content(regions_in_form):
+    lines = [b"1 w"]
+    if regions_in_form:
+        lines.append(b"/Rooms Do")
+    else:
+        lines.extend(region_lines(lambda x, y: tuple(Fraction(v) for v in page_point(x, y))))
+    lines.append(b"/Outer Do")
+    return b"\n".join(lines) + b"\n"
+
+
+def region_lines(point):
+    lines = []
+    for region in REGIONS:
+        points = [point(x, y) for x, y in region]
+        lines.append(b"%s %s m" % (pdf_number(points[0][0]), pdf_number(points[0][1])))
+        lines.extend(b"%s %s l" % (pdf_number(px), pdf_number(py)) for px, py in points[1:])
+        lines.append(b"h")
+        lines.append(b"S")
+    return lines
+
+
+def nested_labels_form():
+    lines = []
+    for x, y, height, text in TEXTS:
+        fx, fy = form_point(x, y)
+        ix, iy = fx - INNER_SHIFT[0], fy - INNER_SHIFT[1]
+        size = Fraction(height * FONT_SIZE, 200 * NESTED_SCALE)
+        lines.append(b"BT /F1 %s Tf 1 0 0 1 %s %s Tm %s Tj ET" % (pdf_number(size), pdf_number(ix), pdf_number(iy), pdf_string(text)))
+    return b"\n".join(lines) + b"\n"
+
+
+def build_nested(regions_in_form):
+    font = b"/Font << /F1 5 0 R >>"
+    xobjects = b"/XObject << /Rooms 8 0 R /Outer 6 0 R >>" if regions_in_form else b"/XObject << /Outer 6 0 R >>"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1200 1200] /Resources << " + font + b" " + xobjects + b" >> /Contents 4 0 R >>",
+        stream_object(b"", nested_page_content(regions_in_form)),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        stream_object(b"/Type /XObject /Subtype /Form /BBox [-50 -75 550 525] /Matrix [%d 0 0 %d %d %d] /Resources << /XObject << /Labels 7 0 R >> >>"
+                      % (NESTED_SCALE, NESTED_SCALE, OFFSET_X, OFFSET_Y), b"q\n/Labels Do\nQ\n"),
+        stream_object(b"/Type /XObject /Subtype /Form /BBox [-55 -70 545 530] /Matrix [1 0 0 1 %d %d] /Resources << " % INNER_SHIFT + font + b" >>",
+                      nested_labels_form()),
+    ]
+    if regions_in_form:
+        objects.append(stream_object(b"/Type /XObject /Subtype /Form /BBox [-50 -75 550 525] /Matrix [%d 0 0 %d %d %d]" % (NESTED_SCALE, NESTED_SCALE, OFFSET_X, OFFSET_Y),
+                                     b"1 w\n" + b"\n".join(region_lines(form_point)) + b"\n"))
+    return serialize(objects)
 
 
 def serialize(objects):
@@ -254,13 +337,19 @@ def main(argv):
         at = arguments.index("--variant")
         variant = arguments[at + 1] if at + 1 < len(arguments) else ""
         del arguments[at:at + 2]
-    if variant not in (None, "xobject-flate") or len(arguments) > 1:
-        sys.stderr.write("usage: brief-plan-pdf.py [--variant xobject-flate] [output.pdf]\n")
+    variants = {
+        None: ("brief-plan.pdf", build),
+        "xobject-flate": ("brief-plan-xobject.pdf", build_variant),
+        "nested-scaled": ("brief-plan-nested.pdf", lambda: build_nested(False)),
+        "nested-scaled-regions": ("brief-plan-nested-regions.pdf", lambda: build_nested(True)),
+    }
+    if variant not in variants or len(arguments) > 1:
+        sys.stderr.write("usage: brief-plan-pdf.py [--variant xobject-flate|nested-scaled|nested-scaled-regions] [output.pdf]\n")
         return 2
-    name = "brief-plan.pdf" if variant is None else "brief-plan-xobject.pdf"
+    name, writer = variants[variant]
     target = arguments[0] if arguments else os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
     with open(target, "wb") as handle:
-        handle.write(build() if variant is None else build_variant())
+        handle.write(writer())
     return 0
 
 

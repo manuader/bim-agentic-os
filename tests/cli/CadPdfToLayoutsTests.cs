@@ -48,6 +48,23 @@ using Bim.Generative;
 //      XObject path; the layouts are byte-identical to brief-plan.pdf's and equal the same pinned digest.
 //   9. Through the real CLI chain the variant layouts equal the in-process bytes and the pinned digest, the --brief-only
 //      file equals the in-process planner brief, and draft.json / brief.json carry the XObject path.
+// P6-19 nested and scaled Form XObject twins (uncompressed, brief-plan-pdf.py --variant nested-scaled |
+// nested-scaled-regions): brief-plan-nested.pdf draws the regions in the page content (object 4) and shows every text
+// from the Form XObject /Labels (object 7, /Matrix [1 0 0 1 5 -5]) invoked by operator 1 of the scaled Form XObject
+// /Outer (object 6, /Matrix [2 0 0 2 100 150]) invoked by the page's operator 49, at half the font size;
+// brief-plan-nested-regions.pdf also draws the regions from the scaled Form XObject /Rooms (object 8, page operator 1;
+// /Outer is then operator 2).
+//  10. Both fixtures have pinned SHA-256 digests that the generator rewrites on Linux and macOS.
+//  11. Each parsed page has brief-plan.pdf's texts (value, page origin, height, rotation; half the font size) and paths
+//      at the same points: texts carry the two-deep XObjectPath ["o4:i49", "o6:i1"] (["o4:i2", "o6:i1"]) and object 7,
+//      paths an empty XObjectPath and object 4 (["o4:i1"] and object 8); the warning codes are equal.
+//  12. For each scale form, brief-plan-nested.pdf (default options) and brief-plan-nested-regions.pdf (IncludeBlockRegions)
+//      give brief-plan.pdf's draft codes, room ids and confidences, with every label, area and region source carrying
+//      its XObject path; the planner keeps and drops the pinned rooms; the planner brief equals brief-plan.pdf's once
+//      provenance references are removed and every room reference names the nested path; the layouts equal the
+//      pinned digest. Without IncludeBlockRegions no room of brief-plan-nested-regions.pdf takes a /Rooms region.
+//  13. Through the real CLI chain brief-plan-nested.pdf's layouts equal the in-process bytes and the pinned digest, the
+//      --brief-only file equals the in-process planner brief, and draft.json / brief.json carry the nested path.
 internal static class CadPdfToLayoutsTests
 {
     // SHA-256 (lower-case hex) of tests/cad/fixtures/brief-plan.pdf as brief-plan-pdf.py writes it.
@@ -65,6 +82,17 @@ internal static class CadPdfToLayoutsTests
     // The invoking Do operator of the labels form: page content object 4, operator index 49 (1 w, then 8 x 6 path operators).
     const string VariantXObjectPath = "o4:i49";
     const int VariantFormObject = 6;
+    // P6-19: SHA-256 of the nested and scaled Form XObject twins as brief-plan-pdf.py --variant nested-scaled |
+    // nested-scaled-regions writes them, the form object numbers and the invoking Do chains of texts and regions.
+    const string NestedFixtureDigest = "f9b7d23122905725b4d9c2aa339a135de26de353e9166d7c09198c02c9e2dfdb";
+    const string NestedRegionsFixtureDigest = "ac1305d0850c55645fb799354f5d365742a4bdafa683830074f4fd6bc9e2af83";
+    const string NestedFile = "brief-plan-nested.pdf";
+    const string NestedRegionsFile = "brief-plan-nested-regions.pdf";
+    const int NestedLabelsFormObject = 7;
+    const int NestedRoomsFormObject = 8;
+    static readonly string[] NestedTextPath = { "o4:i49", "o6:i1" };
+    static readonly string[] NestedRegionsTextPath = { "o4:i2", "o6:i1" };
+    static readonly string[] NestedRegionsPath = { "o4:i1" };
     const string Name = "Brief plan";
     const int Alternatives = 3;
     const int Seed = 7;
@@ -375,6 +403,179 @@ internal static class CadPdfToLayoutsTests
                         && briefRooms.EnumerateArray().All(room => room.ValueKind == JsonValueKind.Object && room.TryGetProperty("provenance", out var provenance) && provenance.ValueKind == JsonValueKind.Object
                             && provenance.TryGetProperty("reference", out var reference) && reference.ValueKind == JsonValueKind.String && (reference.GetString() ?? "").Contains(handleSuffix + " PDF-TEXT", StringComparison.Ordinal));
                     Check(briefCarries, "xobject " + vLabel + ": every room of the --brief-only brief.json has a provenance reference with the XObject path",
+                        briefJson?.ToString() is { } bt && bt.Length > 600 ? bt[..600] + "..." : briefJson?.ToString() ?? "<no brief.json>");
+                }
+            }
+        }
+
+        // ---- P6-19: labels in a Form XObject nested two deep under a scaled form; regions in a form ----
+        {
+            var nestedPath = Path.Combine(fixtures, NestedFile);
+            var regionsPath = Path.Combine(fixtures, NestedRegionsFile);
+            var nestedBytes = Read(nestedPath);
+            var regionsBytes = Read(regionsPath);
+            Check(nestedBytes.Length > 0, "nested: the fixture " + NestedFile + " is present and not empty", nestedPath);
+            Check(regionsBytes.Length > 0, "nested: the fixture " + NestedRegionsFile + " is present and not empty", regionsPath);
+            Check(Hex(nestedBytes) == NestedFixtureDigest, "nested: " + NestedFile + " SHA-256 equals the pinned fixture digest", "actual " + Hex(nestedBytes) + " pinned " + NestedFixtureDigest);
+            Check(Hex(regionsBytes) == NestedRegionsFixtureDigest, "nested: " + NestedRegionsFile + " SHA-256 equals the pinned fixture digest", "actual " + Hex(regionsBytes) + " pinned " + NestedRegionsFixtureDigest);
+            foreach (var (variant, pinnedFixture, flagFirst) in new[] { ("nested-scaled", NestedFixtureDigest, false), ("nested-scaled-regions", NestedRegionsFixtureDigest, true) })
+            {
+                if (!unix)
+                {
+                    skip("cad-pdf-to-layouts: " + variant + " fixture generator rerun", "run on Linux and macOS only (the python3 launcher differs on Windows)");
+                    continue;
+                }
+                var regeneratedNested = Path.Combine(scratch, "regenerated-" + variant + ".pdf");
+                var script = Path.Combine(fixtures, "brief-plan-pdf.py");
+                var generatorArguments = flagFirst
+                    ? new[] { "-I", script, "--variant", variant, regeneratedNested }
+                    : new[] { "-I", script, regeneratedNested, "--variant", variant };
+                (int Exit, string Out, string Err)? generator = null;
+                try { generator = Exec("python3", null, generatorArguments); }
+                catch (Win32Exception) { }
+                if (generator is null)
+                {
+                    if (linuxCi) Check(false, "nested: python3 is available on Linux CI to rerun the fixture generator (" + variant + ")");
+                    else skip("cad-pdf-to-layouts: " + variant + " fixture generator rerun", "python3 not found (required on Linux CI only)");
+                }
+                else Check(generator.Value.Exit == 0 && Hex(Read(regeneratedNested)) == pinnedFixture,
+                    "nested: brief-plan-pdf.py --variant " + variant + " writes the pinned fixture bytes", R(generator.Value) + " sha256 " + Hex(Read(regeneratedNested)) + " pinned " + pinnedFixture);
+            }
+            static int Occurrences(byte[] bytes, string part) => Encoding.Latin1.GetString(bytes).Split(part).Length - 1;
+            Check(Occurrences(nestedBytes, "/Subtype /Form") == 2 && Occurrences(nestedBytes, "/Matrix [2 0 0 2 100 150]") == 1 && Occurrences(nestedBytes, "/Matrix [1 0 0 1 5 -5]") == 1
+                && Occurrences(nestedBytes, "/Labels Do") == 1 && Occurrences(nestedBytes, "/Outer Do") == 1 && Occurrences(nestedBytes, "/FlateDecode") == 0,
+                "nested: " + NestedFile + " has the scaled /Outer form and the nested /Labels form (uncompressed)",
+                "Form " + Occurrences(nestedBytes, "/Subtype /Form").ToString(CultureInfo.InvariantCulture) + " scaled " + Occurrences(nestedBytes, "/Matrix [2 0 0 2 100 150]").ToString(CultureInfo.InvariantCulture));
+            Check(Occurrences(regionsBytes, "/Subtype /Form") == 3 && Occurrences(regionsBytes, "/Matrix [2 0 0 2 100 150]") == 2 && Occurrences(regionsBytes, "/Rooms Do") == 1,
+                "nested: " + NestedRegionsFile + " also draws the regions from the scaled /Rooms form",
+                "Form " + Occurrences(regionsBytes, "/Subtype /Form").ToString(CultureInfo.InvariantCulture) + " scaled " + Occurrences(regionsBytes, "/Matrix [2 0 0 2 100 150]").ToString(CultureInfo.InvariantCulture));
+            if (nestedBytes.Length > 0 && regionsBytes.Length > 0)
+            {
+                // The parsed pages: brief-plan.pdf's texts and paths at the same page points, through the nested forms.
+                var plainDocument = PdfReader.Parse(pdfBytes, "brief-plan.pdf");
+                var plainPage = plainDocument.Pages.First(pg => pg.Number == 1);
+                var plainTexts = plainPage.Elements.OfType<PdfText>().ToList();
+                var plainPaths = plainPage.Elements.OfType<PdfPath>().ToList();
+                static string Fmt(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+                static string NestedTextKey(PdfText t) => t.Value + "|" + Fmt(t.Origin.X) + "," + Fmt(t.Origin.Y) + "|" + Fmt(t.Height) + "|" + Fmt(t.RotationDegrees);
+                static string NestedPathKey(PdfPath path) => string.Join(" ", path.Subpaths.Select(sp => string.Join(",", sp.Flatten(1).Select(pt => Fmt(pt.X) + " " + Fmt(pt.Y))) + (sp.Closed ? " h" : "")));
+                static string Chain2(IReadOnlyList<string> path) => "[" + string.Join(">", path) + "]";
+                foreach (var (file, bytes, textPath, pathPath, pathObject) in new[]
+                {
+                    (NestedFile, nestedBytes, NestedTextPath, Array.Empty<string>(), 4),
+                    (NestedRegionsFile, regionsBytes, NestedRegionsTextPath, NestedRegionsPath, NestedRoomsFormObject),
+                })
+                {
+                    var document = PdfReader.Parse(bytes, file);
+                    var page = document.Pages.FirstOrDefault(pg => pg.Number == 1);
+                    var texts = page?.Elements.OfType<PdfText>().ToList() ?? new List<PdfText>();
+                    var paths = page?.Elements.OfType<PdfPath>().ToList() ?? new List<PdfPath>();
+                    static string WarningCodes(PdfDocument d) => string.Join(",", d.Warnings.Select(w => w.Code).OrderBy(code => code, StringComparer.Ordinal));
+                    Check(WarningCodes(document) == WarningCodes(plainDocument), "nested " + file + ": the warning codes equal brief-plan.pdf's",
+                        "variant [" + string.Join("; ", document.Warnings.Select(w => w.Code + " " + w.Message)) + "] plain [" + WarningCodes(plainDocument) + "]");
+                    Check(plainTexts.Count == 16 && string.Join("; ", texts.Select(NestedTextKey)) == string.Join("; ", plainTexts.Select(NestedTextKey)),
+                        "nested " + file + ": the page shows brief-plan.pdf's 16 texts in order at the same page origin, height and rotation (inner matrix applied before the scaled outer one)",
+                        "variant " + string.Join("; ", texts.Select(NestedTextKey)) + " plain " + string.Join("; ", plainTexts.Select(NestedTextKey)));
+                    Check(texts.Count == 16 && texts.Zip(plainTexts).All(p => p.First.FontSize * 2 == p.Second.FontSize),
+                        "nested " + file + ": each text is set at half brief-plan.pdf's font size (the outer form scales by 2)",
+                        string.Join(",", texts.Select(t => Fmt(t.FontSize))));
+                    Check(texts.Count == 16 && texts.All(t => t.Provenance.XObjectPath.SequenceEqual(textPath) && t.Provenance.ObjectNumber == NestedLabelsFormObject && t.Provenance.Operator == "Tj"),
+                        "nested " + file + ": every text carries the two-deep XObjectPath " + Chain2(textPath) + " and the inner form's object number " + NestedLabelsFormObject.ToString(CultureInfo.InvariantCulture),
+                        string.Join("; ", texts.Select(t => t.Provenance.ObjectNumber.ToString(CultureInfo.InvariantCulture) + ":" + t.Provenance.OperatorIndex.ToString(CultureInfo.InvariantCulture) + "@" + Chain2(t.Provenance.XObjectPath))));
+                    Check(plainPaths.Count > 0 && string.Join("; ", paths.Select(NestedPathKey)) == string.Join("; ", plainPaths.Select(NestedPathKey))
+                        && paths.All(p => p.Provenance.XObjectPath.SequenceEqual(pathPath) && p.Provenance.ObjectNumber == pathObject),
+                        "nested " + file + ": the paths are brief-plan.pdf's at the same page points, drawn by object " + pathObject.ToString(CultureInfo.InvariantCulture) + " with XObjectPath " + Chain2(pathPath),
+                        "variant " + string.Join("; ", paths.Select(p => p.Provenance.ObjectNumber.ToString(CultureInfo.InvariantCulture) + Chain2(p.Provenance.XObjectPath) + " " + NestedPathKey(p))));
+                }
+
+                // Drafts, planner briefs and layouts in process.
+                static string StripNestedReferences(string json)
+                {
+                    var node = JsonNode.Parse(json);
+                    void Walk(JsonNode? current)
+                    {
+                        if (current is JsonObject obj)
+                        {
+                            obj.Remove("reference");
+                            foreach (var child in obj.Select(pair => pair.Value).ToList()) Walk(child);
+                        }
+                        else if (current is JsonArray array) foreach (var child in array.ToList()) Walk(child);
+                    }
+                    Walk(node);
+                    return node?.ToJsonString() ?? "";
+                }
+                static BriefDraft NestedDraft(byte[] pdf, string file, bool calibrated, bool includeBlockRegions) => calibrated
+                    ? BriefExtract.FromPdf(PdfReader.Parse(pdf, file), 1, Calibration(), new BriefExtractOptions { IncludeBlockRegions = includeBlockRegions })
+                    : BriefExtract.FromPdf(PdfReader.Parse(pdf, file), 1, null, new BriefExtractOptions { MetresPerUnit = 0.02, IncludeBlockRegions = includeBlockRegions });
+                var nestedRuns = new List<(string Label, string[] Scale, string Pinned, (byte[] Bytes, AlternativeSet Set, ProjectBrief Brief, BriefPlannerResult Planned) Run)>();
+                foreach (var (vLabel, vCalibrated, vScale, vPlain, vPinned) in new[] { ("calibrated", true, Calibrate, calibrated, PinnedCalibrated), ("metres-per-unit", false, MetresPerUnit, perUnit, PinnedMetresPerUnit) })
+                {
+                    var plainDraft = Draft(pdfBytes, vCalibrated);
+                    // Without IncludeBlockRegions the regions drawn by /Rooms are not read (the P6-05 rule for forms).
+                    var withoutRegions = NestedDraft(regionsBytes, NestedRegionsFile, vCalibrated, false);
+                    Check(withoutRegions.Rooms.Count > 0 && withoutRegions.Rooms.All(room => room.Region is null),
+                        "nested-regions " + vLabel + ": without IncludeBlockRegions no room takes a region drawn by the /Rooms form",
+                        string.Join("; ", withoutRegions.Rooms.Select(room => room.Id + " region " + (room.Region?.Handle ?? "-"))));
+                    foreach (var (file, bytes, includeBlockRegions, labelPath, labelSuffix, regionPath, regionPrefix) in new[]
+                    {
+                        (NestedFile, nestedBytes, false, NestedTextPath, "@" + string.Join(">", NestedTextPath), Array.Empty<string>(), "p1:o4:i"),
+                        (NestedRegionsFile, regionsBytes, true, NestedRegionsTextPath, "@" + string.Join(">", NestedRegionsTextPath), NestedRegionsPath, "p1:o" + NestedRoomsFormObject.ToString(CultureInfo.InvariantCulture) + ":i"),
+                    })
+                    {
+                        var tag = (includeBlockRegions ? "nested-regions " : "nested ") + vLabel;
+                        var draft = NestedDraft(bytes, file, vCalibrated, includeBlockRegions);
+                        Check(draft.Rooms.Count == 7 && Codes(draft) == Codes(plainDraft) && Confidences(draft) == Confidences(plainDraft),
+                            tag + ": the draft" + (includeBlockRegions ? " (IncludeBlockRegions)" : "") + " has brief-plan.pdf's 7 rooms (ids, confidences) and sorted uncertainty codes",
+                            "variant " + Codes(draft) + " / " + Confidences(draft) + " plain " + Codes(plainDraft) + " / " + Confidences(plainDraft));
+                        var regionSuffix = regionPath.Length > 0 ? "@" + string.Join(">", regionPath) : "";
+                        var sourced = draft.Rooms.All(room => room.Label.InsertPath.SequenceEqual(labelPath)
+                            && room.Label.Handle is { } handle && handle.StartsWith("p1:o" + NestedLabelsFormObject.ToString(CultureInfo.InvariantCulture) + ":i", StringComparison.Ordinal) && handle.EndsWith(labelSuffix, StringComparison.Ordinal)
+                            && (room.Area is null || (room.Area.InsertPath.SequenceEqual(labelPath) && room.Area.Handle is { } areaHandle && areaHandle.EndsWith(labelSuffix, StringComparison.Ordinal)))
+                            && (room.Region is null || (room.Region.InsertPath.SequenceEqual(regionPath) && room.Region.Handle is { } regionHandle && regionHandle.StartsWith(regionPrefix, StringComparison.Ordinal)
+                                && (regionSuffix.Length > 0 ? regionHandle.EndsWith(regionSuffix, StringComparison.Ordinal) : !regionHandle.Contains('@', StringComparison.Ordinal)))));
+                        Check(sourced && draft.Rooms.Any(room => room.Region is not null),
+                            tag + ": every room label and area source carries InsertPath " + Chain2(labelPath) + " and a handle ending " + labelSuffix + ", every region source InsertPath " + Chain2(regionPath),
+                            string.Join("; ", draft.Rooms.Select(room => room.Id + " label " + room.Label.Handle + " " + Chain2(room.Label.InsertPath) + " area " + (room.Area?.Handle ?? "-") + " region " + (room.Region?.Handle ?? "-") + " " + (room.Region is null ? "" : Chain2(room.Region.InsertPath)))));
+                        var run = Plan(draft);
+                        var kept = string.Join(",", run.Planned.Kept.Select(r => r.Id));
+                        var dropped = string.Join("; ", run.Planned.Dropped.Select(r => r.Id + ":" + string.Join(",", r.Unconfirmed)));
+                        Check(kept == KeptRooms && dropped == DroppedRooms, tag + ": the planner keeps and drops exactly the pinned rooms", "kept " + kept + " dropped " + dropped);
+                        var text = BriefSerializer.Serialize(run.Brief);
+                        var plainText = BriefSerializer.Serialize(vPlain.Brief);
+                        Check(StripNestedReferences(text) == StripNestedReferences(plainText) && text != plainText,
+                            tag + ": the planner brief equals brief-plan.pdf's once provenance references are removed",
+                            "variant " + StripNestedReferences(text) + " plain " + StripNestedReferences(plainText));
+                        Check(run.Brief.Rooms.Count > 0 && run.Brief.Rooms.All(room => room.Provenance?.Reference is { } reference
+                                && reference.StartsWith(file + " page 1 handle p1:o" + NestedLabelsFormObject.ToString(CultureInfo.InvariantCulture) + ":i", StringComparison.Ordinal)
+                                && reference.Contains(labelSuffix + " PDF-TEXT", StringComparison.Ordinal)),
+                            tag + ": every planner room's provenance reference names the file and the nested XObject path " + labelSuffix,
+                            string.Join("; ", run.Brief.Rooms.Select(room => room.Provenance?.Reference ?? "-")));
+                        Check(run.Bytes.SequenceEqual(vPlain.Bytes) && Hex(run.Bytes) == vPinned, tag + ": the in-process layouts are byte-identical to brief-plan.pdf's and equal the pinned digest",
+                            "variant sha256 " + Hex(run.Bytes) + " pinned " + vPinned);
+                        if (!includeBlockRegions) nestedRuns.Add((vLabel, vScale, vPinned, run));
+                    }
+                }
+
+                // The real CLI chain on brief-plan-nested.pdf (its regions are drawn by the page, so no extractor option is needed).
+                var nestedSuffix = "@" + string.Join(">", NestedTextPath);
+                foreach (var (vLabel, vScale, vPinned, run) in nestedRuns)
+                {
+                    var written = Chain("nested-" + vLabel, vScale, run.Brief, null, nestedPath);
+                    Check(written.SequenceEqual(run.Bytes) && Hex(written) == vPinned, "nested " + vLabel + ": the CLI chain's layouts.json equals the in-process bytes and the pinned digest",
+                        "written sha256 " + Hex(written) + " expected " + Hex(run.Bytes) + " pinned " + vPinned);
+                    var draftJson = Envelope(Encoding.UTF8.GetString(Read(Path.Combine(lastChainDir, "draft.json"))));
+                    var draftCarries = draftJson is { } dj && dj.TryGetProperty("rooms", out var draftRooms) && draftRooms.ValueKind == JsonValueKind.Array && draftRooms.GetArrayLength() == 7
+                        && draftRooms.EnumerateArray().All(room => room.ValueKind == JsonValueKind.Object && room.TryGetProperty("Label", out var label) && label.ValueKind == JsonValueKind.Object
+                            && label.TryGetProperty("InsertPath", out var insertPath) && insertPath.ValueKind == JsonValueKind.Array
+                            && insertPath.EnumerateArray().Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : null).SequenceEqual(NestedTextPath)
+                            && label.TryGetProperty("Handle", out var labelHandle) && labelHandle.ValueKind == JsonValueKind.String && (labelHandle.GetString() ?? "").EndsWith(nestedSuffix, StringComparison.Ordinal));
+                    Check(draftCarries, "nested " + vLabel + ": the cad-brief draft.json room labels carry InsertPath " + Chain2(NestedTextPath) + " and the handle suffix " + nestedSuffix,
+                        draftJson?.ToString() is { } dt && dt.Length > 600 ? dt[..600] + "..." : draftJson?.ToString() ?? "<no draft.json>");
+                    var briefJson = Envelope(Encoding.UTF8.GetString(Read(Path.Combine(lastChainDir, "brief.json"))));
+                    var briefCarries = briefJson is { } bj && bj.TryGetProperty("rooms", out var briefRooms) && briefRooms.ValueKind == JsonValueKind.Array && briefRooms.GetArrayLength() > 0
+                        && briefRooms.EnumerateArray().All(room => room.ValueKind == JsonValueKind.Object && room.TryGetProperty("provenance", out var provenance) && provenance.ValueKind == JsonValueKind.Object
+                            && provenance.TryGetProperty("reference", out var reference) && reference.ValueKind == JsonValueKind.String && (reference.GetString() ?? "").Contains(nestedSuffix + " PDF-TEXT", StringComparison.Ordinal));
+                    Check(briefCarries, "nested " + vLabel + ": every room of the --brief-only brief.json has a provenance reference with the nested XObject path " + nestedSuffix,
                         briefJson?.ToString() is { } bt && bt.Length > 600 ? bt[..600] + "..." : briefJson?.ToString() ?? "<no brief.json>");
                 }
             }
