@@ -521,7 +521,8 @@ foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
         else if(serverSource[p122At]=='}' && --p122Depth==0) { p122End=p122At+1; break; }
     }
     var parseBody=p122End<0 ? "" : serverSource[p122Start..p122End];
-    Check(parseBody.Length>0 && parseBody.Contains("RevitOptionGrammar.ReadTimeout(",StringComparison.Ordinal),"McpServer.ParseOptions reads --read-timeout-seconds through the shared RevitOptionGrammar.ReadTimeout");
+    // P1-24: the value is read inside the shared option loop RevitOptionGrammar.Options (which calls its ReadTimeout).
+    Check(parseBody.Length>0 && parseBody.Contains("RevitOptionGrammar.Options(",StringComparison.Ordinal),"McpServer.ParseOptions reads --read-timeout-seconds through the shared RevitOptionGrammar option loop");
     var ownGrammar=new[]{"TryParse","NumberStyles","PipeTransportWithReadTimeout","takes whole seconds","needs a value","unknown option","repeated option","\"args[\"","Failure("}.Where(token=>parseBody.Contains(token,StringComparison.Ordinal)).ToArray();
     Check(parseBody.Length>0 && ownGrammar.Length==0,"McpServer.ParseOptions has no value grammar, range or refusal text of its own ["+string.Join(", ",ownGrammar)+"]");
     Check(!serverSource.Contains("OptionRefusal(",StringComparison.Ordinal),"McpServer.cs keeps no private option refusal helper");
