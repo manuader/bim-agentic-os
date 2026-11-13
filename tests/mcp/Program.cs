@@ -329,6 +329,32 @@ Check(IsError(lateListing) && FailureCode(lateListing)==McpServer.QueryAllDeadli
     && Node(Text(lateListing))["elements"]!.AsArray().Count==0 && AllSent()-allBefore==3,"revit_query_elements all:true past its overall deadline refuses the next page with query_all_deadline_exceeded (isError, no partial elements) | "+Text(lateListing));
 var quickServer=new McpServer(RevitCommandCatalogue.All,RevitCommandPolicy.None,(pipe,line)=>{ lock(allLock) allClock=allClock.AddMinutes(1); return AllReply(line); },null){QueryAllClock=()=>{ lock(allLock) return allClock; },QueryAllDeadline=TimeSpan.FromMinutes(5)};
 Check(!IsError(AllCall(quickServer,AllInProcessPipe,Walls(5),true)),"revit_query_elements all:true within its overall deadline lists every page");
+// P1-23: the all:true deadline is the CLI --all deadline transport (interfaces/cli/RevitDeadlineTransport.cs, linked):
+// one cut/exceeded rule, only the listing wording ("all:true") is the server's. Reply bytes pinned literally.
+Check(Text(lateListing)=="""{"status":"failed","code":"query_all_deadline_exceeded","field":null,"detail":"the all:true listing took longer than its 180000 ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor","pages":3,"matched":null,"returned":0,"elements":[]}""",
+    "revit_query_elements all:true past its deadline answers the literal pinned listing | "+Text(lateListing));
+// An injected (not real pipe) transport is never cut: its pipe_read_timeout under a deadline below the read timeout stays pipe_read_timeout.
+var p123Sent=0;
+var p123Injected=new McpServer(RevitCommandCatalogue.All,RevitCommandPolicy.None,(pipe,line)=>{ p123Sent++; throw new RevitPipeReadTimeoutException(TimeSpan.FromSeconds(60)); },null){QueryAllDeadline=TimeSpan.FromMinutes(2)};
+var p123Stalled=AllCall(p123Injected,AllInProcessPipe,Walls(5),true);
+Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeReadTimeout && Node(Text(p123Stalled))["detail"]?.GetValue<string>() is {} p123Detail && p123Detail.Contains("60000 ms",StringComparison.Ordinal)
+    && Node(Text(p123Stalled))["pages"]!.GetValue<int>()==0 && p123Sent==1,"revit_query_elements all:true on an injected transport is not cut: its pipe_read_timeout passes through under a shorter deadline | "+Text(p123Stalled));
+{
+    var p123Source=File.ReadAllText(Path.Combine(root,"interfaces","mcp","McpServer.cs"));
+    Check(p123Source.Contains("new RevitDeadlineTransport(",StringComparison.Ordinal),"McpServer all:true pages through the shared RevitDeadlineTransport");
+    var p123Own=new[]{"class DeadlineTransport","took longer than","TotalMilliseconds","- start","left <","PipeTransportWithReadTimeout(left"}.Where(token=>p123Source.Contains(token,StringComparison.Ordinal)).ToArray();
+    Check(p123Own.Length==0,"McpServer.cs has no deadline arithmetic, cut rule or exceeded text of its own ["+string.Join(", ",p123Own)+"]");
+    var p123Shared=Path.GetFullPath(Path.Combine(root,"interfaces","cli","RevitDeadlineTransport.cs"));
+    foreach(var p123Project in new[]{Path.Combine(root,"interfaces","mcp","Bim.Mcp.csproj"),Path.Combine(root,"tests","mcp","Bim.Mcp.Tests.csproj"),
+        Path.Combine(root,"tests","revit-commands","Bim.RevitCommands.Tests.csproj"),Path.Combine(root,"tests","cli","Bim.Cli.Tests.csproj")}) {
+        var p123Dir=Path.GetDirectoryName(p123Project)!;
+        var p123Linked=System.Xml.Linq.XDocument.Load(p123Project).Descendants().Where(e=>e.Name.LocalName=="Compile")
+            .Select(e=>(string?)e.Attribute("Include")).Where(include=>include is not null)
+            .Any(include=>string.Equals(Path.GetFullPath(Path.Combine(p123Dir,include!.Replace('\\','/').Replace('/',Path.DirectorySeparatorChar))),p123Shared,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
+        Check(p123Linked,Path.GetFileName(p123Project)+" compiles interfaces/cli/RevitDeadlineTransport.cs (shared source, not a copy)");
+    }
+}
 // Optional 3: like a single read, all:true never reads the owner policy files (a malformed one does not refuse it).
 var brokenPolicy=new McpServer(RevitCommandCatalogue.All,()=>throw new RevitCommandException(RevitCommandCodes.AllowlistInvalid,"policy","malformed"),AllTransport,null);
 Check(Text(AllCall(brokenPolicy,AllInProcessPipe,Walls(5),true))==pagedDirect,"revit_query_elements all:true does not read the owner policy (a malformed owner file does not refuse it; the CLI reads it)");
