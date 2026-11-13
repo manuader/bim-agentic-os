@@ -521,7 +521,8 @@ foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
         else if(serverSource[p122At]=='}' && --p122Depth==0) { p122End=p122At+1; break; }
     }
     var parseBody=p122End<0 ? "" : serverSource[p122Start..p122End];
-    Check(parseBody.Length>0 && parseBody.Contains("RevitOptionGrammar.ReadTimeout(",StringComparison.Ordinal),"McpServer.ParseOptions reads --read-timeout-seconds through the shared RevitOptionGrammar.ReadTimeout");
+    // P1-24: the value is read inside the shared option loop RevitOptionGrammar.Options (which calls its ReadTimeout).
+    Check(parseBody.Length>0 && parseBody.Contains("RevitOptionGrammar.Options(",StringComparison.Ordinal),"McpServer.ParseOptions reads --read-timeout-seconds through the shared RevitOptionGrammar option loop");
     var ownGrammar=new[]{"TryParse","NumberStyles","PipeTransportWithReadTimeout","takes whole seconds","needs a value","unknown option","repeated option","\"args[\"","Failure("}.Where(token=>parseBody.Contains(token,StringComparison.Ordinal)).ToArray();
     Check(parseBody.Length>0 && ownGrammar.Length==0,"McpServer.ParseOptions has no value grammar, range or refusal text of its own ["+string.Join(", ",ownGrammar)+"]");
     Check(!serverSource.Contains("OptionRefusal(",StringComparison.Ordinal),"McpServer.cs keeps no private option refusal helper");
@@ -544,6 +545,8 @@ Check(McpServer.ParseOptions(new[]{"--read-timeout-seconds"," 5"},out _)=="""{"s
 // The server exposes only --read-timeout-seconds: --deadline-seconds is an unknown server option (MCP deadline sharing is P1-23).
 Check(McpServer.ParseOptions(new[]{"--deadline-seconds","5"},out var p122DeadlineTimeout)==McpRefusal("mcp_option_unknown",0,"unknown option --deadline-seconds") && p122DeadlineTimeout==RevitCommandService.DefaultReadTimeout,
     "McpServer.ParseOptions refuses --deadline-seconds as mcp_option_unknown (the server has no deadline option)");
+// P1-24 one any-order option loop (tests/mcp/RevitOptionLoopTests.cs).
+RevitOptionLoopTests.Run(root,cliDll,mcpDll,Cli,options=>{ var run=RunMcp(toolsList,options); return (run.Exit,run.Out,run.Err); },Check);
 var mcpPlain=RunMcp(toolsList);
 var mcpFlagged=RunMcp(toolsList,"--read-timeout-seconds","86400");
 Check(mcpPlain.Exit==0 && Node(mcpPlain.Out)["id"]!.GetValue<int>()==30 && mcpFlagged.Exit==0 && mcpFlagged.Out==mcpPlain.Out && mcpFlagged.Err.Length==0,"Bim.Mcp with --read-timeout-seconds 86400 serves the same bytes as without it");

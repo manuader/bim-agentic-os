@@ -161,21 +161,15 @@ public sealed class McpServer
     // Returns null and the read timeout (the default when absent), or the typed refusal line (RevitCommandResponse
     // shape, field args[i]) that Program writes to stderr before serving. P1-22: the value grammar, range and refusal
     // lines are revit-command's (RevitOptionGrammar, interfaces/cli/RevitCommandOptions.cs linked into this server);
-    // only the usage and the unknown/repeated code (mcp_option_unknown) are the server's own.
+    // only the usage and the unknown/repeated code (mcp_option_unknown) are the server's own. P1-24: the any-order,
+    // at-most-once loop is RevitOptionGrammar.Options too, given the accepted set {--read-timeout-seconds}; on a refusal
+    // readTimeout is the default.
     public static string? ParseOptions(IReadOnlyList<string> args, out TimeSpan readTimeout)
     {
         ArgumentNullException.ThrowIfNull(args);
-        readTimeout = RevitCommandService.DefaultReadTimeout;
-        var seen = false;
-        for (var index = 0; index < args.Count; index++)
-        {
-            if (args[index] != ReadTimeoutOption) return RevitOptionGrammar.Unknown(RevitCommandCodes.McpOptionUnknown, index, args[index], OptionsUsage);
-            if (seen) return RevitOptionGrammar.Repeated(RevitCommandCodes.McpOptionUnknown, index, ReadTimeoutOption, OptionsUsage);
-            seen = true;
-            if (RevitOptionGrammar.ReadTimeout(args, ref index, OptionsUsage, out var refusal) is not { } timed) return refusal;
-            readTimeout = timed.Timeout;
-        }
-        return null;
+        var options = RevitOptionGrammar.Options(args, 0, [ReadTimeoutOption], RevitCommandCodes.McpOptionUnknown, OptionsUsage, null, out var refusal);
+        readTimeout = options?.ReadTimeout ?? RevitCommandService.DefaultReadTimeout;
+        return refusal;
     }
 
     // Defaults: the repository policy (see RevitCommandPolicy.ForRepository), re-read whenever the owner files change
