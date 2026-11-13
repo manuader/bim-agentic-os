@@ -87,10 +87,15 @@ function Find-PackageLinks([string]$Directory) {
 
 # Revit/Autodesk assemblies (including Nice3point reference packages), Revit models and credential material are
 # never packaged. Names are matched case-insensitively; small text files are also scanned for key material.
+# P10-19: package.ps1 runs this scan on the staging folder before any builder, and reading a FIFO blocks, so every file
+# (links included, followed) is first classified by type and a non-regular one throws typed package_special_file (see
+# Assert-PackageStagedFilesRegular) before anything is read.
 function Find-PackageForbidden([string]$Directory) {
     $base = [IO.Path]::GetFullPath($Directory)
     $hits = [Collections.Generic.List[string]]::new()
-    foreach ($file in Get-ChildItem -LiteralPath $base -Recurse -File -Force) {
+    $files = @(Get-ChildItem -LiteralPath $base -Recurse -File -Force)
+    Assert-PackageStagedFilesRegular $base ([string[]]@($files | ForEach-Object { Get-PackageRelativePath $base $_.FullName }))
+    foreach ($file in $files) {
         $name = $file.Name
         $forbidden = $name -match '(?i)^(Revit[^\\/]*|AdWindows|UIFramework[^\\/]*|Autodesk[^\\/]*|AdskRcConfig[^\\/]*)\.dll$' -or
             $name -match '(?i)^Nice3point' -or
@@ -118,9 +123,10 @@ function Test-PackageReadFailure($ErrorRecord) {
 
 # P10-17: non-regular files (FIFO, socket, character or block device) are never packaged. They are recognised by file
 # type from metadata alone, never by opening them: opening a FIFO for read blocks until a writer appears. The type comes
-# from POSIX `test -p/-S/-c/-b` run by /bin/sh (stat only, symlinks already excluded), one shell per batch of paths;
-# PowerShell's UnixMode/UnixStat is not relied on (on the Ubuntu CI runner it did not classify a FIFO). Windows has no such
-# file system entries (its AF_UNIX sockets are reparse points, refused by Find-PackageLinks), so nothing is special there.
+# from POSIX `test -p/-S/-c/-b` run by /bin/sh (stat only; `test` follows symlinks, so a file link passed in is classified
+# by its target), one shell per batch of paths; PowerShell's UnixMode/UnixStat is not relied on (on the Ubuntu CI runner
+# it did not classify a FIFO). Windows has no such file system entries (its AF_UNIX sockets are reparse points, refused
+# by Find-PackageLinks), so nothing is special there.
 # The type is checked when verification runs; a file swapped for a FIFO after that check (TOCTOU) is not covered.
 # $script:PackageShellPath is the shell used (tests inject failing ones). Batches are bounded by count and by argv bytes
 # (~128 KB, well under macOS ARG_MAX). A check that cannot run (shell missing, non-zero exit, unexpected output) throws.

@@ -759,6 +759,7 @@ try {
                 }
                 foreach ($path in @($case.Links | Where-Object { $_ })) {
                     $full = Join-Path $copy $path
+                    New-Item -ItemType Directory -Force (Split-Path $full) | Out-Null
                     New-Item -ItemType SymbolicLink -Path $full -Target $p19OutsideFifo -ErrorAction Stop | Out-Null
                     $made.Add($full)
                 }
