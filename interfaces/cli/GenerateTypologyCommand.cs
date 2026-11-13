@@ -27,7 +27,7 @@ namespace Bim.Cli;
 //                  passed through in order; an id that is not a composed skill or one listed twice is the resolver's
 //                  typed precedence_unknown / precedence_duplicate refusal
 //   include        optional array of at most 64 strings (P7-16): optional rooms, TypologyBriefRequest.Include as given (the
-//                  pipeline sorts and de-duplicates them; [] is kept as an empty list, so it is not the absent member's bytes);
+//                  pipeline sorts and de-duplicates them; P7-18: [] is normalised to the absent member, same file and stdout);
 //                  a room kind that is unknown or not offered by the pack is the pipeline's typed typology_room_kind_unknown /
 //                  typology_room_not_offered refusal (generate_typology_refused); a non-string entry, one over 64 UTF-16 units or one holding a
 //                  control character is request_invalid include[i]
@@ -269,6 +269,8 @@ internal static class GenerateTypologyCommand
                 throw new Refusal(RequestInvalid, "project_id");
             var weights = root.TryGetValue("weights", out var weightsElement) ? Weights(weightsElement) : new ScoringWeights();
             var include = root.TryGetValue("include", out var includeElement) ? Rooms(includeElement) : null;
+            // P7-18: an empty list is the absent member, so "include":[] keeps the P7-14 / composed bytes.
+            if (include is { Count: 0 }) include = null;
             var request = new TypologyBriefRequest(familySize, lotValue, alternatives, seed, include, weights == new ScoringWeights() ? null : weights);
             var skills = root.TryGetValue("skills", out var skillsElement) ? Strings(skillsElement, "skills") : null;
             var precedence = root.TryGetValue("precedence", out var precedenceElement) ? Strings(precedenceElement, "precedence") : null;
