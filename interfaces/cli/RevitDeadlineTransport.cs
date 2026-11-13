@@ -18,7 +18,7 @@ namespace Bim.Cli;
 // before paging, as the MCP transport starts when its all:true call builds it.
 // Known limit: the pipe connect inside RevitCommandService (ConnectTimeoutMs, 5 s) is not cut, so a run can last the
 // deadline plus up to 5 s, ending pipe_connect_timeout when no add-in is listening. Tests inject the clock and the cut transport.
-public sealed class RevitDeadlineTransport : IRevitCommandTransport
+internal sealed class RevitDeadlineTransport : IRevitCommandTransport
 {
     public const string Code = "query_all_deadline_exceeded";
     public const string CliListing = "--all";

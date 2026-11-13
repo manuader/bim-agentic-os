@@ -341,9 +341,26 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
     && Node(Text(p123Stalled))["pages"]!.GetValue<int>()==0 && p123Sent==1,"revit_query_elements all:true on an injected transport is not cut: its pipe_read_timeout passes through under a shorter deadline | "+Text(p123Stalled));
 {
     var p123Source=File.ReadAllText(Path.Combine(root,"interfaces","mcp","McpServer.cs"));
-    Check(p123Source.Contains("new RevitDeadlineTransport(",StringComparison.Ordinal),"McpServer all:true pages through the shared RevitDeadlineTransport");
-    var p123Own=new[]{"class DeadlineTransport","took longer than","TotalMilliseconds","- start","left <","PipeTransportWithReadTimeout(left"}.Where(token=>p123Source.Contains(token,StringComparison.Ordinal)).ToArray();
-    Check(p123Own.Length==0,"McpServer.cs has no deadline arithmetic, cut rule or exceeded text of its own ["+string.Join(", ",p123Own)+"]");
+    // The RevitCallAll body: from its signature to the brace matching the first '{' after it (no layout assumption).
+    var p123Start=p123Source.IndexOf("(string Text, bool IsError) RevitCallAll(",StringComparison.Ordinal);
+    var p123Open=p123Start<0 ? -1 : p123Source.IndexOf('{',p123Start);
+    var p123End=-1;
+    for(int p123At=Math.Max(p123Open,0),p123Depth=0;p123Open>=0 && p123At<p123Source.Length;p123At++) {
+        if(p123Source[p123At]=='{') p123Depth++;
+        else if(p123Source[p123At]=='}' && --p123Depth==0) { p123End=p123At+1; break; }
+    }
+    var p123Body=p123End<0 ? "" : p123Source[p123Start..p123End];
+    // Code only: line comments dropped, so prose cannot satisfy or trip the checks.
+    var p123Code=string.Join("\n",p123Body.Split('\n').Select(line=>line.IndexOf("//",StringComparison.Ordinal) is var at && at>=0 ? line[..at] : line));
+    var p123Built=p123Code.IndexOf("new RevitDeadlineTransport(",StringComparison.Ordinal);
+    var p123Args=p123Built<0 ? "" : p123Code[p123Built..Math.Max(p123Built,p123Code.IndexOf(';',p123Built))];
+    Check(p123Args.Length>0 && p123Args.Contains("RevitDeadlineTransport.McpListing",StringComparison.Ordinal) && p123Args.Contains("cutReads: realPipe",StringComparison.Ordinal)
+        && p123Args.Contains("RevitDeadlineTransport.ElapsedOn(QueryAllClock)",StringComparison.Ordinal) && p123Args.Contains("QueryAllDeadline",StringComparison.Ordinal),
+        "McpServer.RevitCallAll pages through new RevitDeadlineTransport(… QueryAllDeadline, ElapsedOn(QueryAllClock), McpListing, cutReads: realPipe …) | "+p123Args);
+    var p123Own=new[]{"QueryAllClock()","TimeSpan"," - "," < "," <= ","Exceeded","PipeReadTimeout","PipeTransportWithReadTimeout","TotalMilliseconds","took longer than","RevitCommandService.Run("}
+        .Where(token=>p123Code.Contains(token,StringComparison.Ordinal)).ToArray();
+    Check(p123Code.Length>0 && p123Own.Length==0,"McpServer.RevitCallAll has no deadline arithmetic, cut rule or exceeded text of its own ["+string.Join(", ",p123Own)+"]");
+    Check(!p123Source.Contains("class DeadlineTransport",StringComparison.Ordinal),"McpServer.cs keeps no private DeadlineTransport");
     var p123Shared=Path.GetFullPath(Path.Combine(root,"interfaces","cli","RevitDeadlineTransport.cs"));
     foreach(var p123Project in new[]{Path.Combine(root,"interfaces","mcp","Bim.Mcp.csproj"),Path.Combine(root,"tests","mcp","Bim.Mcp.Tests.csproj"),
         Path.Combine(root,"tests","revit-commands","Bim.RevitCommands.Tests.csproj"),Path.Combine(root,"tests","cli","Bim.Cli.Tests.csproj")}) {
@@ -559,6 +576,7 @@ try {
     var cutStalled=AllCall(cutServer,stallPipe,Walls(5),true);
     cutWatch.Stop();
     Check(IsError(cutStalled) && FailureCode(cutStalled)==McpServer.QueryAllDeadlineExceeded && Node(Text(cutStalled))["pages"]!.GetValue<int>()==0 && cutWatch.Elapsed<TimeSpan.FromSeconds(30)
+        && Text(cutStalled)=="""{"status":"failed","code":"query_all_deadline_exceeded","field":null,"detail":"the all:true listing took longer than its 2000 ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor","pages":0,"matched":null,"returned":0,"elements":[]}"""
         && stallAddIn.WaitForRequests(3) && stallAddIn.Received.Count==3,"a 2 s all:true deadline under a 120 s server read timeout ends the stalled page with query_all_deadline_exceeded | "+Text(cutStalled)+" in "+cutWatch.ElapsedMilliseconds+" ms");
 } finally {
     if(!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR",stallTmpDir);
