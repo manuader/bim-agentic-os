@@ -1777,7 +1777,7 @@
         "tests/cli/RevitCommandReadTimeoutTests.cs",
         "tests/mcp/Program.cs"
       ],
-      "blocker": "No Revit run; CLI and MCP share one option grammar since P1-22 (any-order loop still per side, P1-24); MCP all:true overall deadline stays 1800 s whatever the read timeout; refusal wording for repeated/stray revit-command options changed (code unchanged).",
+      "blocker": "No Revit run; CLI and MCP share one option grammar since P1-22 and one any-order option loop since P1-24; MCP all:true overall deadline stays 1800 s whatever the read timeout; refusal wording for repeated/stray revit-command options changed (code unchanged).",
       "scope": "P1-20: `revit-command … [--all] --read-timeout-seconds n` and `Bim.Mcp.dll --read-timeout-seconds n` (McpServer.ReadTimeout) pass a 1..86400 s timeout to RevitCommandService.PipeTransportWithReadTimeout; typed read_timeout_invalid / mcp_option_unknown (RevitCommandCodes.ClientSide) before any I/O; stalled fake pipe gives pipe_read_timeout within the bound (CLI single and --all, MCP single and all:true page cut); absent flag keeps PipeTransport and today's bytes. CI red 43073359788, green 43075435525; review red 43083652387, green 43086519631."
     },
     {
@@ -1952,7 +1952,7 @@
         "tests/integration/fake-revit-command-pipe.ps1",
         "tests/cli/catalogue-report-record.ps1"
       ],
-      "blocker": "Owner -Catalogue run pending (🔒), never run in Revit; DocDefaults creates fixed names (Level 1 Plan, A101/A900, Door/Room Schedule; English UI schedules) that may collide in a template (P4-17); the owner run no longer exercises dependents > 0 (covered by P4-12 tests in tests/cli); first realized map still hand-built (P4-16).",
+      "blocker": "Owner -Catalogue run pending (🔒), never run in Revit; DocDefaults creates fixed names (Level 1 Plan, A101/A900, Door/Room Schedule; English UI schedules); since P4-17 an existing one refuses doc-up-realize typed (doc_update_name_collision) before any write; the owner run no longer exercises dependents > 0 (covered by P4-12 tests in tests/cli); first realized map still hand-built (P4-16).",
       "scope": "P4-14: the -Catalogue documentation group realizes the fixture's default documentation (9 forced creates), moves the wall and regenerates the door tag through doc-update dry run then --execute --expected-document <sha256 of its own plan.json> (printed path = plan_file, re-hashed after execute); run folder keeps NN-key.doc-update/ inputs, plan.json, report.json, stderr.txt; a reply_lost entry or an unusable --execute line stops the run; typed refusals fail only the update; owner session wires -InvokeDocUpdate with -DocUpdateTimeoutSeconds. In-process stand-in and real CLI on the fake pipe (incl. dropped reply: op received once, rest not_sent). CI red 43198296774, green 43202889177; review red 43206935234, green 43207050532."
     },
     {
@@ -1988,7 +1988,7 @@
         "tests/mcp/Program.cs",
         "tests/cli/RevitCommandReadTimeoutTests.cs"
       ],
-      "blocker": "No Revit run; the at-most-once/any-order option loop is still written per side and the shared option types are public in Bim.Mcp.dll (P1-24; RevitDeadlineTransport is internal since P1-23); MCP exposes no --deadline-seconds (its all:true deadline goes through the shared RevitDeadlineTransport since P1-23); the new MCP padded/signed/overflow refusals are regression pins (already held on main).",
+      "blocker": "No Revit run; one any-order option loop and internal option types since P1-24 (RevitDeadlineTransport internal since P1-23); MCP exposes no --deadline-seconds (its all:true deadline goes through the shared RevitDeadlineTransport since P1-23); the new MCP padded/signed/overflow refusals are regression pins (already held on main).",
       "scope": "P1-22: Bim.Cli.RevitOptionGrammar (linked into Bim.Mcp, tests/mcp, tests/revit-commands) owns --read-timeout-seconds/--deadline-seconds names, digits-only whole seconds, 1..86400 ranges and refusal lines; RevitCommandOptions.Parse and McpServer.ParseOptions delegate; CLI/MCP parity over 14 values; literal JSON pin for the \" 5\" MCP refusal; XML csproj link and ParseOptions-body static checks; existing refusal bytes unchanged. CI red 43222777518, green 43224422380; review green 43239443477."
     },
     {
@@ -2030,7 +2030,7 @@
         "scripts/package-common.ps1",
         "tests/packaging/test-package.ps1"
       ],
-      "blocker": "Linux CI only (verify.ps1 does not run on macOS CI; Windows SKIPs every case); no device fixture (mknod needs root; /dev/null classifier assert only); package.ps1 staging (New-PackageManifestText) still hashes without a type check (→ P10-19); TOCTOU after the check not covered.",
+      "blocker": "Linux CI only (verify.ps1 does not run on macOS CI; Windows SKIPs every case); no device fixture (mknod needs root; /dev/null classifier assert only); package.ps1 staging type-checks before reading or hashing since P10-19; TOCTOU after the check not covered.",
       "scope": "P10-17: package-verify stops at links, then classifies every file by POSIX test -p/-S/-c/-b via /bin/sh (argv-only, batched by count and ~128 KB) and refuses FIFO/socket/device as package_special_file (ordinal) before any open; a failing type check is package_special_file_check_failed; a manifest-listed file it cannot hash is manifest_file_unreadable naming the path (never an exception); bounded 90 s test runs. relay201, CI red 43305452588, green 43315327377; review red 43320124473, green 43324318365."
     },
     {
@@ -2067,6 +2067,37 @@
       ],
       "blocker": "macOS covered by the ifc-portable PackageLayoutPackTests run only (test-package.ps1 runs on Linux/Windows); Windows symlink cases are counted SKIPs; a link swapped in after resolution is not covered.",
       "scope": "P10-18: package.ps1 builds under Resolve-PackagePhysicalPath (component-by-component readlink; link loops refused typed inside try) so dotnet publish keeps Bim.* as project entries in deps.json; macOS package.ps1 exits 0 with first-party Bim.* in sbom.json and the macOS SKIP is gone; Linux symlinked-TMPDIR build byte-equal to a clean build; Linux/Windows bytes unchanged. relay204, CI red 43368648383/43371055614, green 43375835744; review green 43383892581."
+    },
+    {
+      "id": "revit-option-single-loop",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/RevitCommandOptions.cs",
+        "interfaces/mcp/McpServer.cs",
+        "tests/mcp/RevitOptionLoopTests.cs"
+      ],
+      "blocker": "No Revit run; static one-loop check is per file; MCP out readTimeout after a refusal is the default (unobservable).",
+      "scope": "P1-24: RevitOptionGrammar.Options(args, first, accepted, code, usage, deadlineUsage) is the one at-most-once/any-order loop, used by RevitCommandOptions.Parse and McpServer.ParseOptions; RevitOptionGrammar, RevitCommandOptions and RevitOptionValues are internal (metadata check on Bim.Cli.dll, Bim.Mcp.dll and the tests/mcp assembly); 19 CLI + 11 MCP refusal byte pins unchanged (some through the real DLLs); static one-loop check; MCP out readTimeout on refusal is now the default (unobservable, exits). relay205/206, CI red 43397635208, green 43398967732; review green 43413447598."
+    },
+    {
+      "id": "catalogue-doc-update-name-collision",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/owner-catalogue-steps.ps1",
+        "tests/integration/test-catalogue-session.ps1"
+      ],
+      "blocker": "Owner -Catalogue run pending (🔒); never run in Revit — whether every real OST_Views row returns \"View Name\" is unverified (if not, every run fails closed); paging covered only by the headless fake; >100 000 elements per category fails closed; names not trimmed; stricter than Revit's per-view-type uniqueness by design.",
+      "scope": "P4-17: between doc-up-realize-plan and doc-up-realize three read-only query.elements steps list OST_Views \"View Name\", OST_Sheets \"Sheet Number\" and OST_Schedules \"View Name\" (paging next_cursor, cap 20×5000 rows, repeated cursor or cap → fail closed); any planned name (case-insensitive, checked against both view and schedule listings) that already exists refuses doc-up-realize with doc_update_name_collision naming kind/name/unique_id before --execute (nothing sent); a plan create without its name/number refuses with doc_update_plan_unnamed; missing parameter/odd reply fails closed; later groups still run; clean fixture unchanged; real OST_Views rows unverified (owner probe). relay205/206, CI red 43397774986, green 43399133841; reviews green 43406208212 and 43418296675 (red 43413886113)."
+    },
+    {
+      "id": "package-staging-special-files",
+      "status": "unit-tested",
+      "evidence": [
+        "scripts/package-common.ps1",
+        "tests/packaging/test-package.ps1"
+      ],
+      "blocker": "Linux CI only for FIFO cases (Windows SKIPs; macOS not run by verify.ps1); dangling link fails in Get-FileHash with an exception, not typed; TOCTOU after the check not covered; byte check is self-consistency of the real package, not against origin/main.",
+      "scope": "P10-19: Find-PackageForbidden, New-PackageManifestText and New-PackageSbomText run Assert-PackageStagedFilesRegular (P10-17 Get-PackagePosixFileKinds, links followed) before any read or hash: FIFO, link to FIFO, socket refused as package_special_file naming the path, failing check package_special_file_check_failed; bounded 60 s child-pwsh cases, Windows SKIPs, zero skips on Linux; real package manifest.json and sbom.json re-derived byte-equal. relay205/206, CI red 43397435722, green 43401512169; review red 43413538810, green 43416253764."
     }
   ]
 }
