@@ -255,8 +255,10 @@ internal static class GenerateTypologyTests
         ExpectRun("composed (skills []) with the default code pack named", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + CodePack + "\",\"skills\":[]"),
             TypologyPipeline.RunComposed(pack, R3(), new PrototypePipelineOptions(caba, projectId), Array.Empty<SkillManifest>(), null), CodePack,
             same: Utf8(TypologyPipelineSerializer.Serialize(TypologyPipeline.RunComposed(pack, R3(), new PrototypePipelineOptions(caba, projectId), null, null))), sameAs: "the composed CABA + typology run");
+        // The example code pack's living minimum (10 m2) is above the programme minimum (9 m2): composed, it is the typed
+        // typology_minimum_conflict refusal, which shows the code_pack reaches the composed resolution.
         ExpectRun("composed (skills []) with code_pack " + ExampleCodePack, Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + ExampleCodePack + "\",\"skills\":[]"),
-            TypologyPipeline.RunComposed(pack, R3(), new PrototypePipelineOptions(example, projectId), Array.Empty<SkillManifest>(), null), ExampleCodePack, differsFromP714: true);
+            TypologyPipeline.RunComposed(pack, R3(), new PrototypePipelineOptions(example, projectId), Array.Empty<SkillManifest>(), null), ExampleCodePack, SkillTypologyCodes.MinimumConflict);
         ExpectRun("composed include of an unknown room", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":[],\"include\":" + Strs("sauna")),
             TypologyPipeline.RunComposed(pack, R3(new[] { "sauna" }), new PrototypePipelineOptions(caba, projectId), Array.Empty<SkillManifest>(), null), CodePack, SkillTypologyCodes.RoomKindUnknown);
 
