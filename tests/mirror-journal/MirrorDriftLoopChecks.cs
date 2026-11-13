@@ -1028,18 +1028,18 @@ static class MirrorDriftLoopChecks
             return $reply
         }
         function Wire($State, [string]$Line) { try { Invoke-FakeRevitWire $State $Line } catch { '<threw: ' + $_.Exception.Message + '>' } }
-        function Move($State, [string]$Path, [string]$Id, [string]$Uid, [string]$Vector) { $null = Ok $State $Path $Id 'element.move' ('{"element_uids":["' + $Uid + '"],"vector_mm":' + $Vector + '}') }
+        function MoveWall($State, [string]$Path, [string]$Id, [string]$Uid, [string]$Vector) { $null = Ok $State $Path $Id 'element.move' ('{"element_uids":["' + $Uid + '"],"vector_mm":' + $Vector + '}') }
         $r = [ordered]@{}
         $s = New-FakeRevitState $DocumentUid @{} @('x-move-a', 'x-move-b', 'x-move-u')
         $level = [string]@((Ok $s $a 'levels' 'query.levels' '{}' | ConvertFrom-Json).readback.levels)[0].unique_id
         $r.wall = [string]@((Ok $s $a 'wall-1' 'wall.create' ('{"level":"' + $level + '","type":"T1","height_mm":3000,"curve":{"kind":"line","start":[0,0],"end":[5000,0]}}') | ConvertFrom-Json).created)[0]
         $r.s0 = Ok $s $a 'snapshot-0' 'query.snapshot' '{}'
         $r.a0 = Wire $s (Line $a 'null')
-        Move $s $a 'x-move-a' $r.wall '[250,0,0]'
+        MoveWall $s $a 'x-move-a' $r.wall '[250,0,0]'
         $r.s1 = Ok $s $b 'snapshot-1' 'query.snapshot' '{}'
         $r.b0 = Wire $s (Line $b 'null')
         $r.a1 = Wire $s (Line $a '{"peek":true}')
-        Move $s $b 'x-move-b' $r.wall '[0,400,0]'
+        MoveWall $s $b 'x-move-b' $r.wall '[0,400,0]'
         $r.s2 = Ok $s $a 'snapshot-2' 'query.snapshot' '{}'
         $r.a2 = Wire $s (Line $a 'null')
         $r.b1 = Wire $s (Line $b 'null')
@@ -1047,7 +1047,7 @@ static class MirrorDriftLoopChecks
         $s.DocumentUid = $OtherUid
         $r.su0 = Ok $s $a 'snapshot-u0' 'query.snapshot' '{}'
         $r.u0 = Wire $s (Line $a 'null')
-        Move $s $a 'x-move-u' $r.wall '[100,0,0]'
+        MoveWall $s $a 'x-move-u' $r.wall '[100,0,0]'
         $r.su1 = Ok $s $a 'snapshot-u1' 'query.snapshot' '{}'
         $r.u1 = Wire $s (Line $a 'null')
         $s.DocumentUid = $DocumentUid
