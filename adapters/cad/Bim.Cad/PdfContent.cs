@@ -12,6 +12,10 @@ namespace Bim.Cad;
 // default decoding; both warn once per font and page at the Tf. With a CMap, decoded characters are charged to
 // MaxInterpretedBytes as well as the shown bytes.
 // A Type0 code missing from the CMap becomes U+FFFD with tounicode-unmapped on the showing operator.
+// P6-18: a simple font whose /Encoding is a dictionary (/BaseEncoding, /Differences) decodes through it
+// (PdfSimpleEncoding) after ToUnicode, with or without a usable CMap; a shown code whose /Differences glyph name is
+// unknown keeps the byte decoding with encoding-glyph-unknown on the showing operator. An /Encoding name keeps the
+// default decoding.
 internal sealed class PdfContentInterpreter
 {
     private readonly PdfFile file;
@@ -293,19 +297,22 @@ internal sealed class PdfContentInterpreter
                     var joined = new StringBuilder();
                     long byteCount = 0;
                     var unmapped = false;
+                    string? unknownGlyph = null;
                     foreach (var item in pieces)
                     {
                         if (item is PdfString piece)
                         {
-                            var decoded = Decode(piece.Bytes, out var missing);
+                            var decoded = Decode(piece.Bytes, out var missing, out var glyph);
                             if (state.Decoder is not null) file.ChargeInterpreted(decoded.Length);
                             joined.Append(decoded);
                             unmapped |= missing;
+                            unknownGlyph ??= glyph;
                             byteCount += piece.Bytes.Length;
                         }
                         else if (item is PdfNumber adjustment && adjustment.Value < -200 && joined.Length > 0 && joined[^1] != ' ') joined.Append(' ');
                     }
                     if (unmapped) WarnUnmapped(objectNumber, operatorIndex, op);
+                    if (unknownGlyph is not null) WarnUnknownGlyph(unknownGlyph, objectNumber, operatorIndex, op);
                     Show(joined.ToString(), byteCount, objectNumber, operatorIndex, op);
                 }
                 else Warn("operand-error", objectNumber, operatorIndex, "TJ expects an array");
@@ -386,17 +393,22 @@ internal sealed class PdfContentInterpreter
     private void Show(byte[] bytes, int objectNumber, int operatorIndex, string op)
     {
         file.ChargeInterpreted(bytes.Length);
-        var text = Decode(bytes, out var unmapped);
+        var text = Decode(bytes, out var unmapped, out var unknownGlyph);
         if (state.Decoder is not null) file.ChargeInterpreted(text.Length);
         if (unmapped) WarnUnmapped(objectNumber, operatorIndex, op);
+        if (unknownGlyph is not null) WarnUnknownGlyph(unknownGlyph, objectNumber, operatorIndex, op);
         Show(text, 0, objectNumber, operatorIndex, op);
     }
 
-    private string Decode(byte[] bytes, out bool unmapped)
+    private string Decode(byte[] bytes, out bool unmapped, out string? unknownGlyph)
     {
         unmapped = false;
-        return state.Decoder is { } decoder ? decoder.Decode(bytes, out unmapped) : DecodeText(bytes);
+        unknownGlyph = null;
+        return state.Decoder is { } decoder ? decoder.Decode(bytes, out unmapped, out unknownGlyph) : DecodeText(bytes);
     }
+
+    private void WarnUnknownGlyph(string glyph, int objectNumber, int operatorIndex, string op) =>
+        Warn("encoding-glyph-unknown", objectNumber, operatorIndex, op + " shows a code whose /Differences glyph name /" + glyph + " of font /" + state.FontName + " is not in the glyph list; it is read as a text byte");
 
     private void WarnUnmapped(int objectNumber, int operatorIndex, string op) =>
         Warn("tounicode-unmapped", objectNumber, operatorIndex, op + " shows codes that the ToUnicode CMap of font /" + state.FontName + " does not map (U+FFFD)");
@@ -413,6 +425,7 @@ internal sealed class PdfContentInterpreter
         var identity = file.Resolve(PdfFile.Get(font, "Encoding")) is PdfName { Value: "Identity-H" or "Identity-V" };
         var label = "font /" + name + (reference is PdfRef r ? " (object " + r.Number.ToString(CultureInfo.InvariantCulture) + ")" : "");
         PdfFontDecoder? decoder = null;
+        PdfToUnicode? cmap = null;
         var toUnicode = PdfFile.Get(font, "ToUnicode");
         if (toUnicode is null or PdfNull)
         {
@@ -421,13 +434,14 @@ internal sealed class PdfContentInterpreter
         else
         {
             var error = "/ToUnicode is not a stream";
-            var cmap = file.Resolve(toUnicode) is PdfStream stream ? file.ToUnicode(stream, page, out error) : null;
+            cmap = file.Resolve(toUnicode) is PdfStream stream ? file.ToUnicode(stream, page, out error) : null;
             if (cmap is null)
             {
                 Warn("tounicode-invalid", objectNumber, operatorIndex, label + " has an unusable /ToUnicode CMap: " + error + "; its codes are read as text bytes");
             }
-            else decoder = new PdfFontDecoder(composite, identity, cmap);
         }
+        var encoding = !composite && file.Resolve(PdfFile.Get(font, "Encoding")) is Dictionary<string, object> encodingDictionary ? PdfSimpleEncoding.Parse(file, encodingDictionary) : null;
+        if (cmap is not null || encoding is not null) decoder = new PdfFontDecoder(composite, identity, cmap, encoding);
         fontDecoders[font] = decoder;
         return decoder;
     }
