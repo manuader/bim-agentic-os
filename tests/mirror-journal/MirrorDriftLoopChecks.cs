@@ -1030,7 +1030,7 @@ static class MirrorDriftLoopChecks
         function Wire($State, [string]$Line) { try { Invoke-FakeRevitWire $State $Line } catch { '<threw: ' + $_.Exception.Message + '>' } }
         function MoveWall($State, [string]$Path, [string]$Id, [string]$Uid, [string]$Vector) { $null = Ok $State $Path $Id 'element.move' ('{"element_uids":["' + $Uid + '"],"vector_mm":' + $Vector + '}') }
         $r = [ordered]@{}
-        $s = New-FakeRevitState $DocumentUid @{} @('x-move-a', 'x-move-b', 'x-move-u')
+        $s = New-FakeRevitState $DocumentUid @{} @('x-move-a', 'x-move-b', 'x-move-u', 'x-move-c')
         $level = [string]@((Ok $s $a 'levels' 'query.levels' '{}' | ConvertFrom-Json).readback.levels)[0].unique_id
         $r.wall = [string]@((Ok $s $a 'wall-1' 'wall.create' ('{"level":"' + $level + '","type":"T1","height_mm":3000,"curve":{"kind":"line","start":[0,0],"end":[5000,0]}}') | ConvertFrom-Json).created)[0]
         $r.s0 = Ok $s $a 'snapshot-0' 'query.snapshot' '{}'
@@ -1044,6 +1044,7 @@ static class MirrorDriftLoopChecks
         $r.a2 = Wire $s (Line $a 'null')
         $r.b1 = Wire $s (Line $b 'null')
         $r.a3 = Wire $s (Line $a.ToUpperInvariant() '{"peek":true}')
+        # Test-only lever: the fake has no document.open, so the open document's UniqueId is switched on the state itself.
         $s.DocumentUid = $OtherUid
         $r.su0 = Ok $s $a 'snapshot-u0' 'query.snapshot' '{}'
         $r.u0 = Wire $s (Line $a 'null')
@@ -1053,6 +1054,13 @@ static class MirrorDriftLoopChecks
         $s.DocumentUid = $DocumentUid
         $r.s3 = Ok $s $a 'snapshot-3' 'query.snapshot' '{}'
         $r.a4 = Wire $s (Line $a 'null')
+        # The entry filter ignores the path's case: a peek from sequence 0 under the upper-case path lists A's entry 1.
+        $r.a5 = Wire $s (Line $a.ToUpperInvariant() '{"peek":true,"after_sequence":0}')
+        # The baseline key ignores the UniqueId's case: the upper-cased UniqueId is A's document (its baseline, its entries).
+        $s.DocumentUid = $DocumentUid.ToUpperInvariant()
+        MoveWall $s $a 'x-move-c' $r.wall '[0,-100,0]'
+        $r.s4 = Ok $s $a 'snapshot-4' 'query.snapshot' '{}'
+        $r.a6 = Wire $s (Line $a 'null')
         $r | ConvertTo-Json -Compress
         """;
 
@@ -1078,8 +1086,8 @@ static class MirrorDriftLoopChecks
         const string a = "/fake/Drift-Doc-A.rvt", b = "/fake/Drift-Doc-B.rvt";
         var wall = R("wall");
         static MirrorSnapshot Snap(string response) { using var reply = JsonDocument.Parse(response); return MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText()); }
-        MirrorSnapshot s0, s1, s2, su0, su1, s3;
-        try { (s0, s1, s2, su0, su1, s3) = (Snap(R("s0")), Snap(R("s1")), Snap(R("s2")), Snap(R("su0")), Snap(R("su1")), Snap(R("s3"))); }
+        MirrorSnapshot s0, s1, s2, su0, su1, s3, s4;
+        try { (s0, s1, s2, su0, su1, s3, s4) = (Snap(R("s0")), Snap(R("s1")), Snap(R("s2")), Snap(R("su0")), Snap(R("su1")), Snap(R("s3")), Snap(R("s4"))); }
         catch (Exception error) when (error is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "the fake's query.snapshot readbacks parse as snapshots", error.Message + " | " + Head(output)); return; }
         Check(su0.DocumentUid == OtherDocumentUid && s3.DocumentUid == DocumentUid, "the snapshots after the UniqueId switch name the other document, and the first one again after switching back", su0.DocumentUid + " / " + s3.DocumentUid);
 
@@ -1089,7 +1097,7 @@ static class MirrorDriftLoopChecks
         var tracker = new MirrorJournalTracker(journal);
         void Record(string uid, string path, string name, string[] modified, bool addIn = false) =>
             journal.Record(new MirrorJournalChange(uid, "TransactionCommitted", new[] { name }, addIn ? new[] { "x" } : Array.Empty<string>(), modified, Array.Empty<long>(), addIn) { DocumentPath = path });
-        string Read(MirrorSnapshot snapshot, string path, bool peek = false) => RevitJournalQuery.RawRead(tracker, true, snapshot, path, peek ? new MirrorJournalReadOptions(null, true) : new MirrorJournalReadOptions());
+        string Read(MirrorSnapshot snapshot, string path, bool peek = false, long? after = null) => RevitJournalQuery.RawRead(tracker, true, snapshot, path, new MirrorJournalReadOptions(after, peek));
         Record(DocumentUid, a, "BIM Agentic OS wall.create", Array.Empty<string>(), addIn: true);
         var production = new Dictionary<string, string>();
         production["a0"] = Read(s0, a);
@@ -1104,6 +1112,9 @@ static class MirrorDriftLoopChecks
         Record(OtherDocumentUid, a, "Move", new[] { wall });
         production["u1"] = Read(su1, a);
         production["a4"] = Read(s3, a);
+        production["a5"] = Read(s3, a.ToUpperInvariant(), peek: true, after: 0);
+        Record(DocumentUid.ToUpperInvariant(), a, "Move", new[] { wall });
+        production["a6"] = Read(s4, a);
 
         // What each read is about, from the fake's reply: document, baseline_existed, baseline_sequence, entry sequences.
         string Shape(string reply)
@@ -1125,7 +1136,7 @@ static class MirrorDriftLoopChecks
         }
         // The differ holds a change for the reads that compare two different states (the diff checks are not vacuous).
         Check(MirrorSnapshotDiffer.Compare(s0, s1).Changed.Count == 1 && MirrorSnapshotDiffer.Compare(s1, s2).Changed.Count == 1 && MirrorSnapshotDiffer.Compare(s0, s2).Changed.Count == 1
-            && MirrorSnapshotDiffer.Compare(su0, su1).Changed.Count == 1 && MirrorSnapshotDiffer.Compare(s2, s3).Changed.Count == 1, "MirrorSnapshotDiffer sees the wall moved between each pair of snapshots the reads compare",
+            && MirrorSnapshotDiffer.Compare(su0, su1).Changed.Count == 1 && MirrorSnapshotDiffer.Compare(s2, s3).Changed.Count == 1 && MirrorSnapshotDiffer.Compare(s3, s4).Changed.Count == 1, "MirrorSnapshotDiffer sees the wall moved between each pair of snapshots the reads compare",
             MirrorSnapshotDiffer.Compare(s0, s1).ToJson() + " | " + MirrorSnapshotDiffer.Compare(s2, s3).ToJson());
         var cases = new (string Name, string Shape, MirrorSnapshot? Before, MirrorSnapshot After, string What)[]
         {
@@ -1138,6 +1149,8 @@ static class MirrorDriftLoopChecks
             ("u0", "e2e2 existed=false since=0 entries=[]", null, su0, "the first read after the fake's document UniqueId changed at path A: no baseline for that document, every element added"),
             ("u1", "e2e2 existed=true since=2 entries=[3]", su0, su1, "the second read of the other document: its own baseline and its own entry"),
             ("a4", "e2e1 existed=true since=2 entries=[]", s2, s3, "back to the first UniqueId at path A: A's own baseline (snapshot 2, sequence 2), the other document's entry not listed"),
+            ("a5", "e2e1 existed=true since=3 entries=[1]", s3, s3, "a peek from sequence 0 under the upper-case path: the entry filter ignores the path's case and lists A's entry 1"),
+            ("a6", "E2E1 existed=true since=3 entries=[4]", s3, s4, "a read with the fake's UniqueId upper-cased: the same document (case ignored), A's baseline (snapshot 3, sequence 3) and the entry recorded under that UniqueId"),
         };
         foreach (var (name, shape, before, after, what) in cases)
         {

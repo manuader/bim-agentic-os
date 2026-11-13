@@ -28,11 +28,11 @@
 # (exact-case names, an object or null, no duplicates, the same journal_options_invalid codes). Fidelity is semantic:
 # replies parse to the production members and values, not the same escaping bytes (ConvertTo-Json, not Utf8JsonWriter).
 # P2-20: with ExternalEdits the baseline is the last non-peek read's snapshot and report.diff is
-# MirrorSnapshotDiffer.Compare(baseline or none, current snapshot), member for member (Get-FakeSnapshotDiff). P2-22: with
-# ExternalEdits there is one baseline (snapshot and sequence) per (document UniqueId, path), both compared ignoring case,
-# as in MirrorJournalTracker, and entries are those of that document and path; without it the legacy baseline stays one
-# per fake state. An -ExternalEdits list with no ids is off. Without it every reply
-# is the pre-P2-18 one (diff included), byte for byte.
+# MirrorSnapshotDiffer.Compare(baseline or none, current snapshot), member for member (Get-FakeSnapshotDiff).
+# P2-22: with ExternalEdits there is one baseline (snapshot and sequence) per (document UniqueId, path), both compared
+# ignoring case, as in MirrorJournalTracker, and entries are those of that document and path; without it the legacy
+# baseline stays one per fake state. An -ExternalEdits list with no ids is off. Without it every reply is the pre-P2-18
+# one (diff included), byte for byte.
 # It proves nothing about Revit.
 Set-StrictMode -Version Latest
 
