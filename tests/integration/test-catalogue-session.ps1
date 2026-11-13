@@ -807,9 +807,17 @@ foreach ($key in $nameSpecs.Keys) {
 }
 $plannedNames = $full.picked['doc_up_realize_plan'].Names
 Assert ($null -ne $plannedNames -and ($plannedNames['views'] -join '|') -ceq 'Level 1 Plan' -and ($plannedNames['sheets'] -join '|') -ceq 'A101|A900' -and ($plannedNames['schedules'] -join '|') -ceq 'Door Schedule|Room Schedule') "P4-17 the names compared are the ones the reviewed plan creates (DocDefaults): $(if ($plannedNames) { $plannedNames | ConvertTo-Json -Compress })"
+Assert (!(Get-Step $full 'doc-up-realize').Contains('code') -and !$full.picked.ContainsKey('doc_up_name_collision')) 'P4-17 a clean run types no collision (no code on doc-up-realize, no picked.doc_up_name_collision)'
 Assert ([int](Get-StepField $full 'doc-up-names-sheets' 'index') -gt [int](Get-StepField $full 'doc-up-realize-plan' 'index') -and [int](Get-StepField $full 'doc-up-names-schedules' 'index') + 1 -eq [int](Get-StepField $full 'doc-up-realize' 'index')) 'P4-17 the name queries run after the dry run and right before its --execute'
+function Get-TestNameUid([int]$Id) { '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-{0:x8}' -f (0xd100 + $Id) }
+# picked.doc_up_name_collision as sorted "kind|name|unique_id" lines.
+function Get-TestCollisionText($Result) {
+    $lines = [string[]]@(@($Result.picked['doc_up_name_collision']) | Where-Object { $null -ne $_ } | ForEach-Object { "$($_['kind'])|$($_['name'])|$($_['unique_id'])" })
+    [Array]::Sort($lines, [StringComparer]::Ordinal)
+    return ($lines -join ',')
+}
 function New-TestNameRow([int]$Id, [string]$Parameter, $Value) {
-    [ordered]@{ id = 90000 + $Id; unique_id = ('0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-{0:x8}' -f (0xd100 + $Id)); category = 'Fake'; built_in_category = $null; level = $null; family = $null; type = $null; type_unique_id = $null
+    [ordered]@{ id = 90000 + $Id; unique_id = (Get-TestNameUid $Id); category = 'Fake'; built_in_category = $null; level = $null; family = $null; type = $null; type_unique_id = $null
         parameters = @(New-FakeTextParameter $Parameter $null $Value); missing_parameters = @() }
 }
 # Replaces the rows of a query.elements reply (the test copy already holds these views, sheets or schedules).
@@ -828,8 +836,12 @@ function Invoke-TestNameRun([hashtable]$Rows, [switch]$Truncated) {
 }
 $later = @('diario', 'formas', 'extrusion', 'transformar', 'copia', 'modificar')
 foreach ($case in @(
-        @{ What = 'a colliding sheet (A900)'; Rows = @{ 'doc-up-names-sheets' = @((New-TestNameRow 1 'Sheet Number' 'A900'), (New-TestNameRow 2 'Sheet Number' 'A1010')) }; Named = @("'A900'"); NotNamed = @('A101', 'A1010', 'Level 1 Plan') },
-        @{ What = 'a view, a sheet and a schedule named like the plan (ignoring case)'; Rows = @{ 'doc-up-names-views' = @((New-TestNameRow 3 'View Name' 'level 1 plan'), (New-TestNameRow 4 'View Name' 'Level 1')); 'doc-up-names-sheets' = @((New-TestNameRow 5 'Sheet Number' 'A101')); 'doc-up-names-schedules' = @((New-TestNameRow 6 'View Name' 'Room Schedule'), (New-TestNameRow 7 'View Name' $null)) }; Named = @("'Level 1 Plan'", "'A101'", "'Room Schedule'"); NotNamed = @('A900', 'Door Schedule') })) {
+        @{ What = 'a colliding sheet (A900)'; Rows = @{ 'doc-up-names-sheets' = @((New-TestNameRow 1 'Sheet Number' 'A900'), (New-TestNameRow 2 'Sheet Number' 'A1010')) }; Named = @("'A900'"); NotNamed = @('A101', 'A1010', 'Level 1 Plan'); Typed = "sheets|A900|$(Get-TestNameUid 1)" },
+        @{ What = 'a view, a sheet and a schedule named like the plan (ignoring case)'; Rows = @{ 'doc-up-names-views' = @((New-TestNameRow 3 'View Name' 'level 1 plan'), (New-TestNameRow 4 'View Name' 'Level 1')); 'doc-up-names-sheets' = @((New-TestNameRow 5 'Sheet Number' 'A101')); 'doc-up-names-schedules' = @((New-TestNameRow 6 'View Name' 'Room Schedule'), (New-TestNameRow 7 'View Name' $null)) }; Named = @("'Level 1 Plan'", "'A101'", "'Room Schedule'"); NotNamed = @('A900', 'Door Schedule'); Typed = "schedules|Room Schedule|$(Get-TestNameUid 6),sheets|A101|$(Get-TestNameUid 5),views|Level 1 Plan|$(Get-TestNameUid 3)" },
+        # Review: the add-in checks a new plan view or schedule name against view templates and every ViewSchedule, so
+        # both listings count for both kinds.
+        @{ What = 'a view template named like the door schedule (views listing)'; Rows = @{ 'doc-up-names-views' = @((New-TestNameRow 13 'View Name' 'Door Schedule')) }; Named = @("'Door Schedule'"); NotNamed = @('Level 1 Plan', 'A101', 'A900', 'Room Schedule'); Typed = "schedules|Door Schedule|$(Get-TestNameUid 13)" },
+        @{ What = 'a schedule named like the level plan (schedules listing)'; Rows = @{ 'doc-up-names-schedules' = @((New-TestNameRow 14 'View Name' 'Level 1 Plan')) }; Named = @("'Level 1 Plan'"); NotNamed = @('Door Schedule', 'Room Schedule', 'A101', 'A900'); Typed = "views|Level 1 Plan|$(Get-TestNameUid 14)" })) {
     $collide = Invoke-TestNameRun $case.Rows
     $collideResult = $collide.Result
     $realizeStep = Get-Step $collideResult 'doc-up-realize'
@@ -837,6 +849,7 @@ foreach ($case in @(
     $missingNames = @($case.Named | Where-Object { $collideReason -notlike "*$_*" })
     $extraNames = @($case.NotNamed | Where-Object { $collideReason -like "*'$_'*" })
     Assert ($null -ne $realizeStep -and !$realizeStep.passed -and !$realizeStep.blocked -and $null -eq $realizeStep.request -and $collideReason -like 'no enviado: doc_update_name_collision:*' -and $missingNames.Count -eq 0 -and $extraNames.Count -eq 0) "P4-17 $($case.What): doc-up-realize fails doc_update_name_collision naming exactly them, nothing sent: $collideReason"
+    Assert ((Get-CatalogueMember $realizeStep 'code') -ceq 'doc_update_name_collision' -and (Get-TestCollisionText $collideResult) -ceq $case.Typed) "P4-17 $($case.What): the step record carries code doc_update_name_collision and picked.doc_up_name_collision lists kind/name/unique_id: code $(Get-CatalogueMember $realizeStep 'code'), got $(Get-TestCollisionText $collideResult), want $($case.Typed)"
     Assert (@($docUpNames | Where-Object { !(Get-StepField $collideResult $_ 'passed') }).Count -eq 0 -and ($collide.DocUpdate.Calls -join ',') -eq 'doc-up-realize-plan' -and @($collide.Fake.Received | Where-Object { $_ -like 'doc*' }).Count -eq 0 -and $null -eq (Get-StepField $collideResult 'doc-up-move' 'request')) "P4-17 $($case.What): no doc-update --execute and no documentation write reach the add-in: $(@($collide.Fake.Received | Where-Object { $_ -like 'doc*' }) -join ',') calls $($collide.DocUpdate.Calls -join ',')"
     Assert ($null -eq $collideResult.aborted -and (Get-GroupField $collideResult 'documentacion' 'failed') -eq 6 -and @($later | Where-Object { (Get-GroupField $collideResult $_ 'failed') -ne 0 -or (Get-GroupField $collideResult $_ 'not_sent') -ne 0 }).Count -eq 0 -and (Format-CatalogueSummary $collideResult) -like '*resultado: FALLÓ en documentacion') "P4-17 $($case.What): only the update fails, later groups still run: $(Format-CatalogueSummary $collideResult) $(Get-FailedSteps $collideResult)"
 }
@@ -945,6 +958,9 @@ try {
     # writes its two reports list (9 creates, then 1 delete and 1 create), each once. Every catalogue step reaches it too.
     $realUpCatalogue = @($realUp | Where-Object { $_.command -notin 'doc-update', 'doc-realized' })
     Assert ($realUp.Count -eq 13 -and @($realUp | Where-Object { !$_.passed }).Count -eq 0 -and @($realUpCatalogue | Where-Object { $received -notcontains $_.operation_id }).Count -eq 0) "P4-14: the documentation update passes through the real CLI: $(@($realUp | Where-Object { !$_.passed } | ForEach-Object { "$($_.key): $($_.reason) $($_.raw_response)" }) -join '; ')"
+    # P4-17: through the real CLI too, the names compared are the ones its reviewed plan creates (DocDefaults).
+    $realNames = $real.picked['doc_up_realize_plan']
+    Assert ($null -ne $realNames -and ($realNames.Names['views'] -join '|') -ceq 'Level 1 Plan' -and ($realNames.Names['sheets'] -join '|') -ceq 'A101|A900' -and ($realNames.Names['schedules'] -join '|') -ceq 'Door Schedule|Room Schedule' -and !$real.picked.ContainsKey('doc_up_name_collision')) "P4-17 real CLI: the plan names are Level 1 Plan / A101,A900 / Door Schedule,Room Schedule: $(if ($realNames) { $realNames.Names | ConvertTo-Json -Compress })"
     $docLines = @($received | Where-Object { $_ -match '\Adoc(dry|del|new)\.' })
     $reportIds = [string[]]@(foreach ($key in 'doc-up-realize', 'doc-up-update') { Get-CatalogueList (Get-StepField $real $key 'response') 'report' | ForEach-Object { $_ } | ForEach-Object { [string](Get-CatalogueMember $_ 'operation_id') } })
     $writeLines = [string[]]@($docLines | Where-Object { $_ -notlike 'docdry.*' })
