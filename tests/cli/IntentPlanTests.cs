@@ -12,7 +12,7 @@ using Bim.Core;
 //   1. IntentPlan.ParseIntent, IntentPlan.Build, IntentPlan.Failed and IntentPlan.Internal write nothing to stdout or
 //      stderr and leave Environment.ExitCode unchanged; their envelopes are the bytes the verbs print (the IntentJson.Parse
 //      and IntentCompiler refusals, the library codes, and exactly ApplyEditsCommand.Fail / Internal's stdout, stderr and
-//      exit for the same code or exception).
+//      exit for the same code or exception, pinned as bytes since P3-16 made those return this envelope).
 //   2. IntentEnvelope.Print writes the line (and the stderr detail of an internal error) and sets exit 1 on a refusal,
 //      leaving the exit code alone on success, as ApplyEditsCommand.Fail and Console.WriteLine did.
 //   3. DiffIntentCommand.Plan returns, without writing anything, exactly the stdout line and exit status the CLI
@@ -135,21 +135,20 @@ internal static class IntentPlanTests
         foreach (var code in new[] { "diff_intent_usage", "input_missing", "edit_bound_exceeded" })
         {
             var q = Quiet(() => IntentPlan.Failed(code));
-            var printed = Quiet(() => { ApplyEditsCommand.Fail(code); return 0; });
             Check(q.Value.Line == FailedCode(code) && q.Value.Exit == 1 && q.Value.Diagnostic is null && Silent(q), "Failed(" + code + ") returns the failed envelope and writes nothing", E(q.Value) + " " + Q(q));
-            Check(printed.Out == q.Value.Line + Environment.NewLine && printed.Err.Length == 0 && printed.Exit == q.Value.Exit, "Failed(" + code + ") is byte-equal to ApplyEditsCommand.Fail", Q(printed));
+            // P3-16: ApplyEditsCommand.Fail is IntentPlan.Failed (tests/cli/ApplyEditsEnvelopeTests.cs); the bytes it printed are pinned here.
             var shown = Quiet(() => { q.Value.Print(); return 0; });
-            Check(shown.Out == printed.Out && shown.Err == printed.Err && shown.Exit == printed.Exit, "Failed(" + code + ").Print() prints what ApplyEditsCommand.Fail printed", Q(shown));
+            Check(shown.Out == FailedCode(code) + Environment.NewLine && shown.Err.Length == 0 && shown.Exit == 1, "Failed(" + code + ").Print() prints the failed line and sets exit 1, as ApplyEditsCommand.Fail did", Q(shown));
         }
         foreach (var verb in new[] { DiffIntentCommand.Verb, "apply-intent" })
         {
             var failure = new InvalidOperationException("boom " + verb);
             var q = Quiet(() => IntentPlan.Internal(verb, failure));
-            var printed = Quiet(() => { ApplyEditsCommand.Internal(verb, failure); return 0; });
             Check(q.Value.Line == FailedCode(verb.Replace('-', '_') + "_internal_error") && q.Value.Exit == 1 && Silent(q), "Internal(" + verb + ") returns the internal_error envelope and writes nothing", E(q.Value) + " " + Q(q));
             Check(q.Value.Diagnostic == verb + " internal error: System.InvalidOperationException: boom " + verb, "Internal(" + verb + ") carries the stderr detail", E(q.Value));
             var shown = Quiet(() => { q.Value.Print(); return 0; });
-            Check(shown.Out == printed.Out && shown.Err == printed.Err && shown.Exit == printed.Exit && printed.Exit == 1, "Internal(" + verb + ").Print() prints what ApplyEditsCommand.Internal printed (stdout, stderr, exit)", Q(shown) + " vs " + Q(printed));
+            Check(shown.Out == FailedCode(verb.Replace('-', '_') + "_internal_error") + Environment.NewLine && shown.Err == verb + " internal error: System.InvalidOperationException: boom " + verb + Environment.NewLine && shown.Exit == 1,
+                "Internal(" + verb + ").Print() prints the internal_error line, the stderr detail and exit 1, as ApplyEditsCommand.Internal did", Q(shown));
         }
         {
             var success = new IntentEnvelope("{\"plan\":1}", 0);

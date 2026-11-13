@@ -1493,6 +1493,9 @@ try {
     // ---- P3-15 IntentPlan returns its envelope; the verbs print it (tests/cli/IntentPlanTests.cs) ----
     IntentPlanTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
 
+    // ---- P3-16 apply-edits returns its IntentEnvelope; only Run prints it (tests/cli/ApplyEditsEnvelopeTests.cs) ----
+    ApplyEditsEnvelopeTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
+
     // ---- P6-10 cad-plan-brief draft.json output.json [options] (tests/cli/CadPlanBriefTests.cs) ----
     CadPlanBriefTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
 
