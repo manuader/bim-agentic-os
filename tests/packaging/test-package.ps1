@@ -712,6 +712,48 @@ try {
         Assert ($noAssetsText -ceq 'Alpha.Json:direct:0:0,Zeta.Lib:direct:0:0') "P10-14: without project.assets.json references stay direct with no recorded files: $noAssetsText"
     } catch { $failures.Add("P10-14 transitive SBOM checks threw: $($_.Exception.Message)") }
 
+    # --- P10-18: the build tree's physical path (every symlinked component resolved; Windows paths as GetFullPath) ---
+    try {
+        $p18 = Join-Path $work 'p18 physical'
+        New-Item -ItemType Directory -Force (Join-Path $p18 'real/inner') | Out-Null
+        $p18Real = Resolve-PackagePhysicalPath (Join-Path $p18 'real')
+        if ($IsWindows) {
+            foreach ($spelling in $p18, (Join-Path $p18 'real/inner/'), (Join-Path $p18 'real/missing/x')) {
+                Assert ((Resolve-PackagePhysicalPath $spelling) -ceq [IO.Path]::GetFullPath($spelling)) "P10-18: on Windows the path is GetFullPath unchanged: '$(Resolve-PackagePhysicalPath $spelling)'"
+            }
+            Write-Host 'SKIP P10-18 symlinked components: directory symlinks need privileges on Windows'
+        } else {
+            Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'real/inner/')) -ceq (Join-Path $p18Real 'inner')) "P10-18: a path without links must keep its spelling (no trailing separator): '$(Resolve-PackagePhysicalPath (Join-Path $p18 'real/inner/'))'"
+            Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'real/missing/x')) -ceq (Join-Path $p18Real 'missing/x')) 'P10-18: missing components must be kept as written'
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'abs') -Target (Join-Path $p18 'real') | Out-Null
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'rel') -Target 'real' | Out-Null
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'chain') -Target 'abs' | Out-Null
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'real/up') -Target '../real/inner' | Out-Null
+            foreach ($linked in 'abs/inner', 'rel/inner', 'chain/inner', 'abs/up', 'chain/up/') {
+                $resolved = Resolve-PackagePhysicalPath (Join-Path $p18 $linked)
+                Assert ($resolved -ceq (Join-Path $p18Real 'inner')) "P10-18: $linked must resolve to the physical real/inner: '$resolved'"
+            }
+            Assert ((Resolve-PackagePhysicalPath (Join-Path $p18 'abs/missing')) -ceq (Join-Path $p18Real 'missing')) "P10-18: a missing leaf under a link resolves its existing prefix: '$(Resolve-PackagePhysicalPath (Join-Path $p18 'abs/missing'))'"
+            # '..' after a link steps to the physical parent of the link target (kernel semantics), never a lexical collapse.
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'deep') -Target (Join-Path $p18 'real/inner') | Out-Null
+            foreach ($dotted in @(@('deep/..', $p18Real), @('deep/../inner', (Join-Path $p18Real 'inner')), @('deep/../..', (Split-Path $p18Real)), @('real/./inner/../inner', (Join-Path $p18Real 'inner')))) {
+                $resolved = Resolve-PackagePhysicalPath (Join-Path $p18 $dotted[0])
+                Assert ($resolved -ceq $dotted[1]) "P10-18: $($dotted[0]) must resolve component by component to '$($dotted[1])': '$resolved'"
+            }
+            # A link loop (a -> a) is refused, not followed forever: the resolver throws, and package.ps1 with such a temp
+            # directory is a typed "package failed: temp directory ..." refusal leaving no output or staging directory.
+            New-Item -ItemType SymbolicLink -Path (Join-Path $p18 'loop') -Target 'loop' | Out-Null
+            $loopError = $null
+            try { [void](Resolve-PackagePhysicalPath (Join-Path $p18 'loop/x')) } catch { $loopError = $_.Exception.Message }
+            Assert ($loopError -match 'too many levels of symbolic links') "P10-18: a self-loop link must throw 'too many levels of symbolic links': '$loopError'"
+            $loopOut = Join-Path $p18 'loop release'
+            $loopRun = Invoke-ScriptWithTemp (Join-Path $p18 'loop') $packager @('-OutputDirectory', $loopOut, '-Dotnet', $Dotnet)
+            Assert ($loopRun.Code -eq 1 -and $loopRun.Output -match 'package failed: temp directory .* cannot be resolved to a physical path: too many levels of symbolic links') "P10-18: package.ps1 with a looping temp directory must refuse typed (exit 1, package failed: temp directory ...): exit $($loopRun.Code): $(Get-Tail $loopRun.Output)"
+            Assert (!(Test-Path -LiteralPath $loopOut) -and @(Get-ChildItem -LiteralPath $p18 -Force -Directory | Where-Object { $_.Name -like '*.partial-*' }).Count -eq 0) 'P10-18: a refused looping temp must leave no output or staging directory'
+            if ($IsMacOS) { Assert ((Resolve-PackagePhysicalPath '/var/tmp') -ceq '/private/var/tmp') "P10-18: macOS /var/tmp must resolve to /private/var/tmp: '$(Resolve-PackagePhysicalPath '/var/tmp')'" }
+        }
+    } catch { $failures.Add("P10-18 physical path checks threw: $($_.Exception.Message)") }
+
     # --- P7-12 review: a tracked skills/ entry that is not a regular file (mode other than 100644/100755, e.g. a
     # symlink 120000 or a submodule 160000) is refused before any build; the index entry is staged with --cacheinfo so
     # no file system symlink is needed on any OS ---
@@ -1049,6 +1091,23 @@ exit 0
         Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $outC 'manifest.json'))) -eq [Convert]::ToBase64String($bytesA)) 'build files inherited from the temp parent changed the package (manifest differs from clean build)'
     }
     Assert ((Get-BuildTrees $evil).Count -eq 0) 'successful package left a bim-package-src-* build tree in temp'
+
+    # --- P10-18: a temp directory reached through a symlink (macOS TMPDIR /var/folders/... with /var -> /private/var)
+    # still packages its own Bim.* project references as first-party: exit 0 and the clean build's manifest/sbom bytes ---
+    if ($IsWindows) { Write-Host 'SKIP P10-18 symlinked temp: directory symlinks need privileges on Windows (temp is not symlinked there)' } else {
+        $physicalTemp = Join-Path $work 'physical temp'
+        $linkedTemp = Join-Path $work 'linked temp'
+        New-Item -ItemType Directory -Force $physicalTemp | Out-Null
+        New-Item -ItemType SymbolicLink -Path $linkedTemp -Target $physicalTemp | Out-Null
+        $outD = Join-Path $work 'release D'
+        $runD = Invoke-ScriptWithTemp $linkedTemp $packager @('-OutputDirectory', $outD, '-Dotnet', $Dotnet)
+        Assert ($runD.Code -eq 0) "P10-18: package build with TMPDIR behind a symlink exit $($runD.Code): $(Get-Tail $runD.Output)"
+        if ($runD.Code -eq 0) {
+            Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $outD 'manifest.json'))) -eq [Convert]::ToBase64String($bytesA)) 'P10-18: a symlinked temp directory changed the package (manifest differs from clean build)'
+            Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $outD 'sbom.json'))) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $outA 'sbom.json')))) 'P10-18: a symlinked temp directory changed sbom.json'
+        }
+        Assert ((Get-BuildTrees $physicalTemp).Count -eq 0) 'P10-18: package under a symlinked temp left a bim-package-src-* build tree'
+    }
 
     # --- Never overwrite: an existing output (non-empty or empty) is refused before any build and left intact ---
     $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($manifestA))

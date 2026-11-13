@@ -28,6 +28,35 @@ function Get-PackageRelativePath([string]$Base, [string]$Path) {
     return [IO.Path]::GetRelativePath($Base, $Path).Replace('\', '/')
 }
 
+# P10-18: the physical form of a directory path, every symlinked component resolved (what getcwd reports). The build
+# tree must live at its physical path: on macOS the temp directory /var/folders/... is reached through /var ->
+# /private/var, and a build tree under the symlinked spelling publishes deps.json files that list the referenced Bim.*
+# projects as "reference" instead of "project" entries, so package.ps1 refused them as sbom_unattributed. Components are
+# resolved left to right, so '..' steps to the physical parent of what precedes it (link/.. is the link target's parent,
+# as the kernel resolves it, not a lexical collapse); '.' and empty components are dropped; components that do not exist
+# are kept as written. More than 40 nested link resolutions (a loop such as a -> a) throw. Windows paths are returned as
+# GetFullPath gives them (its temp is not linked).
+function Resolve-PackagePhysicalPath([string]$Path, [int]$Depth = 0) {
+    if ($IsWindows) { return [IO.Path]::GetFullPath($Path) }
+    if ($Depth -gt 40) { throw "too many levels of symbolic links resolving $Path" }
+    $current = '/'
+    $rooted = if ($Path.StartsWith('/', [StringComparison]::Ordinal)) { $Path } else { [Environment]::CurrentDirectory.TrimEnd('/') + '/' + $Path }
+    foreach ($part in $rooted.Split('/', [StringSplitOptions]::RemoveEmptyEntries)) {
+        if ($part -ceq '.') { continue }
+        if ($part -ceq '..') { $parent = [IO.Path]::GetDirectoryName($current); $current = if ($parent) { $parent } else { '/' }; continue }
+        $next = if ($current -ceq '/') { '/' + $part } else { $current + '/' + $part }
+        # readlink(2) via FileSystemInfo.LinkTarget: $null for a non-link or a missing path, the target even for a broken
+        # or looping link (Get-Item cannot stat those).
+        $target = [IO.FileInfo]::new($next).LinkTarget
+        if ($target) {
+            if (!$target.StartsWith('/', [StringComparison]::Ordinal)) { $target = $current.TrimEnd('/') + '/' + $target }
+            $next = Resolve-PackagePhysicalPath $target ($Depth + 1)
+        }
+        $current = $next
+    }
+    return $current
+}
+
 # Relative paths of every file in the package except the root manifest, sorted ordinally.
 function Get-PackageFiles([string]$Directory) {
     $base = [IO.Path]::GetFullPath($Directory)

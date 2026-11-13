@@ -15,9 +15,8 @@ using System.Text.Json;
 //      (whose own skills/ are then made malformed), the run falls back to that repository and writes the repository
 //      runs' bytes and stdout again, while the package with both markers reads its malformed skills (*_pack_invalid),
 //      so the fallback is observable.
-//   4. Skipped (a counted SKIP) only where pwsh is absent; on GitHub Actions on Linux a missing pwsh is a failure. One
-//      exception: on macOS (where packaging is not gated) a package.ps1 refusal that is exactly one sbom_unattributed
-//      problem listing only cli/ or mcp/ Bim.*.dll paths is a counted SKIP (IsKnownMacSbomRefusal, unit-tested here).
+//   4. Skipped (a counted SKIP) only where pwsh is absent; on GitHub Actions on Linux a missing pwsh is a failure. P10-18:
+//      packaging runs on macOS too (its first-party Bim.*.dll attributed through deps.json), so no macOS skip remains.
 internal static class PackageLayoutPackTests
 {
     const string Caba = "ar.caba.codigo-edificacion";
@@ -29,21 +28,6 @@ internal static class PackageLayoutPackTests
         void Check(bool condition, string name, string detail = "") => check(condition, "package-layout-pack: " + name, detail);
         void Skip(string name, string why) => skip("package-layout-pack: " + name, why);
         var onCi = Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
-
-        // ---- the macOS skip predicate, in process (runs on every OS, with or without pwsh) ----
-        const string KnownMacStderr = "package failed: staged package failed verification: sbom_unattributed: third-party binaries not attributed to a NuGet package (direct or transitive) in sbom.json: "
-            + "cli/Bim.Cad.dll, cli/Bim.Core.dll, cli/Bim.Evaluation.dll, cli/Bim.Generative.dll, cli/Bim.Gltf.dll, cli/Bim.Ifc.Compiler.dll, mcp/Bim.Core.dll";
-        Check(IsKnownMacSbomRefusal(KnownMacStderr, isMacOS: true), "skip predicate: the macOS stderr of run 43257265603 is the known sbom_unattributed refusal");
-        Check(!IsKnownMacSbomRefusal(KnownMacStderr, isMacOS: false), "skip predicate: the same stderr off macOS is not skipped");
-        Check(!IsKnownMacSbomRefusal(KnownMacStderr + "; sbom_mismatch: x", isMacOS: true), "skip predicate: an extra '; ' problem is not skipped");
-        Check(!IsKnownMacSbomRefusal("package failed: staged package failed verification: sbom_missing: sbom.json; " + KnownMacStderr["package failed: staged package failed verification: ".Length..], isMacOS: true),
-            "skip predicate: another problem before sbom_unattributed is not skipped");
-        Check(!IsKnownMacSbomRefusal(KnownMacStderr.Replace("mcp/Bim.Core.dll", "mcp/Newtonsoft.Json.dll", StringComparison.Ordinal), isMacOS: true), "skip predicate: a non-Bim path is not skipped");
-        Check(!IsKnownMacSbomRefusal(KnownMacStderr.Replace("cli/Bim.Cad.dll", "revit/Bim.Cad.dll", StringComparison.Ordinal), isMacOS: true), "skip predicate: a path outside cli/ and mcp/ is not skipped");
-        Check(!IsKnownMacSbomRefusal(KnownMacStderr.Replace("cli/Bim.Cad.dll", "cli/Bim.Cad.exe", StringComparison.Ordinal), isMacOS: true), "skip predicate: a non-.dll path is not skipped");
-        Check(!IsKnownMacSbomRefusal("package failed: staged package failed verification: sbom_unattributed: third-party binaries not attributed to a NuGet package (direct or transitive) in sbom.json: ", isMacOS: true),
-            "skip predicate: an empty path list is not skipped");
-        Check(!IsKnownMacSbomRefusal("package failed: dotnet publish interfaces/cli/Bim.Cli.csproj failed with exit code 1", isMacOS: true), "skip predicate: a build failure is not skipped");
 
         var pwsh = FindPwsh();
         if (pwsh is null)
@@ -128,14 +112,6 @@ internal static class PackageLayoutPackTests
             Console.WriteLine("package-layout-pack: scripts/package.ps1 took " + stopwatch.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture) + " s");
             var buildTail = built.Out.Length > 1500 ? built.Out[^1500..] : built.Out;
             var packageDll = Path.Combine(package, "cli", Path.GetFileName(cliDll));
-            // Packaging is gated on Linux and Windows only (verify.ps1 packaging-reproducible); on macOS package.ps1 is known
-            // to refuse its own first-party assemblies (sbom_unattributed). That one refusal there is a counted SKIP (it runs
-            // again by itself once packaging works on macOS); any other macOS failure, and every Linux/Windows one, fails.
-            if (built.Exit != 0 && IsKnownMacSbomRefusal(built.Err, OperatingSystem.IsMacOS()))
-            {
-                Skip("scripts/package.ps1 package checks", "macOS packaging refuses sbom_unattributed (packaging is gated on Linux and Windows only)");
-                return;
-            }
             Check(built.Exit == 0 && built.Out.Contains("PACKAGED ", StringComparison.Ordinal) && File.Exists(packageDll),
                 "scripts/package.ps1 builds a package (exit 0, PACKAGED, cli/" + Path.GetFileName(cliDll) + ")",
                 "exit " + built.Exit.ToString(CultureInfo.InvariantCulture) + " stdout tail " + buildTail.ReplaceLineEndings(" | ") + (built.Err.Length > 0 ? " stderr " + (built.Err.Length > 900 ? built.Err[^900..] : built.Err) : ""));
@@ -146,6 +122,35 @@ internal static class PackageLayoutPackTests
             Check(File.Exists(version) && File.Exists(manifest) && File.Exists(Path.Combine(packageSkills, Caba, "skill.json"))
                 && File.Exists(Path.Combine(packageSkills, TypologyPack, "skill.json")) && File.Exists(Path.Combine(packageSkills, CompactStyle, "skill.json")) && !UnderRepository(package),
                 "the package has VERSION, manifest.json and skills/ (CABA, typology, compact-modern) and no global.json above it", package);
+            // P10-18: the shipped Bim.* assemblies are first-party on every OS (macOS included): project entries of each
+            // folder's deps.json, and NOASSERTION sbom.json lines without a "package" field.
+            foreach (var (depsFolder, depsEntry) in new[] { ("cli", "Bim.Cli"), ("mcp", "Bim.Mcp") })
+            {
+                var depsPath = Path.Combine(package, depsFolder, depsEntry + ".deps.json");
+                var notProject = new List<string>();
+                if (File.Exists(depsPath))
+                {
+                    using var depsDocument = JsonDocument.Parse(File.ReadAllText(depsPath));
+                    if (depsDocument.RootElement.ValueKind != JsonValueKind.Object || !depsDocument.RootElement.TryGetProperty("libraries", out var depsLibraries) || depsLibraries.ValueKind != JsonValueKind.Object)
+                        notProject.Add("<no libraries object>");
+                    else foreach (var depsLibrary in depsLibraries.EnumerateObject())
+                        if (depsLibrary.Name.StartsWith("Bim.", StringComparison.Ordinal) && (depsLibrary.Value.ValueKind != JsonValueKind.Object || !depsLibrary.Value.TryGetProperty("type", out var depsType) || depsType.ValueKind != JsonValueKind.String || depsType.GetString() != "project"))
+                            notProject.Add(depsLibrary.Name);
+                }
+                Check(File.Exists(depsPath) && notProject.Count == 0, "P10-18: " + depsFolder + "/" + depsEntry + ".deps.json lists every Bim.* library as a project", string.Join(", ", notProject));
+            }
+            var sbomPath = Path.Combine(package, "sbom.json");
+            var bimLines = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            using (var sbomDocument = JsonDocument.Parse(File.Exists(sbomPath) ? File.ReadAllText(sbomPath) : "{\"assemblies\":[]}"))
+                if (sbomDocument.RootElement.ValueKind == JsonValueKind.Object && sbomDocument.RootElement.TryGetProperty("assemblies", out var sbomAssemblies) && sbomAssemblies.ValueKind == JsonValueKind.Array)
+                    foreach (var sbomAssembly in sbomAssemblies.EnumerateArray())
+                        if (sbomAssembly.ValueKind == JsonValueKind.Object && sbomAssembly.TryGetProperty("path", out var sbomPathValue) && sbomPathValue.ValueKind == JsonValueKind.String && sbomPathValue.GetString() is { } shipped
+                            && System.Text.RegularExpressions.Regex.IsMatch(shipped, @"^(cli|mcp)/Bim\.[A-Za-z.]+\.dll\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+                            bimLines[shipped] = sbomAssembly.Clone();
+            var requiredFirstParty = new[] { "cli/Bim.Cad.dll", "cli/Bim.Cli.dll", "cli/Bim.Core.dll", "cli/Bim.Evaluation.dll", "cli/Bim.Generative.dll", "cli/Bim.Gltf.dll", "cli/Bim.Ifc.Compiler.dll", "mcp/Bim.Core.dll", "mcp/Bim.Generative.dll", "mcp/Bim.Gltf.dll", "mcp/Bim.Mcp.dll" };
+            var notFirstParty = requiredFirstParty.Where(required => !bimLines.ContainsKey(required))
+                .Concat(bimLines.Where(pair => !pair.Value.TryGetProperty("license", out var license) || license.ValueKind != JsonValueKind.String || license.GetString() != "NOASSERTION" || pair.Value.TryGetProperty("package", out _)).Select(pair => pair.Key)).ToArray();
+            Check(notFirstParty.Length == 0, "P10-18: sbom.json lists every cli/ and mcp/ Bim.* assembly (Cad, Cli, Core, Evaluation, Generative, Gltf, Ifc.Compiler; Core, Generative, Gltf, Mcp) first-party: NOASSERTION without a package", string.Join(", ", notFirstParty));
 
             // ---- 2. the same inputs through the repository CLI and the packaged CLI ----
             const string small = "{\"brief_version\":1,\"name\":\"Small studio\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"
@@ -230,17 +235,6 @@ internal static class PackageLayoutPackTests
             }
         }
         finally { try { if (Directory.Exists(caseRoot)) Directory.Delete(caseRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
-    }
-
-    // The one tolerated macOS packaging failure: stderr is exactly one verification problem, sbom_unattributed, listing only
-    // first-party cli/ or mcp/ Bim.*.dll paths. Any other problem (joined with "; "), path or OS is not tolerated.
-    internal static bool IsKnownMacSbomRefusal(string stderr, bool isMacOS)
-    {
-        const string Prefix = "package failed: staged package failed verification: sbom_unattributed: third-party binaries not attributed to a NuGet package (direct or transitive) in sbom.json: ";
-        if (!isMacOS || !stderr.StartsWith(Prefix, StringComparison.Ordinal)) return false;
-        var list = stderr[Prefix.Length..];
-        if (list.Length == 0 || list.Contains("; ", StringComparison.Ordinal)) return false;
-        return list.Split(", ").All(path => System.Text.RegularExpressions.Regex.IsMatch(path, @"^(cli|mcp)/Bim\.[A-Za-z.]+\.dll\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant));
     }
 
     // verify.ps1 exports BIM_PWSH (its own pwsh); otherwise the first pwsh on PATH.
