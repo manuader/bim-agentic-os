@@ -276,3 +276,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay205/206 (2026-11-13, cloud)
 - No new owner action. `git pull` (main 6991358). The 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once, test copy only) now lists existing views/sheets/schedules read-only before the documentation update and refuses it typed (doc_update_name_collision) if "Level 1 Plan", A101/A900 or the door/room schedule names already exist. If that step fails for every run with "View Name" missing, tell the relay (real OST_Views rows may lack that parameter). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended A; then catalogue-report; 🔒 N21 `... -Runs 1`.
+
+## Relay207 (2026-11-13, cloud)
+- No new owner action. `git pull` (main 75e54b6). FYI: the packaged MCP server (mcp/ in a release package) now finds skill packs for generate_typology. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended A; 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once, test copy only) then catalogue-report; 🔒 N21 `... -Runs 1`.
