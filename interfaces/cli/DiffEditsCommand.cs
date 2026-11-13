@@ -54,7 +54,7 @@ internal static class DiffEditsCommand
             Fail(InternalError);
             return;
         }
-        Console.WriteLine(JsonSerializer.Serialize(plan));
+        new IntentEnvelope(JsonSerializer.Serialize(plan), 0).Print();
     }
 
     // Exactly --project <p> and --edits <e>, each once with a non-empty value that is not flag-shaped ("--..."), in either
@@ -87,9 +87,7 @@ internal static class DiffEditsCommand
         return project;
     }
 
-    static void Fail(string code)
-    {
-        Console.WriteLine(JsonSerializer.Serialize(new { status = "failed", code }));
-        Environment.ExitCode = 1;
-    }
+    // P3-17: the refusal envelope {"status":"failed","code":c}, exit 1, has one copy, IntentPlan.Failed; printed by
+    // IntentEnvelope.Print, the bytes this verb printed before.
+    static void Fail(string code) => IntentPlan.Failed(code).Print();
 }

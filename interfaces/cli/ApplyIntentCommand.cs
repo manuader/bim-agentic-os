@@ -58,20 +58,26 @@ internal static class ApplyIntentCommand
     public const string IntentRefused = "apply_intent_intent_refused";
     public const string StaleHead = "apply_intent_stale_head";
 
-    public static void Run(string[] args)
+    // P3-17: the only print. Plan returns the one IntentEnvelope (interfaces/cli/IntentPlan.cs) the verb ends with: the
+    // stdout line, the exit status and, for commit_incomplete and internal_error, the stderr detail. Every step below
+    // ends the verb, so nothing is printed before the envelope and the bytes are those the verb printed per step.
+    public static void Run(string[] args) => Plan(args).Print();
+
+    // The apply-intent verb without writing Console or setting Environment.ExitCode (the store is still committed).
+    internal static IntentEnvelope Plan(string[] args)
     {
-        if (!ApplyEditsCommand.TryParse(args, "--intent", out var storePath, out var intentPath, out var expectedRevision)) { ApplyEditsCommand.Fail(UsageCode).Print(); return; }
+        if (!ApplyEditsCommand.TryParse(args, "--intent", out var storePath, out var intentPath, out var expectedRevision)) return ApplyEditsCommand.Fail(UsageCode);
         string stateText, intentText;
         try
         {
             stateText = BoundedInput.ReadText(Path.Combine(storePath, "project.json"), FileShare.ReadWrite | FileShare.Delete);
             intentText = BoundedInput.ReadText(intentPath);
         }
-        catch (InputRejectedException error) { ApplyEditsCommand.Fail(error.Message).Print(); return; }
-        if (ApplyEditsCommand.ParseHead(stateText) is not { } head) { ApplyEditsCommand.Fail(StoreInvalid).Print(); return; }
-        if (!IntentPlan.ParseIntent(intentText, Verb, IntentInvalid).TryGet(out var intent, out var refused)) { refused.Print(); return; }
-        if (expectedRevision is { } expected && expected != head.Revision) { ApplyEditsCommand.Fail(StaleHead).Print(); return; }
-        if (!IntentPlan.Build(head, intent, Verb, IntentRefused).TryGet(out var result, out refused)) { refused.Print(); return; }
-        ApplyEditsCommand.Commit(storePath, result, Verb).Print();
+        catch (InputRejectedException error) { return ApplyEditsCommand.Fail(error.Message); }
+        if (ApplyEditsCommand.ParseHead(stateText) is not { } head) return ApplyEditsCommand.Fail(StoreInvalid);
+        if (!IntentPlan.ParseIntent(intentText, Verb, IntentInvalid).TryGet(out var intent, out var refused)) return refused;
+        if (expectedRevision is { } expected && expected != head.Revision) return ApplyEditsCommand.Fail(StaleHead);
+        if (!IntentPlan.Build(head, intent, Verb, IntentRefused).TryGet(out var result, out refused)) return refused;
+        return ApplyEditsCommand.Commit(storePath, result, Verb);
     }
 }
