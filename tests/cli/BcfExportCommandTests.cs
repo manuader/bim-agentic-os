@@ -152,7 +152,7 @@ internal static class BcfExportCommandTests
             Check(nullRun.Exit == 0 && File.Exists(third) && File.ReadAllBytes(third).AsSpan().SequenceEqual(nullsExpected), "null optional members are absent members", D(nullRun));
 
             // ---- 2. never overwrite ----
-            ExpectFailureExisting("existing output file", issuesPath, output);
+            ExpectFailureExisting("existing output file", issuesPath, Bytes("existing.bcfzip", new byte[] { 1, 2, 3 }));
             var directory = Output("dir.bcfzip");
             Directory.CreateDirectory(directory);
             var dirRun = Cli("bcf-export", issuesPath, directory);
