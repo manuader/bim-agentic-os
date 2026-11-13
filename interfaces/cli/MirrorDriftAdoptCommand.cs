@@ -23,12 +23,11 @@ namespace Bim.Cli;
 // exact "--preview", once; any other "--..." argument is drift_adopt_option_unknown and a repeated --preview
 // drift_adopt_option_duplicate (detail: the flag), both refused before any input is read; a positional that starts with
 // "--" (a misplaced flag), a non-flag extra argument or fewer than two positionals is the usage. Without the flag the P2-13/P2-15 bytes are unchanged.
+// P2-21: both option codes are Core MirrorDriftAdoptCodes constants; this file holds no error-code literal of its own.
 internal static class MirrorDriftAdoptCommand
 {
     public const string Usage = "usage: mirror-drift-adopt store-directory selection.json [--preview]";
     public const string PreviewFlag = "--preview";
-    public const string OptionUnknown = "drift_adopt_option_unknown";
-    public const string OptionDuplicate = "drift_adopt_option_duplicate";
     static readonly System.Text.UTF8Encoding StrictUtf8 = new(false, true);
 
     public static void Run(string[] args)
@@ -40,8 +39,8 @@ internal static class MirrorDriftAdoptCommand
         {
             var arg = args[i];
             if (!arg.StartsWith("--", StringComparison.Ordinal)) throw new ArgumentException(Usage);
-            if (!string.Equals(arg, PreviewFlag, StringComparison.Ordinal)) { Fail(MirrorDriftTool.Failure(OptionUnknown, arg)); return; }
-            if (preview) { Fail(MirrorDriftTool.Failure(OptionDuplicate, arg)); return; }
+            if (!string.Equals(arg, PreviewFlag, StringComparison.Ordinal)) { Fail(MirrorDriftTool.Failure(MirrorDriftAdoptCodes.OptionUnknown, arg)); return; }
+            if (preview) { Fail(MirrorDriftTool.Failure(MirrorDriftAdoptCodes.OptionDuplicate, arg)); return; }
             preview = true;
         }
         if (!ReadSelection(args[2], out var text)) return;
