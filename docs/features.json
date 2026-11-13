@@ -1875,7 +1875,7 @@
         "interfaces/cli/Program.cs",
         "tests/cli/RevitCommandDeadlineTests.cs"
       ],
-      "blocker": "Pipe connect (5 s) is not cut by the deadline (a run can last deadline + 5 s ending pipe_connect_timeout); deadline rule copied from the MCP private DeadlineTransport (sharing → P1-23); deadline_invalid/query_all_deadline_exceeded live in the CLI, not core RevitCommandCodes; shared Usage line in non-deadline refusals does not mention the flag; not run in Revit.",
+      "blocker": "Pipe connect (5 s) is not cut by the deadline (a run can last deadline + 5 s ending pipe_connect_timeout); deadline rule shared with MCP all:true through the internal RevitDeadlineTransport (P1-23, linked source, listing wording parameterised); deadline_invalid/query_all_deadline_exceeded live in the CLI, not core RevitCommandCodes; shared Usage line in non-deadline refusals does not mention the flag; not run in Revit.",
       "scope": "P1-21: `revit-command envelope.json pipe --all [--read-timeout-seconds n] --deadline-seconds n` bounds the whole paging run: a page due at/after the deadline answers query_all_deadline_exceeded in the listing shape without being sent, a page with less time left than the read timeout is read with only the time left (its pipe_read_timeout reported as the deadline), other cut failures pass through; 1..86400 whole seconds, typed deadline_invalid (incl. needs --all) before any I/O; absent flag byte-identical to RevitServiceTransport paging; injected-clock, fake stalled-pipe and slow add-in tests through the real CLI. CI red 43151595118, green 43152122711; review green 43163347980/43165743640."
     },
     {
@@ -1886,7 +1886,7 @@
         "tests/integration/fake-revit-command-pipe.ps1",
         "tests/mirror-journal/MirrorDriftLoopChecks.cs"
       ],
-      "blocker": "Test fake only (no Revit); report.diff now equals MirrorSnapshotDiffer (P2-20); one global baseline, not per document (P2-22); skipped_add_in counts receipts; journal_complete always true; fidelity is parsed-member, not escaping bytes.",
+      "blocker": "Test fake only (no Revit); report.diff now equals MirrorSnapshotDiffer (P2-20); baseline per (document UniqueId, path) since P2-22; failures always 0 (per-baseline failures → P2-23); skipped_add_in counts receipts; journal_complete always true; fidelity is parsed-member, not escaping bytes.",
       "scope": "P2-18: fake-revit-command-pipe.ps1 -ExternalEdits \"opid,…\" (blank = off) journals named successful non-dry-run element.move/wall.create/element.delete as external TransactionCommitted entries (MirrorJournalEntry member order, deterministic recorded_at); journal.read follows RevitJournalQuery.RawRead (peek, after_sequence, max_entries 1..256 with 20000-id cap, has_more, next_after_sequence, baseline moves only without peek; exact-case strict options, journal_options_invalid / journal_after_sequence_invalid in App.Execute's shape); the P2-16 drift loop reads every journal through the pipe and is member-equal to RawRead over a Core MirrorJournal (diff excluded); default replies byte-identical; wire failures become named check failures. CI red 43151779386, green 43153831165; review red 43159370704, green 43161374794."
     },
     {
@@ -1900,7 +1900,7 @@
         "tests/cad/fixtures/tounicode-pdf.py",
         "tests/cad/fixtures/tounicode.pdf"
       ],
-      "blocker": "Simple fonts without ToUnicode still decode as Latin-1 (/Differences glyph names → P6-18); usecmap ignored; non-Identity Type0 CMaps only split codes through the ToUnicode codespace; BMP bfrange stops at U+FFFF; cad-brief CLI not run end to end on tounicode.pdf (compressed/XObject CLI twin on brief-plan is P6-17).",
+      "blocker": "Simple fonts with an /Encoding dictionary decode through /BaseEncoding (WinAnsi/MacRoman/Standard) + /Differences glyph names since P6-18 (unknown names keep bytes with encoding-glyph-unknown; parsed encodings cached per document and charged to MaxParsedElements); name-only /Encoding and Type3 handling → P6-20; usecmap ignored; non-Identity Type0 CMaps only split codes through the ToUnicode codespace; BMP bfrange stops at U+FFFF; cad-brief CLI not run end to end on tounicode.pdf (compressed/XObject CLI twin on brief-plan is P6-17).",
       "scope": "P6-16: ToUnicode CMaps (codespace ≤100 ranges, bfchar, bfrange incrementing incl. surrogate carry and array form; Flate streams; BCL only) decode Type0 Identity-H/V, non-Identity multi-byte and simple fonts in Tj/TJ/'/\"; Form XObjects use their own font resources, q/Q restores the decoder; brief extraction reads Dormitorio 1 / Baño / Cocina with areas from a deterministic generated fixture (sha pinned); typed warnings tounicode-missing / tounicode-invalid / tounicode-unmapped keep the old decoding; mapped codes charged to the document-wide MaxParsedElements (element-limit), decoded text to MaxInterpretedBytes (interpret-limit); existing PDF pins unchanged. CI red 43151778821, green 43153070188; review red 43156979215, green 43157029343."
     },
     {
@@ -1988,7 +1988,7 @@
         "tests/mcp/Program.cs",
         "tests/cli/RevitCommandReadTimeoutTests.cs"
       ],
-      "blocker": "No Revit run; the at-most-once/any-order option loop is still written per side and the shared types are public in Bim.Mcp.dll (P1-24); MCP exposes no --deadline-seconds (its all:true deadline is P1-23); the new MCP padded/signed/overflow refusals are regression pins (already held on main).",
+      "blocker": "No Revit run; the at-most-once/any-order option loop is still written per side and the shared option types are public in Bim.Mcp.dll (P1-24; RevitDeadlineTransport is internal since P1-23); MCP exposes no --deadline-seconds (its all:true deadline goes through the shared RevitDeadlineTransport since P1-23); the new MCP padded/signed/overflow refusals are regression pins (already held on main).",
       "scope": "P1-22: Bim.Cli.RevitOptionGrammar (linked into Bim.Mcp, tests/mcp, tests/revit-commands) owns --read-timeout-seconds/--deadline-seconds names, digits-only whole seconds, 1..86400 ranges and refusal lines; RevitCommandOptions.Parse and McpServer.ParseOptions delegate; CLI/MCP parity over 14 values; literal JSON pin for the \" 5\" MCP refusal; XML csproj link and ParseOptions-body static checks; existing refusal bytes unchanged. CI red 43222777518, green 43224422380; review green 43239443477."
     },
     {
@@ -1998,7 +1998,7 @@
         "tests/integration/fake-revit-command-executor.ps1",
         "tests/mirror-journal/MirrorDriftLoopChecks.cs"
       ],
-      "blocker": "Test fake only (no Revit); equality after re-serializing both sides, not raw bytes; one baseline per fake state, not per document (P2-22); only kinds the fake snapshot emits come from real fake runs, other kinds via hand-built pairs.",
+      "blocker": "Test fake only (no Revit); equality after re-serializing both sides, not raw bytes; baseline per (document UniqueId, path) since P2-22 (RawRead equality over a two-document Core tracker, case-insensitive keys); only kinds the fake snapshot emits come from real fake runs, other kinds via hand-built pairs.",
       "scope": "P2-20: with -ExternalEdits the fake journal.read baseline is the last non-peek snapshot and report.diff is member-equal to MirrorSnapshotDiffer.Compare (ordinal order, unmapped, field order/names, tolerance both sides equal to ToleranceMetres, R text under de-DE, detail via SnapshotUnstable, ten field-branch pairs); replies equal RevitJournalQuery.RawRead whole; P2-18 loop comparison includes diff; default path pinned on 4 replies. CI red 43223243005, green 43225256279; review red 43233228746, green 43235982933."
     },
     {
