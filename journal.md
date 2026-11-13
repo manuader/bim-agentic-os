@@ -1598,3 +1598,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay209 — 2026-11-13T18:53:03Z (Claude, cloud scheduled)
 - 18:53Z LOCK taken (was FREE; relay208 released 2026-11-13T17:54:26Z).
+- 18:53Z picked P1-18 (phase 1), P10-20 (phase 10), P2-24 (phase 2) — oldest-touched (relay205/206, relay207); P10-21/P10-22 wait (P10-21 shares Program.cs registration with P10-20). Workers starting on relay209-<ID>.
