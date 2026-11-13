@@ -181,6 +181,21 @@ function Get-PackageFileSha256([string]$Path) {
     } finally { $stream.Dispose() }
 }
 
+# P10-19: the package.ps1 staging builders hash and read staged files, and opening a FIFO blocks, so they classify every
+# staged file (package-relative $Files under $Base) with the P10-17 POSIX type check before any open. POSIX test follows
+# file links, so a link to a FIFO is refused too (Get-ChildItem does not descend directory links). Throws typed
+# package_special_file naming each path with its kind (ordinal order), or package_special_file_check_failed when the
+# check itself cannot run. Nothing is special on Windows.
+function Assert-PackageStagedFilesRegular([string]$Base, [string[]]$Files) {
+    if ($IsWindows -or $Files.Length -eq 0) { return }
+    $full = [string[]]@($Files | ForEach-Object { Join-Path $Base $_ })
+    try { $kinds = Get-PackagePosixFileKinds $full }
+    catch { throw "package_special_file_check_failed: staged file types could not be checked, so no file is hashed: $($_.Exception.Message)" }
+    $hits = [Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $Files.Length; $i++) { if ($kinds[$i]) { $hits.Add("$($Files[$i]) ($($kinds[$i]))") } }
+    if ($hits.Count) { throw "package_special_file: non-regular staged files (FIFO, socket or device) are never packaged; refused by file type before hashing: $($hits -join ', ')" }
+}
+
 # ConvertTo-Json on a single string yields its quoted, escaped JSON form (generic JsonSerializer overloads do not bind).
 function ConvertTo-PackageJsonString([string]$Value) { return (ConvertTo-Json -InputObject $Value -Compress) }
 
@@ -195,6 +210,7 @@ function New-PackageManifestText([string]$Directory, [string]$Version, [string]$
     $lines.Add('  "source_dirty": ' + $(if ($Dirty) { 'true' } else { 'false' }) + ',')
     $lines.Add('  "files": [')
     $files = [string[]]@(Get-PackageFiles $base)
+    Assert-PackageStagedFilesRegular $base $files
     for ($i = 0; $i -lt $files.Length; $i++) {
         $full = Join-Path $base $files[$i]
         $size = (Get-Item -LiteralPath $full).Length
@@ -584,7 +600,9 @@ function New-PackageSbomText([string]$Directory, [string]$Version, [string]$Comm
     $lines.Add('  "schema": ' + (ConvertTo-PackageJsonString $script:PackageSbomSchema) + ',')
     $lines.Add('  "version": ' + (ConvertTo-PackageJsonString $Version) + ',')
     $lines.Add('  "source_commit": ' + (ConvertTo-PackageJsonString $Commit) + ',')
-    $assemblies = [string[]]@(Get-PackageFiles $base | Where-Object { $_ -match $script:PackageAssemblyPattern })
+    $staged = [string[]]@(Get-PackageFiles $base)
+    Assert-PackageStagedFilesRegular $base $staged
+    $assemblies = [string[]]@($staged | Where-Object { $_ -match $script:PackageAssemblyPattern })
     $depsIndex = Get-PackageDepsIndex $base
     if ($assemblies.Length -eq 0) { $lines.Add('  "assemblies": [],') } else {
         $lines.Add('  "assemblies": [')
