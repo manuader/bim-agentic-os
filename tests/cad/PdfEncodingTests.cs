@@ -157,5 +157,51 @@ internal static class PdfEncodingTests
             C(Texts(invalid) == "\\u00F1" && Warnings(invalid) == "tounicode-invalid@1:4:1", "an unusable ToUnicode CMap warns and the encoding applies", Texts(invalid) + " " + Warnings(invalid));
         }
         catch (Exception error) { C(false, "tounicode unexpected", error.GetType().Name + ": " + error.Message); }
+
+        // ---------- review round: parse once per document, /Differences charged to MaxParsedElements ----------
+        try
+        {
+            // 20 pages share font 5 and its indirect encoding 6 with 2000 /Differences items. Lexing the file costs about
+            // 4400 elements (a name in an array counts as an item and a name) and parsing the encoding once charges 2000
+            // more; parsing it per page would charge 40000.
+            var small = new PdfReadOptions(MaxParsedElements: 10_000);
+            var shared = PdfReader.Parse(SharedEncodingPages(20, 2000), "shared-encoding.pdf", small);
+            C(shared.Pages.Count == 20 && Texts(shared) == string.Join("|", Enumerable.Repeat("\\u00F1", 20)) && shared.Warnings.Count == 0,
+                "20 pages sharing one indirect encoding of 2000 /Differences items parse it once within MaxParsedElements 10000", Texts(shared) + " " + Warnings(shared));
+            var sharedCode = CodeOf(() => PdfReader.Parse(SharedEncodingPages(20, 2000), "shared-encoding.pdf", new PdfReadOptions(MaxParsedElements: 5_000)));
+            C(sharedCode == "element-limit", "the shared encoding's /Differences items are charged once (lexing about 4400 + parsing 2000 exceed 5000)", sharedCode ?? "read");
+
+            // A /Differences of 20000 items fits the lexer (about 40000 elements) but parsing it charges 20000 more.
+            var huge = Font("<< /BaseEncoding /WinAnsiEncoding /Differences [1 /ntilde" + string.Concat(Enumerable.Repeat(" /a", 19_999)) + "] >>");
+            var hugeCode = CodeOf(() => PdfReader.Parse(PdfToUnicodeTests.PageBytes(Show("\\001"), huge, null), "huge-differences.pdf", new PdfReadOptions(MaxParsedElements: 50_000)));
+            C(hugeCode == "element-limit", "a 20000-item /Differences is charged to MaxParsedElements 50000 and refused element-limit", hugeCode ?? "read");
+            var fits = PdfReader.Parse(PdfToUnicodeTests.PageBytes(Show("\\001"), huge, null), "huge-differences.pdf", new PdfReadOptions(MaxParsedElements: 70_000));
+            C(Texts(fits) == "\\u00F1" && fits.Warnings.Count == 0, "the same /Differences fits MaxParsedElements 70000", Texts(fits) + " " + Warnings(fits));
+        }
+        catch (Exception error) { C(false, "review unexpected", error.GetType().Name + ": " + error.Message); }
+    }
+
+    private static string? CodeOf(Func<object?> action)
+    {
+        try { action(); return null; }
+        catch (PdfFormatException error) { return error.Code; }
+        catch (Exception error) { return "unexpected " + error.GetType().Name + ": " + error.Message; }
+    }
+
+    // pages pages (objects 10+i) inheriting /F1 = font 5 from the page tree, each showing (\\001) from shared content 4;
+    // font 5 has the indirect encoding 6: /Differences [1 /ntilde /a /a ...] with items names in all.
+    private static byte[] SharedEncodingPages(int pages, int items)
+    {
+        var kids = string.Concat(Enumerable.Range(0, pages).Select(i => I(10 + i) + " 0 R "));
+        var objects = new List<(int Number, byte[] Body)>
+        {
+            (1, L("<< /Type /Catalog /Pages 2 0 R >>")),
+            (2, L("<< /Type /Pages /Kids [" + kids + "] /Count " + I(pages) + " /Resources << /Font << /F1 5 0 R >> >> >>")),
+            (4, PdfTests.StreamBody("", L(Show("\\001")))),
+            (5, L(Font("6 0 R"))),
+            (6, L("<< /Type /Encoding /Differences [1 /ntilde" + string.Concat(Enumerable.Repeat(" /a", items - 1)) + "] >>")),
+        };
+        for (var i = 0; i < pages; i++) objects.Add((10 + i, L("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Contents 4 0 R >>")));
+        return PdfTests.Build(objects.OrderBy(o => o.Number));
     }
 }
