@@ -57,9 +57,17 @@ internal static class PackageLayoutPackTests
         try
         {
             Exec(pwsh, ["-NoProfile", "-Command", "Start-Sleep -Seconds 120"], 180000, wait: (_, _) => false,
-                kill: process => { alive = Process.GetProcessById(process.Id); throw new InvalidOperationException("injected: kill failed on a running child"); });
+                kill: process =>
+                {
+                    // A second handle so the harness can stop the child afterwards; a child that already exited (or
+                    // whose id is gone) leaves none, and the Check below then fails instead of the section crashing.
+                    try { alive = Process.GetProcessById(process.Id); }
+                    catch (Exception error) when (error is ArgumentException or InvalidOperationException or Win32Exception) { alive = null; }
+                    throw new InvalidOperationException("injected: kill failed on a running child");
+                });
         }
         catch (InvalidOperationException error) { aliveEscaped = error.Message; }
+        catch (Exception error) { aliveEscaped = "unexpected " + error.GetType().Name + ": " + error.Message; }
         finally { if (alive is not null) { try { alive.Kill(true); alive.WaitForExit(30000); } catch (Exception error) when (error is InvalidOperationException or Win32Exception) { } alive.Dispose(); } }
         Check(aliveEscaped == "injected: kill failed on a running child",
             "P5-19 control: Exec rethrows a Kill failure while the child is still running (only an exited child's Kill failure is tolerated)", aliveEscaped ?? "<nothing thrown>");
@@ -73,7 +81,17 @@ internal static class PackageLayoutPackTests
         (int Exit, string Out, string Err)? Raced(Action<Process>? kill, out string? escaped)
         {
             escaped = null;
-            try { return Exec(dotnet, ["--version"], 180000, wait: (process, _) => { process.WaitForExit(); return false; }, kill: kill); }
+            // The injected wait lets the child finish (bounded), then reports a timeout: the race of a child that exits
+            // between WaitForExit(timeout) and Kill. A child that does not finish is killed and the Check fails.
+            try
+            {
+                return Exec(dotnet, ["--version"], 180000, kill: kill, wait: (process, _) =>
+                {
+                    if (process.WaitForExit(120000)) return false;
+                    try { process.Kill(true); } catch (Exception error) when (error is InvalidOperationException or Win32Exception) { }
+                    throw new TimeoutException("the short-lived child (dotnet --version) did not exit within 120 s");
+                });
+            }
             catch (Exception error) { escaped = error.GetType().Name + ": " + error.Message; return null; }
         }
         static bool TimedOut((int Exit, string Out, string Err)? result) => result.HasValue && result.Value.Exit == -1 && result.Value.Out == "<timed out>";
@@ -86,6 +104,8 @@ internal static class PackageLayoutPackTests
         Check(injectedWin32Escaped is null && TimedOut(injectedWin32),
             "P5-19: Exec tolerates a Win32Exception from Kill on a child that already exited (reported timed out)",
             Shown(injectedWin32, injectedWin32Escaped));
+        // Smoke check only, not evidence for the fix: .NET's own Kill(true) on an already-exited child is a no-op on the
+        // runners (it raised nothing before P5-19 too); the injected exceptions above are what exercise the tolerance.
         var realKill = Raced(null, out var realKillEscaped);
         Check(realKillEscaped is null && TimedOut(realKill),
             "P5-19: Exec's own Kill(true) on a child that exited after WaitForExit timed out raises nothing unhandled (reported timed out)",
