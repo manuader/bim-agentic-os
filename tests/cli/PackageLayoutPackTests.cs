@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -17,13 +18,18 @@ using System.Text.Json;
 //      (whose own skills/ are then made malformed), the run falls back to that repository and writes the repository
 //      runs' bytes and stdout again, while the package with both markers reads its malformed skills (*_pack_invalid),
 //      so the fallback is observable.
+//   4. Skipped (a counted SKIP) only where pwsh is absent; on GitHub Actions on Linux a missing pwsh is a failure. P10-18:
+//      packaging runs on macOS too (its first-party Bim.*.dll attributed through deps.json), so no macOS skip remains.
 //   5. P5-18: the packaged MCP server (mcp/Bim.Mcp.dll over stdio, the same package) finds the packaged skills/ too:
 //      generate_typology returns the packaged CLI output file bytes ("skills":[] gives the pin a8c62da5..., and the
 //      request with skills), every refusal is the packaged CLI stdout line byte for byte (malformed packaged skill.json
 //      with a repository above -> generate_typology_pack_invalid json_invalid; a removed marker -> the repository or
-//      generate_typology_repository_not_found, exactly like the CLI).
-//   4. Skipped (a counted SKIP) only where pwsh is absent; on GitHub Actions on Linux a missing pwsh is a failure. P10-18:
-//      packaging runs on macOS too (its first-party Bim.*.dll attributed through deps.json), so no macOS skip remains.
+//      generate_typology_repository_not_found, exactly like the CLI). P5-19: the marker-removed fallback to the
+//      repository above also has the composed pin a8c62da5... (packaged CLI file and packaged MCP text).
+//   6. P5-19: the process helpers (Exec, the MCP stdio call) tolerate a child that exits between a timed-out WaitForExit
+//      and Kill: an InvalidOperationException/Win32Exception from Kill on an exited child is no unhandled exception (the
+//      run is still reported timed out), injected through a real short-lived child (dotnet --version); a Kill failure on
+//      a child that is still running is not swallowed.
 internal static class PackageLayoutPackTests
 {
     const string Caba = "ar.caba.codigo-edificacion";
@@ -45,12 +51,66 @@ internal static class PackageLayoutPackTests
             else Skip("scripts/package.ps1 package checks", "pwsh not found (BIM_PWSH unset and no pwsh on PATH)");
             return;
         }
+        // P5-19 control: a Kill failure while the child is still running is rethrown, not swallowed.
+        Process? alive = null;
+        string? aliveEscaped = null;
+        try
+        {
+            Exec(pwsh, ["-NoProfile", "-Command", "Start-Sleep -Seconds 120"], 180000, wait: (_, _) => false,
+                kill: process =>
+                {
+                    // A second handle so the harness can stop the child afterwards; a child that already exited (or
+                    // whose id is gone) leaves none, and the Check below then fails instead of the section crashing.
+                    try { alive = Process.GetProcessById(process.Id); }
+                    catch (Exception error) when (error is ArgumentException or InvalidOperationException or Win32Exception) { alive = null; }
+                    throw new InvalidOperationException("injected: kill failed on a running child");
+                });
+        }
+        catch (InvalidOperationException error) { aliveEscaped = error.Message; }
+        catch (Exception error) { aliveEscaped = "unexpected " + error.GetType().Name + ": " + error.Message; }
+        finally { if (alive is not null) { try { alive.Kill(true); alive.WaitForExit(30000); } catch (Exception error) when (error is InvalidOperationException or Win32Exception) { } alive.Dispose(); } }
+        Check(aliveEscaped == "injected: kill failed on a running child",
+            "P5-19 control: Exec rethrows a Kill failure while the child is still running (only an exited child's Kill failure is tolerated)", aliveEscaped ?? "<nothing thrown>");
         static bool UnderRepository(string directory)
         {
             for (var dir = new DirectoryInfo(directory); dir is not null; dir = dir.Parent)
                 if (File.Exists(Path.Combine(dir.FullName, "global.json"))) return true;
             return false;
         }
+        // ---- 6. P5-19: a child that exits between a timed-out WaitForExit and Kill (a real short-lived child) ----
+        (int Exit, string Out, string Err)? Raced(Action<Process>? kill, out string? escaped)
+        {
+            escaped = null;
+            // The injected wait lets the child finish (bounded), then reports a timeout: the race of a child that exits
+            // between WaitForExit(timeout) and Kill. A child that does not finish is killed and the Check fails.
+            try
+            {
+                return Exec(dotnet, ["--version"], 180000, kill: kill, wait: (process, _) =>
+                {
+                    if (process.WaitForExit(120000)) return false;
+                    try { process.Kill(true); } catch (Exception error) when (error is InvalidOperationException or Win32Exception) { }
+                    throw new TimeoutException("the short-lived child (dotnet --version) did not exit within 120 s");
+                });
+            }
+            catch (Exception error) { escaped = error.GetType().Name + ": " + error.Message; return null; }
+        }
+        static bool TimedOut((int Exit, string Out, string Err)? result) => result.HasValue && result.Value.Exit == -1 && result.Value.Out == "<timed out>";
+        static string Shown((int Exit, string Out, string Err)? result, string? escaped) => escaped ?? (result.HasValue ? D(result.Value) : "<null>");
+        var injected = Raced(_ => throw new InvalidOperationException("injected: the process exited between WaitForExit and Kill"), out var injectedEscaped);
+        Check(injectedEscaped is null && TimedOut(injected),
+            "P5-19: Exec tolerates an InvalidOperationException from Kill on a child that exited after WaitForExit timed out (reported timed out, nothing unhandled)",
+            Shown(injected, injectedEscaped));
+        var injectedWin32 = Raced(_ => throw new Win32Exception(5, "injected: access denied on an exited process"), out var injectedWin32Escaped);
+        Check(injectedWin32Escaped is null && TimedOut(injectedWin32),
+            "P5-19: Exec tolerates a Win32Exception from Kill on a child that already exited (reported timed out)",
+            Shown(injectedWin32, injectedWin32Escaped));
+        // Smoke check only, not evidence for the fix: .NET's own Kill(true) on an already-exited child is a no-op on the
+        // runners (it raised nothing before P5-19 too); the injected exceptions above are what exercise the tolerance.
+        var realKill = Raced(null, out var realKillEscaped);
+        Check(realKillEscaped is null && TimedOut(realKill),
+            "P5-19: Exec's own Kill(true) on a child that exited after WaitForExit timed out raises nothing unhandled (reported timed out)",
+            Shown(realKill, realKillEscaped));
+
         var outsideBase = new[] { Environment.GetEnvironmentVariable("RUNNER_TEMP"), Path.GetTempPath(), OperatingSystem.IsWindows() ? null : "/tmp" }
             .FirstOrDefault(candidate => !string.IsNullOrEmpty(candidate) && Directory.Exists(candidate) && !UnderRepository(candidate));
         if (outsideBase is null)
@@ -81,25 +141,6 @@ internal static class PackageLayoutPackTests
             catch (JsonException) { return null; }
         }
         static string D((int Exit, string Out, string Err) r) => "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + (r.Out.Length > 600 ? r.Out[..600] + "..." : r.Out) + (r.Err.Length > 0 ? " stderr " + (r.Err.Length > 600 ? r.Err[..600] + "..." : r.Err) : "");
-        static (int Exit, string Out, string Err) Exec(string file, IEnumerable<string> arguments, int timeoutMilliseconds)
-        {
-            var start = new ProcessStartInfo(file) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
-            // The harness runs under `dotnet run`; a nested build must not inherit an outer MSBuild's resolution.
-            foreach (var name in new[] { "MSBUILD_EXE_PATH", "MSBuildExtensionsPath", "MSBuildSDKsPath", "MSBuildLoadMicrosoftTargetsReadOnly" }) start.Environment.Remove(name);
-            // No MSBuild node reuse or build server: a nested build leaves no process behind the harness.
-            start.Environment["MSBUILDDISABLENODEREUSE"] = "1";
-            start.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
-            foreach (var argument in arguments) start.ArgumentList.Add(argument);
-            using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("process did not start: " + file);
-            var stdout = process.StandardOutput.ReadToEndAsync();
-            var stderr = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(timeoutMilliseconds)) { process.Kill(true); process.WaitForExit(); return (-1, "<timed out>", ""); }
-            process.WaitForExit();
-            var text = stdout.Result;
-            if (text.EndsWith('\n')) text = text[..^1];
-            if (text.EndsWith('\r')) text = text[..^1];
-            return (process.ExitCode, text, stderr.Result.ReplaceLineEndings(" ").Trim());
-        }
         (int Exit, string Out, string Err) CliAt(string dll, params string[] arguments) => Exec(dotnet, [dll, .. arguments], 180000);
         static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         static byte[] Utf8(string text) => new UTF8Encoding(false).GetBytes(text);
@@ -114,8 +155,7 @@ internal static class PackageLayoutPackTests
             var stderr = process.StandardError.ReadToEndAsync();
             var line = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 18, ["method"] = "tools/call", ["params"] = new JsonObject { ["name"] = "generate_typology", ["arguments"] = new JsonObject { ["request_path"] = requestPath } } }.ToJsonString();
             try { process.StandardInput.Write(line + "\n"); process.StandardInput.Close(); } catch (IOException) { }
-            if (!process.WaitForExit(180000)) { process.Kill(true); process.WaitForExit(); return (false, true, "", "<timed out>"); }
-            process.WaitForExit();
+            if (!WaitOrKill(process, 180000)) return (false, true, "", "<timed out>");
             var raw = stdout.Result;
             var err = stderr.Result.ReplaceLineEndings(" ").Trim();
             var described = "exit " + process.ExitCode.ToString(CultureInfo.InvariantCulture) + " " + (raw.Length > 600 ? raw[..600] + "..." : raw) + (err.Length > 0 ? " stderr " + (err.Length > 600 ? err[..600] + "..." : err) : "");
@@ -244,7 +284,7 @@ internal static class PackageLayoutPackTests
                         "P5-18: the packaged CLI file and the packaged MCP text have the composed pin a8c62da5...", "cli " + Hex(cliBytes) + " mcp " + Hex(Utf8(mcp.Text)));
             }
             // The refusal envelope of the packaged CLI for request (its stdout line) equals the packaged MCP text, isError.
-            void McpEqualsCli(string label, string requestPath, Func<(int Exit, string Out, string Err), bool> expected)
+            void McpEqualsCli(string label, string requestPath, Func<(int Exit, string Out, string Err), bool> expected, string? pinLabel = null)
             {
                 var output = Output();
                 var cliRun = CliAt(packageDll, "generate-typology", requestPath, output);
@@ -252,6 +292,9 @@ internal static class PackageLayoutPackTests
                 var mcp = McpTypology(packageMcp, requestPath);
                 var same = cliRun.Exit == 0 ? mcp.Ok && !mcp.IsError && Utf8(mcp.Text).SequenceEqual(cliBytes) : mcp.Ok && mcp.IsError && mcp.Text == cliRun.Out;
                 Check(expected(cliRun) && same, "P5-18 " + label, "mcp " + mcp.Raw + " | cli " + D(cliRun));
+                if (pinLabel is not null)
+                    Check(Hex(cliBytes) == PinnedComposedSha256 && mcp.Ok && Hex(Utf8(mcp.Text)) == PinnedComposedSha256,
+                        "P5-19 " + pinLabel + ": the packaged CLI file and the packaged MCP text have the composed pin a8c62da5...", "cli " + Hex(cliBytes) + " mcp " + Hex(Utf8(mcp.Text)) + " | " + mcp.Raw);
             }
 
             // ---- 3. a removed marker: outside any repository there is nothing to fall back to ----
@@ -302,11 +345,51 @@ internal static class PackageLayoutPackTests
                         D((result.Exit, result.Out, result.Err)) + " written " + result.Bytes.Length.ToString(CultureInfo.InvariantCulture) + " repository " + repo.Bytes.Length.ToString(CultureInfo.InvariantCulture));
                 }
                 McpEqualsCli("without " + Path.GetFileName(marker) + " the packaged MCP falls back to the repository above the package like the packaged CLI (composed pin)",
-                    composedRequest, r => r.Exit == 0);
+                    composedRequest, r => r.Exit == 0, "without " + Path.GetFileName(marker) + " (repository fallback)");
                 File.Move(aside, marker);
             }
         }
         finally { try { if (Directory.Exists(caseRoot)) Directory.Delete(caseRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+    }
+
+    // A real child process; `wait`/`kill` replace WaitForExit(timeout)/Kill(true) only so a test can inject the race of a
+    // child that exits between a timed-out wait and the kill (P5-19).
+    static (int Exit, string Out, string Err) Exec(string file, IEnumerable<string> arguments, int timeoutMilliseconds, Func<Process, int, bool>? wait = null, Action<Process>? kill = null)
+    {
+        var start = new ProcessStartInfo(file) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+        // The harness runs under `dotnet run`; a nested build must not inherit an outer MSBuild's resolution.
+        foreach (var name in new[] { "MSBUILD_EXE_PATH", "MSBuildExtensionsPath", "MSBuildSDKsPath", "MSBuildLoadMicrosoftTargetsReadOnly" }) start.Environment.Remove(name);
+        // No MSBuild node reuse or build server: a nested build leaves no process behind the harness.
+        start.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+        start.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("process did not start: " + file);
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!WaitOrKill(process, timeoutMilliseconds, wait, kill)) return (-1, "<timed out>", "");
+        var text = stdout.Result;
+        if (text.EndsWith('\n')) text = text[..^1];
+        if (text.EndsWith('\r')) text = text[..^1];
+        return (process.ExitCode, text, stderr.Result.ReplaceLineEndings(" ").Trim());
+    }
+
+    // True when the child exited within the timeout (then fully waited); false when it timed out and was killed. P5-19:
+    // the child can exit between the timed-out wait and Kill; Kill may then throw (InvalidOperationException, or
+    // Win32Exception on Windows). That failure is tolerated only when the child really has exited, and the run is still
+    // reported timed out; a Kill failure on a running child propagates.
+    static bool WaitOrKill(Process process, int timeoutMilliseconds, Func<Process, int, bool>? wait = null, Action<Process>? kill = null)
+    {
+        if ((wait ?? ((child, timeout) => child.WaitForExit(timeout)))(process, timeoutMilliseconds)) { process.WaitForExit(); return true; }
+        try { (kill ?? (child => child.Kill(true)))(process); }
+        catch (Exception error) when ((error is InvalidOperationException or Win32Exception) && Exited(process)) { }
+        process.WaitForExit();
+        return false;
+    }
+
+    static bool Exited(Process process)
+    {
+        try { return process.HasExited; }
+        catch (Exception error) when (error is InvalidOperationException or Win32Exception) { return false; }
     }
 
     // verify.ps1 exports BIM_PWSH (its own pwsh); otherwise the first pwsh on PATH.
