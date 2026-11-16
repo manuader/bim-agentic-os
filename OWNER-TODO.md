@@ -288,3 +288,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay211 (2026-11-16, cloud)
 - No new owner action. Still open: 🔒 ADR0010 (P2-11) and ADR0011 (P9-03) decisions; 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then catalogue-report; 🔒 N21 run 3 (`... -Runs 1`); `git pull` (main is now de7a967).
+
+## Relay212/213 (2026-11-16, cloud)
+- No new owner action. `git pull` (main ea11bc6). FYI: new read-only CLI verb `bim jurisdiction-resolve --code ar.caba` (or `--country ar --municipality caba`, optional `--lock skills.lock.json`); catalogue-report now flags a doc-realized step whose recorded request names another folder (request_mismatch). Still open: 🔒 ADR0010 (P2-11) and ADR0011 (P9-03) decisions, recommended A; 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once, test copy only) then catalogue-report; 🔒 N21 run 3 (`... -Runs 1`).
