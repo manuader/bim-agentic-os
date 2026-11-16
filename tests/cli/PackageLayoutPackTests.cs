@@ -353,13 +353,23 @@ internal static class PackageLayoutPackTests
         return (process.ExitCode, text, stderr.Result.ReplaceLineEndings(" ").Trim());
     }
 
-    // True when the child exited within the timeout (then fully waited); false when it timed out and was killed.
+    // True when the child exited within the timeout (then fully waited); false when it timed out and was killed. P5-19:
+    // the child can exit between the timed-out wait and Kill; Kill may then throw (InvalidOperationException, or
+    // Win32Exception on Windows). That failure is tolerated only when the child really has exited, and the run is still
+    // reported timed out; a Kill failure on a running child propagates.
     static bool WaitOrKill(Process process, int timeoutMilliseconds, Func<Process, int, bool>? wait = null, Action<Process>? kill = null)
     {
         if ((wait ?? ((child, timeout) => child.WaitForExit(timeout)))(process, timeoutMilliseconds)) { process.WaitForExit(); return true; }
-        (kill ?? (child => child.Kill(true)))(process);
+        try { (kill ?? (child => child.Kill(true)))(process); }
+        catch (Exception error) when ((error is InvalidOperationException or Win32Exception) && Exited(process)) { }
         process.WaitForExit();
         return false;
+    }
+
+    static bool Exited(Process process)
+    {
+        try { return process.HasExited; }
+        catch (Exception error) when (error is InvalidOperationException or Win32Exception) { return false; }
     }
 
     // verify.ps1 exports BIM_PWSH (its own pwsh); otherwise the first pwsh on PATH.
