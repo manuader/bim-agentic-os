@@ -450,7 +450,7 @@ internal sealed class PdfContentInterpreter
             _ => null,
         };
         if (encoding?.UnknownBase is { } unknownBase)
-            Warn("encoding-base-unknown", objectNumber, operatorIndex, label + " has /BaseEncoding " + unknownBase + ", not /WinAnsiEncoding, /MacRomanEncoding or /StandardEncoding; codes outside /Differences are read as text bytes");
+            Warn("encoding-base-unknown", objectNumber, operatorIndex, label + " has /BaseEncoding " + unknownBase + ", not /WinAnsiEncoding, /MacRomanEncoding or /StandardEncoding; codes outside /Differences that the ToUnicode CMap does not map are read as text bytes");
         if (encoding is not null && file.IsName(font, "Subtype", "Type3")) encoding = encoding.WithoutUnknownNames;
         if (cmap is not null || encoding is not null) decoder = new PdfFontDecoder(composite, identity, cmap, encoding);
         fontDecoders[font] = decoder;

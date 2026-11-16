@@ -24,6 +24,10 @@ namespace Bim.Cad;
 // or a non-name; null is absent) is reported by UnknownBase and the codes outside /Differences keep the byte decoding.
 // A Type3 font names its /Differences slots after its glyph procedures (often /g1, /a65 ...), so WithoutUnknownNames
 // keeps the byte decoding of the names outside the glyph list without reporting them; Latin names still map.
+// Deliberate: a slot a named table leaves undefined (controls, WinAnsi 0x81/0x8D/0x8F/0x90/0x9D, Standard and MacRoman
+// gaps) falls back to the Latin-1 byte, as before P6-20, so existing fixtures and pins keep their text. Known
+// limitation: a Type3 font hides every unknown name, including glyph-list names this table does not support (afii
+// names such as /afii10017, Greek, Cyrillic), which then read as text bytes without encoding-glyph-unknown.
 internal sealed class PdfSimpleEncoding
 {
     private readonly string?[] map = new string?[256];
