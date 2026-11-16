@@ -354,3 +354,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P3-17: no failed attempts — red 43454473275 (f927403) → green 43457705408 (5208175); attempt 1 of the green run failed only in core-windows on the unrelated apply-edits 8-process race check (one racer `apply_edits_commit_incomplete`, the known flake recorded under P10-18; ApplyEditsCommand.cs untouched), failed jobs re-run once, all green.
 - P7-18: no failed attempts — red 43454272873 (5103d8b) → green 43456249524 (94e21f8).
 - P4-18: no failed attempts — red 43454907676 (e5e2312) → green 43458261487 (1a97203); review red 43465011283 (601e8bd) → green 43468205404 (2e614cf).
+
+### Relay211 (2026-11-16, cloud)
+- P5-19: no failed attempts — red 43923698787 (53485d9) → green 43925524888 (2d85355); review hardening green 43932755569 (22a7f99).
+- P6-20: 1 failed attempt — implementation run 43926326570 (85427a0) failed to compile (CS8602 nullable on static Lazy fields declared before the base tables they read); hypothesis: static field order under nullable analysis → declared after the tables, green 43928092328 (ee5dffd). Red 43923918941 (ce672d9). Review red 43937168519 (ab3b237) → green 43939750890 (39c6db8).
+- P3-18: no failed attempts — red 43923600200 (fa8495b) → green 43925901646 (7331258).
