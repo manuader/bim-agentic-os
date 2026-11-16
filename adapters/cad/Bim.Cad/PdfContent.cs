@@ -14,8 +14,11 @@ namespace Bim.Cad;
 // A Type0 code missing from the CMap becomes U+FFFD with tounicode-unmapped on the showing operator.
 // P6-18: a simple font whose /Encoding is a dictionary (/BaseEncoding, /Differences) decodes through it
 // (PdfSimpleEncoding) after ToUnicode, with or without a usable CMap; a shown code whose /Differences glyph name is
-// unknown keeps the byte decoding with encoding-glyph-unknown on the showing operator. An /Encoding name keeps the
-// default decoding.
+// unknown keeps the byte decoding with encoding-glyph-unknown on the showing operator.
+// P6-20: an /Encoding name (/WinAnsiEncoding, /MacRomanEncoding, /StandardEncoding) decodes through its base table
+// after ToUnicode (another name keeps the default decoding); an unknown /BaseEncoding warns encoding-base-unknown once
+// per font and page at the Tf; a Type3 font keeps the byte decoding of /Differences names outside the glyph list
+// without encoding-glyph-unknown.
 internal sealed class PdfContentInterpreter
 {
     private readonly PdfFile file;
@@ -440,7 +443,15 @@ internal sealed class PdfContentInterpreter
                 Warn("tounicode-invalid", objectNumber, operatorIndex, label + " has an unusable /ToUnicode CMap: " + error + "; its codes are read as text bytes");
             }
         }
-        var encoding = !composite && file.Resolve(PdfFile.Get(font, "Encoding")) is Dictionary<string, object> encodingDictionary ? PdfSimpleEncoding.Get(file, encodingDictionary) : null;
+        var encoding = composite ? null : file.Resolve(PdfFile.Get(font, "Encoding")) switch
+        {
+            Dictionary<string, object> encodingDictionary => PdfSimpleEncoding.Get(file, encodingDictionary),
+            PdfName encodingName => PdfSimpleEncoding.Named(encodingName.Value),
+            _ => null,
+        };
+        if (encoding?.UnknownBase is { } unknownBase)
+            Warn("encoding-base-unknown", objectNumber, operatorIndex, label + " has /BaseEncoding " + unknownBase + ", not /WinAnsiEncoding, /MacRomanEncoding or /StandardEncoding; codes outside /Differences that the ToUnicode CMap does not map are read as text bytes");
+        if (encoding is not null && file.IsName(font, "Subtype", "Type3")) encoding = encoding.WithoutUnknownNames;
         if (cmap is not null || encoding is not null) decoder = new PdfFontDecoder(composite, identity, cmap, encoding);
         fontDecoders[font] = decoder;
         return decoder;

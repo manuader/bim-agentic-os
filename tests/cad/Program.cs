@@ -483,5 +483,8 @@ PdfToUnicodeTests.Run(Check, fixtures);
 // P6-18 PDF simple-font /Encoding /Differences glyph names (tests/cad/PdfEncodingTests.cs).
 PdfEncodingTests.Run(Check, fixtures);
 
+// P6-20 PDF named simple-font encodings and Type3 glyph names (tests/cad/PdfNamedEncodingTests.cs).
+PdfNamedEncodingTests.Run(Check, fixtures);
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
