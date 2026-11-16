@@ -12,7 +12,7 @@ using System.Text;
 // and BriefExtract reads the rooms, "Baño" included. Generated pages then pin each base encoding, the glyph-name forms
 // (Latin names, uniXXXX and its sequences, uXXXX..uXXXXXX, a .suffix), unknown names (afii, lower-case or surrogate uni,
 // out of range: today's byte decoding with encoding-glyph-unknown on the showing operator), out-of-range /Differences
-// codes, name-only encodings (today's decoding), and ToUnicode winning over the encoding. Unit-tested evidence only.
+// codes, name-only encodings (their base table since P6-20), and ToUnicode winning over the encoding. Unit-tested evidence only.
 internal static class PdfEncodingTests
 {
     private static string I(long value) => value.ToString(CultureInfo.InvariantCulture);
@@ -118,7 +118,8 @@ internal static class PdfEncodingTests
             var indirect = Page(Show("Ba\\200o"), Font("8 0 R"), (8, L("<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [128 /ntilde] >>")));
             C(Texts(indirect) == "Ba\\u00F1o" && indirect.Warnings.Count == 0, "an indirect /Encoding dictionary is read", Texts(indirect) + " " + Warnings(indirect));
             var named = Page2(Show("\\200\\001") + " BT /F2 10 Tf 1 0 0 1 50 50 Tm (\\226) Tj ET", Font("/WinAnsiEncoding"), Font("/MacRomanEncoding"));
-            C(Texts(named) == "\\u0080\\u0001|\\u0096" && named.Warnings.Count == 0, "an /Encoding name without a dictionary keeps today's decoding", Texts(named) + " " + Warnings(named));
+            // P6-20: an /Encoding name decodes through its base table (was today's Latin-1 decoding under P6-18).
+            C(Texts(named) == "\\u20AC\\u0001|\\u00F1" && named.Warnings.Count == 0, "an /Encoding name without a dictionary decodes through its base table", Texts(named) + " " + Warnings(named));
             var bounds = Page(Show("\\377\\002B\\003"), Font("<< /BaseEncoding /WinAnsiEncoding /Differences [255 /a /b 300 /c -1 /d 2.5 /e 66 /Euro] >>"));
             C(Texts(bounds) == "a\\u0002\\u20AC\\u0003" && bounds.Warnings.Count == 0, "Differences codes past 255, negative or non-integer are ignored", Texts(bounds) + " " + Warnings(bounds));
         }
