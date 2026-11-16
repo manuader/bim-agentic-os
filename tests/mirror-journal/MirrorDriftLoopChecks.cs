@@ -125,6 +125,8 @@ static class MirrorDriftLoopChecks
         FakeDiffChecks(root, pwsh);
         FakeBaselineChecks(root, pwsh);
         FakeFailureChecks(root, pwsh);
+        RunFailureLoop(root, dotnet, pwsh, cliDll, runDirectory);
+        FailureOptionChecks(root, pwsh);
     }
 
     static void Same(Loop? first, Loop? second, string scenario)
@@ -189,7 +191,7 @@ static class MirrorDriftLoopChecks
         public string Document { get; }
         public string Scratch { get; }
 
-        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null)
+        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null, string? recorderFailures = null)
         {
             this.dotnet = dotnet;
             this.cliDll = cliDll;
@@ -206,6 +208,8 @@ static class MirrorDriftLoopChecks
                 "-ReadyFile", ready, "-LogFile", log, "-MaxRequests", maxRequests.ToString(CultureInfo.InvariantCulture), "-TimeoutSeconds", FakeTimeoutSeconds.ToString(CultureInfo.InvariantCulture) }) serverStart.ArgumentList.Add(argument);
             // Test-only: the operation ids the fake records as external journal entries (comma-separated).
             if (externalEdits is not null) { serverStart.ArgumentList.Add("-ExternalEdits"); serverStart.ArgumentList.Add(externalEdits); }
+            // Test-only (P2-24): "<operation_id>:<count>,..." recorder failures the fake injects after those commands.
+            if (recorderFailures is not null) { serverStart.ArgumentList.Add("-RecorderFailures"); serverStart.ArgumentList.Add(recorderFailures); }
             Unix(serverStart);
             server = Process.Start(serverStart) ?? throw new InvalidOperationException("fake add-in pipe did not start");
             serverOut = server.StandardOutput.ReadToEndAsync();
@@ -1306,6 +1310,162 @@ static class MirrorDriftLoopChecks
             var reply = R(name);
             Check(Shape(reply) == shape, "reply " + name + ": " + what + " (" + shape + ")", Shape(reply));
             Check(Uniform(reply) == Uniform(production[name]), "reply " + name + " equals RevitJournalQuery.RawRead over one Core tracker given the same failures, member for member (diff included)", Uniform(reply) + " vs " + Uniform(production[name]));
+        }
+    }
+
+    // P2-24: recorder failures behind the named-pipe fake. The pipe fake's test-only -RecorderFailures option
+    // ("<operation_id>:<count>,...", needs -ExternalEdits) calls Add-FakeRecorderFailure with that count once the named
+    // revit.command has run (the first time), so a failure lands between two calls. Over the real pipe and the real CLI:
+    // walls A (add-in write, one failure after it), snapshot 0, a first read without peek (no baseline: one failure since,
+    // incomplete), a peek (its baseline holds the count: complete), an external move of A (two failures after it),
+    // snapshot 1, a peek after sequence 0 (two since, incomplete, A's entry), mirror-drift with that reply (evidence
+    // incomplete, note journal_incomplete), a read without peek (still two since) and a last peek (complete). Each reply
+    // equals RevitJournalQuery.RawRead over one Core MirrorJournalTracker given the same changes, RecordFailure calls and
+    // snapshots, member for member (diff included). The fake served exactly those requests (the injection adds none).
+    // Without the option the P2-14 / P2-16 pipe runs above keep their pinned replies byte for byte; a malformed option,
+    // a count below 1, a duplicate id or the option without -ExternalEdits is refused before the pipe is ready.
+    static readonly string[] FailureEdits = { "p2-24-move-a" };
+    const string FailureSchedule = "p2-24-wall-a:1,p2-24-move-a:2";
+    static readonly string[] FailureRequests = { "p2-24-levels", "p2-24-wall-types", "p2-24-wall-a", "p2-24-snapshot-0", JournalWire, JournalWire, "p2-24-move-a", "p2-24-snapshot-1", JournalWire, JournalWire, JournalWire };
+
+    // What a journal.read reply says about failures: document, failures, since, complete, baseline_existed, entry sequences.
+    static string FailureShape(string reply)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(reply);
+            var top = document.RootElement;
+            var report = top.GetProperty("report");
+            return "failures=" + top.GetProperty("failures").GetInt64().ToString(CultureInfo.InvariantCulture)
+                + " since=" + report.GetProperty("failures_since_baseline").GetInt64().ToString(CultureInfo.InvariantCulture)
+                + " complete=" + report.GetProperty("journal_complete").GetBoolean().ToString().ToLowerInvariant()
+                + " existed=" + report.GetProperty("baseline_existed").GetBoolean().ToString().ToLowerInvariant()
+                + " entries=[" + string.Join(",", report.GetProperty("entries").EnumerateArray().Select(entry => entry.GetProperty("sequence").GetInt64().ToString(CultureInfo.InvariantCulture))) + "]";
+        }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentException) { return "<no report> " + Head(reply); }
+    }
+
+    static void RunFailureLoop(string root, string dotnet, string pwsh, string cliDll, string runDirectory)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "pipe failures: " + name, detail);
+        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Failures.rvt", FailureRequests.Length, string.Join(",", FailureEdits), FailureSchedule);
+        var document = h.Document;
+        if (!h.WaitReady(out var notReady)) { Check(false, "fake add-in pipe ready with -RecorderFailures " + FailureSchedule, notReady); return; }
+        var levels = h.Command("p2-24-levels", "query.levels", _ => { });
+        var types = h.Command("p2-24-wall-types", "query.wall_types", _ => { });
+        if (!Succeeded(levels) || !Succeeded(types)) { Check(false, "query.levels and query.wall_types succeed", R(levels) + " | " + R(types)); return; }
+        var level = Pick(levels.Out, "levels", "name", "Level 1");
+        var type = Pick(types.Out, "wall_types", "name", WallType);
+        var wallA = h.Command("p2-24-wall-a", "wall.create", w => WallArgs(w, level, type, 0, 0, 5000, 0));
+        if (!Succeeded(wallA)) { Check(false, "wall.create of A succeeds through the CLI", R(wallA)); return; }
+        var uidA = Created(wallA.Out);
+        var snapshot0 = h.Command("p2-24-snapshot-0", "query.snapshot", _ => { });
+        if (!Succeeded(snapshot0)) { Check(false, "the first query.snapshot succeeds", R(snapshot0)); return; }
+        var replies = new Dictionary<string, string>
+        {
+            ["j0"] = h.Journal(null, peek: false),
+            ["j1"] = h.Journal(null),
+        };
+        var move = h.Command("p2-24-move-a", "element.move", w => MoveArgs(w, uidA));
+        if (!Succeeded(move)) { Check(false, "the external element.move of A succeeds through the CLI", R(move)); return; }
+        var snapshot1 = h.Command("p2-24-snapshot-1", "query.snapshot", _ => { });
+        if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the move succeeds", R(snapshot1)); return; }
+        replies["j2"] = h.Journal(0);
+
+        // The drift loop reads that reply as incomplete evidence.
+        var (project, map, levelNames) = CoreFrom(snapshot0.Out, levels.Out);
+        var store = Path.Combine(h.Scratch, "store");
+        var init = h.Cli("init", store, h.Write("project-r1", JsonSerializer.Serialize(project)));
+        if (init.Exit != 0 || Status(init.Out) != "succeeded") { Check(false, "the CLI init verb seeds the store at revision 1", R(init)); return; }
+        var driftPath = h.NewPath("drift-failures");
+        var drift = h.Cli("mirror-drift", store, h.Write("snapshot-1", snapshot1.Out), h.Write("mirror-r1", MirrorJson(document, 1, map, levelNames, replies["j2"], 0)), driftPath);
+        if (drift.Exit != 0 || !File.Exists(driftPath)) Check(false, "mirror-drift with the incomplete journal succeeds", R(drift));
+        else
+        {
+            using var parsed = JsonDocument.Parse(File.ReadAllText(driftPath, Utf8));
+            var evidence = parsed.RootElement.GetProperty("report").GetProperty("evidence");
+            Check(evidence.GetProperty("incomplete").GetBoolean() && evidence.GetProperty("notes").EnumerateArray().Any(note => note.GetString() == MirrorDriftEvidenceNotes.JournalIncomplete),
+                "mirror-drift with the pipe's reply after two failures since the baseline reports the journal evidence incomplete (journal_incomplete)", evidence.GetRawText());
+        }
+        replies["j3"] = h.Journal(null, peek: false);
+        replies["j4"] = h.Journal(null);
+
+        var (finished, how) = h.Finish();
+        Check(finished, "the fake add-in exits 0 after exactly " + FailureRequests.Length + " requests", how);
+        var received = h.Received();
+        Check(received.SequenceEqual(FailureRequests), "the fake add-in received the expected requests in order (injected failures add none)", string.Join(",", received));
+
+        // The production side: one Core journal and tracker, the same add-in write (skipped), failures, commit and reads.
+        MirrorSnapshot s0, s1;
+        try
+        {
+            using (var reply = JsonDocument.Parse(snapshot0.Out)) s0 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
+            using (var reply = JsonDocument.Parse(snapshot1.Out)) s1 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
+        }
+        catch (Exception error) when (error is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "the fake's query.snapshot readbacks parse as snapshots", error.Message); return; }
+        var tick = 0;
+        var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
+        var tracker = new MirrorJournalTracker(journal);
+        string Read(MirrorSnapshot snapshot, bool peek, long? after = null) => RevitJournalQuery.RawRead(tracker, true, snapshot, document, new MirrorJournalReadOptions(after, peek));
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "BIM Agentic OS wall.create" }, new[] { "x" }, Array.Empty<string>(), Array.Empty<long>(), true) { DocumentPath = document });
+        journal.RecordFailure();
+        var production = new Dictionary<string, string> { ["j0"] = Read(s0, false), ["j1"] = Read(s0, true) };
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "Move" }, Array.Empty<string>(), new[] { uidA }, Array.Empty<long>()) { DocumentPath = document });
+        journal.RecordFailure();
+        journal.RecordFailure();
+        production["j2"] = Read(s1, true, 0);
+        production["j3"] = Read(s1, false);
+        production["j4"] = Read(s1, true);
+
+        var cases = new (string Name, string Shape, string What)[]
+        {
+            ("j0", "failures=1 since=1 complete=false existed=false entries=[]", "the first read without peek after the failure injected after wall A: no baseline, one since, incomplete"),
+            ("j1", "failures=1 since=0 complete=true existed=true entries=[]", "a peek after it: the baseline holds the count, complete"),
+            ("j2", "failures=3 since=2 complete=false existed=true entries=[1]", "a peek after sequence 0 once two failures were injected after the external move: two since, incomplete, the move's entry"),
+            ("j3", "failures=3 since=2 complete=false existed=true entries=[1]", "a read without peek: still two since (the peek stored nothing)"),
+            ("j4", "failures=3 since=0 complete=true existed=true entries=[]", "the last peek: the read stored the count with its baseline, complete again"),
+        };
+        foreach (var (name, shape, what) in cases)
+        {
+            Check(FailureShape(replies[name]) == shape, "pipe reply " + name + ": " + what + " (" + shape + ")", FailureShape(replies[name]) + " | " + Head(replies[name]));
+            Check(Uniform(replies[name]) == Uniform(production[name]), "pipe reply " + name + " equals RevitJournalQuery.RawRead over one Core tracker given the same failures, member for member (diff included)",
+                Uniform(replies[name]) + " vs " + Uniform(production[name]));
+        }
+    }
+
+    // P2-24: -RecorderFailures is refused before the pipe is ready when it cannot be applied.
+    static void FailureOptionChecks(string root, string pwsh)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "pipe failure options: " + name, detail);
+        var cases = new (string Name, string? ExternalEdits, string Schedule)[]
+        {
+            ("without -ExternalEdits", null, "p2-24-wall-a:1"),
+            ("with an -ExternalEdits list of no ids", " , ", "p2-24-wall-a:1"),
+            ("a pair without a count", "p2-24-move-a", "p2-24-wall-a"),
+            ("a count of 0", "p2-24-move-a", "p2-24-wall-a:0"),
+            ("a count that is not a number", "p2-24-move-a", "p2-24-wall-a:x"),
+            ("the same operation id twice", "p2-24-move-a", "p2-24-wall-a:1,p2-24-wall-a:2"),
+            ("no pair at all", "p2-24-move-a", " , "),
+        };
+        foreach (var (name, external, schedule) in cases)
+        {
+            var scratch = Path.Combine(Path.GetTempPath(), "bim-drift-failure-option-" + Guid.NewGuid().ToString("N"));
+            Temporary.Add(scratch);
+            Directory.CreateDirectory(scratch);
+            var ready = Path.Combine(scratch, "ready.txt");
+            var start = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            foreach (var argument in new[] { "-NoProfile", "-File", Path.Combine(root, "tests", "integration", "fake-revit-command-pipe.ps1"), "-PipeName", "bim-agentic-os-2025-" + Random.Shared.Next(100000, 999999).ToString(CultureInfo.InvariantCulture),
+                "-DocumentUid", DocumentUid, "-ReadyFile", ready, "-LogFile", Path.Combine(scratch, "received.txt"), "-MaxRequests", "1", "-TimeoutSeconds", "5", "-RecorderFailures", schedule }) start.ArgumentList.Add(argument);
+            if (external is not null) { start.ArgumentList.Add("-ExternalEdits"); start.ArgumentList.Add(external); }
+            Unix(start);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("pwsh did not start");
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(CallTimeoutMs)) { Kill(process); Check(false, "-RecorderFailures " + name + " is refused", "timed out"); continue; }
+            process.WaitForExit();
+            var error = stderr.Result.ReplaceLineEndings(" ");
+            Check(process.ExitCode != 0 && !File.Exists(ready) && error.Contains("-RecorderFailures", StringComparison.Ordinal),
+                "-RecorderFailures " + name + " is refused before the pipe is ready (non-zero exit, no ready file, the error names the option)", "exit " + process.ExitCode + " " + Head(error) + " " + Head(stdout.Result));
         }
     }
 

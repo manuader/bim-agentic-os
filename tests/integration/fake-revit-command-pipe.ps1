@@ -8,6 +8,11 @@
 # process's instances of that name: disposing the last instance closes the listener and unlinks the socket, so a
 # client that reconnected at once (revit-command --all, one connection per page) and sat in the old listener's backlog
 # was reset (pipe_io_error). With the next instance alive the listener never closes between pages.
+# P2-24, test-only: -RecorderFailures "<operation_id>:<count>,..." (needs -ExternalEdits with ids) calls
+# Add-FakeRecorderFailure with that count once the named revit.command has run (its first time), before its reply is
+# written, so the recorder failure lands between that call and the next; journal.read then reports it as the in-process
+# fake does (P2-23). A malformed pair, a count below 1, a duplicate id or no pair is refused before the pipe is ready.
+# Without the option nothing is injected and every reply is unchanged.
 param(
     [Parameter(Mandatory)][string]$PipeName,
     [Parameter(Mandatory)][string]$DocumentUid,
@@ -19,7 +24,9 @@ param(
     [string]$ExternalEdits,
     # Test-only (P4-14): a write of this catalogue command (not a dry run) runs, then its connection is closed without a
     # reply (the reply is lost after the write happened).
-    [string]$DropReplyCommand
+    [string]$DropReplyCommand,
+    # Test-only (P2-24): "<operation_id>:<count>,..." recorder failures injected after those revit.command calls.
+    [string]$RecorderFailures
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/fake-revit-command-executor.ps1"
@@ -27,6 +34,20 @@ $external = if ($PSBoundParameters.ContainsKey('ExternalEdits')) { [string[]]@($
 $state = New-FakeRevitState $DocumentUid @{} $external
 # Behind the real CLI: a client-side case that arrives here answers fake_client_side_leak.
 $state.BehindCli = $true
+$failuresAfter = [Collections.Generic.Dictionary[string, int]]::new([StringComparer]::Ordinal)
+if ($PSBoundParameters.ContainsKey('RecorderFailures')) {
+    if ($null -eq $state.ExternalEdits) { throw '-RecorderFailures needs -ExternalEdits with at least one operation id' }
+    foreach ($pair in @($RecorderFailures -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+        $colon = $pair.LastIndexOf(':')
+        $count = 0
+        if ($colon -lt 1 -or ![int]::TryParse($pair.Substring($colon + 1), [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$count)) { throw "-RecorderFailures pair '$pair' is not <operation_id>:<count>" }
+        if ($count -lt 1) { throw "-RecorderFailures pair '$pair' needs a count of 1 or more" }
+        $id = $pair.Substring(0, $colon).Trim()
+        if (!$id -or $failuresAfter.ContainsKey($id)) { throw "-RecorderFailures names operation id '$id' twice or not at all" }
+        $failuresAfter[$id] = $count
+    }
+    if ($failuresAfter.Count -eq 0) { throw '-RecorderFailures needs at least one <operation_id>:<count> pair' }
+}
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $utf8 = [Text.UTF8Encoding]::new($false)
 $ready = $false
@@ -67,8 +88,12 @@ try {
                 elseif ($at -lt 0 -or $operation -ne 'revit.command' -or !$line.EndsWith('}')) { $response = ConvertTo-FakeResponseJson (New-FakeFailure 'envelope_invalid' $null 'not a revit.command wire line') }
                 else {
                     $commandText = $line.Substring($at + $marker.Length, $line.Length - $at - $marker.Length - 1)
+                    $before = $state.Received.Count
                     $response = Invoke-FakeRevitCommand $state $commandText
                     [IO.File]::AppendAllText($LogFile, $state.Received[$state.Received.Count - 1] + "`n")
+                    # P2-24: the recorder failures scheduled after this operation, once, before its reply is written.
+                    $inject = 0
+                    if ($state.Received.Count -gt $before -and $failuresAfter.Remove($state.Received[$state.Received.Count - 1], [ref]$inject)) { Add-FakeRecorderFailure $state $inject }
                     if ($DropReplyCommand) {
                         $sent = $null
                         try { $sent = $commandText | ConvertFrom-Json } catch { $sent = $null }
