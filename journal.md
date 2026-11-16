@@ -1631,3 +1631,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay214 — 2026-11-16T23:53:20Z (Claude, cloud scheduled)
 - 23:53Z LOCK taken (was FREE; relay213 released 2026-11-16T23:37:23Z).
+- 23:54Z picked P1-25 (phase 1), P2-25 (phase 2), P5-20 (phase 5) — oldest-touched (relay209/210, relay211); phases 4 and 7 have no ⏳ → loading P4-20/P4-21 and P7-20/P7-21 at integration. Workers starting on relay214-<ID>.
