@@ -285,3 +285,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay209/210 (2026-11-16, cloud)
 - No new owner action. `git pull` (main 612169a). FYI: after your 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once, test copy only), catalogue-run<N>.json now records `save_as_path` and `save_as_sha256` of the -guardado.rvt file; new CLI verb `bim bcf-export issues.json out.bcfzip`. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended A; then catalogue-report; 🔒 N21 `... -Runs 1`.
+
+## Relay211 (2026-11-16, cloud)
+- No new owner action. Still open: 🔒 ADR0010 (P2-11) and ADR0011 (P9-03) decisions; 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then catalogue-report; 🔒 N21 run 3 (`... -Runs 1`); `git pull` (main is now de7a967).
