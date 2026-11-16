@@ -1624,3 +1624,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay213 — 2026-11-16T22:52:54Z (Claude, cloud scheduled)
 - 22:52Z LOCK taken over (relay212 TAKEN, last heartbeat 2026-11-16T21:57:46Z — ~55 min stale). Continuing relay212: independent reviews + integration of P4-19, P7-19, P10-21.
 - 22:55Z review: P4-19 and P7-19 were reviewed by relay212 (fix commits 2110b50, eef6b73). P10-21 independent review 0 blockers; should-fix (usage-refusal 'nothing written' oracle could not fail) closed 6e98e5d (skills tree digest before/after); nits (NUL --lock path, registry.Issues not reported, lock_missing unpinned) → new P10-24. Waiting CI.
+- 23:11Z P7-19 review head eef6b73 CI 43973391629 success. Integration head ea11bc6 (relay213-integration on main de7a967: 3 clean merges + board/features/attempts/session/handoff; new P10-24) pushed; waiting CI (P10-21 review run 43974537843 still running).
