@@ -35,7 +35,7 @@ internal static class JurisdictionResolveCommand
     {
         IntentEnvelope envelope;
         try { envelope = Execute(args); }
-        catch (Exception error) { envelope = IntentPlan.Internal(Verb, error); }
+        catch (Exception error) { envelope = IntentPlan.Internal("jurisdiction-resolve", error); }
         envelope.Print();
     }
 
