@@ -1619,3 +1619,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay212 — 2026-11-16T20:53:25Z (Claude, cloud scheduled)
 - 20:53Z LOCK taken (was FREE; relay211 released 2026-11-16T20:16:36Z).
+- 21:57Z picked P4-19 (phase 4), P7-19 (phase 7), P10-21 (phase 10) — oldest-touched (relay208, relay209). Workers green: P4-19 b0afa44 (red 43955003700, green 43955097553; 0 attempts), P7-19 0353d06 (characterization; green 43955000634, deliberate-red detection proof 43958696368, final 43961964233; 0 attempts), P10-21 ff51669 (red 43955018142, green 43961094378; 1 attempt — static check wanted the IntentPlan.Internal literal). Next: independent reviews.
