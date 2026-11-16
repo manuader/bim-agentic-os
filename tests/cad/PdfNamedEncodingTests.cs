@@ -184,5 +184,18 @@ internal static class PdfNamedEncodingTests
             C(Texts(both) == "X\\u201C" && both.Warnings.Count == 0, "ToUnicode wins over a named encoding; codes it does not map use the encoding", Texts(both) + " " + Warnings(both));
         }
         catch (Exception error) { C(false, "tounicode unexpected", error.GetType().Name + ": " + error.Message); }
+
+        // ---------- review: unknown /BaseEncoding under a ToUnicode CMap that maps every shown code ----------
+        try
+        {
+            var cmap = PdfToUnicodeTests.CMap("2 beginbfchar\n<41> <005A>\n<80> <0059>\nendbfchar", "<00> <FF>");
+            var covered = PdfToUnicodeTests.Page(Show("\\200A"), Font("<< /BaseEncoding /FooEncoding /Differences [1 /ntilde] >>", toUnicode: true), cmap);
+            C(Texts(covered) == "YZ" && Warnings(covered) == "encoding-base-unknown@1:4:1", "with ToUnicode covering the codes the text decodes through the CMap and an unknown base still warns",
+                Texts(covered) + " " + Warnings(covered));
+            var message = covered.Warnings.FirstOrDefault()?.Message ?? "none";
+            C(message.Contains("/FooEncoding", StringComparison.Ordinal) && message.Contains("codes outside /Differences that the ToUnicode CMap does not map are read as text bytes", StringComparison.Ordinal),
+                "the encoding-base-unknown message is accurate with and without ToUnicode", message);
+        }
+        catch (Exception error) { C(false, "base-unknown tounicode unexpected", error.GetType().Name + ": " + error.Message); }
     }
 }
