@@ -1532,6 +1532,9 @@ try {
     // ---- P10-20 bcf-export issues.json output.bcfzip|output.bcf (tests/cli/BcfExportCommandTests.cs) ----
     BcfExportCommandTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
 
+    // ---- P10-21 jurisdiction-resolve --code c | --country cc --municipality m [--lock skills.lock.json] [--allow-stub] (tests/cli/JurisdictionResolveTests.cs) ----
+    JurisdictionResolveTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
+
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
 } catch(Exception exception) {
