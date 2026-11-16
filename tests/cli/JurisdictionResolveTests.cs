@@ -16,7 +16,7 @@ using Bim.Core;
 //   3. Package-first: from a CLI copied into <package>/cli beside VERSION, manifest.json and skills/, the package's
 //      skills/ are resolved (SkillPackLookup.PackageRoot), not the repository's.
 //   4. Usage: missing, conflicting, repeated, unknown or valueless options print jurisdiction_resolve_usage with the
-//      usage text; nothing is written (the lock and skills bytes are unchanged).
+//      usage text; nothing is written (the lock bytes and the whole skills tree digest are unchanged).
 //   5. Static: the command loads through JurisdictionRegistry.Load/LoadLocked, finds the package via
 //      SkillPackLookup.PackageRoot, routes defects through IntentPlan.Internal and has no file write API.
 internal static class JurisdictionResolveTests
@@ -81,6 +81,7 @@ internal static class JurisdictionResolveTests
         var unlocked = JurisdictionRegistry.Load(skills);
         Check(unlocked.Succeeded, "the repository skills load in process", unlocked.Refusal?.ToString() ?? "");
         var cabaVersion = SkillLoader.LoadDirectory(skills).Find(Caba)!.Version.ToString();
+        var skillsDigest = TreeDigest(skills);
 
         // ---- 1/2. repository resolutions ----
         var cabaLine = JsonSerializer.Serialize(new { status = "succeeded", code = "ar.caba", pack = Caba, version = cabaVersion, stub = false });
@@ -191,8 +192,9 @@ internal static class JurisdictionResolveTests
             var result = Cli(cliDll, arguments);
             Check(result.Exit == 1 && result.Out == usageLine, "usage refusal: " + label, D(result));
         }
-        Check(File.ReadAllBytes(lockPath).AsSpan().SequenceEqual(lockBytes) && File.ReadAllBytes(Path.Combine(skills, Caba, "jurisdiction.json")).Length > 0,
-            "usage refusals leave the lock unchanged");
+        Check(File.ReadAllBytes(lockPath).AsSpan().SequenceEqual(lockBytes), "usage refusals leave the lock unchanged");
+        var skillsAfter = TreeDigest(skills);
+        Check(skillsAfter == skillsDigest, "every run leaves the repository skills tree unchanged (paths and bytes)", skillsDigest + " -> " + skillsAfter);
 
         // ---- 5. static ----
         var sourcePath = Path.Combine(root, "interfaces", "cli", "JurisdictionResolveCommand.cs");
@@ -203,6 +205,21 @@ internal static class JurisdictionResolveTests
         Check(!source.Contains(" internal error: ", StringComparison.Ordinal), "the command hand-writes no internal-error stderr line");
         Check(new[] { "File.Write", "File.Create", "File.Move", "File.Copy", "File.Delete", "File.Open", "FileMode.", "FileStream", "Directory.Create", "Directory.Move", "Directory.Delete", "SkillLockFile.Write" }
             .All(api => !source.Contains(api, StringComparison.Ordinal)), "the command has no file write API (read-only)");
+    }
+
+    // SHA-256 over the sorted relative paths, sizes and bytes of every file under a directory (P10-21 review): any file
+    // created, removed or rewritten under skills/ changes it.
+    static string TreeDigest(string directory)
+    {
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        foreach (var file in Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
+                     .Select(f => Path.GetRelativePath(directory, f).Replace('\\', '/')).Order(StringComparer.Ordinal))
+        {
+            var bytes = File.ReadAllBytes(Path.Combine(directory, file));
+            hash.AppendData(Encoding.UTF8.GetBytes(file + "\n" + bytes.Length.ToString(CultureInfo.InvariantCulture) + "\n"));
+            hash.AppendData(bytes);
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     static void CopyDirectory(string source, string destination)
