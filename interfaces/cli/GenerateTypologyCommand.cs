@@ -270,7 +270,8 @@ internal static class GenerateTypologyCommand
             var weights = root.TryGetValue("weights", out var weightsElement) ? Weights(weightsElement) : new ScoringWeights();
             var include = root.TryGetValue("include", out var includeElement) ? Rooms(includeElement) : null;
             // P7-18: an empty list is the absent member, so "include":[] keeps the P7-14 / composed bytes.
-            // DELIBERATE RED (P7-19 proof of detection, reverted next commit): normalisation removed
+            // DELIBERATE RED (P7-19 proof of detection, reverted): normalisation skipped only when skills is non-empty
+            if (include is { Count: 0 } && !(root.TryGetValue("skills", out var redSkills) && redSkills.ValueKind == JsonValueKind.Array && redSkills.GetArrayLength() > 0)) include = null;
             var request = new TypologyBriefRequest(familySize, lotValue, alternatives, seed, include, weights == new ScoringWeights() ? null : weights);
             var skills = root.TryGetValue("skills", out var skillsElement) ? Strings(skillsElement, "skills") : null;
             var precedence = root.TryGetValue("precedence", out var precedenceElement) ? Strings(precedenceElement, "precedence") : null;
