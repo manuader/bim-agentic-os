@@ -19,10 +19,16 @@ namespace Bim.Cad;
 // Each parsed encoding is cached per document by its dictionary (an indirect encoding object is one dictionary for
 // every font and page that uses it) and every /Differences item is charged once to the document-wide
 // MaxParsedElements budget (element-limit refusal).
+// P6-20: an /Encoding name (/WinAnsiEncoding, /MacRomanEncoding, /StandardEncoding) is the base table alone (Named;
+// another name is null: today's decoding). A present /BaseEncoding that is not one of the three names (another name
+// or a non-name; null is absent) is reported by UnknownBase and the codes outside /Differences keep the byte decoding.
+// A Type3 font names its /Differences slots after its glyph procedures (often /g1, /a65 ...), so WithoutUnknownNames
+// keeps the byte decoding of the names outside the glyph list without reporting them; Latin names still map.
 internal sealed class PdfSimpleEncoding
 {
     private readonly string?[] map = new string?[256];
     private readonly string?[] unknown = new string?[256];
+    private PdfSimpleEncoding? withoutUnknownNames;
 
     private PdfSimpleEncoding() { }
 
@@ -34,6 +40,39 @@ internal sealed class PdfSimpleEncoding
 
     // The unknown /Differences glyph name of the code, or null.
     public string? UnknownName(byte code) => unknown[code];
+
+    // The /BaseEncoding value that is not a known base encoding ("/Name" or "a non-name value"), or null.
+    public string? UnknownBase { get; private set; }
+
+    // The same mapping without unknown glyph names (no encoding-glyph-unknown); used for Type3 fonts.
+    public PdfSimpleEncoding WithoutUnknownNames => withoutUnknownNames ??= CopyWithoutUnknownNames();
+
+    private PdfSimpleEncoding CopyWithoutUnknownNames()
+    {
+        var copy = new PdfSimpleEncoding { UnknownBase = UnknownBase };
+        Array.Copy(map, copy.map, map.Length);
+        return copy;
+    }
+
+    // The base encoding of an /Encoding name, or null for another name.
+    public static PdfSimpleEncoding? Named(string name) => name switch
+    {
+        "WinAnsiEncoding" => NamedWinAnsi.Value,
+        "MacRomanEncoding" => NamedMacRoman.Value,
+        "StandardEncoding" => NamedStandard.Value,
+        _ => null,
+    };
+
+    private static readonly Lazy<PdfSimpleEncoding> NamedWinAnsi = new(() => FromTable(WinAnsi.Value));
+    private static readonly Lazy<PdfSimpleEncoding> NamedMacRoman = new(() => FromTable(MacRoman.Value));
+    private static readonly Lazy<PdfSimpleEncoding> NamedStandard = new(() => FromTable(Standard.Value));
+
+    private static PdfSimpleEncoding FromTable(string?[] table)
+    {
+        var result = new PdfSimpleEncoding();
+        Array.Copy(table, result.map, result.map.Length);
+        return result;
+    }
 
     private static readonly ConditionalWeakTable<PdfFile, Dictionary<object, PdfSimpleEncoding>> Cache = new();
 
@@ -52,9 +91,12 @@ internal sealed class PdfSimpleEncoding
     private static PdfSimpleEncoding Parse(PdfFile file, Dictionary<string, object> dictionary)
     {
         var result = new PdfSimpleEncoding();
-        var baseName = file.Resolve(PdfFile.Get(dictionary, "BaseEncoding")) is PdfName name ? name.Value : "";
+        var baseValue = file.Resolve(PdfFile.Get(dictionary, "BaseEncoding"));
+        var baseName = baseValue is PdfName name ? name.Value : "";
         if (BaseTable(baseName) is { } table)
             for (var code = 0; code < 256; code++) result.map[code] = table[code];
+        else if (baseValue is not (null or PdfNull))
+            result.UnknownBase = baseValue is PdfName ? "/" + baseName : "a non-name value";
         if (file.Resolve(PdfFile.Get(dictionary, "Differences")) is List<object> differences)
         {
             var next = -1;
