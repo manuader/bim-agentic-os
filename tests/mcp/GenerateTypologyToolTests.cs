@@ -21,10 +21,10 @@ using Bim.Mcp;
 //      and Console.Out untouched; tools/list labels it permission level read with readOnlyHint true only.
 //   4. MCP-only path guard: generate_typology_path_invalid {detail request}; missing / mistyped / extra arguments are -32602.
 //   5. The real Release Bim.Mcp.dll answers the same bytes over stdio.
-//   P7-19: "include":[] with a non-empty skills list is the tool text, CLI file and CLI stdout of the run without include;
-//      a duplicate include member stays request_invalid (request.include).
 //   6. Static: the tool calls GenerateTypologyCommand.Document and contains no parser, pipeline, pack lookup or file access
 //      of its own; the MCP projects link the CLI source.
+//   7. P7-19: "include":[] with a non-empty skills list is the tool text, CLI file and CLI stdout of the run without include;
+//      a duplicate include member stays request_invalid (request.include) in three member orders.
 internal static class GenerateTypologyToolTests
 {
     const string TypologyPack = "bim.typology.vivienda-unifamiliar";
@@ -223,6 +223,8 @@ internal static class GenerateTypologyToolTests
             Code("generate_typology_request_invalid", "request.include"));
         Refused("a duplicate include member ([study] then []) with skills (P7-19)", Input("include-duplicate-2.json",
             Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle) + ",\"include\":[\"study\"],\"include\":[]")), Code("generate_typology_request_invalid", "request.include"));
+        Refused("a duplicate include member ([] then [study]) before skills (P7-19)", Input("include-duplicate-3.json",
+            Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[],\"include\":[\"study\"],\"skills\":" + Ids(CompactStyle))), Code("generate_typology_request_invalid", "request.include"));
         Refused("a code_pack that is not a code skill (P7-16)", Input("code-pack-kind.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + CompactStyle + "\"")),
             Code("generate_typology_code_pack_invalid", "kind"));
         Refused("an unknown typology pack", Input("unknown-pack.json", Request("xx.no-such.pack", 3, 16, 16, 4, 0)), Code("generate_typology_pack_unavailable", "input_not_found"));

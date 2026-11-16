@@ -407,14 +407,12 @@ internal static class GenerateTypologyTests
             var empty = CliAt(dll, null, "generate-typology", Input("p7-19-empty.json", emptyText), emptyOut);
             Check(skillIds.Length > 0 && emptyText.Contains("\"include\":[]", StringComparison.Ordinal) && !absentText.Contains("\"include\"", StringComparison.Ordinal),
                 label + ": the fixture pair is a non-empty skills list with and without \"include\":[] (P7-19)");
-            if (library.Status == PrototypePipelineStatus.Refused)
-            {
-                Check(absent.Exit == 1 && empty.Exit == 1 && absent.Out == RefusedEnvelope(library) && empty.Out == absent.Out && !File.Exists(absentOut) && !File.Exists(emptyOut),
-                    label + ": refused alike with and without \"include\":[] (RunComposed's refusals exactly, no files) (P7-19)", D(absent) + " / " + D(empty));
-                return;
-            }
+            // Every case must be a result (ranked or infeasible): a refused case would lose the sensitivity check below.
+            Check(library.Status != PrototypePipelineStatus.Refused && emptyLibrary.Status != PrototypePipelineStatus.Refused,
+                label + ": fixture: the in-process RunComposed runs (with and without Include: []) are results, not refusals (P7-19)", D(absent) + " / " + D(empty));
+            if (library.Status == PrototypePipelineStatus.Refused) return;
             var expected = Utf8(TypologyPipelineSerializer.Serialize(library));
-            var emptyRecorded = emptyLibrary.Status == PrototypePipelineStatus.Refused ? Array.Empty<byte>() : Utf8(TypologyPipelineSerializer.Serialize(emptyLibrary));
+            var emptyRecorded = Utf8(TypologyPipelineSerializer.Serialize(emptyLibrary));
             Check(!emptyRecorded.SequenceEqual(expected), label + ": in process Include: [] differs from the absent member (the oracle is sensitive to the normalisation) (P7-19)",
                 Hex(emptyRecorded) + " vs " + Hex(expected));
             var envelope = Parse(absent.Out);
