@@ -963,10 +963,12 @@
         "core/Bim.Core/JurisdictionValidator.cs",
         "skills/ar.caba.codigo-edificacion/jurisdiction.json",
         "skills/xx.example.codigo-ejemplo/skill.json",
-        "tests/skills/JurisdictionTests.cs"
+        "tests/skills/JurisdictionTests.cs",
+        "interfaces/cli/JurisdictionResolveCommand.cs",
+        "tests/cli/JurisdictionResolveTests.cs"
       ],
-      "blocker": "Not wired to CLI/MCP or to the brief (constraints.jurisdiction free text not mapped); one pack per jurisdiction code; sidecar format has no JSON Schema yet; only CABA is a real jurisdiction (xx.example is a fictitious stub).",
-      "scope": "P10-06: jurisdiction.json sidecars (new format v1) claim a code for a code pack; registry selects by code or country+municipality (accent/case folded), refuses unspecified/incomplete/invalid/unknown/ambiguous/conflicting jurisdictions and stub packs without opt-in; registry issues for missing/mismatched packs, duplicate claims and alias overlap; validation envelope with pack ids, versions, stub flags and source_confidence counts around the unchanged SkillRoomValidator; deterministic JSON. CI 41833656639."
+      "blocker": "Read-only CLI verb jurisdiction-resolve since P10-21 (not MCP, not the brief) (constraints.jurisdiction free text not mapped); one pack per jurisdiction code; sidecar format has no JSON Schema yet; only CABA is a real jurisdiction (xx.example is a fictitious stub).",
+      "scope": "P10-06: jurisdiction.json sidecars (new format v1) claim a code for a code pack; registry selects by code or country+municipality (accent/case folded), refuses unspecified/incomplete/invalid/unknown/ambiguous/conflicting jurisdictions and stub packs without opt-in; registry issues for missing/mismatched packs, duplicate claims and alias overlap; validation envelope with pack ids, versions, stub flags and source_confidence counts around the unchanged SkillRoomValidator; deterministic JSON. CI 41833656639. P10-21: read-only CLI verb jurisdiction-resolve --code | --country --municipality [--lock] [--allow-stub] resolves through JurisdictionRegistry.Load/LoadLocked via SkillPackLookup (package-first), prints {status,code,pack,version,stub}; unknown/ambiguous/stub-refused/lock-drift print the registry's typed codes unchanged; stdout equals the in-process result; skills tree and lock unchanged. relay212/213, CI red 43955018142, green 43961094378; review green 43974537843."
     },
     {
       "id": "intent-skill-defaults",
@@ -2075,7 +2077,7 @@
         "tests/mcp/GenerateTypologyToolTests.cs"
       ],
       "blocker": "Since P7-18 \"include\":[] equals absent at the CLI/MCP parser (library callers building TypologyBriefRequest(Include: []) still record []); packaged MCP server finds packs since P5-18.",
-      "scope": "P7-16: optional request members include (≤ 64 room kinds, ≤ 64 chars each, no control characters) and code_pack (skill id, default ar.caba.codigo-edificacion, kind code or generate_typology_code_pack_invalid/kind) reach TypologyPipeline.Run/RunComposed; byte-equal to in-process runs; absent/default members keep pins eb8720c1/3a551774/a8c62da5; MCP generate_typology byte-equal to the CLI for the new members. relay204, CI red 43368744628, green 43372457353; review green 43381294764. P7-18: \"include\":[] normalised to absent before the pipeline; byte-equal to pins eb8720c1/3a551774 and composed a8c62da5 (file and stdout); MCP byte-equal. relay208, CI red 43454272873, green 43456249524."
+      "scope": "P7-16: optional request members include (≤ 64 room kinds, ≤ 64 chars each, no control characters) and code_pack (skill id, default ar.caba.codigo-edificacion, kind code or generate_typology_code_pack_invalid/kind) reach TypologyPipeline.Run/RunComposed; byte-equal to in-process runs; absent/default members keep pins eb8720c1/3a551774/a8c62da5; MCP generate_typology byte-equal to the CLI for the new members. relay204, CI red 43368744628, green 43372457353; review green 43381294764. P7-18: \"include\":[] normalised to absent before the pipeline; byte-equal to pins eb8720c1/3a551774 and composed a8c62da5 (file and stdout); MCP byte-equal. relay208, CI red 43454272873, green 43456249524. P7-19: a composed run with a non-empty skills list and \"include\":[] is byte-equal (file and stdout) to the run without include in the CLI and the MCP tool; duplicate include members stay request_invalid; no source change (characterization, detection proven by deliberate reds 43955212491/43958696368). relay212/213, CI green 43955000634, final 43973391629."
     },
     {
       "id": "package-macos-physical-temp-sbom",
@@ -2128,8 +2130,8 @@
         "tests/cli/CatalogueReportTests.cs",
         "tests/cli/catalogue-report-record.ps1"
       ],
-      "blocker": "Headless fake + real doc-realized CLI only, never a real owner -Catalogue record; the step's recorded request.record_file is not cross-checked against the folder; link-refused checks skip where symbolic links are unavailable.",
-      "scope": "P4-18: catalogue-report adds a realized member after copy only for a doc-up-elements/doc-realized step, read from catalogue-requests/<NN>-doc-up-elements.doc-realized/ through BoundedInput (realized.json ≤ 8 MiB, report.json ≤ 1 MiB, links refused); entries/sha256/bytes trusted only on match (disk sha/bytes equal the reply, report.json agrees, object of text values, entry count); typed not_sent/no_reply/link_refused/missing_folder/missing_file/unreadable/mismatch/invalid/report_mismatch/refused; records without the step byte-unchanged. relay208, CI red 43454907676, green 43458261487; review red 43465011283, green 43468205404."
+      "blocker": "Headless fake + real doc-realized CLI only, never a real owner -Catalogue record; link-refused checks skip where symbolic links are unavailable.",
+      "scope": "P4-18: catalogue-report adds a realized member after copy only for a doc-up-elements/doc-realized step, read from catalogue-requests/<NN>-doc-up-elements.doc-realized/ through BoundedInput (realized.json ≤ 8 MiB, report.json ≤ 1 MiB, links refused); entries/sha256/bytes trusted only on match (disk sha/bytes equal the reply, report.json agrees, object of text values, entry count); typed not_sent/no_reply/link_refused/missing_folder/missing_file/unreadable/mismatch/invalid/report_mismatch/refused; records without the step byte-unchanged. relay208, CI red 43454907676, green 43458261487; review red 43465011283, green 43468205404. P4-19: the step's recorded request (record_file / output path members) and the doc-realized reply output are compared with the computed catalogue-requests/<NN>-doc-up-elements.doc-realized folder; a difference reports typed request_mismatch (nothing trusted); stub requests without those members keep the P4-18 bytes. relay212/213, CI red 43955003700, green 43955097553; review red 43965727627, green 43968719330."
     }
   ]
 }

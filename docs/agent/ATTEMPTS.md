@@ -359,3 +359,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P5-19: no failed attempts — red 43923698787 (53485d9) → green 43925524888 (2d85355); review hardening green 43932755569 (22a7f99).
 - P6-20: 1 failed attempt — implementation run 43926326570 (85427a0) failed to compile (CS8602 nullable on static Lazy fields declared before the base tables they read); hypothesis: static field order under nullable analysis → declared after the tables, green 43928092328 (ee5dffd). Red 43923918941 (ce672d9). Review red 43937168519 (ab3b237) → green 43939750890 (39c6db8).
 - P3-18: no failed attempts — red 43923600200 (fa8495b) → green 43925901646 (7331258).
+
+### Relay212/213 (2026-11-16, cloud; relay213 took the stale LOCK and integrated)
+- P4-19: no failed attempts — red 43955003700 (8d06254) → green 43955097553 (b0afa44); review red 43965727627 (bb31104) → green 43968719330 (2110b50).
+- P7-19: no failed attempts — characterization green 43955000634 (99a0393); deliberate detection reds 43955212491 (7aa9d54) and 43958696368 (d044345), reverted 43961964233 (0353d06); review nits 43973391629 (eef6b73).
+- P10-21: 1 failed attempt — implementation run 43957994586 (f8af7e5) failed only the static check that wants the literal IntentPlan.Internal("jurisdiction-resolve" (hypothesis: verb name passed through a constant) → literal, green 43961094378 (ff51669). Red 43955018142 (4a5e01e). Review hardening (skills tree digest) 43974537843 (6e98e5d).
