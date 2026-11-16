@@ -1603,3 +1603,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay210 — 2026-11-16T16:52:58Z (Claude, cloud scheduled)
 - 16:52Z LOCK taken over (relay209 TAKEN, last heartbeat 2026-11-13T19:37:03Z — ~3 days stale). Continuing relay209: independent reviews + integration of P1-18, P10-20, P2-24.
+- 16:56Z reviews (independent, read-only): 0 blockers. P1-18 should-fix (owner doc lacked save_as members) closed at integration; P2-24 should-fix (injection keys on received id, refused/dry-run included) → comment corrected + new P2-26; P10-20 nits → new P10-23; P1-18 nit follow-up → new P1-25. Integration head 612169a (relay210-integration on main 0b9240c: 3 clean merges + board/features/session/handoff) pushed; waiting CI.
