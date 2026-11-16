@@ -1616,3 +1616,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 20:16Z integration de7a967 CI 43943501886 success (9/9) → main fast-forwarded (612169a..de7a967). P5-19, P6-20, P3-18 ✅; new P3-19 (other CLI verbs' internal errors through IntentPlan.Internal), P6-22 (Type3 unsupported glyph-list names signalled). Progress 198/215 (92.1 %). Worktrees retired (branches relay211-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-16T20:16:36Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P4-19, P7-19 (relay208); then P10-21 (then P10-22/P10-23; keep Program.cs registration disjoint), P1-25, P2-25 (then P2-26, same pipe fake) (relay209/210); then P5-20, P6-21 (serialize with P6-22 on PDF/cad files), P3-19 (relay211). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay212 — 2026-11-16T20:53:25Z (Claude, cloud scheduled)
+- 20:53Z LOCK taken (was FREE; relay211 released 2026-11-16T20:16:36Z).
