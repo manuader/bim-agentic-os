@@ -63,10 +63,6 @@ internal sealed class PdfSimpleEncoding
         _ => null,
     };
 
-    private static readonly Lazy<PdfSimpleEncoding> NamedWinAnsi = new(() => FromTable(WinAnsi.Value));
-    private static readonly Lazy<PdfSimpleEncoding> NamedMacRoman = new(() => FromTable(MacRoman.Value));
-    private static readonly Lazy<PdfSimpleEncoding> NamedStandard = new(() => FromTable(Standard.Value));
-
     private static PdfSimpleEncoding FromTable(string?[] table)
     {
         var result = new PdfSimpleEncoding();
@@ -173,6 +169,11 @@ internal sealed class PdfSimpleEncoding
         Fill(table, 0xF1, "ae", null, null, null, "dotlessi", null, null, "lslash", "oslash", "oe", "germandbls");
         return table;
     });
+
+    // Declared after the tables they read (static initializer order).
+    private static readonly Lazy<PdfSimpleEncoding> NamedWinAnsi = new(() => FromTable(WinAnsi.Value));
+    private static readonly Lazy<PdfSimpleEncoding> NamedMacRoman = new(() => FromTable(MacRoman.Value));
+    private static readonly Lazy<PdfSimpleEncoding> NamedStandard = new(() => FromTable(Standard.Value));
 
     private static string?[] Ascii()
     {
