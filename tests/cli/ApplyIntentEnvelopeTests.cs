@@ -22,6 +22,13 @@ using Bim.Core;
 //      only print; DiffEditsCommand.Fail calls IntentPlan.Failed; the failed-envelope fragment `status = "failed", code }`
 //      occurs once over the interfaces/cli intent/edits sources (every file that names IntentPlan or IntentEnvelope, plus
 //      the four verbs and EditsInput.cs), in IntentPlan.cs.
+// P3-18: diff-edits' internal error is IntentPlan.Internal("diff-edits", e), no longer a hand-written stderr line + Fail.
+//   5. DiffEditsCommand.Plan(Func<ExecutionPlan>) (by reflection) is the library call's refusal ladder as one envelope: a
+//      forced exception prints exactly the bytes the hand-written path printed (stderr "diff-edits internal error: <type>:
+//      <message>", stdout {"status":"failed","code":"diff_edits_internal_error"}, exit 1); a library code and invalid_ir
+//      are IntentPlan.Failed; DiffEditsCommand.Run in process equals the real CLI process (success, a library refusal).
+//   6. Static: the catch-all returns IntentPlan.Internal("diff-edits", error), DiffEditsCommand.cs code has no Console.
+//      access, and the stderr detail fragment " internal error: " occurs once over the intent/edits sources, in IntentPlan.cs.
 internal static class ApplyIntentEnvelopeTests
 {
     static readonly Guid ProjectId = Guid.Parse("00000000-0000-0000-0000-0000000000b7");
@@ -91,6 +98,7 @@ internal static class ApplyIntentEnvelopeTests
         static string Cut(string text) => text.Length > 300 ? text[..300] + "..." : text;
         static string E(IntentEnvelope? e) => e is null ? "<null>" : "exit " + e.Exit.ToString(CultureInfo.InvariantCulture) + " line " + Cut(e.Line) + " diagnostic " + (e.Diagnostic ?? "<null>");
         static string Q<T>((T Value, string Out, string Err, int Exit) q) => "wrote out [" + q.Out + "] err [" + q.Err + "] exit " + q.Exit.ToString(CultureInfo.InvariantCulture);
+        static string FailedCode(string code) => JsonSerializer.Serialize(new { status = "failed", code });
         static bool Silent<T>((T Value, string Out, string Err, int Exit) q) => q.Out.Length == 0 && q.Err.Length == 0 && q.Exit == 0;
 
         // 1. Shape.
@@ -184,5 +192,93 @@ internal static class ApplyIntentEnvelopeTests
             .Select(f => (f.Name, Count: f.Code.Split(Fragment).Length - 1)).Where(f => f.Count > 0).ToArray();
         Check(counts.Length == 1 && counts[0] == ("IntentPlan.cs", 1), "the failed-envelope JSON " + Fragment + " has one copy over the interfaces/cli intent/edits sources, in IntentPlan.cs",
             string.Join(", ", counts.Select(c => c.Name + " " + c.Count.ToString(CultureInfo.InvariantCulture))));
+
+        // 5. diff-edits' refusal ladder as one envelope; a forced internal error keeps the hand-written bytes.
+        var diffPlan = typeof(DiffEditsCommand).GetMethod("Plan", Any, new[] { typeof(Func<ExecutionPlan>) });
+        Check(diffPlan is not null && diffPlan.ReturnType == typeof(IntentEnvelope), "DiffEditsCommand.Plan(Func<ExecutionPlan>) returns IntentEnvelope", diffPlan?.ReturnType.FullName ?? "<missing>");
+        {
+            var failure = new InvalidOperationException("boom diff-edits");
+            // The pre-P3-18 catch body, verbatim: its stderr line, then Fail(InternalError).
+            var handWritten = Quiet(() =>
+            {
+                Console.Error.WriteLine("diff-edits internal error: " + failure.GetType().FullName + ": " + failure.Message);
+                fail?.Invoke(null, new object[] { DiffEditsCommand.InternalError });
+                return 0;
+            });
+            Check(handWritten.Out == FailedCode(DiffEditsCommand.InternalError) + Environment.NewLine && handWritten.Err == "diff-edits internal error: System.InvalidOperationException: boom diff-edits" + Environment.NewLine && handWritten.Exit == 1,
+                "fixture: the hand-written diff-edits internal error bytes", Q(handWritten));
+            var ladder = new (string Name, Func<ExecutionPlan> Diff, IntentEnvelope Expected)[]
+            {
+                ("a forced internal error", () => throw failure, IntentPlan.Internal("diff-edits", failure)),
+                ("a forced ArgumentException that is not a library code", () => throw new ArgumentException("boom"), IntentPlan.Internal("diff-edits", new ArgumentException("boom"))),
+                ("a library code", () => throw new ArgumentException(IncrementalDiff.UnknownId), IntentPlan.Failed(IncrementalDiff.UnknownId)),
+                ("invalid_ir", () => throw new InvalidOperationException("invalid_ir"), IntentPlan.Failed("invalid_ir")),
+            };
+            foreach (var (name, diff, expected) in ladder)
+            {
+                IntentEnvelope? envelope = null;
+                var why = "";
+                var q = Quiet(() =>
+                {
+                    if (diffPlan is null) { why = "DiffEditsCommand.Plan not found; "; return 0; }
+                    try { envelope = diffPlan.Invoke(null, new object[] { diff }) as IntentEnvelope; }
+                    catch (TargetInvocationException error) { why = "Plan threw " + error.InnerException?.GetType().FullName + ": " + error.InnerException?.Message + "; "; }
+                    return 0;
+                });
+                Check(envelope is not null && envelope == expected, "DiffEditsCommand.Plan returns " + E(expected) + " (" + name + ")", why + E(envelope));
+                Check(Silent(q), "DiffEditsCommand.Plan writes nothing and leaves the exit code (" + name + ")", Q(q));
+                if (name == "a forced internal error" && envelope is { } forced)
+                {
+                    var shown = Quiet(() => { forced.Print(); return 0; });
+                    Check(shown.Out == handWritten.Out && shown.Err == handWritten.Err && shown.Exit == handWritten.Exit,
+                        "a forced diff-edits internal error prints the hand-written stdout, stderr and exit bytes", Q(shown) + " vs hand-written " + Q(handWritten));
+                }
+            }
+            var ok = Quiet(() =>
+            {
+                if (diffPlan is null) return (IntentEnvelope?)null;
+                try { return diffPlan.Invoke(null, new object[] { (Func<ExecutionPlan>)(() => IncrementalDiff.Diff(head, Array.Empty<ElementEdit>()).Plan) }) as IntentEnvelope; }
+                catch (TargetInvocationException) { return null; }
+            });
+            Check(ok.Value is { Exit: 0, Diagnostic: null } success && success.Line == JsonSerializer.Serialize(IncrementalDiff.Diff(head, Array.Empty<ElementEdit>()).Plan) && Silent(ok),
+                "DiffEditsCommand.Plan returns the plan JSON, exit 0, on success", E(ok.Value) + " " + Q(ok));
+        }
+        {
+            var projectPath = Input("diff-edits.project.json", JsonSerializer.Serialize(head));
+            var same = head.Elements[0];
+            var cases = new (string Name, string Edits)[]
+            {
+                ("a plan", JsonSerializer.Serialize(new[] { new ElementEdit("update", same.Id, same) })),
+                ("a library refusal", JsonSerializer.Serialize(new[] { new ElementEdit("delete", Guid.Parse("00000000-0000-0000-0000-0000000000b8"), null) })),
+            };
+            foreach (var (name, edits) in cases)
+            {
+                var editsPath = Input("diff-edits.edits.json", edits);
+                var args = new[] { "diff-edits", "--project", projectPath, "--edits", editsPath };
+                var q = Quiet(() => { DiffEditsCommand.Run(args); return 0; });
+                var cli = Cli(args);
+                Check(q.Out == cli.Out && q.Err == cli.Err && q.Exit == cli.Exit && cli.Out.Length > 0,
+                    "DiffEditsCommand.Run in process prints the CLI process bytes (" + name + ")", Q(q) + " vs CLI exit " + cli.Exit.ToString(CultureInfo.InvariantCulture) + " out [" + Cut(cli.Out) + "] err [" + cli.Err + "]");
+            }
+        }
+
+        // 6. Static: the internal error delegates; the stderr detail has one copy.
+        var catchAll = diffEdits.IndexOf("catch (Exception error)", StringComparison.Ordinal);
+        var catchBody = catchAll < 0 ? "" : diffEdits[catchAll..Math.Min(diffEdits.Length, catchAll + 120)];
+        var literalDiffEdits = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(cliDir, "DiffEditsCommand.cs")), blankStrings: false);
+        var literalAt = literalDiffEdits.IndexOf("catch (Exception error)", StringComparison.Ordinal);
+        var literalCatch = literalAt < 0 ? "" : literalDiffEdits[literalAt..Math.Min(literalDiffEdits.Length, literalAt + 120)];
+        Check(literalCatch.Contains("return IntentPlan.Internal(\"diff-edits\", error);", StringComparison.Ordinal),
+            "DiffEditsCommand's catch-all returns IntentPlan.Internal(\"diff-edits\", error)", Cut(literalCatch));
+        Check(!diffEdits.Contains("Console.", StringComparison.Ordinal), "DiffEditsCommand.cs code has no Console access (it prints only through IntentEnvelope.Print)", Cut(catchBody));
+        foreach (var copy in new[] { "\" internal error: \"", " internal error: " })
+        {
+            var copies = Directory.GetFiles(cliDir, "*.cs")
+                .Select(f => (Name: Path.GetFileName(f), Code: ApplyIntentTests.CodeOf(File.ReadAllText(f), blankStrings: false)))
+                .Where(f => family.Contains(f.Name, StringComparer.Ordinal) || f.Code.Contains("IntentPlan", StringComparison.Ordinal) || f.Code.Contains("IntentEnvelope", StringComparison.Ordinal))
+                .Select(f => (f.Name, Count: f.Code.Split(copy).Length - 1)).Where(f => f.Count > 0).ToArray();
+            Check(copies.Length == 1 && copies[0] == ("IntentPlan.cs", 1), "the internal-error stderr fragment [" + copy + "] has one copy over the interfaces/cli intent/edits sources, in IntentPlan.cs",
+                string.Join(", ", copies.Select(c => c.Name + " " + c.Count.ToString(CultureInfo.InvariantCulture))));
+        }
     }
 }
