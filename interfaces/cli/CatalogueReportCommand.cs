@@ -100,6 +100,7 @@ internal static class CatalogueReportCommand
     public const int MaxValueChars = 1024;
     public const int MaxMismatchRows = 1000;
     public const long MaxCopyBytes = 8L * 1024 * 1024 * 1024;
+    public const int MaxSaveAsBytes = 1024 * 1024 * 1024;
 
     const string SaveKey = "c-save";
     const string SaveCommand = "document.save_copy";
@@ -138,7 +139,7 @@ internal static class CatalogueReportCommand
 
     // The verb with the repository root given (Run passes the one every verb uses; tests pass a temporary one) and the
     // copy hashing cap (tests pass a small one). Returns the exit code and the one line Run prints.
-    internal static (int Exit, string Out) Execute(string[] args, string repositoryRoot, long maxCopyBytes = MaxCopyBytes)
+    internal static (int Exit, string Out) Execute(string[] args, string repositoryRoot, long maxCopyBytes = MaxCopyBytes, int maxSaveAsBytes = MaxSaveAsBytes)
     {
         try { return (0, Report(args, repositoryRoot, maxCopyBytes)); }
         catch (Refusal refusal) { return (1, Failure(refusal.Code, refusal.Detail)); }
