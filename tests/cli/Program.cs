@@ -1527,6 +1527,9 @@ try {
     // ---- P10-11 audit-verify log.jsonl [--anchor head.json] [--actors a,b] [--summary] [--write-anchor head.json] (tests/cli/AuditVerifyTests.cs) ----
     AuditVerifyTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
 
+    // ---- P10-20 bcf-export issues.json output.bcfzip|output.bcf (tests/cli/BcfExportCommandTests.cs) ----
+    BcfExportCommandTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
+
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
 } catch(Exception exception) {
