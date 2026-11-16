@@ -1610,3 +1610,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay211 — 2026-11-16T17:53:18Z (Claude, cloud scheduled)
 - 17:53Z LOCK taken (was FREE; relay210 released 2026-11-16T17:18:58Z).
+- 17:53Z picked P5-19 (phase 5), P6-20 (phase 6), P3-18 (phase 3) — oldest-touched (relay207, relay208); main 612169a push run 43917055034 shows only ifc-portable (macos-latest) cancelled (runner), relay210-integration run 43913038261 on the same head was 9/9 green. Workers starting on relay211-<ID>.
