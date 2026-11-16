@@ -64,7 +64,8 @@ namespace Bim.Cli;
 // "realized":{step,passed,state,detail,folder,entries,sha256,bytes,code,reply_status,reply_code,reply_entries,
 // reply_sha256,reply_bytes,disk_sha256,disk_bytes}, read from <run>/catalogue-requests/NN-doc-up-elements.doc-realized/
 // (realized.json; report.json for a refusal): see WriteRealized. A record without that step prints exactly what it did
-// before.
+// before. P4-19: a step whose recorded request (record_file, realized_file, output) names another folder is
+// request_mismatch and nothing on disk is trusted.
 // Every refusal prints one {"status":"failed","code"[,"detail"]} envelope and exits 1. catalogue_report_internal_error is a
 // defect (type and message on stderr).
 internal static class CatalogueReportCommand
@@ -209,7 +210,7 @@ internal static class CatalogueReportCommand
                 }
                 writer.WriteEndArray();
                 WriteCopy(writer, steps, copyPath, runDirectory, runName, maxCopyBytes);
-                WriteRealized(writer, steps, runDirectory);
+                WriteRealized(writer, steps, runDirectory, runName);
                 writer.WriteEndObject();
             }
             return Encoding.UTF8.GetString(buffer.WrittenSpan);
@@ -602,7 +603,9 @@ internal static class CatalogueReportCommand
 
     // P4-18: the doc-up-elements step (command doc-realized) and its folder <run>/catalogue-requests/<NN>-doc-up-elements.doc-realized
     // (NN = the step index, two digits at least, as Invoke-CatalogueDocRealized names it). Written only when the record
-    // has that step, so every other record keeps its bytes. Nothing recorded is trusted for the map: entries, sha256 and
+    // has that step, so every other record keeps its bytes. P4-19: right after not_sent, request_mismatch (detail the
+    // member: record_file, realized_file or output) when the step's recorded request names another folder or file than
+    // this one (RequestMismatch); nothing on disk is then read. Nothing recorded is trusted for the map: entries, sha256 and
     // bytes are the file's, given only when it hashes to the step reply (state match). States, in order: not_sent, no_reply
     // (no JSON object reply, or detail "status": neither succeeded nor failed), link_refused (detail catalogue-requests
     // or folder: never read), missing_folder; for a succeeded reply first report.json (the kept CLI line): report_mismatch
@@ -615,7 +618,7 @@ internal static class CatalogueReportCommand
     // unreadable report.json (read up to MaxSummaryBytes). reply_sha256 is printed lower-cased. A folder or file swapped
     // between the link checks and the reads is accepted: it needs write access to the run folder, and BoundedInput still
     // refuses a link or non-regular file at read time.
-    static void WriteRealized(Utf8JsonWriter writer, Step[] steps, string runDirectory)
+    static void WriteRealized(Utf8JsonWriter writer, Step[] steps, string runDirectory, string runName)
     {
         var step = steps.FirstOrDefault(s => s.Key == RealizedKey && s.Command == RealizedCommand);
         if (step is null) return;
@@ -637,6 +640,7 @@ internal static class CatalogueReportCommand
         var requests = Path.Combine(runDirectory, "catalogue-requests");
         var folder = Path.Combine(requests, folderName);
         if (!step.Sent) state = "not_sent";
+        else if (RequestMismatch(step.Element, runName, folderName) is { } member) { state = "request_mismatch"; detail = member; }
         else if (reply is null) state = "no_reply";
         else if (replyStatus is not ("succeeded" or "failed")) { state = "no_reply"; detail = "status"; }
         else if (IsLink(new DirectoryInfo(requests))) { state = "link_refused"; detail = "catalogue-requests"; }
@@ -693,6 +697,28 @@ internal static class CatalogueReportCommand
         WriteText(writer, "disk_sha256", diskSha);
         if (diskBytes is { } v) writer.WriteNumber("disk_bytes", v); else writer.WriteNull("disk_bytes");
         writer.WriteEndObject();
+    }
+
+    // P4-19: the path members the owner invoker records in the step's request stub: record_file (the record it sent,
+    // <folder>/record.json) and, when recorded, realized_file or output (<folder>/realized.json). Each must be text whose
+    // last segments (split on both separators, empty segments ignored, as for copy_path) are .bim, native-runs, this run,
+    // catalogue-requests, the step's folder and the file name (compared like the run name), with no "." or ".." segment
+    // anywhere. Returns the first member that differs (record_file, realized_file, output), or null when none does. An
+    // absent or null member, or a request that is not an object, is not checked (the P4-18 summary stands). The path
+    // before .bim is not compared: the repository may be read from another place than the one that ran it.
+    static string? RequestMismatch(JsonElement step, string runName, string folderName)
+    {
+        if (Member(step, "request") is not { ValueKind: JsonValueKind.Object } request) return null;
+        foreach (var (member, file) in new[] { ("record_file", "record.json"), ("realized_file", "realized.json"), ("output", "realized.json") })
+        {
+            if (!request.TryGetProperty(member, out var value) || value.ValueKind == JsonValueKind.Null) continue;
+            if (value.ValueKind != JsonValueKind.String) return member;
+            var segments = Segments(value.GetString()!);
+            string[] want = { ".bim", "native-runs", runName, "catalogue-requests", folderName, file };
+            if (segments.Any(segment => segment is "." or "..") || segments.Length < want.Length
+                || !want.Select((name, i) => string.Equals(segments[segments.Length - want.Length + i], name, PathComparison)).All(same => same)) return member;
+        }
+        return null;
     }
 
     // sha256 (64 hex, lower-cased), entries and bytes of a doc-realized line; each null when absent or malformed.
