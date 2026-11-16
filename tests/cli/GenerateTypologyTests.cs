@@ -23,6 +23,9 @@ using Bim.Generative;
 //      PrototypePipelineOptions.Pack) byte-equal to the in-process run; absent or default members keep the P7-14 pins;
 //      unknown rooms are the pipeline's typed refusals; a code_pack that is not a code skill is code_pack_invalid (kind).
 //   7. P7-18: "include":[] is normalised to the absent member: the P7-14 pins and stdout, and the composed pin a8c62da5...
+//   8. P7-19: with a non-empty skills list (repository style/code/typology packs and a rule-changing package pack)
+//      "include":[] gives the file bytes and stdout of the same run without include; duplicate include members stay
+//      request_invalid (request.include).
 internal static class GenerateTypologyTests
 {
     const string TypologyPack = "bim.typology.vivienda-unifamiliar";
@@ -391,6 +394,64 @@ internal static class GenerateTypologyTests
         ExpectComposed("skills and precedence with tuned weights", Request(TypologyPack, 3, 16, 16, 4, 2, ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5},\"precedence\":"
             + Ids(CompactStyle, TypologyPack) + ",\"skills\":" + Ids(CompactStyle)), pack,
             tunedRequest, new[] { compact }, new[] { CompactStyle, TypologyPack }, same: tunedComposed, sameAs: "the tuned-weights run without extras (compact-modern adds no planner rule)");
+        // P7-19: "include":[] with a NON-EMPTY skills list is the same composed run without include: the CLI output file and
+        // stdout of both requests are byte-equal, and equal the in-process RunComposed with Include absent. Sensitivity: in
+        // process, Include: [] is recorded in the document and differs from the absent member, so only the CLI normalisation
+        // (P7-18) makes the two requests equal; without it every success case below fails.
+        void ExpectEmptyIncludeWithSkills(string label, string dll, string absentText, string emptyText, TypologyPipelineResult library, TypologyPipelineResult emptyLibrary,
+            string[] skillIds)
+        {
+            var absentOut = Output();
+            var absent = CliAt(dll, null, "generate-typology", Input("p7-19-absent.json", absentText), absentOut);
+            var emptyOut = Output();
+            var empty = CliAt(dll, null, "generate-typology", Input("p7-19-empty.json", emptyText), emptyOut);
+            Check(skillIds.Length > 0 && emptyText.Contains("\"include\":[]", StringComparison.Ordinal) && !absentText.Contains("\"include\"", StringComparison.Ordinal),
+                label + ": the fixture pair is a non-empty skills list with and without \"include\":[] (P7-19)");
+            // Every case must be a result (ranked or infeasible): a refused case would lose the sensitivity check below.
+            Check(library.Status != PrototypePipelineStatus.Refused && emptyLibrary.Status != PrototypePipelineStatus.Refused,
+                label + ": fixture: the in-process RunComposed runs (with and without Include: []) are results, not refusals (P7-19)", D(absent) + " / " + D(empty));
+            if (library.Status == PrototypePipelineStatus.Refused) return;
+            var expected = Utf8(TypologyPipelineSerializer.Serialize(library));
+            var emptyRecorded = Utf8(TypologyPipelineSerializer.Serialize(emptyLibrary));
+            Check(!emptyRecorded.SequenceEqual(expected), label + ": in process Include: [] differs from the absent member (the oracle is sensitive to the normalisation) (P7-19)",
+                Hex(emptyRecorded) + " vs " + Hex(expected));
+            var envelope = Parse(absent.Out);
+            Check(absent.Exit == 0 && Read(absentOut).SequenceEqual(expected) && Str(envelope, "rules") == "composed" && envelope is { } ae && ae.TryGetProperty("skills", out var listed)
+                && listed.ValueKind == JsonValueKind.Array && listed.EnumerateArray().Select(skill => skill.GetString()).SequenceEqual(skillIds),
+                label + ": without include the output is the in-process RunComposed bytes and stdout lists the extra skills (P7-19)", D(absent) + " expected sha " + Hex(expected));
+            Check(empty.Exit == 0 && Read(emptyOut).SequenceEqual(Read(absentOut)) && empty.Out == absent.Out,
+                label + ": \"include\":[] gives the same file bytes and the same stdout as the run without include (P7-19)", D(empty) + " / " + D(absent));
+        }
+        TypologyBriefRequest WithEmptyInclude(TypologyBriefRequest request) => request with { Include = Array.Empty<string>() };
+        foreach (var (label, absentExtra, emptyExtra, request, extras, precedence, skillIds) in new (string, string, string, TypologyBriefRequest, SkillManifest[], string[]?, string[])[]
+        {
+            ("skills [compact-modern] on family 3", ",\"skills\":" + Ids(CompactStyle), ",\"skills\":" + Ids(CompactStyle) + ",\"include\":[]",
+                request3, new[] { compact }, null, new[] { CompactStyle }),
+            ("include [] before skills [compact-modern] on the family-4 lot", ",\"skills\":" + Ids(CompactStyle), ",\"include\":[],\"skills\":" + Ids(CompactStyle),
+                request4, new[] { compact }, null, new[] { CompactStyle }),
+            ("skills naming the code and typology packs", ",\"skills\":" + Ids(CodePack, TypologyPack), ",\"skills\":" + Ids(CodePack, TypologyPack) + ",\"include\":[]",
+                request3, new[] { caba, pack }, null, new[] { CodePack, TypologyPack }),
+            ("skills [compact-modern] named twice with the default code pack named", ",\"code_pack\":\"" + CodePack + "\",\"skills\":" + Ids(CompactStyle, CompactStyle),
+                ",\"code_pack\":\"" + CodePack + "\",\"skills\":" + Ids(CompactStyle, CompactStyle) + ",\"include\":[]",
+                request3, new[] { compact, compact }, null, new[] { CompactStyle, CompactStyle }),
+            ("skills [compact-modern], precedence and tuned weights", ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5},\"precedence\":" + Ids(CompactStyle, TypologyPack) + ",\"skills\":" + Ids(CompactStyle),
+                ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5},\"precedence\":" + Ids(CompactStyle, TypologyPack) + ",\"include\":[],\"skills\":" + Ids(CompactStyle),
+                tunedRequest, new[] { compact }, new[] { CompactStyle, TypologyPack }, new[] { CompactStyle }),
+        })
+        {
+            var lot = request.Lot;
+            ExpectEmptyIncludeWithSkills(label, cliDll,
+                Request(TypologyPack, request.FamilySize, lot.WidthMetres, lot.DepthMetres, request.Alternatives, request.Seed, absentExtra),
+                Request(TypologyPack, request.FamilySize, lot.WidthMetres, lot.DepthMetres, request.Alternatives, request.Seed, emptyExtra),
+                Composed(pack, request, extras, precedence), Composed(pack, WithEmptyInclude(request), extras, precedence), skillIds);
+        }
+        // A non-empty include with skills is not normalised: it reaches RunComposed and differs from the run without include.
+        var studyCompact = Composed(pack, R3(new[] { "study" }), new[] { compact }, null);
+        var studyCompactBytes = Utf8(TypologyPipelineSerializer.Serialize(studyCompact));
+        Check(studyCompact.Status != PrototypePipelineStatus.Refused && !studyCompactBytes.SequenceEqual(compactOne),
+            "P7-19 fixture: with skills [compact-modern], include [study] is a result that differs from the run without include");
+        ExpectComposed("skills [compact-modern] with include [study] (not normalised)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle) + ",\"include\":" + Ids("study")),
+            pack, R3(new[] { "study" }), new[] { compact }, null, same: studyCompactBytes, sameAs: "the in-process include [study] composed run with compact-modern");
         ExpectComposed("two conflicting style packs", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle, MasonryStyle)), pack, request3,
             new[] { compact, masonry }, null, SkillCodes.SkillConflict);
         ExpectComposed("a precedence entry that is not a composed skill", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"precedence\":" + Ids("xx.no-such.skill")), pack, request3,
@@ -504,6 +565,10 @@ internal static class GenerateTypologyTests
             ("a control character in an include entry", good[..^1] + ",\"include\":[\"study\",\"gar\\u0001age\"]}", "include[1]"),
             ("a newline in an include entry", good[..^1] + ",\"include\":[\"study\\n\"]}", "include[0]"),
             ("a duplicate include member", good[..^1] + ",\"include\":[],\"include\":[]}", "request.include"),
+            // P7-19: the duplicate stays request_invalid with a non-empty skills list, whichever member is empty.
+            ("a duplicate empty include member with skills", good[..^1] + ",\"skills\":" + Ids(CompactStyle) + ",\"include\":[],\"include\":[]}", "request.include"),
+            ("a duplicate include member ([study] then []) with skills", good[..^1] + ",\"skills\":" + Ids(CompactStyle) + ",\"include\":[\"study\"],\"include\":[]}", "request.include"),
+            ("a duplicate include member ([] then [study]) before skills", good[..^1] + ",\"include\":[],\"include\":[\"study\"],\"skills\":" + Ids(CompactStyle) + "}", "request.include"),
             ("a non-string code_pack", good[..^1] + ",\"code_pack\":7}", "code_pack"),
             ("null code_pack", good[..^1] + ",\"code_pack\":null}", "code_pack"),
             ("an array code_pack", good[..^1] + ",\"code_pack\":[\"" + CodePack + "\"]}", "code_pack"),
@@ -642,6 +707,15 @@ internal static class GenerateTypologyTests
                         : strict.Exit == 0 && Read(strictOut).SequenceEqual(strictExpected) && Str(Parse(strict.Out), "skills") is null && Parse(strict.Out) is { } so
                             && so.TryGetProperty("skills", out var strictSkills) && strictSkills.GetArrayLength() == 1 && strictSkills[0].GetString() == stricter.Id),
                     "an extra stricter pack read from the package skills/ is RunComposed with that manifest (traced to its rule, unlike CABA + typology)", D(strict));
+                // P7-19: a rule-changing extra pack read from the package skills/, with and without "include":[].
+                foreach (var (strictLabel, strictRequest) in new[] { ("family-4 lot", request4), ("family-3 16 x 16 lot", request3) })
+                {
+                    var strictLot = strictRequest.Lot;
+                    string StrictText(string extra) => Request(TypologyPack, strictRequest.FamilySize, strictLot.WidthMetres, strictLot.DepthMetres, strictRequest.Alternatives, strictRequest.Seed, extra);
+                    ExpectEmptyIncludeWithSkills("the stricter package pack (a rule-changing extra) on the " + strictLabel, packageDll,
+                        StrictText(",\"skills\":" + Ids(stricter.Id)), StrictText(",\"skills\":" + Ids(stricter.Id) + ",\"include\":[]"),
+                        Composed(pack, strictRequest, new[] { stricter }, null), Composed(pack, WithEmptyInclude(strictRequest), new[] { stricter }, null), new[] { stricter.Id });
+                }
                 var badSkillOut = Output();
                 var badSkill = CliAt(packageDll, null, "generate-typology", Input("bad-skill.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids("zz.test.bad-json"))), badSkillOut);
                 Check(badSkill.Exit == 1 && Str(Parse(badSkill.Out), "code") == "generate_typology_skill_invalid" && Str(Parse(badSkill.Out), "detail") == "json_invalid"

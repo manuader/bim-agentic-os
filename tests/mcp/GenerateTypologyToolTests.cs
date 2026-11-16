@@ -23,6 +23,8 @@ using Bim.Mcp;
 //   5. The real Release Bim.Mcp.dll answers the same bytes over stdio.
 //   6. Static: the tool calls GenerateTypologyCommand.Document and contains no parser, pipeline, pack lookup or file access
 //      of its own; the MCP projects link the CLI source.
+//   7. P7-19: "include":[] with a non-empty skills list is the tool text, CLI file and CLI stdout of the run without include;
+//      a duplicate include member stays request_invalid (request.include) in three member orders.
 internal static class GenerateTypologyToolTests
 {
     const string TypologyPack = "bim.typology.vivienda-unifamiliar";
@@ -162,6 +164,39 @@ internal static class GenerateTypologyToolTests
             Document(TypologyPipeline.Run(pack, request4, options)), PinnedInfeasibleSha256);
         Expect("\"include\":[] with \"skills\":[] (P7-18)", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[],\"skills\":[]"),
             Document(TypologyPipeline.RunComposed(pack, request3, options, Array.Empty<SkillManifest>(), null)), PinnedComposedSha256);
+        // P7-19: "include":[] with a NON-EMPTY skills list: the tool text equals the text without include, the in-process
+        // RunComposed with Include absent and the CLI output file; the CLI stdout of both requests is the same line. In process
+        // Include: [] is recorded and differs, so only the shared parser's normalisation makes them equal.
+        foreach (var (label, absentExtra, emptyExtra, request, extras, precedence, skillIds) in new (string, string, string, TypologyBriefRequest, SkillManifest[], string[]?, string[])[]
+        {
+            ("skills [compact-modern] on family 3", ",\"skills\":" + Ids(CompactStyle), ",\"skills\":" + Ids(CompactStyle) + ",\"include\":[]",
+                request3, new[] { compact }, null, new[] { CompactStyle }),
+            ("include [] before skills [compact-modern] on the family-4 lot", ",\"skills\":" + Ids(CompactStyle), ",\"include\":[],\"skills\":" + Ids(CompactStyle),
+                request4, new[] { compact }, null, new[] { CompactStyle }),
+            ("skills naming the code and typology packs", ",\"skills\":" + Ids(CodePack, TypologyPack), ",\"skills\":" + Ids(CodePack, TypologyPack) + ",\"include\":[]",
+                request3, new[] { caba, pack }, null, new[] { CodePack, TypologyPack }),
+            ("skills [compact-modern], precedence and tuned weights", ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5},\"precedence\":" + Ids(CompactStyle, TypologyPack) + ",\"skills\":" + Ids(CompactStyle),
+                ",\"weights\":{\"compliance\":0.2,\"area_fit\":0.5},\"precedence\":" + Ids(CompactStyle, TypologyPack) + ",\"include\":[],\"skills\":" + Ids(CompactStyle),
+                tunedRequest, new[] { compact }, new[] { CompactStyle, TypologyPack }, new[] { CompactStyle }),
+        })
+        {
+            var lot = request.Lot;
+            string RequestText(string extra) => Request(TypologyPack, request.FamilySize, lot.WidthMetres, lot.DepthMetres, request.Alternatives, request.Seed, extra);
+            var library = TypologyPipeline.RunComposed(pack, request, options, extras, precedence);
+            var emptyLibrary = TypologyPipeline.RunComposed(pack, request with { Include = Array.Empty<string>() }, options, extras, precedence);
+            Check(library.Status != PrototypePipelineStatus.Refused && !Document(emptyLibrary).SequenceEqual(Document(library)),
+                label + ": fixture: a result, and in process Include: [] differs from the absent member (P7-19)");
+            var absentText = RequestText(absentExtra);
+            var emptyText = RequestText(emptyExtra);
+            var absentDocument = Expect(label + " without include (P7-19)", absentText, Document(library));
+            var emptyDocument = Expect(label + " with \"include\":[] (P7-19)", emptyText, Document(library));
+            Check(emptyDocument.SequenceEqual(absentDocument), label + ": the \"include\":[] tool text is the text without include byte for byte (P7-19)");
+            var absentCli = Cli(Input("p7-19-absent.json", absentText));
+            var emptyCli = Cli(Input("p7-19-empty.json", emptyText));
+            Check(absentCli.Exit == 0 && emptyCli.Exit == 0 && emptyCli.Out == absentCli.Out && absentCli.File is not null && emptyCli.File is not null
+                && emptyCli.File.SequenceEqual(absentCli.File) && absentCli.Out.Contains("\"skills\":" + Ids(skillIds), StringComparison.Ordinal),
+                label + ": the CLI file and stdout are the same with and without \"include\":[] (P7-19) | " + Short(absentCli.Out) + " / " + Short(emptyCli.Out));
+        }
 
         // ---- 2. refusals: isError, byte-equal to the CLI stdout line, no CLI file ----
         string Refused(string label, string requestPath, string? expected = null)
@@ -183,6 +218,13 @@ internal static class GenerateTypologyToolTests
             Code("generate_typology_request_invalid", "precedence[1]"));
         Refused("65 skills (over the limit)", Input("skills-65.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(Enumerable.Repeat(CompactStyle, 65).ToArray()))),
             Code("generate_typology_request_invalid", "skills"));
+        // P7-19: a duplicate include member stays request_invalid with a non-empty skills list.
+        Refused("a duplicate empty include member with skills (P7-19)", Input("include-duplicate.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle) + ",\"include\":[],\"include\":[]")),
+            Code("generate_typology_request_invalid", "request.include"));
+        Refused("a duplicate include member ([study] then []) with skills (P7-19)", Input("include-duplicate-2.json",
+            Request(TypologyPack, 3, 16, 16, 4, 0, ",\"skills\":" + Ids(CompactStyle) + ",\"include\":[\"study\"],\"include\":[]")), Code("generate_typology_request_invalid", "request.include"));
+        Refused("a duplicate include member ([] then [study]) before skills (P7-19)", Input("include-duplicate-3.json",
+            Request(TypologyPack, 3, 16, 16, 4, 0, ",\"include\":[],\"include\":[\"study\"],\"skills\":" + Ids(CompactStyle))), Code("generate_typology_request_invalid", "request.include"));
         Refused("a code_pack that is not a code skill (P7-16)", Input("code-pack-kind.json", Request(TypologyPack, 3, 16, 16, 4, 0, ",\"code_pack\":\"" + CompactStyle + "\"")),
             Code("generate_typology_code_pack_invalid", "kind"));
         Refused("an unknown typology pack", Input("unknown-pack.json", Request("xx.no-such.pack", 3, 16, 16, 4, 0)), Code("generate_typology_pack_unavailable", "input_not_found"));
