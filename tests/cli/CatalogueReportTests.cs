@@ -196,6 +196,16 @@ internal static class CatalogueReportTests
         // P4-18: a record without the doc-up-elements step keeps today's bytes: the copy is the last member, no realized.
         Check(first.Out.EndsWith(",\"copy\":" + passCopy + "}", StringComparison.Ordinal) && Raw(report, "realized") == "<missing realized>", "a run without the doc-realized step prints no realized member (copy stays last)", D(first));
         Check(Report(pass, pass.Run + Path.DirectorySeparatorChar).Out == first.Out, "a trailing separator gives the same report");
+        // P1-18: members the verb does not know (the run record's save_as_path and save_as_sha256, or any later one) change
+        // nothing in the report: the same bytes as without them.
+        var unknown = Make(Mutate(passTemplate, r =>
+        {
+            r["save_as_path"] = WindowsRun("__RUN__") + "\\BIM-Agentic-Test-c04-" + Stamp + "-r1-guardado.rvt";
+            r["save_as_sha256"] = new string('a', 64);
+            r["p1_18_unknown_member"] = new JsonObject { ["nested"] = new JsonArray(1, "two", null) };
+        }), CopyBytes);
+        var unknownReport = Report(unknown);
+        Check(unknownReport.Exit == 0 && unknownReport.Out.Replace(unknown.Name, pass.Name, StringComparison.Ordinal) == first.Out, "catalogue-report ignores unknown record members (save_as_path, save_as_sha256, any other): the same report", D(unknownReport));
         if (OperatingSystem.IsWindows()) Check(Report(pass, Path.Combine(Path.GetDirectoryName(pass.Run)!, pass.Name.ToUpperInvariant())).Out == first.Out, "the run name is echoed as on disk whatever the argument's case (Windows)");
         var forward = Make(passTemplate, CopyBytes, name => Path.Combine(Path.GetTempPath(), "x", ".bim", "native-runs", name).Replace('\\', '/'));
         Check(Report(forward).Exit == 0, "a summary run_directory with '/' separators is matched too");
@@ -648,6 +658,12 @@ internal static class CatalogueReportTests
         Check(Str(cleanCopy, "state") == "match" && Raw(cleanCopy, "save_passed") == "true" && Raw(cleanCopy, "recorded_check_ok") == "true" && cleanFile is not null
             && Str(cleanCopy, "disk_sha256") == Sha(File.ReadAllBytes(Path.Combine(clean.Run, cleanFile))), "end to end (clean): the copy the fake saved matches its recorded sha256", Raw(clean.Report, "copy"));
 
+        // P1-18: the real writer records the save_as file c-as-save wrote (path and sha256 = the file in the run) next to
+        // copy_path, and the verb reads that record as before (above).
+        var cleanSaveAs = Str(clean.Record, "save_as_path");
+        var cleanSaveAsFile = cleanSaveAs is null ? null : Path.Combine(clean.Run, Path.GetFileName(cleanSaveAs));
+        Check(cleanSaveAsFile is not null && cleanSaveAs!.EndsWith("-guardado.rvt", StringComparison.Ordinal) && File.Exists(cleanSaveAsFile) && Str(clean.Record, "save_as_sha256") == Sha(File.ReadAllBytes(cleanSaveAsFile)),
+            "end to end (clean): the record names the save_as file and its sha256", Raw(clean.Record, "save_as_path") + " " + Raw(clean.Record, "save_as_sha256"));
         var mixed = Read("mixed");
         Check(mixed.Result.Exit == 0 && Raw(mixed.Report, "all_passed") == "false" && SameGroups(mixed.Report, mixed.Record), "end to end (mixed): failures and blocked steps are counted as the real writer counted them", D(mixed.Result));
         Check(string.Join(",", Items(mixed.Report, "blocked").Select(b => Str(b, "key"))) == "s-types-column,s-column", "end to end (mixed): the missing column type blocks two steps", Raw(mixed.Report, "blocked"));
@@ -673,6 +689,7 @@ internal static class CatalogueReportTests
         }
 
         var v1 = Read("v1only");
+        Check(Raw(v1.Record, "save_as_path") == "null" && Raw(v1.Record, "save_as_sha256") == "null", "end to end (v1only): no save_as step: save_as_path and save_as_sha256 null", Raw(v1.Record, "save_as_path"));
         Check(v1.Result.Exit == 0 && Raw(v1.Report, "scope") == "\"v1_only\"" && Raw(v1.Report, "overall") == Counts(null, 17, 17, 0, 0, 0) && Raw(v1.Report, "copy").StartsWith("{\"state\":\"not_in_run\"", StringComparison.Ordinal),
             "end to end (v1only): the 17 v1 steps, no copy step: not_in_run", D(v1.Result));
         Check(Raw(v1.Report, "realized") == "<missing realized>" && v1.Result.Out.EndsWith("," + "\"copy\":" + Raw(v1.Report, "copy") + "}", StringComparison.Ordinal), "end to end (v1only): no doc-realized step, no realized member", D(v1.Result));

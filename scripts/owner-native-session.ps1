@@ -22,7 +22,7 @@
 # and its dependents "blocked", not failed. Schedule field names need the Revit UI in English. -CatalogueV1Only
 # (implies -Catalogue) runs only the 17 v1 steps.
 # Records .bim/native-sessions/<utc>/catalogue-run<N>.json (every step: request, response, requested vs observed,
-# pass/fail) and prints the result line: "Catálogo: 17/17 pasos OK; grupos: v2 6/6, ...; total N/N; resultado: TODO OK"
+# pass/fail; copy_path, and since P1-18 save_as_path and save_as_sha256, null unless c-as-save passed) and prints the result line: "Catálogo: 17/17 pasos OK; grupos: v2 6/6, ...; total N/N; resultado: TODO OK"
 # means everything passed ("resultado: FALLÓ en <grupos>" names the failed groups; "OK con bloqueados: <grupo (n)>"
 # means nothing failed but some preconditions were missing). Unless -CloseWaitSeconds is given
 # the child Revit stays open so the owner can look at the (unsaved) result. See docs/owner-verification-session.md.
@@ -153,9 +153,13 @@ try {
      result_line = (Format-CatalogueSummary $sequence); counts = $sequence.counts; groups = $sequence.groups; overall = $sequence.overall; all_passed = $sequence.all_passed; aborted = $sequence.aborted; picked = $sequence.picked
      fixture_saved = $false
      copy_path = $sequence.picked['copy_path']
+     # P1-18: the file c-as-save wrote and the sha256 it read back (checked equal to the file on disk), only when c-as-save
+     # passed; both null otherwise (failed, not sent, -CatalogueV1Only).
+     save_as_path = $($savedAs = @($sequence.steps | Where-Object { $_.key -eq 'c-as-save' -and $_.passed } | Select-Object -First 1); if ($savedAs.Count -and $sequence.picked['save_as_path']) { [string]$sequence.picked['save_as_path'] } else { $savedAs = @(); $null })
+     save_as_sha256 = $(if ($savedAs.Count) { [string](Get-CataloguePath $savedAs[0].response 'readback.save_as.sha256') } else { $null })
      open_document_path = $(if ($sequence.picked['document_path']) { $sequence.picked['document_path'] } else { $boot.documentPath })
      document_switched_by = $sequence.picked['document_switched_by']
-     document_note = 'The fixture document is never saved. The copia group saves two new files next to the fixture, before the destructive group: document.save_copy writes BIM-Agentic-Test-c04-*-copia.rvt (copy_path) and document.save_as then saves that copy as BIM-Agentic-Test-c04-*-guardado.rvt; Revit ends with the file open_document_path names open and the last group (which deletes the v1 south wall and its door) changes it only in memory. Closing the child Revit without saving discards those changes.'
+     document_note = 'The fixture document is never saved. The copia group saves two new files next to the fixture, before the destructive group: document.save_copy writes BIM-Agentic-Test-c04-*-copia.rvt (copy_path) and document.save_as then saves that copy as BIM-Agentic-Test-c04-*-guardado.rvt (save_as_path, with the sha256 read back as save_as_sha256, when c-as-save passed; null otherwise); Revit ends with the file open_document_path names open and the last group (which deletes the v1 south wall and its door) changes it only in memory. Closing the child Revit without saving discards those changes.'
      steps = $sequence.steps
     } | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $cataloguePath
     $run.catalogue = [ordered]@{ file = $cataloguePath; counts = $sequence.counts; groups = $sequence.groups; overall = $sequence.overall; all_passed = $sequence.all_passed; aborted = $sequence.aborted }

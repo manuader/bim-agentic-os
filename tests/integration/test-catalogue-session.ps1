@@ -539,6 +539,48 @@ $asAfter = (Invoke-FakeSequence @{ SaveAsFailsAfterSave = $true } -All).Result
 Assert (!(Get-StepField $asAfter 'c-as-save' 'passed') -and [string](Get-CataloguePath (Get-StepField $asAfter 'c-as-save' 'response') 'code') -eq 'transaction_failed' -and $null -eq (Get-StepField $asAfter 'c-as-save-again' 'request')) "a save_as failing after Save As fails c-as-save: $(Get-StepField $asAfter 'c-as-save' 'reason')"
 Assert ((Get-StepField $asAfter 'c-as-levels-new' 'passed') -and $asAfter.picked['document_path'] -eq $saveAsPath -and $asAfter.picked['document_switched_by'] -eq 'c-as-levels-new' -and @(Get-StepField $asAfter 'c-as-levels-new' 'comparisons' | Where-Object { $null -ne $_ -and $_.check -like '*cambia al archivo nuevo*' -and $_.ok }).Count -eq 1) "the new-file probe switches the run and records it: $(Get-FailedSteps $asAfter)"
 Assert ((Get-StepField $asAfter 'c-as-levels-previous' 'passed') -and (Get-RequestValue $asAfter 'm-delete' 'document.path') -eq $saveAsPath -and $asAfter.overall.failed -eq 2) "after that switch the destructive group runs on the new file: $(Get-FailedSteps $asAfter)"
+# P1-18: the -Catalogue run record names the save_as file. The record writer block of scripts/owner-native-session.ps1
+# (extracted the way tests/cli/catalogue-report-record.ps1 extracts it, run with the variables the session sets) writes
+# save_as_path and save_as_sha256 right after copy_path: the new file and the sha256 read back (checked = the file on
+# disk) when c-as-save passed; both null when it failed (even with a file on disk), was not sent or the run was v1 only.
+$sessionWriterMatch = [regex]::Match([IO.File]::ReadAllText((Join-Path $root 'scripts/owner-native-session.ps1')), '(?s)\$cataloguePath = Join-Path \$session "catalogue-run\$i\.json"\r?\n(?<writer>\s*\[ordered\]@\{.*?\| ConvertTo-Json -Depth 24 \| Set-Content -LiteralPath \$cataloguePath)')
+Assert $sessionWriterMatch.Success 'P1-18: the catalogue record writer of scripts/owner-native-session.ps1 is found'
+$sessionWriter = [scriptblock]::Create($sessionWriterMatch.Groups['writer'].Value)
+function Get-TestRunRecord($Sequence, [string]$Document, [string]$Folder = $inProcessTree) {
+    $sequence = $Sequence
+    $i = 1
+    $session = [IO.Path]::Combine($Folder, 'session-' + [guid]::NewGuid())
+    New-Item -ItemType Directory -Force $session | Out-Null
+    $summary = [ordered]@{ head = 'p118'; catalogue_scope = 'one_run_all_groups' }
+    $child = [pscustomobject]@{ Id = 4242 }
+    $boot = [pscustomobject]@{ pipeName = 'bim-agentic-os-2025-4242'; documentPath = $Document; documentUniqueId = $documentUid; revitBuild = '25.4.0.32' }
+    $cataloguePath = Join-Path $session "catalogue-run$i.json"
+    . $sessionWriter
+    $text = [IO.File]::ReadAllText($cataloguePath)
+    $parsed = $text | ConvertFrom-Json
+    return @{ Text = $text; Names = @($parsed.PSObject.Properties.Name); CopyPath = (Get-CatalogueMember $parsed 'copy_path'); SaveAsPath = (Get-CatalogueMember $parsed 'save_as_path'); SaveAsSha = (Get-CatalogueMember $parsed 'save_as_sha256') }
+}
+function Test-SaveAsMembersFollowCopy($Names) {
+    $at = [Array]::IndexOf([string[]]$Names, 'copy_path')
+    return $at -ge 0 -and $at + 2 -lt $Names.Count -and $Names[$at + 1] -ceq 'save_as_path' -and $Names[$at + 2] -ceq 'save_as_sha256'
+}
+if ($sessionWriterMatch.Success) {
+    $recordRun = (Invoke-FakeSequence -All).Result
+    $recordDiskSha = if (Test-Path -LiteralPath $saveAsPath -PathType Leaf) { Get-CatalogueFileSha256 $saveAsPath } else { $null }
+    $passedRecord = Get-TestRunRecord $recordRun $documentPath
+    Assert ((Get-StepField $recordRun 'c-as-save' 'passed') -and (Test-SaveAsMembersFollowCopy $passedRecord.Names) -and [string]$passedRecord.SaveAsPath -ceq $saveAsPath -and $null -ne $recordDiskSha -and [string]$passedRecord.SaveAsSha -ceq $recordDiskSha -and [string]$passedRecord.CopyPath -ceq $copyPath) "P1-18: after a passing c-as-save the record names the save_as file and its sha256 next to copy_path: $($passedRecord.Names -join ',') save_as_path=$($passedRecord.SaveAsPath) save_as_sha256=$($passedRecord.SaveAsSha) disk=$recordDiskSha"
+    foreach ($case in @(
+            @{ Label = 'a save_as sha256 read back wrong'; Faults = @{ SaveAsHashOff = $true } },
+            @{ Label = 'a save_as failing after Save As'; Faults = @{ SaveAsFailsAfterSave = $true } },
+            @{ Label = 'a refused save_as'; Faults = @{ FailCommands = @('document.save_as') } })) {
+        $failedRun = (Invoke-FakeSequence $case.Faults -All).Result
+        $failedRecord = Get-TestRunRecord $failedRun $documentPath
+        Assert (!(Get-StepField $failedRun 'c-as-save' 'passed') -and (Test-SaveAsMembersFollowCopy $failedRecord.Names) -and $null -eq $failedRecord.SaveAsPath -and $null -eq $failedRecord.SaveAsSha) "P1-18: with $($case.Label) the record keeps save_as_path and save_as_sha256 null: $($failedRecord.Names -join ',') $($failedRecord.SaveAsPath) $($failedRecord.SaveAsSha)"
+    }
+    $v1Record = Get-TestRunRecord (Invoke-FakeSequence).Result $documentPath
+    Assert ((Test-SaveAsMembersFollowCopy $v1Record.Names) -and $null -eq $v1Record.SaveAsPath -and $null -eq $v1Record.SaveAsSha -and $null -eq $v1Record.CopyPath) "P1-18: a v1-only record has save_as_path and save_as_sha256 null: $($v1Record.Names -join ',')"
+}
+
 # Without an owner-enabled folder the outside_copies_root step is blocked (not failed) and names the owner file.
 $noOwnerFake = New-FakeRevitState $documentUid
 $noOwnerFake.DocumentPath = $documentPath
@@ -1025,6 +1067,18 @@ try {
             Assert ([string](Get-CatalogueMember $refusedReply 'code') -eq 'args_invalid' -and [string](Get-CatalogueMember $refusedReply 'field') -eq 'args.path' -and [string](Get-CatalogueMember $refusedReply 'detail') -like 'path_relative:*') "off Windows the real CLI refuses the $key POSIX target as path_relative: $(Get-StepField $real $key 'reason')"
         }
         Assert (@($real.steps | Where-Object { $_.key -in $asKeys -and $_.passed }).Count -eq 0 -and $real.picked['document_switched_by'] -eq 'c-save' -and !(Test-Path -LiteralPath $realAsSave) -and (Format-CatalogueSummary $real) -like '*resultado: FALLÓ en copia*') "off Windows no save_as passes or switches the document: $(Format-CatalogueSummary $real)"
+    }
+    # P1-18: the session's record writer on the real-CLI run: on Windows the save_as file and its sha256 (= the file on
+    # disk) next to copy_path; off Windows c-as-save is refused path_relative, so both are null.
+    if ($sessionWriterMatch.Success) {
+        $realRecord = Get-TestRunRecord $real ([IO.Path]::GetFullPath($document)) $work
+        if ($IsWindows) {
+            $realDiskSha = if (Test-Path -LiteralPath $realAsSave -PathType Leaf) { Get-CatalogueFileSha256 $realAsSave } else { $null }
+            Assert ((Test-SaveAsMembersFollowCopy $realRecord.Names) -and [string]$realRecord.SaveAsPath -ceq $realAsSave -and $null -ne $realDiskSha -and [string]$realRecord.SaveAsSha -ceq $realDiskSha) "P1-18: the real-CLI run record names the save_as file and its sha256: $($realRecord.Names -join ',') $($realRecord.SaveAsPath) $($realRecord.SaveAsSha) disk=$realDiskSha"
+        }
+        else {
+            Assert ((Test-SaveAsMembersFollowCopy $realRecord.Names) -and $null -eq $realRecord.SaveAsPath -and $null -eq $realRecord.SaveAsSha -and $null -ne $realRecord.CopyPath) "P1-18: off Windows the real-CLI run record keeps save_as_path and save_as_sha256 null: $($realRecord.Names -join ',') $($realRecord.SaveAsPath) $($realRecord.SaveAsSha)"
+        }
     }
     $received = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue)
     $invalid = ($real.steps | Where-Object { $_.key -eq 'invalid-arc' }).operation_id
