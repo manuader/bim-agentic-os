@@ -9,7 +9,7 @@
 # client that reconnected at once (revit-command --all, one connection per page) and sat in the old listener's backlog
 # was reset (pipe_io_error). With the next instance alive the listener never closes between pages.
 # P2-24, test-only: -RecorderFailures "<operation_id>:<count>,..." (needs -ExternalEdits with ids) calls
-# Add-FakeRecorderFailure with that count once the named revit.command has run (its first time), before its reply is
+# Add-FakeRecorderFailure with that count once a request with that operation id has been received (its first time; refused or dry-run included), before its reply is
 # written, so the recorder failure lands between that call and the next; journal.read then reports it as the in-process
 # fake does (P2-23). A malformed pair, a count below 1, a duplicate id or no pair is refused before the pipe is ready.
 # Without the option nothing is injected and every reply is unchanged.
@@ -91,7 +91,8 @@ try {
                     $before = $state.Received.Count
                     $response = Invoke-FakeRevitCommand $state $commandText
                     [IO.File]::AppendAllText($LogFile, $state.Received[$state.Received.Count - 1] + "`n")
-                    # P2-24: the recorder failures scheduled after this operation, once, before its reply is written.
+                    # P2-24: the recorder failures scheduled after any request carrying this operation id (refused or dry-run
+                    # included: Invoke-FakeRevitCommand records the id before validating), once, before its reply is written.
                     $inject = 0
                     if ($state.Received.Count -gt $before -and $failuresAfter.Remove($state.Received[$state.Received.Count - 1], [ref]$inject)) { Add-FakeRecorderFailure $state $inject }
                     if ($DropReplyCommand) {

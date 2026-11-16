@@ -64,7 +64,8 @@ The fixture model itself is never saved. The `copia` group saves two new files n
 Each sha256 is compared with the file on disk and recorded in the step's readback. The last group (which deletes the v1
 south wall and its door) changes the `-guardado.rvt` file only in memory, and the run ends with it open. When Revit asks
 at close whether to save, answer **No**, so both files stay equal to their recorded sha256. `catalogue-run<N>.json`
-records `fixture_saved` (false), `copy_path`, `open_document_path` (the `-guardado.rvt` file after a successful run) and
+records `fixture_saved` (false), `copy_path`, `save_as_path` and `save_as_sha256` (P1-18: the `-guardado.rvt` file and
+its read-back sha256 when `c-as-save` passed, otherwise null), `open_document_path` (the `-guardado.rvt` file after a successful run) and
 `document_switched_by`: `c-as-save`; `c-as-levels-new` when save_as failed after Save As had already re-pointed the
 document and the probe naming the new file succeeded; `c-save` or `c-levels-copy` when no save_as switched it.
 
