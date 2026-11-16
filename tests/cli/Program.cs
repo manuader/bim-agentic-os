@@ -1188,8 +1188,10 @@ try {
         Check(File.Exists(deSourcePath),"interfaces/cli/DiffEditsCommand.cs exists");
         if(File.Exists(deSourcePath)) {
             var deSource=File.ReadAllText(deSourcePath);
-            // A defect is reported on stderr (type and message); stdout keeps the one-line envelope.
-            Check(deSource.Contains("catch (Exception error)",StringComparison.Ordinal) && deSource.Contains("Console.Error.WriteLine(",StringComparison.Ordinal) && deSource.Contains("InternalError",StringComparison.Ordinal),"diff-edits writes the type and message of an internal error to stderr");
+            // A defect is reported on stderr (type and message) through IntentPlan.Internal (P3-18); stdout keeps the one-line
+            // envelope. The bytes are pinned in tests/cli/ApplyIntentEnvelopeTests.cs.
+            Check(deSource.Contains("catch (Exception error) { return IntentPlan.Internal(\"diff-edits\", error); }",StringComparison.Ordinal) && !deSource.Contains("Console.",StringComparison.Ordinal),
+                "diff-edits delegates an internal error (type and message to stderr) to IntentPlan.Internal and has no Console access of its own");
             Check(deSource.Contains("BoundedInput.ReadText(",StringComparison.Ordinal) && deSource.Contains("IncrementalDiff",StringComparison.Ordinal) && !deSource.Contains("Compiler.Diff",StringComparison.Ordinal)
                 && new[]{"File.","FileStream","FileMode.","Directory.","ProjectStore","Commit("}.All(api=>!deSource.Contains(api,StringComparison.Ordinal)),
                 "diff-edits reads only through BoundedInput, diffs through IncrementalDiff (not Compiler.Diff) and has no write path");

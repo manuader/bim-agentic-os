@@ -21,7 +21,8 @@ namespace Bim.Cli;
 // edit_duplicate_id, edit_create_exists, edit_bound_exceeded and invalid_ir, and diff_edits_internal_error.
 // Precedence: usage, then both files are read (project first), then the project is parsed, then the edits, then the
 // library runs; the first failure is the only one reported.
-// diff_edits_internal_error is a defect: its exception type and message go to stderr, stdout keeps the envelope. No
+// diff_edits_internal_error is a defect: its exception type and message go to stderr (IntentPlan.Internal, P3-18), stdout
+// keeps the envelope. No
 // input reaches it on purpose: every shape the library dereferences is refused above, and the library's remaining
 // throws (hash_layout) are layout invariants of the default serializer, so no test triggers it.
 internal static class DiffEditsCommand
@@ -43,18 +44,22 @@ internal static class DiffEditsCommand
         catch (InputRejectedException error) { Fail(error.Message); return; }
         if (ParseProject(projectText) is not { } project) { Fail(ProjectInvalid); return; }
         if (EditsInput.Parse(editsText) is not { } edits) { Fail(EditsInvalid); return; }
+        Plan(() => IncrementalDiff.Diff(project, edits).Plan).Print();
+    }
+
+    // P3-18: the library call's outcome as one envelope: the plan JSON (exit 0), a library code or invalid_ir as
+    // IntentPlan.Failed, and anything else, a defect never passed off as a code, as IntentPlan.Internal("diff-edits", e):
+    // {"status":"failed","code":"diff_edits_internal_error"} with the "diff-edits internal error: <type>: <message>"
+    // stderr detail, the bytes the hand-written catch printed before. Writes nothing itself; the diff is a parameter so
+    // a test can force each branch.
+    internal static IntentEnvelope Plan(Func<ExecutionPlan> diff)
+    {
         ExecutionPlan plan;
-        try { plan = IncrementalDiff.Diff(project, edits).Plan; }
-        catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { Fail(error.Message); return; }
-        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { Fail("invalid_ir"); return; }
-        // Anything else is a defect, never a message passed off as a code.
-        catch (Exception error)
-        {
-            Console.Error.WriteLine("diff-edits internal error: " + error.GetType().FullName + ": " + error.Message);
-            Fail(InternalError);
-            return;
-        }
-        new IntentEnvelope(JsonSerializer.Serialize(plan), 0).Print();
+        try { plan = diff(); }
+        catch (ArgumentException error) when (EditsInput.LibraryCodes.Contains(error.Message, StringComparer.Ordinal)) { return IntentPlan.Failed(error.Message); }
+        catch (InvalidOperationException error) when (error.Message == "invalid_ir") { return IntentPlan.Failed("invalid_ir"); }
+        catch (Exception error) { return IntentPlan.Internal("diff-edits", error); }
+        return new IntentEnvelope(JsonSerializer.Serialize(plan), 0);
     }
 
     // Exactly --project <p> and --edits <e>, each once with a non-empty value that is not flag-shaped ("--..."), in either
