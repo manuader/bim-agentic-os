@@ -450,7 +450,7 @@ internal static class CatalogueReportTests
         var realizedUpper = realizedSha.ToUpperInvariant();
         long realizedLength = realizedBytes.Length;
         const string duplicate = "realized_unique_id_duplicate";
-        JsonObject Succeeded(string sha, long bytes, int entries) => new() { ["status"] = "succeeded", ["output"] = "C:\\Repo\\.bim\\native-runs\\run\\catalogue-requests\\" + realizedFolder + "\\realized.json", ["entries"] = entries, ["bytes"] = bytes, ["sha256"] = sha };
+        JsonObject Succeeded(string sha, long bytes, int entries) => new() { ["status"] = "succeeded", ["output"] = WindowsRun("__RUN__") + "\\catalogue-requests\\" + realizedFolder + "\\realized.json", ["entries"] = entries, ["bytes"] = bytes, ["sha256"] = sha };
         static JsonObject Refusal(string code) => new() { ["status"] = "failed", ["code"] = code, ["detail"] = "element:door-1" };
         // The pass record with the doc-realized step as step 11 (documentacion group), as Invoke-CatalogueSequence records it.
         // P4-19: record_file is the path the owner invoker returns, <run>\catalogue-requests\<folder>\record.json; edit
@@ -651,6 +651,38 @@ internal static class CatalogueReportTests
             "a step without a reply whose request names another folder is request_mismatch");
         Check(RealizedOf(MakeRealized(WithRealized(Refusal(duplicate), passed: false), null, refusedLine)) == Realized("refused", null, null, null, null, duplicate, "failed", duplicate, null, null, null, null, null, passed: false),
             "a refused step whose record_file names its folder is still refused");
+
+        // The realistic Windows shape: the repository root joined to .bim/native-runs/<guid> with '/' (owner session).
+        Check(RealizedOf(MakeRealized(RecordFile("C:\\Repo\\.bim/native-runs/__RUN__\\catalogue-requests\\" + realizedFolder + "\\record.json"), realizedBytes)) == matchExpected,
+            "a recorded record_file with mixed separators naming the step's folder matches");
+        // The reply's output (the path doc-realized wrote, as the owner invoker passed it) must be this step folder's
+        // realized.json too: a reply naming another run's folder is request_mismatch even when this run's file hashes to it.
+        JsonObject WithOutput(JsonNode? output) { var o = Succeeded(realizedUpper, realizedLength, 2); o["output"] = output; return o; }
+        foreach (var (label, output) in new (string, JsonNode?)[]
+        {
+            ("another run's folder", WindowsRun("other-run") + "\\catalogue-requests\\" + realizedFolder + "\\realized.json"),
+            ("another step's folder", inRequests + "12-doc-up-elements.doc-realized\\realized.json"),
+            ("another file", inRequests + realizedFolder + "\\record.json"),
+            ("a .. segment", "C:\\x\\..\\Repo\\.bim\\native-runs\\__RUN__\\catalogue-requests\\" + realizedFolder + "\\realized.json"),
+            ("a number", 5),
+        })
+        {
+            var outputCase = MakeRealized(WithRealized(WithOutput(output), passed: true), realizedBytes);
+            var outputRun = Report(outputCase);
+            Check(outputRun.Exit == 0 && Raw(Json(outputRun.Out), "realized") == Mismatched("response.output") && Raw(Json(outputRun.Out), "all_passed") == "true",
+                "a succeeded reply whose output names " + label + " is request_mismatch (response.output), not match", D(outputRun));
+        }
+        Check(RealizedOf(MakeRealized(WithRealized(WithOutput("C:\\Repo\\.bim/native-runs/__RUN__\\catalogue-requests\\" + realizedFolder + "\\realized.json"), passed: true), realizedBytes)) == matchExpected,
+            "a reply output with mixed separators naming the step folder's realized.json matches");
+        foreach (var (label, edit) in new (string, Action<JsonObject>)[] { ("without output", o => o.Remove("output")), ("with output null", o => o["output"] = null) })
+        {
+            var reply = Succeeded(realizedUpper, realizedLength, 2);
+            edit(reply);
+            var replyRun = Report(MakeRealized(WithRealized(reply, passed: true), realizedBytes));
+            Check(replyRun.Exit == 0 && replyRun.Out.EndsWith(",\"copy\":" + passCopy + ",\"realized\":" + matchExpected + "}", StringComparison.Ordinal), "a succeeded reply " + label + " keeps the P4-18 summary", D(replyRun));
+        }
+        Check(RealizedOf(MakeRealized(WithRealized(WithOutput("C:\\elsewhere\\realized.json"), passed: true, edit: q => q["record_file"] = "C:\\elsewhere\\record.json"), realizedBytes)) == Mismatched("record_file"),
+            "the request's record_file is checked before the reply's output");
 
         // 1k. Links are never followed: run folder, copy, record, summary, session folder.
         var linkedRun = Path.Combine(runs, Guid.NewGuid().ToString());
