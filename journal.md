@@ -1607,3 +1607,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 17:19Z integration 612169a CI 43913038261 success (9/9) → main fast-forwarded (0b9240c..612169a). P1-18, P10-20, P2-24 ✅; new P1-25 (catalogue-report re-hashes the save_as file), P2-26 (pipe fake injects only after a succeeded command; unmatched ids reported), P10-23 (bcf-export refusal edges). Progress 195/213 (91.5 %). Branches relay209-* kept on origin; no worktrees left.
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-16T17:18:58Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P5-19 (then P5-20, same PackageLayoutPackTests), P6-20 (serialize with P6-21 on PDF tests) (relay207); then P3-18, P4-19, P7-19 (relay208); then P10-21 (then P10-22/P10-23; P10-21 and P10-23 both touch interfaces/cli — keep Program.cs registration disjoint), P1-25, P2-25 (then P2-26, same pipe fake) (relay209/210). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay211 — 2026-11-16T17:53:18Z (Claude, cloud scheduled)
+- 17:53Z LOCK taken (was FREE; relay210 released 2026-11-16T17:18:58Z).
