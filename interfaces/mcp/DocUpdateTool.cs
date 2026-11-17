@@ -21,8 +21,11 @@ namespace Bim.Mcp;
 // doc_update_input_bound_exceeded, the library codes such as realized_invalid or document_path_invalid with its field,
 // doc_update_internal_error with its detail on the server's stderr), with isError true.
 // MCP-only refusal, checked before any input is read (before, after, realized, bindings, then dependents): a path that is
-// blank, contains NUL, is longer than MaxPathChars, is rejected by Path.GetFullPath or is not valid text (a lone surrogate)
-// is {"status":"failed","code":"doc_update_path_invalid","detail":"<parameter>"} (the diff_intent_path_invalid rule).
+// blank, contains NUL, is longer than MaxPathChars or is rejected by Path.GetFullPath is
+// {"status":"failed","code":"doc_update_path_invalid","detail":"<parameter>"} (the diff_intent_path_invalid rule). A path
+// argument whose JSON string is not valid text (a lone surrogate escape such as "\ud800") cannot be read as a string:
+// Execute passes it on as the empty path, so it is that same refusal for its parameter. A lone surrogate inside an input
+// file is the file's own typed refusal from the shared parser (doc_update_*_invalid), as on the CLI.
 // DryPlan writes nothing to Console.Out and does not touch Environment.ExitCode, so no capture is needed.
 internal static class DocUpdateTool
 {

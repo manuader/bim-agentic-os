@@ -298,6 +298,8 @@ internal static class DocUpdateCommand
         Project? project;
         try { project = JsonSerializer.Deserialize<Project>(text); }
         catch (JsonException) { throw new Refusal(ProjectInvalid, name); }
+        // A lone surrogate escape ("\ud800") is valid JSON but not text; reading it is a malformed Project, never a crash.
+        catch (InvalidOperationException) { throw new Refusal(ProjectInvalid, name); }
         if (project?.Elements is null || project.Elements.Any(e => e is null || e.GeometryMetres is null || e.Dependencies is null))
             throw new Refusal(ProjectInvalid, name);
         return project;
@@ -314,7 +316,9 @@ internal static class DocUpdateCommand
         return document;
     }
 
-    static Dictionary<string, string> ParseRealized(string text)
+    static Dictionary<string, string> ParseRealized(string text) => Textual(() => ParseRealizedJson(text), RealizedInvalid);
+
+    static Dictionary<string, string> ParseRealizedJson(string text)
     {
         using var document = Parse(text, RealizedInvalid);
         var root = document.RootElement;
@@ -329,7 +333,9 @@ internal static class DocUpdateCommand
         return map;
     }
 
-    static RevitBindings ParseBindings(string text)
+    static RevitBindings ParseBindings(string text) => Textual(() => ParseBindingsJson(text), BindingsInvalid);
+
+    static RevitBindings ParseBindingsJson(string text)
     {
         using var document = Parse(text, BindingsInvalid);
         var root = document.RootElement;
@@ -366,7 +372,9 @@ internal static class DocUpdateCommand
         return new RevitBindings(revitDocument, levels, wallTypes, OptionalText(root, "door_symbol"), OptionalText(root, "window_symbol"));
     }
 
-    static Dictionary<string, IReadOnlyList<string>> ParseDependents(string text)
+    static Dictionary<string, IReadOnlyList<string>> ParseDependents(string text) => Textual(() => ParseDependentsJson(text), DependentsInvalid);
+
+    static Dictionary<string, IReadOnlyList<string>> ParseDependentsJson(string text)
     {
         using var document = Parse(text, DependentsInvalid);
         var root = document.RootElement;
@@ -386,6 +394,14 @@ internal static class DocUpdateCommand
             map[property.Name] = uids.ToArray();
         }
         return map;
+    }
+
+    // A lone surrogate escape ("\ud800") in a member name or string value is valid JSON but not text: JsonElement.GetString
+    // and JsonProperty.Name throw InvalidOperationException on it. It is the input's typed refusal (code), never a crash.
+    static T Textual<T>(Func<T> parse, string code)
+    {
+        try { return parse(); }
+        catch (InvalidOperationException) { throw new Refusal(code); }
     }
 
     // element is an object whose members are all in allowed.
