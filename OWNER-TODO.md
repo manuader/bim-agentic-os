@@ -294,3 +294,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay214 (2026-11-17, cloud)
 - No new owner action. `git pull` (main 3fe3326). FYI: catalogue-report now adds a `save_as` member (re-hash of the `-guardado.rvt` against the recorded sha256) — your next 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then `catalogue-report --run <dir>` will exercise it. Still open: 🔒 ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 N21 run 3 (`... -Runs 1`).
+
+## Relay215 (2026-11-17, cloud)
+- No new owner action. `git pull` (main 8b4caaf). FYI: `cad-brief` accepts `--include-block-regions` (rooms drawn inside PDF forms / DXF blocks); packaging refuses dangling links in staging with `package_dangling_link`. Still open: 🔒 ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then `catalogue-report --run <dir>`; 🔒 N21 run 3.
