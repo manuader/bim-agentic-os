@@ -224,19 +224,43 @@ internal static class InternalErrorDelegationTests
             });
             Check(handWritten.Out == FailedCode(verb.Replace('-', '_') + "_internal_error") + nl && handWritten.Err == verb + " internal error: System.InvalidOperationException: boom " + verb + nl && handWritten.Exit == 1,
                 "fixture: the hand-written " + verb + " internal error bytes", Q(handWritten));
-            var seam = type?.GetMethod("InternalRefusal", Any, new[] { typeof(Exception) });
-            Check(seam is not null && seam.ReturnType.Name == "Refusal", verb + ": InternalRefusal(Exception) returns the verb's Refusal", seam?.ReturnType.FullName ?? "<missing>");
-            if (seam is null) continue;
+            // P3-20: forced through the verb's real Run with valid inputs, the test seam GuardedWorkProbe (an Action the
+            // guarded try calls first; null in production) throwing, so the real catch-all handles it.
+            var run = type?.GetMethod("Run", Any, new[] { typeof(string[]) });
+            var probe = type?.GetProperty("GuardedWorkProbe", Any);
+            Check(run is not null && probe is not null && probe.PropertyType == typeof(Action) && probe.CanWrite,
+                verb + ": Run(string[]) and the test seam GuardedWorkProbe (a settable static Action) found", probe?.PropertyType.FullName ?? "<missing GuardedWorkProbe>");
+            if (run is null || probe is null || probe.PropertyType != typeof(Action) || !probe.CanWrite) continue;
+            Check(probe.GetValue(null) is null, verb + ": GuardedWorkProbe is null unless a test sets it");
+            var output = Path.Combine(work, "internal-" + verb + "-" + Guid.NewGuid().ToString("N") + ".json");
+            var args = RunArgs(verb, output);
             var forced = Quiet(() =>
             {
-                var (refusal, thrown) = Call(seam, failure);
-                if (thrown is not null || refusal is null) return "InternalRefusal threw " + thrown?.GetType().FullName;
-                var code = Prop(refusal, "Code") as string;
-                fail.Invoke(null, FailArgs(code, refusal));
-                return "";
+                probe.SetValue(null, (Action)(() => throw failure));
+                try { return Call(run, new object?[] { args }).Thrown; }
+                finally { probe.SetValue(null, null); }
             });
-            Check(forced.Value.Length == 0 && Same(forced, handWritten), "a forced " + verb + " internal error prints the hand-written stdout, stderr and exit bytes",
-                forced.Value + " " + Q(forced) + " vs hand-written " + Q(handWritten));
+            Check(forced.Value is null && Same(forced, handWritten) && !File.Exists(output), "a forced " + verb + " internal error through Run's real catch-all prints the hand-written stdout, stderr and exit bytes and writes no output",
+                Q(forced) + " vs hand-written " + Q(handWritten) + (forced.Value is { } t ? " threw " + t.GetType().FullName : "") + (File.Exists(output) ? " output written" : ""));
+        }
+
+        // 2f. MCP audit_verify (AuditVerifyTool.Run, in process): the catch-all forced by an actor list whose enumeration
+        // throws (after the path checks and the Count check, inside Actors); the Outcome and stderr equal the hand-written
+        // pre-P3-20 catch body.
+        {
+            var failure = new InvalidOperationException("boom audit_verify");
+            var handWritten = Quiet(() =>
+            {
+                // The pre-P3-20 catch body, verbatim.
+                Console.Error.WriteLine("audit_verify internal error: " + failure.GetType().FullName + ": " + failure.Message);
+                return new Bim.Mcp.AuditVerifyTool.Outcome(false, Bim.Mcp.AuditVerifyTool.Failure(Bim.Mcp.AuditVerifyTool.InternalError, null));
+            });
+            Check(handWritten.Value.Text == FailedCode("audit_verify_internal_error") && handWritten.Err == "audit_verify internal error: System.InvalidOperationException: boom audit_verify" + nl && handWritten.Out.Length == 0,
+                "fixture: the hand-written MCP audit_verify internal error outcome and stderr", handWritten.Value + " " + Q(handWritten));
+            var log = Path.Combine(work, "internal-audit-" + Guid.NewGuid().ToString("N") + ".jsonl");
+            var forced = Quiet(() => Bim.Mcp.AuditVerifyTool.Run(log, null, new ThrowingActors(failure), summary: false));
+            Check(forced.Value == handWritten.Value && Same(forced, handWritten), "a forced MCP audit_verify internal error returns the hand-written outcome and writes the same stderr",
+                forced.Value + " " + Q(forced) + " vs hand-written " + handWritten.Value + " " + Q(handWritten));
         }
 
         // 3. Static: each catch-all delegates; the stderr fragment has one copy over interfaces/cli.
@@ -270,5 +294,45 @@ internal static class InternalErrorDelegationTests
             Check(copies.Length == 1 && copies[0] == ("IntentPlan.cs", 1), "the internal-error stderr fragment [" + copy + "] has one copy over all interfaces/cli code, in IntentPlan.cs",
                 string.Join(", ", copies.Select(c => c.Name + " " + c.Count.ToString(CultureInfo.InvariantCulture))));
         }
+
+        // P3-20: MCP AuditVerifyTool takes its stderr line from IntentPlan.InternalDiagnostic; interfaces/mcp has no copy.
+        var mcpDir = Path.Combine(root, "interfaces", "mcp");
+        var auditTool = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(mcpDir, "AuditVerifyTool.cs")), blankStrings: false);
+        Check(auditTool.Contains("Console.Error.WriteLine(IntentPlan.InternalDiagnostic(\"audit_verify\", error));", StringComparison.Ordinal),
+            "AuditVerifyTool.cs prints its internal error through IntentPlan.InternalDiagnostic(\"audit_verify\", error)");
+        var mcpCopies = Directory.GetFiles(mcpDir, "*.cs")
+            .Where(f => ApplyIntentTests.CodeOf(File.ReadAllText(f), blankStrings: false).Contains(" internal error: ", StringComparison.Ordinal))
+            .Select(f => Path.GetFileName(f)).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        Check(mcpCopies.Length == 0, "the internal-error stderr fragment [ internal error: ] has no copy in interfaces/mcp code", string.Join(", ", mcpCopies));
+    }
+
+    // Valid inputs that pass every check before each verb's guarded library work (a fixed small request, brief or
+    // fixture; the repository's packs), then the output path (a new file under work).
+    static string[] RunArgs(string verb, string output)
+    {
+        var inputs = Path.Combine(Path.GetDirectoryName(output)!, "internal-inputs-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(inputs);
+        string Input(string name, string content) { var path = Path.Combine(inputs, name); File.WriteAllText(path, content, new System.Text.UTF8Encoding(false)); return path; }
+        return verb switch
+        {
+            "generate-prototypes" => new[] { verb, Input("request.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"seed\":0}"), output },
+            "generate-typology" => new[] { verb, Input("request.json", "{\"pack\":\"bim.typology.vivienda-unifamiliar\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":4,\"seed\":0,\"project_id\":\"00000000-0000-4000-8000-0000000007a7\"}"), output },
+            "plan-layouts" => new[] { verb, Input("brief.json", "{\"brief_version\":1,\"name\":\"Small studio\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"
+                + "\"rooms\":[{\"id\":\"living\",\"name\":\"Living\",\"target_area_m2\":20,\"min_area_m2\":15},{\"id\":\"bath\",\"name\":\"Bath\",\"target_area_m2\":4,\"min_area_m2\":3}],"
+                + "\"adjacencies\":[{\"a\":\"living\",\"b\":\"bath\",\"kind\":\"required\"}]}"), output },
+            "doc-realized" => new[] { verb, "--record", Input("run.json", "{}"), "--fixture", Input("ir.json", JsonSerializer.Serialize(new Project(Guid.Parse("00000000-0000-4000-8000-0000000007b1"), 0, Array.Empty<Element>()))),
+                "--assignments", Input("assignments.json", "{}"), "--document", "internal-error-document", "--output", output },
+            _ => throw new ArgumentOutOfRangeException(nameof(verb), verb, null),
+        };
+    }
+
+    // An actor list with one item whose enumeration throws: a defect inside AuditVerifyTool.Run's try that no typed
+    // refusal handles.
+    sealed class ThrowingActors(Exception failure) : IReadOnlyList<string?>
+    {
+        public int Count => 1;
+        public string? this[int index] => throw failure;
+        public IEnumerator<string?> GetEnumerator() => throw failure;
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }
