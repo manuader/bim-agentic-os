@@ -119,14 +119,13 @@ internal static class InternalErrorDelegationTests
         // 2b. catalogue-report: Execute returns (exit, line); the catch-all forced with null args.
         {
             var type = Verb("CatalogueReportCommand");
-            var execute = type?.GetMethod("Execute", Any, new[] { typeof(string[]), typeof(string), typeof(long), typeof(int) });
+            var execute = type?.GetMethod("Execute", Any, new[] { typeof(string[]), typeof(string), typeof(long) });
             var failure = type?.GetMethod("Failure", Any, new[] { typeof(string), typeof(string) });
             var internalError = Const(type, "InternalError");
-            Check(execute is not null && failure is not null, "catalogue-report: Execute(string[], string, long, int) and Failure(string, string) found");
+            Check(execute is not null && failure is not null, "catalogue-report: Execute(string[], string, long) and Failure(string, string) found");
             if (execute is not null && failure is not null)
             {
                 var maxCopy = (long)(type!.GetField("MaxCopyBytes", Any)?.GetValue(null) ?? 0L);
-                var maxSaveAs = (int)(type.GetField("MaxSaveAsBytes", Any)?.GetValue(null) ?? 0);
                 var error = new NullReferenceException();
                 var handWritten = Quiet<object>(() =>
                 {
@@ -136,7 +135,7 @@ internal static class InternalErrorDelegationTests
                 });
                 Check(handWritten.Value is (1, string line) && line == FailedCode("catalogue_report_internal_error") && handWritten.Err == "catalogue-report internal error: System.NullReferenceException: " + error.Message + nl && handWritten.Out.Length == 0,
                     "fixture: the hand-written catalogue-report internal error (exit, line) and stderr", handWritten.Value + " " + Q(handWritten));
-                var forced = Quiet(() => Call(execute, null, root, maxCopy, maxSaveAs));
+                var forced = Quiet(() => Call(execute, null, root, maxCopy));
                 Check(forced.Value.Thrown is null && Equals(forced.Value.Value, handWritten.Value) && Same(forced, handWritten),
                     "a forced catalogue-report internal error returns the hand-written (exit, line) and writes the same stderr", forced.Value.Value + " " + Q(forced) + " vs " + handWritten.Value + " " + Q(handWritten));
             }
