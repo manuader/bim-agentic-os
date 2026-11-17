@@ -57,11 +57,8 @@ internal static class BcfExportCommand
     {
         try { Execute(args); }
         catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine("bcf-export internal error: " + error.GetType().FullName + ": " + error.Message);
-            Fail(InternalError, null);
-        }
+        // P3-19: the stderr detail, {"status":"failed","code":InternalError} and exit 1, printed by IntentPlan.Internal.
+        catch (Exception error) { IntentPlan.Internal("bcf-export", error).Print(); }
     }
 
     static void Execute(string[] args)
