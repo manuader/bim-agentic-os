@@ -67,6 +67,7 @@ namespace Bim.Cli;
 // Precedence: usage, options, output path, input read, brief parse, site, brief validation, pack (package or repository, read,
 // parse, id, rules), planning, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
+// P7-20: the read-only MCP tool plan_layouts runs DryPlan (below): the same option helpers and Plan path, no output file.
 internal static class PlanLayoutsCommand
 {
     public const string Usage = "usage: plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id] (n in 1..64, default 4; s an int32, default 0; "
@@ -110,45 +111,10 @@ internal static class PlanLayoutsCommand
         var (count, seed, packId) = ParseOptions(args);
         var output = args[2];
         if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string badOutput) throw new Refusal(badOutput);
-        string text;
-        try { text = BoundedInput.ReadText(args[1]); }
-        catch (InputRejectedException error) { throw new Refusal(error.Message); }
-
-        ProjectBrief brief;
-        try { brief = BriefParser.Parse(text); }
-        catch (BriefException error) { throw new Refusal(BriefInvalid, error.Code + " at " + (error.Field ?? "brief")); }
-        if (brief.Constraints.Site is null) throw new Refusal(SiteRequired, "constraints.site");
-        if (BriefValidator.Validate(brief).FirstOrDefault(issue => issue.Severity == BriefSeverity.Error) is { } issue)
-            throw new Refusal(BriefInvalid, issue.Code + " at " + issue.Field);
-
-        PlannerRules? rules = null;
-        if (packId is not null)
-        {
-            SkillManifest pack;
-            try { pack = SkillPackLookup.Load(packId, packageFirst: true); }
-            catch (SkillPackException error)
-            {
-                throw error.Problem switch
-                {
-                    SkillPackProblem.RepositoryNotFound => new Refusal(PackRepositoryNotFound),
-                    SkillPackProblem.Unavailable => new Refusal(PackUnavailable, error.Detail),
-                    _ => new Refusal(PackInvalid, error.Detail),
-                };
-            }
-            rules = PackRules(pack, brief);
-        }
-
-        AlternativeSet set;
-        string json;
-        try
-        {
-            set = AlternativeGenerator.Generate(brief, rules is null ? new AlternativeOptions(count, seed) : new AlternativeOptions(count, seed, new PlannerOptions(Rules: rules)));
-            json = set.Status == AlternativeSetStatus.Refused ? "" : AlternativeSetSerializer.Serialize(set);
-        }
-        catch (Exception error) { throw InternalRefusal(error); }
+        var (set, json, rules) = Plan(args[1], count, seed, packId);
         if (set.Status == AlternativeSetStatus.Refused)
         {
-            Console.WriteLine(JsonSerializer.Serialize(new { status = "failed", code = Refused, refusals = set.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) }));
+            Console.WriteLine(RefusedLine(set));
             Environment.ExitCode = 1;
             return;
         }
@@ -193,6 +159,70 @@ internal static class PlanLayoutsCommand
             sha256,
         }));
     }
+
+    // P7-20: the verb's path after its options and output path, shared with DryPlan: input read, brief parse, site, brief
+    // validation, pack (lookup, rules), planning. Json is "" for a refused set. Throws Refusal.
+    static (AlternativeSet Set, string Json, PlannerRules? Rules) Plan(string briefPath, int count, int seed, string? packId)
+    {
+        string text;
+        try { text = BoundedInput.ReadText(briefPath); }
+        catch (InputRejectedException error) { throw new Refusal(error.Message); }
+
+        ProjectBrief brief;
+        try { brief = BriefParser.Parse(text); }
+        catch (BriefException error) { throw new Refusal(BriefInvalid, error.Code + " at " + (error.Field ?? "brief")); }
+        if (brief.Constraints.Site is null) throw new Refusal(SiteRequired, "constraints.site");
+        if (BriefValidator.Validate(brief).FirstOrDefault(issue => issue.Severity == BriefSeverity.Error) is { } issue)
+            throw new Refusal(BriefInvalid, issue.Code + " at " + issue.Field);
+
+        PlannerRules? rules = null;
+        if (packId is not null)
+        {
+            SkillManifest pack;
+            try { pack = SkillPackLookup.Load(packId, packageFirst: true); }
+            catch (SkillPackException error)
+            {
+                throw error.Problem switch
+                {
+                    SkillPackProblem.RepositoryNotFound => new Refusal(PackRepositoryNotFound),
+                    SkillPackProblem.Unavailable => new Refusal(PackUnavailable, error.Detail),
+                    _ => new Refusal(PackInvalid, error.Detail),
+                };
+            }
+            rules = PackRules(pack, brief);
+        }
+
+        try
+        {
+            var set = AlternativeGenerator.Generate(brief, rules is null ? new AlternativeOptions(count, seed) : new AlternativeOptions(count, seed, new PlannerOptions(Rules: rules)));
+            return (set, set.Status == AlternativeSetStatus.Refused ? "" : AlternativeSetSerializer.Serialize(set), rules);
+        }
+        catch (Exception error) { throw InternalRefusal(error); }
+    }
+
+    // P7-20: the dry run of the read-only MCP tool plan_layouts (interfaces/mcp/PlanLayoutsTool.cs), without an output path
+    // or any write. The option values are the CLI's option text (null when absent), validated by the verb's own
+    // AlternativesValue / SeedValue / PackValue in the order alternatives, seed, pack, then Plan. Succeeded: Text is the
+    // canonical AlternativeSetSerializer JSON, whose UTF-8 bytes are exactly the file the verb writes for the same brief
+    // file and options (ranked or infeasible). Otherwise Text is the verb's stdout refusal line without its newline
+    // (plan_layouts_* option, brief, site and pack codes, input_*, plan_layouts_refused, plan_layouts_internal_error with
+    // the detail on stderr). Writes nothing to Console.Out and does not touch Environment.ExitCode.
+    internal static (bool Succeeded, string Text) DryPlan(string briefPath, string? alternatives, string? seed, string? packId)
+    {
+        ArgumentNullException.ThrowIfNull(briefPath);
+        try
+        {
+            var count = alternatives is null ? DefaultAlternatives : AlternativesValue(alternatives);
+            var start = seed is null ? 0 : SeedValue(seed);
+            var pack = packId is null ? null : PackValue(packId);
+            var (set, json, _) = Plan(briefPath, count, start, pack);
+            return set.Status == AlternativeSetStatus.Refused ? (false, RefusedLine(set)) : (true, json);
+        }
+        catch (Refusal refusal) { return (false, FailureLine(refusal.Code, refusal.Detail)); }
+    }
+
+    static string RefusedLine(AlternativeSet set) =>
+        JsonSerializer.Serialize(new { status = "failed", code = Refused, refusals = set.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) });
 
     // The pack's minimum room rules as planner rules (see the header; TypologyRules.From steps 1 and 2 for one pack).
     static PlannerRules PackRules(SkillManifest pack, ProjectBrief brief)
@@ -256,24 +286,20 @@ internal static class PlanLayoutsCommand
             if (repeated) throw new Refusal(OptionDuplicate, name);
             if (index + 1 >= args.Length) throw new Refusal(OptionValueMissing, name);
             var value = args[++index];
-            if (name == "--pack")
-            {
-                if (!SkillParser.IsId(value)) throw new Refusal(PackIdInvalid, value);
-                pack = value;
-            }
-            else if (name == "--alternatives")
-            {
-                if (!Integer(value, out var parsed) || parsed < AlternativeGenerator.MinCount || parsed > AlternativeGenerator.MaxCount) throw new Refusal(AlternativesInvalid, value);
-                count = parsed;
-            }
-            else
-            {
-                if (!Integer(value, out var parsed)) throw new Refusal(SeedInvalid, value);
-                seed = parsed;
-            }
+            if (name == "--pack") pack = PackValue(value);
+            else if (name == "--alternatives") count = AlternativesValue(value);
+            else seed = SeedValue(value);
         }
         return (count ?? DefaultAlternatives, seed ?? 0, pack);
     }
+
+    // The option values (shared by the option loop and DryPlan); each throws its typed Refusal with the value as detail.
+    static int AlternativesValue(string value) =>
+        Integer(value, out var parsed) && parsed >= AlternativeGenerator.MinCount && parsed <= AlternativeGenerator.MaxCount ? parsed : throw new Refusal(AlternativesInvalid, value);
+
+    static int SeedValue(string value) => Integer(value, out var parsed) ? parsed : throw new Refusal(SeedInvalid, value);
+
+    static string PackValue(string value) => SkillParser.IsId(value) ? value : throw new Refusal(PackIdInvalid, value);
 
     static bool Integer(string text, out int value)
     {
@@ -291,7 +317,10 @@ internal static class PlanLayoutsCommand
 
     static void Fail(string code, string? detail)
     {
-        Console.WriteLine(detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail }));
+        Console.WriteLine(FailureLine(code, detail));
         Environment.ExitCode = 1;
     }
+
+    static string FailureLine(string code, string? detail) =>
+        detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail });
 }
