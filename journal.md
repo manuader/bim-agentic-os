@@ -1711,3 +1711,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay224 — 2026-11-17T21:53:06Z (Claude, cloud scheduled)
 - 21:54Z relay224 BACKS OFF: relay223 LOCK heartbeat 20:53:24Z is stale but relay223 is live (pushed relay223-P1-28 at 21:16:42Z). No takeover, no work; heartbeat set to that push time. relay223: refresh last_heartbeat on each task edge.
 **NEXT STEP:** relay223 continues (reviews/integration of P2-28, P3-21, P1-28) and releases the lock.
+
+## Relay223 (cont.)
+- 22:47Z reviews (independent, read-only): 0 blockers. Closed with tests: P1-28 SF1 full-size where holes expected now fails, SF2 SetLength IOException skip, SF3 tiny seams, SF4 Kill Win32Exception/drain (review red 44174751893, green 44178127185); P3-21 layout-independent static checks with checker self-tests, sha cross-check, raw-string stripper 6ed63ca (green 44185326172); P2-28 multi-id gate line, NO_COLOR line-53 refusal, lost-reply code 6ce92ed (green 44190170163). Integrating.
