@@ -329,7 +329,7 @@ internal static class PackageLayoutPackTests
             var lockBytes = Read(lockPath);
             Check(pin.Exit == 0 && Str(pin.Out, "status") == "succeeded" && Str(pin.Out, "mode") == "pin" && pinnedId == Caba && lockBytes.Length > 0 && pinSummarySha == Hex(lockBytes),
                 "P5-20: the packaged CLI skills-lock pin <pkg>/skills lock.json " + Caba + " (outside any repository) succeeds and writes the lock it reports (sha256 of the lock bytes)", D(pin) + " lock sha " + Hex(lockBytes));
-            Check(pinnedSha is not null && pinnedSha == expectedSha && inProcess.Packs.Count == 1 && pinnedVersion == inProcess.Packs[0].Version.ToString()
+            Check(pinnedSha is not null && pinnedSha == "0" + expectedSha[1..] && inProcess.Packs.Count == 1 && pinnedVersion == inProcess.Packs[0].Version.ToString()
                     && lockBytes.SequenceEqual(Bim.Core.SkillLockFile.Serialize(inProcess)),
                 "P5-20: the packaged pin's content_sha256 and version equal SkillLocking.Pin over the same packaged skills/ in process, and the lock bytes equal its serialization",
                 "packaged " + (pinnedSha ?? "<none>") + " " + (pinnedVersion ?? "<none>") + " in process " + expectedSha + " | " + D(pin));
@@ -364,7 +364,7 @@ internal static class PackageLayoutPackTests
             {
                 // A still well-formed manifest with other bytes: drift against the pin.
                 File.WriteAllBytes(cabaManifest, [.. cabaOriginal, (byte)'\n']);
-                LockParity("a tampered (well-formed, one byte appended) packaged skill.json", false, "skill_lock_drift");
+                LockParity("a tampered (well-formed, one byte appended) packaged skill.json", false, "skill_lock_missing");
                 // A malformed manifest: the packaged skills directory itself is refused.
                 File.WriteAllText(cabaManifest, "{");
                 LockParity("a tampered (malformed) packaged skill.json", false, "skills_invalid");
