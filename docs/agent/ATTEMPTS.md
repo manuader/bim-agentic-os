@@ -379,3 +379,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P5-23: no failed attempts — red 44108572317 (5e5d2a5) → green 44110773912 (1afae4b); review green 44123472372 (9393a31). A test defect (the 'no issue' check matched the fixture directory name) was fixed by renaming the fixture, not counted. macOS ifc-portable re-run twice (runner not acquired).
 - P6-24: no failed attempts — red 44108546930 (f1cc109) → green 44111641935 (c6e9df8); review red 44128541644 (7b36da0) → green 44131276445 (4122a86); macOS ifc-portable runner-capacity cancel re-run, not an attempt.
 - P7-22: no failed attempts — red 44108688858 (d844cb6) → green 44109616700 (ed0f6f5); review green 44140731482 (b05f93f).
+
+### Relay223 (2026-11-17, cloud)
+- P1-28: no failed attempts — red 44164056844 (83cf762) → green 44167597560 (546909a); review red 44174751893 (6bfb0ea) → green 44178127185 (7775237); macOS ifc-portable runner-not-acquired cancel re-run, not an attempt.
+- P2-28: no failed attempts — deliberate probe red 44163810969 (049203b; uncaught-throw stderr claimed to be the gate line, rejected on Linux and Windows) → green 44167542770 (bbc2588); review green 44190170163 (6ce92ed).
+- P3-21: 1 failed attempt on "no interfaces/mcp source hand-builds an audit_verify_internal_error envelope" — run 44167238040 (288e1f3); hypothesis 1 (a bare `Failure(InternalError` anywhere in interfaces/mcp is a hand-built audit_verify envelope) wrong: MirrorDriftTool has its own InternalError (mirror_drift_internal_error); hypothesis 2 (check the bare pattern only in AuditVerifyTool.cs, the qualified name and the literal everywhere) green 44170314032 (afd6132). Red 44163877978 (7904fb1); review green 44185326172 (6ed63ca).
