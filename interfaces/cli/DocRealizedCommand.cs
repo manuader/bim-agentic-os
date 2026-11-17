@@ -34,6 +34,7 @@ namespace Bim.Cli;
 // (DocRealizedCodes), and doc_realized_internal_error (a defect: type and message on stderr).
 // Precedence: usage, output path, inputs read (record, fixture, assignments), fixture parse, then the library
 // (FromRecord: record, document, assignments, fixture and sources in its own order; then Canonical), then the write.
+// P4-21: everything after the output path is Build, shared with DryRealized, the read-only MCP tool doc_realized's entry.
 internal static class DocRealizedCommand
 {
     public const string Usage = "usage: doc-realized --record run.json --fixture ir.json --assignments assignments.json --document revit-unique-id --output realized.json (--output: a new file, never overwritten)";
@@ -59,21 +60,7 @@ internal static class DocRealizedCommand
         if (!TryParse(args, out var values)) throw new Refusal(UsageCode);
         var output = values["--output"];
         if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string badOutput) throw new Refusal(badOutput);
-        var recordText = Read(values["--record"], "record", DocRealized.MaxRecordBytes);
-        var fixtureText = Read(values["--fixture"], "fixture", BoundedInput.MaxBytes);
-        var assignmentsText = Read(values["--assignments"], "assignments", DocRealized.MaxRecordBytes);
-        var fixture = ParseFixture(fixtureText);
-
-        IReadOnlyDictionary<string, string> realized;
-        string json;
-        try
-        {
-            GuardedWorkProbe?.Invoke();
-            realized = DocRealized.FromRecord(fixture, recordText, assignmentsText, values["--document"]);
-            json = DocRealized.Canonical(realized);
-        }
-        catch (DocRealizedException error) { throw new Refusal(error.Code, error.Detail); }
-        catch (Exception error) { throw InternalRefusal(error); }
+        var (realized, json) = Build(values["--record"], values["--fixture"], values["--assignments"], values["--document"]);
 
         var bytes = new UTF8Encoding(false).GetBytes(json);
         var line = JsonSerializer.Serialize(new
@@ -88,6 +75,37 @@ internal static class DocRealizedCommand
         catch (GltfExportException error) { throw new Refusal(error.Code); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
         Console.WriteLine(line);
+    }
+
+    // The verb's work after the output path: the inputs read (record, fixture, assignments), the fixture parsed, then the
+    // guarded library build (FromRecord, Canonical); the first failure throws its Refusal. The verb and DryRealized both
+    // build through here.
+    static (IReadOnlyDictionary<string, string> Realized, string Json) Build(string recordPath, string fixturePath, string assignmentsPath, string document)
+    {
+        var recordText = Read(recordPath, "record", DocRealized.MaxRecordBytes);
+        var fixtureText = Read(fixturePath, "fixture", BoundedInput.MaxBytes);
+        var assignmentsText = Read(assignmentsPath, "assignments", DocRealized.MaxRecordBytes);
+        var fixture = ParseFixture(fixtureText);
+        try
+        {
+            GuardedWorkProbe?.Invoke();
+            var realized = DocRealized.FromRecord(fixture, recordText, assignmentsText, document);
+            return (realized, DocRealized.Canonical(realized));
+        }
+        catch (DocRealizedException error) { throw new Refusal(error.Code, error.Detail); }
+        catch (Exception error) { throw InternalRefusal(error); }
+    }
+
+    // P4-21: the map of the read-only MCP tool doc_realized (interfaces/mcp/DocRealizedTool.cs), without an output path or
+    // any write. Succeeded: Text is DocRealized.Canonical(DocRealized.FromRecord(...)), whose UTF-8 bytes are exactly the
+    // file the verb writes for the same inputs. Otherwise Text is the verb's refusal line without its newline (input_*,
+    // realized_fixture_invalid, the library's realized_* codes with their detail, doc_realized_internal_error with the
+    // IntentPlan diagnostic on stderr), in the verb's precedence after the output path. Writes nothing to Console.Out and
+    // does not touch Environment.ExitCode.
+    internal static (bool Succeeded, string Text) DryRealized(string recordPath, string fixturePath, string assignmentsPath, string document)
+    {
+        try { return (true, Build(recordPath, fixturePath, assignmentsPath, document).Json); }
+        catch (Refusal refusal) { return (false, Line(refusal.Code, refusal.Detail)); }
     }
 
     // The five flags, each exactly once, in any order, each with a non-empty value that is not flag-shaped ("--...").
@@ -140,7 +158,11 @@ internal static class DocRealizedCommand
 
     static void Fail(string code, string? detail)
     {
-        Console.WriteLine(detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail }));
+        Console.WriteLine(Line(code, detail));
         Environment.ExitCode = 1;
     }
+
+    // The refusal envelope {"status":"failed","code"[,"detail"]} (Fail prints it; DryRealized returns it).
+    static string Line(string code, string? detail) =>
+        detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail });
 }
