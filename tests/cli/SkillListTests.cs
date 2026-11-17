@@ -207,7 +207,7 @@ internal static class SkillListTests
         }
 
         // ---- 8. P5-23: registry issues of a successful load are dropped ----
-        var issues = Path.Combine(scratch, "registry-issues");
+        var issues = Path.Combine(scratch, "claim-fixture");
         CopyDirectory(Path.Combine(skills, Caba), Path.Combine(issues, Caba));
         var stubManifest = File.ReadAllText(Path.Combine(skills, Stub, "skill.json"));
         foreach (var id in new[] { "xx.dup.pack-a", "xx.dup.pack-b" })

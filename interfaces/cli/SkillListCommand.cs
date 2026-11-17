@@ -10,8 +10,14 @@ namespace Bim.Cli;
 // Skills directory: --skills (made absolute against the working directory, a trailing separator trimmed) when given; else the one SkillPackLookup
 // serves (package-first): <package>/skills when SkillPackLookup.PackageRoot of the binary directory is a release package,
 // else <repository>/skills of RevitCommandPolicy.RepositoryRoot.
-// Loading: SkillLoader.LoadDirectory(skills), then JurisdictionRegistry.Load(skills) for the stub flags (the claim on a
-// pack, JurisdictionRegistry.ClaimFor; false without one, as in JurisdictionValidator).
+// Loading (P5-23: the skills directory is read once): one JurisdictionRegistry.Load(skills) supplies both the catalogue
+// (registry.Catalog) and the stub flags (the claim on a pack, JurisdictionRegistry.ClaimFor; false without one, as in
+// JurisdictionValidator). Only when that load refuses with skills_invalid (the loader rejected a manifest) is the
+// directory read again by SkillLoader.LoadDirectory, to print the loader's typed SkillException unchanged; should that
+// second read succeed (the directory changed in between) the registry refusal is printed as it stands.
+// Registry issues of a successful load (JurisdictionRegistry.Issues: claim_duplicate, pack_missing, pack_not_code,
+// alias_overlap, ...) are dropped (P5-23): the success envelope never carries them and its bytes are unchanged; a
+// duplicated or non-code claim simply flags no pack as stub. Output is culture-invariant (ordinal order, JSON numbers).
 // Success prints, exit 0, packs in ordinal id order:
 //   {"status":"succeeded","skills_path":<absolute directory>,"packs":[{"id","version","kind","stub",
 //    "source_confidence":{"rules","cited","owner-confirmed","to-verify","lowest"}}...]}
@@ -64,14 +70,19 @@ internal static class SkillListCommand
             skillsDirectory = Path.Combine(root, "skills");
         }
         var skills = Path.TrimEndingDirectorySeparator(Path.GetFullPath(skillsDirectory));
-        try { SkillLoader.LoadDirectory(skills); }
-        catch (SkillException error)
-        {
-            return new IntentEnvelope(JsonSerializer.Serialize(new { status = "failed", code = error.Code, field = error.Field, detail = error.Detail, file = error.File }), 1);
-        }
         var load = JurisdictionRegistry.Load(skills);
         if (load.Refusal is { } refusal)
+        {
+            if (refusal.Code == JurisdictionCodes.SkillsInvalid)
+            {
+                try { SkillLoader.LoadDirectory(skills); }
+                catch (SkillException error)
+                {
+                    return new IntentEnvelope(JsonSerializer.Serialize(new { status = "failed", code = error.Code, field = error.Field, detail = error.Detail, file = error.File }), 1);
+                }
+            }
             return new IntentEnvelope(JsonSerializer.Serialize(new { status = "failed", code = refusal.Code, subject = refusal.Subject, detail = refusal.Detail }), 1);
+        }
         var registry = load.Registry!;
         var packs = new JsonArray();
         foreach (var pack in registry.Catalog.Skills.OrderBy(pack => pack.Id, StringComparer.Ordinal))
