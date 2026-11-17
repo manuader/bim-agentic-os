@@ -37,6 +37,10 @@ namespace Bim.Mcp;
 // generate_typology (P5-17) is read-only: its text is the document the CLI generate-typology verb writes for the same
 // request file, or that verb's refusal line, from the verb's own parser and pipeline path (GenerateTypologyTool.cs runs
 // GenerateTypologyCommand.Document); listed with permission level read (readOnlyHint true); it takes no output path.
+// doc_update (P4-20) is read-only: its text is the dry DocUpdatePlan file the CLI doc-update verb writes for the same input
+// files (without --probe-dependents), or that verb's plain refusal line, from the verb's own reader, parser and plan path
+// (DocUpdateTool.cs runs DocUpdateCommand.DryPlan); listed with permission level read (readOnlyHint true); no output path,
+// pipe, --accept or --execute.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -116,6 +120,12 @@ public sealed class McpServer
         new ToolSpec(GenerateTypologyTool.Name, "Read-only typology prototypes (P7-14/P5-16) for a generate-typology request file (pack, family_size, lot, alternatives, seed, project_id, optional weights, skills and precedence, the last two running the composed pack rules): returns the canonical document the CLI writes, byte for byte, or the typed generate_typology_* / input_* refusal; writes nothing (CLI: generate-typology request.json output.json).",
             [new ParameterSpec(GenerateTypologyTool.RequestParameter, "string", "generate-typology request JSON file, read only")],
             GenerateTypologyTool.Execute, Permission: PermissionLevel.Read),
+        new ToolSpec(DocUpdateTool.Name, "Read-only documentation update dry plan (P4-07/P4-08) of a BIM-IR edit: the canonical DocUpdatePlan JSON (regeneration, stale replacement steps, forced and retired keys) for before/after Project files, the realized map, the after-state Revit bindings and optional dry-run dependents, byte-equal to the file the CLI writes, or its typed refusal; never writes, probes or runs anything (CLI: doc-update --before before.json --after after.json --realized realized.json --bindings bindings.json --output plan.json [--dependents dependents.json]).",
+            [new ParameterSpec("before", "string", "Project IR file before the edit, read only"), new ParameterSpec("after", "string", "Project IR file after the edit, read only"),
+             new ParameterSpec("realized", "string", "Realized map file {\"doc:<key>\"|\"element:<id>\": UniqueId}, read only"),
+             new ParameterSpec("bindings", "string", "Revit bindings file {document {path, unique_id}, levels, optional wall_types, door_symbol, window_symbol}, read only"),
+             new ParameterSpec(DocUpdateTool.DependentsParameter, "string", "Optional dry-run dependents file {regenerated key: [UniqueId, ...]}, read only", false)],
+            DocUpdateTool.Execute, Permission: PermissionLevel.Read),
     ];
 
     const string AuditInputSchema = """{"type":"object","properties":{"log_path":{"type":"string","description":"Audit log (JSONL), read only"},"anchor_path":{"type":"string","description":"Head anchor file {kind audit-anchor, version 1, sequence, hash}, read only"},"actors":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Known actor ids; an entry by any other actor is audit_actor_unknown"},"summary":{"type":"boolean","description":"Return the decision summary instead of the report"}},"required":["log_path"],"additionalProperties":false}""";

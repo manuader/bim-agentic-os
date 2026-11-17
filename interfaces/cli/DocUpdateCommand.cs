@@ -121,8 +121,7 @@ internal static class DocUpdateCommand
         {
             if (pipe is null)
             {
-                var single = field ?? detail;
-                stdout.WriteLine(single is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail = single }));
+                stdout.WriteLine(PlainFailure(code, field ?? detail));
                 return 1;
             }
             var envelope = new JsonObject { ["status"] = "failed", ["code"] = code };
@@ -143,16 +142,8 @@ internal static class DocUpdateCommand
         var channel = pipe is null ? null : DocUpdateProbe.Channel(pipe, revit);
         try
         {
-            var beforeText = Read(paths["--before"], "before");
-            var afterText = Read(paths["--after"], "after");
-            var realizedText = Read(paths["--realized"], "realized");
-            var bindingsText = Read(paths["--bindings"], "bindings");
-            var dependentsText = paths.TryGetValue("--dependents", out var dependentsPath) ? Read(dependentsPath, "dependents") : null;
-            var before = ParseProject(beforeText, "before");
-            var after = ParseProject(afterText, "after");
-            var realized = ParseRealized(realizedText);
-            var bindings = ParseBindings(bindingsText);
-            var dependents = dependentsText is null ? null : ParseDependents(dependentsText);
+            var (before, after, realized, bindings, dependents) = ReadInputs(paths["--before"], paths["--after"], paths["--realized"], paths["--bindings"],
+                paths.TryGetValue("--dependents", out var dependentsPath) ? dependentsPath : null);
             DocUpdatePlan plan;
             DocUpdateDependentsResult? probed = null;
             if (channel is not { } probeChannel) plan = Library(() => DocUpdate.Plan(before, after, bindings, realized, dependents));
@@ -204,6 +195,44 @@ internal static class DocUpdateCommand
         }
         // Plain mode: the P4-08 detail is the field (a RevitCommandException's own detail was never printed there).
         catch (Refusal refusal) { return Fail(refusal.Code, refusal.Field, pipe is null ? null : refusal.Detail); }
+    }
+
+    // The P4-08 plain-mode envelope {"status":"failed","code"[,"detail"]}.
+    static string PlainFailure(string code, string? detail) =>
+        detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail });
+
+    sealed record Inputs(Project Before, Project After, Dictionary<string, string> Realized, RevitBindings Bindings, Dictionary<string, IReadOnlyList<string>>? Dependents);
+
+    // The verb's inputs: every file read first (before, after, realized, bindings, then dependents when given), then parsed
+    // in that order; the first failure throws its Refusal. The verb and DryPlan both read through here.
+    static Inputs ReadInputs(string beforePath, string afterPath, string realizedPath, string bindingsPath, string? dependentsPath)
+    {
+        var beforeText = Read(beforePath, "before");
+        var afterText = Read(afterPath, "after");
+        var realizedText = Read(realizedPath, "realized");
+        var bindingsText = Read(bindingsPath, "bindings");
+        var dependentsText = dependentsPath is null ? null : Read(dependentsPath, "dependents");
+        var before = ParseProject(beforeText, "before");
+        var after = ParseProject(afterText, "after");
+        var realized = ParseRealized(realizedText);
+        var bindings = ParseBindings(bindingsText);
+        var dependents = dependentsText is null ? null : ParseDependents(dependentsText);
+        return new Inputs(before, after, realized, bindings, dependents);
+    }
+
+    // P4-20: the dry plan of the read-only MCP tool doc_update (interfaces/mcp/DocUpdateTool.cs), without an output path,
+    // a pipe or any write. Succeeded: Text is JsonSerializer.Serialize(DocUpdate.Plan(...)), whose UTF-8 bytes are exactly
+    // the file the verb writes for the same input files without --probe-dependents. Otherwise Text is the verb's plain-mode
+    // refusal line without its newline (input_*, doc_update_*_invalid, doc_update_input_bound_exceeded, the library codes,
+    // doc_update_internal_error with the detail on stderr), in the verb's precedence after the output path.
+    internal static (bool Succeeded, string Text) DryPlan(string beforePath, string afterPath, string realizedPath, string bindingsPath, string? dependentsPath)
+    {
+        try
+        {
+            var (before, after, realized, bindings, dependents) = ReadInputs(beforePath, afterPath, realizedPath, bindingsPath, dependentsPath);
+            return (true, JsonSerializer.Serialize(Library(() => DocUpdate.Plan(before, after, bindings, realized, dependents))));
+        }
+        catch (Refusal refusal) { return (false, PlainFailure(refusal.Code, refusal.Field)); }
     }
 
     // A library call: its typed refusals become Refusal, anything else is an internal error (type and message on stderr).
