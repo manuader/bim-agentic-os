@@ -330,8 +330,9 @@ internal static class DocRealizedToolTests
             var arguments = Arguments(recordPath, fixturePath, assignmentsPath, RecordDocument);
             arguments.Remove(parameter);
             Check(ErrorCode(call(ToolLine(arguments))) == -32602, "without " + parameter + " returns -32602");
-            arguments[parameter] = 1;
-            Check(ErrorCode(call(ToolLine(arguments))) == -32602, "a non-string " + parameter + " returns -32602");
+            var mistyped = Arguments(recordPath, fixturePath, assignmentsPath, RecordDocument);
+            mistyped[parameter] = 1;
+            Check(ErrorCode(call(ToolLine(mistyped))) == -32602, "a non-string " + parameter + " returns -32602");
         }
         Check(ErrorCode(call(ToolLine(new JsonObject { ["record"] = JsonNode.Parse(recordText), ["fixture"] = fixturePath, ["assignments"] = assignmentsPath, ["document"] = RecordDocument }))) == -32602,
             "takes no inline record object (-32602)");
