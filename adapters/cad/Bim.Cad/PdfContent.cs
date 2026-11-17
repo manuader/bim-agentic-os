@@ -19,6 +19,8 @@ namespace Bim.Cad;
 // after ToUnicode (another name keeps the default decoding); an unknown /BaseEncoding warns encoding-base-unknown once
 // per font and page at the Tf; a Type3 font keeps the byte decoding of /Differences names outside the glyph list
 // without encoding-glyph-unknown.
+// P6-22: a Type3 /Differences name that is a real glyph-list name the reader does not map (PdfGlyphNames.IsGlyphListName)
+// warns encoding-glyph-unsupported once per font and page at the Tf; its codes keep the byte decoding.
 internal sealed class PdfContentInterpreter
 {
     private readonly PdfFile file;
@@ -418,6 +420,8 @@ internal sealed class PdfContentInterpreter
 
     // The decoder of the named font in the current resources, cached per font dictionary for the page; null keeps the
     // default decoding. Warnings are given once, when the font is first selected on the page.
+    private const int MaxListedGlyphNames = 8;
+
     private PdfFontDecoder? FontDecoder(string name, Dictionary<string, object>? resources, int objectNumber, int operatorIndex)
     {
         var fonts = file.Resolve(PdfFile.Get(resources, "Font")) as Dictionary<string, object>;
@@ -451,7 +455,14 @@ internal sealed class PdfContentInterpreter
         };
         if (encoding?.UnknownBase is { } unknownBase)
             Warn("encoding-base-unknown", objectNumber, operatorIndex, label + " has /BaseEncoding " + unknownBase + ", not /WinAnsiEncoding, /MacRomanEncoding or /StandardEncoding; codes outside /Differences that the ToUnicode CMap does not map are read as text bytes");
-        if (encoding is not null && file.IsName(font, "Subtype", "Type3")) encoding = encoding.WithoutUnknownNames;
+        if (encoding is not null && file.IsName(font, "Subtype", "Type3"))
+        {
+            if (encoding.UnsupportedGlyphListNames is { Count: > 0 } unsupported)
+                Warn("encoding-glyph-unsupported", objectNumber, operatorIndex, label + " is a Type3 font whose /Differences names glyph-list names the reader does not map ("
+                    + string.Join(", ", unsupported.Take(MaxListedGlyphNames).Select(glyph => "/" + glyph)) + (unsupported.Count > MaxListedGlyphNames ? ", ..." : "")
+                    + "); codes that the ToUnicode CMap does not map are read as text bytes");
+            encoding = encoding.WithoutUnknownNames;
+        }
         if (cmap is not null || encoding is not null) decoder = new PdfFontDecoder(composite, identity, cmap, encoding);
         fontDecoders[font] = decoder;
         return decoder;
