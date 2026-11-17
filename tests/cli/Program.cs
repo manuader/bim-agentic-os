@@ -1541,6 +1541,9 @@ try {
     // ---- P10-21 jurisdiction-resolve --code c | --country cc --municipality m [--lock skills.lock.json] [--allow-stub] (tests/cli/JurisdictionResolveTests.cs) ----
     JurisdictionResolveTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
 
+    // ---- P5-21 skill-list [--skills dir] (tests/cli/SkillListTests.cs) ----
+    SkillListTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
+
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
 } catch(Exception exception) {
