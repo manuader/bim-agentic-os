@@ -66,6 +66,9 @@ namespace Bim.Cli;
 // (realized.json; report.json for a refusal): see WriteRealized. A record without that step prints exactly what it did
 // before. P4-19: a step whose recorded request (record_file; realized_file or output if present) or succeeded reply
 // (output) names another folder is request_mismatch and nothing on disk is trusted.
+// P1-25: a record whose save_as_path is text gets "save_as":{state,detail,file,recorded_sha256,disk_sha256,disk_bytes}
+// right after copy (before realized): the -guardado.rvt file re-hashed through BoundedInput against save_as_sha256 (see
+// WriteSaveAs). A record without save_as_path, or with it null, prints exactly what it did before.
 // Every refusal prints one {"status":"failed","code"[,"detail"]} envelope and exits 1. catalogue_report_internal_error is a
 // defect (type and message on stderr).
 internal static class CatalogueReportCommand
@@ -105,6 +108,7 @@ internal static class CatalogueReportCommand
     const string SaveKey = "c-save";
     const string SaveCommand = "document.save_copy";
     const string ShaCheck = "sha256 leído = sha256 del archivo en disco";
+    static readonly Regex SaveAsName = new(@"\ABIM-Agentic-Test-c04-[A-Za-z0-9._-]+-guardado\.rvt\z", RegexOptions.CultureInvariant);
     static readonly Regex CopyName = new(@"\ABIM-Agentic-Test-c04-[A-Za-z0-9._-]+-copia\.rvt\z", RegexOptions.CultureInvariant);
     static readonly Regex DocumentName = new(@"\ABIM-Agentic-Test[A-Za-z0-9._-]*\.[rR][vV][tT]\z", RegexOptions.CultureInvariant);
     static readonly Regex GroupKey = new(@"\A[A-Za-z0-9_-]{1,64}\z", RegexOptions.CultureInvariant);
@@ -141,7 +145,7 @@ internal static class CatalogueReportCommand
     // copy hashing cap (tests pass a small one). Returns the exit code and the one line Run prints.
     internal static (int Exit, string Out) Execute(string[] args, string repositoryRoot, long maxCopyBytes = MaxCopyBytes, int maxSaveAsBytes = MaxSaveAsBytes)
     {
-        try { return (0, Report(args, repositoryRoot, maxCopyBytes)); }
+        try { return (0, Report(args, repositoryRoot, maxCopyBytes, maxSaveAsBytes)); }
         catch (Refusal refusal) { return (1, Failure(refusal.Code, refusal.Detail)); }
         catch (Exception error)
         {
@@ -150,7 +154,7 @@ internal static class CatalogueReportCommand
         }
     }
 
-    static string Report(string[] args, string repository, long maxCopyBytes)
+    static string Report(string[] args, string repository, long maxCopyBytes, int maxSaveAsBytes)
     {
         if (args.Length != 3 || args[1] != "--run" || args[2].Length == 0 || args[2].StartsWith("--", StringComparison.Ordinal)) throw new Refusal(UsageCode);
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repository));
@@ -180,6 +184,8 @@ internal static class CatalogueReportCommand
             var scope = Optional(record, "scope", "scope");
             var head = Optional(record, "head", "head");
             var copyPath = Optional(record, "copy_path", "copy_path");
+            var saveAsPath = Optional(record, "save_as_path", "save_as_path");
+            var saveAsSha = saveAsPath is null ? null : Optional(record, "save_as_sha256", "save_as_sha256");
 
             var buffer = new ArrayBufferWriter<byte>();
             using (var writer = new Utf8JsonWriter(buffer))
@@ -211,6 +217,7 @@ internal static class CatalogueReportCommand
                 }
                 writer.WriteEndArray();
                 WriteCopy(writer, steps, copyPath, runDirectory, runName, maxCopyBytes);
+                if (saveAsPath is not null) WriteSaveAs(writer, saveAsPath, saveAsSha, runDirectory, runName, maxSaveAsBytes);
                 WriteRealized(writer, steps, runDirectory, runName);
                 writer.WriteEndObject();
             }
@@ -599,6 +606,60 @@ internal static class CatalogueReportCommand
         if (recordedBytes is { } recorded) writer.WriteNumber("recorded_bytes", recorded); else writer.WriteNull("recorded_bytes");
         WriteText(writer, "disk_sha256", diskSha);
         if (diskBytes is { } disk) writer.WriteNumber("disk_bytes", disk); else writer.WriteNull("disk_bytes");
+        writer.WriteEndObject();
+    }
+
+    // P1-25: the file c-as-save wrote (document.save_as), named by the run record's save_as_path (P1-18: the full path of
+    // BIM-Agentic-Test-c04-*-guardado.rvt next to the test copy, written only when c-as-save passed, else null) and
+    // re-hashed now against the record's save_as_sha256 (the sha256 Revit read back, which c-as-save checked equal to the
+    // file on disk at run time). Written only when save_as_path is text, so a record without it (absent or null) keeps
+    // its bytes. "save_as":{state,detail,file,recorded_sha256,disk_sha256,disk_bytes}. States: outside_run (the path is
+    // not a -guardado.rvt directly in <run>: nothing is read, file null), link_refused (the file is a link or junction,
+    // dangling or not: never followed), missing, unreadable (detail the BoundedInput input_* code: not a regular file,
+    // over maxSaveAsBytes = input_too_large, access denied, I/O error), no_recorded_sha256 (save_as_sha256 absent, null or
+    // not 64 hex: the file is still hashed), mismatch (detail sha256), matches. The file is read whole through
+    // BoundedInput (regular files only, lstat before open on Unix, links refused, bounded), shared for write and delete
+    // because Revit keeps it open after the Save As. recorded_sha256 is printed lower-cased.
+    static void WriteSaveAs(Utf8JsonWriter writer, string path, string? recordedText, string runDirectory, string runName, int maxSaveAsBytes)
+    {
+        string state;
+        string? detail = null, file = null, recordedSha = null, diskSha = null;
+        long? diskBytes = null;
+        if (!InRun(path, runName, SaveAsName)) state = "outside_run";
+        else
+        {
+            file = Segments(path)[^1];
+            if (recordedText is not null && Sha256Any.IsMatch(recordedText)) recordedSha = recordedText.ToLowerInvariant();
+            var full = Path.Combine(runDirectory, file);
+            if (IsLink(new FileInfo(full))) state = "link_refused";
+            else
+            {
+                byte[]? content = null;
+                string? problem = null;
+                try { content = BoundedInput.ReadBytes(full, maxSaveAsBytes, FileShare.ReadWrite | FileShare.Delete); }
+                catch (InputRejectedException error) { problem = error.Message; }
+                if (content is null)
+                {
+                    state = problem switch { BoundedInput.NotFound => "missing", BoundedInput.LinkRejected => "link_refused", _ => "unreadable" };
+                    if (state == "unreadable") detail = problem;
+                }
+                else
+                {
+                    diskSha = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
+                    diskBytes = content.LongLength;
+                    if (recordedSha is null) state = "no_recorded_sha256";
+                    else if (recordedSha == diskSha) state = "matches";
+                    else { state = "mismatch"; detail = "sha256"; }
+                }
+            }
+        }
+        writer.WriteStartObject("save_as");
+        writer.WriteString("state", state);
+        WriteText(writer, "detail", detail);
+        WriteText(writer, "file", file);
+        WriteText(writer, "recorded_sha256", recordedSha);
+        WriteText(writer, "disk_sha256", diskSha);
+        if (diskBytes is { } length) writer.WriteNumber("disk_bytes", length); else writer.WriteNull("disk_bytes");
         writer.WriteEndObject();
     }
 
