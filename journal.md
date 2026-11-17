@@ -1648,3 +1648,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 04:36Z integration 8b4caaf CI 44015622281 success (9/9) → main fast-forwarded (3fe3326..8b4caaf). P3-19, P6-21, P10-22 ✅; new P3-20 (real catch-all forcing + MCP audit_verify line), P6-23 (flag on DXF blocks at the CLI), P5-21 (skill-list verb), P5-22 (MCP skill_list). Progress 207/225 (92.0 %). Worktrees retired (branches relay215-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-17T04:36:50Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P4-20 and P7-20 (MCP tools; both register in interfaces/mcp/McpServer.cs — serialize or keep hunks disjoint), P1-26, P2-26 (relay214); then P5-21 (P5-22 after it, also McpServer.cs); then P6-22/P6-23, P3-20, P10-23/P10-24 (relay215/213; P10-23 touches BcfExportCommand.cs, P3-20 touches other cli verbs — disjoint). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay216 — 2026-11-17T04:53:15Z (Claude, cloud scheduled)
+- 04:53Z LOCK taken (was FREE; relay215 released 2026-11-17T04:36:50Z).
