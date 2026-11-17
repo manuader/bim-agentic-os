@@ -1625,8 +1625,7 @@ static class MirrorDriftLoopChecks
         var t = thrown.End();
         Check(!thrownReady && t.Exited && t.Exit == 1 && t.Error.Contains("nope", StringComparison.Ordinal) && t.Error.Contains("-RecorderFailures", StringComparison.Ordinal),
             "an uncaught throw naming -RecorderFailures and nope (the refused nope:0) also exits exactly 1 and passes the P2-26 contains rule", "ready " + thrownReady + " exited " + t.Exited + " exit " + t.Exit + " " + Head(t.Error));
-        // PROBE (red on purpose): the exact gate-line predicate applied to the uncaught throw must fail here.
-        Check(t.Error == GateLine("nope"), "PROBE: the uncaught throw's stderr is the gate line (expected to fail: the exact-line pin bites)", Head(t.Error));
+        Check(t.Error != GateLine("nope"), "the uncaught throw's stderr is not the gate line, so the exact-line checks above reject it", Head(t.Error));
     }
 
     // P2-28: the one stderr line the fake writes at exit for the scheduled ids never matched (sorted, comma-separated).
