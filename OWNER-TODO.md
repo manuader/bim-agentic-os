@@ -309,3 +309,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay220 (2026-11-17, cloud)
 - No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 `git pull` (main 731d255) then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once); 🔒 N21 `... -Runs 1`.
+
+## Relay221 (2026-11-17, cloud)
+- No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 one `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run (Load Once) then catalogue-report; 🔒 N21 `... -Runs 1`; `git pull` (main c633488).
