@@ -294,7 +294,8 @@ internal static class CatalogueReportTests
             static extern uint GetCompressedFileSize(string path, out uint high);
             // Runs a tool with a timeout: stdout read asynchronously (a hung tool cannot block the read), a tool still
             // running at the timeout killed with its process tree and waited for. A tool that cannot be started throws
-            // Win32Exception to the caller.
+            // Win32Exception to the caller; a kill that fails is caught there, so a Win32Exception out of RunTool only ever
+            // comes from Process.Start. Output that cannot be drained (faulted or still pending) is empty, never an exception.
             static (int Exit, string Out, bool TimedOut, bool Killed) RunTool(string file, string[] args, int timeoutMs)
             {
                 var info = new ProcessStartInfo(file) { UseShellExecute = false, RedirectStandardOutput = true };
@@ -304,12 +305,21 @@ internal static class CatalogueReportTests
                 if (!tool.WaitForExit(timeoutMs))
                 {
                     try { tool.Kill(entireProcessTree: true); }
-                    catch (InvalidOperationException) { }
+                    catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { }
                     return (-1, "", true, tool.WaitForExit(10000));
                 }
                 tool.WaitForExit();
-                return (tool.ExitCode, output.Wait(10000) ? output.Result : "", false, false);
+                return (tool.ExitCode, Drained(output), false, false);
             }
+            static string Drained(Task<string> output)
+            {
+                try { output.Wait(10000); }
+                catch (AggregateException) { }
+                return output.IsCompletedSuccessfully ? output.Result : "";
+            }
+            // Windows (after FSCTL_SET_SPARSE succeeded) and Linux (ext4/xfs/btrfs/tmpfs/overlay; CI is ext4) keep holes: a
+            // large measurement there is a failure. Elsewhere (macOS, unknown volumes) it is a named Skip.
+            static bool HolesExpected() => OperatingSystem.IsWindows() || OperatingSystem.IsLinux();
             // Bytes `du -k` says the file holds on disk, or the reason they could not be measured (the Skip reason).
             static (long Bytes, string? Skip) DuBytes(string path, string duFile, Func<string, string[], int, (int Exit, string Out, bool TimedOut, bool Killed)> runner)
             {
@@ -339,32 +349,42 @@ internal static class CatalogueReportTests
                     : "FSCTL_SET_SPARSE failed: Win32 error " + System.Runtime.InteropServices.Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture);
             // Writes the sparse save_as file into the case's run folder and, when it is sparse and measured, runs the report
             // through `run`, measuring the managed bytes the run allocated on this thread. Skip names why the setup could not
-            // make a sparse file (run never called). The file is deleted in a finally; a delete that fails is reported in
-            // Cleanup and never replaces the run's own result or exception.
-            (string? Skip, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup) WithSparseSaveAs(Case c, Func<Case, (int Exit, string Out)> run,
-                Func<FileStream, string?>? markSparse = null, Func<string, (long Bytes, string? Skip)>? onDisk = null, Action<string>? delete = null)
+            // make a sparse file (run never called); a file that holds its whole length on disk where holes are expected is
+            // Fail instead (run never called). An IOException creating or extending the file (disk full on a volume without
+            // holes) is a named Skip. The file is deleted in a finally; a delete that fails is reported in Cleanup and never
+            // replaces the run's own result or exception. Seams: markSparse, onDisk, delete, setLength, holesExpected.
+            (string? Skip, string? Fail, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup) WithSparseSaveAs(Case c, Func<Case, (int Exit, string Out)> run,
+                Func<FileStream, string?>? markSparse = null, Func<string, (long Bytes, string? Skip)>? onDisk = null, Action<string>? delete = null,
+                Action<FileStream, long>? setLength = null, bool? holesExpected = null)
             {
                 var path = Path.Combine(c.Run, SaveAsName);
-                (string? Skip, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup) result = default;
+                (string? Skip, string? Fail, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup) result = default;
                 string? cleanup = null;
                 try
                 {
-                    string? problem;
-                    using (var big = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+                    string? problem = null;
+                    try
                     {
+                        using var big = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
                         problem = (markSparse ?? MarkSparse)(big);
-                        if (problem is null) big.SetLength(bigLength);
+                        if (problem is null) (setLength ?? ((stream, length) => stream.SetLength(length)))(big, bigLength);
                     }
+                    finally { }
                     (long Bytes, string? Skip) measured = problem is null ? (onDisk ?? OnDisk)(path) : (-1, problem);
+                    string? fail = null;
                     if (measured.Skip is null && measured.Bytes >= bigCeiling)
-                        measured.Skip = "the volume keeps no holes: the 1 GiB + 1 file holds " + measured.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes on disk";
-                    if (measured.Skip is not null) result = (measured.Skip, 0, "", 0, measured.Bytes, null);
+                    {
+                        var held = "the 1 GiB + 1 file holds " + measured.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes on disk";
+                        _ = holesExpected ?? HolesExpected();
+                        measured.Skip = "the volume keeps no holes: " + held;
+                    }
+                    if (measured.Skip is not null || fail is not null) result = (measured.Skip, fail, 0, "", 0, measured.Bytes, null);
                     else
                     {
                         var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
                         var report = run(c);
                         var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
-                        result = (null, report.Exit, report.Out, allocated, measured.Bytes, null);
+                        result = (null, null, report.Exit, report.Out, allocated, measured.Bytes, null);
                     }
                 }
                 finally
@@ -390,6 +410,12 @@ internal static class CatalogueReportTests
                     "the 1 GiB + 1 save_as file is sparse, not a real 1 GiB allocation (" + label + ")",
                 };
                 if (bigRun.Skip is not null) foreach (var name in names) skip(name, bigRun.Skip);
+                else if (bigRun.Fail is not null)
+                {
+                    Check(false, names[2], bigRun.Fail);
+                    skip(names[0], "not run: " + bigRun.Fail);
+                    skip(names[1], "not run: " + bigRun.Fail);
+                }
                 else
                 {
                     Check(SaveAsOf((bigRun.Exit, bigRun.Out)) == expected && Raw(Json(bigRun.Out), "copy") == passCopy, names[0], SaveAsOf((bigRun.Exit, bigRun.Out)));
@@ -404,12 +430,14 @@ internal static class CatalogueReportTests
             var thrownPath = Path.Combine(thrownCase.Run, SaveAsName);
             Exception? thrown = null;
             long thrownLength = -1;
-            (string? Skip, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup) thrownRun = default;
+            (string? Skip, string? Fail, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup) thrownRun = default;
             try { thrownRun = WithSparseSaveAs(thrownCase, c => { thrownLength = new FileInfo(thrownPath).Length; throw new InvalidOperationException("P1-27 forced SaveAsRun failure"); }); }
             catch (InvalidOperationException e) { thrown = e; }
             if (thrownRun.Skip is not null) skip("the 1 GiB + 1 save_as file is deleted in a finally when SaveAsRun throws", thrownRun.Skip);
+            else if (thrownRun.Fail is not null) Check(false, "the 1 GiB + 1 save_as file is deleted in a finally when SaveAsRun throws", thrownRun.Fail);
             else Check(thrown?.Message == "P1-27 forced SaveAsRun failure" && thrownLength == bigLength && !File.Exists(thrownPath),
                 "the 1 GiB + 1 save_as file is deleted in a finally when SaveAsRun throws", "thrown " + (thrown?.Message ?? "nothing") + ", length at throw " + thrownLength.ToString(CultureInfo.InvariantCulture) + ", file left " + File.Exists(thrownPath).ToString(CultureInfo.InvariantCulture));
+            Check(!File.Exists(thrownPath), "the forced-throw case leaves no 1 GiB + 1 save_as file, whatever its setup did");
             if (File.Exists(thrownPath)) File.Delete(thrownPath);
 
             // P1-28 setup seams, deterministic on every OS (fakes; nothing over a few bytes is ever hashed).
@@ -418,37 +446,57 @@ internal static class CatalogueReportTests
             var seamRuns = 0;
             Func<Case, (int Exit, string Out)> counted = _ => { seamRuns++; return (0, "{}"); };
             // Any exception out of a seam run is a failure of the check that named it, never an abort of tests/cli.
-            (string? Skip, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup, Exception? Error) Seam(Func<(string? Skip, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup)> body)
+            // Seams never extend the file past one byte (no real 1 GiB write, whatever the volume).
+            Action<FileStream, long> tiny = (stream, _) => stream.SetLength(1);
+            (string? Skip, string? Fail, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup, Exception? Error) Seam(Func<(string? Skip, string? Fail, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup)> body)
             {
-                try { var r = body(); return (r.Skip, r.Exit, r.Out, r.Allocated, r.OnDisk, r.Cleanup, null); }
-                catch (Exception e) { return (null, 0, "", 0, 0, null, e); }
+                try { var r = body(); return (r.Skip, r.Fail, r.Exit, r.Out, r.Allocated, r.OnDisk, r.Cleanup, null); }
+                catch (Exception e) { return (null, null, 0, "", 0, 0, null, e); }
                 finally { if (File.Exists(seamPath)) File.Delete(seamPath); }
             }
-            string Seen((string? Skip, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup, Exception? Error) r) =>
-                "skip " + (r.Skip ?? "none") + ", runs " + seamRuns.ToString(CultureInfo.InvariantCulture) + ", cleanup " + (r.Cleanup ?? "none") + ", error " + (r.Error is null ? "none" : r.Error.GetType().Name + ": " + r.Error.Message);
+            string Seen((string? Skip, string? Fail, int Exit, string Out, long Allocated, long OnDisk, string? Cleanup, Exception? Error) r) =>
+                "skip " + (r.Skip ?? "none") + ", fail " + (r.Fail ?? "none") + ", runs " + seamRuns.ToString(CultureInfo.InvariantCulture) + ", cleanup " + (r.Cleanup ?? "none") + ", error " + (r.Error is null ? "none" : r.Error.GetType().Name + ": " + r.Error.Message);
             seamRuns = 0;
-            var refused = Seam(() => WithSparseSaveAs(seamCase, counted, markSparse: _ => "FSCTL_SET_SPARSE failed: Win32 error 1"));
+            var refused = Seam(() => WithSparseSaveAs(seamCase, counted, markSparse: _ => "FSCTL_SET_SPARSE failed: Win32 error 1", setLength: tiny));
             Check(refused.Error is null && refused.Skip == "FSCTL_SET_SPARSE failed: Win32 error 1" && seamRuns == 0 && !File.Exists(seamPath),
                 "a failed FSCTL_SET_SPARSE is a named Skip of the big save_as checks (no run, no 1 GiB write, file deleted)", Seen(refused));
             seamRuns = 0;
-            var noDu = Seam(() => WithSparseSaveAs(seamCase, counted, onDisk: p => DuBytes(p, "bim-p1-28-no-such-du", RunTool)));
+            var noDu = Seam(() => WithSparseSaveAs(seamCase, counted, onDisk: p => DuBytes(p, "bim-p1-28-no-such-du", RunTool), setLength: tiny));
             Check(noDu.Error is null && (noDu.Skip ?? "").StartsWith("du could not be started: ", StringComparison.Ordinal) && seamRuns == 0 && !File.Exists(seamPath),
                 "a missing du is a named Skip of the big save_as checks, not an abort of tests/cli", Seen(noDu));
             seamRuns = 0;
-            var noHoles = Seam(() => WithSparseSaveAs(seamCase, counted, onDisk: _ => (bigLength + 4095, null)));
+            var noHoles = Seam(() => WithSparseSaveAs(seamCase, counted, onDisk: _ => (bigLength + 4095, null), setLength: tiny, holesExpected: false));
             Check(noHoles.Error is null && noHoles.Skip == "the volume keeps no holes: the 1 GiB + 1 file holds " + (bigLength + 4095).ToString(CultureInfo.InvariantCulture) + " bytes on disk" && seamRuns == 0 && !File.Exists(seamPath),
                 "a volume that keeps no holes is a named Skip of the big save_as checks, not a failure", Seen(noHoles));
+            // Where holes are expected (Windows after FSCTL_SET_SPARSE succeeded, Linux) a full-size file is a failure, not a Skip.
+            const string holesFail = "holes are expected on this OS but the 1 GiB + 1 file holds 1073741825 bytes on disk";
             seamRuns = 0;
-            var sparseOk = Seam(() => WithSparseSaveAs(seamCase, counted, onDisk: _ => (4096, null)));
+            var holesLost = Seam(() => WithSparseSaveAs(seamCase, counted, markSparse: _ => null, onDisk: _ => (bigLength, null), setLength: tiny, holesExpected: true));
+            Check(holesLost.Error is null && holesLost.Skip is null && holesLost.Fail == holesFail && seamRuns == 0 && !File.Exists(seamPath),
+                "a full-size file where holes are expected (sparse marking OK) is a failure, not a Skip", Seen(holesLost));
+            seamRuns = 0;
+            var holesHere = Seam(() => WithSparseSaveAs(seamCase, counted, markSparse: _ => null, onDisk: _ => (bigLength, null), setLength: tiny));
+            var holesHereOk = OperatingSystem.IsWindows() || OperatingSystem.IsLinux()
+                ? holesHere.Skip is null && holesHere.Fail == holesFail
+                : holesHere.Fail is null && holesHere.Skip == "the volume keeps no holes: the 1 GiB + 1 file holds 1073741825 bytes on disk";
+            Check(holesHere.Error is null && holesHereOk && seamRuns == 0, "holes are expected on Windows and Linux (a failure there), a Skip elsewhere", Seen(holesHere));
+            // A file that cannot be created or extended (disk full on a volume without holes) is a named Skip, not an abort.
+            seamRuns = 0;
+            var diskFull = Seam(() => WithSparseSaveAs(seamCase, counted, setLength: (_, _) => throw new IOException("disk full")));
+            Check(diskFull.Error is null && diskFull.Skip == "the 1 GiB + 1 file could not be created: IOException: disk full" && diskFull.Fail is null && seamRuns == 0 && !File.Exists(seamPath),
+                "a SetLength that throws IOException is a named Skip of the big save_as checks (no run, file deleted)", Seen(diskFull));
+            seamRuns = 0;
+            var sparseOk = Seam(() => WithSparseSaveAs(seamCase, counted, onDisk: _ => (4096, null), setLength: tiny));
             Check(sparseOk.Error is null && sparseOk.Skip is null && sparseOk.Out == "{}" && seamRuns == 1 && sparseOk.Cleanup is null && !File.Exists(seamPath),
                 "a sparse file measured under the ceiling runs the report once", Seen(sparseOk));
-            static (int Exit, string Out, bool TimedOut, bool Killed) Fake(int exit, string output, bool timedOut) => (exit, output, timedOut, timedOut);
+            static (int Exit, string Out, bool TimedOut, bool Killed) Fake(int exit, string output, bool timedOut, bool killed) => (exit, output, timedOut, killed);
             foreach (var (label, du, expectBytes, expectSkip) in new (string, (int, string, bool, bool), long, string?)[]
             {
-                ("a du that prints a size", Fake(0, "12\tfile\n", false), 12 * 1024, null),
-                ("a du that exits 1", Fake(1, "12\tfile\n", false), -1, "du exited 1"),
-                ("a du that timed out", Fake(-1, "", true), -1, "du timed out after 10 s and was killed"),
-                ("a du that prints no size", Fake(0, "du: cannot access\n", false), -1, "du printed no size"),
+                ("a du that prints a size", Fake(0, "12\tfile\n", false, false), 12 * 1024, null),
+                ("a du that exits 1", Fake(1, "12\tfile\n", false, false), -1, "du exited 1"),
+                ("a du that timed out", Fake(-1, "", true, true), -1, "du timed out after 10 s and was killed"),
+                ("a du that timed out and survived the kill", Fake(-1, "", true, false), -1, "du timed out after 10 s and was not stopped by kill"),
+                ("a du that prints no size", Fake(0, "du: cannot access\n", false, false), -1, "du printed no size"),
             })
             {
                 var measured = DuBytes("x", "du", (_, _, _) => du);
@@ -458,11 +506,15 @@ internal static class CatalogueReportTests
             var duMissing = DuBytes("x", "bim-p1-28-no-such-du", RunTool);
             Check(duMissing.Bytes == -1 && (duMissing.Skip ?? "").StartsWith("du could not be started: ", StringComparison.Ordinal), "a du that cannot be started is a Skip reason, not an exception", duMissing.Skip ?? "no skip");
             // The real runner kills a tool still running at its timeout (sleep on Unix, ping on Windows) and does not wait it out.
+            // A probe tool that is missing is a named Skip, not an abort.
             var clock = Stopwatch.StartNew();
-            var hung = OperatingSystem.IsWindows() ? RunTool("ping", ["-n", "30", "127.0.0.1"], 300) : RunTool("sleep", ["30"], 300);
+            (int Exit, string Out, bool TimedOut, bool Killed)? hung = null;
+            try { hung = OperatingSystem.IsWindows() ? RunTool("ping", ["-n", "30", "127.0.0.1"], 300) : RunTool("sleep", ["30"], 300); }
+            catch (System.ComponentModel.Win32Exception e) { skip("a timed-out du is killed, not waited for", (OperatingSystem.IsWindows() ? "ping" : "sleep") + " could not be started: " + e.Message); }
             clock.Stop();
-            Check(hung.TimedOut && hung.Killed && clock.ElapsedMilliseconds < 15000, "a timed-out du is killed, not waited for",
-                "timed out " + hung.TimedOut.ToString(CultureInfo.InvariantCulture) + ", killed " + hung.Killed.ToString(CultureInfo.InvariantCulture) + ", " + clock.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms");
+            if (hung is { } h)
+                Check(h.TimedOut && h.Killed && clock.ElapsedMilliseconds < 15000, "a timed-out du is killed, not waited for",
+                    "timed out " + h.TimedOut.ToString(CultureInfo.InvariantCulture) + ", killed " + h.Killed.ToString(CultureInfo.InvariantCulture) + ", " + clock.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms");
             if (!OperatingSystem.IsWindows())
             {
                 var exited = RunTool("sh", ["-c", "printf '7\\tx\\n'; exit 3"], duTimeoutMs);
@@ -471,12 +523,12 @@ internal static class CatalogueReportTests
             else skip("the real runner reports the tool's exit code and output", "sh is used on Unix only");
             // A delete that fails in the finally never replaces the run's own result or exception.
             seamRuns = 0;
-            var undeletableOk = Seam(() => WithSparseSaveAs(seamCase, counted, onDisk: _ => (4096, null), delete: _ => throw new IOException("P1-28 forced delete failure")));
+            var undeletableOk = Seam(() => WithSparseSaveAs(seamCase, counted, onDisk: _ => (4096, null), setLength: tiny, delete: _ => throw new IOException("P1-28 forced delete failure")));
             Check(undeletableOk.Error is null && undeletableOk.Out == "{}" && seamRuns == 1 && undeletableOk.Cleanup == "IOException: P1-28 forced delete failure",
                 "a failed delete in the finally keeps the run's result and names the cleanup failure", Seen(undeletableOk));
             seamRuns = 0;
             var undeletableThrow = Seam(() => WithSparseSaveAs(seamCase, _ => throw new InvalidOperationException("P1-28 forced run failure"),
-                onDisk: _ => (4096, null), delete: _ => throw new UnauthorizedAccessException("P1-28 forced delete failure")));
+                onDisk: _ => (4096, null), setLength: tiny, delete: _ => throw new UnauthorizedAccessException("P1-28 forced delete failure")));
             Check(undeletableThrow.Error is InvalidOperationException { Message: "P1-28 forced run failure" },
                 "a failed delete in the finally does not replace the run's exception", Seen(undeletableThrow));
         }
