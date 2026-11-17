@@ -307,18 +307,21 @@ internal static class CatalogueReportTests
             (int Exit, string Out, long Allocated, long OnDisk) WithSparseSaveAs(Case c, Func<Case, (int Exit, string Out)> run)
             {
                 var path = Path.Combine(c.Run, SaveAsName);
-                using (var big = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+                try
                 {
-                    if (OperatingSystem.IsWindows() && !DeviceIoControl(big.SafeFileHandle, 0x000900C4 /* FSCTL_SET_SPARSE */, IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero))
-                        throw new IOException("FSCTL_SET_SPARSE failed: Win32 error " + System.Runtime.InteropServices.Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture));
-                    big.SetLength(bigLength);
+                    using (var big = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+                    {
+                        if (OperatingSystem.IsWindows() && !DeviceIoControl(big.SafeFileHandle, 0x000900C4 /* FSCTL_SET_SPARSE */, IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero))
+                            throw new IOException("FSCTL_SET_SPARSE failed: Win32 error " + System.Runtime.InteropServices.Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture));
+                        big.SetLength(bigLength);
+                    }
+                    var onDisk = OnDisk(path);
+                    var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                    var result = run(c);
+                    var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                    return (result.Exit, result.Out, allocated, onDisk);
                 }
-                var onDisk = OnDisk(path);
-                var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
-                var result = run(c);
-                var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
-                File.Delete(path);
-                return (result.Exit, result.Out, allocated, onDisk);
+                finally { File.Delete(path); }
             }
             foreach (var (label, recorded, expected) in new[]
             {
