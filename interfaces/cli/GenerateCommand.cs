@@ -135,6 +135,7 @@ internal static class GenerateCommand
         string json;
         try
         {
+            GuardedWorkProbe?.Invoke();
             result = PrototypePipeline.Run(parsed.Request, options);
             json = result.Status == PrototypePipelineStatus.Refused ? "" : PrototypePipelineSerializer.Serialize(result);
         }
@@ -374,6 +375,10 @@ internal static class GenerateCommand
         hash[8] = (byte)((hash[8] & 0x3F) | 0x80);
         return new Guid(hash.AsSpan(0, 16), bigEndian: true);
     }
+
+    // P3-20 test seam: null in production. tests/cli/InternalErrorDelegationTests.cs sets it (by reflection) to an Action
+    // that throws, so the guarded library work below fails inside Run's real catch-all; it is reset after the test.
+    internal static Action? GuardedWorkProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).

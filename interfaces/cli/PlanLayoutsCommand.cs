@@ -194,6 +194,7 @@ internal static class PlanLayoutsCommand
 
         try
         {
+            GuardedWorkProbe?.Invoke();
             var set = AlternativeGenerator.Generate(brief, rules is null ? new AlternativeOptions(count, seed) : new AlternativeOptions(count, seed, new PlannerOptions(Rules: rules)));
             return (set, set.Status == AlternativeSetStatus.Refused ? "" : AlternativeSetSerializer.Serialize(set), rules);
         }
@@ -306,6 +307,10 @@ internal static class PlanLayoutsCommand
         value = 0;
         return IntegerLiteral.IsMatch(text) && int.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value);
     }
+
+    // P3-20 test seam: null in production. tests/cli/InternalErrorDelegationTests.cs sets it (by reflection) to an Action
+    // that throws, so the guarded library work below fails inside Run's real catch-all; it is reset after the test.
+    internal static Action? GuardedWorkProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
