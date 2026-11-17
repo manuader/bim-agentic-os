@@ -197,7 +197,7 @@ function Get-PackageFileSha256([string]$Path) {
 # uses readlink/stat metadata only (FileSystemInfo.LinkTarget / ResolveLinkTarget), never an open, on every platform.
 function Assert-PackageStagedFilesRegular([string]$Base, [string[]]$Files) {
     if ($Files.Length -eq 0) { return }
-    $dangling = [Collections.Generic.List[string]]::new()
+    $dangling = [Collections.Generic.SortedDictionary[string, string]]::new([StringComparer]::Ordinal)
     foreach ($file in $Files) {
         $info = [IO.FileInfo]::new((Join-Path $Base $file))
         $target = $info.LinkTarget
@@ -205,11 +205,11 @@ function Assert-PackageStagedFilesRegular([string]$Base, [string[]]$Files) {
         $exists = $false
         try { $final = $info.ResolveLinkTarget($true); $exists = $final -and ([IO.File]::Exists($final.FullName) -or [IO.Directory]::Exists($final.FullName)) -and !$final.LinkTarget }
         catch { $exists = $false }
-        if (!$exists) { $dangling.Add("$file (link to $target)") }
+        if (!$exists) { $dangling[$file] = [string]$target }
     }
     if ($dangling.Count) {
-        $sorted = $dangling.ToArray(); [Array]::Sort($sorted, [StringComparer]::Ordinal)
-        throw "package_dangling_link: staged symbolic links whose target does not exist are never packaged; refused before any read or hash: $($sorted -join ', ')"
+        $named = [string[]]@($dangling.Keys | ForEach-Object { "$_ (link to $($dangling[$_]))" })
+        throw "package_dangling_link: staged symbolic links whose target does not exist are never packaged; refused before any read or hash: $($named -join ', ')"
     }
     if ($IsWindows) { return }
     $full = [string[]]@($Files | ForEach-Object { Join-Path $Base $_ })
