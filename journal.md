@@ -1693,3 +1693,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay221 — 2026-11-17T14:53:33Z (Claude, cloud scheduled)
 - 14:53Z LOCK taken (was FREE; relay220 released 2026-11-17T14:17:21Z).
 - 14:53Z picked P5-23 (phase 5), P6-24 (phase 6), P7-22 (phase 7) — oldest-touched (relay217); disjoint files. Workers spawned.
+- 16:11Z workers green: P5-23 1afae4b (red 44108572317, green 44110773912; 0 attempts; macOS job re-run twice after runner not acquired), P6-24 c6e9df8 (red 44108546930, green 44111641935; 0 attempts), P7-22 ed0f6f5 (red 44108688858, green 44109616700; 0 attempts). Next: independent reviews.
