@@ -29,6 +29,8 @@ namespace Bim.Cli;
 //   {"status":"failed","code","field","detail","file"}  the loader's SkillException unchanged (e.g. root_missing,
 //       json_invalid, id_mismatch, path_unsafe), file root-relative;
 //   {"status":"failed","code","subject","detail"}  a jurisdiction sidecar refusal of JurisdictionRegistry.Load unchanged;
+//       also its skills_invalid refusal (subject the file, detail "<loader code>: <detail>") in the rare case the
+//       loader's re-read then succeeds (the directory changed between the two reads);
 //   {"status":"failed","code":"skill_list_internal_error"}  a defect (IntentPlan.Internal, detail on stderr).
 // Precedence: usage, skills directory, loader, sidecars.
 // List(skillsDirectory) is the shared handler (the MCP skill_list tool, P5-22): it never prints and never throws.

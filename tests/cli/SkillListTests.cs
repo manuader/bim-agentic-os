@@ -24,14 +24,20 @@ using Bim.Core;
 //      routes defects through IntentPlan.Internal("skill-list", ...), exposes a public static handler and has no file
 //      write API; Program.cs registers the verb.
 //   7. P5-23 one load: the skills directory is read once. The source calls JurisdictionRegistry.Load( exactly once and
-//      takes the catalogue from registry.Catalog; SkillLoader.LoadDirectory( appears exactly once, after the registry
-//      load, only to restate a skills_invalid refusal as the loader's typed SkillException (failure path only).
+//      takes the catalogue from registry.Catalog; SkillLoader.LoadDirectory( appears exactly once, brace-nested inside
+//      `if (load.Refusal is { } refusal)` and its `if (refusal.Code == JurisdictionCodes.SkillsInvalid)` block, so an
+//      unconditional second read fails (failure path only).
 //   8. P5-23 registry issues are dropped: a directory whose registry loads with claim_duplicate (two packs claiming xx.dup)
 //      and pack_not_code (a qa pack claiming xx.qa) lists exactly the in-process envelope, which never carries them; the
 //      duplicated and the non-code claims flag no pack as stub. (pack_missing cannot arise from a directory load: a
 //      sidecar's pack must equal its own directory, which the catalogue holds.)
-//   9. P5-23 culture: under LANG/LC_ALL de_DE.UTF-8 and tr_TR.UTF-8 the repository listing and a loader refusal print the
-//      same bytes as under the default culture (skipped with a SKIP line when culture data is unavailable).
+//   9. P5-23 culture: in process, the oracle envelope built under CurrentCulture de-DE and tr-TR equals the invariant one
+//      (every OS). On Linux only (LANG/LC_ALL do not select the .NET culture on Windows or macOS; SKIP elsewhere), CLI
+//      children under LANG/LC_ALL de_DE.UTF-8 and tr_TR.UTF-8 (DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=0) print the
+//      repository listing, the claim fixture listing and a loader refusal byte for byte as under the default culture. A
+//      sentinel proves the environment really selects the culture in a .NET child: a pwsh child under the same environment
+//      must report CurrentCulture de-DE / tr-TR, and the CLI's runtimeconfig must not force invariant globalization; a
+//      missing pwsh or culture data on Linux is a failure, not a skip, so a silently invariant child cannot pass.
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -247,19 +253,64 @@ internal static class SkillListTests
         Check(TreeDigest(issues) == issuesDigest, "the registry-issues fixture is unchanged");
 
         // ---- 9. P5-23: a non-invariant culture prints the same bytes ----
-        foreach (var (locale, name) in new[] { ("de_DE.UTF-8", "de-DE"), ("tr_TR.UTF-8", "tr-TR") })
+        foreach (var name in new[] { "de-DE", "tr-TR" })
         {
             var available = false;
-            try { available = !CultureInfo.GetCultureInfo(name).NumberFormat.NumberDecimalSeparator.Equals(".", StringComparison.Ordinal); }
+            try { available = CultureInfo.GetCultureInfo(name).NumberFormat.NumberDecimalSeparator == ","; }
             catch (CultureNotFoundException) { }
-            if (!available) { Console.WriteLine("SKIP skill-list: " + name + " culture data unavailable (invariant globalization); culture check not run"); continue; }
-            var env = new Dictionary<string, string> { ["LANG"] = locale, ["LC_ALL"] = locale };
-            var cultured = CliWith(env, cliDll);
-            Check(cultured.Exit == listing.Exit && cultured.Out == listing.Out, "under " + locale + " the repository listing prints the same bytes as under the default culture", D(cultured));
-            var culturedIssues = CliWith(env, cliDll, "--skills", issues);
-            Check(culturedIssues.Exit == issuesResult.Exit && culturedIssues.Out == issuesResult.Out, "under " + locale + " the registry-issues listing prints the same bytes", D(culturedIssues));
-            var culturedRefusal = CliWith(env, cliDll, "--skills", malformed);
-            Check(culturedRefusal.Exit == malformedResult.Exit && culturedRefusal.Out == malformedResult.Out, "under " + locale + " a loader refusal prints the same bytes", D(culturedRefusal));
+            if (!available)
+            {
+                if (OperatingSystem.IsLinux()) Check(false, name + " culture data with a comma decimal separator exists on Linux", "CultureInfo.GetCultureInfo(\"" + name + "\") unavailable or not comma-decimal");
+                else Console.WriteLine("SKIP skill-list: " + name + " culture data unavailable (invariant globalization); in-process culture check not run");
+                continue;
+            }
+            var previous = CultureInfo.CurrentCulture;
+            var previousUi = CultureInfo.CurrentUICulture;
+            (int Exit, string Line) invariantRepository = Expected(skills), invariantIssues = Expected(issues), culturedRepository, culturedIssuesExpected;
+            try
+            {
+                CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(name);
+                CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo(name);
+                culturedRepository = Expected(skills);
+                culturedIssuesExpected = Expected(issues);
+            }
+            finally { CultureInfo.CurrentCulture = previous; CultureInfo.CurrentUICulture = previousUi; }
+            Check(culturedRepository == invariantRepository && culturedIssuesExpected == invariantIssues && invariantRepository.Line == listing.Out,
+                "in process under " + name + " current culture the listing envelopes are byte-identical", culturedRepository.Line);
+        }
+        if (!OperatingSystem.IsLinux())
+            Console.WriteLine("SKIP skill-list: child-process culture runs need Linux (LANG/LC_ALL do not select the .NET culture on Windows or macOS)");
+        else
+        {
+            var runtimeConfig = Path.ChangeExtension(cliDll, ".runtimeconfig.json");
+            var forcedInvariant = File.Exists(runtimeConfig) && File.ReadAllText(runtimeConfig).Contains("\"System.Globalization.Invariant\": true", StringComparison.Ordinal);
+            Check(File.Exists(runtimeConfig) && !forcedInvariant, "the CLI runtimeconfig does not force invariant globalization", runtimeConfig);
+            foreach (var (locale, name) in new[] { ("de_DE.UTF-8", "de-DE"), ("tr_TR.UTF-8", "tr-TR") })
+            {
+                var env = new Dictionary<string, string> { ["LANG"] = locale, ["LC_ALL"] = locale, ["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "0" };
+                // Sentinel: a .NET child (pwsh) under the same environment must really select the culture.
+                string sentinel;
+                try
+                {
+                    var probe = new ProcessStartInfo("pwsh") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+                    foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-Command", "[System.Globalization.CultureInfo]::CurrentCulture.Name + '|' + (1.5).ToString([System.Globalization.CultureInfo]::CurrentCulture)" })
+                        probe.ArgumentList.Add(argument);
+                    foreach (var (key, value) in env) probe.Environment[key] = value;
+                    using var process = Process.Start(probe) ?? throw new InvalidOperationException("pwsh did not start");
+                    var probeOut = process.StandardOutput.ReadToEndAsync();
+                    var probeErr = process.StandardError.ReadToEndAsync();
+                    if (!process.WaitForExit(120000)) { process.Kill(true); sentinel = "<timed out>"; }
+                    else { process.WaitForExit(); sentinel = probeOut.Result.Trim() + (probeErr.Result.Trim().Length > 0 ? " stderr " + probeErr.Result.Trim() : ""); }
+                }
+                catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException) { sentinel = "<pwsh unavailable: " + error.Message + ">"; }
+                Check(sentinel == name + "|1,5", "sentinel: a .NET child under LANG/LC_ALL " + locale + " runs with CurrentCulture " + name + " (comma decimal)", sentinel);
+                var cultured = CliWith(env, cliDll);
+                Check(cultured.Exit == listing.Exit && cultured.Out == listing.Out, "under " + locale + " the repository listing prints the same bytes as under the default culture", D(cultured));
+                var culturedIssues = CliWith(env, cliDll, "--skills", issues);
+                Check(culturedIssues.Exit == issuesResult.Exit && culturedIssues.Out == issuesResult.Out, "under " + locale + " the claim fixture listing prints the same bytes", D(culturedIssues));
+                var culturedRefusal = CliWith(env, cliDll, "--skills", malformed);
+                Check(culturedRefusal.Exit == malformedResult.Exit && culturedRefusal.Out == malformedResult.Out, "under " + locale + " a loader refusal prints the same bytes", D(culturedRefusal));
+            }
         }
 
         // ---- 5. read-only ----
@@ -282,6 +333,10 @@ internal static class SkillListTests
             "the skills directory is read once: one JurisdictionRegistry.Load supplies catalogue and claims; SkillLoader.LoadDirectory runs only after a skills_invalid refusal",
             "JurisdictionRegistry.Load x" + Count(codeText, "JurisdictionRegistry.Load(").ToString(CultureInfo.InvariantCulture) + " at " + registryAt.ToString(CultureInfo.InvariantCulture)
             + ", SkillLoader.LoadDirectory x" + Count(codeText, "SkillLoader.LoadDirectory(").ToString(CultureInfo.InvariantCulture) + " at " + loaderAt.ToString(CultureInfo.InvariantCulture));
+        var refusalBlock = Block(codeText, "if (load.Refusal is { } refusal)");
+        var skillsInvalidBlock = Block(refusalBlock, "if (refusal.Code == JurisdictionCodes.SkillsInvalid)");
+        Check(skillsInvalidBlock.Contains("SkillLoader.LoadDirectory(", StringComparison.Ordinal) && !refusalBlock.Contains("registry.Catalog", StringComparison.Ordinal),
+            "the second read is conditional: SkillLoader.LoadDirectory( sits inside the load.Refusal block's skills_invalid branch", "refusal block: " + refusalBlock);
         Check(!codeText.Contains(".Issues", StringComparison.Ordinal), "registry issues are not read by the command (dropped)");
         Check(source.Contains("public static IntentEnvelope List(", StringComparison.Ordinal), "the handler is a public static IntentEnvelope List(...) for reuse by the MCP tool");
         Check(!source.Contains(" internal error: ", StringComparison.Ordinal), "the command hand-writes no internal-error stderr line");
@@ -290,6 +345,22 @@ internal static class SkillListTests
         var program = File.ReadAllText(Path.Combine(root, "interfaces", "cli", "Program.cs"));
         Check(program.Contains("case \"skill-list\": SkillListCommand.Run(args); break;", StringComparison.Ordinal) && program.Contains("| skill-list [--skills skills-directory] |", StringComparison.Ordinal),
             "Program.cs registers skill-list and lists it in the usage text");
+    }
+
+    // The brace-matched body of the first block after header ("" when absent).
+    static string Block(string text, string header)
+    {
+        var at = text.IndexOf(header, StringComparison.Ordinal);
+        if (at < 0) return "";
+        var open = text.IndexOf('{', at + header.Length);
+        if (open < 0) return "";
+        var depth = 0;
+        for (var index = open; index < text.Length; index++)
+        {
+            if (text[index] == '{') depth++;
+            else if (text[index] == '}' && --depth == 0) return text[(open + 1)..index];
+        }
+        return "";
     }
 
     static IEnumerable<string> EnumerateNames(JsonElement element) => element.EnumerateObject().Select(property => property.Name);
