@@ -9,10 +9,13 @@
 # client that reconnected at once (revit-command --all, one connection per page) and sat in the old listener's backlog
 # was reset (pipe_io_error). With the next instance alive the listener never closes between pages.
 # P2-24, test-only: -RecorderFailures "<operation_id>:<count>,..." (needs -ExternalEdits with ids) calls
-# Add-FakeRecorderFailure with that count once a request with that operation id has been received (its first time; refused or dry-run included), before its reply is
+# Add-FakeRecorderFailure with that count once a revit.command with that operation id has run, before its reply is
 # written, so the recorder failure lands between that call and the next; journal.read then reports it as the in-process
 # fake does (P2-23). A malformed pair, a count below 1, a duplicate id or no pair is refused before the pipe is ready.
-# Without the option nothing is injected and every reply is unchanged.
+# P2-26: only the first request with that id whose reply status is succeeded and which is not a dry run (args.dry_run)
+# injects; a refused or dry-run request with that id injects nothing and the id stays scheduled. At exit every scheduled
+# id never matched is written to stderr and the fake exits 1. Without the option nothing is injected and every reply is
+# unchanged; with it, replies differ only by the failures injected.
 param(
     [Parameter(Mandatory)][string]$PipeName,
     [Parameter(Mandatory)][string]$DocumentUid,
@@ -91,10 +94,18 @@ try {
                     $before = $state.Received.Count
                     $response = Invoke-FakeRevitCommand $state $commandText
                     [IO.File]::AppendAllText($LogFile, $state.Received[$state.Received.Count - 1] + "`n")
-                    # P2-24: the recorder failures scheduled after any request carrying this operation id (refused or dry-run
-                    # included: Invoke-FakeRevitCommand records the id before validating), once, before its reply is written.
+                    # P2-24 / P2-26: the recorder failures scheduled after this operation id, once, before its reply is written,
+                    # and only when that reply is succeeded and the request is not a dry run.
                     $inject = 0
-                    if ($state.Received.Count -gt $before -and $failuresAfter.Remove($state.Received[$state.Received.Count - 1], [ref]$inject)) { Add-FakeRecorderFailure $state $inject }
+                    if ($state.Received.Count -gt $before -and $failuresAfter.ContainsKey($state.Received[$state.Received.Count - 1])) {
+                        $sent = $null
+                        try { $sent = $commandText | ConvertFrom-Json } catch { $sent = $null }
+                        $reply = $null
+                        try { $reply = $response | ConvertFrom-Json } catch { $reply = $null }
+                        $dryRun = $null -ne $sent -and $null -ne $sent.args -and $null -ne $sent.args.PSObject.Properties['dry_run'] -and [bool]$sent.args.dry_run
+                        $succeeded = $null -ne $reply -and $null -ne $reply.PSObject.Properties['status'] -and [string]::Equals([string]$reply.status, 'succeeded', [StringComparison]::Ordinal)
+                        if ($succeeded -and $null -ne $sent -and !$dryRun -and $failuresAfter.Remove($state.Received[$state.Received.Count - 1], [ref]$inject)) { Add-FakeRecorderFailure $state $inject }
+                    }
                     if ($DropReplyCommand) {
                         $sent = $null
                         try { $sent = $commandText | ConvertFrom-Json } catch { $sent = $null }
@@ -115,3 +126,10 @@ try {
         if ($null -eq $next) { break }
     }
 } finally { if ($null -ne $next) { $next.Dispose() } }
+# P2-26: a scheduled recorder failure that never landed fails the run instead of vanishing.
+if ($failuresAfter.Count -gt 0) {
+    $unmatched = [string[]]@($failuresAfter.Keys)
+    [Array]::Sort($unmatched, [StringComparer]::Ordinal)
+    [Console]::Error.WriteLine('fake pipe: -RecorderFailures operation ids never matched by a succeeded, non-dry-run revit.command: ' + ($unmatched -join ','))
+    exit 1
+}
