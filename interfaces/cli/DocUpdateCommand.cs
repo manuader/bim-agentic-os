@@ -218,7 +218,7 @@ internal static class DocUpdateCommand
         // Anything else is a defect, never a message passed off as a code.
         catch (Exception error)
         {
-            Console.Error.WriteLine("doc-update internal error: " + error.GetType().FullName + ": " + error.Message);
+            Console.Error.WriteLine(IntentPlan.InternalDiagnostic("doc-update", error));
             throw new Refusal(InternalError);
         }
     }
