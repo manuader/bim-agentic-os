@@ -364,3 +364,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P4-19: no failed attempts — red 43955003700 (8d06254) → green 43955097553 (b0afa44); review red 43965727627 (bb31104) → green 43968719330 (2110b50).
 - P7-19: no failed attempts — characterization green 43955000634 (99a0393); deliberate detection reds 43955212491 (7aa9d54) and 43958696368 (d044345), reverted 43961964233 (0353d06); review nits 43973391629 (eef6b73).
 - P10-21: 1 failed attempt — implementation run 43957994586 (f8af7e5) failed only the static check that wants the literal IntentPlan.Internal("jurisdiction-resolve" (hypothesis: verb name passed through a constant) → literal, green 43961094378 (ff51669). Red 43955018142 (4a5e01e). Review hardening (skills tree digest) 43974537843 (6e98e5d).
+
+### Relay214 (2026-11-16/17, cloud)
+- P1-25: no failed attempts — red 43983649557 (e0e10a5) → green 43985584892 (2a8c7ee).
+- P2-25: no failed attempts — red 43983628078 (6acb487) → green 43986119970 (90d6229); review tests 43991000455 (176cd56).
+- P5-20: no failed attempts — characterization green 43983471387 (0c71398); deliberate detection red 43986334542 (0d0f252), reverted 43988470404 (698049c); review tests 43993398956 (161a742).
