@@ -1689,3 +1689,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 14:17Z integration 731d255 CI 44097403944 success (9/9) → main fast-forwarded (59e0d1e..731d255). P4-21, P1-27, P10-24 ✅; new P1-28, P4-23, P10-26. Progress 219/238 (92.0 %). Worktrees retired (branches relay220-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-17T14:17:21Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P2-28 (MirrorDriftLoopChecks.cs), P3-21 (AuditVerifyTool.cs + tests/mcp), P3-22 (InternalErrorDelegationTests.cs) (relay219); then P5-22 and P7-21 (both register in McpServer.cs and edit tools/list pins in tests/mcp + tests/revit-commands and 4 csproj links — serialize; doc_realized is now in those pins), P5-23, P6-23/P6-24, P7-22 (relay217); then P4-22/P4-23 (serialize on Bim.Mcp.csproj and DocRealizedCommand/DocUpdateCommand splits), P1-28, P10-25/P10-26. ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay221 — 2026-11-17T14:53:33Z (Claude, cloud scheduled)
+- 14:53Z LOCK taken (was FREE; relay220 released 2026-11-17T14:17:21Z).
