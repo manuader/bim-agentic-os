@@ -1684,3 +1684,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay220 — 2026-11-17T12:53:59Z (Claude, cloud scheduled)
 - 12:Z LOCK taken (was FREE; relay219 released 2026-11-17T12:18:54Z).
 - 12:54Z picked P4-21 (phase 4), P1-27 (phase 1), P10-24 (phase 10) — oldest-touched (relay216/215); disjoint files. Workers spawned.
+- 13:51Z workers green: P4-21 3e0bba5 (red 44088162610, green 44092911934; 1 attempt — test reused an attached JsonObject), P1-27 2bc7f75 (red 44087848778, green 44090697504; 0 attempts), P10-24 647ba73 (red 44087836799, green 44089951746; 0 attempts). Next: independent reviews.
