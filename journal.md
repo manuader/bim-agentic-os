@@ -1636,3 +1636,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 00:47Z P2-25 green except macos runner (43986119970, 90d6229; red 43983628078 6acb487). P5-20 run 43988470404 core running. Starting independent reviews.
 - 01:08Z reviews 0 blockers. P2-25 should-fixes (default 1024 and capacity 1 untested) closed 176cd56 (CI 43991000455 green). P1-25 should-fix (whole-file read ≤1 GiB) → new P1-26; P5-20 should-fix (tamper envelope thinly asserted) being closed.
 - 01:32Z P5-20 review should-fix + nits closed 161a742 (CI 43993398956). Integrating.
+- 01:33Z integration head 3fe3326 (relay214-integration on main ea11bc6: 3 clean merges + board/features/contracts/attempts/session/handoff; new P1-26, P4-20, P4-21, P7-20, P7-21) pushed; waiting CI.
