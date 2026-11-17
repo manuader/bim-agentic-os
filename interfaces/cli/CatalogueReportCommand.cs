@@ -149,8 +149,10 @@ internal static class CatalogueReportCommand
         catch (Refusal refusal) { return (1, Failure(refusal.Code, refusal.Detail)); }
         catch (Exception error)
         {
-            Console.Error.WriteLine("catalogue-report internal error: " + error.GetType().FullName + ": " + error.Message);
-            return (1, Failure(InternalError, null));
+            // P3-19: the stderr detail, the line and the exit status from IntentPlan.Internal (Failure(InternalError, null)).
+            var failure = IntentPlan.Internal("catalogue-report", error);
+            Console.Error.WriteLine(failure.Diagnostic);
+            return (failure.Exit, failure.Line);
         }
     }
 
