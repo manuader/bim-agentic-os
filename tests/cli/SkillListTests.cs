@@ -12,7 +12,8 @@ using Bim.Core;
 //      "owner-confirmed","to-verify","lowest"}}]} in ordinal id order, exit 0; a SkillException is
 //      {"status":"failed","code","field","detail","file"} with the loader's values unchanged, a registry refusal
 //      {"status":"failed","code","subject","detail"}, exit 1.
-//   2. Pinned cases: the repository listing (ids equal the skills/ directory names in ordinal order, CABA kind code not
+//   2. Pinned cases: a malformed jurisdiction.json (json_invalid, subject <id>/jurisdiction.json), a trailing separator on
+//      --skills (same skills_path as the default), the repository listing (ids equal the skills/ directory names in ordinal order, CABA kind code not
 //      stub, xx.example stub), a malformed skill.json (json_invalid at <id>/skill.json) and a missing directory
 //      (root_missing at ".", not created).
 //   3. Package-first: from a CLI copied into <package>/cli beside VERSION, manifest.json and skills/, the package's
@@ -111,6 +112,35 @@ internal static class SkillListTests
         Check(malformedResult.Out.Contains("\"file\":\"bim.broken.pack/skill.json\"", StringComparison.Ordinal), "the malformed manifest is named by its root-relative path", D(malformedResult));
         Check(TreeDigest(malformed) == malformedDigest, "the malformed fixture is unchanged");
 
+        // ---- malformed jurisdiction.json sidecar (the registry's refusal, after the loader accepted the manifests) ----
+        var badSidecar = Path.Combine(scratch, "bad-sidecar");
+        CopyDirectory(Path.Combine(skills, Caba), Path.Combine(badSidecar, Caba));
+        File.WriteAllText(Path.Combine(badSidecar, Caba, "jurisdiction.json"), "{ \"jurisdiction_version\": 1, ", new UTF8Encoding(false));
+        var badSidecarDigest = TreeDigest(badSidecar);
+        Same("malformed jurisdiction.json", cliDll, badSidecar, JurisdictionCodes.JsonInvalid, "--skills", badSidecar);
+        var sidecarResult = Cli(cliDll, "--skills", badSidecar);
+        string? sidecarSubject = null;
+        var sidecarMembers = "";
+        try
+        {
+            using var document = JsonDocument.Parse(sidecarResult.Out);
+            sidecarMembers = string.Join(",", EnumerateNames(document.RootElement));
+            sidecarSubject = document.RootElement.GetProperty("subject").GetString();
+        }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException) { }
+        Check(sidecarResult.Exit == 1 && sidecarMembers == "status,code,subject,detail" && sidecarResult.Out.StartsWith("{\"status\":\"failed\",\"code\":\"json_invalid\",", StringComparison.Ordinal)
+            && sidecarSubject == Caba + "/jurisdiction.json",
+            "a malformed sidecar prints {status,code,subject,detail} with code json_invalid and subject " + Caba + "/jurisdiction.json, exit 1", D(sidecarResult));
+        Check(TreeDigest(badSidecar) == badSidecarDigest, "the malformed sidecar fixture is unchanged (nothing written)");
+
+        // ---- a trailing directory separator prints the same skills_path as the default ----
+        foreach (var separator in new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }.Distinct())
+        {
+            var trailing = Cli(cliDll, "--skills", skills + separator);
+            Check(trailing.Exit == 0 && trailing.Out == listing.Out && trailing.Out.Contains("\"skills_path\":" + JsonSerializer.Serialize(skills) + ",", StringComparison.Ordinal),
+                "--skills with a trailing '" + separator + "' prints the default listing (skills_path without the separator)", D(trailing));
+        }
+
         // ---- missing directory ----
         var absent = Path.Combine(scratch, "absent-skills");
         Same("missing directory", cliDll, absent, SkillCodes.RootMissing, "--skills", absent);
@@ -189,7 +219,7 @@ internal static class SkillListTests
     // The envelope skill-list must print for a skills directory, built from the in-process loader.
     static (int Exit, string Line) Expected(string skillsDirectory)
     {
-        var full = Path.GetFullPath(skillsDirectory);
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(skillsDirectory));
         try { SkillLoader.LoadDirectory(full); }
         catch (SkillException error) { return (1, JsonSerializer.Serialize(new { status = "failed", code = error.Code, field = error.Field, detail = error.Detail, file = error.File })); }
         var load = JurisdictionRegistry.Load(full);
