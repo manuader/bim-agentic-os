@@ -16,12 +16,16 @@ namespace Bim.Cli;
 //   {"status":"failed","code":"jurisdiction_resolve_usage","detail":<usage>}  no selector, --code together with
 //       --country/--municipality, only one of --country/--municipality, an option given twice, an unknown option or
 //       positional argument, a missing, blank or "--"-prefixed value;
+//   {"status":"failed","code":"skills_lock_path_invalid","detail":"lock"}  a --lock path SkillLockTool.PathProblem refuses
+//       (NUL, over SkillLockTool.MaxPathChars characters, rejected by Path.GetFullPath), as skills-lock does (P10-24);
 //   {"status":"failed","code":"jurisdiction_resolve_repository_not_found"}  neither a package nor a repository root;
 //   {"status":"failed","code","subject","detail"}  the registry's JurisdictionIssue unchanged, from the load (e.g.
 //       skills_invalid, lock_missing, skill_lock_drift, skill_lock_missing) or the selection (jurisdiction_unknown,
 //       jurisdiction_ambiguous, jurisdiction_stub_refused, jurisdiction_invalid);
 //   {"status":"failed","code":"jurisdiction_resolve_internal_error"}  a defect (IntentPlan.Internal, detail on stderr).
-// Precedence: usage, skills directory, load, selection.
+// Precedence: usage, lock path, skills directory, load, selection. An absent lock file is the load's lock_missing.
+// Registry issues of a successful load (JurisdictionRegistry.Issues: claim_duplicate, alias_overlap, pack_missing, ...)
+// are dropped: the success envelope never carries them (P10-24); a selection they affect refuses on its own terms.
 internal static class JurisdictionResolveCommand
 {
     public const string Verb = "jurisdiction-resolve";
@@ -43,6 +47,7 @@ internal static class JurisdictionResolveCommand
     {
         if (Parse(args) is not { } options)
             return new IntentEnvelope(JsonSerializer.Serialize(new { status = "failed", code = UsageCode, detail = Usage }), 1);
+        if (options.Lock is not null && Bim.Mcp.SkillLockTool.PathProblem(options.Lock, "lock") is { } badLock) return new IntentEnvelope(badLock, 1);
         var root = SkillPackLookup.PackageRoot(AppContext.BaseDirectory) ?? RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory);
         if (root is null) return IntentPlan.Failed(RepositoryNotFound);
         var skills = Path.Combine(root, "skills");
