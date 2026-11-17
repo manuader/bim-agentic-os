@@ -20,8 +20,13 @@ using Bim.Core;
 //        doc-update (--execute)     DocUpdateExecute.Run with a plan of duplicate operation ids: DocUpdate.Run throws
 //                                   ArgumentException(plan_duplicate_operation); stdout, stderr and exit.
 //        generate-prototypes, generate-typology, plan-layouts, doc-realized
-//                                   the catch-all is `throw InternalRefusal(error)`: InternalRefusal(e) and then the
-//                                   verb's Fail (what Run does with that Refusal), stdout, stderr and exit.
+//                                   the catch-all is `throw InternalRefusal(error)` (P3-20): the verb's real
+//                                   Run(string[]) with valid inputs and the test seam GuardedWorkProbe (a static Action,
+//                                   null in production, called first inside the guarded try) set to throw; stdout,
+//                                   stderr and exit equal the fixture, no output file, the seam null before and after.
+//        MCP audit_verify (P3-20)   AuditVerifyTool.Run in process with an actor list whose enumeration throws: the
+//                                   Outcome and stderr equal the pre-P3-20 catch body; its line comes from
+//                                   IntentPlan.InternalDiagnostic (static pin; no " internal error: " under interfaces/mcp).
 //   3. Static: each verb's catch-all delegates (exact text below); the fragment " internal error: " occurs once over all
 //      interfaces/cli code (comments stripped, strings kept), in IntentPlan.cs.
 internal static class InternalErrorDelegationTests
@@ -240,6 +245,7 @@ internal static class InternalErrorDelegationTests
                 try { return Call(run, new object?[] { args }).Thrown; }
                 finally { probe.SetValue(null, null); }
             });
+            Check(probe.GetValue(null) is null, verb + ": GuardedWorkProbe is reset to null after the forced run");
             Check(forced.Value is null && Same(forced, handWritten) && !File.Exists(output), "a forced " + verb + " internal error through Run's real catch-all prints the hand-written stdout, stderr and exit bytes and writes no output",
                 Q(forced) + " vs hand-written " + Q(handWritten) + (forced.Value is { } t ? " threw " + t.GetType().FullName : "") + (File.Exists(output) ? " output written" : ""));
         }

@@ -16,6 +16,12 @@
 # injects; a refused or dry-run request with that id injects nothing and the id stays scheduled. At exit every scheduled
 # id never matched is written to stderr and the fake exits 1. Without the option nothing is injected and every reply is
 # unchanged; with it, replies differ only by the failures injected.
+# P2-27: -DropReplyCommand drops a reply only for a request whose command equals it and whose args.dry_run is not true
+# (absent, null or false): that write has run (state changed, operation id logged) and its connection is closed without
+# a reply. A dry run of that command (args.dry_run true) is answered normally, so no dry-run reply is ever dropped. The
+# drop is decided after the -RecorderFailures check, by the same dry-run rule: a dropped write whose reply was succeeded
+# and whose operation id is scheduled still injects its failures and that id counts as matched; a dropped write that was
+# refused injects nothing and its id stays scheduled.
 param(
     [Parameter(Mandatory)][string]$PipeName,
     [Parameter(Mandatory)][string]$DocumentUid,
