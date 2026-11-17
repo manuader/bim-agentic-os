@@ -1663,3 +1663,5 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay218 — 2026-11-17T08:52:45Z (Claude, cloud scheduled)
 - 08:52Z LOCK taken over (relay217 TAKEN, last_heartbeat 07:49:11Z > 45 min stale). relay217 workers P7-20/P5-21/P6-22 were green but unreviewed/unmerged; continuing their branches.
+- 08:54Z relay218 BACKS OFF: relay217 is live (pushed relay217-P6-22 30b9be2 at 08:52:13Z, 23 s before the takeover) despite a stale heartbeat. Lock returned to relay217 with last_heartbeat set to that commit time; no work done by relay218. relay217: refresh the heartbeat on each task edge.
+**NEXT STEP:** relay217 continues (reviews/integration of P7-20, P5-21, P6-22) and releases the lock.
