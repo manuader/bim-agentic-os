@@ -145,11 +145,7 @@ internal static class PlanLayoutsCommand
             set = AlternativeGenerator.Generate(brief, rules is null ? new AlternativeOptions(count, seed) : new AlternativeOptions(count, seed, new PlannerOptions(Rules: rules)));
             json = set.Status == AlternativeSetStatus.Refused ? "" : AlternativeSetSerializer.Serialize(set);
         }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine("plan-layouts internal error: " + error.GetType().FullName + ": " + error.Message);
-            throw new Refusal(InternalError);
-        }
+        catch (Exception error) { throw InternalRefusal(error); }
         if (set.Status == AlternativeSetStatus.Refused)
         {
             Console.WriteLine(JsonSerializer.Serialize(new { status = "failed", code = Refused, refusals = set.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) }));
@@ -283,6 +279,14 @@ internal static class PlanLayoutsCommand
     {
         value = 0;
         return IntegerLiteral.IsMatch(text) && int.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value);
+    }
+
+    // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
+    // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
+    static Refusal InternalRefusal(Exception error)
+    {
+        Console.Error.WriteLine(IntentPlan.InternalDiagnostic("plan-layouts", error));
+        return new Refusal(InternalError);
     }
 
     static void Fail(string code, string? detail)
