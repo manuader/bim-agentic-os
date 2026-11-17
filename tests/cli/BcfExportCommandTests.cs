@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Bim.Core;
 
 // P10-20 `bcf-export issues.json out.bcfzip|out.bcf`: the P10-02 BCF 3.0 export (core/Bim.Core/Bcf.cs, BcfZip.cs) on the
@@ -16,10 +17,19 @@ using Bim.Core;
 //      bcf_export_usage, bcf_export_output_invalid, bcf_export_input_missing, bcf_export_input_too_large,
 //      bcf_export_input_unreadable, bcf_export_input_invalid (detail the JSON path), and every library refusal with
 //      exactly the in-process BcfExportException's code and detail.
+//   4. (P10-23) The timestamp offset is exactly ±hh:mm (+0200, +2:00 refused), version is exactly 1 (1.0 refused), and a
+//      NUL in the input path (unrepresentable in a process argument, so checked in process) is
+//      bcf_export_input_unreadable/input_path_invalid. The golden SHA-256 is read from tests/bcf/Program.cs, not copied.
 internal static class BcfExportCommandTests
 {
-    // Same constant as tests/bcf/Program.cs GoldenSha256 (SHA-256 of WriteZip over the fixture below).
-    const string GoldenSha256 = "f787db0d5858cee76066d8e537e2fa6fe4a28227d5938e2a0bb7fe3c5c4cf7e8";
+    // The golden SHA-256 of WriteZip over the fixture below is shared with tests/bcf: read from its one declaration in
+    // tests/bcf/Program.cs (top-level statements, so it cannot be linked as a constant) instead of being copied here.
+    static string SharedGoldenSha256(string root)
+    {
+        var source = File.ReadAllText(Path.Combine(root, "tests", "bcf", "Program.cs"));
+        var matches = Regex.Matches(source, "const string GoldenSha256 = \"([0-9a-f]{64})\";");
+        return matches.Count == 1 ? matches[0].Groups[1].Value : "";
+    }
     const string Usage = "usage: bcf-export issues.json output.bcfzip|output.bcf (output: a new file, never overwritten)";
 
     public static void Run(string root, string work, string dotnet, string cliDll, byte[] overCap, Action<bool, string, string> check)
@@ -27,6 +37,8 @@ internal static class BcfExportCommandTests
         var scratch = Path.Combine(work, "bcf-export");
         Directory.CreateDirectory(scratch);
         void Check(bool condition, string name, string detail = "") => check(condition, "bcf-export: " + name, detail);
+        var goldenSha256 = SharedGoldenSha256(root);
+        Check(goldenSha256.Length == 64, "fixture: reads the single golden SHA-256 declared in tests/bcf/Program.cs");
 
         (int Exit, string Out, string Err) Cli(params string[] arguments)
         {
@@ -117,7 +129,7 @@ internal static class BcfExportCommandTests
 
         var expected = BcfExport.WriteZip(issues, options);
         var entryCount = BcfExport.Entries(issues, options).Count;
-        Check(Lower(expected) == GoldenSha256, "fixture: in-process WriteZip still matches the tests/bcf golden SHA-256", Lower(expected));
+        Check(Lower(expected) == goldenSha256, "fixture: in-process WriteZip still matches the tests/bcf golden SHA-256", Lower(expected));
         var issuesPath = Input("issues.json", Document(issues.Select(IssueJson)));
 
         // ---- 1. byte equality with the in-process export and the golden hash ----
@@ -127,7 +139,7 @@ internal static class BcfExportCommandTests
             var run = Cli("bcf-export", issuesPath, output);
             var written = File.Exists(output) ? File.ReadAllBytes(output) : Array.Empty<byte>();
             Check(run.Exit == 0 && run.Err.Length == 0 && written.AsSpan().SequenceEqual(expected), "writes the archive byte-identical to BcfExport.WriteZip(issues, options)", D(run));
-            Check(Lower(written) == GoldenSha256, "output hashes to the tests/bcf golden SHA-256", Lower(written));
+            Check(Lower(written) == goldenSha256, "output hashes to the tests/bcf golden SHA-256", Lower(written));
             var summary = JsonSerializer.Serialize(new { status = "succeeded", output, issues = issues.Count, entries = entryCount, bytes = (long)expected.Length, sha256 = Convert.ToHexString(SHA256.HashData(expected)) });
             Check(run.Out == summary, "prints the one-line success summary (output, issues, entries, bytes, sha256)", D(run) + " expected " + summary);
             Check(File.ReadAllBytes(issuesPath).AsSpan().SequenceEqual(before), "leaves the input file unchanged");
@@ -192,6 +204,24 @@ internal static class BcfExportCommandTests
         var dirOut = Output();
         ExpectFailure("input is a directory", "bcf_export_input_unreadable", "input_not_regular_file", dirOut, "bcf-export", inputDirectory, dirOut);
 
+        // A NUL cannot travel in a process argument, so the input-path NUL refusal runs the command in process.
+        {
+            var nulOut = Output();
+            var previousOut = Console.Out;
+            var previousExit = Environment.ExitCode;
+            var captured = new StringWriter();
+            Environment.ExitCode = 0;
+            Console.SetOut(captured);
+            try { Bim.Cli.BcfExportCommand.Run(new[] { "bcf-export", scratch + Path.DirectorySeparatorChar + "in\0put.json", nulOut }); }
+            finally { Console.SetOut(previousOut); }
+            var nulExit = Environment.ExitCode;
+            Environment.ExitCode = previousExit;
+            var nulLine = captured.ToString().TrimEnd('\r', '\n');
+            var nulExpected = Envelope("bcf_export_input_unreadable", "input_path_invalid");
+            Check(nulExit == 1 && nulLine == nulExpected, "NUL in the input path (in process) -> " + nulExpected, "exit " + nulExit.ToString(CultureInfo.InvariantCulture) + " " + nulLine);
+            Check(!File.Exists(nulOut) && !Directory.Exists(nulOut), "NUL in the input path: no output file");
+        }
+
         // Strict input shape: detail is the JSON path of the first problem.
         void Invalid(string name, string text, string detail)
         {
@@ -208,6 +238,8 @@ internal static class BcfExportCommandTests
         Invalid("root is an array", "[]", "$");
         Invalid("wrong kind", Root("[]").Replace("\"bcf-issues\"", "\"bcf\"", StringComparison.Ordinal), "$.kind");
         Invalid("wrong version", Root("[]").Replace("\"version\":1", "\"version\":2", StringComparison.Ordinal), "$.version");
+        Invalid("version 1.0", Root("[]").Replace("\"version\":1", "\"version\":1.0", StringComparison.Ordinal), "$.version");
+        Invalid("version 1e0", Root("[]").Replace("\"version\":1", "\"version\":1e0", StringComparison.Ordinal), "$.version");
         Invalid("missing project", "{\"kind\":\"bcf-issues\",\"version\":1,\"issues\":[]}", "$.project");
         Invalid("unknown root member", Root("[]")[..^1] + ",\"extra\":0}", "$.extra");
         Invalid("duplicate root member", Root("[]")[..^1] + ",\"issues\":[]}", "$.issues");
@@ -223,6 +255,9 @@ internal static class BcfExportCommandTests
         Invalid("camera coordinate not a number", Root("[{\"id\":\"a\",\"title\":\"t\",\"severity\":\"info\",\"camera\":{\"kind\":\"perspective\",\"view_point\":{\"x\":0,\"y\":\"1\",\"z\":0},\"direction\":{\"x\":0,\"y\":1,\"z\":0},\"up_vector\":{\"x\":0,\"y\":0,\"z\":1},\"value\":50,\"aspect_ratio\":1}}]"), "$.issues[0].camera.view_point.y");
         Invalid("camera number overflows", Root("[{\"id\":\"a\",\"title\":\"t\",\"severity\":\"info\",\"camera\":{\"kind\":\"perspective\",\"view_point\":{\"x\":0,\"y\":0,\"z\":0},\"direction\":{\"x\":0,\"y\":1,\"z\":0},\"up_vector\":{\"x\":0,\"y\":0,\"z\":1},\"value\":1e999,\"aspect_ratio\":1}}]"), "$.issues[0].camera.value");
         Invalid("timestamp without offset", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T10:00:00", StringComparison.Ordinal)), "$.project.timestamp");
+        Invalid("timestamp offset without colon (+0200)", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+0200", StringComparison.Ordinal)), "$.project.timestamp");
+        Invalid("timestamp offset with one-digit hour (+2:00)", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+2:00", StringComparison.Ordinal)), "$.project.timestamp");
+        Invalid("timestamp offset hours only (+02)", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+02", StringComparison.Ordinal)), "$.project.timestamp");
         Invalid("timestamp not ISO", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "02/11/2026 10:00", StringComparison.Ordinal)), "$.project.timestamp");
         Invalid("unknown project member", Root("[]", proj[..^1] + ",\"guid\":\"x\"}"), "$.project.guid");
         Invalid("lone surrogate in a string", Root("[{\"id\":\"a\",\"title\":\"\\ud800\",\"severity\":\"info\"}]"), "$.issues[0].title");
