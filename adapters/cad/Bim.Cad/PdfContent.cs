@@ -460,7 +460,7 @@ internal sealed class PdfContentInterpreter
             if (encoding.UnsupportedGlyphListNames is { Count: > 0 } unsupported)
                 Warn("encoding-glyph-unsupported", objectNumber, operatorIndex, label + " is a Type3 font whose /Differences names glyph-list names the reader does not map ("
                     + string.Join(", ", unsupported.Take(MaxListedGlyphNames).Select(glyph => "/" + glyph)) + (unsupported.Count > MaxListedGlyphNames ? ", ..." : "")
-                    + "); codes that the ToUnicode CMap does not map are read as text bytes");
+                    + (cmap is not null ? "); codes that the ToUnicode CMap does not map are read as text bytes" : "); their codes are read as text bytes"));
             encoding = encoding.WithoutUnknownNames;
         }
         if (cmap is not null || encoding is not null) decoder = new PdfFontDecoder(composite, identity, cmap, encoding);

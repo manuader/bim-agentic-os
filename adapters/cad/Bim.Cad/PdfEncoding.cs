@@ -246,7 +246,9 @@ internal static class PdfGlyphNames
 
     // P6-22: a conservative recogniser of real Adobe Glyph List names that TryUnicode does not map (the reader does not
     // bundle the AGL). After dropping a .suffix as TryUnicode does, a name is a glyph-list name when it is
-    // - afii followed by exactly five decimal digits (the AGL afii names: Cyrillic /afii10017, Hebrew, Arabic ...);
+    // - afii followed by exactly five decimal digits (the AGL afii names: Cyrillic /afii10017, Hebrew, Arabic ...); by
+    //   design this is broader than the AGL, which lists only some five-digit afii numbers, so an afii name absent
+    //   from the AGL is still reported (such a name is a glyph-list-style name, never a Type3 procedure slot);
     // - uni followed by one or more groups of four upper-case hex digits, or u followed by four to six upper-case hex
     //   digits, that TryUnicode rejects (surrogates, more than MaxUniGroups groups, above U+10FFFF);
     // - one of the AglExtra names below (Greek, Latin Extended-A, the ff ligatures, arrows, prime marks), all AGL names.
