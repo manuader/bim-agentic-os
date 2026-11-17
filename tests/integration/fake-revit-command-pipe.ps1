@@ -102,7 +102,7 @@ try {
                         try { $sent = $commandText | ConvertFrom-Json } catch { $sent = $null }
                         $reply = $null
                         try { $reply = $response | ConvertFrom-Json } catch { $reply = $null }
-                        $dryRun = $null -ne $sent -and $null -ne $sent.args -and $null -ne $sent.args.PSObject.Properties['dry_run']
+                        $dryRun = $null -ne $sent -and $null -ne $sent.args -and $null -ne $sent.args.PSObject.Properties['dry_run'] -and [bool]$sent.args.dry_run
                         $succeeded = $null -ne $reply -and $null -ne $reply.PSObject.Properties['status'] -and [string]::Equals([string]$reply.status, 'succeeded', [StringComparison]::Ordinal)
                         if ($succeeded -and $null -ne $sent -and !$dryRun -and $failuresAfter.Remove($state.Received[$state.Received.Count - 1], [ref]$inject)) { Add-FakeRecorderFailure $state $inject }
                     }
@@ -131,5 +131,5 @@ if ($failuresAfter.Count -gt 0) {
     $unmatched = [string[]]@($failuresAfter.Keys)
     [Array]::Sort($unmatched, [StringComparer]::Ordinal)
     [Console]::Error.WriteLine('fake pipe: -RecorderFailures operation ids never matched by a succeeded, non-dry-run revit.command: ' + ($unmatched -join ','))
-    exit 2
+    exit 1
 }
