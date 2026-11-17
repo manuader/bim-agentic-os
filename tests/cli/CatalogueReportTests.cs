@@ -22,6 +22,8 @@ internal static class CatalogueReportTests
     const string CopyName = "BIM-Agentic-Test-c04-20261105T120000Z-r1-copia.rvt";
     const string CopySha = "3202cfd5c94a2241834e957759aa5fb26a21bed8e485646de3289cfca9aae862";
     static readonly byte[] CopyBytes = Encoding.ASCII.GetBytes("BIM-Agentic-Test copy fixture: not a real Revit file\n");
+    const string SaveAsName = "BIM-Agentic-Test-c04-20261105T120000Z-r1-guardado.rvt";
+    static readonly byte[] SaveAsBytes = Encoding.ASCII.GetBytes("BIM-Agentic-Test save_as fixture: not a real Revit file\n");
     const int MaxRecordBytes = 32 * 1024 * 1024;
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
 
@@ -60,6 +62,12 @@ internal static class CatalogueReportTests
         static string N(long? v) => v is null ? "null" : v.Value.ToString(CultureInfo.InvariantCulture);
         return "{\"state\":" + S(state) + ",\"file\":" + S(file) + ",\"save_step\":" + N(saveStep) + ",\"save_passed\":" + B(savePassed) + ",\"recorded_check_ok\":" + B(checkOk)
             + ",\"recorded_sha256\":" + S(recordedSha) + ",\"recorded_bytes\":" + N(recordedBytes) + ",\"disk_sha256\":" + S(diskSha) + ",\"disk_bytes\":" + N(diskBytes) + "}";
+    }
+    static string SaveAs(string state, string? detail, string? file, string? recordedSha, string? diskSha, long? diskBytes)
+    {
+        static string S(string? v) => v is null ? "null" : "\"" + v + "\"";
+        return "{\"state\":" + S(state) + ",\"detail\":" + S(detail) + ",\"file\":" + S(file) + ",\"recorded_sha256\":" + S(recordedSha) + ",\"disk_sha256\":" + S(diskSha)
+            + ",\"disk_bytes\":" + (diskBytes is null ? "null" : diskBytes.Value.ToString(CultureInfo.InvariantCulture)) + "}";
     }
     static string Sha(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     static string Fixture(string root, string name) => File.ReadAllText(Path.Combine(root, "tests", "cli", "catalogue-report", name, "catalogue-run1.json"));
@@ -196,16 +204,102 @@ internal static class CatalogueReportTests
         // P4-18: a record without the doc-up-elements step keeps today's bytes: the copy is the last member, no realized.
         Check(first.Out.EndsWith(",\"copy\":" + passCopy + "}", StringComparison.Ordinal) && Raw(report, "realized") == "<missing realized>", "a run without the doc-realized step prints no realized member (copy stays last)", D(first));
         Check(Report(pass, pass.Run + Path.DirectorySeparatorChar).Out == first.Out, "a trailing separator gives the same report");
-        // P1-18: members the verb does not know (the run record's save_as_path and save_as_sha256, or any later one) change
-        // nothing in the report: the same bytes as without them.
+        // P1-18: members the verb does not know change nothing in the report: the same bytes as without them. P1-25: a
+        // save_as_path that is null (c-as-save did not pass) is no save_as either, even with a -guardado.rvt in the run.
         var unknown = Make(Mutate(passTemplate, r =>
         {
-            r["save_as_path"] = WindowsRun("__RUN__") + "\\BIM-Agentic-Test-c04-" + Stamp + "-r1-guardado.rvt";
-            r["save_as_sha256"] = new string('a', 64);
+            r["save_as_path"] = null;
+            r["save_as_sha256"] = null;
             r["p1_18_unknown_member"] = new JsonObject { ["nested"] = new JsonArray(1, "two", null) };
         }), CopyBytes);
+        File.WriteAllBytes(Path.Combine(unknown.Run, SaveAsName), SaveAsBytes);
         var unknownReport = Report(unknown);
-        Check(unknownReport.Exit == 0 && unknownReport.Out.Replace(unknown.Name, pass.Name, StringComparison.Ordinal) == first.Out, "catalogue-report ignores unknown record members (save_as_path, save_as_sha256, any other): the same report", D(unknownReport));
+        Check(unknownReport.Exit == 0 && unknownReport.Out.Replace(unknown.Name, pass.Name, StringComparison.Ordinal) == first.Out, "catalogue-report ignores unknown record members and a null save_as_path: the same report", D(unknownReport));
+        var unknownOnly = Make(Mutate(passTemplate, r => r["p1_18_unknown_member"] = 1), CopyBytes);
+        var unknownOnlyReport = Report(unknownOnly);
+        Check(unknownOnlyReport.Exit == 0 && unknownOnlyReport.Out.Replace(unknownOnly.Name, pass.Name, StringComparison.Ordinal) == first.Out, "a record without save_as_path keeps its report bytes (no save_as member)", D(unknownOnlyReport));
+
+        // 1n. P1-25: a record with save_as_path gets a save_as member right after copy: the -guardado.rvt file c-as-save
+        // wrote, re-hashed through BoundedInput now and compared with the record's save_as_sha256.
+        var saveAsSha = Sha(SaveAsBytes);
+        long saveAsLength = SaveAsBytes.Length;
+        var saveAsPath = WindowsRun("__RUN__") + "\\" + SaveAsName;
+        string WithSaveAs(JsonNode? path, JsonNode? sha) => Mutate(passTemplate, r => { r["save_as_path"] = path; r["save_as_sha256"] = sha; });
+        Case MakeSaveAs(string record, byte[]? content)
+        {
+            var c = Make(record, CopyBytes);
+            if (content is not null) File.WriteAllBytes(Path.Combine(c.Run, SaveAsName), content);
+            return c;
+        }
+        (int Exit, string Out) SaveAsRun(Case c, int? maxSaveAs = null) => maxSaveAs is null ? Report(c) : CatalogueReportCommand.Execute(["catalogue-report", "--run", c.Run], c.Root, CatalogueReportCommand.MaxCopyBytes, maxSaveAs.Value);
+        string SaveAsOf((int Exit, string Out) r) => r.Exit == 0 ? Raw(Json(r.Out), "save_as") : D(r);
+        // The pass report with the save_as member appended right after copy, nothing else changed.
+        bool Appended(Case c, (int Exit, string Out) r, string member) => r.Exit == 0 && r.Out.Replace(c.Name, pass.Name, StringComparison.Ordinal) == first.Out[..^1] + ",\"save_as\":" + member + "}";
+        var saveAsMatches = SaveAs("matches", null, SaveAsName, saveAsSha, saveAsSha, saveAsLength);
+        var saveAsCase = MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), SaveAsBytes);
+        var saveAsBefore = Tree(saveAsCase);
+        var saveAsRun = SaveAsRun(saveAsCase);
+        Check(Appended(saveAsCase, saveAsRun, saveAsMatches), "a save_as file that hashes to save_as_sha256 is matches, printed right after copy (the rest of the report unchanged)", D(saveAsRun));
+        Check(SaveAsRun(saveAsCase).Out == saveAsRun.Out && Tree(saveAsCase) == saveAsBefore, "the save_as check is deterministic and read-only");
+        Check(SaveAsOf(SaveAsRun(MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha.ToUpperInvariant()), SaveAsBytes))) == saveAsMatches, "save_as_sha256 is compared ignoring case and printed lower-cased");
+        var forwardSaveAs = MakeSaveAs(WithSaveAs(Path.Combine(Path.GetTempPath(), "x", ".bim", "native-runs", "__RUN__", SaveAsName).Replace('\\', '/'), saveAsSha), SaveAsBytes);
+        Check(SaveAsOf(SaveAsRun(forwardSaveAs)) == saveAsMatches, "a save_as_path with '/' separators is read too");
+        var saveAsTampered = (byte[])SaveAsBytes.Clone();
+        saveAsTampered[0] ^= 1;
+        var tamperedSaveAs = SaveAsRun(MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), saveAsTampered));
+        Check(SaveAsOf(tamperedSaveAs) == SaveAs("mismatch", "sha256", SaveAsName, saveAsSha, Sha(saveAsTampered), saveAsLength) && Raw(Json(tamperedSaveAs.Out), "all_passed") == "true",
+            "a save_as file changed after the run is mismatch (the run's verdict stands)", D(tamperedSaveAs));
+        Check(SaveAsOf(SaveAsRun(MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), [.. SaveAsBytes, (byte)'x']))).StartsWith("{\"state\":\"mismatch\",\"detail\":\"sha256\"", StringComparison.Ordinal), "a longer save_as file is mismatch");
+        Check(SaveAsOf(SaveAsRun(MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), null))) == SaveAs("missing", null, SaveAsName, saveAsSha, null, null), "a save_as file that is gone is missing");
+        foreach (var (label, sha) in new (string, JsonNode?)[] { ("null", null), ("not 64 hex", "not-a-sha"), ("63 hex", new string('a', 63)) })
+            Check(SaveAsOf(SaveAsRun(MakeSaveAs(WithSaveAs(saveAsPath, sha), SaveAsBytes))) == SaveAs("no_recorded_sha256", null, SaveAsName, null, saveAsSha, saveAsLength),
+                "a save_as_sha256 that is " + label + " is no_recorded_sha256 (the file is still hashed)");
+        var noShaMember = MakeSaveAs(Mutate(passTemplate, r => r["save_as_path"] = saveAsPath), SaveAsBytes);
+        Check(SaveAsOf(SaveAsRun(noShaMember)) == SaveAs("no_recorded_sha256", null, SaveAsName, null, saveAsSha, saveAsLength), "a record without save_as_sha256 is no_recorded_sha256");
+        foreach (var (label, path) in new[] { ("in another folder", "C:\\Repo\\.bim\\" + SaveAsName), ("in another run", WindowsRun("other-run") + "\\" + SaveAsName), ("not named as a save_as file", WindowsRun("__RUN__") + "\\" + CopyName) })
+        {
+            var outsideSaveAs = SaveAsRun(MakeSaveAs(WithSaveAs(path, saveAsSha), SaveAsBytes));
+            Check(SaveAsOf(outsideSaveAs) == SaveAs("outside_run", null, null, null, null, null) && Raw(Json(outsideSaveAs.Out), "copy") == passCopy,
+                "a save_as_path " + label + " is outside_run: nothing is read, the rest of the report stands", D(outsideSaveAs));
+        }
+        var folderSaveAs = MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), null);
+        Directory.CreateDirectory(Path.Combine(folderSaveAs.Run, SaveAsName));
+        Check(SaveAsOf(SaveAsRun(folderSaveAs)) == SaveAs("unreadable", "input_not_regular_file", SaveAsName, saveAsSha, null, null), "a folder in place of the save_as file is unreadable (input_not_regular_file)");
+        var cappedSaveAs = MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), SaveAsBytes);
+        Check(SaveAsOf(SaveAsRun(cappedSaveAs, (int)saveAsLength)) == saveAsMatches && SaveAsOf(SaveAsRun(cappedSaveAs, (int)saveAsLength - 1)) == SaveAs("unreadable", "input_too_large", SaveAsName, saveAsSha, null, null),
+            "a save_as file of exactly the read cap is hashed; one byte over is unreadable (input_too_large)", SaveAsOf(SaveAsRun(cappedSaveAs, (int)saveAsLength - 1)));
+        Check(CatalogueReportCommand.MaxSaveAsBytes == 1024 * 1024 * 1024, "the save_as read cap is 1 GiB");
+        if (OperatingSystem.IsLinux())
+        {
+            var fifoSaveAs = MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), null);
+            var fifoPath = Path.Combine(fifoSaveAs.Run, SaveAsName);
+            using (var mkfifo = Process.Start(new ProcessStartInfo("mkfifo") { ArgumentList = { fifoPath }, UseShellExecute = false }))
+            {
+                mkfifo?.WaitForExit(10000);
+            }
+            if (!File.Exists(fifoPath)) skip("a FIFO in place of the save_as file is unreadable", "mkfifo did not create the FIFO");
+            else
+            {
+                var task = Task.Run(() => SaveAsRun(fifoSaveAs));
+                if (!task.Wait(30000))
+                {
+                    Check(false, "a FIFO in place of the save_as file is unreadable without opening it", "the report blocked on the FIFO");
+                    try { using var writer = new FileStream(fifoPath, FileMode.Open, FileAccess.Write); } catch (IOException) { }
+                }
+                else Check(SaveAsOf(task.Result) == SaveAs("unreadable", "input_not_regular_file", SaveAsName, saveAsSha, null, null), "a FIFO in place of the save_as file is unreadable without opening it", D(task.Result));
+            }
+        }
+        else skip("a FIFO in place of the save_as file is unreadable", "mkfifo is used on Linux only");
+        var linkedSaveAs = MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), null);
+        var saveAsTarget = Path.Combine(scratch, "save-as-target.rvt");
+        File.WriteAllBytes(saveAsTarget, SaveAsBytes);
+        if (Link(Path.Combine(linkedSaveAs.Run, SaveAsName), saveAsTarget, false, "a linked save_as file is link_refused"))
+            Check(SaveAsOf(SaveAsRun(linkedSaveAs)) == SaveAs("link_refused", null, SaveAsName, saveAsSha, null, null), "a linked save_as file is link_refused (never followed)", SaveAsOf(SaveAsRun(linkedSaveAs)));
+        var danglingSaveAs = MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), null);
+        if (Link(Path.Combine(danglingSaveAs.Run, SaveAsName), Path.Combine(scratch, "no-such-save-as.rvt"), false, "a dangling linked save_as file is link_refused"))
+            Check(SaveAsOf(SaveAsRun(danglingSaveAs)) == SaveAs("link_refused", null, SaveAsName, saveAsSha, null, null), "a dangling linked save_as file is link_refused, not missing", SaveAsOf(SaveAsRun(danglingSaveAs)));
+        Refused("a record whose save_as_path is not text", "catalogue_report_record_invalid", "save_as_path", MakeSaveAs(WithSaveAs(3, saveAsSha), SaveAsBytes));
+        Refused("a record whose save_as_sha256 is not text", "catalogue_report_record_invalid", "save_as_sha256", MakeSaveAs(WithSaveAs(saveAsPath, 5), SaveAsBytes));
         if (OperatingSystem.IsWindows()) Check(Report(pass, Path.Combine(Path.GetDirectoryName(pass.Run)!, pass.Name.ToUpperInvariant())).Out == first.Out, "the run name is echoed as on disk whatever the argument's case (Windows)");
         var forward = Make(passTemplate, CopyBytes, name => Path.Combine(Path.GetTempPath(), "x", ".bim", "native-runs", name).Replace('\\', '/'));
         Check(Report(forward).Exit == 0, "a summary run_directory with '/' separators is matched too");
@@ -502,6 +596,12 @@ internal static class CatalogueReportTests
         Check(matchRun.Exit == 0 && matchRun.Out.EndsWith(",\"copy\":" + passCopy + ",\"realized\":" + matchExpected + "}", StringComparison.Ordinal) && Raw(Json(matchRun.Out), "overall") == Counts(null, 11, 11, 0, 0, 0),
             "the doc-realized step is listed after the copy with the entry count and sha256 of its realized.json (match)", D(matchRun));
         Check(Report(matchCase).Out == matchRun.Out && Tree(matchCase) == matchBefore, "the realized summary is deterministic and read-only");
+        // P1-25: with both, save_as comes right after copy and realized after save_as.
+        var bothCase = MakeRealized(Mutate(okRecord, r => { r["save_as_path"] = WindowsRun("__RUN__") + "\\" + SaveAsName; r["save_as_sha256"] = Sha(SaveAsBytes); }), realizedBytes);
+        File.WriteAllBytes(Path.Combine(bothCase.Run, SaveAsName), SaveAsBytes);
+        var bothRun = Report(bothCase);
+        Check(bothRun.Exit == 0 && bothRun.Out.EndsWith(",\"copy\":" + passCopy + ",\"save_as\":" + SaveAs("matches", null, SaveAsName, Sha(SaveAsBytes), Sha(SaveAsBytes), SaveAsBytes.Length) + ",\"realized\":" + matchExpected + "}", StringComparison.Ordinal),
+            "a run with the save_as file and the doc-realized step prints copy, save_as, realized in that order", D(bothRun));
         var tamperedMap = (byte[])realizedBytes.Clone();
         tamperedMap[^3] ^= 1;
         var tamperedRun = Report(MakeRealized(okRecord, tamperedMap));
@@ -769,6 +869,13 @@ internal static class CatalogueReportTests
         var cleanSaveAsFile = cleanSaveAs is null ? null : Path.Combine(clean.Run, Path.GetFileName(cleanSaveAs));
         Check(cleanSaveAsFile is not null && cleanSaveAs!.EndsWith("-guardado.rvt", StringComparison.Ordinal) && File.Exists(cleanSaveAsFile) && Str(clean.Record, "save_as_sha256") == Sha(File.ReadAllBytes(cleanSaveAsFile)),
             "end to end (clean): the record names the save_as file and its sha256", Raw(clean.Record, "save_as_path") + " " + Raw(clean.Record, "save_as_sha256"));
+        // P1-25: catalogue-report re-hashes that file: matches, between copy and realized.
+        var cleanSaveAsReport = Member(clean.Report, "save_as");
+        Check(Str(cleanSaveAsReport, "state") == "matches" && Raw(cleanSaveAsReport, "detail") == "null" && cleanSaveAsFile is not null && Str(cleanSaveAsReport, "file") == Path.GetFileName(cleanSaveAsFile)
+            && Str(cleanSaveAsReport, "recorded_sha256") == Str(clean.Record, "save_as_sha256") && File.Exists(cleanSaveAsFile) && Str(cleanSaveAsReport, "disk_sha256") == Sha(File.ReadAllBytes(cleanSaveAsFile))
+            && Raw(cleanSaveAsReport, "disk_bytes") == new FileInfo(cleanSaveAsFile).Length.ToString(CultureInfo.InvariantCulture)
+            && clean.Result.Out.Contains(",\"copy\":" + Raw(clean.Report, "copy") + ",\"save_as\":" + Raw(clean.Report, "save_as") + ",\"realized\":", StringComparison.Ordinal),
+            "end to end (clean): catalogue-report re-hashes the save_as file the record names: matches, after copy", Raw(clean.Report, "save_as"));
         var mixed = Read("mixed");
         Check(mixed.Result.Exit == 0 && Raw(mixed.Report, "all_passed") == "false" && SameGroups(mixed.Report, mixed.Record), "end to end (mixed): failures and blocked steps are counted as the real writer counted them", D(mixed.Result));
         Check(string.Join(",", Items(mixed.Report, "blocked").Select(b => Str(b, "key"))) == "s-types-column,s-column", "end to end (mixed): the missing column type blocks two steps", Raw(mixed.Report, "blocked"));
