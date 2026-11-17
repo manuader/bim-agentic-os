@@ -26,8 +26,10 @@ namespace Bim.Cad;
 // keeps the byte decoding of the names outside the glyph list without reporting them; Latin names still map.
 // Deliberate: a slot a named table leaves undefined (controls, WinAnsi 0x81/0x8D/0x8F/0x90/0x9D, Standard and MacRoman
 // gaps) falls back to the Latin-1 byte, as before P6-20, so existing fixtures and pins keep their text. Known
-// limitation: a Type3 font hides every unknown name, including glyph-list names this table does not support (afii
-// names such as /afii10017, Greek, Cyrillic), which then read as text bytes without encoding-glyph-unknown.
+// limitation (P6-20): a Type3 font hid every unknown name, including glyph-list names this table does not support.
+// P6-22: UnsupportedGlyphListNames lists the unknown /Differences names that PdfGlyphNames.IsGlyphListName recognises
+// as real Adobe glyph-list names (rule there); the Type3 decoder reports them once per font per page
+// (encoding-glyph-unsupported) and still keeps their text bytes. Slot names such as /g12, /a1, /cid123 stay silent.
 internal sealed class PdfSimpleEncoding
 {
     private readonly string?[] map = new string?[256];
@@ -56,6 +58,20 @@ internal sealed class PdfSimpleEncoding
         var copy = new PdfSimpleEncoding { UnknownBase = UnknownBase };
         Array.Copy(map, copy.map, map.Length);
         return copy;
+    }
+
+    // The distinct unknown /Differences names (in code order) that are real Adobe glyph-list names the reader does not
+    // map; empty when there are none. Computed once per parsed encoding.
+    public IReadOnlyList<string> UnsupportedGlyphListNames => unsupportedGlyphListNames ??= FindUnsupportedGlyphListNames();
+
+    private IReadOnlyList<string>? unsupportedGlyphListNames;
+
+    private IReadOnlyList<string> FindUnsupportedGlyphListNames()
+    {
+        var names = new List<string>();
+        foreach (var name in unknown)
+            if (name is not null && PdfGlyphNames.IsGlyphListName(name) && !names.Contains(name, StringComparer.Ordinal)) names.Add(name);
+        return names;
     }
 
     // The base encoding of an /Encoding name, or null for another name.
@@ -227,6 +243,54 @@ internal static class PdfGlyphNames
         }
         return false;
     }
+
+    // P6-22: a conservative recogniser of real Adobe Glyph List names that TryUnicode does not map (the reader does not
+    // bundle the AGL). After dropping a .suffix as TryUnicode does, a name is a glyph-list name when it is
+    // - afii followed by exactly five decimal digits (the AGL afii names: Cyrillic /afii10017, Hebrew, Arabic ...); by
+    //   design this is broader than the AGL, which lists only some five-digit afii numbers, so an afii name absent
+    //   from the AGL is still reported (such a name is a glyph-list-style name, never a Type3 procedure slot);
+    // - uni followed by one or more groups of four upper-case hex digits, or u followed by four to six upper-case hex
+    //   digits, that TryUnicode rejects (surrogates, more than MaxUniGroups groups, above U+10FFFF);
+    // - one of the AglExtra names below (Greek, Latin Extended-A, the ff ligatures, arrows, prime marks), all AGL names.
+    // Anything else (slot names such as /g12, /a1, /cid123, /afii1234, lower-case hex such as /uni00e9, /u1F) is not.
+    // A name TryUnicode maps is never reported here.
+    public static bool IsGlyphListName(string name)
+    {
+        if (TryUnicode(name, out _)) return false;
+        var dot = name.IndexOf('.', StringComparison.Ordinal);
+        if (dot > 0) name = name[..dot];
+        if (name.Length == 9 && name.StartsWith("afii", StringComparison.Ordinal) && AllDecimal(name.AsSpan(4))) return true;
+        if (name.Length >= 7 && name.StartsWith("uni", StringComparison.Ordinal) && (name.Length - 3) % 4 == 0 && AllHex(name.AsSpan(3))) return true;
+        if (name.Length is >= 5 and <= 7 && name[0] == 'u' && AllHex(name.AsSpan(1))) return true;
+        return AglExtra.Contains(name);
+    }
+
+    private static bool AllDecimal(ReadOnlySpan<char> digits)
+    {
+        foreach (var c in digits) if (c is < '0' or > '9') return false;
+        return true;
+    }
+
+    private static bool AllHex(ReadOnlySpan<char> digits)
+    {
+        foreach (var c in digits) if (c is not ((>= '0' and <= '9') or (>= 'A' and <= 'F'))) return false;
+        return true;
+    }
+
+    // Adobe Glyph List names outside the Latin table above (a small embedded subset, not the full AGL).
+    private static readonly HashSet<string> AglExtra = new(StringComparer.Ordinal)
+    {
+        // Greek capitals and small letters (Delta, Omega, pi and mu are in the Latin table).
+        "Alpha", "Beta", "Gamma", "Epsilon", "Zeta", "Eta", "Theta", "Iota", "Kappa", "Lambda", "Mu", "Nu", "Xi", "Omicron", "Pi", "Rho", "Sigma", "Tau", "Upsilon", "Phi", "Chi", "Psi",
+        "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda", "nu", "xi", "omicron", "rho", "sigma", "sigma1", "tau", "upsilon", "phi", "chi", "psi", "omega",
+        // Latin Extended-A.
+        "Amacron", "amacron", "Abreve", "abreve", "Aogonek", "aogonek", "Cacute", "cacute", "Ccaron", "ccaron", "Dcaron", "dcaron", "Emacron", "emacron", "Edotaccent", "edotaccent",
+        "Eogonek", "eogonek", "Ecaron", "ecaron", "Gbreve", "gbreve", "Imacron", "imacron", "Iogonek", "iogonek", "Idotaccent", "Lacute", "lacute", "Lcaron", "lcaron", "Nacute", "nacute",
+        "Ncaron", "ncaron", "Omacron", "omacron", "Ohungarumlaut", "ohungarumlaut", "Racute", "racute", "Rcaron", "rcaron", "Sacute", "sacute", "Scedilla", "scedilla", "Tcaron", "tcaron",
+        "Umacron", "umacron", "Uring", "uring", "Uhungarumlaut", "uhungarumlaut", "Uogonek", "uogonek", "Zacute", "zacute", "Zdotaccent", "zdotaccent",
+        // Ligatures, arrows and primes.
+        "ff", "ffi", "ffl", "arrowleft", "arrowup", "arrowright", "arrowdown", "arrowboth", "minute", "second",
+    };
 
     // Upper-case hexadecimal digits only (as the glyph list requires), else null.
     private static int? Hex(ReadOnlySpan<char> digits)
