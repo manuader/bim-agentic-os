@@ -67,8 +67,8 @@ namespace Bim.Cli;
 // before. P4-19: a step whose recorded request (record_file; realized_file or output if present) or succeeded reply
 // (output) names another folder is request_mismatch and nothing on disk is trusted.
 // P1-25: a record whose save_as_path is text gets "save_as":{state,detail,file,recorded_sha256,disk_sha256,disk_bytes}
-// right after copy (before realized): the -guardado.rvt file re-hashed through BoundedInput against save_as_sha256 (see
-// WriteSaveAs). A record without save_as_path, or with it null, prints exactly what it did before.
+// right after copy (before realized): the -guardado.rvt file re-hashed against save_as_sha256 (see WriteSaveAs); P1-26: in
+// a stream through the copy's Hash(), under the copy's MaxCopyBytes. A record without save_as_path, or with it null, prints exactly what it did before.
 // Every refusal prints one {"status":"failed","code"[,"detail"]} envelope and exits 1. catalogue_report_internal_error is a
 // defect (type and message on stderr).
 internal static class CatalogueReportCommand
@@ -103,7 +103,6 @@ internal static class CatalogueReportCommand
     public const int MaxValueChars = 1024;
     public const int MaxMismatchRows = 1000;
     public const long MaxCopyBytes = 8L * 1024 * 1024 * 1024;
-    public const int MaxSaveAsBytes = 1024 * 1024 * 1024;
 
     const string SaveKey = "c-save";
     const string SaveCommand = "document.save_copy";
@@ -142,10 +141,10 @@ internal static class CatalogueReportCommand
     }
 
     // The verb with the repository root given (Run passes the one every verb uses; tests pass a temporary one) and the
-    // copy hashing cap (tests pass a small one). Returns the exit code and the one line Run prints.
-    internal static (int Exit, string Out) Execute(string[] args, string repositoryRoot, long maxCopyBytes = MaxCopyBytes, int maxSaveAsBytes = MaxSaveAsBytes)
+    // copy and save_as hashing cap (tests pass a small one). Returns the exit code and the one line Run prints.
+    internal static (int Exit, string Out) Execute(string[] args, string repositoryRoot, long maxCopyBytes = MaxCopyBytes)
     {
-        try { return (0, Report(args, repositoryRoot, maxCopyBytes, maxSaveAsBytes)); }
+        try { return (0, Report(args, repositoryRoot, maxCopyBytes)); }
         catch (Refusal refusal) { return (1, Failure(refusal.Code, refusal.Detail)); }
         catch (Exception error)
         {
@@ -156,7 +155,7 @@ internal static class CatalogueReportCommand
         }
     }
 
-    static string Report(string[] args, string repository, long maxCopyBytes, int maxSaveAsBytes)
+    static string Report(string[] args, string repository, long maxCopyBytes)
     {
         if (args.Length != 3 || args[1] != "--run" || args[2].Length == 0 || args[2].StartsWith("--", StringComparison.Ordinal)) throw new Refusal(UsageCode);
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repository));
@@ -219,7 +218,7 @@ internal static class CatalogueReportCommand
                 }
                 writer.WriteEndArray();
                 WriteCopy(writer, steps, copyPath, runDirectory, runName, maxCopyBytes);
-                if (saveAsPath is not null) WriteSaveAs(writer, saveAsPath, saveAsSha, runDirectory, runName, maxSaveAsBytes);
+                if (saveAsPath is not null) WriteSaveAs(writer, saveAsPath, saveAsSha, runDirectory, runName, maxCopyBytes);
                 WriteRealized(writer, steps, runDirectory, runName);
                 writer.WriteEndObject();
             }
@@ -618,11 +617,12 @@ internal static class CatalogueReportCommand
     // its bytes. "save_as":{state,detail,file,recorded_sha256,disk_sha256,disk_bytes}. States: outside_run (the path is
     // not a -guardado.rvt directly in <run>: nothing is read, file null), link_refused (the file is a link or junction,
     // dangling or not: never followed), missing, unreadable (detail the BoundedInput input_* code: not a regular file,
-    // over maxSaveAsBytes = input_too_large, access denied, I/O error), no_recorded_sha256 (save_as_sha256 absent, null or
-    // not 64 hex: the file is still hashed), mismatch (detail sha256), matches. The file is read whole through
-    // BoundedInput (regular files only, lstat before open on Unix, links refused, bounded), shared for write and delete
-    // because Revit keeps it open after the Save As. recorded_sha256 is printed lower-cased.
-    static void WriteSaveAs(Utf8JsonWriter writer, string path, string? recordedText, string runDirectory, string runName, int maxSaveAsBytes)
+    // over maxCopyBytes = input_too_large, access denied, I/O error), no_recorded_sha256 (save_as_sha256 absent, null or
+    // not 64 hex: the file is still hashed), mismatch (detail sha256), matches. P1-26: the file is hashed in a stream by
+    // the copy's Hash() (regular files only, lstat before open on Unix, bounded by the copy's cap, 8 GiB; never a
+    // whole-file byte[]), opened shared for write and delete because Revit keeps it open after the Save As; Hash's
+    // problems are reported as the BoundedInput code they correspond to. recorded_sha256 is printed lower-cased.
+    static void WriteSaveAs(Utf8JsonWriter writer, string path, string? recordedText, string runDirectory, string runName, long maxBytes)
     {
         string state;
         string? detail = null, file = null, recordedSha = null, diskSha = null;
@@ -633,26 +633,34 @@ internal static class CatalogueReportCommand
             file = Segments(path)[^1];
             if (recordedText is not null && Sha256Any.IsMatch(recordedText)) recordedSha = recordedText.ToLowerInvariant();
             var full = Path.Combine(runDirectory, file);
-            if (IsLink(new FileInfo(full))) state = "link_refused";
+            var info = new FileInfo(full);
+            string? problem = null;
+            string? sha = null;
+            long hashed = 0;
+            if (IsLink(info)) problem = BoundedInput.LinkRejected;
+            else if (Directory.Exists(full)) problem = BoundedInput.NotRegularFile;
+            else if (!info.Exists) problem = BoundedInput.NotFound;
             else
             {
-                byte[]? content = null;
-                string? problem = null;
-                try { content = BoundedInput.ReadBytes(full, maxSaveAsBytes, FileShare.ReadWrite | FileShare.Delete); }
-                catch (InputRejectedException error) { problem = error.Message; }
-                if (content is null)
+                try
                 {
-                    state = problem switch { BoundedInput.NotFound => "missing", BoundedInput.LinkRejected => "link_refused", _ => "unreadable" };
-                    if (state == "unreadable") detail = problem;
+                    (sha, hashed) = HashStream(full, maxBytes);
+                    if (sha is null) problem = BoundedInput.TooLarge;
                 }
-                else
-                {
-                    diskSha = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
-                    diskBytes = content.LongLength;
-                    if (recordedSha is null) state = "no_recorded_sha256";
-                    else if (recordedSha == diskSha) state = "matches";
-                    else { state = "mismatch"; detail = "sha256"; }
-                }
+                catch (HashProblem error) { problem = error.Code; }
+            }
+            if (problem is not null)
+            {
+                state = problem switch { BoundedInput.NotFound => "missing", BoundedInput.LinkRejected => "link_refused", _ => "unreadable" };
+                if (state == "unreadable") detail = problem;
+            }
+            else
+            {
+                diskSha = sha;
+                diskBytes = hashed;
+                if (recordedSha is null) state = "no_recorded_sha256";
+                else if (recordedSha == diskSha) state = "matches";
+                else { state = "mismatch"; detail = "sha256"; }
             }
         }
         writer.WriteStartObject("save_as");
@@ -866,22 +874,40 @@ internal static class CatalogueReportCommand
     // file's, and reading stops one byte past the cap whatever the length said.
     static (string? Sha, long Bytes) Hash(string path, long maxCopyBytes)
     {
+        try { return HashStream(path, maxCopyBytes); }
+        catch (HashProblem problem) when (problem.Code == BoundedInput.NotRegularFile) { throw new Refusal(CopyNotRegular); }
+        catch (HashProblem problem) when (problem.Code == BoundedInput.TypeUnverifiable) { throw new Refusal(IoError, "copy_type_unverifiable"); }
+        catch (HashProblem) { throw new Refusal(IoError, "copy"); }
+    }
+
+    // A Hash() failure, coded as BoundedInput codes them: input_not_regular_file, input_type_unverifiable, input_not_found
+    // (gone when opened), input_access_denied, input_io_error. The copy turns them into its refusals; save_as reports them.
+    sealed class HashProblem(string code) : Exception(code)
+    {
+        public string Code { get; } = code;
+    }
+
+    // P1-26: the streaming, bounded hash shared by copy and save_as (64 KiB buffer, never the whole file in memory).
+    static (string? Sha, long Bytes) HashStream(string path, long maxBytes)
+    {
         if (!OperatingSystem.IsWindows())
         {
             var pathBytes = Encoding.UTF8.GetBytes(path + "\0");
-            if ((UnixMode(status => NativeLStat(pathBytes, status)) & TypeMask) != RegularType) throw new Refusal(CopyNotRegular);
+            if ((UnixMode(status => NativeLStat(pathBytes, status)) & TypeMask) != RegularType) throw new HashProblem(BoundedInput.NotRegularFile);
         }
         FileStream stream;
         try { stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal(IoError, "copy"); }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { throw new HashProblem(BoundedInput.NotFound); }
+        catch (UnauthorizedAccessException) { throw new HashProblem(BoundedInput.AccessDenied); }
+        catch (IOException) { throw new HashProblem(BoundedInput.IoError); }
         using (stream)
         {
             try
             {
-                if (OperatingSystem.IsWindows()) { if (GetFileType(stream.SafeFileHandle) != FileTypeDisk) throw new Refusal(CopyNotRegular); }
-                else if ((UnixMode(status => NativeFStat(stream.SafeFileHandle, status)) & TypeMask) != RegularType) throw new Refusal(CopyNotRegular);
+                if (OperatingSystem.IsWindows()) { if (GetFileType(stream.SafeFileHandle) != FileTypeDisk) throw new HashProblem(BoundedInput.NotRegularFile); }
+                else if ((UnixMode(status => NativeFStat(stream.SafeFileHandle, status)) & TypeMask) != RegularType) throw new HashProblem(BoundedInput.NotRegularFile);
                 var length = stream.Length;
-                if (length > maxCopyBytes) return (null, length);
+                if (length > maxBytes) return (null, length);
                 using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 var buffer = new byte[64 * 1024];
                 long total = 0;
@@ -889,12 +915,13 @@ internal static class CatalogueReportCommand
                 while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
                 {
                     total += read;
-                    if (total > maxCopyBytes) return (null, length);
+                    if (total > maxBytes) return (null, length);
                     hash.AppendData(buffer, 0, read);
                 }
                 return (Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(), total);
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal(IoError, "copy"); }
+            catch (UnauthorizedAccessException) { throw new HashProblem(BoundedInput.AccessDenied); }
+            catch (IOException) { throw new HashProblem(BoundedInput.IoError); }
         }
     }
 
@@ -913,8 +940,8 @@ internal static class CatalogueReportCommand
         var status = new byte[StatusBytes];
         int result;
         try { result = call(status); }
-        catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException) { throw new Refusal(IoError, "copy_type_unverifiable"); }
-        if (result != 0) throw new Refusal(IoError, "copy");
+        catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException) { throw new HashProblem(BoundedInput.TypeUnverifiable); }
+        if (result != 0) throw new HashProblem(BoundedInput.IoError);
         return BitConverter.ToInt32(status, 4);
     }
 
