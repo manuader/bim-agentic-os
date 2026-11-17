@@ -97,9 +97,11 @@ internal static class AuditVerifyTool
         catch (AuditVerifyRefusal refusal) { return new Outcome(false, Failure(refusal.Code, refusal.Detail)); }
         catch (Exception error)
         {
-            // P3-20: the stderr detail is IntentPlan's one copy (interfaces/cli/IntentPlan.cs, linked wherever this file is).
-            Console.Error.WriteLine(IntentPlan.InternalDiagnostic("audit_verify", error));
-            return new Outcome(false, Failure(InternalError, null));
+            // P3-21: the outcome text and the stderr detail are one IntentPlan.Internal envelope (interfaces/cli/IntentPlan.cs,
+            // linked wherever this file is): {"status":"failed","code":"audit_verify_internal_error"}, the pre-P3-21 bytes.
+            var envelope = IntentPlan.Internal("audit_verify", error);
+            Console.Error.WriteLine(envelope.Diagnostic);
+            return new Outcome(false, envelope.Line);
         }
     }
 

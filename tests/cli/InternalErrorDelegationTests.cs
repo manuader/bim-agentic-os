@@ -301,11 +301,12 @@ internal static class InternalErrorDelegationTests
                 string.Join(", ", copies.Select(c => c.Name + " " + c.Count.ToString(CultureInfo.InvariantCulture))));
         }
 
-        // P3-20: MCP AuditVerifyTool takes its stderr line from IntentPlan.InternalDiagnostic; interfaces/mcp has no copy.
+        // P3-20/P3-21: MCP AuditVerifyTool takes its outcome text and stderr line from one IntentPlan.Internal envelope;
+        // interfaces/mcp has no copy.
         var mcpDir = Path.Combine(root, "interfaces", "mcp");
         var auditTool = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(mcpDir, "AuditVerifyTool.cs")), blankStrings: false);
-        Check(auditTool.Contains("Console.Error.WriteLine(IntentPlan.InternalDiagnostic(\"audit_verify\", error));", StringComparison.Ordinal),
-            "AuditVerifyTool.cs prints its internal error through IntentPlan.InternalDiagnostic(\"audit_verify\", error)");
+        Check(auditTool.Contains("IntentPlan.Internal(\"audit_verify\", error)", StringComparison.Ordinal),
+            "AuditVerifyTool.cs builds its internal error through IntentPlan.Internal(\"audit_verify\", error)");
         var mcpCopies = Directory.GetFiles(mcpDir, "*.cs")
             .Where(f => ApplyIntentTests.CodeOf(File.ReadAllText(f), blankStrings: false).Contains(" internal error: ", StringComparison.Ordinal))
             .Select(f => Path.GetFileName(f)).OrderBy(n => n, StringComparer.Ordinal).ToArray();
