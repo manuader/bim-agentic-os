@@ -1686,6 +1686,8 @@ DocUpdateToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,C
 PlanLayoutsToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
 // P4-21 doc_realized (tests/mcp/DocRealizedToolTests.cs).
 DocRealizedToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
+// P3-21 MCP internal-error envelopes from IntentPlan (tests/mcp/InternalErrorEnvelopeToolTests.cs).
+InternalErrorEnvelopeToolTests.Run(root,cliDir,Call,Check);
 // P5-18 the package root from a cli/ or mcp/ binary directory (tests/mcp/SkillPackPackageRootTests.cs).
 SkillPackPackageRootTests.Run(cliDir,Check);
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
