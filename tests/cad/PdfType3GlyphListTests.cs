@@ -68,6 +68,31 @@ internal static class PdfType3GlyphListTests
         }
         catch (Exception error) { C(false, "silent unexpected", error.GetType().Name + ": " + error.Message); }
 
+        // ---------- full messages, the eight-name cap, duplicates and ToUnicode ----------
+        try
+        {
+            const string prefix = "font /F1 (object 5) is a Type3 font whose /Differences names glyph-list names the reader does not map (";
+            string Message(PdfDocument document) => document.Warnings.FirstOrDefault(w => w.Code == "encoding-glyph-unsupported")?.Message ?? "none";
+
+            var plain = Page(Show("\\001"), Type3("[1 /afii10017]"));
+            C(Message(plain) == prefix + "/afii10017); their codes are read as text bytes", "without ToUnicode the full message does not mention a CMap", Message(plain));
+
+            var nine = Page(Show("\\001"), Type3("[1 /afii10017 /afii10018 /afii10019 /afii10020 /afii10021 /afii10022 /afii10023 /afii10024 /afii10025 20 /afii10017]"));
+            C(Warnings(nine) == "encoding-glyph-unsupported@1:4:1"
+                && Message(nine) == prefix + "/afii10017, /afii10018, /afii10019, /afii10020, /afii10021, /afii10022, /afii10023, /afii10024, ...); their codes are read as text bytes",
+                "nine distinct names list the first eight then ', ...' and a repeated name counts once", Message(nine));
+            var repeated = Page(Show("\\001"), Type3("[1 /afii10017 /afii10017 /Gamma 30 /afii10017]"));
+            C(Message(repeated) == prefix + "/afii10017, /Gamma); their codes are read as text bytes", "a name repeated in /Differences is listed once", Message(repeated));
+
+            var cmap = PdfToUnicodeTests.CMap("1 beginbfchar\n<01> <0416>\nendbfchar", "<00> <FF>");
+            var withCmap = PdfToUnicodeTests.Page(Show("\\001\\002"), Type3("[1 /afii10017 /afii10018]").Replace("/Resources << >> >>", "/Resources << >> /ToUnicode 6 0 R >>", StringComparison.Ordinal), cmap);
+            C(Texts(withCmap) == "\\u0416\\u0002" && Warnings(withCmap) == "encoding-glyph-unsupported@1:4:1",
+                "with ToUnicode the warning still fires at the Tf, mapped codes decode through the CMap and unmapped ones keep their bytes", Texts(withCmap) + " " + Warnings(withCmap));
+            C(Message(withCmap) == prefix + "/afii10017, /afii10018); codes that the ToUnicode CMap does not map are read as text bytes",
+                "with ToUnicode the full message names the CMap", Message(withCmap));
+        }
+        catch (Exception error) { C(false, "message unexpected", error.GetType().Name + ": " + error.Message); }
+
         // ---------- once per font per page ----------
         try
         {
