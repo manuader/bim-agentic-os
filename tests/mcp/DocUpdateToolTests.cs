@@ -333,9 +333,11 @@ internal static class DocUpdateToolTests
             .Where(api => toolCode.Contains(api, StringComparison.Ordinal)).ToArray();
         Check(inlined.Length == 0, "the tool inlines no parser, plan, probe, transport, file access or Console capture [" + string.Join(", ", inlined) + "]");
         var owners = Directory.GetFiles(Path.Combine(root, "interfaces", "mcp"), "*.cs")
-            .Where(f => new[] { "DocUpdate.Plan(", "DocUpdateProbe.", "DocUpdateExecute.", "DocUpdateCommand.Execute(", "\"wall_types\"" }.Any(api => CodeOf(File.ReadAllText(f)).Contains(api, StringComparison.Ordinal)))
+            .Where(f => new[] { "DocUpdate.Plan(", "DocUpdateDependents.", "DocUpdateProbe.", "DocUpdateExecute.", "DocUpdateCommand.Execute(" }.Any(api => CodeOf(File.ReadAllText(f)).Contains(api, StringComparison.Ordinal)))
             .Select(f => Path.GetFileName(f)).ToArray();
-        Check(owners.Length == 0, "no interfaces/mcp source plans a documentation update, probes or parses bindings itself [" + string.Join(", ", owners) + "]");
+        // The bindings member names are shared with the mirror_drift request (MirrorDriftTool.cs parses its own wall_types), so
+        // the cross-file guard names the doc-update plan, probe and run entry points only.
+        Check(owners.Length == 0, "no interfaces/mcp source plans, probes or runs a documentation update itself [" + string.Join(", ", owners) + "]");
         var commandCode = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "DocUpdateCommand.cs")));
         Check(Regex.Matches(commandCode, @"= ReadInputs\(").Count == 2 && Regex.Matches(commandCode, @"\bParseBindings\(bindingsText\)").Count == 1 && Regex.Matches(commandCode, @"\bRead\(beforePath, ""before""\)").Count == 1,
             "the CLI verb and DryPlan share one path: both call ReadInputs, which reads and parses the inputs in one place");
