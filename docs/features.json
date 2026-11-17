@@ -1906,10 +1906,12 @@
         "adapters/cad/Bim.Cad/PdfReader.cs",
         "tests/cad/PdfToUnicodeTests.cs",
         "tests/cad/fixtures/tounicode-pdf.py",
-        "tests/cad/fixtures/tounicode.pdf"
+        "tests/cad/fixtures/tounicode.pdf",
+        "adapters/cad/Bim.Cad/PdfEncoding.cs",
+        "tests/cad/PdfType3GlyphListTests.cs"
       ],
-      "blocker": "Simple fonts with an /Encoding dictionary decode through /BaseEncoding (WinAnsi/MacRoman/Standard) + /Differences glyph names since P6-18 (unknown names keep bytes with encoding-glyph-unknown; parsed encodings cached per document and charged to MaxParsedElements); name-only /Encoding names decode through the base tables and Type3 /Differences slot names keep bytes silently since P6-20 (unknown /BaseEncoding → encoding-base-unknown; Type3 unsupported glyph-list names not signalled → P6-22); usecmap ignored; non-Identity Type0 CMaps only split codes through the ToUnicode codespace; BMP bfrange stops at U+FFFF; cad-brief CLI not run end to end on tounicode.pdf (compressed/XObject CLI twin on brief-plan is P6-17).",
-      "scope": "P6-16: ToUnicode CMaps (codespace ≤100 ranges, bfchar, bfrange incrementing incl. surrogate carry and array form; Flate streams; BCL only) decode Type0 Identity-H/V, non-Identity multi-byte and simple fonts in Tj/TJ/'/\"; Form XObjects use their own font resources, q/Q restores the decoder; brief extraction reads Dormitorio 1 / Baño / Cocina with areas from a deterministic generated fixture (sha pinned); typed warnings tounicode-missing / tounicode-invalid / tounicode-unmapped keep the old decoding; mapped codes charged to the document-wide MaxParsedElements (element-limit), decoded text to MaxInterpretedBytes (interpret-limit); existing PDF pins unchanged. CI red 43151778821, green 43153070188; review red 43156979215, green 43157029343."
+      "blocker": "Simple fonts with an /Encoding dictionary decode through /BaseEncoding (WinAnsi/MacRoman/Standard) + /Differences glyph names since P6-18 (unknown names keep bytes with encoding-glyph-unknown; parsed encodings cached per document and charged to MaxParsedElements); name-only /Encoding names decode through the base tables and Type3 /Differences slot names keep bytes silently since P6-20 (unknown /BaseEncoding → encoding-base-unknown; Type3 unsupported glyph-list names not signalled → P6-22); usecmap ignored; non-Identity Type0 CMaps only split codes through the ToUnicode codespace; BMP bfrange stops at U+FFFF; cad-brief CLI not run end to end on tounicode.pdf (compressed/XObject CLI twin on brief-plan is P6-17). Since P6-22 Type3 /Differences glyph-list names the reader does not map (afii+5 digits, rejected uni/u forms, a small embedded AGL subset) give one encoding-glyph-unsupported per font per page at the selecting Tf; the embedded list is partial and the warning fires even when the affected codes are not shown (→ P6-24).",
+      "scope": "P6-16: ToUnicode CMaps (codespace ≤100 ranges, bfchar, bfrange incrementing incl. surrogate carry and array form; Flate streams; BCL only) decode Type0 Identity-H/V, non-Identity multi-byte and simple fonts in Tj/TJ/'/\"; Form XObjects use their own font resources, q/Q restores the decoder; brief extraction reads Dormitorio 1 / Baño / Cocina with areas from a deterministic generated fixture (sha pinned); typed warnings tounicode-missing / tounicode-invalid / tounicode-unmapped keep the old decoding; mapped codes charged to the document-wide MaxParsedElements (element-limit), decoded text to MaxInterpretedBytes (interpret-limit); existing PDF pins unchanged. CI red 43151778821, green 43153070188; review red 43156979215, green 43157029343. P6-22: typed encoding-glyph-unsupported for Type3 glyph-list names (≤8 names in code order, deduplicated; wording with/without ToUnicode pinned); slot names (/g12, /a1, /cid123) silent; Type1 unchanged; text bytes unchanged. relay217, CI red 44034850877, green 44037286821, review red 44047618622, green 44050432124."
     },
     {
       "id": "mcp-diff-intent",
@@ -2151,6 +2153,32 @@
       ],
       "blocker": "Dry plan only (no transport, probe or execute; those stay CLI-only); takes file paths, not inline JSON; relative paths resolve against the server working directory; the MCP binary still links DocUpdateProbe/DocUpdateExecute (unreachable, → P4-22).",
       "scope": "P4-20: MCP tool doc_update {before, after, realized, bindings, dependents?} (permission read, readOnlyHint) shares DocUpdateCommand.DryPlan with the CLI verb; text byte-equal to the doc-update CLI output file and DocUpdate.Plan; refusals equal the CLI plain line; lone surrogates in input text are typed doc_update_*_invalid in CLI and tool; nothing written. CI red 44020772433, green 44022220986, review fix green 44026934842."
+    },
+    {
+      "id": "mcp-plan-layouts",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/mcp/PlanLayoutsTool.cs",
+        "interfaces/mcp/McpServer.cs",
+        "interfaces/cli/PlanLayoutsCommand.cs",
+        "tests/mcp/PlanLayoutsToolTests.cs",
+        "tests/mcp/Program.cs",
+        "tests/revit-commands/Program.cs"
+      ],
+      "blocker": "Forced plan_layouts_internal_error and plan_layouts_refused through the tool are not tested (→ P7-22); alternatives/seed that are not int32 are -32602 at the MCP layer (the CLI types them); relative paths resolve against the server working directory.",
+      "scope": "P7-20: MCP tool plan_layouts {brief, alternatives?, seed?, pack?} (permission read, readOnlyHint) calls PlanLayoutsCommand.DryPlan, which shares Plan(brief, count, seed, pack) and the option validators with the CLI verb (package-first SkillPackLookup); text byte-equal to the real plan-layouts CLI output file and in-process AlternativeGenerator (defaults, seed wrap, negative seed, infeasible, CABA and xx.example packs); refusals byte-equal to the CLI line (malformed brief and pack_invalid pinned literally); MCP-only plan_layouts_path_invalid; nothing written; real Bim.Mcp.dll over stdio. relay217, CI red 44035035936, green 44038349793, review pins green 44054329853."
+    },
+    {
+      "id": "cli-skill-list",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/cli/SkillListCommand.cs",
+        "interfaces/cli/Program.cs",
+        "tests/cli/SkillListTests.cs",
+        "tests/cli/Program.cs"
+      ],
+      "blocker": "CLI only (MCP skill_list → P5-22); registry issues (claim_duplicate, pack_missing, pack_not_code) are not reported and the directory is loaded twice (→ P5-23); internal-error path checked statically only.",
+      "scope": "P5-21: read-only skill-list [--skills dir] (default package-first <package>/skills else repository skills/) prints {status, skills_path, packs:[{id, version, kind, stub, source_confidence{rules, cited, owner-confirmed, to-verify, lowest}}]} ordinal by id, equal to the in-process loader + jurisdiction registry result; loader codes (json_invalid, root_missing) and jurisdiction sidecar refusals pass through unchanged; trailing separator trimmed; skills tree digest unchanged. relay217, CI red 44034963800, green 44036668745, review red 44041974987, green 44043953028."
     }
   ]
 }
