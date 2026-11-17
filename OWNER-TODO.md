@@ -300,3 +300,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay216 (2026-11-17, cloud)
 - No new owner action. New read-only MCP tool doc_update (needs `git pull` + `pwsh -NoProfile -File scripts/install-mcp.ps1 -Build` and a Claude Desktop restart to appear). Still open: ADR0010/ADR0011 decisions; 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) then catalogue-report; 🔒 N21 `... -Runs 1`.
+
+## Relay217 (2026-11-17, cloud)
+- No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 `git pull` then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and catalogue-report; 🔒 N21 `... -Runs 1`. New headless commands (nothing to run): MCP plan_layouts, CLI skill-list.
