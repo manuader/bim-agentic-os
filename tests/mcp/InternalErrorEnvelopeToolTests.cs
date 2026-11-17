@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Bim.Mcp;
 
 // P3-21 MCP internal-error envelopes from IntentPlan. Oracles:
@@ -9,9 +10,11 @@ using Bim.Mcp;
 //      Count checks, inside Actors), returns {"status":"failed","code":"audit_verify_internal_error"} byte for byte (the
 //      pre-P3-21 hand-built bytes) and writes "audit_verify internal error: <type>: <message>" to stderr once; both are
 //      IntentPlan.Internal("audit_verify", error)'s Line and Diagnostic.
-//   2. Static: AuditVerifyTool.cs builds its catch-all from IntentPlan.Internal("audit_verify", error) alone (no
-//      InternalDiagnostic call, no Failure(InternalError ...) envelope); no interfaces/mcp source hand-builds an
-//      audit_verify_internal_error envelope (the literal appears only as AuditVerifyTool.InternalError's declaration).
+//   2. Static (layout-independent regexes over comment-stripped code, each checker self-tested on fake snippets):
+//      AuditVerifyTool.cs's catch-all binds IntentPlan.Internal("audit_verify", error) to one variable whose Diagnostic is
+//      the stderr line and whose Line is the Outcome text (no InternalDiagnostic call); InternalError is named only in its
+//      declaration and no interfaces/mcp source hand-builds an audit_verify_internal_error envelope. The P5-12 pin equals
+//      the tests/cli constant.
 //   3. generate_typology: the MCP Document path, forced through GenerateTypologyCommand.GuardedWorkProbe, is isError with
 //      the typed generate_typology_internal_error line (IntentPlan.Internal("generate-typology", error).Line, not
 //      McpServer's generic failure carrying the exception message), the IntentPlan diagnostic on stderr once; with the
@@ -55,29 +58,61 @@ internal static class InternalErrorEnvelopeToolTests
         // ---- 2. static: one IntentPlan helper, no hand-built audit_verify_internal_error envelope in interfaces/mcp ----
         {
             var mcpDir = Path.Combine(root, "interfaces", "mcp");
-            var audit = CodeOf(File.ReadAllText(Path.Combine(mcpDir, "AuditVerifyTool.cs")));
-            Check(audit.Contains("IntentPlan.Internal(\"audit_verify\", error)", StringComparison.Ordinal),
-                "AuditVerifyTool.cs builds its catch-all from IntentPlan.Internal(\"audit_verify\", error)");
-            Check(!audit.Contains("InternalDiagnostic(", StringComparison.Ordinal),
-                "AuditVerifyTool.cs does not build the stderr line separately (no IntentPlan.InternalDiagnostic call)");
-            var handBuilt = Directory.GetFiles(mcpDir, "*.cs").Order(StringComparer.Ordinal).SelectMany(file =>
+            var auditSource = File.ReadAllText(Path.Combine(mcpDir, "AuditVerifyTool.cs"));
+            var catchAll = CatchAllProblems(auditSource);
+            Check(catchAll.Count == 0, "AuditVerifyTool.cs's catch-all is one IntentPlan.Internal(\"audit_verify\", error) envelope whose Diagnostic goes to stderr and whose Line is the Outcome text, no InternalDiagnostic call [" + string.Join("; ", catchAll) + "]");
+            var sources = Directory.GetFiles(mcpDir, "*.cs").Order(StringComparer.Ordinal).Select(file => (Path.GetFileName(file), File.ReadAllText(file))).ToArray();
+            var handBuilt = HandBuiltProblems(sources);
+            Check(handBuilt.Count == 0, "no interfaces/mcp source hand-builds an audit_verify_internal_error envelope [" + string.Join("; ", handBuilt) + "]");
+
+            // Checker self-tests: the evasions are flagged, layout-independent equivalents of the real shape pass.
+            const string Declaration = "public const string InternalError = \"audit_verify_internal_error\";";
+            string AuditFile(string body) => "namespace Bim.Mcp; internal static class AuditVerifyTool { " + Declaration + " static object Run() { " + body + " } }";
+            var evasions = new (string Label, (string, string)[] Files)[]
             {
-                var code = CodeOf(File.ReadAllText(file));
-                var name = Path.GetFileName(file);
-                var found = new List<string>();
-                // A bare InternalError names audit_verify_internal_error only inside AuditVerifyTool.cs (MirrorDriftTool's own
-                // InternalError is mirror_drift_internal_error); elsewhere the code is reached as AuditVerifyTool.InternalError
-                // or the literal.
-                var patterns = new List<string> { "Failure(AuditVerifyTool.InternalError", "Failed(AuditVerifyTool.InternalError", "Failed(\"audit_verify_internal_error\"" };
-                if (name == "AuditVerifyTool.cs") patterns.AddRange(new[] { "Failure(InternalError", "Failed(InternalError" });
-                foreach (var pattern in patterns)
-                    if (code.Contains(pattern, StringComparison.Ordinal)) found.Add(name + ": " + pattern);
-                var literals = Occurrences(code, "\"audit_verify_internal_error\"");
-                var declared = name == "AuditVerifyTool.cs" && code.Contains("public const string InternalError = \"audit_verify_internal_error\";", StringComparison.Ordinal) ? 1 : 0;
-                if (literals != declared) found.Add(name + ": " + literals.ToString(CultureInfo.InvariantCulture) + " audit_verify_internal_error literal(s)");
-                return found;
-            }).ToArray();
-            Check(handBuilt.Length == 0, "no interfaces/mcp source hand-builds an audit_verify_internal_error envelope [" + string.Join(", ", handBuilt) + "]");
+                ("Failure( InternalError, null)", new[] { ("AuditVerifyTool.cs", AuditFile("return new Outcome(false, Failure( InternalError, null));")) }),
+                ("Failure(code: InternalError, detail: null)", new[] { ("AuditVerifyTool.cs", AuditFile("return new Outcome(false, Failure(code: InternalError, detail: null));")) }),
+                ("Serialize(new{status=\"failed\",code=InternalError})", new[] { ("AuditVerifyTool.cs", AuditFile("return JsonSerializer.Serialize(new{status=\"failed\",code=InternalError});")) }),
+                ("\"audit_verify\"+\"_internal_error\" in AuditVerifyTool.cs", new[] { ("AuditVerifyTool.cs", AuditFile("return Failure(\"audit_verify\"+\"_internal_error\", null);")) }),
+                ("a second audit_verify_internal_error literal", new[] { ("AuditVerifyTool.cs", AuditFile("return Failure(\"audit_verify_internal_error\", null);")) }),
+                ("AuditVerifyTool . InternalError in another file", new[] { ("AuditVerifyTool.cs", AuditFile("return null;")), ("McpServer.cs", "var t = Failed(AuditVerifyTool . InternalError);") }),
+                ("\"audit_verify\" + \"_internal_error\" in another file", new[] { ("AuditVerifyTool.cs", AuditFile("return null;")), ("McpServer.cs", "var t = Failed(\"audit_verify\" + \"_internal_error\");") }),
+                ("the literal in another file", new[] { ("AuditVerifyTool.cs", AuditFile("return null;")), ("McpServer.cs", "var t = Failed(\"audit_verify_internal_error\");") }),
+                ("the declaration missing", new[] { ("AuditVerifyTool.cs", "internal static class AuditVerifyTool { }") }),
+            };
+            foreach (var (label, files) in evasions)
+                Check(HandBuiltProblems(files).Count > 0, "self-test: the hand-built checker flags " + label);
+            Check(HandBuiltProblems(new[] { ("AuditVerifyTool.cs", AuditFile("// Failure(InternalError) in a comment\nreturn null;")), ("MirrorDriftTool.cs", "const string InternalError = \"mirror_drift_internal_error\"; var t = Failure(InternalError, null);") }).Count == 0,
+                "self-test: the hand-built checker passes the declaration alone, a comment, and another tool's own InternalError");
+
+            const string Good = "catch (Exception error) { var envelope = IntentPlan.Internal(\"audit_verify\", error); Console.Error.WriteLine(envelope.Diagnostic); return new Outcome(false, envelope.Line); }";
+            const string Spaced = "catch (Exception error)\n{\n var  e2 =\n IntentPlan . Internal ( \"audit_verify\" ,\n error ) ;\n Console . Error . WriteLine( e2 . Diagnostic ) ;\n return new Outcome( false , e2 . Line );\n}";
+            Check(CatchAllProblems(Good).Count == 0 && CatchAllProblems(Spaced).Count == 0, "self-test: the catch-all checker accepts the shape at any spacing and variable name");
+            var badShapes = new (string Label, string Source)[]
+            {
+                ("the P3-20 body", "catch (Exception error) { Console.Error.WriteLine(IntentPlan.InternalDiagnostic(\"audit_verify\", error)); return new Outcome(false, Failure(InternalError, null)); }"),
+                ("Diagnostic from another variable", "catch (Exception error) { var envelope = IntentPlan.Internal(\"audit_verify\", error); var other = IntentPlan.Internal(\"x\", error); Console.Error.WriteLine(other.Diagnostic); return new Outcome(false, envelope.Line); }"),
+                ("Line from another variable", "catch (Exception error) { var envelope = IntentPlan.Internal(\"audit_verify\", error); var other = IntentPlan.Internal(\"x\", error); Console.Error.WriteLine(envelope.Diagnostic); return new Outcome(false, other.Line); }"),
+                ("an extra InternalDiagnostic call", Good + " void X(Exception error) { Console.Error.WriteLine(IntentPlan.InternalDiagnostic(\"audit_verify\", error)); }"),
+                ("the shape only in a comment", "// var envelope = IntentPlan.Internal(\"audit_verify\", error); Console.Error.WriteLine(envelope.Diagnostic); return new Outcome(false, envelope.Line);\n"),
+            };
+            foreach (var (label, source) in badShapes)
+                Check(CatchAllProblems(source).Count > 0, "self-test: the catch-all checker flags " + label);
+
+            // CodeOf self-test: comments go, string / verbatim / raw / char literals stay verbatim.
+            const string Sample = """"
+                var a = "x // kept"; // gone "q"
+                var b = """
+                  raw " // kept too
+                  """; /* gone */ var c = '"'; var d = @"v "" // kept three";
+                """";
+            var stripped = CodeOf(Sample);
+            Check(!stripped.Contains("gone", StringComparison.Ordinal) && stripped.Contains("\"x // kept\"", StringComparison.Ordinal) && stripped.Contains("raw \" // kept too", StringComparison.Ordinal)
+                && stripped.Contains("'\"'", StringComparison.Ordinal) && stripped.Contains("@\"v \"\" // kept three\"", StringComparison.Ordinal), "self-test: CodeOf strips comments and keeps string, raw, verbatim and char literals | " + Short(stripped));
+
+            // The P5-12 pin used below is the tests/cli constant.
+            var cliPin = Regex.Match(File.ReadAllText(Path.Combine(root, "tests", "cli", "GenerateTypologyTests.cs")), "PinnedAcceptedSha256\\s*=\\s*\"([0-9a-f]{64})\"");
+            Check(cliPin.Success && cliPin.Groups[1].Value == PinnedAcceptedSha256, "the P5-12 pin equals tests/cli/GenerateTypologyTests.cs PinnedAcceptedSha256");
         }
 
         // ---- 3. generate_typology Document path forced through GuardedWorkProbe ----
@@ -120,6 +155,54 @@ internal static class InternalErrorEnvelopeToolTests
         }
     }
 
+    // The positive shape of AuditVerifyTool.Run's catch-all, layout-independent: exactly one
+    // var <v> = IntentPlan.Internal("audit_verify", error); then Console.Error.WriteLine(<v>.Diagnostic) and
+    // new Outcome(false, <v>.Line) on the same <v>; no IntentPlan.InternalDiagnostic call anywhere in the file.
+    static List<string> CatchAllProblems(string source)
+    {
+        var code = CodeOf(source);
+        var problems = new List<string>();
+        var internals = Regex.Matches(code, @"\bIntentPlan\s*\.\s*Internal\s*\(\s*""audit_verify""\s*,");
+        var bound = Regex.Matches(code, @"\bvar\s+(?<v>[A-Za-z_]\w*)\s*=\s*IntentPlan\s*\.\s*Internal\s*\(\s*""audit_verify""\s*,\s*error\s*\)\s*;");
+        if (internals.Count != 1 || bound.Count != 1) problems.Add("IntentPlan.Internal(\"audit_verify\", error) bound to one variable exactly once (" + internals.Count.ToString(CultureInfo.InvariantCulture) + " calls, " + bound.Count.ToString(CultureInfo.InvariantCulture) + " bindings)");
+        else
+        {
+            var v = Regex.Escape(bound[0].Groups["v"].Value);
+            if (!Regex.IsMatch(code, @"\bConsole\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*" + v + @"\s*\.\s*Diagnostic\s*\)")) problems.Add("Console.Error.WriteLine(" + bound[0].Groups["v"].Value + ".Diagnostic)");
+            if (!Regex.IsMatch(code, @"\bnew\s+Outcome\s*\(\s*false\s*,\s*" + v + @"\s*\.\s*Line\s*\)")) problems.Add("new Outcome(false, " + bound[0].Groups["v"].Value + ".Line)");
+        }
+        if (Regex.IsMatch(code, @"\bInternalDiagnostic\s*\(")) problems.Add("an InternalDiagnostic call");
+        return problems;
+    }
+
+    // No hand-built audit_verify_internal_error envelope over (file name, source) pairs, comments stripped:
+    // AuditVerifyTool.cs names InternalError exactly once (its declaration) and contains "internal_error" only there;
+    // no other file names AuditVerifyTool.InternalError, contains audit_verify_internal_error, or concatenates
+    // "audit_verify..." + "...internal_error".
+    static List<string> HandBuiltProblems(IEnumerable<(string Name, string Source)> files)
+    {
+        var problems = new List<string>();
+        var declarations = 0;
+        foreach (var (name, source) in files)
+        {
+            var code = CodeOf(source);
+            if (name == "AuditVerifyTool.cs")
+            {
+                declarations += Regex.Matches(code, @"\bpublic\s+const\s+string\s+InternalError\s*=\s*""audit_verify_internal_error""\s*;").Count;
+                var named = Regex.Matches(code, @"\bInternalError\b").Count;
+                if (named != 1) problems.Add(name + ": InternalError named " + named.ToString(CultureInfo.InvariantCulture) + " times (the declaration only)");
+                var texts = Occurrences(code, "internal_error");
+                if (texts != 1) problems.Add(name + ": internal_error appears " + texts.ToString(CultureInfo.InvariantCulture) + " times (the declaration only)");
+                continue;
+            }
+            if (Regex.IsMatch(code, @"\bAuditVerifyTool\s*\.\s*InternalError\b")) problems.Add(name + ": AuditVerifyTool.InternalError");
+            if (code.Contains("audit_verify_internal_error", StringComparison.Ordinal)) problems.Add(name + ": the audit_verify_internal_error literal");
+            if (Regex.IsMatch(code, @"""audit_verify[^""]*""\s*\+\s*""[^""]*internal_error")) problems.Add(name + ": a concatenated audit_verify internal_error code");
+        }
+        if (declarations != 1) problems.Add("AuditVerifyTool.cs: the InternalError declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
+        return problems;
+    }
+
     static int Occurrences(string text, string value)
     {
         var count = 0;
@@ -127,7 +210,7 @@ internal static class InternalErrorEnvelopeToolTests
         return count;
     }
 
-    // C# source without // and /* */ comments; string and char literals are kept verbatim.
+    // C# source without // and /* */ comments; string, verbatim, raw ("""...) and char literals are kept verbatim.
     static string CodeOf(string source)
     {
         var code = new StringBuilder(source.Length);
@@ -146,6 +229,19 @@ internal static class InternalErrorEnvelopeToolTests
                 while (i + 1 < source.Length && !(source[i] == '*' && source[i + 1] == '/')) i++;
                 i++;
                 code.Append(' ');
+                continue;
+            }
+            if (c == '"' && i + 2 < source.Length && source[i + 1] == '"' && source[i + 2] == '"')
+            {
+                var quotes = 0;
+                while (i < source.Length && source[i] == '"') { code.Append('"'); quotes++; i++; }
+                var run = 0;
+                for (; i < source.Length; i++)
+                {
+                    code.Append(source[i]);
+                    run = source[i] == '"' ? run + 1 : 0;
+                    if (run == quotes) break;
+                }
                 continue;
             }
             if (c is '"' or '\'')

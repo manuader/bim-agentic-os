@@ -305,7 +305,8 @@ internal static class InternalErrorDelegationTests
         // interfaces/mcp has no copy.
         var mcpDir = Path.Combine(root, "interfaces", "mcp");
         var auditTool = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(mcpDir, "AuditVerifyTool.cs")), blankStrings: false);
-        Check(auditTool.Contains("IntentPlan.Internal(\"audit_verify\", error)", StringComparison.Ordinal),
+        // Layout-independent; tests/mcp/InternalErrorEnvelopeToolTests.cs also ties its Diagnostic and Line to one variable.
+        Check(System.Text.RegularExpressions.Regex.IsMatch(auditTool, @"\bIntentPlan\s*\.\s*Internal\s*\(\s*""audit_verify""\s*,\s*error\s*\)"),
             "AuditVerifyTool.cs builds its internal error through IntentPlan.Internal(\"audit_verify\", error)");
         var mcpCopies = Directory.GetFiles(mcpDir, "*.cs")
             .Where(f => ApplyIntentTests.CodeOf(File.ReadAllText(f), blankStrings: false).Contains(" internal error: ", StringComparison.Ordinal))
