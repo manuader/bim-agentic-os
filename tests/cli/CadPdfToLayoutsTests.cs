@@ -65,6 +65,12 @@ using Bim.Generative;
 //      pinned digest. Without IncludeBlockRegions no room of brief-plan-nested-regions.pdf takes a /Rooms region.
 //  13. Through the real CLI chain brief-plan-nested.pdf's layouts equal the in-process bytes and the pinned digest, the
 //      --brief-only file equals the in-process planner brief, and draft.json / brief.json carry the nested path.
+// P6-21 cad-brief --include-block-regions (valueless, cad-brief only, sets BriefExtractOptions.IncludeBlockRegions):
+//  14. For each scale form (flag before or after the scale options) brief-plan-nested-regions.pdf through the real CLI
+//      chain gives the in-process IncludeBlockRegions layouts bytes and the pinned digest, and draft.json rooms equal the
+//      in-process rooms (regions from the /Rooms form); without the flag draft.json rooms equal the default-option rooms
+//      (no form region). A repeated flag is cad_option_duplicate, the flag on cad-draft is cad_option_unknown, a word after
+//      it is an unknown option, and cad-brief without arguments prints the usage naming the flag (exact envelopes).
 internal static class CadPdfToLayoutsTests
 {
     // SHA-256 (lower-case hex) of tests/cad/fixtures/brief-plan.pdf as brief-plan-pdf.py writes it.
@@ -579,6 +585,64 @@ internal static class CadPdfToLayoutsTests
                         briefJson?.ToString() is { } bt && bt.Length > 600 ? bt[..600] + "..." : briefJson?.ToString() ?? "<no brief.json>");
                 }
             }
+        }
+
+        // ---- P6-21: cad-brief --include-block-regions (BriefExtractOptions.IncludeBlockRegions) through the real CLI ----
+        {
+            const string Flag = "--include-block-regions";
+            var regionsPath = Path.Combine(fixtures, NestedRegionsFile);
+            var regionsBytes = Read(regionsPath);
+            Check(Hex(regionsBytes) == NestedRegionsFixtureDigest, "block-regions: " + NestedRegionsFile + " SHA-256 equals the pinned fixture digest", "actual " + Hex(regionsBytes));
+            var roomJson = new JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+            static BriefDraft RegionsDraft(byte[] pdf, bool calibrated, bool include) => calibrated
+                ? BriefExtract.FromPdf(PdfReader.Parse(pdf, NestedRegionsFile), 1, Calibration(), new BriefExtractOptions { IncludeBlockRegions = include })
+                : BriefExtract.FromPdf(PdfReader.Parse(pdf, NestedRegionsFile), 1, null, new BriefExtractOptions { MetresPerUnit = 0.02, IncludeBlockRegions = include });
+            // The flag is valueless and may sit before or after the scale options.
+            foreach (var (vLabel, vCalibrated, withFlag, withoutFlag) in new[]
+            {
+                ("calibrated", true, new[] { Flag }.Concat(Calibrate).ToArray(), Calibrate),
+                ("metres-per-unit", false, MetresPerUnit.Concat(new[] { Flag }).ToArray(), MetresPerUnit),
+            })
+            {
+                var included = RegionsDraft(regionsBytes, vCalibrated, true);
+                var expected = Plan(included);
+                Check(Hex(expected.Bytes) == PinnedCalibrated, "block-regions " + vLabel + ": the in-process IncludeBlockRegions run equals the pinned layouts digest", "actual " + Hex(expected.Bytes));
+                var written = Chain("block-regions-" + vLabel, withFlag, expected.Brief, null, regionsPath);
+                Check(written.SequenceEqual(expected.Bytes) && Hex(written) == PinnedCalibrated,
+                    "block-regions " + vLabel + ": cad-brief " + Flag + " -> cad-plan-brief --brief-only -> plan-layouts equals the in-process IncludeBlockRegions bytes and the pinned digest",
+                    "written sha256 " + Hex(written) + " expected " + Hex(expected.Bytes) + " pinned " + PinnedCalibrated);
+                var withDoc = Envelope(Encoding.UTF8.GetString(Read(Path.Combine(lastChainDir, "draft.json"))));
+                var withRooms = withDoc is { } wd && wd.TryGetProperty("rooms", out var wr) ? wr.GetRawText() : "<none>";
+                Check(withRooms == JsonSerializer.Serialize(included.Rooms, roomJson) && included.Rooms.Any(room => room.Region is not null && room.Region.InsertPath.SequenceEqual(NestedRegionsPath)),
+                    "block-regions " + vLabel + ": with " + Flag + " the draft.json rooms equal the in-process IncludeBlockRegions rooms (regions from the /Rooms form)",
+                    withRooms.Length > 600 ? withRooms[..600] + "..." : withRooms);
+
+                // Without the flag the CLI keeps today's behaviour: the in-process default-option rooms, no region from a form.
+                var excluded = RegionsDraft(regionsBytes, vCalibrated, false);
+                var withoutOutput = Path.Combine(scratch, "block-regions-without-" + vLabel + ".json");
+                var plain = Cli(null, new[] { "cad-brief", regionsPath, withoutOutput }.Concat(withoutFlag).ToArray());
+                var withoutDoc = Envelope(Encoding.UTF8.GetString(Read(withoutOutput)));
+                var withoutRooms = withoutDoc is { } nd && nd.TryGetProperty("rooms", out var nr) ? nr.GetRawText() : "<none>";
+                Check(plain.Exit == 0 && withoutRooms == JsonSerializer.Serialize(excluded.Rooms, roomJson) && excluded.Rooms.Count > 0 && excluded.Rooms.All(room => room.Region is null),
+                    "block-regions " + vLabel + ": without " + Flag + " the draft.json rooms equal the default-option in-process rooms and none takes a /Rooms region", R(plain));
+            }
+
+            // Refusals and usage: one failed envelope, exit 1, nothing written.
+            void Refused(string label, string code, string? detail, params string[] arguments)
+            {
+                var output = arguments.Length > 2 ? arguments[2] : "";
+                var r = Cli(null, arguments);
+                var expectedText = detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail });
+                Check(r.Exit == 1 && r.Out == expectedText && (output.Length == 0 || !File.Exists(output)), "block-regions: " + label, R(r) + " expected " + expectedText);
+            }
+            Refused("a repeated " + Flag + " is refused as cad_option_duplicate", "cad_option_duplicate", Flag,
+                "cad-brief", regionsPath, Path.Combine(scratch, "block-regions-duplicate.json"), Flag, "--metres-per-unit", "0.02", Flag);
+            Refused(Flag + " on cad-draft is cad_option_unknown", "cad_option_unknown", Flag,
+                "cad-draft", regionsPath, Path.Combine(scratch, "block-regions-draft.json"), "--metres-per-unit", "0.02", Flag);
+            Refused(Flag + " takes no value (a following word is an unknown option)", "cad_option_unknown", "true",
+                "cad-brief", regionsPath, Path.Combine(scratch, "block-regions-value.json"), Flag, "true");
+            const string BriefUsageText = "usage: cad-brief input.dxf|input.pdf output.json [--page n] [--metres-per-unit m | --calibrate x1,y1,x2,y2,mm] [--include-block-regions]";
+            Refused("cad-brief without arguments prints the usage naming " + Flag, BriefUsageText, null, "cad-brief");
         }
 
         // ---- without a scale ----
