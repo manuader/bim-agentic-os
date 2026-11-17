@@ -41,6 +41,10 @@ namespace Bim.Mcp;
 // files (without --probe-dependents), or that verb's plain refusal line, from the verb's own reader, parser and plan path
 // (DocUpdateTool.cs runs DocUpdateCommand.DryPlan); listed with permission level read (readOnlyHint true); no output path,
 // pipe, --accept or --execute.
+// plan_layouts (P7-20) is read-only: its text is the AlternativeSet file the CLI plan-layouts verb writes for the same brief
+// file and options, or that verb's refusal line, from the verb's own option validation, brief reader, pack lookup
+// (package first) and planner path (PlanLayoutsTool.cs runs PlanLayoutsCommand.DryPlan); listed with permission level read
+// (readOnlyHint true); no output path.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -126,6 +130,12 @@ public sealed class McpServer
              new ParameterSpec("bindings", "string", "Revit bindings file {document {path, unique_id}, levels, optional wall_types, door_symbol, window_symbol}, read only"),
              new ParameterSpec(DocUpdateTool.DependentsParameter, "string", "Optional dry-run dependents file {regenerated key: [UniqueId, ...]}, read only", false)],
             DocUpdateTool.Execute, Permission: PermissionLevel.Read),
+        new ToolSpec(PlanLayoutsTool.Name, "Read-only space-plan alternatives (P7-11/P7-13) for a P6-03 brief file: the canonical AlternativeSet JSON (n plans from seeds s+i, ranked, or infeasible with the planner's reasons; with pack, the pack's error-severity area_m2/min_side_m room minimums as planner rules, found in the release package first, else the repository), byte-equal to the file the CLI writes, or its typed plan_layouts_* / input_* refusal; writes nothing (CLI: plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id]).",
+            [new ParameterSpec(PlanLayoutsTool.BriefParameter, "string", "Project brief JSON file (brief_version 1, constraints.site required), read only"),
+             new ParameterSpec(PlanLayoutsTool.AlternativesParameter, "integer", "Number of alternatives, 1..64, default 4", false),
+             new ParameterSpec(PlanLayoutsTool.SeedParameter, "integer", "Base seed (int32, default 0); alternative i uses seed + i, wrapping", false),
+             new ParameterSpec(PlanLayoutsTool.PackParameter, "string", "Optional skill pack id whose room minimums become planner rules", false)],
+            PlanLayoutsTool.Execute, Permission: PermissionLevel.Read),
     ];
 
     const string AuditInputSchema = """{"type":"object","properties":{"log_path":{"type":"string","description":"Audit log (JSONL), read only"},"anchor_path":{"type":"string","description":"Head anchor file {kind audit-anchor, version 1, sequence, hash}, read only"},"actors":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Known actor ids; an entry by any other actor is audit_actor_unknown"},"summary":{"type":"boolean","description":"Return the decision summary instead of the report"}},"required":["log_path"],"additionalProperties":false}""";
