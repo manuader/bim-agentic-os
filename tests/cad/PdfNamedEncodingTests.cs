@@ -152,9 +152,10 @@ internal static class PdfNamedEncodingTests
         {
             const string differences = "[1 /g1 /a2 /afii10017 65 /cid65 66 /eacute]";
             var type3 = Page("BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\001\\002\\003) Tj (AB) Tj ET", Type3(differences));
-            // P6-22: /afii10017 is a glyph-list name the reader does not map, so the Type3 font now warns
-            // encoding-glyph-unsupported once at the Tf (the slot names /g1, /a2, /cid65 stay silent).
-            C(Texts(type3) == "\\u0001\\u0002\\u0003|A\\u00E9" && Warnings(type3) == "encoding-glyph-unsupported@1:4:1",
+            // P6-22: /afii10017 is a glyph-list name the reader does not map, so the Type3 font warns
+            // encoding-glyph-unsupported once (the slot names /g1, /a2, /cid65 stay silent); P6-24: at the Tj that
+            // shows its code 3, not at the Tf.
+            C(Texts(type3) == "\\u0001\\u0002\\u0003|A\\u00E9" && Warnings(type3) == "encoding-glyph-unsupported@1:4:3",
                 "a Type3 font keeps the byte decoding of slots named outside the glyph list without encoding-glyph-unknown; a Latin name still maps", Texts(type3) + " " + Warnings(type3));
             var type1 = Page("BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\001\\002\\003) Tj (AB) Tj ET", Font("<< /Differences " + differences + " >>"));
             C(Texts(type1) == "\\u0001\\u0002\\u0003|A\\u00E9" && Warnings(type1) == "encoding-glyph-unknown@1:4:3;encoding-glyph-unknown@1:4:4",
