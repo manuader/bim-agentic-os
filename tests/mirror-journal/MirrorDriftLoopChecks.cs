@@ -130,6 +130,7 @@ static class MirrorDriftLoopChecks
         FailureOptionChecks(root, pwsh);
         RunFailureGateLoop(root, dotnet, pwsh, cliDll, runDirectory);
         RunUnmatchedFailureLoops(root, dotnet, pwsh, cliDll, runDirectory);
+        RunDroppedFailureLoop(root, dotnet, pwsh, cliDll, runDirectory);
     }
 
     static void Same(Loop? first, Loop? second, string scenario)
@@ -194,7 +195,7 @@ static class MirrorDriftLoopChecks
         public string Document { get; }
         public string Scratch { get; }
 
-        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null, string? recorderFailures = null)
+        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null, string? recorderFailures = null, string? dropReplyCommand = null)
         {
             this.dotnet = dotnet;
             this.cliDll = cliDll;
@@ -213,6 +214,8 @@ static class MirrorDriftLoopChecks
             if (externalEdits is not null) { serverStart.ArgumentList.Add("-ExternalEdits"); serverStart.ArgumentList.Add(externalEdits); }
             // Test-only (P2-24): "<operation_id>:<count>,..." recorder failures the fake injects after those commands.
             if (recorderFailures is not null) { serverStart.ArgumentList.Add("-RecorderFailures"); serverStart.ArgumentList.Add(recorderFailures); }
+            // Test-only (P4-14, P2-28): a write of this command runs, then its connection is closed without a reply.
+            if (dropReplyCommand is not null) { serverStart.ArgumentList.Add("-DropReplyCommand"); serverStart.ArgumentList.Add(dropReplyCommand); }
             Unix(serverStart);
             server = Process.Start(serverStart) ?? throw new InvalidOperationException("fake add-in pipe did not start");
             serverOut = server.StandardOutput.ReadToEndAsync();
@@ -1533,8 +1536,9 @@ static class MirrorDriftLoopChecks
 
         var (exited, exit, error) = h.End();
         Check(exited && exit == 1, "the fake add-in exits exactly 1 after exactly " + GateRequests.Length + " requests because p2-26-dry-delete was never matched", "exited " + exited + " exit " + exit + " " + error);
-        Check(error.Contains("p2-26-dry-delete", StringComparison.Ordinal) && !error.Contains("p2-26-move-a", StringComparison.Ordinal) && !error.Contains("p2-27-delete-a", StringComparison.Ordinal),
-            "the fake's stderr names the unmatched p2-26-dry-delete and neither the matched p2-26-move-a nor the matched p2-27-delete-a (dry_run false)", error);
+        // P2-28: the whole stderr is the gate line naming exactly the unmatched id, so an uncaught throw (also exit 1) fails.
+        Check(error == GateLine("p2-26-dry-delete"),
+            "the fake's whole stderr is the gate line naming exactly the unmatched p2-26-dry-delete (neither the matched p2-26-move-a nor the matched p2-27-delete-a, dry_run false)", error + " vs " + GateLine("p2-26-dry-delete"));
         var received = h.Received();
         Check(received.SequenceEqual(GateRequests), "the fake add-in received the expected requests in order", string.Join(",", received));
 
@@ -1612,7 +1616,77 @@ static class MirrorDriftLoopChecks
         Check(FailureShape(p.Replies.Split('\n')[1]) == "failures=0 since=0 complete=true existed=true entries=[1]", "the option-less journal.read after the move reports no failure and the move's entry", FailureShape(p.Replies.Split('\n')[1]));
         Check(n.Replies == p.Replies, "with -RecorderFailures nope:1 every journal.read reply is byte-equal to the option-less run", Head(n.Replies) + " vs " + Head(p.Replies));
         Check(n.Exited && n.Exit == 1, "with -RecorderFailures nope:1 the fake exits exactly 1 (nope never matched)", "exited " + n.Exited + " exit " + n.Exit + " " + n.Error);
-        Check(n.Error.Contains("nope", StringComparison.Ordinal) && n.Error.Contains("-RecorderFailures", StringComparison.Ordinal), "with -RecorderFailures nope:1 the fake's stderr names the option and the unmatched id nope", n.Error);
+        Check(n.Error == GateLine("nope"), "with -RecorderFailures nope:1 the fake's whole stderr is the gate line naming exactly the unmatched id nope", n.Error + " vs " + GateLine("nope"));
+
+        // P2-28: why the whole line: an uncaught throw naming the option and the id (here the refused "nope:0") also exits
+        // exactly 1 and passes the P2-26 rule (stderr contains "-RecorderFailures" and "nope"), but is not the gate line.
+        using var thrown = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Failure-Thrown.rvt", 1, "p2-26-move-a", "nope:0");
+        var thrownReady = thrown.WaitReady(out _);
+        var t = thrown.End();
+        Check(!thrownReady && t.Exited && t.Exit == 1 && t.Error.Contains("nope", StringComparison.Ordinal) && t.Error.Contains("-RecorderFailures", StringComparison.Ordinal),
+            "an uncaught throw naming -RecorderFailures and nope (the refused nope:0) also exits exactly 1 and passes the P2-26 contains rule", "ready " + thrownReady + " exited " + t.Exited + " exit " + t.Exit + " " + Head(t.Error));
+        // PROBE (red on purpose): the exact gate-line predicate applied to the uncaught throw must fail here.
+        Check(t.Error == GateLine("nope"), "PROBE: the uncaught throw's stderr is the gate line (expected to fail: the exact-line pin bites)", Head(t.Error));
+    }
+
+    // P2-28: the one stderr line the fake writes at exit for the scheduled ids never matched (sorted, comma-separated).
+    const string GatePrefix = "fake pipe: -RecorderFailures operation ids never matched by a succeeded, non-dry-run revit.command: ";
+    static string GateLine(params string[] unmatched) => GatePrefix + string.Join(",", unmatched);
+
+    // P2-28: a write dropped by -DropReplyCommand (it ran, its connection closed without a reply) whose operation id is
+    // scheduled still injects its failures and counts as matched (the P2-27 fake header). With -ExternalEdits
+    // p2-28-move-a, -RecorderFailures p2-28-move-a:2 and -DropReplyCommand element.move: wall A, snapshot 0, a read without
+    // peek, the external move of A named p2-28-move-a (the CLI gets no reply), snapshot 1 and a peek after sequence 0 (two
+    // failures, incomplete, the move's entry), equal to RevitJournalQuery.RawRead over one Core tracker given the same
+    // changes and failures, member for member. The fake exits 0 with an empty stderr: no gate line, the id never named.
+    static readonly string[] DroppedRequests = { "p2-28-levels", "p2-28-wall-types", "p2-28-wall-a", "p2-28-snapshot-0", JournalWire, "p2-28-move-a", "p2-28-snapshot-1", JournalWire };
+
+    static void RunDroppedFailureLoop(string root, string dotnet, string pwsh, string cliDll, string runDirectory)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "pipe failure dropped: " + name, detail);
+        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Failure-Dropped.rvt", DroppedRequests.Length, "p2-28-move-a", "p2-28-move-a:2", "element.move");
+        var document = h.Document;
+        if (!h.WaitReady(out var notReady)) { Check(false, "fake add-in pipe ready with -RecorderFailures p2-28-move-a:2 -DropReplyCommand element.move", notReady); return; }
+        var levels = h.Command("p2-28-levels", "query.levels", _ => { });
+        var types = h.Command("p2-28-wall-types", "query.wall_types", _ => { });
+        if (!Succeeded(levels) || !Succeeded(types)) { Check(false, "query.levels and query.wall_types succeed", R(levels) + " | " + R(types)); return; }
+        var wallA = h.Command("p2-28-wall-a", "wall.create", w => WallArgs(w, Pick(levels.Out, "levels", "name", "Level 1"), Pick(types.Out, "wall_types", "name", WallType), 0, 0, 5000, 0));
+        if (!Succeeded(wallA)) { Check(false, "wall.create of A succeeds through the CLI", R(wallA)); return; }
+        var uidA = Created(wallA.Out);
+        var snapshot0 = h.Command("p2-28-snapshot-0", "query.snapshot", _ => { });
+        if (!Succeeded(snapshot0)) { Check(false, "the first query.snapshot succeeds", R(snapshot0)); return; }
+        var j0 = h.Journal(null, peek: false);
+        var move = h.Command("p2-28-move-a", "element.move", w => MoveArgs(w, uidA));
+        Check(Status(move.Out) != "succeeded", "the external element.move of A named p2-28-move-a gets no reply (its connection is dropped after the write)", R(move));
+        var snapshot1 = h.Command("p2-28-snapshot-1", "query.snapshot", _ => { });
+        if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the dropped move succeeds", R(snapshot1)); return; }
+        var j1 = h.Journal(0);
+
+        var (exited, exit, error) = h.End();
+        Check(exited && exit == 0 && error.Length == 0, "the fake add-in exits 0 with an empty stderr (p2-28-move-a matched by the dropped write, never named)", "exited " + exited + " exit " + exit + " " + error);
+        var received = h.Received();
+        Check(received.SequenceEqual(DroppedRequests), "the fake add-in received the expected requests in order (the dropped move once)", string.Join(",", received));
+
+        MirrorSnapshot s0, s1;
+        try
+        {
+            using (var reply = JsonDocument.Parse(snapshot0.Out)) s0 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
+            using (var reply = JsonDocument.Parse(snapshot1.Out)) s1 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
+        }
+        catch (Exception parseError) when (parseError is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "the fake's query.snapshot readbacks parse as snapshots", parseError.Message); return; }
+        var tick = 0;
+        var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
+        var tracker = new MirrorJournalTracker(journal);
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "BIM Agentic OS wall.create" }, new[] { "x" }, Array.Empty<string>(), Array.Empty<long>(), true) { DocumentPath = document });
+        var p0 = RevitJournalQuery.RawRead(tracker, true, s0, document, new MirrorJournalReadOptions(null, false));
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "Move" }, Array.Empty<string>(), new[] { uidA }, Array.Empty<long>()) { DocumentPath = document });
+        journal.RecordFailure();
+        journal.RecordFailure();
+        var p1 = RevitJournalQuery.RawRead(tracker, true, s1, document, new MirrorJournalReadOptions(0, true));
+        Check(FailureShape(j0) == "failures=0 since=0 complete=true existed=false entries=[]", "pipe reply d0: the first read without peek, no failure yet", FailureShape(j0) + " | " + Head(j0));
+        Check(FailureShape(j1) == "failures=2 since=2 complete=false existed=true entries=[1]", "pipe reply d1: a peek after sequence 0 once the dropped move ran: its two failures, incomplete, the move's entry", FailureShape(j1) + " | " + Head(j1));
+        Check(Uniform(j0) == Uniform(p0), "pipe reply d0 equals RevitJournalQuery.RawRead over one Core tracker, member for member (diff included)", Uniform(j0) + " vs " + Uniform(p0));
+        Check(Uniform(j1) == Uniform(p1), "pipe reply d1 equals RevitJournalQuery.RawRead over one Core tracker given the same failures, member for member (diff included)", Uniform(j1) + " vs " + Uniform(p1));
     }
 
     // P2-25: the -ExternalEdits fake keeps at most the MirrorJournal retained-entry capacity (DefaultCapacity unless the
