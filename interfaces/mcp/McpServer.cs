@@ -45,6 +45,10 @@ namespace Bim.Mcp;
 // file and options, or that verb's refusal line, from the verb's own option validation, brief reader, pack lookup
 // (package first) and planner path (PlanLayoutsTool.cs runs PlanLayoutsCommand.DryPlan); listed with permission level read
 // (readOnlyHint true); no output path.
+// doc_realized (P4-21) is read-only: its text is the realized map file the CLI doc-realized verb writes for the same
+// record, fixture, assignments and document, or that verb's refusal line, from the verb's own reader, fixture parser and
+// guarded builder (DocRealizedTool.cs runs DocRealizedCommand.DryRealized); listed with permission level read
+// (readOnlyHint true); no output path.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -136,6 +140,12 @@ public sealed class McpServer
              new ParameterSpec(PlanLayoutsTool.SeedParameter, "integer", "Base seed (int32, default 0); alternative i uses seed + i, wrapping", false),
              new ParameterSpec(PlanLayoutsTool.PackParameter, "string", "Optional skill pack id whose room minimums become planner rules", false)],
             PlanLayoutsTool.Execute, Permission: PermissionLevel.Read),
+        new ToolSpec(DocRealizedTool.Name, "Read-only realized map (P4-13/P4-15) of an owner catalogue run record: the canonical {\"doc:<key>\"|\"element:<id>\": UniqueId} JSON that doc-update --realized takes, built from the record's created UniqueIds per assigned step and the BIM-IR fixture, byte-equal to the file the CLI writes, or its typed realized_* / input_* refusal; never writes (CLI: doc-realized --record run.json --fixture ir.json --assignments assignments.json --document revit-unique-id --output realized.json).",
+            [new ParameterSpec(DocRealizedTool.RecordParameter, "string", "Owner -Catalogue run record file (schema_version 1, document_unique_id, steps), read only"),
+             new ParameterSpec(DocRealizedTool.FixtureParameter, "string", "BIM-IR Project file the catalogue built, read only"),
+             new ParameterSpec(DocRealizedTool.AssignmentsParameter, "string", "Assignments file {\"doc:<key>\"|\"element:<id>\": \"<step key>\"}, read only"),
+             new ParameterSpec(DocRealizedTool.DocumentParameter, "string", "UniqueId of the Revit document the map is for; must equal the record's document_unique_id (any case)")],
+            DocRealizedTool.Execute, Permission: PermissionLevel.Read),
     ];
 
     const string AuditInputSchema = """{"type":"object","properties":{"log_path":{"type":"string","description":"Audit log (JSONL), read only"},"anchor_path":{"type":"string","description":"Head anchor file {kind audit-anchor, version 1, sequence, hash}, read only"},"actors":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Known actor ids; an entry by any other actor is audit_actor_unknown"},"summary":{"type":"boolean","description":"Return the decision summary instead of the report"}},"required":["log_path"],"additionalProperties":false}""";
