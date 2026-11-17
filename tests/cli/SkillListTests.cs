@@ -20,9 +20,18 @@ using Bim.Core;
 //      skills/ are listed (SkillPackLookup.PackageRoot), not the repository's; --skills overrides it.
 //   4. Usage: unknown, repeated, valueless or positional arguments print skill_list_usage with the usage text.
 //   5. Read-only: the repository skills tree and the fixture trees are unchanged (paths and bytes).
-//   6. Static: the command loads through SkillLoader.LoadDirectory and JurisdictionRegistry.Load, finds the package via
-//      SkillPackLookup.PackageRoot, routes defects through IntentPlan.Internal("skill-list", ...), exposes a public static
-//      handler and has no file write API; Program.cs registers the verb.
+//   6. Static: the command loads through JurisdictionRegistry.Load, finds the package via SkillPackLookup.PackageRoot,
+//      routes defects through IntentPlan.Internal("skill-list", ...), exposes a public static handler and has no file
+//      write API; Program.cs registers the verb.
+//   7. P5-23 one load: the skills directory is read once. The source calls JurisdictionRegistry.Load( exactly once and
+//      takes the catalogue from registry.Catalog; SkillLoader.LoadDirectory( appears exactly once, after the registry
+//      load, only to restate a skills_invalid refusal as the loader's typed SkillException (failure path only).
+//   8. P5-23 registry issues are dropped: a directory whose registry loads with claim_duplicate (two packs claiming xx.dup)
+//      and pack_not_code (a qa pack claiming xx.qa) lists exactly the in-process envelope, which never carries them; the
+//      duplicated and the non-code claims flag no pack as stub. (pack_missing cannot arise from a directory load: a
+//      sidecar's pack must equal its own directory, which the catalogue holds.)
+//   9. P5-23 culture: under LANG/LC_ALL de_DE.UTF-8 and tr_TR.UTF-8 the repository listing and a loader refusal print the
+//      same bytes as under the default culture (skipped with a SKIP line when culture data is unavailable).
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -36,9 +45,11 @@ internal static class SkillListTests
         Directory.CreateDirectory(scratch);
         void Check(bool condition, string name, string detail = "") => check(condition, "skill-list: " + name, detail);
 
-        (int Exit, string Out, string Err) Cli(string dll, params string[] arguments)
+        (int Exit, string Out, string Err) Cli(string dll, params string[] arguments) => CliWith(null, dll, arguments);
+        (int Exit, string Out, string Err) CliWith(IReadOnlyDictionary<string, string>? environment, string dll, params string[] arguments)
         {
             var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            if (environment is not null) foreach (var (key, value) in environment) start.Environment[key] = value;
             start.ArgumentList.Add(dll);
             start.ArgumentList.Add("skill-list");
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
@@ -195,6 +206,62 @@ internal static class SkillListTests
             Check(result.Exit == 1 && result.Out == usageLine, "usage refusal: " + label, D(result));
         }
 
+        // ---- 8. P5-23: registry issues of a successful load are dropped ----
+        var issues = Path.Combine(scratch, "registry-issues");
+        CopyDirectory(Path.Combine(skills, Caba), Path.Combine(issues, Caba));
+        var stubManifest = File.ReadAllText(Path.Combine(skills, Stub, "skill.json"));
+        foreach (var id in new[] { "xx.dup.pack-a", "xx.dup.pack-b" })
+        {
+            Directory.CreateDirectory(Path.Combine(issues, id));
+            File.WriteAllText(Path.Combine(issues, id, "skill.json"), stubManifest.Replace("\"id\": \"" + Stub + "\"", "\"id\": \"" + id + "\"", StringComparison.Ordinal), new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(issues, id, "jurisdiction.json"),
+                "{\"jurisdiction_version\":1,\"code\":\"xx.dup\",\"pack\":\"" + id + "\",\"country_names\":[\"Duplicate Country\"],\"municipality_names\":[\"Duplicate City\"],\"stub\":true,\"note\":\"fictitious test fixture\"}\n",
+                new UTF8Encoding(false));
+        }
+        const string QaSource = "bim.qa.element-basics";
+        const string QaClaimed = "xx.qa.element-basics";
+        Directory.CreateDirectory(Path.Combine(issues, QaClaimed));
+        File.WriteAllText(Path.Combine(issues, QaClaimed, "skill.json"),
+            File.ReadAllText(Path.Combine(skills, QaSource, "skill.json")).Replace("\"" + QaSource + "\"", "\"" + QaClaimed + "\"", StringComparison.Ordinal), new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(issues, QaClaimed, "jurisdiction.json"),
+            "{\"jurisdiction_version\":1,\"code\":\"xx.qa\",\"pack\":\"" + QaClaimed + "\",\"country_names\":[\"Qa Country\"],\"municipality_names\":[\"Qa City\"],\"stub\":true,\"note\":\"fictitious test fixture\"}\n",
+            new UTF8Encoding(false));
+        var issuesDigest = TreeDigest(issues);
+        var issuesLoad = JurisdictionRegistry.Load(issues);
+        var issueCodes = issuesLoad.Registry?.Issues.Select(issue => issue.Code).ToArray() ?? Array.Empty<string>();
+        Check(issuesLoad.Succeeded && issueCodes.Contains(JurisdictionCodes.ClaimDuplicate) && issueCodes.Contains(JurisdictionCodes.PackNotCode),
+            "the registry-issues fixture loads in process with claim_duplicate and pack_not_code", issuesLoad.Refusal?.ToString() ?? string.Join(",", issueCodes));
+        Same("registry issues dropped", cliDll, issues, null, "--skills", issues);
+        var issuesResult = Cli(cliDll, "--skills", issues);
+        Check(issuesResult.Exit == 0 && !issuesResult.Out.Contains("issue", StringComparison.Ordinal) && !issuesResult.Out.Contains(JurisdictionCodes.ClaimDuplicate, StringComparison.Ordinal)
+            && !issuesResult.Out.Contains(JurisdictionCodes.PackNotCode, StringComparison.Ordinal) && !issuesResult.Out.Contains(JurisdictionCodes.PackMissing, StringComparison.Ordinal),
+            "registry issues are dropped: the success envelope never names claim_duplicate, pack_not_code or pack_missing", D(issuesResult));
+        try
+        {
+            using var document = JsonDocument.Parse(issuesResult.Out);
+            Check(string.Join(",", EnumerateNames(document.RootElement)) == "status,skills_path,packs", "with registry issues the envelope members are still status, skills_path, packs", issuesResult.Out);
+            var stubs = document.RootElement.GetProperty("packs").EnumerateArray().Where(pack => pack.GetProperty("stub").GetBoolean()).Select(pack => pack.GetProperty("id").GetString()).ToArray();
+            Check(stubs.Length == 0, "duplicated and non-code stub claims flag no pack as stub (ClaimFor is null for both)", string.Join(",", stubs));
+        }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException) { Check(false, "the registry-issues listing is a JSON envelope", D(issuesResult) + " " + error.Message); }
+        Check(TreeDigest(issues) == issuesDigest, "the registry-issues fixture is unchanged");
+
+        // ---- 9. P5-23: a non-invariant culture prints the same bytes ----
+        foreach (var (locale, name) in new[] { ("de_DE.UTF-8", "de-DE"), ("tr_TR.UTF-8", "tr-TR") })
+        {
+            var available = false;
+            try { available = !CultureInfo.GetCultureInfo(name).NumberFormat.NumberDecimalSeparator.Equals(".", StringComparison.Ordinal); }
+            catch (CultureNotFoundException) { }
+            if (!available) { Console.WriteLine("SKIP skill-list: " + name + " culture data unavailable (invariant globalization); culture check not run"); continue; }
+            var env = new Dictionary<string, string> { ["LANG"] = locale, ["LC_ALL"] = locale };
+            var cultured = CliWith(env, cliDll);
+            Check(cultured.Exit == listing.Exit && cultured.Out == listing.Out, "under " + locale + " the repository listing prints the same bytes as under the default culture", D(cultured));
+            var culturedIssues = CliWith(env, cliDll, "--skills", issues);
+            Check(culturedIssues.Exit == issuesResult.Exit && culturedIssues.Out == issuesResult.Out, "under " + locale + " the registry-issues listing prints the same bytes", D(culturedIssues));
+            var culturedRefusal = CliWith(env, cliDll, "--skills", malformed);
+            Check(culturedRefusal.Exit == malformedResult.Exit && culturedRefusal.Out == malformedResult.Out, "under " + locale + " a loader refusal prints the same bytes", D(culturedRefusal));
+        }
+
         // ---- 5. read-only ----
         var skillsAfter = TreeDigest(skills);
         Check(skillsAfter == skillsDigest, "every run leaves the repository skills tree unchanged (paths and bytes)", skillsDigest + " -> " + skillsAfter);
@@ -202,9 +269,20 @@ internal static class SkillListTests
         // ---- 6. static ----
         var sourcePath = Path.Combine(root, "interfaces", "cli", "SkillListCommand.cs");
         var source = File.Exists(sourcePath) ? File.ReadAllText(sourcePath) : "";
-        Check(source.Contains("SkillLoader.LoadDirectory(", StringComparison.Ordinal) && source.Contains("JurisdictionRegistry.Load(", StringComparison.Ordinal)
+        Check(source.Contains("JurisdictionRegistry.Load(", StringComparison.Ordinal)
             && source.Contains("SkillPackLookup.PackageRoot(", StringComparison.Ordinal) && source.Contains("IntentPlan.Internal(\"skill-list\"", StringComparison.Ordinal),
-            "the command loads through SkillLoader.LoadDirectory and JurisdictionRegistry.Load, finds the package with SkillPackLookup.PackageRoot and reports defects with IntentPlan.Internal");
+            "the command loads through JurisdictionRegistry.Load, finds the package with SkillPackLookup.PackageRoot and reports defects with IntentPlan.Internal");
+        // 7. P5-23 one load: comments are stripped so only code is counted.
+        var codeText = string.Join("\n", source.Split('\n').Select(line => { var at = line.IndexOf("//", StringComparison.Ordinal); return at < 0 ? line : line[..at]; }));
+        static int Count(string text, string token) { var n = 0; for (var at = text.IndexOf(token, StringComparison.Ordinal); at >= 0; at = text.IndexOf(token, at + token.Length, StringComparison.Ordinal)) n++; return n; }
+        var registryAt = codeText.IndexOf("JurisdictionRegistry.Load(", StringComparison.Ordinal);
+        var loaderAt = codeText.IndexOf("SkillLoader.LoadDirectory(", StringComparison.Ordinal);
+        Check(Count(codeText, "JurisdictionRegistry.Load(") == 1 && Count(codeText, "SkillLoader.LoadDirectory(") == 1 && registryAt >= 0 && loaderAt > registryAt
+            && codeText.Contains("JurisdictionCodes.SkillsInvalid", StringComparison.Ordinal) && codeText.Contains("registry.Catalog", StringComparison.Ordinal),
+            "the skills directory is read once: one JurisdictionRegistry.Load supplies catalogue and claims; SkillLoader.LoadDirectory runs only after a skills_invalid refusal",
+            "JurisdictionRegistry.Load x" + Count(codeText, "JurisdictionRegistry.Load(").ToString(CultureInfo.InvariantCulture) + " at " + registryAt.ToString(CultureInfo.InvariantCulture)
+            + ", SkillLoader.LoadDirectory x" + Count(codeText, "SkillLoader.LoadDirectory(").ToString(CultureInfo.InvariantCulture) + " at " + loaderAt.ToString(CultureInfo.InvariantCulture));
+        Check(!codeText.Contains(".Issues", StringComparison.Ordinal), "registry issues are not read by the command (dropped)");
         Check(source.Contains("public static IntentEnvelope List(", StringComparison.Ordinal), "the handler is a public static IntentEnvelope List(...) for reuse by the MCP tool");
         Check(!source.Contains(" internal error: ", StringComparison.Ordinal), "the command hand-writes no internal-error stderr line");
         Check(new[] { "File.Write", "File.Create", "File.Move", "File.Copy", "File.Delete", "File.Open", "FileMode.", "FileStream", "Directory.Create", "Directory.Move", "Directory.Delete" }
