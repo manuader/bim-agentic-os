@@ -198,6 +198,87 @@ internal static class PlanLayoutsToolTests
         Refused("a malformed pack id with a missing brief", missing, null, null, "../x", Code("plan_layouts_pack_id_invalid", "../x"));
         Refused("an unknown pack with a missing brief", missing, null, null, "xx.no-such.pack", Code("input_not_found"));
 
+        // ---- 2b. P7-22: the guarded generation through the tool: a forced internal error and a generator refusal are the
+        // CLI's own lines. The CLI is the verb's real Run in process (the same compiled Bim.Cli.PlanLayoutsCommand the test
+        // seams reach; a CLI process cannot be seamed), with Console and the exit code restored ----
+        {
+            var nl = Environment.NewLine;
+            (string Out, string Err, int Exit, bool Written) InProcessCli(string briefPath)
+            {
+                var target = Path.Combine(outputs, Next() + "-in-process.json");
+                var savedOut = Console.Out;
+                var savedErr = Console.Error;
+                var savedExit = Environment.ExitCode;
+                var outWriter = new StringWriter();
+                var errWriter = new StringWriter();
+                int exitCode;
+                Console.SetOut(outWriter);
+                Console.SetError(errWriter);
+                try { Environment.ExitCode = 0; Bim.Cli.PlanLayoutsCommand.Run(new[] { "plan-layouts", briefPath, target }); exitCode = Environment.ExitCode; }
+                finally { Console.SetOut(savedOut); Console.SetError(savedErr); Environment.ExitCode = savedExit; }
+                return (outWriter.ToString(), errWriter.ToString(), exitCode, File.Exists(target));
+            }
+            var baseline = InProcessCli(smallPath);
+            Check(baseline.Exit == 0 && baseline.Written && baseline.Err.Length == 0 && baseline.Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal),
+                "fixture: the in-process verb plans the small brief with the seams unset | " + Short(baseline.Out));
+
+            // A forced exception inside the guarded Generate/Serialize step (the P3-20 seam GuardedWorkProbe).
+            var failure = new InvalidOperationException("boom plan_layouts");
+            var internalLine = Bim.Cli.IntentPlan.Internal("plan-layouts", failure).Line;
+            var diagnostic = Bim.Cli.IntentPlan.InternalDiagnostic("plan-layouts", failure) + nl;
+            Check(internalLine == Code("plan_layouts_internal_error"), "fixture: the CLI internal error line is plan_layouts_internal_error | " + internalLine);
+            Check(Bim.Cli.PlanLayoutsCommand.GuardedWorkProbe is null, "fixture: the guarded-work test seam is null unless a test sets it");
+            var toolErrors = new StringWriter();
+            var serverErr = Console.Error;
+            (string Out, string Err, int Exit, bool Written) forcedCli;
+            JsonObject forcedTool;
+            Bim.Cli.PlanLayoutsCommand.GuardedWorkProbe = () => throw failure;
+            try
+            {
+                forcedCli = InProcessCli(smallPath);
+                Console.SetError(toolErrors);
+                try { forcedTool = Call("a forced internal error", Arguments(smallPath, null, null, null)); }
+                finally { Console.SetError(serverErr); }
+            }
+            finally { Bim.Cli.PlanLayoutsCommand.GuardedWorkProbe = null; }
+            Check(forcedCli.Out == internalLine + nl && forcedCli.Err == diagnostic && forcedCli.Exit == 1 && !forcedCli.Written,
+                "fixture: the forced CLI run prints plan_layouts_internal_error, the IntentPlan diagnostic once, exit 1, no file | " + Short(forcedCli.Out) + " / " + Short(forcedCli.Err));
+            Check(IsError(forcedTool) && Text(forcedTool) == internalLine && Text(forcedTool) + nl == forcedCli.Out,
+                "a forced exception in the guarded generation reaches the tool as the CLI's plan_layouts_internal_error line byte for byte, not a generic failure | " + Short(Text(forcedTool)));
+            Check(toolErrors.ToString() == diagnostic && toolErrors.ToString() == forcedCli.Err,
+                "the forced internal error writes the CLI's IntentPlan diagnostic to the server's stderr once | " + Short(toolErrors.ToString()));
+            var afterInternal = Call("after the forced internal error", Arguments(smallPath, null, null, null));
+            Check(Bim.Cli.PlanLayoutsCommand.GuardedWorkProbe is null && !IsError(afterInternal) && Utf8(Text(afterInternal)).SequenceEqual(defaults),
+                "the guarded-work seam is reset: the next call answers the default set bytes");
+
+            // A generator refusal (plan_layouts_refused): the scoring weights of the guarded generation replaced through the
+            // test seam GenerationWeightsProbe (null in production: the default ScoringWeights) by invalid ones.
+            var badWeights = new ScoringWeights(AreaFit: -1);
+            var refusedSet = AlternativeGenerator.Generate(smallBrief, new AlternativeOptions(Bim.Cli.PlanLayoutsCommand.DefaultAlternatives, 0, Weights: badWeights));
+            Check(refusedSet.Status == AlternativeSetStatus.Refused && refusedSet.Refusals.Count > 0, "fixture: a negative weight is a generator refusal in process");
+            var refusedLine = JsonSerializer.Serialize(new { status = "failed", code = "plan_layouts_refused",
+                refusals = refusedSet.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) });
+            Check(Bim.Cli.PlanLayoutsCommand.GenerationWeightsProbe is null, "fixture: the weights test seam is null unless a test sets it");
+            (string Out, string Err, int Exit, bool Written) refusedCli;
+            JsonObject refusedTool;
+            Bim.Cli.PlanLayoutsCommand.GenerationWeightsProbe = badWeights;
+            try
+            {
+                refusedCli = InProcessCli(smallPath);
+                refusedTool = Call("a generator refusal", Arguments(smallPath, null, null, null));
+            }
+            finally { Bim.Cli.PlanLayoutsCommand.GenerationWeightsProbe = null; }
+            Check(refusedCli.Out == refusedLine + nl && refusedCli.Err.Length == 0 && refusedCli.Exit == 1 && !refusedCli.Written,
+                "fixture: the refused CLI run prints plan_layouts_refused with the set's refusals, exit 1, no file | " + Short(refusedCli.Out));
+            Check(IsError(refusedTool) && Text(refusedTool) == refusedLine && Text(refusedTool) + nl == refusedCli.Out,
+                "a generator refusal reaches the tool as the CLI's plan_layouts_refused line byte for byte | " + Short(Text(refusedTool)));
+            var afterRefusal = Call("after the generator refusal", Arguments(smallPath, null, null, null));
+            Check(Bim.Cli.PlanLayoutsCommand.GenerationWeightsProbe is null && !IsError(afterRefusal) && Utf8(Text(afterRefusal)).SequenceEqual(defaults),
+                "the weights seam is reset: the next call answers the default set bytes");
+            var again = InProcessCli(smallPath);
+            Check(again.Exit == 0 && again.Written && again.Out == baseline.Out && again.Err.Length == 0, "with both seams reset the in-process verb's success line is unchanged");
+        }
+
         // ---- 4. MCP-only path guard and argument errors ----
         var pathInvalid = Code("plan_layouts_path_invalid", "brief");
         foreach (var (label, bad) in new[] { ("empty", ""), ("blank", "   "), ("with NUL", "a\0b"), ("of 5000 characters", new string('x', 5000)) })
