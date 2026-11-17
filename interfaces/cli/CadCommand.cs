@@ -18,7 +18,9 @@ namespace Bim.Cli;
 // overrides $INSUNITS; PDF: a uniform page-unit scale) or --calibrate x1,y1,x2,y2,mm (PDF only: two page points and
 // their real distance in millimetres, PdfCalibration.FromKnownDimension, no alignment); cad-draft only: --project-id
 // guid (default: the first 16 bytes of the input SHA-256, so reruns are byte-identical) and --pdf-door-forms /
-// --pdf-window-forms n,... (PDF Form XObject numbers). The format comes from the input extension (.dxf or .pdf).
+// --pdf-window-forms n,... (PDF Form XObject numbers); cad-brief only: --include-block-regions (no value; P6-21: closed
+// regions drawn through a DXF block insert or PDF Form XObject are read as room regions, BriefExtractOptions.
+// IncludeBlockRegions; without it such regions are skipped as before). The format comes from the input extension (.dxf or .pdf).
 //
 // The output path follows GltfExportCommand.OutputProblem with extension .json: never an existing file, directory or
 // link, and it is checked before the input is read. Every refusal prints one {"status":"failed","code":...[,"detail"]}
@@ -41,7 +43,7 @@ internal static class CadCommand
     public const int MaxFormNumbers = 1_000;
 
     public const string DraftUsage = "usage: cad-draft input.dxf|input.pdf output.json [--page n] [--metres-per-unit m | --calibrate x1,y1,x2,y2,mm] [--project-id guid] [--pdf-door-forms n,...] [--pdf-window-forms n,...]";
-    public const string BriefUsage = "usage: cad-brief input.dxf|input.pdf output.json [--page n] [--metres-per-unit m | --calibrate x1,y1,x2,y2,mm]";
+    public const string BriefUsage = "usage: cad-brief input.dxf|input.pdf output.json [--page n] [--metres-per-unit m | --calibrate x1,y1,x2,y2,mm] [--include-block-regions]";
 
     static readonly JsonSerializerOptions Json = new() { Converters = { new JsonStringEnumConverter() } };
 
@@ -51,7 +53,7 @@ internal static class CadCommand
         public string? Detail { get; } = detail;
     }
 
-    sealed record Options(int? Page, double? MetresPerUnit, double[]? Calibrate, Guid? ProjectId, int[]? DoorForms, int[]? WindowForms);
+    sealed record Options(int? Page, double? MetresPerUnit, double[]? Calibrate, Guid? ProjectId, int[]? DoorForms, int[]? WindowForms, bool IncludeBlockRegions);
 
     public static void Run(string[] args)
     {
@@ -144,7 +146,7 @@ internal static class CadCommand
             }
             else
             {
-                var briefOptions = new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit };
+                var briefOptions = new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions };
                 var result = drawing is not null ? BriefExtract.FromDxf(drawing, briefOptions) : BriefExtract.FromPdf(pdf!, page!.Value, calibration, briefOptions);
                 var scale = calibration is not null ? "known-dimension"
                     : options.MetresPerUnit is not null ? "metres-per-unit"
@@ -193,13 +195,22 @@ internal static class CadCommand
     static Options ParseOptions(bool draft, string[] args)
     {
         int? page = null; double? metres = null; double[]? calibrate = null; Guid? projectId = null; int[]? doors = null, windows = null;
+        var includeBlockRegions = false;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 3; i < args.Length; i += 2)
         {
             var name = args[i];
-            var known = name is "--page" or "--metres-per-unit" or "--calibrate" || (draft && name is "--project-id" or "--pdf-door-forms" or "--pdf-window-forms");
+            var flag = !draft && name == "--include-block-regions";
+            var known = flag || name is "--page" or "--metres-per-unit" or "--calibrate" || (draft && name is "--project-id" or "--pdf-door-forms" or "--pdf-window-forms");
             if (!known) throw new Refusal("cad_option_unknown", name);
             if (!seen.Add(name)) throw new Refusal("cad_option_duplicate", name);
+            if (flag)
+            {
+                // A valueless flag: the next argument is the next option.
+                includeBlockRegions = true;
+                i--;
+                continue;
+            }
             if (i + 1 >= args.Length) throw new Refusal("cad_option_value_missing", name);
             var value = args[i + 1];
             var invalid = name + ": ";
@@ -235,7 +246,7 @@ internal static class CadCommand
                     break;
             }
         }
-        return new Options(page, metres, calibrate, projectId, doors, windows);
+        return new Options(page, metres, calibrate, projectId, doors, windows, includeBlockRegions);
     }
 
     // A finite invariant-culture number (sign, decimal point, exponent; no thousands separators), or null.
