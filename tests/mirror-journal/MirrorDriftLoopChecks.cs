@@ -195,7 +195,7 @@ static class MirrorDriftLoopChecks
         public string Document { get; }
         public string Scratch { get; }
 
-        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null, string? recorderFailures = null, string? dropReplyCommand = null)
+        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null, string? recorderFailures = null, string? dropReplyCommand = null, bool noColor = false)
         {
             this.dotnet = dotnet;
             this.cliDll = cliDll;
@@ -217,6 +217,8 @@ static class MirrorDriftLoopChecks
             // Test-only (P4-14, P2-28): a write of this command runs, then its connection is closed without a reply.
             if (dropReplyCommand is not null) { serverStart.ArgumentList.Add("-DropReplyCommand"); serverStart.ArgumentList.Add(dropReplyCommand); }
             Unix(serverStart);
+            // P2-28: plain error text (no ANSI colour) for runs that read the fake's error record.
+            if (noColor) serverStart.Environment["NO_COLOR"] = "1";
             server = Process.Start(serverStart) ?? throw new InvalidOperationException("fake add-in pipe did not start");
             serverOut = server.StandardOutput.ReadToEndAsync();
             serverErr = server.StandardError.ReadToEndAsync();
@@ -1620,17 +1622,28 @@ static class MirrorDriftLoopChecks
 
         // P2-28: why the whole line: an uncaught throw naming the option and the id (here the refused "nope:0") also exits
         // exactly 1 and passes the P2-26 rule (stderr contains "-RecorderFailures" and "nope"), but is not the gate line.
-        using var thrown = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Failure-Thrown.rvt", 1, "p2-26-move-a", "nope:0");
+        using var thrown = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Failure-Thrown.rvt", 1, "p2-26-move-a", "nope:0", noColor: true);
         var thrownReady = thrown.WaitReady(out _);
         var t = thrown.End();
         Check(!thrownReady && t.Exited && t.Exit == 1 && t.Error.Contains("nope", StringComparison.Ordinal) && t.Error.Contains("-RecorderFailures", StringComparison.Ordinal),
             "an uncaught throw naming -RecorderFailures and nope (the refused nope:0) also exits exactly 1 and passes the P2-26 contains rule", "ready " + thrownReady + " exited " + t.Exited + " exit " + t.Exit + " " + Head(t.Error));
-        Check(t.Error != GateLine("nope"), "the uncaught throw's stderr is not the gate line, so the exact-line checks above reject it", Head(t.Error));
+        Check(t.Error.Contains("-RecorderFailures pair 'nope:0' needs a count of 1 or more", StringComparison.Ordinal) && t.Error != GateLine("nope"),
+            "the uncaught throw's stderr is the fake's nope:0 count refusal (NO_COLOR), not the gate line, so the exact-line checks above reject it", Head(t.Error));
+
+        // P2-28: several unmatched ids: one line, the ids sorted ordinally and comma-joined (zz-id before aa-id in the option).
+        using var multi = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Failure-Multi.rvt", 1, "zz-id", "zz-id:1,aa-id:1");
+        if (!multi.WaitReady(out var multiNotReady)) { Check(false, "fake add-in pipe ready with -RecorderFailures zz-id:1,aa-id:1", multiNotReady); return; }
+        var multiReply = multi.Journal(null);
+        var m = multi.End();
+        Check(FailureShape(multiReply) == "failures=0 since=0 complete=true existed=false entries=[]", "with -RecorderFailures zz-id:1,aa-id:1 the one journal.read injects nothing", FailureShape(multiReply) + " | " + Head(multiReply));
+        Check(multi.Received().SequenceEqual(new[] { JournalWire }), "with -RecorderFailures zz-id:1,aa-id:1 the fake received only the journal.read", string.Join(",", multi.Received()));
+        Check(m.Exited && m.Exit == 1 && m.Error == GatePrefix + "aa-id,zz-id",
+            "with -RecorderFailures zz-id:1,aa-id:1 and neither id sent the fake exits exactly 1 and its whole stderr is the gate line naming aa-id,zz-id (ordinal order)", "exited " + m.Exited + " exit " + m.Exit + " " + m.Error);
     }
 
-    // P2-28: the one stderr line the fake writes at exit for the scheduled ids never matched (sorted, comma-separated).
+    // P2-28: the one stderr line the fake writes at exit for the scheduled ids never matched (ordinally sorted, comma-joined).
     const string GatePrefix = "fake pipe: -RecorderFailures operation ids never matched by a succeeded, non-dry-run revit.command: ";
-    static string GateLine(params string[] unmatched) => GatePrefix + string.Join(",", unmatched);
+    static string GateLine(params string[] unmatched) => GatePrefix + string.Join(",", unmatched.Order(StringComparer.Ordinal));
 
     // P2-28: a write dropped by -DropReplyCommand (it ran, its connection closed without a reply) whose operation id is
     // scheduled still injects its failures and counts as matched (the P2-27 fake header). With -ExternalEdits
@@ -1656,7 +1669,8 @@ static class MirrorDriftLoopChecks
         if (!Succeeded(snapshot0)) { Check(false, "the first query.snapshot succeeds", R(snapshot0)); return; }
         var j0 = h.Journal(null, peek: false);
         var move = h.Command("p2-28-move-a", "element.move", w => MoveArgs(w, uidA));
-        Check(Status(move.Out) != "succeeded", "the external element.move of A named p2-28-move-a gets no reply (its connection is dropped after the write)", R(move));
+        Check(Status(move.Out) == "failed" && (Text(move.Out, "code") is "no_response" or "pipe_io_error"),
+            "the external element.move of A named p2-28-move-a gets no reply (its connection is dropped after the write): failed with no_response or pipe_io_error", R(move));
         var snapshot1 = h.Command("p2-28-snapshot-1", "query.snapshot", _ => { });
         if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the dropped move succeeds", R(snapshot1)); return; }
         var j1 = h.Journal(0);
