@@ -97,7 +97,8 @@ internal static class AuditVerifyTool
         catch (AuditVerifyRefusal refusal) { return new Outcome(false, Failure(refusal.Code, refusal.Detail)); }
         catch (Exception error)
         {
-            Console.Error.WriteLine("audit_verify internal error: " + error.GetType().FullName + ": " + error.Message);
+            // P3-20: the stderr detail is IntentPlan's one copy (interfaces/cli/IntentPlan.cs, linked wherever this file is).
+            Console.Error.WriteLine(IntentPlan.InternalDiagnostic("audit_verify", error));
             return new Outcome(false, Failure(InternalError, null));
         }
     }

@@ -213,6 +213,7 @@ internal static class GenerateTypologyCommand
         string json;
         try
         {
+            GuardedWorkProbe?.Invoke();
             result = parsed.Composed
                 ? TypologyPipeline.RunComposed(pack, parsed.Request, options, extras, parsed.Precedence)
                 : TypologyPipeline.Run(pack, parsed.Request, options);
@@ -360,6 +361,10 @@ internal static class GenerateTypologyCommand
         return new ScoringWeights(W("area_fit", defaults.AreaFit), W("adjacency", defaults.Adjacency), W("proportions", defaults.Proportions),
             W("compactness", defaults.Compactness), W("perimeter", defaults.Perimeter), W("compliance", defaults.Compliance));
     }
+
+    // P3-20 test seam: null in production. tests/cli/InternalErrorDelegationTests.cs sets it (by reflection) to an Action
+    // that throws, so the guarded library work below fails inside Run's real catch-all; it is reset after the test.
+    internal static Action? GuardedWorkProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
