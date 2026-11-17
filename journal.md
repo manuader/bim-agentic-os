@@ -1634,3 +1634,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 23:54Z picked P1-25 (phase 1), P2-25 (phase 2), P5-20 (phase 5) — oldest-touched (relay209/210, relay211); phases 4 and 7 have no ⏳ → loading P4-20/P4-21 and P7-20/P7-21 at integration. Workers starting on relay214-<ID>.
 - 00:38Z P1-25 green 2a8c7ee (red 43983649557 e0e10a5, green 43985584892). P2-25 (impl 90d6229, CI 43986119970 running) and P5-20 (deliberate-red revert 698049c, CI 43988470404 running) in flight.
 - 00:47Z P2-25 green except macos runner (43986119970, 90d6229; red 43983628078 6acb487). P5-20 run 43988470404 core running. Starting independent reviews.
+- 01:08Z reviews 0 blockers. P2-25 should-fixes (default 1024 and capacity 1 untested) closed 176cd56 (CI 43991000455 green). P1-25 should-fix (whole-file read ≤1 GiB) → new P1-26; P5-20 should-fix (tamper envelope thinly asserted) being closed.
