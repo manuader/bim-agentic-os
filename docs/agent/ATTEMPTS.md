@@ -374,3 +374,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P7-20: 1 failed attempt — implementation run 44036344359 (2622cdc) failed to compile (PlanLayoutsTool missing in tests/cli and tests/revit-commands); hypothesis: only Bim.Mcp and Bim.Mcp.Tests compile McpServer.cs — wrong, both test projects also compile it; linked the sources there. Red 44035035936 (268bdab) → green 44038349793 (f65c672); review pins green 44054329853 (2da57fe).
 - P5-21: no failed attempts — red 44034963800 (6821854) → green 44036668745 (691aef9); review red 44041974987 (628080a) → green 44043953028 (ea218d7). An earlier commit 45763d1 added the test file without registering it (run 44034947546 passed vacuously; not counted as red evidence).
 - P6-22: no failed attempts — red 44034850877 (0894eb3) → green 44037286821 (8ce90e8); review red 44047618622 (3e416cf) → green 44050432124 (30b9be2).
+
+### Relay221 (2026-11-17, cloud)
+- P5-23: no failed attempts — red 44108572317 (5e5d2a5) → green 44110773912 (1afae4b); review green 44123472372 (9393a31). A test defect (the 'no issue' check matched the fixture directory name) was fixed by renaming the fixture, not counted. macOS ifc-portable re-run twice (runner not acquired).
+- P6-24: no failed attempts — red 44108546930 (f1cc109) → green 44111641935 (c6e9df8); review red 44128541644 (7b36da0) → green 44131276445 (4122a86); macOS ifc-portable runner-capacity cancel re-run, not an attempt.
+- P7-22: no failed attempts — red 44108688858 (d844cb6) → green 44109616700 (ed0f6f5); review green 44140731482 (b05f93f).
