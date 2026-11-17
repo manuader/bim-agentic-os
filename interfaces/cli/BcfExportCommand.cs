@@ -16,7 +16,9 @@ namespace Bim.Cli;
 //               [,"camera":{"kind":"perspective"|"orthogonal","view_point":{"x","y","z"},"direction":{...},
 //                           "up_vector":{...},"value","aspect_ratio"}]}]}
 //   Members in any order, each at most once, no unknown members, no comments or trailing commas; optional members may be
-//   null (same as absent). timestamp is yyyy-MM-ddTHH:mm:ssZ or yyyy-MM-ddTHH:mm:ss+hh:mm (the library normalizes to UTC).
+//   null (same as absent). timestamp is exactly yyyy-MM-ddTHH:mm:ssZ or yyyy-MM-ddTHH:mm:ss±hh:mm with ASCII digits (P10-23:
+//   +0200, +2:00 and +02 are refused although .NET's zzz parses them; the library normalizes to UTC). version is exactly the
+//   literal 1 (1.0, 1e0 refused at $.version).
 //   Each value maps one-to-one onto BcfExportOptions / BcfIssue / BcfCamera; every value rule beyond JSON types is the
 //   library's (BcfExport.Entries), so its refusals pass through with their code and detail.
 // Output: exactly BcfZip.Write(BcfExport.Entries(issues, options), options.Timestamp), i.e. BcfExport.WriteZip, byte for
@@ -25,9 +27,9 @@ namespace Bim.Cli;
 // Success prints {"status":"succeeded","output","issues","entries","bytes","sha256"} (sha256 upper-case hex) and exits 0.
 // Refusals print one {"status":"failed","code"[,"detail"]} line, exit 1 and write no file: bcf_export_usage (detail the
 // usage text), bcf_export_output_exists, bcf_export_output_invalid (detail the output_* code), bcf_export_input_missing,
-// bcf_export_input_too_large, bcf_export_input_unreadable (detail the input_* code), bcf_export_input_invalid (detail
-// "json" or the JSON path of the first problem), the library's bcf_* codes (BcfCodes) with their detail,
-// bcf_export_output_io_error and bcf_export_internal_error (a defect: type and message on stderr).
+// bcf_export_input_too_large, bcf_export_input_unreadable (detail the input_* code; a NUL in the input path is
+// input_path_invalid), bcf_export_input_invalid (detail "json" or the JSON path of the first problem), the library's
+// bcf_* codes (BcfCodes) with their detail, bcf_export_output_io_error and bcf_export_internal_error (a defect: type and message on stderr).
 // Precedence: usage, output path, input read, JSON shape, library, write.
 internal static class BcfExportCommand
 {
@@ -46,6 +48,10 @@ internal static class BcfExportCommand
 
     static readonly string[] Extensions = [".bcfzip", ".bcf"];
     static readonly string[] TimestampFormats = ["yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:sszzz"];
+    // The accepted lexical forms; DateTimeOffset.TryParseExact's zzz alone also takes +hhmm, +h:mm and +hmm.
+    static readonly System.Text.RegularExpressions.Regex TimestampShape = new(
+        "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-9]{2})\\z",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     sealed class Refusal(string code, string? detail = null) : Exception(code)
     {
@@ -120,7 +126,7 @@ internal static class BcfExportCommand
             var root = Members(document.RootElement, "$", ["kind", "version", "project", "issues"]);
             if (Str(Required(root, "kind", "$"), "$.kind") != Kind) throw new Refusal(InputInvalid, "$.kind");
             var version = Required(root, "version", "$");
-            if (version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var v) || v != Version) throw new Refusal(InputInvalid, "$.version");
+            if (version.ValueKind != JsonValueKind.Number || version.GetRawText() != Version.ToString(CultureInfo.InvariantCulture)) throw new Refusal(InputInvalid, "$.version");
             var options = Options(Required(root, "project", "$"), "$.project");
             var issuesElement = Required(root, "issues", "$");
             if (issuesElement.ValueKind != JsonValueKind.Array) throw new Refusal(InputInvalid, "$.issues");
@@ -138,7 +144,7 @@ internal static class BcfExportCommand
         var name = Str(Required(members, "name", path), path + ".name");
         var author = Str(Required(members, "author", path), path + ".author");
         var stampText = Str(Required(members, "timestamp", path), path + ".timestamp");
-        if (!DateTimeOffset.TryParseExact(stampText, TimestampFormats, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var timestamp))
+        if (!TimestampShape.IsMatch(stampText) || !DateTimeOffset.TryParseExact(stampText, TimestampFormats, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var timestamp))
             throw new Refusal(InputInvalid, path + ".timestamp");
         var system = OptionalStr(members, "originating_system", path);
         return new BcfExportOptions(id, name, author, timestamp, system);
