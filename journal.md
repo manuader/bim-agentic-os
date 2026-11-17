@@ -1660,3 +1660,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay217 — 2026-11-17T06:53:28Z (Claude, cloud scheduled)
 - 06:53Z LOCK taken (was FREE; relay216 released 2026-11-17T06:40:56Z).
 - 07:49Z picked P7-20 (phase 7), P5-21 (phase 5), P6-22 (phase 6) — oldest-touched (relay214/215). Workers green: P7-20 f65c672 (red 44035035936, green 44038349793; 1 attempt — McpServer.cs also compiled by tests/cli and tests/revit-commands), P5-21 691aef9 (red 44034963800, green 44036668745; 0 attempts), P6-22 8ce90e8 (red 44034850877, green 44037286821; 0 attempts). Next: independent reviews.
+
+## Relay218 — 2026-11-17T08:52:45Z (Claude, cloud scheduled)
+- 08:52Z LOCK taken over (relay217 TAKEN, last_heartbeat 07:49:11Z > 45 min stale). relay217 workers P7-20/P5-21/P6-22 were green but unreviewed/unmerged; continuing their branches.
