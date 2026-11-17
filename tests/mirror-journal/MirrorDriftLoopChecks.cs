@@ -125,6 +125,7 @@ static class MirrorDriftLoopChecks
         FakeDiffChecks(root, pwsh);
         FakeBaselineChecks(root, pwsh);
         FakeFailureChecks(root, pwsh);
+        FakeRetentionChecks(root, pwsh);
         RunFailureLoop(root, dotnet, pwsh, cliDll, runDirectory);
         FailureOptionChecks(root, pwsh);
     }
@@ -1467,6 +1468,305 @@ static class MirrorDriftLoopChecks
             Check(process.ExitCode != 0 && !File.Exists(ready) && error.Contains("-RecorderFailures", StringComparison.Ordinal),
                 "-RecorderFailures " + name + " is refused before the pipe is ready (non-zero exit, no ready file, the error names the option)", "exit " + process.ExitCode + " " + Head(error) + " " + Head(stdout.Result));
         }
+    }
+
+    // P2-25: the -ExternalEdits fake keeps at most the MirrorJournal retained-entry capacity (DefaultCapacity unless the
+    // test-only lever Set-FakeJournalCapacity, before the first entry, sets a smaller one), drops the oldest entries over
+    // all documents past it and counts them in dropped, and reports journal_complete false when FirstRetainedSequence >
+    // after_sequence + 1, as MirrorJournalTracker does. One scenario, run on a fake with capacity 2 and on a default fake,
+    // in process: A read; two external moves under A; a peek of A; a move under B (the capped fake drops sequence 1); a
+    // peek of A, a peek of A after sequence 1, a first read of B, a read of A; two moves under A (two more drops); reads of
+    // A and B; a peek of A from sequence 0; a recorder failure and a peek of A. Every reply equals RevitJournalQuery.RawRead
+    // over a Core MirrorJournalTracker whose MirrorJournal has the same capacity and records the same commits, member for
+    // member; the capped fake's replies before its first drop are byte-equal to the default fake's. Two edge scenarios in
+    // the same child: a default fake fed 1026 entries (DefaultCapacity enforced: 1024 held from sequence 3, 2 dropped) and
+    // a capacity-1 fake after two moves (sequence 2 held, 1 dropped), each against a Core journal of that capacity.
+    const string RetentionScript = """
+        param([string]$Executor, [string]$DocumentUid)
+        $ErrorActionPreference = 'Stop'
+        . $Executor
+        $a = '/fake/Drift-Doc-A.rvt'; $b = '/fake/Drift-Doc-B.rvt'
+        function Line([string]$Path, [string]$Journal) { '{"DocumentPath":"' + $Path + '","Operation":"journal.read","UniqueId":null,"Metres":[],"Journal":' + $Journal + '}' }
+        function Env([string]$Path, [string]$Id, [string]$Command, [string]$Arguments) { '{"protocol_version":1,"operation_id":"' + $Id + '","document":{"path":"' + $Path + '","unique_id":"' + $DocumentUid + '"},"command":"' + $Command + '","args":' + $Arguments + '}' }
+        function Ok($State, [string]$Path, [string]$Id, [string]$Command, [string]$Arguments) {
+            $reply = Invoke-FakeRevitCommand $State (Env $Path $Id $Command $Arguments)
+            if (($reply | ConvertFrom-Json).status -ne 'succeeded') { throw "$Id ($Command) did not succeed: $reply" }
+            return $reply
+        }
+        function Wire($State, [string]$Line) { try { Invoke-FakeRevitWire $State $Line } catch { '<threw: ' + $_.Exception.Message + '>' } }
+        function Refused([scriptblock]$Action) { try { $null = & $Action; 'accepted' } catch { 'refused: ' + $_.Exception.Message } }
+        function Scenario([int]$Capacity) {
+            $r = [ordered]@{}
+            $s = New-FakeRevitState $DocumentUid @{} @('x-1', 'x-2', 'x-3', 'x-4', 'x-5')
+            if ($Capacity -gt 0) { Set-FakeJournalCapacity $s $Capacity }
+            $r.capacity = [string]$s.JournalCapacity
+            $level = [string]@((Ok $s $a 'levels' 'query.levels' '{}' | ConvertFrom-Json).readback.levels)[0].unique_id
+            $r.wall = [string]@((Ok $s $a 'wall-1' 'wall.create' ('{"level":"' + $level + '","type":"T1","height_mm":3000,"curve":{"kind":"line","start":[0,0],"end":[5000,0]}}') | ConvertFrom-Json).created)[0]
+            $move = '{"element_uids":["' + $r.wall + '"],"vector_mm":[250,0,0]}'
+            $r.s0 = Ok $s $a 'snapshot-0' 'query.snapshot' '{}'
+            $r.a0 = Wire $s (Line $a 'null')
+            $null = Ok $s $a 'x-1' 'element.move' $move
+            $null = Ok $s $a 'x-2' 'element.move' $move
+            $r.s1 = Ok $s $a 'snapshot-1' 'query.snapshot' '{}'
+            $r.a1 = Wire $s (Line $a '{"peek":true}')
+            $null = Ok $s $b 'x-3' 'element.move' $move
+            $r.s2 = Ok $s $a 'snapshot-2' 'query.snapshot' '{}'
+            $r.a2 = Wire $s (Line $a '{"peek":true}')
+            $r.a3 = Wire $s (Line $a '{"peek":true,"after_sequence":1}')
+            $r.b0 = Wire $s (Line $b 'null')
+            $r.a4 = Wire $s (Line $a 'null')
+            $null = Ok $s $a 'x-4' 'element.move' $move
+            $null = Ok $s $a 'x-5' 'element.move' $move
+            $r.s3 = Ok $s $a 'snapshot-3' 'query.snapshot' '{}'
+            $r.a5 = Wire $s (Line $a 'null')
+            $r.b1 = Wire $s (Line $b 'null')
+            $r.a6 = Wire $s (Line $a '{"peek":true,"after_sequence":0}')
+            Add-FakeRecorderFailure $s
+            $r.a7 = Wire $s (Line $a '{"peek":true}')
+            # The Core journal's capacity is fixed when it is made: once an entry is held the lever is refused.
+            $r.late = Refused { Set-FakeJournalCapacity $s 1 }
+            return $r
+        }
+        $out = [ordered]@{ capped = Scenario 2; default = Scenario 0 }
+        $out.zero = Refused { Set-FakeJournalCapacity (New-FakeRevitState $DocumentUid @{} @('x-1')) 0 }
+        $legacy = New-FakeRevitState $DocumentUid
+        $out.legacy = Refused { Set-FakeJournalCapacity $legacy 2 }
+        $out.legacy_read = Wire $legacy (Line $a 'null')
+        # The default capacity enforced: 1026 entries fed straight into a default -ExternalEdits state.
+        $bulk = New-FakeRevitState $DocumentUid @{} @('x-1')
+        $out.bulk_snapshot = Ok $bulk $a 'snapshot-bulk' 'query.snapshot' '{}'
+        foreach ($n in 1..1026) { Add-FakeJournalEntry $bulk $a 'Move' @() @('u-bulk') @() }
+        $out.bulk_capacity = [string]$bulk.JournalCapacity
+        $out.bulk_retained = [string]$bulk.Journal.Count
+        $out.bulk_first = [string]$bulk.Journal[0].sequence
+        $out.bulk_dropped = [string]$bulk.JournalDropped
+        $out.bulk_r0 = Wire $bulk (Line $a '{"peek":true,"after_sequence":0,"max_entries":1}')
+        $out.bulk_r2 = Wire $bulk (Line $a '{"peek":true,"after_sequence":2,"max_entries":1}')
+        $out.bulk_read = Wire $bulk (Line $a '{"max_entries":1}')
+        # The smallest capacity: 1, then two external moves under A.
+        $one = New-FakeRevitState $DocumentUid @{} @('x-1', 'x-2')
+        Set-FakeJournalCapacity $one 1
+        $level = [string]@((Ok $one $a 'levels' 'query.levels' '{}' | ConvertFrom-Json).readback.levels)[0].unique_id
+        $out.one_wall = [string]@((Ok $one $a 'wall-1' 'wall.create' ('{"level":"' + $level + '","type":"T1","height_mm":3000,"curve":{"kind":"line","start":[0,0],"end":[5000,0]}}') | ConvertFrom-Json).created)[0]
+        $move = '{"element_uids":["' + $out.one_wall + '"],"vector_mm":[250,0,0]}'
+        $null = Ok $one $a 'x-1' 'element.move' $move
+        $null = Ok $one $a 'x-2' 'element.move' $move
+        $out.one_snapshot = Ok $one $a 'snapshot-one' 'query.snapshot' '{}'
+        $out.one_capacity = [string]$one.JournalCapacity
+        $out.one_retained = [string]$one.Journal.Count
+        $out.one_dropped = [string]$one.JournalDropped
+        $out.one_r1 = Wire $one (Line $a '{"peek":true,"after_sequence":1}')
+        $out.one_r0 = Wire $one (Line $a '{"peek":true,"after_sequence":0}')
+        $out.one_read = Wire $one (Line $a 'null')
+        $out | ConvertTo-Json -Compress -Depth 5
+        """;
+
+    static void FakeRetentionChecks(string root, string pwsh)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "fake retention: " + name, detail);
+        var scratch = Path.Combine(Path.GetTempPath(), "bim-drift-retention-" + Guid.NewGuid().ToString("N"));
+        Temporary.Add(scratch);
+        Directory.CreateDirectory(scratch);
+        var script = Path.Combine(scratch, "retention.ps1");
+        File.WriteAllText(script, RetentionScript, Utf8);
+        var start = new ProcessStartInfo(pwsh) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = Utf8 };
+        foreach (var argument in new[] { "-NoProfile", "-File", script, "-Executor", Path.Combine(root, "tests", "integration", "fake-revit-command-executor.ps1"), "-DocumentUid", DocumentUid }) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("pwsh did not start");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(CallTimeoutMs)) { Kill(process); Check(false, "the in-process retention script finishes", "timed out"); return; }
+        process.WaitForExit();
+        var output = stdout.Result.Trim();
+        if (process.ExitCode != 0 || !output.StartsWith('{')) { Check(false, "the in-process retention script runs (Set-FakeJournalCapacity sets a small journal capacity)", "exit " + process.ExitCode + " " + Head(output) + " " + Head(stderr.Result.ReplaceLineEndings(" "))); return; }
+        using var parsed = JsonDocument.Parse(output);
+        var top = parsed.RootElement;
+        string T(string name) => top.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "<missing>";
+        Check(T("zero").StartsWith("refused: ", StringComparison.Ordinal), "Set-FakeJournalCapacity refuses a capacity below 1 (journal_capacity_invalid)", T("zero"));
+        Check(T("legacy").StartsWith("refused: ", StringComparison.Ordinal), "Set-FakeJournalCapacity refuses a state without -ExternalEdits", T("legacy"));
+        Check(T("legacy_read").Contains("\"dropped\":0,", StringComparison.Ordinal) && T("legacy_read").Contains("\"journal_complete\":true,", StringComparison.Ordinal),
+            "a legacy state's reply after the refused lever still reports nothing dropped", T("legacy_read"));
+        const string a = "/fake/Drift-Doc-A.rvt", b = "/fake/Drift-Doc-B.rvt";
+        static MirrorSnapshot Snap(string response) { using var reply = JsonDocument.Parse(response); return MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText()); }
+
+        // What each read says about retention, from a reply.
+        static string Shape(string reply)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(reply);
+                var body = document.RootElement;
+                var report = body.GetProperty("report");
+                return "dropped=" + body.GetProperty("dropped").GetInt64().ToString(CultureInfo.InvariantCulture)
+                    + " after=" + report.GetProperty("after_sequence").GetInt64().ToString(CultureInfo.InvariantCulture)
+                    + " complete=" + report.GetProperty("journal_complete").GetBoolean().ToString().ToLowerInvariant()
+                    + " since=" + report.GetProperty("failures_since_baseline").GetInt64().ToString(CultureInfo.InvariantCulture)
+                    + " entries=[" + string.Join(",", report.GetProperty("entries").EnumerateArray().Select(entry => entry.GetProperty("sequence").GetInt64().ToString(CultureInfo.InvariantCulture))) + "]";
+            }
+            catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentException) { return "<no report> " + Head(reply); }
+        }
+
+        var replies = new Dictionary<string, Dictionary<string, string>>();
+        foreach (var (run, capacity, cases) in new (string Run, int Capacity, (string Name, string Shape, string What)[] Cases)[]
+        {
+            ("capped", 2, new[]
+            {
+                ("a0", "dropped=0 after=0 complete=true since=0 entries=[]", "the first read of A: nothing recorded yet"),
+                ("a1", "dropped=0 after=0 complete=true since=0 entries=[1,2]", "a peek of A at capacity: both entries held, nothing dropped"),
+                ("a2", "dropped=1 after=0 complete=false since=0 entries=[2]", "a peek of A after B's move: sequence 1 dropped, FirstRetainedSequence 2 > after 0 + 1, incomplete"),
+                ("a3", "dropped=1 after=1 complete=true since=0 entries=[2]", "a peek of A after sequence 1: FirstRetainedSequence 2 = after + 1, complete"),
+                ("b0", "dropped=1 after=0 complete=false since=0 entries=[3]", "the first read of B: no baseline, after 0, a dropped entry (of another document) makes it incomplete"),
+                ("a4", "dropped=1 after=0 complete=false since=0 entries=[2]", "a read of A from its baseline 0: still incomplete"),
+                ("a5", "dropped=3 after=3 complete=true since=0 entries=[4,5]", "a read of A after two more moves: sequences 2 and 3 dropped, but none after A's baseline 3"),
+                ("b1", "dropped=3 after=3 complete=true since=0 entries=[]", "a read of B: B's entry 3 was dropped, but at its baseline, so complete"),
+                ("a6", "dropped=3 after=0 complete=false since=0 entries=[4,5]", "a peek of A from sequence 0: three dropped, incomplete"),
+                ("a7", "dropped=3 after=5 complete=false since=1 entries=[]", "a peek of A after a recorder failure: no drop since, but a failure, incomplete"),
+            }),
+            ("default", MirrorJournal.DefaultCapacity, new[]
+            {
+                ("a0", "dropped=0 after=0 complete=true since=0 entries=[]", "the first read of A"),
+                ("a1", "dropped=0 after=0 complete=true since=0 entries=[1,2]", "a peek of A"),
+                ("a2", "dropped=0 after=0 complete=true since=0 entries=[1,2]", "a peek of A after B's move: nothing dropped"),
+                ("a3", "dropped=0 after=1 complete=true since=0 entries=[2]", "a peek of A after sequence 1"),
+                ("b0", "dropped=0 after=0 complete=true since=0 entries=[3]", "the first read of B"),
+                ("a4", "dropped=0 after=0 complete=true since=0 entries=[1,2]", "a read of A from its baseline 0"),
+                ("a5", "dropped=0 after=3 complete=true since=0 entries=[4,5]", "a read of A after two more moves"),
+                ("b1", "dropped=0 after=3 complete=true since=0 entries=[]", "a read of B"),
+                ("a6", "dropped=0 after=0 complete=true since=0 entries=[1,2,4,5]", "a peek of A from sequence 0: every entry held"),
+                ("a7", "dropped=0 after=5 complete=false since=1 entries=[]", "a peek of A after a recorder failure"),
+            }),
+        })
+        {
+            if (!top.TryGetProperty(run, out var result) || result.ValueKind != JsonValueKind.Object) { Check(false, run + " scenario ran", Head(output)); continue; }
+            string R(string name) => result.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "<missing>";
+            replies[run] = cases.ToDictionary(c => c.Name, c => R(c.Name));
+            Check(R("capacity") == capacity.ToString(CultureInfo.InvariantCulture), run + ": the fake's journal capacity is " + capacity + (run == "default" ? " (MirrorJournal.DefaultCapacity)" : " (the lever)"), R("capacity"));
+            Check(R("late").StartsWith("refused: ", StringComparison.Ordinal), run + ": Set-FakeJournalCapacity is refused once the journal holds an entry", R("late"));
+            MirrorSnapshot s0, s1, s2, s3;
+            try { (s0, s1, s2, s3) = (Snap(R("s0")), Snap(R("s1")), Snap(R("s2")), Snap(R("s3"))); }
+            catch (Exception error) when (error is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, run + ": the fake's query.snapshot readbacks parse as snapshots", error.Message); continue; }
+            var wall = R("wall");
+
+            // The production side: one Core journal with the same capacity and tracker, the same commits and reads.
+            var tick = 0;
+            var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick), capacity);
+            var tracker = new MirrorJournalTracker(journal);
+            void Record(string path, string name, string[] modified, bool addIn = false) =>
+                journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { name }, addIn ? new[] { "x" } : Array.Empty<string>(), modified, Array.Empty<long>(), addIn) { DocumentPath = path });
+            string Read(MirrorSnapshot snapshot, string path, bool peek = false, long? after = null) => RevitJournalQuery.RawRead(tracker, true, snapshot, path, new MirrorJournalReadOptions(after, peek));
+            var production = new Dictionary<string, string>();
+            Record(a, "BIM Agentic OS wall.create", Array.Empty<string>(), addIn: true);
+            production["a0"] = Read(s0, a);
+            Record(a, "Move", new[] { wall });
+            Record(a, "Move", new[] { wall });
+            production["a1"] = Read(s1, a, peek: true);
+            Record(b, "Move", new[] { wall });
+            production["a2"] = Read(s2, a, peek: true);
+            production["a3"] = Read(s2, a, peek: true, after: 1);
+            production["b0"] = Read(s2, b);
+            production["a4"] = Read(s2, a);
+            Record(a, "Move", new[] { wall });
+            Record(a, "Move", new[] { wall });
+            production["a5"] = Read(s3, a);
+            production["b1"] = Read(s3, b);
+            production["a6"] = Read(s3, a, peek: true, after: 0);
+            journal.RecordFailure();
+            production["a7"] = Read(s3, a, peek: true);
+            Check(journal.Capacity == capacity && journal.Dropped == (run == "capped" ? 3 : 0), run + ": the Core journal holds the same capacity and dropped count", journal.Capacity + " " + journal.Dropped);
+
+            foreach (var (name, shape, what) in cases)
+            {
+                var reply = R(name);
+                Check(Shape(reply) == shape, run + " reply " + name + ": " + what + " (" + shape + ")", Shape(reply));
+                Check(Uniform(reply) == Uniform(production[name]), run + " reply " + name + " equals RevitJournalQuery.RawRead over a Core tracker with capacity " + capacity + " and the same commits, member for member (diff included)", Uniform(reply) + " vs " + Uniform(production[name]));
+            }
+        }
+        if (replies.TryGetValue("capped", out var capped) && replies.TryGetValue("default", out var unbounded))
+        {
+            // Before its first drop the capped fake answers byte for byte as the default one.
+            foreach (var name in new[] { "a0", "a1" }) Check(capped[name] == unbounded[name], "capped reply " + name + " (nothing dropped yet) is byte-equal to the default fake's", capped[name] + " vs " + unbounded[name]);
+            // The drift loop's reader sees the dropped entries as an incomplete journal.
+            bool? Complete(string reply) { try { return MirrorDrift.ParseJournal(reply).Complete; } catch (ArgumentException) { return null; } }
+            Check(Complete(capped["a2"]) == false && Complete(capped["a5"]) == true && Complete(unbounded["a2"]) == true, "MirrorDrift.ParseJournal reads the capped fake's dropped entries as an incomplete journal (a2) and a later baseline as complete (a5)",
+                Complete(capped["a2"]) + " " + Complete(capped["a5"]) + " " + Complete(unbounded["a2"]));
+        }
+
+        // Each top-level reply's retention shape, and equality with the Core RawRead reply of the same name.
+        void Compare(string label, int coreCapacity, Dictionary<string, string> production, (string Name, string Shape, string What)[] cases)
+        {
+            foreach (var (name, shape, what) in cases)
+            {
+                var reply = T(name);
+                Check(Shape(reply) == shape, label + " reply " + name + ": " + what + " (" + shape + ")", Shape(reply));
+                Check(Uniform(reply) == Uniform(production[name]), label + " reply " + name + " equals RevitJournalQuery.RawRead over a Core tracker with capacity " + coreCapacity + " and the same records, member for member (diff included)",
+                    Uniform(reply) + " vs " + Uniform(production[name]));
+            }
+        }
+
+        // The default capacity enforced: a default fake fed 1026 entries keeps the last 1024 (sequences 3..1026) and
+        // counts 2 dropped, as a Core MirrorJournal at DefaultCapacity fed 1026 records.
+        void BulkDefaultCapacity()
+        {
+            MirrorSnapshot snapshot;
+            try { snapshot = Snap(T("bulk_snapshot")); }
+            catch (Exception error) when (error is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "bulk: the default fake's query.snapshot readback parses as a snapshot", error.Message); return; }
+            Check(T("bulk_capacity") == "1024" && T("bulk_retained") == "1024" && T("bulk_first") == "3" && T("bulk_dropped") == "2",
+                "bulk: a default fake fed 1026 entries holds 1024 (MirrorJournal.DefaultCapacity), the first retained is sequence 3, and 2 are dropped",
+                T("bulk_capacity") + " " + T("bulk_retained") + " " + T("bulk_first") + " " + T("bulk_dropped"));
+            var tick = 0;
+            var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
+            var tracker = new MirrorJournalTracker(journal);
+            for (var n = 0; n < 1026; n++)
+                journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "Move" }, Array.Empty<string>(), new[] { "u-bulk" }, Array.Empty<long>()) { DocumentPath = a });
+            string Read(long? after, bool peek) => RevitJournalQuery.RawRead(tracker, true, snapshot, a, new MirrorJournalReadOptions(after, peek, 1));
+            var production = new Dictionary<string, string>();
+            production["bulk_r0"] = Read(0, true);
+            production["bulk_r2"] = Read(2, true);
+            production["bulk_read"] = Read(null, false);
+            Check(journal.Capacity == MirrorJournal.DefaultCapacity && journal.Dropped == 2 && journal.FirstRetainedSequence == 3 && journal.Entries().Count == 1024,
+                "bulk: the Core journal at DefaultCapacity fed the same 1026 records holds 1024 from sequence 3 and dropped 2",
+                journal.Capacity + " " + journal.Dropped + " " + journal.FirstRetainedSequence + " " + journal.Entries().Count);
+            Compare("bulk", MirrorJournal.DefaultCapacity, production, new[]
+            {
+                ("bulk_r0", "dropped=2 after=0 complete=false since=0 entries=[3]", "a peek after sequence 0: sequences 1 and 2 dropped, FirstRetainedSequence 3 > after + 1, incomplete"),
+                ("bulk_r2", "dropped=2 after=2 complete=true since=0 entries=[3]", "a peek after sequence 2: FirstRetainedSequence 3 = after + 1, complete"),
+                ("bulk_read", "dropped=2 after=0 complete=false since=0 entries=[3]", "the first read (no baseline, after 0): incomplete"),
+            });
+        }
+
+        // The smallest capacity: capacity 1 and two external moves keep only sequence 2 and count 1 dropped.
+        void CapacityOne()
+        {
+            MirrorSnapshot snapshot;
+            try { snapshot = Snap(T("one_snapshot")); }
+            catch (Exception error) when (error is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "capacity 1: the fake's query.snapshot readback parses as a snapshot", error.Message); return; }
+            Check(T("one_capacity") == "1" && T("one_retained") == "1" && T("one_dropped") == "1", "capacity 1: two external moves leave one entry held and one dropped",
+                T("one_capacity") + " " + T("one_retained") + " " + T("one_dropped"));
+            var tick = 0;
+            var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick), 1);
+            var tracker = new MirrorJournalTracker(journal);
+            void Record(string name, string[] modified, bool addIn = false) =>
+                journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { name }, addIn ? new[] { "x" } : Array.Empty<string>(), modified, Array.Empty<long>(), addIn) { DocumentPath = a });
+            Record("BIM Agentic OS wall.create", Array.Empty<string>(), addIn: true);
+            Record("Move", new[] { T("one_wall") });
+            Record("Move", new[] { T("one_wall") });
+            string Read(long? after, bool peek) => RevitJournalQuery.RawRead(tracker, true, snapshot, a, new MirrorJournalReadOptions(after, peek));
+            var production = new Dictionary<string, string>();
+            production["one_r1"] = Read(1, true);
+            production["one_r0"] = Read(0, true);
+            production["one_read"] = Read(null, false);
+            Check(journal.Capacity == 1 && journal.Dropped == 1 && journal.FirstRetainedSequence == 2 && journal.Entries().Count == 1,
+                "capacity 1: the Core journal with capacity 1 fed the same moves holds sequence 2 and dropped 1",
+                journal.Capacity + " " + journal.Dropped + " " + journal.FirstRetainedSequence + " " + journal.Entries().Count);
+            Compare("capacity 1", 1, production, new[]
+            {
+                ("one_r1", "dropped=1 after=1 complete=true since=0 entries=[2]", "a peek after sequence 1: FirstRetainedSequence 2 = after + 1, complete"),
+                ("one_r0", "dropped=1 after=0 complete=false since=0 entries=[2]", "a peek after sequence 0: sequence 1 dropped, incomplete"),
+                ("one_read", "dropped=1 after=0 complete=false since=0 entries=[2]", "the first read (no baseline, after 0): incomplete"),
+            });
+        }
+
+        BulkDefaultCapacity();
+        CapacityOne();
     }
 
     // Snapshot pairs (MirrorSnapshot.ToJson shape) for the differ's field branches the fake's own snapshots never reach.

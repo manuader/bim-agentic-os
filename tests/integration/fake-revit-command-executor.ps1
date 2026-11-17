@@ -38,6 +38,13 @@
 # running total), failures_since_baseline (the total minus the count stored with that (UniqueId, path) baseline, or the
 # total when there is none) and journal_complete (false while that difference is above zero), as MirrorJournalTracker
 # does; a non-peek read stores the count with its baseline. With no failure injected every reply is unchanged.
+# P2-25: with ExternalEdits the fake journal keeps at most JournalCapacity entries (MirrorJournal.DefaultCapacity, 1024,
+# unless the test-only lever Set-FakeJournalCapacity sets a smaller one before the first entry, as the Core capacity is
+# fixed when the journal is made): past it the oldest entries over every document are dropped (the newest is always kept)
+# and counted, journal.read reports that count as dropped and journal_complete is false also when the oldest retained
+# sequence (the last sequence + 1 when none is held) is above after_sequence + 1, as MirrorJournalTracker.Report does.
+# The Core id budget (200000 ids) is not modelled: fake entries hold one or two ids. Below the capacity every reply is
+# unchanged.
 # It proves nothing about Revit.
 Set-StrictMode -Version Latest
 
@@ -53,6 +60,7 @@ function New-FakeRevitState([string]$DocumentUid, [hashtable]$Faults = @{}, [str
         Elements = [ordered]@{}; Cache = @{}; Placed = @{}; ElementNumber = 100000; SkippedAddIn = 0; JournalBaseline = $null; Snapshots = 0; DocumentPath = $null
         Copies = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         ExternalEdits = $external; Journal = [Collections.Generic.List[object]]::new(); JournalSequence = 0; JournalFailures = [long]0
+        JournalCapacity = 1024; JournalDropped = [long]0
         JournalBaselines = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase) }
 }
 
@@ -83,6 +91,16 @@ function Add-FakeRecorderFailure($State, [int]$Count = 1) {
     $State.JournalFailures = [long]$State.JournalFailures + $Count
 }
 
+# P2-25, test-only lever: the journal's retained-entry capacity (MirrorJournal capacity; journal_capacity_invalid below
+# 1). Only an ExternalEdits state keeps entries, and only before its first entry, as the Core capacity is fixed when the
+# journal is made.
+function Set-FakeJournalCapacity($State, [int]$Capacity) {
+    if ($null -eq $State.ExternalEdits) { throw 'Set-FakeJournalCapacity needs a state made with -ExternalEdits' }
+    if ($Capacity -lt 1) { throw 'journal_capacity_invalid' }
+    if ([long]$State.JournalSequence -gt 0) { throw 'Set-FakeJournalCapacity needs a journal with no entry yet' }
+    $State.JournalCapacity = $Capacity
+}
+
 # P2-18: the Revit transaction name a user edit of that kind commits under (what DocumentChanged reports).
 $script:FakeExternalTransactions = @{ 'element.move' = 'Move'; 'wall.create' = 'Wall'; 'element.delete' = 'Delete' }
 
@@ -108,6 +126,11 @@ function Add-FakeJournalEntry($State, [string]$DocumentPath, [string]$Transactio
     $State.Journal.Add([ordered]@{ sequence = $sequence; recorded_at = $at; document_unique_id = $State.DocumentUid; document_path = $DocumentPath; operation = 'TransactionCommitted'; origin = 'external'
         transaction_names = @($Transaction); added = $added; modified = $modified; deleted_element_ids = $deletedIds
         added_total = [int]$added.Count; modified_total = [int]$modified.Count; deleted_total = [int]$deletedIds.Count; truncated = $false })
+    # P2-25: MirrorJournal.Record's bound: past the capacity the oldest entries (any document) are dropped and counted.
+    while ($State.Journal.Count -gt 1 -and $State.Journal.Count -gt [int]$State.JournalCapacity) {
+        $State.Journal.RemoveAt(0)
+        $State.JournalDropped = [long]$State.JournalDropped + 1
+    }
 }
 
 function New-FakeUniqueId($State) { $State.Next++; '{0}-{1:x8}' -f $State.Episode, (4096 + $State.Next) }
@@ -1028,7 +1051,7 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
         if ($null -ne $request) { $peek = [bool](Get-FakeArg (Get-FakeArg $request 'Journal') 'peek') }
         # Pre-P2-18 values (no ExternalEdits): no entries, every sequence 0, options other than peek ignored.
         $baselineSequence = 0; $currentSequence = 0; $afterSequence = 0; $hasMore = $false; $nextAfter = 0; $entries = @()
-        $failures = 0; $failuresSince = 0; $complete = $true
+        $failures = 0; $failuresSince = 0; $complete = $true; $dropped = 0
         if ($null -ne $State.ExternalEdits) {
             if ($null -eq $document) { return New-FakeJournalFailure 'request_invalid' }
             # MirrorJournalReadOptions.Parse, then MirrorJournalTracker.Report; failures as App.Execute answers an exception.
@@ -1070,11 +1093,13 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
             $baselineExisted = $null -ne $stored
             $snapshot = Get-FakeSnapshot $State
             $diff = Get-FakeSnapshotDiff $State.DocumentUid $(if ($baselineExisted) { $stored.Snapshot } else { $null }) $snapshot
-            # P2-23: failures since that baseline's stored count (all of them without one); complete only when none. The fake
-            # never drops entries, so FirstRetainedSequence <= after + 1 always holds.
+            # P2-23: failures since that baseline's stored count (all of them without one). P2-25: complete only when none
+            # and no entry after after_sequence was dropped (FirstRetainedSequence <= after + 1).
             $failures = [long]$State.JournalFailures
             $failuresSince = $failures - $(if ($baselineExisted) { [long]$stored.Failures } else { [long]0 })
-            $complete = $failuresSince -eq 0
+            $firstRetained = if ($State.Journal.Count -gt 0) { [long]$State.Journal[0].sequence } else { $last + 1 }
+            $dropped = [long]$State.JournalDropped
+            $complete = $firstRetained -le $after + 1 -and $failuresSince -eq 0
             if (!$peek) { Set-FakeJournalBaseline $State $State.DocumentUid $path $snapshot $last $failures }
         }
         else {
@@ -1091,6 +1116,6 @@ function Invoke-FakeRevitWire($State, [string]$Line) {
         }
         $report = [ordered]@{ journal_version = 1; document_unique_id = $State.DocumentUid; document_path = $path; baseline_sequence = $baselineSequence; current_sequence = $currentSequence; after_sequence = $afterSequence; baseline_existed = $baselineExisted; peek = $peek
             journal_complete = $complete; failures_since_baseline = $failuresSince; has_more = $hasMore; next_after_sequence = $nextAfter; entries = $entries; diff = $diff }
-        return ConvertTo-FakeResponseJson ([ordered]@{ status = 'succeeded'; verification = 'unverified'; attached = $true; dropped = 0; skipped_add_in = $State.SkippedAddIn; failures = $failures; unidentified = 0; report = $report })
+        return ConvertTo-FakeResponseJson ([ordered]@{ status = 'succeeded'; verification = 'unverified'; attached = $true; dropped = $dropped; skipped_add_in = $State.SkippedAddIn; failures = $failures; unidentified = 0; report = $report })
     } finally { if ($null -ne $document) { $document.Dispose() } }
 }
