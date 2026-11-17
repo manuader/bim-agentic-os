@@ -1680,6 +1680,8 @@ Check(server.Handle(silentCall.ToJsonString())==null && !Directory.Exists(silent
 
 // P5-17 generate_typology (tests/mcp/GenerateTypologyToolTests.cs).
 GenerateTypologyToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
+// P4-22 the doc_update server links the dry plan only, never the doc-update probe or run (tests/mcp/DocUpdateLinkTests.cs).
+DocUpdateLinkTests.Run(root,Check);
 // P4-20 doc_update (tests/mcp/DocUpdateToolTests.cs).
 DocUpdateToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
 // P7-20 plan_layouts (tests/mcp/PlanLayoutsToolTests.cs).
