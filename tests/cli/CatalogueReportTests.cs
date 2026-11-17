@@ -276,12 +276,53 @@ internal static class CatalogueReportTests
             && typeof(CatalogueReportCommand).GetField("MaxSaveAsBytes", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static) is null
             && typeof(CatalogueReportCommand).GetMethod("Execute", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)?.GetParameters().Length == 3,
             "the save_as file has no cap of its own: the copy's 8 GiB hashing cap (MaxSaveAsBytes and its Execute seam are gone)");
-        if (OperatingSystem.IsLinux())
         {
             // A sparse file of 1 GiB + 1 byte of zeros (the old whole-file read cap + 1): hashed in a stream, never held
-            // whole in memory, so it is matches (or mismatch) instead of unreadable/input_too_large.
+            // whole in memory, so it is matches (or mismatch) instead of unreadable/input_too_large. P1-27: on every OS
+            // (Linux and macOS: ftruncate leaves a hole; Windows: FSCTL_SET_SPARSE before SetLength), with the blocks
+            // the file holds on disk checked, and the file deleted in a finally whatever the run does.
             const long bigLength = 1024L * 1024 * 1024 + 1;
             const string bigSha = "6d9bfe50425f2dfe4e2ac07efee1f0bc9d567348ad4aed62704ffe6f5884e9a8";
+            const long bigCeiling = 64L * 1024 * 1024;
+            [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+            static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle device, uint code, IntPtr input, uint inputSize, IntPtr output, uint outputSize, out uint returned, IntPtr overlapped);
+            [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode, EntryPoint = "GetCompressedFileSizeW")]
+            static extern uint GetCompressedFileSize(string path, out uint high);
+            // Bytes the file holds on disk: GetCompressedFileSizeW on Windows (the allocated size of a sparse file), du -k elsewhere.
+            long OnDisk(string path)
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    var low = GetCompressedFileSize(path, out var high);
+                    var error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                    return low == uint.MaxValue && error != 0 ? -1 : ((long)high << 32) | low;
+                }
+                using var du = Process.Start(new ProcessStartInfo("du") { ArgumentList = { "-k", path }, UseShellExecute = false, RedirectStandardOutput = true })!;
+                var text = du.StandardOutput.ReadToEnd();
+                du.WaitForExit(10000);
+                return long.TryParse(text.Split('\t', ' ')[0].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var kib) ? kib * 1024 : -1;
+            }
+            // Writes the sparse save_as file into the case's run folder, runs the report through `run` and measures the
+            // managed bytes the run allocated on this thread.
+            (int Exit, string Out, long Allocated, long OnDisk) WithSparseSaveAs(Case c, Func<Case, (int Exit, string Out)> run)
+            {
+                var path = Path.Combine(c.Run, SaveAsName);
+                try
+                {
+                    using (var big = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+                    {
+                        if (OperatingSystem.IsWindows() && !DeviceIoControl(big.SafeFileHandle, 0x000900C4 /* FSCTL_SET_SPARSE */, IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero))
+                            throw new IOException("FSCTL_SET_SPARSE failed: Win32 error " + System.Runtime.InteropServices.Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture));
+                        big.SetLength(bigLength);
+                    }
+                    var onDisk = OnDisk(path);
+                    var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                    var result = run(c);
+                    var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                    return (result.Exit, result.Out, allocated, onDisk);
+                }
+                finally { File.Delete(path); }
+            }
             foreach (var (label, recorded, expected) in new[]
             {
                 ("matches", bigSha, SaveAs("matches", null, SaveAsName, bigSha, bigSha, bigLength)),
@@ -289,18 +330,24 @@ internal static class CatalogueReportTests
             })
             {
                 var bigCase = MakeSaveAs(WithSaveAs(saveAsPath, recorded), null);
-                var bigPath = Path.Combine(bigCase.Run, SaveAsName);
-                using (var big = new FileStream(bigPath, FileMode.CreateNew, FileAccess.Write)) big.SetLength(bigLength);
-                var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
-                var bigRun = SaveAsRun(bigCase);
-                var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
-                File.Delete(bigPath);
-                Check(SaveAsOf(bigRun) == expected && Raw(Json(bigRun.Out), "copy") == passCopy,
-                    "a save_as file over the old 1 GiB read cap is hashed in a stream: " + label, SaveAsOf(bigRun));
-                Check(allocated < 64L * 1024 * 1024, "a save_as file over 1 GiB is never read into one byte[] (" + label + ")", "allocated " + allocated.ToString(CultureInfo.InvariantCulture) + " bytes");
+                var bigRun = WithSparseSaveAs(bigCase, c => SaveAsRun(c));
+                Check(SaveAsOf((bigRun.Exit, bigRun.Out)) == expected && Raw(Json(bigRun.Out), "copy") == passCopy,
+                    "a save_as file over the old 1 GiB read cap is hashed in a stream: " + label, SaveAsOf((bigRun.Exit, bigRun.Out)));
+                Check(bigRun.Allocated < bigCeiling, "a save_as file over 1 GiB is never read into one byte[] (" + label + ")", "allocated " + bigRun.Allocated.ToString(CultureInfo.InvariantCulture) + " bytes");
+                Check(bigRun.OnDisk >= 0 && bigRun.OnDisk < bigCeiling, "the 1 GiB + 1 save_as file is sparse, not a real 1 GiB allocation (" + label + ")",
+                    "on disk " + bigRun.OnDisk.ToString(CultureInfo.InvariantCulture) + " bytes");
+                Check(!File.Exists(Path.Combine(bigCase.Run, SaveAsName)), "the 1 GiB + 1 save_as file is deleted after the run (" + label + ")");
             }
+            // A run that throws still leaves no 1 GiB file behind.
+            var thrownCase = MakeSaveAs(WithSaveAs(saveAsPath, bigSha), null);
+            var thrownPath = Path.Combine(thrownCase.Run, SaveAsName);
+            Exception? thrown = null;
+            try { WithSparseSaveAs(thrownCase, c => { SaveAsRun(c); throw new InvalidOperationException("P1-27 forced SaveAsRun failure"); }); }
+            catch (InvalidOperationException e) { thrown = e; }
+            Check(thrown?.Message == "P1-27 forced SaveAsRun failure" && !File.Exists(thrownPath),
+                "the 1 GiB + 1 save_as file is deleted in a finally when SaveAsRun throws", "thrown " + (thrown?.Message ?? "nothing") + ", file left " + File.Exists(thrownPath).ToString(CultureInfo.InvariantCulture));
+            if (File.Exists(thrownPath)) File.Delete(thrownPath);
         }
-        else skip("a save_as file over the old 1 GiB read cap is hashed in a stream", "sparse files are used on Linux only");
         if (OperatingSystem.IsLinux())
         {
             var fifoSaveAs = MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), null);
