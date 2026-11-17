@@ -7,7 +7,7 @@ namespace Bim.Cli;
 
 // P5-21 `skill-list [--skills skills-directory]`: the skill packs of a skills directory on the CLI. Read-only: nothing is
 // written, no store, no pipe, no Revit.
-// Skills directory: --skills (made absolute against the working directory) when given; else the one SkillPackLookup
+// Skills directory: --skills (made absolute against the working directory, a trailing separator trimmed) when given; else the one SkillPackLookup
 // serves (package-first): <package>/skills when SkillPackLookup.PackageRoot of the binary directory is a release package,
 // else <repository>/skills of RevitCommandPolicy.RepositoryRoot.
 // Loading: SkillLoader.LoadDirectory(skills), then JurisdictionRegistry.Load(skills) for the stub flags (the claim on a
@@ -63,7 +63,7 @@ internal static class SkillListCommand
             if (root is null) return IntentPlan.Failed(RepositoryNotFound);
             skillsDirectory = Path.Combine(root, "skills");
         }
-        var skills = Path.GetFullPath(skillsDirectory);
+        var skills = Path.TrimEndingDirectorySeparator(Path.GetFullPath(skillsDirectory));
         try { SkillLoader.LoadDirectory(skills); }
         catch (SkillException error)
         {
