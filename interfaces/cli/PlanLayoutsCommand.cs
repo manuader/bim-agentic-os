@@ -195,7 +195,7 @@ internal static class PlanLayoutsCommand
         try
         {
             GuardedWorkProbe?.Invoke();
-            var set = AlternativeGenerator.Generate(brief, rules is null ? new AlternativeOptions(count, seed) : new AlternativeOptions(count, seed, new PlannerOptions(Rules: rules)));
+            var set = AlternativeGenerator.Generate(brief, new AlternativeOptions(count, seed, rules is null ? null : new PlannerOptions(Rules: rules), GenerationWeightsProbe));
             return (set, set.Status == AlternativeSetStatus.Refused ? "" : AlternativeSetSerializer.Serialize(set), rules);
         }
         catch (Exception error) { throw InternalRefusal(error); }
@@ -311,6 +311,13 @@ internal static class PlanLayoutsCommand
     // P3-20 test seam: null in production. tests/cli/InternalErrorDelegationTests.cs sets it (by reflection) to an Action
     // that throws, so the guarded library work below fails inside Run's real catch-all; it is reset after the test.
     internal static Action? GuardedWorkProbe { get; set; }
+
+    // P7-22 test seam: null in production (the default ScoringWeights, today's bytes). tests/mcp/PlanLayoutsToolTests.cs
+    // sets invalid weights so the guarded generation returns a refused set (plan_layouts_refused) through the CLI verb and
+    // the MCP tool alike; it is reset after the test. Without it plan_layouts_refused is unreachable: AlternativeGenerator
+    // refuses only an alternatives count outside 1..64 (AlternativesValue already refuses that as
+    // plan_layouts_alternatives_invalid) or invalid weights (the verb always passes the default ScoringWeights).
+    internal static ScoringWeights? GenerationWeightsProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
