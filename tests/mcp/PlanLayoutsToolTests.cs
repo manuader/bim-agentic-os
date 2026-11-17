@@ -182,7 +182,7 @@ internal static class PlanLayoutsToolTests
         Refused("an unknown pack", smallPath, null, null, "xx.no-such.pack", Code("plan_layouts_pack_unavailable", "input_not_found"));
         Refused("a pack with no planner minimum rules", smallPath, null, null, "bim.typology.vivienda-unifamiliar", Code("plan_layouts_pack_rules_none", "bim.typology.vivienda-unifamiliar"));
         Refused("a pack with only warning minimums", smallPath, null, null, "bim.typology.dwelling", Code("plan_layouts_pack_rules_none", "bim.typology.dwelling"));
-        Refused("malformed brief JSON", Input("bad.json", "{"), null, null, null, Cli(Input("bad-probe.json", "{"), null, null, null).Out);
+        Refused("malformed brief JSON", Input("bad.json", "{"), null, null, null, Code("plan_layouts_brief_invalid", "json_invalid at brief"));
         Refused("a brief without a site", Input("nosite.json", small.Replace("\"site\":{\"width_m\":6,\"depth_m\":8},", "", StringComparison.Ordinal)), null, null, null,
             Code("plan_layouts_site_required", "constraints.site"));
         Refused("an adjacency naming an unknown room", Input("adjacency.json", small.Replace("\"b\":\"bath\"", "\"b\":\"kitchen\"", StringComparison.Ordinal)), null, null, null,
@@ -222,6 +222,69 @@ internal static class PlanLayoutsToolTests
         var processResponse = JsonNode.Parse(processOut.Split('\n')[0])!.AsObject();
         Check(!IsError(processResponse) && Utf8(Text(processResponse)).SequenceEqual(withPack),
             "the real Bim.Mcp.dll process returns the --pack set byte for byte (pack found from the server binary) | " + Short(processOut));
+
+        // ---- 5b. plan_layouts_pack_invalid: a scratch repository with its own skills/ (global.json, no package markers),
+        // the Release CLI and Bim.Mcp.dll copied under it, so both find these packs as the repository's ----
+        var fakeRepo = Path.Combine(scratch, "fake-repo");
+        Directory.CreateDirectory(fakeRepo);
+        File.WriteAllText(Path.Combine(fakeRepo, "global.json"), "{}");
+        string CopyBinaries(string dll, string target)
+        {
+            var source = Path.GetDirectoryName(dll)!;
+            foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+            {
+                var destination = Path.Combine(target, Path.GetRelativePath(source, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(file, destination);
+            }
+            return Path.Combine(target, Path.GetFileName(dll));
+        }
+        var fakeCli = CopyBinaries(cliDll, Path.Combine(fakeRepo, "cli-bin"));
+        var fakeMcp = CopyBinaries(Path.Combine(root, "interfaces", "mcp", "bin", "Release", "net8.0", "Bim.Mcp.dll"), Path.Combine(fakeRepo, "mcp-bin"));
+        void FakePack(string folder, string text) { Directory.CreateDirectory(Path.Combine(fakeRepo, "skills", folder)); File.WriteAllText(Path.Combine(fakeRepo, "skills", folder, "skill.json"), text, new UTF8Encoding(false)); }
+        static string Manifest(string id) => "{\"manifest_version\":1,\"id\":\"" + id + "\",\"version\":\"0.0.1\",\"kind\":\"code\",\"description\":\"test pack\",\"priority\":100,\"rules\":["
+            + "{\"id\":\"living-area\",\"severity\":\"error\",\"target\":{\"room\":\"living*\"},\"check\":{\"op\":\"min\",\"property\":\"area_m2\",\"value\":10},\"message\":\"m\"}]}";
+        FakePack("zz.test.bad-json", "{");
+        FakePack("zz.test.mismatch", Manifest("zz.test.other"));
+        FakePack("zz.test.good", Manifest("zz.test.good"));
+        (int Exit, string Out) RunProcess(string dll, string stdin, params string[] arguments)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+                StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = new UTF8Encoding(false) };
+            start.ArgumentList.Add(dll);
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new Exception("process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            try { process.StandardInput.Write(stdin); process.StandardInput.Close(); } catch (IOException) { }
+            if (!process.WaitForExit(180000)) { process.Kill(true); throw new Exception("timed out: " + dll); }
+            process.WaitForExit();
+            _ = stderr.Result;
+            return (process.ExitCode, stdout.Result.TrimEnd('\r', '\n'));
+        }
+        string FakeTool(string pack) => RunProcess(fakeMcp, ToolLine(Arguments(smallPath, 1, null, pack)) + "\n").Out.Split('\n')[0];
+        (int Exit, string Out, bool Written) FakeCli(string pack)
+        {
+            var output = Path.Combine(outputs, Next() + "-fake-out.json");
+            var result = RunProcess(fakeCli, "", "plan-layouts", smallPath, output, "--alternatives", "1", "--pack", pack);
+            return (result.Exit, result.Out, File.Exists(output));
+        }
+        var goodTool = JsonNode.Parse(FakeTool("zz.test.good"))!.AsObject();
+        var goodCli = FakeCli("zz.test.good");
+        Check(!IsError(goodTool) && goodCli.Exit == 0 && goodCli.Written && Utf8(Text(goodTool)).SequenceEqual(Generated(smallBrief, 1, 0,
+            new[] { new PlannerRule(NamePattern: "living*", MinAreaSquareMetres: 10, MinSideMetres: null, Reference: "zz.test.good living-area") })),
+            "fixture: the copied server and CLI read the scratch repository's skills/ (zz.test.good plans with its rule) | " + Short(Text(goodTool)) + " / " + Short(goodCli.Out));
+        foreach (var (label, pack, expected) in new[]
+        {
+            ("a malformed pack manifest", "zz.test.bad-json", Code("plan_layouts_pack_invalid", "json_invalid")),
+            ("a manifest naming another pack id", "zz.test.mismatch", Code("plan_layouts_pack_invalid", "id")),
+        })
+        {
+            var response = JsonNode.Parse(FakeTool(pack))!.AsObject();
+            var cli = FakeCli(pack);
+            Check(IsError(response) && cli.Exit == 1 && !cli.Written && Text(response) == cli.Out && cli.Out == expected,
+                "refuses " + label + " byte-equal to the CLI envelope | " + Short(Text(response)) + " / " + Short(cli.Out));
+        }
 
         // ---- 6. static: the shared handler, linked, not copied ----
         // Comments stripped: /* */ blocks first, then // to end of line.
