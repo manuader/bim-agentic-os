@@ -30,6 +30,11 @@ using System.Text.Json;
 //      and Kill: an InvalidOperationException/Win32Exception from Kill on an exited child is no unhandled exception (the
 //      run is still reported timed out), injected through a real short-lived child (dotnet --version); a Kill failure on
 //      a child that is still running is not swallowed.
+//   7. P5-20: skills-lock over the packaged skills/: the packaged CLI `skills-lock pin <pkg>/skills lock.json <CABA>` (lock
+//      in a temp folder outside any repository) succeeds, its content_sha256/version and lock bytes equal SkillLocking.Pin
+//      over the same directory in process; packaged CLI verify succeeds and the packaged MCP skills_lock_verify text (and
+//      the in-process SkillLockTool.Verify text) equals its stdout; a tampered packaged skill.json (one byte appended ->
+//      skill_lock_drift; malformed -> skills_invalid) makes both refuse with the same envelope; restored, verify passes.
 internal static class PackageLayoutPackTests
 {
     const string Caba = "ar.caba.codigo-edificacion";
@@ -145,7 +150,10 @@ internal static class PackageLayoutPackTests
         static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         static byte[] Utf8(string text) => new UTF8Encoding(false).GetBytes(text);
         // P5-18: one generate_typology tools/call line to a real MCP server process over stdio; the first stdout line parsed.
-        (bool Ok, bool IsError, string Text, string Raw) McpTypology(string mcpDll, string requestPath)
+        (bool Ok, bool IsError, string Text, string Raw) McpTypology(string mcpDll, string requestPath) =>
+            McpTool(mcpDll, "generate_typology", new JsonObject { ["request_path"] = requestPath });
+        // P5-20: any one tools/call line (name, arguments) to a real MCP server process over stdio.
+        (bool Ok, bool IsError, string Text, string Raw) McpTool(string mcpDll, string toolName, JsonObject arguments)
         {
             var start = new ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
                 StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false) };
@@ -153,7 +161,7 @@ internal static class PackageLayoutPackTests
             using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("MCP process did not start: " + dotnet);
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
-            var line = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 18, ["method"] = "tools/call", ["params"] = new JsonObject { ["name"] = "generate_typology", ["arguments"] = new JsonObject { ["request_path"] = requestPath } } }.ToJsonString();
+            var line = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 18, ["method"] = "tools/call", ["params"] = new JsonObject { ["name"] = toolName, ["arguments"] = arguments } }.ToJsonString();
             try { process.StandardInput.Write(line + "\n"); process.StandardInput.Close(); } catch (IOException) { }
             if (!WaitOrKill(process, 180000)) return (false, true, "", "<timed out>");
             var raw = stdout.Result;
@@ -296,6 +304,108 @@ internal static class PackageLayoutPackTests
                     Check(Hex(cliBytes) == PinnedComposedSha256 && mcp.Ok && Hex(Utf8(mcp.Text)) == PinnedComposedSha256,
                         "P5-19 " + pinLabel + ": the packaged CLI file and the packaged MCP text have the composed pin a8c62da5...", "cli " + Hex(cliBytes) + " mcp " + Hex(Utf8(mcp.Text)) + " | " + mcp.Raw);
             }
+
+            // ---- 7. P5-20: skills-lock over the packaged skills/ (packaged CLI pin/verify, packaged MCP skills_lock_verify) ----
+            var lockDirectory = Path.Combine(caseRoot, "lock");
+            Directory.CreateDirectory(lockDirectory);
+            var lockPath = Path.Combine(lockDirectory, "lock.json");
+            var pin = CliAt(packageDll, "skills-lock", "pin", packageSkills, lockPath, Caba);
+            var inProcess = Bim.Core.SkillLocking.Pin(packageSkills, [Caba]);
+            var expectedSha = inProcess.Packs.Count == 1 ? inProcess.Packs[0].ContentSha256 : "<in-process pin has " + inProcess.Packs.Count.ToString(CultureInfo.InvariantCulture) + " packs>";
+            string? pinnedSha = null, pinnedId = null, pinnedVersion = null, pinSummarySha = null;
+            try
+            {
+                using var pinDocument = JsonDocument.Parse(pin.Out);
+                var pinRoot = pinDocument.RootElement;
+                if (pinRoot.ValueKind == JsonValueKind.Object && pinRoot.TryGetProperty("packs", out var pinPacks) && pinPacks.ValueKind == JsonValueKind.Array && pinPacks.GetArrayLength() == 1)
+                {
+                    pinnedId = Str(pinPacks[0].GetRawText(), "id");
+                    pinnedVersion = Str(pinPacks[0].GetRawText(), "version");
+                    pinnedSha = Str(pinPacks[0].GetRawText(), "content_sha256");
+                }
+                pinSummarySha = Str(pin.Out, "sha256");
+            }
+            catch (JsonException) { }
+            var lockBytes = Read(lockPath);
+            Check(pin.Exit == 0 && Str(pin.Out, "status") == "succeeded" && Str(pin.Out, "mode") == "pin" && Str(pin.Out, "lock") == lockPath && pinnedId == Caba && lockBytes.Length > 0 && pinSummarySha == Hex(lockBytes),
+                "P5-20: the packaged CLI skills-lock pin <pkg>/skills lock.json " + Caba + " (outside any repository) succeeds and writes the lock it reports (lock path, sha256 of the lock bytes)", D(pin) + " lock sha " + Hex(lockBytes));
+            Check(pinnedSha is not null && pinnedSha == expectedSha && inProcess.Packs.Count == 1 && pinnedVersion == inProcess.Packs[0].Version.ToString()
+                    && lockBytes.SequenceEqual(Bim.Core.SkillLockFile.Serialize(inProcess)),
+                "P5-20: the packaged pin's content_sha256 and version equal SkillLocking.Pin over the same packaged skills/ in process, and the lock bytes equal its serialization",
+                "packaged " + (pinnedSha ?? "<none>") + " " + (pinnedVersion ?? "<none>") + " in process " + expectedSha + " | " + D(pin));
+            // Packaging preserves the pack's bytes: the same pack pinned over the repository skills/ has the same hash.
+            var repositoryPin = Bim.Core.SkillLocking.Pin(Path.Combine(root, "skills"), [Caba]);
+            var repositorySha = repositoryPin.Packs.Count == 1 ? repositoryPin.Packs[0].ContentSha256 : "<repository pin has " + repositoryPin.Packs.Count.ToString(CultureInfo.InvariantCulture) + " packs>";
+            Check(pinnedSha is not null && pinnedSha == repositorySha,
+                "P5-20: the packaged pin's content_sha256 equals SkillLocking.Pin over the repository skills/ for " + Caba + " (packaging preserved the pack bytes)",
+                "packaged " + (pinnedSha ?? "<none>") + " repository " + repositorySha);
+            // verify: packaged CLI stdout, packaged MCP skills_lock_verify text and the in-process SkillLockTool.Verify text.
+            void LockParity(string label, bool expectSuccess, string? expectedCode, params (string Code, string Subject)[] expectedIssues)
+            {
+                var cliVerify = CliAt(packageDll, "skills-lock", "verify", packageSkills, lockPath);
+                var mcpVerify = McpTool(packageMcp, "skills_lock_verify", new JsonObject { ["skills_path"] = packageSkills, ["lock_path"] = lockPath });
+                var local = Bim.Mcp.SkillLockTool.Verify(packageSkills, lockPath);
+                string? state = null;
+                bool? verified = null;
+                var issues = new List<(string? Code, string? Subject)>();
+                var issuesRead = false;
+                try
+                {
+                    using var verifyDocument = JsonDocument.Parse(cliVerify.Out);
+                    var verifyRoot = verifyDocument.RootElement;
+                    if (verifyRoot.ValueKind == JsonValueKind.Object)
+                    {
+                        if (verifyRoot.TryGetProperty("packs", out var verifyPacks) && verifyPacks.ValueKind == JsonValueKind.Array && verifyPacks.GetArrayLength() == 1)
+                            state = Str(verifyPacks[0].GetRawText(), "state");
+                        if (verifyRoot.TryGetProperty("verified", out var verifiedValue) && verifiedValue.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                            verified = verifiedValue.GetBoolean();
+                        if (verifyRoot.TryGetProperty("issues", out var verifyIssues) && verifyIssues.ValueKind == JsonValueKind.Array)
+                        {
+                            issuesRead = true;
+                            foreach (var issue in verifyIssues.EnumerateArray())
+                                issues.Add((Str(issue.GetRawText(), "code"), Str(issue.GetRawText(), "subject")));
+                        }
+                    }
+                }
+                catch (JsonException) { }
+                var issuesExpected = issuesRead && issues.Count == expectedIssues.Length
+                    && issues.Zip(expectedIssues).All(pair => pair.First.Code == pair.Second.Code && pair.First.Subject == pair.Second.Subject);
+                var cliExpected = Str(cliVerify.Out, "mode") == "verify" && verified == expectSuccess && issuesExpected && (expectSuccess
+                    ? cliVerify.Exit == 0 && Str(cliVerify.Out, "status") == "succeeded" && state == "ok"
+                    : cliVerify.Exit == 1 && Str(cliVerify.Out, "status") == "failed" && Str(cliVerify.Out, "code") == expectedCode && state == expectedCode);
+                Check(cliExpected, "P5-20 " + label + ": the packaged CLI skills-lock verify " + (expectSuccess ? "succeeds (exit 0, state ok)" : "refuses (exit 1, " + expectedCode + ")")
+                    + " with mode verify, verified " + (expectSuccess ? "true" : "false") + " and exactly the issues ["
+                    + string.Join(", ", expectedIssues.Select(issue => issue.Code + " " + issue.Subject)) + "]", D(cliVerify));
+                Check(mcpVerify.Ok && mcpVerify.IsError == !expectSuccess && mcpVerify.Text == cliVerify.Out,
+                    "P5-20 " + label + ": the packaged mcp/Bim.Mcp.dll skills_lock_verify text equals the packaged CLI verify stdout" + (expectSuccess ? "" : " (isError, the same envelope)"),
+                    "mcp " + mcpVerify.Raw + " | cli " + D(cliVerify));
+                Check(local.Succeeded == expectSuccess && local.Text == cliVerify.Out,
+                    "P5-20 " + label + ": the in-process SkillLockTool.Verify over the same packaged skills/ and lock gives the packaged CLI stdout", "in process " + local.Text + " | cli " + D(cliVerify));
+            }
+            LockParity("the unchanged packaged skills/", true, null);
+            var cabaManifest = Path.Combine(packageSkills, Caba, "skill.json");
+            var cabaOriginal = File.ReadAllBytes(cabaManifest);
+            try
+            {
+                // A still well-formed manifest with other bytes: drift against the pin.
+                File.WriteAllBytes(cabaManifest, [.. cabaOriginal, (byte)'\n']);
+                LockParity("a tampered (well-formed, one byte appended) packaged skill.json", false, "skill_lock_drift", ("skill_lock_drift", Caba));
+                // A malformed manifest: the packaged skills directory itself is refused.
+                File.WriteAllText(cabaManifest, "{");
+                // Two issues in Core's (subject, code) order: the pinned pack's snapshot (subject the pack id) and the
+                // skills directory load (subject the manifest path relative to the skills root).
+                LockParity("a tampered (malformed) packaged skill.json", false, "skills_invalid", ("skills_invalid", Caba), ("skills_invalid", Caba + "/skill.json"));
+            }
+            finally
+            {
+                try { File.WriteAllBytes(cabaManifest, cabaOriginal); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                {
+                    Check(false, "P5-20: the tampered packaged skill.json is restored", error.GetType().Name + ": " + error.Message);
+                }
+            }
+            LockParity("the restored packaged skill.json", true, null);
+            Check(Read(lockPath).SequenceEqual(lockBytes), "P5-20: skills-lock verify (CLI, MCP, in process) never rewrites the lock: its bytes are those the pin wrote", "lock sha " + Hex(Read(lockPath)) + " pinned " + Hex(lockBytes));
 
             // ---- 3. a removed marker: outside any repository there is nothing to fall back to ----
             foreach (var marker in new[] { version, manifest })
