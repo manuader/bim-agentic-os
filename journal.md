@@ -1714,3 +1714,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay223 (cont.)
 - 22:47Z reviews (independent, read-only): 0 blockers. Closed with tests: P1-28 SF1 full-size where holes expected now fails, SF2 SetLength IOException skip, SF3 tiny seams, SF4 Kill Win32Exception/drain (review red 44174751893, green 44178127185); P3-21 layout-independent static checks with checker self-tests, sha cross-check, raw-string stripper 6ed63ca (green 44185326172); P2-28 multi-id gate line, NO_COLOR line-53 refusal, lost-reply code 6ce92ed (green 44190170163). Integrating.
+- 22:49Z integration head 699f99e (relay223-integration on main c633488: 3 clean merges + board/features/contracts/attempts/session/handoff; Phase 1 batch complete → P1-29..P1-31; new P2-29, P3-23) pushed; waiting CI.
