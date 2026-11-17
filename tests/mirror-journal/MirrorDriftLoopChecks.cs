@@ -1486,17 +1486,20 @@ static class MirrorDriftLoopChecks
     // (refused reference_not_found), a dry-run element.delete of A named p2-26-dry-delete (succeeded, dry run), a peek
     // (nothing injected: no failure, complete), the external move of A retried under the same id (succeeded: the two
     // failures land), snapshot 1 and a peek after sequence 0 (two since, incomplete, the move's entry). Each reply equals
-    // RevitJournalQuery.RawRead over one Core tracker given the same changes and failures, member for member. At exit the
-    // scheduled id never matched (p2-26-dry-delete) is written to stderr and the fake exits non-zero; the matched one is
-    // not named.
-    const string GateSchedule = "p2-26-move-a:2,p2-26-dry-delete:3";
+    // RevitJournalQuery.RawRead over one Core tracker given the same changes and failures, member for member. P2-27: then
+    // the external element.delete of A named p2-27-delete-a with an explicit dry_run false (scheduled :1, so it injects:
+    // only dry_run true is a dry run), snapshot 2 and a peek after sequence 0 (three failures, the move's and the delete's
+    // entries). At exit the scheduled id never matched (p2-26-dry-delete) is written to stderr and the fake exits exactly
+    // 1; the matched ones are not named.
+    const string GateSchedule = "p2-26-move-a:2,p2-26-dry-delete:3,p2-27-delete-a:1";
+    const string GateExternal = "p2-26-move-a,p2-27-delete-a";
     const string MissingUid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-0000ffff";
-    static readonly string[] GateRequests = { "p2-26-levels", "p2-26-wall-types", "p2-26-wall-a", "p2-26-snapshot-0", JournalWire, "p2-26-move-a", "p2-26-dry-delete", JournalWire, "p2-26-move-a", "p2-26-snapshot-1", JournalWire };
+    static readonly string[] GateRequests = { "p2-26-levels", "p2-26-wall-types", "p2-26-wall-a", "p2-26-snapshot-0", JournalWire, "p2-26-move-a", "p2-26-dry-delete", JournalWire, "p2-26-move-a", "p2-26-snapshot-1", JournalWire, "p2-27-delete-a", "p2-27-snapshot-2", JournalWire };
 
     static void RunFailureGateLoop(string root, string dotnet, string pwsh, string cliDll, string runDirectory)
     {
         void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "pipe failure gate: " + name, detail);
-        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Failure-Gate.rvt", GateRequests.Length, "p2-26-move-a", GateSchedule);
+        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Failure-Gate.rvt", GateRequests.Length, GateExternal, GateSchedule);
         var document = h.Document;
         if (!h.WaitReady(out var notReady)) { Check(false, "fake add-in pipe ready with -RecorderFailures " + GateSchedule, notReady); return; }
         var levels = h.Command("p2-26-levels", "query.levels", _ => { });
@@ -1521,19 +1524,26 @@ static class MirrorDriftLoopChecks
         var snapshot1 = h.Command("p2-26-snapshot-1", "query.snapshot", _ => { });
         if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the move succeeds", R(snapshot1)); return; }
         replies["g2"] = h.Journal(0);
+        // P2-27: an explicit dry_run false is a write, so the scheduled p2-27-delete-a injects its failure.
+        var delete = h.Command("p2-27-delete-a", "element.delete", w => { w.WriteStartArray("element_uids"); w.WriteStringValue(uidA); w.WriteEndArray(); w.WriteBoolean("dry_run", false); });
+        if (!Succeeded(delete)) { Check(false, "the external element.delete of A named p2-27-delete-a with dry_run false succeeds through the CLI", R(delete)); return; }
+        var snapshot2 = h.Command("p2-27-snapshot-2", "query.snapshot", _ => { });
+        if (!Succeeded(snapshot2)) { Check(false, "the query.snapshot after the delete succeeds", R(snapshot2)); return; }
+        replies["g3"] = h.Journal(0);
 
         var (exited, exit, error) = h.End();
-        Check(exited && exit != 0, "the fake add-in exits non-zero after exactly " + GateRequests.Length + " requests because p2-26-dry-delete was never matched", "exited " + exited + " exit " + exit + " " + error);
-        Check(error.Contains("p2-26-dry-delete", StringComparison.Ordinal) && !error.Contains("p2-26-move-a", StringComparison.Ordinal),
-            "the fake's stderr names the unmatched p2-26-dry-delete and not the matched p2-26-move-a", error);
+        Check(exited && exit == 1, "the fake add-in exits exactly 1 after exactly " + GateRequests.Length + " requests because p2-26-dry-delete was never matched", "exited " + exited + " exit " + exit + " " + error);
+        Check(error.Contains("p2-26-dry-delete", StringComparison.Ordinal) && !error.Contains("p2-26-move-a", StringComparison.Ordinal) && !error.Contains("p2-27-delete-a", StringComparison.Ordinal),
+            "the fake's stderr names the unmatched p2-26-dry-delete and neither the matched p2-26-move-a nor the matched p2-27-delete-a (dry_run false)", error);
         var received = h.Received();
         Check(received.SequenceEqual(GateRequests), "the fake add-in received the expected requests in order", string.Join(",", received));
 
-        MirrorSnapshot s0, s1;
+        MirrorSnapshot s0, s1, s2;
         try
         {
             using (var reply = JsonDocument.Parse(snapshot0.Out)) s0 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
             using (var reply = JsonDocument.Parse(snapshot1.Out)) s1 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
+            using (var reply = JsonDocument.Parse(snapshot2.Out)) s2 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
         }
         catch (Exception parseError) when (parseError is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "the fake's query.snapshot readbacks parse as snapshots", parseError.Message); return; }
         var tick = 0;
@@ -1546,12 +1556,17 @@ static class MirrorDriftLoopChecks
         journal.RecordFailure();
         journal.RecordFailure();
         production["g2"] = Read(s1, true, 0);
+        if (!long.TryParse(uidA[(uidA.LastIndexOf('-') + 1)..], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var deletedA) || deletedA <= 0) { Check(false, "wall A's UniqueId ends in a hex element id", uidA); return; }
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "Delete" }, Array.Empty<string>(), Array.Empty<string>(), new[] { deletedA }) { DocumentPath = document });
+        journal.RecordFailure();
+        production["g3"] = Read(s2, true, 0);
 
         var cases = new (string Name, string Shape, string What)[]
         {
             ("g0", "failures=0 since=0 complete=true existed=false entries=[]", "the first read without peek: no failure yet"),
             ("g1", "failures=0 since=0 complete=true existed=true entries=[]", "a peek after the refused move and the dry-run delete carrying scheduled ids: nothing injected"),
             ("g2", "failures=2 since=2 complete=false existed=true entries=[1]", "a peek after sequence 0 once the retried move succeeded: its two failures, incomplete, the move's entry"),
+            ("g3", "failures=3 since=3 complete=false existed=true entries=[1,2]", "a peek after sequence 0 once the delete with dry_run false succeeded: its one failure added, the move's and the delete's entries"),
         };
         foreach (var (name, shape, what) in cases)
         {
@@ -1563,7 +1578,7 @@ static class MirrorDriftLoopChecks
 
     // P2-26: -RecorderFailures "nope:1" (an id no request carries) is accepted, injects nothing and leaves every journal.read
     // reply byte-equal to the same run without the option; at exit the fake writes the unmatched id to stderr and exits
-    // non-zero, where the option-less run exits 0.
+    // exactly 1 (P2-27), where the option-less run exits 0.
     static readonly string[] UnmatchedRequests = { "p2-26-levels", "p2-26-wall-types", "p2-26-wall-a", "p2-26-snapshot-0", JournalWire, "p2-26-move-a", "p2-26-snapshot-1", JournalWire, JournalWire };
 
     static void RunUnmatchedFailureLoops(string root, string dotnet, string pwsh, string cliDll, string runDirectory)
@@ -1596,7 +1611,7 @@ static class MirrorDriftLoopChecks
         Check(p.Received.SequenceEqual(UnmatchedRequests) && n.Received.SequenceEqual(UnmatchedRequests), "both fakes received the expected requests in order", string.Join(",", p.Received) + " | " + string.Join(",", n.Received));
         Check(FailureShape(p.Replies.Split('\n')[1]) == "failures=0 since=0 complete=true existed=true entries=[1]", "the option-less journal.read after the move reports no failure and the move's entry", FailureShape(p.Replies.Split('\n')[1]));
         Check(n.Replies == p.Replies, "with -RecorderFailures nope:1 every journal.read reply is byte-equal to the option-less run", Head(n.Replies) + " vs " + Head(p.Replies));
-        Check(n.Exited && n.Exit != 0, "with -RecorderFailures nope:1 the fake exits non-zero (nope never matched)", "exited " + n.Exited + " exit " + n.Exit + " " + n.Error);
+        Check(n.Exited && n.Exit == 1, "with -RecorderFailures nope:1 the fake exits exactly 1 (nope never matched)", "exited " + n.Exited + " exit " + n.Exit + " " + n.Error);
         Check(n.Error.Contains("nope", StringComparison.Ordinal) && n.Error.Contains("-RecorderFailures", StringComparison.Ordinal), "with -RecorderFailures nope:1 the fake's stderr names the option and the unmatched id nope", n.Error);
     }
 
