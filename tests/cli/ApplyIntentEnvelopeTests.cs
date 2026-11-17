@@ -31,6 +31,13 @@ using Bim.Core;
 //      access, and the stderr detail fragment " internal error: " occurs once over the intent/edits sources, in IntentPlan.cs.
 internal static class ApplyIntentEnvelopeTests
 {
+    // The intent/edits sources: the named family, plus any interfaces/cli file whose code uses IntentEnvelope or an
+    // IntentPlan member. A verb that only borrows IntentPlan.Internal / IntentPlan.InternalDiagnostic for its catch-all's
+    // stderr detail (P3-19, tests/cli/InternalErrorDelegationTests.cs) keeps its own failed envelope and is not one.
+    static bool IntentFamily(string[] family, string name, string code) =>
+        family.Contains(name, StringComparer.Ordinal) || code.Contains("IntentEnvelope", StringComparison.Ordinal)
+        || code.Replace("IntentPlan.Internal(", "", StringComparison.Ordinal).Replace("IntentPlan.InternalDiagnostic(", "", StringComparison.Ordinal).Contains("IntentPlan", StringComparison.Ordinal);
+
     static readonly Guid ProjectId = Guid.Parse("00000000-0000-0000-0000-0000000000b7");
     static readonly Provenance Source = new("cli apply-intent envelope fixture", "specified");
     const BindingFlags Any = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
@@ -188,7 +195,7 @@ internal static class ApplyIntentEnvelopeTests
         var family = new[] { "ApplyEditsCommand.cs", "ApplyIntentCommand.cs", "DiffEditsCommand.cs", "DiffIntentCommand.cs", "EditsInput.cs", "IntentPlan.cs" };
         var counts = Directory.GetFiles(cliDir, "*.cs")
             .Select(f => (Name: Path.GetFileName(f), Code: ApplyIntentTests.CodeOf(File.ReadAllText(f), blankStrings: false)))
-            .Where(f => family.Contains(f.Name, StringComparer.Ordinal) || f.Code.Contains("IntentPlan", StringComparison.Ordinal) || f.Code.Contains("IntentEnvelope", StringComparison.Ordinal))
+            .Where(f => IntentFamily(family, f.Name, f.Code))
             .Select(f => (f.Name, Count: f.Code.Split(Fragment).Length - 1)).Where(f => f.Count > 0).ToArray();
         Check(counts.Length == 1 && counts[0] == ("IntentPlan.cs", 1), "the failed-envelope JSON " + Fragment + " has one copy over the interfaces/cli intent/edits sources, in IntentPlan.cs",
             string.Join(", ", counts.Select(c => c.Name + " " + c.Count.ToString(CultureInfo.InvariantCulture))));
@@ -275,7 +282,7 @@ internal static class ApplyIntentEnvelopeTests
         {
             var copies = Directory.GetFiles(cliDir, "*.cs")
                 .Select(f => (Name: Path.GetFileName(f), Code: ApplyIntentTests.CodeOf(File.ReadAllText(f), blankStrings: false)))
-                .Where(f => family.Contains(f.Name, StringComparer.Ordinal) || f.Code.Contains("IntentPlan", StringComparison.Ordinal) || f.Code.Contains("IntentEnvelope", StringComparison.Ordinal))
+                .Where(f => IntentFamily(family, f.Name, f.Code))
                 .Select(f => (f.Name, Count: f.Code.Split(copy).Length - 1)).Where(f => f.Count > 0).ToArray();
             Check(copies.Length == 1 && copies[0] == ("IntentPlan.cs", 1), "the internal-error stderr fragment [" + copy + "] has one copy over the interfaces/cli intent/edits sources, in IntentPlan.cs",
                 string.Join(", ", copies.Select(c => c.Name + " " + c.Count.ToString(CultureInfo.InvariantCulture))));

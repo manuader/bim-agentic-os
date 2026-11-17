@@ -1469,7 +1469,10 @@ try {
             Check(duSource.Contains("BoundedInput.ReadText(",StringComparison.Ordinal) && duSource.Contains("DocUpdate.Plan(",StringComparison.Ordinal) && duSource.Contains("GltfExporter.WriteNew(",StringComparison.Ordinal)
                 && new[]{"DocUpdate.Run","DocUpdate.Resume","DocUpdate.Update","Transport","NamedPipe","File.","FileStream","FileMode.","Directory.","ProjectStore"}.All(api=>!duSource.Contains(api,StringComparison.Ordinal)),
                 "doc-update reads only through BoundedInput, plans with DocUpdate.Plan, writes only through GltfExporter.WriteNew and never runs a transport");
-            Check(duSource.Contains("Console.Error.WriteLine(",StringComparison.Ordinal) && duSource.Contains("InternalError",StringComparison.Ordinal),"doc-update writes the type and message of an internal error to stderr");
+            // P3-19: the internal error's type and message reach stderr through IntentPlan.InternalDiagnostic (bytes pinned in
+            // tests/cli/InternalErrorDelegationTests.cs), never a hand-written line.
+            Check(ApplyIntentTests.CodeOf(duSource,blankStrings:false).Contains("Console.Error.WriteLine(IntentPlan.InternalDiagnostic(\"doc-update\", error));",StringComparison.Ordinal) && duSource.Contains("InternalError",StringComparison.Ordinal)
+                && !ApplyIntentTests.CodeOf(duSource,blankStrings:false).Contains(" internal error: ",StringComparison.Ordinal),"doc-update writes the type and message of an internal error to stderr through IntentPlan.InternalDiagnostic");
             Check(duSource.Contains("LibraryCodes.Contains(",StringComparison.Ordinal) && !duSource.Contains("Regex",StringComparison.Ordinal),"doc-update passes on only an explicit allowlist of library codes (no code-shaped message heuristic)");
             var countsAt=duSource.IndexOf("Commands.Steps.Count",StringComparison.Ordinal); var writeAt=duSource.IndexOf("GltfExporter.WriteNew(",StringComparison.Ordinal);
             Check(countsAt>=0 && writeAt>countsAt && !duSource.Contains("JsonDocument.Parse(plan",StringComparison.Ordinal),"doc-update computes its summary from the plan object before writing the file (nothing can fail after the write)");
@@ -1500,6 +1503,9 @@ try {
 
     // ---- P3-17 apply-intent and diff-edits print through IntentEnvelope (tests/cli/ApplyIntentEnvelopeTests.cs) ----
     ApplyIntentEnvelopeTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
+
+    // ---- P3-19 every CLI verb prints its internal error through IntentPlan (tests/cli/InternalErrorDelegationTests.cs) ----
+    InternalErrorDelegationTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
 
     // ---- P6-10 cad-plan-brief draft.json output.json [options] (tests/cli/CadPlanBriefTests.cs) ----
     CadPlanBriefTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
