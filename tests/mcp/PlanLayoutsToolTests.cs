@@ -258,16 +258,23 @@ internal static class PlanLayoutsToolTests
             Check(refusedSet.Status == AlternativeSetStatus.Refused && refusedSet.Refusals.Count > 0, "fixture: a negative weight is a generator refusal in process");
             var refusedLine = JsonSerializer.Serialize(new { status = "failed", code = "plan_layouts_refused",
                 refusals = refusedSet.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) });
+            // The literal line, against serializer or refusal-text drift.
+            Check(refusedLine == "{\"status\":\"failed\",\"code\":\"plan_layouts_refused\",\"refusals\":[{\"code\":\"weights_invalid\",\"subject\":\"weights.area_fit\","
+                + "\"detail\":\"weight must be finite and non-negative\"}]}", "fixture: the refused line is the literal weights_invalid / weights.area_fit envelope | " + refusedLine);
             Check(Bim.Cli.PlanLayoutsCommand.GenerationWeightsProbe is null, "fixture: the weights test seam is null unless a test sets it");
             (string Out, string Err, int Exit, bool Written) refusedCli;
             JsonObject refusedTool;
+            var refusedErrors = new StringWriter();
             Bim.Cli.PlanLayoutsCommand.GenerationWeightsProbe = badWeights;
             try
             {
                 refusedCli = InProcessCli(smallPath);
-                refusedTool = Call("a generator refusal", Arguments(smallPath, null, null, null));
+                Console.SetError(refusedErrors);
+                try { refusedTool = Call("a generator refusal", Arguments(smallPath, null, null, null)); }
+                finally { Console.SetError(serverErr); }
             }
             finally { Bim.Cli.PlanLayoutsCommand.GenerationWeightsProbe = null; }
+            Check(refusedErrors.ToString().Length == 0, "a generator refusal writes nothing to the server's stderr (no diagnostic) | " + Short(refusedErrors.ToString()));
             Check(refusedCli.Out == refusedLine + nl && refusedCli.Err.Length == 0 && refusedCli.Exit == 1 && !refusedCli.Written,
                 "fixture: the refused CLI run prints plan_layouts_refused with the set's refusals, exit 1, no file | " + Short(refusedCli.Out));
             Check(IsError(refusedTool) && Text(refusedTool) == refusedLine && Text(refusedTool) + nl == refusedCli.Out,
@@ -277,6 +284,22 @@ internal static class PlanLayoutsToolTests
                 "the weights seam is reset: the next call answers the default set bytes");
             var again = InProcessCli(smallPath);
             Check(again.Exit == 0 && again.Written && again.Out == baseline.Out && again.Err.Length == 0, "with both seams reset the in-process verb's success line is unchanged");
+
+            // Static: GenerationWeightsProbe is assigned only under tests/, and PlanLayoutsCommand.cs uses it only in its
+            // declaration and the single AlternativeGenerator.Generate( line (comments stripped).
+            var skipped = new[] { ".git", "bin", "obj", "node_modules" };
+            var sources = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+                .Where(f => !Path.GetRelativePath(root, f).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(part => skipped.Contains(part, StringComparer.OrdinalIgnoreCase)))
+                .ToArray();
+            var assigners = sources.Where(f => Regex.IsMatch(CodeOf(File.ReadAllText(f)), @"\bGenerationWeightsProbe\s*=(?!=)"))
+                .Select(f => Path.GetRelativePath(root, f).Replace('\\', '/')).Order(StringComparer.Ordinal).ToArray();
+            Check(assigners.Length > 0 && assigners.All(f => f.StartsWith("tests/", StringComparison.Ordinal)),
+                "GenerationWeightsProbe is assigned only under tests/ [" + string.Join(", ", assigners) + "]");
+            var seamLines = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "PlanLayoutsCommand.cs"))).Split('\n')
+                .Where(line => Regex.IsMatch(line, @"\bGenerationWeightsProbe\b")).Select(line => line.Trim()).ToArray();
+            Check(seamLines.Length == 2 && seamLines.Count(line => line == "internal static ScoringWeights? GenerationWeightsProbe { get; set; }") == 1
+                && seamLines.Count(line => line.Contains("AlternativeGenerator.Generate(", StringComparison.Ordinal)) == 1,
+                "PlanLayoutsCommand.cs uses GenerationWeightsProbe only in its declaration and the single Generate( line [" + string.Join(" | ", seamLines) + "]");
         }
 
         // ---- 4. MCP-only path guard and argument errors ----

@@ -313,8 +313,10 @@ internal static class PlanLayoutsCommand
     internal static Action? GuardedWorkProbe { get; set; }
 
     // P7-22 test seam: null in production (the default ScoringWeights, today's bytes). tests/mcp/PlanLayoutsToolTests.cs
-    // sets invalid weights so the guarded generation returns a refused set (plan_layouts_refused, otherwise unreachable
-    // with the option bounds) through the CLI verb and the MCP tool alike; it is reset after the test.
+    // sets invalid weights so the guarded generation returns a refused set (plan_layouts_refused) through the CLI verb and
+    // the MCP tool alike; it is reset after the test. Without it plan_layouts_refused is unreachable: AlternativeGenerator
+    // refuses only an alternatives count outside 1..64 (AlternativesValue already refuses that as
+    // plan_layouts_alternatives_invalid) or invalid weights (the verb always passes the default ScoringWeights).
     internal static ScoringWeights? GenerationWeightsProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
