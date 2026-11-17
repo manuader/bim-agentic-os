@@ -64,8 +64,11 @@ internal static class IntentPlan
 
     // {"status":"failed","code":<verb>_internal_error}, exit 1, with the stderr detail (also ApplyEditsCommand.Internal).
     public static IntentEnvelope Internal(string verb, Exception error) =>
-        new(JsonSerializer.Serialize(new { status = "failed", code = verb.Replace('-', '_') + "_internal_error" }), 1,
-            verb + " internal error: " + error.GetType().FullName + ": " + error.Message);
+        new(JsonSerializer.Serialize(new { status = "failed", code = verb.Replace('-', '_') + "_internal_error" }), 1, InternalDiagnostic(verb, error));
+
+    // The stderr detail of an internal error, "<verb> internal error: <type>: <message>": the one copy (P3-19). A verb
+    // whose failed envelope is its own (a richer JSON, or a Refusal its Run prints) writes this line and keeps its envelope.
+    public static string InternalDiagnostic(string verb, Exception error) => verb + " internal error: " + error.GetType().FullName + ": " + error.Message;
 
     static IntentStep<T> Refuse<T>(string line) where T : class => IntentStep<T>.Refused(new IntentEnvelope(line, 1));
 }
