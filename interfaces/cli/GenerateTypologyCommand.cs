@@ -218,11 +218,7 @@ internal static class GenerateTypologyCommand
                 : TypologyPipeline.Run(pack, parsed.Request, options);
             json = result.Status == PrototypePipelineStatus.Refused ? "" : TypologyPipelineSerializer.Serialize(result);
         }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine("generate-typology internal error: " + error.GetType().FullName + ": " + error.Message);
-            throw new Refusal(InternalError);
-        }
+        catch (Exception error) { throw InternalRefusal(error); }
         if (result.Status == PrototypePipelineStatus.Refused)
             return new Generated(parsed, result, "", JsonSerializer.Serialize(new { status = "failed", code = Refused, refusals = result.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) }));
         return new Generated(parsed, result, json, null);
@@ -363,6 +359,14 @@ internal static class GenerateTypologyCommand
         double W(string name, double fallback) => members.TryGetValue(name, out var value) ? Number(value, "weights." + name) : fallback;
         return new ScoringWeights(W("area_fit", defaults.AreaFit), W("adjacency", defaults.Adjacency), W("proportions", defaults.Proportions),
             W("compactness", defaults.Compactness), W("perimeter", defaults.Perimeter), W("compliance", defaults.Compliance));
+    }
+
+    // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
+    // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
+    static Refusal InternalRefusal(Exception error)
+    {
+        Console.Error.WriteLine(IntentPlan.InternalDiagnostic("generate-typology", error));
+        return new Refusal(InternalError);
     }
 
     static void Fail(string code, string? detail, string? skill = null)
