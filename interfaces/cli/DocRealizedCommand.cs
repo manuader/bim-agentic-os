@@ -72,11 +72,7 @@ internal static class DocRealizedCommand
             json = DocRealized.Canonical(realized);
         }
         catch (DocRealizedException error) { throw new Refusal(error.Code, error.Detail); }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine("doc-realized internal error: " + error.GetType().FullName + ": " + error.Message);
-            throw new Refusal(InternalError);
-        }
+        catch (Exception error) { throw InternalRefusal(error); }
 
         var bytes = new UTF8Encoding(false).GetBytes(json);
         var line = JsonSerializer.Serialize(new
@@ -127,6 +123,14 @@ internal static class DocRealizedCommand
         if (project.Elements is null || project.Elements.Any(e => e is null || e.GeometryMetres is null || e.Dependencies is null))
             throw new Refusal(DocRealizedCodes.FixtureInvalid, "fixture");
         return project;
+    }
+
+    // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
+    // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
+    static Refusal InternalRefusal(Exception error)
+    {
+        Console.Error.WriteLine(IntentPlan.InternalDiagnostic("doc-realized", error));
+        return new Refusal(InternalError);
     }
 
     static void Fail(string code, string? detail)
