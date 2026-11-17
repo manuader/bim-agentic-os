@@ -165,6 +165,45 @@ internal static class PdfType3GlyphListTests
             var outside = Page("(\\002) Tj BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\002) Tj ET", Type3(affected));
             C(Warnings(outside) == "text-outside-bt@1:4:0;encoding-glyph-unsupported@1:4:4",
                 "a Tj with no font selected does not warn; the Type3 font warns at its own showing Tj", Warnings(outside));
+
+            // Review: a show that emits no text (outside BT ... ET) does not consume the pending warning.
+            var stray = Page("BT /F1 10 Tf ET (\\002) Tj BT 1 0 0 1 50 50 Tm (\\002) Tj ET", Type3(affected));
+            C(Texts(stray) == "\\u0002" && Warnings(stray) == "text-outside-bt@1:4:3;encoding-glyph-unsupported@1:4:6"
+                && Message(stray) == prefix + "/afii10017); their codes are read as text bytes",
+                "a Tj outside BT ... ET with the Type3 font selected keeps only text-outside-bt; the warning fires at the in-BT Tj that shows the code", Texts(stray) + " " + Warnings(stray));
+
+            // Review: ' and " that show an affected code warn at their own index.
+            var quoteFirst = Page("BT /F1 10 Tf 12 TL 1 0 0 1 50 50 Tm (\\002) ' 1 2 (\\004) \" ET", Type3(affected));
+            C(Warnings(quoteFirst) == "encoding-glyph-unsupported@1:4:4" && Message(quoteFirst) == prefix + "/afii10017); their codes are read as text bytes",
+                "a ' showing an affected code warns at the ' and the later \" stays silent", Warnings(quoteFirst) + " " + Message(quoteFirst));
+            var quoteOnly = Page("BT /F1 10 Tf 12 TL 1 0 0 1 50 50 Tm 1 2 (\\005\\004) \" ET", Type3(affected));
+            C(Warnings(quoteOnly) == "encoding-glyph-unsupported@1:4:4" && Message(quoteOnly) == prefix + "/afii10018, /afii10019); their codes are read as text bytes",
+                "a \" showing affected codes warns at the \"", Warnings(quoteOnly) + " " + Message(quoteOnly));
+
+            // Review: Form XObjects. Operators of the form are indexed within the form stream (object 8).
+            static (int Number, byte[] Body) Form(string resources, string content) =>
+                (8, PdfTests.StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 600 400]" + resources, L(content)));
+            string Paths(PdfDocument document) => string.Join("|", document.Pages.SelectMany(p => p.Elements).OfType<PdfText>()
+                .Select(t => I(t.Provenance.ObjectNumber) + ":" + I(t.Provenance.OperatorIndex) + "@" + string.Join(">", t.Provenance.XObjectPath)));
+            // Page: BT 0, Tf 1, Tm 2, ET 3, Do 4, BT 5, Tm 6, Tj 7, ET 8. Form: BT 0, Tm 1, Tj 2, ET 3.
+            var inherited = PdfToUnicodeTests.Page("BT /F1 10 Tf 1 0 0 1 50 50 Tm ET /X1 Do BT 1 0 0 1 50 80 Tm (\\003) Tj ET", Type3(affected), null,
+                "/XObject << /X1 8 0 R >>", Form("", "BT 1 0 0 1 10 10 Tm (\\002) Tj ET"));
+            C(Texts(inherited) == "\\u0002|\\u0003" && Paths(inherited) == "8:2@o4:i4|4:7@" && Warnings(inherited) == "encoding-glyph-unsupported@1:8:2"
+                && Message(inherited) == prefix + "/afii10017); their codes are read as text bytes",
+                "a page Tf then a form showing an affected code with the same font dictionary warns once, at the form's Tj; the later page show is silent",
+                Texts(inherited) + " " + Paths(inherited) + " " + Warnings(inherited) + " " + Message(inherited));
+            // Same font dictionary reached through the form's own resources and Tf: still one warning for the page.
+            var sameDictionary = PdfToUnicodeTests.Page("BT /F1 10 Tf 1 0 0 1 50 50 Tm ET /X1 Do BT 1 0 0 1 50 80 Tm (\\003) Tj ET", Type3(affected), null,
+                "/XObject << /X1 8 0 R >>", Form(" /Resources << /Font << /F1 5 0 R >> >>", "BT /F1 10 Tf 1 0 0 1 10 10 Tm (\\002) Tj ET"));
+            C(Warnings(sameDictionary) == "encoding-glyph-unsupported@1:8:3", "a form selecting the same font dictionary through its own resources shares the page's single warning",
+                Warnings(sameDictionary));
+            // Page: BT 0, Tf 1, Tm 2, Tj 3, ET 4, Do 5. Form: BT 0, Tf 1, Tm 2, Tj 3, ET 4; its /F1 is object 9.
+            var ownFont = PdfToUnicodeTests.Page("BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\002) Tj ET /X1 Do", Type3(affected), null,
+                "/XObject << /X1 8 0 R >>", Form(" /Resources << /Font << /F1 9 0 R >> >>", "BT /F1 10 Tf 1 0 0 1 10 10 Tm (\\002) Tj ET"), (9, L(Type3(affected))));
+            var ownMessages = string.Join(" / ", ownFont.Warnings.Select(w => w.Message));
+            C(Warnings(ownFont) == "encoding-glyph-unsupported@1:4:3;encoding-glyph-unsupported@1:8:3"
+                && ownMessages == prefix + "/afii10017); their codes are read as text bytes / " + prefix.Replace("(object 5)", "(object 9)", StringComparison.Ordinal) + "/afii10017); their codes are read as text bytes",
+                "a form whose /F1 resolves to a different font dictionary warns on its own", Warnings(ownFont) + " " + ownMessages);
         }
         catch (Exception error) { C(false, "shown unexpected", error.GetType().Name + ": " + error.Message); }
     }
