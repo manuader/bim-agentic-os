@@ -246,6 +246,35 @@ internal static class DocUpdateToolTests
         for (var i = 0; i <= 100_000; i++) bigMap.Append(i == 0 ? "" : ",").Append("\"doc:k").Append(N(i)).Append("\":\"x\"");
         Refused("a realized map over the entry bound", Failed("doc_update_input_bound_exceeded", "realized"), r: Input("big.realized.json", bigMap.Append('}').ToString()));
 
+        // A lone surrogate escape (\ud800) is valid JSON but not text: reading it is the input's typed refusal on the CLI
+        // (exit 1, one stdout line) and through the tool, never a crash or an untyped code.
+        const string Lone = "\\ud800";
+        Refused("a realized value that is a lone surrogate", Failed("doc_update_realized_invalid"), r: Input("lone-value.realized.json", "{\"doc:a\":\"" + Lone + "\"}"));
+        Refused("a realized key that is a lone surrogate", Failed("doc_update_realized_invalid"), r: Input("lone-key.realized.json", "{\"" + Lone + "\":\"x\"}"));
+        Refused("a bindings door symbol that is a lone surrogate", Failed("doc_update_bindings_invalid"), g: Input("lone-symbol.bindings.json", goodBindings[..^1] + ",\"door_symbol\":\"" + Lone + "\"}"));
+        Refused("a bindings document path that is a lone surrogate", Failed("doc_update_bindings_invalid"),
+            g: Input("lone-path.bindings.json", "{\"document\":{\"path\":\"" + Lone + "\",\"unique_id\":\"x\"},\"levels\":{}}"));
+        Refused("a bindings level key that is a lone surrogate", Failed("doc_update_bindings_invalid"),
+            g: Input("lone-level.bindings.json", "{\"document\":{\"path\":\"C:\\\\a\\\\b.rvt\",\"unique_id\":\"x\"},\"levels\":{\"" + Lone + "\":\"Level 1\"}}"));
+        Refused("a bindings level name that is a lone surrogate", Failed("doc_update_bindings_invalid"),
+            g: Input("lone-level-name.bindings.json", "{\"document\":{\"path\":\"C:\\\\a\\\\b.rvt\",\"unique_id\":\"x\"},\"levels\":{\"" + Guid.Empty.ToString("D") + "\":\"" + Lone + "\"}}"));
+        Refused("a dependents UniqueId that is a lone surrogate", Failed("doc_update_dependents_invalid"), d: Input("lone-uid.dependents.json", "{\"k\":[\"" + Lone + "\"]}"));
+        Refused("a dependents key that is a lone surrogate", Failed("doc_update_dependents_invalid"), d: Input("lone-key.dependents.json", "{\"" + Lone + "\":[]}"));
+        {
+            // A Project string (the provenance source) that is a lone surrogate: either the deserializer refuses it, which is
+            // doc_update_project_invalid (before), or it reads it and the plan is written; never a crash or another code.
+            var lonely = JsonSerializer.Serialize(before);
+            var at = lonely.IndexOf("mcp-doc-update-tests", StringComparison.Ordinal);
+            Check(at > 0, "fixture: the before Project text holds the provenance source");
+            var bp = Input("lone.before.json", lonely[..at] + Lone + lonely[(at + "mcp-doc-update-tests".Length)..]);
+            var cli = Cli(bp, okAfter, okRealized, okBindings, null);
+            var response = Call("a before Project string that is a lone surrogate", Arguments(bp, okAfter, okRealized, okBindings, null));
+            Check(cli.Exit == 1 ? cli.Out == Failed("doc_update_project_invalid", "before") && cli.File is null : cli.Exit == 0 && cli.File is not null,
+                "a before Project string that is a lone surrogate: the CLI refuses doc_update_project_invalid (before) or plans | exit " + cli.Exit + " " + Short(cli.Out));
+            Check(IsError(response) == (cli.Exit == 1) && (cli.Exit == 1 ? Text(response) == cli.Out : cli.File is not null && Utf8(Text(response)).AsSpan().SequenceEqual(cli.File)),
+                "a before Project string that is a lone surrogate: the tool text is the CLI line or file | " + Short(Text(response)));
+        }
+
         // Library refusals: the code the library raises (a RevitCommandException's field as detail).
         static string LibraryLine(Project b, Project a, RevitBindings g, IReadOnlyDictionary<string, string> r, IReadOnlyDictionary<string, IReadOnlyList<string>>? d = null)
         {
