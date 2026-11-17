@@ -369,14 +369,14 @@ internal static class CatalogueReportTests
                         problem = (markSparse ?? MarkSparse)(big);
                         if (problem is null) (setLength ?? ((stream, length) => stream.SetLength(length)))(big, bigLength);
                     }
-                    finally { }
+                    catch (IOException e) { problem = "the 1 GiB + 1 file could not be created: " + e.GetType().Name + ": " + e.Message; }
                     (long Bytes, string? Skip) measured = problem is null ? (onDisk ?? OnDisk)(path) : (-1, problem);
                     string? fail = null;
                     if (measured.Skip is null && measured.Bytes >= bigCeiling)
                     {
                         var held = "the 1 GiB + 1 file holds " + measured.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes on disk";
-                        _ = holesExpected ?? HolesExpected();
-                        measured.Skip = "the volume keeps no holes: " + held;
+                        if (holesExpected ?? HolesExpected()) fail = "holes are expected on this OS but " + held;
+                        else measured.Skip = "the volume keeps no holes: " + held;
                     }
                     if (measured.Skip is not null || fail is not null) result = (measured.Skip, fail, 0, "", 0, measured.Bytes, null);
                     else
