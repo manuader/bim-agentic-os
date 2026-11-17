@@ -65,7 +65,12 @@ internal static class InternalErrorEnvelopeToolTests
                 var code = CodeOf(File.ReadAllText(file));
                 var name = Path.GetFileName(file);
                 var found = new List<string>();
-                foreach (var pattern in new[] { "Failure(InternalError", "Failure(AuditVerifyTool.InternalError", "Failed(AuditVerifyTool.InternalError", "Failed(\"audit_verify_internal_error\"" })
+                // A bare InternalError names audit_verify_internal_error only inside AuditVerifyTool.cs (MirrorDriftTool's own
+                // InternalError is mirror_drift_internal_error); elsewhere the code is reached as AuditVerifyTool.InternalError
+                // or the literal.
+                var patterns = new List<string> { "Failure(AuditVerifyTool.InternalError", "Failed(AuditVerifyTool.InternalError", "Failed(\"audit_verify_internal_error\"" };
+                if (name == "AuditVerifyTool.cs") patterns.AddRange(new[] { "Failure(InternalError", "Failed(InternalError" });
+                foreach (var pattern in patterns)
                     if (code.Contains(pattern, StringComparison.Ordinal)) found.Add(name + ": " + pattern);
                 var literals = Occurrences(code, "\"audit_verify_internal_error\"");
                 var declared = name == "AuditVerifyTool.cs" && code.Contains("public const string InternalError = \"audit_verify_internal_error\";", StringComparison.Ordinal) ? 1 : 0;
