@@ -24,7 +24,8 @@ namespace Bim.Cad;
 // P6-24: that warning is given at the first show operator (Tj, TJ, ', ") that shows an affected code (a code whose
 // /Differences name is such a name and that the ToUnicode CMap does not map), not at the Tf, and lists only the names
 // of the affected codes that operator shows (code order, deduplicated, at most eight); a font selected but never
-// showing an affected code is silent.
+// showing an affected code is silent. Only a show that emits text counts: one outside BT ... ET or at a non-finite
+// position keeps the warning pending.
 internal sealed class PdfContentInterpreter
 {
     private readonly PdfFile file;
@@ -326,8 +327,7 @@ internal sealed class PdfContentInterpreter
                     }
                     if (unmapped) WarnUnmapped(objectNumber, operatorIndex, op);
                     if (unknownGlyph is not null) WarnUnknownGlyph(unknownGlyph, objectNumber, operatorIndex, op);
-                    WarnUnsupportedGlyphs(unsupported, objectNumber, operatorIndex);
-                    Show(joined.ToString(), byteCount, objectNumber, operatorIndex, op);
+                    if (Show(joined.ToString(), byteCount, objectNumber, operatorIndex, op)) WarnUnsupportedGlyphs(unsupported, objectNumber, operatorIndex);
                 }
                 else Warn("operand-error", objectNumber, operatorIndex, "TJ expects an array");
                 break;
@@ -411,8 +411,7 @@ internal sealed class PdfContentInterpreter
         if (state.Decoder is not null) file.ChargeInterpreted(text.Length);
         if (unmapped) WarnUnmapped(objectNumber, operatorIndex, op);
         if (unknownGlyph is not null) WarnUnknownGlyph(unknownGlyph, objectNumber, operatorIndex, op);
-        WarnUnsupportedGlyphs(ShownUnsupported(bytes, null), objectNumber, operatorIndex);
-        Show(text, 0, objectNumber, operatorIndex, op);
+        if (Show(text, 0, objectNumber, operatorIndex, op)) WarnUnsupportedGlyphs(ShownUnsupported(bytes, null), objectNumber, operatorIndex);
     }
 
     // P6-24: the affected names of a Type3 font (by code) and its ToUnicode CMap, kept until the warning is given.
@@ -508,29 +507,32 @@ internal sealed class PdfContentInterpreter
         return decoder;
     }
 
-    private void Show(string text, long byteCount, int objectNumber, int operatorIndex, string op)
+    // Adds the text element; false when the show emits no text (outside BT ... ET or a non-finite position or height),
+    // which then gives no encoding-glyph-unsupported (P6-24 review: only a show that emits text counts).
+    private bool Show(string text, long byteCount, int objectNumber, int operatorIndex, string op)
     {
         file.ChargeInterpreted(byteCount);
         if (!inText)
         {
             Warn("text-outside-bt", objectNumber, operatorIndex, op + " outside BT ... ET");
-            return;
+            return false;
         }
         var rendering = PdfMatrix.Translation(0, state.Rise).Then(textMatrix).Then(state.Ctm);
         var origin = new Point2(rendering.E, rendering.F);
         if (!rendering.IsFinite)
         {
             Warn("operand-error", objectNumber, operatorIndex, op + " gives a non-finite text position");
-            return;
+            return false;
         }
         var height = Math.Abs(state.FontSize) * Hypot(rendering.C, rendering.D);
         if (!double.IsFinite(height))
         {
             Warn("operand-error", objectNumber, operatorIndex, op + " gives a non-finite text height");
-            return;
+            return false;
         }
         var rotation = PdfGeometry.AngleDegrees(rendering.A, rendering.B);
         elements.Add(new PdfText(Provenance(objectNumber, operatorIndex, op), origin, text, state.FontName, state.FontSize, height, rotation));
+        return true;
     }
 
     // sqrt(x^2 + y^2) without overflow for large finite components.
