@@ -231,7 +231,8 @@ internal static class CatalogueReportTests
             if (content is not null) File.WriteAllBytes(Path.Combine(c.Run, SaveAsName), content);
             return c;
         }
-        (int Exit, string Out) SaveAsRun(Case c, int? maxSaveAs = null) => maxSaveAs is null ? Report(c) : CatalogueReportCommand.Execute(["catalogue-report", "--run", c.Run], c.Root, CatalogueReportCommand.MaxCopyBytes, maxSaveAs.Value);
+        // P1-26: the save_as file is hashed in a stream through the copy's Hash(), under the copy's cap (maxCopyBytes).
+        (int Exit, string Out) SaveAsRun(Case c, long? maxCopy = null) => Report(c, maxCopy: maxCopy);
         string SaveAsOf((int Exit, string Out) r) => r.Exit == 0 ? Raw(Json(r.Out), "save_as") : D(r);
         // The pass report with the save_as member appended right after copy, nothing else changed.
         bool Appended(Case c, (int Exit, string Out) r, string member) => r.Exit == 0 && r.Out.Replace(c.Name, pass.Name, StringComparison.Ordinal) == first.Out[..^1] + ",\"save_as\":" + member + "}";
@@ -266,9 +267,40 @@ internal static class CatalogueReportTests
         Directory.CreateDirectory(Path.Combine(folderSaveAs.Run, SaveAsName));
         Check(SaveAsOf(SaveAsRun(folderSaveAs)) == SaveAs("unreadable", "input_not_regular_file", SaveAsName, saveAsSha, null, null), "a folder in place of the save_as file is unreadable (input_not_regular_file)");
         var cappedSaveAs = MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), SaveAsBytes);
-        Check(SaveAsOf(SaveAsRun(cappedSaveAs, (int)saveAsLength)) == saveAsMatches && SaveAsOf(SaveAsRun(cappedSaveAs, (int)saveAsLength - 1)) == SaveAs("unreadable", "input_too_large", SaveAsName, saveAsSha, null, null),
-            "a save_as file of exactly the read cap is hashed; one byte over is unreadable (input_too_large)", SaveAsOf(SaveAsRun(cappedSaveAs, (int)saveAsLength - 1)));
-        Check(CatalogueReportCommand.MaxSaveAsBytes == 1024 * 1024 * 1024, "the save_as read cap is 1 GiB");
+        var atSaveAsCap = SaveAsRun(cappedSaveAs, saveAsLength);
+        var overSaveAsCap = SaveAsRun(cappedSaveAs, saveAsLength - 1);
+        Check(SaveAsOf(atSaveAsCap) == saveAsMatches && Raw(Json(atSaveAsCap.Out), "copy") == passCopy
+            && SaveAsOf(overSaveAsCap) == SaveAs("unreadable", "input_too_large", SaveAsName, saveAsSha, null, null) && Raw(Json(overSaveAsCap.Out), "copy") == passCopy,
+            "a save_as file of exactly the copy hashing cap is hashed; one byte over is unreadable (input_too_large), the copy unchanged", SaveAsOf(atSaveAsCap) + " " + SaveAsOf(overSaveAsCap));
+        Check(CatalogueReportCommand.MaxCopyBytes == 8L * 1024 * 1024 * 1024
+            && typeof(CatalogueReportCommand).GetField("MaxSaveAsBytes", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static) is null
+            && typeof(CatalogueReportCommand).GetMethod("Execute", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)?.GetParameters().Length == 3,
+            "the save_as file has no cap of its own: the copy's 8 GiB hashing cap (MaxSaveAsBytes and its Execute seam are gone)");
+        if (OperatingSystem.IsLinux())
+        {
+            // A sparse file of 1 GiB + 1 byte of zeros (the old whole-file read cap + 1): hashed in a stream, never held
+            // whole in memory, so it is matches (or mismatch) instead of unreadable/input_too_large.
+            const long bigLength = 1024L * 1024 * 1024 + 1;
+            const string bigSha = "6d9bfe50425f2dfe4e2ac07efee1f0bc9d567348ad4aed62704ffe6f5884e9a8";
+            foreach (var (label, recorded, expected) in new[]
+            {
+                ("matches", bigSha, SaveAs("matches", null, SaveAsName, bigSha, bigSha, bigLength)),
+                ("mismatch", saveAsSha, SaveAs("mismatch", "sha256", SaveAsName, saveAsSha, bigSha, bigLength)),
+            })
+            {
+                var bigCase = MakeSaveAs(WithSaveAs(saveAsPath, recorded), null);
+                var bigPath = Path.Combine(bigCase.Run, SaveAsName);
+                using (var big = new FileStream(bigPath, FileMode.CreateNew, FileAccess.Write)) big.SetLength(bigLength);
+                var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                var bigRun = SaveAsRun(bigCase);
+                var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                File.Delete(bigPath);
+                Check(SaveAsOf(bigRun) == expected && Raw(Json(bigRun.Out), "copy") == passCopy,
+                    "a save_as file over the old 1 GiB read cap is hashed in a stream: " + label, SaveAsOf(bigRun));
+                Check(allocated < 64L * 1024 * 1024, "a save_as file over 1 GiB is never read into one byte[] (" + label + ")", "allocated " + allocated.ToString(CultureInfo.InvariantCulture) + " bytes");
+            }
+        }
+        else skip("a save_as file over the old 1 GiB read cap is hashed in a stream", "sparse files are used on Linux only");
         if (OperatingSystem.IsLinux())
         {
             var fifoSaveAs = MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), null);
