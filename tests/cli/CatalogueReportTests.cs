@@ -300,14 +300,24 @@ internal static class CatalogueReportTests
                 var info = new ProcessStartInfo(file) { UseShellExecute = false, RedirectStandardOutput = true };
                 foreach (var arg in args) info.ArgumentList.Add(arg);
                 using var tool = Process.Start(info) ?? throw new System.ComponentModel.Win32Exception(file + " did not start");
-                var output = tool.StandardOutput.ReadToEnd();
-                tool.WaitForExit(timeoutMs);
-                return (0, output, false, false);
+                var output = tool.StandardOutput.ReadToEndAsync();
+                if (!tool.WaitForExit(timeoutMs))
+                {
+                    try { tool.Kill(entireProcessTree: true); }
+                    catch (InvalidOperationException) { }
+                    return (-1, "", true, tool.WaitForExit(10000));
+                }
+                tool.WaitForExit();
+                return (tool.ExitCode, output.Wait(10000) ? output.Result : "", false, false);
             }
             // Bytes `du -k` says the file holds on disk, or the reason they could not be measured (the Skip reason).
             static (long Bytes, string? Skip) DuBytes(string path, string duFile, Func<string, string[], int, (int Exit, string Out, bool TimedOut, bool Killed)> runner)
             {
-                var du = runner(duFile, ["-k", path], duTimeoutMs);
+                (int Exit, string Out, bool TimedOut, bool Killed) du;
+                try { du = runner(duFile, ["-k", path], duTimeoutMs); }
+                catch (System.ComponentModel.Win32Exception e) { return (-1, "du could not be started: " + e.Message); }
+                if (du.TimedOut) return (-1, "du timed out after " + (duTimeoutMs / 1000).ToString(CultureInfo.InvariantCulture) + " s and was " + (du.Killed ? "killed" : "not stopped by kill"));
+                if (du.Exit != 0) return (-1, "du exited " + du.Exit.ToString(CultureInfo.InvariantCulture));
                 return long.TryParse(du.Out.Split('\t', ' ')[0].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var kib)
                     ? (kib * 1024, null)
                     : (-1, "du printed no size");
@@ -343,11 +353,13 @@ internal static class CatalogueReportTests
                     using (var big = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
                     {
                         problem = (markSparse ?? MarkSparse)(big);
-                        if (problem is not null) throw new IOException(problem);
-                        big.SetLength(bigLength);
+                        if (problem is null) big.SetLength(bigLength);
                     }
                     (long Bytes, string? Skip) measured = problem is null ? (onDisk ?? OnDisk)(path) : (-1, problem);
-
+                    if (measured.Skip is null && measured.Bytes >= bigCeiling)
+                        measured.Skip = "the volume keeps no holes: the 1 GiB + 1 file holds " + measured.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes on disk";
+                    if (measured.Skip is not null) result = (measured.Skip, 0, "", 0, measured.Bytes, null);
+                    else
                     {
                         var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
                         var report = run(c);
@@ -357,7 +369,8 @@ internal static class CatalogueReportTests
                 }
                 finally
                 {
-                    (delete ?? File.Delete)(path);
+                    try { (delete ?? File.Delete)(path); }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException) { cleanup = e.GetType().Name + ": " + e.Message; }
                 }
                 result.Cleanup = cleanup;
                 return result;
