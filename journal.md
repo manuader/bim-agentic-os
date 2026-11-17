@@ -1670,3 +1670,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 10:11Z integration f395196 CI 44058574501 success (9/9) → main fast-forwarded (07f9d65..f395196). P7-20, P5-21, P6-22 ✅; new P5-23, P6-24, P7-22. Progress 213/231 (92.2 %). Worktrees retired (branches relay217-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-17T10:11:58Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P3-20, P10-23/P10-24 (relay215/213; P10-23 BcfExportCommand.cs, P10-24 JurisdictionResolveCommand.cs, P3-20 other cli verbs — disjoint); then P4-21/P4-22, P1-27, P2-27 (relay216); then P5-22 and P7-21 (both register in McpServer.cs and edit tools/list pins in tests/mcp + tests/revit-commands and 4 csproj links — serialize), P5-23, P6-23/P6-24, P7-22. ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay219 — 2026-11-17T10:52:50Z (Claude, cloud scheduled)
+- 10:52Z LOCK taken (was FREE; relay217 released 2026-11-17T10:11:58Z).
