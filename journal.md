@@ -1707,3 +1707,7 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay223 — 2026-11-17T19:53:00Z (Claude, cloud scheduled)
 - 19:53Z LOCK taken (was FREE; relay221 released 2026-11-17T18:58:12Z).
 - 20:53Z picked P2-28 (phase 2), P3-21 (phase 3), P1-28 (phase 1) — oldest-touched (relay219/220); disjoint files. Workers green: P2-28 bbc2588 (probe red 44163810969, green 44167542770; 0 attempts), P3-21 afd6132 (red 44163877978, green 44170314032; 1 attempt — static check too broad, narrowed to AuditVerifyTool; scope +tests/cli/InternalErrorDelegationTests.cs static pin), P1-28 546909a (red 44164056844, green 44167597560; 0 attempts). Next: independent reviews.
+
+## Relay224 — 2026-11-17T21:53:06Z (Claude, cloud scheduled)
+- 21:54Z relay224 BACKS OFF: relay223 LOCK heartbeat 20:53:24Z is stale but relay223 is live (pushed relay223-P1-28 at 21:16:42Z). No takeover, no work; heartbeat set to that push time. relay223: refresh last_heartbeat on each task edge.
+**NEXT STEP:** relay223 continues (reviews/integration of P2-28, P3-21, P1-28) and releases the lock.
