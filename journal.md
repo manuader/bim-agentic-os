@@ -1651,3 +1651,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay216 — 2026-11-17T04:53:15Z (Claude, cloud scheduled)
 - 04:53Z LOCK taken (was FREE; relay215 released 2026-11-17T04:36:50Z).
+- 05:37Z picked P4-20 (phase 4), P1-26 (phase 1), P2-26 (phase 2) — oldest-touched (relay214). Workers green: P4-20 000b1ce (red 44020772433, green 44022220986; 1 attempt — static guard token too broad), P1-26 2c7ffca (red 44020476970, green 44021609472; 0 attempts), P2-26 4c143c3 (red 44020700125, green 44022729310; 0 attempts). Next: independent reviews.
