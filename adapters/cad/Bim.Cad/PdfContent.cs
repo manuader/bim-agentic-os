@@ -20,7 +20,12 @@ namespace Bim.Cad;
 // per font and page at the Tf; a Type3 font keeps the byte decoding of /Differences names outside the glyph list
 // without encoding-glyph-unknown.
 // P6-22: a Type3 /Differences name that is a real glyph-list name the reader does not map (PdfGlyphNames.IsGlyphListName)
-// warns encoding-glyph-unsupported once per font and page at the Tf; its codes keep the byte decoding.
+// warns encoding-glyph-unsupported once per font and page; its codes keep the byte decoding.
+// P6-24: that warning is given at the first show operator (Tj, TJ, ', ") that shows an affected code (a code whose
+// /Differences name is such a name and that the ToUnicode CMap does not map), not at the Tf, and lists only the names
+// of the affected codes that operator shows (code order, deduplicated, at most eight); a font selected but never
+// showing an affected code is silent. Only a show that emits text counts: one outside BT ... ET or at a non-finite
+// position keeps the warning pending.
 internal sealed class PdfContentInterpreter
 {
     private readonly PdfFile file;
@@ -29,6 +34,8 @@ internal sealed class PdfContentInterpreter
     private readonly Stack<GraphicsState> stack = new();
     private readonly HashSet<int> activeForms = new();
     private readonly Dictionary<object, PdfFontDecoder?> fontDecoders = new(ReferenceEqualityComparer.Instance);
+    // P6-24: Type3 decoders whose encoding-glyph-unsupported warning is still pending on this page.
+    private readonly Dictionary<PdfFontDecoder, Type3GlyphList> pendingGlyphLists = new();
     private List<PdfSubpath> subpaths = new();
     private List<PdfSegment> segments = new();
     private GraphicsState state = new(PdfMatrix.Identity, 1, "", 0, 0, 0, null);
@@ -303,11 +310,13 @@ internal sealed class PdfContentInterpreter
                     long byteCount = 0;
                     var unmapped = false;
                     string? unknownGlyph = null;
+                    bool[]? unsupported = null;
                     foreach (var item in pieces)
                     {
                         if (item is PdfString piece)
                         {
                             var decoded = Decode(piece.Bytes, out var missing, out var glyph);
+                            unsupported = ShownUnsupported(piece.Bytes, unsupported);
                             if (state.Decoder is not null) file.ChargeInterpreted(decoded.Length);
                             joined.Append(decoded);
                             unmapped |= missing;
@@ -318,7 +327,7 @@ internal sealed class PdfContentInterpreter
                     }
                     if (unmapped) WarnUnmapped(objectNumber, operatorIndex, op);
                     if (unknownGlyph is not null) WarnUnknownGlyph(unknownGlyph, objectNumber, operatorIndex, op);
-                    Show(joined.ToString(), byteCount, objectNumber, operatorIndex, op);
+                    if (Show(joined.ToString(), byteCount, objectNumber, operatorIndex, op)) WarnUnsupportedGlyphs(unsupported, objectNumber, operatorIndex);
                 }
                 else Warn("operand-error", objectNumber, operatorIndex, "TJ expects an array");
                 break;
@@ -402,7 +411,31 @@ internal sealed class PdfContentInterpreter
         if (state.Decoder is not null) file.ChargeInterpreted(text.Length);
         if (unmapped) WarnUnmapped(objectNumber, operatorIndex, op);
         if (unknownGlyph is not null) WarnUnknownGlyph(unknownGlyph, objectNumber, operatorIndex, op);
-        Show(text, 0, objectNumber, operatorIndex, op);
+        if (Show(text, 0, objectNumber, operatorIndex, op)) WarnUnsupportedGlyphs(ShownUnsupported(bytes, null), objectNumber, operatorIndex);
+    }
+
+    // P6-24: the affected names of a Type3 font (by code) and its ToUnicode CMap, kept until the warning is given.
+    private sealed record Type3GlyphList(string Reference, string?[] Names, PdfToUnicode? CMap);
+
+    // Marks the shown codes of the current font whose warning is pending and that the ToUnicode CMap does not map.
+    private bool[]? ShownUnsupported(byte[] bytes, bool[]? shown)
+    {
+        if (state.Decoder is not { } decoder || !pendingGlyphLists.TryGetValue(decoder, out var glyphs)) return shown;
+        foreach (var code in bytes)
+            if (glyphs.Names[code] is not null && !(glyphs.CMap?.TryMap(code, out _) ?? false)) (shown ??= new bool[256])[code] = true;
+        return shown;
+    }
+
+    private void WarnUnsupportedGlyphs(bool[]? shown, int objectNumber, int operatorIndex)
+    {
+        if (shown is null || state.Decoder is not { } decoder || !pendingGlyphLists.Remove(decoder, out var glyphs)) return;
+        var names = new List<string>();
+        for (var code = 0; code < 256; code++)
+            if (shown[code] && glyphs.Names[code] is { } glyph && !names.Contains(glyph, StringComparer.Ordinal)) names.Add(glyph);
+        Warn("encoding-glyph-unsupported", objectNumber, operatorIndex, "font /" + state.FontName + glyphs.Reference
+            + " is a Type3 font whose /Differences names glyph-list names the reader does not map ("
+            + string.Join(", ", names.Take(MaxListedGlyphNames).Select(name => "/" + name)) + (names.Count > MaxListedGlyphNames ? ", ..." : "")
+            + (glyphs.CMap is not null ? "); codes that the ToUnicode CMap does not map are read as text bytes" : "); their codes are read as text bytes"));
     }
 
     private string Decode(byte[] bytes, out bool unmapped, out string? unknownGlyph)
@@ -419,7 +452,8 @@ internal sealed class PdfContentInterpreter
         Warn("tounicode-unmapped", objectNumber, operatorIndex, op + " shows codes that the ToUnicode CMap of font /" + state.FontName + " does not map (U+FFFD)");
 
     // The decoder of the named font in the current resources, cached per font dictionary for the page; null keeps the
-    // default decoding. Warnings are given once, when the font is first selected on the page.
+    // default decoding. Warnings are given once, when the font is first selected on the page (encoding-glyph-unsupported:
+    // at the first operator showing an affected code, P6-24).
     private const int MaxListedGlyphNames = 8;
 
     private PdfFontDecoder? FontDecoder(string name, Dictionary<string, object>? resources, int objectNumber, int operatorIndex)
@@ -430,7 +464,8 @@ internal sealed class PdfContentInterpreter
         if (fontDecoders.TryGetValue(font, out var cached)) return cached;
         var composite = file.IsName(font, "Subtype", "Type0");
         var identity = file.Resolve(PdfFile.Get(font, "Encoding")) is PdfName { Value: "Identity-H" or "Identity-V" };
-        var label = "font /" + name + (reference is PdfRef r ? " (object " + r.Number.ToString(CultureInfo.InvariantCulture) + ")" : "");
+        var objectLabel = reference is PdfRef r ? " (object " + r.Number.ToString(CultureInfo.InvariantCulture) + ")" : "";
+        var label = "font /" + name + objectLabel;
         PdfFontDecoder? decoder = null;
         PdfToUnicode? cmap = null;
         var toUnicode = PdfFile.Get(font, "ToUnicode");
@@ -455,42 +490,49 @@ internal sealed class PdfContentInterpreter
         };
         if (encoding?.UnknownBase is { } unknownBase)
             Warn("encoding-base-unknown", objectNumber, operatorIndex, label + " has /BaseEncoding " + unknownBase + ", not /WinAnsiEncoding, /MacRomanEncoding or /StandardEncoding; codes outside /Differences that the ToUnicode CMap does not map are read as text bytes");
+        string?[]? unsupportedNames = null;
         if (encoding is not null && file.IsName(font, "Subtype", "Type3"))
         {
-            if (encoding.UnsupportedGlyphListNames is { Count: > 0 } unsupported)
-                Warn("encoding-glyph-unsupported", objectNumber, operatorIndex, label + " is a Type3 font whose /Differences names glyph-list names the reader does not map ("
-                    + string.Join(", ", unsupported.Take(MaxListedGlyphNames).Select(glyph => "/" + glyph)) + (unsupported.Count > MaxListedGlyphNames ? ", ..." : "")
-                    + (cmap is not null ? "); codes that the ToUnicode CMap does not map are read as text bytes" : "); their codes are read as text bytes"));
+            if (encoding.UnsupportedGlyphListNames.Count > 0)
+            {
+                unsupportedNames = new string?[256];
+                for (var code = 0; code < 256; code++)
+                    if (encoding.UnknownName((byte)code) is { } glyph && PdfGlyphNames.IsGlyphListName(glyph)) unsupportedNames[code] = glyph;
+            }
             encoding = encoding.WithoutUnknownNames;
         }
         if (cmap is not null || encoding is not null) decoder = new PdfFontDecoder(composite, identity, cmap, encoding);
+        if (decoder is not null && unsupportedNames is not null) pendingGlyphLists[decoder] = new Type3GlyphList(objectLabel, unsupportedNames, cmap);
         fontDecoders[font] = decoder;
         return decoder;
     }
 
-    private void Show(string text, long byteCount, int objectNumber, int operatorIndex, string op)
+    // Adds the text element; false when the show emits no text (outside BT ... ET or a non-finite position or height),
+    // which then gives no encoding-glyph-unsupported (P6-24 review: only a show that emits text counts).
+    private bool Show(string text, long byteCount, int objectNumber, int operatorIndex, string op)
     {
         file.ChargeInterpreted(byteCount);
         if (!inText)
         {
             Warn("text-outside-bt", objectNumber, operatorIndex, op + " outside BT ... ET");
-            return;
+            return false;
         }
         var rendering = PdfMatrix.Translation(0, state.Rise).Then(textMatrix).Then(state.Ctm);
         var origin = new Point2(rendering.E, rendering.F);
         if (!rendering.IsFinite)
         {
             Warn("operand-error", objectNumber, operatorIndex, op + " gives a non-finite text position");
-            return;
+            return false;
         }
         var height = Math.Abs(state.FontSize) * Hypot(rendering.C, rendering.D);
         if (!double.IsFinite(height))
         {
             Warn("operand-error", objectNumber, operatorIndex, op + " gives a non-finite text height");
-            return;
+            return false;
         }
         var rotation = PdfGeometry.AngleDegrees(rendering.A, rendering.B);
         elements.Add(new PdfText(Provenance(objectNumber, operatorIndex, op), origin, text, state.FontName, state.FontSize, height, rotation));
+        return true;
     }
 
     // sqrt(x^2 + y^2) without overflow for large finite components.
