@@ -19,6 +19,8 @@
 # fails instead of hanging; mkfifo/socket cases are counted SKIPs where unavailable (Windows).
 # P10-19: the package.ps1 staging builders (manifest and sbom text) and its forbidden-content scan refuse a FIFO (also behind a file link) by file type
 # before any hash or read (package_special_file), in bounded child runs; a clean real build is byte-unchanged.
+# P10-22: those same three refuse a dangling staged symlink (missing target, chain, loop) as typed package_dangling_link
+# naming the path before any read or hash, in bounded child runs (counted SKIPs on Windows).
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -789,6 +791,65 @@ try {
         }
         Write-Host "P10-19 staging special-file cases: $p19Run run, $p19Skip skipped"
         if ($IsLinux -and $env:GITHUB_ACTIONS -eq 'true') { Assert ($p19Skip -eq 0) "P10-19: no staging special-file case may be skipped on the Linux CI runner (skipped: $p19Skip)" }
+
+        # P10-22: a dangling symbolic link in the staging folder (missing target, chain ending at a missing target, a
+        # link loop) is refused by Find-PackageForbidden, New-PackageManifestText and New-PackageSbomText with typed
+        # package_dangling_link naming the path before any read or hash (previously an untyped Get-FileHash exception
+        # or, in the forbidden scan, silently skipped). Bounded child pwsh (same p19 builder script); counted SKIPs on
+        # Windows (file symlinks need privileges there), none on the Linux CI runner.
+        $p22Run = 0; $p22Skip = 0
+        $p22Missing = Join-Path $work 'p22 no such target.bin'
+        $p22Cases = @(
+            @{ Name = 'manifest relative'; Builder = 'manifest'; Links = @(,@('cli/gone.bin', 'no-such-file.bin')) },
+            @{ Name = 'manifest absolute'; Builder = 'manifest'; Links = @(,@('cli/abs gone.dat', $p22Missing)) },
+            @{ Name = 'manifest chain ordinal'; Builder = 'manifest'; Links = @(@('cli/chain.bin', 'chainmid.bin'), @('cli/chainmid.bin', 'no-such-file.bin')); Expect = 'cli/chain\.bin \(link to chainmid\.bin\), cli/chainmid\.bin \(link to no-such-file\.bin\)' },
+            @{ Name = 'manifest loop'; Builder = 'manifest'; Links = @(,@('cli/loop.bin', 'loop.bin')) },
+            @{ Name = 'manifest two-node loop'; Builder = 'manifest'; Links = @(@('cli/loopa.bin', 'loopb.bin'), @('cli/loopb.bin', 'loopa.bin')); Expect = 'cli/loopa\.bin \(link to loopb\.bin\), cli/loopb\.bin \(link to loopa\.bin\)' },
+            @{ Name = 'sbom dll'; Builder = 'sbom'; Links = @(,@('cli/Gone.Thing.dll', $p22Missing)) },
+            @{ Name = 'sbom deps json'; Builder = 'sbom'; Links = @(,@('cli/Gone.deps.json', 'no-such.deps.json')) },
+            @{ Name = 'sbom non-assembly'; Builder = 'sbom'; Links = @(,@('cli/gone.bin', 'no-such-file.bin')) },
+            @{ Name = 'forbidden scan json'; Builder = 'forbidden'; Links = @(,@('skills/gone.json', 'no-such-file.json')) },
+            @{ Name = 'forbidden scan absolute'; Builder = 'forbidden'; Links = @(,@('skills/abs.txt', $p22Missing)) }
+        )
+        foreach ($case in $p22Cases) {
+            if ($IsWindows) { $p22Skip++; Write-Host "SKIP P10-22 staging $($case.Name): file symlinks need privileges on Windows"; continue }
+            $copy = Join-Path $work ('p22 staging ' + $case.Name)
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            try {
+                foreach ($link in $case.Links) {
+                    $full = Join-Path $copy $link[0]
+                    New-Item -ItemType Directory -Force (Split-Path $full) | Out-Null
+                    if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Force }
+                    # File.CreateSymbolicLink stores the target text as given (relative stays relative) and never checks it exists.
+                    $null = [IO.File]::CreateSymbolicLink($full, $link[1])
+                }
+            } catch { $failures.Add("P10-22 staging $($case.Name) setup failed: $($_.Exception.Message)"); continue }
+            $p22Run++
+            $run = Invoke-ScriptBounded $p19Script @('-Common', $common, '-Directory', $copy, '-Builder', $case.Builder) 60
+            $first = $case.Links[0]
+            $named = if ($case.Expect) { $case.Expect } else { [regex]::Escape($first[0]) + ' \(link to ' + [regex]::Escape($first[1]) + '\)' }
+            Assert (!$run.TimedOut -and $run.Code -eq 1 -and $run.Output -match ('builder failed: package_dangling_link: [^\r\n]*(: |, )' + $named + '(,|\r|\n|$)')) "P10-22: the $($case.Builder) staging builder must refuse $($case.Name) dangling link as package_dangling_link naming the path before any read or hash (timed out: $($run.TimedOut), exit $($run.Code)): $(Get-Tail $run.Output)"
+            Assert ($run.Output -notmatch '(?i)FullyQualifiedErrorId|Could not find|Get-FileHash') "P10-22: the $($case.Builder) staging builder must not leak an untyped exception for $($case.Name): $(Get-Tail $run.Output)"
+        }
+        # Valid relative links to a regular file (one hop, and a two-hop chain) are not dangling: they get past the check
+        # and the manifest builder treats them as P10-19 does any link to a regular file (followed and hashed: BUILT).
+        foreach ($okCase in @(
+            @{ Name = 'valid relative link'; Links = @(,@('cli/ok.bin', 'real.bin')) },
+            @{ Name = 'valid relative two-hop chain'; Links = @(@('cli/a.bin', 'b.bin'), @('cli/b.bin', 'real.bin')) }
+        )) {
+            if ($IsWindows) { $p22Skip++; Write-Host "SKIP P10-22 staging $($okCase.Name): file symlinks need privileges on Windows"; continue }
+            $copy = Join-Path $work ('p22 staging ' + $okCase.Name)
+            Copy-Item -LiteralPath $tPkg -Destination $copy -Recurse
+            try {
+                [IO.File]::WriteAllText((Join-Path $copy 'cli/real.bin'), "regular payload`n")
+                foreach ($link in $okCase.Links) { $null = [IO.File]::CreateSymbolicLink((Join-Path $copy $link[0]), $link[1]) }
+            } catch { $failures.Add("P10-22 staging $($okCase.Name) setup failed: $($_.Exception.Message)"); continue }
+            $p22Run++
+            $run = Invoke-ScriptBounded $p19Script @('-Common', $common, '-Directory', $copy, '-Builder', 'manifest') 60
+            Assert (!$run.TimedOut -and $run.Code -eq 0 -and $run.Output -match 'BUILT manifest' -and $run.Output -notmatch 'package_dangling_link') "P10-22: the manifest staging builder must accept a $($okCase.Name) to a regular file like P10-19 does (no package_dangling_link; timed out: $($run.TimedOut), exit $($run.Code)): $(Get-Tail $run.Output)"
+        }
+        Write-Host "P10-22 staging dangling-link cases: $p22Run run, $p22Skip skipped"
+        if ($IsLinux -and $env:GITHUB_ACTIONS -eq 'true') { Assert ($p22Skip -eq 0) "P10-22: no staging dangling-link case may be skipped on the Linux CI runner (skipped: $p22Skip)" }
 
         # Without an assets file the P10-13 behaviour is unchanged: direct references only, no recorded files.
         $refsNoAssets = @(Get-PackageNuGetReferences -Root $sbomSrc -Projects @('app/App.csproj') -PackagesRoot (Join-Path $sbomSrc 'nuget'))

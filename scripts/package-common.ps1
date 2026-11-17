@@ -192,8 +192,26 @@ function Get-PackageFileSha256([string]$Path) {
 # file links, so a link to a FIFO is refused too (Get-ChildItem does not descend directory links). Throws typed
 # package_special_file naming each path with its kind (ordinal order), or package_special_file_check_failed when the
 # check itself cannot run. Nothing is special on Windows.
+# P10-22: first, a staged file link whose final target does not exist (missing target, chain ending at one, or a loop
+# that cannot resolve) throws typed package_dangling_link naming each path with its stored target (ordinal order); this
+# uses readlink/stat metadata only (FileSystemInfo.LinkTarget / ResolveLinkTarget), never an open, on every platform.
 function Assert-PackageStagedFilesRegular([string]$Base, [string[]]$Files) {
-    if ($IsWindows -or $Files.Length -eq 0) { return }
+    if ($Files.Length -eq 0) { return }
+    $dangling = [Collections.Generic.SortedDictionary[string, string]]::new([StringComparer]::Ordinal)
+    foreach ($file in $Files) {
+        $info = [IO.FileInfo]::new((Join-Path $Base $file))
+        $target = $info.LinkTarget
+        if (!$target) { continue }
+        $exists = $false
+        try { $final = $info.ResolveLinkTarget($true); $exists = $final -and ([IO.File]::Exists($final.FullName) -or [IO.Directory]::Exists($final.FullName)) -and !$final.LinkTarget }
+        catch { $exists = $false }
+        if (!$exists) { $dangling[$file] = [string]$target }
+    }
+    if ($dangling.Count) {
+        $named = [string[]]@($dangling.Keys | ForEach-Object { "$_ (link to $($dangling[$_]))" })
+        throw "package_dangling_link: staged symbolic links whose target does not exist are never packaged; refused before any read or hash: $($named -join ', ')"
+    }
+    if ($IsWindows) { return }
     $full = [string[]]@($Files | ForEach-Object { Join-Path $Base $_ })
     try { $kinds = Get-PackagePosixFileKinds $full }
     catch { throw "package_special_file_check_failed: staged file types could not be checked, so no file is hashed: $($_.Exception.Message)" }
