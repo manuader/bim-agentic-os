@@ -19,6 +19,9 @@ using Bim.Core;
 //      usage text; nothing is written (the lock bytes and the whole skills tree digest are unchanged).
 //   5. Static: the command loads through JurisdictionRegistry.Load/LoadLocked, finds the package via
 //      SkillPackLookup.PackageRoot, routes defects through IntentPlan.Internal and has no file write API.
+//   6. P10-24 refusal edges: an absent lock is lock_missing; a NUL or over-length --lock path (in process) is
+//      skills_lock_path_invalid (detail "lock"), never jurisdiction_resolve_internal_error; registry issues of a
+//      successful load (claim_duplicate, alias_overlap) are dropped and the CABA success bytes stay unchanged.
 internal static class JurisdictionResolveTests
 {
     const string Usage = "usage: jurisdiction-resolve --code c | --country cc --municipality m [--lock skills.lock.json] [--allow-stub]";
@@ -122,8 +125,35 @@ internal static class JurisdictionResolveTests
         Same("forged content hash under --lock", cliDll, JurisdictionRegistry.LoadLocked(skills, forged), new ProjectJurisdiction(Code: "ar.caba"), false,
             JurisdictionCodes.SkillLockDrift, "--code", "ar.caba", "--lock", forged);
         var missingLock = Path.Combine(scratch, "absent.lock.json");
-        Same("absent lock file", cliDll, JurisdictionRegistry.LoadLocked(skills, missingLock), new ProjectJurisdiction(Code: "ar.caba"), false, null, "--code", "ar.caba", "--lock", missingLock);
+        Same("absent lock file", cliDll, JurisdictionRegistry.LoadLocked(skills, missingLock), new ProjectJurisdiction(Code: "ar.caba"), false, SkillLockCodes.LockMissing, "--code", "ar.caba", "--lock", missingLock);
         Check(!File.Exists(missingLock), "an absent lock is not created");
+        // P10-24: a lock path SkillLockTool.PathProblem refuses (NUL, over MaxPathChars) is the typed lock refusal
+        // skills_lock_path_invalid (detail "lock"), as in skills-lock, never jurisdiction_resolve_internal_error. A NUL
+        // cannot travel in a process argument, so these run the command in process (stdout, stderr and exit captured).
+        var pathInvalidLine = JsonSerializer.Serialize(new { status = "failed", code = "skills_lock_path_invalid", detail = "lock" });
+        foreach (var (label, badLock) in new (string, string)[]
+        {
+            ("NUL in the lock path", scratch + Path.DirectorySeparatorChar + "sk\0ills.lock.json"),
+            ("lock path over 4096 characters", Path.Combine(scratch, new string('l', 5000) + ".json")),
+        })
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            Environment.ExitCode = 0;
+            Console.SetOut(capturedOut);
+            Console.SetError(capturedError);
+            try { Bim.Cli.JurisdictionResolveCommand.Run(new[] { "jurisdiction-resolve", "--code", "ar.caba", "--lock", badLock }); }
+            finally { Console.SetOut(previousOut); Console.SetError(previousError); }
+            var exit = Environment.ExitCode;
+            Environment.ExitCode = previousExit;
+            var line = capturedOut.ToString().TrimEnd('\r', '\n');
+            var error = capturedError.ToString().Trim();
+            Check(exit == 1 && line == pathInvalidLine && error.Length == 0, label + " (in process) is " + pathInvalidLine + " with nothing on stderr",
+                "exit " + exit.ToString(CultureInfo.InvariantCulture) + " " + line + (error.Length > 0 ? " stderr " + error : ""));
+        }
         Check(File.ReadAllBytes(lockPath).AsSpan().SequenceEqual(lockBytes), "the lock file is unchanged (read-only verb)");
 
         // ---- 3. package-first: a CLI copied into <package>/cli beside VERSION, manifest.json and skills/ ----
@@ -155,6 +185,26 @@ internal static class JurisdictionResolveTests
         Same("stub code is unknown from the package (package skills, not the repository's)", packageDll, packageLoad, new ProjectJurisdiction(Code: "xx.example"), true,
             JurisdictionCodes.JurisdictionUnknown, "--code", "xx.example", "--allow-stub");
         Same("CABA from the package", packageDll, packageLoad, new ProjectJurisdiction(Code: "ar.caba"), false, null, "--code", "ar.caba");
+        // P10-24: registry issues of a successful load (JurisdictionRegistry.Issues: claim_duplicate, alias_overlap,
+        // pack_missing, ...) are dropped by the verb: the success envelope is exactly {status,code,pack,version,stub} and
+        // never carries them. The package fixture's xx.dup is claimed twice (claim_duplicate); a third pack under the
+        // distinct code xx.twin with the same aliases adds alias_overlap.
+        var twin = "xx.twin.pack-c";
+        Directory.CreateDirectory(Path.Combine(packageSkills, twin));
+        File.WriteAllText(Path.Combine(packageSkills, twin, "skill.json"), stubManifest.Replace("\"id\": \"" + Stub + "\"", "\"id\": \"" + twin + "\"", StringComparison.Ordinal), new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(packageSkills, twin, "jurisdiction.json"),
+            "{\"jurisdiction_version\":1,\"code\":\"xx.twin\",\"pack\":\"" + twin + "\",\"country_names\":[\"Duplicate Country\"],\"municipality_names\":[\"Duplicate City\"],\"stub\":false,\"note\":\"fictitious test fixture\"}\n",
+            new UTF8Encoding(false));
+        var issuesLoad = JurisdictionRegistry.Load(packageSkills);
+        var issueCodes = issuesLoad.Registry?.Issues.Select(issue => issue.Code).ToArray() ?? Array.Empty<string>();
+        Check(issuesLoad.Succeeded && issueCodes.Contains(JurisdictionCodes.ClaimDuplicate) && issueCodes.Contains(JurisdictionCodes.AliasOverlap),
+            "the package fixture with xx.twin loads in process with registry issues claim_duplicate and alias_overlap", issuesLoad.Refusal?.ToString() ?? string.Join(",", issueCodes));
+        var withIssues = Cli(packageDll, "--code", "ar.caba");
+        Check(withIssues.Exit == 0 && withIssues.Out == cabaLine && withIssues.Err.Length == 0,
+            "registry issues are dropped: CABA from a package with claim_duplicate and alias_overlap prints the plain CABA envelope byte for byte", D(withIssues) + " | expected " + cabaLine);
+        Same("ambiguous metadata with alias_overlap", packageDll, issuesLoad, new ProjectJurisdiction(Country: "Duplicate Country", Municipality: "Duplicate City"), false,
+            JurisdictionCodes.JurisdictionAmbiguous, "--country", "Duplicate Country", "--municipality", "Duplicate City");
+        Directory.Delete(Path.Combine(packageSkills, twin), true);
         // Lock drift: pin the package's CABA pack, then edit its sidecar.
         var packageLock = Path.Combine(scratch, "package.lock.json");
         File.WriteAllBytes(packageLock, SkillLockFile.Serialize(SkillLocking.Pin(packageSkills, new[] { Caba })));
