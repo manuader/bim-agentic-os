@@ -50,11 +50,8 @@ internal static class AuditVerifyCommand
     {
         try { Execute(args); }
         catch (AuditVerifyRefusal refusal) { Fail(refusal.Code, refusal.Detail); }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine("audit-verify internal error: " + error.GetType().FullName + ": " + error.Message);
-            Fail(InternalError, null);
-        }
+        // P3-19: the stderr detail, {"status":"failed","code":InternalError} and exit 1, printed by IntentPlan.Internal.
+        catch (Exception error) { IntentPlan.Internal("audit-verify", error).Print(); }
     }
 
     static void Execute(string[] args)

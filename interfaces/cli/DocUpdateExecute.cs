@@ -55,7 +55,7 @@ internal static class DocUpdateExecute
         try { result = DocUpdate.Run(plan, recorder); }
         catch (Exception error)
         {
-            Console.Error.WriteLine("doc-update internal error: " + error.GetType().FullName + ": " + error.Message);
+            Console.Error.WriteLine(IntentPlan.InternalDiagnostic("doc-update", error));
             var internalError = new JsonObject { ["status"] = Failed, ["code"] = DocUpdateCommand.InternalError };
             Copy(summary, internalError);
             internalError["applied"] = false;

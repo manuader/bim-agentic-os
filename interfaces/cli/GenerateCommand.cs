@@ -138,11 +138,7 @@ internal static class GenerateCommand
             result = PrototypePipeline.Run(parsed.Request, options);
             json = result.Status == PrototypePipelineStatus.Refused ? "" : PrototypePipelineSerializer.Serialize(result);
         }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine("generate-prototypes internal error: " + error.GetType().FullName + ": " + error.Message);
-            throw new Refusal(InternalError);
-        }
+        catch (Exception error) { throw InternalRefusal(error); }
         if (result.Status == PrototypePipelineStatus.Refused)
         {
             Console.WriteLine(JsonSerializer.Serialize(new { status = "failed", code = Refused, refusals = result.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) }));
@@ -377,6 +373,14 @@ internal static class GenerateCommand
         hash[6] = (byte)((hash[6] & 0x0F) | 0x80);
         hash[8] = (byte)((hash[8] & 0x3F) | 0x80);
         return new Guid(hash.AsSpan(0, 16), bigEndian: true);
+    }
+
+    // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
+    // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
+    static Refusal InternalRefusal(Exception error)
+    {
+        Console.Error.WriteLine(IntentPlan.InternalDiagnostic("generate-prototypes", error));
+        return new Refusal(InternalError);
     }
 
     static void Fail(string code, string? detail)
