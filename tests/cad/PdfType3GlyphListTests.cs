@@ -258,8 +258,57 @@ internal static class PdfType3GlyphListTests
                 Count(content, "IsGlyphListName") + " " + Count(content, ".UnsupportedGlyphListName("));
             C(Count(encoding, "public string? UnsupportedGlyphListName(byte code)") == 1 && Count(encoding, "PdfGlyphNames.IsGlyphListName(") == 1,
                 "PdfSimpleEncoding applies the glyph-list filter once, in the per-code accessor (P6-25 static check)", Count(encoding, "PdfGlyphNames.IsGlyphListName(").ToString(CultureInfo.InvariantCulture));
+            const string signature = "public string? UnsupportedGlyphListName(byte code)";
+            var (bodyStart, bodyEnd) = Body(encoding, encoding.IndexOf(signature, StringComparison.Ordinal), signature.Length);
+            var call = encoding.IndexOf("PdfGlyphNames.IsGlyphListName(", StringComparison.Ordinal);
+            C(bodyStart >= 0 && call > bodyStart && call < bodyEnd,
+                "the single PdfGlyphNames.IsGlyphListName call in PdfEncoding.cs lies inside the UnsupportedGlyphListName accessor body (P6-25 static check)",
+                I(bodyStart) + ".." + I(bodyEnd) + " call " + I(call));
         }
         catch (Exception error) { C(false, "hygiene unexpected", error.GetType().Name + ": " + error.Message); }
+
+        // ---------- P6-25: PdfSimpleEncoding.UnsupportedGlyphListName per code ----------
+        try
+        {
+            var file = new PdfFile(Array.Empty<byte>(), "accessor.pdf", new PdfReadOptions());
+            var dictionary = new Dictionary<string, object>
+            {
+                ["Differences"] = new List<object> { new PdfNumber(1, true), new PdfName("g1"), new PdfName("eacute"), new PdfName("afii10017"), new PdfName("Alpha.sc") },
+            };
+            var parsed = PdfSimpleEncoding.Get(file, dictionary);
+            string Name(byte code) => parsed.UnsupportedGlyphListName(code) ?? "null";
+            C(Name(1) == "null", "a slot name /g1 gives no unsupported glyph-list name", Name(1));
+            C(Name(2) == "null", "a name the reader maps (/eacute) gives no unsupported glyph-list name", Name(2));
+            C(Name(0) == "null" && Name(5) == "null" && Name(65) == "null" && Name(255) == "null", "a code without a /Differences entry gives no unsupported glyph-list name",
+                Name(0) + " " + Name(5) + " " + Name(65) + " " + Name(255));
+            C(Name(3) == "afii10017" && Name(4) == "Alpha.sc", "/afii10017 and /Alpha.sc give their names without the slash", Name(3) + " " + Name(4));
+            var stripped = parsed.WithoutUnknownNames;
+            var leaked = Enumerable.Range(0, 256).Where(code => stripped.UnsupportedGlyphListName((byte)code) is not null).Select(code => I(code)).ToList();
+            C(leaked.Count == 0, "a WithoutUnknownNames copy gives no unsupported glyph-list name for any code", string.Join(",", leaked));
+        }
+        catch (Exception error) { C(false, "accessor unexpected", error.GetType().Name + ": " + error.Message); }
+    }
+
+    // The [start, end) span of the member body after the signature at index: an expression body up to its ';', or a
+    // block body up to its matching '}'; (-1, -1) when the signature is absent.
+    private static (int Start, int End) Body(string text, int index, int length)
+    {
+        if (index < 0) return (-1, -1);
+        var start = index + length;
+        while (start < text.Length && char.IsWhiteSpace(text[start])) start++;
+        if (start + 1 < text.Length && text[start] == '=' && text[start + 1] == '>')
+        {
+            var end = text.IndexOf(';', start);
+            return end < 0 ? (-1, -1) : (start, end);
+        }
+        if (start >= text.Length || text[start] != '{') return (-1, -1);
+        var depth = 0;
+        for (var k = start; k < text.Length; k++)
+        {
+            if (text[k] == '{') depth++;
+            else if (text[k] == '}' && --depth == 0) return (start, k);
+        }
+        return (-1, -1);
     }
 
     private static string Show(string literal) => "BT /F1 10 Tf 1 0 0 1 50 50 Tm (" + literal + ") Tj ET";
