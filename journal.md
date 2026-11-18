@@ -1766,3 +1766,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 11:52Z LOCK taken (was FREE; relay229 released 2026-11-18T10:56:26Z).
 - 11:53Z picked P1-30 (phase 1), P7-23 (phase 7), P2-30 (phase 2) — oldest-touched (relay226/227); disjoint files. Workers spawned.
 - 12:47Z workers green: P1-30 77632ba (red 44299240575, green 44301595888; 0 attempts), P7-23 c838579 (red 44301138736, green 44302746005; 0 attempts + 1 build-only AD0001 run 44299479480), P2-30 1c56127 (probe red 44299538961, green 44303037494; 0 attempts; pipe_io_error/pipe_name/IOException both OSes). Next: independent reviews.
+- 12:50Z reviews (independent, read-only): 0 blockers; should-fixes sent back to workers (P1-30 N=5 wording + stale comments; P7-23 8d no silent skip on CI + literal pins; P2-30 envelope-anchored marker + tails on every move).
