@@ -21,11 +21,26 @@ public sealed record JurisdictionSelection(JurisdictionClaim? Claim, string Matc
 // Result of loading a skills directory with its sidecars: either Registry is set or Refusal names the first problem.
 // LoaderError (P5-24) is the skill loader's typed SkillException behind a skills_invalid Refusal, from the same single
 // read of the directory (null on success and on sidecar refusals), so callers can print it without loading again.
+// P5-25: only Bim.Core sets it, through SkillsInvalid, which also builds that Refusal from it. It is bound to that exact
+// Refusal instance: a `with { Refusal = … }` copy (another, an equal but distinct, or a null refusal) reads it as null.
 public sealed record JurisdictionLoad(JurisdictionRegistry? Registry, JurisdictionIssue? Refusal)
 {
+    private readonly SkillException? loaderError;
+    private readonly JurisdictionIssue? loaderRefusal;
+
+    private JurisdictionLoad(SkillException error, JurisdictionIssue refusal) : this((JurisdictionRegistry?)null, refusal)
+    {
+        loaderError = error;
+        loaderRefusal = refusal;
+    }
+
     public bool Succeeded => Refusal is null;
 
-    public SkillException? LoaderError { get; init; }
+    public SkillException? LoaderError => loaderRefusal is not null && ReferenceEquals(loaderRefusal, Refusal) ? loaderError : null;
+
+    // The skills_invalid refusal for the skill loader's error, carrying that error as LoaderError.
+    internal static JurisdictionLoad SkillsInvalid(SkillException error) =>
+        new(error, new JurisdictionIssue(JurisdictionCodes.SkillsInvalid, error.File ?? ".", error.Code + (error.Detail is null ? "" : ": " + error.Detail)));
 }
 
 public sealed partial class JurisdictionRegistry
@@ -93,7 +108,7 @@ public sealed partial class JurisdictionRegistry
         ArgumentNullException.ThrowIfNull(skillsRoot);
         SkillCatalog catalog;
         try { catalog = SkillLoader.LoadDirectory(skillsRoot); }
-        catch (SkillException error) { return new JurisdictionLoad(null, new JurisdictionIssue(JurisdictionCodes.SkillsInvalid, error.File ?? ".", error.Code + (error.Detail is null ? "" : ": " + error.Detail))) { LoaderError = error }; }
+        catch (SkillException error) { return JurisdictionLoad.SkillsInvalid(error); }
         var root = Path.GetFullPath(skillsRoot);
         var claims = new List<JurisdictionClaim>();
         foreach (var skill in catalog.Skills)
