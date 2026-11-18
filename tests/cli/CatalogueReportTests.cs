@@ -1325,7 +1325,10 @@ internal static class CatalogueReportTests
             var outside = Cli(null, "catalogue-report", "--run", scratch);
             Check(outside.Exit == 1 && outside.Out == Failure("catalogue_report_run_outside", null), "real process: a folder outside .bim/native-runs is refused", D(outside));
             Check(string.Join("\n", Directory.EnumerateFileSystemEntries(runs).Concat(Directory.EnumerateFileSystemEntries(sessions)).OrderBy(p => p, StringComparer.Ordinal)) == listing, "real process: nothing is added to .bim/native-runs or native-sessions");
-            Check(Cli(null, "no-such-verb").Out.Contains("catalogue-report --run", StringComparison.Ordinal), "default usage lists catalogue-report");
+            var defaultUsage = Cli(null, "no-such-verb");
+            Check(defaultUsage.Out.Contains("catalogue-report --run", StringComparison.Ordinal), "default usage lists catalogue-report");
+            Check(defaultUsage.Out.Contains("| catalogue-report --run .bim/native-runs/<run> [--fail-on-failures] |", StringComparison.Ordinal),
+                "default usage lists the full catalogue-report segment with --fail-on-failures (P1-29)", D(defaultUsage));
             // P1-29: the real process carries the --fail-on-failures exit code (0 for a passing run, 2 once the copy is gone).
             var gatedPass = Cli(null, "catalogue-report", "--run", run, "--fail-on-failures");
             Check(gatedPass.Exit == 0 && gatedPass.Out == first.Out, "real process: --fail-on-failures on a passing run exits 0 with the same report", D(gatedPass));

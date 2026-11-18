@@ -80,6 +80,9 @@ internal static class CatalogueReportCommand
     public const string Usage = "usage: catalogue-report --run .bim/native-runs/<run> [--fail-on-failures]";
     public const string FailOnFailures = "--fail-on-failures";
     public const int FailuresExit = 2;
+    // The copy and save_as states the --fail-on-failures gate accepts (P1-29), written by WriteCopy and WriteSaveAs.
+    const string CopyMatch = "match";
+    const string SaveAsMatches = "matches";
     public const string UsageCode = "catalogue_report_usage";
     public const string RepositoryNotFound = "catalogue_report_repository_not_found";
     public const string RunInvalid = "catalogue_report_run_invalid";
@@ -249,7 +252,7 @@ internal static class CatalogueReportCommand
                 WriteRealized(writer, steps, runDirectory, runName);
                 writer.WriteEndObject();
             }
-            var failures = overall.Failed > 0 || copyState != "match" || (saveAsState is not null && saveAsState != "matches");
+            var failures = overall.Failed > 0 || copyState != CopyMatch || (saveAsState is not null && saveAsState != SaveAsMatches);
             return (Encoding.UTF8.GetString(buffer.WrittenSpan), failOnFailures && failures);
         }
     }
@@ -622,7 +625,7 @@ internal static class CatalogueReportCommand
                     diskBytes = bytes;
                     state = sha is null ? "too_large"
                         : recordedSha is null ? "no_recorded_sha256"
-                        : recordedSha == sha && (recordedBytes is null || recordedBytes == bytes) ? "match" : "mismatch";
+                        : recordedSha == sha && (recordedBytes is null || recordedBytes == bytes) ? CopyMatch : "mismatch";
                 }
             }
         }
@@ -690,7 +693,7 @@ internal static class CatalogueReportCommand
                 diskSha = sha;
                 diskBytes = hashed;
                 if (recordedSha is null) state = "no_recorded_sha256";
-                else if (recordedSha == diskSha) state = "matches";
+                else if (recordedSha == diskSha) state = SaveAsMatches;
                 else { state = "mismatch"; detail = "sha256"; }
             }
         }
