@@ -136,7 +136,7 @@ internal static class DocRealizedToolTests
         // One MCP call: the response, with "nothing written, exit code untouched" checked around it. P4-23: the call runs
         // with Console.Out redirected to a StringWriter that must stay empty (success and refusal alike), so a stray
         // Console.Write in the shared path fails here instead of only a swapped writer being caught; the writer is restored
-        // and must be the one installed when the call returns.
+        // and the installed writer must still be in place when the call returns.
         JsonObject Call(string label, JsonObject arguments)
         {
             var before = Listing();
@@ -145,7 +145,9 @@ internal static class DocRealizedToolTests
             JsonObject response;
             bool same;
             Console.SetOut(captured);
-            try { response = call(ToolLine(arguments)); same = ReferenceEquals(Console.Out, captured); }
+            // Console.SetOut installs a synchronized wrapper around the writer, so the call must leave that wrapper in place.
+            var installed = Console.Out;
+            try { response = call(ToolLine(arguments)); same = ReferenceEquals(Console.Out, installed); }
             finally { Console.SetOut(stdout); }
             Check(Listing() == before && Environment.ExitCode == exitBefore && same && captured.ToString().Length == 0,
                 label + ": writes nothing (no file, nothing on a redirected Console.Out), exit code and Console.Out untouched | " + Short(captured.ToString()));
