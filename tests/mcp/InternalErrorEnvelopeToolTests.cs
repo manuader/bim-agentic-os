@@ -19,6 +19,11 @@ using Bim.Mcp;
 //      the typed generate_typology_internal_error line (IntentPlan.Internal("generate-typology", error).Line, not
 //      McpServer's generic failure carrying the exception message), the IntentPlan diagnostic on stderr once; with the
 //      seam reset the next call answers the P5-12 pinned success bytes again.
+//   4. P3-23 generate_typology outside the guarded block: a non-refusal exception in the parse / pack-load stretch of
+//      GenerateTypologyCommand.Document, forced through GenerateTypologyCommand.UnguardedWorkProbe (null in production),
+//      is isError with the same typed generate_typology_internal_error line (not McpServer's generic Failed carrying the
+//      exception message), the IntentPlan diagnostic on stderr once and nothing on stdout; with the seam reset the next
+//      call answers the P5-12 pinned success bytes again.
 internal static class InternalErrorEnvelopeToolTests
 {
     const string TypologyPack = "bim.typology.vivienda-unifamiliar";
@@ -152,6 +157,64 @@ internal static class InternalErrorEnvelopeToolTests
             var after = Tool();
             Check(Bim.Cli.GenerateTypologyCommand.GuardedWorkProbe is null && !IsError(after) && Text(after) == Text(baseline) && Hex(Text(after)) == PinnedAcceptedSha256,
                 "the seam is reset: the next call answers the unchanged pinned success bytes");
+        }
+
+        // ---- 4. P3-23 generate_typology Document path outside the guarded block (parse / pack load) ----
+        {
+            var scratch = Path.Combine(work, "p3-23-generate-typology");
+            Directory.CreateDirectory(scratch);
+            var requestPath = Path.Combine(scratch, "request.json");
+            File.WriteAllText(requestPath, "{\"pack\":\"" + TypologyPack + "\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":4,\"seed\":0,\"project_id\":\"" + Id + "\"}", new UTF8Encoding(false));
+            JsonObject Tool() => call(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 23, ["method"] = "tools/call",
+                ["params"] = new JsonObject { ["name"] = GenerateTypologyTool.Name, ["arguments"] = new JsonObject { [GenerateTypologyTool.RequestParameter] = requestPath } } }.ToJsonString());
+            static string Text(JsonObject response) => response["result"]!["content"]![0]!["text"]!.GetValue<string>();
+            static bool IsError(JsonObject response) => response["result"]!["isError"]!.GetValue<bool>();
+            static string Hex(string text) => Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false).GetBytes(text))).ToLowerInvariant();
+
+            Check(Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe is null && Bim.Cli.GenerateTypologyCommand.GuardedWorkProbe is null,
+                "P3-23 fixture: the generate_typology unguarded and guarded test seams are null unless a test sets them");
+            var baseline = Tool();
+            Check(!IsError(baseline) && Hex(Text(baseline)) == PinnedAcceptedSha256, "P3-23 fixture: with the seams unset the tool answers the P5-12 pinned document | " + Hex(Text(baseline)));
+
+            var failure = new InvalidOperationException("boom generate_typology P3-23 unguarded");
+            var envelope = Bim.Cli.IntentPlan.Internal("generate-typology", failure);
+            var errors = new StringWriter();
+            var output = new StringWriter();
+            var savedErr = Console.Error;
+            var savedOut = Console.Out;
+            (bool Succeeded, string Text) direct;
+            JsonObject forced;
+            Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe = () => throw failure;
+            try
+            {
+                Console.SetError(errors);
+                Console.SetOut(output);
+                try { direct = Bim.Cli.GenerateTypologyCommand.Document(requestPath); }
+                catch (Exception escaped) { direct = (true, "escaped: " + escaped.GetType().FullName + ": " + escaped.Message); }
+                finally { Console.SetError(savedErr); Console.SetOut(savedOut); }
+            }
+            finally { Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe = null; }
+            Check(!direct.Succeeded && direct.Text == envelope.Line,
+                "P3-23: a forced exception before the guarded block makes GenerateTypologyCommand.Document return the typed generate_typology_internal_error line instead of throwing | " + Short(direct.Text));
+            Check(errors.ToString() == envelope.Diagnostic + nl && output.ToString().Length == 0,
+                "P3-23: Document writes the IntentPlan diagnostic to stderr once and nothing to stdout | stderr=" + Short(errors.ToString()) + " stdout=" + Short(output.ToString()));
+
+            errors = new StringWriter();
+            Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe = () => throw failure;
+            try
+            {
+                Console.SetError(errors);
+                try { forced = Tool(); }
+                finally { Console.SetError(savedErr); }
+            }
+            finally { Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe = null; }
+            Check(IsError(forced) && Text(forced) == envelope.Line && !Text(forced).Contains(failure.Message, StringComparison.Ordinal),
+                "P3-23: a forced exception in the parse / pack-load stretch reaches the MCP tool as the typed generate_typology_internal_error line, not McpServer's generic failure | " + Short(Text(forced)));
+            Check(errors.ToString() == envelope.Diagnostic + nl,
+                "P3-23: the forced unguarded generate_typology internal error writes the IntentPlan diagnostic to the server's stderr once | " + Short(errors.ToString()));
+            var after = Tool();
+            Check(Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe is null && !IsError(after) && Text(after) == Text(baseline) && Hex(Text(after)) == PinnedAcceptedSha256,
+                "P3-23: the seam is reset: the next call answers the unchanged pinned success bytes");
         }
     }
 

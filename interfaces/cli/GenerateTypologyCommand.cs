@@ -201,6 +201,7 @@ internal static class GenerateTypologyCommand
     // before the write, in the verb's precedence order. Throws Refusal; a pipeline refusal is returned as RefusedLine.
     static Generated Generate(string text)
     {
+        UnguardedWorkProbe?.Invoke();
         var parsed = Parse(text);
         var pack = Load(parsed.Pack, PackUnavailable, PackInvalid);
         var code = Load(parsed.CodePack, CodePackUnavailable, CodePackInvalid);
@@ -365,6 +366,11 @@ internal static class GenerateTypologyCommand
     // P3-20 test seam: null in production. tests/cli/InternalErrorDelegationTests.cs sets it (by reflection) to an Action
     // that throws, so the guarded library work below fails inside Run's real catch-all; it is reset after the test.
     internal static Action? GuardedWorkProbe { get; set; }
+
+    // P3-23 test seam: null in production. tests/mcp/InternalErrorEnvelopeToolTests.cs sets it to an Action that throws,
+    // so a non-refusal exception arises in Generate before the guarded pipeline block (the parse / pack-load stretch);
+    // it is reset after the test.
+    internal static Action? UnguardedWorkProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
