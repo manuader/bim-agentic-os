@@ -19,9 +19,13 @@ public sealed record JurisdictionSelection(JurisdictionClaim? Claim, string Matc
 }
 
 // Result of loading a skills directory with its sidecars: either Registry is set or Refusal names the first problem.
+// LoaderError (P5-24) is the skill loader's typed SkillException behind a skills_invalid Refusal, from the same single
+// read of the directory (null on success and on sidecar refusals), so callers can print it without loading again.
 public sealed record JurisdictionLoad(JurisdictionRegistry? Registry, JurisdictionIssue? Refusal)
 {
     public bool Succeeded => Refusal is null;
+
+    public SkillException? LoaderError { get; init; }
 }
 
 public sealed partial class JurisdictionRegistry
@@ -89,7 +93,7 @@ public sealed partial class JurisdictionRegistry
         ArgumentNullException.ThrowIfNull(skillsRoot);
         SkillCatalog catalog;
         try { catalog = SkillLoader.LoadDirectory(skillsRoot); }
-        catch (SkillException error) { return new JurisdictionLoad(null, new JurisdictionIssue(JurisdictionCodes.SkillsInvalid, error.File ?? ".", error.Code + (error.Detail is null ? "" : ": " + error.Detail))); }
+        catch (SkillException error) { return new JurisdictionLoad(null, new JurisdictionIssue(JurisdictionCodes.SkillsInvalid, error.File ?? ".", error.Code + (error.Detail is null ? "" : ": " + error.Detail))) { LoaderError = error }; }
         var root = Path.GetFullPath(skillsRoot);
         var claims = new List<JurisdictionClaim>();
         foreach (var skill in catalog.Skills)

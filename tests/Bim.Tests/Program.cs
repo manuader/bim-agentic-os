@@ -78,6 +78,26 @@ try {RoomCompiler.Compile(p.Id,0,roomIntent with {WidthMetres=double.MaxValue,An
 var goodLevel=new Project(p.Id,0,[p.Elements[3]]);
 var badLevel=goodLevel with {Elements=[p.Elements[3] with {GeometryMetres=[0,1]}]};
 Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,badLevel)).Any(i=>i.Code=="invalid_level"),"native preflight validates new state of retained identities");
+// P5-24: JurisdictionRegistry.Load exposes the loader's typed SkillException of its one directory read (LoaderError).
+{
+ var p524=Path.Combine(envRoot(),"bim-p524-"+Guid.NewGuid());
+ var missing=Path.Combine(p524,"absent");
+ var missingLoad=JurisdictionRegistry.Load(missing);
+ SkillException? missingDirect=null; try {SkillLoader.LoadDirectory(missing);} catch(SkillException e){missingDirect=e;}
+ Check(missingDirect is not null && missingLoad.Refusal?.Code==JurisdictionCodes.SkillsInvalid && missingLoad.LoaderError is {} me
+  && me.Code==missingDirect.Code && me.Field==missingDirect.Field && me.Detail==missingDirect.Detail && me.File==missingDirect.File,"P5-24 registry load of a missing directory carries the loader's typed error");
+ Check(missingLoad.Refusal!.Subject==(missingDirect!.File ?? ".") && missingLoad.Refusal.Detail==missingDirect.Code+(missingDirect.Detail is null ? "" : ": "+missingDirect.Detail),"P5-24 skills_invalid refusal subject and detail unchanged");
+ Directory.CreateDirectory(Path.Combine(p524,"bad","xx.bad.pack"));
+ File.WriteAllText(Path.Combine(p524,"bad","xx.bad.pack","skill.json"),"{ \"manifest_version\": 1, ");
+ var badLoad=JurisdictionRegistry.Load(Path.Combine(p524,"bad"));
+ SkillException? badDirect=null; try {SkillLoader.LoadDirectory(Path.Combine(p524,"bad"));} catch(SkillException e){badDirect=e;}
+ Check(badDirect is not null && badLoad.Registry is null && badLoad.LoaderError is {} be && be.Code==badDirect.Code && be.Field==badDirect.Field && be.Detail==badDirect.Detail && be.File==badDirect.File,"P5-24 malformed manifest: LoaderError equals the loader's error");
+ Directory.CreateDirectory(Path.Combine(p524,"empty"));
+ var emptyLoad=JurisdictionRegistry.Load(Path.Combine(p524,"empty"));
+ Check(emptyLoad.Succeeded && emptyLoad.LoaderError is null,"P5-24 a successful load has no LoaderError");
+ Check(new JurisdictionLoad(null,new JurisdictionIssue("json_invalid","x/jurisdiction.json","d")).LoaderError is null,"P5-24 LoaderError defaults to null");
+ Directory.Delete(p524,true);
+}
 Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {passed=count, core_test_ms=timer.Elapsed.TotalMilliseconds, native_verified=false}));
 } catch(Exception exception) {
     Console.Error.WriteLine(exception);
