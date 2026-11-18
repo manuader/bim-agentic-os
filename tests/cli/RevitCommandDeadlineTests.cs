@@ -27,9 +27,11 @@ using Bim.Core;
 //      RevitDeadlineTransport and MCP all:true (real pipe transport, 1 s QueryAllDeadline) end within 1 s + 1 s with
 //      query_all_deadline_exceeded, having waited the deadline in the connect.
 //   2b. A cut page's no_response / pipe_io_error pass through unchanged; time left equal to the read timeout is not cut.
-//   2c. P1-31, the reply-at-deadline race (injected clock, page transports that model the pipe read): a reply line that
-//      completes exactly when its read timeout fires (the time left of a cut read, the configured timeout, or a cut
-//      connect's read) is kept: a final page there ends the listing succeeded, byte-equal to RevitServiceTransport
+//   2c. P1-31, the reply-at-deadline race of RevitDeadlineTransport (injected clock, fake page transports). The fakes
+//      MODEL the pipe read's keep-at-timeout rule, mirroring RevitCommandService.Send (core/Bim.Core/RevitCommandsService.cs,
+//      a line complete when the read timeout fires is still the reply); they do not test it, and Send's own cancel-race
+//      branch stays unit-untested. Given that model: a reply line that completes exactly when its read timeout fires
+//      (the time left of a cut read, the configured timeout, or a cut connect's read) is kept: a final page there ends the listing succeeded, byte-equal to RevitServiceTransport
 //      paging; a line due one tick after it is the read timeout, query_all_deadline_exceeded on a cut page (pinned
 //      bytes) and pipe_read_timeout on an uncut one. A non-final page completing exactly at the deadline leaves no time
 //      for the next page, which is refused query_all_deadline_exceeded without being sent.
@@ -296,9 +298,14 @@ internal static class RevitCommandDeadlineTests
 
     // P1-31 (section 2c): each page goes through a transport given the wait of its pipe read (the time left of a cut
     // read, the configured read timeout, or the read of a cut connect), whose reply line completes `duration` after the
-    // send on the injected clock. As RevitCommandService's pipe read (a line complete when the read timeout fires is
-    // still the reply), a line due at or before the wait is returned with the clock at its completion; a line due after
-    // it is not: the clock stops at the wait and the read times out (RevitPipeReadTimeoutException naming that wait).
+    // send on the injected clock. The fake MODELS RevitCommandService.Send's keep-at-timeout rule (a line complete when
+    // the read timeout fires is still the reply) rather than exercising it, so Send's cancel-race branch is not covered
+    // here: a line due at or before the wait is returned with the clock at its completion; a line due after it is not:
+    // the clock stops at the wait and the read times out (RevitPipeReadTimeoutException naming that wait).
+    static string RaceExceededAt(long deadlineMs, int pages) => RaceExceeded.Replace("its 120000 ms deadline", "its " + N(deadlineMs) + " ms deadline", StringComparison.Ordinal)
+        .Replace("\"pages\":0,", "\"pages\":" + N(pages) + ",", StringComparison.Ordinal);
+    const string RaceReadDetail = "no reply within 30000 ms; read-only command, the document is unchanged and the request may be resent (the add-in serves one request at a time, so a resend while it is still busy may get pipe_connect_timeout: retry later)";
+
     static void ReplyAtDeadline(string wallsText, long[] model, Action<bool, string, string> check)
     {
         const string RacePipe = "bim-agentic-os-2025-3131";
@@ -352,7 +359,7 @@ internal static class RevitCommandDeadlineTests
         check(atRead.Json == singleExpected && sent == 1 && clock == thirty && waits.SequenceEqual(new[] { "transport 30000 ms" }),
             "P1-31 race: an uncut page whose reply line completes exactly when the read timeout fires keeps the line (succeeded)", atRead.Json + Calls());
         var afterRead = Listing(thirty, TimeSpan.FromHours(1), thirty + tick, single);
-        check(Code(afterRead.Node) == RevitCommandCodes.PipeReadTimeout && afterRead.Node?["detail"]?.GetValue<string>() is { } readDetail && readDetail.Contains("30000 ms", StringComparison.Ordinal)
+        check(Code(afterRead.Node) == RevitCommandCodes.PipeReadTimeout && afterRead.Node?["detail"]?.GetValue<string>() == RaceReadDetail
             && Pages(afterRead.Node) == 0 && ElementCount(afterRead.Node) == 0 && sent == 1 && clock == thirty,
             "P1-31 race: an uncut page whose reply line completes one tick after the read timeout is pipe_read_timeout (not the deadline)", afterRead.Json + Calls());
 
@@ -362,7 +369,7 @@ internal static class RevitCommandDeadlineTests
         check(atConnect.Json == singleExpected && sent == 1 && clock == three && waits.SequenceEqual(new[] { "connect 3000 ms read 3000 ms" }),
             "P1-31 race: a cut-connect page whose reply line completes exactly at the deadline keeps the line (succeeded)", atConnect.Json + Calls());
         var afterConnect = Listing(halfHour, three, three + tick, single);
-        check(Code(afterConnect.Node) == Exceeded && Pages(afterConnect.Node) == 0 && ElementCount(afterConnect.Node) == 0 && sent == 1 && clock == three,
+        check(afterConnect.Json == RaceExceededAt(3000, 0) && sent == 1 && clock == three,
             "P1-31 race: a cut-connect page whose reply line completes one tick after the deadline is query_all_deadline_exceeded", afterConnect.Json + Calls());
 
         // 23 pages of 1 min each under a 30 min read timeout, every page cut to the time left.
@@ -373,7 +380,7 @@ internal static class RevitCommandDeadlineTests
             "P1-31 race: a 23-page listing whose last reply line completes exactly at the 23 min deadline is succeeded with all 23 elements (byte-equal)",
             (lastAt.Json.Length > 300 ? lastAt.Json[..300] : lastAt.Json) + Calls());
         var lastAfter = Listing(halfHour, TimeSpan.FromMinutes(23) - tick, minute, model);
-        check(Code(lastAfter.Node) == Exceeded && Pages(lastAfter.Node) == 22 && ElementCount(lastAfter.Node) == 0 && sent == 23 && clock == TimeSpan.FromMinutes(23) - tick
+        check(lastAfter.Json == RaceExceededAt(23 * 60000L - 1, 22) /* 23 min - 1 tick truncates to 1379999 ms */ && sent == 23 && clock == TimeSpan.FromMinutes(23) - tick
             && waits.Count == 23 && waits[22] == "cut " + Label(minute - tick),
             "P1-31 race: a last reply line completing one tick after the deadline is query_all_deadline_exceeded after 22 pages, no partial elements", lastAfter.Json + Calls());
         var earlyAt = Listing(halfHour, TimeSpan.FromMinutes(22), minute, model);
