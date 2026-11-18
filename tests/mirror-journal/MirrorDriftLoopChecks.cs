@@ -132,6 +132,7 @@ static class MirrorDriftLoopChecks
         RunUnmatchedFailureLoops(root, dotnet, pwsh, cliDll, runDirectory);
         RunDroppedFailureLoop(root, dotnet, pwsh, cliDll, runDirectory);
         RunBrokenPipeLoop(root, dotnet, pwsh, cliDll, runDirectory);
+        RunMidArgsBreakLoop(root, dotnet, pwsh, cliDll, runDirectory);
     }
 
     static void Same(Loop? first, Loop? second, string scenario)
@@ -196,7 +197,7 @@ static class MirrorDriftLoopChecks
         public string Document { get; }
         public string Scratch { get; }
 
-        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null, string? recorderFailures = null, string? dropReplyCommand = null, bool noColor = false, string? breakPipeCommand = null)
+        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null, string? recorderFailures = null, string? dropReplyCommand = null, bool noColor = false, string? breakPipeCommand = null, int? breakAfterBytes = null)
         {
             this.dotnet = dotnet;
             this.cliDll = cliDll;
@@ -219,6 +220,8 @@ static class MirrorDriftLoopChecks
             if (dropReplyCommand is not null) { serverStart.ArgumentList.Add("-DropReplyCommand"); serverStart.ArgumentList.Add(dropReplyCommand); }
             // Test-only (P2-30): a request of this command has its connection closed before its line is fully read.
             if (breakPipeCommand is not null) { serverStart.ArgumentList.Add("-BreakPipeCommand"); serverStart.ArgumentList.Add(breakPipeCommand); }
+            // Test-only (P2-31): a request line longer than this many bytes has its connection closed after that many.
+            if (breakAfterBytes is { } breakAfter) { serverStart.ArgumentList.Add("-BreakAfterBytes"); serverStart.ArgumentList.Add(breakAfter.ToString(CultureInfo.InvariantCulture)); }
             Unix(serverStart);
             // P2-28: plain error text (no ANSI colour) for runs that read the fake's error record.
             if (noColor) serverStart.Environment["NO_COLOR"] = "1";
@@ -1840,6 +1843,132 @@ static class MirrorDriftLoopChecks
         Check(FailureShape(j1) == "failures=0 since=0 complete=true existed=true entries=[]", "pipe reply b1: a peek after sequence 0 once the moves were broken: no failure injected, no entry, complete", FailureShape(j1) + " | " + Head(j1));
         Check(Uniform(j0) == Uniform(p0), "pipe reply b0 equals RevitJournalQuery.RawRead over one Core tracker, member for member (diff included)", Uniform(j0) + " vs " + Uniform(p0));
         Check(Uniform(j1) == Uniform(p1), "pipe reply b1 equals RevitJournalQuery.RawRead over one Core tracker that saw no move and no failure, member for member (diff included)", Uniform(j1) + " vs " + Uniform(p1));
+    }
+
+    // P2-31: a pipe broken mid-args. With -BreakAfterBytes 4096 the fake reads at most 4096 bytes of each request and
+    // closes a connection whose line is not ended within them, without a reply; the request never reaches the executor.
+    // The broken request is a floor.create with a 1000-point boundary (a regular polygon of radius 10 km, shortest
+    // round-trip coordinates), a wire line of over 30000 ASCII characters in which byte 4096 lies inside the args member,
+    // so the fake stops mid-args with the rest of the line unread or still being written. Measured counts: the fake logs
+    // the bytes it read and the InBufferSize its server end reports; the test measures the wire bytes the CLI writes
+    // (line plus Environment.NewLine) and, off Windows, the default send buffer of a Unix socket (the CLI's client end).
+    // A control run without the option serves the same floor (succeeded, one created), so the request would run. The
+    // broken run: walls A, snapshot 0, a read without peek, the broken floor (its id an external edit with a scheduled
+    // recorder failure), snapshot 1 and a peek after sequence 0: the CLI fails with one code, field and detail, exit 1;
+    // snapshot 1 equals snapshot 0; the journal has no entry and no failure (RawRead over a tracker that saw only wall A);
+    // the floor's id is never matched (the gate line names it, the fake exits 1).
+    const int MidArgsBreakBytes = 4096;
+    const string MidArgsFloor = "p2-31-floor";
+    const string MidArgsLogPrefix = "broken-after:";
+    static readonly string[] MidArgsRequestsBefore = { "p2-31-levels", "p2-31-wall-types", "p2-31-floor-types", "p2-31-wall-a", "p2-31-snapshot-0", JournalWire };
+    static readonly string[] MidArgsRequestsAfter = { "p2-31-snapshot-1", JournalWire };
+
+    static void BigFloorArgs(Utf8JsonWriter w, string level, string type)
+    {
+        w.WriteString("level", level);
+        w.WriteString("type", type);
+        w.WriteStartArray("boundary");
+        for (var i = 0; i < RevitCommandCatalogue.MaxBoundaryPoints; i++)
+        {
+            var angle = 2 * Math.PI * i / RevitCommandCatalogue.MaxBoundaryPoints;
+            w.WriteStartArray(); w.WriteNumberValue(1e7 * Math.Cos(angle)); w.WriteNumberValue(1e7 * Math.Sin(angle)); w.WriteEndArray();
+        }
+        w.WriteEndArray();
+    }
+
+    // The default send buffer of a new Unix socket (what the CLI's NamedPipeClientStream gets off Windows); -1 on Windows.
+    static int UnixSendBuffer()
+    {
+        if (OperatingSystem.IsWindows()) return -1;
+        using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        return socket.SendBufferSize;
+    }
+
+    static void RunMidArgsBreakLoop(string root, string dotnet, string pwsh, string cliDll, string runDirectory)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "pipe broken mid-args: " + name, detail);
+        var os = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
+
+        // Control: the same large floor.create served by a fake without the option runs (succeeded, one element created).
+        using (var c = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Pipe-MidArgs-Control.rvt", 3))
+        {
+            if (!c.WaitReady(out var controlNotReady)) { Check(false, "control fake add-in pipe ready (no option)", controlNotReady); return; }
+            var controlLevels = c.Command("p2-31-control-levels", "query.levels", _ => { });
+            var controlTypes = c.Command("p2-31-control-floor-types", "query.floor_types", _ => { });
+            if (!Succeeded(controlLevels) || !Succeeded(controlTypes)) { Check(false, "control: query.levels and query.floor_types succeed", R(controlLevels) + " | " + R(controlTypes)); return; }
+            var controlFloor = c.Command("p2-31-control-floor", "floor.create", w => BigFloorArgs(w, Pick(controlLevels.Out, "levels", "name", "Level 1"), Pick(controlTypes.Out, "floor_types", "name", "Generic 150mm")));
+            Check(Succeeded(controlFloor) && Created(controlFloor.Out).Length > 0, "control: without -BreakAfterBytes the large floor.create runs (succeeded, one element created)", R(controlFloor));
+            var (controlExited, controlExit, controlError) = c.End();
+            Check(controlExited && controlExit == 0 && controlError.Length == 0, "control: the fake add-in exits 0 with an empty stderr", "exited " + controlExited + " exit " + controlExit + " " + controlError);
+        }
+
+        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Pipe-MidArgs.rvt", MidArgsRequestsBefore.Length + 1 + MidArgsRequestsAfter.Length, MidArgsFloor, MidArgsFloor + ":1", breakAfterBytes: MidArgsBreakBytes);
+        var document = h.Document;
+        if (!h.WaitReady(out var notReady)) { Check(false, "fake add-in pipe ready with -BreakAfterBytes " + MidArgsBreakBytes, notReady); return; }
+        var levels = h.Command("p2-31-levels", "query.levels", _ => { });
+        var types = h.Command("p2-31-wall-types", "query.wall_types", _ => { });
+        var floorTypes = h.Command("p2-31-floor-types", "query.floor_types", _ => { });
+        if (!Succeeded(levels) || !Succeeded(types) || !Succeeded(floorTypes)) { Check(false, "query.levels, query.wall_types and query.floor_types succeed (lines under 4096 bytes are served)", R(levels) + " | " + R(types) + " | " + R(floorTypes)); return; }
+        var level = Pick(levels.Out, "levels", "name", "Level 1");
+        var wallA = h.Command("p2-31-wall-a", "wall.create", w => WallArgs(w, level, Pick(types.Out, "wall_types", "name", WallType), 0, 0, 5000, 0));
+        if (!Succeeded(wallA)) { Check(false, "wall.create of A succeeds through the CLI", R(wallA)); return; }
+        var snapshot0 = h.Command("p2-31-snapshot-0", "query.snapshot", _ => { });
+        if (!Succeeded(snapshot0)) { Check(false, "the first query.snapshot succeeds", R(snapshot0)); return; }
+        var j0 = h.Journal(null, peek: false);
+        var floor = h.Command(MidArgsFloor, "floor.create", w => BigFloorArgs(w, level, Pick(floorTypes.Out, "floor_types", "name", "Generic 150mm")));
+        var snapshot1 = h.Command("p2-31-snapshot-1", "query.snapshot", _ => { });
+        if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the broken floor succeeds", R(snapshot1)); return; }
+        var j1 = h.Journal(0);
+        var (exited, exit, error) = h.End();
+        var received = h.Received();
+
+        // Measured counts: the wire line the CLI wrote (WireLine of the very envelope file plus Environment.NewLine), where
+        // its args member lies, the bytes the fake read and the buffers.
+        var wire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(File.ReadAllText(Directory.GetFiles(h.Scratch, "*-envelope-floor.create.json").Single(), Utf8)));
+        var wireBytes = Utf8.GetByteCount(wire + Environment.NewLine);
+        const string argsOpen = "\"Command\":{\"args\":";
+        var argsStart = wire.IndexOf(argsOpen, StringComparison.Ordinal) + argsOpen.Length;
+        var argsEnd = wire.IndexOf(",\"command\":\"floor.create\",\"document\":", StringComparison.Ordinal);
+        var brokenLine = received.Length == MidArgsRequestsBefore.Length + 1 + MidArgsRequestsAfter.Length ? received[MidArgsRequestsBefore.Length] : "";
+        var parts = brokenLine.Split(':');
+        var read = parts.Length == 3 && parts[0] + ":" == MidArgsLogPrefix && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var r) ? r : -1;
+        var fakeInBuffer = parts.Length == 3 && int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var b) ? b : -1;
+        var clientSendBuffer = UnixSendBuffer();
+        var unsent = read < 0 ? -1 : wireBytes - read;
+        var measured = "os=" + os + " wire_chars=" + wire.Length + " wire_bytes=" + wireBytes + " args=[" + argsStart + "," + argsEnd + ") read=" + read + " unread=" + unsent
+            + " fake_in_buffer=" + fakeInBuffer + (parts.Length == 3 ? "(" + parts[2] + ")" : "(<none>)") + " unix_send_buffer=" + clientSendBuffer;
+        Check(wire.Length > 30000 && wire.Length <= RevitCommandProtocol.MaxRequestChars && wireBytes == wire.Length + Environment.NewLine.Length && argsStart > argsOpen.Length && argsEnd > argsStart
+            && argsStart < MidArgsBreakBytes && MidArgsBreakBytes < argsEnd,
+            "the broken floor.create's wire line is large (over 30000 ASCII characters, within the 65536 cap) and byte " + MidArgsBreakBytes + " lies inside its args member", measured);
+        Check(read == MidArgsBreakBytes, "the fake read exactly " + MidArgsBreakBytes + " bytes of the floor.create line before closing it (measured from its log)", measured + " log " + brokenLine);
+        string Seen((int Exit, string Out, string Err) x) => "exit=" + x.Exit + " status=" + (Status(x.Out) ?? "<null>") + " code=" + (Text(x.Out, "code") ?? "<null>") + " field=" + (Text(x.Out, "field") ?? "<null>") + " detail=" + (Text(x.Out, "detail") ?? "<null>");
+        // P2-31 deliberate probe: report what each OS observes (failure and measured counts), then pin it.
+        Check(false, "PROBE " + os + " observed", Seen(floor) + " | " + measured);
+
+        Check(Readback(snapshot1.Out) == Readback(snapshot0.Out), "the query.snapshot after the broken floor equals the one before (nothing ran)", Head(Readback(snapshot1.Out)));
+        Check(exited && exit == 1 && error == GateLine(MidArgsFloor),
+            "the fake add-in exits exactly 1 and its whole stderr is the gate line naming the broken floor's id (never run, so never matched)", "exited " + exited + " exit " + exit + " " + error);
+        var expected = MidArgsRequestsBefore.Append(brokenLine).Concat(MidArgsRequestsAfter).ToArray();
+        Check(brokenLine.StartsWith(MidArgsLogPrefix, StringComparison.Ordinal) && received.SequenceEqual(expected),
+            "the fake add-in logged the expected requests in order (one broken-after line for the floor, no floor operation id)", string.Join(",", received));
+
+        MirrorSnapshot s0, s1;
+        try
+        {
+            using (var reply = JsonDocument.Parse(snapshot0.Out)) s0 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
+            using (var reply = JsonDocument.Parse(snapshot1.Out)) s1 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
+        }
+        catch (Exception parseError) when (parseError is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "the fake's query.snapshot readbacks parse as snapshots", parseError.Message); return; }
+        var tick = 0;
+        var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
+        var tracker = new MirrorJournalTracker(journal);
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "BIM Agentic OS wall.create" }, new[] { "x" }, Array.Empty<string>(), Array.Empty<long>(), true) { DocumentPath = document });
+        var p0 = RevitJournalQuery.RawRead(tracker, true, s0, document, new MirrorJournalReadOptions(null, false));
+        var p1 = RevitJournalQuery.RawRead(tracker, true, s1, document, new MirrorJournalReadOptions(0, true));
+        Check(FailureShape(j0) == "failures=0 since=0 complete=true existed=false entries=[]", "pipe reply m0: the first read without peek, no failure", FailureShape(j0) + " | " + Head(j0));
+        Check(FailureShape(j1) == "failures=0 since=0 complete=true existed=true entries=[]", "pipe reply m1: a peek after sequence 0 once the floor was broken: no failure injected, no entry, complete", FailureShape(j1) + " | " + Head(j1));
+        Check(Uniform(j0) == Uniform(p0), "pipe reply m0 equals RevitJournalQuery.RawRead over one Core tracker, member for member (diff included)", Uniform(j0) + " vs " + Uniform(p0));
+        Check(Uniform(j1) == Uniform(p1), "pipe reply m1 equals RevitJournalQuery.RawRead over one Core tracker that saw no floor and no failure, member for member (diff included)", Uniform(j1) + " vs " + Uniform(p1));
     }
 
     // P2-25: the -ExternalEdits fake keeps at most the MirrorJournal retained-entry capacity (DefaultCapacity unless the
