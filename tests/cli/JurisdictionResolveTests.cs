@@ -217,6 +217,7 @@ internal static class JurisdictionResolveTests
         Check(Environment.ExitCode == exitBeforeInProcess, "the in-process lock-path checks restore Environment.ExitCode (finally)",
             "Environment.ExitCode " + Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBeforeInProcess.ToString(CultureInfo.InvariantCulture));
         Check(File.ReadAllBytes(lockPath).AsSpan().SequenceEqual(lockBytes), "the lock file is unchanged (read-only verb)");
+        DeletedWorkingDirectory(scratch, skills, pathInvalidLine, Check);
 
         // ---- 3. package-first: a CLI copied into <package>/cli beside VERSION, manifest.json and skills/ ----
         var package = Path.Combine(scratch, "pkg");
@@ -328,6 +329,78 @@ internal static class JurisdictionResolveTests
         Check(!source.Contains(" internal error: ", StringComparison.Ordinal), "the command hand-writes no internal-error stderr line");
         Check(new[] { "File.Write", "File.Create", "File.Move", "File.Copy", "File.Delete", "File.Open", "FileMode.", "FileStream", "Directory.Create", "Directory.Move", "Directory.Delete", "SkillLockFile.Write" }
             .All(api => !source.Contains(api, StringComparison.Ordinal)), "the command has no file write API (read-only)");
+    }
+
+    // P10-28: a relative --lock path checked after the working directory was deleted (Linux/macOS: Path.GetFullPath must
+    // read the current directory, which no longer exists) is the typed lock refusal skills_lock_path_invalid (detail
+    // "lock") in jurisdiction-resolve, skills-lock (verify and pin) and the MCP engine SkillLockTool.Verify, never an
+    // internal error or an escaping exception. Each run happens in process with the console captured; the working
+    // directory and Environment.ExitCode are restored in a finally. tests/cli runs its sections sequentially on one
+    // thread (Program.cs), so no other check observes the changed working directory. Windows refuses to delete a
+    // directory that is some process's current directory, so the case cannot be built there (explicit skip).
+    static void DeletedWorkingDirectory(string scratch, string skills, string pathInvalidLine, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "deleted working directory: " + name, detail);
+        if (OperatingSystem.IsWindows())
+        {
+            Console.WriteLine("SKIP jurisdiction-resolve: deleted working directory: Windows cannot delete a directory that is a process's current directory, so a relative lock path under a deleted working directory cannot be constructed");
+            return;
+        }
+        const string relativeLock = "skills.lock.json";
+        var absoluteSkills = Path.GetFullPath(skills);
+        var runs = new (string Label, Action Run)[]
+        {
+            ("jurisdiction-resolve --lock", () => Bim.Cli.JurisdictionResolveCommand.Run(new[] { "jurisdiction-resolve", "--code", "ar.caba", "--lock", relativeLock })),
+            ("skills-lock verify", () => Bim.Cli.SkillLockCommand.Run(new[] { "skills-lock", "verify", absoluteSkills, relativeLock })),
+            ("skills-lock pin", () => Bim.Cli.SkillLockCommand.Run(new[] { "skills-lock", "pin", absoluteSkills, relativeLock, "ar.caba.codigo-edificacion" })),
+            ("SkillLockTool.Verify (MCP skills_lock_verify)", () => { var outcome = Bim.Mcp.SkillLockTool.Verify(absoluteSkills, relativeLock); Console.WriteLine(outcome.Text); if (!outcome.Succeeded) Environment.ExitCode = 1; }),
+        };
+        var original = Environment.CurrentDirectory;
+        var exitBefore = Environment.ExitCode;
+        foreach (var (label, run) in runs)
+        {
+            var gone = Path.Combine(scratch, "deleted-cwd-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(gone);
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            var exit = -1;
+            var thrown = "";
+            var probe = "";
+            var deleted = false;
+            try
+            {
+                Directory.SetCurrentDirectory(gone);
+                Directory.Delete(gone);
+                deleted = !Directory.Exists(gone);
+                try { probe = "GetFullPath accepted: " + Path.GetFullPath(relativeLock); }
+                catch (Exception failure) { probe = "GetFullPath threw " + failure.GetType().FullName + ": " + failure.Message; }
+                Environment.ExitCode = 0;
+                Console.SetOut(capturedOut);
+                Console.SetError(capturedError);
+                run();
+            }
+            catch (Exception failure) { thrown = " threw " + failure.GetType().FullName + ": " + failure.Message; }
+            finally
+            {
+                exit = Environment.ExitCode;
+                Environment.ExitCode = previousExit;
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+                Directory.SetCurrentDirectory(original);
+            }
+            var line = capturedOut.ToString().TrimEnd('\r', '\n');
+            var error = (capturedError.ToString().Trim() + thrown).Trim();
+            var detail = "exit " + exit.ToString(CultureInfo.InvariantCulture) + " " + line + (error.Length > 0 ? " stderr " + error : "") + " | probe " + probe;
+            Check(deleted, label + ": the working directory was deleted", gone);
+            Check(exit == 1 && line == pathInvalidLine && error.Length == 0 && !line.Contains("internal_error", StringComparison.Ordinal),
+                label + ": a relative lock path under a deleted working directory is " + pathInvalidLine + " with nothing on stderr", detail);
+            Check(Environment.CurrentDirectory == original, label + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
+        }
+        Check(Environment.ExitCode == exitBefore, "Environment.ExitCode is restored (finally)",
+            Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBefore.ToString(CultureInfo.InvariantCulture));
     }
 
     // SHA-256 over the sorted relative paths, sizes and bytes of every file under a directory (P10-21 review): any file
