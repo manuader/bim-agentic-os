@@ -1327,7 +1327,8 @@ internal static class CatalogueReportTests
             Check(string.Join("\n", Directory.EnumerateFileSystemEntries(runs).Concat(Directory.EnumerateFileSystemEntries(sessions)).OrderBy(p => p, StringComparer.Ordinal)) == listing, "real process: nothing is added to .bim/native-runs or native-sessions");
             var defaultUsage = Cli(null, "no-such-verb");
             Check(defaultUsage.Out.Contains("catalogue-report --run", StringComparison.Ordinal), "default usage lists catalogue-report");
-            Check(defaultUsage.Out.Contains("| catalogue-report --run .bim/native-runs/<run> [--fail-on-failures] |", StringComparison.Ordinal),
+            // The usage is printed as the code of a JSON failure envelope ('<' and '>' escaped): pin the decoded text.
+            Check((Str(Json(defaultUsage.Out), "code") ?? "").Contains("| catalogue-report --run .bim/native-runs/<run> [--fail-on-failures] |", StringComparison.Ordinal),
                 "default usage lists the full catalogue-report segment with --fail-on-failures (P1-29)", D(defaultUsage));
             // P1-29: the real process carries the --fail-on-failures exit code (0 for a passing run, 2 once the copy is gone).
             var gatedPass = Cli(null, "catalogue-report", "--run", run, "--fail-on-failures");
