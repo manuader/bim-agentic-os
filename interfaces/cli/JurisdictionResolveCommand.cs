@@ -17,8 +17,9 @@ namespace Bim.Cli;
 //       --country/--municipality, only one of --country/--municipality, an option given twice, an unknown option or
 //       positional argument, a missing, blank or "--"-prefixed value;
 //   {"status":"failed","code":"skills_lock_path_invalid","detail":"lock"}  a --lock path SkillLockTool.PathProblem refuses
-//       (NUL or over SkillLockTool.MaxPathChars characters; its Path.GetFullPath catch is defensive — unreachable on
-//       .NET 8 after those checks, P10-26), as skills-lock does (P10-24);
+//       (NUL or over SkillLockTool.MaxPathChars characters; or, P10-28, a relative path Path.GetFullPath cannot
+//       resolve because the working directory was deleted — FileNotFoundException on Linux/macOS; no other input is
+//       rejected only by GetFullPath on .NET 8, P10-26), as skills-lock does (P10-24);
 //   {"status":"failed","code":"jurisdiction_resolve_repository_not_found"}  neither a package nor a repository root;
 //   {"status":"failed","code","subject","detail"}  the registry's JurisdictionIssue unchanged, from the load (e.g.
 //       skills_invalid, lock_missing, skill_lock_drift, skill_lock_missing) or the selection (jurisdiction_unknown,

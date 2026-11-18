@@ -11,8 +11,9 @@ namespace Bim.Mcp;
 // explicit update are CLI-only (SkillLockCommand). The lock and the packs are read by Core's own bounded readers (lock:
 // no link, regular non-empty file, at most SkillLock.MaxInputChars, strict UTF-8; packs: SkillPackHash limits).
 //
-// Both paths must be non-blank, without NUL, at most MaxPathChars characters and accepted by Path.GetFullPath, else
-// {"status":"failed","code":"skills_lock_path_invalid","detail":"skills"|"lock"}. A lock that cannot be read or parsed
+// Both paths must be non-blank, without NUL, at most MaxPathChars characters and accepted by Path.GetFullPath (on .NET 8
+// the only GetFullPath-only rejection is P10-28: a relative path under a deleted working directory, FileNotFoundException
+// on Linux/macOS), else {"status":"failed","code":"skills_lock_path_invalid","detail":"skills"|"lock"}. A lock that cannot be read or parsed
 // is {"status":"failed","code":<SkillLockCodes>,"subject":<lock file name or member path>,"detail":..,"mode":"verify",
 // "verified":false,"packs":[],"issues":[<that issue>]}.
 // Otherwise the report (UTF-8, compact):
@@ -43,8 +44,10 @@ internal static class SkillLockTool
     public static string? PathProblem(string? path, string name)
     {
         if (string.IsNullOrWhiteSpace(path) || path.IndexOf('\0') >= 0 || path.Length > MaxPathChars) return Failure(PathInvalid, null, name);
+        // P10-28: a relative path cannot be resolved once the working directory is deleted; on Linux and macOS .NET 8
+        // GetFullPath then throws FileNotFoundException (observed, run 44329715033), refused like any other unusable path.
         try { Path.GetFullPath(path); }
-        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { return Failure(PathInvalid, null, name); }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException) { return Failure(PathInvalid, null, name); }
         return null;
     }
 
