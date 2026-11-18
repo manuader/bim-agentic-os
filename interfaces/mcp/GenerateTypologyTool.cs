@@ -16,7 +16,9 @@ namespace Bim.Mcp;
 // generate_typology_usage and output_* refusals do not arise. Every other refusal is the CLI's stdout line without its
 // newline, byte for byte (input_*, generate_typology_request_invalid, *_pack_unavailable / *_pack_invalid,
 // generate_typology_skill_*, generate_typology_repository_not_found, generate_typology_refused with the typed issues,
-// generate_typology_internal_error), with isError true.
+// generate_typology_internal_error), with isError true. Exception (P3-23): a non-refusal exception outside the guarded
+// block (parse / pack load) is the typed generate_typology_internal_error here (Document's catch-all, diagnostic on stderr
+// once), while the CLI verb's Run still lets it reach Program's generic catch (→ P3-24).
 // MCP-only refusal, checked before the request is read: a request_path that is blank, contains NUL, is longer than
 // MaxPathChars, is rejected by Path.GetFullPath or is not valid text (a lone surrogate) is
 // {"status":"failed","code":"generate_typology_path_invalid","detail":"request"} (the diff_intent_path_invalid rule).

@@ -394,3 +394,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P5-24: no failed attempts — red 44219312842 (c202ae6; the two static checks found SkillLoader.LoadDirectory and the race branch) → green 44219413459 (15fecbf); review red 44225252963 (4270b4d; LoadLocked LoaderError null) → green 44225380175 (bcfa446).
 - P7-21: no failed attempts — red 44219627281 (5b3333a; tools/list pin and missing tool) → green 44219938454 (0c3d539).
 - P1-29: 1 failed attempt on the review pin "global usage lists --fail-on-failures" — run 44228551313 (cff2e09); hypothesis 1 (substring match on raw stdout) wrong: the usage is the `code` of a JSON envelope where < > are escaped \u003C/\u003E; hypothesis 2 (parse the envelope, check the decoded code) green 44230381758 (77de579). Red 44219479345 (7084460) → green 44221871058 (2dc60f7).
+
+### Relay227 (2026-11-18, cloud)
+- P2-29: no failed attempts — deliberate probe red 44240630631 (264200b; asserted code `probe_code`, observed `no_response` / pipe_name / "pipe closed without a response line" on Linux core and Windows core-windows) → green 44243259312 (bffdf5d).
+- P3-23: no failed attempts — red 44240609093 (ea9cd42; seam + tests, no catch: InvalidOperationException escaped Document) → green 44242263962 (0718a08); review static pin green 44247631745 (39ee651).
+- P10-26: no failed attempts — deliberate probe reds 44240683936 (a3abcd6; twin directory / ExitCode probes) and 44250658836 (82345ae; printed in-process output for the odd lock paths per OS) → greens 44242454433 (74d4778), 44252686953 (2309a08).
