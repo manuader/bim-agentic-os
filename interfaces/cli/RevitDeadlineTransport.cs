@@ -19,9 +19,10 @@ namespace Bim.Cli;
 // P1-30: the pipe connect is bounded too. A page whose time left is below the 5 s connect wait
 // (RevitCommandService.ConnectTimeoutMs) goes through connectTransport(read, left), the real pipe with that read timeout
 // (the time left when the read is cut, else the configured one) and a connect wait of the time left; its
-// pipe_connect_timeout is reported as the deadline. With time left of at least 5 s the connect keeps its full 5 s and a
-// pipe_connect_timeout passes through (a deadline of 5 s or more on an absent pipe ends pipe_connect_timeout after 5 s,
-// within the deadline). cutReads false never cuts the connect either. Known limit: the read of a page whose connect was
+// pipe_connect_timeout is reported as the deadline. With time left of at least 5 s at the page the connect keeps its
+// full 5 s and a pipe_connect_timeout passes through: on an absent pipe that takes N >= 6 in practice (at N = 5 the
+// first page already has just under 5 s left, so its connect is cut and the run ends query_all_deadline_exceeded at
+// 5 s), ending pipe_connect_timeout after 5 s, within the deadline. cutReads false never cuts the connect either. Known limit: the read of a page whose connect was
 // cut is still given the time left measured before the connect, so a connect that succeeds just before the deadline can
 // extend the run by up to that time left. Tests inject the clock, the cut transport and the connect transport.
 internal sealed class RevitDeadlineTransport : IRevitCommandTransport

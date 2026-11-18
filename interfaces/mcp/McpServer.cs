@@ -72,7 +72,7 @@ namespace Bim.Mcp;
 // DefaultQueryAllBytes (32 MiB) of element JSON (listing_too_large beyond it; CLI byte-equality holds for listings under
 // this cap, the CLI allowing 256 MiB) and an overall deadline DefaultQueryAllDeadline (1800 s, the CLI's per-page read
 // timeout) for the whole listing: a page due after it is not sent, and on the real pipe each page's read timeout is
-// cut to the time left, both reported as query_all_deadline_exceeded in the listing shape (the rule of the CLI
+// cut to the time left, and (P1-30) its pipe connect too when less than 5 s is left, all reported as query_all_deadline_exceeded in the listing shape (the rule of the CLI
 // --all --deadline-seconds n, one shared RevitDeadlineTransport). Known difference: the CLI reads the owner policy
 // files even for this read-only command (a malformed owner file refuses it); here, as without all, they are not read.
 public sealed class McpServer
@@ -350,7 +350,8 @@ public sealed class McpServer
         var (pages, elements, bytes) = QueryAllCaps;
         // P1-23: the CLI --all deadline transport (interfaces/cli/RevitDeadlineTransport.cs, linked), one cut/exceeded rule:
         // a page due after the deadline is not sent; on the real pipe a page whose time left is below the server read
-        // timeout is read with the time left, its pipe_read_timeout reported as the deadline; an injected transport is never cut.
+        // timeout is read with the time left, its pipe_read_timeout reported as the deadline; P1-30: below 5 s left its pipe
+        // connect also waits only the time left, its pipe_connect_timeout reported as the deadline; an injected transport is never cut.
         var transport = new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, revitTransport, readTimeout, QueryAllDeadline,
             RevitDeadlineTransport.ElapsedOn(QueryAllClock), listing: RevitDeadlineTransport.McpListing, cutReads: realPipe, probe: revitProbe);
         var listing = RevitElementQueryPaging.All(CommandEnvelope(RevitElementQueryPaging.Command, arguments), transport, pages, elements, bytes);
