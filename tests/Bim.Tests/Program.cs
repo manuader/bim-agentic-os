@@ -103,6 +103,43 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
   Check(new JurisdictionLoad(null,new JurisdictionIssue("json_invalid","x/jurisdiction.json","d")).LoaderError is null,"P5-24 LoaderError defaults to null");
  } finally { if(Directory.Exists(p524)) Directory.Delete(p524,true); }
 }
+// P5-25: JurisdictionLoad.LoaderError is set only inside Bim.Core and only travels with the skills_invalid Refusal it explains.
+{
+ var p525=Path.Combine(envRoot(),"bim-p525-"+Guid.NewGuid());
+ try {
+  var qLoadType=typeof(JurisdictionLoad);
+  var qLoaderProperty=qLoadType.GetProperty(nameof(JurisdictionLoad.LoaderError))!;
+  var qLoaderSetter=qLoaderProperty.GetSetMethod(true);
+  Check(qLoaderProperty.GetGetMethod() is {IsPublic:true} && (qLoaderSetter is null || qLoaderSetter.IsAssembly || qLoaderSetter.IsPrivate),"P5-25 LoaderError has no public or protected setter or init accessor");
+  Check(qLoadType.GetConstructors().All(qCtor=>qCtor.GetParameters().All(qPa=>!typeof(Exception).IsAssignableFrom(qPa.ParameterType))),"P5-25 no public constructor takes the loader error");
+  Check(qLoadType.GetFields(System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.Public).Length==0,"P5-25 no public instance field exposes the loader error");
+  var qBad=Path.Combine(p525,"bad");
+  Directory.CreateDirectory(Path.Combine(qBad,"xx.bad.pack"));
+  File.WriteAllText(Path.Combine(qBad,"xx.bad.pack","skill.json"),"{ \"manifest_version\": 1, ");
+  var qBadLoad=JurisdictionRegistry.Load(qBad);
+  var qBadLocked=JurisdictionRegistry.LoadLocked(qBad,new SkillLock(Array.Empty<SkillLockEntry>()));
+  Check(qBadLoad.Refusal?.Code==JurisdictionCodes.SkillsInvalid && qBadLoad.LoaderError is not null && qBadLocked.Refusal?.Code==JurisdictionCodes.SkillsInvalid && qBadLocked.LoaderError is not null,"P5-25 skills_invalid from Load and LoadLocked carries a LoaderError");
+  var qOther=new JurisdictionIssue("json_invalid","x/jurisdiction.json","d");
+  Check((qBadLoad with {Refusal=qOther}).LoaderError is null && (qBadLocked with {Refusal=qOther}).LoaderError is null,"P5-25 a with-copy replacing the Refusal drops the stale LoaderError");
+  Check((qBadLoad with {Refusal=null}).LoaderError is null,"P5-25 a with-copy clearing the Refusal drops the LoaderError");
+  Check((qBadLoad with {Refusal=qBadLoad.Refusal! with {}}).LoaderError is null,"P5-25 an equal but distinct Refusal instance does not inherit the LoaderError");
+  Check(ReferenceEquals((qBadLoad with {Registry=null}).LoaderError,qBadLoad.LoaderError),"P5-25 a with-copy keeping the same Refusal keeps its LoaderError");
+  // Record equality includes the hidden loader fields; a copy with another refusal is unequal and reads LoaderError as null.
+  Check((qBadLoad with {}).Equals(qBadLoad) && !(qBadLoad with {Refusal=qOther}).Equals(qBadLoad) && (qBadLoad with {Refusal=qOther}).LoaderError is null,"P5-25 equality: a plain copy is equal, a with { Refusal = other } copy is unequal and has no LoaderError");
+  var qSide=Path.Combine(p525,"side");
+  Directory.CreateDirectory(Path.Combine(qSide,"xx.p525.pack"));
+  File.WriteAllText(Path.Combine(qSide,"xx.p525.pack","skill.json"),"{\"manifest_version\":1,\"id\":\"xx.p525.pack\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fixture\",\"priority\":10,\"rules\":[]}");
+  File.WriteAllText(Path.Combine(qSide,"xx.p525.pack","jurisdiction.json"),"{");
+  var qSideLoad=JurisdictionRegistry.Load(qSide);
+  Check(qSideLoad.Refusal is {} qSr && qSr.Code==JurisdictionCodes.JsonInvalid && qSr.Subject=="xx.p525.pack/jurisdiction.json" && qSideLoad.LoaderError is null,"P5-25 a sidecar refusal from Load has no LoaderError ("+qSideLoad.Refusal?.Code+")");
+  var qSideLocked=JurisdictionRegistry.LoadLocked(qSide,SkillLocking.Pin(qSide,["xx.p525.pack"]));
+  Check(qSideLocked.Refusal is {} qLr && qLr.Code==JurisdictionCodes.JsonInvalid && qLr.Subject=="xx.p525.pack/jurisdiction.json" && qSideLocked.LoaderError is null,"P5-25 a sidecar refusal from LoadLocked has no LoaderError ("+qSideLocked.Refusal?.Code+")");
+  File.Delete(Path.Combine(qSide,"xx.p525.pack","jurisdiction.json"));
+  var qOkLoad=JurisdictionRegistry.Load(qSide);
+  var qOkLocked=JurisdictionRegistry.LoadLocked(qSide,SkillLocking.Pin(qSide,["xx.p525.pack"]));
+  Check(qOkLoad.Succeeded && qOkLoad.LoaderError is null && qOkLocked.Succeeded && qOkLocked.LoaderError is null,"P5-25 successful Load and LoadLocked have no LoaderError");
+ } finally { if(Directory.Exists(p525)) Directory.Delete(p525,true); }
+}
 Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {passed=count, core_test_ms=timer.Elapsed.TotalMilliseconds, native_verified=false}));
 } catch(Exception exception) {
     Console.Error.WriteLine(exception);

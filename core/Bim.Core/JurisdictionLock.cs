@@ -45,7 +45,7 @@ public sealed partial class JurisdictionRegistry
         ArgumentNullException.ThrowIfNull(skillsRoot);
         ArgumentNullException.ThrowIfNull(skillLock);
         try { SkillLoader.LoadDirectory(skillsRoot); }
-        catch (SkillException error) { return new JurisdictionLoad(null, new JurisdictionIssue(JurisdictionCodes.SkillsInvalid, error.File ?? ".", error.Code + (error.Detail is null ? "" : ": " + error.Detail))) { LoaderError = error }; }
+        catch (SkillException error) { return JurisdictionLoad.SkillsInvalid(error); }
         var snapshots = new List<SkillPackSnapshot>();
         var issues = new List<SkillLockIssue>();
         foreach (var entry in skillLock.Packs)
