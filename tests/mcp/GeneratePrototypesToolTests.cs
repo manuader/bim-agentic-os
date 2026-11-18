@@ -104,14 +104,15 @@ internal static class GeneratePrototypesToolTests
         // ---- tools/list ----
         var listed = call(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 2, ["method"] = "tools/list" }.ToJsonString())["result"]!["tools"]!.AsArray();
         var tools = listed.Where(t => t!["name"]!.GetValue<string>() == ToolName).ToArray();
-        var tool = tools.Length == 1 ? tools[0]!.AsObject() : null;
-        Check(tool is not null && tool["description"]!.GetValue<string>().Contains("generate-prototypes", StringComparison.Ordinal)
-            && tool["description"]!.GetValue<string>().Contains("read-only", StringComparison.OrdinalIgnoreCase), "listed once, read-only, naming the CLI verb generate-prototypes");
-        Check(tool?["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>() == "read" && tool["annotations"]?["readOnlyHint"]?.GetValue<bool>() == true
-            && tool["annotations"]!.AsObject().Count == 1, "lists _meta permission_level read and annotations readOnlyHint true only");
-        Check(tool?["inputSchema"]?["required"] is JsonArray required && string.Join(",", required.Select(x => x!.GetValue<string>())) == RequestParameter
-            && tool["inputSchema"]!["properties"]!.AsObject().Count == 1 && tool["inputSchema"]!["properties"]![RequestParameter]?["type"]?.GetValue<string>() == "string"
-            && tool["inputSchema"]!["additionalProperties"]!.GetValue<bool>() == false, "schema: exactly request (string), required");
+        var tool = tools.Length == 1 ? tools[0]!.AsObject() : new JsonObject();
+        var description = tool["description"]?.GetValue<string>() ?? "";
+        Check(tools.Length == 1 && description.Contains("generate-prototypes", StringComparison.Ordinal) && description.Contains("read-only", StringComparison.OrdinalIgnoreCase),
+            "listed once, read-only, naming the CLI verb generate-prototypes");
+        Check(tool["_meta"]?["bim-agentic-os/permission_level"]?.GetValue<string>() == "read" && tool["annotations"] is JsonObject annotations
+            && annotations["readOnlyHint"]?.GetValue<bool>() == true && annotations.Count == 1, "lists _meta permission_level read and annotations readOnlyHint true only");
+        Check(tool["inputSchema"] is JsonObject schema && schema["required"] is JsonArray required && string.Join(",", required.Select(x => x!.GetValue<string>())) == RequestParameter
+            && schema["properties"] is JsonObject properties && properties.Count == 1 && properties[RequestParameter]?["type"]?.GetValue<string>() == "string"
+            && schema["additionalProperties"]?.GetValue<bool>() == false, "schema: exactly request (string), required");
 
         // ---- 1. documents: CLI output file == tool text == in-process PrototypePipeline.Run ----
         SkillManifest Skill(string id) => SkillParser.Parse(File.ReadAllText(Path.Combine(root, "skills", id, "skill.json")));
