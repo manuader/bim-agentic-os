@@ -69,11 +69,20 @@ namespace Bim.Cli;
 // P1-25: a record whose save_as_path is text gets "save_as":{state,detail,file,recorded_sha256,disk_sha256,disk_bytes}
 // right after copy (before realized): the -guardado.rvt file re-hashed against save_as_sha256 (see WriteSaveAs); P1-26: in
 // a stream through the copy's Hash(), under the copy's MaxCopyBytes. A record without save_as_path, or with it null, prints exactly what it did before.
+// P1-29: an opt-in --fail-on-failures (before or after --run <dir>, at most once; anything else is catalogue_report_usage)
+// keeps the printed report byte for byte and only changes the exit code of a report: 2 when overall.failed > 0, the copy
+// state is not "match" or the save_as state (when the member is printed) is not "matches"; else 0. Blocked steps alone
+// (failed = 0) and the realized member do not change it. Without the flag a report always exits 0.
 // Every refusal prints one {"status":"failed","code"[,"detail"]} envelope and exits 1. catalogue_report_internal_error is a
 // defect (type and message on stderr).
 internal static class CatalogueReportCommand
 {
-    public const string Usage = "usage: catalogue-report --run .bim/native-runs/<run>";
+    public const string Usage = "usage: catalogue-report --run .bim/native-runs/<run> [--fail-on-failures]";
+    public const string FailOnFailures = "--fail-on-failures";
+    public const int FailuresExit = 2;
+    // The copy and save_as states the --fail-on-failures gate accepts (P1-29), written by WriteCopy and WriteSaveAs.
+    const string CopyMatch = "match";
+    const string SaveAsMatches = "matches";
     public const string UsageCode = "catalogue_report_usage";
     public const string RepositoryNotFound = "catalogue_report_repository_not_found";
     public const string RunInvalid = "catalogue_report_run_invalid";
@@ -144,7 +153,11 @@ internal static class CatalogueReportCommand
     // copy and save_as hashing cap (tests pass a small one). Returns the exit code and the one line Run prints.
     internal static (int Exit, string Out) Execute(string[] args, string repositoryRoot, long maxCopyBytes = MaxCopyBytes)
     {
-        try { return (0, Report(args, repositoryRoot, maxCopyBytes)); }
+        try
+        {
+            var (output, failures) = Report(args, repositoryRoot, maxCopyBytes);
+            return (failures ? FailuresExit : 0, output);
+        }
         catch (Refusal refusal) { return (1, Failure(refusal.Code, refusal.Detail)); }
         catch (Exception error)
         {
@@ -155,11 +168,26 @@ internal static class CatalogueReportCommand
         }
     }
 
-    static string Report(string[] args, string repository, long maxCopyBytes)
+    // P1-29: `--run <dir>` with an optional `--fail-on-failures` before or after it, at most once.
+    static (string Run, bool FailOnFailures) Arguments(string[] args)
     {
-        if (args.Length != 3 || args[1] != "--run" || args[2].Length == 0 || args[2].StartsWith("--", StringComparison.Ordinal)) throw new Refusal(UsageCode);
+        string[] rest = args.Length switch
+        {
+            3 => args[1..],
+            4 when args[1] == FailOnFailures => args[2..],
+            4 when args[3] == FailOnFailures => args[1..3],
+            _ => throw new Refusal(UsageCode),
+        };
+        if (rest[0] != "--run" || rest[1].Length == 0 || rest[1].StartsWith("--", StringComparison.Ordinal)) throw new Refusal(UsageCode);
+        return (rest[1], args.Length == 4);
+    }
+
+    // The report and whether --fail-on-failures was given and the report shows a failure (P1-29).
+    static (string Output, bool Failures) Report(string[] args, string repository, long maxCopyBytes)
+    {
+        var (runArgument, failOnFailures) = Arguments(args);
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repository));
-        var (runDirectory, runName) = ResolveRun(root, args[2]);
+        var (runDirectory, runName) = ResolveRun(root, runArgument);
         var (sessionName, recordIndex, recordPath) = FindRecord(root, runName);
         byte[] bytes;
         try { bytes = BoundedInput.ReadBytes(recordPath, MaxRecordBytes); }
@@ -189,6 +217,8 @@ internal static class CatalogueReportCommand
             var saveAsSha = saveAsPath is null ? null : Optional(record, "save_as_sha256", "save_as_sha256");
 
             var buffer = new ArrayBufferWriter<byte>();
+            string copyState;
+            string? saveAsState = null;
             using (var writer = new Utf8JsonWriter(buffer))
             {
                 writer.WriteStartObject();
@@ -217,12 +247,13 @@ internal static class CatalogueReportCommand
                     writer.WriteEndObject();
                 }
                 writer.WriteEndArray();
-                WriteCopy(writer, steps, copyPath, runDirectory, runName, maxCopyBytes);
-                if (saveAsPath is not null) WriteSaveAs(writer, saveAsPath, saveAsSha, runDirectory, runName, maxCopyBytes);
+                copyState = WriteCopy(writer, steps, copyPath, runDirectory, runName, maxCopyBytes);
+                if (saveAsPath is not null) saveAsState = WriteSaveAs(writer, saveAsPath, saveAsSha, runDirectory, runName, maxCopyBytes);
                 WriteRealized(writer, steps, runDirectory, runName);
                 writer.WriteEndObject();
             }
-            return Encoding.UTF8.GetString(buffer.WrittenSpan);
+            var failures = overall.Failed > 0 || copyState != CopyMatch || (saveAsState is not null && saveAsState != SaveAsMatches);
+            return (Encoding.UTF8.GetString(buffer.WrittenSpan), failOnFailures && failures);
         }
     }
 
@@ -554,7 +585,8 @@ internal static class CatalogueReportCommand
         writer.WriteEndArray();
     }
 
-    static void WriteCopy(Utf8JsonWriter writer, Step[] steps, string? copyPath, string runDirectory, string runName, long maxCopyBytes)
+    // Returns the copy state it printed (P1-29).
+    static string WriteCopy(Utf8JsonWriter writer, Step[] steps, string? copyPath, string runDirectory, string runName, long maxCopyBytes)
     {
         var save = steps.FirstOrDefault(s => s.Key == SaveKey && s.Command == SaveCommand);
         string state;
@@ -593,7 +625,7 @@ internal static class CatalogueReportCommand
                     diskBytes = bytes;
                     state = sha is null ? "too_large"
                         : recordedSha is null ? "no_recorded_sha256"
-                        : recordedSha == sha && (recordedBytes is null || recordedBytes == bytes) ? "match" : "mismatch";
+                        : recordedSha == sha && (recordedBytes is null || recordedBytes == bytes) ? CopyMatch : "mismatch";
                 }
             }
         }
@@ -608,6 +640,7 @@ internal static class CatalogueReportCommand
         WriteText(writer, "disk_sha256", diskSha);
         if (diskBytes is { } disk) writer.WriteNumber("disk_bytes", disk); else writer.WriteNull("disk_bytes");
         writer.WriteEndObject();
+        return state;
     }
 
     // P1-25: the file c-as-save wrote (document.save_as), named by the run record's save_as_path (P1-18: the full path of
@@ -622,7 +655,8 @@ internal static class CatalogueReportCommand
     // the copy's Hash() (regular files only, lstat before open on Unix, bounded by the copy's cap, 8 GiB; never a
     // whole-file byte[]), opened shared for write and delete because Revit keeps it open after the Save As; Hash's
     // problems are reported as the BoundedInput code they correspond to. recorded_sha256 is printed lower-cased.
-    static void WriteSaveAs(Utf8JsonWriter writer, string path, string? recordedText, string runDirectory, string runName, long maxBytes)
+    // Returns the save_as state it printed (P1-29).
+    static string WriteSaveAs(Utf8JsonWriter writer, string path, string? recordedText, string runDirectory, string runName, long maxBytes)
     {
         string state;
         string? detail = null, file = null, recordedSha = null, diskSha = null;
@@ -659,7 +693,7 @@ internal static class CatalogueReportCommand
                 diskSha = sha;
                 diskBytes = hashed;
                 if (recordedSha is null) state = "no_recorded_sha256";
-                else if (recordedSha == diskSha) state = "matches";
+                else if (recordedSha == diskSha) state = SaveAsMatches;
                 else { state = "mismatch"; detail = "sha256"; }
             }
         }
@@ -671,6 +705,7 @@ internal static class CatalogueReportCommand
         WriteText(writer, "disk_sha256", diskSha);
         if (diskBytes is { } length) writer.WriteNumber("disk_bytes", length); else writer.WriteNull("disk_bytes");
         writer.WriteEndObject();
+        return state;
     }
 
     // P4-18: the doc-up-elements step (command doc-realized) and its folder <run>/catalogue-requests/<NN>-doc-up-elements.doc-realized

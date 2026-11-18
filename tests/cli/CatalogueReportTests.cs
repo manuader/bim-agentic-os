@@ -1071,6 +1071,62 @@ internal static class CatalogueReportTests
         File.WriteAllText(Path.Combine(outsideSession, "catalogue-run1.json"), passTemplate.Replace("__RUN__", hidden.Name, StringComparison.Ordinal));
         if (Link(Path.Combine(hidden.Root, ".bim", "native-sessions", Stamp), outsideSession, true, "skips a linked session folder"))
             Refused("a run named only through a linked session folder", "catalogue_report_record_not_found", null, hidden);
+
+        // 1o. P1-29: an opt-in --fail-on-failures (before or after --run <dir>, at most once) keeps the report bytes and
+        // exits 2 when a step failed, the copy is not match or the save_as file is not matches; else 0. Without the flag
+        // every report still exits 0 with the same bytes.
+        (int Exit, string Out) Gate(Case c, bool flagFirst = false) => CatalogueReportCommand.Execute(
+            flagFirst ? ["catalogue-report", "--fail-on-failures", "--run", c.Run] : ["catalogue-report", "--run", c.Run, "--fail-on-failures"], c.Root);
+        void Gated(string name, Case c, int exit)
+        {
+            var plain = Report(c);
+            var gated = Gate(c);
+            var flagFirstRun = Gate(c, flagFirst: true);
+            Check(plain.Exit == 0 && plain.Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal) && gated.Exit == exit && gated.Out == plain.Out && flagFirstRun.Exit == exit && flagFirstRun.Out == plain.Out,
+                "--fail-on-failures: " + name + " exits " + exit.ToString(CultureInfo.InvariantCulture) + " with the report bytes unchanged (exit 0 without the flag)", D(plain) + " | flag after " + D(gated) + " | flag first " + D(flagFirstRun));
+        }
+        Gated("a passing run (copy match)", pass, 0);
+        Gated("a run with failed steps", Make(failTemplate, CopyBytes), 2);
+        var gateTampered = (byte[])CopyBytes.Clone();
+        gateTampered[0] ^= 1;
+        Gated("a passing run whose copy is mismatch", Make(passTemplate, gateTampered), 2);
+        Gated("a passing run whose copy is missing_file", Make(passTemplate), 2);
+        Gated("a v1-only run (copy not_in_run)", Make(Fixture(root, "v1only")), 2);
+        Gated("blocked steps alone (failed 0, copy match)", Make(Fixture(root, "blocked"), CopyBytes), 0);
+        Gated("a passing run whose save_as is matches", MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), SaveAsBytes), 0);
+        Gated("a passing run whose save_as is mismatch", MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), saveAsTampered), 2);
+        Gated("a passing run whose save_as is missing", MakeSaveAs(WithSaveAs(saveAsPath, saveAsSha), null), 2);
+        Gated("a passing run whose save_as is no_recorded_sha256", MakeSaveAs(WithSaveAs(saveAsPath, null), SaveAsBytes), 2);
+        Gated("a passing run whose save_as is outside_run", MakeSaveAs(WithSaveAs("C:\\Repo\\.bim\\" + SaveAsName, saveAsSha), SaveAsBytes), 2);
+        Gated("a null save_as_path (no save_as member)", unknown, 0);
+        var gateMissing = Path.Combine(pass.Root, ".bim", "native-runs", Guid.NewGuid().ToString());
+        foreach (var refusedArgs in new[] { new[] { "catalogue-report", "--run", gateMissing, "--fail-on-failures" }, new[] { "catalogue-report", "--fail-on-failures", "--run", gateMissing } })
+        {
+            var refusedGate = CatalogueReportCommand.Execute(refusedArgs, pass.Root);
+            Check(refusedGate.Exit == 1 && refusedGate.Out == Failure("catalogue_report_run_not_found", "run"), "--fail-on-failures: a refusal still exits 1 with its envelope", D(refusedGate));
+        }
+        foreach (var bad in new[]
+        {
+            new[] { "catalogue-report", "--run", pass.Run, "--fail-on-failures", "--fail-on-failures" },
+            new[] { "catalogue-report", "--fail-on-failures", "--run", pass.Run, "--fail-on-failures" },
+            new[] { "catalogue-report", "--fail-on-failures", "--fail-on-failures", "--run", pass.Run },
+            new[] { "catalogue-report", "--run", pass.Run, "--fail-on-failure" },
+            new[] { "catalogue-report", "--run", pass.Run, "--FAIL-ON-FAILURES" },
+            new[] { "catalogue-report", "--run", pass.Run, "--strict" },
+            new[] { "catalogue-report", "--strict", "--run", pass.Run },
+            new[] { "catalogue-report", "--fail-on-failures" },
+            new[] { "catalogue-report", "--fail-on-failures", "--run" },
+            new[] { "catalogue-report", "--run", "--fail-on-failures" },
+            new[] { "catalogue-report", "--fail-on-failures", "--run", "--fail-on-failures" },
+            new[] { "catalogue-report", "--run", "--fail-on-failures", pass.Run },
+            new[] { "catalogue-report", "--fail-on-failures", pass.Run, "--run" },
+            new[] { "catalogue-report", "--run", pass.Run, "--fail-on-failures", "extra" },
+        })
+        {
+            var result = CatalogueReportCommand.Execute(bad, pass.Root);
+            Check(result.Exit == 1 && result.Out == Failure("catalogue_report_usage", null), "--fail-on-failures: refuses " + string.Join(" ", bad.Skip(1).Select(a => a == pass.Run ? "<run>" : a)) + " (catalogue_report_usage)", D(result));
+        }
+        Check(CatalogueReportCommand.Usage == "usage: catalogue-report --run .bim/native-runs/<run> [--fail-on-failures]", "--fail-on-failures: the verb's usage names the flag", CatalogueReportCommand.Usage);
     }
 
     // ---- 2. records written by the real owner code ----
@@ -1269,7 +1325,21 @@ internal static class CatalogueReportTests
             var outside = Cli(null, "catalogue-report", "--run", scratch);
             Check(outside.Exit == 1 && outside.Out == Failure("catalogue_report_run_outside", null), "real process: a folder outside .bim/native-runs is refused", D(outside));
             Check(string.Join("\n", Directory.EnumerateFileSystemEntries(runs).Concat(Directory.EnumerateFileSystemEntries(sessions)).OrderBy(p => p, StringComparer.Ordinal)) == listing, "real process: nothing is added to .bim/native-runs or native-sessions");
-            Check(Cli(null, "no-such-verb").Out.Contains("catalogue-report --run", StringComparison.Ordinal), "default usage lists catalogue-report");
+            var defaultUsage = Cli(null, "no-such-verb");
+            Check(defaultUsage.Out.Contains("catalogue-report --run", StringComparison.Ordinal), "default usage lists catalogue-report");
+            // The usage is printed as the code of a JSON failure envelope ('<' and '>' escaped): pin the decoded text.
+            Check((Str(Json(defaultUsage.Out), "code") ?? "").Contains("| catalogue-report --run .bim/native-runs/<run> [--fail-on-failures] |", StringComparison.Ordinal),
+                "default usage lists the full catalogue-report segment with --fail-on-failures (P1-29)", D(defaultUsage));
+            // P1-29: the real process carries the --fail-on-failures exit code (0 for a passing run, 2 once the copy is gone).
+            var gatedPass = Cli(null, "catalogue-report", "--run", run, "--fail-on-failures");
+            Check(gatedPass.Exit == 0 && gatedPass.Out == first.Out, "real process: --fail-on-failures on a passing run exits 0 with the same report", D(gatedPass));
+            File.Delete(Path.Combine(run, CopyName));
+            var plainMissing = Cli(null, "catalogue-report", "--run", run);
+            var gatedMissing = Cli(null, "catalogue-report", "--run", run, "--fail-on-failures");
+            Check(plainMissing.Exit == 0 && Raw(Json(plainMissing.Out), "copy").StartsWith("{\"state\":\"missing_file\"", StringComparison.Ordinal) && gatedMissing.Exit == 2 && gatedMissing.Out == plainMissing.Out,
+                "real process: --fail-on-failures exits 2 when the copy is missing_file, stdout unchanged", D(plainMissing) + " | " + D(gatedMissing));
+            var gatedUsage = Cli(null, "catalogue-report", "--run", run, "--fail-on-failures", "--fail-on-failures");
+            Check(gatedUsage.Exit == 1 && gatedUsage.Out == Failure("catalogue_report_usage", null), "real process: a repeated --fail-on-failures is catalogue_report_usage (exit 1)", D(gatedUsage));
         }
         finally { Clean(); }
 
