@@ -341,9 +341,27 @@ internal static class RevitCommandDeadlineTests
             && !builtArgs.Contains("ConnectTimeout", StringComparison.Ordinal) && !builtArgs.Contains("cutTransport", StringComparison.Ordinal),
             "P1-30 static: McpServer.RevitCallAll builds RevitDeadlineTransport with cutReads: realPipe and the default (shared) connect bound", builtArgs.ReplaceLineEndings(" "));
 
+        // Static: no source under interfaces/cli or interfaces/mcp still says the connect is not cut. Comment markers and
+        // line breaks are folded into single spaces first, so a phrase wrapped over two comment lines is still found.
+        string[] stale = ["connect is not cut", "connect of a page is not cut", "deadline + up to 5 s", "does not cut a page's 5 s pipe connect"];
+        var staleHits = new List<string>();
+        foreach (var dir in new[] { Path.Combine(root, "interfaces", "cli"), Path.Combine(root, "interfaces", "mcp") })
+            foreach (var file in Directory.EnumerateFiles(dir, "*.cs", SearchOption.AllDirectories)
+                .Where(f => !f.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(part => part is "bin" or "obj")))
+            {
+                var folded = System.Text.RegularExpressions.Regex.Replace(File.ReadAllText(file), @"\s*(?:\r?\n)\s*(?://+)?\s*", " ");
+                folded = System.Text.RegularExpressions.Regex.Replace(folded, @"[ \t]+", " ");
+                foreach (var phrase in stale)
+                    if (folded.Contains(phrase, StringComparison.Ordinal)) staleHits.Add(Path.GetRelativePath(root, file).Replace('\\', '/') + ": " + phrase);
+            }
+        check(staleHits.Count == 0, "P1-30 static: no interfaces/cli or interfaces/mcp source says the deadline does not cut the pipe connect", string.Join("; ", staleHits));
+
         // The process start-up and envelope read of a refused --all run: the CLI clock starts just before paging.
-        var startup = rc([Path.Combine(Path.GetDirectoryName(walls)!, "missing-envelope.json"), AbsentPipe(), "--all", Flag, "1"]);
-        check(startup.Exit == 1 && Code(Node(startup.Out)) == RevitCommandCodes.EnvelopeInvalid, "P1-30 start-up baseline: a missing envelope under --all is refused in the listing shape", startup.Out);
+        // The larger of two samples, so one fast start does not tighten the bounds below.
+        var startupRuns = new[] { 0, 1 }.Select(_ => rc([Path.Combine(Path.GetDirectoryName(walls)!, "missing-envelope.json"), AbsentPipe(), "--all", Flag, "1"])).ToArray();
+        check(startupRuns.All(run => run.Exit == 1 && Code(Node(run.Out)) == RevitCommandCodes.EnvelopeInvalid), "P1-30 start-up baseline: a missing envelope under --all is refused in the listing shape (2 samples)",
+            string.Join(" ; ", startupRuns.Select(run => run.Out + " in " + N(run.Ms) + " ms")));
+        var startupMs = startupRuns.Max(run => run.Ms);
 
         // In process, the real pipe transport: a 1 s deadline ends at the deadline, not after the 5 s connect.
         var inProcessWatch = Stopwatch.StartNew();
@@ -370,24 +388,26 @@ internal static class RevitCommandDeadlineTests
             "P1-30 MCP all:true (real pipe, 1 s QueryAllDeadline) on an absent pipe is query_all_deadline_exceeded within 1 s + 1 s",
             (mcpText ?? mcpResponse?.ToJsonString() ?? "<no response>") + " in " + N(mcpWatch.ElapsedMilliseconds) + " ms");
 
-        // The real CLI: N = 1 and 2 end query_all_deadline_exceeded within N + 1 s (plus the measured start-up).
-        foreach (var seconds in new[] { 1, 2 })
+        // The real CLI: N = 1, 2 and 5 end query_all_deadline_exceeded within N + 1 s (plus the measured start-up). At N = 5
+        // the first page has just under 5 s left, so its connect is cut too: pipe_connect_timeout needs time left >= 5 s
+        // at the page (N >= 6 in practice).
+        foreach (var seconds in new[] { 1, 2, 5 })
         {
             var absent = rc([walls, AbsentPipe(), "--all", Flag, N(seconds)]);
             var expected = AbsentExceededCli.Replace("its 1000 ms deadline", "its " + N(seconds * 1000L) + " ms deadline", StringComparison.Ordinal);
-            check(absent.Exit == 1 && absent.Out == expected && absent.Ms >= seconds * 1000L && absent.Ms < seconds * 1000L + 1000 + startup.Ms,
-                "P1-30 revit-command --all " + Flag + " " + N(seconds) + " with no add-in listening ends query_all_deadline_exceeded within the deadline + 1 s (start-up " + N(startup.Ms) + " ms), not after the 5 s connect",
+            check(absent.Exit == 1 && absent.Out == expected && absent.Ms >= seconds * 1000L && absent.Ms < seconds * 1000L + 1000 + startupMs,
+                "P1-30 revit-command --all " + Flag + " " + N(seconds) + " with no add-in listening ends query_all_deadline_exceeded within the deadline + 1 s (start-up " + N(startupMs) + " ms), not after the 5 s connect",
                 "exit " + absent.Exit + " " + absent.Out + " in " + N(absent.Ms) + " ms");
         }
         // N = 7 (time left at least 5 s): the full 5 s connect, pipe_connect_timeout, byte-equal to the run without a deadline.
         var roomy = rc([walls, AbsentPipe(), "--all", Flag, "7"]);
         var roomyJson = Node(roomy.Out);
-        check(roomy.Exit == 1 && Code(roomyJson) == RevitCommandCodes.PipeConnectTimeout && Pages(roomyJson) == 0 && roomy.Ms >= connectMs && roomy.Ms < 7000 + 1000 + startup.Ms,
+        check(roomy.Exit == 1 && Code(roomyJson) == RevitCommandCodes.PipeConnectTimeout && Pages(roomyJson) == 0 && roomy.Ms >= connectMs && roomy.Ms < 7000 + 1000 + startupMs,
             "P1-30 revit-command --all " + Flag + " 7 with no add-in listening ends pipe_connect_timeout after the full 5 s connect, within 7 s + 1 s",
             "exit " + roomy.Exit + " " + roomy.Out + " in " + N(roomy.Ms) + " ms");
         var plain = rc([walls, AbsentPipe(), "--all"]);
-        check(plain.Exit == 1 && plain.Out == roomy.Out && plain.Ms >= connectMs,
-            "P1-30 revit-command --all without " + Flag + " on an absent pipe keeps the 5 s connect and pipe_connect_timeout bytes (equal to the 7 s deadline run)",
+        check(plain.Exit == 1 && plain.Out == roomy.Out && plain.Ms >= connectMs && plain.Ms < connectMs + 1000 + startupMs,
+            "P1-30 revit-command --all without " + Flag + " on an absent pipe keeps the 5 s connect (5 s to 6 s + start-up) and pipe_connect_timeout bytes (equal to the 7 s deadline run)",
             "exit " + plain.Exit + " " + plain.Out + " in " + N(plain.Ms) + " ms");
     }
 }
