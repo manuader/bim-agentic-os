@@ -12,6 +12,9 @@ using System.Text;
 // /Differences name is such a glyph-list name and that the ToUnicode CMap does not map), not at the Tf, and lists only
 // the names of the affected codes that operator shows (code order, deduplicated, at most eight); a font selected but
 // never showing an affected code is silent.
+// P6-25: the font decoder reads the affected names through PdfSimpleEncoding.UnsupportedGlyphListName (static check);
+// one font dictionary under two resource names warns once, named by the resource active at the showing operator; a
+// show at a non-finite position keeps the warning pending.
 internal static class PdfType3GlyphListTests
 {
     private static string I(long value) => value.ToString(CultureInfo.InvariantCulture);
@@ -206,6 +209,57 @@ internal static class PdfType3GlyphListTests
                 "a form whose /F1 resolves to a different font dictionary warns on its own", Warnings(ownFont) + " " + ownMessages);
         }
         catch (Exception error) { C(false, "shown unexpected", error.GetType().Name + ": " + error.Message); }
+
+        // ---------- P6-25: hygiene ----------
+        try
+        {
+            const string prefix = " (object 5) is a Type3 font whose /Differences names glyph-list names the reader does not map (";
+            const string affected = "[1 /g1 /afii10017 /Gamma /afii10018 /afii10019]";
+            string Messages(PdfDocument document) => string.Join(" / ", document.Warnings.Select(w => w.Message));
+
+            // One font dictionary (object 5) reachable as /F1 and /F3. Operators: BT 0, Tf 1, Tm 2, Tj 3, Tf 4, Tj 5, Tf 6, Tj 7, ET 8.
+            PdfDocument TwoNames(string content) => PdfReader.Parse(PdfTests.Build(new List<(int Number, byte[] Body)>
+            {
+                (1, L("<< /Type /Catalog /Pages 2 0 R >>")),
+                (2, L("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+                (3, L("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Resources << /Font << /F1 5 0 R /F3 5 0 R >> >> /Contents 4 0 R >>")),
+                (4, PdfTests.StreamBody("", L(content))),
+                (5, L(Type3(affected))),
+            }), "type3-glyph-list-names.pdf");
+            var second = TwoNames("BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\001) Tj /F3 10 Tf (\\002) Tj /F1 10 Tf (\\002\\003) Tj ET");
+            C(Texts(second) == "\\u0001|\\u0002|\\u0002\\u0003" && Warnings(second) == "encoding-glyph-unsupported@1:4:5"
+                && Messages(second) == "font /F3" + prefix + "/afii10017); their codes are read as text bytes",
+                "a font dictionary reachable under two resource names warns once, named by the resource active at the showing operator (P6-25)",
+                Texts(second) + " " + Warnings(second) + " " + Messages(second));
+            var first = TwoNames("BT /F3 10 Tf 1 0 0 1 50 50 Tm (\\001) Tj /F1 10 Tf (\\002) Tj /F3 10 Tf (\\002\\003) Tj ET");
+            C(Warnings(first) == "encoding-glyph-unsupported@1:4:5" && Messages(first) == "font /F1" + prefix + "/afii10017); their codes are read as text bytes",
+                "the name comes from the showing operator's resource, not the resource that first selected the dictionary (P6-25)", Warnings(first) + " " + Messages(first));
+
+            // A show at a non-finite position (CTM 1e300 times a text matrix of 1e60) emits no text and keeps the warning
+            // pending. Operators: BT 0, Tf 1, ET 2, q 3, cm 4-8, BT 9, Tm 10, Tj 11, ET 12, Q 13, BT 14, Tm 15, Tj 16, ET 17.
+            var big = "1" + new string('0', 60);
+            var scale = big + " 0 0 " + big + " 0 0 cm ";
+            var infinite = Page("BT /F1 10 Tf ET q " + string.Concat(Enumerable.Repeat(scale, 5)) + "BT " + big + " 0 0 " + big + " 0 0 Tm (\\002) Tj ET Q BT 1 0 0 1 50 50 Tm (\\002\\004) Tj ET",
+                Type3(affected));
+            C(Texts(infinite) == "\\u0002\\u0004" && Warnings(infinite) == "operand-error@1:4:11;encoding-glyph-unsupported@1:4:16"
+                && Messages(infinite) == "Tj gives a non-finite text position / font /F1" + prefix + "/afii10017, /afii10018); their codes are read as text bytes",
+                "a show at a non-finite position keeps only operand-error; the warning fires at the next show that emits text (P6-25)",
+                Texts(infinite) + " " + Warnings(infinite) + " " + Messages(infinite));
+
+            // Static check: the font decoder reads affected names through PdfSimpleEncoding.UnsupportedGlyphListName(code)
+            // and the glyph-list filter is applied in exactly one place.
+            var adapter = Path.Combine(fixtures, "..", "..", "..", "adapters", "cad", "Bim.Cad");
+            static string Code(string path) => string.Join("\n", File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+            var content = Code(Path.Combine(adapter, "PdfContent.cs"));
+            var encoding = Code(Path.Combine(adapter, "PdfEncoding.cs"));
+            static int Count(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
+            C(Count(content, "IsGlyphListName") == 0 && Count(content, ".UnsupportedGlyphListName(") == 1,
+                "the font decoder reads affected names through one PdfSimpleEncoding per-code accessor (P6-25 static check)",
+                Count(content, "IsGlyphListName") + " " + Count(content, ".UnsupportedGlyphListName("));
+            C(Count(encoding, "public string? UnsupportedGlyphListName(byte code)") == 1 && Count(encoding, "PdfGlyphNames.IsGlyphListName(") == 1,
+                "PdfSimpleEncoding applies the glyph-list filter once, in the per-code accessor (P6-25 static check)", Count(encoding, "PdfGlyphNames.IsGlyphListName(").ToString(CultureInfo.InvariantCulture));
+        }
+        catch (Exception error) { C(false, "hygiene unexpected", error.GetType().Name + ": " + error.Message); }
     }
 
     private static string Show(string literal) => "BT /F1 10 Tf 1 0 0 1 50 50 Tm (" + literal + ") Tj ET";
