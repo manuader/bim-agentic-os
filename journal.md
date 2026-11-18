@@ -1752,3 +1752,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay229 — 2026-11-18T07:53:07Z (Claude, cloud scheduled)
 - 07:53Z LOCK taken (was FREE; relay227 released 2026-11-18T07:32:15Z).
+- 07:53Z picked P4-23 (phase 4), P6-25 (phase 6), P5-25 (phase 5) — oldest-touched (relay225/226); disjoint files. Workers spawned.
