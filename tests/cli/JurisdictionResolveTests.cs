@@ -19,8 +19,9 @@ using Bim.Core;
 //      usage text; nothing is written (the lock bytes and the whole skills tree digest are unchanged).
 //   5. Static: the command loads through JurisdictionRegistry.Load/LoadLocked, finds the package via
 //      SkillPackLookup.PackageRoot, routes defects through IntentPlan.Internal and has no file write API.
-//   6. P10-24 refusal edges: an absent lock is lock_missing; a NUL or over-length --lock path (in process) is
-//      skills_lock_path_invalid (detail "lock"), never jurisdiction_resolve_internal_error; registry issues of a
+//   6. P10-24 refusal edges: an absent lock is lock_missing; a NUL or over-length --lock path (in process), and (P10-28,
+//      Linux/macOS) a relative --lock path under a deleted working directory in jurisdiction-resolve, skills-lock and
+//      SkillLockTool.Verify, is skills_lock_path_invalid (detail "lock"), never jurisdiction_resolve_internal_error; registry issues of a
 //      successful load (claim_duplicate, alias_overlap) are dropped and the CABA success bytes stay unchanged.
 internal static class JurisdictionResolveTests
 {
@@ -168,8 +169,9 @@ internal static class JurisdictionResolveTests
         // P10-26 narrowed contract: SkillLockTool.PathProblem refuses blank, NUL and over-MaxPathChars paths before it calls
         // Path.GetFullPath, and on .NET 8 Path.GetFullPath throws only for null, empty or NUL-containing input on both Linux
         // and Windows (no invalid-character validation, no MAX_PATH / PathTooLongException since .NET Core 2.1). So no lock
-        // path is rejected *only* by Path.GetFullPath on either test OS: the skills_lock_path_invalid contract this file pins
-        // is the NUL and length cases above; the GetFullPath catch is defensive. (A Windows GetFullPathNameW failure on an
+        // path string is rejected *only* by Path.GetFullPath on either test OS: the skills_lock_path_invalid contract this file
+        // pins is the NUL and length cases above, plus one environment case, P10-28: a relative path under a deleted working
+        // directory, where GetFullPath throws FileNotFoundException on Linux/macOS (DeletedWorkingDirectory below). (A Windows GetFullPathNameW failure on an
         // over-long input is unreachable too: PathProblem caps the path at MaxPathChars = 4096 characters first.) Pinned here: inputs the .NET Framework
         // GetFullPath rejected (wildcards, pipes, quotes, extra colons, a control character, a bare \?\ prefix) and a path of
         // exactly MaxPathChars characters pass PathProblem, each checked against Path.GetFullPath on this runtime.
@@ -395,6 +397,10 @@ internal static class JurisdictionResolveTests
             var error = (capturedError.ToString().Trim() + thrown).Trim();
             var detail = "exit " + exit.ToString(CultureInfo.InvariantCulture) + " " + line + (error.Length > 0 ? " stderr " + error : "") + " | probe " + probe;
             Check(deleted, label + ": the working directory was deleted", gone);
+            // The precondition this section exists for: if GetFullPath ever stops throwing here, fail loudly rather than
+            // pass on a case that no longer reaches the catch.
+            Check(probe.StartsWith("GetFullPath threw System.IO.FileNotFoundException", StringComparison.Ordinal),
+                label + ": precondition: Path.GetFullPath of a relative path under the deleted working directory throws FileNotFoundException", probe);
             Check(exit == 1 && line == pathInvalidLine && error.Length == 0 && !line.Contains("internal_error", StringComparison.Ordinal),
                 label + ": a relative lock path under a deleted working directory is " + pathInvalidLine + " with nothing on stderr", detail);
             Check(Environment.CurrentDirectory == original, label + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
