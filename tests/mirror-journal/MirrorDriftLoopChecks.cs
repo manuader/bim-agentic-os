@@ -1639,6 +1639,19 @@ static class MirrorDriftLoopChecks
         Check(multi.Received().SequenceEqual(new[] { JournalWire }), "with -RecorderFailures zz-id:1,aa-id:1 the fake received only the journal.read", string.Join(",", multi.Received()));
         Check(m.Exited && m.Exit == 1 && m.Error == GatePrefix + "aa-id,zz-id",
             "with -RecorderFailures zz-id:1,aa-id:1 and neither id sent the fake exits exactly 1 and its whole stderr is the gate line naming aa-id,zz-id (ordinal order)", "exited " + m.Exited + " exit " + m.Exit + " " + m.Error);
+
+        // P2-29: three scheduled ids, the middle one (mm-id) matched by a succeeded, non-dry-run query.levels: the gate line
+        // names only the two never matched, sorted ordinally (aa-id,zz-id), and never the matched mm-id.
+        using var three = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Failure-Three.rvt", 2, "zz-id", "zz-id:1,mm-id:1,aa-id:1");
+        if (!three.WaitReady(out var threeNotReady)) { Check(false, "fake add-in pipe ready with -RecorderFailures zz-id:1,mm-id:1,aa-id:1", threeNotReady); return; }
+        var matched = three.Command("mm-id", "query.levels", _ => { });
+        var threeReply = three.Journal(null);
+        var t3 = three.End();
+        Check(Succeeded(matched), "with -RecorderFailures zz-id:1,mm-id:1,aa-id:1 the query.levels named mm-id succeeds (not a dry run)", R(matched));
+        Check(FailureShape(threeReply) == "failures=1 since=1 complete=false existed=false entries=[]", "with -RecorderFailures zz-id:1,mm-id:1,aa-id:1 the journal.read after mm-id reports exactly its one injected failure", FailureShape(threeReply) + " | " + Head(threeReply));
+        Check(three.Received().SequenceEqual(new[] { "mm-id", JournalWire }), "with -RecorderFailures zz-id:1,mm-id:1,aa-id:1 the fake received mm-id then the journal.read", string.Join(",", three.Received()));
+        Check(t3.Exited && t3.Exit == 1 && t3.Error == GateLine("zz-id", "aa-id") && !t3.Error.Contains("mm-id", StringComparison.Ordinal),
+            "with -RecorderFailures zz-id:1,mm-id:1,aa-id:1 and mm-id matched the fake exits exactly 1 and its whole stderr is the gate line naming aa-id,zz-id only (the matched mm-id excluded)", "exited " + t3.Exited + " exit " + t3.Exit + " " + t3.Error);
     }
 
     // P2-28: the one stderr line the fake writes at exit for the scheduled ids never matched (ordinally sorted, comma-joined).
@@ -1669,8 +1682,9 @@ static class MirrorDriftLoopChecks
         if (!Succeeded(snapshot0)) { Check(false, "the first query.snapshot succeeds", R(snapshot0)); return; }
         var j0 = h.Journal(null, peek: false);
         var move = h.Command("p2-28-move-a", "element.move", w => MoveArgs(w, uidA));
-        Check(Status(move.Out) == "failed" && (Text(move.Out, "code") is "no_response" or "pipe_io_error"),
-            "the external element.move of A named p2-28-move-a gets no reply (its connection is dropped after the write): failed with no_response or pipe_io_error", R(move));
+        // P2-29 probe: a deliberately wrong code so the annotation prints the code the CLI really returns on this OS.
+        Check(Status(move.Out) == "failed" && Text(move.Out, "code") == "probe_code",
+            "PROBE on " + (OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux") + " observed code=" + (Text(move.Out, "code") ?? "<null>") + " exit=" + move.Exit, R(move));
         var snapshot1 = h.Command("p2-28-snapshot-1", "query.snapshot", _ => { });
         if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the dropped move succeeds", R(snapshot1)); return; }
         var j1 = h.Journal(0);
