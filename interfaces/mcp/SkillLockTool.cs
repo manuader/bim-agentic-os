@@ -43,8 +43,10 @@ internal static class SkillLockTool
     public static string? PathProblem(string? path, string name)
     {
         if (string.IsNullOrWhiteSpace(path) || path.IndexOf('\0') >= 0 || path.Length > MaxPathChars) return Failure(PathInvalid, null, name);
+        // P10-28: a relative path cannot be resolved once the working directory is deleted; on Linux and macOS .NET 8
+        // GetFullPath then throws FileNotFoundException (observed, run 44329715033), refused like any other unusable path.
         try { Path.GetFullPath(path); }
-        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { return Failure(PathInvalid, null, name); }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException) { return Failure(PathInvalid, null, name); }
         return null;
     }
 
