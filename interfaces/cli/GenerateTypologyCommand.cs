@@ -55,7 +55,8 @@ namespace Bim.Cli;
 // Success: the file is written and stdout is {"status":"succeeded","scope":"proposal_only","persisted":false,
 // "pipeline_status":"ranked"|"infeasible","pack","code_pack" (the code pack used),"project_id","alternatives":n,"accepted":k,"bytes":n,
 // "sha256":lower-case hex of the file}; exit 0. An infeasible result is a result: it is written with its rejections.
-// Failures print one {"status":"failed","code":...[,"detail"]} line, exit 1 and leave no output file:
+// Failures print one {"status":"failed","code":...[,"detail"]} line, exit 1 and leave no output file (except the
+// internal error below once GltfExporter.WriteNew has succeeded):
 //   generate_typology_usage (detail: the usage text), output_* (GltfExportCommand.OutputProblem with .json, checked
 //   before the request is read; output_exists and output_io_error at the write), input_* (BoundedInput, the request),
 //   generate_typology_request_invalid (detail: the offending member), generate_typology_repository_not_found,
@@ -63,7 +64,9 @@ namespace Bim.Cli;
 //   generate_typology_pack_invalid / generate_typology_code_pack_invalid (detail: the skill code, or "id" when the
 //   manifest names another pack; "kind" when the code pack is not a code skill), generate_typology_skill_unavailable / generate_typology_skill_invalid (an extra skill;
 //   detail as for the packs, plus "skill": the extra id), generate_typology_refused (with "refusals":[{"code","subject","detail"}] =
-//   TypologyPipelineResult.Refusals in order, no detail), generate_typology_internal_error (stderr: exception type, message).
+//   TypologyPipelineResult.Refusals in order, no detail), generate_typology_internal_error (stderr: exception type, message;
+//   P3-24: an unexpected exception after GltfExporter.WriteNew succeeded leaves the written file in place, a
+//   documented gap).
 // Composed-mode stdout adds "rules":"composed" and "skills":[the extra ids as given].
 // Precedence: usage, output path, request read, request parse, repository, typology pack, code pack, extra skills (in
 // request order), pipeline, write.
@@ -112,10 +115,12 @@ internal static class GenerateTypologyCommand
     {
         try { Execute(args); }
         catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail, refusal.Skill); }
-        // P3-24: a non-refusal exception outside Generate's guarded pipeline block (the parse / pack-load stretch, forced in
-        // tests through the P3-23 seam) prints the typed {"status":"failed","code":InternalError} line with IntentPlan's
-        // stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. The guarded block's own failures
-        // already arrive above as Refusal(InternalError) with their diagnostic written once.
+        // P3-24: any other exception in Execute (for example in Generate's parse / pack-load stretch, outside its guarded
+        // pipeline block; forced in tests through the P3-23 seam) prints the typed {"status":"failed","code":InternalError}
+        // line with IntentPlan's stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. Before the
+        // write no output file exists; an exception after GltfExporter.WriteNew succeeded leaves the written file in place
+        // (documented gap). The guarded block's own failures already arrive above as Refusal(InternalError) with their
+        // diagnostic written once.
         catch (Exception error) { IntentPlan.Internal("generate-typology", error).Print(); }
     }
 

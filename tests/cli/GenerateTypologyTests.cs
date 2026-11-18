@@ -859,13 +859,17 @@ internal static class GenerateTypologyTests
             Check(forced.Err == envelope.Diagnostic + nl, "the forced run writes the IntentPlan diagnostic to stderr exactly once", Q(forced));
             Check(forced.Exit == 1 && !File.Exists(forcedOut) && !Directory.Exists(forcedOut), "the forced run exits 1 and writes no output file", Q(forced) + (File.Exists(forcedOut) ? " output written" : ""));
 
-            // A forced run with null args (Execute itself throws) still leaves the seam null.
-            _ = Quiet(() =>
+            // A forced run with null args: Execute itself throws (args.Length, a NullReferenceException) before the seam is
+            // reached; Run's catch-all prints the typed line and its diagnostic once, and the seam is still reset.
+            var nullArgs = Quiet(() =>
             {
                 probe.SetValue(null, (Action)(() => throw failure));
                 try { return Invoke(null); }
                 finally { probe.SetValue(null, null); }
             });
+            var nullEnvelope = Bim.Cli.IntentPlan.Internal("generate-typology", new NullReferenceException());
+            Check(nullArgs.Thrown is null && nullArgs.Out == nullEnvelope.Line + nl && nullArgs.Out == envelope.Line + nl && nullArgs.Err == nullEnvelope.Diagnostic + nl && nullArgs.Exit == 1,
+                "a forced run with null args prints the typed generate_typology_internal_error line, the NullReferenceException diagnostic once, exit 1, nothing thrown", Q(nullArgs));
             Check(probe.GetValue(null) is null, "UnguardedWorkProbe is null after a forced run with null args");
 
             // Seams unset: the in-process Run is the real process, for the success and a sample of refusals.
@@ -879,6 +883,9 @@ internal static class GenerateTypologyTests
                 && process.Exit == 0 && AsProcess(inProcess) == process,
                 "after the reset the in-process Run writes the P5-12 pinned file and the real process's stdout", Q(inProcess) + " vs process exit " + process.Exit.ToString(CultureInfo.InvariantCulture) + " " + process.Out + " " + process.Err);
 
+            // The refusal sample compares the in-process Run with a real process of the same Release binary (same code on
+            // both sides), so it shows the in-process path is the process path; that these bytes are unchanged by P3-24
+            // rests on the literal pins of sections 1-8 above, which run against the real process.
             var existing = Output();
             File.WriteAllText(existing, "keep");
             var refusals = new (string Label, Func<string, string[]> Args)[]
