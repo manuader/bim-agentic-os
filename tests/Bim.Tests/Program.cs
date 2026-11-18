@@ -125,7 +125,7 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
   try { _=qBadLoad with {Refusal=null}; Check(false,"P5-25/P5-26 a with-copy clearing the Refusal throws"); } catch(ArgumentException) { Check(true,"P5-25/P5-26 a with-copy clearing the Refusal throws"); }
   Check((qBadLoad with {Refusal=qBadLoad.Refusal! with {}}).LoaderError is null,"P5-25 an equal but distinct Refusal instance does not inherit the LoaderError");
   Check(ReferenceEquals((qBadLoad with {Registry=null}).LoaderError,qBadLoad.LoaderError),"P5-25 a with-copy keeping the same Refusal keeps its LoaderError");
-  // Record equality includes the hidden loader fields; a copy with another refusal is unequal and reads LoaderError as null.
+  // Equality compares Registry, Refusal and the derived LoaderError (P5-26); a copy with another refusal is unequal and reads LoaderError as null.
   Check((qBadLoad with {}).Equals(qBadLoad) && !(qBadLoad with {Refusal=qOther}).Equals(qBadLoad) && (qBadLoad with {Refusal=qOther}).LoaderError is null,"P5-25 equality: a plain copy is equal, a with { Refusal = other } copy is unequal and has no LoaderError");
   var qSide=Path.Combine(p525,"side");
   Directory.CreateDirectory(Path.Combine(qSide,"xx.p525.pack"));
@@ -145,6 +145,7 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
 {
  var p526=Path.Combine(envRoot(),"bim-p526-"+Guid.NewGuid());
  bool r26Throws(Func<object> make) { try { make(); return false; } catch(ArgumentException) { return true; } }
+ string? r26Param(Func<object> make) { try { make(); return "(no throw)"; } catch(ArgumentException e) { return e.ParamName; } }
  bool r26One(JurisdictionLoad load) => (load.Registry is null) != (load.Refusal is null) && load.Succeeded == (load.Registry is not null);
  try {
   var r26Empty=Path.Combine(p526,"empty");
@@ -174,11 +175,14 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
    ("Load empty",r26Ok),
    ("LoadLocked empty",JurisdictionRegistry.LoadLocked(r26Empty,new SkillLock(Array.Empty<SkillLockEntry>()))),
   };
+  Check(r26Results[0].Load.Registry is null && r26Results[0].Load.Refusal?.Code==JurisdictionCodes.SkillsInvalid,"P5-26 Load of a missing directory sets Refusal (skills_invalid), not Registry ("+r26Results[0].Load.Refusal?.Code+")");
   foreach(var (r26Name,r26Load) in r26Results) Check(r26One(r26Load),"P5-26 exactly one of Registry and Refusal: "+r26Name+" ("+r26Load.Refusal?.Code+")");
   Check(r26Throws(()=>r26Ok with {Registry=null}),"P5-26 a with-copy clearing the Registry of a success throws");
   Check(r26Throws(()=>r26Ok with {Refusal=r26Issue}),"P5-26 a with-copy adding a Refusal to a success throws");
   Check(r26Throws(()=>r26BadLoad with {Refusal=null}),"P5-26 a with-copy clearing the Refusal of a refusal throws");
   Check(r26Throws(()=>r26BadLoad with {Registry=r26Reg}),"P5-26 a with-copy adding a Registry to a refusal throws");
+  Check(r26Param(()=>r26Ok with {Registry=null})=="Registry" && r26Param(()=>r26Ok with {Refusal=r26Issue})=="Refusal" && r26Param(()=>r26BadLoad with {Refusal=null})=="Refusal" && r26Param(()=>r26BadLoad with {Registry=r26Reg})=="Registry","P5-26 a with-copy violation names the member being assigned as ParamName");
+  Check(r26Param(()=>new JurisdictionLoad(null,null))=="Refusal" && r26Param(()=>new JurisdictionLoad(r26Reg,r26Issue))=="Registry","P5-26 constructor violations name Refusal (neither set) and Registry (both set)");
   Check(r26Throws(()=>r26BadLoad with {Registry=r26Reg,Refusal=null}) && r26Throws(()=>r26Ok with {Refusal=r26Issue,Registry=null}),"P5-26 a with-copy switching between success and refusal throws in either assignment order");
   Check(r26One(r26Ok with {Registry=JurisdictionRegistry.Load(r26Empty).Registry}) && r26One(r26BadLoad with {Refusal=r26Issue}) && r26One(r26BadLoad with {Registry=null}),"P5-26 a with-copy keeping exactly one member is accepted");
   // Equality is exactly Registry (reference: a class), Refusal (record value) and LoaderError (reference: an exception).

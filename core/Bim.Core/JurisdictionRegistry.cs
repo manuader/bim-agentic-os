@@ -24,9 +24,11 @@ public sealed record JurisdictionSelection(JurisdictionClaim? Claim, string Matc
 // P5-25: it is get-only; outside reflection only code that can call the internal SkillsInvalid sets it, that is Bim.Core
 // and its InternalsVisibleTo test assemblies (Reconcile.Tests, LocalValidation.Tests, Bim.MirrorJournal.Tests,
 // Bim.Audit.Tests). SkillsInvalid also builds that Refusal from the error, and LoaderError is bound to that exact Refusal
-// instance: a `with { Refusal = … }` copy (another, an equal but distinct, or a null refusal) reads it as null.
+// instance: a `with { Refusal = … }` copy with another or an equal but distinct refusal reads it as null (a copy with a
+// null refusal leaves neither member set and throws, see P5-26).
 // P5-26: exactly one of Registry and Refusal is non-null. The constructor throws ArgumentException otherwise, and so does
-// a with-copy whose assignment would leave both or neither set; a with-copy may only replace the member already set (a
+// a with-copy whose assignment would leave both or neither set (ParamName names the member being assigned; for the
+// constructor, Refusal when neither is set and Registry when both are); a with-copy may only replace the member already set (a
 // copy switching between success and refusal throws whatever its assignment order: build a new load instead).
 // Equality is exactly (Registry, Refusal, LoaderError) with their own equality: Registry by reference, Refusal by record
 // value, LoaderError by reference. So a copy with an equal but distinct refusal, whose LoaderError reads null, is unequal
@@ -40,7 +42,7 @@ public sealed record JurisdictionLoad
 
     public JurisdictionLoad(JurisdictionRegistry? Registry, JurisdictionIssue? Refusal)
     {
-        RequireExactlyOne(Registry, Refusal);
+        RequireExactlyOne(Registry, Refusal, Registry is null ? nameof(Refusal) : nameof(Registry));
         registry = Registry;
         refusal = Refusal;
     }
@@ -54,13 +56,13 @@ public sealed record JurisdictionLoad
     public JurisdictionRegistry? Registry
     {
         get => registry;
-        init { RequireExactlyOne(value, refusal); registry = value; }
+        init { RequireExactlyOne(value, refusal, nameof(Registry)); registry = value; }
     }
 
     public JurisdictionIssue? Refusal
     {
         get => refusal;
-        init { RequireExactlyOne(registry, value); refusal = value; }
+        init { RequireExactlyOne(registry, value, nameof(Refusal)); refusal = value; }
     }
 
     public bool Succeeded => Refusal is null;
@@ -86,10 +88,10 @@ public sealed record JurisdictionLoad
     internal static JurisdictionLoad SkillsInvalid(SkillException error) =>
         new(error, new JurisdictionIssue(JurisdictionCodes.SkillsInvalid, error.File ?? ".", error.Code + (error.Detail is null ? "" : ": " + error.Detail)));
 
-    static void RequireExactlyOne(JurisdictionRegistry? registry, JurisdictionIssue? refusal)
+    static void RequireExactlyOne(JurisdictionRegistry? registry, JurisdictionIssue? refusal, string member)
     {
         if ((registry is null) == (refusal is null))
-            throw new ArgumentException("exactly one of Registry and Refusal must be non-null", registry is null ? nameof(Refusal) : nameof(Registry));
+            throw new ArgumentException("exactly one of Registry and Refusal must be non-null", member);
     }
 }
 
