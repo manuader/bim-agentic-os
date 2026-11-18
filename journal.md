@@ -1786,3 +1786,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 2026-11-18T18:22:49Z integration 2328193 CI 44363696226 success (9/9) → main fast-forwarded (5e9139d..2328193). P3-24, P10-28, P4-24 ✅; new P3-25, P4-25, P10-29. Progress 243/262 (92.7 %). Worktrees retired (branches relay233-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-18T18:22:49Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P5-22, P5-26, P6-26, P6-27 (relay229); then P1-31, P1-32, P2-31, P7-24, P7-25 (relay232); then P3-22, P3-25, P4-25, P10-27, P10-29. McpServer.cs edits serialize (P5-22, P10-27); csproj edits serialize (P4-25). Refresh last_heartbeat during long CI waits (relay233 went ~2 h stale; relay234 backed off).
+
+## Relay236
+- 2026-11-18T18:52:53Z lock taken (session_014pxpsTf6WLsTXaDZKbzEX9; was FREE, relay233 released 18:22:49Z)
