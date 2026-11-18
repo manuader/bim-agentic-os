@@ -23,10 +23,13 @@ using Bim.Core;
 //   6. Static: the command loads through JurisdictionRegistry.Load, finds the package via SkillPackLookup.PackageRoot,
 //      routes defects through IntentPlan.Internal("skill-list", ...), exposes a public static handler and has no file
 //      write API; Program.cs registers the verb.
-//   7. P5-23 one load: the skills directory is read once. The source calls JurisdictionRegistry.Load( exactly once and
-//      takes the catalogue from registry.Catalog; SkillLoader.LoadDirectory( appears exactly once, brace-nested inside
-//      `if (load.Refusal is { } refusal)` and its `if (refusal.Code == JurisdictionCodes.SkillsInvalid)` block, so an
-//      unconditional second read fails (failure path only).
+//   7. P5-23/P5-24 one load: the skills directory is read once on every path. The source calls JurisdictionRegistry.Load(
+//      exactly once, takes the catalogue from registry.Catalog and the loader's typed error from load.LoaderError (P5-24),
+//      and never reads the directory itself: no LoadDirectory(, LoadLocked(, SkillPackHash., File./Directory. or
+//      file-system info type, no SkillLoader use, `using static` or alias (so no second read after a skills_invalid
+//      refusal and no race branch); the refusal block prints the loader's error members {code,field,detail,file} from
+//      LoaderError. Comments are stripped by a lexer that keeps string and char literals whole ("http://x" is not cut),
+//      and checker self-tests on crafted sources prove each bypass is caught. Refusal bytes are pinned by oracle 1/2.
 //   8. P5-23 registry issues are dropped: a directory whose registry loads with claim_duplicate (two packs claiming xx.dup)
 //      and pack_not_code (a qa pack claiming xx.qa) lists exactly the in-process envelope, which never carries them; the
 //      duplicated and the non-code claims flag no pack as stub. (pack_missing cannot arise from a directory load: a
@@ -324,19 +327,54 @@ internal static class SkillListTests
             && source.Contains("SkillPackLookup.PackageRoot(", StringComparison.Ordinal) && source.Contains("IntentPlan.Internal(\"skill-list\"", StringComparison.Ordinal),
             "the command loads through JurisdictionRegistry.Load, finds the package with SkillPackLookup.PackageRoot and reports defects with IntentPlan.Internal");
         // 7. P5-23 one load: comments are stripped so only code is counted.
-        var codeText = string.Join("\n", source.Split('\n').Select(line => { var at = line.IndexOf("//", StringComparison.Ordinal); return at < 0 ? line : line[..at]; }));
+        var codeText = StripComments(source);
         static int Count(string text, string token) { var n = 0; for (var at = text.IndexOf(token, StringComparison.Ordinal); at >= 0; at = text.IndexOf(token, at + token.Length, StringComparison.Ordinal)) n++; return n; }
         var registryAt = codeText.IndexOf("JurisdictionRegistry.Load(", StringComparison.Ordinal);
-        var loaderAt = codeText.IndexOf("SkillLoader.LoadDirectory(", StringComparison.Ordinal);
-        Check(Count(codeText, "JurisdictionRegistry.Load(") == 1 && Count(codeText, "SkillLoader.LoadDirectory(") == 1 && registryAt >= 0 && loaderAt > registryAt
-            && codeText.Contains("JurisdictionCodes.SkillsInvalid", StringComparison.Ordinal) && codeText.Contains("registry.Catalog", StringComparison.Ordinal),
-            "the skills directory is read once: one JurisdictionRegistry.Load supplies catalogue and claims; SkillLoader.LoadDirectory runs only after a skills_invalid refusal",
-            "JurisdictionRegistry.Load x" + Count(codeText, "JurisdictionRegistry.Load(").ToString(CultureInfo.InvariantCulture) + " at " + registryAt.ToString(CultureInfo.InvariantCulture)
-            + ", SkillLoader.LoadDirectory x" + Count(codeText, "SkillLoader.LoadDirectory(").ToString(CultureInfo.InvariantCulture) + " at " + loaderAt.ToString(CultureInfo.InvariantCulture));
+        Check(Count(codeText, "JurisdictionRegistry.Load(") == 1 && registryAt >= 0 && codeText.Contains("registry.Catalog", StringComparison.Ordinal),
+            "one JurisdictionRegistry.Load supplies catalogue and claims",
+            "JurisdictionRegistry.Load x" + Count(codeText, "JurisdictionRegistry.Load(").ToString(CultureInfo.InvariantCulture) + " at " + registryAt.ToString(CultureInfo.InvariantCulture));
+        var violations = ReadViolations(codeText);
+        Check(violations.Count == 0,
+            "P5-24: the skills directory is read once on every path: the command never reads the skills directory itself (no loader, lock, hash or file-system read API; no SkillLoader import or alias)",
+            string.Join(", ", violations));
+        // Checker self-tests: each bypass of the read ban in a crafted source is caught, and comments (but not string
+        // literals that contain "//" or "/*") are stripped before the scan.
+        const string Q = "\"";
+        foreach (var (label, crafted, expected) in new (string, string, string?)[]
+        {
+            ("clean source with comments naming the loader", "var load = JurisdictionRegistry.Load(skills); var url = " + Q + "http://x" + Q + "; // SkillLoader.LoadDirectory(skills)\n/* File.ReadAllText(x); LoadLocked( */ var y = 1;", null),
+            ("a call after a string holding //", "var url = " + Q + "http://x" + Q + "; var c = SkillLoader.LoadDirectory(skills);", "LoadDirectory("),
+            ("a call after a string holding /*", "var glob = " + Q + "a/*b" + Q + "; var c = SkillLoader.LoadDirectory(skills); var d = " + Q + "*/" + Q + ";", "LoadDirectory("),
+            ("a call after a verbatim string ending in a backslash", "var dir = @" + Q + "c:\\" + Q + "; var url = " + Q + "http://x" + Q + "; var c = Bim.Core.SkillLoader.LoadDirectory(skills);", "LoadDirectory("),
+            ("a call after a verbatim string with a doubled quote", "var t = @" + Q + "a" + Q + Q + "//" + Q + "; var c = SkillLoader.LoadDirectory(skills);", "LoadDirectory("),
+            ("a call after a raw string holding // and a quote", "var t = " + Q + Q + Q + "a " + Q + "// b" + Q + Q + Q + "; var c = SkillLoader.LoadDirectory(skills);", "LoadDirectory("),
+            ("a call after a quote char literal", "var q = '" + Q + "'; var url = " + Q + "http://x" + Q + "; var c = SkillLoader.LoadDirectory(skills);", "LoadDirectory("),
+            ("a call after an escaped quote in a string", "var t = " + Q + "a\\" + Q + "//" + Q + "; var c = SkillLoader.LoadDirectory(skills);", "LoadDirectory("),
+            ("using static SkillLoader", "using static Bim.Core.SkillLoader;\nvar c = LoadDirectory (skills);", "using static SkillLoader"),
+            ("using static SkillLoader with global::", "using static global::Bim.Core.SkillLoader;", "using static SkillLoader"),
+            ("a SkillLoader alias", "using Reader = Bim.Core.SkillLoader;\nvar c = Reader.Load" + "Directory(skills);", "SkillLoader alias"),
+            ("a global:: SkillLoader alias", "using Reader = global::Bim.Core.SkillLoader;", "SkillLoader alias"),
+            ("any SkillLoader use", "var max = SkillLoader.MaxSkills;", "SkillLoader"),
+            ("LoadLocked", "var load = JurisdictionRegistry.LoadLocked(skills, lockPath);", "LoadLocked("),
+            ("SkillPackHash", "var snapshot = SkillPackHash.Snapshot(skills, id);", "SkillPackHash."),
+            ("File read API", "var text = File.ReadAllText(path);", "File."),
+            ("System.IO.File read API", "var bytes = System.IO.File.ReadAllBytes(path);", "File."),
+            ("Directory read API", "var names = Directory.EnumerateDirectories(skills);", "Directory."),
+            ("DirectoryInfo", "var info = new DirectoryInfo(skills);", "file-system info type"),
+            ("FileInfo", "var info = new System.IO.FileInfo(path);", "file-system info type"),
+            ("block comment does not hide a call", "/* note */ var c = SkillLoader.LoadDirectory(skills); /* end */", "LoadDirectory("),
+        })
+        {
+            var found = ReadViolations(StripComments(crafted));
+            Check(expected is null ? found.Count == 0 : found.Contains(expected),
+                "read-ban checker self-test: " + label + (expected is null ? " passes" : " is caught as " + expected), string.Join(", ", found) + " | " + crafted);
+        }
+        Check(StripComments("var url = " + Q + "http://x" + Q + "; // tail") == "var url = " + Q + "http://x" + Q + "; ",
+            "comment stripping keeps a string literal holding // and drops the trailing comment", StripComments("var url = " + Q + "http://x" + Q + "; // tail"));
         var refusalBlock = Block(codeText, "if (load.Refusal is { } refusal)");
-        var skillsInvalidBlock = Block(refusalBlock, "if (refusal.Code == JurisdictionCodes.SkillsInvalid)");
-        Check(skillsInvalidBlock.Contains("SkillLoader.LoadDirectory(", StringComparison.Ordinal) && !refusalBlock.Contains("registry.Catalog", StringComparison.Ordinal),
-            "the second read is conditional: SkillLoader.LoadDirectory( sits inside the load.Refusal block's skills_invalid branch", "refusal block: " + refusalBlock);
+        Check(refusalBlock.Contains("load.LoaderError", StringComparison.Ordinal) && !refusalBlock.Contains("registry.Catalog", StringComparison.Ordinal)
+            && !refusalBlock.Contains("JurisdictionCodes.SkillsInvalid", StringComparison.Ordinal),
+            "P5-24: the refusal block prints the loader's typed error from load.LoaderError, with no skills_invalid race branch", "refusal block: " + refusalBlock);
         Check(!codeText.Contains(".Issues", StringComparison.Ordinal), "registry issues are not read by the command (dropped)");
         Check(source.Contains("public static IntentEnvelope List(", StringComparison.Ordinal), "the handler is a public static IntentEnvelope List(...) for reuse by the MCP tool");
         Check(!source.Contains(" internal error: ", StringComparison.Ordinal), "the command hand-writes no internal-error stderr line");
@@ -345,6 +383,82 @@ internal static class SkillListTests
         var program = File.ReadAllText(Path.Combine(root, "interfaces", "cli", "Program.cs"));
         Check(program.Contains("case \"skill-list\": SkillListCommand.Run(args); break;", StringComparison.Ordinal) && program.Contains("| skill-list [--skills skills-directory] |", StringComparison.Ordinal),
             "Program.cs registers skill-list and lists it in the usage text");
+    }
+
+    // Reads of the skills directory skill-list must never make itself (P5-24): only JurisdictionRegistry.Load reads it.
+    static readonly (string Label, string Pattern)[] ForbiddenReads =
+    {
+        ("LoadDirectory(", @"\bLoadDirectory\s*\("),
+        ("LoadLocked(", @"\bLoadLocked\s*\("),
+        ("SkillPackHash.", @"\bSkillPackHash\s*\."),
+        ("SkillLoader", @"\bSkillLoader\b"),
+        ("using static SkillLoader", @"\busing\s+static\s+(global\s*::\s*)?([\w.]+\.)?SkillLoader\b"),
+        ("SkillLoader alias", @"\busing\s+\w+\s*=\s*(global\s*::\s*)?([\w.]+\.)?SkillLoader\b"),
+        ("File.", @"\bFile\s*\."),
+        ("Directory.", @"\bDirectory\s*\."),
+        ("file-system info type", @"\b(FileInfo|DirectoryInfo|FileSystemInfo|FileStream|StreamReader|FileSystemEnumerable)\b"),
+    };
+
+    static List<string> ReadViolations(string code) =>
+        ForbiddenReads.Where(rule => System.Text.RegularExpressions.Regex.IsMatch(code, rule.Pattern, System.Text.RegularExpressions.RegexOptions.CultureInvariant)).Select(rule => rule.Label).ToList();
+
+    // C# source with // and /* */ comments removed; string literals (regular, verbatim, raw) and char literals are kept
+    // whole, so "//" or "/*" inside them never starts a comment. A block comment becomes one space.
+    static string StripComments(string text)
+    {
+        var output = new StringBuilder(text.Length);
+        var index = 0;
+        while (index < text.Length)
+        {
+            var current = text[index];
+            var next = index + 1 < text.Length ? text[index + 1] : '\0';
+            if (current == '/' && next == '/') { while (index < text.Length && text[index] != '\n') index++; continue; }
+            if (current == '/' && next == '*')
+            {
+                var end = text.IndexOf("*/", index + 2, StringComparison.Ordinal);
+                index = end < 0 ? text.Length : end + 2;
+                output.Append(' ');
+                continue;
+            }
+            if (current == '"' || current == '\'')
+            {
+                var start = index;
+                var verbatim = current == '"' && ((index > 0 && text[index - 1] == '@') || (index > 1 && text[index - 1] == '$' && text[index - 2] == '@'));
+                var quotes = 0;
+                while (current == '"' && index + quotes < text.Length && text[index + quotes] == '"') quotes++;
+                if (!verbatim && quotes >= 3)
+                {
+                    var close = text.IndexOf(new string('"', quotes), index + quotes, StringComparison.Ordinal);
+                    index = close < 0 ? text.Length : close + quotes;
+                }
+                else
+                {
+                    index++;
+                    while (index < text.Length)
+                    {
+                        var at = text[index];
+                        if (verbatim)
+                        {
+                            if (at == '"' && index + 1 < text.Length && text[index + 1] == '"') { index += 2; continue; }
+                            index++;
+                            if (at == '"') break;
+                        }
+                        else
+                        {
+                            if (at == '\\') { index += 2; continue; }
+                            index++;
+                            if (at == current || at == '\n') break;
+                        }
+                    }
+                    index = Math.Min(index, text.Length);
+                }
+                output.Append(text, start, index - start);
+                continue;
+            }
+            output.Append(current);
+            index++;
+        }
+        return output.ToString();
     }
 
     // The brace-matched body of the first block after header ("" when absent).
