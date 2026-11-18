@@ -3,7 +3,7 @@
 # and tests/cli/catalogue-report-record.ps1, which pass Invoke-FakeDocUpdate as the sequence's -InvokeDocUpdate.
 # New-FakeDocUpdate writes its plan files in a new folder under -Directory. Never Revit, never the CLI.
 # Mirrors, for the owner script's fixture (New-CatalogueDocUpdateProject) and against the in-process fake add-in, only what
-# the session reads of interfaces/cli/DocUpdateCommand.cs and DocUpdateExecute.cs: the 9 DocDefaults keys of the
+# the session reads of interfaces/cli/DocUpdateCommand.cs, DocUpdateDryPlan.cs and DocUpdateExecute.cs: the 9 DocDefaults keys of the
 # fixture, all forced (created) while the realized map has no doc: entry, else only the door tag when the wall moved;
 # each stale delete probed by two element.delete dry runs (collect, confirm) through the fake, a dependent refused
 # dependent_unknown; the plan file (the members the session reads: Regeneration.Regenerated, Forced, Retired,
