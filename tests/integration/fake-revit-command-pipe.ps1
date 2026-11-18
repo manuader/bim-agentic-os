@@ -22,6 +22,12 @@
 # drop is decided after the -RecorderFailures check, by the same dry-run rule: a dropped write whose reply was succeeded
 # and whose operation id is scheduled still injects its failures and that id counts as matched; a dropped write that was
 # refused injects nothing and its id stays scheduled.
+# P2-30: -BreakPipeCommand reads each request line itself in 64-byte reads and, as soon as what it has read holds
+# "command":"<that command>" (the envelope's own command member; WireLine's canonical envelope writes args before
+# command, then document, operation_id and protocol_version), closes the connection without reading the rest of the
+# line and without a reply: the request never reaches the executor (nothing runs, no operation id is known or logged,
+# no -RecorderFailures id matches, dry run or not); the log gets one "broken:<command>" line instead. Every other
+# request is read up to its newline and served exactly as without the option. Without it requests are read by ReadLine.
 param(
     [Parameter(Mandatory)][string]$PipeName,
     [Parameter(Mandatory)][string]$DocumentUid,
@@ -35,7 +41,9 @@ param(
     # reply (the reply is lost after the write happened).
     [string]$DropReplyCommand,
     # Test-only (P2-24): "<operation_id>:<count>,..." recorder failures injected after those revit.command calls.
-    [string]$RecorderFailures
+    [string]$RecorderFailures,
+    # Test-only (P2-30): a request of this catalogue command has its connection closed before its line is fully read.
+    [string]$BreakPipeCommand
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/fake-revit-command-executor.ps1"
@@ -78,7 +86,30 @@ try {
                 $reader = [IO.StreamReader]::new($server, $utf8, $false, 4096, $true)
                 $writer = [IO.StreamWriter]::new($server, $utf8, 4096, $true)
                 $writer.AutoFlush = $true
-                $line = $reader.ReadLine()
+                if ($BreakPipeCommand) {
+                    # P2-30: read the line in small chunks so the rest of a broken request stays unread on the connection.
+                    $breakMarker = '"command":"' + $BreakPipeCommand + '"'
+                    $bytes = [IO.MemoryStream]::new()
+                    $chunk = [byte[]]::new(64)
+                    $broken = $false
+                    while ($true) {
+                        $count = $server.Read($chunk, 0, $chunk.Length)
+                        if ($count -le 0) { break }
+                        $bytes.Write($chunk, 0, $count)
+                        if ($utf8.GetString($bytes.GetBuffer(), 0, [int]$bytes.Length).Contains($breakMarker, [StringComparison]::Ordinal)) { $broken = $true; break }
+                        if ([Array]::IndexOf($chunk, [byte]10, 0, $count) -ge 0) { break }
+                    }
+                    if ($broken) {
+                        [IO.File]::AppendAllText($LogFile, "broken:$BreakPipeCommand`n")
+                        $reader.Dispose(); $writer.Dispose(); continue
+                    }
+                    if ($bytes.Length -eq 0) { continue }
+                    $line = $utf8.GetString($bytes.GetBuffer(), 0, [int]$bytes.Length)
+                    $end = $line.IndexOf([char]10)
+                    if ($end -ge 0) { $line = $line.Substring(0, $end) }
+                    if ($line.EndsWith([char]13)) { $line = $line.Substring(0, $line.Length - 1) }
+                }
+                else { $line = $reader.ReadLine() }
                 if ($null -eq $line) { continue }
                 # WireLine writes Command last, verbatim: {"DocumentPath":...,"Operation":"revit.command",...,"Command":<envelope>}
                 $marker = '"Command":'

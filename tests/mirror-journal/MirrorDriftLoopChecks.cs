@@ -131,6 +131,7 @@ static class MirrorDriftLoopChecks
         RunFailureGateLoop(root, dotnet, pwsh, cliDll, runDirectory);
         RunUnmatchedFailureLoops(root, dotnet, pwsh, cliDll, runDirectory);
         RunDroppedFailureLoop(root, dotnet, pwsh, cliDll, runDirectory);
+        RunBrokenPipeLoop(root, dotnet, pwsh, cliDll, runDirectory);
     }
 
     static void Same(Loop? first, Loop? second, string scenario)
@@ -195,7 +196,7 @@ static class MirrorDriftLoopChecks
         public string Document { get; }
         public string Scratch { get; }
 
-        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null, string? recorderFailures = null, string? dropReplyCommand = null, bool noColor = false)
+        public Harness(string root, string dotnet, string pwsh, string cliDll, string runDirectory, string documentName, int maxRequests, string? externalEdits = null, string? recorderFailures = null, string? dropReplyCommand = null, bool noColor = false, string? breakPipeCommand = null)
         {
             this.dotnet = dotnet;
             this.cliDll = cliDll;
@@ -216,6 +217,8 @@ static class MirrorDriftLoopChecks
             if (recorderFailures is not null) { serverStart.ArgumentList.Add("-RecorderFailures"); serverStart.ArgumentList.Add(recorderFailures); }
             // Test-only (P4-14, P2-28): a write of this command runs, then its connection is closed without a reply.
             if (dropReplyCommand is not null) { serverStart.ArgumentList.Add("-DropReplyCommand"); serverStart.ArgumentList.Add(dropReplyCommand); }
+            // Test-only (P2-30): a request of this command has its connection closed before its line is fully read.
+            if (breakPipeCommand is not null) { serverStart.ArgumentList.Add("-BreakPipeCommand"); serverStart.ArgumentList.Add(breakPipeCommand); }
             Unix(serverStart);
             // P2-28: plain error text (no ANSI colour) for runs that read the fake's error record.
             if (noColor) serverStart.Environment["NO_COLOR"] = "1";
@@ -1719,6 +1722,101 @@ static class MirrorDriftLoopChecks
         Check(FailureShape(j1) == "failures=2 since=2 complete=false existed=true entries=[1]", "pipe reply d1: a peek after sequence 0 once the dropped move ran: its two failures, incomplete, the move's entry", FailureShape(j1) + " | " + Head(j1));
         Check(Uniform(j0) == Uniform(p0), "pipe reply d0 equals RevitJournalQuery.RawRead over one Core tracker, member for member (diff included)", Uniform(j0) + " vs " + Uniform(p0));
         Check(Uniform(j1) == Uniform(p1), "pipe reply d1 equals RevitJournalQuery.RawRead over one Core tracker given the same failures, member for member (diff included)", Uniform(j1) + " vs " + Uniform(p1));
+    }
+
+    // P2-30: a pipe broken before the reply is read. With -BreakPipeCommand element.move the fake closes each element.move
+    // connection as soon as it has read that envelope's "command" member, before the rest of the line (document,
+    // operation_id, protocol_version, newline) and without a reply; the request never reaches the executor. The move is a
+    // large request (100 element uids, a 128-character operation id after the command member) so a long tail stays
+    // unread while the client writes it. Three such moves, the first one's id scheduled with -RecorderFailures
+    // p2-30-move-a:2: each CLI call fails (exit 1) with one code, field and detail on this OS; nothing ran, so the id is
+    // never matched (the fake's gate line names it, exit 1), the log holds broken:element.move for each, the journal has
+    // no entry and no failure, equal to RevitJournalQuery.RawRead over one Core tracker that saw only wall A, and the
+    // snapshot after the moves equals the one before.
+    static readonly string BrokenMoveA = "p2-30-move-a-" + new string('a', 115);
+    static readonly string[] BrokenMoves = { BrokenMoveA, "p2-30-move-b", "p2-30-move-c" };
+    const string BrokenLog = "broken:element.move";
+    static readonly string[] BrokenRequests = { "p2-30-levels", "p2-30-wall-types", "p2-30-wall-a", "p2-30-snapshot-0", JournalWire, BrokenLog, BrokenLog, BrokenLog, "p2-30-snapshot-1", JournalWire };
+
+    static void BigMoveArgs(Utf8JsonWriter w, string uid)
+    {
+        w.WriteStartArray("element_uids");
+        w.WriteStringValue(uid);
+        for (var i = 1; i < RevitTransformRules.MaxTargets; i++) w.WriteStringValue(string.Create(CultureInfo.InvariantCulture, $"e2e2{i:x4}-0000-4000-8000-00000000{i:x4}-{i:x8}"));
+        w.WriteEndArray();
+        w.WriteStartArray("vector_mm"); w.WriteNumberValue(500); w.WriteNumberValue(0); w.WriteNumberValue(0); w.WriteEndArray();
+    }
+
+    static void RunBrokenPipeLoop(string root, string dotnet, string pwsh, string cliDll, string runDirectory)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "pipe broken before reply: " + name, detail);
+        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Pipe-Broken.rvt", BrokenRequests.Length, string.Join(",", BrokenMoves), BrokenMoveA + ":2", breakPipeCommand: "element.move");
+        var document = h.Document;
+        if (!h.WaitReady(out var notReady)) { Check(false, "fake add-in pipe ready with -BreakPipeCommand element.move", notReady); return; }
+        var levels = h.Command("p2-30-levels", "query.levels", _ => { });
+        var types = h.Command("p2-30-wall-types", "query.wall_types", _ => { });
+        if (!Succeeded(levels) || !Succeeded(types)) { Check(false, "query.levels and query.wall_types succeed", R(levels) + " | " + R(types)); return; }
+        var wallA = h.Command("p2-30-wall-a", "wall.create", w => WallArgs(w, Pick(levels.Out, "levels", "name", "Level 1"), Pick(types.Out, "wall_types", "name", WallType), 0, 0, 5000, 0));
+        if (!Succeeded(wallA)) { Check(false, "wall.create of A succeeds through the CLI", R(wallA)); return; }
+        var uidA = Created(wallA.Out);
+        var snapshot0 = h.Command("p2-30-snapshot-0", "query.snapshot", _ => { });
+        if (!Succeeded(snapshot0)) { Check(false, "the first query.snapshot succeeds", R(snapshot0)); return; }
+        var j0 = h.Journal(null, peek: false);
+
+        // The wire line the CLI sends for the first move: large, with a long tail after the command member left unread.
+        using (var buffer = new MemoryStream())
+        {
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("protocol_version", 1);
+                writer.WriteString("operation_id", BrokenMoveA);
+                writer.WriteStartObject("document"); writer.WriteString("path", document); writer.WriteString("unique_id", DocumentUid); writer.WriteEndObject();
+                writer.WriteString("command", "element.move");
+                writer.WriteStartObject("args"); BigMoveArgs(writer, uidA); writer.WriteEndObject();
+                writer.WriteEndObject();
+            }
+            var wire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(Utf8.GetString(buffer.ToArray())));
+            var marker = "\"command\":\"element.move\"";
+            var tail = wire.Length - wire.IndexOf(marker, StringComparison.Ordinal) - marker.Length;
+            Check(wire.Length > 4500 && wire.Length <= RevitCommandProtocol.MaxRequestChars && wire.IndexOf(marker, StringComparison.Ordinal) == wire.LastIndexOf(marker, StringComparison.Ordinal) && tail >= 250,
+                "the broken move's wire line is large (over 4500 characters, within the 65536 cap), names element.move once and leaves at least 250 characters unread after it", "length " + wire.Length + " tail " + tail);
+        }
+
+        var moves = BrokenMoves.Select(id => h.Command(id, "element.move", w => BigMoveArgs(w, uidA))).ToArray();
+        var os = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
+        string Seen((int Exit, string Out, string Err) r) => "exit=" + r.Exit + " status=" + (Status(r.Out) ?? "<null>") + " code=" + (Text(r.Out, "code") ?? "<null>") + " field=" + (Text(r.Out, "field") ?? "<null>") + " detail=" + (Text(r.Out, "detail") ?? "<null>");
+        // P2-30 probe: a deliberately wrong code so the annotation prints what the CLI really returns on this OS.
+        Check(moves.All(m => m.Exit == 1 && Status(m.Out) == "failed" && Text(m.Out, "code") == "probe_code"),
+            "PROBE on " + os + " observed " + string.Join(" ; ", moves.Select(Seen)), string.Join(" | ", moves.Select(R)));
+        var snapshot1 = h.Command("p2-30-snapshot-1", "query.snapshot", _ => { });
+        if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the broken moves succeeds", R(snapshot1)); return; }
+        Check(Readback(snapshot1.Out) == Readback(snapshot0.Out), "the query.snapshot after the broken moves equals the one before (no move ran)", Head(Readback(snapshot1.Out)));
+        var j1 = h.Journal(0);
+
+        var (exited, exit, error) = h.End();
+        Check(exited && exit == 1 && error == GateLine(BrokenMoveA),
+            "the fake add-in exits exactly 1 and its whole stderr is the gate line naming the broken move's id (never run, so never matched)", "exited " + exited + " exit " + exit + " " + error);
+        var received = h.Received();
+        Check(received.SequenceEqual(BrokenRequests), "the fake add-in logged the expected requests in order (broken:element.move for each move, no move operation id)", string.Join(",", received));
+
+        MirrorSnapshot s0, s1;
+        try
+        {
+            using (var reply = JsonDocument.Parse(snapshot0.Out)) s0 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
+            using (var reply = JsonDocument.Parse(snapshot1.Out)) s1 = MirrorDrift.ParseSnapshot(reply.RootElement.GetProperty("readback").GetRawText());
+        }
+        catch (Exception parseError) when (parseError is JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException) { Check(false, "the fake's query.snapshot readbacks parse as snapshots", parseError.Message); return; }
+        var tick = 0;
+        var journal = new MirrorJournal(() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(++tick));
+        var tracker = new MirrorJournalTracker(journal);
+        journal.Record(new MirrorJournalChange(DocumentUid, "TransactionCommitted", new[] { "BIM Agentic OS wall.create" }, new[] { "x" }, Array.Empty<string>(), Array.Empty<long>(), true) { DocumentPath = document });
+        var p0 = RevitJournalQuery.RawRead(tracker, true, s0, document, new MirrorJournalReadOptions(null, false));
+        var p1 = RevitJournalQuery.RawRead(tracker, true, s1, document, new MirrorJournalReadOptions(0, true));
+        Check(FailureShape(j0) == "failures=0 since=0 complete=true existed=false entries=[]", "pipe reply b0: the first read without peek, no failure", FailureShape(j0) + " | " + Head(j0));
+        Check(FailureShape(j1) == "failures=0 since=0 complete=true existed=true entries=[]", "pipe reply b1: a peek after sequence 0 once the moves were broken: no failure injected, no entry, complete", FailureShape(j1) + " | " + Head(j1));
+        Check(Uniform(j0) == Uniform(p0), "pipe reply b0 equals RevitJournalQuery.RawRead over one Core tracker, member for member (diff included)", Uniform(j0) + " vs " + Uniform(p0));
+        Check(Uniform(j1) == Uniform(p1), "pipe reply b1 equals RevitJournalQuery.RawRead over one Core tracker that saw no move and no failure, member for member (diff included)", Uniform(j1) + " vs " + Uniform(p1));
     }
 
     // P2-25: the -ExternalEdits fake keeps at most the MirrorJournal retained-entry capacity (DefaultCapacity unless the
