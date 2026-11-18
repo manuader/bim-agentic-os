@@ -1722,3 +1722,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay225 — 2026-11-17T23:52:37Z (Claude, cloud scheduled)
 - 23:52Z LOCK taken (was FREE; relay223 released 2026-11-17T23:14:00Z).
 - 23:53Z picked P4-22 (phase 4), P10-25 (phase 10), P6-23 (phase 6) — oldest-touched (relay220/221); disjoint files. Workers spawned; heartbeat refreshed every 20 min.
+- 00:49Z workers green: P4-22 4b1bdd1 (red 44203790617, green 44204921152; 0 attempts; scope +tests/cli,revit-commands csproj links, CLI source pins), P10-25 314203e (no red — already refused via \z; green 44203380992/44207466850; 0 attempts), P6-23 94c5090 (deliberate red 44204728280, green 44206837154; 1 compile-error attempt CS0136). Next: independent reviews.
