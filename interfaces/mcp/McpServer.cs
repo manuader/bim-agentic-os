@@ -49,6 +49,10 @@ namespace Bim.Mcp;
 // record, fixture, assignments and document, or that verb's refusal line, from the verb's own reader, fixture parser and
 // guarded builder (DocRealizedTool.cs runs DocRealizedCommand.DryRealized); listed with permission level read
 // (readOnlyHint true); no output path.
+// generate_prototypes (P7-21) is read-only: its text is the document the CLI generate-prototypes verb writes for the same
+// request file, or that verb's refusal line, from the verb's own reader, parser, default project id, package-first pack
+// lookup and guarded pipeline path (GeneratePrototypesTool.cs runs GenerateCommand.Document); listed with permission level
+// read (readOnlyHint true); no output path.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -146,6 +150,9 @@ public sealed class McpServer
              new ParameterSpec(DocRealizedTool.AssignmentsParameter, "string", "Assignments file {\"doc:<key>\"|\"element:<id>\": \"<step key>\"}, read only"),
              new ParameterSpec(DocRealizedTool.DocumentParameter, "string", "UniqueId of the Revit document the map is for; must equal the record's document_unique_id (any case)")],
             DocRealizedTool.Execute, Permission: PermissionLevel.Read),
+        new ToolSpec(GeneratePrototypesTool.Name, "Read-only apartment prototypes (P7-09/P7-12) for a generate-prototypes request file (typology, lot, optional alternatives, seed, door_width_m, weights, fixed_rooms, fixed_walls, pack, project_id or the derived UUIDv8 default, revision, circulation_weight, facade_weight, snap; the code pack found in the release package first, else the repository): returns the canonical prototype pipeline document the CLI writes, byte for byte, or the typed generate_prototypes_* / input_* refusal; writes nothing (CLI: generate-prototypes request.json output.json).",
+            [new ParameterSpec(GeneratePrototypesTool.RequestParameter, "string", "generate-prototypes request JSON file, read only")],
+            GeneratePrototypesTool.Execute, Permission: PermissionLevel.Read),
     ];
 
     const string AuditInputSchema = """{"type":"object","properties":{"log_path":{"type":"string","description":"Audit log (JSONL), read only"},"anchor_path":{"type":"string","description":"Head anchor file {kind audit-anchor, version 1, sequence, hash}, read only"},"actors":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Known actor ids; an entry by any other actor is audit_actor_unknown"},"summary":{"type":"boolean","description":"Return the decision summary instead of the report"}},"required":["log_path"],"additionalProperties":false}""";
