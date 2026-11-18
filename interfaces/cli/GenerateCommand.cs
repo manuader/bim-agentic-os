@@ -104,14 +104,68 @@ internal static class GenerateCommand
         catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
     }
 
+    // P7-21: the request-to-document path shared with the MCP generate_prototypes tool (interfaces/mcp/GeneratePrototypesTool.cs
+    // links this file): the request file read like the CLI reads it, then the same Parse, default project id, pack load and
+    // pipeline as the verb (Generate). Writes nothing. Succeeded: Text is the canonical document, exactly the string whose
+    // UTF-8 bytes the verb writes to its output file. Otherwise Text is the verb's failure stdout line without its newline
+    // (the verb would exit 1). There is no output path, so no generate_prototypes_usage or output_* refusal comes from here.
+    internal static (bool Succeeded, string Text) Document(string requestPath)
+    {
+        try
+        {
+            var generated = Generate(ReadRequest(requestPath));
+            return generated.RefusedLine is { } refused ? (false, refused) : (true, generated.Json);
+        }
+        catch (Refusal refusal) { return (false, FailureLine(refusal.Code, refusal.Detail)); }
+    }
+
+    // RefusedLine is the generate_prototypes_refused stdout line when the pipeline refused (Json is then empty).
+    sealed record Generated(Parsed Parsed, Guid ProjectId, PrototypePipelineResult Result, string Json, string? RefusedLine);
+
     static void Execute(string[] args)
     {
         if (args.Length != 3 || args[1].Length == 0 || args[2].Length == 0) throw new Refusal(UsageCode, Usage);
         var output = args[2];
         if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string badOutput) throw new Refusal(badOutput);
-        string text;
-        try { text = BoundedInput.ReadText(args[1]); }
+        var generated = Generate(ReadRequest(args[1]));
+        if (generated.RefusedLine is { } refused)
+        {
+            Console.WriteLine(refused);
+            Environment.ExitCode = 1;
+            return;
+        }
+        var parsed = generated.Parsed;
+        var result = generated.Result;
+        var bytes = new UTF8Encoding(false).GetBytes(generated.Json);
+        try { GltfExporter.WriteNew(bytes, output); }
+        catch (GltfExportException error) { throw new Refusal(error.Code); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            status = "succeeded",
+            scope = "proposal_only",
+            persisted = false,
+            pipeline_status = result.Status == PrototypePipelineStatus.Ranked ? "ranked" : "infeasible",
+            project_id = generated.ProjectId.ToString("D", CultureInfo.InvariantCulture),
+            project_id_source = parsed.ProjectId is null ? "derived" : "request",
+            alternatives = result.Alternatives.Count,
+            accepted = result.Alternatives.Count(alternative => alternative.Accepted),
+            bytes = bytes.LongLength,
+            sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+        }));
+    }
+
+    // The request file through BoundedInput (8 MiB cap); its input_* code is the refusal.
+    static string ReadRequest(string path)
+    {
+        try { return BoundedInput.ReadText(path); }
         catch (InputRejectedException error) { throw new Refusal(error.Message); }
+    }
+
+    // Parse, default project id, pack, pipeline: everything after the request read and before the write, in the verb's
+    // precedence order. Throws Refusal; a pipeline refusal is returned as RefusedLine.
+    static Generated Generate(string text)
+    {
         var parsed = Parse(text);
         var projectId = parsed.ProjectId ?? DerivedId(Canonical(parsed));
 
@@ -141,28 +195,8 @@ internal static class GenerateCommand
         }
         catch (Exception error) { throw InternalRefusal(error); }
         if (result.Status == PrototypePipelineStatus.Refused)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(new { status = "failed", code = Refused, refusals = result.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) }));
-            Environment.ExitCode = 1;
-            return;
-        }
-        var bytes = new UTF8Encoding(false).GetBytes(json);
-        try { GltfExporter.WriteNew(bytes, output); }
-        catch (GltfExportException error) { throw new Refusal(error.Code); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
-        Console.WriteLine(JsonSerializer.Serialize(new
-        {
-            status = "succeeded",
-            scope = "proposal_only",
-            persisted = false,
-            pipeline_status = result.Status == PrototypePipelineStatus.Ranked ? "ranked" : "infeasible",
-            project_id = projectId.ToString("D", CultureInfo.InvariantCulture),
-            project_id_source = parsed.ProjectId is null ? "derived" : "request",
-            alternatives = result.Alternatives.Count,
-            accepted = result.Alternatives.Count(alternative => alternative.Accepted),
-            bytes = bytes.LongLength,
-            sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
-        }));
+            return new Generated(parsed, projectId, result, "", JsonSerializer.Serialize(new { status = "failed", code = Refused, refusals = result.Refusals.Select(r => new { code = r.Code, subject = r.Subject, detail = r.Detail }) }));
+        return new Generated(parsed, projectId, result, json, null);
     }
 
     // ---- request parsing: strict members and types; value ranges are the pipeline's ----
@@ -390,7 +424,11 @@ internal static class GenerateCommand
 
     static void Fail(string code, string? detail)
     {
-        Console.WriteLine(detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail }));
+        Console.WriteLine(FailureLine(code, detail));
         Environment.ExitCode = 1;
     }
+
+    // The failure stdout line without its newline (Run prints it; Document returns it).
+    static string FailureLine(string code, string? detail) =>
+        detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail });
 }
