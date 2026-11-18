@@ -1786,9 +1786,14 @@ static class MirrorDriftLoopChecks
         var moves = BrokenMoves.Select(id => h.Command(id, "element.move", w => BigMoveArgs(w, uidA))).ToArray();
         var os = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
         string Seen((int Exit, string Out, string Err) r) => "exit=" + r.Exit + " status=" + (Status(r.Out) ?? "<null>") + " code=" + (Text(r.Out, "code") ?? "<null>") + " field=" + (Text(r.Out, "field") ?? "<null>") + " detail=" + (Text(r.Out, "detail") ?? "<null>");
-        // P2-30 probe: a deliberately wrong code so the annotation prints what the CLI really returns on this OS.
-        Check(moves.All(m => m.Exit == 1 && Status(m.Out) == "failed" && Text(m.Out, "code") == "probe_code"),
-            "PROBE on " + os + " observed " + string.Join(" ; ", moves.Select(Seen)), string.Join(" | ", moves.Select(R)));
+        // P2-30: the exact failure per OS, observed by a deliberate probe red (run 44299538961, all three moves): the CLI
+        // answers pipe_io_error, field pipe_name, detail IOException (the exception type name only), exit 1, on Windows
+        // (named pipe) and Linux (Unix socket). Both OSes return the same failure, so one set of constants pins each move.
+        const string brokenCode = "pipe_io_error", brokenField = "pipe_name", brokenDetail = "IOException";
+        for (var i = 0; i < moves.Length; i++)
+            Check(moves[i].Exit == 1 && Status(moves[i].Out) == "failed" && Text(moves[i].Out, "code") == brokenCode && Text(moves[i].Out, "field") == brokenField && Text(moves[i].Out, "detail") == brokenDetail,
+                "broken element.move " + (i + 1) + " of 3 (its connection closed before its line was read): exit 1, failed with exactly " + brokenCode + ", field " + brokenField + ", detail " + brokenDetail + " on " + os,
+                Seen(moves[i]) + " | " + R(moves[i]));
         var snapshot1 = h.Command("p2-30-snapshot-1", "query.snapshot", _ => { });
         if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the broken moves succeeds", R(snapshot1)); return; }
         Check(Readback(snapshot1.Out) == Readback(snapshot0.Out), "the query.snapshot after the broken moves equals the one before (no move ran)", Head(Readback(snapshot1.Out)));
