@@ -753,6 +753,177 @@ internal static class GenerateTypologyTests
             }
             finally { try { Directory.Delete(packageRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
         }
+
+        UnguardedRun(root, scratch, cliDll, Check, arguments => Cli(arguments));
+    }
+
+    // ---- 9. P3-24: a non-refusal exception outside the guarded pipeline block on the CLI path is the typed internal error ----
+    // GenerateTypologyCommand.Run of the real Release CLI assembly (loaded from cliDll, members by reflection, so a missing
+    // seam is an assertion failure), in process, with valid inputs and the P3-23 test seam UnguardedWorkProbe (null in
+    // production; Generate calls it before Parse and the pack loads) throwing: stdout is IntentPlan.Internal's
+    // {"status":"failed","code":"generate_typology_internal_error"} line, stderr its diagnostic once, exit 1, nothing
+    // escapes Run (so Program's generic catch, whose line would carry the exception message as the code, is not reached)
+    // and no output file. The seams are null before and reset in a finally; afterwards the in-process Run gives the P5-12
+    // pinned file and the same stdout as the real CLI process, and a sample of refusals (usage, output path, request,
+    // pack, extra skill, pipeline) prints the real process's bytes. Static: Run is try Execute / catch (Refusal) Fail / one
+    // catch-all through IntentPlan.Internal("generate-typology", error).Print().
+    static void UnguardedRun(string root, string scratch, string cliDll, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "P3-24 " + name, detail);
+        const System.Reflection.BindingFlags Any = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        var nl = Environment.NewLine;
+        static (Exception? Thrown, string Out, string Err, int Exit) Quiet(Func<Exception?> run)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            using var output = new StringWriter(CultureInfo.InvariantCulture);
+            using var error = new StringWriter(CultureInfo.InvariantCulture);
+            try
+            {
+                Console.SetOut(output);
+                Console.SetError(error);
+                Environment.ExitCode = 0;
+                var thrown = run();
+                return (thrown, output.ToString(), error.ToString(), Environment.ExitCode);
+            }
+            finally
+            {
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+                Environment.ExitCode = previousExit;
+            }
+        }
+        static string Q((Exception? Thrown, string Out, string Err, int Exit) q) => "out [" + q.Out + "] err [" + q.Err + "] exit " + q.Exit.ToString(CultureInfo.InvariantCulture)
+            + (q.Thrown is { } t ? " threw " + t.GetType().FullName + ": " + t.Message : "");
+        // The real process's form: (exit, stdout without its final newline, stderr with line ends as spaces, trimmed).
+        static (int Exit, string Out, string Err) AsProcess((Exception? Thrown, string Out, string Err, int Exit) q)
+        {
+            var text = q.Out;
+            if (text.EndsWith('\n')) text = text[..^1];
+            if (text.EndsWith('\r')) text = text[..^1];
+            return (q.Exit, text, q.Err.ReplaceLineEndings(" ").Trim());
+        }
+        static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+        var inputs = Path.Combine(scratch, "p3-24-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(inputs);
+        try
+        {
+            var counter = 0;
+            string Input(string name, string content) { var path = Path.Combine(inputs, name); File.WriteAllText(path, content, new UTF8Encoding(false)); return path; }
+            string Output() => Path.Combine(inputs, "out-" + (++counter).ToString(CultureInfo.InvariantCulture) + ".json");
+            var good = "{\"pack\":\"" + TypologyPack + "\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":4,\"seed\":0,\"project_id\":\"" + Id + "\"}";
+            var request = Input("request.json", good);
+
+            System.Reflection.Assembly? assembly = null;
+            try { assembly = System.Reflection.Assembly.LoadFrom(cliDll); }
+            catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+            var type = assembly?.GetType("Bim.Cli.GenerateTypologyCommand");
+            var run = type?.GetMethod("Run", Any, new[] { typeof(string[]) });
+            var unguarded = type?.GetProperty("UnguardedWorkProbe", Any);
+            var guarded = type?.GetProperty("GuardedWorkProbe", Any);
+            static bool Seam(System.Reflection.PropertyInfo? p) => p is not null && p.PropertyType == typeof(Action) && p.CanWrite && p.CanRead;
+            Check(run is not null && Seam(unguarded) && Seam(guarded), "Run(string[]) and the settable static Action seams UnguardedWorkProbe / GuardedWorkProbe found in the Release CLI",
+                (run is null ? "<missing Run> " : "") + (unguarded?.PropertyType.FullName ?? "<missing UnguardedWorkProbe>") + " " + (guarded?.PropertyType.FullName ?? "<missing GuardedWorkProbe>"));
+            if (run is null || unguarded is null || guarded is null || !Seam(unguarded) || !Seam(guarded)) return;
+            System.Reflection.MethodInfo runMethod = run;
+            System.Reflection.PropertyInfo probe = unguarded;
+            System.Reflection.PropertyInfo guardedProbe = guarded;
+            Exception? Invoke(string[]? args)
+            {
+                try { runMethod.Invoke(null, new object?[] { args }); return null; }
+                catch (System.Reflection.TargetInvocationException error) { return error.InnerException; }
+            }
+            Check(probe.GetValue(null) is null && guardedProbe.GetValue(null) is null, "the generate-typology seams are null unless a test sets them");
+
+            // The typed bytes, and the line Program's generic catch would print for the escaped exception (the old behaviour).
+            var failure = new InvalidOperationException("boom generate-typology P3-24 unguarded");
+            var envelope = Bim.Cli.IntentPlan.Internal("generate-typology", failure);
+            Check(envelope.Line == "{\"status\":\"failed\",\"code\":\"generate_typology_internal_error\"}" && envelope.Exit == 1
+                && envelope.Diagnostic == "generate-typology internal error: System.InvalidOperationException: boom generate-typology P3-24 unguarded",
+                "fixture: IntentPlan.Internal(\"generate-typology\", e) is the literal typed line, exit 1 and diagnostic", envelope.ToString());
+            var generic = JsonSerializer.Serialize(new { status = "failed", code = failure.Message });
+
+            var forcedOut = Output();
+            var forced = Quiet(() =>
+            {
+                probe.SetValue(null, (Action)(() => throw failure));
+                try { return Invoke(new[] { "generate-typology", request, forcedOut }); }
+                finally { probe.SetValue(null, null); }
+            });
+            Check(probe.GetValue(null) is null && guardedProbe.GetValue(null) is null, "UnguardedWorkProbe is reset to null after the forced run");
+            Check(forced.Thrown is null, "a forced exception before the guarded block does not escape Run to Program's generic catch", Q(forced));
+            Check(forced.Out == envelope.Line + nl && forced.Out != generic + nl && !forced.Out.Contains(failure.Message, StringComparison.Ordinal),
+                "the forced run prints the typed generate_typology_internal_error line (not the exception message)", Q(forced));
+            Check(forced.Err == envelope.Diagnostic + nl, "the forced run writes the IntentPlan diagnostic to stderr exactly once", Q(forced));
+            Check(forced.Exit == 1 && !File.Exists(forcedOut) && !Directory.Exists(forcedOut), "the forced run exits 1 and writes no output file", Q(forced) + (File.Exists(forcedOut) ? " output written" : ""));
+
+            // A forced run with null args: Execute itself throws (args.Length, a NullReferenceException) before the seam is
+            // reached; Run's catch-all prints the typed line and its diagnostic once, and the seam is still reset.
+            var nullArgs = Quiet(() =>
+            {
+                probe.SetValue(null, (Action)(() => throw failure));
+                try { return Invoke(null); }
+                finally { probe.SetValue(null, null); }
+            });
+            var nullEnvelope = Bim.Cli.IntentPlan.Internal("generate-typology", new NullReferenceException());
+            Check(nullArgs.Thrown is null && nullArgs.Out == nullEnvelope.Line + nl && nullArgs.Out == envelope.Line + nl && nullArgs.Err == nullEnvelope.Diagnostic + nl && nullArgs.Exit == 1,
+                "a forced run with null args prints the typed generate_typology_internal_error line, the NullReferenceException diagnostic once, exit 1, nothing thrown", Q(nullArgs));
+            Check(probe.GetValue(null) is null, "UnguardedWorkProbe is null after a forced run with null args");
+
+            // Seams unset: the in-process Run is the real process, for the success and a sample of refusals.
+            var inOut = Output();
+            var inProcess = Quiet(() => Invoke(new[] { "generate-typology", request, inOut }));
+            var processOut = Output();
+            var process = cli(new[] { "generate-typology", request, processOut });
+            var inBytes = File.Exists(inOut) ? File.ReadAllBytes(inOut) : Array.Empty<byte>();
+            var processBytes = File.Exists(processOut) ? File.ReadAllBytes(processOut) : Array.Empty<byte>();
+            Check(inProcess.Thrown is null && inProcess.Exit == 0 && inProcess.Err.Length == 0 && Hex(inBytes) == PinnedAcceptedSha256 && inBytes.SequenceEqual(processBytes)
+                && process.Exit == 0 && AsProcess(inProcess) == process,
+                "after the reset the in-process Run writes the P5-12 pinned file and the real process's stdout", Q(inProcess) + " vs process exit " + process.Exit.ToString(CultureInfo.InvariantCulture) + " " + process.Out + " " + process.Err);
+
+            // The refusal sample compares the in-process Run with a real process of the same Release binary (same code on
+            // both sides), so it shows the in-process path is the process path; that these bytes are unchanged by P3-24
+            // rests on the literal pins of sections 1-8 above, which run against the real process.
+            var existing = Output();
+            File.WriteAllText(existing, "keep");
+            var refusals = new (string Label, Func<string, string[]> Args)[]
+            {
+                ("usage", output => new[] { "generate-typology", request }),
+                ("output extension", output => new[] { "generate-typology", request, output + ".txt" }),
+                ("output exists", output => new[] { "generate-typology", request, existing }),
+                ("missing request", output => new[] { "generate-typology", Path.Combine(inputs, "missing.json"), output }),
+                ("malformed JSON", output => new[] { "generate-typology", Input("json.json", "{"), output }),
+                ("unknown member", output => new[] { "generate-typology", Input("member.json", good[..^1] + ",\"revision\":1}"), output }),
+                ("unknown pack", output => new[] { "generate-typology", Input("pack.json", good.Replace(TypologyPack, "xx.no-such.pack", StringComparison.Ordinal)), output }),
+                ("unknown extra skill", output => new[] { "generate-typology", Input("skill.json", good[..^1] + ",\"skills\":[\"xx.no-such.skill\"]}"), output }),
+                ("pipeline refusal", output => new[] { "generate-typology", Input("refused.json", good.Replace("\"family_size\":3", "\"family_size\":0", StringComparison.Ordinal)), output }),
+            };
+            foreach (var (label, argsOf) in refusals)
+            {
+                var a = Output();
+                var b = Output();
+                var mine = Quiet(() => Invoke(argsOf(a)));
+                var theirs = cli(argsOf(b));
+                Check(mine.Thrown is null && mine.Exit == 1 && theirs.Exit == 1 && AsProcess(mine) == theirs && mine.Err.Length == 0 && !File.Exists(a) && !File.Exists(b)
+                    && mine.Out.StartsWith("{\"status\":\"failed\",\"code\":\"", StringComparison.Ordinal) && !mine.Out.Contains("internal_error", StringComparison.Ordinal),
+                    "seams unset: the " + label + " refusal of the in-process Run equals the real process bytes", Q(mine) + " vs process " + theirs.Out + " " + theirs.Err);
+            }
+            Check(File.ReadAllText(existing) == "keep", "the existing output is left untouched");
+
+            // Static: Run's body, comments stripped, layout-independent.
+            var source = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateTypologyCommand.cs")), blankStrings: false);
+            Check(System.Text.RegularExpressions.Regex.IsMatch(source,
+                    @"public\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{\s*try\s*\{\s*Execute\s*\(\s*args\s*\)\s*;\s*\}\s*catch\s*\(\s*Refusal\s+refusal\s*\)\s*\{\s*Fail\s*\(\s*refusal\s*\.\s*Code\s*,\s*refusal\s*\.\s*Detail\s*,\s*refusal\s*\.\s*Skill\s*\)\s*;\s*\}\s*"
+                    + @"catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*IntentPlan\s*\.\s*Internal\s*\(\s*""generate-typology""\s*,\s*error\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*\}"),
+                "GenerateTypologyCommand.Run is try Execute / catch (Refusal) Fail / catch (Exception) IntentPlan.Internal(\"generate-typology\", error).Print()");
+        }
+        finally
+        {
+            try { Directory.Delete(inputs, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
     }
 
     static string RefusedEnvelope(TypologyPipelineResult library) =>
