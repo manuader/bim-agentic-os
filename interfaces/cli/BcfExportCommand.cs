@@ -17,7 +17,8 @@ namespace Bim.Cli;
 //                           "up_vector":{...},"value","aspect_ratio"}]}]}
 //   Members in any order, each at most once, no unknown members, no comments or trailing commas; optional members may be
 //   null (same as absent). timestamp is exactly yyyy-MM-ddTHH:mm:ssZ or yyyy-MM-ddTHH:mm:ss±hh:mm with ASCII digits (P10-23:
-//   +0200, +2:00 and +02 are refused although .NET's zzz parses them; the library normalizes to UTC). version is exactly the
+//   +0200 and +2:00 are refused although .NET's zzz parses them; +02 is refused by zzz too, as are trailing characters
+//   such as a newline; the library normalizes to UTC). version is exactly the
 //   literal 1 (1.0, 1e0 refused at $.version).
 //   Each value maps one-to-one onto BcfExportOptions / BcfIssue / BcfCamera; every value rule beyond JSON types is the
 //   library's (BcfExport.Entries), so its refusals pass through with their code and detail.
@@ -48,7 +49,8 @@ internal static class BcfExportCommand
 
     static readonly string[] Extensions = [".bcfzip", ".bcf"];
     static readonly string[] TimestampFormats = ["yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:sszzz"];
-    // The accepted lexical forms; DateTimeOffset.TryParseExact's zzz alone also takes +hhmm, +h:mm and +hmm.
+    // The accepted lexical forms (\z, not $, so a trailing newline is refused); DateTimeOffset.TryParseExact's zzz alone
+    // also takes +hhmm, +h:mm and +hmm, but not +hh (it requires the two minute digits).
     static readonly System.Text.RegularExpressions.Regex TimestampShape = new(
         "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-9]{2})\\z",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
