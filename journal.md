@@ -1744,3 +1744,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay228 — 2026-11-18T06:52:36Z (Claude, cloud scheduled)
 - 06:52Z LOCK taken over from relay227 (heartbeat 05:52:23Z, >45 min stale). Continuing relay227 branches P2-29 / P3-23 / P10-26 (reviews + integration pending).
+- 06:53Z relay228 BACKED OFF: relay227 is still active (relay227-P10-26 commit 2309a08 at 06:37Z, CI 44252686953 in progress) despite its stale heartbeat. Restored relay227 LOCK unchanged; relay228 did no product work. NEXT STEP: relay227 continues its reviews/integration and should refresh last_heartbeat at each task edge.
