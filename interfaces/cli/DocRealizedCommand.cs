@@ -25,8 +25,8 @@ namespace Bim.Cli;
 // read cap equals the library cap, which would refuse the same text as realized_bound_exceeded. The library's other
 // bounds (MaxSteps, MaxCreated, MaxAssignments, MaxCanonicalBytes) are realized_bound_exceeded.
 // Never-overwrite: the output path follows the gltf-export OutputProblem rule with extension .json (never an existing
-// file, directory or link; checked before any input is read) and is created exclusively by GltfExporter.WriteNew(bytes,
-// output) in interfaces/cli/DocRealizedWrite.cs.
+// file, directory or link; checked before any input is read) and is created exclusively by the gltf exporter's
+// never-overwrite writer, in interfaces/cli/DocRealizedWrite.cs (the verb's part of this class).
 // Success prints {"status":"succeeded","output","entries","bytes","sha256"} (sha256 upper-case hex of the file, as
 // doc-update prints it) and exits 0. Every refusal prints one {"status":"failed","code"[,"detail"]} envelope, exits 1 and
 // writes no file: doc_realized_usage, output_*, input_*, the library's realized_* codes with their detail

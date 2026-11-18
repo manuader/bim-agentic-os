@@ -7,8 +7,8 @@ namespace Bim.Mcp;
 // P4-21: the read-only MCP tool doc_realized, the MCP face of the P4-15 CLI verb `doc-realized --record run.json --fixture
 // ir.json --assignments a.json --document <UniqueId> --output realized.json` (interfaces/cli/DocRealizedCommand.cs). It
 // has no reader, parser or builder call of its own: it runs DocRealizedCommand.DryRealized, compiled into this server from
-// the CLI sources (Bim.Mcp.csproj links DocRealizedCommand.cs with GltfExportCommand.cs, IntentPlan.cs and
-// BoundedInput.cs), which reads the inputs with the verb's bounds (record and assignments to DocRealized.MaxRecordBytes,
+// the CLI sources (Bim.Mcp.csproj links the shared part DocRealizedCommand.cs with IntentPlan.cs and BoundedInput.cs, and
+// never the verb's write path DocRealizedWrite.cs; P4-23), which reads the inputs with the verb's bounds (record and assignments to DocRealized.MaxRecordBytes,
 // the fixture to BoundedInput.MaxBytes), parses the fixture and builds the map with DocRealized.FromRecord and
 // DocRealized.Canonical behind the verb's guarded catch, exactly as the verb does before it writes its file.
 //   record        the owner -Catalogue run record file;  fixture  the BIM-IR Project file;
