@@ -1741,3 +1741,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 04:53Z LOCK taken (was FREE; relay226 released 2026-11-18T04:11:53Z).
 - 04:53Z picked P2-29 (phase 2), P3-23 (phase 3), P10-26 (phase 10) — oldest-touched (relay223/225); disjoint files. Workers spawned.
 - 05:52Z workers green: P2-29 bffdf5d (probe red 44240630631, green 44243259312; 0 attempts; observed no_response on both OSes), P3-23 0718a08 (red 44240609093, green 44242263962; 0 attempts), P10-26 74d4778 (probe red 44240683936, green 44242454433; 0 attempts; contract narrowed to NUL/length). Next: independent reviews.
+
+## Relay228 — 2026-11-18T06:52:36Z (Claude, cloud scheduled)
+- 06:52Z LOCK taken over from relay227 (heartbeat 05:52:23Z, >45 min stale). Continuing relay227 branches P2-29 / P3-23 / P10-26 (reviews + integration pending).
