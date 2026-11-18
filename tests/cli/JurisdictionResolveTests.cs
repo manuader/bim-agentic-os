@@ -132,11 +132,10 @@ internal static class JurisdictionResolveTests
         // cannot travel in a process argument, so these run the command in process (stdout, stderr and exit captured).
         var pathInvalidLine = JsonSerializer.Serialize(new { status = "failed", code = "skills_lock_path_invalid", detail = "lock" });
         var exitBeforeInProcess = Environment.ExitCode;
-        foreach (var (label, badLock) in new (string, string)[]
-        {
-            ("NUL in the lock path", scratch + Path.DirectorySeparatorChar + "sk\0ills.lock.json"),
-            ("lock path over 4096 characters", Path.Combine(scratch, new string('l', 5000) + ".json")),
-        })
+        // The command run in process: stdout, stderr and the exit code captured. P10-26: Environment.ExitCode is reset and the
+        // console redirected inside the try, and the exit code is read and every global restored in the finally, so a
+        // throwing Run cannot leak the command's exit code or the redirected console into the test process.
+        (int Exit, string Line, string Error) InProcess(string lockArgument)
         {
             var previousOut = Console.Out;
             var previousError = Console.Error;
@@ -144,17 +143,27 @@ internal static class JurisdictionResolveTests
             var capturedOut = new StringWriter();
             var capturedError = new StringWriter();
             var exit = -1;
-            Environment.ExitCode = 0;
-            Console.SetOut(capturedOut);
-            Console.SetError(capturedError);
-            // P10-26: the exit code is read and Environment.ExitCode restored inside the finally, so a throwing Run cannot
-            // leak the command's exit code into the test process.
-            try { Bim.Cli.JurisdictionResolveCommand.Run(new[] { "jurisdiction-resolve", "--code", "ar.caba", "--lock", badLock }); }
+            string thrown = "";
+            try
+            {
+                Environment.ExitCode = 0;
+                Console.SetOut(capturedOut);
+                Console.SetError(capturedError);
+                Bim.Cli.JurisdictionResolveCommand.Run(new[] { "jurisdiction-resolve", "--code", "ar.caba", "--lock", lockArgument });
+            }
+            catch (Exception failure) { thrown = " threw " + failure.GetType().Name + ": " + failure.Message; }
             finally { exit = Environment.ExitCode; Environment.ExitCode = previousExit; Console.SetOut(previousOut); Console.SetError(previousError); }
-            var line = capturedOut.ToString().TrimEnd('\r', '\n');
-            var error = capturedError.ToString().Trim();
-            Check(exit == 1 && line == pathInvalidLine && error.Length == 0, label + " (in process) is " + pathInvalidLine + " with nothing on stderr",
-                "exit " + exit.ToString(CultureInfo.InvariantCulture) + " " + line + (error.Length > 0 ? " stderr " + error : ""));
+            return (exit, capturedOut.ToString().TrimEnd('\r', '\n'), (capturedError.ToString().Trim() + thrown).Trim());
+        }
+        static string R((int Exit, string Line, string Error) r) => "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + r.Line + (r.Error.Length > 0 ? " stderr " + r.Error : "");
+        foreach (var (label, badLock) in new (string, string)[]
+        {
+            ("NUL in the lock path", scratch + Path.DirectorySeparatorChar + "sk\0ills.lock.json"),
+            ("lock path over 4096 characters", Path.Combine(scratch, new string('l', 5000) + ".json")),
+        })
+        {
+            var result = InProcess(badLock);
+            Check(result.Exit == 1 && result.Line == pathInvalidLine && result.Error.Length == 0, label + " (in process) is " + pathInvalidLine + " with nothing on stderr", R(result));
         }
         Check(Environment.ExitCode == exitBeforeInProcess, "the in-process lock-path checks restore Environment.ExitCode (finally)",
             "Environment.ExitCode " + Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBeforeInProcess.ToString(CultureInfo.InvariantCulture));
@@ -162,7 +171,8 @@ internal static class JurisdictionResolveTests
         // Path.GetFullPath, and on .NET 8 Path.GetFullPath throws only for null, empty or NUL-containing input on both Linux
         // and Windows (no invalid-character validation, no MAX_PATH / PathTooLongException since .NET Core 2.1). So no lock
         // path is rejected *only* by Path.GetFullPath on either test OS: the skills_lock_path_invalid contract this file pins
-        // is the NUL and length cases above; the GetFullPath catch is defensive. Pinned here: inputs the .NET Framework
+        // is the NUL and length cases above; the GetFullPath catch is defensive. (A Windows GetFullPathNameW failure on an
+        // over-long input is unreachable too: PathProblem caps the path at MaxPathChars = 4096 characters first.) Pinned here: inputs the .NET Framework
         // GetFullPath rejected (wildcards, pipes, quotes, extra colons, a control character, a bare \?\ prefix) and a path of
         // exactly MaxPathChars characters pass PathProblem, each checked against Path.GetFullPath on this runtime.
         var boundary = Path.Combine(scratch, "b");
@@ -184,6 +194,25 @@ internal static class JurisdictionResolveTests
             var problem = Bim.Mcp.SkillLockTool.PathProblem(candidate, "lock");
             Check(rejection is null && problem is null, "a lock path with " + label + " is accepted by Path.GetFullPath and by SkillLockTool.PathProblem (no GetFullPath-only rejection; contract narrowed to NUL/length)",
                 "length " + candidate.Length.ToString(CultureInfo.InvariantCulture) + " GetFullPath " + (rejection ?? "accepted") + " PathProblem " + (problem ?? "null"));
+        }
+        // P10-26: accepted odd paths reach the registry load: run in process, an absent lock under each is the typed load
+        // refusal lock_missing (exit 1, nothing on stderr, equal to the in-process LoadLocked refusal), never
+        // jurisdiction_resolve_internal_error.
+        foreach (var (label, candidate) in new (string, string)[]
+        {
+            ("an alternate data stream suffix", Path.Combine(scratch, "lock:stream:$DATA.json")),
+            ("wildcards", Path.Combine(scratch, "lo*ck?.json")),
+            ("a bare device prefix", @"\\?\"),
+        })
+        {
+            var result = InProcess(candidate);
+            string inProcess;
+            try { inProcess = JurisdictionRegistry.LoadLocked(skills, candidate).Refusal is { } refusal ? Failed(refusal) : "<loaded>"; }
+            catch (Exception failure) { inProcess = "<threw " + failure.GetType().Name + ": " + failure.Message + ">"; }
+            Check(result.Exit == 1 && result.Line == inProcess && result.Line.Contains("\"code\":\"" + SkillLockCodes.LockMissing + "\"", StringComparison.Ordinal)
+                && !result.Line.Contains("jurisdiction_resolve_internal_error", StringComparison.Ordinal) && result.Error.Length == 0,
+                "a lock path with " + label + " (in process) is the typed lock_missing refusal of the in-process load, nothing on stderr", R(result) + " | in-process load " + inProcess);
+            Check(false, "PROBE-RED observed " + label, R(result) + " | in-process load " + inProcess);
         }
         Check(File.ReadAllBytes(lockPath).AsSpan().SequenceEqual(lockBytes), "the lock file is unchanged (read-only verb)");
 
@@ -241,8 +270,12 @@ internal static class JurisdictionResolveTests
             Same("ambiguous metadata with alias_overlap", packageDll, issuesLoad, new ProjectJurisdiction(Country: "Duplicate Country", Municipality: "Duplicate City"), false,
                 JurisdictionCodes.JurisdictionAmbiguous, "--country", "Duplicate Country", "--municipality", "Duplicate City");
         }
-        finally { if (Directory.Exists(twinDirectory)) Directory.Delete(twinDirectory, true); }
-        Check(!Directory.Exists(twinDirectory), "the twin pack directory is deleted in a finally after its block", twinDirectory);
+        finally
+        {
+            try { if (Directory.Exists(twinDirectory)) Directory.Delete(twinDirectory, true); }
+            catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { Check(false, "the twin pack directory is deleted", twinDirectory + ": " + failure.Message); }
+        }
+        Check(!Directory.Exists(twinDirectory), "the twin pack directory is gone before the lock-drift block", twinDirectory);
         // Lock drift: pin the package's CABA pack, then edit its sidecar.
         var packageLock = Path.Combine(scratch, "package.lock.json");
         File.WriteAllBytes(packageLock, SkillLockFile.Serialize(SkillLocking.Pin(packageSkills, new[] { Caba })));
