@@ -1682,9 +1682,14 @@ static class MirrorDriftLoopChecks
         if (!Succeeded(snapshot0)) { Check(false, "the first query.snapshot succeeds", R(snapshot0)); return; }
         var j0 = h.Journal(null, peek: false);
         var move = h.Command("p2-28-move-a", "element.move", w => MoveArgs(w, uidA));
-        // P2-29 probe: a deliberately wrong code so the annotation prints the code the CLI really returns on this OS.
-        Check(Status(move.Out) == "failed" && Text(move.Out, "code") == "probe_code",
-            "PROBE on " + (OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux") + " observed code=" + (Text(move.Out, "code") ?? "<null>") + " exit=" + move.Exit, R(move));
+        // P2-29: the exact code per OS, observed by a deliberate probe red (run 44240630631): the CLI answers no_response
+        // (exit 1, field pipe_name, "pipe closed without a response line") on Windows (named pipe) and Linux (Unix socket).
+        // Both OSes return the same code, so one constant pins each; pipe_io_error (the P2-28 alternative) is now refused.
+        const string droppedCode = "no_response";
+        Check(move.Exit == 1 && Status(move.Out) == "failed" && Text(move.Out, "code") == droppedCode && Text(move.Out, "field") == "pipe_name"
+            && Text(move.Out, "detail") == "pipe closed without a response line",
+            "the external element.move of A named p2-28-move-a gets no reply (its connection is dropped after the write): exit 1, failed with exactly " + droppedCode + " on " + (OperatingSystem.IsWindows() ? "Windows" : "Unix") + ", field pipe_name",
+            "observed code " + (Text(move.Out, "code") ?? "<null>") + " | " + R(move));
         var snapshot1 = h.Command("p2-28-snapshot-1", "query.snapshot", _ => { });
         if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the dropped move succeeds", R(snapshot1)); return; }
         var j1 = h.Journal(0);
