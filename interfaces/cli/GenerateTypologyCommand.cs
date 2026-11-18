@@ -127,9 +127,10 @@ internal static class GenerateTypologyCommand
             return generated.RefusedLine is { } refused ? (false, refused) : (true, generated.Json);
         }
         catch (Refusal refusal) { return (false, FailureLine(refusal.Code, refusal.Detail, refusal.Skill)); }
-        // P3-23: a non-refusal exception outside Generate's guarded pipeline block (request read, parse, pack loads) is
-        // the typed internal error too, not an exception escaping to McpServer's generic Failed(message). The guarded
-        // block's own failures already arrive here as Refusal(InternalError) with their diagnostic written once.
+        // P3-23: a non-refusal exception outside Generate's guarded pipeline block (the parse / pack-load stretch, forced in
+        // tests through UnguardedWorkProbe) is the typed internal error too, not an exception escaping to McpServer's
+        // generic Failed(message). The guarded block's own failures already arrive here as Refusal(InternalError) with their
+        // diagnostic written once.
         catch (Exception error)
         {
             var envelope = IntentPlan.Internal("generate-typology", error);
