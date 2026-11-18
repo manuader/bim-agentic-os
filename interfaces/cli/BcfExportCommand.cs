@@ -49,8 +49,8 @@ internal static class BcfExportCommand
 
     static readonly string[] Extensions = [".bcfzip", ".bcf"];
     static readonly string[] TimestampFormats = ["yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:sszzz"];
-    // The accepted lexical forms (\z, not $, so a trailing newline is refused); DateTimeOffset.TryParseExact's zzz alone
-    // also takes +hhmm, +h:mm and +hmm, but not +hh (it requires the two minute digits).
+    // The accepted lexical forms (\z, not $, which would allow a final newline); DateTimeOffset.TryParseExact's zzz alone
+    // also takes +hhmm and +h:mm, but neither +hh nor +hmm (after the hour it requires exactly two minute digits).
     static readonly System.Text.RegularExpressions.Regex TimestampShape = new(
         "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-9]{2})\\z",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));

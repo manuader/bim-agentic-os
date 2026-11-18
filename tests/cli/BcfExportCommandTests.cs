@@ -274,13 +274,15 @@ internal static class BcfExportCommandTests
         Invalid("timestamp offset hours only (+02)", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+02", StringComparison.Ordinal)), "$.project.timestamp");
         Invalid("timestamp with a trailing newline", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T10:00:00Z\\n", StringComparison.Ordinal)), "$.project.timestamp");
         Invalid("timestamp offset with a trailing newline", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+02:00\\n", StringComparison.Ordinal)), "$.project.timestamp");
-        // Which offsets .NET's "zzz" takes on its own (the shape check above is what refuses +0200 and +2:00): it requires
-        // the two minute digits, so +02 is refused by zzz too.
+        // Runtime fixtures (they document .NET, not the product: the shape check above runs first and is what refuses +0200
+        // and +2:00): "zzz" on its own requires exactly two minute digits after the hour, so +02 and +200 are refused by zzz too.
         static bool Zzz(string text) => DateTimeOffset.TryParseExact(text, "yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _);
         Check(Zzz("2026-11-02T12:00:00+02:00") && Zzz("2026-11-02T12:00:00+0200") && Zzz("2026-11-02T12:00:00+2:00"),
             "fixture: .NET zzz alone parses +02:00, +0200 and +2:00");
         Check(!Zzz("2026-11-02T12:00:00+02"), "fixture: .NET zzz alone refuses +02 (minutes required)");
-        Invalid("timestamp not ISO",Root("[]", proj.Replace("2026-11-02T10:00:00Z", "02/11/2026 10:00", StringComparison.Ordinal)), "$.project.timestamp");
+        Check(!Zzz("2026-11-02T12:00:00+200"), "fixture: .NET zzz alone refuses +200 (+hmm: two minute digits required)");
+        Invalid("timestamp offset +hmm (+200)", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+200", StringComparison.Ordinal)), "$.project.timestamp");
+        Invalid("timestamp not ISO", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "02/11/2026 10:00", StringComparison.Ordinal)), "$.project.timestamp");
         Invalid("unknown project member", Root("[]", proj[..^1] + ",\"guid\":\"x\"}"), "$.project.guid");
         Invalid("lone surrogate in a string", Root("[{\"id\":\"a\",\"title\":\"\\ud800\",\"severity\":\"info\"}]"), "$.issues[0].title");
 
