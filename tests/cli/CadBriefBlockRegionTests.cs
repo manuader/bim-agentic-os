@@ -104,19 +104,19 @@ internal static class CadBriefBlockRegionTests
         {
             var expectedWith = JsonSerializer.Serialize(InProcess(true, metres).Rooms, RoomJson);
             var withOutput = Path.Combine(scratch, "with-" + label + ".json");
-            var with = Cli(new[] { "cad-brief", input, withOutput }.Concat(withFlag).ToArray());
+            var flagged = Cli(new[] { "cad-brief", input, withOutput }.Concat(withFlag).ToArray());
             var withRooms = RoomsOf(withOutput);
-            Check(with.Exit == 0 && withRooms == expectedWith && expectedWith.Contains("\"InsertPath\":[\"", StringComparison.Ordinal),
+            Check(flagged.Exit == 0 && withRooms == expectedWith && expectedWith.Contains("\"InsertPath\":[\"", StringComparison.Ordinal),
                 label + ": with " + Flag + " draft.json rooms equal the in-process IncludeBlockRegions rooms (a region from the block insert)",
-                R(with) + " rooms " + Clip(withRooms));
+                R(flagged) + " rooms " + Clip(withRooms));
 
             var expectedWithout = JsonSerializer.Serialize(InProcess(false, metres).Rooms, RoomJson);
             var withoutOutput = Path.Combine(scratch, "without-" + label + ".json");
-            var without = Cli(new[] { "cad-brief", input, withoutOutput }.Concat(withoutFlag).ToArray());
+            var plain = Cli(new[] { "cad-brief", input, withoutOutput }.Concat(withoutFlag).ToArray());
             var withoutRooms = RoomsOf(withoutOutput);
-            Check(without.Exit == 0 && withoutRooms == expectedWithout && withoutRooms.Contains("\"InsertPath\":[\"", StringComparison.Ordinal) /* deliberate red: region WITHOUT the flag */,
+            Check(plain.Exit == 0 && withoutRooms == expectedWithout && withoutRooms.Contains("\"InsertPath\":[\"", StringComparison.Ordinal) /* deliberate red: region WITHOUT the flag */,
                 label + ": without " + Flag + " draft.json rooms equal the default-option in-process rooms (no block region)",
-                R(without) + " rooms " + Clip(withoutRooms));
+                R(plain) + " rooms " + Clip(withoutRooms));
         }
 
         // A value option followed by the flag: the flag is read as that option's value and refused, nothing written.
