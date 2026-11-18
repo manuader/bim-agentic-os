@@ -121,7 +121,8 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
   Check(qBadLoad.Refusal?.Code==JurisdictionCodes.SkillsInvalid && qBadLoad.LoaderError is not null && qBadLocked.Refusal?.Code==JurisdictionCodes.SkillsInvalid && qBadLocked.LoaderError is not null,"P5-25 skills_invalid from Load and LoadLocked carries a LoaderError");
   var qOther=new JurisdictionIssue("json_invalid","x/jurisdiction.json","d");
   Check((qBadLoad with {Refusal=qOther}).LoaderError is null && (qBadLocked with {Refusal=qOther}).LoaderError is null,"P5-25 a with-copy replacing the Refusal drops the stale LoaderError");
-  Check((qBadLoad with {Refusal=null}).LoaderError is null,"P5-25 a with-copy clearing the Refusal drops the LoaderError");
+  // P5-26: clearing the Refusal of a refusal would leave neither Registry nor Refusal, so that with-copy now throws.
+  try { _=qBadLoad with {Refusal=null}; Check(false,"P5-25/P5-26 a with-copy clearing the Refusal throws"); } catch(ArgumentException) { Check(true,"P5-25/P5-26 a with-copy clearing the Refusal throws"); }
   Check((qBadLoad with {Refusal=qBadLoad.Refusal! with {}}).LoaderError is null,"P5-25 an equal but distinct Refusal instance does not inherit the LoaderError");
   Check(ReferenceEquals((qBadLoad with {Registry=null}).LoaderError,qBadLoad.LoaderError),"P5-25 a with-copy keeping the same Refusal keeps its LoaderError");
   // Record equality includes the hidden loader fields; a copy with another refusal is unequal and reads LoaderError as null.
