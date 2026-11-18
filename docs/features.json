@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-17",
+  "updated": "2026-11-18",
   "features": [
     {
       "id": "semantic-ir-and-diff",
@@ -1379,10 +1379,11 @@
         "interfaces/cli/CatalogueReportCommand.cs",
         "tests/cli/CatalogueReportTests.cs",
         "tests/cli/catalogue-report-record.ps1",
-        "tests/cli/catalogue-report/pass/catalogue-run1.json"
+        "tests/cli/catalogue-report/pass/catalogue-run1.json",
+        "docs/contracts/module-contracts.md"
       ],
-      "blocker": "never run on a real owner -Catalogue record (end-to-end records come from the fake executor); run-time sha row matched by its Spanish check text; exit 0 even when the report shows failures.",
-      "scope": "P1-12: read-only `catalogue-report --run .bim/native-runs/<run>` finds .bim/native-sessions/<utc>/catalogue-run<i>.json through summary.json, checks the record against its steps, prints per-group passed/failed/blocked/not_sent counts, failing steps with requested vs observed (raw_response for non-JSON), blocked steps and the copy sha256 re-hashed on disk (regular files only, bounded) against c-save's readback, as deterministic ASCII JSON; refuses traversal, paths outside .bim/native-runs, links, malformed/inconsistent/oversized records with typed catalogue_report_* codes; end-to-end on records written by the real owner record writer (clean/mixed/nocopy/v1only). CI red 42733295077, green 42734609677, review red 42747523781, green 42749563142."
+      "blocker": "never run on a real owner -Catalogue record (end-to-end records come from the fake executor); run-time sha row matched by its Spanish check text; exit 0 by default even when the report shows failures (opt-in --fail-on-failures exits 2 since P1-29; the realized member does not gate).",
+      "scope": "P1-12: read-only `catalogue-report --run .bim/native-runs/<run>` finds .bim/native-sessions/<utc>/catalogue-run<i>.json through summary.json, checks the record against its steps, prints per-group passed/failed/blocked/not_sent counts, failing steps with requested vs observed (raw_response for non-JSON), blocked steps and the copy sha256 re-hashed on disk (regular files only, bounded) against c-save's readback, as deterministic ASCII JSON; refuses traversal, paths outside .bim/native-runs, links, malformed/inconsistent/oversized records with typed catalogue_report_* codes; end-to-end on records written by the real owner record writer (clean/mixed/nocopy/v1only). CI red 42733295077, green 42734609677, review red 42747523781, green 42749563142. P1-29: opt-in --fail-on-failures (before or after --run, once) exits 2 when overall.failed>0, copy state ≠ match or a printed save_as state ≠ matches; stdout bytes identical; repeated/unknown flag → catalogue_report_usage; global usage lists the flag. CI red 44219479345, green 44221871058, review green 44230381758."
     },
     {
       "id": "revit-element-query-cursor",
@@ -2184,16 +2185,33 @@
       "scope": "P7-20: MCP tool plan_layouts {brief, alternatives?, seed?, pack?} (permission read, readOnlyHint) calls PlanLayoutsCommand.DryPlan, which shares Plan(brief, count, seed, pack) and the option validators with the CLI verb (package-first SkillPackLookup); text byte-equal to the real plan-layouts CLI output file and in-process AlternativeGenerator (defaults, seed wrap, negative seed, infeasible, CABA and xx.example packs); refusals byte-equal to the CLI line (malformed brief and pack_invalid pinned literally); MCP-only plan_layouts_path_invalid; nothing written; real Bim.Mcp.dll over stdio. relay217, CI red 44035035936, green 44038349793, review pins green 44054329853. P7-22: forced internal error (GuardedWorkProbe) and generator refusal (test seam GenerationWeightsProbe) reach the tool byte-equal to the in-process verb line, diagnostic on stderr once, refusal stderr empty, literal refused line pinned; relay221, CI red 44108688858, green 44109616700, review green 44140731482."
     },
     {
+      "id": "mcp-generate-prototypes",
+      "status": "unit-tested",
+      "evidence": [
+        "interfaces/mcp/GeneratePrototypesTool.cs",
+        "interfaces/mcp/McpServer.cs",
+        "interfaces/cli/GenerateCommand.cs",
+        "tests/mcp/GeneratePrototypesToolTests.cs",
+        "tests/mcp/Program.cs",
+        "tests/revit-commands/Program.cs"
+      ],
+      "blocker": "No infeasible result, repository_not_found or pack_invalid through the tool, and no refusal over stdio (→ P7-23); parse/load exceptions outside the guarded block go to McpServer's generic failure (→ P7-23); no packaged-MCP end-to-end (→ P7-24); relative paths resolve against the server working directory.",
+      "scope": "P7-21: read-only MCP tool generate_prototypes {request} (permission read, readOnlyHint) shares GenerateCommand.Generate(ReadRequest(path)) with the CLI verb (package-first pack lookup); document byte-equal to the generate-prototypes CLI output file and to an in-process PrototypePipeline run (6 cases incl. derived UUIDv8 id, -0, snap, fixed rooms/walls, second pack); 16 generate_prototypes_*/input_* refusals equal the CLI line; bad path → generate_prototypes_path_invalid; forced internal error typed generate_prototypes_internal_error with one stderr line; nothing written, Console.Out empty; real Bim.Mcp.dll over stdio. CI red 44219627281, green 44219938454."
+    },
+    {
       "id": "cli-skill-list",
       "status": "unit-tested",
       "evidence": [
         "interfaces/cli/SkillListCommand.cs",
         "interfaces/cli/Program.cs",
         "tests/cli/SkillListTests.cs",
-        "tests/cli/Program.cs"
+        "tests/cli/Program.cs",
+        "core/Bim.Core/JurisdictionRegistry.cs",
+        "core/Bim.Core/JurisdictionLock.cs",
+        "tests/Bim.Tests/Program.cs"
       ],
-      "blocker": "CLI only (MCP skill_list → P5-22); registry issues (claim_duplicate, pack_missing, pack_not_code) are not reported and the directory is loaded twice (→ P5-23); internal-error path checked statically only.",
-      "scope": "P5-21: read-only skill-list [--skills dir] (default package-first <package>/skills else repository skills/) prints {status, skills_path, packs:[{id, version, kind, stub, source_confidence{rules, cited, owner-confirmed, to-verify, lowest}}]} ordinal by id, equal to the in-process loader + jurisdiction registry result; loader codes (json_invalid, root_missing) and jurisdiction sidecar refusals pass through unchanged; trailing separator trimmed; skills tree digest unchanged. relay217, CI red 44034963800, green 44036668745, review red 44041974987, green 44043953028. P5-23: one JurisdictionRegistry.Load supplies catalogue and stub claims (loader re-read only on skills_invalid), registry issues dropped (pinned), culture-invariant bytes (de-DE/tr-TR); relay221, CI red 44108572317, green 44110773912, review green 44123472372."
+      "blocker": "CLI only (MCP skill_list → P5-22); internal-error path checked statically only; JurisdictionLoad.LoaderError is a public init property (invariant → P5-25).",
+      "scope": "P5-21: read-only skill-list [--skills dir] (default package-first <package>/skills else repository skills/) prints {status, skills_path, packs:[{id, version, kind, stub, source_confidence{rules, cited, owner-confirmed, to-verify, lowest}}]} ordinal by id, equal to the in-process loader + jurisdiction registry result; loader codes (json_invalid, root_missing) and jurisdiction sidecar refusals pass through unchanged; trailing separator trimmed; skills tree digest unchanged. relay217, CI red 44034963800, green 44036668745, review red 44041974987, green 44043953028. P5-23: one JurisdictionRegistry.Load supplies catalogue and stub claims (loader re-read only on skills_invalid), registry issues dropped (pinned), culture-invariant bytes (de-DE/tr-TR); relay221, CI red 44108572317, green 44110773912, review green 44123472372. P5-24: JurisdictionLoad.LoaderError carries the one directory read's SkillException (Load and LoadLocked on skills_invalid); skill-list never calls SkillLoader itself (lexer-based static check, 21 self-tests), race branch gone, bytes unchanged. CI red 44219312842, green 44219413459, review green 44225380175."
     }
   ]
 }

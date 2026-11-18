@@ -389,3 +389,8 @@ No individual case exhausted3failed attempts. Syntax-only unmatched brace and wh
 - P4-22: no failed attempts — red 44203790617 (0edf95e; static check named the probe/execute links) → green 44204921152 (4b1bdd1).
 - P10-25: no failed attempts — no red possible (production already refused a trailing newline via the `\z` anchor; tests pin behaviour) green 44203380992 (f46b228), 44207466850 (314203e); review fix 038c6b8 (+200 pinned, comment corrected).
 - P6-23: 1 failed attempt — run 44203489694 (9a9ec75) failed to compile (CS0136: pattern variable `r` clashed with a later local); hypothesis "the test was correct" wrong, renamed. Deliberate probe red 44204728280 (93a0550; block region asserted without the flag, exactly the three without-flag checks failed on Linux/Windows/macOS) → green 44206837154 (94c5090); review fix 0304e16 (empty stderr on refusals, insert handle I1, 180 s timeout).
+
+### Relay226 (2026-11-18, cloud)
+- P5-24: no failed attempts — red 44219312842 (c202ae6; the two static checks found SkillLoader.LoadDirectory and the race branch) → green 44219413459 (15fecbf); review red 44225252963 (4270b4d; LoadLocked LoaderError null) → green 44225380175 (bcfa446).
+- P7-21: no failed attempts — red 44219627281 (5b3333a; tools/list pin and missing tool) → green 44219938454 (0c3d539).
+- P1-29: 1 failed attempt on the review pin "global usage lists --fail-on-failures" — run 44228551313 (cff2e09); hypothesis 1 (substring match on raw stdout) wrong: the usage is the `code` of a JSON envelope where < > are escaped \u003C/\u003E; hypothesis 2 (parse the envelope, check the decoded code) green 44230381758 (77de579). Red 44219479345 (7084460) → green 44221871058 (2dc60f7).
