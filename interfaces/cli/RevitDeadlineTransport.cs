@@ -16,13 +16,20 @@ namespace Bim.Cli;
 // and its pipe_read_timeout passes through. probe is the file-system probe RevitCommandService.Run checks paths with.
 // The clock starts when this transport is built: in the CLI after the option, pipe name, policy and envelope reads, just
 // before paging, as the MCP transport starts when its all:true call builds it.
-// Known limit: the pipe connect inside RevitCommandService (ConnectTimeoutMs, 5 s) is not cut, so a run can last the
-// deadline plus up to 5 s, ending pipe_connect_timeout when no add-in is listening. Tests inject the clock and the cut transport.
+// P1-30: the pipe connect is bounded too. A page whose time left is below the 5 s connect wait
+// (RevitCommandService.ConnectTimeoutMs) goes through connectTransport(read, left), the real pipe with that read timeout
+// (the time left when the read is cut, else the configured one) and a connect wait of the time left; its
+// pipe_connect_timeout is reported as the deadline. With time left of at least 5 s the connect keeps its full 5 s and a
+// pipe_connect_timeout passes through (a deadline of 5 s or more on an absent pipe ends pipe_connect_timeout after 5 s,
+// within the deadline). cutReads false never cuts the connect either. Known limit: the read of a page whose connect was
+// cut is still given the time left measured before the connect, so a connect that succeeds just before the deadline can
+// extend the run by up to that time left. Tests inject the clock, the cut transport and the connect transport.
 internal sealed class RevitDeadlineTransport : IRevitCommandTransport
 {
     public const string Code = "query_all_deadline_exceeded";
     public const string CliListing = "--all";
     public const string McpListing = "all:true";
+    public static readonly TimeSpan ConnectWait = TimeSpan.FromMilliseconds(RevitCommandService.ConnectTimeoutMs);
 
     readonly string pipeName;
     readonly RevitCommandPolicy policy;
@@ -31,6 +38,7 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
     readonly TimeSpan deadline;
     readonly Func<TimeSpan> elapsed;
     readonly Func<TimeSpan, Func<string, string, string?>> cutTransport;
+    readonly Func<TimeSpan, TimeSpan, Func<string, string, string?>> connectTransport;
     readonly TimeSpan start;
     readonly string listing;
     readonly bool cutReads;
@@ -38,7 +46,8 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
 
     public RevitDeadlineTransport(string pipeName, RevitCommandPolicy policy, Func<string, string, string?> transport, TimeSpan readTimeout, TimeSpan deadline,
         Func<TimeSpan>? elapsed = null, Func<TimeSpan, Func<string, string, string?>>? cutTransport = null,
-        string listing = CliListing, bool cutReads = true, RevitFileSystemProbe? probe = null)
+        string listing = CliListing, bool cutReads = true, RevitFileSystemProbe? probe = null,
+        Func<TimeSpan, TimeSpan, Func<string, string, string?>>? connectTransport = null)
     {
         this.pipeName = pipeName;
         this.policy = policy;
@@ -52,6 +61,7 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
         }
         this.elapsed = elapsed;
         this.cutTransport = cutTransport ?? RevitCommandService.PipeTransportWithReadTimeout;
+        this.connectTransport = connectTransport ?? RevitCommandService.PipeTransportWithTimeouts;
         this.listing = listing;
         this.cutReads = cutReads;
         this.probe = probe;
@@ -74,9 +84,15 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
         var left = deadline - (elapsed() - start);
         if (left <= TimeSpan.Zero) return Exceeded();
         var cut = cutReads && left < readTimeout;
-        var line = RevitCommandService.Run(pipeName, envelopeJson, policy, cut ? cutTransport(left) : transport, probe).Line;
-        if (!cut) return line;
-        try { return RevitCommandResponse.Parse(line).Code == RevitCommandCodes.PipeReadTimeout ? Exceeded() : line; }
+        var cutConnect = cutReads && left < ConnectWait;
+        var pipe = cutConnect ? connectTransport(cut ? left : readTimeout, left) : cut ? cutTransport(left) : transport;
+        var line = RevitCommandService.Run(pipeName, envelopeJson, policy, pipe, probe).Line;
+        if (!cut && !cutConnect) return line;
+        try
+        {
+            var code = RevitCommandResponse.Parse(line).Code;
+            return (cut && code == RevitCommandCodes.PipeReadTimeout) || (cutConnect && code == RevitCommandCodes.PipeConnectTimeout) ? Exceeded() : line;
+        }
         catch (RevitCommandException) { return line; }
     }
 }

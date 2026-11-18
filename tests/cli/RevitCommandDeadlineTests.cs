@@ -251,7 +251,7 @@ internal static class RevitCommandDeadlineTests
                 "a 1 s read timeout below a 20 s deadline stays pipe_read_timeout", readFirst.Out + " in " + N(readFirst.Ms) + " ms");
 
             // ---- 3a. P1-30: the deadline also bounds the pipe connect (connect wait min(5 s, time left)) ----
-            AbsentPipeConnect(walls, wallsText, Rc, Check);
+            AbsentPipeConnect(root, walls, wallsText, Rc, Check);
 
             // ---- 3b. A slow paging add-in: the whole run is bounded, not each page ----
             addIn.Reply = line => PageReply(line, model);
@@ -289,9 +289,58 @@ internal static class RevitCommandDeadlineTests
     static string AbsentPipe() => "bim-agentic-os-2025-" + N(Random.Shared.Next(100000000, 999999999));
 
     // P1-30 (section 3a): no add-in listening on the pipe (a name nothing serves), so every connect waits its full timeout.
-    static void AbsentPipeConnect(string walls, string wallsText, Func<string[], (int Exit, string Out, long Ms)> rc, Action<bool, string, string> check)
+    static void AbsentPipeConnect(string root, string walls, string wallsText, Func<string[], (int Exit, string Out, long Ms)> rc, Action<bool, string, string> check)
     {
         var connectMs = RevitCommandService.ConnectTimeoutMs;
+        // In process, injected clock and connect transport: which pipe transport each page gets and what its codes become.
+        const string SeamPipe = "bim-agentic-os-2025-3030";
+        var calls = new List<string>();
+        string Label(TimeSpan t) => N((long)t.TotalMilliseconds);
+        Func<string, string, string?> Throws(Exception error) => (_, _) => throw error;
+        string Listing(TimeSpan readTimeout, TimeSpan deadline, Exception error, bool cutReads = true)
+        {
+            calls.Clear();
+            var seam = new Bim.Cli.RevitDeadlineTransport(SeamPipe, RevitCommandPolicy.None, (pipe, line) => { calls.Add("transport"); throw error; }, readTimeout, deadline, () => TimeSpan.Zero,
+                left => { calls.Add("cut " + Label(left)); return Throws(error); }, cutReads: cutReads,
+                connectTransport: (read, connect) => { calls.Add("connect " + Label(read) + "/" + Label(connect)); return Throws(error); });
+            return RevitElementQueryPaging.All(wallsText, seam).ToJson();
+        }
+        var connectCut = Listing(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(3), new TimeoutException());
+        check(Code(Node(connectCut)) == Exceeded && Pages(Node(connectCut)) == 0 && calls.SequenceEqual(new[] { "connect 3000/3000" }),
+            "P1-30 seam: 3 s left under a 30 s read timeout is read and connected with the time left (3000/3000 ms); its pipe_connect_timeout is query_all_deadline_exceeded",
+            connectCut + " calls " + string.Join(",", calls));
+        var readKept = Listing(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4), new RevitPipeReadTimeoutException(TimeSpan.FromSeconds(2)));
+        check(Code(Node(readKept)) == RevitCommandCodes.PipeReadTimeout && calls.SequenceEqual(new[] { "connect 2000/4000" }),
+            "P1-30 seam: 4 s left over a 2 s read timeout keeps the 2 s read, connects within 4 s, and its pipe_read_timeout passes through",
+            readKept + " calls " + string.Join(",", calls));
+        var readKeptConnect = Listing(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4), new TimeoutException());
+        check(Code(Node(readKeptConnect)) == Exceeded && calls.SequenceEqual(new[] { "connect 2000/4000" }),
+            "P1-30 seam: a connect cut to 4 s left (read not cut) that times out is query_all_deadline_exceeded", readKeptConnect + " calls " + string.Join(",", calls));
+        var fiveLeft = Listing(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(5), new TimeoutException());
+        check(Code(Node(fiveLeft)) == RevitCommandCodes.PipeConnectTimeout && calls.SequenceEqual(new[] { "cut 5000" }),
+            "P1-30 seam: exactly 5 s left keeps the full 5 s connect (read cut only) and its pipe_connect_timeout passes through", fiveLeft + " calls " + string.Join(",", calls));
+        var tenLeft = Listing(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(10), new TimeoutException());
+        check(Code(Node(tenLeft)) == RevitCommandCodes.PipeConnectTimeout && calls.SequenceEqual(new[] { "transport" }),
+            "P1-30 seam: 10 s left over a 3 s read timeout uses the configured transport; its pipe_connect_timeout passes through", tenLeft + " calls " + string.Join(",", calls));
+        var uncut = Listing(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(3), new TimeoutException(), cutReads: false);
+        check(Code(Node(uncut)) == RevitCommandCodes.PipeConnectTimeout && calls.SequenceEqual(new[] { "transport" }),
+            "P1-30 seam: cutReads false (MCP injected transport) never cuts the connect: pipe_connect_timeout passes through", uncut + " calls " + string.Join(",", calls));
+        static bool Refused(Action make) { try { make(); return false; } catch (ArgumentOutOfRangeException) { return true; } }
+        foreach (var (label, bad) in new[] { ("zero", TimeSpan.Zero), ("negative", TimeSpan.FromMilliseconds(-1)), ("over 5 s", TimeSpan.FromMilliseconds(5001)) })
+            check(Refused(() => RevitCommandService.PipeTransportWithTimeouts(TimeSpan.FromSeconds(1), bad)), "P1-30 PipeTransportWithTimeouts refuses a " + label + " connect timeout when made", "");
+        check(Refused(() => RevitCommandService.PipeTransportWithTimeouts(TimeSpan.Zero, TimeSpan.FromSeconds(1))) && !Refused(() => RevitCommandService.PipeTransportWithTimeouts(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5)))
+            && Bim.Cli.RevitDeadlineTransport.ConnectWait == TimeSpan.FromMilliseconds(RevitCommandService.ConnectTimeoutMs) && RevitCommandService.ConnectTimeoutMs == 5000,
+            "P1-30 PipeTransportWithTimeouts refuses a bad read timeout and accepts 5 s; the connect wait is the 5 s ConnectTimeoutMs", "");
+
+        // Static: MCP all:true builds the shared RevitDeadlineTransport with the default connect transport (no override).
+        var mcpSource = File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs"));
+        var allStart = mcpSource.IndexOf("(string Text, bool IsError) RevitCallAll(", StringComparison.Ordinal);
+        var built = allStart < 0 ? -1 : mcpSource.IndexOf("new RevitDeadlineTransport(", allStart, StringComparison.Ordinal);
+        var builtArgs = built < 0 ? "" : mcpSource[built..mcpSource.IndexOf(';', built)];
+        check(builtArgs.Contains("cutReads: realPipe", StringComparison.Ordinal) && !builtArgs.Contains("connectTransport", StringComparison.Ordinal)
+            && !builtArgs.Contains("ConnectTimeout", StringComparison.Ordinal) && !builtArgs.Contains("cutTransport", StringComparison.Ordinal),
+            "P1-30 static: McpServer.RevitCallAll builds RevitDeadlineTransport with cutReads: realPipe and the default (shared) connect bound", builtArgs.ReplaceLineEndings(" "));
+
         // The process start-up and envelope read of a refused --all run: the CLI clock starts just before paging.
         var startup = rc([Path.Combine(Path.GetDirectoryName(walls)!, "missing-envelope.json"), AbsentPipe(), "--all", Flag, "1"]);
         check(startup.Exit == 1 && Code(Node(startup.Out)) == RevitCommandCodes.EnvelopeInvalid, "P1-30 start-up baseline: a missing envelope under --all is refused in the listing shape", startup.Out);

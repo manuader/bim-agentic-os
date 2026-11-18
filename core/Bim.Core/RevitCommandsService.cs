@@ -116,12 +116,32 @@ public static class RevitCommandService
         return (pipeName, line) => PipeTransport(pipeName, line, readTimeout);
     }
 
-    public static string? PipeTransport(string pipeName, string line, TimeSpan readTimeout)
+    public static string? PipeTransport(string pipeName, string line, TimeSpan readTimeout) => Send(pipeName, line, readTimeout, ConnectTimeoutMs);
+
+    // P1-30: a transport with another read timeout and a shorter connect wait (greater than zero, at most
+    // ConnectTimeoutMs, rounded up to whole milliseconds), both checked when it is made: the revit-command --all and MCP
+    // all:true deadline (RevitDeadlineTransport) waits for the connect at most the time left. A connect that does not
+    // complete in time throws TimeoutException (pipe_connect_timeout), as with the 5 s default.
+    public static Func<string, string, string?> PipeTransportWithTimeouts(TimeSpan readTimeout, TimeSpan connectTimeout)
+    {
+        CheckReadTimeout(readTimeout);
+        var connectMs = ConnectMilliseconds(connectTimeout);
+        return (pipeName, line) => Send(pipeName, line, readTimeout, connectMs);
+    }
+
+    static int ConnectMilliseconds(TimeSpan connectTimeout)
+    {
+        if (connectTimeout <= TimeSpan.Zero || connectTimeout > TimeSpan.FromMilliseconds(ConnectTimeoutMs))
+            throw new ArgumentOutOfRangeException(nameof(connectTimeout), connectTimeout, "the connect timeout must be greater than zero and at most 5 s");
+        return (int)Math.Ceiling(connectTimeout.TotalMilliseconds);
+    }
+
+    static string? Send(string pipeName, string line, TimeSpan readTimeout, int connectMs)
     {
         CheckReadTimeout(readTimeout);
         // Asynchronous (overlapped) so a pending read can be cancelled on Windows as well as on Unix sockets.
         using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-        pipe.Connect(ConnectTimeoutMs);
+        pipe.Connect(connectMs);
         var utf8 = new UTF8Encoding(false);
         // The same bytes StreamWriter.WriteLine sent before, without a writer whose disposal would flush a pipe the
         // add-in already closed (IOException "Pipe is broken" on Windows instead of no_response).
