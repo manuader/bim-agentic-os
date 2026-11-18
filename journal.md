@@ -1801,3 +1801,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay238
 - 2026-11-18T21:53:11Z lock taken (session_014pxpsQ2F8Qdm2CSj8qgBX8; was FREE, relay236 released 21:31:04Z)
 - 2026-11-18T22:45:16Z picked P1-32 (phase 1), P2-31 (phase 2), P7-25 (phase 7) — oldest-touched (relay232); workers green: P1-32 928e3c0 (red 44406681679, green 44409084315), P2-31 4bf5a1c (probe red 44407063531, green 44410698517; Windows remainder>InBufferSize, Linux remainder fits 212992 send buffer — measured fact pinned), P7-25 de9e2b1 (red 44406469298, green 44408681950); 0 failed attempts. Reviews next.
+- 2026-11-18T23:50:17Z container restarted mid-review-fixes; heartbeat refreshed. P1-32 review fix 0bbe5c2, P7-25 review fix 9fc6b0e pushed; P2-31 review fix pending.
