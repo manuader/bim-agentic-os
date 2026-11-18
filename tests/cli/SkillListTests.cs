@@ -23,10 +23,11 @@ using Bim.Core;
 //   6. Static: the command loads through JurisdictionRegistry.Load, finds the package via SkillPackLookup.PackageRoot,
 //      routes defects through IntentPlan.Internal("skill-list", ...), exposes a public static handler and has no file
 //      write API; Program.cs registers the verb.
-//   7. P5-23 one load: the skills directory is read once. The source calls JurisdictionRegistry.Load( exactly once and
-//      takes the catalogue from registry.Catalog; SkillLoader.LoadDirectory( appears exactly once, brace-nested inside
-//      `if (load.Refusal is { } refusal)` and its `if (refusal.Code == JurisdictionCodes.SkillsInvalid)` block, so an
-//      unconditional second read fails (failure path only).
+//   7. P5-23/P5-24 one load: the skills directory is read once on every path. The source calls JurisdictionRegistry.Load(
+//      exactly once, takes the catalogue from registry.Catalog and the loader's typed error from load.LoaderError (P5-24),
+//      and never calls SkillLoader.LoadDirectory( (no second read after a skills_invalid refusal, so no race branch
+//      printing the registry's skills_invalid refusal when a re-read succeeds); the refusal block prints the loader's
+//      error members {code,field,detail,file} from LoaderError. The refusal bytes themselves are pinned by oracle 1/2.
 //   8. P5-23 registry issues are dropped: a directory whose registry loads with claim_duplicate (two packs claiming xx.dup)
 //      and pack_not_code (a qa pack claiming xx.qa) lists exactly the in-process envelope, which never carries them; the
 //      duplicated and the non-code claims flag no pack as stub. (pack_missing cannot arise from a directory load: a
@@ -327,16 +328,16 @@ internal static class SkillListTests
         var codeText = string.Join("\n", source.Split('\n').Select(line => { var at = line.IndexOf("//", StringComparison.Ordinal); return at < 0 ? line : line[..at]; }));
         static int Count(string text, string token) { var n = 0; for (var at = text.IndexOf(token, StringComparison.Ordinal); at >= 0; at = text.IndexOf(token, at + token.Length, StringComparison.Ordinal)) n++; return n; }
         var registryAt = codeText.IndexOf("JurisdictionRegistry.Load(", StringComparison.Ordinal);
-        var loaderAt = codeText.IndexOf("SkillLoader.LoadDirectory(", StringComparison.Ordinal);
-        Check(Count(codeText, "JurisdictionRegistry.Load(") == 1 && Count(codeText, "SkillLoader.LoadDirectory(") == 1 && registryAt >= 0 && loaderAt > registryAt
-            && codeText.Contains("JurisdictionCodes.SkillsInvalid", StringComparison.Ordinal) && codeText.Contains("registry.Catalog", StringComparison.Ordinal),
-            "the skills directory is read once: one JurisdictionRegistry.Load supplies catalogue and claims; SkillLoader.LoadDirectory runs only after a skills_invalid refusal",
-            "JurisdictionRegistry.Load x" + Count(codeText, "JurisdictionRegistry.Load(").ToString(CultureInfo.InvariantCulture) + " at " + registryAt.ToString(CultureInfo.InvariantCulture)
-            + ", SkillLoader.LoadDirectory x" + Count(codeText, "SkillLoader.LoadDirectory(").ToString(CultureInfo.InvariantCulture) + " at " + loaderAt.ToString(CultureInfo.InvariantCulture));
+        Check(Count(codeText, "JurisdictionRegistry.Load(") == 1 && registryAt >= 0 && codeText.Contains("registry.Catalog", StringComparison.Ordinal),
+            "one JurisdictionRegistry.Load supplies catalogue and claims",
+            "JurisdictionRegistry.Load x" + Count(codeText, "JurisdictionRegistry.Load(").ToString(CultureInfo.InvariantCulture) + " at " + registryAt.ToString(CultureInfo.InvariantCulture));
+        Check(Count(codeText, "SkillLoader.LoadDirectory(") == 0 && Count(codeText, "SkillLoader.") == 0,
+            "P5-24: the skills directory is read once on every path: the command never calls the skill loader itself (no re-read after a skills_invalid refusal)",
+            "SkillLoader.LoadDirectory x" + Count(codeText, "SkillLoader.LoadDirectory(").ToString(CultureInfo.InvariantCulture));
         var refusalBlock = Block(codeText, "if (load.Refusal is { } refusal)");
-        var skillsInvalidBlock = Block(refusalBlock, "if (refusal.Code == JurisdictionCodes.SkillsInvalid)");
-        Check(skillsInvalidBlock.Contains("SkillLoader.LoadDirectory(", StringComparison.Ordinal) && !refusalBlock.Contains("registry.Catalog", StringComparison.Ordinal),
-            "the second read is conditional: SkillLoader.LoadDirectory( sits inside the load.Refusal block's skills_invalid branch", "refusal block: " + refusalBlock);
+        Check(refusalBlock.Contains("load.LoaderError", StringComparison.Ordinal) && !refusalBlock.Contains("registry.Catalog", StringComparison.Ordinal)
+            && !refusalBlock.Contains("JurisdictionCodes.SkillsInvalid", StringComparison.Ordinal),
+            "P5-24: the refusal block prints the loader's typed error from load.LoaderError, with no skills_invalid race branch", "refusal block: " + refusalBlock);
         Check(!codeText.Contains(".Issues", StringComparison.Ordinal), "registry issues are not read by the command (dropped)");
         Check(source.Contains("public static IntentEnvelope List(", StringComparison.Ordinal), "the handler is a public static IntentEnvelope List(...) for reuse by the MCP tool");
         Check(!source.Contains(" internal error: ", StringComparison.Ordinal), "the command hand-writes no internal-error stderr line");
