@@ -112,6 +112,11 @@ internal static class GenerateTypologyCommand
     {
         try { Execute(args); }
         catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail, refusal.Skill); }
+        // P3-24: a non-refusal exception outside Generate's guarded pipeline block (the parse / pack-load stretch, forced in
+        // tests through the P3-23 seam) prints the typed {"status":"failed","code":InternalError} line with IntentPlan's
+        // stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. The guarded block's own failures
+        // already arrive above as Refusal(InternalError) with their diagnostic written once.
+        catch (Exception error) { IntentPlan.Internal("generate-typology", error).Print(); }
     }
 
     // P5-17: the request-to-document path shared with the MCP generate_typology tool (interfaces/mcp/GenerateTypologyTool.cs
