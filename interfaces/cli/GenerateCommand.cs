@@ -117,6 +117,16 @@ internal static class GenerateCommand
             return generated.RefusedLine is { } refused ? (false, refused) : (true, generated.Json);
         }
         catch (Refusal refusal) { return (false, FailureLine(refusal.Code, refusal.Detail)); }
+        // P7-23: a non-refusal exception outside Generate's guarded pipeline block (the parse / pack-load stretch, forced in
+        // tests through UnguardedStageProbe) is the typed internal error too, not an exception escaping to McpServer's
+        // generic Failed(message). The guarded block's own failures already arrive here as Refusal(InternalError) with their
+        // diagnostic written once.
+        catch (Exception error)
+        {
+            var envelope = IntentPlan.Internal("generate-prototypes", error);
+            Console.Error.WriteLine(envelope.Diagnostic);
+            return (false, envelope.Line);
+        }
     }
 
     // RefusedLine is the generate_prototypes_refused stdout line when the pipeline refused (Json is then empty).
@@ -166,6 +176,7 @@ internal static class GenerateCommand
     // precedence order. Throws Refusal; a pipeline refusal is returned as RefusedLine.
     static Generated Generate(string text)
     {
+        UnguardedStageProbe?.Invoke();
         var parsed = Parse(text);
         var projectId = parsed.ProjectId ?? DerivedId(Canonical(parsed));
 
@@ -413,6 +424,12 @@ internal static class GenerateCommand
     // P3-20 test seam: null in production. tests/cli/InternalErrorDelegationTests.cs sets it (by reflection) to an Action
     // that throws, so the guarded library work below fails inside Run's real catch-all; it is reset after the test.
     internal static Action? GuardedWorkProbe { get; set; }
+
+    // P7-23 test seam: null in production. tests/mcp/GeneratePrototypesToolTests.cs sets it (by reflection) to an Action
+    // that throws, so a non-refusal exception arises in Generate before the guarded pipeline block (the parse / pack-load
+    // stretch); it is reset after the test. Named apart from GenerateTypologyCommand's P3-23 seam, whose static pin counts
+    // that name over interfaces/.
+    internal static Action? UnguardedStageProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).

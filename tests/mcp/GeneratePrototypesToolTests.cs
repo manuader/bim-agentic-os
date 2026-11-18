@@ -26,6 +26,12 @@ using Bim.Generative;
 //      generate_prototypes_internal_error line with the IntentPlan diagnostic on stderr once, not McpServer's generic failure.
 //   7. Static: the tool calls GenerateCommand.Document and contains no parser, pipeline, pack lookup or file access of its
 //      own; the verb and Document share one Generate(ReadRequest(...)) path; the MCP projects link the CLI source.
+//   8. P7-23: an infeasible result (three bedrooms on a 3 x 3 m lot) is the CLI output file byte for byte; refusals over the
+//      real Bim.Mcp.dll stdio equal the CLI line; copies of Bim.Mcp.dll and the CLI in a scratch repository, a scratch
+//      release package and outside any repository give the same generate_prototypes_pack_invalid / _repository_not_found
+//      line; the lone-surrogate and -32602 calls leave Console.Out, the inputs and the exit code alone; a non-refusal
+//      exception before the guarded block (GenerateCommand.UnguardedStageProbe, null in production, statically pinned)
+//      is the typed generate_prototypes_internal_error line with the diagnostic on stderr once.
 // The tool name, parameter and codes are literals here (not the tool's constants) so this file compiles before the tool exists.
 internal static class GeneratePrototypesToolTests
 {
@@ -295,6 +301,294 @@ internal static class GeneratePrototypesToolTests
                 if (project.StartsWith("interfaces/mcp/", StringComparison.Ordinal) && shared.StartsWith("interfaces/mcp/", StringComparison.Ordinal)) continue; // compiled by default
                 var full = Path.GetFullPath(Path.Combine(root, shared.Replace('/', Path.DirectorySeparatorChar)));
                 Check(includes.Any(include => string.Equals(include, full, comparison)), project + " compiles " + shared + " (shared source, not a copy)");
+            }
+        }
+
+        // ---- 8. P7-23 refusal coverage ----
+        {
+            void Check723(bool condition, string name) => check(condition, "P7-23 generate_prototypes refusal coverage: " + name);
+            var nl = Environment.NewLine;
+            static bool UnderRepository(string directory)
+            {
+                for (var dir = new DirectoryInfo(directory); dir is not null; dir = dir.Parent)
+                    if (File.Exists(Path.Combine(dir.FullName, "global.json"))) return true;
+                return false;
+            }
+            static string CopyBinary(string dll, string target)
+            {
+                var source = Path.GetDirectoryName(dll)!;
+                foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+                {
+                    var destination = Path.Combine(target, Path.GetRelativePath(source, file));
+                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    File.Copy(file, destination);
+                }
+                return Path.Combine(target, Path.GetFileName(dll));
+            }
+            // A CLI copy: (exit, stdout line, written bytes or null), a fresh output path each time.
+            (int Exit, string Out, byte[]? File) CliAt(string dll, string requestPath)
+            {
+                var output = Path.Combine(outputs, Next() + "-copy-out.json");
+                var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+                start.ArgumentList.Add(dll);
+                start.ArgumentList.Add("generate-prototypes");
+                start.ArgumentList.Add(requestPath);
+                start.ArgumentList.Add(output);
+                using var process = Process.Start(start) ?? throw new Exception("CLI copy did not start: " + dotnet);
+                var stdout = process.StandardOutput.ReadToEndAsync();
+                var stderr = process.StandardError.ReadToEndAsync();
+                if (!process.WaitForExit(180000)) { process.Kill(true); throw new Exception("CLI copy timed out: " + dll); }
+                process.WaitForExit();
+                _ = stderr.Result;
+                return (process.ExitCode, stdout.Result.TrimEnd('\r', '\n'), File.Exists(output) ? File.ReadAllBytes(output) : null);
+            }
+            // An MCP server copy over stdio: one response object per input line.
+            JsonObject[] McpAt(string dll, params string[] lines)
+            {
+                var start = new ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+                    StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = new UTF8Encoding(false) };
+                start.ArgumentList.Add(dll);
+                using var process = Process.Start(start) ?? throw new Exception("MCP copy did not start: " + dotnet);
+                var stdout = process.StandardOutput.ReadToEndAsync();
+                var stderr = process.StandardError.ReadToEndAsync();
+                try { process.StandardInput.Write(string.Concat(lines.Select(line => line + "\n"))); process.StandardInput.Close(); } catch (IOException) { }
+                if (!process.WaitForExit(180000)) { process.Kill(true); throw new Exception("MCP copy timed out: " + dll); }
+                process.WaitForExit();
+                _ = stderr.Result;
+                return stdout.Result.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => JsonNode.Parse(line)!.AsObject()).ToArray();
+            }
+            void SameRefusal(string label, JsonObject[] responses, (int Exit, string Out, byte[]? File) cli, string expected)
+            {
+                var response = responses.Length == 1 ? responses[0] : new JsonObject();
+                Check723(responses.Length == 1 && IsError(response) && cli.Exit == 1 && cli.File is null && Text(response) == cli.Out && cli.Out == expected,
+                    label + ": the copied Bim.Mcp.dll over stdio answers the CLI copy's refusal line byte for byte | " + Short(Text(response)) + " / " + Short(cli.Out));
+            }
+            var mcpDll = Path.Combine(root, "interfaces", "mcp", "bin", "Release", "net8.0", "Bim.Mcp.dll");
+            Check723(File.Exists(mcpDll), "fixture: the Release Bim.Mcp.dll exists (" + mcpDll + ")");
+
+            // 8a. An infeasible pipeline result (a 3 x 3 m lot for three bedrooms: every alternative rejected) is a
+            // result, not a refusal: the tool text is the CLI output file and the in-process document byte for byte.
+            var tinyResult = PrototypePipeline.Run(new PrototypeRequest(ApartmentTypology.ThreeBedroom, new PrototypeLot(3, 3), 2, 0), new PrototypePipelineOptions(caba, explicitId));
+            Check723(tinyResult.Status == PrototypePipelineStatus.Infeasible && tinyResult.Accepted.Count == 0 && tinyResult.Alternatives.Count > 0,
+                "fixture: a three-bedroom request on a 3 x 3 m lot is infeasible in process (" + tinyResult.Status + ", " + tinyResult.Alternatives.Count.ToString(CultureInfo.InvariantCulture) + " alternatives)");
+            var tinyPath = Input("tiny-lot.json", "{\"typology\":3,\"lot\":{\"width_m\":3,\"depth_m\":3},\"alternatives\":2,\"seed\":0,\"project_id\":\"" + Id + "\"}");
+            var tinyResponse = Call("an infeasible lot", tinyPath);
+            var tinyCli = Cli(tinyPath);
+            var tinyText = Utf8(Text(tinyResponse));
+            Check723(!IsError(tinyResponse) && tinyText.SequenceEqual(Utf8(PrototypePipelineSerializer.Serialize(tinyResult))),
+                "an infeasible lot: the tool text (isError false) is the in-process infeasible document byte for byte | " + Short(Text(tinyResponse)));
+            Check723(tinyCli.Exit == 0 && tinyCli.File is not null && tinyText.SequenceEqual(tinyCli.File)
+                && tinyCli.Out.Contains("\"pipeline_status\":\"infeasible\"", StringComparison.Ordinal) && tinyCli.Out.Contains("\"accepted\":0", StringComparison.Ordinal)
+                && tinyCli.Out.Contains("\"sha256\":\"" + Hex(tinyText) + "\"", StringComparison.Ordinal),
+                "an infeasible lot: the tool text is byte-equal to the CLI output file (pipeline_status infeasible, accepted 0) | exit " + tinyCli.Exit.ToString(CultureInfo.InvariantCulture) + " " + Short(tinyCli.Out));
+
+            // 8b. A refusal over the real Release Bim.Mcp.dll stdio (pipeline refusal and request_invalid), equal to the CLI line.
+            var stdioTypology4 = Input("stdio-typology-4.json", "{\"typology\":4,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"project_id\":\"" + Id + "\"}");
+            var stdioBad = Input("stdio-bad.json", "{");
+            var stdioOut = mcpProcess(ToolLine(new JsonObject { [RequestParameter] = stdioTypology4 }) + "\n" + ToolLine(new JsonObject { [RequestParameter] = stdioBad }) + "\n");
+            var stdioLines = stdioOut.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => JsonNode.Parse(line)!.AsObject()).ToArray();
+            var stdioTypology4Cli = Cli(stdioTypology4);
+            var stdioBadCli = Cli(stdioBad);
+            Check723(stdioLines.Length == 2 && IsError(stdioLines[0]) && Text(stdioLines[0]) == stdioTypology4Cli.Out && stdioTypology4Cli.Out == RefusedEnvelope(typology4) && stdioTypology4Cli.Exit == 1 && stdioTypology4Cli.File is null,
+                "the real Bim.Mcp.dll over stdio answers the generate_prototypes_refused line of the CLI byte for byte | " + Short(stdioOut));
+            Check723(stdioLines.Length == 2 && IsError(stdioLines[1]) && Text(stdioLines[1]) == stdioBadCli.Out && stdioBadCli.Out == Code("generate_prototypes_request_invalid", "json") && stdioBadCli.File is null,
+                "the real Bim.Mcp.dll over stdio answers the generate_prototypes_request_invalid line of the CLI byte for byte | " + Short(stdioOut));
+
+            // 8c. generate_prototypes_pack_invalid from a scratch repository (global.json, its own skills/): a copied
+            // Bim.Mcp.dll in <repo>/mcp and a copied CLI in <repo>/cli give the same line.
+            var scratchRepo = Path.Combine(scratch, "p7-23-repo-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(scratchRepo);
+                File.WriteAllText(Path.Combine(scratchRepo, "global.json"), "{}");
+                var cabaText = File.ReadAllText(Path.Combine(root, "skills", CodePack, "skill.json"));
+                void RepoPack(string folder, string text) { Directory.CreateDirectory(Path.Combine(scratchRepo, "skills", folder)); File.WriteAllText(Path.Combine(scratchRepo, "skills", folder, "skill.json"), text, new UTF8Encoding(false)); }
+                RepoPack("zz.test.bad-json", "{");
+                RepoPack("zz.test.mismatch", cabaText.Replace("\"id\": \"" + CodePack + "\"", "\"id\": \"zz.test.other\"", StringComparison.Ordinal));
+                RepoPack(CodePack, cabaText);
+                var repoMcp = CopyBinary(mcpDll, Path.Combine(scratchRepo, "mcp"));
+                var repoCli = CopyBinary(cliDll, Path.Combine(scratchRepo, "cli"));
+                var badJson = Input("pack-bad-json.json", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"pack\":\"zz.test.bad-json\",\"project_id\":\"" + Id + "\"}");
+                var badJsonCli = CliAt(repoCli, badJson);
+                var badJsonCode = badJsonCli.Out.Length > 0 && badJsonCli.Out[0] == '{' ? JsonNode.Parse(badJsonCli.Out)?["code"]?.GetValue<string>() : null;
+                Check723(badJsonCode == "generate_prototypes_pack_invalid", "fixture: the scratch repository's malformed pack is generate_prototypes_pack_invalid from the copied CLI | " + Short(badJsonCli.Out));
+                SameRefusal("a malformed pack manifest in a scratch repository", McpAt(repoMcp, ToolLine(new JsonObject { [RequestParameter] = badJson })), badJsonCli,
+                    "{\"status\":\"failed\",\"code\":\"generate_prototypes_pack_invalid\",\"detail\":\"json_invalid\"}");
+                var mismatch = Input("pack-mismatch.json", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"pack\":\"zz.test.mismatch\",\"project_id\":\"" + Id + "\"}");
+                SameRefusal("a pack manifest naming another id in a scratch repository", McpAt(repoMcp, ToolLine(new JsonObject { [RequestParameter] = mismatch })), CliAt(repoCli, mismatch),
+                    "{\"status\":\"failed\",\"code\":\"generate_prototypes_pack_invalid\",\"detail\":\"id\"}");
+                // The scratch repository's own CABA pack: the copied server answers the in-repository document (the lookup really reached the scratch skills/).
+                var repoOk = McpAt(repoMcp, ToolLine(new JsonObject { [RequestParameter] = okRequest }));
+                Check723(repoOk.Length == 1 && !IsError(repoOk[0]) && Utf8(Text(repoOk[0])).SequenceEqual(twoBedDocument),
+                    "fixture: the copied server in the scratch repository answers the two-bedroom document from the scratch skills/ | " + Short(repoOk.Length == 1 ? Text(repoOk[0]) : "<none>"));
+            }
+            finally { try { Directory.Delete(scratchRepo, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+
+            // 8d. generate_prototypes_repository_not_found (copies outside any repository, no package markers) and
+            // _pack_invalid from a scratch release package (<pkg>/mcp and <pkg>/cli beside VERSION, manifest.json, skills/).
+            var outsideBase = new[] { Environment.GetEnvironmentVariable("RUNNER_TEMP"), Path.GetTempPath(), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), OperatingSystem.IsWindows() ? null : "/tmp" }
+                .FirstOrDefault(candidate => !string.IsNullOrEmpty(candidate) && Directory.Exists(candidate) && !UnderRepository(candidate));
+            // On CI (CI, GITHUB_ACTIONS or RUNNER_TEMP set) the outside-repository cases must run on every OS; a local run may skip with its reason.
+            var onCi = new[] { "CI", "GITHUB_ACTIONS", "RUNNER_TEMP" }.Any(variable => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(variable)));
+            if (onCi) Check723(outsideBase is not null, "on CI a writable directory outside any repository exists, so repository_not_found and the scratch package run (no skip)");
+            if (outsideBase is null) Console.WriteLine("SKIP P7-23 generate_prototypes: no writable directory outside a repository for the copied server (local run)");
+            else
+            {
+                var outsideRoot = Path.Combine(outsideBase, "bim-p7-23-outside-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    var outsideMcp = CopyBinary(mcpDll, Path.Combine(outsideRoot, "mcp"));
+                    var outsideCli = CopyBinary(cliDll, Path.Combine(outsideRoot, "cli"));
+                    Check723(!UnderRepository(outsideRoot), "fixture: the outside copies have no global.json above them");
+                    SameRefusal("copies outside any repository", McpAt(outsideMcp, ToolLine(new JsonObject { [RequestParameter] = okRequest })), CliAt(outsideCli, okRequest),
+                        "{\"status\":\"failed\",\"code\":\"generate_prototypes_repository_not_found\"}");
+                }
+                finally { try { Directory.Delete(outsideRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+
+                var packageRoot = Path.Combine(outsideBase, "bim-p7-23-package-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    var packageMcp = CopyBinary(mcpDll, Path.Combine(packageRoot, "mcp"));
+                    var packageCli = CopyBinary(cliDll, Path.Combine(packageRoot, "cli"));
+                    File.WriteAllText(Path.Combine(packageRoot, "VERSION"), "0.0.0-test\n");
+                    File.WriteAllText(Path.Combine(packageRoot, "manifest.json"), "{}\n");
+                    Directory.CreateDirectory(Path.Combine(packageRoot, "skills", CodePack));
+                    File.WriteAllText(Path.Combine(packageRoot, "skills", CodePack, "skill.json"), "{", new UTF8Encoding(false));
+                    var packageCliRun = CliAt(packageCli, okRequest);
+                    var packageCode = packageCliRun.Out.Length > 0 && packageCliRun.Out[0] == '{' ? JsonNode.Parse(packageCliRun.Out)?["code"]?.GetValue<string>() : null;
+                    Check723(packageCode == "generate_prototypes_pack_invalid", "fixture: a malformed default pack in the scratch package is generate_prototypes_pack_invalid from the copied CLI | " + Short(packageCliRun.Out));
+                    SameRefusal("a malformed default pack in a scratch release package", McpAt(packageMcp, ToolLine(new JsonObject { [RequestParameter] = okRequest })), packageCliRun,
+                        "{\"status\":\"failed\",\"code\":\"generate_prototypes_pack_invalid\",\"detail\":\"json_invalid\"}");
+                }
+                finally { try { Directory.Delete(packageRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            }
+
+            // 8e. The lone-surrogate and -32602 calls leave Console.Out empty, the input listing unchanged and the exit code.
+            JsonObject Quiet(string label, string line)
+            {
+                var before = Listing();
+                var stdout = Console.Out;
+                var captured = new StringWriter();
+                JsonObject response;
+                Console.SetOut(captured);
+                try { response = call(line); }
+                finally { Console.SetOut(stdout); }
+                Check723(Listing() == before && captured.ToString().Length == 0 && Environment.ExitCode == exitBefore,
+                    label + ": Console.Out empty, the input listing unchanged, exit code untouched | " + Short(captured.ToString()));
+                return response;
+            }
+            var quietSurrogate = Quiet("a lone-surrogate request path", "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"" + ToolName + "\",\"arguments\":{\"" + RequestParameter + "\":\"\\ud800\"}}}");
+            Check723(IsError(quietSurrogate) && Text(quietSurrogate) == pathInvalid, "a lone-surrogate request path is generate_prototypes_path_invalid | " + Short(Text(quietSurrogate)));
+            // Argument objects are built from JSON text (JsonObject creations inside a tuple array crash Roslyn's AD0001
+            // UseCollectionInitializer analyzer, ATTEMPTS P10-12).
+            static JsonObject Arguments(string json) => JsonNode.Parse(json)!.AsObject();
+            foreach (var (label, arguments) in new[]
+            {
+                ("no request", "{}"),
+                ("a non-string request", "{\"" + RequestParameter + "\":1}"),
+                ("an inline request object", "{\"" + RequestParameter + "\":{\"typology\":2}}"),
+                ("an output argument", "{\"" + RequestParameter + "\":" + JsonSerializer.Serialize(okRequest) + ",\"output\":" + JsonSerializer.Serialize(Path.Combine(inputs, "never-p7-23.json")) + "}"),
+            })
+                Check723(ErrorCode(Quiet(label + " (-32602)", ToolLine(Arguments(arguments)))) == -32602, label + " returns -32602");
+
+            // 8f. Static: the unguarded-stage seam is declared once in GenerateCommand.cs and invoked once, inside Generate
+            // before its Parse( call; nothing under interfaces/ assigns it. (Named apart from GenerateTypologyCommand's
+            // UnguardedWorkProbe, whose P3-23 pin counts that name over interfaces/.)
+            static List<string> StageSeamProblems(IEnumerable<(string Name, string Code)> files)
+            {
+                var problems = new List<string>();
+                var total = 0;
+                var sawCommand = false;
+                foreach (var (name, code) in files)
+                {
+                    total += Regex.Matches(code, @"\bUnguardedStageProbe\b").Count;
+                    if (Regex.IsMatch(code, @"\bUnguardedStageProbe\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)")) problems.Add(name + ": UnguardedStageProbe assigned");
+                    if (name != "interfaces/cli/GenerateCommand.cs") continue;
+                    sawCommand = true;
+                    var declarations = Regex.Matches(code, @"\binternal\s+static\s+Action\s*\?\s*UnguardedStageProbe\s*\{\s*get\s*;\s*set\s*;\s*\}").Count;
+                    if (declarations != 1) problems.Add(name + ": the declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
+                    var invokes = Regex.Matches(code, @"\bUnguardedStageProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;");
+                    var generate = Regex.Match(code, @"\bstatic\s+Generated\s+Generate\s*\(");
+                    if (invokes.Count != 1 || !generate.Success) { problems.Add(name + ": " + invokes.Count.ToString(CultureInfo.InvariantCulture) + " invokes, Generate " + (generate.Success ? "found" : "missing")); continue; }
+                    var parse = Regex.Match(code[(generate.Index + generate.Length)..], @"\bParse\s*\(");
+                    var parseAt = parse.Success ? generate.Index + generate.Length + parse.Index : -1;
+                    if (parseAt < 0 || invokes[0].Index < generate.Index || invokes[0].Index > parseAt) problems.Add(name + ": UnguardedStageProbe?.Invoke() not inside Generate before its Parse(");
+                }
+                if (!sawCommand) problems.Add("interfaces/cli/GenerateCommand.cs not found");
+                if (total != 2) problems.Add("UnguardedStageProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
+                return problems;
+            }
+            var interfaceSources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
+                .Select(file => (Path.GetRelativePath(root, file).Replace('\\', '/'), CodeOf(File.ReadAllText(file)))).ToArray();
+            var stageSeam = StageSeamProblems(interfaceSources);
+            Check723(stageSeam.Count == 0, "interfaces/**/*.cs names UnguardedStageProbe only in its declaration and one ?.Invoke() before Parse( in Generate, never assigned [" + string.Join("; ", stageSeam) + "]");
+            const string SeamFile = "interfaces/cli/GenerateCommand.cs";
+            const string SeamDecl = "internal static Action? UnguardedStageProbe { get; set; }";
+            static string SeamCommand(string body, string extra = "") => "internal static class GenerateCommand { static Generated Generate(string text) { " + body + " } " + SeamDecl + " " + extra + " }";
+            const string SeamGood = "UnguardedStageProbe?.Invoke(); var parsed = Parse(text); return null;";
+            Check723(StageSeamProblems(new[] { (SeamFile, SeamCommand(SeamGood)) }).Count == 0, "self-test: the stage seam checker accepts the real shape");
+            foreach (var (label, files) in new (string, (string, string)[])[]
+            {
+                ("an assignment in the command", new[] { (SeamFile, SeamCommand(SeamGood, "static void Set() { UnguardedStageProbe = null; }")) }),
+                ("an assignment in another interfaces file", new[] { (SeamFile, SeamCommand(SeamGood)), ("interfaces/mcp/McpServer.cs", "class S { void X() { GenerateCommand.UnguardedStageProbe ??= null; } }") }),
+                ("the invoke after Parse(", new[] { (SeamFile, SeamCommand("var parsed = Parse(text); UnguardedStageProbe?.Invoke(); return null;")) }),
+                ("the invoke missing", new[] { (SeamFile, SeamCommand("var parsed = Parse(text); return null;")) }),
+                ("the declaration missing", new[] { (SeamFile, "internal static class GenerateCommand { static Generated Generate(string text) { " + SeamGood + " } }") }),
+            })
+                Check723(StageSeamProblems(files).Count > 0, "self-test: the stage seam checker flags " + label);
+
+            // 8g. A non-refusal exception outside Generate's guarded pipeline block (before Parse, forced through
+            // GenerateCommand.UnguardedStageProbe, null in production) is the typed generate_prototypes_internal_error
+            // line (IntentPlan.Internal), not McpServer's generic Failed carrying the exception message; the diagnostic
+            // goes to stderr once and nothing to stdout; with the seam reset the next call answers the unchanged document.
+            var commandType = typeof(GeneratePrototypesToolTests).Assembly.GetType("Bim.Cli.GenerateCommand");
+            var stageProbe = commandType?.GetProperty("UnguardedStageProbe", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            var guardedProbe = commandType?.GetProperty("GuardedWorkProbe", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            Check723(stageProbe is not null && stageProbe.PropertyType == typeof(Action) && stageProbe.CanWrite && guardedProbe is not null,
+                "the linked GenerateCommand exposes the settable UnguardedStageProbe test seam");
+            if (stageProbe is not null && stageProbe.PropertyType == typeof(Action) && stageProbe.CanWrite && guardedProbe is not null)
+            {
+                Check723(stageProbe.GetValue(null) is null && guardedProbe.GetValue(null) is null, "fixture: the unguarded and guarded seams are null unless a test sets them");
+                var unguarded = new InvalidOperationException("boom generate_prototypes P7-23 unguarded");
+                var envelope = Bim.Cli.IntentPlan.Internal("generate-prototypes", unguarded);
+                var savedError = Console.Error;
+                var savedOut = Console.Out;
+                var toolErrors = new StringWriter();
+                JsonObject viaTool;
+                stageProbe.SetValue(null, (Action)(() => throw unguarded));
+                try
+                {
+                    Console.SetError(toolErrors);
+                    try { viaTool = Call("forced unguarded internal error", okRequest); }
+                    finally { Console.SetError(savedError); }
+                }
+                finally { stageProbe.SetValue(null, null); }
+                Check723(IsError(viaTool) && Text(viaTool) == envelope.Line && !Text(viaTool).Contains(unguarded.Message, StringComparison.Ordinal),
+                    "a forced exception before the guarded block reaches the MCP tool as the typed generate_prototypes_internal_error line, not McpServer's generic failure | " + Short(Text(viaTool)));
+                Check723(toolErrors.ToString() == envelope.Diagnostic + nl, "the forced unguarded internal error writes the IntentPlan diagnostic to stderr once | " + Short(toolErrors.ToString()));
+                Check723(Text(viaTool) == "{\"status\":\"failed\",\"code\":\"generate_prototypes_internal_error\"}"
+                    && toolErrors.ToString() == "generate-prototypes internal error: System.InvalidOperationException: boom generate_prototypes P7-23 unguarded" + nl,
+                    "literal bytes: the tool text is {\"status\":\"failed\",\"code\":\"generate_prototypes_internal_error\"} and stderr the literal diagnostic line | " + Short(Text(viaTool)) + " / " + Short(toolErrors.ToString()));
+
+                var directErrors = new StringWriter();
+                var directOut = new StringWriter();
+                (bool Succeeded, string Text) direct;
+                stageProbe.SetValue(null, (Action)(() => throw unguarded));
+                try
+                {
+                    Console.SetError(directErrors);
+                    Console.SetOut(directOut);
+                    try { direct = Bim.Cli.GenerateCommand.Document(okRequest); }
+                    catch (Exception escaped) { direct = (true, "escaped: " + escaped.GetType().FullName + ": " + escaped.Message); }
+                    finally { Console.SetError(savedError); Console.SetOut(savedOut); }
+                }
+                finally { stageProbe.SetValue(null, null); }
+                Check723(!direct.Succeeded && direct.Text == envelope.Line, "GenerateCommand.Document returns the typed line instead of throwing | " + Short(direct.Text));
+                Check723(directErrors.ToString() == envelope.Diagnostic + nl && directOut.ToString().Length == 0,
+                    "Document writes the diagnostic to stderr once and nothing to stdout | stderr=" + Short(directErrors.ToString()) + " stdout=" + Short(directOut.ToString()));
+                var reset = Call("after the forced unguarded internal error", okRequest);
+                Check723(stageProbe.GetValue(null) is null && !IsError(reset) && Utf8(Text(reset)).SequenceEqual(twoBedDocument), "the seam is reset: the next call answers the unchanged document");
             }
         }
     }
