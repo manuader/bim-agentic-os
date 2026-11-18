@@ -1790,3 +1790,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay236
 - 2026-11-18T18:52:53Z lock taken (session_014pxpsTf6WLsTXaDZKbzEX9; was FREE, relay233 released 18:22:49Z)
 - 2026-11-18T18:53:17Z picked P5-26 (phase 5), P6-26 (phase 6) (relay229) and P1-31 (phase 1, relay232) — oldest-touched; disjoint files. Workers spawned.
+- 2026-11-18T19:41:31Z workers green: P5-26 e8ae484 (red 44374972933, green 44378411572; 0 attempts; record no longer positional, init guards; one P5-25 line now asserts throw), P1-31 2f5f52e (probe red 44375009588, green 44377894371; 0 attempts; test-only), P6-26 ba69b8f (probe red 44374890155, green 44378737924; 0 attempts; test-only). Reviews next.
