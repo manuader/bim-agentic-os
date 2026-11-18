@@ -21,8 +21,12 @@ public sealed record JurisdictionSelection(JurisdictionClaim? Claim, string Matc
 // Result of loading a skills directory with its sidecars: either Registry is set or Refusal names the first problem.
 // LoaderError (P5-24) is the skill loader's typed SkillException behind a skills_invalid Refusal, from the same single
 // read of the directory (null on success and on sidecar refusals), so callers can print it without loading again.
-// P5-25: only Bim.Core sets it, through SkillsInvalid, which also builds that Refusal from it. It is bound to that exact
-// Refusal instance: a `with { Refusal = … }` copy (another, an equal but distinct, or a null refusal) reads it as null.
+// P5-25: it is get-only; outside reflection only code that can call the internal SkillsInvalid sets it, that is Bim.Core
+// and its InternalsVisibleTo test assemblies (Reconcile.Tests, LocalValidation.Tests, Bim.MirrorJournal.Tests,
+// Bim.Audit.Tests). SkillsInvalid also builds that Refusal from the error, and LoaderError is bound to that exact Refusal
+// instance: a `with { Refusal = … }` copy (another, an equal but distinct, or a null refusal) reads it as null.
+// Record equality includes the hidden fields (compared by value): a copy with another refusal is unequal, but a copy with
+// an equal but distinct refusal still compares equal although its LoaderError reads null (equality is not changed here).
 public sealed record JurisdictionLoad(JurisdictionRegistry? Registry, JurisdictionIssue? Refusal)
 {
     private readonly SkillException? loaderError;

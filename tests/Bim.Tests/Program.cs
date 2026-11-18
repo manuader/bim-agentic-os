@@ -124,14 +124,16 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
   Check((qBadLoad with {Refusal=null}).LoaderError is null,"P5-25 a with-copy clearing the Refusal drops the LoaderError");
   Check((qBadLoad with {Refusal=qBadLoad.Refusal! with {}}).LoaderError is null,"P5-25 an equal but distinct Refusal instance does not inherit the LoaderError");
   Check(ReferenceEquals((qBadLoad with {Registry=null}).LoaderError,qBadLoad.LoaderError),"P5-25 a with-copy keeping the same Refusal keeps its LoaderError");
+  // Record equality includes the hidden loader fields; a copy with another refusal is unequal and reads LoaderError as null.
+  Check((qBadLoad with {}).Equals(qBadLoad) && !(qBadLoad with {Refusal=qOther}).Equals(qBadLoad) && (qBadLoad with {Refusal=qOther}).LoaderError is null,"P5-25 equality: a plain copy is equal, a with { Refusal = other } copy is unequal and has no LoaderError");
   var qSide=Path.Combine(p525,"side");
   Directory.CreateDirectory(Path.Combine(qSide,"xx.p525.pack"));
   File.WriteAllText(Path.Combine(qSide,"xx.p525.pack","skill.json"),"{\"manifest_version\":1,\"id\":\"xx.p525.pack\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fixture\",\"priority\":10,\"rules\":[]}");
   File.WriteAllText(Path.Combine(qSide,"xx.p525.pack","jurisdiction.json"),"{");
   var qSideLoad=JurisdictionRegistry.Load(qSide);
-  Check(qSideLoad.Refusal is {} qSr && qSr.Code!=JurisdictionCodes.SkillsInvalid && qSideLoad.LoaderError is null,"P5-25 a sidecar refusal from Load has no LoaderError ("+qSideLoad.Refusal?.Code+")");
+  Check(qSideLoad.Refusal is {} qSr && qSr.Code==JurisdictionCodes.JsonInvalid && qSr.Subject=="xx.p525.pack/jurisdiction.json" && qSideLoad.LoaderError is null,"P5-25 a sidecar refusal from Load has no LoaderError ("+qSideLoad.Refusal?.Code+")");
   var qSideLocked=JurisdictionRegistry.LoadLocked(qSide,SkillLocking.Pin(qSide,["xx.p525.pack"]));
-  Check(qSideLocked.Refusal is {} qLr && qLr.Code!=JurisdictionCodes.SkillsInvalid && qSideLocked.LoaderError is null,"P5-25 a sidecar refusal from LoadLocked has no LoaderError ("+qSideLocked.Refusal?.Code+")");
+  Check(qSideLocked.Refusal is {} qLr && qLr.Code==JurisdictionCodes.JsonInvalid && qLr.Subject=="xx.p525.pack/jurisdiction.json" && qSideLocked.LoaderError is null,"P5-25 a sidecar refusal from LoadLocked has no LoaderError ("+qSideLocked.Refusal?.Code+")");
   File.Delete(Path.Combine(qSide,"xx.p525.pack","jurisdiction.json"));
   var qOkLoad=JurisdictionRegistry.Load(qSide);
   var qOkLocked=JurisdictionRegistry.LoadLocked(qSide,SkillLocking.Pin(qSide,["xx.p525.pack"]));
