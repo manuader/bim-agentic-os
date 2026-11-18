@@ -156,7 +156,7 @@ internal static class JurisdictionResolveTests
             Check(exit == 1 && line == pathInvalidLine && error.Length == 0, label + " (in process) is " + pathInvalidLine + " with nothing on stderr",
                 "exit " + exit.ToString(CultureInfo.InvariantCulture) + " " + line + (error.Length > 0 ? " stderr " + error : ""));
         }
-        Check(Environment.ExitCode != exitBeforeInProcess, "PROBE-RED the in-process lock-path checks leak their exit code",
+        Check(Environment.ExitCode == exitBeforeInProcess, "the in-process lock-path checks restore Environment.ExitCode (finally)",
             "Environment.ExitCode " + Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBeforeInProcess.ToString(CultureInfo.InvariantCulture));
         // P10-26 narrowed contract: SkillLockTool.PathProblem refuses blank, NUL and over-MaxPathChars paths before it calls
         // Path.GetFullPath, and on .NET 8 Path.GetFullPath throws only for null, empty or NUL-containing input on both Linux
@@ -242,7 +242,7 @@ internal static class JurisdictionResolveTests
                 JurisdictionCodes.JurisdictionAmbiguous, "--country", "Duplicate Country", "--municipality", "Duplicate City");
         }
         finally { if (Directory.Exists(twinDirectory)) Directory.Delete(twinDirectory, true); }
-        Check(Directory.Exists(twinDirectory), "PROBE-RED the twin pack directory remains after its block", twinDirectory);
+        Check(!Directory.Exists(twinDirectory), "the twin pack directory is deleted in a finally after its block", twinDirectory);
         // Lock drift: pin the package's CABA pack, then edit its sidecar.
         var packageLock = Path.Combine(scratch, "package.lock.json");
         File.WriteAllBytes(packageLock, SkillLockFile.Serialize(SkillLocking.Pin(packageSkills, new[] { Caba })));
