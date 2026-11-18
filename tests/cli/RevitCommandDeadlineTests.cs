@@ -18,9 +18,14 @@ using Bim.Core;
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
-//      run with query_all_deadline_exceeded before the listing is complete, without partial elements. Known limit: the
-//      pipe connect (RevitCommandService.ConnectTimeoutMs, 5 s) is not cut, so with no add-in listening a 1 s deadline
-//      run ends pipe_connect_timeout after the 5 s connect (deadline + up to 5 s), not query_all_deadline_exceeded.
+//      run with query_all_deadline_exceeded before the listing is complete, without partial elements.
+//   3a. P1-30: the pipe connect is bounded too: it waits min(RevitCommandService.ConnectTimeoutMs = 5 s, time left).
+//      With no add-in listening a 1 s or 2 s deadline run ends query_all_deadline_exceeded (pinned bytes) within the
+//      deadline + 1 s (the CLI bound adds the measured start-up of a refused run, as the clock starts before paging);
+//      a 7 s deadline (time left at least 5 s) still ends pipe_connect_timeout after the full 5 s connect, byte-equal to
+//      the run without a deadline, which keeps today's 5 s connect. In process (no process start-up) the real-pipe
+//      RevitDeadlineTransport and MCP all:true (real pipe transport, 1 s QueryAllDeadline) end within 1 s + 1 s with
+//      query_all_deadline_exceeded, having waited the deadline in the connect.
 //   2b. A cut page's no_response / pipe_io_error pass through unchanged; time left equal to the read timeout is not cut.
 //   4. Without the flag no deadline applies (the paging add-in lists all rows) and the stdout is byte-equal to a run
 //      with a deadline long enough; the CLI still waits 3 s on a stalled pipe without the flag.
@@ -245,12 +250,8 @@ internal static class RevitCommandDeadlineTests
                 && readFirst.Ms >= 1000 && readFirst.Ms < 20000 && addIn.WaitForRequests(3) && addIn.Received.Count == 3,
                 "a 1 s read timeout below a 20 s deadline stays pipe_read_timeout", readFirst.Out + " in " + N(readFirst.Ms) + " ms");
 
-            // ---- 3a. Known limit: the connect step is not bounded by the deadline (deadline + up to 5 s connect) ----
-            var absentPipe = "bim-agentic-os-2025-" + N(Random.Shared.Next(100000000, 999999999));
-            var absent = Rc(walls, absentPipe, "--all", Flag, "1");
-            Check(absent.Exit == 1 && Code(Node(absent.Out)) == RevitCommandCodes.PipeConnectTimeout && Pages(Node(absent.Out)) == 0
-                && absent.Ms >= RevitCommandService.ConnectTimeoutMs && absent.Ms < 1000 + RevitCommandService.ConnectTimeoutMs + 15000,
-                "with no add-in listening a 1 s deadline run ends pipe_connect_timeout after the uncut 5 s connect (deadline + up to 5 s)", absent.Out + " in " + N(absent.Ms) + " ms");
+            // ---- 3a. P1-30: the deadline also bounds the pipe connect (connect wait min(5 s, time left)) ----
+            AbsentPipeConnect(walls, wallsText, Rc, Check);
 
             // ---- 3b. A slow paging add-in: the whole run is bounded, not each page ----
             addIn.Reply = line => PageReply(line, model);
@@ -280,5 +281,64 @@ internal static class RevitCommandDeadlineTests
         {
             if (!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR", tmpDir);
         }
+    }
+
+    const string AbsentExceededCli = """{"status":"failed","code":"query_all_deadline_exceeded","field":null,"detail":"the --all listing took longer than its 1000 ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor","pages":0,"matched":null,"returned":0,"elements":[]}""";
+    const string AbsentExceededMcp = """{"status":"failed","code":"query_all_deadline_exceeded","field":null,"detail":"the all:true listing took longer than its 1000 ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor","pages":0,"matched":null,"returned":0,"elements":[]}""";
+
+    static string AbsentPipe() => "bim-agentic-os-2025-" + N(Random.Shared.Next(100000000, 999999999));
+
+    // P1-30 (section 3a): no add-in listening on the pipe (a name nothing serves), so every connect waits its full timeout.
+    static void AbsentPipeConnect(string walls, string wallsText, Func<string[], (int Exit, string Out, long Ms)> rc, Action<bool, string, string> check)
+    {
+        var connectMs = RevitCommandService.ConnectTimeoutMs;
+        // The process start-up and envelope read of a refused --all run: the CLI clock starts just before paging.
+        var startup = rc([Path.Combine(Path.GetDirectoryName(walls)!, "missing-envelope.json"), AbsentPipe(), "--all", Flag, "1"]);
+        check(startup.Exit == 1 && Code(Node(startup.Out)) == RevitCommandCodes.EnvelopeInvalid, "P1-30 start-up baseline: a missing envelope under --all is refused in the listing shape", startup.Out);
+
+        // In process, the real pipe transport: a 1 s deadline ends at the deadline, not after the 5 s connect.
+        var inProcessWatch = Stopwatch.StartNew();
+        var inProcess = RevitElementQueryPaging.All(wallsText, new Bim.Cli.RevitDeadlineTransport(AbsentPipe(), RevitCommandPolicy.None, RevitCommandService.PipeTransport,
+            RevitCommandService.DefaultReadTimeout, TimeSpan.FromSeconds(1)));
+        inProcessWatch.Stop();
+        check(inProcess.ToJson() == AbsentExceededCli && inProcessWatch.ElapsedMilliseconds >= 900 && inProcessWatch.ElapsedMilliseconds < 2000,
+            "P1-30 in process: RevitDeadlineTransport 1 s on an absent pipe is query_all_deadline_exceeded within 1 s + 1 s (connect cut to the time left)",
+            inProcess.ToJson() + " in " + N(inProcessWatch.ElapsedMilliseconds) + " ms");
+
+        // MCP all:true on the real pipe transport shares the bound.
+        var server = new Bim.Mcp.McpServer(RevitCommandCatalogue.All, RevitCommandPolicy.None, null, null) { QueryAllDeadline = TimeSpan.FromSeconds(1) };
+        var arguments = new JsonObject
+        {
+            ["pipe_name"] = AbsentPipe(), ["operation_id"] = "op-p1-30", ["document"] = new JsonObject { ["path"] = @"C:\Projects\P1-21\Model.rvt", ["unique_id"] = Uid },
+            ["args"] = new JsonObject { ["category"] = "wall", ["limit"] = 1 }, ["all"] = true,
+        };
+        var request = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 30, ["method"] = "tools/call", ["params"] = new JsonObject { ["name"] = "revit_query_elements", ["arguments"] = arguments } };
+        var mcpWatch = Stopwatch.StartNew();
+        var mcpResponse = Node(server.Handle(request.ToJsonString()) ?? "");
+        mcpWatch.Stop();
+        var mcpText = mcpResponse?["result"]?["content"]?[0]?["text"]?.GetValue<string>();
+        check(mcpText == AbsentExceededMcp && mcpResponse?["result"]?["isError"]?.GetValue<bool>() == true && mcpWatch.ElapsedMilliseconds >= 900 && mcpWatch.ElapsedMilliseconds < 2000,
+            "P1-30 MCP all:true (real pipe, 1 s QueryAllDeadline) on an absent pipe is query_all_deadline_exceeded within 1 s + 1 s",
+            (mcpText ?? mcpResponse?.ToJsonString() ?? "<no response>") + " in " + N(mcpWatch.ElapsedMilliseconds) + " ms");
+
+        // The real CLI: N = 1 and 2 end query_all_deadline_exceeded within N + 1 s (plus the measured start-up).
+        foreach (var seconds in new[] { 1, 2 })
+        {
+            var absent = rc([walls, AbsentPipe(), "--all", Flag, N(seconds)]);
+            var expected = AbsentExceededCli.Replace("its 1000 ms deadline", "its " + N(seconds * 1000L) + " ms deadline", StringComparison.Ordinal);
+            check(absent.Exit == 1 && absent.Out == expected && absent.Ms >= seconds * 1000L && absent.Ms < seconds * 1000L + 1000 + startup.Ms,
+                "P1-30 revit-command --all " + Flag + " " + N(seconds) + " with no add-in listening ends query_all_deadline_exceeded within the deadline + 1 s (start-up " + N(startup.Ms) + " ms), not after the 5 s connect",
+                "exit " + absent.Exit + " " + absent.Out + " in " + N(absent.Ms) + " ms");
+        }
+        // N = 7 (time left at least 5 s): the full 5 s connect, pipe_connect_timeout, byte-equal to the run without a deadline.
+        var roomy = rc([walls, AbsentPipe(), "--all", Flag, "7"]);
+        var roomyJson = Node(roomy.Out);
+        check(roomy.Exit == 1 && Code(roomyJson) == RevitCommandCodes.PipeConnectTimeout && Pages(roomyJson) == 0 && roomy.Ms >= connectMs && roomy.Ms < 7000 + 1000 + startup.Ms,
+            "P1-30 revit-command --all " + Flag + " 7 with no add-in listening ends pipe_connect_timeout after the full 5 s connect, within 7 s + 1 s",
+            "exit " + roomy.Exit + " " + roomy.Out + " in " + N(roomy.Ms) + " ms");
+        var plain = rc([walls, AbsentPipe(), "--all"]);
+        check(plain.Exit == 1 && plain.Out == roomy.Out && plain.Ms >= connectMs,
+            "P1-30 revit-command --all without " + Flag + " on an absent pipe keeps the 5 s connect and pipe_connect_timeout bytes (equal to the 7 s deadline run)",
+            "exit " + plain.Exit + " " + plain.Out + " in " + N(plain.Ms) + " ms");
     }
 }
