@@ -279,7 +279,8 @@ internal static class InternalErrorDelegationTests
             ("AuditVerifyCommand.cs", new[] { "catch (Exception error) { IntentPlan.Internal(\"audit-verify\", error).Print(); }" }),
             ("BcfExportCommand.cs", new[] { "catch (Exception error) { IntentPlan.Internal(\"bcf-export\", error).Print(); }" }),
             ("CatalogueReportCommand.cs", new[] { "var failure = IntentPlan.Internal(\"catalogue-report\", error);", "Console.Error.WriteLine(failure.Diagnostic);", "return (failure.Exit, failure.Line);" }),
-            ("DocUpdateCommand.cs", new[] { Seam("doc-update") }),
+            // P4-22: Library<T> moved with the dry plan into DocUpdateDryPlan.cs (the other part of DocUpdateCommand).
+            ("DocUpdateDryPlan.cs", new[] { Seam("doc-update") }),
             ("DocUpdateExecute.cs", new[] { Seam("doc-update") }),
             ("GenerateCommand.cs", new[] { Throws, Seam("generate-prototypes") }),
             ("GenerateTypologyCommand.cs", new[] { Throws, Seam("generate-typology") }),
