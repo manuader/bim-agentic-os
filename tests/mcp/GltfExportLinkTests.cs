@@ -9,13 +9,17 @@ using System.Text.RegularExpressions;
 // Oracles:
 //   1. Bim.Mcp.csproj and tests/mcp/Bim.Mcp.Tests.csproj (every Compile item through DocUpdateLinkTests.Compiled: each ';'
 //      entry, '\' or '/', any case, wildcards expanded, Link) compile interfaces/cli/OutputProblem.cs and no item names
-//      GltfExportCommand.cs; no source they compile uses GltfExportCommand.Run / Usage / Fail in code.
+//      GltfExportCommand.cs; no source they compile (linked items and interfaces/mcp/**/*.cs outside bin/obj) uses
+//      GltfExportCommand.Run / Usage / Fail in code.
 //   2. Static (comments stripped by DocUpdateLinkTests.CodeOf, literals kept, whitespace removed): OutputProblem.cs
 //      defines both OutputProblem overloads, HasStreamColon and DeviceNamespace and holds no Run, Usage, Fail, exporter,
 //      bounded read or stdout; GltfExportCommand.cs no longer defines them and still calls OutputProblem first.
 //   3. A self-test of both checkers on synthetic csproj and source texts.
 //   4. The real Release Bim.Mcp.dll answers tools/list, an unknown-tool and a missing-argument refusal with the
-//      in-process bytes.
+//      in-process bytes; both refusal lines are also pinned literally.
+// Remaining (follow-up, not this task): Bim.Mcp.csproj still compiles the writer verbs GenerateCommand.cs
+// (generate-prototypes), PlanLayoutsCommand.cs (plan-layouts) and GenerateTypologyCommand.cs (generate-typology) in
+// full, so their Run paths and GltfExporter.WriteNew stay in the server binary.
 internal static class GltfExportLinkTests
 {
     static readonly Regex ForbiddenUse = new(@"\bGltfExportCommand\s*\.\s*(?:Run|Usage|Fail)\b", RegexOptions.CultureInvariant);
@@ -80,6 +84,7 @@ internal static class GltfExportLinkTests
         // ---- 1. the MCP project files and every source they compile ----
         var rulePath = Path.Combine(cliDir, "OutputProblem.cs");
         var verbPath = Path.Combine(cliDir, "GltfExportCommand.cs");
+        static bool Built(string path) => path.Split(Path.DirectorySeparatorChar).Any(segment => segment is "bin" or "obj");
         var testsDir = Path.GetFullPath(Path.Combine(root, "tests")) + Path.DirectorySeparatorChar;
         foreach (var project in new[] { Path.Combine(mcpDir, "Bim.Mcp.csproj"), Path.Combine(root, "tests", "mcp", "Bim.Mcp.Tests.csproj") })
         {
@@ -91,7 +96,8 @@ internal static class GltfExportLinkTests
             Check(links.Length == 0, name + " does not compile the export-gltf verb (interfaces/cli/GltfExportCommand.cs) [" + string.Join(", ", links) + "]");
             Check(items.Any(c => c.Files.Any(path => string.Equals(path, Path.GetFullPath(rulePath), comparison))),
                 name + " compiles interfaces/cli/OutputProblem.cs (shared source, not a copy)");
-            var compiledSources = items.SelectMany(c => c.Files).Concat(Directory.GetFiles(mcpDir, "*.cs"))
+            var compiledSources = items.SelectMany(c => c.Files)
+                .Concat(Directory.GetFiles(mcpDir, "*.cs", SearchOption.AllDirectories).Where(path => !Built(Path.GetRelativePath(mcpDir, path))))
                 .Select(path => Path.GetFullPath(path)).Where(path => !path.StartsWith(testsDir, comparison) && File.Exists(path)).Distinct().ToArray();
             var users = compiledSources.Select(path => (Name: Path.GetFileName(path), Found: VerbUses(File.ReadAllText(path)))).Where(u => u.Found.Length > 0)
                 .Select(u => u.Name + " " + string.Join(" ", u.Found)).ToArray();
@@ -123,16 +129,19 @@ internal static class GltfExportLinkTests
             "GltfExportCommand.Run still judges the output path first, then reads the input, then writes exclusively [" + string.Join(", ", order) + "]");
 
         // ---- 4. the real server binary serves the in-process bytes ----
-        foreach (var (label, line) in new[]
+        foreach (var (label, line, pinned) in new (string, string, string?)[]
         {
-            ("tools/list", """{"jsonrpc":"2.0","id":241,"method":"tools/list"}"""),
-            ("an unknown tool refusal", """{"jsonrpc":"2.0","id":242,"method":"tools/call","params":{"name":"export_gltf","arguments":{}}}"""),
-            ("a missing-argument refusal", """{"jsonrpc":"2.0","id":243,"method":"tools/call","params":{"name":"generate_prototypes","arguments":{}}}"""),
+            ("tools/list", """{"jsonrpc":"2.0","id":241,"method":"tools/list"}""", null),
+            ("an unknown tool refusal", """{"jsonrpc":"2.0","id":242,"method":"tools/call","params":{"name":"export_gltf","arguments":{}}}""",
+                """{"jsonrpc":"2.0","id":242,"result":{"content":[{"type":"text","text":"{\"status\":\"failed\",\"code\":\"unknown_tool\"}"}],"isError":true}}"""),
+            ("a missing-argument refusal", """{"jsonrpc":"2.0","id":243,"method":"tools/call","params":{"name":"generate_prototypes","arguments":{}}}""",
+                """{"jsonrpc":"2.0","id":243,"error":{"code":-32602,"message":"invalid_params: request must be string"}}"""),
         })
         {
             var expected = handle(line) ?? "";
             var served = mcpProcess(line + "\n").Split('\n')[0].TrimEnd('\r');
             Check(expected.Length > 0 && served == expected, "the real Bim.Mcp.dll answers " + label + " with the in-process bytes (" + served.Length + " vs " + expected.Length + " chars)");
+            if (pinned is not null) Check(served == pinned, "the real Bim.Mcp.dll answers " + label + " with the pinned line | " + served);
         }
     }
 }

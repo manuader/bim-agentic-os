@@ -7,7 +7,7 @@ namespace Bim.Mcp;
 // P7-21: the read-only MCP tool generate_prototypes, the MCP face of the P7-09/P7-12 CLI verb `generate-prototypes
 // request.json output.json` (interfaces/cli/GenerateCommand.cs). It has no request parser, project id derivation, pack
 // lookup or pipeline call of its own: it runs GenerateCommand.Document, compiled into this server from the CLI sources
-// (Bim.Mcp.csproj links GenerateCommand.cs with its SkillPackLookup.cs, GltfExportCommand.cs, IntentPlan.cs and
+// (Bim.Mcp.csproj links GenerateCommand.cs with its SkillPackLookup.cs, OutputProblem.cs, IntentPlan.cs and
 // BoundedInput.cs), which reads the request file through BoundedInput and runs the verb's own Parse (strict members, int32
 // literals, finite numbers, lone surrogates refused), deterministic default project id (UUIDv8 of the canonical request),
 // pack load (SkillPackLookup.Load(id, packageFirst: true)) and guarded PrototypePipeline.Run, exactly as the verb does
