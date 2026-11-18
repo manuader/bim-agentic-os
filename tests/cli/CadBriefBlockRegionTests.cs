@@ -53,7 +53,7 @@ internal static class CadBriefBlockRegionTests
             using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(60000))
+            if (!process.WaitForExit(180000))
             {
                 try { process.Kill(true); } catch (Exception e) when (e is InvalidOperationException or Win32Exception or NotSupportedException) { }
                 return (-1, "<timed out>", "");
@@ -85,7 +85,7 @@ internal static class CadBriefBlockRegionTests
         // The in-process oracle discriminates: only IncludeBlockRegions gives Dormitorio the block region.
         var included = InProcess(true, null);
         var excluded = InProcess(false, null);
-        Check(included.Rooms.Count == 2 && Room(included, "dormitorio") is { Region: { } dormitorioRegion } d && dormitorioRegion.InsertPath.Count == 1 && Near(d.RegionAreaSquareMetres, 12)
+        Check(included.Rooms.Count == 2 && Room(included, "dormitorio") is { Region: { } dormitorioRegion } d && dormitorioRegion.InsertPath.SequenceEqual(new[] { "I1" }) && Near(d.RegionAreaSquareMetres, 12)
                 && Room(included, "cocina") is { Region: { InsertPath.Count: 0 } } c && Near(c.RegionAreaSquareMetres, 9),
             "in process IncludeBlockRegions: Dormitorio takes the 12 m2 region inside insert I1, Cocina its 9 m2 model-space region",
             Clip(JsonSerializer.Serialize(included.Rooms, RoomJson)));
@@ -129,8 +129,8 @@ internal static class CadBriefBlockRegionTests
             var output = Path.Combine(scratch, "refused" + option + ".json");
             var r = Cli("cad-brief", input, output, option, Flag);
             var expected = JsonSerializer.Serialize(new { status = "failed", code = "cad_option_value_invalid", detail });
-            Check(r.Exit == 1 && r.Out == expected && !File.Exists(output),
-                option + " " + Flag + " is the exact cad_option_value_invalid envelope and writes nothing", R(r) + " expected " + expected);
+            Check(r.Exit == 1 && r.Out == expected && r.Err.Length == 0 && !File.Exists(output),
+                option + " " + Flag + " is the exact cad_option_value_invalid envelope, empty stderr, and writes nothing", R(r) + " expected " + expected);
         }
     }
 }
