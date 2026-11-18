@@ -85,7 +85,7 @@ internal static class CadBriefBlockRegionTests
         // The in-process oracle discriminates: only IncludeBlockRegions gives Dormitorio the block region.
         var included = InProcess(true, null);
         var excluded = InProcess(false, null);
-        Check(included.Rooms.Count == 2 && Room(included, "dormitorio") is { Region: { } r } d && r.InsertPath.Count == 1 && Near(d.RegionAreaSquareMetres, 12)
+        Check(included.Rooms.Count == 2 && Room(included, "dormitorio") is { Region: { } dormitorioRegion } d && dormitorioRegion.InsertPath.Count == 1 && Near(d.RegionAreaSquareMetres, 12)
                 && Room(included, "cocina") is { Region: { InsertPath.Count: 0 } } c && Near(c.RegionAreaSquareMetres, 9),
             "in process IncludeBlockRegions: Dormitorio takes the 12 m2 region inside insert I1, Cocina its 9 m2 model-space region",
             Clip(JsonSerializer.Serialize(included.Rooms, RoomJson)));
