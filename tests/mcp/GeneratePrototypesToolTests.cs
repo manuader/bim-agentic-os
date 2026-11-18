@@ -475,14 +475,17 @@ internal static class GeneratePrototypesToolTests
             }
             var quietSurrogate = Quiet("a lone-surrogate request path", "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"" + ToolName + "\",\"arguments\":{\"" + RequestParameter + "\":\"\\ud800\"}}}");
             Check723(IsError(quietSurrogate) && Text(quietSurrogate) == pathInvalid, "a lone-surrogate request path is generate_prototypes_path_invalid | " + Short(Text(quietSurrogate)));
+            // Argument objects are built from JSON text (JsonObject creations inside a tuple array crash Roslyn's AD0001
+            // UseCollectionInitializer analyzer, ATTEMPTS P10-12).
+            static JsonObject Arguments(string json) => JsonNode.Parse(json)!.AsObject();
             foreach (var (label, arguments) in new[]
             {
-                ("no request", new JsonObject()),
-                ("a non-string request", new JsonObject { [RequestParameter] = 1 }),
-                ("an inline request object", new JsonObject { [RequestParameter] = JsonNode.Parse("{\"typology\":2}") }),
-                ("an output argument", new JsonObject { [RequestParameter] = okRequest, ["output"] = Path.Combine(inputs, "never-p7-23.json") }),
+                ("no request", "{}"),
+                ("a non-string request", "{\"" + RequestParameter + "\":1}"),
+                ("an inline request object", "{\"" + RequestParameter + "\":{\"typology\":2}}"),
+                ("an output argument", "{\"" + RequestParameter + "\":" + JsonSerializer.Serialize(okRequest) + ",\"output\":" + JsonSerializer.Serialize(Path.Combine(inputs, "never-p7-23.json")) + "}"),
             })
-                Check723(ErrorCode(Quiet(label + " (-32602)", ToolLine(arguments))) == -32602, label + " returns -32602");
+                Check723(ErrorCode(Quiet(label + " (-32602)", ToolLine(Arguments(arguments)))) == -32602, label + " returns -32602");
 
             // 8f. Static: the unguarded-stage seam is declared once in GenerateCommand.cs and invoked once, inside Generate
             // before its Parse( call; nothing under interfaces/ assigns it. (Named apart from GenerateTypologyCommand's
