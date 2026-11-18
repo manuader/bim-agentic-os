@@ -17,6 +17,7 @@ using Bim.Cad;
 //      while Cocina keeps its model-space region (the flag changes only block regions).
 //   3. A value option followed by the flag (--page --include-block-regions, --metres-per-unit --include-block-regions)
 //      is the exact cad_option_value_invalid envelope for that option, exit 1, nothing written.
+// P6-26 (nested, MINSERT cell and mirrored inserts) is the RunTransformed section below.
 internal static class CadBriefBlockRegionTests
 {
     const string Flag = "--include-block-regions";
@@ -140,9 +141,9 @@ internal static class CadBriefBlockRegionTests
     // labelled rooms whose only closed regions are reached through transformed inserts:
     //   * "Bano": block INNER (1000 x 1250 rectangle) inserted as N2 at (500, 0) inside block OUTER, which model space
     //     inserts as N1 at (20000, 0) with scale 2: world rectangle (21000, 0)-(23000, 2500), 5 m2, InsertPath [N1, N2].
-    //   * "Estudio": block CELL (3000 x 2000 rectangle) placed by MINSERT M1 at (0, 10000), 2 columns x 2 rows, column
-    //     spacing 5000, row spacing 4000; the label sits in cell row 1, column 1: world (5000, 14000)-(8000, 16000), 6 m2,
-    //     InsertPath [M1[1,1]].
+    //   * "Estudio": block CELL (3000 x 2000 rectangle) placed by MINSERT M1 at (0, 10000), 3 columns (70) x 2 rows (71),
+    //     column spacing 5000, row spacing 4000; the label sits in cell row 0, column 2: world (10000, 10000)-(13000, 12000),
+    //     6 m2, InsertPath [M1[0,2]] (asymmetric, so a row/column swap or a 70/71 swap has no such cell and fails).
     //   * "Sala": block MIR (4000 x 2500 rectangle) inserted as X1 at (40000, 0) with X scale -1.5 (mirrored): world
     //     rectangle (34000, 0)-(40000, 2500), 15 m2 (positive although the transformed outline runs clockwise), InsertPath [X1].
     // Oracles: through the real CLI with the flag draft.json rooms equal the in-process IncludeBlockRegions rooms, each
@@ -159,7 +160,7 @@ internal static class CadBriefBlockRegionTests
         + G("0 BLOCK|5 B40|8 0|2 MIR|70 0|10 0|20 0|30 0") + Rect("B41", 0, 0, 4000, 2500, "0") + G("0 ENDBLK|5 B42|8 0")
         + G("0 ENDSEC|0 SECTION|2 ENTITIES")
         + G("0 INSERT|5 N1|8 ROOMS|2 OUTER|10 20000|20 0|30 0|41 2|42 2") + Text("21", 22000, 1000, "Bano")
-        + G("0 INSERT|5 M1|8 ROOMS|2 CELL|10 0|20 10000|30 0|70 2|71 2|44 5000|45 4000") + Text("22", 6500, 15000, "Estudio")
+        + G("0 INSERT|5 M1|8 ROOMS|2 CELL|10 0|20 10000|30 0|70 3|71 2|44 5000|45 4000") + Text("22", 11000, 10500, "Estudio")
         + G("0 INSERT|5 X1|8 ROOMS|2 MIR|10 40000|20 0|30 0|41 -1.5|42 1") + Text("23", 37000, 1000, "Sala")
         + G("0 ENDSEC|0 EOF");
 
@@ -185,7 +186,7 @@ internal static class CadBriefBlockRegionTests
         var expectations = new[]
         {
             (Id: "bano", Path: new[] { "N1", "N2" }, X0: 21000.0, Y0: 0.0, X1: 23000.0, Y1: 2500.0),
-            (Id: "estudio", Path: new[] { "M1[1,1]" }, X0: 5000.0, Y0: 14000.0, X1: 8000.0, Y1: 16000.0),
+            (Id: "estudio", Path: new[] { "M1[0,2]" }, X0: 10000.0, Y0: 10000.0, X1: 13000.0, Y1: 12000.0),
             (Id: "sala", Path: new[] { "X1" }, X0: 34000.0, Y0: 0.0, X1: 40000.0, Y1: 2500.0),
         };
 
@@ -211,7 +212,7 @@ internal static class CadBriefBlockRegionTests
         var withRooms = roomsOf(withOutput);
         Check(flagged.Exit == 0 && withRooms == expectedWith
                 && expectedWith.Contains("\"InsertPath\":[\"N1\",\"N2\"]", StringComparison.Ordinal)
-                && expectedWith.Contains("\"InsertPath\":[\"M1[1,1]\"]", StringComparison.Ordinal)
+                && expectedWith.Contains("\"InsertPath\":[\"M1[0,2]\"]", StringComparison.Ordinal)
                 && expectedWith.Contains("\"InsertPath\":[\"X1\"]", StringComparison.Ordinal),
             "with " + Flag + " draft.json rooms equal the in-process IncludeBlockRegions rooms (nested, MINSERT cell and mirrored insert paths)",
             r(flagged) + " rooms " + clip(withRooms));
