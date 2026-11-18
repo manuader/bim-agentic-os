@@ -1525,6 +1525,7 @@ try {
     PackageLayoutPackTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail),(name,why)=>Skip(name,why)); // P7-17 pack lookup from a package built by scripts/package.ps1 (tests/cli/PackageLayoutPackTests.cs)
     CadToLayoutsTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail),(name,why)=>Skip(name,why)); // P6-13 brief-plan.dxf -> cad-brief -> cad-plan-brief -> plan-layouts (tests/cli/CadToLayoutsTests.cs)
     CadPdfToLayoutsTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail),(name,why)=>Skip(name,why)); // P6-15 brief-plan.pdf -> cad-brief -> cad-plan-brief -> plan-layouts (tests/cli/CadPdfToLayoutsTests.cs)
+    CadBriefBlockRegionTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail)); // P6-23 cad-brief --include-block-regions on a DXF block insert (tests/cli/CadBriefBlockRegionTests.cs)
 
     // ---- P4-15 doc-realized --record run.json --fixture ir.json --assignments a.json --document uid --output realized.json (tests/cli/DocRealizedTests.cs) ----
     DocRealizedTests.Run(root,work,dotnet,cliDll,overCap,(condition,name,detail)=>Check(condition,name,detail));
