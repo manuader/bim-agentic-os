@@ -264,6 +264,9 @@ internal static class RevitCommandDeadlineTests
             // ---- 3a. P1-30: the deadline also bounds the pipe connect (connect wait min(5 s, time left)) ----
             AbsentPipeConnect(root, walls, wallsText, Rc, Check);
 
+            // ---- 3c. P1-32: the read of a page whose connect was cut is measured after the connect ----
+            ReadAfterConnect(wallsText, Check);
+
             // ---- 3b. A slow paging add-in: the whole run is bounded, not each page ----
             addIn.Reply = line => PageReply(line, model);
             addIn.Delay = TimeSpan.FromMilliseconds(250);
@@ -516,5 +519,80 @@ internal static class RevitCommandDeadlineTests
         check(plain.Exit == 1 && plain.Out == roomy.Out && plain.Ms >= connectMs && plain.Ms < connectMs + 1000 + startupMs,
             "P1-30 revit-command --all without " + Flag + " on an absent pipe keeps the 5 s connect (5 s to 6 s + start-up) and pipe_connect_timeout bytes (equal to the 7 s deadline run)",
             "exit " + plain.Exit + " " + plain.Out + " in " + N(plain.Ms) + " ms");
+    }
+
+    // P1-32 (section 3c): a page whose connect was cut (time left below the 5 s connect wait) is read with the time left
+    // after the connect completes, not the time left measured before it. Real pipe: an add-in that starts listening at
+    // 800 ms of a 1 s deadline accepts the page and never replies; the run ends query_all_deadline_exceeded (pinned
+    // bytes) within the deadline + 300 ms (before P1-32 the read waited the 1 s measured before the connect: about 1.8 s).
+    static void ReadAfterConnect(string wallsText, Action<bool, string, string> check)
+    {
+        var wire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(wallsText));
+        var deadline = TimeSpan.FromSeconds(1);
+        var listenAt = TimeSpan.FromMilliseconds(800);
+        var pipe = AbsentPipe();
+        var watch = Stopwatch.StartNew();
+        using var addIn = new LateAddIn(pipe, watch, listenAt);
+        var transport = new Bim.Cli.RevitDeadlineTransport(pipe, RevitCommandPolicy.None, RevitCommandService.PipeTransport, RevitCommandService.DefaultReadTimeout, deadline,
+            () => watch.Elapsed);
+        var listing = RevitElementQueryPaging.All(wallsText, transport).ToJson();
+        var ended = watch.Elapsed;
+        var served = addIn.WaitServed();
+        var detail = listing + " in " + N((long)ended.TotalMilliseconds) + " ms; " + addIn.Describe();
+        check(served && addIn.Line == wire && addIn.ConnectedAt is { } connectedAt && connectedAt >= listenAt && connectedAt < deadline,
+            "P1-32 real pipe: an add-in listening from 800 ms of a 1 s deadline accepts the page before the deadline and receives its exact wire line", detail);
+        check(listing == AbsentExceededCli && ended >= TimeSpan.FromMilliseconds(900) && ended < deadline + TimeSpan.FromMilliseconds(300),
+            "P1-32 real pipe: that add-in never replies and the run ends query_all_deadline_exceeded within the deadline + 300 ms (read cut to the time left after the connect)", detail);
+    }
+
+    // A same-user pipe server that starts listening only when `clock` reaches `listenAt`, on its own thread (no thread
+    // pool latency), accepts one connection, reads one request line and never replies: the pipe stays open until disposed.
+    sealed class LateAddIn : IDisposable
+    {
+        readonly ManualResetEventSlim served = new();
+        readonly ManualResetEventSlim release = new();
+        readonly Thread thread;
+
+        public LateAddIn(string name, Stopwatch clock, TimeSpan listenAt)
+        {
+            thread = new Thread(() =>
+            {
+                try
+                {
+                    while (clock.Elapsed < listenAt) Thread.Sleep(1);
+                    using var server = new System.IO.Pipes.NamedPipeServerStream(name, System.IO.Pipes.PipeDirection.InOut, 1,
+                        System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.None);
+                    ListeningAt = clock.Elapsed;
+                    server.WaitForConnection();
+                    ConnectedAt = clock.Elapsed;
+                    using var reader = new StreamReader(server, new UTF8Encoding(false), false, 4096, leaveOpen: true);
+                    Line = reader.ReadLine();
+                    served.Set();
+                    release.Wait(TimeSpan.FromSeconds(30));
+                }
+                catch (Exception error) { Error = error.GetType().Name + ": " + error.Message; }
+                finally { served.Set(); }
+            }) { IsBackground = true };
+            thread.Start();
+        }
+
+        public TimeSpan? ListeningAt { get; private set; }
+        public TimeSpan? ConnectedAt { get; private set; }
+        public string? Line { get; private set; }
+        public string? Error { get; private set; }
+
+        public bool WaitServed() => served.Wait(TimeSpan.FromSeconds(10)) && Error is null;
+
+        public string Describe() => "listening " + (ListeningAt is { } l ? N((long)l.TotalMilliseconds) + " ms" : "never")
+            + ", connected " + (ConnectedAt is { } c ? N((long)c.TotalMilliseconds) + " ms" : "never")
+            + ", line " + (Line ?? "<none>") + (Error is null ? "" : ", error " + Error);
+
+        public void Dispose()
+        {
+            release.Set();
+            if (!thread.Join(TimeSpan.FromSeconds(10))) return;
+            served.Dispose();
+            release.Dispose();
+        }
     }
 }
