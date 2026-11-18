@@ -22,9 +22,15 @@ namespace Bim.Cli;
 // pipe_connect_timeout is reported as the deadline. With time left of at least 5 s at the page the connect keeps its
 // full 5 s and a pipe_connect_timeout passes through: on an absent pipe that takes N >= 6 in practice (at N = 5 the
 // first page already has just under 5 s left, so its connect is cut and the run ends query_all_deadline_exceeded at
-// 5 s), ending pipe_connect_timeout after 5 s, within the deadline. cutReads false never cuts the connect either. Known limit: the read of a page whose connect was
-// cut is still given the time left measured before the connect, so a connect that succeeds just before the deadline can
-// extend the run by up to that time left. Tests inject the clock, the cut transport and the connect transport.
+// 5 s), ending pipe_connect_timeout after 5 s, within the deadline. cutReads false never cuts the connect either.
+// P1-32: the read of a page whose connect was cut is measured after the connect: connectThenRead(left, readAfter) is the
+// real pipe (RevitCommandService.PipeTransportWithReadAfterConnect) with a connect wait of the time left, asking
+// readAfter() for its read timeout once connected: the time left then when it is below the configured read timeout
+// (cut, its pipe_read_timeout reported as the deadline), else the configured one. A connect that completes at or after
+// the deadline leaves no read: the line is not sent and the page is the deadline. So an add-in that accepts just before
+// the deadline and never replies ends the run at the deadline, not up to the time left before the connect later.
+// Tests inject the clock, the cut transport and connectThenRead; an injected P1-30 connectTransport(read, left) is
+// still accepted and given readAfter() measured when the page's transport is made (its fakes move no clock in a connect).
 internal sealed class RevitDeadlineTransport : IRevitCommandTransport
 {
     public const string Code = "query_all_deadline_exceeded";
@@ -39,7 +45,7 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
     readonly TimeSpan deadline;
     readonly Func<TimeSpan> elapsed;
     readonly Func<TimeSpan, Func<string, string, string?>> cutTransport;
-    readonly Func<TimeSpan, TimeSpan, Func<string, string, string?>> connectTransport;
+    readonly Func<TimeSpan, Func<TimeSpan>, Func<string, string, string?>> connectThenRead;
     readonly TimeSpan start;
     readonly string listing;
     readonly bool cutReads;
@@ -48,7 +54,8 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
     public RevitDeadlineTransport(string pipeName, RevitCommandPolicy policy, Func<string, string, string?> transport, TimeSpan readTimeout, TimeSpan deadline,
         Func<TimeSpan>? elapsed = null, Func<TimeSpan, Func<string, string, string?>>? cutTransport = null,
         string listing = CliListing, bool cutReads = true, RevitFileSystemProbe? probe = null,
-        Func<TimeSpan, TimeSpan, Func<string, string, string?>>? connectTransport = null)
+        Func<TimeSpan, TimeSpan, Func<string, string, string?>>? connectTransport = null,
+        Func<TimeSpan, Func<TimeSpan>, Func<string, string, string?>>? connectThenRead = null)
     {
         this.pipeName = pipeName;
         this.policy = policy;
@@ -62,7 +69,9 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
         }
         this.elapsed = elapsed;
         this.cutTransport = cutTransport ?? RevitCommandService.PipeTransportWithReadTimeout;
-        this.connectTransport = connectTransport ?? RevitCommandService.PipeTransportWithTimeouts;
+        if (connectThenRead is not null) this.connectThenRead = connectThenRead;
+        else if (connectTransport is { } legacy) this.connectThenRead = (left, readAfter) => legacy(readAfter(), left);
+        else this.connectThenRead = RevitCommandService.PipeTransportWithReadAfterConnect;
         this.listing = listing;
         this.cutReads = cutReads;
         this.probe = probe;
@@ -86,7 +95,19 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
         if (left <= TimeSpan.Zero) return Exceeded();
         var cut = cutReads && left < readTimeout;
         var cutConnect = cutReads && left < ConnectWait;
-        var pipe = cutConnect ? connectTransport(cut ? left : readTimeout, left) : cut ? cutTransport(left) : transport;
+        Func<string, string, string?> pipe;
+        if (cutConnect)
+        {
+            // P1-32: asked once connected; whether the read is cut is decided by the time left then.
+            TimeSpan ReadAfter()
+            {
+                var after = deadline - (elapsed() - start);
+                cut = after < readTimeout;
+                return cut ? after : readTimeout;
+            }
+            pipe = connectThenRead(left, ReadAfter);
+        }
+        else pipe = cut ? cutTransport(left) : transport;
         var line = RevitCommandService.Run(pipeName, envelopeJson, policy, pipe, probe).Line;
         if (!cut && !cutConnect) return line;
         try
