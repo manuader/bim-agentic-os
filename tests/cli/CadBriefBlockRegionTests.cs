@@ -114,7 +114,7 @@ internal static class CadBriefBlockRegionTests
             var withoutOutput = Path.Combine(scratch, "without-" + label + ".json");
             var plain = Cli(new[] { "cad-brief", input, withoutOutput }.Concat(withoutFlag).ToArray());
             var withoutRooms = RoomsOf(withoutOutput);
-            Check(plain.Exit == 0 && withoutRooms == expectedWithout && withoutRooms.Contains("\"InsertPath\":[\"", StringComparison.Ordinal) /* deliberate red: region WITHOUT the flag */,
+            Check(plain.Exit == 0 && withoutRooms == expectedWithout && withoutRooms != withRooms && !withoutRooms.Contains("\"InsertPath\":[\"", StringComparison.Ordinal),
                 label + ": without " + Flag + " draft.json rooms equal the default-option in-process rooms (no block region)",
                 R(plain) + " rooms " + Clip(withoutRooms));
         }
