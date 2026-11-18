@@ -1725,18 +1725,24 @@ static class MirrorDriftLoopChecks
     }
 
     // P2-30: a pipe broken before the reply is read. With -BreakPipeCommand element.move the fake closes each element.move
-    // connection as soon as it has read that envelope's "command" member, before the rest of the line (document,
-    // operation_id, protocol_version, newline) and without a reply; the request never reaches the executor. The move is a
-    // large request (100 element uids, a 128-character operation id after the command member) so a long tail stays
-    // unread while the client writes it. Three such moves, the first one's id scheduled with -RecorderFailures
-    // p2-30-move-a:2: each CLI call fails (exit 1) with one code, field and detail on this OS; nothing ran, so the id is
-    // never matched (the fake's gate line names it, exit 1), the log holds broken:element.move for each, the journal has
-    // no entry and no failure, equal to RevitJournalQuery.RawRead over one Core tracker that saw only wall A, and the
-    // snapshot after the moves equals the one before.
-    static readonly string BrokenMoveA = "p2-30-move-a-" + new string('a', 115);
-    static readonly string[] BrokenMoves = { BrokenMoveA, "p2-30-move-b", "p2-30-move-c" };
+    // connection as soon as it has read that envelope's own "command":"element.move","document": member, before the rest of
+    // the line (document, operation_id, protocol_version, newline) and without a reply; the request never reaches the
+    // executor. Each move is a large request (100 element uids, a 128-character operation id after the command member), so
+    // a long tail stays unread. First a command.batch whose one step is an element.move (its step's "command" is followed
+    // by "operation_id", not "document") is served normally: logged by its operation id, answered by the fake
+    // (command_unknown, the fake has no batch). Then ten moves, the first one's id scheduled with -RecorderFailures <id>:2:
+    // each CLI call fails (exit 1) with one code, field and detail; nothing ran, so the id is never matched (the fake's
+    // gate line names it, exit 1), the log holds broken:element.move for each, the journal has no entry and no failure,
+    // equal to RevitJournalQuery.RawRead over one Core tracker that saw only wall A, and the snapshot after the moves
+    // equals the one before.
+    const int BrokenMoveCount = 10;
+    static readonly string[] BrokenMoves = Enumerable.Range(1, BrokenMoveCount).Select(i => ("p2-30-move-" + i.ToString("D2", CultureInfo.InvariantCulture) + "-").PadRight(128, 'x')).ToArray();
+    static readonly string BrokenMoveA = BrokenMoves[0];
     const string BrokenLog = "broken:element.move";
-    static readonly string[] BrokenRequests = { "p2-30-levels", "p2-30-wall-types", "p2-30-wall-a", "p2-30-snapshot-0", JournalWire, BrokenLog, BrokenLog, BrokenLog, "p2-30-snapshot-1", JournalWire };
+    const string BrokenBatch = "p2-30-batch";
+    const string BrokenMarker = "\"command\":\"element.move\",\"document\":";
+    static readonly string[] BrokenRequests = new[] { "p2-30-levels", "p2-30-wall-types", "p2-30-wall-a", "p2-30-snapshot-0", JournalWire, BrokenBatch }
+        .Concat(Enumerable.Repeat(BrokenLog, BrokenMoveCount)).Concat(new[] { "p2-30-snapshot-1", JournalWire }).ToArray();
 
     static void BigMoveArgs(Utf8JsonWriter w, string uid)
     {
@@ -1763,36 +1769,48 @@ static class MirrorDriftLoopChecks
         if (!Succeeded(snapshot0)) { Check(false, "the first query.snapshot succeeds", R(snapshot0)); return; }
         var j0 = h.Journal(null, peek: false);
 
-        // The wire line the CLI sends for the first move: large, with a long tail after the command member left unread.
-        using (var buffer = new MemoryStream())
+        // A command.batch with one element.move step: its wire line holds "command":"element.move" (the step's) but not the
+        // anchored marker, so the fake reads it whole and answers it (the fake has no batch: command_unknown).
+        var batch = h.Command(BrokenBatch, "command.batch", w =>
         {
-            using (var writer = new Utf8JsonWriter(buffer))
-            {
-                writer.WriteStartObject();
-                writer.WriteNumber("protocol_version", 1);
-                writer.WriteString("operation_id", BrokenMoveA);
-                writer.WriteStartObject("document"); writer.WriteString("path", document); writer.WriteString("unique_id", DocumentUid); writer.WriteEndObject();
-                writer.WriteString("command", "element.move");
-                writer.WriteStartObject("args"); BigMoveArgs(writer, uidA); writer.WriteEndObject();
-                writer.WriteEndObject();
-            }
-            var wire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(Utf8.GetString(buffer.ToArray())));
-            var marker = "\"command\":\"element.move\"";
-            var tail = wire.Length - wire.IndexOf(marker, StringComparison.Ordinal) - marker.Length;
-            Check(wire.Length > 4500 && wire.Length <= RevitCommandProtocol.MaxRequestChars && wire.IndexOf(marker, StringComparison.Ordinal) == wire.LastIndexOf(marker, StringComparison.Ordinal) && tail >= 250,
-                "the broken move's wire line is large (over 4500 characters, within the 65536 cap), names element.move once and leaves at least 250 characters unread after it", "length " + wire.Length + " tail " + tail);
-        }
+            w.WriteStartArray("steps");
+            w.WriteStartObject();
+            w.WriteString("operation_id", BrokenBatch + "-step-1");
+            w.WriteString("command", "element.move");
+            w.WriteStartObject("args"); MoveArgs(w, uidA); w.WriteEndObject();
+            w.WriteEndObject();
+            w.WriteEndArray();
+        });
+        var batchFile = Directory.GetFiles(h.Scratch, "*-envelope-command.batch.json").Single();
+        var batchWire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(File.ReadAllText(batchFile, Utf8)));
+        Check(batchWire.Contains("\"command\":\"element.move\"", StringComparison.Ordinal) && !batchWire.Contains(BrokenMarker, StringComparison.Ordinal),
+            "the command.batch wire line holds its step's \"command\":\"element.move\" but not the envelope's own command member marker", Head(batchWire));
+        Check(batch.Exit == 1 && Status(batch.Out) == "failed" && Text(batch.Out, "code") == "command_unknown" && Text(batch.Out, "field") == "command" && Text(batch.Out, "detail") == "command.batch",
+            "with -BreakPipeCommand element.move the command.batch whose step is an element.move is served normally, not broken (the fake's own answer: failed command_unknown, field command, detail command.batch)", R(batch));
 
         var moves = BrokenMoves.Select(id => h.Command(id, "element.move", w => BigMoveArgs(w, uidA))).ToArray();
+        // The wire line the CLI sent for each move: RevitCommandProtocol.WireLine of the very envelope file it was given.
+        var moveFiles = Directory.GetFiles(h.Scratch, "*-envelope-element.move.json").Order(StringComparer.Ordinal).ToArray();
+        Check(moveFiles.Length == BrokenMoveCount, "one envelope file per broken move", moveFiles.Length.ToString(CultureInfo.InvariantCulture));
+        for (var i = 0; i < moveFiles.Length; i++)
+        {
+            var wire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(File.ReadAllText(moveFiles[i], Utf8)));
+            var at = wire.IndexOf(BrokenMarker, StringComparison.Ordinal);
+            var tail = at < 0 ? -1 : wire.Length - at - BrokenMarker.Length;
+            Check(wire.Length > 4500 && wire.Length <= RevitCommandProtocol.MaxRequestChars && at >= 0 && at == wire.LastIndexOf(BrokenMarker, StringComparison.Ordinal) && tail >= 250
+                && wire.Contains("\"operation_id\":\"" + BrokenMoves[i] + "\"", StringComparison.Ordinal),
+                "broken move " + (i + 1) + "'s wire line is large (over 4500 characters, within the 65536 cap), names its 128-character operation id, holds the anchored marker once and leaves at least 250 characters after it",
+                "length " + wire.Length + " tail " + tail);
+        }
         var os = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
         string Seen((int Exit, string Out, string Err) r) => "exit=" + r.Exit + " status=" + (Status(r.Out) ?? "<null>") + " code=" + (Text(r.Out, "code") ?? "<null>") + " field=" + (Text(r.Out, "field") ?? "<null>") + " detail=" + (Text(r.Out, "detail") ?? "<null>");
-        // P2-30: the exact failure per OS, observed by a deliberate probe red (run 44299538961, all three moves): the CLI
+        // P2-30: the exact failure per OS, observed by a deliberate probe red (run 44299538961, three moves): the CLI
         // answers pipe_io_error, field pipe_name, detail IOException (the exception type name only), exit 1, on Windows
         // (named pipe) and Linux (Unix socket). Both OSes return the same failure, so one set of constants pins each move.
         const string brokenCode = "pipe_io_error", brokenField = "pipe_name", brokenDetail = "IOException";
         for (var i = 0; i < moves.Length; i++)
             Check(moves[i].Exit == 1 && Status(moves[i].Out) == "failed" && Text(moves[i].Out, "code") == brokenCode && Text(moves[i].Out, "field") == brokenField && Text(moves[i].Out, "detail") == brokenDetail,
-                "broken element.move " + (i + 1) + " of 3 (its connection closed before its line was read): exit 1, failed with exactly " + brokenCode + ", field " + brokenField + ", detail " + brokenDetail + " on " + os,
+                "broken element.move " + (i + 1) + " of " + BrokenMoveCount + " (its connection closed before its line was read): exit 1, failed with exactly " + brokenCode + ", field " + brokenField + ", detail " + brokenDetail + " on " + os,
                 Seen(moves[i]) + " | " + R(moves[i]));
         var snapshot1 = h.Command("p2-30-snapshot-1", "query.snapshot", _ => { });
         if (!Succeeded(snapshot1)) { Check(false, "the query.snapshot after the broken moves succeeds", R(snapshot1)); return; }

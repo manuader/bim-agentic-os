@@ -23,11 +23,16 @@
 # and whose operation id is scheduled still injects its failures and that id counts as matched; a dropped write that was
 # refused injects nothing and its id stays scheduled.
 # P2-30: -BreakPipeCommand reads each request line itself in 64-byte reads and, as soon as what it has read holds
-# "command":"<that command>" (the envelope's own command member; WireLine's canonical envelope writes args before
-# command, then document, operation_id and protocol_version), closes the connection without reading the rest of the
-# line and without a reply: the request never reaches the executor (nothing runs, no operation id is known or logged,
-# no -RecorderFailures id matches, dry run or not); the log gets one "broken:<command>" line instead. Every other
-# request is read up to its newline and served exactly as without the option. Without it requests are read by ReadLine.
+# "command":"<that command>","document": (the envelope's own command member: the canonical envelope sorts its members,
+# so args comes first, then command, document, operation_id and protocol_version; a command.batch step's "command" is
+# followed by "operation_id" and never matches), closes the connection without reading the rest of the line and without
+# a reply. The request never reaches the executor: nothing runs, no operation id is known or logged, no
+# -RecorderFailures id matches, dry run or not; the log gets one "broken:<command>" line instead. Because args precede
+# the command member, the fake has read the args when it breaks; what stays unread is the tail (document, operation_id,
+# protocol_version, newline). On Linux (Unix socket) the client's write has completed into the socket buffer and closing
+# with that unread receive queue resets the connection, so the client's read fails (ECONNRESET); on Windows (named
+# pipe) the client's pending write of the tail fails when the server end closes. Every other request is read up to its
+# newline and served exactly as without the option. Without the option requests are read by ReadLine, as before.
 param(
     [Parameter(Mandatory)][string]$PipeName,
     [Parameter(Mandatory)][string]$DocumentUid,
@@ -83,12 +88,14 @@ try {
             if ($served + 1 -lt $MaxRequests) { $next = & $newServer }
             # A client that vanishes mid-request (killed, timed out) costs only its own connection.
             try {
-                $reader = [IO.StreamReader]::new($server, $utf8, $false, 4096, $true)
+                # P2-30: with -BreakPipeCommand the line is read below without a reader (StreamReader.Null: Dispose is a no-op).
+                $reader = if ($BreakPipeCommand) { [IO.StreamReader]::Null } else { [IO.StreamReader]::new($server, $utf8, $false, 4096, $true) }
                 $writer = [IO.StreamWriter]::new($server, $utf8, 4096, $true)
                 $writer.AutoFlush = $true
                 if ($BreakPipeCommand) {
                     # P2-30: read the line in small chunks so the rest of a broken request stays unread on the connection.
-                    $breakMarker = '"command":"' + $BreakPipeCommand + '"'
+                    $breakMarker = '"command":"' + $BreakPipeCommand + '","document":'
+                    $markerBytes = $utf8.GetByteCount($breakMarker)
                     $bytes = [IO.MemoryStream]::new()
                     $chunk = [byte[]]::new(64)
                     $broken = $false
@@ -96,7 +103,10 @@ try {
                         $count = $server.Read($chunk, 0, $chunk.Length)
                         if ($count -le 0) { break }
                         $bytes.Write($chunk, 0, $count)
-                        if ($utf8.GetString($bytes.GetBuffer(), 0, [int]$bytes.Length).Contains($breakMarker, [StringComparison]::Ordinal)) { $broken = $true; break }
+                        # Only the new bytes plus an overlap of the marker's length (the marker is ASCII, so a window that
+                        # starts or ends inside a multi-byte character cannot hide it).
+                        $from = [Math]::Max(0, [int]$bytes.Length - $count - $markerBytes)
+                        if ($utf8.GetString($bytes.GetBuffer(), $from, [int]$bytes.Length - $from).Contains($breakMarker, [StringComparison]::Ordinal)) { $broken = $true; break }
                         if ([Array]::IndexOf($chunk, [byte]10, 0, $count) -ge 0) { break }
                     }
                     if ($broken) {
