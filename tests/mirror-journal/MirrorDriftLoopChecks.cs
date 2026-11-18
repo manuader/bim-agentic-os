@@ -1942,8 +1942,26 @@ static class MirrorDriftLoopChecks
             "the broken floor.create's wire line is large (over 30000 ASCII characters, within the 65536 cap) and byte " + MidArgsBreakBytes + " lies inside its args member", measured);
         Check(read == MidArgsBreakBytes, "the fake read exactly " + MidArgsBreakBytes + " bytes of the floor.create line before closing it (measured from its log)", measured + " log " + brokenLine);
         string Seen((int Exit, string Out, string Err) x) => "exit=" + x.Exit + " status=" + (Status(x.Out) ?? "<null>") + " code=" + (Text(x.Out, "code") ?? "<null>") + " field=" + (Text(x.Out, "field") ?? "<null>") + " detail=" + (Text(x.Out, "detail") ?? "<null>");
-        // P2-31 deliberate probe: report what each OS observes (failure and measured counts), then pin it.
-        Check(false, "PROBE " + os + " observed", Seen(floor) + " | " + measured);
+        // P2-31: measured by a deliberate probe red (run 44407063531): wire 39715 bytes on Windows (CRLF) and 39724 on Linux,
+        // 4096 read, about 35620 unread. Windows (named pipe): the server end reports InBufferSize 0, so the unread
+        // remainder exceeds the pipe buffer and the client is still writing when the fake closes. Linux (Unix socket): the
+        // CLI's client socket has a 212992-byte default send buffer, larger than any request the CLI sends (the 65536-
+        // character cap), so the whole line is already in the socket when the fake closes and the unread receive queue
+        // resets the connection; the remainder cannot exceed the buffer there, and this check pins that measured fact.
+        // Other OSes have not been probed (macOS does not run mirror-journal) and fail here until one is.
+        if (OperatingSystem.IsWindows())
+            Check(fakeInBuffer >= 0 && unsent > fakeInBuffer,
+                "windows: the unread remainder of the floor.create line exceeds the named pipe's inbound buffer the server end reports (measured), so the client is still writing when the fake closes", measured);
+        else if (OperatingSystem.IsLinux())
+            Check(clientSendBuffer > 0 && unsent > 0 && unsent < clientSendBuffer && RevitCommandProtocol.MaxRequestChars + Environment.NewLine.Length < clientSendBuffer,
+                "linux: the unread remainder and even a request at the 65536-character cap fit in the client's Unix socket send buffer (measured), so the CLI's write has completed when the fake closes", measured);
+        else Check(false, os + ": the pipe buffer relation for a request broken mid-args has not been observed by a probe on this OS", measured);
+        // P2-31: the exact failure, observed by the same probe: the CLI answers pipe_io_error, field pipe_name, detail
+        // IOException (the exception type name only), exit 1, on Windows and Linux alike, so one set of constants pins it.
+        const string midArgsCode = "pipe_io_error", midArgsField = "pipe_name", midArgsDetail = "IOException";
+        Check(floor.Exit == 1 && Status(floor.Out) == "failed" && Text(floor.Out, "code") == midArgsCode && Text(floor.Out, "field") == midArgsField && Text(floor.Out, "detail") == midArgsDetail,
+            "the floor.create broken after " + MidArgsBreakBytes + " bytes (mid-args): exit 1, failed with exactly " + midArgsCode + ", field " + midArgsField + ", detail " + midArgsDetail + " on " + os,
+            Seen(floor) + " | " + R(floor));
 
         Check(Readback(snapshot1.Out) == Readback(snapshot0.Out), "the query.snapshot after the broken floor equals the one before (nothing ran)", Head(Readback(snapshot1.Out)));
         Check(exited && exit == 1 && error == GateLine(MidArgsFloor),
