@@ -412,10 +412,11 @@ internal static class GeneratePrototypesToolTests
                 var badJsonCli = CliAt(repoCli, badJson);
                 var badJsonCode = badJsonCli.Out.Length > 0 && badJsonCli.Out[0] == '{' ? JsonNode.Parse(badJsonCli.Out)?["code"]?.GetValue<string>() : null;
                 Check723(badJsonCode == "generate_prototypes_pack_invalid", "fixture: the scratch repository's malformed pack is generate_prototypes_pack_invalid from the copied CLI | " + Short(badJsonCli.Out));
-                SameRefusal("a malformed pack manifest in a scratch repository", McpAt(repoMcp, ToolLine(new JsonObject { [RequestParameter] = badJson })), badJsonCli, badJsonCli.Out);
+                SameRefusal("a malformed pack manifest in a scratch repository", McpAt(repoMcp, ToolLine(new JsonObject { [RequestParameter] = badJson })), badJsonCli,
+                    "{\"status\":\"failed\",\"code\":\"generate_prototypes_pack_invalid\",\"detail\":\"json_invalid\"}");
                 var mismatch = Input("pack-mismatch.json", "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"pack\":\"zz.test.mismatch\",\"project_id\":\"" + Id + "\"}");
                 SameRefusal("a pack manifest naming another id in a scratch repository", McpAt(repoMcp, ToolLine(new JsonObject { [RequestParameter] = mismatch })), CliAt(repoCli, mismatch),
-                    Code("generate_prototypes_pack_invalid", "id"));
+                    "{\"status\":\"failed\",\"code\":\"generate_prototypes_pack_invalid\",\"detail\":\"id\"}");
                 // The scratch repository's own CABA pack: the copied server answers the in-repository document (the lookup really reached the scratch skills/).
                 var repoOk = McpAt(repoMcp, ToolLine(new JsonObject { [RequestParameter] = okRequest }));
                 Check723(repoOk.Length == 1 && !IsError(repoOk[0]) && Utf8(Text(repoOk[0])).SequenceEqual(twoBedDocument),
@@ -428,7 +429,10 @@ internal static class GeneratePrototypesToolTests
             var outsideBase = new[] { Environment.GetEnvironmentVariable("RUNNER_TEMP"), Path.GetTempPath(), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), OperatingSystem.IsWindows() ? null : "/tmp" }
                 .FirstOrDefault(candidate => !string.IsNullOrEmpty(candidate) && Directory.Exists(candidate) && !UnderRepository(candidate));
-            if (outsideBase is null) Console.WriteLine("SKIP P7-23 generate_prototypes: no writable directory outside a repository for the copied server");
+            // On CI (CI, GITHUB_ACTIONS or RUNNER_TEMP set) the outside-repository cases must run on every OS; a local run may skip with its reason.
+            var onCi = new[] { "CI", "GITHUB_ACTIONS", "RUNNER_TEMP" }.Any(variable => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(variable)));
+            if (onCi) Check723(outsideBase is not null, "on CI a writable directory outside any repository exists, so repository_not_found and the scratch package run (no skip)");
+            if (outsideBase is null) Console.WriteLine("SKIP P7-23 generate_prototypes: no writable directory outside a repository for the copied server (local run)");
             else
             {
                 var outsideRoot = Path.Combine(outsideBase, "bim-p7-23-outside-" + Guid.NewGuid().ToString("N"));
@@ -438,7 +442,7 @@ internal static class GeneratePrototypesToolTests
                     var outsideCli = CopyBinary(cliDll, Path.Combine(outsideRoot, "cli"));
                     Check723(!UnderRepository(outsideRoot), "fixture: the outside copies have no global.json above them");
                     SameRefusal("copies outside any repository", McpAt(outsideMcp, ToolLine(new JsonObject { [RequestParameter] = okRequest })), CliAt(outsideCli, okRequest),
-                        Code("generate_prototypes_repository_not_found"));
+                        "{\"status\":\"failed\",\"code\":\"generate_prototypes_repository_not_found\"}");
                 }
                 finally { try { Directory.Delete(outsideRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
 
@@ -454,7 +458,8 @@ internal static class GeneratePrototypesToolTests
                     var packageCliRun = CliAt(packageCli, okRequest);
                     var packageCode = packageCliRun.Out.Length > 0 && packageCliRun.Out[0] == '{' ? JsonNode.Parse(packageCliRun.Out)?["code"]?.GetValue<string>() : null;
                     Check723(packageCode == "generate_prototypes_pack_invalid", "fixture: a malformed default pack in the scratch package is generate_prototypes_pack_invalid from the copied CLI | " + Short(packageCliRun.Out));
-                    SameRefusal("a malformed default pack in a scratch release package", McpAt(packageMcp, ToolLine(new JsonObject { [RequestParameter] = okRequest })), packageCliRun, packageCliRun.Out);
+                    SameRefusal("a malformed default pack in a scratch release package", McpAt(packageMcp, ToolLine(new JsonObject { [RequestParameter] = okRequest })), packageCliRun,
+                        "{\"status\":\"failed\",\"code\":\"generate_prototypes_pack_invalid\",\"detail\":\"json_invalid\"}");
                 }
                 finally { try { Directory.Delete(packageRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
             }
@@ -562,6 +567,9 @@ internal static class GeneratePrototypesToolTests
                 Check723(IsError(viaTool) && Text(viaTool) == envelope.Line && !Text(viaTool).Contains(unguarded.Message, StringComparison.Ordinal),
                     "a forced exception before the guarded block reaches the MCP tool as the typed generate_prototypes_internal_error line, not McpServer's generic failure | " + Short(Text(viaTool)));
                 Check723(toolErrors.ToString() == envelope.Diagnostic + nl, "the forced unguarded internal error writes the IntentPlan diagnostic to stderr once | " + Short(toolErrors.ToString()));
+                Check723(Text(viaTool) == "{\"status\":\"failed\",\"code\":\"generate_prototypes_internal_error\"}"
+                    && toolErrors.ToString() == "generate-prototypes internal error: System.InvalidOperationException: boom generate_prototypes P7-23 unguarded" + nl,
+                    "literal bytes: the tool text is {\"status\":\"failed\",\"code\":\"generate_prototypes_internal_error\"} and stderr the literal diagnostic line | " + Short(Text(viaTool)) + " / " + Short(toolErrors.ToString()));
 
                 var directErrors = new StringWriter();
                 var directOut = new StringWriter();
