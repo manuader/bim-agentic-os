@@ -9,7 +9,8 @@ using Bim.Core;
 using Bim.Mcp;
 
 // P4-20 doc_update: the read-only MCP face of the P4-08 CLI verb `doc-update --before b --after a --realized r --bindings g
-// --output plan.json [--dependents d]` (interfaces/cli/DocUpdateCommand.cs, linked into the server, no copied parser).
+// --output plan.json [--dependents d]` (interfaces/cli/DocUpdateCommand.cs; its dry plan, interfaces/cli/DocUpdateDryPlan.cs,
+// is linked into the server, no copied parser; P4-22: the probe and run sources are not, tests/mcp/DocUpdateLinkTests.cs).
 // Oracles:
 //   1. On success the tool text is the canonical DocUpdatePlan JSON: its UTF-8 bytes equal the file the real Release CLI
 //      process writes for the same input files and UTF-8(JsonSerializer.Serialize(DocUpdate.Plan(...))) computed in
@@ -22,7 +23,8 @@ using Bim.Mcp;
 //   4. MCP-only path guard: doc_update_path_invalid {detail the input}; missing / mistyped / extra arguments are -32602.
 //   5. The real Release Bim.Mcp.dll answers the same bytes over stdio.
 //   6. Static: the tool calls DocUpdateCommand.DryPlan and contains no parser, plan call, probe, transport or file access
-//      of its own; the CLI verb and DryPlan read and parse through one ReadInputs; the MCP projects link the CLI source.
+//      of its own; the CLI verb and DryPlan read and parse through one ReadInputs; the MCP projects link the CLI dry-plan
+//      source (interfaces/cli/DocUpdateDryPlan.cs).
 internal static class DocUpdateToolTests
 {
     static readonly Provenance provenance = new("mcp-doc-update-tests", "unit");
@@ -367,18 +369,20 @@ internal static class DocUpdateToolTests
         // The bindings member names are shared with the mirror_drift request (MirrorDriftTool.cs parses its own wall_types), so
         // the cross-file guard names the doc-update plan, probe and run entry points only.
         Check(owners.Length == 0, "no interfaces/mcp source plans, probes or runs a documentation update itself [" + string.Join(", ", owners) + "]");
-        var commandCode = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "DocUpdateCommand.cs")));
+        // P4-22: the verb (DocUpdateCommand.cs) and its dry plan (DocUpdateDryPlan.cs) are two parts of one class; read as one.
+        var commandCode = string.Join("\n", new[] { "DocUpdateCommand.cs", "DocUpdateDryPlan.cs" }.Select(name => Path.Combine(root, "interfaces", "cli", name))
+            .Where(File.Exists).Select(path => CodeOf(File.ReadAllText(path))));
         Check(Regex.Matches(commandCode, @"= ReadInputs\(").Count == 2 && Regex.Matches(commandCode, @"\bParseBindings\(bindingsText\)").Count == 1 && Regex.Matches(commandCode, @"\bRead\(beforePath, ""before""\)").Count == 1,
             "the CLI verb and DryPlan share one path: both call ReadInputs, which reads and parses the inputs in one place");
         foreach (var project in new[] { Path.Combine(root, "interfaces", "mcp", "Bim.Mcp.csproj"), Path.Combine(root, "tests", "mcp", "Bim.Mcp.Tests.csproj") })
         {
             var projectDir = Path.GetDirectoryName(project)!;
-            var shared = Path.GetFullPath(Path.Combine(root, "interfaces", "cli", "DocUpdateCommand.cs"));
+            var shared = Path.GetFullPath(Path.Combine(root, "interfaces", "cli", "DocUpdateDryPlan.cs"));
             var linked = System.Xml.Linq.XDocument.Load(project).Descendants().Where(e => e.Name.LocalName == "Compile")
                 .Select(e => (string?)e.Attribute("Include")).Where(include => include is not null)
                 .Any(include => string.Equals(Path.GetFullPath(Path.Combine(projectDir, include!.Replace('\\', '/').Replace('/', Path.DirectorySeparatorChar))), shared,
                     OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
-            Check(linked, Path.GetFileName(project) + " compiles interfaces/cli/DocUpdateCommand.cs (shared source, not a copy)");
+            Check(linked, Path.GetFileName(project) + " compiles interfaces/cli/DocUpdateDryPlan.cs (shared source, not a copy)");
         }
     }
 }

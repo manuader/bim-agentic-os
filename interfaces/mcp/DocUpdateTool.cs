@@ -7,8 +7,9 @@ namespace Bim.Mcp;
 // P4-20: the read-only MCP tool doc_update, the MCP face of the P4-08 CLI verb `doc-update --before b.json --after a.json
 // --realized r.json --bindings bindings.json --output plan.json [--dependents dependents.json]`
 // (interfaces/cli/DocUpdateCommand.cs). It has no reader, parser or plan call of its own: it runs DocUpdateCommand.DryPlan,
-// compiled into this server from the CLI sources (Bim.Mcp.csproj links DocUpdateCommand.cs with DocUpdateProbe.cs,
-// DocUpdateExecute.cs, GltfExportCommand.cs, IntentPlan.cs and BoundedInput.cs), which reads and parses the inputs through
+// compiled into this server from the CLI sources (Bim.Mcp.csproj links DocUpdateDryPlan.cs with IntentPlan.cs and
+// BoundedInput.cs; P4-22: not the verb DocUpdateCommand.cs, the probe DocUpdateProbe.cs or the run DocUpdateExecute.cs,
+// pinned by tests/mcp/DocUpdateLinkTests.cs), which reads and parses the inputs through
 // the verb's own ReadInputs (BoundedInput, strict members, duplicate keys refused, the entry bounds) and plans with
 // DocUpdate.Plan behind the verb's library-code filter, exactly as the verb does before it writes its file.
 //   before, after  Project JSON files; realized  the realized map file; bindings  the RevitBindings file;

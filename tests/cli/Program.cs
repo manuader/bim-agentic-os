@@ -1462,10 +1462,12 @@ try {
             Refused("arguments of length "+bad.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)+" ("+string.Join(" ",bad.Skip(1).Where(a=>a.StartsWith("--",StringComparison.Ordinal)))+")","doc_update_usage",null,bad,usageOut);
 
         // 9. Static: a dry plan; reads through BoundedInput, writes only through the exclusive create, never runs.
+        // P4-22: DocUpdateCommand is two parts, the verb (DocUpdateCommand.cs) then its dry plan (DocUpdateDryPlan.cs); read as one.
         var duSourcePath=Path.Combine(root,"interfaces","cli","DocUpdateCommand.cs");
-        Check(File.Exists(duSourcePath),"interfaces/cli/DocUpdateCommand.cs exists");
-        if(File.Exists(duSourcePath)) {
-            var duSource=File.ReadAllText(duSourcePath);
+        var duDryPlanPath=Path.Combine(root,"interfaces","cli","DocUpdateDryPlan.cs");
+        Check(File.Exists(duSourcePath) && File.Exists(duDryPlanPath),"interfaces/cli/DocUpdateCommand.cs and DocUpdateDryPlan.cs exist");
+        if(File.Exists(duSourcePath) && File.Exists(duDryPlanPath)) {
+            var duSource=File.ReadAllText(duSourcePath)+"\n"+File.ReadAllText(duDryPlanPath);
             Check(duSource.Contains("BoundedInput.ReadText(",StringComparison.Ordinal) && duSource.Contains("DocUpdate.Plan(",StringComparison.Ordinal) && duSource.Contains("GltfExporter.WriteNew(",StringComparison.Ordinal)
                 && new[]{"DocUpdate.Run","DocUpdate.Resume","DocUpdate.Update","Transport","NamedPipe","File.","FileStream","FileMode.","Directory.","ProjectStore"}.All(api=>!duSource.Contains(api,StringComparison.Ordinal)),
                 "doc-update reads only through BoundedInput, plans with DocUpdate.Plan, writes only through GltfExporter.WriteNew and never runs a transport");
