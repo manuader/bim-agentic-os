@@ -538,18 +538,13 @@ internal static class GeneratePrototypesTests
             Check(forced.Err == envelope.Diagnostic + nl, "the forced run writes the IntentPlan diagnostic to stderr exactly once", Q(forced));
             Check(forced.Exit == 1 && !File.Exists(forcedOut) && !Directory.Exists(forcedOut), "the forced run exits 1 and writes no output file", Q(forced) + (File.Exists(forcedOut) ? " output written" : ""));
 
-            // A forced run with null args: Execute itself throws (args.Length, a NullReferenceException) before the seam is
-            // reached; Run's catch-all prints the typed line and its diagnostic once, and the seam is still reset.
-            var nullArgs = Quiet(() =>
-            {
-                probe.SetValue(null, (Action)(() => throw failure));
-                try { return Invoke(null); }
-                finally { probe.SetValue(null, null); }
-            });
+            // A run with null args and the seams unset: Execute itself throws (args.Length, a NullReferenceException) before
+            // Generate; Run's catch-all prints the typed line and its diagnostic once.
+            var nullArgs = Quiet(() => Invoke(null));
             var nullEnvelope = Bim.Cli.IntentPlan.Internal("generate-prototypes", new NullReferenceException());
             Check(nullArgs.Thrown is null && nullArgs.Out == nullEnvelope.Line + nl && nullArgs.Out == envelope.Line + nl && nullArgs.Err == nullEnvelope.Diagnostic + nl && nullArgs.Exit == 1,
-                "a forced run with null args prints the typed generate_prototypes_internal_error line, the NullReferenceException diagnostic once, exit 1, nothing thrown", Q(nullArgs));
-            Check(probe.GetValue(null) is null, "UnguardedStageProbe is null after a forced run with null args");
+                "a run with null args (seams unset) prints the typed generate_prototypes_internal_error line, the NullReferenceException diagnostic once, exit 1, nothing thrown", Q(nullArgs));
+            Check(probe.GetValue(null) is null && guardedProbe.GetValue(null) is null, "the seams are still null after the null-args run");
 
             // Seams unset: the in-process Run is the in-process pipeline and the real process, for the success and a sample of refusals.
             var inOut = Output();
@@ -584,7 +579,7 @@ internal static class GeneratePrototypesTests
                 var b = Output();
                 var mine = Quiet(() => Invoke(argsOf(a)));
                 var theirs = cli(argsOf(b));
-                Check(mine.Thrown is null && mine.Exit == 1 && theirs.Exit == 1 && AsProcess(mine) == theirs && mine.Err.Length == 0 && !File.Exists(a) && !File.Exists(b)
+                Check(mine.Thrown is null && mine.Exit == 1 && theirs.Exit == 1 && AsProcess(mine) == theirs && mine.Err.Length == 0 && !File.Exists(a) && !File.Exists(b) && !File.Exists(a + ".txt") && !File.Exists(b + ".txt")
                     && mine.Out.StartsWith("{\"status\":\"failed\",\"code\":\"", StringComparison.Ordinal) && !mine.Out.Contains("internal_error", StringComparison.Ordinal),
                     "seams unset: the " + label + " refusal of the in-process Run equals the real process bytes", Q(mine) + " vs process " + theirs.Out + " " + theirs.Err);
             }

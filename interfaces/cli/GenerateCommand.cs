@@ -64,7 +64,8 @@ namespace Bim.Cli;
 //   generate_prototypes_pack_unavailable (detail: the pack's input_* code), generate_prototypes_pack_invalid (detail:
 //   the skill code, or "id" when the manifest names another pack), generate_prototypes_refused (with
 //   "refusals":[{"code","subject","detail"}] = PrototypePipelineResult.Refusals in order, no detail),
-//   generate_prototypes_internal_error (stderr gets the exception type and message).
+//   generate_prototypes_internal_error (stderr gets the exception type and message; P7-25: an unexpected exception after
+//   GltfExporter.WriteNew succeeded leaves the written file in place, a documented gap (→ P7-26)).
 // Precedence: usage, output path, request read, request parse, repository, pack, pipeline, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
 internal static class GenerateCommand
