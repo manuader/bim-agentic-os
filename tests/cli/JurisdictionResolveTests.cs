@@ -131,6 +131,7 @@ internal static class JurisdictionResolveTests
         // skills_lock_path_invalid (detail "lock"), as in skills-lock, never jurisdiction_resolve_internal_error. A NUL
         // cannot travel in a process argument, so these run the command in process (stdout, stderr and exit captured).
         var pathInvalidLine = JsonSerializer.Serialize(new { status = "failed", code = "skills_lock_path_invalid", detail = "lock" });
+        var exitBeforeInProcess = Environment.ExitCode;
         foreach (var (label, badLock) in new (string, string)[]
         {
             ("NUL in the lock path", scratch + Path.DirectorySeparatorChar + "sk\0ills.lock.json"),
@@ -142,17 +143,47 @@ internal static class JurisdictionResolveTests
             var previousExit = Environment.ExitCode;
             var capturedOut = new StringWriter();
             var capturedError = new StringWriter();
+            var exit = -1;
             Environment.ExitCode = 0;
             Console.SetOut(capturedOut);
             Console.SetError(capturedError);
+            // P10-26: the exit code is read and Environment.ExitCode restored inside the finally, so a throwing Run cannot
+            // leak the command's exit code into the test process.
             try { Bim.Cli.JurisdictionResolveCommand.Run(new[] { "jurisdiction-resolve", "--code", "ar.caba", "--lock", badLock }); }
-            finally { Console.SetOut(previousOut); Console.SetError(previousError); }
-            var exit = Environment.ExitCode;
-            Environment.ExitCode = previousExit;
+            finally { exit = Environment.ExitCode; Environment.ExitCode = previousExit; Console.SetOut(previousOut); Console.SetError(previousError); }
             var line = capturedOut.ToString().TrimEnd('\r', '\n');
             var error = capturedError.ToString().Trim();
             Check(exit == 1 && line == pathInvalidLine && error.Length == 0, label + " (in process) is " + pathInvalidLine + " with nothing on stderr",
                 "exit " + exit.ToString(CultureInfo.InvariantCulture) + " " + line + (error.Length > 0 ? " stderr " + error : ""));
+        }
+        Check(Environment.ExitCode != exitBeforeInProcess, "PROBE-RED the in-process lock-path checks leak their exit code",
+            "Environment.ExitCode " + Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBeforeInProcess.ToString(CultureInfo.InvariantCulture));
+        // P10-26 narrowed contract: SkillLockTool.PathProblem refuses blank, NUL and over-MaxPathChars paths before it calls
+        // Path.GetFullPath, and on .NET 8 Path.GetFullPath throws only for null, empty or NUL-containing input on both Linux
+        // and Windows (no invalid-character validation, no MAX_PATH / PathTooLongException since .NET Core 2.1). So no lock
+        // path is rejected *only* by Path.GetFullPath on either test OS: the skills_lock_path_invalid contract this file pins
+        // is the NUL and length cases above; the GetFullPath catch is defensive. Pinned here: inputs the .NET Framework
+        // GetFullPath rejected (wildcards, pipes, quotes, extra colons, a control character, a bare \?\ prefix) and a path of
+        // exactly MaxPathChars characters pass PathProblem, each checked against Path.GetFullPath on this runtime.
+        var boundary = Path.Combine(scratch, "b");
+        boundary += new string('b', Bim.Mcp.SkillLockTool.MaxPathChars - boundary.Length - ".json".Length) + ".json";
+        foreach (var (label, candidate) in new (string, string)[]
+        {
+            ("wildcards", Path.Combine(scratch, "lo*ck?.json")),
+            ("pipe and angle brackets", Path.Combine(scratch, "lo|ck<>.json")),
+            ("double quote", Path.Combine(scratch, "lo\"ck.json")),
+            ("extra colons", Path.Combine(scratch, "lock:stream:$DATA.json")),
+            ("control character U+0001", Path.Combine(scratch, "lo\u0001ck.json")),
+            ("a bare device prefix", @"\\?\"),
+            ("exactly MaxPathChars characters", boundary),
+        })
+        {
+            string? rejection = null;
+            try { Path.GetFullPath(candidate); }
+            catch (Exception failure) when (failure is ArgumentException or NotSupportedException or PathTooLongException) { rejection = failure.GetType().Name + ": " + failure.Message; }
+            var problem = Bim.Mcp.SkillLockTool.PathProblem(candidate, "lock");
+            Check(rejection is null && problem is null, "a lock path with " + label + " is accepted by Path.GetFullPath and by SkillLockTool.PathProblem (no GetFullPath-only rejection; contract narrowed to NUL/length)",
+                "length " + candidate.Length.ToString(CultureInfo.InvariantCulture) + " GetFullPath " + (rejection ?? "accepted") + " PathProblem " + (problem ?? "null"));
         }
         Check(File.ReadAllBytes(lockPath).AsSpan().SequenceEqual(lockBytes), "the lock file is unchanged (read-only verb)");
 
@@ -190,21 +221,28 @@ internal static class JurisdictionResolveTests
         // never carries them. The package fixture's xx.dup is claimed twice (claim_duplicate); a third pack under the
         // distinct code xx.twin with the same aliases adds alias_overlap.
         var twin = "xx.twin.pack-c";
-        Directory.CreateDirectory(Path.Combine(packageSkills, twin));
-        File.WriteAllText(Path.Combine(packageSkills, twin, "skill.json"), stubManifest.Replace("\"id\": \"" + Stub + "\"", "\"id\": \"" + twin + "\"", StringComparison.Ordinal), new UTF8Encoding(false));
-        File.WriteAllText(Path.Combine(packageSkills, twin, "jurisdiction.json"),
-            "{\"jurisdiction_version\":1,\"code\":\"xx.twin\",\"pack\":\"" + twin + "\",\"country_names\":[\"Duplicate Country\"],\"municipality_names\":[\"Duplicate City\"],\"stub\":false,\"note\":\"fictitious test fixture\"}\n",
-            new UTF8Encoding(false));
-        var issuesLoad = JurisdictionRegistry.Load(packageSkills);
-        var issueCodes = issuesLoad.Registry?.Issues.Select(issue => issue.Code).ToArray() ?? Array.Empty<string>();
-        Check(issuesLoad.Succeeded && issueCodes.Contains(JurisdictionCodes.ClaimDuplicate) && issueCodes.Contains(JurisdictionCodes.AliasOverlap),
-            "the package fixture with xx.twin loads in process with registry issues claim_duplicate and alias_overlap", issuesLoad.Refusal?.ToString() ?? string.Join(",", issueCodes));
-        var withIssues = Cli(packageDll, "--code", "ar.caba");
-        Check(withIssues.Exit == 0 && withIssues.Out == cabaLine && withIssues.Err.Length == 0,
-            "registry issues are dropped: CABA from a package with claim_duplicate and alias_overlap prints the plain CABA envelope byte for byte", D(withIssues) + " | expected " + cabaLine);
-        Same("ambiguous metadata with alias_overlap", packageDll, issuesLoad, new ProjectJurisdiction(Country: "Duplicate Country", Municipality: "Duplicate City"), false,
-            JurisdictionCodes.JurisdictionAmbiguous, "--country", "Duplicate Country", "--municipality", "Duplicate City");
-        Directory.Delete(Path.Combine(packageSkills, twin), true);
+        var twinDirectory = Path.Combine(packageSkills, twin);
+        // P10-26: the twin pack is deleted in a finally, so a throwing check cannot leave it behind for the lock-drift
+        // block below (which pins only CABA from the same package skills).
+        try
+        {
+            Directory.CreateDirectory(twinDirectory);
+            File.WriteAllText(Path.Combine(packageSkills, twin, "skill.json"), stubManifest.Replace("\"id\": \"" + Stub + "\"", "\"id\": \"" + twin + "\"", StringComparison.Ordinal), new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(packageSkills, twin, "jurisdiction.json"),
+                "{\"jurisdiction_version\":1,\"code\":\"xx.twin\",\"pack\":\"" + twin + "\",\"country_names\":[\"Duplicate Country\"],\"municipality_names\":[\"Duplicate City\"],\"stub\":false,\"note\":\"fictitious test fixture\"}\n",
+                new UTF8Encoding(false));
+            var issuesLoad = JurisdictionRegistry.Load(packageSkills);
+            var issueCodes = issuesLoad.Registry?.Issues.Select(issue => issue.Code).ToArray() ?? Array.Empty<string>();
+            Check(issuesLoad.Succeeded && issueCodes.Contains(JurisdictionCodes.ClaimDuplicate) && issueCodes.Contains(JurisdictionCodes.AliasOverlap),
+                "the package fixture with xx.twin loads in process with registry issues claim_duplicate and alias_overlap", issuesLoad.Refusal?.ToString() ?? string.Join(",", issueCodes));
+            var withIssues = Cli(packageDll, "--code", "ar.caba");
+            Check(withIssues.Exit == 0 && withIssues.Out == cabaLine && withIssues.Err.Length == 0,
+                "registry issues are dropped: CABA from a package with claim_duplicate and alias_overlap prints the plain CABA envelope byte for byte", D(withIssues) + " | expected " + cabaLine);
+            Same("ambiguous metadata with alias_overlap", packageDll, issuesLoad, new ProjectJurisdiction(Country: "Duplicate Country", Municipality: "Duplicate City"), false,
+                JurisdictionCodes.JurisdictionAmbiguous, "--country", "Duplicate Country", "--municipality", "Duplicate City");
+        }
+        finally { if (Directory.Exists(twinDirectory)) Directory.Delete(twinDirectory, true); }
+        Check(Directory.Exists(twinDirectory), "PROBE-RED the twin pack directory remains after its block", twinDirectory);
         // Lock drift: pin the package's CABA pack, then edit its sidecar.
         var packageLock = Path.Combine(scratch, "package.lock.json");
         File.WriteAllBytes(packageLock, SkillLockFile.Serialize(SkillLocking.Pin(packageSkills, new[] { Caba })));
