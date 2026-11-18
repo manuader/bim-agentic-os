@@ -205,20 +205,34 @@ internal static class BcfExportCommandTests
         ExpectFailure("input is a directory", "bcf_export_input_unreadable", "input_not_regular_file", dirOut, "bcf-export", inputDirectory, dirOut);
 
         // A NUL cannot travel in a process argument, so the input-path NUL refusal runs the command in process.
+        // stdout and stderr are both captured and, with Environment.ExitCode, restored in a finally even if Run throws.
         {
             var nulOut = Output();
             var previousOut = Console.Out;
+            var previousError = Console.Error;
             var previousExit = Environment.ExitCode;
             var captured = new StringWriter();
-            Environment.ExitCode = 0;
-            Console.SetOut(captured);
-            try { Bim.Cli.BcfExportCommand.Run(new[] { "bcf-export", scratch + Path.DirectorySeparatorChar + "in\0put.json", nulOut }); }
-            finally { Console.SetOut(previousOut); }
-            var nulExit = Environment.ExitCode;
-            Environment.ExitCode = previousExit;
+            var capturedError = new StringWriter();
+            var nulExit = -1;
+            try
+            {
+                Environment.ExitCode = 0;
+                Console.SetOut(captured);
+                Console.SetError(capturedError);
+                Bim.Cli.BcfExportCommand.Run(new[] { "bcf-export", scratch + Path.DirectorySeparatorChar + "in\0put.json", nulOut });
+                nulExit = Environment.ExitCode;
+            }
+            finally
+            {
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+                Environment.ExitCode = previousExit;
+            }
             var nulLine = captured.ToString().TrimEnd('\r', '\n');
+            var nulError = capturedError.ToString();
             var nulExpected = Envelope("bcf_export_input_unreadable", "input_path_invalid");
             Check(nulExit == 1 && nulLine == nulExpected, "NUL in the input path (in process) -> " + nulExpected, "exit " + nulExit.ToString(CultureInfo.InvariantCulture) + " " + nulLine);
+            Check(nulError.Length == 0, "NUL in the input path (in process): nothing on stderr", nulError);
             Check(!File.Exists(nulOut) && !Directory.Exists(nulOut), "NUL in the input path: no output file");
         }
 
@@ -258,6 +272,16 @@ internal static class BcfExportCommandTests
         Invalid("timestamp offset without colon (+0200)", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+0200", StringComparison.Ordinal)), "$.project.timestamp");
         Invalid("timestamp offset with one-digit hour (+2:00)", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+2:00", StringComparison.Ordinal)), "$.project.timestamp");
         Invalid("timestamp offset hours only (+02)", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+02", StringComparison.Ordinal)), "$.project.timestamp");
+        Invalid("timestamp with a trailing newline", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T10:00:00Z\\n", StringComparison.Ordinal)), "$.project.timestamp");
+        Invalid("timestamp offset with a trailing newline", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+02:00\\n", StringComparison.Ordinal)), "$.project.timestamp");
+        // Runtime fixtures (they document .NET, not the product: the shape check above runs first and is what refuses +0200
+        // and +2:00): "zzz" on its own requires exactly two minute digits after the hour, so +02 and +200 are refused by zzz too.
+        static bool Zzz(string text) => DateTimeOffset.TryParseExact(text, "yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _);
+        Check(Zzz("2026-11-02T12:00:00+02:00") && Zzz("2026-11-02T12:00:00+0200") && Zzz("2026-11-02T12:00:00+2:00"),
+            "fixture: .NET zzz alone parses +02:00, +0200 and +2:00");
+        Check(!Zzz("2026-11-02T12:00:00+02"), "fixture: .NET zzz alone refuses +02 (minutes required)");
+        Check(!Zzz("2026-11-02T12:00:00+200"), "fixture: .NET zzz alone refuses +200 (+hmm: two minute digits required)");
+        Invalid("timestamp offset +hmm (+200)", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "2026-11-02T12:00:00+200", StringComparison.Ordinal)), "$.project.timestamp");
         Invalid("timestamp not ISO", Root("[]", proj.Replace("2026-11-02T10:00:00Z", "02/11/2026 10:00", StringComparison.Ordinal)), "$.project.timestamp");
         Invalid("unknown project member", Root("[]", proj[..^1] + ",\"guid\":\"x\"}"), "$.project.guid");
         Invalid("lone surrogate in a string", Root("[{\"id\":\"a\",\"title\":\"\\ud800\",\"severity\":\"info\"}]"), "$.issues[0].title");
