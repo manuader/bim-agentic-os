@@ -165,8 +165,6 @@ internal static class JurisdictionResolveTests
             var result = InProcess(badLock);
             Check(result.Exit == 1 && result.Line == pathInvalidLine && result.Error.Length == 0, label + " (in process) is " + pathInvalidLine + " with nothing on stderr", R(result));
         }
-        Check(Environment.ExitCode == exitBeforeInProcess, "the in-process lock-path checks restore Environment.ExitCode (finally)",
-            "Environment.ExitCode " + Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBeforeInProcess.ToString(CultureInfo.InvariantCulture));
         // P10-26 narrowed contract: SkillLockTool.PathProblem refuses blank, NUL and over-MaxPathChars paths before it calls
         // Path.GetFullPath, and on .NET 8 Path.GetFullPath throws only for null, empty or NUL-containing input on both Linux
         // and Windows (no invalid-character validation, no MAX_PATH / PathTooLongException since .NET Core 2.1). So no lock
@@ -198,22 +196,26 @@ internal static class JurisdictionResolveTests
         // P10-26: accepted odd paths reach the registry load: run in process, an absent lock under each is the typed load
         // refusal lock_missing (exit 1, nothing on stderr, equal to the in-process LoadLocked refusal), never
         // jurisdiction_resolve_internal_error.
-        foreach (var (label, candidate) in new (string, string)[]
+        foreach (var (label, candidate, subject) in new (string, string, string)[]
         {
-            ("an alternate data stream suffix", Path.Combine(scratch, "lock:stream:$DATA.json")),
-            ("wildcards", Path.Combine(scratch, "lo*ck?.json")),
-            ("a bare device prefix", @"\\?\"),
+            ("an alternate data stream suffix", Path.Combine(scratch, "lock:stream:$DATA.json"), "lock:stream:$DATA.json"),
+            ("wildcards", Path.Combine(scratch, "lo*ck?.json"), "lo*ck?.json"),
+            // Observed (P10-26 run 44250658836): the subject is "" on Windows, where \\?\ is a device root, and the whole
+            // name on Linux and macOS, where it is an ordinary relative file name.
+            ("a bare device prefix", @"\\?\", OperatingSystem.IsWindows() ? "" : @"\\?\"),
         })
         {
+            var pinned = JsonSerializer.Serialize(new { status = "failed", code = SkillLockCodes.LockMissing, subject, detail = "lock file not found" });
             var result = InProcess(candidate);
             string inProcess;
             try { inProcess = JurisdictionRegistry.LoadLocked(skills, candidate).Refusal is { } refusal ? Failed(refusal) : "<loaded>"; }
             catch (Exception failure) { inProcess = "<threw " + failure.GetType().Name + ": " + failure.Message + ">"; }
-            Check(result.Exit == 1 && result.Line == inProcess && result.Line.Contains("\"code\":\"" + SkillLockCodes.LockMissing + "\"", StringComparison.Ordinal)
+            Check(result.Exit == 1 && result.Line == inProcess && result.Line == pinned
                 && !result.Line.Contains("jurisdiction_resolve_internal_error", StringComparison.Ordinal) && result.Error.Length == 0,
-                "a lock path with " + label + " (in process) is the typed lock_missing refusal of the in-process load, nothing on stderr", R(result) + " | in-process load " + inProcess);
-            Check(false, "PROBE-RED observed " + label, R(result) + " | in-process load " + inProcess);
+                "a lock path with " + label + " (in process) is the typed lock_missing refusal (pinned line, equal to the in-process load), nothing on stderr", R(result) + " | in-process load " + inProcess + " | pinned " + pinned);
         }
+        Check(Environment.ExitCode == exitBeforeInProcess, "the in-process lock-path checks restore Environment.ExitCode (finally)",
+            "Environment.ExitCode " + Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBeforeInProcess.ToString(CultureInfo.InvariantCulture));
         Check(File.ReadAllBytes(lockPath).AsSpan().SequenceEqual(lockBytes), "the lock file is unchanged (read-only verb)");
 
         // ---- 3. package-first: a CLI copied into <package>/cli beside VERSION, manifest.json and skills/ ----
