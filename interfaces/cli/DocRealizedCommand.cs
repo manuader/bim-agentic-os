@@ -1,9 +1,7 @@
 #nullable enable
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Bim.Core;
-using Bim.Gltf;
 
 namespace Bim.Cli;
 
@@ -26,8 +24,9 @@ namespace Bim.Cli;
 // in-process builder accepts. A file over that bound is refused at read time as input_too_large (detail the input): the
 // read cap equals the library cap, which would refuse the same text as realized_bound_exceeded. The library's other
 // bounds (MaxSteps, MaxCreated, MaxAssignments, MaxCanonicalBytes) are realized_bound_exceeded.
-// Never-overwrite: the output path follows GltfExportCommand.OutputProblem with extension .json (never an existing file,
-// directory or link; checked before any input is read) and is created exclusively (GltfExporter.WriteNew).
+// Never-overwrite: the output path follows the gltf-export OutputProblem rule with extension .json (never an existing
+// file, directory or link; checked before any input is read) and is created exclusively by the gltf exporter's
+// never-overwrite writer, in interfaces/cli/DocRealizedWrite.cs (the verb's part of this class).
 // Success prints {"status":"succeeded","output","entries","bytes","sha256"} (sha256 upper-case hex of the file, as
 // doc-update prints it) and exits 0. Every refusal prints one {"status":"failed","code"[,"detail"]} envelope, exits 1 and
 // writes no file: doc_realized_usage, output_*, input_*, the library's realized_* codes with their detail
@@ -35,46 +34,17 @@ namespace Bim.Cli;
 // Precedence: usage, output path, inputs read (record, fixture, assignments), fixture parse, then the library
 // (FromRecord: record, document, assignments, fixture and sources in its own order; then Canonical), then the write.
 // P4-21: everything after the output path is Build, shared with DryRealized, the read-only MCP tool doc_realized's entry.
-internal static class DocRealizedCommand
+// P4-23: this file is the shared, read-only part (Build, DryRealized, the readers, the refusal envelope); the verb's
+// argument parsing, output path, exclusive write and stdout/exit code live in DocRealizedWrite.cs (the other part of this
+// partial class), which the CLI compiles and the MCP server does not.
+internal static partial class DocRealizedCommand
 {
-    public const string Usage = "usage: doc-realized --record run.json --fixture ir.json --assignments assignments.json --document revit-unique-id --output realized.json (--output: a new file, never overwritten)";
-    public const string UsageCode = "doc_realized_usage";
     public const string InternalError = "doc_realized_internal_error";
-
-    static readonly string[] Flags = { "--record", "--fixture", "--assignments", "--document", "--output" };
 
     sealed class Refusal(string code, string? detail = null) : Exception(code)
     {
         public string Code { get; } = code;
         public string? Detail { get; } = detail;
-    }
-
-    public static void Run(string[] args)
-    {
-        try { Execute(args); }
-        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
-    }
-
-    static void Execute(string[] args)
-    {
-        if (!TryParse(args, out var values)) throw new Refusal(UsageCode);
-        var output = values["--output"];
-        if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string badOutput) throw new Refusal(badOutput);
-        var (realized, json) = Build(values["--record"], values["--fixture"], values["--assignments"], values["--document"]);
-
-        var bytes = new UTF8Encoding(false).GetBytes(json);
-        var line = JsonSerializer.Serialize(new
-        {
-            status = "succeeded",
-            output,
-            entries = realized.Count,
-            bytes = bytes.LongLength,
-            sha256 = Convert.ToHexString(SHA256.HashData(bytes)),
-        });
-        try { GltfExporter.WriteNew(bytes, output); }
-        catch (GltfExportException error) { throw new Refusal(error.Code); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
-        Console.WriteLine(line);
     }
 
     // The verb's work after the output path: the inputs read (record, fixture, assignments), the fixture parsed, then the
@@ -106,20 +76,6 @@ internal static class DocRealizedCommand
     {
         try { return (true, Build(recordPath, fixturePath, assignmentsPath, document).Json); }
         catch (Refusal refusal) { return (false, Line(refusal.Code, refusal.Detail)); }
-    }
-
-    // The five flags, each exactly once, in any order, each with a non-empty value that is not flag-shaped ("--...").
-    static bool TryParse(string[] args, out Dictionary<string, string> values)
-    {
-        values = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (args.Length != 1 + 2 * Flags.Length) return false;
-        for (var i = 1; i < args.Length; i += 2)
-        {
-            var value = args[i + 1];
-            if (value.Length == 0 || value.StartsWith("--", StringComparison.Ordinal)) return false;
-            if (!Flags.Contains(args[i], StringComparer.Ordinal) || !values.TryAdd(args[i], value)) return false;
-        }
-        return Flags.All(values.ContainsKey);
     }
 
     // BoundedInput.ReadBytes with the given cap, decoded exactly as BoundedInput.ReadText (UTF-8, BOMs detected and stripped).
@@ -156,13 +112,7 @@ internal static class DocRealizedCommand
         return new Refusal(InternalError);
     }
 
-    static void Fail(string code, string? detail)
-    {
-        Console.WriteLine(Line(code, detail));
-        Environment.ExitCode = 1;
-    }
-
-    // The refusal envelope {"status":"failed","code"[,"detail"]} (Fail prints it; DryRealized returns it).
+    // The refusal envelope {"status":"failed","code"[,"detail"]} (the verb's Fail prints it; DryRealized returns it).
     static string Line(string code, string? detail) =>
         detail is null ? JsonSerializer.Serialize(new { status = "failed", code }) : JsonSerializer.Serialize(new { status = "failed", code, detail });
 }
