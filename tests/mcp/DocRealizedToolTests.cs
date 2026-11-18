@@ -19,14 +19,15 @@ using Bim.Core;
 //      realized_fixture_invalid, every library realized_* code with its detail, the CLI precedence).
 //   3. A forced exception inside the guarded library work (DocRealizedCommand.GuardedWorkProbe) is the CLI's typed
 //      doc_realized_internal_error envelope with the IntentPlan diagnostic on stderr once, never McpServer's generic failure.
-//   4. It writes nothing (the input directory is unchanged; it takes no output path), leaves the exit code and Console.Out
-//      untouched; tools/list labels it permission level read with readOnlyHint true only and the schema requires exactly
+//   4. It writes nothing (the input directory is unchanged; it takes no output path; a Console.Out redirected to a
+//      StringWriter around every in-process call stays empty), leaves the exit code and Console.Out untouched; tools/list labels it permission level read with readOnlyHint true only and the schema requires exactly
 //      record, fixture, assignments, document (strings, nothing else).
 //   5. MCP-only path guard: doc_realized_path_invalid {detail the input}; the document is judged by the library like the
 //      CLI's; missing / mistyped / extra arguments are -32602.
 //   6. The real Release Bim.Mcp.dll answers the same bytes over stdio.
 //   7. Static: the tool calls DocRealizedCommand.DryRealized and contains no reader, parser, builder or file access of its
-//      own; the CLI verb and DryRealized share one Build; the MCP projects link the CLI source.
+//      own; the CLI verb and DryRealized share one Build (whitespace-insensitive checks, read order record, fixture,
+//      assignments, then parse); the MCP projects link the shared CLI source but not its write path (DocRealizedWrite.cs).
 internal static class DocRealizedToolTests
 {
     const string ToolName = "doc_realized";
@@ -132,13 +133,22 @@ internal static class DocRealizedToolTests
         static int? ErrorCode(JsonObject response) => response["error"]?["code"]?.GetValue<int>();
 
         var exitBefore = Environment.ExitCode;
-        // One MCP call: the response, with "nothing written, exit code and Console.Out untouched" checked around it.
+        // One MCP call: the response, with "nothing written, exit code untouched" checked around it. P4-23: the call runs
+        // with Console.Out redirected to a StringWriter that must stay empty (success and refusal alike), so a stray
+        // Console.Write in the shared path fails here instead of only a swapped writer being caught; the writer is restored
+        // and must be the one installed when the call returns.
         JsonObject Call(string label, JsonObject arguments)
         {
             var before = Listing();
             var stdout = Console.Out;
-            var response = call(ToolLine(arguments));
-            Check(Listing() == before && Environment.ExitCode == exitBefore && ReferenceEquals(Console.Out, stdout), label + ": writes nothing, exit code and Console.Out untouched");
+            var captured = new StringWriter();
+            JsonObject response;
+            bool same;
+            Console.SetOut(captured);
+            try { response = call(ToolLine(arguments)); same = ReferenceEquals(Console.Out, captured); }
+            finally { Console.SetOut(stdout); }
+            Check(Listing() == before && Environment.ExitCode == exitBefore && same && captured.ToString().Length == 0,
+                label + ": writes nothing (no file, nothing on a redirected Console.Out), exit code and Console.Out untouched | " + Short(captured.ToString()));
             return response;
         }
 
@@ -222,6 +232,9 @@ internal static class DocRealizedToolTests
         Refused("a missing fixture", Failed("input_not_found", "fixture"), f: missing);
         Refused("a missing assignments file", Failed("input_not_found", "assignments"), a: missing);
         Refused("a missing record and fixture (record first)", Failed("input_not_found", "record"), r: missing, f: missing);
+        Refused("a missing fixture and assignments file (fixture first)", Failed("input_not_found", "fixture"), f: missing, a: missing);
+        Refused("a fixture that is not JSON and a missing assignments file (every input read before the fixture parse)", Failed("input_not_found", "assignments"),
+            f: Input("bad-ir-first.json", "{not json"), a: missing);
         Check(!File.Exists(missing), "creates no missing input");
         var directory = Path.Combine(inputs, Next() + "-a-directory.json");
         Directory.CreateDirectory(directory);
@@ -357,19 +370,49 @@ internal static class DocRealizedToolTests
             .Where(f => new[] { "DocRealized.FromRecord(", "DocRealized.Build(", "DocRealized.Canonical(", "DocRealizedCommand.Run(" }.Any(api => CodeOf(File.ReadAllText(f)).Contains(api, StringComparison.Ordinal)))
             .Select(f => Path.GetFileName(f)).ToArray();
         Check(owners.Length == 0, "no interfaces/mcp source builds a realized map or runs the writing verb itself [" + string.Join(", ", owners) + "]");
-        var commandCode = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "DocRealizedCommand.cs")));
-        Check(Regex.Matches(commandCode, @"\bBuild\(values\[").Count == 1 && Regex.Matches(commandCode, @"\bBuild\(recordPath, ").Count == 1
-            && Regex.Matches(commandCode, @"DocRealized\.FromRecord\(").Count == 1 && Regex.Matches(commandCode, @"DocRealized\.Canonical\(").Count == 1,
-            "the CLI verb and DryRealized share one Build, which reads, parses and builds the map in one place");
+        // P4-23: formatting-insensitive. Compact is the comment-free code with every whitespace run removed, so the
+        // checks below hold however the calls are wrapped or spaced.
+        static string Compact(string code) => Regex.Replace(code, @"\s+", "");
+        static int Count(string compact, string fragment) => compact.Split(fragment).Length - 1;
+        var commandPath = Path.Combine(root, "interfaces", "cli", "DocRealizedCommand.cs");
+        var writePath = Path.Combine(root, "interfaces", "cli", "DocRealizedWrite.cs");
+        Check(File.Exists(writePath), "interfaces/cli/DocRealizedWrite.cs holds the verb's write path (split from the shared DocRealizedCommand.cs)");
+        var command = Compact(CodeOf(File.ReadAllText(commandPath)));
+        var write = File.Exists(writePath) ? Compact(CodeOf(File.ReadAllText(writePath))) : "";
+        Check(Count(command, ")Build(stringrecordPath,stringfixturePath,stringassignmentsPath,stringdocument)") == 1
+            && Count(command + write, "Build(") == 3
+            && Count(command, "Build(recordPath,fixturePath,assignmentsPath,document)") == 1
+            && Count(write, "Build(values[\"--record\"],values[\"--fixture\"],values[\"--assignments\"],values[\"--document\"])") == 1
+            && Count(command, "DocRealized.FromRecord(") == 1 && Count(command, "DocRealized.Canonical(") == 1
+            && Count(write, "DocRealized.") == 0,
+            "the CLI verb (DocRealizedWrite.cs) and DryRealized share one Build in DocRealizedCommand.cs, which reads, parses and builds the map in one place");
+        // Precedence inside Build: record, fixture, assignments read, then the fixture parsed, then the guarded library work.
+        var reads = new[] { "Read(recordPath,\"record\",", "Read(fixturePath,\"fixture\",", "Read(assignmentsPath,\"assignments\",", "ParseFixture(fixtureText)", "DocRealized.FromRecord(" }
+            .Select(fragment => command.IndexOf(fragment, StringComparison.Ordinal)).ToArray();
+        Check(reads.All(at => at >= 0) && reads.Zip(reads.Skip(1)).All(pair => pair.First < pair.Second),
+            "Build reads record, fixture, then assignments, then parses the fixture, then builds [" + string.Join(", ", reads) + "]");
+        // The output path is judged before Build reads anything, and the write follows the build (the verb's part only).
+        var order = new[] { "GltfExportCommand.OutputProblem(output,", "Build(values[", "GltfExporter.WriteNew(bytes,output)", "Console.WriteLine(line)" }
+            .Select(fragment => write.IndexOf(fragment, StringComparison.Ordinal)).ToArray();
+        Check(order.All(at => at >= 0) && order.Zip(order.Skip(1)).All(pair => pair.First < pair.Second),
+            "DocRealizedWrite.cs: output path, then Build, then the exclusive write, then the success line [" + string.Join(", ", order) + "]");
+        var writeApis = new[] { "GltfExporter", "GltfExportCommand", "WriteNew", "Console.WriteLine", "Console.Write(", "Console.Out", "Environment.ExitCode", "File.", "FileStream", "Directory." }
+            .Where(api => command.Contains(api, StringComparison.Ordinal)).ToArray();
+        Check(writeApis.Length == 0, "the shared DocRealizedCommand.cs has no write path, stdout or exit code [" + string.Join(", ", writeApis) + "]");
         foreach (var project in new[] { Path.Combine(root, "interfaces", "mcp", "Bim.Mcp.csproj"), Path.Combine(root, "tests", "mcp", "Bim.Mcp.Tests.csproj") })
         {
             var projectDir = Path.GetDirectoryName(project)!;
-            var shared = Path.GetFullPath(Path.Combine(root, "interfaces", "cli", "DocRealizedCommand.cs"));
-            var linked = System.Xml.Linq.XDocument.Load(project).Descendants().Where(e => e.Name.LocalName == "Compile")
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            var compiled = System.Xml.Linq.XDocument.Load(project).Descendants().Where(e => e.Name.LocalName == "Compile")
                 .Select(e => (string?)e.Attribute("Include")).Where(include => include is not null)
-                .Any(include => string.Equals(Path.GetFullPath(Path.Combine(projectDir, include!.Replace('\\', '/').Replace('/', Path.DirectorySeparatorChar))), shared,
-                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
-            Check(linked, Path.GetFileName(project) + " compiles interfaces/cli/DocRealizedCommand.cs (shared source, not a copy)");
+                .Select(include => Path.GetFullPath(Path.Combine(projectDir, include!.Replace('\\', '/').Replace('/', Path.DirectorySeparatorChar)))).ToArray();
+            Check(compiled.Any(path => string.Equals(path, Path.GetFullPath(commandPath), comparison)),
+                Path.GetFileName(project) + " compiles interfaces/cli/DocRealizedCommand.cs (shared source, not a copy)");
+            Check(!compiled.Any(path => string.Equals(path, Path.GetFullPath(writePath), comparison)) && !compiled.Any(path => path.EndsWith("DocRealizedWrite.cs", comparison)),
+                Path.GetFileName(project) + " does not compile the doc-realized write path (interfaces/cli/DocRealizedWrite.cs, GltfExporter.WriteNew)");
+            Check(compiled.All(path => path.StartsWith(Path.GetFullPath(Path.Combine(root, "tests")), comparison) || !File.Exists(path)
+                    || !Compact(CodeOf(File.ReadAllText(path))).Contains("DocRealizedCommand.Run(", StringComparison.Ordinal)),
+                Path.GetFileName(project) + ": no compiled source runs the writing verb DocRealizedCommand.Run");
         }
     }
 }
