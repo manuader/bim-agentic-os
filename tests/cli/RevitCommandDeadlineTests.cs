@@ -377,7 +377,7 @@ internal static class RevitCommandDeadlineTests
             && waits.Count == 23 && waits[22] == "cut " + Label(minute - tick),
             "P1-31 race: a last reply line completing one tick after the deadline is query_all_deadline_exceeded after 22 pages, no partial elements", lastAfter.Json + Calls());
         var earlyAt = Listing(halfHour, TimeSpan.FromMinutes(22), minute, model);
-        check(Code(earlyAt.Node) == Exceeded && Pages(earlyAt.Node) == 22 && ElementCount(earlyAt.Node) == 0 && sent == 23 && clock == TimeSpan.FromMinutes(22)
+        check(Code(earlyAt.Node) == Exceeded && Pages(earlyAt.Node) == 22 && ElementCount(earlyAt.Node) == 0 && sent == 22 && clock == TimeSpan.FromMinutes(22)
             && waits.SequenceEqual(cutsDown.Skip(1)),
             "P1-31 race: a non-final reply line completing exactly at the deadline is kept, and the next page (no time left) is refused without being sent",
             earlyAt.Json + Calls());
