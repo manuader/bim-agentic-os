@@ -347,15 +347,30 @@ internal static class DocRealizedTests
         }
 
         // ---- the verb's shape: bounded reads, the P4-13 builder, exclusive write, no transport ----
-        var sourcePath = Path.Combine(root, "interfaces", "cli", "DocRealizedCommand.cs");
-        Check(File.Exists(sourcePath), "interfaces/cli/DocRealizedCommand.cs exists");
-        if (File.Exists(sourcePath))
+        // P4-23: the verb is one partial class in two files: DocRealizedCommand.cs (the shared read-only part: bounded
+        // reads, the parse, the builder) and DocRealizedWrite.cs (flags, output path, the exclusive write). Both are read
+        // as code (comments stripped, literals kept, ApplyIntentTests.CodeOf), so a comment can neither satisfy nor
+        // break a check; the shared part's raw text does not even mention the writer call.
+        var cliDir = Path.Combine(root, "interfaces", "cli");
+        var sourcePath = Path.Combine(cliDir, "DocRealizedCommand.cs");
+        var writePath = Path.Combine(cliDir, "DocRealizedWrite.cs");
+        Check(File.Exists(sourcePath) && File.Exists(writePath), "interfaces/cli/DocRealizedCommand.cs and DocRealizedWrite.cs exist");
+        if (File.Exists(sourcePath) && File.Exists(writePath))
         {
-            var source = File.ReadAllText(sourcePath);
-            Check(source.Contains("BoundedInput.", StringComparison.Ordinal) && source.Contains("DocRealized.MaxRecordBytes", StringComparison.Ordinal) && source.Contains("DocRealized.FromRecord(", StringComparison.Ordinal)
-                && source.Contains("DocRealized.Canonical(", StringComparison.Ordinal) && source.Contains("GltfExporter.WriteNew(", StringComparison.Ordinal)
-                && new[] { "Transport", "NamedPipe", "File.", "FileStream", "FileMode.", "Directory.", "ProjectStore" }.All(api => !source.Contains(api, StringComparison.Ordinal)),
-                "doc-realized reads only through BoundedInput (record/assignments at DocRealized.MaxRecordBytes), builds with DocRealized.FromRecord/Canonical, writes only through GltfExporter.WriteNew and never runs a transport");
+            var sharedText = File.ReadAllText(sourcePath);
+            var shared = ApplyIntentTests.CodeOf(sharedText, blankStrings: false);
+            var write = ApplyIntentTests.CodeOf(File.ReadAllText(writePath), blankStrings: false);
+            static bool Has(string code, string pattern) => System.Text.RegularExpressions.Regex.IsMatch(code, pattern);
+            Check(Has(shared, @"\bBoundedInput\s*\.") && Has(shared, @"\bDocRealized\s*\.\s*MaxRecordBytes\b")
+                && Has(shared, @"\bDocRealized\s*\.\s*FromRecord\s*\(") && Has(shared, @"\bDocRealized\s*\.\s*Canonical\s*\("),
+                "DocRealizedCommand.cs reads through BoundedInput (record/assignments at DocRealized.MaxRecordBytes) and builds with DocRealized.FromRecord/Canonical");
+            Check(Has(write, @"\bGltfExporter\s*\.\s*WriteNew\s*\(") && !Has(shared, @"\bGltfExporter\b|\bWriteNew\b")
+                && !sharedText.Contains("GltfExporter.WriteNew(", StringComparison.Ordinal),
+                "doc-realized writes only through GltfExporter.WriteNew, in DocRealizedWrite.cs; the shared part has no writer, not even in a comment");
+            var banned = new[] { "Transport", "NamedPipe", "File.", "FileStream", "FileMode.", "Directory.", "ProjectStore" };
+            var found = new[] { ("DocRealizedCommand.cs", shared), ("DocRealizedWrite.cs", write) }
+                .SelectMany(f => banned.Where(api => f.Item2.Contains(api, StringComparison.Ordinal)).Select(api => f.Item1 + " " + api)).ToArray();
+            Check(found.Length == 0, "doc-realized has no other file access and never runs a transport", string.Join(", ", found));
         }
         Check(Cli("no-such-verb").Out.Contains("doc-realized --record", StringComparison.Ordinal), "default usage lists doc-realized");
     }
