@@ -1777,3 +1777,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay233
 - 2026-11-18T14:53:30Z lock taken (session_014pxpsU15nhektWESgZbiBg)
 - 2026-11-18T14:53:59Z picked P3-24 (phase 3), P10-28 (phase 10) (relay227) and P4-24 (phase 4, relay229) — oldest-touched; disjoint files. Workers spawned.
+- 2026-11-18T15:44:41Z workers green: P3-24 7e1643e (red 44330250767, green 44334252213; 0 attempts), P10-28 76bd1a3 (probe red 44329715033 FileNotFoundException under deleted cwd on Linux/macOS, green 44334073614; 0 attempts), P4-24 31c471a (red 44330017852, green 44333247911; 0 attempts). Reviews next.
