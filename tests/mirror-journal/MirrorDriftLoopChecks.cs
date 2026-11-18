@@ -1850,8 +1850,11 @@ static class MirrorDriftLoopChecks
     // The broken request is a floor.create with a 1000-point boundary (a regular polygon of radius 10 km, shortest
     // round-trip coordinates), a wire line of over 30000 ASCII characters in which byte 4096 lies inside the args member,
     // so the fake stops mid-args with the rest of the line unread or still being written. Measured counts: the fake logs
-    // the bytes it read and the InBufferSize its server end reports; the test measures the wire bytes the CLI writes
-    // (line plus Environment.NewLine) and, off Windows, the default send buffer of a Unix socket (the CLI's client end).
+    // the bytes it read, the InBufferSize its server end reports (on Windows the requested quota, 0, not a measured
+    // buffer: diagnostic only) and, 200 ms after it stopped reading, the bytes queued in its server end (PeekNamedPipe /
+    // FIONREAD); the test measures the wire bytes the CLI writes (line plus Environment.NewLine). The byte counts differ
+    // per OS (CRLF on Windows, and Math.Cos/Math.Sin give coordinates whose shortest round-trip text differs in length);
+    // the default send buffer of a Unix socket is reported as a diagnostic only.
     // A control run without the option serves the same floor (succeeded, one created), so the request would run. The
     // broken run: walls A, snapshot 0, a read without peek, the broken floor (its id an external edit with a scheduled
     // recorder failure), snapshot 1 and a peek after sequence 0: the CLI fails with one code, field and detail, exit 1;
@@ -1931,31 +1934,19 @@ static class MirrorDriftLoopChecks
         var argsEnd = wire.IndexOf(",\"command\":\"floor.create\",\"document\":", StringComparison.Ordinal);
         var brokenLine = received.Length == MidArgsRequestsBefore.Length + 1 + MidArgsRequestsAfter.Length ? received[MidArgsRequestsBefore.Length] : "";
         var parts = brokenLine.Split(':');
-        var read = parts.Length == 3 && parts[0] + ":" == MidArgsLogPrefix && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var r) ? r : -1;
-        var fakeInBuffer = parts.Length == 3 && int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var b) ? b : -1;
-        var clientSendBuffer = UnixSendBuffer();
-        var unsent = read < 0 ? -1 : wireBytes - read;
-        var measured = "os=" + os + " wire_chars=" + wire.Length + " wire_bytes=" + wireBytes + " args=[" + argsStart + "," + argsEnd + ") read=" + read + " unread=" + unsent
-            + " fake_in_buffer=" + fakeInBuffer + (parts.Length == 3 ? "(" + parts[2] + ")" : "(<none>)") + " unix_send_buffer=" + clientSendBuffer;
+        var read = parts.Length == 4 && parts[0] + ":" == MidArgsLogPrefix && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var r) ? r : -1;
+        var queued = parts.Length == 4 && long.TryParse(parts[3], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var q) ? q : long.MinValue;
+        var unread = read < 0 ? -1 : wireBytes - read;
+        var measured = "os=" + os + " wire_chars=" + wire.Length + " wire_bytes=" + wireBytes + " args=[" + argsStart + "," + argsEnd + ") read=" + read + " unread=" + unread
+            + " queued=" + (parts.Length == 4 ? parts[3] : "<none>") + " unqueued=" + (queued == long.MinValue ? "<none>" : (unread - queued).ToString(CultureInfo.InvariantCulture))
+            + " in_buffer_size=" + (parts.Length == 4 ? parts[2] : "<none>") + " unix_send_buffer=" + UnixSendBuffer() + " cap_bytes=" + (RevitCommandProtocol.MaxRequestChars + Environment.NewLine.Length);
         Check(wire.Length > 30000 && wire.Length <= RevitCommandProtocol.MaxRequestChars && wireBytes == wire.Length + Environment.NewLine.Length && argsStart > argsOpen.Length && argsEnd > argsStart
             && argsStart < MidArgsBreakBytes && MidArgsBreakBytes < argsEnd,
             "the broken floor.create's wire line is large (over 30000 ASCII characters, within the 65536 cap) and byte " + MidArgsBreakBytes + " lies inside its args member", measured);
         Check(read == MidArgsBreakBytes, "the fake read exactly " + MidArgsBreakBytes + " bytes of the floor.create line before closing it (measured from its log)", measured + " log " + brokenLine);
         string Seen((int Exit, string Out, string Err) x) => "exit=" + x.Exit + " status=" + (Status(x.Out) ?? "<null>") + " code=" + (Text(x.Out, "code") ?? "<null>") + " field=" + (Text(x.Out, "field") ?? "<null>") + " detail=" + (Text(x.Out, "detail") ?? "<null>");
-        // P2-31: measured by a deliberate probe red (run 44407063531): wire 39715 bytes on Windows (CRLF) and 39724 on Linux,
-        // 4096 read, about 35620 unread. Windows (named pipe): the server end reports InBufferSize 0, so the unread
-        // remainder exceeds the pipe buffer and the client is still writing when the fake closes. Linux (Unix socket): the
-        // CLI's client socket has a 212992-byte default send buffer, larger than any request the CLI sends (the 65536-
-        // character cap), so the whole line is already in the socket when the fake closes and the unread receive queue
-        // resets the connection; the remainder cannot exceed the buffer there, and this check pins that measured fact.
-        // Other OSes have not been probed (macOS does not run mirror-journal) and fail here until one is.
-        if (OperatingSystem.IsWindows())
-            Check(fakeInBuffer >= 0 && unsent > fakeInBuffer,
-                "windows: the unread remainder of the floor.create line exceeds the named pipe's inbound buffer the server end reports (measured), so the client is still writing when the fake closes", measured);
-        else if (OperatingSystem.IsLinux())
-            Check(clientSendBuffer > 0 && unsent > 0 && unsent < clientSendBuffer && RevitCommandProtocol.MaxRequestChars + Environment.NewLine.Length < clientSendBuffer,
-                "linux: the unread remainder and even a request at the 65536-character cap fit in the client's Unix socket send buffer (measured), so the CLI's write has completed when the fake closes", measured);
-        else Check(false, os + ": the pipe buffer relation for a request broken mid-args has not been observed by a probe on this OS", measured);
+        // P2-31 deliberate probe (review round): report the bytes queued in the server end per OS, then pin them.
+        Check(false, "PROBE queued " + os, measured);
         // P2-31: the exact failure, observed by the same probe: the CLI answers pipe_io_error, field pipe_name, detail
         // IOException (the exception type name only), exit 1, on Windows and Linux alike, so one set of constants pins it.
         const string midArgsCode = "pipe_io_error", midArgsField = "pipe_name", midArgsDetail = "IOException";

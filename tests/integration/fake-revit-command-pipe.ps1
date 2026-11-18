@@ -34,9 +34,12 @@
 # pipe) the client's pending write of the tail fails when the server end closes. Every other request is read up to its
 # newline and served exactly as without the option. Without the option requests are read by ReadLine, as before.
 # P2-31: -BreakAfterBytes <N> reads each request itself, at most N bytes (4096-byte reads, never past N) and, when it
-# has read N bytes without a newline, closes the connection without reading the rest of the line and without a reply;
-# the log gets one "broken-after:<bytes read>:<InBufferSize>" line instead (InBufferSize as the server end reports it,
-# "unknown" when it throws), so a test can measure how much of the request was read and what the OS buffer was. The
+# has read N bytes without a newline, waits 200 ms, measures the bytes queued in the server end and closes the
+# connection without reading the rest of the line and without a reply; the log gets one
+# "broken-after:<bytes read>:<InBufferSize>:<bytes queued>" line instead. InBufferSize is what the server end reports
+# ("unknown" when it throws): on Windows it is the requested quota (0 here), not a measured buffer. Bytes queued is
+# measured: Windows PeekNamedPipe TotalBytesAvail on the server handle, Linux ioctl FIONREAD on its socket fd (-1 - error
+# code when the call fails, -1 on other OSes), so a test can tell whether the client still had bytes unsent. The
 # request never reaches the executor: nothing runs, no operation id is known or logged, no -RecorderFailures id
 # matches. A request whose newline lies within its first N bytes is read up to it and served exactly as without the
 # option. It cannot be combined with -BreakPipeCommand (refused before the pipe is ready).
@@ -81,6 +84,33 @@ if ($PSBoundParameters.ContainsKey('RecorderFailures')) {
 }
 $breakAfter = if ($PSBoundParameters.ContainsKey('BreakAfterBytes')) { $BreakAfterBytes } else { 0 }
 if ($breakAfter -gt 0 -and $BreakPipeCommand) { throw '-BreakAfterBytes cannot be combined with -BreakPipeCommand' }
+if ($breakAfter -gt 0) {
+    # P2-31: the bytes queued in the server end of a connection (see the header).
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FakePipeQueue
+{
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool PeekNamedPipe(IntPtr pipe, IntPtr buffer, uint size, IntPtr read, out uint available, IntPtr left);
+    [DllImport("libc", SetLastError = true)]
+    static extern int ioctl(int fd, UIntPtr request, out int available);
+    public static long Queued(SafeHandle handle)
+    {
+        var added = false;
+        handle.DangerousAddRef(ref added);
+        try
+        {
+            var raw = handle.DangerousGetHandle();
+            if (OperatingSystem.IsWindows()) return PeekNamedPipe(raw, IntPtr.Zero, 0, IntPtr.Zero, out var available, IntPtr.Zero) ? available : -1L - Marshal.GetLastWin32Error();
+            if (OperatingSystem.IsLinux()) return ioctl(checked((int)raw), (UIntPtr)0x541Bu, out var queued) == 0 ? queued : -1L - Marshal.GetLastWin32Error();
+            return -1;
+        }
+        finally { if (added) handle.DangerousRelease(); }
+    }
+}
+'@
+}
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $utf8 = [Text.UTF8Encoding]::new($false)
 $ready = $false
@@ -145,7 +175,10 @@ try {
                     if (!$ended -and $bytes.Length -ge $breakAfter) {
                         $inBuffer = 'unknown'
                         try { $inBuffer = [string]$server.InBufferSize } catch { $inBuffer = 'unknown' }
-                        [IO.File]::AppendAllText($LogFile, 'broken-after:' + $bytes.Length + ':' + $inBuffer + "`n")
+                        # Let the client write what it can, then measure what sits in the server end.
+                        Start-Sleep -Milliseconds 200
+                        $queued = [FakePipeQueue]::Queued($server.SafePipeHandle)
+                        [IO.File]::AppendAllText($LogFile, 'broken-after:' + $bytes.Length + ':' + $inBuffer + ':' + $queued + "`n")
                         $reader.Dispose(); $writer.Dispose(); continue
                     }
                     if ($bytes.Length -eq 0) { continue }
