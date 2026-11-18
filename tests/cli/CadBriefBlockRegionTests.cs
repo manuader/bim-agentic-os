@@ -17,6 +17,7 @@ using Bim.Cad;
 //      while Cocina keeps its model-space region (the flag changes only block regions).
 //   3. A value option followed by the flag (--page --include-block-regions, --metres-per-unit --include-block-regions)
 //      is the exact cad_option_value_invalid envelope for that option, exit 1, nothing written.
+// P6-26 (nested, MINSERT cell and mirrored inserts) is the RunTransformed section below.
 internal static class CadBriefBlockRegionTests
 {
     const string Flag = "--include-block-regions";
@@ -132,5 +133,96 @@ internal static class CadBriefBlockRegionTests
             Check(r.Exit == 1 && r.Out == expected && r.Err.Length == 0 && !File.Exists(output),
                 option + " " + Flag + " is the exact cad_option_value_invalid envelope, empty stderr, and writes nothing", R(r) + " expected " + expected);
         }
+
+        RunTransformed(scratch, Cli, RoomsOf, R, Clip, Check);
+    }
+
+    // P6-26 block regions through nested, MINSERT and mirrored inserts. A second generated millimetre DXF holds three
+    // labelled rooms whose only closed regions are reached through transformed inserts:
+    //   * "Bano": block INNER (1000 x 1250 rectangle) inserted as N2 at (500, 0) inside block OUTER, which model space
+    //     inserts as N1 at (20000, 0) with scale 2: world rectangle (21000, 0)-(23000, 2500), 5 m2, InsertPath [N1, N2].
+    //   * "Estudio": block CELL (3000 x 2000 rectangle) placed by MINSERT M1 at (0, 10000), 3 columns (70) x 2 rows (71),
+    //     column spacing 5000, row spacing 4000; the label sits in cell row 0, column 2: world (10000, 10000)-(13000, 12000),
+    //     6 m2, InsertPath [M1[0,2]] (asymmetric, so a row/column swap or a 70/71 swap has no such cell and fails).
+    //   * "Sala": block MIR (4000 x 2500 rectangle) inserted as X1 at (40000, 0) with X scale -1.5 (mirrored): world
+    //     rectangle (34000, 0)-(40000, 2500), 15 m2 (positive although the transformed outline runs clockwise), InsertPath [X1].
+    // Oracles: through the real CLI with the flag draft.json rooms equal the in-process IncludeBlockRegions rooms, each
+    // room's region has the pinned InsertPath, centre and positive area of the transformed rectangle; without the flag the
+    // rooms equal the default-option in-process rooms and none has a region or an insert path.
+    const string TransformedFileName = "block-region-transformed.dxf";
+
+    static string TransformedDrawing() =>
+        G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+        + G("0 SECTION|2 BLOCKS")
+        + G("0 BLOCK|5 B10|8 0|2 INNER|70 0|10 0|20 0|30 0") + Rect("B11", 0, 0, 1000, 1250, "0") + G("0 ENDBLK|5 B12|8 0")
+        + G("0 BLOCK|5 B20|8 0|2 OUTER|70 0|10 0|20 0|30 0") + G("0 INSERT|5 N2|8 0|2 INNER|10 500|20 0|30 0") + G("0 ENDBLK|5 B22|8 0")
+        + G("0 BLOCK|5 B30|8 0|2 CELL|70 0|10 0|20 0|30 0") + Rect("B31", 0, 0, 3000, 2000, "0") + G("0 ENDBLK|5 B32|8 0")
+        + G("0 BLOCK|5 B40|8 0|2 MIR|70 0|10 0|20 0|30 0") + Rect("B41", 0, 0, 4000, 2500, "0") + G("0 ENDBLK|5 B42|8 0")
+        + G("0 ENDSEC|0 SECTION|2 ENTITIES")
+        + G("0 INSERT|5 N1|8 ROOMS|2 OUTER|10 20000|20 0|30 0|41 2|42 2") + Text("21", 22000, 1000, "Bano")
+        + G("0 INSERT|5 M1|8 ROOMS|2 CELL|10 0|20 10000|30 0|70 3|71 2|44 5000|45 4000") + Text("22", 11000, 10500, "Estudio")
+        + G("0 INSERT|5 X1|8 ROOMS|2 MIR|10 40000|20 0|30 0|41 -1.5|42 1") + Text("23", 37000, 1000, "Sala")
+        + G("0 ENDSEC|0 EOF");
+
+    static void RunTransformed(string scratch, Func<string[], (int Exit, string Out, string Err)> cli, Func<string, string> roomsOf,
+        Func<(int Exit, string Out, string Err), string> r, Func<string, string> clip, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "transformed: " + name, detail);
+        var bytes = new UTF8Encoding(false).GetBytes(TransformedDrawing());
+        var input = Path.Combine(scratch, TransformedFileName);
+        File.WriteAllBytes(input, bytes);
+        BriefDraft InProcess(bool include) =>
+            BriefExtract.FromDxf(DxfReader.Parse(bytes, TransformedFileName), new BriefExtractOptions { IncludeBlockRegions = include });
+        static bool Near(double? value, double expected) => value is { } v && Math.Abs(v - expected) < 1e-9;
+        // Shoelace area in m2 of the expected world rectangle (millimetre corners), independent of the extractor.
+        static double Area(double x0, double y0, double x1, double y1)
+        {
+            var corners = new[] { (x0, y0), (x1, y0), (x1, y1), (x0, y1) };
+            double twice = 0;
+            for (var i = 0; i < corners.Length; i++) { var (ax, ay) = corners[i]; var (bx, by) = corners[(i + 1) % corners.Length]; twice += ax * by - bx * ay; }
+            return Math.Abs(twice) / 2 * 1e-6;
+        }
+
+        var expectations = new[]
+        {
+            (Id: "bano", Path: new[] { "N1", "N2" }, X0: 21000.0, Y0: 0.0, X1: 23000.0, Y1: 2500.0),
+            (Id: "estudio", Path: new[] { "M1[0,2]" }, X0: 10000.0, Y0: 10000.0, X1: 13000.0, Y1: 12000.0),
+            (Id: "sala", Path: new[] { "X1" }, X0: 34000.0, Y0: 0.0, X1: 40000.0, Y1: 2500.0),
+        };
+
+        var included = InProcess(true);
+        var excluded = InProcess(false);
+        foreach (var e in expectations)
+        {
+            var room = included.Rooms.FirstOrDefault(x => x.Id == e.Id);
+            var area = Area(e.X0, e.Y0, e.X1, e.Y1);
+            Check(room is { Region: { } region } && region.InsertPath.SequenceEqual(e.Path)
+                    && Near(region.At.X, (e.X0 + e.X1) / 2) && Near(region.At.Y, (e.Y0 + e.Y1) / 2)
+                    && room.RegionAreaSquareMetres > 0 && Near(room.RegionAreaSquareMetres, area),
+                "in process IncludeBlockRegions: " + e.Id + " region InsertPath [" + string.Join(", ", e.Path) + "], centre and positive area " + F(area) + " m2 of the transformed rectangle",
+                clip(JsonSerializer.Serialize(room, RoomJson)));
+            var plainRoom = excluded.Rooms.FirstOrDefault(x => x.Id == e.Id);
+            Check(plainRoom is { Region: null, RegionAreaSquareMetres: null },
+                "in process default options: " + e.Id + " has no region", clip(JsonSerializer.Serialize(plainRoom, RoomJson)));
+        }
+
+        var expectedWith = JsonSerializer.Serialize(included.Rooms, RoomJson);
+        var withOutput = Path.Combine(scratch, "transformed-with.json");
+        var flagged = cli(new[] { "cad-brief", input, withOutput, Flag });
+        var withRooms = roomsOf(withOutput);
+        Check(flagged.Exit == 0 && withRooms == expectedWith
+                && expectedWith.Contains("\"InsertPath\":[\"N1\",\"N2\"]", StringComparison.Ordinal)
+                && expectedWith.Contains("\"InsertPath\":[\"M1[0,2]\"]", StringComparison.Ordinal)
+                && expectedWith.Contains("\"InsertPath\":[\"X1\"]", StringComparison.Ordinal),
+            "with " + Flag + " draft.json rooms equal the in-process IncludeBlockRegions rooms (nested, MINSERT cell and mirrored insert paths)",
+            r(flagged) + " rooms " + clip(withRooms));
+
+        var expectedWithout = JsonSerializer.Serialize(excluded.Rooms, RoomJson);
+        var withoutOutput = Path.Combine(scratch, "transformed-without.json");
+        var plain = cli(new[] { "cad-brief", input, withoutOutput });
+        var withoutRooms = roomsOf(withoutOutput);
+        Check(plain.Exit == 0 && withoutRooms == expectedWithout && withoutRooms != withRooms && !withoutRooms.Contains("\"InsertPath\":[\"", StringComparison.Ordinal),
+            "without " + Flag + " draft.json rooms equal the default-option in-process rooms (no block region)",
+            r(plain) + " rooms " + clip(withoutRooms));
     }
 }
