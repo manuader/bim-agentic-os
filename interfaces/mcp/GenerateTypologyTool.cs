@@ -7,7 +7,7 @@ namespace Bim.Mcp;
 // P5-17: the read-only MCP tool generate_typology, the MCP face of the P7-14/P5-16 CLI verb `generate-typology
 // request.json output.json` (interfaces/cli/GenerateTypologyCommand.cs). It has no request parser or pipeline call of its
 // own: it runs GenerateTypologyCommand.Document, compiled into this server from the CLI sources (Bim.Mcp.csproj links
-// GenerateTypologyCommand.cs with its SkillPackLookup.cs, GltfExportCommand.cs and BoundedInput.cs), which reads the
+// GenerateTypologyCommand.cs with its SkillPackLookup.cs, OutputProblem.cs and BoundedInput.cs), which reads the
 // request file through BoundedInput and runs the verb's own Parse (strict members, weights, skills, precedence), pack
 // loads and TypologyPipeline Run / RunComposed path, exactly as the verb does before it writes its file.
 //   request_path  the generate-typology request JSON file, read like the CLI reads its request.json.

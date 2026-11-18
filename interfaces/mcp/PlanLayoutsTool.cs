@@ -8,7 +8,7 @@ namespace Bim.Mcp;
 // P7-20: the read-only MCP tool plan_layouts, the MCP face of the P7-11/P7-13/P7-15 CLI verb `plan-layouts brief.json
 // output.json [--alternatives n] [--seed s] [--pack id]` (interfaces/cli/PlanLayoutsCommand.cs). It has no brief parser,
 // option parser, pack lookup or planner call of its own: it runs PlanLayoutsCommand.DryPlan, compiled into this server
-// from the CLI sources (Bim.Mcp.csproj links PlanLayoutsCommand.cs with its SkillPackLookup.cs, GltfExportCommand.cs,
+// from the CLI sources (Bim.Mcp.csproj links PlanLayoutsCommand.cs with its SkillPackLookup.cs, OutputProblem.cs,
 // IntentPlan.cs and BoundedInput.cs), which validates the option values with the verb's own helpers, reads the brief
 // through BoundedInput, parses and validates it, loads the pack with SkillPackLookup.Load(id, packageFirst: true) and
 // generates the set exactly as the verb does before it writes its file.
