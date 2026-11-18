@@ -264,9 +264,6 @@ internal static class RevitCommandDeadlineTests
             // ---- 3a. P1-30: the deadline also bounds the pipe connect (connect wait min(5 s, time left)) ----
             AbsentPipeConnect(root, walls, wallsText, Rc, Check);
 
-            // ---- 3c. P1-32: the read of a page whose connect was cut is measured after the connect ----
-            ReadAfterConnect(wallsText, Check);
-
             // ---- 3b. A slow paging add-in: the whole run is bounded, not each page ----
             addIn.Reply = line => PageReply(line, model);
             addIn.Delay = TimeSpan.FromMilliseconds(250);
@@ -277,6 +274,9 @@ internal static class RevitCommandDeadlineTests
             Check(slowRun.Exit == 1 && Code(slowJson) == Exceeded && ElementCount(slowJson) == 0 && Pages(slowJson) is { } slowPages && slowPages < 23
                 && slowSent >= 1 && slowSent < 23 && slowRun.Ms < 30000,
                 "a 250 ms-per-page add-in (23 pages, about 6 s) under a 2 s deadline ends query_all_deadline_exceeded before the 23-page listing completes, no partial elements", slowRun.Out + " sent " + N(slowSent) + " in " + N(slowRun.Ms) + " ms");
+
+            // ---- 3c. P1-32: the read of a page whose connect was cut is measured after the connect ----
+            ReadAfterConnect(wallsText, Check);
 
             // ---- 4. Absent flag: no deadline, today's bytes ----
             addIn.Delay = TimeSpan.FromMilliseconds(100);
@@ -448,8 +448,10 @@ internal static class RevitCommandDeadlineTests
         var built = allStart < 0 ? -1 : mcpSource.IndexOf("new RevitDeadlineTransport(", allStart, StringComparison.Ordinal);
         var builtArgs = built < 0 ? "" : mcpSource[built..mcpSource.IndexOf(';', built)];
         check(builtArgs.Contains("cutReads: realPipe", StringComparison.Ordinal) && !builtArgs.Contains("connectTransport", StringComparison.Ordinal)
-            && !builtArgs.Contains("ConnectTimeout", StringComparison.Ordinal) && !builtArgs.Contains("cutTransport", StringComparison.Ordinal),
-            "P1-30 static: McpServer.RevitCallAll builds RevitDeadlineTransport with cutReads: realPipe and the default (shared) connect bound", builtArgs.ReplaceLineEndings(" "));
+            && !builtArgs.Contains("ConnectTimeout", StringComparison.Ordinal) && !builtArgs.Contains("cutTransport", StringComparison.Ordinal)
+            && !builtArgs.Contains("connectThenRead", StringComparison.Ordinal),
+            "P1-30/P1-32 static: McpServer.RevitCallAll builds RevitDeadlineTransport with cutReads: realPipe and the default (shared) connect bound and read after connect (no connectTransport, connectThenRead or cutTransport override)",
+            builtArgs.ReplaceLineEndings(" "));
 
         // Static: no source under interfaces/cli or interfaces/mcp still says the connect is not cut. Comment markers and
         // line breaks are folded into single spaces first, so a phrase wrapped over two comment lines is still found.
@@ -570,13 +572,19 @@ internal static class RevitCommandDeadlineTests
         var atDeadline = Listing(halfHour, second, second, null);
         check(atDeadline == RaceExceededAt(1000, 0) && sent == 0 && clock == second && calls.SequenceEqual(new[] { "connect 1000 took 1000 read 0" }),
             "P1-32 seam: a connect completing exactly at the deadline leaves no read: the page is not sent and is query_all_deadline_exceeded", atDeadline + Calls());
+        // Under 1 ms left once connected (here 1 tick) counts as no time left: not sent, query_all_deadline_exceeded.
+        var tick = TimeSpan.FromTicks(1);
+        var subMillisecond = Listing(halfHour, second, second - tick, null);
+        check(subMillisecond == RaceExceededAt(1000, 0) && sent == 0 && clock == second - tick && calls.SequenceEqual(new[] { "connect 1000 took 999 read 0" }),
+            "P1-32 seam: a connect leaving under 1 ms (1 tick) of the deadline counts as no time left: the page is not sent and is query_all_deadline_exceeded",
+            subMillisecond + Calls());
         var timedOut = Listing(halfHour, second, Ms(1200), null);
         check(timedOut == RaceExceededAt(1000, 0) && sent == 0 && clock == second && calls.SequenceEqual(new[] { "connect 1000 timed out" }),
             "P1-32 seam: a connect over the time left still times out at the deadline (query_all_deadline_exceeded)", timedOut + Calls());
         var replied = Listing(halfHour, second, Ms(800), Ms(200));
         check(replied == singleExpected && sent == 1 && clock == second,
             "P1-32 seam: after an 800 ms connect a reply completing exactly at the 1 s deadline is kept (succeeded, byte-equal)", replied + Calls());
-        var repliedLate = Listing(halfHour, second, Ms(800), Ms(200) + TimeSpan.FromTicks(1));
+        var repliedLate = Listing(halfHour, second, Ms(800), Ms(200) + tick);
         check(repliedLate == RaceExceededAt(1000, 0) && sent == 1 && clock == second,
             "P1-32 seam: after an 800 ms connect a reply one tick after the deadline is query_all_deadline_exceeded", repliedLate + Calls());
         // A 2 s read timeout under a 4 s deadline: uncut before the connect; cut by a 3 s connect, not by a 1 s one.
@@ -613,8 +621,11 @@ internal static class RevitCommandDeadlineTests
             var plain = Thrown(() => RevitCommandService.PipeTransportWithReadTimeout(Ms(500))(plainPipe, wire));
             var took = plainWatch.Elapsed;
             var plainServed = slowListen.WaitServed();
-            check(plain is RevitPipeReadTimeoutException { Timeout.TotalMilliseconds: 500 } && took >= Ms(790) && took < TimeSpan.FromSeconds(3) && plainServed && slowListen.Line == wire,
-                "P1-32 no deadline: a 300 ms connect is followed by the full 500 ms read timeout (unchanged)", (plain?.GetType().Name ?? "<none>") + " in " + Label(took) + " ms; " + slowListen.Describe());
+            // The read timeout itself is the exception's (500 ms) and the accept is after the 300 ms listen; the wall-clock
+            // floor is loose (750 ms) so a coarse Windows timer tick cannot fail it.
+            check(plain is RevitPipeReadTimeoutException { Timeout.TotalMilliseconds: 500 } && slowListen.ConnectedAt is { } plainConnected && plainConnected >= Ms(300)
+                && took >= Ms(750) && took < TimeSpan.FromSeconds(3) && plainServed && slowListen.Line == wire,
+                "P1-32 no deadline: a connect accepted after 300 ms is followed by the full 500 ms read timeout (unchanged)", (plain?.GetType().Name ?? "<none>") + " in " + Label(took) + " ms; " + slowListen.Describe());
         }
 
         // Real pipe, 1 s deadline, add-in listening from 800 ms and never replying.

@@ -160,6 +160,9 @@ public static class RevitCommandService
         using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         pipe.Connect(connectMs);
         var readTimeout = readTimeoutAfterConnect();
+        // Only PipeTransportWithReadAfterConnect can get here with no time left: its one caller is the read-only
+        // --all / all:true listing deadline (RevitDeadlineTransport), which reports this unsent page as
+        // query_all_deadline_exceeded, so the "no reply within 0 ms" pipe_read_timeout detail is never printed.
         if (readTimeout <= TimeSpan.Zero) throw new RevitPipeReadTimeoutException(TimeSpan.Zero);
         CheckReadTimeout(readTimeout);
         var utf8 = new UTF8Encoding(false);

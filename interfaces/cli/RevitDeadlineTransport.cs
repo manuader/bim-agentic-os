@@ -17,17 +17,16 @@ namespace Bim.Cli;
 // The clock starts when this transport is built: in the CLI after the option, pipe name, policy and envelope reads, just
 // before paging, as the MCP transport starts when its all:true call builds it.
 // P1-30: the pipe connect is bounded too. A page whose time left is below the 5 s connect wait
-// (RevitCommandService.ConnectTimeoutMs) goes through connectTransport(read, left), the real pipe with that read timeout
-// (the time left when the read is cut, else the configured one) and a connect wait of the time left; its
-// pipe_connect_timeout is reported as the deadline. With time left of at least 5 s at the page the connect keeps its
+// (RevitCommandService.ConnectTimeoutMs) goes through connectThenRead (see P1-32 below), the real pipe with a connect
+// wait of the time left and a read timeout taken once connected; its pipe_connect_timeout is reported as the deadline. With time left of at least 5 s at the page the connect keeps its
 // full 5 s and a pipe_connect_timeout passes through: on an absent pipe that takes N >= 6 in practice (at N = 5 the
 // first page already has just under 5 s left, so its connect is cut and the run ends query_all_deadline_exceeded at
 // 5 s), ending pipe_connect_timeout after 5 s, within the deadline. cutReads false never cuts the connect either.
 // P1-32: the read of a page whose connect was cut is measured after the connect: connectThenRead(left, readAfter) is the
 // real pipe (RevitCommandService.PipeTransportWithReadAfterConnect) with a connect wait of the time left, asking
 // readAfter() for its read timeout once connected: the time left then when it is below the configured read timeout
-// (cut, its pipe_read_timeout reported as the deadline), else the configured one. A connect that completes at or after
-// the deadline leaves no read: the line is not sent and the page is the deadline. So an add-in that accepts just before
+// (cut, its pipe_read_timeout reported as the deadline), else the configured one. A connect that leaves under 1 ms
+// (or completes at or after the deadline) leaves no read: the line is not sent and the page is the deadline. So an add-in that accepts just before
 // the deadline and never replies ends the run at the deadline, not up to the time left before the connect later.
 // Tests inject the clock, the cut transport and connectThenRead; an injected P1-30 connectTransport(read, left) is
 // still accepted and given readAfter() measured when the page's transport is made (its fakes move no clock in a connect).
@@ -37,6 +36,7 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
     public const string CliListing = "--all";
     public const string McpListing = "all:true";
     public static readonly TimeSpan ConnectWait = TimeSpan.FromMilliseconds(RevitCommandService.ConnectTimeoutMs);
+    static readonly TimeSpan MinRead = TimeSpan.FromMilliseconds(1);
 
     readonly string pipeName;
     readonly RevitCommandPolicy policy;
@@ -103,7 +103,8 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
             {
                 var after = deadline - (elapsed() - start);
                 cut = after < readTimeout;
-                return cut ? after : readTimeout;
+                // Under 1 ms left is no time left (a sub-millisecond wait would time out at once): not sent.
+                return !cut ? readTimeout : after < MinRead ? TimeSpan.Zero : after;
             }
             pipe = connectThenRead(left, ReadAfter);
         }
