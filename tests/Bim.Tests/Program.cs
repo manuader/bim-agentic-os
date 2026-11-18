@@ -121,10 +121,11 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
   Check(qBadLoad.Refusal?.Code==JurisdictionCodes.SkillsInvalid && qBadLoad.LoaderError is not null && qBadLocked.Refusal?.Code==JurisdictionCodes.SkillsInvalid && qBadLocked.LoaderError is not null,"P5-25 skills_invalid from Load and LoadLocked carries a LoaderError");
   var qOther=new JurisdictionIssue("json_invalid","x/jurisdiction.json","d");
   Check((qBadLoad with {Refusal=qOther}).LoaderError is null && (qBadLocked with {Refusal=qOther}).LoaderError is null,"P5-25 a with-copy replacing the Refusal drops the stale LoaderError");
-  Check((qBadLoad with {Refusal=null}).LoaderError is null,"P5-25 a with-copy clearing the Refusal drops the LoaderError");
+  // P5-26: clearing the Refusal of a refusal would leave neither Registry nor Refusal, so that with-copy now throws.
+  try { _=qBadLoad with {Refusal=null}; Check(false,"P5-25/P5-26 a with-copy clearing the Refusal throws"); } catch(ArgumentException) { Check(true,"P5-25/P5-26 a with-copy clearing the Refusal throws"); }
   Check((qBadLoad with {Refusal=qBadLoad.Refusal! with {}}).LoaderError is null,"P5-25 an equal but distinct Refusal instance does not inherit the LoaderError");
   Check(ReferenceEquals((qBadLoad with {Registry=null}).LoaderError,qBadLoad.LoaderError),"P5-25 a with-copy keeping the same Refusal keeps its LoaderError");
-  // Record equality includes the hidden loader fields; a copy with another refusal is unequal and reads LoaderError as null.
+  // Equality compares Registry, Refusal and the derived LoaderError (P5-26); a copy with another refusal is unequal and reads LoaderError as null.
   Check((qBadLoad with {}).Equals(qBadLoad) && !(qBadLoad with {Refusal=qOther}).Equals(qBadLoad) && (qBadLoad with {Refusal=qOther}).LoaderError is null,"P5-25 equality: a plain copy is equal, a with { Refusal = other } copy is unequal and has no LoaderError");
   var qSide=Path.Combine(p525,"side");
   Directory.CreateDirectory(Path.Combine(qSide,"xx.p525.pack"));
@@ -139,6 +140,62 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
   var qOkLocked=JurisdictionRegistry.LoadLocked(qSide,SkillLocking.Pin(qSide,["xx.p525.pack"]));
   Check(qOkLoad.Succeeded && qOkLoad.LoaderError is null && qOkLocked.Succeeded && qOkLocked.LoaderError is null,"P5-25 successful Load and LoadLocked have no LoaderError");
  } finally { if(Directory.Exists(p525)) Directory.Delete(p525,true); }
+}
+// P5-26: exactly one of JurisdictionLoad.Registry / Refusal is non-null, and equality is (Registry, Refusal, LoaderError).
+{
+ var p526=Path.Combine(envRoot(),"bim-p526-"+Guid.NewGuid());
+ bool r26Throws(Func<object> make) { try { make(); return false; } catch(ArgumentException) { return true; } }
+ string? r26Param(Func<object> make) { try { make(); return "(no throw)"; } catch(ArgumentException e) { return e.ParamName; } }
+ bool r26One(JurisdictionLoad load) => (load.Registry is null) != (load.Refusal is null) && load.Succeeded == (load.Registry is not null);
+ try {
+  var r26Empty=Path.Combine(p526,"empty");
+  Directory.CreateDirectory(r26Empty);
+  var r26Ok=JurisdictionRegistry.Load(r26Empty);
+  var r26Reg=r26Ok.Registry!;
+  var r26Issue=new JurisdictionIssue("json_invalid","x/jurisdiction.json","d");
+  Check(r26Throws(()=>new JurisdictionLoad(null,null)),"P5-26 a constructor with neither Registry nor Refusal throws");
+  Check(r26Throws(()=>new JurisdictionLoad(r26Reg,r26Issue)),"P5-26 a constructor with both Registry and Refusal throws");
+  Check(r26One(new JurisdictionLoad(r26Reg,null)) && r26One(new JurisdictionLoad(null,r26Issue)),"P5-26 a constructor with exactly one of Registry and Refusal is accepted");
+  var r26Bad=Path.Combine(p526,"bad");
+  Directory.CreateDirectory(Path.Combine(r26Bad,"xx.bad.pack"));
+  File.WriteAllText(Path.Combine(r26Bad,"xx.bad.pack","skill.json"),"{ \"manifest_version\": 1, ");
+  var r26BadLoad=JurisdictionRegistry.Load(r26Bad);
+  var r26Side=Path.Combine(p526,"side");
+  Directory.CreateDirectory(Path.Combine(r26Side,"xx.p526.pack"));
+  File.WriteAllText(Path.Combine(r26Side,"xx.p526.pack","skill.json"),"{\"manifest_version\":1,\"id\":\"xx.p526.pack\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fixture\",\"priority\":10,\"rules\":[]}");
+  var r26SideLock=SkillLocking.Pin(r26Side,["xx.p526.pack"]);
+  File.WriteAllText(Path.Combine(r26Side,"xx.p526.pack","jurisdiction.json"),"{");
+  var r26Results=new (string Name,JurisdictionLoad Load)[] {
+   ("Load missing directory",JurisdictionRegistry.Load(Path.Combine(p526,"absent"))),
+   ("Load malformed manifest",r26BadLoad),
+   ("LoadLocked malformed manifest",JurisdictionRegistry.LoadLocked(r26Bad,new SkillLock(Array.Empty<SkillLockEntry>()))),
+   ("Load malformed sidecar",JurisdictionRegistry.Load(r26Side)),
+   ("LoadLocked drifted sidecar",JurisdictionRegistry.LoadLocked(r26Side,r26SideLock)),
+   ("LoadLocked missing lock file",JurisdictionRegistry.LoadLocked(r26Side,Path.Combine(p526,"absent.lock"))),
+   ("Load empty",r26Ok),
+   ("LoadLocked empty",JurisdictionRegistry.LoadLocked(r26Empty,new SkillLock(Array.Empty<SkillLockEntry>()))),
+  };
+  Check(r26Results[0].Load.Registry is null && r26Results[0].Load.Refusal?.Code==JurisdictionCodes.SkillsInvalid,"P5-26 Load of a missing directory sets Refusal (skills_invalid), not Registry ("+r26Results[0].Load.Refusal?.Code+")");
+  foreach(var (r26Name,r26Load) in r26Results) Check(r26One(r26Load),"P5-26 exactly one of Registry and Refusal: "+r26Name+" ("+r26Load.Refusal?.Code+")");
+  Check(r26Throws(()=>r26Ok with {Registry=null}),"P5-26 a with-copy clearing the Registry of a success throws");
+  Check(r26Throws(()=>r26Ok with {Refusal=r26Issue}),"P5-26 a with-copy adding a Refusal to a success throws");
+  Check(r26Throws(()=>r26BadLoad with {Refusal=null}),"P5-26 a with-copy clearing the Refusal of a refusal throws");
+  Check(r26Throws(()=>r26BadLoad with {Registry=r26Reg}),"P5-26 a with-copy adding a Registry to a refusal throws");
+  Check(r26Param(()=>r26Ok with {Registry=null})=="Registry" && r26Param(()=>r26Ok with {Refusal=r26Issue})=="Refusal" && r26Param(()=>r26BadLoad with {Refusal=null})=="Refusal" && r26Param(()=>r26BadLoad with {Registry=r26Reg})=="Registry","P5-26 a with-copy violation names the member being assigned as ParamName");
+  Check(r26Param(()=>new JurisdictionLoad(null,null))=="Refusal" && r26Param(()=>new JurisdictionLoad(r26Reg,r26Issue))=="Registry","P5-26 constructor violations name Refusal (neither set) and Registry (both set)");
+  Check(r26Throws(()=>r26BadLoad with {Registry=r26Reg,Refusal=null}) && r26Throws(()=>r26Ok with {Refusal=r26Issue,Registry=null}),"P5-26 a with-copy switching between success and refusal throws in either assignment order");
+  Check(r26One(r26Ok with {Registry=JurisdictionRegistry.Load(r26Empty).Registry}) && r26One(r26BadLoad with {Refusal=r26Issue}) && r26One(r26BadLoad with {Registry=null}),"P5-26 a with-copy keeping exactly one member is accepted");
+  // Equality is exactly Registry (reference: a class), Refusal (record value) and LoaderError (reference: an exception).
+  var r26Same=r26BadLoad with {};
+  Check(r26Same.Equals(r26BadLoad) && r26Same==r26BadLoad && r26Same.GetHashCode()==r26BadLoad.GetHashCode(),"P5-26 a plain copy (same Registry, Refusal and LoaderError) is equal with an equal hash");
+  Check(new JurisdictionLoad(null,r26Issue)==new JurisdictionLoad(null,r26Issue with {}) && new JurisdictionLoad(null,r26Issue).GetHashCode()==new JurisdictionLoad(null,r26Issue with {}).GetHashCode(),"P5-26 refusals with equal Refusal and no LoaderError are equal with an equal hash");
+  Check(new JurisdictionLoad(r26Reg,null)==new JurisdictionLoad(r26Reg,null) && new JurisdictionLoad(r26Reg,null)!=new JurisdictionLoad(JurisdictionRegistry.Load(r26Empty).Registry,null),"P5-26 successes compare by Registry reference");
+  var r26Distinct=r26BadLoad with {Refusal=r26BadLoad.Refusal! with {}};
+  Check(r26Distinct.Refusal==r26BadLoad.Refusal && r26Distinct.LoaderError is null && r26BadLoad.LoaderError is not null && !r26Distinct.Equals(r26BadLoad) && r26Distinct!=r26BadLoad,"P5-26 an equal but distinct refusal copy drops LoaderError and is unequal to the original");
+  Check(r26Distinct==new JurisdictionLoad(null,r26BadLoad.Refusal! with {}) && r26Distinct.GetHashCode()==new JurisdictionLoad(null,r26BadLoad.Refusal! with {}).GetHashCode(),"P5-26 that copy equals a public refusal with the same Refusal and no LoaderError");
+  var r26Again=JurisdictionRegistry.Load(r26Bad);
+  Check(r26Again.Refusal==r26BadLoad.Refusal && !ReferenceEquals(r26Again.LoaderError,r26BadLoad.LoaderError) && r26Again!=r26BadLoad,"P5-26 two reads of one bad directory carry distinct loader errors and are unequal");
+ } finally { if(Directory.Exists(p526)) Directory.Delete(p526,true); }
 }
 Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {passed=count, core_test_ms=timer.Elapsed.TotalMilliseconds, native_verified=false}));
 } catch(Exception exception) {

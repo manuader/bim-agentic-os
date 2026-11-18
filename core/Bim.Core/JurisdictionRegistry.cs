@@ -24,13 +24,28 @@ public sealed record JurisdictionSelection(JurisdictionClaim? Claim, string Matc
 // P5-25: it is get-only; outside reflection only code that can call the internal SkillsInvalid sets it, that is Bim.Core
 // and its InternalsVisibleTo test assemblies (Reconcile.Tests, LocalValidation.Tests, Bim.MirrorJournal.Tests,
 // Bim.Audit.Tests). SkillsInvalid also builds that Refusal from the error, and LoaderError is bound to that exact Refusal
-// instance: a `with { Refusal = … }` copy (another, an equal but distinct, or a null refusal) reads it as null.
-// Record equality includes the hidden fields (compared by value): a copy with another refusal is unequal, but a copy with
-// an equal but distinct refusal still compares equal although its LoaderError reads null (equality is not changed here).
-public sealed record JurisdictionLoad(JurisdictionRegistry? Registry, JurisdictionIssue? Refusal)
+// instance: a `with { Refusal = … }` copy with another or an equal but distinct refusal reads it as null (a copy with a
+// null refusal leaves neither member set and throws, see P5-26).
+// P5-26: exactly one of Registry and Refusal is non-null. The constructor throws ArgumentException otherwise, and so does
+// a with-copy whose assignment would leave both or neither set (ParamName names the member being assigned; for the
+// constructor, Refusal when neither is set and Registry when both are); a with-copy may only replace the member already set (a
+// copy switching between success and refusal throws whatever its assignment order: build a new load instead).
+// Equality is exactly (Registry, Refusal, LoaderError) with their own equality: Registry by reference, Refusal by record
+// value, LoaderError by reference. So a copy with an equal but distinct refusal, whose LoaderError reads null, is unequal
+// to its original and equal to a public load with that refusal; two reads of one bad directory are unequal.
+public sealed record JurisdictionLoad
 {
+    private readonly JurisdictionRegistry? registry;
+    private readonly JurisdictionIssue? refusal;
     private readonly SkillException? loaderError;
     private readonly JurisdictionIssue? loaderRefusal;
+
+    public JurisdictionLoad(JurisdictionRegistry? Registry, JurisdictionIssue? Refusal)
+    {
+        RequireExactlyOne(Registry, Refusal, Registry is null ? nameof(Refusal) : nameof(Registry));
+        registry = Registry;
+        refusal = Refusal;
+    }
 
     private JurisdictionLoad(SkillException error, JurisdictionIssue refusal) : this((JurisdictionRegistry?)null, refusal)
     {
@@ -38,13 +53,46 @@ public sealed record JurisdictionLoad(JurisdictionRegistry? Registry, Jurisdicti
         loaderRefusal = refusal;
     }
 
+    public JurisdictionRegistry? Registry
+    {
+        get => registry;
+        init { RequireExactlyOne(value, refusal, nameof(Registry)); registry = value; }
+    }
+
+    public JurisdictionIssue? Refusal
+    {
+        get => refusal;
+        init { RequireExactlyOne(registry, value, nameof(Refusal)); refusal = value; }
+    }
+
     public bool Succeeded => Refusal is null;
 
     public SkillException? LoaderError => loaderRefusal is not null && ReferenceEquals(loaderRefusal, Refusal) ? loaderError : null;
 
+    public void Deconstruct(out JurisdictionRegistry? Registry, out JurisdictionIssue? Refusal)
+    {
+        Registry = this.Registry;
+        Refusal = this.Refusal;
+    }
+
+    public bool Equals(JurisdictionLoad? other) =>
+        other is not null
+        && (ReferenceEquals(this, other)
+            || (EqualityComparer<JurisdictionRegistry?>.Default.Equals(Registry, other.Registry)
+                && EqualityComparer<JurisdictionIssue?>.Default.Equals(Refusal, other.Refusal)
+                && EqualityComparer<SkillException?>.Default.Equals(LoaderError, other.LoaderError)));
+
+    public override int GetHashCode() => HashCode.Combine(Registry, Refusal, LoaderError);
+
     // The skills_invalid refusal for the skill loader's error, carrying that error as LoaderError.
     internal static JurisdictionLoad SkillsInvalid(SkillException error) =>
         new(error, new JurisdictionIssue(JurisdictionCodes.SkillsInvalid, error.File ?? ".", error.Code + (error.Detail is null ? "" : ": " + error.Detail)));
+
+    static void RequireExactlyOne(JurisdictionRegistry? registry, JurisdictionIssue? refusal, string member)
+    {
+        if ((registry is null) == (refusal is null))
+            throw new ArgumentException("exactly one of Registry and Refusal must be non-null", member);
+    }
 }
 
 public sealed partial class JurisdictionRegistry
