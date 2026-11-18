@@ -117,6 +117,16 @@ internal static class GenerateCommand
             return generated.RefusedLine is { } refused ? (false, refused) : (true, generated.Json);
         }
         catch (Refusal refusal) { return (false, FailureLine(refusal.Code, refusal.Detail)); }
+        // P7-23: a non-refusal exception outside Generate's guarded pipeline block (the parse / pack-load stretch, forced in
+        // tests through UnguardedStageProbe) is the typed internal error too, not an exception escaping to McpServer's
+        // generic Failed(message). The guarded block's own failures already arrive here as Refusal(InternalError) with their
+        // diagnostic written once.
+        catch (Exception error)
+        {
+            var envelope = IntentPlan.Internal("generate-prototypes", error);
+            Console.Error.WriteLine(envelope.Diagnostic);
+            return (false, envelope.Line);
+        }
     }
 
     // RefusedLine is the generate_prototypes_refused stdout line when the pipeline refused (Json is then empty).
