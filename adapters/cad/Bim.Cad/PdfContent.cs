@@ -26,6 +26,8 @@ namespace Bim.Cad;
 // of the affected codes that operator shows (code order, deduplicated, at most eight); a font selected but never
 // showing an affected code is silent. Only a show that emits text counts: one outside BT ... ET or at a non-finite
 // position keeps the warning pending.
+// P6-25: the affected names come from PdfSimpleEncoding.UnsupportedGlyphListName (one filter); a font dictionary under
+// two resource names shares one decoder and so warns once, named by the resource active at the showing operator.
 internal sealed class PdfContentInterpreter
 {
     private readonly PdfFile file;
@@ -497,7 +499,7 @@ internal sealed class PdfContentInterpreter
             {
                 unsupportedNames = new string?[256];
                 for (var code = 0; code < 256; code++)
-                    if (encoding.UnknownName((byte)code) is { } glyph && PdfGlyphNames.IsGlyphListName(glyph)) unsupportedNames[code] = glyph;
+                    unsupportedNames[code] = encoding.UnsupportedGlyphListName((byte)code);
             }
             encoding = encoding.WithoutUnknownNames;
         }

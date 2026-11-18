@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text;
+[assembly: InternalsVisibleTo("Bim.Cad.Tests")]
 namespace Bim.Cad;
 
 // The /Encoding dictionary of a simple font (PDF 32000-1 9.6.6.1): /BaseEncoding /StandardEncoding, /WinAnsiEncoding or
@@ -69,10 +70,15 @@ internal sealed class PdfSimpleEncoding
     private IReadOnlyList<string> FindUnsupportedGlyphListNames()
     {
         var names = new List<string>();
-        foreach (var name in unknown)
-            if (name is not null && PdfGlyphNames.IsGlyphListName(name) && !names.Contains(name, StringComparer.Ordinal)) names.Add(name);
+        for (var code = 0; code < 256; code++)
+            if (UnsupportedGlyphListName((byte)code) is { } name && !names.Contains(name, StringComparer.Ordinal)) names.Add(name);
         return names;
     }
+
+    // P6-25: the unknown /Differences name of the code when it is a real Adobe glyph-list name the reader does not map
+    // (PdfGlyphNames.IsGlyphListName), or null; the single place that filter is applied to an encoding. A
+    // WithoutUnknownNames copy keeps no unknown names, so it gives null for every code.
+    public string? UnsupportedGlyphListName(byte code) => unknown[code] is { } name && PdfGlyphNames.IsGlyphListName(name) ? name : null;
 
     // The base encoding of an /Encoding name, or null for another name.
     public static PdfSimpleEncoding? Named(string name) => name switch
