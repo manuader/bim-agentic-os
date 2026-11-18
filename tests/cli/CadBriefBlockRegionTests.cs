@@ -186,7 +186,7 @@ internal static class CadBriefBlockRegionTests
         {
             (Id: "bano", Path: new[] { "N1", "N2" }, X0: 21000.0, Y0: 0.0, X1: 23000.0, Y1: 2500.0),
             (Id: "estudio", Path: new[] { "M1[1,1]" }, X0: 5000.0, Y0: 14000.0, X1: 8000.0, Y1: 16000.0),
-            (Id: "sala", Path: new[] { "X1" }, X0: 36000.0, Y0: 0.0, X1: 40000.0, Y1: 2500.0),
+            (Id: "sala", Path: new[] { "X1" }, X0: 34000.0, Y0: 0.0, X1: 40000.0, Y1: 2500.0),
         };
 
         var included = InProcess(true);
