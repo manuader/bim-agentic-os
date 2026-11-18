@@ -1749,3 +1749,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 07:32Z integration bc370ab CI 44256207238 success (9/9) → main fast-forwarded (af6bc79..bc370ab). P2-29, P3-23, P10-26 ✅; new P2-30, P3-24, P10-27, P10-28. Progress 234/253 (92.5 %). Worktrees retired (branches relay227-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS updated (OWNER-TODO unchanged: no new owner action) e) LOCK released 2026-11-18T07:32:15Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P4-23 (Bim.Mcp.csproj + DocRealized split), P6-25 (PdfEncoding/PdfContent), P6-26 (CadBriefBlockRegionTests) (relay225); then P5-22, P5-25, P7-23, P7-24, P1-30, P1-31 (relay226; McpServer.cs edits serialize: P5-22, P7-23, P10-27); then P2-30, P3-22, P3-24, P10-27, P10-28. ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay229 — 2026-11-18T07:53:07Z (Claude, cloud scheduled)
+- 07:53Z LOCK taken (was FREE; relay227 released 2026-11-18T07:32:15Z).
