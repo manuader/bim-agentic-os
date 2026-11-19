@@ -17,6 +17,15 @@ string? Code(Action action)
     catch (Exception error) { return "unexpected " + error.GetType().Name + ": " + error.Message; }
 }
 
+// P2-33: --write-progress-only runs only the per-OS write-progress section of the drift loop (the macOS CI step).
+if (args is ["--write-progress-only"])
+{
+    MirrorDriftLoopChecks.Run(Check, writeProgressOnly: true);
+    Console.WriteLine($"mirror-journal --write-progress-only: {passed} passed, {failed} failed");
+    return failed == 0 && passed > 0 ? 0 : 1;
+}
+if (args.Length > 0) { Console.WriteLine("::error::mirror-journal: unknown arguments " + string.Join(" ", args)); return 2; }
+
 const string Doc = "60f91daf-3dd7-4283-a86d-24137b73f3da-0001fd0b";
 const string OtherDoc = "11111111-2222-3333-4444-555555555555-00000001";
 const string L1 = "60f91daf-3dd7-4283-a86d-24137b73f3da-00000137";
