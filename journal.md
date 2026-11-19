@@ -1861,3 +1861,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay244
 - 2026-11-19T17:52:49Z lock taken (session_014pxpsT1HRDYSeiGZzvQEex relay244; was FREE, relay243 released 17:05:27Z)
 - 2026-11-19T17:53:21Z picked P2-33 (phase 2), P3-26 (phase 3) (relay241) and P4-27 (phase 4, relay242) — oldest-touched; disjoint files (GenerateTypologyWrite.cs only by P3-26, GenerateCommand.cs only by P4-27). Workers spawned.
+- 2026-11-19T18:43:50Z workers green: P2-33 c44e395 (deliberate macOS probe red 44582611952, green 44586113882), P3-26 8be82aa (red 44582683717, green 44585805948; P4-26 Execute SHA pin updated as recorded deviation), P4-27 2687e40 (red 44582754418, green 44585131245); 0 failed attempts. Reviews next.
