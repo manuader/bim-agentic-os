@@ -35,7 +35,7 @@ internal static class GenerateTypologyWriteLinkTests
     static readonly (string Name, string Start, string? End, int Length, string Sha256)[] Moved =
     {
         ("Run", "    public static void Run(string[] args)\n", null, 940, "276bcd59f46d30af29780c5e66b623cb0648f4665defcfd1b6fe049b5bc9d6b0"),
-        ("Execute", "    static void Execute(string[] args)\n", null, 3998, "21e46bf089ba67bcd27f5e4b22591a441eef013c1f1bb1ac6ca7cedbd9dfb14c"),
+        ("Execute", "    static void Execute(string[] args)\n", null, 3785, "2736244ade44c149e18c2fa0f7ac409542b47ce9415d40b9511e71a7f2fc35c6"),
         ("PostWriteProbe", "    // P3-25 test seam: null in production.", "    internal static Action? PostWriteProbe { get; set; }\n", 329, "ab3fb49b7fcd00c4667f689724421a5851b78d2ecb590dbc7a4ec28978957e01"),
         ("Fail", "    static void Fail(string code, string? detail, string? skill = null)\n", null, 179, "88cfa4e44ffd48a4d8fc3cd9316af95aea3e8c64675c0142776c69a099609660"),
     };
@@ -60,6 +60,57 @@ internal static class GenerateTypologyWriteLinkTests
         var close = end ?? "\n    }\n";
         var stop = text.IndexOf(close, at, StringComparison.Ordinal);
         return stop < 0 ? null : text[at..(stop + close.Length)];
+    }
+
+    // P3-26 changed Execute after the P4-26 move: its post-write comment paragraph and the cleanup catch. The documented
+    // delta below, as exact (new, old) pairs, is applied in reverse to the current Execute block (each new text must occur
+    // exactly once, or the reversal fails closed with null); the result must be the pre-split Execute pinned in Moved, so
+    // everything outside the delta is still verbatim. The current block is pinned too ("Execute after P3-26").
+    static readonly (string New, string Old)[] ExecuteDeltaP326 =
+    {
+        ("        // to Run's catch-all (the typed InternalError line with its diagnostic once). P3-26: a failed removal (any exception,\n"
+            + "        // IO or not) writes one PartialOutputLeft line naming the file left behind to stderr (a failure writing it is\n"
+            + "        // swallowed too) and is otherwise swallowed, so the original exception is the one rethrown and reported. If stdout\n"
+            + "        // itself throws part-way through the success line, that partial line may precede the typed line on stdout.\n",
+            "        // to Run's catch-all (the typed InternalError line with its diagnostic once). A failed removal is ignored: the typed\n"
+            + "        // line is still printed. If stdout itself throws part-way through the success line, that partial line may precede\n"
+            + "        // the typed line on stdout.\n"),
+        ("            try { PostWriteRemovalProbe?.Invoke(output); File.Delete(output); }\n"
+            + "            catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }\n",
+            "            try\n"
+            + "            {\n"
+            + "                File.Delete(output);\n"
+            + "            }\n"
+            + "            catch (Exception removal) when (removal is IOException or UnauthorizedAccessException) { }\n"),
+    };
+    const int ExecuteAfterP326Length = 3998;
+    const string ExecuteAfterP326Sha256 = "21e46bf089ba67bcd27f5e4b22591a441eef013c1f1bb1ac6ca7cedbd9dfb14c";
+
+    // The block with each (new, old) pair replaced back (new -> old), or null when a new text does not occur exactly once.
+    internal static string? ReverseDelta(string block, IReadOnlyList<(string New, string Old)> delta)
+    {
+        foreach (var (newText, oldText) in delta)
+        {
+            var at = block.IndexOf(newText, StringComparison.Ordinal);
+            if (at < 0 || block.IndexOf(newText, at + 1, StringComparison.Ordinal) >= 0) return null;
+            block = block[..at] + oldText + block[(at + newText.Length)..];
+        }
+        return block;
+    }
+
+    // The field names of a top-level type in an assembly's metadata (constants and backing fields included), or null.
+    static string[]? FieldsOf(string assemblyPath, string ns, string name)
+    {
+        using var stream = File.OpenRead(assemblyPath);
+        using var pe = new System.Reflection.PortableExecutable.PEReader(stream);
+        var metadata = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
+        foreach (var handle in metadata.TypeDefinitions)
+        {
+            var type = metadata.GetTypeDefinition(handle);
+            if (!type.GetDeclaringType().IsNil || metadata.GetString(type.Namespace) != ns || metadata.GetString(type.Name) != name) continue;
+            return type.GetFields().Select(f => metadata.GetString(metadata.GetFieldDefinition(f).Name)).Distinct().Order(StringComparer.Ordinal).ToArray();
+        }
+        return null;
     }
 
     static string Sha256(string text) => Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false).GetBytes(text))).ToLowerInvariant();
@@ -173,7 +224,7 @@ internal static class GenerateTypologyWriteLinkTests
             "no generate-typology source compiled by Bim.Mcp.csproj calls GltfExporter.WriteNew [" + string.Join(", ", remaining) + "]");
 
         // ---- 2. the real Release binaries ----
-        var verbMembers = new[] { "Run", "Execute", "Fail", "get_PostWriteProbe", "set_PostWriteProbe" };
+        var verbMembers = new[] { "Run", "Execute", "Fail", "get_PostWriteProbe", "set_PostWriteProbe", "get_PostWriteRemovalProbe", "set_PostWriteRemovalProbe" };
         var shared = new[] { "Document", "Generate" };
         var mcpMethods = File.Exists(mcpDll) ? PlanLayoutsWriteLinkTests.MethodsOf(mcpDll, "Bim.Cli", "GenerateTypologyCommand") : null;
         var cliMethods = File.Exists(cliDll) ? PlanLayoutsWriteLinkTests.MethodsOf(cliDll, "Bim.Cli", "GenerateTypologyCommand") : null;
@@ -183,6 +234,14 @@ internal static class GenerateTypologyWriteLinkTests
             "the Release Bim.Cli.dll defines Bim.Cli.GenerateTypologyCommand with Run, Execute, Fail, PostWriteProbe, Document and Generate (reader control) [" + string.Join(", ", cliNames) + "]");
         Check(mcpMethods is not null && shared.All(member => mcpNames.Contains(member)) && !verbMembers.Any(member => mcpNames.Contains(member)),
             "the Release Bim.Mcp.dll defines Bim.Cli.GenerateTypologyCommand with Document and Generate and without Run, Execute, Fail or PostWriteProbe [" + string.Join(", ", mcpNames) + "]");
+        // P3-26: the cleanup-report constant and the removal seam's backing field are CLI-only too.
+        var cliFields = File.Exists(cliDll) ? FieldsOf(cliDll, "Bim.Cli", "GenerateTypologyCommand") : null;
+        var mcpFields = File.Exists(mcpDll) ? FieldsOf(mcpDll, "Bim.Cli", "GenerateTypologyCommand") : null;
+        static bool P326Field(string field) => field == "PartialOutputLeft" || field.Contains("PostWriteRemovalProbe", StringComparison.Ordinal);
+        Check(cliFields is not null && cliFields.Contains("PartialOutputLeft") && cliFields.Any(f => f.Contains("PostWriteRemovalProbe", StringComparison.Ordinal)),
+            "the Release Bim.Cli.dll GenerateTypologyCommand has the P3-26 field PartialOutputLeft and the PostWriteRemovalProbe backing field (reader control) [" + string.Join(", ", cliFields ?? Array.Empty<string>()) + "]");
+        Check(mcpFields is not null && !mcpFields.Any(P326Field),
+            "the Release Bim.Mcp.dll GenerateTypologyCommand has no PartialOutputLeft or PostWriteRemovalProbe field [" + string.Join(", ", mcpFields ?? Array.Empty<string>()) + "]");
 
         // ---- 3. the split ----
         Check(File.Exists(writePath), "interfaces/cli/GenerateTypologyWrite.cs holds the generate-typology write path (split from GenerateTypologyCommand.cs)");
@@ -190,10 +249,34 @@ internal static class GenerateTypologyWriteLinkTests
         var sharedText = File.ReadAllText(sharedPath).Replace("\r\n", "\n", StringComparison.Ordinal);
         foreach (var (name, start, end, length, sha256) in Moved)
         {
-            var block = Block(writeText, start, end);
+            var current = Block(writeText, start, end);
+            // P3-26: Execute is compared after reversing its documented delta (ExecuteDeltaP326).
+            var block = name == "Execute" && current is not null ? ReverseDelta(current, ExecuteDeltaP326) : current;
             Check(block is not null && block.Length == length && Sha256(block) == sha256,
-                "GenerateTypologyWrite.cs holds " + name + " moved verbatim (" + (block?.Length ?? -1) + " chars, sha256 " + (block is null ? "-" : Sha256(block)) + ")");
+                "GenerateTypologyWrite.cs holds " + name + " moved verbatim" + (name == "Execute" ? " (the documented P3-26 delta reversed)" : "")
+                + " (" + (block?.Length ?? -1) + " chars, sha256 " + (block is null ? "-" : Sha256(block)) + ")");
             Check(!sharedText.Contains(start, StringComparison.Ordinal), "GenerateTypologyCommand.cs no longer holds " + name);
+        }
+        // P3-26: the current Execute block is pinned, and the delta reversal fails closed (self-tests on the real block).
+        var execute = Moved.Single(m => m.Name == "Execute");
+        var executeNow = Block(writeText, execute.Start, execute.End);
+        Check(executeNow is not null && executeNow.Length == ExecuteAfterP326Length && Sha256(executeNow) == ExecuteAfterP326Sha256,
+            "GenerateTypologyWrite.cs holds Execute after P3-26 (" + (executeNow?.Length ?? -1) + " chars, sha256 " + (executeNow is null ? "-" : Sha256(executeNow)) + ")");
+        if (executeNow is not null)
+        {
+            bool Pinned(string? text) => text is not null && text.Length == execute.Length && Sha256(text) == execute.Sha256;
+            const string Outside = "        var output = args[2];\n";
+            Check(executeNow.Contains(Outside, StringComparison.Ordinal)
+                && !Pinned(ReverseDelta(executeNow.Replace(Outside, "        var output = args[1];\n", StringComparison.Ordinal), ExecuteDeltaP326)),
+                "delta self-test: a one-character change outside the P3-26 delta no longer reverses to the pre-split Execute pin");
+            foreach (var (index, pair) in ExecuteDeltaP326.Select((p, i) => (i, p)))
+            {
+                Check(ReverseDelta(executeNow.Replace(pair.New, "", StringComparison.Ordinal), ExecuteDeltaP326) is null,
+                    "delta self-test: P3-26 delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " missing fails closed (null)");
+                Check(ReverseDelta(executeNow + pair.New, ExecuteDeltaP326) is null,
+                    "delta self-test: P3-26 delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " appearing twice fails closed (null)");
+            }
+            Check(Pinned(ReverseDelta(executeNow, ExecuteDeltaP326)), "delta self-test: the unchanged block reverses to the pre-split Execute pin (positive control)");
         }
         var write = Compact(DocUpdateLinkTests.CodeOf(writeText));
         var sharedCode = Compact(DocUpdateLinkTests.CodeOf(sharedText));
@@ -206,7 +289,7 @@ internal static class GenerateTypologyWriteLinkTests
         Check(misplaced.Length == 0, "GenerateTypologyWrite.cs defines Run, Execute, Fail and PostWriteProbe once and GenerateTypologyCommand.cs none of them [" + string.Join(", ", misplaced) + "]");
         Check(Count(write, "GltfExporter.WriteNew(bytes,output)") == 1 && Count(write, "WriteNew") == 1,
             "GenerateTypologyWrite.cs holds the verb's single exclusive write (GltfExporter.WriteNew)");
-        var writerApis = new[] { "GltfExporter", "WriteNew", "Console.WriteLine(", "Console.Out", "Environment.ExitCode", "SHA256", "File.", "FileStream", "usingBim.Gltf;", "PostWriteProbe" }
+        var writerApis = new[] { "GltfExporter", "WriteNew", "Console.WriteLine(", "Console.Out", "Environment.ExitCode", "SHA256", "File.", "FileStream", "usingBim.Gltf;", "PostWriteProbe", "PostWriteRemovalProbe", "PartialOutputLeft" }
             .Where(api => sharedCode.Contains(api, StringComparison.Ordinal)).ToArray();
         Check(sharedCode.Length > 0 && writerApis.Length == 0,
             "GenerateTypologyCommand.cs (compiled by the server) holds no writer: no exporter, stdout line, exit code, hash, file access, post-write seam or using Bim.Gltf in code ["
