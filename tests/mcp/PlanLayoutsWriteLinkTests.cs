@@ -131,12 +131,12 @@ internal static class PlanLayoutsWriteLinkTests
         var testsDir = Path.GetFullPath(Path.Combine(root, "tests")) + Path.DirectorySeparatorChar;
         var project = Path.Combine(mcpDir, "Bim.Mcp.csproj");
         var projectXml = File.ReadAllText(project);
-        var items = DocUpdateLinkTests.Compiled(projectXml, mcpDir);
+        var compiledItems = DocUpdateLinkTests.Compiled(projectXml, mcpDir);
         var links = WriteLinks(projectXml, mcpDir);
         Check(links.Length == 0, "Bim.Mcp.csproj does not compile the plan-layouts write part (interfaces/cli/PlanLayoutsWrite.cs) [" + string.Join(", ", links) + "]");
-        Check(items.Any(c => c.Files.Any(path => string.Equals(path, sharedPath, comparison))),
+        Check(compiledItems.Any(c => c.Files.Any(path => string.Equals(path, sharedPath, comparison))),
             "Bim.Mcp.csproj compiles interfaces/cli/PlanLayoutsCommand.cs (the dry plan the plan_layouts tool runs)");
-        var compiledSources = items.SelectMany(c => c.Files)
+        var compiledSources = compiledItems.SelectMany(c => c.Files)
             .Concat(Directory.GetFiles(mcpDir, "*.cs", SearchOption.AllDirectories).Where(path => !Built(Path.GetRelativePath(mcpDir, path))))
             .Select(path => Path.GetFullPath(path)).Where(path => !path.StartsWith(testsDir, comparison) && File.Exists(path)).Distinct().ToArray();
         var users = compiledSources.Select(path => (Name: Path.GetFileName(path), Found: WriteUses(File.ReadAllText(path)))).Where(u => u.Found.Length > 0)
