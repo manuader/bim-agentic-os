@@ -455,7 +455,15 @@ internal static class RevitCommandDeadlineTests
         check(ignoringError is RevitPipeReadTimeoutException && ignoring.Events == "read,gave up,cancel",
             "P1-33 cancel race: a line completing only after the cancel is dropped (RevitPipeReadTimeoutException)", (ignoringError?.GetType().Name ?? "no error") + " events " + ignoring.Events);
 
-        // A read that faults on the cancel (a closed pipe) is still the read timeout, its late fault observed.
+        // A read that ends cancelled within the wait (not by the seam's token) is taken as not done: hook, cancel, read timeout.
+        var precancelled = new GatedRead();
+        precancelled.Line.TrySetCanceled();
+        var precancelledError = Thrown(() => RevitCommandService.ReadReplyLine(precancelled.Start, wait, () => precancelled.Event("gave up")));
+        check(precancelledError is RevitPipeReadTimeoutException { Timeout: var pt } && pt == wait && precancelled.Events == "read,gave up,cancel",
+            "P1-33 cancel race: a read already cancelled (not by the seam) is not done: RevitPipeReadTimeoutException names the 50 ms wait",
+            (precancelledError?.GetType().Name ?? "no error") + " events " + precancelled.Events);
+
+        // A read that faults on the cancel (a closed pipe) is still the read timeout; the late fault is dropped.
         var faulting = new GatedRead { FaultOnCancel = new IOException("late fault") };
         var faultingError = Thrown(() => RevitCommandService.ReadReplyLine(faulting.Start, wait, () => faulting.Event("gave up")));
         check(faultingError is RevitPipeReadTimeoutException && faulting.Line.Task.IsFaulted,
@@ -526,6 +534,16 @@ internal static class RevitCommandDeadlineTests
         check(sendBody.Contains("return ReadReplyLine(token => reader.ReadLineAsync(token).AsTask(), readTimeout);", StringComparison.Ordinal)
             && !sendBody.Contains(".Wait(", StringComparison.Ordinal) && !sendBody.Contains("Cancel()", StringComparison.Ordinal),
             "P1-33 static: RevitCommandService.SendMeasured reads the reply line only through ReadReplyLine, without the test hook", sendBody.Length > 400 ? sendBody[^400..] : sendBody);
+        var coreUses = Directory.GetFiles(Path.Combine(root, "core"), "*.cs", SearchOption.AllDirectories)
+            .SelectMany(file => System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(file).ReplaceLineEndings("\n"), @"ReadReplyLine\(")
+                .Select(hit => Path.GetRelativePath(root, file).Replace('\\', '/') + "@" + N(hit.Index))).ToArray();
+        var definition = source.IndexOf("internal static string? ReadReplyLine(", StringComparison.Ordinal);
+        var inSend = sendStart < 0 ? -1 : source.IndexOf("ReadReplyLine(", sendStart, StringComparison.Ordinal);
+        check(coreUses.Length == 2 && definition >= 0 && inSend > sendStart && inSend < sendEnd
+            && coreUses.All(use => use.StartsWith("core/Bim.Core/RevitCommandsService.cs@", StringComparison.Ordinal))
+            && coreUses.Contains("core/Bim.Core/RevitCommandsService.cs@" + N(definition + "internal static string? ".Length))
+            && coreUses.Contains("core/Bim.Core/RevitCommandsService.cs@" + N(inSend)),
+            "P1-33 static: under core/ ReadReplyLine( appears only at its internal definition and in SendMeasured", string.Join(", ", coreUses));
     }
 
     // ---- 2e. P1-33: cutReads false (the MCP server on an injected transport) never cuts the in-flight page ----
