@@ -17,7 +17,8 @@ using Bim.Cad;
 //      while Cocina keeps its model-space region (the flag changes only block regions).
 //   3. A value option followed by the flag (--page --include-block-regions, --metres-per-unit --include-block-regions)
 //      is the exact cad_option_value_invalid envelope for that option, exit 1, nothing written.
-// P6-26 (nested, MINSERT cell and mirrored inserts) is the RunTransformed section below.
+// P6-26 (nested, MINSERT cell and mirrored inserts) is the RunTransformed section below; P6-28 (rotated inserts,
+// rotated MINSERT cells and non-zero block base points) is the RunRotated section.
 internal static class CadBriefBlockRegionTests
 {
     const string Flag = "--include-block-regions";
@@ -135,6 +136,7 @@ internal static class CadBriefBlockRegionTests
         }
 
         RunTransformed(scratch, Cli, RoomsOf, R, Clip, Check);
+        RunRotated(scratch, Cli, RoomsOf, R, Clip, Check);
     }
 
     // P6-26 block regions through nested, MINSERT and mirrored inserts. A second generated millimetre DXF holds three
@@ -222,6 +224,132 @@ internal static class CadBriefBlockRegionTests
         var plain = cli(new[] { "cad-brief", input, withoutOutput });
         var withoutRooms = roomsOf(withoutOutput);
         Check(plain.Exit == 0 && withoutRooms == expectedWithout && withoutRooms != withRooms && !withoutRooms.Contains("\"InsertPath\":[\"", StringComparison.Ordinal),
+            "without " + Flag + " draft.json rooms equal the default-option in-process rooms (no block region)",
+            r(plain) + " rooms " + clip(withoutRooms));
+    }
+
+    // P6-28 block regions through rotated inserts, a rotated MINSERT cell and blocks with a non-zero base point. A third
+    // generated millimetre DXF holds five labelled rooms:
+    //   * "Comedor": block ROT (4000 x 2000 rectangle at the origin) inserted as R1 at (60000, 0) rotated 30 degrees:
+    //     centre (61232.05, 1866.03), 8 m2, InsertPath [R1].
+    //   * "Despensa": a label at (63500, 200), inside the unrotated footprint (60000, 0)-(64000, 2000) of R1 (and inside the
+    //     footprint rotated by -30 degrees) but outside the true 30-degree rectangle, so it must have no region.
+    //   * "Oficina": block CELL2 (2000 x 1000) placed by MINSERT M2 at (0, 30000) rotated 60 degrees, 2 columns x 3 rows,
+    //     column spacing 3000, row spacing 2000; the label sits in cell row 2, column 1 (the cell offset turns with the
+    //     insert): centre (-1897.11, 35714.10), 2 m2, InsertPath [M2[2,1]].
+    //   * "Lavadero": block BASE with base point (1000, 500) (BLOCK groups 10/20) holding the rectangle (2000, 1000)-(5000,
+    //     3500), inserted as L1 at (0, 60000): world (1000, 60500)-(4000, 63000), centre (2500, 61750), 7.5 m2, [L1].
+    //   * "Garaje": the same block BASE inserted as G1 at (20000, 60000), rotated 30 degrees, scale 2: world = insertion +
+    //     rotate(scale(p - base)), centre (22580.13, 65531.09), 30 m2, InsertPath [G1].
+    // Expected corners come from an independent transform written here (insertion + R(angle) * (cell offset + S * (p -
+    // base))), cross-checked against hand-computed centres; the centre is the bounding-box centre of the transformed
+    // corners and the area their shoelace area, positive. Through the real CLI with the flag draft.json rooms equal the
+    // in-process IncludeBlockRegions rooms; without the flag they equal the default-option rooms and none has a region.
+    const string RotatedFileName = "block-region-rotated.dxf";
+
+    static string RotatedDrawing() =>
+        G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+        + G("0 SECTION|2 BLOCKS")
+        + G("0 BLOCK|5 B50|8 0|2 ROT|70 0|10 0|20 0|30 0") + Rect("B51", 0, 0, 4000, 2000, "0") + G("0 ENDBLK|5 B52|8 0")
+        + G("0 BLOCK|5 B60|8 0|2 CELL2|70 0|10 0|20 0|30 0") + Rect("B61", 0, 0, 2000, 1000, "0") + G("0 ENDBLK|5 B62|8 0")
+        + G("0 BLOCK|5 B70|8 0|2 BASE|70 0|10 1000|20 500|30 0") + Rect("B71", 2000, 1000, 5000, 3500, "0") + G("0 ENDBLK|5 B72|8 0")
+        + G("0 ENDSEC|0 SECTION|2 ENTITIES")
+        + G("0 INSERT|5 R1|8 ROOMS|2 ROT|10 60000|20 0|30 0|50 30")
+        + G("0 INSERT|5 M2|8 ROOMS|2 CELL2|10 0|20 30000|30 0|50 60|70 2|71 3|44 3000|45 2000")
+        + G("0 INSERT|5 L1|8 ROOMS|2 BASE|10 0|20 60000|30 0")
+        + G("0 INSERT|5 G1|8 ROOMS|2 BASE|10 20000|20 60000|30 0|41 2|42 2|50 30")
+        + string.Concat(RotatedLabels.Select((l, i) => Text((31 + i).ToString(CultureInfo.InvariantCulture), l.X, l.Y, l.Name)))
+        + G("0 ENDSEC|0 EOF");
+
+    // Independent placement: insertion + R(degrees) * (offset + (sx, sy) * (p - base)).
+    static (double X, double Y) Place((double X, double Y) insertion, double degrees, double sx, double sy, (double X, double Y) basePoint, (double X, double Y) offset, (double X, double Y) p)
+    {
+        var radians = degrees * Math.PI / 180;
+        double lx = offset.X + sx * (p.X - basePoint.X), ly = offset.Y + sy * (p.Y - basePoint.Y);
+        return (insertion.X + lx * Math.Cos(radians) - ly * Math.Sin(radians), insertion.Y + lx * Math.Sin(radians) + ly * Math.Cos(radians));
+    }
+
+    sealed record RotatedCase(string Id, string Name, string[] Path, (double X, double Y)[] Corners, (double X, double Y) Hand, double HandArea);
+
+    static RotatedCase Case(string id, string name, string[] path, (double X, double Y) insertion, double degrees, double scale, (double X, double Y) basePoint, (double X, double Y) offset,
+        double x0, double y0, double x1, double y1, (double X, double Y) hand, double handArea) =>
+        new(id, name, path, new[] { (x0, y0), (x1, y0), (x1, y1), (x0, y1) }.Select(c => Place(insertion, degrees, scale, scale, basePoint, offset, c)).ToArray(), hand, handArea);
+
+    static readonly RotatedCase[] RotatedCases =
+    {
+        Case("comedor", "Comedor", new[] { "R1" }, (60000, 0), 30, 1, (0, 0), (0, 0), 0, 0, 4000, 2000, (61232.0508, 1866.0254), 8),
+        Case("oficina", "Oficina", new[] { "M2[2,1]" }, (0, 30000), 60, 1, (0, 0), (1 * 3000, 2 * 2000), 0, 0, 2000, 1000, (-1897.1143, 35714.1016), 2),
+        Case("lavadero", "Lavadero", new[] { "L1" }, (0, 60000), 0, 1, (1000, 500), (0, 0), 2000, 1000, 5000, 3500, (2500, 61750), 7.5),
+        Case("garaje", "Garaje", new[] { "G1" }, (20000, 60000), 30, 2, (1000, 500), (0, 0), 2000, 1000, 5000, 3500, (22580.1270, 65531.0889), 30),
+    };
+
+    static (double X, double Y) BoxCentre((double X, double Y)[] corners) =>
+        ((corners.Min(c => c.X) + corners.Max(c => c.X)) / 2, (corners.Min(c => c.Y) + corners.Max(c => c.Y)) / 2);
+
+    static double ShoelaceSquareMetres((double X, double Y)[] corners)
+    {
+        double twice = 0;
+        for (var i = 0; i < corners.Length; i++) { var (ax, ay) = corners[i]; var (bx, by) = corners[(i + 1) % corners.Length]; twice += ax * by - bx * ay; }
+        return Math.Abs(twice) / 2 * 1e-6;
+    }
+
+    // Labels at the transformed rectangle centres, plus Despensa outside the rotated rectangle.
+    static readonly (string Name, double X, double Y)[] RotatedLabels =
+        RotatedCases.Select(c => { var (x, y) = BoxCentre(c.Corners); return (Name: c.Name, X: x, Y: y); }).Append(("Despensa", 63500.0, 200.0)).ToArray();
+
+    static void RunRotated(string scratch, Func<string[], (int Exit, string Out, string Err)> cli, Func<string, string> roomsOf,
+        Func<(int Exit, string Out, string Err), string> r, Func<string, string> clip, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "rotated: " + name, detail);
+        var bytes = new UTF8Encoding(false).GetBytes(RotatedDrawing());
+        var input = Path.Combine(scratch, RotatedFileName);
+        File.WriteAllBytes(input, bytes);
+        BriefDraft InProcess(bool include) =>
+            BriefExtract.FromDxf(DxfReader.Parse(bytes, RotatedFileName), new BriefExtractOptions { IncludeBlockRegions = include });
+        static bool Near(double? value, double expected, double tolerance = 1e-6) => value is { } v && Math.Abs(v - expected) < tolerance;
+        static string P((double X, double Y) p) => "(" + F(p.X) + ", " + F(p.Y) + ")";
+
+        var included = InProcess(true);
+        var excluded = InProcess(false);
+        foreach (var c in RotatedCases)
+        {
+            var centre = BoxCentre(c.Corners);
+            var area = ShoelaceSquareMetres(c.Corners);
+            // The independent transform agrees with the hand-computed centre and area (guards the oracle itself).
+            Check(Near(centre.X, c.Hand.X, 1e-3) && Near(centre.Y, c.Hand.Y, 1e-3) && Near(area, c.HandArea, 1e-9),
+                "oracle: " + c.Id + " independently transformed centre " + P(centre) + " and area " + F(area) + " m2 match the hand values " + P(c.Hand) + ", " + F(c.HandArea),
+                "corners " + string.Join(" ", c.Corners.Select(P)));
+            var room = included.Rooms.FirstOrDefault(x => x.Id == c.Id);
+            Check(room is { Region: { } region } && region.InsertPath.SequenceEqual(c.Path)
+                    && Near(region.At.X, centre.X) && Near(region.At.Y, centre.Y)
+                    && room.RegionAreaSquareMetres > 0 && Near(room.RegionAreaSquareMetres, area, 1e-9),
+                "in process IncludeBlockRegions: " + c.Id + " region InsertPath [" + string.Join(", ", c.Path) + "], centre " + P(centre) + " and positive area " + F(area) + " m2 of the independently transformed rectangle",
+                clip(JsonSerializer.Serialize(room, RoomJson)));
+            var plainRoom = excluded.Rooms.FirstOrDefault(x => x.Id == c.Id);
+            Check(plainRoom is { Region: null, RegionAreaSquareMetres: null },
+                "in process default options: " + c.Id + " has no region", clip(JsonSerializer.Serialize(plainRoom, RoomJson)));
+        }
+        // Containment follows the rotated outline, not the unrotated footprint nor a -30 degree rotation.
+        var despensa = included.Rooms.FirstOrDefault(x => x.Id == "despensa");
+        var comedor = included.Rooms.FirstOrDefault(x => x.Id == "comedor");
+        Check(despensa is { Region: null, RegionAreaSquareMetres: null } && comedor is { Region: not null } && included.Rooms.Count == 5,
+            "in process IncludeBlockRegions: Despensa (63500, 200), outside the 30-degree rectangle of R1, has no region; Comedor keeps it; five rooms",
+            clip(JsonSerializer.Serialize(included.Rooms.Select(x => new { x.Id, x.Region, x.RegionAreaSquareMetres }), RoomJson)));
+
+        var expectedWith = JsonSerializer.Serialize(included.Rooms, RoomJson);
+        var withOutput = Path.Combine(scratch, "rotated-with.json");
+        var flagged = cli(new[] { "cad-brief", input, withOutput, Flag });
+        var withRooms = roomsOf(withOutput);
+        Check(flagged.Exit == 0 && withRooms == expectedWith && RotatedCases.All(c => expectedWith.Contains("\"InsertPath\":[\"" + c.Path[0] + "\"]", StringComparison.Ordinal)),
+            "with " + Flag + " draft.json rooms equal the in-process IncludeBlockRegions rooms (rotated insert, rotated MINSERT cell, base-point inserts)",
+            r(flagged) + " rooms " + clip(withRooms));
+
+        var expectedWithout = JsonSerializer.Serialize(excluded.Rooms, RoomJson);
+        var withoutOutput = Path.Combine(scratch, "rotated-without.json");
+        var plain = cli(new[] { "cad-brief", input, withoutOutput });
+        var withoutRooms = roomsOf(withoutOutput);
+        Check(plain.Exit == 0 && withoutRooms == expectedWithout && withoutRooms != withRooms && !withoutRooms.Contains("\"InsertPath\":[\"", StringComparison.Ordinal)
+                && excluded.Rooms.All(x => x.Region is null),
             "without " + Flag + " draft.json rooms equal the default-option in-process rooms (no block region)",
             r(plain) + " rooms " + clip(withoutRooms));
     }
