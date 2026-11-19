@@ -65,9 +65,10 @@ namespace Bim.Cli;
 //   the skill code, or "id" when the manifest names another pack), generate_prototypes_refused (with
 //   "refusals":[{"code","subject","detail"}] = PrototypePipelineResult.Refusals in order, no detail),
 //   generate_prototypes_internal_error (stderr gets the exception type and message; P7-26: an unexpected exception after
-//   GltfExporter.WriteNew succeeded removes the just-written file again; P7-27: if that removal itself fails, stderr first
-//   gets one line "generate-prototypes: could not delete partial output: <output path as given>" (PartialOutputLeft) and
-//   the file stays; stdout, exit 1 and the diagnostic, which names the original exception, are unchanged).
+//   GltfExporter.WriteNew succeeded removes the just-written file again; P7-27: if that removal itself fails, the file
+//   stays and stderr gets one line "generate-prototypes: could not delete partial output: <output path as given>"
+//   (PartialOutputLeft) before the diagnostic, which still names the original exception once; stdout and exit 1 are
+//   unchanged; if writing that stderr line fails too, it is dropped and the original exception is still the one reported).
 // Precedence: usage, output path, request read, request parse, repository, pack, pipeline, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
 internal static class GenerateCommand
@@ -165,8 +166,8 @@ internal static class GenerateCommand
         // the file between WriteNew and the Delete below, a theoretical race, could make the Delete remove another's file).
         // Any exception before the success line is complete removes the just-written file again, then propagates unchanged
         // to Run's catch-all (the typed InternalError line with its diagnostic once). P7-27: a failed removal (any exception,
-        // IO or not) writes one PartialOutputLeft line naming the file left behind to stderr and is otherwise swallowed, so
-        // the original exception is the one rethrown and reported. If stdout itself throws part-way through the success
+        // IO or not) writes one PartialOutputLeft line naming the file left behind to stderr (a failure writing it is
+        // swallowed too) and is otherwise swallowed, so the original exception is the one rethrown and reported. If stdout itself throws part-way through the success
         // line, that partial line may precede the typed line on stdout.
         try
         {
@@ -189,7 +190,7 @@ internal static class GenerateCommand
         catch (Exception)
         {
             try { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }
-            catch (Exception) { Console.Error.WriteLine(PartialOutputLeft + output); }
+            catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }
             throw;
         }
     }
