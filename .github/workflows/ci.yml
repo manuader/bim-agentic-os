@@ -164,6 +164,11 @@ jobs:
       - name: Bounded CLI input tests (macOS)
         if: runner.os == 'macOS'
         run: dotnet run --project tests/cli --configuration Release --no-build
+      - name: Write progress at a mid-args break (macOS, P2-33)
+        if: runner.os == 'macOS'
+        run: |
+          dotnet build tests/mirror-journal --configuration Release --warnaserror
+          dotnet run --project tests/mirror-journal --configuration Release --no-build -- --write-progress-only
   native-build:
     runs-on: windows-latest
     steps:
