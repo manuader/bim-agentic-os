@@ -220,11 +220,14 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
    Check(r27A.Registry is {} r27Ra && r27B.Registry is {} r27Rb && r27Ra.Codes.SequenceEqual(r27Rb.Codes) && r27Ra.Claims.Count==1 && r27Rb.Claims.Count==1 && r27Ra.Claims[0].Pack==r27Rb.Claims[0].Pack,"P5-27 "+r27Name+": both reads succeed with the same claims ("+r27A.Refusal?.Code+"/"+r27B.Refusal?.Code+")");
    var r27X=r27A.Registry!; var r27Y=r27B.Registry!;
    Check(!ReferenceEquals(r27X,r27Y) && !r27X.Equals(r27Y) && !r27X.Equals((object)r27Y) && !EqualityComparer<JurisdictionRegistry>.Default.Equals(r27X,r27Y) && !(r27X==r27Y) && r27X!=r27Y,"P5-27 "+r27Name+": two reads give unequal registries (reference identity)");
-   Check(r27X.Equals(r27X) && r27X.Equals((object)r27X) && !r27X.Equals(null) && !r27X.Equals((object?)null) && !r27X.Equals((object)"x"),"P5-27 "+r27Name+": a registry equals itself only");
+   Check(r27X.Equals(r27X) && r27X.Equals((object)r27X) && !r27X.Equals((object)"x"),"P5-27 "+r27Name+": a registry equals itself only");
    Check(r27X.GetHashCode()==System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(r27X) && r27Y.GetHashCode()==System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(r27Y) && r27X.GetHashCode()==r27X.GetHashCode(),"P5-27 "+r27Name+": the hash is the identity hash and stable");
    Check(new HashSet<JurisdictionRegistry>{r27X,r27Y,r27X}.Count==2,"P5-27 "+r27Name+": a hash set keeps both reads");
    Check(r27A!=r27B && !r27A.Equals(r27B),"P5-27 "+r27Name+": the two loads are unequal (JurisdictionLoad follows Registry identity)");
    Check(new JurisdictionLoad(r27X,null)==r27A && new JurisdictionLoad(r27X,null).GetHashCode()==r27A.GetHashCode() && (r27B with {Registry=r27X})==r27A,"P5-27 "+r27Name+": loads over the same registry instance are equal with an equal hash");
+   // A separate local: comparing with null makes the compiler treat the receiver as maybe-null afterwards.
+   var r27Z=r27X;
+   Check(!r27Z.Equals(null) && !r27Z.Equals((object?)null),"P5-27 "+r27Name+": a registry is not equal to null");
   }
  } finally { if(Directory.Exists(p527)) Directory.Delete(p527,true); }
 }
