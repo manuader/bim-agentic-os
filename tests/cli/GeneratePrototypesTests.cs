@@ -450,7 +450,7 @@ internal static class GeneratePrototypesTests
     // sampled with the seam set never reaches the probe and prints the real process's bytes; with the seam unset the
     // in-process Run is the in-process pipeline's file and the real process's stdout. Static: PostWriteStageProbe is
     // declared once, invoked once inside Execute inside a try opened after GltfExporter.WriteNew( and before the SHA-256,
-    // never assigned under interfaces/ (with self-tests). Named apart from GenerateTypologyCommand's P3-25 PostWriteProbe,
+    // never assigned under interfaces/, its try brace-matched and followed by the deleting catch (with self-tests). Named apart from GenerateTypologyCommand's P3-25 PostWriteProbe,
     // whose static pin counts that name over interfaces/.
     static void PostWriteStage(string root, string scratch, string cliDll, byte[] expected, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
     {
@@ -534,7 +534,7 @@ internal static class GeneratePrototypesTests
             Check(envelope.Line == "{\"status\":\"failed\",\"code\":\"generate_prototypes_internal_error\"}" && envelope.Exit == 1
                 && envelope.Diagnostic == "generate-prototypes internal error: System.InvalidOperationException: boom generate-prototypes P7-26 post-write",
                 "fixture: IntentPlan.Internal(\"generate-prototypes\", e) is the literal typed line, exit 1 and diagnostic", envelope.ToString());
-            var generic = JsonSerializer.Serialize(new { status = "failed", code = failure.Message });
+            // Not Program's generic {"status":"failed","code":<message>} line: the forced stdout below never contains the message.
 
             // A forced post-write exception: the probe records what was on disk when it ran, then throws.
             void ExpectRemoved(string label, string requestPath, string? pin)
@@ -558,7 +558,7 @@ internal static class GeneratePrototypesTests
                     label + ": the probe ran once, after GltfExporter.WriteNew wrote the file" + (pin is null ? "" : " (the in-process pipeline's bytes, " + pin[..8] + "...)"),
                     "calls " + calls.ToString(CultureInfo.InvariantCulture) + " seen " + (seen is null ? "<no file>" : Hex(seen)));
                 Check(forced.Thrown is null, label + ": the post-write exception does not escape Run to Program's generic catch", Q(forced));
-                Check(forced.Out == envelope.Line + nl && forced.Out != generic + nl && !forced.Out.Contains(failure.Message, StringComparison.Ordinal) && !forced.Out.Contains("succeeded", StringComparison.Ordinal),
+                Check(forced.Out == envelope.Line + nl && !forced.Out.Contains(failure.Message, StringComparison.Ordinal) && !forced.Out.Contains("succeeded", StringComparison.Ordinal),
                     label + ": stdout is only the typed generate_prototypes_internal_error line (no success line, not the exception message)", Q(forced));
                 Check(forced.Err == envelope.Diagnostic + nl, label + ": stderr is the IntentPlan diagnostic exactly once", Q(forced));
                 Check(forced.Exit == 1 && !File.Exists(output) && !Directory.Exists(output), label + ": exit 1 and the just-written output file is deleted",
@@ -636,15 +636,16 @@ internal static class GeneratePrototypesTests
             var sources = Directory.GetFiles(interfaces, "*.cs", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
                 .Select(file => (Path.GetRelativePath(root, file).Replace('\\', '/'), File.ReadAllText(file))).ToArray();
             var seam = PostWriteStageSeamProblems(sources);
-            Check(seam.Count == 0, "interfaces/**/*.cs names PostWriteStageProbe only in its declaration and one ?.Invoke() inside Execute after GltfExporter.WriteNew( and a try {, before SHA256.HashData(, never assigned ["
+            Check(seam.Count == 0, "interfaces/**/*.cs names PostWriteStageProbe only in its declaration and one ?.Invoke() inside Execute's body, in a try { opened after GltfExporter.WriteNew( that holds the later SHA256.HashData( and the only post-write Console.WriteLine(, directly followed by catch (Exception) { File.Delete(output) ... throw; }, never assigned ["
                 + string.Join("; ", seam) + "]");
             const string Path26 = "interfaces/cli/GenerateCommand.cs";
             const string Decl = "internal static Action? PostWriteStageProbe { get; set; }";
             string Command(string executeBody, string extra = "") => "internal static class GenerateCommand { static void Execute(string[] args) { " + executeBody + " } " + Decl + " " + extra + " }";
-            const string GoodBody = "GltfExporter.WriteNew(bytes, output); try { PostWriteStageProbe?.Invoke(); var sha256 = SHA256.HashData(bytes); } catch { throw; }";
+            const string Remove = " catch (Exception) { try { File.Delete(output); } catch (Exception removal) when (removal is IOException) { } throw; }";
+            const string GoodBody = "try { GltfExporter.WriteNew(bytes, output); } catch (IOException) { throw; } try { PostWriteStageProbe?.Invoke(); var sha256 = SHA256.HashData(bytes); Console.WriteLine(new { sha256 }); }" + Remove;
             Check(PostWriteStageSeamProblems(new[] { (Path26, Command(GoodBody)) }).Count == 0
-                && PostWriteStageSeamProblems(new[] { (Path26, Command("GltfExporter . WriteNew ( bytes, output );\n try\n { PostWriteStageProbe ?. Invoke ( ) ; // PostWriteStageProbe = null;\n var s = \"PostWriteStageProbe = x\"; SHA256 . HashData ( bytes ); } catch { throw; }")) }).Count == 0,
-                "self-test: the post-write seam checker accepts the real shape at any spacing, ignoring comments and string literals");
+                && PostWriteStageSeamProblems(new[] { (Path26, Command("GltfExporter . WriteNew ( bytes, output );\n try\n { PostWriteStageProbe ?. Invoke ( ) ; // PostWriteStageProbe = null; }\n var s = \"PostWriteStageProbe = x } {\"; SHA256 . HashData ( bytes ); Console . WriteLine ( s ); }\n catch ( Exception )\n { File . Delete ( output ) ; throw ; }")) }).Count == 0,
+                "self-test: the post-write seam checker accepts the real shape at any spacing, ignoring comments and string literals (braces in them too)");
             var evasions = new (string Label, (string, string)[] Files)[]
             {
                 ("an assignment in the command", new[] { (Path26, Command(GoodBody, "static void Set() { PostWriteStageProbe = () => throw null!; }")) }),
@@ -658,6 +659,15 @@ internal static class GeneratePrototypesTests
                 ("a second invoke", new[] { (Path26, Command("GltfExporter.WriteNew(bytes, output); PostWriteStageProbe?.Invoke(); PostWriteStageProbe?.Invoke(); SHA256.HashData(bytes);")) }),
                 ("the declaration missing", new[] { (Path26, "internal static class GenerateCommand { static void Execute(string[] args) { " + GoodBody + " } }") }),
                 ("the command file missing", new[] { ("interfaces/cli/Other.cs", Command(GoodBody)) }),
+                ("a closed try before the invoke", new[] { (Path26, Command("GltfExporter.WriteNew(bytes, output); try { }" + Remove + " PostWriteStageProbe?.Invoke(); SHA256.HashData(bytes); Console.WriteLine(x);")) }),
+                ("the success WriteLine outside the try", new[] { (Path26, Command("GltfExporter.WriteNew(bytes, output); try { PostWriteStageProbe?.Invoke(); var sha256 = SHA256.HashData(bytes); }" + Remove + " Console.WriteLine(sha256);")) }),
+                ("a second success WriteLine after the catch", new[] { (Path26, Command(GoodBody + " Console.WriteLine(x);")) }),
+                ("SHA256.HashData( outside the try", new[] { (Path26, Command("GltfExporter.WriteNew(bytes, output); try { PostWriteStageProbe?.Invoke(); Console.WriteLine(x); }" + Remove + " SHA256.HashData(bytes);")) }),
+                ("a catch without File.Delete", new[] { (Path26, Command("GltfExporter.WriteNew(bytes, output); try { PostWriteStageProbe?.Invoke(); SHA256.HashData(bytes); Console.WriteLine(x); } catch (Exception) { throw; }")) }),
+                ("a catch without throw;", new[] { (Path26, Command("GltfExporter.WriteNew(bytes, output); try { PostWriteStageProbe?.Invoke(); SHA256.HashData(bytes); Console.WriteLine(x); } catch (Exception) { File.Delete(output); }")) }),
+                ("a finally instead of catch (Exception)", new[] { (Path26, Command("GltfExporter.WriteNew(bytes, output); try { PostWriteStageProbe?.Invoke(); SHA256.HashData(bytes); Console.WriteLine(x); } finally { File.Delete(output); throw; }")) }),
+                ("the invoke in a method after Execute with a later SHA256", new[] { (Path26, Command("GltfExporter.WriteNew(bytes, output); try { SHA256.HashData(bytes); Console.WriteLine(x); }" + Remove,
+                    "static void Other() { try { PostWriteStageProbe?.Invoke(); SHA256.HashData(bytes); Console.WriteLine(x); }" + Remove + " }")) }),
             };
             foreach (var (label, files) in evasions)
                 Check(PostWriteStageSeamProblems(files).Count > 0, "self-test: the post-write seam checker flags " + label);
@@ -671,10 +681,27 @@ internal static class GeneratePrototypesTests
 
     // P7-26: over (relative path, source) pairs under interfaces/, comments stripped and string literals blanked:
     // PostWriteStageProbe is named exactly twice in total, both in interfaces/cli/GenerateCommand.cs: its declaration and
-    // one PostWriteStageProbe?.Invoke(); inside Execute after its GltfExporter.WriteNew( and before its SHA256.HashData(,
-    // with a try { opening between WriteNew( and the invoke (the invoke is inside the deleting try); no assignment anywhere.
+    // one PostWriteStageProbe?.Invoke(); no assignment anywhere. Brace-matched: the invoke is inside Execute's body, after
+    // its GltfExporter.WriteNew(, inside a try { opened after WriteNew( that also holds a later SHA256.HashData( and the
+    // Console.WriteLine( (no Console.WriteLine( in Execute after WriteNew( outside it), and that try is directly followed
+    // by catch (Exception) { ... } whose body holds File.Delete(output) and throw;.
     static List<string> PostWriteStageSeamProblems(IEnumerable<(string Name, string Source)> files)
     {
+        static int Close(string code, int open)
+        {
+            var depth = 0;
+            for (var i = open; i < code.Length; i++)
+            {
+                if (code[i] == '{') depth++;
+                else if (code[i] == '}' && --depth == 0) return i;
+            }
+            return -1;
+        }
+        static System.Text.RegularExpressions.Match Find(string code, string pattern, int from, int to)
+        {
+            var match = new System.Text.RegularExpressions.Regex(pattern).Match(code, from, to - from);
+            return match;
+        }
         var problems = new List<string>();
         var total = 0;
         var sawCommand = false;
@@ -688,16 +715,34 @@ internal static class GeneratePrototypesTests
             var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+static\s+Action\s*\?\s*PostWriteStageProbe\s*\{\s*get\s*;\s*set\s*;\s*\}").Count;
             if (declarations != 1) problems.Add(name + ": the declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
             var invokes = System.Text.RegularExpressions.Regex.Matches(code, @"\bPostWriteStageProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;");
-            var execute = System.Text.RegularExpressions.Regex.Match(code, @"\bstatic\s+void\s+Execute\s*\(");
+            var execute = System.Text.RegularExpressions.Regex.Match(code, @"\bstatic\s+void\s+Execute\s*\([^)]*\)\s*\{");
             if (invokes.Count != 1 || !execute.Success) { problems.Add(name + ": " + invokes.Count.ToString(CultureInfo.InvariantCulture) + " PostWriteStageProbe?.Invoke() calls, Execute " + (execute.Success ? "found" : "missing")); continue; }
-            var body = execute.Index + execute.Length;
-            var write = System.Text.RegularExpressions.Regex.Match(code[body..], @"\bGltfExporter\s*\.\s*WriteNew\s*\(");
-            var hash = System.Text.RegularExpressions.Regex.Match(code[body..], @"\bSHA256\s*\.\s*HashData\s*\(");
-            var writeAt = write.Success ? body + write.Index : -1;
-            var hashAt = hash.Success ? body + hash.Index : -1;
+            var open = execute.Index + execute.Length - 1;
+            var close = Close(code, open);
+            if (close < 0) { problems.Add(name + ": Execute's body is not closed"); continue; }
             var at = invokes[0].Index;
-            if (writeAt < 0 || hashAt < 0 || at < writeAt || at > hashAt) problems.Add(name + ": PostWriteStageProbe?.Invoke() not inside Execute between GltfExporter.WriteNew( and SHA256.HashData(");
-            else if (!System.Text.RegularExpressions.Regex.IsMatch(code[writeAt..at], @"\btry\s*\{")) problems.Add(name + ": no try { between GltfExporter.WriteNew( and PostWriteStageProbe?.Invoke()");
+            var write = Find(code, @"\bGltfExporter\s*\.\s*WriteNew\s*\(", open, close);
+            if (!write.Success || at < write.Index || at > close) { problems.Add(name + ": PostWriteStageProbe?.Invoke() not inside Execute's body after its GltfExporter.WriteNew("); continue; }
+            // The innermost try { opened after WriteNew( whose block holds the invoke.
+            int tryOpen = -1, tryClose = -1;
+            foreach (System.Text.RegularExpressions.Match candidate in new System.Text.RegularExpressions.Regex(@"\btry\s*\{").Matches(code[..at], write.Index))
+            {
+                var brace = candidate.Index + candidate.Length - 1;
+                var end = Close(code, brace);
+                if (end > at && end < close) { tryOpen = brace; tryClose = end; }
+            }
+            if (tryOpen < 0) { problems.Add(name + ": PostWriteStageProbe?.Invoke() not inside a try { opened after GltfExporter.WriteNew("); continue; }
+            if (!Find(code, @"\bSHA256\s*\.\s*HashData\s*\(", at, tryClose).Success) problems.Add(name + ": no SHA256.HashData( after the invoke inside its try");
+            if (!Find(code, @"\bConsole\s*\.\s*WriteLine\s*\(", tryOpen, tryClose).Success) problems.Add(name + ": no Console.WriteLine( inside the invoke's try");
+            if (Find(code, @"\bConsole\s*\.\s*WriteLine\s*\(", write.Index, tryOpen).Success || Find(code, @"\bConsole\s*\.\s*WriteLine\s*\(", tryClose, close).Success)
+                problems.Add(name + ": a Console.WriteLine( in Execute after GltfExporter.WriteNew( outside the invoke's try");
+            var handler = new System.Text.RegularExpressions.Regex(@"\G\s*catch\s*\(\s*Exception\s*\)\s*\{").Match(code, tryClose + 1);
+            if (!handler.Success) { problems.Add(name + ": the invoke's try is not directly followed by catch (Exception) {"); continue; }
+            var handlerOpen = handler.Index + handler.Length - 1;
+            var handlerClose = Close(code, handlerOpen);
+            if (handlerClose < 0 || handlerClose > close) { problems.Add(name + ": the catch (Exception) body is not closed inside Execute"); continue; }
+            if (!Find(code, @"\bFile\s*\.\s*Delete\s*\(\s*output\s*\)", handlerOpen, handlerClose).Success) problems.Add(name + ": the catch (Exception) body has no File.Delete(output)");
+            if (!Find(code, @"\bthrow\s*;", handlerOpen, handlerClose).Success) problems.Add(name + ": the catch (Exception) body has no throw;");
         }
         if (!sawCommand) problems.Add("interfaces/cli/GenerateCommand.cs not found");
         if (total != 2) problems.Add("PostWriteStageProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
