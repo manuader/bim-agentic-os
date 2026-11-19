@@ -246,7 +246,7 @@ internal static class CadBriefBlockRegionTests
     //     world = insertion + rotate(scale(p - base)), centre (23017.63, 64773.32), 22.5 m2, InsertPath [G1] (the wrong
     //     order scale(rotate(p - base)) would centre at (22580.13, 64148.32)).
     // Out of scope: MINSERT spacing under a non-unit insert scale (M2 has scale 1), rotated inserts inside nested chains,
-    // and mirrored OCS combined with rotation.
+    // and mirrored OCS combined with rotation → covered by P6-29 RunOcsMinsert.
     // Expected corners come from an independent transform written here (insertion + R(angle) * (cell offset + S * (p -
     // base))), cross-checked against hand-computed centres; the centre is the bounding-box centre of the transformed
     // corners and the area their shoelace area, positive. Through the real CLI with the flag draft.json rooms equal the
@@ -377,13 +377,14 @@ internal static class CadBriefBlockRegionTests
     //   * "Biblioteca": block BASE3 with base point (1000, 500) holding the rectangle (2000, 1000)-(4000, 2000), placed by
     //     MINSERT K1 at (0, 100000) rotated 45 degrees with scale X 2, Y 1.5, 2 columns x 3 rows, column spacing 5000, row
     //     spacing 4000; the label sits in cell row 2, column 1: centre (-353.5534, 113081.4755), 6 m2, InsertPath [K1[2,1]].
-    //     MINSERT spacing semantics pinned here: the cell offset (column * 44, row * 45) is in drawing units along the
-    //     rotated insert axes and is NOT multiplied by the insert scale, i.e. world = insertion + R(angle) * (offset +
-    //     S * (p - base)). Under the other reading (offset scaled by S) the cell would centre at (353.5534, 119445.4365),
+    //     MINSERT spacing semantics pinned here to the documented AutoCAD/ezdxf reading (not measured against AutoCAD):
+    //     the cell offset (column * 44, row * 45) is in the insert's OCS units, rotated with the insert and NOT multiplied
+    //     by the insert scale, i.e. world = insertion + R(angle) * (offset + S * (p - base)). Under the other reading (offset scaled by S) the cell would centre at (353.5534, 119445.4365),
     //     and the label lies in no cell of that reading (self-checked below), so the region and its centre discriminate.
-    //   * "Vestidor": block LEAF (3000 x 2000 rectangle) inserted as C2 at (1000, 0) rotated 90 degrees inside block MID,
-    //     which model space inserts as C1 at (50000, 100000) rotated 30 degrees: world = C1 * C2 * p, centre (49250,
-    //     101299.0381), 6 m2, InsertPath [C1, C2] (the reversed composition would centre at (-100616.03, 50799.04)).
+    //   * "Vestidor": block LEAF (3000 x 2000 rectangle) inserted as C2 at (1000, 0) rotated 90 degrees with X scale 2
+    //     inside block MID (base point (500, 250)), which model space inserts as C1 at (50000, 100000) rotated 30 degrees:
+    //     world = C1 + R(30) * ((1000, 0) + R(90) * S(2, 1) * p - MID base), centre (48191.9873, 102131.5699), 12 m2,
+    //     InsertPath [C1, C2] (ignoring MID's base point would centre at (48500, 102598.08)).
     //   * "Galeria": block OCSB (4000 x 1000 rectangle) inserted as Z1 with extrusion (0, 0, -1), OCS insertion
     //     (-70000, 100000) and rotation 30 degrees. By the arbitrary axis algorithm Ax = Wy x N = (-1, 0, 0), Ay = N x Ax =
     //     (0, 1, 0), so world = Ocs(insertion + R(30) * p): centre (68517.9492, 101433.0127), 4 m2, InsertPath [Z1].
@@ -401,7 +402,7 @@ internal static class CadBriefBlockRegionTests
         + G("0 SECTION|2 BLOCKS")
         + G("0 BLOCK|5 B80|8 0|2 BASE3|70 0|10 1000|20 500|30 0") + Rect("B81", 2000, 1000, 4000, 2000, "0") + G("0 ENDBLK|5 B82|8 0")
         + G("0 BLOCK|5 B90|8 0|2 LEAF|70 0|10 0|20 0|30 0") + Rect("B91", 0, 0, 3000, 2000, "0") + G("0 ENDBLK|5 B92|8 0")
-        + G("0 BLOCK|5 BA0|8 0|2 MID|70 0|10 0|20 0|30 0") + G("0 INSERT|5 C2|8 0|2 LEAF|10 1000|20 0|30 0|50 90") + G("0 ENDBLK|5 BA2|8 0")
+        + G("0 BLOCK|5 BA0|8 0|2 MID|70 0|10 500|20 250|30 0") + G("0 INSERT|5 C2|8 0|2 LEAF|10 1000|20 0|30 0|41 2|50 90") + G("0 ENDBLK|5 BA2|8 0")
         + G("0 BLOCK|5 BB0|8 0|2 OCSB|70 0|10 0|20 0|30 0") + Rect("BB1", 0, 0, 4000, 1000, "0") + G("0 ENDBLK|5 BB2|8 0")
         + G("0 ENDSEC|0 SECTION|2 ENTITIES")
         + G("0 INSERT|5 K1|8 ROOMS|2 BASE3|10 0|20 100000|30 0|41 2|42 1.5|50 45|70 2|71 3|44 5000|45 4000")
@@ -419,6 +420,7 @@ internal static class CadBriefBlockRegionTests
     static (double X, double Y) Add((double X, double Y) a, (double X, double Y) b) => (a.X + b.X, a.Y + b.Y);
 
     // OCS (0, 0, -1) to world XY by the arbitrary axis algorithm, computed here: Ax = normalise(Wy x N), Ay = N x Ax.
+    // Specific to N = (0, 0, -1) (hard-coded below; the Wy branch holds only because |Nx|, |Ny| < 1/64), not a general OCS.
     static (double X, double Y) Ocs((double X, double Y) p)
     {
         double nx = 0, ny = 0, nz = -1;
@@ -440,7 +442,7 @@ internal static class CadBriefBlockRegionTests
         new("biblioteca", "Biblioteca", new[] { "K1[2,1]" },
             Corners(2000, 1000, 4000, 2000, p => Add(K1Insertion, Rot(45, K1Local((1 * 5000, 2 * 4000), p)))), (-353.5534, 113081.4755), 6),
         new("vestidor", "Vestidor", new[] { "C1", "C2" },
-            Corners(0, 0, 3000, 2000, p => Add((50000, 100000), Rot(30, Add((1000, 0), Rot(90, p))))), (49250, 101299.0381), 6),
+            Corners(0, 0, 3000, 2000, p => Add((50000, 100000), Rot(30, Add(Add((1000, 0), Rot(90, (2 * p.X, p.Y))), (-500, -250))))), (48191.9873, 102131.5699), 12),
         new("galeria", "Galeria", new[] { "Z1" },
             Corners(0, 0, 4000, 1000, p => Ocs(Add((-70000, 100000), Rot(30, p)))), (68517.9492, 101433.0127), 4),
     };
