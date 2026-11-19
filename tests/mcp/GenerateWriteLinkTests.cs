@@ -1,0 +1,278 @@
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+
+// P4-27: the MCP server binary carries the generate-prototypes request-to-document path (GenerateCommand.Document and the
+// shared Generate / Parse / pack load the read-only tool generate_prototypes runs) but never the verb's write path. Run,
+// Execute (the output-path rule, the exclusive GltfExporter.WriteNew write, the P7-26 removal of the just-written file, the
+// P7-27 report of a failed removal, the success line), the P7-26 seam PostWriteStageProbe, the P7-27 seam
+// PostWriteDeleteProbe and its PartialOutputLeft line (both used only inside Execute) and Fail live, moved verbatim, in
+// interfaces/cli/GenerateWrite.cs, a part of the same internal static partial class Bim.Cli.GenerateCommand compiled by the
+// CLI (its default glob) and not by interfaces/mcp/Bim.Mcp.csproj. It was the last server-compiled writer.
+// Oracles (the P4-25 / P4-26 pattern, tests/mcp/PlanLayoutsWriteLinkTests.cs, tests/mcp/GenerateTypologyWriteLinkTests.cs):
+//   1. Bim.Mcp.csproj (every Compile item through DocUpdateLinkTests.Compiled: each ';' entry, '\' or '/', any case,
+//      wildcards expanded, Link) compiles interfaces/cli/GenerateCommand.cs and no item names GenerateWrite.cs; no source
+//      it compiles (linked items and interfaces/mcp/**/*.cs outside bin/obj) uses GenerateCommand.Run / Execute / Fail /
+//      PostWriteStageProbe / PostWriteDeleteProbe / PartialOutputLeft or imports the class with using static, in code; and
+//      no source it compiles calls GltfExporter.WriteNew at all (the list is empty).
+//   2. The real Release Bim.Mcp.dll (its metadata) defines Bim.Cli.GenerateCommand with Document and Generate and without
+//      Run, Execute, Fail, the seam accessors or the PartialOutputLeft field, and holds no member reference to
+//      Bim.Gltf.GltfExporter.WriteNew; the Release Bim.Cli.dll defines all of them and references WriteNew (control).
+//   3. Static split: both files are parts of the class; GenerateWrite.cs holds the original Run, Execute, the two seams
+//      (each with its comment), PartialOutputLeft (with its comment) and Fail text byte for byte (LF-normalized, pinned
+//      SHA-256 of the pre-split blocks, origin/main b3a8986) and the only GltfExporter.WriteNew call; the shared part defines
+//      none of them and has no exporter, stdout line, exit code, output hash, file access or using Bim.Gltf in code;
+//      Execute still judges the output path, then generates through the shared Generate(ReadRequest(...)), then writes.
+//   4. A self-test of the link and use checkers on synthetic csproj and source texts, and a fail-closed Block self-test.
+// The generate_prototypes MCP bytes and the generate-prototypes CLI bytes are pinned by tests/mcp/GeneratePrototypesToolTests.cs
+// and tests/cli/GeneratePrototypesTests.cs (expectations unchanged; their static pins read the moved code where it now is).
+internal static class GenerateWriteLinkTests
+{
+    static readonly Regex ForbiddenUse = new(@"\bGenerateCommand\s*\.\s*(?:Run|Execute|Fail|PostWriteStageProbe|PostWriteDeleteProbe|PartialOutputLeft)\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?GenerateCommand\b",
+        RegexOptions.CultureInvariant);
+
+    // SHA-256 and length of the pre-split text (LF line ends) of Run, Execute, the P7-26 seam and the P7-27 seam (each from
+    // its comment's first line through the declaration line), PartialOutputLeft (comment through declaration) and Fail
+    // (origin/main b3a8986).
+    static readonly (string Name, string Start, string? End, int Length, string Sha256)[] Moved =
+    {
+        ("Run", "    public static void Run(string[] args)\n", null, 927, "8147c177f2669b8d93a3a0278a99e3937307079e7012cae993b8dedeb3a9ea7e"),
+        ("Execute", "    static void Execute(string[] args)\n", null, 3084, "53774c6868b80db0d77900b3e3db00206becf23623dd49fadf47de3086299ebd"),
+        ("PostWriteStageProbe", "    // P7-26 test seam: null in production.", "    internal static Action? PostWriteStageProbe { get; set; }\n", 449, "d099596cb2b913a30eee88187c2ad4defa71562d398aae5de232d5302a8d4ae4"),
+        ("PostWriteDeleteProbe", "    // P7-27 test seam: null in production.", "    internal static Action<string>? PostWriteDeleteProbe { get; set; }\n", 542, "920e09afe15cbd2360992524f15c010a60d742da9f04783f360722e86d84f26f"),
+        ("PartialOutputLeft", "    // P7-27: the stderr line written before", "    internal const string PartialOutputLeft = \"generate-prototypes: could not delete partial output: \";\n", 323, "986cba92e626235e73589627fc907b9b14dd60cea03f5906dd4dc3ad83f15d58"),
+        ("Fail", "    static void Fail(string code, string? detail)\n", null, 150, "0fbbe9bc83a0d8728fa0cb1aa93b4de75881bdd39d99fe7a49ebd5103c7ceed1"),
+    };
+
+    static bool IsWrite(string? path) => path is not null
+        && string.Equals(path.Replace('\\', '/').Split('/')[^1], "GenerateWrite.cs", StringComparison.OrdinalIgnoreCase);
+
+    // The Compile entries of a project text that compile the write part (by Include, a matched file or Link).
+    internal static string[] WriteLinks(string projectXml, string projectDir) => DocUpdateLinkTests.Compiled(projectXml, projectDir)
+        .Where(c => IsWrite(c.Include) || IsWrite(c.Link) || c.Files.Any(IsWrite))
+        .Select(c => c.Include + (c.Link is null ? "" : " (Link " + c.Link + ")")).ToArray();
+
+    // The uses of GenerateCommand.Run / .Execute / .Fail / the seams / PartialOutputLeft (or a using static of the class) in code.
+    internal static string[] WriteUses(string source) =>
+        ForbiddenUse.Matches(DocUpdateLinkTests.CodeOf(source)).Select(m => Regex.Replace(m.Value, @"\s+", " ")).ToArray();
+
+    // The member references (MemberRef rows) of an assembly whose parent is the type reference ns.type and whose name is member.
+    internal static int MemberRefs(string assemblyPath, string ns, string type, string member)
+    {
+        using var stream = File.OpenRead(assemblyPath);
+        using var pe = new PEReader(stream);
+        var metadata = pe.GetMetadataReader();
+        var count = 0;
+        foreach (var handle in metadata.MemberReferences)
+        {
+            var reference = metadata.GetMemberReference(handle);
+            if (reference.Parent.Kind != HandleKind.TypeReference || metadata.GetString(reference.Name) != member) continue;
+            var parent = metadata.GetTypeReference((TypeReferenceHandle)reference.Parent);
+            if (metadata.GetString(parent.Namespace) == ns && metadata.GetString(parent.Name) == type) count++;
+        }
+        return count;
+    }
+
+    // The field names of the top-level type ns.name, or null when the assembly does not define it.
+    static string[]? FieldsOf(string assemblyPath, string ns, string name)
+    {
+        using var stream = File.OpenRead(assemblyPath);
+        using var pe = new PEReader(stream);
+        var metadata = pe.GetMetadataReader();
+        foreach (var handle in metadata.TypeDefinitions)
+        {
+            var type = metadata.GetTypeDefinition(handle);
+            if (!type.GetDeclaringType().IsNil || metadata.GetString(type.Namespace) != ns || metadata.GetString(type.Name) != name) continue;
+            return type.GetFields().Select(f => metadata.GetString(metadata.GetFieldDefinition(f).Name)).Distinct().Order(StringComparer.Ordinal).ToArray();
+        }
+        return null;
+    }
+
+    // The text from start through the first class-member closing line ("\n    }\n") after it, or through end when given.
+    static string? Block(string text, string start, string? end)
+    {
+        var at = text.IndexOf(start, StringComparison.Ordinal);
+        if (at < 0) return null;
+        var close = end ?? "\n    }\n";
+        var stop = text.IndexOf(close, at, StringComparison.Ordinal);
+        return stop < 0 ? null : text[at..(stop + close.Length)];
+    }
+
+    static string Sha256(string text) => Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false).GetBytes(text))).ToLowerInvariant();
+
+    static string Compact(string code) => Regex.Replace(code, @"\s+", "");
+
+    static int Count(string compact, string fragment) => compact.Split(fragment).Length - 1;
+
+    public static void Run(string root, string mcpDll, string cliDll, Action<bool, string> check)
+    {
+        void Check(bool condition, string name) => check(condition, "generate-prototypes write link: " + name);
+        var mcpDir = Path.Combine(root, "interfaces", "mcp");
+        var cliDir = Path.Combine(root, "interfaces", "cli");
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+        // ---- 4. self-test of the checkers ----
+        // Wildcards are resolved against a scratch tree holding both parts, so the self-test does not depend on the real split.
+        var scratch = Path.Combine(Path.GetTempPath(), "p4-27-link-" + Guid.NewGuid().ToString("N"));
+        var scratchMcp = Path.Combine(scratch, "mcp");
+        Directory.CreateDirectory(scratchMcp);
+        Directory.CreateDirectory(Path.Combine(scratch, "cli"));
+        File.WriteAllText(Path.Combine(scratch, "cli", "GenerateCommand.cs"), "");
+        File.WriteAllText(Path.Combine(scratch, "cli", "GenerateWrite.cs"), "");
+        try
+        {
+            string Synthetic(string items) => "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n" + items + "\n  </ItemGroup>\n</Project>";
+            foreach (var (label, items, flagged) in new (string, string, bool)[]
+            {
+                ("a multi-line item with '\\' separators", "    <Compile\n      Include=\"..\\cli\\GenerateWrite.cs\"\n      Link=\"GenerateWrite.cs\" />", true),
+                ("an item in an XML comment", "    <!-- <Compile Include=\"../cli/GenerateWrite.cs\" /> -->\n    <Compile Include=\"../cli/GenerateCommand.cs\" />", false),
+                ("the second of two ';' entries", "<Compile Include=\"../cli/GenerateCommand.cs;  ../cli/GenerateWrite.cs\" />", true),
+                ("another case", "<Compile Include=\"../CLI/generatewrite.CS\" />", true),
+                ("a Link only", "<Compile Include=\"../cli/Other.cs\" Link=\"Sub/GenerateWrite.cs\" />", true),
+                ("a wildcard matching the CLI sources", "<Compile Include=\"../cli/Generate*.cs\" />", true),
+                ("a recursive wildcard", "<Compile Include=\"../**/*.cs\" />", true),
+                // Negative wildcards: a resolver that flagged every wildcard would fail these.
+                ("a wildcard matching only the shared part", "<Compile Include=\"../cli/GenerateC*.cs\" />", false),
+                ("a wildcard matching no file", "<Compile Include=\"../cli/Nothing*.cs\" />", false),
+                ("the shared part only", "<Compile Include=\"../cli/GenerateCommand.cs\" Link=\"GenerateCommand.cs\" />", false),
+                ("the generate-typology write part", "<Compile Include=\"../cli/GenerateTypologyWrite.cs\" />", false),
+            })
+            {
+                var found = WriteLinks(Synthetic(items), scratchMcp);
+                Check(found.Length > 0 == flagged, "link checker self-test: " + label + (flagged ? " is flagged" : " is not flagged") + " [" + string.Join(", ", found) + "]");
+            }
+        }
+        finally { try { Directory.Delete(scratch, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        // Fail-closed self-test of Block and the Moved pins on a synthetic file holding the pinned Fail text.
+        {
+            var fail = Moved.Single(m => m.Name == "Fail");
+            const string FailText = "    static void Fail(string code, string? detail)\n    {\n"
+                + "        Console.WriteLine(FailureLine(code, detail));\n        Environment.ExitCode = 1;\n    }\n";
+            string Wrap(string body) => "class C\n{\n" + body + "\n    static void Next() { }\n}\n";
+            var exact = Block(Wrap(FailText), fail.Start, fail.End);
+            Check(exact is not null && exact.Length == fail.Length && Sha256(exact) == fail.Sha256,
+                "block self-test: the exact pre-split Fail text matches its pin (" + (exact?.Length ?? -1) + " chars)");
+            var changed = Block(Wrap(FailText.Replace("ExitCode = 1", "ExitCode = 2", StringComparison.Ordinal)), fail.Start, fail.End);
+            Check(changed is not null && changed.Length == fail.Length && Sha256(changed) != fail.Sha256,
+                "block self-test: a one-character change in the Fail block gives another hash (same length)");
+            Check(Block("class C\n{\n" + FailText.Replace("\n    }\n", "\n", StringComparison.Ordinal) + "}", fail.Start, fail.End) is null,
+                "block self-test: a Fail block without its closing line is not found (null)");
+            Check(Block(Wrap(FailText), "    static void Missing(", null) is null, "block self-test: a missing start is not found (null)");
+        }
+        foreach (var (label, source, flagged) in new (string, string, bool)[]
+        {
+            ("a call", "GenerateCommand.Run(args);", true),
+            ("a call split over lines", "Bim.Cli.GenerateCommand\n        .Run(args);", true),
+            ("a method group", "Action<string, string?> f = GenerateCommand . Fail;", true),
+            ("Execute by name", "GenerateCommand.Execute(args);", true),
+            ("the post-write seam", "GenerateCommand.PostWriteStageProbe = null;", true),
+            ("the post-write delete seam", "GenerateCommand.PostWriteDeleteProbe = null;", true),
+            ("the partial-output line", "var s = GenerateCommand.PartialOutputLeft;", true),
+            ("a using static", "using static Bim.Cli.GenerateCommand;\nRun(args);", true),
+            ("a global using static", "using static global::Bim.Cli.GenerateCommand;", true),
+            ("a line comment", "// GenerateCommand.Run(args)\nvar x = 1;", false),
+            ("a block comment", "/* GenerateCommand.Run(\n */ var x = 1;", false),
+            ("code after '//' inside a string", "var url = \"http://host\"; GenerateCommand.Run(args);", true),
+            ("a longer member", "GenerateCommand.RunTests(); GenerateCommand.Failed(); GenerateCommand.ExecuteAll();", false),
+            ("the shared document path", "var (ok, text) = GenerateCommand.Document(requestPath);", false),
+            ("the other seams", "GenerateCommand.GuardedWorkProbe = null; GenerateCommand.UnguardedStageProbe = null;", false),
+            ("another class's Run", "GenerateTypologyCommand.Run(args); PlanLayoutsCommand.Run(args);", false),
+            // A using alias is a known blind spot of this textual check (not flagged, by design); the metadata checks of the
+            // real Release Bim.Mcp.dll below cover it.
+            ("a using alias (covered by the binary metadata check)", "using G = Bim.Cli.GenerateCommand;\nG.Run(args);", false),
+        })
+        {
+            var found = WriteUses(source);
+            Check(found.Length > 0 == flagged, "use checker self-test: " + label + (flagged ? " is flagged" : " is not flagged") + " [" + string.Join(", ", found) + "]");
+        }
+
+        // ---- 1. the server project file and every source it compiles ----
+        var sharedPath = Path.GetFullPath(Path.Combine(cliDir, "GenerateCommand.cs"));
+        var writePath = Path.GetFullPath(Path.Combine(cliDir, "GenerateWrite.cs"));
+        static bool Built(string path) => path.Split(Path.DirectorySeparatorChar).Any(segment => segment is "bin" or "obj");
+        var testsDir = Path.GetFullPath(Path.Combine(root, "tests")) + Path.DirectorySeparatorChar;
+        var project = Path.Combine(mcpDir, "Bim.Mcp.csproj");
+        var projectXml = File.ReadAllText(project);
+        var compiledItems = DocUpdateLinkTests.Compiled(projectXml, mcpDir);
+        var links = WriteLinks(projectXml, mcpDir);
+        Check(links.Length == 0, "Bim.Mcp.csproj does not compile the generate-prototypes write part (interfaces/cli/GenerateWrite.cs) [" + string.Join(", ", links) + "]");
+        Check(compiledItems.Any(c => c.Files.Any(path => string.Equals(path, sharedPath, comparison))),
+            "Bim.Mcp.csproj compiles interfaces/cli/GenerateCommand.cs (the document path the generate_prototypes tool runs)");
+        var compiledSources = compiledItems.SelectMany(c => c.Files)
+            .Concat(Directory.GetFiles(mcpDir, "*.cs", SearchOption.AllDirectories).Where(path => !Built(Path.GetRelativePath(mcpDir, path))))
+            .Select(path => Path.GetFullPath(path)).Where(path => !path.StartsWith(testsDir, comparison) && File.Exists(path)).Distinct().ToArray();
+        var users = compiledSources.Select(path => (Name: Path.GetFileName(path), Found: WriteUses(File.ReadAllText(path)))).Where(u => u.Found.Length > 0)
+            .Select(u => u.Name + " " + string.Join(" ", u.Found)).ToArray();
+        Check(users.Length == 0, "Bim.Mcp.csproj: no compiled source uses GenerateCommand.Run / Execute / Fail / PostWriteStageProbe / PostWriteDeleteProbe / PartialOutputLeft ["
+            + string.Join(", ", users) + "]");
+        var remaining = compiledSources.Where(path => Regex.IsMatch(DocUpdateLinkTests.CodeOf(File.ReadAllText(path)), @"\bGltfExporter\s*\.\s*WriteNew\s*\("))
+            .Select(path => Path.GetFileName(path)).Order(StringComparer.Ordinal).ToArray();
+        Check(compiledSources.Length > 0 && remaining.Length == 0,
+            "no source compiled by Bim.Mcp.csproj calls GltfExporter.WriteNew (the server-compiled writer list is empty) [" + string.Join(", ", remaining) + "]");
+
+        // ---- 2. the real Release binaries ----
+        var verbMembers = new[] { "Run", "Execute", "Fail", "get_PostWriteStageProbe", "set_PostWriteStageProbe", "get_PostWriteDeleteProbe", "set_PostWriteDeleteProbe" };
+        var shared = new[] { "Document", "Generate" };
+        var mcpMethods = File.Exists(mcpDll) ? PlanLayoutsWriteLinkTests.MethodsOf(mcpDll, "Bim.Cli", "GenerateCommand") : null;
+        var cliMethods = File.Exists(cliDll) ? PlanLayoutsWriteLinkTests.MethodsOf(cliDll, "Bim.Cli", "GenerateCommand") : null;
+        var cliNames = cliMethods ?? Array.Empty<string>();
+        var mcpNames = mcpMethods ?? Array.Empty<string>();
+        Check(cliMethods is not null && verbMembers.Concat(shared).All(member => cliNames.Contains(member)),
+            "the Release Bim.Cli.dll defines Bim.Cli.GenerateCommand with Run, Execute, Fail, PostWriteStageProbe, PostWriteDeleteProbe, Document and Generate (reader control) ["
+            + string.Join(", ", cliNames) + "]");
+        Check(mcpMethods is not null && shared.All(member => mcpNames.Contains(member)) && !verbMembers.Any(member => mcpNames.Contains(member)),
+            "the Release Bim.Mcp.dll defines Bim.Cli.GenerateCommand with Document and Generate and without Run, Execute, Fail, PostWriteStageProbe or PostWriteDeleteProbe ["
+            + string.Join(", ", mcpNames) + "]");
+        var cliFields = File.Exists(cliDll) ? FieldsOf(cliDll, "Bim.Cli", "GenerateCommand") : null;
+        var mcpFields = File.Exists(mcpDll) ? FieldsOf(mcpDll, "Bim.Cli", "GenerateCommand") : null;
+        Check(cliFields is not null && cliFields.Contains("PartialOutputLeft") && cliFields.Contains("InternalError"),
+            "the Release Bim.Cli.dll defines the GenerateCommand fields PartialOutputLeft and InternalError (reader control) [" + string.Join(", ", cliFields ?? Array.Empty<string>()) + "]");
+        Check(mcpFields is not null && mcpFields.Contains("InternalError") && !mcpFields.Contains("PartialOutputLeft"),
+            "the Release Bim.Mcp.dll defines the GenerateCommand field InternalError and not PartialOutputLeft [" + string.Join(", ", mcpFields ?? Array.Empty<string>()) + "]");
+        var cliWriteRefs = File.Exists(cliDll) ? MemberRefs(cliDll, "Bim.Gltf", "GltfExporter", "WriteNew") : -1;
+        var mcpWriteRefs = File.Exists(mcpDll) ? MemberRefs(mcpDll, "Bim.Gltf", "GltfExporter", "WriteNew") : -1;
+        Check(cliWriteRefs >= 1, "the Release Bim.Cli.dll holds a member reference to Bim.Gltf.GltfExporter.WriteNew (reader control) [" + cliWriteRefs + "]");
+        Check(mcpWriteRefs == 0, "the Release Bim.Mcp.dll holds no member reference to Bim.Gltf.GltfExporter.WriteNew [" + mcpWriteRefs + " (-1: missing dll)]");
+
+        // ---- 3. the split ----
+        Check(File.Exists(writePath), "interfaces/cli/GenerateWrite.cs holds the generate-prototypes write path (split from GenerateCommand.cs)");
+        var writeText = File.Exists(writePath) ? File.ReadAllText(writePath).Replace("\r\n", "\n", StringComparison.Ordinal) : "";
+        var sharedText = File.ReadAllText(sharedPath).Replace("\r\n", "\n", StringComparison.Ordinal);
+        foreach (var (name, start, end, length, sha256) in Moved)
+        {
+            var block = Block(writeText, start, end);
+            Check(block is not null && block.Length == length && Sha256(block) == sha256,
+                "GenerateWrite.cs holds " + name + " moved verbatim (" + (block?.Length ?? -1) + " chars, sha256 " + (block is null ? "-" : Sha256(block)) + ")");
+            Check(!sharedText.Contains(start, StringComparison.Ordinal), "GenerateCommand.cs no longer holds " + name);
+        }
+        var write = Compact(DocUpdateLinkTests.CodeOf(writeText));
+        var sharedCode = Compact(DocUpdateLinkTests.CodeOf(sharedText));
+        Check(Count(write, "namespaceBim.Cli;") == 1 && Count(write, "internalstaticpartialclassGenerateCommand") == 1
+            && Count(sharedCode, "namespaceBim.Cli;") == 1 && Count(sharedCode, "internalstaticpartialclassGenerateCommand") == 1,
+            "both files are parts of internal static partial class Bim.Cli.GenerateCommand (callers unchanged)");
+        var definitions = new[] { "publicstaticvoidRun(string[]args)", "staticvoidExecute(string[]args)", "staticvoidFail(stringcode,string?detail)",
+            "internalstaticAction?PostWriteStageProbe{get;set;}", "internalstaticAction<string>?PostWriteDeleteProbe{get;set;}", "internalconststringPartialOutputLeft=" };
+        var misplaced = definitions.Where(d => Count(write, d) != 1 || Count(sharedCode, d) != 0).ToArray();
+        Check(misplaced.Length == 0, "GenerateWrite.cs defines Run, Execute, Fail, PostWriteStageProbe, PostWriteDeleteProbe and PartialOutputLeft once and GenerateCommand.cs none of them ["
+            + string.Join(", ", misplaced) + "]");
+        Check(Count(write, "GltfExporter.WriteNew(bytes,output)") == 1 && Count(write, "WriteNew") == 1,
+            "GenerateWrite.cs holds the verb's single exclusive write (GltfExporter.WriteNew)");
+        // SHA256 itself stays in the shared part (the derived project id hashes the canonical request); the output hash does not.
+        var writerApis = new[] { "GltfExporter", "WriteNew", "Console.WriteLine(", "Console.Out", "Environment.ExitCode", "SHA256.HashData(bytes)", "File.", "FileStream",
+                "usingBim.Gltf;", "PostWriteStageProbe", "PostWriteDeleteProbe", "PartialOutputLeft" }
+            .Where(api => sharedCode.Contains(api, StringComparison.Ordinal)).ToArray();
+        Check(sharedCode.Length > 0 && writerApis.Length == 0,
+            "GenerateCommand.cs (compiled by the server) holds no writer: no exporter, stdout line, exit code, output hash, file access, post-write seam or using Bim.Gltf in code ["
+            + string.Join(", ", writerApis) + "]");
+        Check(Count(sharedCode, "Generate(ReadRequest(requestPath))") == 1 && Count(sharedCode, "Generate(ReadRequest(") == 1 && Count(write, "Generate(ReadRequest(args[1]))") == 1,
+            "Document (shared) and Execute (write part) each call Generate(ReadRequest(...)) once");
+        var order = new[] { "GltfExportCommand.OutputProblem(output,[\".json\"],out_)", "Generate(ReadRequest(args[1]))", "GltfExporter.WriteNew(bytes,output)",
+                "PostWriteStageProbe?.Invoke();", "PostWriteDeleteProbe?.Invoke(output);File.Delete(output);", "Console.Error.WriteLine(PartialOutputLeft+output);" }
+            .Select(fragment => write.IndexOf(fragment, StringComparison.Ordinal)).ToArray();
+        Check(order.All(at => at >= 0) && order.Zip(order.Skip(1)).All(pair => pair.First < pair.Second),
+            "Execute still judges the output path, generates through the shared Generate, writes exclusively, runs the post-write seam, then the removing and reporting catch ["
+            + string.Join(", ", order) + "]");
+    }
+}
