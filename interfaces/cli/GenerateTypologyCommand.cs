@@ -1,11 +1,8 @@
 #nullable enable
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Bim.Core;
 using Bim.Generative;
-using Bim.Gltf;
 
 namespace Bim.Cli;
 
@@ -70,7 +67,10 @@ namespace Bim.Cli;
 // request order), pipeline, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
 // Everything is culture-invariant: the same request gives the same bytes and stdout under any current culture.
-internal static class GenerateTypologyCommand
+// P4-26: Run, Execute (the output path, the exclusive GltfExporter.WriteNew write, the P3-25 removal, the success line), the
+// P3-25 seam PostWriteProbe and Fail live in GenerateTypologyWrite.cs (the CLI only); interfaces/mcp/Bim.Mcp.csproj links
+// this part alone (Document and the shared Generate path the generate_typology tool runs).
+internal static partial class GenerateTypologyCommand
 {
     public const string CodePack = "ar.caba.codigo-edificacion";
     public const string Usage = "usage: generate-typology request.json output.json (request: {\"pack\": typology skill id, \"family_size\": int, "
@@ -109,19 +109,6 @@ internal static class GenerateTypologyCommand
         public bool Composed => Skills is not null || Precedence is not null;
     }
 
-    public static void Run(string[] args)
-    {
-        try { Execute(args); }
-        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail, refusal.Skill); }
-        // P3-24: any other exception in Execute (for example in Generate's parse / pack-load stretch, outside its guarded
-        // pipeline block; forced in tests through the P3-23 seam) prints the typed {"status":"failed","code":InternalError}
-        // line with IntentPlan's stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. Before the
-        // write no output file exists; P3-25: Execute removes the file it just wrote before an exception after
-        // GltfExporter.WriteNew succeeded reaches this catch. The guarded block's own failures already arrive above as Refusal(InternalError) with their
-        // diagnostic written once.
-        catch (Exception error) { IntentPlan.Internal("generate-typology", error).Print(); }
-    }
-
     // P5-17: the request-to-document path shared with the MCP generate_typology tool (interfaces/mcp/GenerateTypologyTool.cs
     // links this file): the request file read like the CLI reads it, then the same Parse, pack loads and pipeline as the
     // verb (Generate). Writes nothing. Succeeded: Text is the canonical document, exactly the string whose UTF-8 bytes the
@@ -149,84 +136,6 @@ internal static class GenerateTypologyCommand
 
     // RefusedLine is the generate_typology_refused stdout line when the pipeline refused (Json is then empty).
     sealed record Generated(Parsed Parsed, TypologyPipelineResult Result, string Json, string? RefusedLine);
-
-    static void Execute(string[] args)
-    {
-        if (args.Length != 3 || args[1].Length == 0 || args[2].Length == 0) throw new Refusal(UsageCode, Usage);
-        var output = args[2];
-        if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string badOutput) throw new Refusal(badOutput);
-        var generated = Generate(ReadRequest(args[1]));
-        if (generated.RefusedLine is { } refused)
-        {
-            Console.WriteLine(refused);
-            Environment.ExitCode = 1;
-            return;
-        }
-        var parsed = generated.Parsed;
-        var result = generated.Result;
-        var bytes = new UTF8Encoding(false).GetBytes(generated.Json);
-        try { GltfExporter.WriteNew(bytes, output); }
-        catch (GltfExportException error) { throw new Refusal(error.Code); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
-        // P3-25: from here on the file exists and is this run's own (WriteNew created it exclusively, so a pre-existing
-        // output was already refused as output_exists above and is not reached here; only a concurrent process replacing
-        // the file between WriteNew and the Delete below, a theoretical race, could make the Delete remove another's file).
-        // Any exception before the success line is complete removes the just-written file again, then propagates unchanged
-        // to Run's catch-all (the typed InternalError line with its diagnostic once). A failed removal is ignored: the typed
-        // line is still printed. If stdout itself throws part-way through the success line, that partial line may precede
-        // the typed line on stdout.
-        try
-        {
-            PostWriteProbe?.Invoke();
-            var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-            var pipelineStatus = result.Status == PrototypePipelineStatus.Ranked ? "ranked" : "infeasible";
-            var projectId = parsed.ProjectId.ToString("D", CultureInfo.InvariantCulture);
-            var acceptedCount = result.Alternatives.Count(alternative => alternative.Accepted);
-            if (parsed.Composed)
-            {
-                Console.WriteLine(JsonSerializer.Serialize(new
-                {
-                    status = "succeeded",
-                    scope = "proposal_only",
-                    persisted = false,
-                    pipeline_status = pipelineStatus,
-                    rules = "composed",
-                    pack = parsed.Pack,
-                    code_pack = parsed.CodePack,
-                    skills = parsed.Skills ?? Array.Empty<string>(),
-                    project_id = projectId,
-                    alternatives = result.Alternatives.Count,
-                    accepted = acceptedCount,
-                    bytes = bytes.LongLength,
-                    sha256,
-                }));
-                return;
-            }
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                status = "succeeded",
-                scope = "proposal_only",
-                persisted = false,
-                pipeline_status = pipelineStatus,
-                pack = parsed.Pack,
-                code_pack = parsed.CodePack,
-                project_id = projectId,
-                alternatives = result.Alternatives.Count,
-                accepted = acceptedCount,
-                bytes = bytes.LongLength,
-                sha256,
-            }));
-        }
-        catch (Exception)
-        {
-            try
-            {
-                File.Delete(output);
-            }
-            catch (Exception removal) when (removal is IOException or UnauthorizedAccessException) { }
-            throw;
-        }
-    }
 
     // The request file through BoundedInput (8 MiB cap); its input_* code is the refusal.
     static string ReadRequest(string path)
@@ -410,23 +319,12 @@ internal static class GenerateTypologyCommand
     // it is reset after the test.
     internal static Action? UnguardedWorkProbe { get; set; }
 
-    // P3-25 test seam: null in production. tests/cli/GenerateTypologyTests.cs section 10 sets it (by reflection) to an
-    // Action that throws, so a non-refusal exception arises in Execute right after GltfExporter.WriteNew succeeded; it is
-    // reset after the test.
-    internal static Action? PostWriteProbe { get; set; }
-
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
     static Refusal InternalRefusal(Exception error)
     {
         Console.Error.WriteLine(IntentPlan.InternalDiagnostic("generate-typology", error));
         return new Refusal(InternalError);
-    }
-
-    static void Fail(string code, string? detail, string? skill = null)
-    {
-        Console.WriteLine(FailureLine(code, detail, skill));
-        Environment.ExitCode = 1;
     }
 
     static string FailureLine(string code, string? detail, string? skill) =>
