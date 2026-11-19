@@ -90,6 +90,14 @@ internal static class PlanLayoutsWriteLinkTests
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
         // ---- 4. self-test of the checkers ----
+        // Wildcards are resolved against a scratch tree holding both parts (cli/PlanLayoutsCommand.cs and
+        // cli/PlanLayoutsWrite.cs next to an mcp/ project directory), so the self-test does not depend on the real split.
+        var scratch = Path.Combine(Path.GetTempPath(), "p4-25-link-" + Guid.NewGuid().ToString("N"));
+        var scratchMcp = Path.Combine(scratch, "mcp");
+        Directory.CreateDirectory(scratchMcp);
+        Directory.CreateDirectory(Path.Combine(scratch, "cli"));
+        File.WriteAllText(Path.Combine(scratch, "cli", "PlanLayoutsCommand.cs"), "");
+        File.WriteAllText(Path.Combine(scratch, "cli", "PlanLayoutsWrite.cs"), "");
         string Synthetic(string items) => "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n" + items + "\n  </ItemGroup>\n</Project>";
         foreach (var (label, items, flagged) in new (string, string, bool)[]
         {
@@ -103,9 +111,10 @@ internal static class PlanLayoutsWriteLinkTests
             ("the shared part only", "<Compile Include=\"../cli/PlanLayoutsCommand.cs\" Link=\"PlanLayoutsCommand.cs\" />", false),
         })
         {
-            var found = WriteLinks(Synthetic(items), mcpDir);
+            var found = WriteLinks(Synthetic(items), scratchMcp);
             Check(found.Length > 0 == flagged, "link checker self-test: " + label + (flagged ? " is flagged" : " is not flagged") + " [" + string.Join(", ", found) + "]");
         }
+        Directory.Delete(scratch, recursive: true);
         foreach (var (label, source, flagged) in new (string, string, bool)[]
         {
             ("a call", "PlanLayoutsCommand.Run(args);", true),
