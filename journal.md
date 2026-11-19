@@ -1860,3 +1860,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay244
 - 2026-11-19T17:52:49Z lock taken (session_014pxpsT1HRDYSeiGZzvQEex relay244; was FREE, relay243 released 17:05:27Z)
+- 2026-11-19T17:53:21Z picked P2-33 (phase 2), P3-26 (phase 3) (relay241) and P4-27 (phase 4, relay242) — oldest-touched; disjoint files (GenerateTypologyWrite.cs only by P3-26, GenerateCommand.cs only by P4-27). Workers spawned.
