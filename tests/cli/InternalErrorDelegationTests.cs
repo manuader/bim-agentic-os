@@ -241,39 +241,54 @@ internal static class InternalErrorDelegationTests
                 verb + ": Run(string[]) and the test seam GuardedWorkProbe (a settable static Action) found", probe?.PropertyType.FullName ?? "<missing GuardedWorkProbe>");
             if (run is null || probe is null || probe.PropertyType != typeof(Action) || !probe.CanWrite) continue;
             Check(probe.GetValue(null) is null, verb + ": GuardedWorkProbe is null unless a test sets it");
+            // P3-22: the seam-null-after checks below verify this test's own reset (WithSeam's finally); the production
+            // guarantee (nothing under interfaces/ ever assigns the seam) is carried by the static check after this loop.
             var output = Path.Combine(work, "internal-" + verb + "-" + Guid.NewGuid().ToString("N") + ".json");
-            var (args, inputs) = RunArgs(verb, output);
+            var inputs = Path.Combine(work, "internal-inputs-" + Guid.NewGuid().ToString("N"));
             (Exception? Value, string Out, string Err, int Exit) forced;
-            // P3-22: the per-verb input directory is deleted in a finally, whatever the run does.
-            try { forced = Quiet(() => WithSeam(probe, () => throw failure, () => Call(run, new object?[] { args }).Thrown)); }
-            finally { DeleteTree(inputs); }
-            Check(!Directory.Exists(inputs), verb + ": the forced run's input directory is deleted afterwards", inputs);
-            Check(probe.GetValue(null) is null, verb + ": GuardedWorkProbe is reset to null after the forced run");
-            Check(forced.Value is null && Same(forced, handWritten) && !File.Exists(output), "a forced " + verb + " internal error through Run's real catch-all prints the hand-written stdout, stderr and exit bytes and writes no output",
-                Q(forced) + " vs hand-written " + Q(handWritten) + (forced.Value is { } t ? " threw " + t.GetType().FullName : "") + (File.Exists(output) ? " output written" : ""));
-
-            // P3-22: a forced run whose Run itself throws (stdout fails while Run prints the refusal, inside its
-            // catch (Refusal), so no sibling catch handles it): the exception escapes Run, and the seam is still reset
-            // and the input directory still deleted.
-            var throwingOutput = Path.Combine(work, "internal-throws-" + verb + "-" + Guid.NewGuid().ToString("N") + ".json");
-            var (throwingArgs, throwingInputs) = RunArgs(verb, throwingOutput);
-            var stdoutFailure = new IOException("stdout closed for " + verb);
-            Exception? escaped;
+            bool wroteOutput;
+            // P3-22: the per-verb input directory (and any output) is deleted in a finally, whatever the run does.
             try
             {
+                var args = RunArgs(verb, output, inputs);
+                forced = Quiet(() => WithSeam(probe, () => throw failure, () => Call(run, new object?[] { args }).Thrown));
+                wroteOutput = File.Exists(output);
+            }
+            finally
+            {
+                DeleteTree(inputs);
+                if (File.Exists(output)) File.Delete(output);
+            }
+            Check(!Directory.Exists(inputs), verb + ": the forced run's input directory is deleted afterwards", inputs);
+            Check(probe.GetValue(null) is null, verb + ": GuardedWorkProbe is reset to null after the forced run");
+            Check(forced.Value is null && Same(forced, handWritten) && !wroteOutput, "a forced " + verb + " internal error through Run's real catch-all prints the hand-written stdout, stderr and exit bytes and writes no output",
+                Q(forced) + " vs hand-written " + Q(handWritten) + (forced.Value is { } t ? " threw " + t.GetType().FullName : "") + (wroteOutput ? " output written" : ""));
+
+            // P3-22: a forced run whose Run itself throws (stdout fails while Run prints the refusal, inside its
+            // catch (Refusal), so no sibling catch handles it): the exception escapes Run after InternalRefusal wrote the
+            // internal diagnostic once, and the seam is still reset and the input directory still deleted.
+            var throwingOutput = Path.Combine(work, "internal-throws-" + verb + "-" + Guid.NewGuid().ToString("N") + ".json");
+            var throwingInputs = Path.Combine(work, "internal-inputs-" + Guid.NewGuid().ToString("N"));
+            var stdoutFailure = new IOException("stdout closed for " + verb);
+            (Exception? Value, string Out, string Err, int Exit) escaped;
+            try
+            {
+                var throwingArgs = RunArgs(verb, throwingOutput, throwingInputs);
                 escaped = Quiet(() =>
                 {
                     Console.SetOut(new ThrowingWriter(stdoutFailure));
                     try { WithSeam(probe, () => throw failure, () => run.Invoke(null, new object?[] { throwingArgs })); return (Exception?)null; }
                     catch (TargetInvocationException error) { return error.InnerException; }
-                }).Value;
+                });
             }
             finally
             {
                 DeleteTree(throwingInputs);
                 if (File.Exists(throwingOutput)) File.Delete(throwingOutput);
             }
-            Check(ReferenceEquals(escaped, stdoutFailure), verb + ": the forced run whose stdout write fails throws out of Run", escaped?.GetType().FullName + ": " + escaped?.Message);
+            Check(ReferenceEquals(escaped.Value, stdoutFailure), verb + ": the forced run whose stdout write fails throws out of Run", escaped.Value?.GetType().FullName + ": " + escaped.Value?.Message);
+            Check(escaped.Err == handWritten.Err, verb + ": the forced run whose Run throws wrote the hand-written internal diagnostic to stderr once (InternalRefusal ran)",
+                "err [" + escaped.Err + "] vs hand-written [" + handWritten.Err + "]");
             Check(probe.GetValue(null) is null, verb + ": GuardedWorkProbe is reset to null after a forced run whose Run throws");
             Check(!Directory.Exists(throwingInputs), verb + ": the input directory of a forced run whose Run throws is deleted afterwards", throwingInputs);
         }
@@ -281,27 +296,34 @@ internal static class InternalErrorDelegationTests
         // P3-22: static seam hygiene. Over every .cs file under interfaces/ (comments stripped, string and char literals
         // blanked), GuardedWorkProbe occurs only as its declaration `internal static Action? GuardedWorkProbe { get; set; }`
         // (no initializer) and one guarded `GuardedWorkProbe?.Invoke()` read, in each of the four verb files and nowhere
-        // else; no assignment (=, +=, -=, ??=) anywhere. The classifier is first run on planted sources.
+        // else; no assignment (=, +=, -=, ??=) anywhere. Because blanking can hide code the literal scanner does not
+        // model (interpolation holes, @$ verbatim, raw """ strings), the name's count with literals kept must equal
+        // declarations + reads: any mention inside a literal is flagged too. The checker is first run on planted sources.
         {
             var good = "internal static Action? GuardedWorkProbe { get; set; }\nstatic void W() { try { GuardedWorkProbe?.Invoke(); } catch (Exception error) { throw InternalRefusal(error); } }\n";
             var cases = new (string Name, string Source, bool Clean)[]
             {
                 ("the declaration plus one guarded read", good, true),
                 ("a planted assignment", good + "static void T() { GuardedWorkProbe = () => { }; }\n", false),
+                ("a planted assignment without spaces", good + "static void T() { GuardedWorkProbe=null; }\n", false),
+                ("a planted parenthesized assignment", good + "static void T() { (GuardedWorkProbe) = null; }\n", false),
                 ("a planted qualified assignment", good + "static void T() { GenerateCommand.GuardedWorkProbe = null; }\n", false),
                 ("a planted +=", good + "static void T() { GuardedWorkProbe += () => { }; }\n", false),
                 ("a planted ??=", good + "static void T() { GuardedWorkProbe ??= () => { }; }\n", false),
                 ("a planted initializer", "internal static Action? GuardedWorkProbe { get; set; } = () => { };\nstatic void W() { GuardedWorkProbe?.Invoke(); }\n", false),
                 ("a second read", good + "static void T() { GuardedWorkProbe?.Invoke(); }\n", false),
                 ("an unguarded read", good + "static void T() { var p = GuardedWorkProbe; p!(); }\n", false),
-                ("assignments only inside comments and string literals", good
-                    + "// GuardedWorkProbe = () => { };\n/* GuardedWorkProbe += x; */\nconst string S = \"GuardedWorkProbe = null;\";\nconst string V = @\"GuardedWorkProbe ??= \"\"x\"\"\";\n", true),            };
+                ("an assignment in an interpolation hole", good + "static void T() { var s = $\"{GuardedWorkProbe = null}\"; }\n", false),
+                ("an @$ verbatim string ending in a backslash, then an assignment", good + "static void T() { var s = @$\"\\\"; GuardedWorkProbe = null; }\n", false),
+                ("an assignment inside a raw string literal", good + "static void T() { var s = \"\"\"\nGuardedWorkProbe = null;\n\"\"\"; }\n", false),
+                ("a '\"' char literal, then an assignment", good + "static void T() { var c = '\"'; GuardedWorkProbe = null; }\n", false),
+                ("the name inside a string literal", good + "const string S = \"GuardedWorkProbe = null;\";\n", false),
+                ("assignments only inside comments", good + "// GuardedWorkProbe = () => { };\n/* GuardedWorkProbe += x; */\n", true),
+            };
             foreach (var (name, source, clean) in cases)
             {
-                var uses = ProbeUses(ApplyIntentTests.CodeOf(source, blankStrings: true));
-                var isClean = uses.Declarations == 1 && uses.Reads == 1 && uses.Others.Count == 0;
-                Check(isClean == clean, "seam hygiene self-test: " + name + (clean ? " is clean" : " is caught"),
-                    "declarations " + uses.Declarations.ToString(CultureInfo.InvariantCulture) + " reads " + uses.Reads.ToString(CultureInfo.InvariantCulture) + " others [" + string.Join(" | ", uses.Others) + "]");
+                var uses = Hygiene(source);
+                Check(uses.Clean == clean, "seam hygiene self-test: " + name + (clean ? " is clean" : " is caught"), uses.Detail);
             }
 
             var interfacesDir = Path.Combine(root, "interfaces");
@@ -311,15 +333,13 @@ internal static class InternalErrorDelegationTests
                 .OrderBy(f => f, StringComparer.Ordinal).ToArray();
             Check(files.Length > 0, "seam hygiene: interfaces/ code found from the repository root", interfacesDir);
             var found = files
-                .Select(f => (Name: Path.GetRelativePath(root, f).Replace('\\', '/'), Uses: ProbeUses(ApplyIntentTests.CodeOf(File.ReadAllText(f), blankStrings: true))))
-                .Where(f => f.Uses.Declarations + f.Uses.Reads + f.Uses.Others.Count > 0).ToArray();
+                .Select(f => (Name: Path.GetRelativePath(root, f).Replace('\\', '/'), Uses: Hygiene(File.ReadAllText(f))))
+                .Where(f => f.Uses.Mentions > 0).ToArray();
             var expected = new[] { "interfaces/cli/DocRealizedCommand.cs", "interfaces/cli/GenerateCommand.cs", "interfaces/cli/GenerateTypologyCommand.cs", "interfaces/cli/PlanLayoutsCommand.cs" };
             Check(found.Select(f => f.Name).OrderBy(n => n, StringComparer.Ordinal).SequenceEqual(expected),
                 "seam hygiene: GuardedWorkProbe appears under interfaces/ only in the four verb files", string.Join(", ", found.Select(f => f.Name)));
             foreach (var (name, uses) in found)
-                Check(uses.Declarations == 1 && uses.Reads == 1 && uses.Others.Count == 0,
-                    "seam hygiene: " + name + " only declares GuardedWorkProbe and reads it once through ?.Invoke(), never assigns it",
-                    "declarations " + uses.Declarations.ToString(CultureInfo.InvariantCulture) + " reads " + uses.Reads.ToString(CultureInfo.InvariantCulture) + " others [" + string.Join(" | ", uses.Others) + "]");
+                Check(uses.Clean, "seam hygiene: " + name + " only declares GuardedWorkProbe and reads it once through ?.Invoke(), never assigns it", uses.Detail);
         }
 
         // 2f. MCP audit_verify (AuditVerifyTool.Run, in process): the catch-all forced by an actor list whose enumeration
@@ -422,6 +442,18 @@ internal static class InternalErrorDelegationTests
         return (declarations, reads, others);
     }
 
+    // P3-22: the hygiene verdict for one source text: exactly one declaration, one guarded read, no other use, and the
+    // name's count with literals kept (comments stripped) equal to declarations + reads.
+    static (bool Clean, int Mentions, string Detail) Hygiene(string text)
+    {
+        var uses = ProbeUses(ApplyIntentTests.CodeOf(text, blankStrings: true));
+        var kept = System.Text.RegularExpressions.Regex.Matches(ApplyIntentTests.CodeOf(text, blankStrings: false), @"\bGuardedWorkProbe\b").Count;
+        var clean = uses.Declarations == 1 && uses.Reads == 1 && uses.Others.Count == 0 && kept == uses.Declarations + uses.Reads;
+        var detail = "declarations " + uses.Declarations.ToString(CultureInfo.InvariantCulture) + " reads " + uses.Reads.ToString(CultureInfo.InvariantCulture)
+            + " mentions with literals kept " + kept.ToString(CultureInfo.InvariantCulture) + " others [" + string.Join(" | ", uses.Others) + "]";
+        return (clean, Math.Max(kept, uses.Declarations + uses.Reads + uses.Others.Count), detail);
+    }
+
     // P3-22: a stdout whose every write throws the given exception, so Run throws while it prints.
     sealed class ThrowingWriter(Exception failure) : TextWriter(CultureInfo.InvariantCulture)
     {
@@ -432,14 +464,13 @@ internal static class InternalErrorDelegationTests
     }
 
     // Valid inputs that pass every check before each verb's guarded library work (a fixed small request, brief or
-    // fixture; the repository's packs), then the output path (a new file under work). Returns the new input directory
-    // too; the caller deletes it in a finally (P3-22).
-    static (string[] Args, string Inputs) RunArgs(string verb, string output)
+    // fixture; the repository's packs), then the output path (a new file under work). The inputs are written to the new
+    // directory inputs, which the caller deletes in a finally (P3-22).
+    static string[] RunArgs(string verb, string output, string inputs)
     {
-        var inputs = Path.Combine(Path.GetDirectoryName(output)!, "internal-inputs-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(inputs);
         string Input(string name, string content) { var path = Path.Combine(inputs, name); File.WriteAllText(path, content, new System.Text.UTF8Encoding(false)); return path; }
-        return (verb switch
+        return verb switch
         {
             "generate-prototypes" => new[] { verb, Input("request.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2,\"seed\":0}"), output },
             "generate-typology" => new[] { verb, Input("request.json", "{\"pack\":\"bim.typology.vivienda-unifamiliar\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":4,\"seed\":0,\"project_id\":\"00000000-0000-4000-8000-0000000007a7\"}"), output },
@@ -449,7 +480,7 @@ internal static class InternalErrorDelegationTests
             "doc-realized" => new[] { verb, "--record", Input("run.json", "{}"), "--fixture", Input("ir.json", JsonSerializer.Serialize(new Project(Guid.Parse("00000000-0000-4000-8000-0000000007b1"), 0, Array.Empty<Element>()))),
                 "--assignments", Input("assignments.json", "{}"), "--document", "internal-error-document", "--output", output },
             _ => throw new ArgumentOutOfRangeException(nameof(verb), verb, null),
-        }, inputs);
+        };
     }
 
     // An actor list with one item whose enumeration throws: a defect inside AuditVerifyTool.Run's try that no typed
