@@ -17,11 +17,11 @@ using System.Text.RegularExpressions;
 //   3. A self-test of both checkers on synthetic csproj and source texts.
 //   4. The real Release Bim.Mcp.dll answers tools/list, an unknown-tool and a missing-argument refusal with the
 //      in-process bytes; both refusal lines are also pinned literally.
-// Remaining (follow-up, not this task): Bim.Mcp.csproj still compiles the writer verb GenerateCommand.cs
-// (generate-prototypes) in full, so its Run path and GltfExporter.WriteNew stay in the server binary. P4-25 moved the
-// plan-layouts write path into PlanLayoutsWrite.cs and P4-26 the generate-typology write path into
-// GenerateTypologyWrite.cs, neither compiled by the server (tests/mcp/PlanLayoutsWriteLinkTests.cs,
-// tests/mcp/GenerateTypologyWriteLinkTests.cs).
+// Later rows moved the other writers out of the server binary: P4-25 the plan-layouts write path into
+// PlanLayoutsWrite.cs, P4-26 the generate-typology write path into GenerateTypologyWrite.cs and P4-27 the
+// generate-prototypes write path into GenerateWrite.cs, none compiled by the server, which now compiles no
+// GltfExporter.WriteNew caller (tests/mcp/PlanLayoutsWriteLinkTests.cs, tests/mcp/GenerateTypologyWriteLinkTests.cs,
+// tests/mcp/GenerateWriteLinkTests.cs).
 internal static class GltfExportLinkTests
 {
     static readonly Regex ForbiddenUse = new(@"\bGltfExportCommand\s*\.\s*(?:Run|Usage|Fail)\b", RegexOptions.CultureInvariant);
