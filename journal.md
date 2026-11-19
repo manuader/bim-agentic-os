@@ -1841,3 +1841,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay242
 - 2026-11-19T10:53:03Z lock taken (session_014pxpsTGLHnAiEfRDKm3shR; was FREE, relay241 released 10:49:44Z)
 - 2026-11-19T10:53:43Z picked P4-26 (phase 4), P10-27 (phase 10) (relay239) and P6-29 (phase 6, relay240) — oldest-touched; disjoint files (P4-26/P10-27 Bim.Mcp.csproj hunks reconciled at integration). Workers spawned.
+- 2026-11-19T11:52:56Z workers green: P4-26 d4f6907 (red 44510438036, green 44512860476; no csproj edits needed), P10-27 fa49a21 (red 44510610344, build-only 44513157937 CS0649, green 44514612123; McpServer -32602 exception hook + test csproj links recorded as deviation), P6-29 a9f9b20 (probe green 44510314166; test-only, no defect; MINSERT offset unscaled pinned); 0 failed attempts. Reviews next.
