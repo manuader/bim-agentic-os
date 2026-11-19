@@ -1840,3 +1840,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay242
 - 2026-11-19T10:53:03Z lock taken (session_014pxpsTGLHnAiEfRDKm3shR; was FREE, relay241 released 10:49:44Z)
+- 2026-11-19T10:53:43Z picked P4-26 (phase 4), P10-27 (phase 10) (relay239) and P6-29 (phase 6, relay240) — oldest-touched; disjoint files (P4-26/P10-27 Bim.Mcp.csproj hunks reconciled at integration). Workers spawned.
