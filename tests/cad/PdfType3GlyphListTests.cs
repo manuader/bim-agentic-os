@@ -422,7 +422,8 @@ internal static class PdfType3GlyphListTests
                 {
                     var quotes = 0;
                     while (k + quotes < n && source[k + quotes] == '"') quotes++;
-                    if (quotes >= 3)
+                    // A verbatim string is never raw: @"""" is one escaped quote, not the start of a raw literal.
+                    if (quotes >= 3 && !verbatim)
                     {
                         var close = source.IndexOf(new string('"', quotes), k + quotes, StringComparison.Ordinal);
                         i = close < 0 ? n : close + quotes;
