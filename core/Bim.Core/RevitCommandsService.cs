@@ -129,6 +129,18 @@ public static class RevitCommandService
         return (pipeName, line) => Send(pipeName, line, readTimeout, connectMs);
     }
 
+    // P1-32: like PipeTransportWithTimeouts, but the read timeout is asked of readTimeoutAfterConnect once the connect
+    // has completed, so a deadline counts the connect time against the read (RevitDeadlineTransport: the time left after
+    // the connect). A value of zero or less means the connect used up the wait: the line is not written and
+    // RevitPipeReadTimeoutException(TimeSpan.Zero) is thrown (RevitDeadlineTransport reports it as its deadline); a value
+    // above MaxReadTimeout throws ArgumentOutOfRangeException. The connect timeout is checked when the transport is made.
+    public static Func<string, string, string?> PipeTransportWithReadAfterConnect(TimeSpan connectTimeout, Func<TimeSpan> readTimeoutAfterConnect)
+    {
+        ArgumentNullException.ThrowIfNull(readTimeoutAfterConnect);
+        var connectMs = ConnectMilliseconds(connectTimeout);
+        return (pipeName, line) => SendMeasured(pipeName, line, readTimeoutAfterConnect, connectMs);
+    }
+
     static int ConnectMilliseconds(TimeSpan connectTimeout)
     {
         if (connectTimeout <= TimeSpan.Zero || connectTimeout > TimeSpan.FromMilliseconds(ConnectTimeoutMs))
@@ -139,9 +151,20 @@ public static class RevitCommandService
     static string? Send(string pipeName, string line, TimeSpan readTimeout, int connectMs)
     {
         CheckReadTimeout(readTimeout);
+        return SendMeasured(pipeName, line, () => readTimeout, connectMs);
+    }
+
+    static string? SendMeasured(string pipeName, string line, Func<TimeSpan> readTimeoutAfterConnect, int connectMs)
+    {
         // Asynchronous (overlapped) so a pending read can be cancelled on Windows as well as on Unix sockets.
         using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         pipe.Connect(connectMs);
+        var readTimeout = readTimeoutAfterConnect();
+        // Only PipeTransportWithReadAfterConnect can get here with no time left: its one caller is the read-only
+        // --all / all:true listing deadline (RevitDeadlineTransport), which reports this unsent page as
+        // query_all_deadline_exceeded, so the "no reply within 0 ms" pipe_read_timeout detail is never printed.
+        if (readTimeout <= TimeSpan.Zero) throw new RevitPipeReadTimeoutException(TimeSpan.Zero);
+        CheckReadTimeout(readTimeout);
         var utf8 = new UTF8Encoding(false);
         // The same bytes StreamWriter.WriteLine sent before, without a writer whose disposal would flush a pipe the
         // add-in already closed (IOException "Pipe is broken" on Windows instead of no_response).
