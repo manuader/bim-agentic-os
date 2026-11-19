@@ -51,6 +51,7 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
     readonly TimeSpan readTimeout;
     readonly TimeSpan deadline;
     readonly Func<TimeSpan> elapsed;
+    // Reached only through the legacy seams (an injected cutTransport or connectTransport); production uses connectThenRead.
     readonly Func<TimeSpan, Func<string, string, string?>> cutTransport;
     readonly Func<TimeSpan, Func<TimeSpan>, Func<string, string, string?>> connectThenRead;
     readonly TimeSpan start;
@@ -114,9 +115,10 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
             // Under 1 ms left is no time left (a sub-millisecond wait would time out at once): not sent.
             return !cut ? readTimeout : after < MinRead ? TimeSpan.Zero : after;
         }
-        if (cutConnect) pipe = connectThenRead(left, ReadAfter);
+        // P1-34: a measured page is cut only as ReadAfter decides once connected; a connect that throws first leaves it uncut.
+        if (cutConnect) { cut = false; pipe = connectThenRead(left, ReadAfter); }
         // P1-34: time left of at least 5 s: the full connect wait, the read still measured once connected.
-        else if (cutReads && measured) pipe = connectThenRead(ConnectWait, ReadAfter);
+        else if (cutReads && measured) { cut = false; pipe = connectThenRead(ConnectWait, ReadAfter); }
         else pipe = cut ? cutTransport(left) : transport;
         var line = RevitCommandService.Run(pipeName, envelopeJson, policy, pipe, probe).Line;
         if (!cut && !cutConnect) return line;
