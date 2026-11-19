@@ -344,7 +344,7 @@ internal static class InternalErrorEnvelopeToolTests
 
     // C# source without // and /* */ comments; string, verbatim, raw ("""...) and char literals are kept verbatim, or
     // with keepLiterals false (P3-23) reduced to their delimiters.
-    static string CodeOf(string source, bool keepLiterals = true)
+    internal static string CodeOf(string source, bool keepLiterals = true)
     {
         var code = new StringBuilder(source.Length);
         for (var i = 0; i < source.Length; i++)

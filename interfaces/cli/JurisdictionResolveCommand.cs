@@ -43,7 +43,9 @@ internal static class JurisdictionResolveCommand
     public static readonly IntentEnvelope UsageRefusal = new(JsonSerializer.Serialize(new { status = "failed", code = UsageCode, detail = Usage }), 1);
 
     // P10-27 test seam (null in production): invoked first inside Resolve's guarded block, so a test can force the typed
-    // internal error through the CLI and the MCP tool alike.
+    // internal error through the CLI and the MCP tool alike. Not named GuardedWorkProbe: this verb has no unguarded
+    // stretch to tell apart (the whole handler runs inside Resolve's catch), and a distinct name keeps the P3-23 pins on
+    // GenerateTypologyCommand's GuardedWorkProbe/UnguardedWorkProbe counting only that verb's seams.
     internal static Action? WorkProbe { get; set; }
 
     public static void Run(string[] args) => Resolve(args).Print();

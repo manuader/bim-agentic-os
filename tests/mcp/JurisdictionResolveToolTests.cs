@@ -18,7 +18,8 @@ using Bim.Core;
 //      line without its newline and isError equals (CLI exit != 0); the CABA success is pinned literally.
 //   3. Usage-equivalent arguments are JSON-RPC -32602 (never a tool result): no selector, code with country or
 //      municipality, only one of country/municipality, a blank or "--"-prefixed string, null or wrongly typed values, an
-//      unknown argument, a lone-surrogate string; each case with a CLI spelling is the CLI's jurisdiction_resolve_usage.
+//      unknown argument, a lone-surrogate string, an argument name given twice; each case with a CLI spelling is the
+//      CLI's jurisdiction_resolve_usage.
 //   4. A NUL lock path (cannot travel in a process argument) is the in-process CLI handler's skills_lock_path_invalid
 //      line, byte for byte.
 //   5. Typed internal error: with the command's WorkProbe seam throwing, the tool is isError with exactly
@@ -28,6 +29,11 @@ using Bim.Core;
 //   7. Static: the tool runs JurisdictionResolveCommand.Resolve (no registry, lock, selection, serializer or file call
 //      of its own); the CLI Run prints Resolve's envelope; the three csprojs compiling McpServer.cs link the command
 //      source; the Release Bim.Mcp.dll defines Bim.Cli.JurisdictionResolveCommand with Resolve.
+//   8. Static pins, each checker self-tested on synthetic sources: no source Bim.Mcp compiles (linked items and
+//      interfaces/mcp/**/*.cs) calls JurisdictionResolveCommand.Run or imports it with using static; over
+//      interfaces/**/*.cs (comments and literals stripped) WorkProbe is only its initializer-free declaration and one
+//      WorkProbe?.Invoke(); in Execute before Parse(, never assigned; McpInvalidParamsException is constructed only in
+//      interfaces/mcp/JurisdictionResolveTool.cs.
 internal static class JurisdictionResolveToolTests
 {
     const string ToolName = "jurisdiction_resolve";
@@ -113,6 +119,9 @@ internal static class JurisdictionResolveToolTests
             ("unknown municipality", A(("country", "Argentina"), ("municipality", "Rosario")), ["--country", "Argentina", "--municipality", "Rosario"], "jurisdiction_unknown"),
             ("malformed code", A(("code", "Not A Code")), ["--code", "Not A Code"], "jurisdiction_invalid"),
             ("CABA under a lock", A(("code", "ar.caba"), ("lock_path", lockPath)), ["--code", "ar.caba", "--lock", lockPath], null),
+            ("CABA by country and municipality under a lock", A(("country", "Argentina"), ("municipality", "CABA"), ("lock_path", lockPath)),
+                ["--country", "Argentina", "--municipality", "CABA", "--lock", lockPath], null),
+            ("stub allowed under a lock", A(("code", "xx.example"), ("lock_path", lockPath), ("allow_stub", true)), ["--code", "xx.example", "--lock", lockPath, "--allow-stub"], null),
             ("stub refused under a lock", A(("code", "xx.example"), ("lock_path", lockPath)), ["--code", "xx.example", "--lock", lockPath], "jurisdiction_stub_refused"),
             ("CABA unpinned under a lock", A(("code", "ar.caba"), ("lock_path", stubOnly)), ["--code", "ar.caba", "--lock", stubOnly], "jurisdiction_unknown"),
             ("forged hash under a lock", A(("code", "ar.caba"), ("lock_path", forged)), ["--code", "ar.caba", "--lock", forged], "skill_lock_drift"),
@@ -155,6 +164,10 @@ internal static class JurisdictionResolveToolTests
             ("string allow_stub", "{\"code\":\"ar.caba\",\"allow_stub\":\"true\"}", null),
             ("null lock_path", "{\"code\":\"ar.caba\",\"lock_path\":null}", null),
             ("unknown argument", "{\"code\":\"ar.caba\",\"skills\":\"x\"}", null),
+            ("code given twice", "{\"code\":\"ar.caba\",\"code\":\"ar.caba\"}", ["--code", "ar.caba", "--code", "ar.caba"]),
+            ("allow_stub given twice", "{\"code\":\"ar.caba\",\"allow_stub\":true,\"allow_stub\":true}", ["--code", "ar.caba", "--allow-stub", "--allow-stub"]),
+            ("lock_path given twice", "{\"code\":\"ar.caba\",\"lock_path\":" + JsonSerializer.Serialize(lockPath) + ",\"lock_path\":" + JsonSerializer.Serialize(lockPath) + "}",
+                ["--code", "ar.caba", "--lock", lockPath, "--lock", lockPath]),
             ("lone-surrogate code", "{\"code\":\"\\ud800\"}", null),
             ("lone-surrogate lock_path", "{\"code\":\"ar.caba\",\"lock_path\":\"\\udc00\"}", null),
         };
@@ -255,6 +268,133 @@ internal static class JurisdictionResolveToolTests
             var methods = PlanLayoutsWriteLinkTests.MethodsOf(mcpDll, "Bim.Cli", "JurisdictionResolveCommand");
             Check(methods is not null && methods.Contains("Resolve"), "the Release Bim.Mcp.dll defines Bim.Cli.JurisdictionResolveCommand with Resolve [" + string.Join(", ", methods ?? []) + "]");
         }
+
+        // ---- 8. static pins (review) ----
+        {
+            // 8a. No source Bim.Mcp.csproj compiles (its linked items and interfaces/mcp/**/*.cs outside bin/obj) calls
+            // JurisdictionResolveCommand.Run or imports the class with using static (comments stripped).
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            var mcpDir = Path.Combine(root, "interfaces", "mcp");
+            static bool Built(string path) => path.Split(Path.DirectorySeparatorChar).Any(segment => segment is "bin" or "obj");
+            var testsDir = Path.GetFullPath(Path.Combine(root, "tests")) + Path.DirectorySeparatorChar;
+            var compiled = DocUpdateLinkTests.Compiled(File.ReadAllText(Path.Combine(mcpDir, "Bim.Mcp.csproj")), mcpDir).SelectMany(c => c.Files)
+                .Concat(Directory.GetFiles(mcpDir, "*.cs", SearchOption.AllDirectories).Where(path => !Built(Path.GetRelativePath(mcpDir, path))))
+                .Select(path => Path.GetFullPath(path)).Where(path => !path.StartsWith(testsDir, comparison) && File.Exists(path)).Distinct().ToArray();
+            var commandFile = Path.GetFullPath(Path.Combine(root, "interfaces", "cli", "JurisdictionResolveCommand.cs"));
+            Check(compiled.Contains(commandFile, StringComparer.FromComparison(comparison)) && compiled.Any(path => Path.GetFileName(path) == "JurisdictionResolveTool.cs"),
+                "the Bim.Mcp source set includes JurisdictionResolveCommand.cs and JurisdictionResolveTool.cs");
+            var runUsers = compiled.Select(path => (Name: Path.GetFileName(path), Found: RunUses(File.ReadAllText(path)))).Where(u => u.Found.Length > 0)
+                .Select(u => u.Name + " " + string.Join(" ", u.Found)).ToArray();
+            Check(runUsers.Length == 0, "no source Bim.Mcp compiles calls JurisdictionResolveCommand.Run or imports it with using static [" + string.Join(", ", runUsers) + "]");
+            Check(RunUses("class T { void X() { var e = JurisdictionResolveCommand.Resolve(a); } } // JurisdictionResolveCommand.Run(a)").Length == 0
+                && RunUses("class T { void X() { JurisdictionResolveCommand . Run ( a ); } }").Length == 1
+                && RunUses("class T { void X() { Bim.Cli.JurisdictionResolveCommand.Run(a); } }").Length == 1
+                && RunUses("using static Bim.Cli.JurisdictionResolveCommand;\nclass T { }").Length == 1
+                && RunUses("using static global::Bim.Cli.JurisdictionResolveCommand;").Length == 1
+                && RunUses("/* JurisdictionResolveCommand.Run(a) */ class T { }").Length == 0,
+                "self-test: the Run checker flags qualified calls at any spacing and using static, and ignores Resolve and comments");
+
+            // 8b and 8c over interfaces/**/*.cs (comments and literals stripped).
+            var interfaces = Path.Combine(root, "interfaces");
+            var sources = Directory.GetFiles(interfaces, "*.cs", SearchOption.AllDirectories).Where(path => !Built(Path.GetRelativePath(interfaces, path))).Order(StringComparer.Ordinal)
+                .Select(file => (Path.GetRelativePath(root, file).Replace('\\', '/'), File.ReadAllText(file))).ToArray();
+            var seam = SeamProblems(sources);
+            Check(seam.Count == 0, "interfaces/**/*.cs names WorkProbe only in its declaration (no initializer) and one WorkProbe?.Invoke(); in Execute before Parse(, never assigned [" + string.Join("; ", seam) + "]");
+            const string SeamPath = "interfaces/cli/JurisdictionResolveCommand.cs";
+            const string Decl = "internal static Action? WorkProbe { get; set; }";
+            static string Command(string executeBody, string declaration = Decl, string extra = "") =>
+                "internal static class JurisdictionResolveCommand { " + declaration + " public static IntentEnvelope Resolve(string[] args) { try { return Execute(args); } catch (Exception e) { return null; } } static IntentEnvelope Execute(string[] args) { " + executeBody + " } static Options? Parse(string[] args) => null; " + extra + " }";
+            const string Good = "WorkProbe?.Invoke(); if (Parse(args) is not { } options) return UsageRefusal; return null;";
+            Check(SeamProblems([(SeamPath, Command(Good))]).Count == 0
+                && SeamProblems([(SeamPath, Command("WorkProbe ?. Invoke ( ) ;\n if (Parse ( args ) is null) return null; // WorkProbe = null;\n var s = \"WorkProbe = x\"; return null;"))]).Count == 0
+                && SeamProblems([(SeamPath, Command(Good)), ("interfaces/cli/GenerateTypologyCommand.cs", "class G { internal static Action? GuardedWorkProbe { get; set; } void X() { GuardedWorkProbe?.Invoke(); } }")]).Count == 0,
+                "self-test: the seam checker accepts the real shape at any spacing, ignoring comments, literals and GuardedWorkProbe");
+            var seamEvasions = new (string Label, (string, string)[] Files)[]
+            {
+                ("an initializer", [(SeamPath, Command(Good, "internal static Action? WorkProbe { get; set; } = null;"))]),
+                ("a field declaration", [(SeamPath, Command(Good, "internal static Action? WorkProbe;"))]),
+                ("the declaration missing", [(SeamPath, Command(Good, ""))]),
+                ("an assignment in the command", [(SeamPath, Command(Good, Decl, "static void Set() { WorkProbe = () => throw null!; }"))]),
+                ("an assignment in another interfaces file", [(SeamPath, Command(Good)), ("interfaces/mcp/McpServer.cs", "class S { void X() { JurisdictionResolveCommand.WorkProbe = null; } }")]),
+                ("a += assignment", [(SeamPath, Command(Good)), ("interfaces/mcp/McpServer.cs", "class S { void X() { JurisdictionResolveCommand.WorkProbe += null; } }")]),
+                ("a ??= assignment", [(SeamPath, Command(Good)), ("interfaces/mcp/McpServer.cs", "class S { void X() { JurisdictionResolveCommand.WorkProbe ??= null; } }")]),
+                ("the invoke after Parse(", [(SeamPath, Command("if (Parse(args) is null) return null; WorkProbe?.Invoke(); return null;"))]),
+                ("the invoke outside Execute", [(SeamPath, Command("if (Parse(args) is null) return null; return null;", Decl, "static void Other() { WorkProbe?.Invoke(); }"))]),
+                ("the invoke missing", [(SeamPath, Command("if (Parse(args) is null) return null; return null;"))]),
+                ("a second invoke", [(SeamPath, Command("WorkProbe?.Invoke(); WorkProbe?.Invoke(); if (Parse(args) is null) return null; return null;"))]),
+                ("a use in the tool", [(SeamPath, Command(Good)), ("interfaces/mcp/JurisdictionResolveTool.cs", "class T { void X() { JurisdictionResolveCommand.WorkProbe?.Invoke(); } }")]),
+            };
+            foreach (var (label, files) in seamEvasions)
+                Check(SeamProblems(files).Count > 0, "self-test: the seam checker flags " + label);
+
+            var raisers = ExceptionProblems(sources);
+            Check(raisers.Count == 0, "McpInvalidParamsException is constructed only in interfaces/mcp/JurisdictionResolveTool.cs [" + string.Join("; ", raisers) + "]");
+            const string ToolFile = "interfaces/mcp/JurisdictionResolveTool.cs";
+            Check(ExceptionProblems([(ToolFile, "class T { void X() { throw new McpInvalidParamsException(M); } }"), ("interfaces/mcp/McpServer.cs", "class S { void X() { try { } catch (McpInvalidParamsException e) { } var s = \"new McpInvalidParamsException(x)\"; } }")]).Count == 0
+                && ExceptionProblems([(ToolFile, "class T { }")]).Count > 0
+                && ExceptionProblems([(ToolFile, "class T { void X() { throw new McpInvalidParamsException(M); } }"), ("interfaces/mcp/DocUpdateTool.cs", "class D { void X() { throw new Bim.Mcp.McpInvalidParamsException ( M ); } }")]).Count > 0
+                && ExceptionProblems([(ToolFile, "class T { void X() { throw new McpInvalidParamsException(M); } }"), ("interfaces/mcp/DocUpdateTool.cs", "class D { void X() { McpInvalidParamsException e = new(M); } }")]).Count > 0,
+                "self-test: the constructor checker accepts the tool's throws and a catch, and flags another file's new (qualified or target-typed) and a tool without one");
+        }
+    }
+
+    static readonly System.Text.RegularExpressions.Regex RunUse = new(
+        @"\bJurisdictionResolveCommand\s*\.\s*Run\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?JurisdictionResolveCommand\b",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // The calls of JurisdictionResolveCommand.Run (or a using static of the class) in the code of a source.
+    static string[] RunUses(string source) =>
+        RunUse.Matches(DocUpdateLinkTests.CodeOf(source)).Select(m => System.Text.RegularExpressions.Regex.Replace(m.Value, @"\s+", " ")).ToArray();
+
+    // Over (relative path, source) pairs under interfaces/, comments and literals stripped: WorkProbe (whole word, so not
+    // GuardedWorkProbe) is named exactly twice, both in interfaces/cli/JurisdictionResolveCommand.cs: the declaration
+    // internal static Action? WorkProbe { get; set; } with no initializer and one WorkProbe?.Invoke(); inside Execute
+    // before Execute's first Parse( call; no assignment (=, +=, ??=, ...) anywhere.
+    static List<string> SeamProblems(IEnumerable<(string Name, string Source)> files)
+    {
+        const string Command = "interfaces/cli/JurisdictionResolveCommand.cs";
+        var problems = new List<string>();
+        var total = 0;
+        var sawCommand = false;
+        foreach (var (name, source) in files)
+        {
+            var code = InternalErrorEnvelopeToolTests.CodeOf(source, keepLiterals: false);
+            total += System.Text.RegularExpressions.Regex.Matches(code, @"\bWorkProbe\b").Count;
+            if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bWorkProbe\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)")) problems.Add(name + ": WorkProbe assigned");
+            if (name != Command) continue;
+            sawCommand = true;
+            var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+static\s+Action\s*\?\s*WorkProbe\s*\{\s*get\s*;\s*set\s*;\s*\}(?!\s*=)").Count;
+            if (declarations != 1) problems.Add(name + ": the declaration without initializer found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
+            var invokes = System.Text.RegularExpressions.Regex.Matches(code, @"\bWorkProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;");
+            var execute = System.Text.RegularExpressions.Regex.Match(code, @"\bstatic\s+IntentEnvelope\s+Execute\s*\(");
+            if (invokes.Count != 1 || !execute.Success) { problems.Add(name + ": " + invokes.Count.ToString(CultureInfo.InvariantCulture) + " WorkProbe?.Invoke() calls, Execute " + (execute.Success ? "found" : "missing")); continue; }
+            var parse = System.Text.RegularExpressions.Regex.Match(code[(execute.Index + execute.Length)..], @"\bParse\s*\(");
+            var parseAt = parse.Success ? execute.Index + execute.Length + parse.Index : -1;
+            if (parseAt < 0 || invokes[0].Index < execute.Index || invokes[0].Index > parseAt) problems.Add(name + ": WorkProbe?.Invoke() not inside Execute before its Parse(");
+        }
+        if (!sawCommand) problems.Add(Command + " not found");
+        if (total != 2) problems.Add("WorkProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
+        return problems;
+    }
+
+    // Over (relative path, source) pairs under interfaces/, comments and literals stripped: McpInvalidParamsException is
+    // constructed (new McpInvalidParamsException(, qualified or not, or a target-typed new( of a variable of that type)
+    // only in interfaces/mcp/JurisdictionResolveTool.cs, and at least once there.
+    static List<string> ExceptionProblems(IEnumerable<(string Name, string Source)> files)
+    {
+        const string Tool = "interfaces/mcp/JurisdictionResolveTool.cs";
+        var problems = new List<string>();
+        var inTool = 0;
+        foreach (var (name, source) in files)
+        {
+            var code = InternalErrorEnvelopeToolTests.CodeOf(source, keepLiterals: false);
+            var count = System.Text.RegularExpressions.Regex.Matches(code, @"\bnew\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Mcp\s*\.\s*)?McpInvalidParamsException\s*\(").Count
+                + System.Text.RegularExpressions.Regex.Matches(code, @"\bMcpInvalidParamsException\s+\w+\s*=\s*new\s*\(").Count;
+            if (name == Tool) inTool += count;
+            else if (count > 0) problems.Add(name + ": constructs McpInvalidParamsException " + count.ToString(CultureInfo.InvariantCulture) + " times");
+        }
+        if (inTool == 0) problems.Add(Tool + ": no construction");
+        return problems;
     }
 
     // The CLI handler in process: stdout line (without newline), stderr and exit code captured and restored in a finally.
