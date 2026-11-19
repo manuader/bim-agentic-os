@@ -65,7 +65,9 @@ namespace Bim.Cli;
 //   the skill code, or "id" when the manifest names another pack), generate_prototypes_refused (with
 //   "refusals":[{"code","subject","detail"}] = PrototypePipelineResult.Refusals in order, no detail),
 //   generate_prototypes_internal_error (stderr gets the exception type and message; P7-26: an unexpected exception after
-//   GltfExporter.WriteNew succeeded removes the just-written file again).
+//   GltfExporter.WriteNew succeeded removes the just-written file again; P7-27: if that removal itself fails, stderr first
+//   gets one line "generate-prototypes: could not delete partial output: <output path as given>" (PartialOutputLeft) and
+//   the file stays; stdout, exit 1 and the diagnostic, which names the original exception, are unchanged).
 // Precedence: usage, output path, request read, request parse, repository, pack, pipeline, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
 internal static class GenerateCommand
@@ -162,9 +164,10 @@ internal static class GenerateCommand
         // output was already refused as output_exists above and is not reached here; only a concurrent process replacing
         // the file between WriteNew and the Delete below, a theoretical race, could make the Delete remove another's file).
         // Any exception before the success line is complete removes the just-written file again, then propagates unchanged
-        // to Run's catch-all (the typed InternalError line with its diagnostic once). A failed removal is ignored: the typed
-        // line is still printed. If stdout itself throws part-way through the success line, that partial line may precede
-        // the typed line on stdout.
+        // to Run's catch-all (the typed InternalError line with its diagnostic once). P7-27: a failed removal (any exception,
+        // IO or not) writes one PartialOutputLeft line naming the file left behind to stderr and is otherwise swallowed, so
+        // the original exception is the one rethrown and reported. If stdout itself throws part-way through the success
+        // line, that partial line may precede the typed line on stdout.
         try
         {
             PostWriteStageProbe?.Invoke();
@@ -185,8 +188,8 @@ internal static class GenerateCommand
         }
         catch (Exception)
         {
-            try { File.Delete(output); }
-            catch (Exception removal) when (removal is IOException or UnauthorizedAccessException) { }
+            try { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }
+            catch (Exception) { Console.Error.WriteLine(PartialOutputLeft + output); }
             throw;
         }
     }
@@ -462,6 +465,16 @@ internal static class GenerateCommand
     // reset after the test. Named apart from GenerateTypologyCommand's P3-25 seam, whose static pin counts that name over
     // interfaces/.
     internal static Action? PostWriteStageProbe { get; set; }
+
+    // P7-27 test seam: null in production. tests/cli/GeneratePrototypesTests.cs section 8 sets it (by reflection) to an
+    // Action<string> that throws, so the post-write cleanup's File.Delete(output) is never reached (as if the delete
+    // failed); Execute calls it with the output path right before that delete. It is reset after the test. Not named
+    // PostWriteProbe (GenerateTypologyCommand's P3-25 seam, whose static pin counts that name over interfaces/).
+    internal static Action<string>? PostWriteDeleteProbe { get; set; }
+
+    // P7-27: the stderr line written before the internal-error diagnostic when the post-write cleanup could not delete the
+    // just-written output (followed by the output path exactly as given on the command line).
+    internal const string PartialOutputLeft = "generate-prototypes: could not delete partial output: ";
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
