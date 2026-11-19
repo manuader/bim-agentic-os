@@ -53,6 +53,10 @@ namespace Bim.Mcp;
 // request file, or that verb's refusal line, from the verb's own reader, parser, default project id, package-first pack
 // lookup and guarded pipeline path (GeneratePrototypesTool.cs runs GenerateCommand.Document); listed with permission level
 // read (readOnlyHint true); no output path.
+// jurisdiction_resolve (P10-27) is read-only: its text is the CLI jurisdiction-resolve stdout line for the same selector,
+// lock and allow-stub flag, from the verb's own handler (JurisdictionResolveTool.cs runs JurisdictionResolveCommand.Resolve);
+// listed with permission level read (readOnlyHint true). A usage-equivalent call is -32602: a tool throws
+// McpInvalidParamsException, which CallTool answers as invalid params instead of a tool result.
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -153,6 +157,13 @@ public sealed class McpServer
         new ToolSpec(GeneratePrototypesTool.Name, "Read-only apartment prototypes (P7-09/P7-12) for a generate-prototypes request file (typology, lot, optional alternatives, seed, door_width_m, weights, fixed_rooms, fixed_walls, pack, project_id or the derived UUIDv8 default, revision, circulation_weight, facade_weight, snap; the code pack found in the release package first, else the repository): returns the canonical prototype pipeline document the CLI writes, byte for byte, or the typed generate_prototypes_* / input_* refusal; writes nothing (CLI: generate-prototypes request.json output.json).",
             [new ParameterSpec(GeneratePrototypesTool.RequestParameter, "string", "generate-prototypes request JSON file, read only")],
             GeneratePrototypesTool.Execute, Permission: PermissionLevel.Read),
+        new ToolSpec(JurisdictionResolveTool.Name, "Read-only jurisdiction selection (P10-06/P10-21) over the skill packs' jurisdiction sidecars (the release package's skills first, else the repository's): give code, or country and municipality; with lock_path only the packs a skills.lock.json pins (P5-10); allow_stub admits stub packs. Returns {status succeeded, code, pack, version, stub} or the typed refusal, byte-equal to the CLI stdout; writes nothing (CLI: jurisdiction-resolve --code c | --country cc --municipality m [--lock skills.lock.json] [--allow-stub]).",
+            [new ParameterSpec(JurisdictionResolveTool.CodeParameter, "string", "Jurisdiction code (e.g. ar.caba); not together with country/municipality", false),
+             new ParameterSpec(JurisdictionResolveTool.CountryParameter, "string", "Country name, with municipality, instead of code", false),
+             new ParameterSpec(JurisdictionResolveTool.MunicipalityParameter, "string", "Municipality name, with country, instead of code", false),
+             new ParameterSpec(JurisdictionResolveTool.LockParameter, "string", "Project skill lock file (skills.lock.json), read only", false),
+             new ParameterSpec(JurisdictionResolveTool.AllowStubParameter, "boolean", "true admits a stub pack; default false", false)],
+            JurisdictionResolveTool.Execute, Permission: PermissionLevel.Read),
     ];
 
     const string AuditInputSchema = """{"type":"object","properties":{"log_path":{"type":"string","description":"Audit log (JSONL), read only"},"anchor_path":{"type":"string","description":"Head anchor file {kind audit-anchor, version 1, sequence, hash}, read only"},"actors":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Known actor ids; an entry by any other actor is audit_actor_unknown"},"summary":{"type":"boolean","description":"Return the decision summary instead of the report"}},"required":["log_path"],"additionalProperties":false}""";
@@ -582,6 +593,7 @@ public sealed class McpServer
         string text;
         bool isError;
         try { (text, isError) = tool.Execute(arguments); }
+        catch (McpInvalidParamsException e) { return Error(id, InvalidParams, e.Message); }
         catch (Exception e) { text = Failed(e.Message); isError = true; }
         return Result(id, ToolResult(text, isError));
     }
@@ -724,3 +736,6 @@ public sealed class McpServer
         return document.RootElement.Clone();
     }
 }
+
+// A tool's usage-equivalent argument refusal (P10-27): CallTool answers it with JSON-RPC -32602 and this message.
+internal sealed class McpInvalidParamsException(string message) : Exception(message);
