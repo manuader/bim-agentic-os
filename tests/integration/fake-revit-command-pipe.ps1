@@ -33,6 +33,16 @@
 # with that unread receive queue resets the connection, so the client's read fails (ECONNRESET); on Windows (named
 # pipe) the client's pending write of the tail fails when the server end closes. Every other request is read up to its
 # newline and served exactly as without the option. Without the option requests are read by ReadLine, as before.
+# P2-31: -BreakAfterBytes <N> reads each request itself, at most N bytes (4096-byte reads, never past N) and, when it
+# has read N bytes without a newline, waits 200 ms, measures the bytes queued in the server end and closes the
+# connection without reading the rest of the line and without a reply; the log gets one
+# "broken-after:<bytes read>:<InBufferSize>:<bytes queued>" line instead. InBufferSize is what the server end reports
+# ("unknown" when it throws): on Windows it is the requested quota (0 here), not a measured buffer. Bytes queued is
+# measured: Windows PeekNamedPipe TotalBytesAvail on the server handle, Linux ioctl FIONREAD on its socket fd (-1 - error
+# code when the call fails, -1 on other OSes), so a test can tell whether the client still had bytes unsent. The
+# request never reaches the executor: nothing runs, no operation id is known or logged, no -RecorderFailures id
+# matches. A request whose newline lies within its first N bytes is read up to it and served exactly as without the
+# option. It cannot be combined with -BreakPipeCommand (refused before the pipe is ready).
 param(
     [Parameter(Mandatory)][string]$PipeName,
     [Parameter(Mandatory)][string]$DocumentUid,
@@ -48,7 +58,9 @@ param(
     # Test-only (P2-24): "<operation_id>:<count>,..." recorder failures injected after those revit.command calls.
     [string]$RecorderFailures,
     # Test-only (P2-30): a request of this catalogue command has its connection closed before its line is fully read.
-    [string]$BreakPipeCommand
+    [string]$BreakPipeCommand,
+    # Test-only (P2-31): a request line longer than this many bytes has its connection closed after exactly that many.
+    [ValidateRange(1, 1048576)][int]$BreakAfterBytes
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/fake-revit-command-executor.ps1"
@@ -70,6 +82,35 @@ if ($PSBoundParameters.ContainsKey('RecorderFailures')) {
     }
     if ($failuresAfter.Count -eq 0) { throw '-RecorderFailures needs at least one <operation_id>:<count> pair' }
 }
+$breakAfter = if ($PSBoundParameters.ContainsKey('BreakAfterBytes')) { $BreakAfterBytes } else { 0 }
+if ($breakAfter -gt 0 -and $BreakPipeCommand) { throw '-BreakAfterBytes cannot be combined with -BreakPipeCommand' }
+if ($breakAfter -gt 0) {
+    # P2-31: the bytes queued in the server end of a connection (see the header).
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FakePipeQueue
+{
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool PeekNamedPipe(IntPtr pipe, IntPtr buffer, uint size, IntPtr read, out uint available, IntPtr left);
+    [DllImport("libc", SetLastError = true)]
+    static extern int ioctl(int fd, UIntPtr request, out int available);
+    public static long Queued(SafeHandle handle)
+    {
+        var added = false;
+        handle.DangerousAddRef(ref added);
+        try
+        {
+            var raw = handle.DangerousGetHandle();
+            if (OperatingSystem.IsWindows()) return PeekNamedPipe(raw, IntPtr.Zero, 0, IntPtr.Zero, out var available, IntPtr.Zero) ? available : -1L - Marshal.GetLastWin32Error();
+            if (OperatingSystem.IsLinux()) return ioctl(checked((int)raw), (UIntPtr)0x541Bu, out var queued) == 0 ? queued : -1L - Marshal.GetLastWin32Error();
+            return -1;
+        }
+        finally { if (added) handle.DangerousRelease(); }
+    }
+}
+'@
+}
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $utf8 = [Text.UTF8Encoding]::new($false)
 $ready = $false
@@ -89,7 +130,8 @@ try {
             # A client that vanishes mid-request (killed, timed out) costs only its own connection.
             try {
                 # P2-30: with -BreakPipeCommand the line is read below without a reader (StreamReader.Null: Dispose is a no-op).
-                $reader = if ($BreakPipeCommand) { [IO.StreamReader]::Null } else { [IO.StreamReader]::new($server, $utf8, $false, 4096, $true) }
+                # P2-31: so is it with -BreakAfterBytes.
+                $reader = if ($BreakPipeCommand -or $breakAfter -gt 0) { [IO.StreamReader]::Null } else { [IO.StreamReader]::new($server, $utf8, $false, 4096, $true) }
                 $writer = [IO.StreamWriter]::new($server, $utf8, 4096, $true)
                 $writer.AutoFlush = $true
                 if ($BreakPipeCommand) {
@@ -111,6 +153,32 @@ try {
                     }
                     if ($broken) {
                         [IO.File]::AppendAllText($LogFile, "broken:$BreakPipeCommand`n")
+                        $reader.Dispose(); $writer.Dispose(); continue
+                    }
+                    if ($bytes.Length -eq 0) { continue }
+                    $line = $utf8.GetString($bytes.GetBuffer(), 0, [int]$bytes.Length)
+                    $end = $line.IndexOf([char]10)
+                    if ($end -ge 0) { $line = $line.Substring(0, $end) }
+                    if ($line.EndsWith([char]13)) { $line = $line.Substring(0, $line.Length - 1) }
+                }
+                elseif ($breakAfter -gt 0) {
+                    # P2-31: read at most N bytes; a line not ended within them is broken there, the rest left unsent or unread.
+                    $bytes = [IO.MemoryStream]::new()
+                    $chunk = [byte[]]::new(4096)
+                    $ended = $false
+                    while ($bytes.Length -lt $breakAfter) {
+                        $count = $server.Read($chunk, 0, [Math]::Min($chunk.Length, $breakAfter - [int]$bytes.Length))
+                        if ($count -le 0) { break }
+                        $bytes.Write($chunk, 0, $count)
+                        if ([Array]::IndexOf($chunk, [byte]10, 0, $count) -ge 0) { $ended = $true; break }
+                    }
+                    if (!$ended -and $bytes.Length -ge $breakAfter) {
+                        $inBuffer = 'unknown'
+                        try { $inBuffer = [string]$server.InBufferSize } catch { $inBuffer = 'unknown' }
+                        # Let the client write what it can, then measure what sits in the server end.
+                        Start-Sleep -Milliseconds 200
+                        $queued = [FakePipeQueue]::Queued($server.SafePipeHandle)
+                        [IO.File]::AppendAllText($LogFile, 'broken-after:' + $bytes.Length + ':' + $inBuffer + ':' + $queued + "`n")
                         $reader.Dispose(); $writer.Dispose(); continue
                     }
                     if ($bytes.Length -eq 0) { continue }
