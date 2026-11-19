@@ -1837,3 +1837,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 2026-11-19T10:49:44Z integration 895c6bc CI 44506177713 success (9/9) → main fast-forwarded (ad27b14..895c6bc). P7-26, P2-32, P3-22 ✅; new P7-27, P2-33, P3-27. Progress 258/277 (93.1 %). Worktrees retired (branches relay241-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-19T10:49:44Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P3-26, P4-26, P10-27, P10-30 (relay239); then P5-22, P5-28, P6-27, P6-29, P1-34, P1-35 (relay240); then P7-24, P7-27, P2-33, P3-27. GenerateTypologyCommand.cs edits serialize (P3-26, P4-26, P10-30); McpServer.cs edits serialize (P5-22, P10-27). ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender. In-process .NET pipe clients in tests on Linux must resolve /tmp (verify.ps1 sets a long TMPDIR; .NET caches the pipe prefix).
+
+## Relay242
+- 2026-11-19T10:53:03Z lock taken (session_014pxpsTGLHnAiEfRDKm3shR; was FREE, relay241 released 10:49:44Z)
