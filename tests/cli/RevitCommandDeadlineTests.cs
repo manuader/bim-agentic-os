@@ -29,8 +29,8 @@ using Bim.Core;
 //   2b. A cut page's no_response / pipe_io_error pass through unchanged; time left equal to the read timeout is not cut.
 //   2c. P1-31, the reply-at-deadline race of RevitDeadlineTransport (injected clock, fake page transports). The fakes
 //      MODEL the pipe read's keep-at-timeout rule, mirroring RevitCommandService.Send (core/Bim.Core/RevitCommandsService.cs,
-//      a line complete when the read timeout fires is still the reply); they do not test it, and Send's own cancel-race
-//      branch stays unit-untested. Given that model: a reply line that completes exactly when its read timeout fires
+//      a line complete when the read timeout fires is still the reply); they do not test it; Send's own cancel-race
+//      branch is pinned in 2d (P1-33). Given that model: a reply line that completes exactly when its read timeout fires
 //      (the time left of a cut read, the configured timeout, or a cut connect's read) is kept: a final page there ends the listing succeeded, byte-equal to RevitServiceTransport
 //      paging; a line due one tick after it is the read timeout, query_all_deadline_exceeded on a cut page (pinned
 //      bytes) and pipe_read_timeout on an uncut one. A non-final page completing exactly at the deadline leaves no time

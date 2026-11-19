@@ -170,8 +170,22 @@ public static class RevitCommandService
         // add-in already closed (IOException "Pipe is broken" on Windows instead of no_response).
         pipe.Write(utf8.GetBytes(line + Environment.NewLine));
         using var reader = new StreamReader(pipe, utf8, false, 4096, leaveOpen: true);
+        return ReadReplyLine(token => reader.ReadLineAsync(token).AsTask(), readTimeout);
+    }
+
+    // P1-33: the reply read of SendMeasured (the real pipe transports), a seam so its cancel race is unit-tested with
+    // a gated read. readLine starts the read with a token that is cancelled when the wait gives up. A line (or null, the
+    // pipe closed) within readTimeout is returned; a read fault within it is rethrown as is. After the timed wait gives
+    // up the read is cancelled, and a line that completed after the wait but before the cancel is KEPT: it is still this
+    // request's reply (RevitCommandService.Run then verifies it like any other). Otherwise RevitPipeReadTimeoutException
+    // naming readTimeout is thrown and the read's late outcome (a line, a cancel or a fault) is observed and dropped.
+    // afterWaitGivesUp runs between the wait and the cancel: tests only (the production transports pass none).
+    public static string? ReadReplyLine(Func<CancellationToken, Task<string?>> readLine, TimeSpan readTimeout, Action? afterWaitGivesUp = null)
+    {
+        ArgumentNullException.ThrowIfNull(readLine);
+        CheckReadTimeout(readTimeout);
         using var cancel = new CancellationTokenSource();
-        var read = reader.ReadLineAsync(cancel.Token).AsTask();
+        var read = readLine(cancel.Token);
         bool done;
         try { done = read.Wait(readTimeout); }
         catch (AggregateException error) when (error.InnerException is OperationCanceledException) { done = false; }
@@ -181,7 +195,8 @@ public static class RevitCommandService
             throw;
         }
         if (done) return read.Result;
-        // Stop the pending read and close the pipe; its late outcome is observed and dropped.
+        afterWaitGivesUp?.Invoke();
+        // Stop the pending read (the caller then closes the pipe); its late outcome is observed and dropped.
         cancel.Cancel();
         // A line that arrived between the deadline and the cancel is still this request's reply.
         if (read.IsCompletedSuccessfully) return read.Result;
