@@ -17,7 +17,9 @@ using System.Text;
 // show at a non-finite position keeps the warning pending.
 // P6-27: a show at a finite position whose text height is non-finite (Tf size x CTM) also keeps it pending; equal direct
 // (not indirect) font dictionaries under two resource names are separate fonts and warn once each (the decoder cache is
-// keyed by dictionary identity); the static check also runs on sources stripped of comments and literals.
+// keyed by dictionary identity); the static check also runs on sources stripped of comments and literals. Known limit
+// of that stripper: an interpolation hole is not parsed, so a quote or a nested literal inside a hole (for example
+// $"{F('"')}..." or $"{(b ? @"q" : "r")}") ends or restarts the literal early; the swallow guard catches a run to EOF.
 internal static class PdfType3GlyphListTests
 {
     private static string I(long value) => value.ToString(CultureInfo.InvariantCulture);
@@ -305,16 +307,18 @@ internal static class PdfType3GlyphListTests
             var size = "1" + new string('0', 63);
             var scale = big + " 0 0 " + big + " 0 0 cm ";
             string Tall(string show) => "q " + string.Concat(Enumerable.Repeat(scale, 4)) + "BT /F1 " + size + " Tf 1 0 0 10000000000 50 50 Tm " + show
-                + " ET Q BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\002\\004) Tj ET";
-            foreach (var (show, op) in new[] { ("(\\002) Tj", "Tj"), ("[(\\002) -300 (\\004)] TJ", "TJ"), ("12 TL (\\002) '", "'") })
+                + " ET Q BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\002) Tj ET";
+            foreach (var (show, op) in new[] { ("(\\004) Tj", "Tj"), ("[(\\004) -300 (\\004)] TJ", "TJ"), ("12 TL (\\004) '", "'") })
             {
+                // The dropped show marks only code 4 (/afii10018) and the next show only code 2 (/afii10017): the warning lists
+                // /afii10017 alone, so marks of the dropped show are not carried over (P6-27 review).
                 // ' : TL is operator 8 and ' is 9, shifting the later operators by one.
                 var shift = op == "'" ? 1 : 0;
                 var tall = Page(Tall(show), Type3(affected));
-                C(Texts(tall) == "\\u0002\\u0004"
+                C(Texts(tall) == "\\u0002"
                     && Warnings(tall) == "operand-error@1:4:" + I(8 + shift) + ";encoding-glyph-unsupported@1:4:" + I(14 + shift)
-                    && Messages(tall) == op + " gives a non-finite text height / font /F1 (object 5)" + tail + "/afii10017, /afii10018); their codes are read as text bytes",
-                    "a " + op + " at a finite position with a non-finite text height (Tf size x CTM) keeps only operand-error; the warning fires at the next show that emits text (P6-27)",
+                    && Messages(tall) == op + " gives a non-finite text height / font /F1 (object 5)" + tail + "/afii10017); their codes are read as text bytes",
+                    "a " + op + " at a finite position with a non-finite text height (Tf size x CTM) keeps only operand-error; the warning fires at the next show that emits text and lists only its own names (P6-27)",
                     Texts(tall) + " " + Warnings(tall) + " " + Messages(tall));
             }
 
@@ -336,9 +340,11 @@ internal static class PdfType3GlyphListTests
 
             // The stripper removes // and /* */ comments and string, verbatim, interpolated, raw and char literals.
             const string crafted = "var a = 1; // IsGlyphListName\nvar b = \"Is\\\"GlyphListName\";\nvar c = @\"x \"\" IsGlyphListName\";\nvar d = '\"'; var e = $\"{x} IsGlyphListName\";\n"
-                + "var f = \"\"\"\nIsGlyphListName \"\" \n\"\"\"; /* IsGlyphListName */ var g = '\\''; IsGlyphListName(\"{\"); var @h = \"\";";
+                + "var f = \"\"\"\nIsGlyphListName \"\" \n\"\"\"; /* IsGlyphListName */ var g = '\\''; IsGlyphListName(\"{\"); var @h = \"\";"
+                + "\nvar p = '/'; var q = \"http://x\"; /* \" */ var r = @\"a\\\";\nvar v = @\"\"\"\"; IsGlyphListName(7);";
             var stripped = StripCommentsAndLiterals(crafted);
-            C(stripped == "var a = 1; \nvar b = \"\";\nvar c = \"\";\nvar d = ''; var e = \"\";\nvar f = \"\";   var g = ''; IsGlyphListName(\"\"); var @h = \"\";",
+            C(stripped == "var a = 1; \nvar b = \"\";\nvar c = \"\";\nvar d = ''; var e = \"\";\nvar f = \"\";   var g = ''; IsGlyphListName(\"\"); var @h = \"\";"
+                + "\nvar p = ''; var q = \"\";   var r = \"\";\nvar v = \"\"; IsGlyphListName(7);",
                 "the static check strips trailing // comments, block comments and string and char literals (P6-27)", Escape(stripped));
 
             // The P6-25 static check, re-run on the sources with comments and literals stripped.
@@ -346,15 +352,25 @@ internal static class PdfType3GlyphListTests
             var content = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfContent.cs")));
             var encoding = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfEncoding.cs")));
             static int Count(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
+            // Swallow guard (P6-27 review): each stripped source keeps balanced braces, ends with '}' and still holds its
+            // decoder member and its last member, so a literal or comment that ran to EOF fails here.
+            foreach (var (source, sourceName, member, last) in new[]
+            {
+                (content, "PdfContent.cs", "FontDecoder(string name", "private void InvokeXObject(string name"),
+                (encoding, "PdfEncoding.cs", "UnsupportedGlyphListName(byte code)", "Lazy<Dictionary<string, string>> Latin = new("),
+            })
+                C(Count(source, "{") == Count(source, "}") && source.TrimEnd().EndsWith('}') && Count(source, member) == 1 && Count(source, last) == 1,
+                    "stripped " + sourceName + " keeps balanced braces and its members " + member + " and " + last + " (P6-27 swallow guard)",
+                    I(Count(source, "{")) + "/" + I(Count(source, "}")) + " end " + (source.TrimEnd().Length > 0 ? source.TrimEnd()[^1].ToString() : "empty") + " " + I(Count(source, member)) + " " + I(Count(source, last)));
             C(Count(content, "IsGlyphListName") == 0 && Count(content, ".UnsupportedGlyphListName(") == 1,
                 "without comments and literals the font decoder reads affected names through the one per-code accessor (P6-27 static check)",
                 I(Count(content, "IsGlyphListName")) + " " + I(Count(content, ".UnsupportedGlyphListName(")));
             const string signature = "public string? UnsupportedGlyphListName(byte code)";
             var (bodyStart, bodyEnd) = Body(encoding, encoding.IndexOf(signature, StringComparison.Ordinal), signature.Length);
             var call = encoding.IndexOf("PdfGlyphNames.IsGlyphListName(", StringComparison.Ordinal);
-            C(Count(encoding, signature) == 1 && Count(encoding, "PdfGlyphNames.IsGlyphListName(") == 1 && bodyStart >= 0 && call > bodyStart && call < bodyEnd,
-                "without comments and literals PdfSimpleEncoding applies the glyph-list filter once, inside the accessor body (P6-27 static check)",
-                I(Count(encoding, signature)) + " " + I(Count(encoding, "PdfGlyphNames.IsGlyphListName(")) + " " + I(bodyStart) + ".." + I(bodyEnd) + " call " + I(call));
+            C(Count(encoding, signature) == 1 && Count(encoding, "PdfGlyphNames.IsGlyphListName(") == 1 && Count(encoding, "IsGlyphListName") == 2 && bodyStart >= 0 && call > bodyStart && call < bodyEnd,
+                "without comments and literals PdfSimpleEncoding applies the glyph-list filter once, inside the accessor body, and names IsGlyphListName only at its definition and that call (P6-27 static check)",
+                I(Count(encoding, signature)) + " bare " + I(Count(encoding, "IsGlyphListName")) + " " + I(Count(encoding, "PdfGlyphNames.IsGlyphListName(")) + " " + I(bodyStart) + ".." + I(bodyEnd) + " call " + I(call));
         }
         catch (Exception error) { C(false, "p6-27 unexpected", error.GetType().Name + ": " + error.Message); }
     }
