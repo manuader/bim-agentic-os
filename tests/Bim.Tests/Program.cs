@@ -197,6 +197,41 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
   Check(r26Again.Refusal==r26BadLoad.Refusal && !ReferenceEquals(r26Again.LoaderError,r26BadLoad.LoaderError) && r26Again!=r26BadLoad,"P5-26 two reads of one bad directory carry distinct loader errors and are unequal");
  } finally { if(Directory.Exists(p526)) Directory.Delete(p526,true); }
 }
+// P5-27: JurisdictionRegistry equality is reference identity, declared explicitly (IEquatable, Equals, GetHashCode) and
+// pinned: two Load (or LoadLocked) reads of one valid directory give equal content but unequal registries, so their loads are
+// unequal too (JurisdictionLoad compares Registry by that equality).
+{
+ var p527=Path.Combine(envRoot(),"bim-p527-"+Guid.NewGuid());
+ try {
+  var r27Type=typeof(JurisdictionRegistry);
+  Check(typeof(IEquatable<JurisdictionRegistry>).IsAssignableFrom(r27Type),"P5-27 JurisdictionRegistry declares IEquatable<JurisdictionRegistry> (equality chosen explicitly)");
+  Check(r27Type.GetMethod(nameof(object.Equals),[typeof(object)])?.DeclaringType==r27Type && r27Type.GetMethod(nameof(object.GetHashCode),Type.EmptyTypes)?.DeclaringType==r27Type,"P5-27 JurisdictionRegistry overrides Equals(object) and GetHashCode itself");
+  var r27Root=Path.Combine(p527,"skills");
+  Directory.CreateDirectory(Path.Combine(r27Root,"xx.p527.pack"));
+  File.WriteAllText(Path.Combine(r27Root,"xx.p527.pack","skill.json"),"{\"manifest_version\":1,\"id\":\"xx.p527.pack\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fixture\",\"priority\":10,\"rules\":[]}");
+  File.WriteAllText(Path.Combine(r27Root,"xx.p527.pack","jurisdiction.json"),"{\"jurisdiction_version\":1,\"code\":\"xx.p527\",\"pack\":\"xx.p527.pack\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"Fixture Town\"],\"stub\":true}");
+  var r27Lock=SkillLocking.Pin(r27Root,["xx.p527.pack"]);
+  var r27Pairs=new (string Name,JurisdictionLoad A,JurisdictionLoad B)[] {
+   ("Load",JurisdictionRegistry.Load(r27Root),JurisdictionRegistry.Load(r27Root)),
+   ("LoadLocked",JurisdictionRegistry.LoadLocked(r27Root,r27Lock),JurisdictionRegistry.LoadLocked(r27Root,r27Lock)),
+   ("Load vs LoadLocked",JurisdictionRegistry.Load(r27Root),JurisdictionRegistry.LoadLocked(r27Root,r27Lock)),
+  };
+  foreach(var (r27Name,r27A,r27B) in r27Pairs) {
+   Check(r27A.Registry is {} r27Ra && r27B.Registry is {} r27Rb && r27Ra.Codes.SequenceEqual(r27Rb.Codes) && r27Ra.Claims.Count==1 && r27Rb.Claims.Count==1 && r27Ra.Claims[0].Pack==r27Rb.Claims[0].Pack,"P5-27 "+r27Name+": both reads succeed with the same claims ("+r27A.Refusal?.Code+"/"+r27B.Refusal?.Code+")");
+   var r27X=r27A.Registry!; var r27Y=r27B.Registry!;
+   Check(!ReferenceEquals(r27X,r27Y) && !r27X.Equals(r27Y) && !r27X.Equals((object)r27Y) && !EqualityComparer<JurisdictionRegistry>.Default.Equals(r27X,r27Y) && !(r27X==r27Y) && r27X!=r27Y,"P5-27 "+r27Name+": two reads give unequal registries (reference identity)");
+   Check(r27X.Equals(r27X) && r27X.Equals((object)r27X) && !r27X.Equals((object)"x"),"P5-27 "+r27Name+": a registry equals itself only");
+   Check(r27X.GetHashCode()==System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(r27X) && r27Y.GetHashCode()==System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(r27Y) && r27X.GetHashCode()==r27X.GetHashCode(),"P5-27 "+r27Name+": the hash is the identity hash and stable");
+   Check(new HashSet<JurisdictionRegistry>{r27X,r27Y,r27X}.Count==2,"P5-27 "+r27Name+": a hash set keeps both reads");
+   Check(r27A!=r27B && !r27A.Equals(r27B),"P5-27 "+r27Name+": the two loads are unequal (JurisdictionLoad follows Registry identity)");
+   Check(new JurisdictionLoad(r27X,null)==r27A && new JurisdictionLoad(r27X,null).GetHashCode()==r27A.GetHashCode() && (r27B with {Registry=r27X})==r27A,"P5-27 "+r27Name+": loads over the same registry instance are equal with an equal hash");
+   // A separate local: nullable analysis treats x.Equals(null) as a null test of x, so after it x is maybe-null and a later
+   // dereference of x is CS8602 (an error under --warnaserror); r27X stays untouched for the checks above.
+   var r27Z=r27X;
+   Check(!r27Z.Equals(null) && !r27Z.Equals((object?)null),"P5-27 "+r27Name+": a registry is not equal to null");
+  }
+ } finally { if(Directory.Exists(p527)) Directory.Delete(p527,true); }
+}
 Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {passed=count, core_test_ms=timer.Elapsed.TotalMilliseconds, native_verified=false}));
 } catch(Exception exception) {
     Console.Error.WriteLine(exception);
