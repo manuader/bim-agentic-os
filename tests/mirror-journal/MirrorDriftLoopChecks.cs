@@ -1945,8 +1945,18 @@ static class MirrorDriftLoopChecks
             "the broken floor.create's wire line is large (over 30000 ASCII characters, within the 65536 cap) and byte " + MidArgsBreakBytes + " lies inside its args member", measured);
         Check(read == MidArgsBreakBytes, "the fake read exactly " + MidArgsBreakBytes + " bytes of the floor.create line before closing it (measured from its log)", measured + " log " + brokenLine);
         string Seen((int Exit, string Out, string Err) x) => "exit=" + x.Exit + " status=" + (Status(x.Out) ?? "<null>") + " code=" + (Text(x.Out, "code") ?? "<null>") + " field=" + (Text(x.Out, "field") ?? "<null>") + " detail=" + (Text(x.Out, "detail") ?? "<null>");
-        // P2-31 deliberate probe (review round): report the bytes queued in the server end per OS, then pin them.
-        Check(false, "PROBE queued " + os, measured);
+        // P2-31: measured by a deliberate probe red (run 44424268750): 200 ms after the fake stopped reading, the bytes
+        // queued in its server end equal the whole unread remainder on both OSes (Linux 35628 of 35628, FIONREAD on the
+        // socket; Windows 35619 of 35619, PeekNamedPipe TotalBytesAvail). On Linux that is the remainder sitting in the
+        // socket: the CLI's write completed (its send buffer is larger than any request under the 65536-character cap).
+        // On Windows the inbound quota is 0, so those bytes cannot be buffered: they are the CLI's still-pending write,
+        // which PeekNamedPipe counts as available. Neither measurement shows bytes the client had not yet handed to the
+        // OS, so "unread minus queued" is 0 on both and is pinned as observed. Other OSes have not been probed (macOS does
+        // not run mirror-journal) and fail here until one is.
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
+            Check(read == MidArgsBreakBytes && unread > 0 && queued == unread,
+                os + ": 200 ms after the break the bytes queued in the fake's server end (measured) equal the whole unread remainder of the floor.create line", measured);
+        else Check(false, os + ": the bytes queued at a mid-args break have not been observed by a probe on this OS", measured);
         // P2-31: the exact failure, observed by the same probe: the CLI answers pipe_io_error, field pipe_name, detail
         // IOException (the exception type name only), exit 1, on Windows and Linux alike, so one set of constants pins it.
         const string midArgsCode = "pipe_io_error", midArgsField = "pipe_name", midArgsDetail = "IOException";
