@@ -1,6 +1,5 @@
 #nullable enable
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Bim.Core;
@@ -247,7 +246,7 @@ internal static partial class PlanLayoutsCommand
     }
 
     // P3-20 test seam: null in production. tests/cli/InternalErrorDelegationTests.cs sets it (by reflection) to an Action
-    // that throws, so the guarded library work below fails inside Run's real catch-all; it is reset after the test.
+    // that throws, so the guarded library work below fails inside Run's (PlanLayoutsWrite.cs) real catch-all; it is reset after the test.
     internal static Action? GuardedWorkProbe { get; set; }
 
     // P7-22 test seam: null in production (the default ScoringWeights, today's bytes). tests/mcp/PlanLayoutsToolTests.cs
@@ -257,7 +256,7 @@ internal static partial class PlanLayoutsCommand
     // plan_layouts_alternatives_invalid) or invalid weights (the verb always passes the default ScoringWeights).
     internal static ScoringWeights? GenerationWeightsProbe { get; set; }
 
-    // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
+    // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run (PlanLayoutsWrite.cs) prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
     static Refusal InternalRefusal(Exception error)
     {

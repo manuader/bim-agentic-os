@@ -98,23 +98,29 @@ internal static class PlanLayoutsWriteLinkTests
         Directory.CreateDirectory(Path.Combine(scratch, "cli"));
         File.WriteAllText(Path.Combine(scratch, "cli", "PlanLayoutsCommand.cs"), "");
         File.WriteAllText(Path.Combine(scratch, "cli", "PlanLayoutsWrite.cs"), "");
-        string Synthetic(string items) => "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n" + items + "\n  </ItemGroup>\n</Project>";
-        foreach (var (label, items, flagged) in new (string, string, bool)[]
+        try
         {
-            ("a multi-line item with '\\' separators", "    <Compile\n      Include=\"..\\cli\\PlanLayoutsWrite.cs\"\n      Link=\"PlanLayoutsWrite.cs\" />", true),
-            ("an item in an XML comment", "    <!-- <Compile Include=\"../cli/PlanLayoutsWrite.cs\" /> -->\n    <Compile Include=\"../cli/PlanLayoutsCommand.cs\" />", false),
-            ("the second of two ';' entries", "<Compile Include=\"../cli/PlanLayoutsCommand.cs;  ../cli/PlanLayoutsWrite.cs\" />", true),
-            ("another case", "<Compile Include=\"../CLI/planlayoutswrite.CS\" />", true),
-            ("a Link only", "<Compile Include=\"../cli/Other.cs\" Link=\"Sub/PlanLayoutsWrite.cs\" />", true),
-            ("a wildcard matching the CLI sources", "<Compile Include=\"../cli/PlanLayouts*.cs\" />", true),
-            ("a recursive wildcard", "<Compile Include=\"../**/*.cs\" />", true),
-            ("the shared part only", "<Compile Include=\"../cli/PlanLayoutsCommand.cs\" Link=\"PlanLayoutsCommand.cs\" />", false),
-        })
-        {
-            var found = WriteLinks(Synthetic(items), scratchMcp);
-            Check(found.Length > 0 == flagged, "link checker self-test: " + label + (flagged ? " is flagged" : " is not flagged") + " [" + string.Join(", ", found) + "]");
+            string Synthetic(string items) => "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n" + items + "\n  </ItemGroup>\n</Project>";
+            foreach (var (label, items, flagged) in new (string, string, bool)[]
+            {
+                ("a multi-line item with '\\' separators", "    <Compile\n      Include=\"..\\cli\\PlanLayoutsWrite.cs\"\n      Link=\"PlanLayoutsWrite.cs\" />", true),
+                ("an item in an XML comment", "    <!-- <Compile Include=\"../cli/PlanLayoutsWrite.cs\" /> -->\n    <Compile Include=\"../cli/PlanLayoutsCommand.cs\" />", false),
+                ("the second of two ';' entries", "<Compile Include=\"../cli/PlanLayoutsCommand.cs;  ../cli/PlanLayoutsWrite.cs\" />", true),
+                ("another case", "<Compile Include=\"../CLI/planlayoutswrite.CS\" />", true),
+                ("a Link only", "<Compile Include=\"../cli/Other.cs\" Link=\"Sub/PlanLayoutsWrite.cs\" />", true),
+                ("a wildcard matching the CLI sources", "<Compile Include=\"../cli/PlanLayouts*.cs\" />", true),
+                ("a recursive wildcard", "<Compile Include=\"../**/*.cs\" />", true),
+                // Negative wildcards: a resolver that flagged every wildcard would fail these.
+                ("a wildcard matching only the shared part", "<Compile Include=\"../cli/PlanLayoutsC*.cs\" />", false),
+                ("a wildcard matching no file", "<Compile Include=\"../cli/Nothing*.cs\" />", false),
+                ("the shared part only", "<Compile Include=\"../cli/PlanLayoutsCommand.cs\" Link=\"PlanLayoutsCommand.cs\" />", false),
+            })
+            {
+                var found = WriteLinks(Synthetic(items), scratchMcp);
+                Check(found.Length > 0 == flagged, "link checker self-test: " + label + (flagged ? " is flagged" : " is not flagged") + " [" + string.Join(", ", found) + "]");
+            }
         }
-        Directory.Delete(scratch, recursive: true);
+        finally { try { Directory.Delete(scratch, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
         foreach (var (label, source, flagged) in new (string, string, bool)[]
         {
             ("a call", "PlanLayoutsCommand.Run(args);", true),
@@ -127,6 +133,9 @@ internal static class PlanLayoutsWriteLinkTests
             ("code after '//' inside a string", "var url = \"http://host\"; PlanLayoutsCommand.Run(args);", true),
             ("a longer member", "PlanLayoutsCommand.RunTests(); PlanLayoutsCommand.Failed(); PlanLayoutsCommand.ExecuteAll();", false),
             ("the dry plan", "var (ok, text) = PlanLayoutsCommand.DryPlan(brief, null, null, null);", false),
+            // A using alias is a known blind spot of this textual check (not flagged, by design); the metadata check of the
+            // real Release Bim.Mcp.dll below (no Run, Execute or Fail on Bim.Cli.PlanLayoutsCommand) covers it.
+            ("a using alias (covered by the binary metadata check)", "using P = Bim.Cli.PlanLayoutsCommand;\nP.Run(args);", false),
         })
         {
             var found = WriteUses(source);

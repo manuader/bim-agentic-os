@@ -2,7 +2,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Bim.Core;
 using Bim.Generative;
 using Bim.Gltf;
 

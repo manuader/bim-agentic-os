@@ -18,8 +18,9 @@ using System.Text.RegularExpressions;
 //   4. The real Release Bim.Mcp.dll answers tools/list, an unknown-tool and a missing-argument refusal with the
 //      in-process bytes; both refusal lines are also pinned literally.
 // Remaining (follow-up, not this task): Bim.Mcp.csproj still compiles the writer verbs GenerateCommand.cs
-// (generate-prototypes), PlanLayoutsCommand.cs (plan-layouts) and GenerateTypologyCommand.cs (generate-typology) in
-// full, so their Run paths and GltfExporter.WriteNew stay in the server binary.
+// (generate-prototypes) and GenerateTypologyCommand.cs (generate-typology) in full, so their Run paths and
+// GltfExporter.WriteNew stay in the server binary. P4-25 moved the plan-layouts write path into PlanLayoutsWrite.cs,
+// which the server does not compile (tests/mcp/PlanLayoutsWriteLinkTests.cs).
 internal static class GltfExportLinkTests
 {
     static readonly Regex ForbiddenUse = new(@"\bGltfExportCommand\s*\.\s*(?:Run|Usage|Fail)\b", RegexOptions.CultureInvariant);
