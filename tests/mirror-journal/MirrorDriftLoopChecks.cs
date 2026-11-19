@@ -133,6 +133,7 @@ static class MirrorDriftLoopChecks
         RunDroppedFailureLoop(root, dotnet, pwsh, cliDll, runDirectory);
         RunBrokenPipeLoop(root, dotnet, pwsh, cliDll, runDirectory);
         RunMidArgsBreakLoop(root, dotnet, pwsh, cliDll, runDirectory);
+        RunWriteProgressLoop(root, dotnet, pwsh, cliDll, runDirectory);
     }
 
     static void Same(Loop? first, Loop? second, string scenario)
@@ -1988,6 +1989,157 @@ static class MirrorDriftLoopChecks
         Check(FailureShape(j1) == "failures=0 since=0 complete=true existed=true entries=[]", "pipe reply m1: a peek after sequence 0 once the floor was broken: no failure injected, no entry, complete", FailureShape(j1) + " | " + Head(j1));
         Check(Uniform(j0) == Uniform(p0), "pipe reply m0 equals RevitJournalQuery.RawRead over one Core tracker, member for member (diff included)", Uniform(j0) + " vs " + Uniform(p0));
         Check(Uniform(j1) == Uniform(p1), "pipe reply m1 equals RevitJournalQuery.RawRead over one Core tracker that saw no floor and no failure, member for member (diff included)", Uniform(j1) + " vs " + Uniform(p1));
+    }
+
+    // P2-32: client-side write progress at the P2-31 mid-args break. The fake's queued count (P2-31) cannot tell on
+    // Windows a pending client write from buffered bytes, so this measures the client: Core's test seam
+    // RevitCommandService.WriteProgress ([ThreadStatic], null in production) makes the real pipe transport hand the request
+    // to the pipe in WriteProgressChunk-byte pieces and report (bytes handed so far, wire bytes) before the first piece and
+    // after each piece whose Write returned. Against a fresh -BreakAfterBytes 4096 fake: the CLI sends the same large
+    // floor.create as P2-31 (no seam: one Write), then RevitCommandService.Run sends that very envelope in process with the
+    // seam set. Both are broken after 4096 bytes; the seam run's line equals the CLI's (same code, field and detail, exit 1
+    // for the CLI), the seam's wire bytes equal WireLine plus Environment.NewLine, and the bytes handed when the fake
+    // closed are pinned per OS (see the measured values below). Static pin: no production source assigns the seam, and it is null on the test thread
+    // before and after the run.
+    const string WriteProgressFloor = "p2-32-floor";
+    static readonly string[] WriteProgressRequestsBefore = { "p2-32-levels", "p2-32-floor-types" };
+    const string WriteProgressService = "core/Bim.Core/RevitCommandsService.cs";
+
+    static void RunWriteProgressLoop(string root, string dotnet, string pwsh, string cliDll, string runDirectory)
+    {
+        void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "client write progress at a mid-args break: " + name, detail);
+        var os = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
+
+        // Static pin: the seam is named only in RevitCommandsService.cs among the production sources, declared without an
+        // initializer and never assigned there.
+        var naming = new List<string>();
+        foreach (var top in new[] { "core", "interfaces", "runtimes", "adapters", "evaluation" })
+        {
+            var directory = Path.Combine(root, top);
+            if (!Directory.Exists(directory)) continue;
+            foreach (var file in Directory.EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+                if (relative.Contains("/bin/", StringComparison.Ordinal) || relative.Contains("/obj/", StringComparison.Ordinal)) continue;
+                if (File.ReadAllText(file).Contains("WriteProgress", StringComparison.Ordinal)) naming.Add(relative);
+            }
+        }
+        naming.Sort(StringComparer.Ordinal);
+        Check(naming.SequenceEqual(new[] { WriteProgressService }), "static pin: among the production sources only " + WriteProgressService + " names the write-progress seam", string.Join(",", naming));
+        var service = File.ReadAllText(Path.Combine(root, WriteProgressService));
+        // Comments stripped, the code of RevitCommandsService.cs names the seam exactly twice: its declaration and the one
+        // read in WriteRequest. Any assignment (=, +=, -=, ??=) or other use is a third occurrence; a planted self-test
+        // shows those forms are caught while a mention in a comment is not.
+        static string Code(string source) => System.Text.RegularExpressions.Regex.Replace(source, @"/\*.*?\*/|//[^\n]*", "", System.Text.RegularExpressions.RegexOptions.Singleline);
+        const string seamDeclaration = "[ThreadStatic] internal static Action<int, int>? WriteProgress;";
+        const string seamRead = "var progress = WriteProgress;";
+        static int Uses(string source) => System.Text.RegularExpressions.Regex.Matches(Code(source), @"\bWriteProgress\b").Count;
+        static bool Pinned(string source) => Uses(source) == 2 && Code(source).Contains(seamDeclaration, StringComparison.Ordinal) && Code(source).Contains(seamRead, StringComparison.Ordinal);
+        Check(Pinned(service),
+            "static pin: with comments stripped the seam occurs exactly twice in " + WriteProgressService + " (its [ThreadStatic] declaration without an initializer and the one read): never assigned in production source (null unless a test sets it)",
+            "code occurrences " + Uses(service));
+        var planted = new[] { "\nstatic void P() { WriteProgress += (_, _) => { }; }\n", "\nstatic void P(Action<int, int> x) { WriteProgress ??= x; }\n", "\nstatic void P() { WriteProgress -= null; }\n", "\nstatic void P() { WriteProgress = null; }\n" };
+        Check(planted.All(plant => !Pinned(service + plant)) && Pinned(service + "\n// WriteProgress = x;\n/* WriteProgress += y; */\n"),
+            "static pin self-test: a planted WriteProgress +=, ??=, -= or = is caught, a mention in a comment is not", string.Join(",", planted.Select(plant => Uses(service + plant))));
+        Check(RevitCommandService.WriteProgress is null, "the seam is null on the test thread before the run");
+
+        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Pipe-WriteProgress.rvt", WriteProgressRequestsBefore.Length + 2, breakAfterBytes: MidArgsBreakBytes);
+        if (!h.WaitReady(out var notReady)) { Check(false, "fake add-in pipe ready with -BreakAfterBytes " + MidArgsBreakBytes, notReady); return; }
+        var levels = h.Command("p2-32-levels", "query.levels", _ => { });
+        var floorTypes = h.Command("p2-32-floor-types", "query.floor_types", _ => { });
+        if (!Succeeded(levels) || !Succeeded(floorTypes)) { Check(false, "query.levels and query.floor_types succeed", R(levels) + " | " + R(floorTypes)); return; }
+        var cli = h.Command(WriteProgressFloor, "floor.create", w => BigFloorArgs(w, Pick(levels.Out, "levels", "name", "Level 1"), Pick(floorTypes.Out, "floor_types", "name", "Generic 150mm")));
+        var envelope = File.ReadAllText(Directory.GetFiles(h.Scratch, "*-envelope-floor.create.json").Single(), Utf8);
+        var wire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(envelope));
+        var wireBytes = Utf8.GetByteCount(wire + Environment.NewLine);
+
+        // The fake's pipe name (Harness keeps it private) and, off Windows, the socket directory Core's client resolves.
+        var pipe = typeof(Harness).GetField("pipe", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(h) as string;
+        if (pipe is null) { Check(false, "the harness pipe name is readable"); return; }
+        // scripts/verify.ps1 gives this process a long TMPDIR, while the fake listens under UnixTemp (sockets: 108-byte
+        // limit). .NET caches the pipe socket prefix (PipeStream.s_pipePrefix, from Path.GetTempPath) for the process on
+        // first use, so TMPDIR is UnixTemp when that cache is made (forced here by reading it by reflection) and while
+        // Core's client runs. Only TMPDIR is restored afterwards: the cached prefix stays UnixTemp for the rest of this
+        // process. Order dependency: no earlier check of this process may open a pipe client off Windows (none does), or
+        // the prefix is already cached elsewhere and the check below fails by name.
+        Check(MidArgsBreakBytes % RevitCommandService.WriteProgressChunk == 0,
+            "precondition: the break point (" + MidArgsBreakBytes + " bytes) is a whole number of " + RevitCommandService.WriteProgressChunk + "-byte pieces, so a piece ends exactly where the fake stops reading");
+        var savedTemp = Environment.GetEnvironmentVariable("TMPDIR");
+        var reports = new List<(int Written, int Total, long Ms)>();
+        var clock = Stopwatch.StartNew();
+        RevitCommandResult? seam = null;
+        var thrown = "";
+        string? wrongPrefix = null;
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                Environment.SetEnvironmentVariable("TMPDIR", UnixTemp);
+                var prefixField = typeof(System.IO.Pipes.PipeStream).GetField("s_pipePrefix", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                var prefix = prefixField?.GetValue(null) as string;
+                if (prefix is null)
+                    Console.WriteLine("::warning::drift-loop: client write progress at a mid-args break: PipeStream.s_pipePrefix is not readable on this runtime ("
+                        + (prefixField is null ? "no such field" : "not a string") + "); the socket directory Core's client resolves is not confirmed (a wrong one ends in pipe_connect_timeout below)");
+                else if (prefix != UnixPipePrefix) wrongPrefix = prefix;
+            }
+            if (wrongPrefix is null)
+            {
+                RevitCommandService.WriteProgress = (written, total) => reports.Add((written, total, clock.ElapsedMilliseconds));
+                seam = RevitCommandService.Run(pipe, envelope, RevitCommandPolicy.ForRepository(root), RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromMilliseconds(Math.Max(1, h.Budget()))));
+            }
+        }
+        catch (Exception failure) { thrown = failure.GetType().Name + ": " + failure.Message; }
+        finally
+        {
+            RevitCommandService.WriteProgress = null;
+            if (!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR", savedTemp);
+        }
+        if (wrongPrefix is not null) { Check(false, "Core's pipe client resolves sockets under " + UnixTemp + " (PipeStream socket prefix)", wrongPrefix); return; }
+        var elapsed = clock.ElapsedMilliseconds;
+        Check(RevitCommandService.WriteProgress is null, "the seam is null on the test thread after the run");
+        var (exited, exit, error) = h.End();
+        var received = h.Received();
+
+        var handed = reports.Count > 0 ? reports[^1].Written : -1;
+        var brokenLines = received.Skip(WriteProgressRequestsBefore.Length).ToArray();
+        int Read(string line) { var p = line.Split(':'); return p.Length == 4 && p[0] + ":" == MidArgsLogPrefix && int.TryParse(p[1], NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : -1; }
+        var measured = "os=" + os + " wire_bytes=" + wireBytes + " chunk=" + RevitCommandService.WriteProgressChunk + " reports=" + reports.Count + " handed=" + handed
+            + " unhanded=" + (handed < 0 ? "<none>" : (wireBytes - handed).ToString(CultureInfo.InvariantCulture))
+            + " last_report_ms=" + (reports.Count > 0 ? reports[^1].Ms.ToString(CultureInfo.InvariantCulture) : "<none>") + " elapsed_ms=" + elapsed
+            + " fake=" + string.Join(",", brokenLines) + " seam_line=" + (seam?.Line ?? "<none> " + thrown);
+
+        Check(reports.Count > 0 && reports[0].Written == 0 && reports.All(x => x.Total == wireBytes),
+            "the seam reported 0 of the wire bytes before the first piece, and its wire bytes are WireLine of the CLI's envelope plus Environment.NewLine", measured);
+        Check(reports.Zip(reports.Skip(1)).All(x => x.Second.Written > x.First.Written && x.Second.Written - x.First.Written <= RevitCommandService.WriteProgressChunk),
+            "each report after a returned Write grows by one piece of at most " + RevitCommandService.WriteProgressChunk + " bytes", measured);
+        Check(brokenLines.Length == 2 && brokenLines.All(x => Read(x) == MidArgsBreakBytes)
+            && received.Take(WriteProgressRequestsBefore.Length).SequenceEqual(WriteProgressRequestsBefore),
+            "the fake logged the two queries and two broken-after lines, each after reading exactly " + MidArgsBreakBytes + " bytes (CLI, then the seam run)", string.Join(",", received));
+        Check(exited && exit == 0 && error.Length == 0, "the fake add-in exits 0 with an empty stderr", "exited " + exited + " exit " + exit + " " + error);
+        // The seam changes neither the bytes nor the answer: the CLI (no seam) and the seam run end with the same line,
+        // the P2-31 failure (pipe_io_error, field pipe_name, detail IOException), exit 1 for the CLI.
+        Check(cli.Exit == 1 && Status(cli.Out) == "failed" && Text(cli.Out, "code") == "pipe_io_error" && Text(cli.Out, "field") == "pipe_name" && Text(cli.Out, "detail") == "IOException",
+            "the CLI's floor.create broken after " + MidArgsBreakBytes + " bytes: exit 1, pipe_io_error, field pipe_name, detail IOException on " + os, R(cli));
+        Check(seam is { IsError: true, Forwarded: true } && seam.Line == cli.Out, "the seam run's line equals the CLI's line (same failure, nothing changed by the seam)", measured + " | " + R(cli));
+        // P2-32: measured by deliberate probe reds (Windows run 44484659892, Linux run 44487717843). Windows (named pipe,
+        // inbound quota 0): the seam saw 4096 of 39727 bytes handed, exactly what the fake read; the fifth piece's Write
+        // was still pending when the fake closed (it failed about 200 ms after the last report), and the fake's queued
+        // count was 1024 for the seam run (that one pending piece) but 35631 for the CLI's single Write (its whole pending
+        // remainder): PeekNamedPipe counts a pending client write, so the P2-31 "queued == unread" on Windows was the
+        // client still writing. Linux (Unix socket): every byte was handed (39736 of 39736) about 200 ms before the close
+        // and both runs left 35640 bytes queued in the fake's socket: the client's write had completed, nothing was still
+        // being written. Other OSes have not been probed (macOS does not run mirror-journal) and fail here until one is.
+        long Queued(string line) { var p = line.Split(':'); return p.Length == 4 && long.TryParse(p[3], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var q) ? q : long.MinValue; }
+        var cliQueued = brokenLines.Length == 2 ? Queued(brokenLines[0]) : long.MinValue;
+        var seamQueued = brokenLines.Length == 2 ? Queued(brokenLines[1]) : long.MinValue;
+        if (OperatingSystem.IsWindows())
+            Check(handed == MidArgsBreakBytes && handed < wireBytes && seamQueued == RevitCommandService.WriteProgressChunk && cliQueued == wireBytes - MidArgsBreakBytes,
+                "windows: when the fake closed the client had handed only the " + MidArgsBreakBytes + " bytes the fake read (written < wire bytes: still writing); the fake's queued count is the pending write (one "
+                + RevitCommandService.WriteProgressChunk + "-byte piece with the seam, the whole remainder for the CLI's single Write)", measured);
+        else if (OperatingSystem.IsLinux())
+            Check(handed == wireBytes && cliQueued == wireBytes - MidArgsBreakBytes && seamQueued == cliQueued,
+                "linux: the client had handed every wire byte before the fake closed (its write completed) and the unread remainder sat queued in the fake's socket in both runs", measured);
+        else Check(false, os + ": the bytes handed at a mid-args break have not been observed by a probe on this OS", measured);
     }
 
     // P2-25: the -ExternalEdits fake keeps at most the MirrorJournal retained-entry capacity (DefaultCapacity unless the
