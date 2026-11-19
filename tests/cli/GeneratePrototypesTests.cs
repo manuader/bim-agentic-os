@@ -768,8 +768,10 @@ internal static class GeneratePrototypesTests
     // call it and equal the real process. Static: PostWriteDeleteProbe is declared once, never assigned under interfaces/,
     // invoked once inside Execute as the first statement of a try { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }
     // that is the first statement of the catch (Exception) following PostWriteStageProbe's try, directly followed by an
-    // unfiltered catch (Exception) { Console.Error.WriteLine(PartialOutputLeft + output); } without a throw, then throw; as
-    // the handler's last statement (brace-matched, with self-tests). Not named PostWriteProbe (P3-25's pin).
+    // unfiltered catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }
+    // without a throw, then throw; as the handler's last statement (brace-matched, with self-tests). Review fix: a stderr
+    // that throws on the cleanup line (IOException) is swallowed too, so the original exception is still the one reported
+    // and its diagnostic the only recorded stderr line. Not named PostWriteProbe (P3-25's pin).
     static void PostWriteDeleteStage(string root, string scratch, string cliDll, byte[] expected, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-27 " + name, detail);
@@ -899,6 +901,44 @@ internal static class GeneratePrototypesTests
             ExpectLeft("non-IO ArgumentException on delete", request, pinned, new ArgumentException("p7-27 delete non-io failure"));
             ExpectLeft("non-IO NotSupportedException on delete, derived project id", derivedRequest, null, new NotSupportedException("p7-27 delete not supported"));
 
+            // The cleanup line itself fails (stderr throws IOException on it): the original exception is still the one reported.
+            {
+                var output = Output();
+                var deletes = 0;
+                using var recorder = new ReportRejectingWriter(Left);
+                var previousOut = Console.Out;
+                var previousError = Console.Error;
+                var previousExit = Environment.ExitCode;
+                using var stdout = new StringWriter(CultureInfo.InvariantCulture);
+                Exception? thrown;
+                int exit;
+                try
+                {
+                    Console.SetOut(stdout);
+                    Console.SetError(recorder);
+                    Environment.ExitCode = 0;
+                    probe.SetValue(null, (Action)(() => throw failure));
+                    deleteProbe.SetValue(null, (Action<string>)(_ => { deletes++; throw new IOException("p7-27 delete io failure"); }));
+                    try { thrown = Invoke(new[] { "generate-prototypes", request, output }); }
+                    finally { probe.SetValue(null, null); deleteProbe.SetValue(null, null); }
+                    exit = Environment.ExitCode;
+                }
+                finally
+                {
+                    Console.SetOut(previousOut);
+                    Console.SetError(previousError);
+                    Environment.ExitCode = previousExit;
+                }
+                var detail = "out [" + stdout + "] recorded [" + string.Join(" | ", recorder.Lines) + "] partial [" + recorder.Partial + "] rejected " + recorder.Rejected.ToString(CultureInfo.InvariantCulture)
+                    + " exit " + exit.ToString(CultureInfo.InvariantCulture) + (thrown is { } t ? " threw " + t.GetType().FullName + ": " + t.Message : "");
+                Check(AllNull() && thrown is null, "a stderr that throws on the cleanup line: nothing escapes Run and the seams are reset", detail);
+                Check(deletes == 1 && recorder.Rejected == 1 && stdout.ToString() == envelope.Line + nl && exit == 1,
+                    "a stderr that throws on the cleanup line: the line was attempted once, stdout is still only the typed line, exit 1", detail);
+                Check(recorder.Lines.Count == 1 && recorder.Lines[0] == envelope.Diagnostic && recorder.Partial.Length == 0,
+                    "a stderr that throws on the cleanup line: the recorded stderr is exactly the ORIGINAL exception's diagnostic once", detail);
+                if (File.Exists(output)) File.Delete(output);
+            }
+
             // A delete probe that does not throw: section 7's bytes (file deleted, stderr only the diagnostic).
             {
                 var output = Output();
@@ -971,11 +1011,11 @@ internal static class GeneratePrototypesTests
                 "internal static class GenerateCommand { static void Execute(string[] args) { GltfExporter.WriteNew(bytes, output); try { PostWriteStageProbe?.Invoke(); Console.WriteLine(x); } catch (Exception) { "
                 + handler + " } } " + decls + " " + extra + " }";
             const string Inner = "try { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }";
-            const string Report = " catch (Exception) { Console.Error.WriteLine(PartialOutputLeft + output); }";
+            const string Report = " catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }";
             const string Good = Inner + Report + " throw;";
             Check(PostWriteDeleteSeamProblems(new[] { (Path27, Command(Good)) }).Count == 0
                 && PostWriteDeleteSeamProblems(new[] { (Path27, Command("try\n { PostWriteDeleteProbe ?. Invoke ( output ) ; // PostWriteDeleteProbe = null; }\n File . Delete ( output ) ; }\n catch ( Exception )\n"
-                    + " { var s = \"} throw; {\"; Console . Error . WriteLine ( PartialOutputLeft + output ) ; }\n throw ;")) }).Count == 0,
+                    + " { try { /* throw; } */ Console . Error . WriteLine ( PartialOutputLeft + output ) ; }\n catch ( Exception ) { /* } throw; { */ } }\n throw ;", "static string S = \"} throw; { catch\";")) }).Count == 0,
                 "self-test: the delete seam checker accepts the real shape at any spacing, ignoring comments and string literals (braces and throw in them too)");
             var evasions = new (string Label, (string, string)[] Files)[]
             {
@@ -999,6 +1039,10 @@ internal static class GeneratePrototypesTests
                 ("a report catch that rethrows", new[] { (Path27, Command(Inner + " catch (Exception) { Console.Error.WriteLine(PartialOutputLeft + output); throw; } throw;")) }),
                 ("a report catch that throws the delete exception", new[] { (Path27, Command(Inner + " catch (Exception removal) { Console.Error.WriteLine(PartialOutputLeft + output); throw removal; } throw;")) }),
                 ("a report catch without the stderr line", new[] { (Path27, Command(Inner + " catch (Exception) { } throw;")) }),
+                ("an unwrapped report line", new[] { (Path27, Command(Inner + " catch (Exception) { Console.Error.WriteLine(PartialOutputLeft + output); } throw;")) }),
+                ("a throw in the report line's inner catch", new[] { (Path27, Command(Inner + " catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { throw; } } throw;")) }),
+                ("a filtered inner catch around the report line", new[] { (Path27, Command(Inner + " catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (IOException) { } } throw;")) }),
+                ("a statement after the wrapped report line", new[] { (Path27, Command(Inner + " catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } Console.Error.WriteLine(x); } throw;")) }),
                 ("a report line to stdout", new[] { (Path27, Command(Inner + " catch (Exception) { Console.WriteLine(PartialOutputLeft + output); } throw;")) }),
                 ("throw; missing after the report catch", new[] { (Path27, Command(Inner + Report)) }),
                 ("a statement after throw;", new[] { (Path27, Command(Good + " return;")) }),
@@ -1014,14 +1058,32 @@ internal static class GeneratePrototypesTests
         }
     }
 
+    // P7-27 review: a stderr that throws IOException on a line starting with the cleanup prefix (counted in Rejected) and
+    // records every other line; characters written outside WriteLine(string) collect in Partial.
+    sealed class ReportRejectingWriter(string prefix) : TextWriter
+    {
+        readonly StringBuilder partial = new();
+        public List<string> Lines { get; } = new();
+        public int Rejected { get; private set; }
+        public string Partial => partial.ToString();
+        public override Encoding Encoding => new UTF8Encoding(false);
+        public override void Write(char value) => partial.Append(value);
+        public override void WriteLine(string? value)
+        {
+            if (value is not null && value.StartsWith(prefix, StringComparison.Ordinal)) { Rejected++; throw new IOException("p7-27 stderr rejects the cleanup line"); }
+            Lines.Add(value ?? "");
+        }
+    }
+
     // P7-27: over (relative path, source) pairs under interfaces/, comments stripped and string literals blanked:
     // PostWriteDeleteProbe is named exactly twice in total, both in interfaces/cli/GenerateCommand.cs: its Action<string>?
     // declaration and one PostWriteDeleteProbe?.Invoke(output); no assignment anywhere; PartialOutputLeft declared once as an
     // internal const string. Brace-matched inside Execute's body: the invoke's innermost try block is exactly
     // { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }, is the first statement of a catch (Exception) { that
     // directly follows a try block holding PostWriteStageProbe?.Invoke(), is directly followed by an unfiltered
-    // catch (Exception) { ... } holding Console.Error.WriteLine(PartialOutputLeft + output); and no throw, and that is directly
-    // followed by throw; and the handler's closing brace.
+    // catch (Exception) whose body is exactly { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }
+    // (so neither the delete nor a throwing stderr replaces the original), and that is directly followed by throw; and the
+    // handler's closing brace.
     static List<string> PostWriteDeleteSeamProblems(IEnumerable<(string Name, string Source)> files)
     {
         static int Close(string code, int open)
@@ -1088,8 +1150,8 @@ internal static class GeneratePrototypesTests
             var reportClose = Close(code, reportOpen);
             if (reportClose < 0 || handlerClose < 0 || reportClose > handlerClose) { problems.Add(name + ": the report catch is not closed inside the handler"); continue; }
             var reportBody = code[reportOpen..(reportClose + 1)];
-            if (!System.Text.RegularExpressions.Regex.IsMatch(reportBody, @"\bConsole\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*PartialOutputLeft\s*\+\s*output\s*\)\s*;"))
-                problems.Add(name + ": the report catch has no Console.Error.WriteLine(PartialOutputLeft + output);");
+            if (!System.Text.RegularExpressions.Regex.IsMatch(reportBody, @"^\{\s*try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*PartialOutputLeft\s*\+\s*output\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}$"))
+                problems.Add(name + ": the report catch is not exactly { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }");
             if (System.Text.RegularExpressions.Regex.IsMatch(reportBody, @"\bthrow\b")) problems.Add(name + ": the report catch throws");
             var rethrow = At(code, @"\s*throw\s*;\s*\}", reportClose + 1);
             if (!rethrow.Success || rethrow.Index + rethrow.Length - 1 != handlerClose) problems.Add(name + ": the report catch is not directly followed by throw; ending the handler");
