@@ -2045,7 +2045,22 @@ static class MirrorDriftLoopChecks
         // The fake's pipe name (Harness keeps it private) and, off Windows, the socket directory Core's client resolves.
         var pipe = typeof(Harness).GetField("pipe", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(h) as string;
         if (pipe is null) { Check(false, "the harness pipe name is readable"); return; }
-        if (!OperatingSystem.IsWindows() && Path.GetTempPath() != UnixTemp + "/") { Check(false, "Core's pipe client resolves sockets under " + UnixTemp + " (TMPDIR unset or " + UnixTemp + ")", Path.GetTempPath()); return; }
+        // scripts/verify.ps1 gives this process a long TMPDIR, while the fake listens under UnixTemp (sockets: 108-byte
+        // limit). .NET caches the pipe socket prefix (PipeStream.s_pipePrefix, from Path.GetTempPath) on first use, and no
+        // earlier check of this process opens a pipe off Windows, so TMPDIR is UnixTemp while that cache is made (read
+        // here by reflection) and while Core's client runs, then restored.
+        var savedTemp = Environment.GetEnvironmentVariable("TMPDIR");
+        if (!OperatingSystem.IsWindows())
+        {
+            Environment.SetEnvironmentVariable("TMPDIR", UnixTemp);
+            var prefix = typeof(System.IO.Pipes.PipeStream).GetField("s_pipePrefix", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)?.GetValue(null) as string;
+            if (prefix is not null && prefix != UnixPipePrefix)
+            {
+                Environment.SetEnvironmentVariable("TMPDIR", savedTemp);
+                Check(false, "Core's pipe client resolves sockets under " + UnixTemp + " (PipeStream socket prefix)", prefix);
+                return;
+            }
+        }
 
         var reports = new List<(int Written, int Total, long Ms)>();
         var clock = Stopwatch.StartNew();
@@ -2054,7 +2069,11 @@ static class MirrorDriftLoopChecks
         RevitCommandService.WriteProgress = (written, total) => reports.Add((written, total, clock.ElapsedMilliseconds));
         try { seam = RevitCommandService.Run(pipe, envelope, RevitCommandPolicy.ForRepository(root), RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromMilliseconds(Math.Max(1, h.Budget())))); }
         catch (Exception failure) { thrown = failure.GetType().Name + ": " + failure.Message; }
-        finally { RevitCommandService.WriteProgress = null; }
+        finally
+        {
+            RevitCommandService.WriteProgress = null;
+            if (!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR", savedTemp);
+        }
         var elapsed = clock.ElapsedMilliseconds;
         Check(RevitCommandService.WriteProgress is null, "the seam is null on the test thread after the run");
         var (exited, exit, error) = h.End();
