@@ -2189,8 +2189,12 @@ static class MirrorDriftLoopChecks
             if (!OperatingSystem.IsWindows())
             {
                 Environment.SetEnvironmentVariable("TMPDIR", UnixTemp);
-                var prefix = typeof(System.IO.Pipes.PipeStream).GetField("s_pipePrefix", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)?.GetValue(null) as string;
-                if (prefix is not null && prefix != UnixPipePrefix) wrongPrefix = prefix;
+                var prefixField = typeof(System.IO.Pipes.PipeStream).GetField("s_pipePrefix", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                var prefix = prefixField?.GetValue(null) as string;
+                if (prefix is null)
+                    Console.WriteLine("::warning::drift-loop: write progress per OS (P2-33): PipeStream.s_pipePrefix is not readable on this runtime ("
+                        + (prefixField is null ? "no such field" : "not a string") + "); the socket directory Core's client resolves is not confirmed (a wrong one ends in pipe_connect_timeout below)");
+                else if (prefix != UnixPipePrefix) wrongPrefix = prefix;
             }
             if (wrongPrefix is null)
             {
@@ -2248,12 +2252,13 @@ static class MirrorDriftLoopChecks
                 "linux: every wire byte handed (write completed); queued: the whole unread remainder in both runs", measured);
         else if (OperatingSystem.IsMacOS())
             // P2-33 probe red (run 44582611952): wire 39757 bytes, 13 reports, handed 12288 = the 4096 bytes the fake read
-            // plus its socket's 8192-byte receive buffer (InBufferSize, equal to a new Unix socket's send buffer); the next
+            // plus its socket's 8192-byte receive buffer (InBufferSize; a new Unix socket's send buffer, a distinct setting,
+            // was also 8192 and is only reported in the measured detail); the next
             // piece's Write was pending when the fake closed (27469 bytes never handed). The fake does not measure queued
             // bytes on macOS (its FakePipeQueue answers -1 off Windows and Linux) → P2-34.
-            Check(inBuffer > 0 && inBuffer == UnixSendBuffer() && handed == MidArgsBreakBytes + inBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
+            Check(inBuffer > 0 && handed == MidArgsBreakBytes + inBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
                 && cliQueued == -1 && seamQueued == -1,
-                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize == a new Unix socket's send buffer) < wire bytes (still writing); queued not measured by the fake (-1) in both runs", measured);
+                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize) < wire bytes (still writing); queued not measured by the fake (-1) in both runs", measured);
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
 
