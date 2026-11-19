@@ -64,7 +64,8 @@ namespace Bim.Cli;
 //   generate_prototypes_pack_unavailable (detail: the pack's input_* code), generate_prototypes_pack_invalid (detail:
 //   the skill code, or "id" when the manifest names another pack), generate_prototypes_refused (with
 //   "refusals":[{"code","subject","detail"}] = PrototypePipelineResult.Refusals in order, no detail),
-//   generate_prototypes_internal_error (stderr gets the exception type and message).
+//   generate_prototypes_internal_error (stderr gets the exception type and message; P7-25: an unexpected exception after
+//   GltfExporter.WriteNew succeeded leaves the written file in place, a documented gap (→ P7-26)).
 // Precedence: usage, output path, request read, request parse, repository, pack, pipeline, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
 internal static class GenerateCommand
@@ -102,6 +103,13 @@ internal static class GenerateCommand
     {
         try { Execute(args); }
         catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
+        // P7-25: any other exception in Execute (for example in Generate's parse / pack-load stretch, outside its guarded
+        // pipeline block; forced in tests through the P7-23 seam) prints the typed {"status":"failed","code":InternalError}
+        // line with IntentPlan's stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. Before the
+        // write no output file exists; an exception after GltfExporter.WriteNew succeeded leaves the written file in place
+        // (documented gap). The guarded block's own failures already arrive above as Refusal(InternalError) with their
+        // diagnostic written once.
+        catch (Exception error) { IntentPlan.Internal("generate-prototypes", error).Print(); }
     }
 
     // P7-21: the request-to-document path shared with the MCP generate_prototypes tool (interfaces/mcp/GeneratePrototypesTool.cs
