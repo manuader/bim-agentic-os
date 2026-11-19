@@ -57,6 +57,9 @@ namespace Bim.Mcp;
 // lock and allow-stub flag, from the verb's own handler (JurisdictionResolveTool.cs runs JurisdictionResolveCommand.Resolve);
 // listed with permission level read (readOnlyHint true). A usage-equivalent call is -32602: a tool throws
 // McpInvalidParamsException, which CallTool answers as invalid params instead of a tool result.
+// skill_list (P5-22) is read-only: its text is the CLI skill-list stdout line for the same skills directory (or the
+// verb's package-first default), from the verb's shared handler (SkillListTool.cs runs SkillListCommand.List); listed with
+// permission level read (readOnlyHint true). A usage-equivalent skills value is -32602 (McpInvalidParamsException).
 // ADR0009/P9-05: one revit_<command> tool per RevitCommandCatalogue.All entry (v1, v2 and any later entry) is generated
 // from the catalogue at construction; there is no hardcoded tool list. Each lists the P10-03 permission level it needs on
 // a test copy, derived from PermissionPolicy.RequiredLevel, as _meta "bim-agentic-os/permission_level" (read or
@@ -164,6 +167,9 @@ public sealed class McpServer
              new ParameterSpec(JurisdictionResolveTool.LockParameter, "string", "Project skill lock file (skills.lock.json), read only", false),
              new ParameterSpec(JurisdictionResolveTool.AllowStubParameter, "boolean", "true admits a stub pack; default false", false)],
             JurisdictionResolveTool.Execute, Permission: PermissionLevel.Read),
+        new ToolSpec(SkillListTool.Name, "Read-only skill pack listing (P5-21) of a skills directory (default: the release package's skills first, else the repository's): returns {status succeeded, skills_path, packs:[{id, version, kind, stub, source_confidence}]} ordered by id, or the loader's typed refusal (root_missing, json_invalid, ...) unchanged, byte-equal to the CLI stdout; writes nothing (CLI: skill-list [--skills skills-directory]).",
+            [new ParameterSpec(SkillListTool.SkillsParameter, "string", "Skills directory to list, read only; default the package-first skills directory", false)],
+            SkillListTool.Execute, Permission: PermissionLevel.Read),
     ];
 
     const string AuditInputSchema = """{"type":"object","properties":{"log_path":{"type":"string","description":"Audit log (JSONL), read only"},"anchor_path":{"type":"string","description":"Head anchor file {kind audit-anchor, version 1, sequence, hash}, read only"},"actors":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Known actor ids; an entry by any other actor is audit_actor_unknown"},"summary":{"type":"boolean","description":"Return the decision summary instead of the report"}},"required":["log_path"],"additionalProperties":false}""";
