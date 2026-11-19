@@ -23,8 +23,8 @@ using System.Text.RegularExpressions;
 //   4. A self-test of the link and use checkers on synthetic csproj and source texts.
 // The generate_typology MCP bytes and the generate-typology CLI bytes are pinned by tests/mcp/GenerateTypologyToolTests.cs
 // and tests/cli/GenerateTypologyTests.cs (unchanged).
-// P4-27 then moved the generate-prototypes write path into interfaces/cli/GenerateWrite.cs, so the list of server-compiled
-// GltfExporter.WriteNew callers checked below is empty (tests/mcp/GenerateWriteLinkTests.cs).
+// Remaining (follow-up, not this task): Bim.Mcp.csproj still compiles the generate-prototypes verb GenerateCommand.cs in
+// full, the last server-compiled writer: its Run path and GltfExporter.WriteNew stay in the server binary (NOTE line).
 internal static class GenerateTypologyWriteLinkTests
 {
     static readonly Regex ForbiddenUse = new(@"\bGenerateTypologyCommand\s*\.\s*(?:Run|Execute|Fail|PostWriteProbe)\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?GenerateTypologyCommand\b",
@@ -165,9 +165,9 @@ internal static class GenerateTypologyWriteLinkTests
         Check(users.Length == 0, "Bim.Mcp.csproj: no compiled source uses GenerateTypologyCommand.Run / Execute / Fail / PostWriteProbe [" + string.Join(", ", users) + "]");
         var remaining = compiledSources.Where(path => Regex.IsMatch(DocUpdateLinkTests.CodeOf(File.ReadAllText(path)), @"\bGltfExporter\s*\.\s*WriteNew\s*\("))
             .Select(path => Path.GetFileName(path)).Order(StringComparer.Ordinal).ToArray();
-        // After P4-27 (generate-prototypes moved its write path into GenerateWrite.cs) no server-compiled writer is left.
-        Check(remaining.Length == 0,
-            "no source compiled by Bim.Mcp.csproj still calls GltfExporter.WriteNew (P4-27: generate-prototypes was the last remaining writer) ["
+        // After P4-26 the only server-compiled writer left is GenerateCommand.cs (generate-prototypes), the follow-up row.
+        Check(remaining.SequenceEqual(new[] { "GenerateCommand.cs" }, StringComparer.OrdinalIgnoreCase),
+            "the only source compiled by Bim.Mcp.csproj that still calls GltfExporter.WriteNew is GenerateCommand.cs (generate-prototypes, the last remaining writer) ["
             + string.Join(", ", remaining) + "]");
         Check(!remaining.Contains("GenerateTypologyCommand.cs", StringComparer.OrdinalIgnoreCase) && !remaining.Contains("GenerateTypologyWrite.cs", StringComparer.OrdinalIgnoreCase),
             "no generate-typology source compiled by Bim.Mcp.csproj calls GltfExporter.WriteNew [" + string.Join(", ", remaining) + "]");
