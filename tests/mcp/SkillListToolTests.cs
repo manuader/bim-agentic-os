@@ -21,7 +21,8 @@ using Bim.Core;
 //   3. Usage-equivalent arguments are JSON-RPC -32602 (never a tool result): a blank or "--"-prefixed skills value, null
 //      or wrongly typed skills, an unknown argument, skills given twice, a lone-surrogate string; each case with a CLI
 //      spelling is the CLI's skill_list_usage line.
-//   4. A NUL skills path (cannot travel in a process argument) is the in-process CLI Run line, byte for byte.
+//   4. A NUL skills path (cannot travel in a process argument) is the in-process CLI Run line, byte for byte: the typed
+//      skill_list_internal_error, with the server's stderr equal to the CLI's IntentPlan diagnostic (non-empty).
 //   5. Read-only: the repository skills tree and the fixture trees are unchanged (paths and bytes); a missing directory is
 //      not created.
 //   6. The real Release Bim.Mcp.dll over stdio answers the default listing, one success, one refusal and one -32602 with
@@ -34,6 +35,7 @@ internal static class SkillListToolTests
     const string ToolName = "skill_list";
     const string Caba = "ar.caba.codigo-edificacion";
     const string Stub = "xx.example.codigo-ejemplo";
+    const string InternalLine = "{\"status\":\"failed\",\"code\":\"skill_list_internal_error\"}";
     const string UsageLine = "{\"status\":\"failed\",\"code\":\"skill_list_usage\",\"detail\":\"usage: skill-list [--skills skills-directory]\"}";
 
     public static void Run(string root, string work, string dotnet, string cliDll, Func<string, JsonObject> call, Func<string, string> mcpProcess, Action<bool, string> check)
@@ -165,15 +167,18 @@ internal static class SkillListToolTests
         // ---- 4. a NUL skills path: the in-process CLI handler's bytes ----
         {
             var nul = Path.Combine(scratch, "a\0b");
-            var (exit, line, _) = InProcessCli(["skill-list", "--skills", nul]);
+            var (exit, line, cliError) = InProcessCli(["skill-list", "--skills", nul]);
             var errors = new StringWriter();
             var savedError = Console.Error;
             JsonObject response;
             Console.SetError(errors);
             try { response = call(Line(A(("skills", nul)))); }
             finally { Console.SetError(savedError); }
-            Check(exit == 1 && line.StartsWith("{\"status\":\"failed\",", StringComparison.Ordinal), "fixture: the in-process CLI refuses a NUL skills path | " + line);
-            Check(IsResult(response) && IsError(response) && Text(response) == line, "NUL skills path: text equals the in-process CLI line | " + Short(response.ToJsonString()));
+            Check(exit == 1 && line == InternalLine && cliError.StartsWith("skill-list internal error: ", StringComparison.Ordinal),
+                "fixture: the in-process CLI answers a NUL skills path with the typed skill_list_internal_error line and its diagnostic | " + line + " / " + cliError);
+            Check(IsResult(response) && IsError(response) && Text(response) == line && Text(response).Contains("\"code\":\"skill_list_internal_error\"", StringComparison.Ordinal),
+                "NUL skills path: text equals the in-process CLI skill_list_internal_error line | " + Short(response.ToJsonString()));
+            Check(errors.ToString().Length > 0 && errors.ToString() == cliError, "NUL skills path: the server's stderr is the in-process CLI diagnostic once | " + errors + " / " + cliError);
         }
 
         // ---- 5. read-only ----
