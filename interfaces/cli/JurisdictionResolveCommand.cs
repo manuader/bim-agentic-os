@@ -28,6 +28,8 @@ namespace Bim.Cli;
 // Precedence: usage, lock path, skills directory, load, selection. An absent lock file is the load's lock_missing.
 // Registry issues of a successful load (JurisdictionRegistry.Issues: claim_duplicate, alias_overlap, pack_missing, ...)
 // are dropped: the success envelope never carries them (P10-24); a selection they affect refuses on its own terms.
+// P10-27: Resolve is the whole handler (the envelope Run prints); the read-only MCP tool jurisdiction_resolve runs it
+// (interfaces/mcp/JurisdictionResolveTool.cs, which answers UsageRefusal with -32602), so both share one call path.
 internal static class JurisdictionResolveCommand
 {
     public const string Verb = "jurisdiction-resolve";
@@ -37,18 +39,27 @@ internal static class JurisdictionResolveCommand
 
     sealed record Options(string? Code, string? Country, string? Municipality, string? Lock, bool AllowStub);
 
-    public static void Run(string[] args)
+    // P10-27: the usage refusal envelope, by value (the MCP tool jurisdiction_resolve answers it with -32602).
+    public static readonly IntentEnvelope UsageRefusal = new(JsonSerializer.Serialize(new { status = "failed", code = UsageCode, detail = Usage }), 1);
+
+    // P10-27 test seam (null in production): invoked first inside Resolve's guarded block, so a test can force the typed
+    // internal error through the CLI and the MCP tool alike.
+    internal static Action? WorkProbe;
+
+    public static void Run(string[] args) => Resolve(args).Print();
+
+    // P10-27: the verb's whole handler (args[0] is the verb): the envelope Run prints, shared by the MCP tool
+    // jurisdiction_resolve (interfaces/mcp/JurisdictionResolveTool.cs). Writes nothing to the console or the exit code.
+    public static IntentEnvelope Resolve(string[] args)
     {
-        IntentEnvelope envelope;
-        try { envelope = Execute(args); }
-        catch (Exception error) { envelope = IntentPlan.Internal("jurisdiction-resolve", error); }
-        envelope.Print();
+        try { return Execute(args); }
+        catch (Exception error) { return IntentPlan.Internal("jurisdiction-resolve", error); }
     }
 
     static IntentEnvelope Execute(string[] args)
     {
-        if (Parse(args) is not { } options)
-            return new IntentEnvelope(JsonSerializer.Serialize(new { status = "failed", code = UsageCode, detail = Usage }), 1);
+        WorkProbe?.Invoke();
+        if (Parse(args) is not { } options) return UsageRefusal;
         if (options.Lock is not null && Bim.Mcp.SkillLockTool.PathProblem(options.Lock, "lock") is { } badLock) return new IntentEnvelope(badLock, 1);
         var root = SkillPackLookup.PackageRoot(AppContext.BaseDirectory) ?? RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory);
         if (root is null) return IntentPlan.Failed(RepositoryNotFound);

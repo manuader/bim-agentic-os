@@ -248,8 +248,10 @@ internal static class JurisdictionResolveToolTests
                 Path.Combine(root, "tests", "cli", "Bim.Cli.Tests.csproj"), Path.Combine(root, "tests", "revit-commands", "Bim.RevitCommands.Tests.csproj") })
             {
                 var files = DocUpdateLinkTests.Compiled(File.ReadAllText(project), Path.GetDirectoryName(project)!).SelectMany(c => c.Files).Select(f => f.Replace('\\', '/')).ToArray();
+                // Bim.Mcp.csproj compiles interfaces/mcp/*.cs through the SDK default glob; the others link the tool.
+                var server = Path.GetFileName(project) == "Bim.Mcp.csproj";
                 Check(files.Any(f => f.EndsWith("interfaces/cli/JurisdictionResolveCommand.cs", StringComparison.Ordinal))
-                    && files.Any(f => f.EndsWith("interfaces/mcp/JurisdictionResolveTool.cs", StringComparison.Ordinal)),
+                    && (server ? File.Exists(toolPath) : files.Any(f => f.EndsWith("interfaces/mcp/JurisdictionResolveTool.cs", StringComparison.Ordinal))),
                     Path.GetFileName(project) + " compiles the CLI JurisdictionResolveCommand.cs and the tool (shared source, not a copy)");
             }
             var mcpDll = Path.Combine(root, "interfaces", "mcp", "bin", "Release", "net8.0", "Bim.Mcp.dll");
