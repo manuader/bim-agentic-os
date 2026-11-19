@@ -1870,3 +1870,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay245
 - 2026-11-19T21:52:57Z lock taken (session_014pxpsUVNekYBFKPp5xganY relay245; was FREE, relay244 released 20:58:36Z)
+- 2026-11-19T22:40:47Z workers green: P10-30 45eb3b2 (probe red 44623774846, green 44626516529; defect fixed: OutputProblem GetFullPath FileNotFoundException under deleted cwd → output_path_invalid), P6-27 d9ee325 (probe red 44623729030, green 44626900389; test-only), P5-28 471b662 (red 44623782837, green 44626169431; test-only); 0 failed attempts. Reviews next.
