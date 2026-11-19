@@ -755,6 +755,263 @@ internal static class GenerateTypologyTests
         }
 
         UnguardedRun(root, scratch, cliDll, Check, arguments => Cli(arguments));
+        PostWriteRun(root, scratch, cliDll, Check, arguments => Cli(arguments));
+    }
+
+    // ---- 10. P3-25: a non-refusal exception after GltfExporter.WriteNew succeeded leaves no output file ----
+    // GenerateTypologyCommand.Run of the real Release CLI assembly (reflection, so a missing seam is an assertion failure),
+    // in process, with valid inputs and the P3-25 test seam PostWriteProbe (null in production; Execute calls it once,
+    // right after GltfExporter.WriteNew returned) throwing: the probe sees the just-written file holding the P5-12 pinned
+    // bytes (so the exception really is post-write), then stdout is IntentPlan.Internal's typed
+    // {"status":"failed","code":"generate_typology_internal_error"} line, stderr its diagnostic once, exit 1, nothing
+    // escapes Run, and the written file is gone. A pre-existing output with the seam set is still output_exists before any
+    // write: the probe never runs and the file is byte- and mtime-identical. Every refusal sampled with the seam set never
+    // reaches the probe and prints the real process's bytes; with the seam unset the in-process Run is the P5-12 pinned
+    // file and the real process's stdout. Static: PostWriteProbe is declared once, invoked once inside Execute after
+    // GltfExporter.WriteNew( and before the SHA-256, never assigned under interfaces/ (with self-tests).
+    static void PostWriteRun(string root, string scratch, string cliDll, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "P3-25 " + name, detail);
+        const System.Reflection.BindingFlags Any = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        var nl = Environment.NewLine;
+        static (Exception? Thrown, string Out, string Err, int Exit) Quiet(Func<Exception?> run)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            using var output = new StringWriter(CultureInfo.InvariantCulture);
+            using var error = new StringWriter(CultureInfo.InvariantCulture);
+            try
+            {
+                Console.SetOut(output);
+                Console.SetError(error);
+                Environment.ExitCode = 0;
+                var thrown = run();
+                return (thrown, output.ToString(), error.ToString(), Environment.ExitCode);
+            }
+            finally
+            {
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+                Environment.ExitCode = previousExit;
+            }
+        }
+        static string Q((Exception? Thrown, string Out, string Err, int Exit) q) => "out [" + q.Out + "] err [" + q.Err + "] exit " + q.Exit.ToString(CultureInfo.InvariantCulture)
+            + (q.Thrown is { } t ? " threw " + t.GetType().FullName + ": " + t.Message : "");
+        static (int Exit, string Out, string Err) AsProcess((Exception? Thrown, string Out, string Err, int Exit) q)
+        {
+            var text = q.Out;
+            if (text.EndsWith('\n')) text = text[..^1];
+            if (text.EndsWith('\r')) text = text[..^1];
+            return (q.Exit, text, q.Err.ReplaceLineEndings(" ").Trim());
+        }
+        static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+        var inputs = Path.Combine(scratch, "p3-25-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(inputs);
+        try
+        {
+            var counter = 0;
+            string Input(string name, string content) { var path = Path.Combine(inputs, name); File.WriteAllText(path, content, new UTF8Encoding(false)); return path; }
+            string Output() => Path.Combine(inputs, "out-" + (++counter).ToString(CultureInfo.InvariantCulture) + ".json");
+            var good = "{\"pack\":\"" + TypologyPack + "\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":4,\"seed\":0,\"project_id\":\"" + Id + "\"}";
+            var request = Input("request.json", good);
+            var composedRequest = Input("composed.json", good[..^1] + ",\"skills\":[]}");
+
+            System.Reflection.Assembly? assembly = null;
+            try { assembly = System.Reflection.Assembly.LoadFrom(cliDll); }
+            catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+            var type = assembly?.GetType("Bim.Cli.GenerateTypologyCommand");
+            var run = type?.GetMethod("Run", Any, new[] { typeof(string[]) });
+            var postWrite = type?.GetProperty("PostWriteProbe", Any);
+            var unguarded = type?.GetProperty("UnguardedWorkProbe", Any);
+            var guarded = type?.GetProperty("GuardedWorkProbe", Any);
+            static bool Seam(System.Reflection.PropertyInfo? p) => p is not null && p.PropertyType == typeof(Action) && p.CanWrite && p.CanRead;
+            Check(run is not null && Seam(postWrite), "Run(string[]) and the settable static Action seam PostWriteProbe found in the Release CLI",
+                (run is null ? "<missing Run> " : "") + (postWrite?.PropertyType.FullName ?? "<missing PostWriteProbe>"));
+            if (run is null || postWrite is null || !Seam(postWrite)) return;
+            System.Reflection.MethodInfo runMethod = run;
+            System.Reflection.PropertyInfo probe = postWrite;
+            Exception? Invoke(string[]? args)
+            {
+                try { runMethod.Invoke(null, new object?[] { args }); return null; }
+                catch (System.Reflection.TargetInvocationException error) { return error.InnerException; }
+            }
+            bool AllNull() => probe.GetValue(null) is null && unguarded?.GetValue(null) is null && guarded?.GetValue(null) is null;
+            Check(AllNull(), "the generate-typology seams (PostWriteProbe, UnguardedWorkProbe, GuardedWorkProbe) are null unless a test sets them");
+
+            var failure = new InvalidOperationException("boom generate-typology P3-25 post-write");
+            var envelope = Bim.Cli.IntentPlan.Internal("generate-typology", failure);
+            Check(envelope.Line == "{\"status\":\"failed\",\"code\":\"generate_typology_internal_error\"}" && envelope.Exit == 1
+                && envelope.Diagnostic == "generate-typology internal error: System.InvalidOperationException: boom generate-typology P3-25 post-write",
+                "fixture: IntentPlan.Internal(\"generate-typology\", e) is the literal typed line, exit 1 and diagnostic", envelope.ToString());
+            var generic = JsonSerializer.Serialize(new { status = "failed", code = failure.Message });
+
+            // A forced post-write exception: the probe records what was on disk when it ran, then throws.
+            void ExpectRemoved(string label, string requestPath, string? pin)
+            {
+                var output = Output();
+                var calls = 0;
+                byte[]? seen = null;
+                var forced = Quiet(() =>
+                {
+                    probe.SetValue(null, (Action)(() =>
+                    {
+                        calls++;
+                        seen = File.Exists(output) ? File.ReadAllBytes(output) : null;
+                        throw failure;
+                    }));
+                    try { return Invoke(new[] { "generate-typology", requestPath, output }); }
+                    finally { probe.SetValue(null, null); }
+                });
+                Check(AllNull(), label + ": PostWriteProbe is reset to null after the forced run");
+                Check(calls == 1 && seen is { Length: > 0 } && (pin is null || Hex(seen) == pin),
+                    label + ": the probe ran once, after GltfExporter.WriteNew wrote the file" + (pin is null ? "" : " (P5-12 pinned bytes, " + pin[..8] + "...)"),
+                    "calls " + calls.ToString(CultureInfo.InvariantCulture) + " seen " + (seen is null ? "<no file>" : Hex(seen)));
+                Check(forced.Thrown is null, label + ": the post-write exception does not escape Run to Program's generic catch", Q(forced));
+                Check(forced.Out == envelope.Line + nl && forced.Out != generic + nl && !forced.Out.Contains(failure.Message, StringComparison.Ordinal) && !forced.Out.Contains("succeeded", StringComparison.Ordinal),
+                    label + ": stdout is only the typed generate_typology_internal_error line (no success line, not the exception message)", Q(forced));
+                Check(forced.Err == envelope.Diagnostic + nl, label + ": stderr is the IntentPlan diagnostic exactly once", Q(forced));
+                Check(forced.Exit == 1 && !File.Exists(output) && !Directory.Exists(output), label + ": exit 1 and the just-written output file is deleted",
+                    Q(forced) + (File.Exists(output) ? " output left (" + new FileInfo(output).Length.ToString(CultureInfo.InvariantCulture) + " bytes)" : ""));
+            }
+            ExpectRemoved("plain run", request, PinnedAcceptedSha256);
+            ExpectRemoved("composed run (skills [])", composedRequest, PinnedComposedSha256);
+
+            // A pre-existing output is never touched: output_exists refuses before any write, so the probe never runs.
+            var existing = Output();
+            var sentinel = new UTF8Encoding(false).GetBytes("{\"sentinel\":\"p3-25\"}");
+            File.WriteAllBytes(existing, sentinel);
+            var stamp = new DateTime(2002, 3, 4, 5, 6, 7, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(existing, stamp);
+            var existingCalls = 0;
+            var exists = Quiet(() =>
+            {
+                probe.SetValue(null, (Action)(() => { existingCalls++; throw failure; }));
+                try { return Invoke(new[] { "generate-typology", request, existing }); }
+                finally { probe.SetValue(null, null); }
+            });
+            Check(exists.Thrown is null && exists.Exit == 1 && exists.Out == "{\"status\":\"failed\",\"code\":\"output_exists\"}" + nl && exists.Err.Length == 0 && existingCalls == 0
+                && File.ReadAllBytes(existing).SequenceEqual(sentinel) && File.GetLastWriteTimeUtc(existing) == stamp,
+                "with the seam set, an existing output is output_exists before any write (probe not run) and left byte- and mtime-identical", Q(exists) + " calls " + existingCalls.ToString(CultureInfo.InvariantCulture));
+            Check(AllNull(), "PostWriteProbe is null after the existing-output run");
+
+            // Refusals (every one before the write) never reach the probe and print the real process's bytes.
+            var refusals = new (string Label, Func<string, string[]> Args)[]
+            {
+                ("usage", output => new[] { "generate-typology", request }),
+                ("output extension", output => new[] { "generate-typology", request, output + ".txt" }),
+                ("output exists", output => new[] { "generate-typology", request, existing }),
+                ("missing request", output => new[] { "generate-typology", Path.Combine(inputs, "missing.json"), output }),
+                ("malformed JSON", output => new[] { "generate-typology", Input("json.json", "{"), output }),
+                ("unknown member", output => new[] { "generate-typology", Input("member.json", good[..^1] + ",\"revision\":1}"), output }),
+                ("unknown pack", output => new[] { "generate-typology", Input("pack.json", good.Replace(TypologyPack, "xx.no-such.pack", StringComparison.Ordinal)), output }),
+                ("non-code code_pack", output => new[] { "generate-typology", Input("code.json", good[..^1] + ",\"code_pack\":\"" + CompactStyle + "\"}"), output }),
+                ("unknown extra skill", output => new[] { "generate-typology", Input("skill.json", good[..^1] + ",\"skills\":[\"xx.no-such.skill\"]}"), output }),
+                ("pipeline refusal", output => new[] { "generate-typology", Input("refused.json", good.Replace("\"family_size\":3", "\"family_size\":0", StringComparison.Ordinal)), output }),
+                ("composed resolution refusal", output => new[] { "generate-typology", Input("conflict.json", good[..^1] + ",\"skills\":[\"" + CompactStyle + "\",\"" + MasonryStyle + "\"]}"), output }),
+            };
+            foreach (var (label, argsOf) in refusals)
+            {
+                var a = Output();
+                var b = Output();
+                var refusalCalls = 0;
+                var mine = Quiet(() =>
+                {
+                    probe.SetValue(null, (Action)(() => { refusalCalls++; throw failure; }));
+                    try { return Invoke(argsOf(a)); }
+                    finally { probe.SetValue(null, null); }
+                });
+                var theirs = cli(argsOf(b));
+                Check(mine.Thrown is null && refusalCalls == 0 && mine.Exit == 1 && theirs.Exit == 1 && AsProcess(mine) == theirs && mine.Err.Length == 0 && !File.Exists(a) && !File.Exists(b)
+                    && mine.Out.StartsWith("{\"status\":\"failed\",\"code\":\"", StringComparison.Ordinal) && !mine.Out.Contains("internal_error", StringComparison.Ordinal),
+                    "with the seam set, the " + label + " refusal never reaches the probe and equals the real process bytes", Q(mine) + " calls " + refusalCalls.ToString(CultureInfo.InvariantCulture) + " vs process " + theirs.Out + " " + theirs.Err);
+            }
+            Check(AllNull() && File.ReadAllBytes(existing).SequenceEqual(sentinel), "the seams are null after the refusal sample and the existing output is untouched");
+
+            // Seams unset: the in-process Run is the real process (P5-12 pinned file, same stdout, nothing on stderr).
+            foreach (var (label, requestPath, pin) in new[] { ("plain", request, PinnedAcceptedSha256), ("composed", composedRequest, PinnedComposedSha256) })
+            {
+                var inOut = Output();
+                var inProcess = Quiet(() => Invoke(new[] { "generate-typology", requestPath, inOut }));
+                var processOut = Output();
+                var process = cli(new[] { "generate-typology", requestPath, processOut });
+                var inBytes = File.Exists(inOut) ? File.ReadAllBytes(inOut) : Array.Empty<byte>();
+                var processBytes = File.Exists(processOut) ? File.ReadAllBytes(processOut) : Array.Empty<byte>();
+                Check(inProcess.Thrown is null && inProcess.Exit == 0 && inProcess.Err.Length == 0 && Hex(inBytes) == pin && inBytes.SequenceEqual(processBytes)
+                    && process.Exit == 0 && AsProcess(inProcess) == process && Bim.Cli.IntentPlan.Internal("generate-typology", failure).Line != process.Out,
+                    "seams unset: the " + label + " in-process Run writes the pinned file (" + pin[..8] + "...) and the real process's stdout", Q(inProcess) + " vs process " + process.Out + " " + process.Err);
+            }
+
+            // Static: the seam over interfaces/**/*.cs, comments and literals stripped, plus self-tests of the checker.
+            var interfaces = Path.Combine(root, "interfaces");
+            var sources = Directory.GetFiles(interfaces, "*.cs", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
+                .Select(file => (Path.GetRelativePath(root, file).Replace('\\', '/'), File.ReadAllText(file))).ToArray();
+            var seam = PostWriteSeamProblems(sources);
+            Check(seam.Count == 0, "interfaces/**/*.cs names PostWriteProbe only in its declaration and one ?.Invoke() inside Execute after GltfExporter.WriteNew( and before SHA256.HashData(, never assigned ["
+                + string.Join("; ", seam) + "]");
+            const string Path25 = "interfaces/cli/GenerateTypologyCommand.cs";
+            const string Decl = "internal static Action? PostWriteProbe { get; set; }";
+            string Command(string executeBody, string extra = "") => "internal static class GenerateTypologyCommand { static void Execute(string[] args) { " + executeBody + " } " + Decl + " " + extra + " }";
+            const string GoodBody = "GltfExporter.WriteNew(bytes, output); try { PostWriteProbe?.Invoke(); var sha256 = SHA256.HashData(bytes); } catch { throw; }";
+            Check(PostWriteSeamProblems(new[] { (Path25, Command(GoodBody)) }).Count == 0
+                && PostWriteSeamProblems(new[] { (Path25, Command("GltfExporter . WriteNew ( bytes, output );\n PostWriteProbe ?. Invoke ( ) ; // PostWriteProbe = null;\n var s = \"PostWriteProbe = x\"; SHA256 . HashData ( bytes );")) }).Count == 0,
+                "self-test: the post-write seam checker accepts the real shape at any spacing, ignoring comments and string literals");
+            var evasions = new (string Label, (string, string)[] Files)[]
+            {
+                ("an assignment in the command", new[] { (Path25, Command(GoodBody, "static void Set() { PostWriteProbe = () => throw null!; }")) }),
+                ("an assignment in another interfaces file", new[] { (Path25, Command(GoodBody)), ("interfaces/mcp/McpServer.cs", "class S { void X() { GenerateTypologyCommand.PostWriteProbe = null; } }") }),
+                ("a compound assignment", new[] { (Path25, Command(GoodBody)), ("interfaces/mcp/McpServer.cs", "class S { void X() { GenerateTypologyCommand.PostWriteProbe ??= null; } }") }),
+                ("the invoke before WriteNew(", new[] { (Path25, Command("PostWriteProbe?.Invoke(); GltfExporter.WriteNew(bytes, output); SHA256.HashData(bytes);")) }),
+                ("the invoke after SHA256.HashData(", new[] { (Path25, Command("GltfExporter.WriteNew(bytes, output); SHA256.HashData(bytes); PostWriteProbe?.Invoke();")) }),
+                ("the invoke outside Execute", new[] { (Path25, Command("GltfExporter.WriteNew(bytes, output); SHA256.HashData(bytes);", "static void Other() { PostWriteProbe?.Invoke(); }")) }),
+                ("the invoke missing", new[] { (Path25, Command("GltfExporter.WriteNew(bytes, output); SHA256.HashData(bytes);")) }),
+                ("a second invoke", new[] { (Path25, Command("GltfExporter.WriteNew(bytes, output); PostWriteProbe?.Invoke(); PostWriteProbe?.Invoke(); SHA256.HashData(bytes);")) }),
+                ("the declaration missing", new[] { (Path25, "internal static class GenerateTypologyCommand { static void Execute(string[] args) { " + GoodBody + " } }") }),
+                ("the command file missing", new[] { ("interfaces/cli/Other.cs", Command(GoodBody)) }),
+            };
+            foreach (var (label, files) in evasions)
+                Check(PostWriteSeamProblems(files).Count > 0, "self-test: the post-write seam checker flags " + label);
+        }
+        finally
+        {
+            try { Directory.Delete(inputs, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    // P3-25: over (relative path, source) pairs under interfaces/, comments stripped and string literals blanked:
+    // PostWriteProbe is named exactly twice in total, both in interfaces/cli/GenerateTypologyCommand.cs: its declaration
+    // and one PostWriteProbe?.Invoke(); inside Execute after its GltfExporter.WriteNew( and before its SHA256.HashData(;
+    // no assignment (=, +=, ??=, ...) anywhere.
+    static List<string> PostWriteSeamProblems(IEnumerable<(string Name, string Source)> files)
+    {
+        var problems = new List<string>();
+        var total = 0;
+        var sawCommand = false;
+        foreach (var (name, source) in files)
+        {
+            var code = ApplyIntentTests.CodeOf(source);
+            total += System.Text.RegularExpressions.Regex.Matches(code, @"\bPostWriteProbe\b").Count;
+            if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bPostWriteProbe\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)")) problems.Add(name + ": PostWriteProbe assigned");
+            if (name != "interfaces/cli/GenerateTypologyCommand.cs") continue;
+            sawCommand = true;
+            var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+static\s+Action\s*\?\s*PostWriteProbe\s*\{\s*get\s*;\s*set\s*;\s*\}").Count;
+            if (declarations != 1) problems.Add(name + ": the declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
+            var invokes = System.Text.RegularExpressions.Regex.Matches(code, @"\bPostWriteProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;");
+            var execute = System.Text.RegularExpressions.Regex.Match(code, @"\bstatic\s+void\s+Execute\s*\(");
+            if (invokes.Count != 1 || !execute.Success) { problems.Add(name + ": " + invokes.Count.ToString(CultureInfo.InvariantCulture) + " PostWriteProbe?.Invoke() calls, Execute " + (execute.Success ? "found" : "missing")); continue; }
+            var body = execute.Index + execute.Length;
+            var write = System.Text.RegularExpressions.Regex.Match(code[body..], @"\bGltfExporter\s*\.\s*WriteNew\s*\(");
+            var hash = System.Text.RegularExpressions.Regex.Match(code[body..], @"\bSHA256\s*\.\s*HashData\s*\(");
+            var writeAt = write.Success ? body + write.Index : -1;
+            var hashAt = hash.Success ? body + hash.Index : -1;
+            var at = invokes[0].Index;
+            if (writeAt < 0 || hashAt < 0 || at < writeAt || at > hashAt) problems.Add(name + ": PostWriteProbe?.Invoke() not inside Execute between GltfExporter.WriteNew( and SHA256.HashData(");
+        }
+        if (!sawCommand) problems.Add("interfaces/cli/GenerateTypologyCommand.cs not found");
+        if (total != 2) problems.Add("PostWriteProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
+        return problems;
     }
 
     // ---- 9. P3-24: a non-refusal exception outside the guarded pipeline block on the CLI path is the typed internal error ----
