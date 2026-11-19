@@ -1,12 +1,10 @@
 #nullable enable
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Bim.Core;
 using Bim.Generative;
-using Bim.Gltf;
 
 namespace Bim.Cli;
 
@@ -68,7 +66,9 @@ namespace Bim.Cli;
 // parse, id, rules), planning, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
 // P7-20: the read-only MCP tool plan_layouts runs DryPlan (below): the same option helpers and Plan path, no output file.
-internal static class PlanLayoutsCommand
+// P4-25: Run, Execute (the write) and Fail are in PlanLayoutsWrite.cs, the other part of this class, compiled by the CLI
+// and not by interfaces/mcp/Bim.Mcp.csproj, so the MCP server binary holds no plan-layouts writer.
+internal static partial class PlanLayoutsCommand
 {
     public const string Usage = "usage: plan-layouts brief.json output.json [--alternatives n] [--seed s] [--pack id] (n in 1..64, default 4; s an int32, default 0; "
         + "seeds s+i; the brief needs constraints.site; --pack plans with the error-severity area_m2/min_side_m room minimums of skills/<id>/skill.json in the release package, else the repository)";
@@ -96,68 +96,6 @@ internal static class PlanLayoutsCommand
     {
         public string Code { get; } = code;
         public string? Detail { get; } = detail;
-    }
-
-    public static void Run(string[] args)
-    {
-        try { Execute(args); }
-        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
-    }
-
-    static void Execute(string[] args)
-    {
-        if (args.Length < 3 || args[1].Length == 0 || args[2].Length == 0 || args[1].StartsWith("--", StringComparison.Ordinal) || args[2].StartsWith("--", StringComparison.Ordinal))
-            throw new Refusal(UsageCode, Usage);
-        var (count, seed, packId) = ParseOptions(args);
-        var output = args[2];
-        if (GltfExportCommand.OutputProblem(output, [".json"], out _) is string badOutput) throw new Refusal(badOutput);
-        var (set, json, rules) = Plan(args[1], count, seed, packId);
-        if (set.Status == AlternativeSetStatus.Refused)
-        {
-            Console.WriteLine(RefusedLine(set));
-            Environment.ExitCode = 1;
-            return;
-        }
-        var bytes = new UTF8Encoding(false).GetBytes(json);
-        try { GltfExporter.WriteNew(bytes, output); }
-        catch (GltfExportException error) { throw new Refusal(error.Code); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
-        var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-        var setStatus = set.Status == AlternativeSetStatus.Ranked ? "ranked" : "infeasible";
-        if (packId is not null)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                status = "succeeded",
-                kind = "plan-layouts",
-                scope = "proposal_only",
-                persisted = false,
-                set_status = setStatus,
-                requested = count,
-                seed,
-                ranked = set.Ranked.Count,
-                alternatives = set.Alternatives.Count,
-                bytes = bytes.LongLength,
-                sha256,
-                pack = packId,
-                pack_rules = rules!.Rules.Count,
-            }));
-            return;
-        }
-        Console.WriteLine(JsonSerializer.Serialize(new
-        {
-            status = "succeeded",
-            kind = "plan-layouts",
-            scope = "proposal_only",
-            persisted = false,
-            set_status = setStatus,
-            requested = count,
-            seed,
-            ranked = set.Ranked.Count,
-            alternatives = set.Alternatives.Count,
-            bytes = bytes.LongLength,
-            sha256,
-        }));
     }
 
     // P7-20: the verb's path after its options and output path, shared with DryPlan: input read, brief parse, site, brief
@@ -325,12 +263,6 @@ internal static class PlanLayoutsCommand
     {
         Console.Error.WriteLine(IntentPlan.InternalDiagnostic("plan-layouts", error));
         return new Refusal(InternalError);
-    }
-
-    static void Fail(string code, string? detail)
-    {
-        Console.WriteLine(FailureLine(code, detail));
-        Environment.ExitCode = 1;
     }
 
     static string FailureLine(string code, string? detail) =>
