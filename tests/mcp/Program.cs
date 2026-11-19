@@ -1692,6 +1692,8 @@ DocRealizedToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out
 GeneratePrototypesToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
 // P4-24 the server links the shared output-path rule (OutputProblem.cs), never the export-gltf verb (tests/mcp/GltfExportLinkTests.cs).
 GltfExportLinkTests.Run(root,server.Handle,stdin=>RunMcp(stdin).Out,Check);
+// P4-25 the server links the plan-layouts dry plan, never the verb's write path (tests/mcp/PlanLayoutsWriteLinkTests.cs).
+PlanLayoutsWriteLinkTests.Run(root,mcpDll,cliDll,Check);
 // P3-21 MCP internal-error envelopes from IntentPlan (tests/mcp/InternalErrorEnvelopeToolTests.cs).
 InternalErrorEnvelopeToolTests.Run(root,cliDir,Call,Check);
 // P5-18 the package root from a cli/ or mcp/ binary directory (tests/mcp/SkillPackPackageRootTests.cs).

@@ -406,7 +406,10 @@ internal static class PlanLayoutsToolTests
             .Where(f => new[] { "BriefParser.Parse(", "AlternativeGenerator.Generate(", "AlternativeSetSerializer.Serialize(" }.Any(api => CodeOf(File.ReadAllText(f)).Contains(api, StringComparison.Ordinal)))
             .Select(f => Path.GetFileName(f)).ToArray();
         Check(owners.Length == 0, "no interfaces/mcp source parses a brief or generates a set itself [" + string.Join(", ", owners) + "]");
-        var commandCode = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "PlanLayoutsCommand.cs")));
+        // P4-25: the verb's Run/Execute/Fail live in the other part, PlanLayoutsWrite.cs; both parts are read as one class.
+        var writePart = Path.Combine(root, "interfaces", "cli", "PlanLayoutsWrite.cs");
+        var commandCode = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "PlanLayoutsCommand.cs")))
+            + "\n" + (File.Exists(writePart) ? CodeOf(File.ReadAllText(writePart)) : "");
         Check(Regex.Matches(commandCode, @"BriefParser\.Parse\(").Count == 1 && Regex.Matches(commandCode, @"AlternativeGenerator\.Generate\(").Count == 1
             && Regex.Matches(commandCode, @"SkillPackLookup\.Load\(").Count == 1 && Regex.Matches(commandCode, @"\bPlan\(").Count == 3,
             "the CLI verb and DryPlan share one path: the brief is parsed, the pack loaded and the set generated in one place, which both call (Plan)");
