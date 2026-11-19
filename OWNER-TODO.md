@@ -345,3 +345,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay241 (2026-11-19, cloud)
 - No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03/C05); 🔒 `git pull` (main 895c6bc) then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and 🔒 N21 `... -Runs 1`. FYI: P2-32 closed P2-31's deviation on Windows (the client was still writing at the break).
+
+## Relay242 (2026-11-19, cloud)
+- No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03/C05); 🔒 `git pull` (main 4422b56) then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and 🔒 N21 `... -Runs 1`. FYI: new read-only MCP tool jurisdiction_resolve (reinstall MCP with `scripts/install-mcp.ps1 -Build` when convenient to get it in Claude Desktop).
