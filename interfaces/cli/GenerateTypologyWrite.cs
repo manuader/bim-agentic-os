@@ -46,7 +46,7 @@ internal static partial class GenerateTypologyCommand
         try { GltfExporter.WriteNew(bytes, output); }
         catch (GltfExportException error) { throw new Refusal(error.Code); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
-        // P3-25: from here on, the file exists and is this run's own (WriteNew created it exclusively, so a pre-existing
+        // P3-25: from here on the file exists and is this run's own (WriteNew created it exclusively, so a pre-existing
         // output was already refused as output_exists above and is not reached here; only a concurrent process replacing
         // the file between WriteNew and the Delete below, a theoretical race, could make the Delete remove another's file).
         // Any exception before the success line is complete removes the just-written file again, then propagates unchanged
