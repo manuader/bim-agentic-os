@@ -33,7 +33,7 @@ using Bim.Core;
 //      interfaces/mcp/**/*.cs) calls JurisdictionResolveCommand.Run or imports it with using static; over
 //      interfaces/**/*.cs (comments and literals stripped) WorkProbe is only its initializer-free declaration and one
 //      WorkProbe?.Invoke(); in Execute before Parse(, never assigned; McpInvalidParamsException is constructed only in
-//      interfaces/mcp/JurisdictionResolveTool.cs.
+//      interfaces/mcp/JurisdictionResolveTool.cs (and, since P5-22, interfaces/mcp/SkillListTool.cs).
 internal static class JurisdictionResolveToolTests
 {
     const string ToolName = "jurisdiction_resolve";
@@ -328,7 +328,7 @@ internal static class JurisdictionResolveToolTests
                 Check(SeamProblems(files).Count > 0, "self-test: the seam checker flags " + label);
 
             var raisers = ExceptionProblems(sources);
-            Check(raisers.Count == 0, "McpInvalidParamsException is constructed only in interfaces/mcp/JurisdictionResolveTool.cs [" + string.Join("; ", raisers) + "]");
+            Check(raisers.Count == 0, "McpInvalidParamsException is constructed only in interfaces/mcp/JurisdictionResolveTool.cs and interfaces/mcp/SkillListTool.cs [" + string.Join("; ", raisers) + "]");
             const string ToolFile = "interfaces/mcp/JurisdictionResolveTool.cs";
             Check(ExceptionProblems([(ToolFile, "class T { void X() { throw new McpInvalidParamsException(M); } }"), ("interfaces/mcp/McpServer.cs", "class S { void X() { try { } catch (McpInvalidParamsException e) { } var s = \"new McpInvalidParamsException(x)\"; } }")]).Count == 0
                 && ExceptionProblems([(ToolFile, "class T { }")]).Count > 0
@@ -379,7 +379,8 @@ internal static class JurisdictionResolveToolTests
 
     // Over (relative path, source) pairs under interfaces/, comments and literals stripped: McpInvalidParamsException is
     // constructed (new McpInvalidParamsException(, qualified or not, or a target-typed new( of a variable of that type)
-    // only in interfaces/mcp/JurisdictionResolveTool.cs, and at least once there.
+    // only in interfaces/mcp/JurisdictionResolveTool.cs, and at least once there (P5-22: interfaces/mcp/SkillListTool.cs
+    // may construct it too).
     static List<string> ExceptionProblems(IEnumerable<(string Name, string Source)> files)
     {
         const string Tool = "interfaces/mcp/JurisdictionResolveTool.cs";
@@ -391,7 +392,7 @@ internal static class JurisdictionResolveToolTests
             var count = System.Text.RegularExpressions.Regex.Matches(code, @"\bnew\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Mcp\s*\.\s*)?McpInvalidParamsException\s*\(").Count
                 + System.Text.RegularExpressions.Regex.Matches(code, @"\bMcpInvalidParamsException\s+\w+\s*=\s*new\s*\(").Count;
             if (name == Tool) inTool += count;
-            else if (count > 0) problems.Add(name + ": constructs McpInvalidParamsException " + count.ToString(CultureInfo.InvariantCulture) + " times");
+            else if (count > 0 && name != "interfaces/mcp/SkillListTool.cs") problems.Add(name + ": constructs McpInvalidParamsException " + count.ToString(CultureInfo.InvariantCulture) + " times");
         }
         if (inTool == 0) problems.Add(Tool + ": no construction");
         return problems;
