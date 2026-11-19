@@ -106,6 +106,22 @@ internal static class GenerateTypologyWriteLinkTests
             }
         }
         finally { try { Directory.Delete(scratch, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        // Fail-closed self-test of Block and the Moved pins on a synthetic file holding the pinned Fail text.
+        {
+            var fail = Moved.Single(m => m.Name == "Fail");
+            const string FailText = "    static void Fail(string code, string? detail, string? skill = null)\n    {\n"
+                + "        Console.WriteLine(FailureLine(code, detail, skill));\n        Environment.ExitCode = 1;\n    }\n";
+            string Wrap(string body) => "class C\n{\n" + body + "\n    static void Next() { }\n}\n";
+            var exact = Block(Wrap(FailText), fail.Start, fail.End);
+            Check(exact is not null && exact.Length == fail.Length && Sha256(exact) == fail.Sha256,
+                "block self-test: the exact pre-split Fail text matches its pin (" + (exact?.Length ?? -1) + " chars)");
+            var changed = Block(Wrap(FailText.Replace("ExitCode = 1", "ExitCode = 2", StringComparison.Ordinal)), fail.Start, fail.End);
+            Check(changed is not null && changed.Length == fail.Length && Sha256(changed) != fail.Sha256,
+                "block self-test: a one-character change in the Fail block gives another hash (same length)");
+            Check(Block("class C\n{\n" + FailText.Replace("\n    }\n", "\n", StringComparison.Ordinal) + "}", fail.Start, fail.End) is null,
+                "block self-test: a Fail block without its closing line is not found (null)");
+            Check(Block(Wrap(FailText), "    static void Missing(", null) is null, "block self-test: a missing start is not found (null)");
+        }
         foreach (var (label, source, flagged) in new (string, string, bool)[]
         {
             ("a call", "GenerateTypologyCommand.Run(args);", true),
@@ -149,8 +165,10 @@ internal static class GenerateTypologyWriteLinkTests
         Check(users.Length == 0, "Bim.Mcp.csproj: no compiled source uses GenerateTypologyCommand.Run / Execute / Fail / PostWriteProbe [" + string.Join(", ", users) + "]");
         var remaining = compiledSources.Where(path => Regex.IsMatch(DocUpdateLinkTests.CodeOf(File.ReadAllText(path)), @"\bGltfExporter\s*\.\s*WriteNew\s*\("))
             .Select(path => Path.GetFileName(path)).Order(StringComparer.Ordinal).ToArray();
-        // Expected after P4-26: [GenerateCommand.cs] (generate-prototypes), the last remaining server-compiled writer.
-        Console.WriteLine("NOTE generate-typology write link: Bim.Mcp.csproj still compiles GltfExporter.WriteNew in [" + string.Join(", ", remaining) + "] (follow-up rows)");
+        // After P4-26 the only server-compiled writer left is GenerateCommand.cs (generate-prototypes), the follow-up row.
+        Check(remaining.SequenceEqual(new[] { "GenerateCommand.cs" }, StringComparer.OrdinalIgnoreCase),
+            "the only source compiled by Bim.Mcp.csproj that still calls GltfExporter.WriteNew is GenerateCommand.cs (generate-prototypes, the last remaining writer) ["
+            + string.Join(", ", remaining) + "]");
         Check(!remaining.Contains("GenerateTypologyCommand.cs", StringComparer.OrdinalIgnoreCase) && !remaining.Contains("GenerateTypologyWrite.cs", StringComparer.OrdinalIgnoreCase),
             "no generate-typology source compiled by Bim.Mcp.csproj calls GltfExporter.WriteNew [" + string.Join(", ", remaining) + "]");
 

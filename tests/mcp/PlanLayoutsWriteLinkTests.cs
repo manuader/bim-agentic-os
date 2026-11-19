@@ -24,9 +24,10 @@ using System.Text.RegularExpressions;
 //   4. A self-test of the link and use checkers on synthetic csproj and source texts.
 // The plan_layouts MCP bytes and the plan-layouts CLI bytes are pinned by tests/mcp/PlanLayoutsToolTests.cs and
 // tests/cli/PlanLayoutsTests.cs (unchanged).
-// Remaining (follow-up, not this task): Bim.Mcp.csproj still compiles the writer verbs GenerateCommand.cs
-// (generate-prototypes) and GenerateTypologyCommand.cs (generate-typology) in full, so their Run paths and
-// GltfExporter.WriteNew stay in the server binary; the NOTE line below lists the compiled sources still calling it.
+// Remaining (follow-up, not this task): Bim.Mcp.csproj still compiles the writer verb GenerateCommand.cs
+// (generate-prototypes) in full, so its Run path and GltfExporter.WriteNew stay in the server binary; the NOTE line below
+// lists the compiled sources still calling it. P4-26 moved the generate-typology write path into GenerateTypologyWrite.cs,
+// which the server does not compile (tests/mcp/GenerateTypologyWriteLinkTests.cs).
 internal static class PlanLayoutsWriteLinkTests
 {
     static readonly Regex ForbiddenUse = new(@"\bPlanLayoutsCommand\s*\.\s*(?:Run|Execute|Fail)\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?PlanLayoutsCommand\b",
