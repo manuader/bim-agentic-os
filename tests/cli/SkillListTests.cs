@@ -41,6 +41,9 @@ using Bim.Core;
 //      sentinel proves the environment really selects the culture in a .NET child: a pwsh child under the same environment
 //      must report CurrentCulture de-DE / tr-TR, and the CLI's runtimeconfig must not force invariant globalization; a
 //      missing pwsh or culture data on Linux is a failure, not a skip, so a silently invariant child cannot pass.
+//  10. P5-28 twice-read: over one generated package skills directory (a code pack + sidecar), skill-list and
+//      jurisdiction-resolve run twice in process and twice as real processes print byte-identical lines on success and
+//      on a sidecar refusal, while the two in-process JurisdictionRegistry loads behind them are unequal (TwiceRead).
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -515,9 +518,11 @@ internal static class SkillListTests
             (first.Refusal?.ToString() ?? "") + " / " + (second.Refusal?.ToString() ?? ""));
         var firstRegistry = first.Registry;
         var secondRegistry = second.Registry;
-        // RED PROBE (P5-28 red phase): deliberately wrong expectation, to be inverted after CI confirms red.
-        Check(firstRegistry is not null && secondRegistry is not null && firstRegistry.Equals(secondRegistry),
-            "RED PROBE success: the two in-process registries compare equal",
+        // P5-27 reference identity: the two reads give distinct, unequal registries (red phase run 44623782837 probed the
+        // opposite expectation and failed with ReferenceEquals False, Equals False, loads equal False).
+        Check(firstRegistry is not null && secondRegistry is not null && !ReferenceEquals(firstRegistry, secondRegistry) && !firstRegistry.Equals(secondRegistry)
+            && !firstRegistry.Equals((object)secondRegistry) && !EqualityComparer<JurisdictionRegistry>.Default.Equals(firstRegistry, secondRegistry),
+            "success: the two in-process registries are unequal (P5-27 reference identity), so the identical bytes below never depend on registry identity",
             "ReferenceEquals " + ReferenceEquals(firstRegistry, secondRegistry) + ", Equals " + (firstRegistry?.Equals(secondRegistry)).ToString() + ", loads equal " + (first == second));
         Check(first != second && !first.Equals(second), "success: the two in-process loads are unequal (JurisdictionLoad follows registry identity)", first + " / " + second);
         var expectedList = Expected(skills);
