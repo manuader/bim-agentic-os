@@ -1857,3 +1857,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 2026-11-19T17:05:27Z integration b3a8986 CI 44567882670 success (9/9) → main fast-forwarded (4422b56..b3a8986). P5-22, P1-34, P7-27 ✅; new P5-29, P1-36, P7-28. Progress 264/283 (93.3 %). Worktrees retired (branches relay243-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-19T17:05:27Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P2-33, P3-26, P3-27 (relay241); then P4-27, P10-30, P10-31, P6-27, P6-30 (relay242); then P5-28, P5-29, P1-35, P1-36, P7-24, P7-28. GenerateCommand.cs edits serialize (P4-27, P7-28); McpServer.cs edits serialize (P10-31, P1-36 comment-only); P10-31 must cover skill_list's tool-local duplicate check too. ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay244
+- 2026-11-19T17:52:49Z lock taken (session_014pxpsT1HRDYSeiGZzvQEex relay244; was FREE, relay243 released 17:05:27Z)
