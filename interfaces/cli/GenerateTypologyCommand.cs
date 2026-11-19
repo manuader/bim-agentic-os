@@ -221,7 +221,7 @@ internal static class GenerateTypologyCommand
         {
             try
             {
-                // File.Delete(output);
+                File.Delete(output);
             }
             catch (Exception removal) when (removal is IOException or UnauthorizedAccessException) { }
             throw;
