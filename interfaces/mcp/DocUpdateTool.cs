@@ -60,7 +60,9 @@ internal static class DocUpdateTool
     {
         if (string.IsNullOrWhiteSpace(path) || path.IndexOf('\0') >= 0 || path.Length > MaxPathChars) return true;
         try { Path.GetFullPath(path); }
-        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { return true; }
+        // P10-29 (the P10-28 rule): a relative path under a deleted working directory makes GetFullPath throw
+        // FileNotFoundException on Linux/macOS (observed, run 44440575516); refused like any other unusable path.
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException) { return true; }
         return false;
     }
 
