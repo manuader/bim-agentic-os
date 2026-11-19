@@ -2027,9 +2027,20 @@ static class MirrorDriftLoopChecks
         naming.Sort(StringComparer.Ordinal);
         Check(naming.SequenceEqual(new[] { WriteProgressService }), "static pin: among the production sources only " + WriteProgressService + " names the write-progress seam", string.Join(",", naming));
         var service = File.ReadAllText(Path.Combine(root, WriteProgressService));
-        var assigned = System.Text.RegularExpressions.Regex.Matches(service, @"\bWriteProgress\s*=(?!=)").Count;
-        Check(service.Contains("[ThreadStatic] internal static Action<int, int>? WriteProgress;", StringComparison.Ordinal) && assigned == 0,
-            "static pin: the seam is a [ThreadStatic] internal field declared without an initializer and never assigned in production source (null unless a test sets it)", "assignments " + assigned);
+        // Comments stripped, the code of RevitCommandsService.cs names the seam exactly twice: its declaration and the one
+        // read in WriteRequest. Any assignment (=, +=, -=, ??=) or other use is a third occurrence; a planted self-test
+        // shows those forms are caught while a mention in a comment is not.
+        static string Code(string source) => System.Text.RegularExpressions.Regex.Replace(source, @"/\*.*?\*/|//[^\n]*", "", System.Text.RegularExpressions.RegexOptions.Singleline);
+        const string seamDeclaration = "[ThreadStatic] internal static Action<int, int>? WriteProgress;";
+        const string seamRead = "var progress = WriteProgress;";
+        static int Uses(string source) => System.Text.RegularExpressions.Regex.Matches(Code(source), @"\bWriteProgress\b").Count;
+        static bool Pinned(string source) => Uses(source) == 2 && Code(source).Contains(seamDeclaration, StringComparison.Ordinal) && Code(source).Contains(seamRead, StringComparison.Ordinal);
+        Check(Pinned(service),
+            "static pin: with comments stripped the seam occurs exactly twice in " + WriteProgressService + " (its [ThreadStatic] declaration without an initializer and the one read): never assigned in production source (null unless a test sets it)",
+            "code occurrences " + Uses(service));
+        var planted = new[] { "\nstatic void P() { WriteProgress += (_, _) => { }; }\n", "\nstatic void P(Action<int, int> x) { WriteProgress ??= x; }\n", "\nstatic void P() { WriteProgress -= null; }\n", "\nstatic void P() { WriteProgress = null; }\n" };
+        Check(planted.All(plant => !Pinned(service + plant)) && Pinned(service + "\n// WriteProgress = x;\n/* WriteProgress += y; */\n"),
+            "static pin self-test: a planted WriteProgress +=, ??=, -= or = is caught, a mention in a comment is not", string.Join(",", planted.Select(plant => Uses(service + plant))));
         Check(RevitCommandService.WriteProgress is null, "the seam is null on the test thread before the run");
 
         using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Pipe-WriteProgress.rvt", WriteProgressRequestsBefore.Length + 2, breakAfterBytes: MidArgsBreakBytes);
@@ -2046,34 +2057,44 @@ static class MirrorDriftLoopChecks
         var pipe = typeof(Harness).GetField("pipe", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(h) as string;
         if (pipe is null) { Check(false, "the harness pipe name is readable"); return; }
         // scripts/verify.ps1 gives this process a long TMPDIR, while the fake listens under UnixTemp (sockets: 108-byte
-        // limit). .NET caches the pipe socket prefix (PipeStream.s_pipePrefix, from Path.GetTempPath) on first use, and no
-        // earlier check of this process opens a pipe off Windows, so TMPDIR is UnixTemp while that cache is made (read
-        // here by reflection) and while Core's client runs, then restored.
+        // limit). .NET caches the pipe socket prefix (PipeStream.s_pipePrefix, from Path.GetTempPath) for the process on
+        // first use, so TMPDIR is UnixTemp when that cache is made (forced here by reading it by reflection) and while
+        // Core's client runs. Only TMPDIR is restored afterwards: the cached prefix stays UnixTemp for the rest of this
+        // process. Order dependency: no earlier check of this process may open a pipe client off Windows (none does), or
+        // the prefix is already cached elsewhere and the check below fails by name.
+        Check(MidArgsBreakBytes % RevitCommandService.WriteProgressChunk == 0,
+            "precondition: the break point (" + MidArgsBreakBytes + " bytes) is a whole number of " + RevitCommandService.WriteProgressChunk + "-byte pieces, so a piece ends exactly where the fake stops reading");
         var savedTemp = Environment.GetEnvironmentVariable("TMPDIR");
-        if (!OperatingSystem.IsWindows())
-        {
-            Environment.SetEnvironmentVariable("TMPDIR", UnixTemp);
-            var prefix = typeof(System.IO.Pipes.PipeStream).GetField("s_pipePrefix", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)?.GetValue(null) as string;
-            if (prefix is not null && prefix != UnixPipePrefix)
-            {
-                Environment.SetEnvironmentVariable("TMPDIR", savedTemp);
-                Check(false, "Core's pipe client resolves sockets under " + UnixTemp + " (PipeStream socket prefix)", prefix);
-                return;
-            }
-        }
-
         var reports = new List<(int Written, int Total, long Ms)>();
         var clock = Stopwatch.StartNew();
         RevitCommandResult? seam = null;
         var thrown = "";
-        RevitCommandService.WriteProgress = (written, total) => reports.Add((written, total, clock.ElapsedMilliseconds));
-        try { seam = RevitCommandService.Run(pipe, envelope, RevitCommandPolicy.ForRepository(root), RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromMilliseconds(Math.Max(1, h.Budget())))); }
+        string? wrongPrefix = null;
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                Environment.SetEnvironmentVariable("TMPDIR", UnixTemp);
+                var prefixField = typeof(System.IO.Pipes.PipeStream).GetField("s_pipePrefix", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                var prefix = prefixField?.GetValue(null) as string;
+                if (prefix is null)
+                    Console.WriteLine("::warning::drift-loop: client write progress at a mid-args break: PipeStream.s_pipePrefix is not readable on this runtime ("
+                        + (prefixField is null ? "no such field" : "not a string") + "); the socket directory Core's client resolves is not confirmed (a wrong one ends in pipe_connect_timeout below)");
+                else if (prefix != UnixPipePrefix) wrongPrefix = prefix;
+            }
+            if (wrongPrefix is null)
+            {
+                RevitCommandService.WriteProgress = (written, total) => reports.Add((written, total, clock.ElapsedMilliseconds));
+                seam = RevitCommandService.Run(pipe, envelope, RevitCommandPolicy.ForRepository(root), RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromMilliseconds(Math.Max(1, h.Budget()))));
+            }
+        }
         catch (Exception failure) { thrown = failure.GetType().Name + ": " + failure.Message; }
         finally
         {
             RevitCommandService.WriteProgress = null;
             if (!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR", savedTemp);
         }
+        if (wrongPrefix is not null) { Check(false, "Core's pipe client resolves sockets under " + UnixTemp + " (PipeStream socket prefix)", wrongPrefix); return; }
         var elapsed = clock.ElapsedMilliseconds;
         Check(RevitCommandService.WriteProgress is null, "the seam is null on the test thread after the run");
         var (exited, exit, error) = h.End();
