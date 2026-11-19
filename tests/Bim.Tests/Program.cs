@@ -225,7 +225,8 @@ Check(NativeBatchContract.Preflight(goodLevel,badLevel,Compiler.Diff(goodLevel,b
    Check(new HashSet<JurisdictionRegistry>{r27X,r27Y,r27X}.Count==2,"P5-27 "+r27Name+": a hash set keeps both reads");
    Check(r27A!=r27B && !r27A.Equals(r27B),"P5-27 "+r27Name+": the two loads are unequal (JurisdictionLoad follows Registry identity)");
    Check(new JurisdictionLoad(r27X,null)==r27A && new JurisdictionLoad(r27X,null).GetHashCode()==r27A.GetHashCode() && (r27B with {Registry=r27X})==r27A,"P5-27 "+r27Name+": loads over the same registry instance are equal with an equal hash");
-   // A separate local: comparing with null makes the compiler treat the receiver as maybe-null afterwards.
+   // A separate local: nullable analysis treats x.Equals(null) as a null test of x, so after it x is maybe-null and a later
+   // dereference of x is CS8602 (an error under --warnaserror); r27X stays untouched for the checks above.
    var r27Z=r27X;
    Check(!r27Z.Equals(null) && !r27Z.Equals((object?)null),"P5-27 "+r27Name+": a registry is not equal to null");
   }
