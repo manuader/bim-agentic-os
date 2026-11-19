@@ -96,11 +96,13 @@ public sealed record JurisdictionLoad
 }
 
 // P5-27: equality is reference identity, declared here on purpose. Two Load (or LoadLocked, which builds through
-// FromSnapshots, so that path is covered via LoadLocked) calls on the same skills directory build two registries with the same catalogue and claims, and those registries are unequal:
-// Equals is ReferenceEquals and GetHashCode is the identity hash (RuntimeHelpers.GetHashCode), consistent with each other
-// and stable for the instance's lifetime. Value equality is not offered because SkillCatalog compares by reference and the
-// claims' list members (CountryNames, MunicipalityNames) compare by reference themselves; compare Claims, Issues, UnregisteredCodePacks or Catalog.Skills element-wise for content.
-// JurisdictionLoad compares its Registry with this equality, so two successful loads are equal only over one instance.
+// FromSnapshots, so that path is covered via LoadLocked) calls on the same skills directory build two registries with
+// the same catalogue and claims, and those registries are unequal: Equals is ReferenceEquals and GetHashCode is the
+// identity hash (RuntimeHelpers.GetHashCode), consistent with each other and stable for the instance's lifetime. Value
+// equality is not offered because SkillCatalog compares by reference and the claims' list members (CountryNames,
+// MunicipalityNames) compare by reference themselves; compare Claims, Issues, UnregisteredCodePacks or Catalog.Skills
+// element-wise for content. JurisdictionLoad compares its Registry with this equality, so two successful loads are equal
+// only over one instance.
 public sealed partial class JurisdictionRegistry : IEquatable<JurisdictionRegistry>
 {
     public bool Equals(JurisdictionRegistry? other) => ReferenceEquals(this, other);
