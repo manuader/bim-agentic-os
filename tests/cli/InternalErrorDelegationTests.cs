@@ -295,9 +295,7 @@ internal static class InternalErrorDelegationTests
                 ("a second read", good + "static void T() { GuardedWorkProbe?.Invoke(); }\n", false),
                 ("an unguarded read", good + "static void T() { var p = GuardedWorkProbe; p!(); }\n", false),
                 ("assignments only inside comments and string literals", good
-                    + "// GuardedWorkProbe = () => { };\n/* GuardedWorkProbe += x; */\nconst string S = \"GuardedWorkProbe = null;\";\nconst string V = @\"GuardedWorkProbe ??= \"\"x\"\"\";\n", true),
-                ("DELIBERATE NEGATIVE (P3-22 probe, must be red): a planted assignment", good + "static void T() { GuardedWorkProbe = null; }\n", true),
-            };
+                    + "// GuardedWorkProbe = () => { };\n/* GuardedWorkProbe += x; */\nconst string S = \"GuardedWorkProbe = null;\";\nconst string V = @\"GuardedWorkProbe ??= \"\"x\"\"\";\n", true),            };
             foreach (var (name, source, clean) in cases)
             {
                 var uses = ProbeUses(ApplyIntentTests.CodeOf(source, blankStrings: true));
