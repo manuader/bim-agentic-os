@@ -284,7 +284,9 @@ internal static class GeneratePrototypesToolTests
             .Where(f => new[] { "PrototypePipeline.", "PrototypeRequest(", "PrototypePipelineSerializer" }.Any(api => CodeOf(File.ReadAllText(f)).Contains(api, StringComparison.Ordinal)))
             .Select(f => Path.GetFileName(f)).ToArray();
         Check(owners.Length == 0, "no interfaces/mcp source builds a prototype request or runs the pipeline itself [" + string.Join(", ", owners) + "]");
-        var commandCode = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateCommand.cs")));
+        // P4-27: Execute (the verb's Generate(ReadRequest(...)) call) lives in the CLI-only write part GenerateWrite.cs.
+        var commandCode = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateCommand.cs")) + "\n"
+            + File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateWrite.cs")));
         Check(Regex.Matches(commandCode, @"\bGenerate\s*\(\s*ReadRequest\s*\(").Count == 2 && Regex.Matches(commandCode, @"\bParse\s*\(\s*text\s*\)").Count == 1
             && Regex.Matches(commandCode, @"\bPrototypePipeline\s*\.\s*Run\s*\(").Count == 1,
             "the CLI verb and Document share one path: both call Generate(ReadRequest(...)); the request is parsed and the pipeline run in one place");

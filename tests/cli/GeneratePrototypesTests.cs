@@ -642,7 +642,7 @@ internal static class GeneratePrototypesTests
             var seam = PostWriteStageSeamProblems(sources);
             Check(seam.Count == 0, "interfaces/**/*.cs names PostWriteStageProbe only in its declaration and one ?.Invoke() inside Execute's body, in a try { opened after GltfExporter.WriteNew( that holds the later SHA256.HashData( and the only post-write Console.WriteLine(, directly followed by catch (Exception) { File.Delete(output) ... throw; }, never assigned ["
                 + string.Join("; ", seam) + "]");
-            const string Path26 = "interfaces/cli/GenerateCommand.cs";
+            const string Path26 = "interfaces/cli/GenerateWrite.cs";
             const string Decl = "internal static Action? PostWriteStageProbe { get; set; }";
             string Command(string executeBody, string extra = "") => "internal static class GenerateCommand { static void Execute(string[] args) { " + executeBody + " } " + Decl + " " + extra + " }";
             const string Remove = " catch (Exception) { try { File.Delete(output); } catch (Exception removal) when (removal is IOException) { } throw; }";
@@ -684,7 +684,8 @@ internal static class GeneratePrototypesTests
     }
 
     // P7-26: over (relative path, source) pairs under interfaces/, comments stripped and string literals blanked:
-    // PostWriteStageProbe is named exactly twice in total, both in interfaces/cli/GenerateCommand.cs: its declaration and
+    // (P4-27: the path follows Execute into the CLI-only write part GenerateWrite.cs; the expectation is unchanged.)
+    // PostWriteStageProbe is named exactly twice in total, both in interfaces/cli/GenerateWrite.cs: its declaration and
     // one PostWriteStageProbe?.Invoke(); no assignment anywhere. Brace-matched: the invoke is inside Execute's body, after
     // its GltfExporter.WriteNew(, inside a try { opened after WriteNew( that also holds a later SHA256.HashData( and the
     // Console.WriteLine( (no Console.WriteLine( in Execute after WriteNew( outside it), and that try is directly followed
@@ -714,7 +715,7 @@ internal static class GeneratePrototypesTests
             var code = ApplyIntentTests.CodeOf(source);
             total += System.Text.RegularExpressions.Regex.Matches(code, @"\bPostWriteStageProbe\b").Count;
             if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bPostWriteStageProbe\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)")) problems.Add(name + ": PostWriteStageProbe assigned");
-            if (name != "interfaces/cli/GenerateCommand.cs") continue;
+            if (name != "interfaces/cli/GenerateWrite.cs") continue;
             sawCommand = true;
             var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+static\s+Action\s*\?\s*PostWriteStageProbe\s*\{\s*get\s*;\s*set\s*;\s*\}").Count;
             if (declarations != 1) problems.Add(name + ": the declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
@@ -748,7 +749,7 @@ internal static class GeneratePrototypesTests
             if (!Find(code, @"\bFile\s*\.\s*Delete\s*\(\s*output\s*\)", handlerOpen, handlerClose).Success) problems.Add(name + ": the catch (Exception) body has no File.Delete(output)");
             if (!Find(code, @"\bthrow\s*;", handlerOpen, handlerClose).Success) problems.Add(name + ": the catch (Exception) body has no throw;");
         }
-        if (!sawCommand) problems.Add("interfaces/cli/GenerateCommand.cs not found");
+        if (!sawCommand) problems.Add("interfaces/cli/GenerateWrite.cs not found");
         if (total != 2) problems.Add("PostWriteStageProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
         return problems;
     }
@@ -1005,7 +1006,7 @@ internal static class GeneratePrototypesTests
             var seam = PostWriteDeleteSeamProblems(sources);
             Check(seam.Count == 0, "interfaces/**/*.cs names PostWriteDeleteProbe only in its declaration and one ?.Invoke(output) right before File.Delete(output) in the post-write catch (Exception), "
                 + "whose unfiltered catch (Exception) writes Console.Error.WriteLine(PartialOutputLeft + output) without a throw, then throw; ends the handler; never assigned [" + string.Join("; ", seam) + "]");
-            const string Path27 = "interfaces/cli/GenerateCommand.cs";
+            const string Path27 = "interfaces/cli/GenerateWrite.cs";
             const string Decls = "internal const string PartialOutputLeft = \"x\"; internal static Action<string>? PostWriteDeleteProbe { get; set; }";
             static string Command(string handler, string extra = "", string decls = Decls) =>
                 "internal static class GenerateCommand { static void Execute(string[] args) { GltfExporter.WriteNew(bytes, output); try { PostWriteStageProbe?.Invoke(); Console.WriteLine(x); } catch (Exception) { "
@@ -1076,7 +1077,8 @@ internal static class GeneratePrototypesTests
     }
 
     // P7-27: over (relative path, source) pairs under interfaces/, comments stripped and string literals blanked:
-    // PostWriteDeleteProbe is named exactly twice in total, both in interfaces/cli/GenerateCommand.cs: its Action<string>?
+    // (P4-27: the path follows Execute into the CLI-only write part GenerateWrite.cs; the expectation is unchanged.)
+    // PostWriteDeleteProbe is named exactly twice in total, both in interfaces/cli/GenerateWrite.cs: its Action<string>?
     // declaration and one PostWriteDeleteProbe?.Invoke(output); no assignment anywhere; PartialOutputLeft declared once as an
     // internal const string. Brace-matched inside Execute's body: the invoke's innermost try block is exactly
     // { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }, is the first statement of a catch (Exception) { that
@@ -1105,7 +1107,7 @@ internal static class GeneratePrototypesTests
             var code = ApplyIntentTests.CodeOf(source);
             total += System.Text.RegularExpressions.Regex.Matches(code, @"\bPostWriteDeleteProbe\b").Count;
             if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bPostWriteDeleteProbe\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)")) problems.Add(name + ": PostWriteDeleteProbe assigned");
-            if (name != "interfaces/cli/GenerateCommand.cs") continue;
+            if (name != "interfaces/cli/GenerateWrite.cs") continue;
             sawCommand = true;
             var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+static\s+Action\s*<\s*string\s*>\s*\?\s*PostWriteDeleteProbe\s*\{\s*get\s*;\s*set\s*;\s*\}").Count;
             if (declarations != 1) problems.Add(name + ": the Action<string>? declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
@@ -1156,7 +1158,7 @@ internal static class GeneratePrototypesTests
             var rethrow = At(code, @"\s*throw\s*;\s*\}", reportClose + 1);
             if (!rethrow.Success || rethrow.Index + rethrow.Length - 1 != handlerClose) problems.Add(name + ": the report catch is not directly followed by throw; ending the handler");
         }
-        if (!sawCommand) problems.Add("interfaces/cli/GenerateCommand.cs not found");
+        if (!sawCommand) problems.Add("interfaces/cli/GenerateWrite.cs not found");
         if (total != 2) problems.Add("PostWriteDeleteProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
         return problems;
     }
@@ -1311,7 +1313,8 @@ internal static class GeneratePrototypesTests
             Check(File.ReadAllText(existing) == "keep", "the existing output is left untouched");
 
             // Static: Run's body, comments stripped, layout-independent.
-            var source = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateCommand.cs")), blankStrings: false);
+            // P4-27: Run lives in the CLI-only write part GenerateWrite.cs.
+            var source = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateWrite.cs")), blankStrings: false);
             Check(System.Text.RegularExpressions.Regex.IsMatch(source,
                     @"public\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{\s*try\s*\{\s*Execute\s*\(\s*args\s*\)\s*;\s*\}\s*catch\s*\(\s*Refusal\s+refusal\s*\)\s*\{\s*Fail\s*\(\s*refusal\s*\.\s*Code\s*,\s*refusal\s*\.\s*Detail\s*\)\s*;\s*\}\s*"
                     + @"catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*IntentPlan\s*\.\s*Internal\s*\(\s*""generate-prototypes""\s*,\s*error\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*\}"),
