@@ -491,7 +491,7 @@ internal static class RevitCommandDeadlineTests
         check(!runKept.IsError && runKept.Forwarded && runKept.Line == expected,
             "P1-33 cancel race through RevitCommandService.Run: the kept late line is the verified reply, byte-equal to a prompt one", runKept.Line);
         var runTimeout = RevitCommandService.Run(RacePipe, wallsText, RevitCommandPolicy.None, (_, _) => RevitCommandService.ReadReplyLine(new GatedRead().Start, wait));
-        const string RunTimeout = """{"status":"failed","code":"pipe_read_timeout","field":"pipe_name","detail":"no reply within 50 ms; read-only command, the document is unchanged and the request may be resent (the add-in serves one request at a time, so a resend while it is still busy may get pipe_connect_timeout: retry later)"}""";
+        const string RunTimeout = """{"status":"failed","code":"pipe_read_timeout","field":"pipe_name","detail":"no reply within 50 ms; read-only command, the document is unchanged and the request may be resent (the add-in serves one request at a time, so a resend while it is still busy may get pipe_connect_timeout: retry later)","created":[],"modified":[],"deleted":[],"readback":null,"receipt":null,"warnings":[]}""";
         check(runTimeout.IsError && runTimeout.Forwarded && runTimeout.Line == RunTimeout,
             "P1-33 cancel race through RevitCommandService.Run: no line by the cancel is pipe_read_timeout (pinned bytes)", runTimeout.Line);
 
