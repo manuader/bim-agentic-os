@@ -30,6 +30,13 @@ namespace Bim.Cli;
 // the deadline and never replies ends the run at the deadline, not up to the time left before the connect later.
 // Tests inject the clock, the cut transport and connectThenRead; an injected P1-30 connectTransport(read, left) is
 // still accepted and given readAfter() measured when the page's transport is made (its fakes move no clock in a connect).
+// P1-34: a page with time left of at least 5 s (its connect keeps the full wait) is measured after its connect too: via
+// connectThenRead(5 s, readAfter), read with min(configured read timeout, time left once connected), cut (its
+// pipe_read_timeout reported as the deadline) only when the time left is the smaller; its pipe_connect_timeout after the
+// full 5 s still passes through. This replaces both the configured transport and the cut transport on such pages, as
+// the same real pipe (5 s connect, the configured or cut read) with the read now counted from the connect. Kept as
+// before (read measured when the page's transport is made) only for the legacy seams: an injected cutTransport or P1-30
+// connectTransport without connectThenRead (the P1-21..P1-31 fakes). cutReads false never measures (configured transport).
 internal sealed class RevitDeadlineTransport : IRevitCommandTransport
 {
     public const string Code = "query_all_deadline_exceeded";
@@ -47,6 +54,7 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
     readonly Func<TimeSpan, Func<string, string, string?>> cutTransport;
     readonly Func<TimeSpan, Func<TimeSpan>, Func<string, string, string?>> connectThenRead;
     readonly TimeSpan start;
+    readonly bool measured;
     readonly string listing;
     readonly bool cutReads;
     readonly RevitFileSystemProbe? probe;
@@ -68,6 +76,8 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
             elapsed = () => watch.Elapsed;
         }
         this.elapsed = elapsed;
+        // P1-34: the default transports (or an injected connectThenRead) measure every page's read after its connect.
+        measured = connectThenRead is not null || (cutTransport is null && connectTransport is null);
         this.cutTransport = cutTransport ?? RevitCommandService.PipeTransportWithReadTimeout;
         if (connectThenRead is not null) this.connectThenRead = connectThenRead;
         else if (connectTransport is { } legacy) this.connectThenRead = (left, readAfter) => legacy(readAfter(), left);
@@ -96,18 +106,17 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
         var cut = cutReads && left < readTimeout;
         var cutConnect = cutReads && left < ConnectWait;
         Func<string, string, string?> pipe;
-        if (cutConnect)
+        // P1-32: asked once connected; whether the read is cut is decided by the time left then.
+        TimeSpan ReadAfter()
         {
-            // P1-32: asked once connected; whether the read is cut is decided by the time left then.
-            TimeSpan ReadAfter()
-            {
-                var after = deadline - (elapsed() - start);
-                cut = after < readTimeout;
-                // Under 1 ms left is no time left (a sub-millisecond wait would time out at once): not sent.
-                return !cut ? readTimeout : after < MinRead ? TimeSpan.Zero : after;
-            }
-            pipe = connectThenRead(left, ReadAfter);
+            var after = deadline - (elapsed() - start);
+            cut = after < readTimeout;
+            // Under 1 ms left is no time left (a sub-millisecond wait would time out at once): not sent.
+            return !cut ? readTimeout : after < MinRead ? TimeSpan.Zero : after;
         }
+        if (cutConnect) pipe = connectThenRead(left, ReadAfter);
+        // P1-34: time left of at least 5 s: the full connect wait, the read still measured once connected.
+        else if (cutReads && measured) pipe = connectThenRead(ConnectWait, ReadAfter);
         else pipe = cut ? cutTransport(left) : transport;
         var line = RevitCommandService.Run(pipeName, envelopeJson, policy, pipe, probe).Line;
         if (!cut && !cutConnect) return line;
