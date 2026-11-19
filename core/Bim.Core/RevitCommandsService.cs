@@ -157,6 +157,27 @@ public static class RevitCommandService
         return SendMeasured(pipeName, line, () => readTimeout, connectMs);
     }
 
+    // P2-32: a write-progress test seam, null in production (nothing assigns it outside tests; per thread, so only the
+    // thread that sets it is affected). Null: the request is handed to the pipe in one Write, as before. Set: the same
+    // bytes are handed in WriteProgressChunk-byte pieces and it is called with (bytes handed so far, wire bytes) once
+    // before the first piece and after each piece whose Write returned, so a test sees how far the client got when the
+    // server end closed. Tests only (tests/mirror-journal).
+    [ThreadStatic] internal static Action<int, int>? WriteProgress;
+    internal const int WriteProgressChunk = 1024;
+
+    static void WriteRequest(PipeStream pipe, byte[] bytes)
+    {
+        var progress = WriteProgress;
+        if (progress is null) { pipe.Write(bytes); return; }
+        progress(0, bytes.Length);
+        for (var at = 0; at < bytes.Length; at += WriteProgressChunk)
+        {
+            var count = Math.Min(WriteProgressChunk, bytes.Length - at);
+            pipe.Write(bytes.AsSpan(at, count));
+            progress(at + count, bytes.Length);
+        }
+    }
+
     static string? SendMeasured(string pipeName, string line, Func<TimeSpan> readTimeoutAfterConnect, int connectMs)
     {
         // Asynchronous (overlapped) so a pending read can be cancelled on Windows as well as on Unix sockets.
@@ -171,7 +192,7 @@ public static class RevitCommandService
         var utf8 = new UTF8Encoding(false);
         // The same bytes StreamWriter.WriteLine sent before, without a writer whose disposal would flush a pipe the
         // add-in already closed (IOException "Pipe is broken" on Windows instead of no_response).
-        pipe.Write(utf8.GetBytes(line + Environment.NewLine));
+        WriteRequest(pipe, utf8.GetBytes(line + Environment.NewLine));
         using var reader = new StreamReader(pipe, utf8, false, 4096, leaveOpen: true);
         return ReadReplyLine(token => reader.ReadLineAsync(token).AsTask(), readTimeout);
     }
