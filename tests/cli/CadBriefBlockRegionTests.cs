@@ -239,8 +239,11 @@ internal static class CadBriefBlockRegionTests
     //     insert): centre (-1897.11, 35714.10), 2 m2, InsertPath [M2[2,1]].
     //   * "Lavadero": block BASE with base point (1000, 500) (BLOCK groups 10/20) holding the rectangle (2000, 1000)-(5000,
     //     3500), inserted as L1 at (0, 60000): world (1000, 60500)-(4000, 63000), centre (2500, 61750), 7.5 m2, [L1].
-    //   * "Garaje": the same block BASE inserted as G1 at (20000, 60000), rotated 30 degrees, scale 2: world = insertion +
-    //     rotate(scale(p - base)), centre (22580.13, 65531.09), 30 m2, InsertPath [G1].
+    //   * "Garaje": the same block BASE inserted as G1 at (20000, 60000), rotated 30 degrees, non-uniform scale X 2, Y 1.5:
+    //     world = insertion + rotate(scale(p - base)), centre (23017.63, 64773.32), 22.5 m2, InsertPath [G1] (the wrong
+    //     order scale(rotate(p - base)) would centre at (22580.13, 64148.32)).
+    // Out of scope: MINSERT spacing under a non-unit insert scale (M2 has scale 1), rotated inserts inside nested chains,
+    // and mirrored OCS combined with rotation.
     // Expected corners come from an independent transform written here (insertion + R(angle) * (cell offset + S * (p -
     // base))), cross-checked against hand-computed centres; the centre is the bounding-box centre of the transformed
     // corners and the area their shoelace area, positive. Through the real CLI with the flag draft.json rooms equal the
@@ -257,7 +260,7 @@ internal static class CadBriefBlockRegionTests
         + G("0 INSERT|5 R1|8 ROOMS|2 ROT|10 60000|20 0|30 0|50 30")
         + G("0 INSERT|5 M2|8 ROOMS|2 CELL2|10 0|20 30000|30 0|50 60|70 2|71 3|44 3000|45 2000")
         + G("0 INSERT|5 L1|8 ROOMS|2 BASE|10 0|20 60000|30 0")
-        + G("0 INSERT|5 G1|8 ROOMS|2 BASE|10 20000|20 60000|30 0|41 2|42 2|50 30")
+        + G("0 INSERT|5 G1|8 ROOMS|2 BASE|10 20000|20 60000|30 0|41 2|42 1.5|50 30")
         + string.Concat(RotatedLabels.Select((l, i) => Text((31 + i).ToString(CultureInfo.InvariantCulture), l.X, l.Y, l.Name)))
         + G("0 ENDSEC|0 EOF");
 
@@ -271,16 +274,16 @@ internal static class CadBriefBlockRegionTests
 
     sealed record RotatedCase(string Id, string Name, string[] Path, (double X, double Y)[] Corners, (double X, double Y) Hand, double HandArea);
 
-    static RotatedCase Case(string id, string name, string[] path, (double X, double Y) insertion, double degrees, double scale, (double X, double Y) basePoint, (double X, double Y) offset,
+    static RotatedCase Case(string id, string name, string[] path, (double X, double Y) insertion, double degrees, double sx, double sy, (double X, double Y) basePoint, (double X, double Y) offset,
         double x0, double y0, double x1, double y1, (double X, double Y) hand, double handArea) =>
-        new(id, name, path, new[] { (x0, y0), (x1, y0), (x1, y1), (x0, y1) }.Select(c => Place(insertion, degrees, scale, scale, basePoint, offset, c)).ToArray(), hand, handArea);
+        new(id, name, path, new[] { (x0, y0), (x1, y0), (x1, y1), (x0, y1) }.Select(c => Place(insertion, degrees, sx, sy, basePoint, offset, c)).ToArray(), hand, handArea);
 
     static readonly RotatedCase[] RotatedCases =
     {
-        Case("comedor", "Comedor", new[] { "R1" }, (60000, 0), 30, 1, (0, 0), (0, 0), 0, 0, 4000, 2000, (61232.0508, 1866.0254), 8),
-        Case("oficina", "Oficina", new[] { "M2[2,1]" }, (0, 30000), 60, 1, (0, 0), (1 * 3000, 2 * 2000), 0, 0, 2000, 1000, (-1897.1143, 35714.1016), 2),
-        Case("lavadero", "Lavadero", new[] { "L1" }, (0, 60000), 0, 1, (1000, 500), (0, 0), 2000, 1000, 5000, 3500, (2500, 61750), 7.5),
-        Case("garaje", "Garaje", new[] { "G1" }, (20000, 60000), 30, 2, (1000, 500), (0, 0), 2000, 1000, 5000, 3500, (22580.1270, 65531.0889), 30),
+        Case("comedor", "Comedor", new[] { "R1" }, (60000, 0), 30, 1, 1, (0, 0), (0, 0), 0, 0, 4000, 2000, (61232.0508, 1866.0254), 8),
+        Case("oficina", "Oficina", new[] { "M2[2,1]" }, (0, 30000), 60, 1, 1, (0, 0), (1 * 3000, 2 * 2000), 0, 0, 2000, 1000, (-1897.1143, 35714.1016), 2),
+        Case("lavadero", "Lavadero", new[] { "L1" }, (0, 60000), 0, 1, 1, (1000, 500), (0, 0), 2000, 1000, 5000, 3500, (2500, 61750), 7.5),
+        Case("garaje", "Garaje", new[] { "G1" }, (20000, 60000), 30, 2, 1.5, (1000, 500), (0, 0), 2000, 1000, 5000, 3500, (23017.6270, 64773.3168), 22.5),
     };
 
     static (double X, double Y) BoxCentre((double X, double Y)[] corners) =>
@@ -329,7 +332,18 @@ internal static class CadBriefBlockRegionTests
             Check(plainRoom is { Region: null, RegionAreaSquareMetres: null },
                 "in process default options: " + c.Id + " has no region", clip(JsonSerializer.Serialize(plainRoom, RoomJson)));
         }
-        // Containment follows the rotated outline, not the unrotated footprint nor a -30 degree rotation.
+        // Containment follows the rotated outline, not the unrotated footprint nor a -30 degree rotation. Self-check of the
+        // fixture: Despensa lies inside the unrotated and the -30 degree 4000 x 2000 rectangles at R1, outside the 30-degree one.
+        static bool InRot(double degrees, (double X, double Y) q)
+        {
+            var radians = -degrees * Math.PI / 180;
+            double dx = q.X - 60000, dy = q.Y;
+            double lx = dx * Math.Cos(radians) - dy * Math.Sin(radians), ly = dx * Math.Sin(radians) + dy * Math.Cos(radians);
+            return lx > 0 && lx < 4000 && ly > 0 && ly < 2000;
+        }
+        var despensaPoint = (X: 63500.0, Y: 200.0);
+        Check(InRot(0, despensaPoint) && InRot(-30, despensaPoint) && !InRot(30, despensaPoint),
+            "oracle: Despensa (63500, 200) is inside R1's unrotated and -30 degree rectangles and outside the 30-degree one", "");
         var despensa = included.Rooms.FirstOrDefault(x => x.Id == "despensa");
         var comedor = included.Rooms.FirstOrDefault(x => x.Id == "comedor");
         Check(despensa is { Region: null, RegionAreaSquareMetres: null } && comedor is { Region: not null } && included.Rooms.Count == 5,
@@ -340,7 +354,7 @@ internal static class CadBriefBlockRegionTests
         var withOutput = Path.Combine(scratch, "rotated-with.json");
         var flagged = cli(new[] { "cad-brief", input, withOutput, Flag });
         var withRooms = roomsOf(withOutput);
-        Check(flagged.Exit == 0 && withRooms == expectedWith && RotatedCases.All(c => expectedWith.Contains("\"InsertPath\":[\"" + c.Path[0] + "\"]", StringComparison.Ordinal)),
+        Check(flagged.Exit == 0 && withRooms == expectedWith && RotatedCases.All(c => withRooms.Contains("\"InsertPath\":[\"" + c.Path[0] + "\"]", StringComparison.Ordinal)),
             "with " + Flag + " draft.json rooms equal the in-process IncludeBlockRegions rooms (rotated insert, rotated MINSERT cell, base-point inserts)",
             r(flagged) + " rooms " + clip(withRooms));
 
