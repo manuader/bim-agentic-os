@@ -2233,19 +2233,28 @@ static class MirrorDriftLoopChecks
         Check(exited && exit == 0 && error.Length == 0, "the fake add-in exits 0 with an empty stderr", "exited " + exited + " exit " + exit + " " + error);
         // CLI process bytes unchanged by the seam: the real CLI (no seam) and the seam run print the very same line.
         Check(seam is { IsError: true, Forwarded: true } && seam.Line == cli.Out, "the seam run's line equals the CLI process's stdout line byte for byte on " + os, measured);
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
-        {
-            // P2-31/P2-32 facts reproduced in this section: pipe_io_error, field pipe_name, detail IOException, exit 1.
-            Check(cli.Exit == 1 && Status(cli.Out) == "failed" && Text(cli.Out, "code") == "pipe_io_error" && Text(cli.Out, "field") == "pipe_name" && Text(cli.Out, "detail") == "IOException",
-                "the CLI process's floor.create broken after " + MidArgsBreakBytes + " bytes: exit 1, pipe_io_error, field pipe_name, detail IOException on " + os, measured);
-            if (OperatingSystem.IsWindows())
-                Check(handed == MidArgsBreakBytes && handed < wireBytes && seamQueued == RevitCommandService.WriteProgressChunk && cliQueued == wireBytes - MidArgsBreakBytes,
-                    "windows: handed == the bytes the fake read < wire bytes (still writing); queued: one piece with the seam, the whole unread remainder for the CLI", measured);
-            else
-                Check(handed == wireBytes && cliQueued == wireBytes - MidArgsBreakBytes && seamQueued == cliQueued,
-                    "linux: every wire byte handed (write completed); queued: the whole unread remainder in both runs", measured);
-        }
-        else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS (probe)", measured);
+        // P2-31/P2-32 facts, and on macOS the P2-33 probe red (run 44582611952): pipe_io_error, field pipe_name, detail
+        // IOException, exit 1 for the CLI process on all three OSes.
+        Check(cli.Exit == 1 && Status(cli.Out) == "failed" && Text(cli.Out, "code") == "pipe_io_error" && Text(cli.Out, "field") == "pipe_name" && Text(cli.Out, "detail") == "IOException",
+            "the CLI process's floor.create broken after " + MidArgsBreakBytes + " bytes: exit 1, pipe_io_error, field pipe_name, detail IOException on " + os, measured);
+        // The fake's InBufferSize field (on Unix the receive buffer of its socket end).
+        var inBuffers = brokenLines.Select(x => Fields(x) is { Length: 4 } p && int.TryParse(p[2], NumberStyles.None, CultureInfo.InvariantCulture, out var b) ? b : -1).Distinct().ToArray();
+        var inBuffer = inBuffers.Length == 1 ? inBuffers[0] : -1;
+        if (OperatingSystem.IsWindows())
+            Check(handed == MidArgsBreakBytes && handed < wireBytes && seamQueued == RevitCommandService.WriteProgressChunk && cliQueued == wireBytes - MidArgsBreakBytes,
+                "windows: handed == the bytes the fake read < wire bytes (still writing); queued: one piece with the seam, the whole unread remainder for the CLI", measured);
+        else if (OperatingSystem.IsLinux())
+            Check(handed == wireBytes && cliQueued == wireBytes - MidArgsBreakBytes && seamQueued == cliQueued,
+                "linux: every wire byte handed (write completed); queued: the whole unread remainder in both runs", measured);
+        else if (OperatingSystem.IsMacOS())
+            // P2-33 probe red (run 44582611952): wire 39757 bytes, 13 reports, handed 12288 = the 4096 bytes the fake read
+            // plus its socket's 8192-byte receive buffer (InBufferSize, equal to a new Unix socket's send buffer); the next
+            // piece's Write was pending when the fake closed (27469 bytes never handed). The fake does not measure queued
+            // bytes on macOS (its FakePipeQueue answers -1 off Windows and Linux) → P2-34.
+            Check(inBuffer > 0 && inBuffer == UnixSendBuffer() && handed == MidArgsBreakBytes + inBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
+                && cliQueued == -1 && seamQueued == -1,
+                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize == a new Unix socket's send buffer) < wire bytes (still writing); queued not measured by the fake (-1) in both runs", measured);
+        else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
 
     // P2-25: the -ExternalEdits fake keeps at most the MirrorJournal retained-entry capacity (DefaultCapacity unless the
