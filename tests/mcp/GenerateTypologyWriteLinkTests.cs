@@ -35,7 +35,7 @@ internal static class GenerateTypologyWriteLinkTests
     static readonly (string Name, string Start, string? End, int Length, string Sha256)[] Moved =
     {
         ("Run", "    public static void Run(string[] args)\n", null, 940, "276bcd59f46d30af29780c5e66b623cb0648f4665defcfd1b6fe049b5bc9d6b0"),
-        ("Execute", "    static void Execute(string[] args)\n", null, 3785, "2736244ade44c149e18c2fa0f7ac409542b47ce9415d40b9511e71a7f2fc35c6"),
+        ("Execute", "    static void Execute(string[] args)\n", null, 3998, "21e46bf089ba67bcd27f5e4b22591a441eef013c1f1bb1ac6ca7cedbd9dfb14c"),
         ("PostWriteProbe", "    // P3-25 test seam: null in production.", "    internal static Action? PostWriteProbe { get; set; }\n", 329, "ab3fb49b7fcd00c4667f689724421a5851b78d2ecb590dbc7a4ec28978957e01"),
         ("Fail", "    static void Fail(string code, string? detail, string? skill = null)\n", null, 179, "88cfa4e44ffd48a4d8fc3cd9316af95aea3e8c64675c0142776c69a099609660"),
     };
