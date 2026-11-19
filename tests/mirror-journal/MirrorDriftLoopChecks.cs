@@ -1999,7 +1999,7 @@ static class MirrorDriftLoopChecks
     // floor.create as P2-31 (no seam: one Write), then RevitCommandService.Run sends that very envelope in process with the
     // seam set. Both are broken after 4096 bytes; the seam run's line equals the CLI's (same code, field and detail, exit 1
     // for the CLI), the seam's wire bytes equal WireLine plus Environment.NewLine, and the bytes handed when the fake
-    // closed are pinned per OS. Static pin: no production source assigns the seam, and it is null on the test thread
+    // closed are pinned per OS (see the measured values below). Static pin: no production source assigns the seam, and it is null on the test thread
     // before and after the run.
     const string WriteProgressFloor = "p2-32-floor";
     static readonly string[] WriteProgressRequestsBefore = { "p2-32-levels", "p2-32-floor-types" };
@@ -2100,8 +2100,25 @@ static class MirrorDriftLoopChecks
         Check(cli.Exit == 1 && Status(cli.Out) == "failed" && Text(cli.Out, "code") == "pipe_io_error" && Text(cli.Out, "field") == "pipe_name" && Text(cli.Out, "detail") == "IOException",
             "the CLI's floor.create broken after " + MidArgsBreakBytes + " bytes: exit 1, pipe_io_error, field pipe_name, detail IOException on " + os, R(cli));
         Check(seam is { IsError: true, Forwarded: true } && seam.Line == cli.Out, "the seam run's line equals the CLI's line (same failure, nothing changed by the seam)", measured + " | " + R(cli));
-        // Probe: report the measured bytes handed per OS before pinning them.
-        Check(false, "probe: bytes handed to the pipe when the fake closed on " + os, measured);
+        // P2-32: measured by deliberate probe reds (Windows run 44484659892, Linux run 44487717843). Windows (named pipe,
+        // inbound quota 0): the seam saw 4096 of 39727 bytes handed, exactly what the fake read; the fifth piece's Write
+        // was still pending when the fake closed (it failed about 200 ms after the last report), and the fake's queued
+        // count was 1024 for the seam run (that one pending piece) but 35631 for the CLI's single Write (its whole pending
+        // remainder): PeekNamedPipe counts a pending client write, so the P2-31 "queued == unread" on Windows was the
+        // client still writing. Linux (Unix socket): every byte was handed (39736 of 39736) about 200 ms before the close
+        // and both runs left 35640 bytes queued in the fake's socket: the client's write had completed, nothing was still
+        // being written. Other OSes have not been probed (macOS does not run mirror-journal) and fail here until one is.
+        long Queued(string line) { var p = line.Split(':'); return p.Length == 4 && long.TryParse(p[3], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var q) ? q : long.MinValue; }
+        var cliQueued = brokenLines.Length == 2 ? Queued(brokenLines[0]) : long.MinValue;
+        var seamQueued = brokenLines.Length == 2 ? Queued(brokenLines[1]) : long.MinValue;
+        if (OperatingSystem.IsWindows())
+            Check(handed == MidArgsBreakBytes && handed < wireBytes && seamQueued == RevitCommandService.WriteProgressChunk && cliQueued == wireBytes - MidArgsBreakBytes,
+                "windows: when the fake closed the client had handed only the " + MidArgsBreakBytes + " bytes the fake read (written < wire bytes: still writing); the fake's queued count is the pending write (one "
+                + RevitCommandService.WriteProgressChunk + "-byte piece with the seam, the whole remainder for the CLI's single Write)", measured);
+        else if (OperatingSystem.IsLinux())
+            Check(handed == wireBytes && cliQueued == wireBytes - MidArgsBreakBytes && seamQueued == cliQueued,
+                "linux: the client had handed every wire byte before the fake closed (its write completed) and the unread remainder sat queued in the fake's socket in both runs", measured);
+        else Check(false, os + ": the bytes handed at a mid-args break have not been observed by a probe on this OS", measured);
     }
 
     // P2-25: the -ExternalEdits fake keeps at most the MirrorJournal retained-entry capacity (DefaultCapacity unless the
