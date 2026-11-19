@@ -55,8 +55,7 @@ namespace Bim.Cli;
 // Success: the file is written and stdout is {"status":"succeeded","scope":"proposal_only","persisted":false,
 // "pipeline_status":"ranked"|"infeasible","pack","code_pack" (the code pack used),"project_id","alternatives":n,"accepted":k,"bytes":n,
 // "sha256":lower-case hex of the file}; exit 0. An infeasible result is a result: it is written with its rejections.
-// Failures print one {"status":"failed","code":...[,"detail"]} line, exit 1 and leave no output file (except the
-// internal error below once GltfExporter.WriteNew has succeeded):
+// Failures print one {"status":"failed","code":...[,"detail"]} line, exit 1 and leave no output file:
 //   generate_typology_usage (detail: the usage text), output_* (GltfExportCommand.OutputProblem with .json, checked
 //   before the request is read; output_exists and output_io_error at the write), input_* (BoundedInput, the request),
 //   generate_typology_request_invalid (detail: the offending member), generate_typology_repository_not_found,
@@ -65,8 +64,7 @@ namespace Bim.Cli;
 //   manifest names another pack; "kind" when the code pack is not a code skill), generate_typology_skill_unavailable / generate_typology_skill_invalid (an extra skill;
 //   detail as for the packs, plus "skill": the extra id), generate_typology_refused (with "refusals":[{"code","subject","detail"}] =
 //   TypologyPipelineResult.Refusals in order, no detail), generate_typology_internal_error (stderr: exception type, message;
-//   P3-24: an unexpected exception after GltfExporter.WriteNew succeeded leaves the written file in place, a
-//   documented gap).
+//   P3-25: an unexpected exception after GltfExporter.WriteNew succeeded removes the just-written file again).
 // Composed-mode stdout adds "rules":"composed" and "skills":[the extra ids as given].
 // Precedence: usage, output path, request read, request parse, repository, typology pack, code pack, extra skills (in
 // request order), pipeline, write.
@@ -118,8 +116,8 @@ internal static class GenerateTypologyCommand
         // P3-24: any other exception in Execute (for example in Generate's parse / pack-load stretch, outside its guarded
         // pipeline block; forced in tests through the P3-23 seam) prints the typed {"status":"failed","code":InternalError}
         // line with IntentPlan's stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. Before the
-        // write no output file exists; an exception after GltfExporter.WriteNew succeeded leaves the written file in place
-        // (documented gap). The guarded block's own failures already arrive above as Refusal(InternalError) with their
+        // write no output file exists; P3-25: Execute removes the file it just wrote before an exception after
+        // GltfExporter.WriteNew succeeded reaches this catch. The guarded block's own failures already arrive above as Refusal(InternalError) with their
         // diagnostic written once.
         catch (Exception error) { IntentPlan.Internal("generate-typology", error).Print(); }
     }
@@ -170,44 +168,58 @@ internal static class GenerateTypologyCommand
         try { GltfExporter.WriteNew(bytes, output); }
         catch (GltfExportException error) { throw new Refusal(error.Code); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
-        var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-        var pipelineStatus = result.Status == PrototypePipelineStatus.Ranked ? "ranked" : "infeasible";
-        var projectId = parsed.ProjectId.ToString("D", CultureInfo.InvariantCulture);
-        var acceptedCount = result.Alternatives.Count(alternative => alternative.Accepted);
-        if (parsed.Composed)
+        // P3-25: from here on the file exists and is this run's own (WriteNew created it exclusively, so a pre-existing
+        // output was already refused as output_exists above and is never reached). Any exception before the success line
+        // is printed removes the just-written file again, then propagates unchanged to Run's catch-all (the typed
+        // InternalError line with its diagnostic once). A failed removal is ignored: the typed line is still printed.
+        try
         {
+            PostWriteProbe?.Invoke();
+            var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            var pipelineStatus = result.Status == PrototypePipelineStatus.Ranked ? "ranked" : "infeasible";
+            var projectId = parsed.ProjectId.ToString("D", CultureInfo.InvariantCulture);
+            var acceptedCount = result.Alternatives.Count(alternative => alternative.Accepted);
+            if (parsed.Composed)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    status = "succeeded",
+                    scope = "proposal_only",
+                    persisted = false,
+                    pipeline_status = pipelineStatus,
+                    rules = "composed",
+                    pack = parsed.Pack,
+                    code_pack = parsed.CodePack,
+                    skills = parsed.Skills ?? Array.Empty<string>(),
+                    project_id = projectId,
+                    alternatives = result.Alternatives.Count,
+                    accepted = acceptedCount,
+                    bytes = bytes.LongLength,
+                    sha256,
+                }));
+                return;
+            }
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 status = "succeeded",
                 scope = "proposal_only",
                 persisted = false,
                 pipeline_status = pipelineStatus,
-                rules = "composed",
                 pack = parsed.Pack,
                 code_pack = parsed.CodePack,
-                skills = parsed.Skills ?? Array.Empty<string>(),
                 project_id = projectId,
                 alternatives = result.Alternatives.Count,
                 accepted = acceptedCount,
                 bytes = bytes.LongLength,
                 sha256,
             }));
-            return;
         }
-        Console.WriteLine(JsonSerializer.Serialize(new
+        catch (Exception)
         {
-            status = "succeeded",
-            scope = "proposal_only",
-            persisted = false,
-            pipeline_status = pipelineStatus,
-            pack = parsed.Pack,
-            code_pack = parsed.CodePack,
-            project_id = projectId,
-            alternatives = result.Alternatives.Count,
-            accepted = acceptedCount,
-            bytes = bytes.LongLength,
-            sha256,
-        }));
+            try { File.Delete(output); }
+            catch (Exception removal) when (removal is IOException or UnauthorizedAccessException) { }
+            throw;
+        }
     }
 
     // The request file through BoundedInput (8 MiB cap); its input_* code is the refusal.
@@ -391,6 +403,11 @@ internal static class GenerateTypologyCommand
     // so a non-refusal exception arises in Generate before the guarded pipeline block (the parse / pack-load stretch);
     // it is reset after the test.
     internal static Action? UnguardedWorkProbe { get; set; }
+
+    // P3-25 test seam: null in production. tests/cli/GenerateTypologyTests.cs section 10 sets it (by reflection) to an
+    // Action that throws, so a non-refusal exception arises in Execute right after GltfExporter.WriteNew succeeded; it is
+    // reset after the test.
+    internal static Action? PostWriteProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
