@@ -24,10 +24,9 @@ using System.Text.RegularExpressions;
 //   4. A self-test of the link and use checkers on synthetic csproj and source texts.
 // The plan_layouts MCP bytes and the plan-layouts CLI bytes are pinned by tests/mcp/PlanLayoutsToolTests.cs and
 // tests/cli/PlanLayoutsTests.cs (unchanged).
-// Remaining (follow-up, not this task): Bim.Mcp.csproj still compiles the writer verb GenerateCommand.cs
-// (generate-prototypes) in full, so its Run path and GltfExporter.WriteNew stay in the server binary; the NOTE line below
-// lists the compiled sources still calling it. P4-26 moved the generate-typology write path into GenerateTypologyWrite.cs,
-// which the server does not compile (tests/mcp/GenerateTypologyWriteLinkTests.cs).
+// P4-26 moved the generate-typology write path into GenerateTypologyWrite.cs and P4-27 the generate-prototypes write path
+// into GenerateWrite.cs, neither compiled by the server, so the NOTE line below lists no compiled source calling
+// GltfExporter.WriteNew (the empty list is asserted by tests/mcp/GenerateWriteLinkTests.cs).
 internal static class PlanLayoutsWriteLinkTests
 {
     static readonly Regex ForbiddenUse = new(@"\bPlanLayoutsCommand\s*\.\s*(?:Run|Execute|Fail)\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?PlanLayoutsCommand\b",
@@ -163,7 +162,8 @@ internal static class PlanLayoutsWriteLinkTests
         Check(users.Length == 0, "Bim.Mcp.csproj: no compiled source uses PlanLayoutsCommand.Run / Execute / Fail [" + string.Join(", ", users) + "]");
         var remaining = compiledSources.Where(path => Regex.IsMatch(DocUpdateLinkTests.CodeOf(File.ReadAllText(path)), @"\bGltfExporter\s*\.\s*WriteNew\s*\("))
             .Select(path => Path.GetFileName(path)).Order(StringComparer.Ordinal).ToArray();
-        Console.WriteLine("NOTE plan-layouts write link: Bim.Mcp.csproj still compiles GltfExporter.WriteNew in [" + string.Join(", ", remaining) + "] (follow-up rows)");
+        Console.WriteLine("NOTE plan-layouts write link: sources compiled by Bim.Mcp.csproj that call GltfExporter.WriteNew: [" + string.Join(", ", remaining) + "]"
+            + (remaining.Length == 0 ? " (none: the list is empty)" : ""));
         Check(!remaining.Contains("PlanLayoutsCommand.cs", StringComparer.OrdinalIgnoreCase) && !remaining.Contains("PlanLayoutsWrite.cs", StringComparer.OrdinalIgnoreCase),
             "no plan-layouts source compiled by Bim.Mcp.csproj calls GltfExporter.WriteNew [" + string.Join(", ", remaining) + "]");
 

@@ -59,6 +59,7 @@ internal static class GenerateWriteLinkTests
         ForbiddenUse.Matches(DocUpdateLinkTests.CodeOf(source)).Select(m => Regex.Replace(m.Value, @"\s+", " ")).ToArray();
 
     // The member references (MemberRef rows) of an assembly whose parent is the type reference ns.type and whose name is member.
+    // Assumes ns.type is defined in another assembly (Bim.Gltf), so a call to it is a MemberRef whose parent is a TypeRef.
     internal static int MemberRefs(string assemblyPath, string ns, string type, string member)
     {
         using var stream = File.OpenRead(assemblyPath);
