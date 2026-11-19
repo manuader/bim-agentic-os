@@ -24,6 +24,9 @@ using Bim.Generative;
 //      is the typed generate_prototypes_internal_error line, diagnostic once, exit 1, no file (UnguardedStage below).
 //   7. P7-26: a non-refusal exception after GltfExporter.WriteNew succeeded (forced in process through
 //      GenerateCommand.PostWriteStageProbe) is the same typed line, and the just-written file is deleted (PostWriteStage).
+//   8. P7-27: when that cleanup delete itself fails (forced in process through GenerateCommand.PostWriteDeleteProbe), the
+//      typed line and exit 1 are unchanged, stderr adds one line naming the file left behind before the original
+//      exception's diagnostic (once), and a delete exception never replaces the original (PostWriteDeleteStage).
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -437,6 +440,7 @@ internal static class GeneratePrototypesTests
 
         UnguardedStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
         PostWriteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
+        PostWriteDeleteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
     }
 
     // ---- 7. P7-26: a non-refusal exception after GltfExporter.WriteNew succeeded leaves no output file ----
@@ -746,6 +750,414 @@ internal static class GeneratePrototypesTests
         }
         if (!sawCommand) problems.Add("interfaces/cli/GenerateCommand.cs not found");
         if (total != 2) problems.Add("PostWriteStageProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
+        return problems;
+    }
+
+    // ---- 8. P7-27: a failed post-write cleanup delete is reported on stderr; the original exception is still the one reported ----
+    // GenerateCommand.Run of the real Release CLI assembly (reflection, so a missing seam is an assertion failure), in
+    // process, with the P7-26 seam PostWriteStageProbe throwing the original exception and the P7-27 test seam
+    // PostWriteDeleteProbe (Action<string>, null in production; the post-write catch calls it once with the output path
+    // right before File.Delete(output)) throwing an IOException, an UnauthorizedAccessException or a non-IO exception: the
+    // delete never runs, so the just-written file (the in-process pipeline's exact bytes for the explicit-id request) is
+    // left on disk; stdout is still only the typed {"status":"failed","code":"generate_prototypes_internal_error"} line,
+    // exit 1, nothing escapes Run, and stderr is the documented line
+    //   generate-prototypes: could not delete partial output: <output path as given>
+    // (GenerateCommand.PartialOutputLeft + path) followed by the IntentPlan diagnostic of the ORIGINAL exception exactly
+    // once (the delete exception's type and message appear nowhere). A delete probe that does not throw leaves section 7's
+    // bytes (file deleted, stderr only the diagnostic); with the delete probe set, success and the sampled refusals never
+    // call it and equal the real process. Static: PostWriteDeleteProbe is declared once, never assigned under interfaces/,
+    // invoked once inside Execute as the first statement of a try { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }
+    // that is the first statement of the catch (Exception) following PostWriteStageProbe's try, directly followed by an
+    // unfiltered catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }
+    // without a throw, then throw; as the handler's last statement (brace-matched, with self-tests). Review fix: a stderr
+    // that throws on the cleanup line (IOException) is swallowed too, so the original exception is still the one reported
+    // and its diagnostic the only recorded stderr line. Not named PostWriteProbe (P3-25's pin).
+    static void PostWriteDeleteStage(string root, string scratch, string cliDll, byte[] expected, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-27 " + name, detail);
+        const System.Reflection.BindingFlags Any = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        const string Left = "generate-prototypes: could not delete partial output: ";
+        var nl = Environment.NewLine;
+        static (Exception? Thrown, string Out, string Err, int Exit) Quiet(Func<Exception?> run)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            using var output = new StringWriter(CultureInfo.InvariantCulture);
+            using var error = new StringWriter(CultureInfo.InvariantCulture);
+            try
+            {
+                Console.SetOut(output);
+                Console.SetError(error);
+                Environment.ExitCode = 0;
+                var thrown = run();
+                return (thrown, output.ToString(), error.ToString(), Environment.ExitCode);
+            }
+            finally
+            {
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+                Environment.ExitCode = previousExit;
+            }
+        }
+        static string Q((Exception? Thrown, string Out, string Err, int Exit) q) => "out [" + q.Out + "] err [" + q.Err + "] exit " + q.Exit.ToString(CultureInfo.InvariantCulture)
+            + (q.Thrown is { } t ? " threw " + t.GetType().FullName + ": " + t.Message : "");
+        static (int Exit, string Out, string Err) AsProcess((Exception? Thrown, string Out, string Err, int Exit) q)
+        {
+            var text = q.Out;
+            if (text.EndsWith('\n')) text = text[..^1];
+            if (text.EndsWith('\r')) text = text[..^1];
+            return (q.Exit, text, q.Err.ReplaceLineEndings(" ").Trim());
+        }
+        static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+        var inputs = Path.Combine(scratch, "p7-27-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(inputs);
+        try
+        {
+            var counter = 0;
+            string Input(string name, string content) { var path = Path.Combine(inputs, name); File.WriteAllText(path, content, new UTF8Encoding(false)); return path; }
+            string Output() => Path.Combine(inputs, "out-" + (++counter).ToString(CultureInfo.InvariantCulture) + ".json");
+            const string good = "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"seed\":0,\"project_id\":\"00000000-0000-4000-8000-0000000007a9\"}";
+            var request = Input("request.json", good);
+            var derivedRequest = Input("derived.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2}");
+            var pinned = Hex(expected);
+
+            System.Reflection.Assembly? assembly = null;
+            try { assembly = System.Reflection.Assembly.LoadFrom(cliDll); }
+            catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+            var type = assembly?.GetType("Bim.Cli.GenerateCommand");
+            var run = type?.GetMethod("Run", Any, new[] { typeof(string[]) });
+            var postWrite = type?.GetProperty("PostWriteStageProbe", Any);
+            var deleteSeam = type?.GetProperty("PostWriteDeleteProbe", Any);
+            var unguarded = type?.GetProperty("UnguardedStageProbe", Any);
+            var guarded = type?.GetProperty("GuardedWorkProbe", Any);
+            var leftField = type?.GetField("PartialOutputLeft", Any);
+            static bool Seam(System.Reflection.PropertyInfo? p, Type t) => p is not null && p.PropertyType == t && p.CanWrite && p.CanRead;
+            Check(run is not null && Seam(postWrite, typeof(Action)) && Seam(deleteSeam, typeof(Action<string>)) && Seam(unguarded, typeof(Action)) && Seam(guarded, typeof(Action)),
+                "Run(string[]), the settable static Action<string> seam PostWriteDeleteProbe and the Action seams PostWriteStageProbe / UnguardedStageProbe / GuardedWorkProbe found in the Release CLI",
+                (run is null ? "<missing Run> " : "") + (deleteSeam?.PropertyType.FullName ?? "<missing PostWriteDeleteProbe>") + " " + (postWrite?.PropertyType.FullName ?? "<missing PostWriteStageProbe>"));
+            if (run is null || postWrite is null || deleteSeam is null || unguarded is null || guarded is null || !Seam(deleteSeam, typeof(Action<string>)) || !Seam(postWrite, typeof(Action))) return;
+            Check(leftField is { IsLiteral: true } && leftField.FieldType == typeof(string) && (string?)leftField.GetRawConstantValue() == Left,
+                "GenerateCommand.PartialOutputLeft is the documented constant \"" + Left + "\"", leftField is { IsLiteral: true } ? "[" + leftField.GetRawConstantValue() + "]" : "<missing const>");
+            System.Reflection.MethodInfo runMethod = run;
+            System.Reflection.PropertyInfo probe = postWrite;
+            System.Reflection.PropertyInfo deleteProbe = deleteSeam;
+            System.Reflection.PropertyInfo unguardedProbe = unguarded;
+            System.Reflection.PropertyInfo guardedProbe = guarded;
+            Exception? Invoke(string[]? args)
+            {
+                try { runMethod.Invoke(null, new object?[] { args }); return null; }
+                catch (System.Reflection.TargetInvocationException error) { return error.InnerException; }
+            }
+            bool AllNull() => probe.GetValue(null) is null && deleteProbe.GetValue(null) is null && unguardedProbe.GetValue(null) is null && guardedProbe.GetValue(null) is null;
+            Check(AllNull(), "the generate-prototypes seams (PostWriteDeleteProbe, PostWriteStageProbe, UnguardedStageProbe, GuardedWorkProbe) are null unless a test sets them");
+            (Exception? Thrown, string Out, string Err, int Exit) WithSeams(Action? stage, Action<string>? delete, string[] args) => Quiet(() =>
+            {
+                probe.SetValue(null, stage);
+                deleteProbe.SetValue(null, delete);
+                try { return Invoke(args); }
+                finally { probe.SetValue(null, null); deleteProbe.SetValue(null, null); }
+            });
+
+            var failure = new InvalidOperationException("boom generate-prototypes P7-27 original post-write");
+            var envelope = Bim.Cli.IntentPlan.Internal("generate-prototypes", failure);
+            Check(envelope.Line == "{\"status\":\"failed\",\"code\":\"generate_prototypes_internal_error\"}" && envelope.Exit == 1
+                && envelope.Diagnostic == "generate-prototypes internal error: System.InvalidOperationException: boom generate-prototypes P7-27 original post-write",
+                "fixture: IntentPlan.Internal(\"generate-prototypes\", e) is the literal typed line, exit 1 and diagnostic", envelope.ToString());
+
+            // The cleanup delete forced to fail: the file stays, stderr names it once, the original exception is the one reported.
+            void ExpectLeft(string label, string requestPath, string? pin, Exception removal)
+            {
+                var output = Output();
+                var stageCalls = 0;
+                var deletes = new List<string>();
+                byte[]? seenAtDelete = null;
+                var forced = WithSeams(() => { stageCalls++; throw failure; }, path =>
+                {
+                    deletes.Add(path);
+                    seenAtDelete = File.Exists(output) ? File.ReadAllBytes(output) : null;
+                    throw removal;
+                }, new[] { "generate-prototypes", requestPath, output });
+                Check(AllNull(), label + ": both seams are reset to null after the forced run");
+                Check(stageCalls == 1 && deletes.Count == 1 && deletes[0] == output && seenAtDelete is { Length: > 0 } && (pin is null || Hex(seenAtDelete) == pin),
+                    label + ": the delete probe ran once, with the output path as given, after the file was written" + (pin is null ? "" : " (the in-process pipeline's bytes)"),
+                    "stage " + stageCalls.ToString(CultureInfo.InvariantCulture) + " deletes [" + string.Join(", ", deletes) + "] seen " + (seenAtDelete is null ? "<no file>" : Hex(seenAtDelete)));
+                Check(forced.Thrown is null, label + ": neither the original nor the delete exception escapes Run to Program's generic catch", Q(forced));
+                Check(forced.Out == envelope.Line + nl, label + ": stdout is still only the typed generate_prototypes_internal_error line", Q(forced));
+                Check(forced.Err == Left + output + nl + envelope.Diagnostic + nl,
+                    label + ": stderr is the documented cleanup line naming the output path, then the ORIGINAL exception's diagnostic exactly once", Q(forced));
+                Check(!forced.Err.Contains(removal.Message, StringComparison.Ordinal) && !forced.Err.Contains(removal.GetType().FullName!, StringComparison.Ordinal)
+                    && !forced.Out.Contains(removal.Message, StringComparison.Ordinal),
+                    label + ": the delete exception never replaces the original (its type and message appear nowhere)", Q(forced));
+                var left = File.Exists(output) ? File.ReadAllBytes(output) : null;
+                Check(forced.Exit == 1 && left is { Length: > 0 } && (pin is null || Hex(left) == pin),
+                    label + ": exit 1 and the output file the stderr line names is left behind" + (pin is null ? "" : " with the in-process pipeline's bytes"),
+                    Q(forced) + (left is null ? " <no file>" : " left " + Hex(left)));
+                if (File.Exists(output)) File.Delete(output);
+            }
+            ExpectLeft("IOException on delete", request, pinned, new IOException("p7-27 delete io failure"));
+            ExpectLeft("UnauthorizedAccessException on delete", request, pinned, new UnauthorizedAccessException("p7-27 delete access failure"));
+            ExpectLeft("non-IO ArgumentException on delete", request, pinned, new ArgumentException("p7-27 delete non-io failure"));
+            ExpectLeft("non-IO NotSupportedException on delete, derived project id", derivedRequest, null, new NotSupportedException("p7-27 delete not supported"));
+
+            // The cleanup line itself fails (stderr throws IOException on it): the original exception is still the one reported.
+            {
+                var output = Output();
+                var deletes = 0;
+                using var recorder = new ReportRejectingWriter(Left);
+                var previousOut = Console.Out;
+                var previousError = Console.Error;
+                var previousExit = Environment.ExitCode;
+                using var stdout = new StringWriter(CultureInfo.InvariantCulture);
+                Exception? thrown;
+                int exit;
+                try
+                {
+                    Console.SetOut(stdout);
+                    Console.SetError(recorder);
+                    Environment.ExitCode = 0;
+                    probe.SetValue(null, (Action)(() => throw failure));
+                    deleteProbe.SetValue(null, (Action<string>)(_ => { deletes++; throw new IOException("p7-27 delete io failure"); }));
+                    try { thrown = Invoke(new[] { "generate-prototypes", request, output }); }
+                    finally { probe.SetValue(null, null); deleteProbe.SetValue(null, null); }
+                    exit = Environment.ExitCode;
+                }
+                finally
+                {
+                    Console.SetOut(previousOut);
+                    Console.SetError(previousError);
+                    Environment.ExitCode = previousExit;
+                }
+                var detail = "out [" + stdout + "] recorded [" + string.Join(" | ", recorder.Lines) + "] partial [" + recorder.Partial + "] rejected " + recorder.Rejected.ToString(CultureInfo.InvariantCulture)
+                    + " exit " + exit.ToString(CultureInfo.InvariantCulture) + (thrown is { } t ? " threw " + t.GetType().FullName + ": " + t.Message : "");
+                Check(AllNull() && thrown is null, "a stderr that throws on the cleanup line: nothing escapes Run and the seams are reset", detail);
+                Check(deletes == 1 && recorder.Rejected == 1 && stdout.ToString() == envelope.Line + nl && exit == 1,
+                    "a stderr that throws on the cleanup line: the line was attempted once, stdout is still only the typed line, exit 1", detail);
+                Check(recorder.Lines.Count == 1 && recorder.Lines[0] == envelope.Diagnostic && recorder.Partial.Length == 0,
+                    "a stderr that throws on the cleanup line: the recorded stderr is exactly the ORIGINAL exception's diagnostic once", detail);
+                if (File.Exists(output)) File.Delete(output);
+            }
+
+            // A delete probe that does not throw: section 7's bytes (file deleted, stderr only the diagnostic).
+            {
+                var output = Output();
+                var deletes = new List<string>();
+                var quiet = WithSeams(() => throw failure, path => deletes.Add(path), new[] { "generate-prototypes", request, output });
+                Check(quiet.Thrown is null && deletes.Count == 1 && deletes[0] == output && quiet.Out == envelope.Line + nl && quiet.Err == envelope.Diagnostic + nl && quiet.Exit == 1
+                    && !File.Exists(output) && !Directory.Exists(output),
+                    "a delete probe that does not throw keeps section 7's bytes: typed line, diagnostic once, no cleanup line, exit 1, file deleted",
+                    Q(quiet) + " deletes " + deletes.Count.ToString(CultureInfo.InvariantCulture) + (File.Exists(output) ? " <file left>" : ""));
+            }
+            Check(AllNull(), "the seams are null after the non-throwing delete probe run");
+
+            // Success with the delete probe set: it is never called; the file and stdout are the real process's.
+            foreach (var (label, requestPath, pin) in new (string Label, string Request, string? Pin)[] { ("explicit project id", request, pinned), ("derived project id", derivedRequest, null) })
+            {
+                var inOut = Output();
+                var deleteCalls = 0;
+                var inProcess = WithSeams(null, _ => { deleteCalls++; throw new IOException("p7-27 never"); }, new[] { "generate-prototypes", requestPath, inOut });
+                var processOut = Output();
+                var process = cli(new[] { "generate-prototypes", requestPath, processOut });
+                var inBytes = File.Exists(inOut) ? File.ReadAllBytes(inOut) : Array.Empty<byte>();
+                var processBytes = File.Exists(processOut) ? File.ReadAllBytes(processOut) : Array.Empty<byte>();
+                Check(inProcess.Thrown is null && deleteCalls == 0 && inProcess.Exit == 0 && inProcess.Err.Length == 0 && inBytes.Length > 0 && (pin is null || Hex(inBytes) == pin)
+                    && inBytes.SequenceEqual(processBytes) && process.Exit == 0 && AsProcess(inProcess) == process && process.Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal),
+                    "with the delete probe set, the " + label + " success never calls it and writes the real process's file and stdout",
+                    Q(inProcess) + " deletes " + deleteCalls.ToString(CultureInfo.InvariantCulture) + " vs process " + process.Out + " " + process.Err);
+            }
+
+            // Refusals (every one before the write) with both seams set call neither and print the real process's bytes.
+            var existing = Output();
+            var sentinel = new UTF8Encoding(false).GetBytes("{\"sentinel\":\"p7-27\"}");
+            File.WriteAllBytes(existing, sentinel);
+            var stamp = new DateTime(2004, 5, 6, 7, 8, 9, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(existing, stamp);
+            var refusals = new (string Label, Func<string, string[]> Args)[]
+            {
+                ("usage", output => new[] { "generate-prototypes", request }),
+                ("output extension", output => new[] { "generate-prototypes", request, output + ".txt" }),
+                ("output exists", output => new[] { "generate-prototypes", request, existing }),
+                ("missing request", output => new[] { "generate-prototypes", Path.Combine(inputs, "missing.json"), output }),
+                ("malformed JSON", output => new[] { "generate-prototypes", Input("json.json", "{"), output }),
+                ("unknown pack", output => new[] { "generate-prototypes", Input("pack.json", good[..^1] + ",\"pack\":\"xx.no-such.pack\"}"), output }),
+                ("pipeline refusal", output => new[] { "generate-prototypes", Input("refused.json", good.Replace("\"typology\":2", "\"typology\":4", StringComparison.Ordinal)), output }),
+            };
+            foreach (var (label, argsOf) in refusals)
+            {
+                var a = Output();
+                var b = Output();
+                var calls = 0;
+                var mine = WithSeams(() => { calls++; throw failure; }, _ => { calls++; throw new IOException("p7-27 never"); }, argsOf(a));
+                var theirs = cli(argsOf(b));
+                Check(mine.Thrown is null && calls == 0 && mine.Exit == 1 && theirs.Exit == 1 && AsProcess(mine) == theirs && mine.Err.Length == 0
+                    && !File.Exists(a) && !File.Exists(b) && !File.Exists(a + ".txt") && !File.Exists(b + ".txt")
+                    && mine.Out.StartsWith("{\"status\":\"failed\",\"code\":\"", StringComparison.Ordinal) && !mine.Out.Contains("internal_error", StringComparison.Ordinal),
+                    "with both seams set, the " + label + " refusal calls neither and equals the real process bytes", Q(mine) + " calls " + calls.ToString(CultureInfo.InvariantCulture) + " vs process " + theirs.Out + " " + theirs.Err);
+            }
+            Check(AllNull() && File.ReadAllBytes(existing).SequenceEqual(sentinel) && File.GetLastWriteTimeUtc(existing) == stamp,
+                "the seams are null after the refusal sample and the existing output is byte- and mtime-identical");
+
+            // Static: the delete seam over interfaces/**/*.cs, comments and literals stripped, plus self-tests of the checker.
+            var interfaces = Path.Combine(root, "interfaces");
+            var sources = Directory.GetFiles(interfaces, "*.cs", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
+                .Select(file => (Path.GetRelativePath(root, file).Replace('\\', '/'), File.ReadAllText(file))).ToArray();
+            var seam = PostWriteDeleteSeamProblems(sources);
+            Check(seam.Count == 0, "interfaces/**/*.cs names PostWriteDeleteProbe only in its declaration and one ?.Invoke(output) right before File.Delete(output) in the post-write catch (Exception), "
+                + "whose unfiltered catch (Exception) writes Console.Error.WriteLine(PartialOutputLeft + output) without a throw, then throw; ends the handler; never assigned [" + string.Join("; ", seam) + "]");
+            const string Path27 = "interfaces/cli/GenerateCommand.cs";
+            const string Decls = "internal const string PartialOutputLeft = \"x\"; internal static Action<string>? PostWriteDeleteProbe { get; set; }";
+            static string Command(string handler, string extra = "", string decls = Decls) =>
+                "internal static class GenerateCommand { static void Execute(string[] args) { GltfExporter.WriteNew(bytes, output); try { PostWriteStageProbe?.Invoke(); Console.WriteLine(x); } catch (Exception) { "
+                + handler + " } } " + decls + " " + extra + " }";
+            const string Inner = "try { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }";
+            const string Report = " catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }";
+            const string Good = Inner + Report + " throw;";
+            Check(PostWriteDeleteSeamProblems(new[] { (Path27, Command(Good)) }).Count == 0
+                && PostWriteDeleteSeamProblems(new[] { (Path27, Command("try\n { PostWriteDeleteProbe ?. Invoke ( output ) ; // PostWriteDeleteProbe = null; }\n File . Delete ( output ) ; }\n catch ( Exception )\n"
+                    + " { try { /* throw; } */ Console . Error . WriteLine ( PartialOutputLeft + output ) ; }\n catch ( Exception ) { /* } throw; { */ } }\n throw ;", "static string S = \"} throw; { catch\";")) }).Count == 0,
+                "self-test: the delete seam checker accepts the real shape at any spacing, ignoring comments and string literals (braces and throw in them too)");
+            var evasions = new (string Label, (string, string)[] Files)[]
+            {
+                ("an assignment in the command", new[] { (Path27, Command(Good, "static void Set() { PostWriteDeleteProbe = _ => { }; }")) }),
+                ("an assignment in another interfaces file", new[] { (Path27, Command(Good)), ("interfaces/mcp/McpServer.cs", "class S { void X() { GenerateCommand.PostWriteDeleteProbe = null; } }") }),
+                ("a compound assignment", new[] { (Path27, Command(Good)), ("interfaces/mcp/McpServer.cs", "class S { void X() { GenerateCommand.PostWriteDeleteProbe ??= null; } }") }),
+                ("the declaration missing", new[] { (Path27, Command(Good, decls: "internal const string PartialOutputLeft = \"x\";")) }),
+                ("an Action declaration", new[] { (Path27, Command(Good, decls: "internal const string PartialOutputLeft = \"x\"; internal static Action? PostWriteDeleteProbe { get; set; }")) }),
+                ("the constant missing", new[] { (Path27, Command(Good, decls: "internal static Action<string>? PostWriteDeleteProbe { get; set; }")) }),
+                ("the command file missing", new[] { ("interfaces/cli/Other.cs", Command(Good)) }),
+                ("the invoke missing", new[] { (Path27, Command("try { File.Delete(output); }" + Report + " throw;")) }),
+                ("a second invoke", new[] { (Path27, Command("PostWriteDeleteProbe?.Invoke(output); " + Good)) }),
+                ("the invoke after File.Delete", new[] { (Path27, Command("try { File.Delete(output); PostWriteDeleteProbe?.Invoke(output); }" + Report + " throw;")) }),
+                ("the invoke with another argument", new[] { (Path27, Command("try { PostWriteDeleteProbe?.Invoke(args[2]); File.Delete(output); }" + Report + " throw;")) }),
+                ("the invoke outside Execute", new[] { (Path27, Command("try { File.Delete(output); }" + Report + " throw;", "static void Other() { try { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }" + Report + " }")) }),
+                ("the delete try not first in the handler", new[] { (Path27, Command("Console.Error.WriteLine(x); " + Good)) }),
+                ("the delete try in a catch not after the stage probe's try", new[] { (Path27,
+                    "internal static class GenerateCommand { static void Execute(string[] args) { GltfExporter.WriteNew(bytes, output); try { Console.WriteLine(x); } catch (Exception) { " + Good + " } } " + Decls + " }") }),
+                ("a filtered report catch", new[] { (Path27, Command(Inner + " catch (Exception removal) when (removal is IOException) { Console.Error.WriteLine(PartialOutputLeft + output); } throw;")) }),
+                ("an IOException-only report catch", new[] { (Path27, Command(Inner + " catch (IOException) { Console.Error.WriteLine(PartialOutputLeft + output); } throw;")) }),
+                ("a report catch that rethrows", new[] { (Path27, Command(Inner + " catch (Exception) { Console.Error.WriteLine(PartialOutputLeft + output); throw; } throw;")) }),
+                ("a report catch that throws the delete exception", new[] { (Path27, Command(Inner + " catch (Exception removal) { Console.Error.WriteLine(PartialOutputLeft + output); throw removal; } throw;")) }),
+                ("a report catch without the stderr line", new[] { (Path27, Command(Inner + " catch (Exception) { } throw;")) }),
+                ("an unwrapped report line", new[] { (Path27, Command(Inner + " catch (Exception) { Console.Error.WriteLine(PartialOutputLeft + output); } throw;")) }),
+                ("a throw in the report line's inner catch", new[] { (Path27, Command(Inner + " catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { throw; } } throw;")) }),
+                ("a filtered inner catch around the report line", new[] { (Path27, Command(Inner + " catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (IOException) { } } throw;")) }),
+                ("a statement after the wrapped report line", new[] { (Path27, Command(Inner + " catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } Console.Error.WriteLine(x); } throw;")) }),
+                ("a report line to stdout", new[] { (Path27, Command(Inner + " catch (Exception) { Console.WriteLine(PartialOutputLeft + output); } throw;")) }),
+                ("throw; missing after the report catch", new[] { (Path27, Command(Inner + Report)) }),
+                ("a statement after throw;", new[] { (Path27, Command(Good + " return;")) }),
+                ("throw new instead of throw;", new[] { (Path27, Command(Inner + Report + " throw new InvalidOperationException();")) }),
+            };
+            foreach (var (label, files) in evasions)
+                Check(PostWriteDeleteSeamProblems(files).Count > 0, "self-test: the delete seam checker flags " + label);
+        }
+        finally
+        {
+            try { Directory.Delete(inputs, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    // P7-27 review: a stderr that throws IOException on a line starting with the cleanup prefix (counted in Rejected) and
+    // records every other line; characters written outside WriteLine(string) collect in Partial.
+    sealed class ReportRejectingWriter(string prefix) : TextWriter
+    {
+        readonly StringBuilder partial = new();
+        public List<string> Lines { get; } = new();
+        public int Rejected { get; private set; }
+        public string Partial => partial.ToString();
+        public override Encoding Encoding => new UTF8Encoding(false);
+        public override void Write(char value) => partial.Append(value);
+        public override void WriteLine(string? value)
+        {
+            if (value is not null && value.StartsWith(prefix, StringComparison.Ordinal)) { Rejected++; throw new IOException("p7-27 stderr rejects the cleanup line"); }
+            Lines.Add(value ?? "");
+        }
+    }
+
+    // P7-27: over (relative path, source) pairs under interfaces/, comments stripped and string literals blanked:
+    // PostWriteDeleteProbe is named exactly twice in total, both in interfaces/cli/GenerateCommand.cs: its Action<string>?
+    // declaration and one PostWriteDeleteProbe?.Invoke(output); no assignment anywhere; PartialOutputLeft declared once as an
+    // internal const string. Brace-matched inside Execute's body: the invoke's innermost try block is exactly
+    // { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }, is the first statement of a catch (Exception) { that
+    // directly follows a try block holding PostWriteStageProbe?.Invoke(), is directly followed by an unfiltered
+    // catch (Exception) whose body is exactly { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }
+    // (so neither the delete nor a throwing stderr replaces the original), and that is directly followed by throw; and the
+    // handler's closing brace.
+    static List<string> PostWriteDeleteSeamProblems(IEnumerable<(string Name, string Source)> files)
+    {
+        static int Close(string code, int open)
+        {
+            var depth = 0;
+            for (var i = open; i < code.Length; i++)
+            {
+                if (code[i] == '{') depth++;
+                else if (code[i] == '}' && --depth == 0) return i;
+            }
+            return -1;
+        }
+        static System.Text.RegularExpressions.Match At(string code, string pattern, int from) => new System.Text.RegularExpressions.Regex(@"\G" + pattern).Match(code, from);
+        var problems = new List<string>();
+        var total = 0;
+        var sawCommand = false;
+        foreach (var (name, source) in files)
+        {
+            var code = ApplyIntentTests.CodeOf(source);
+            total += System.Text.RegularExpressions.Regex.Matches(code, @"\bPostWriteDeleteProbe\b").Count;
+            if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bPostWriteDeleteProbe\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)")) problems.Add(name + ": PostWriteDeleteProbe assigned");
+            if (name != "interfaces/cli/GenerateCommand.cs") continue;
+            sawCommand = true;
+            var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+static\s+Action\s*<\s*string\s*>\s*\?\s*PostWriteDeleteProbe\s*\{\s*get\s*;\s*set\s*;\s*\}").Count;
+            if (declarations != 1) problems.Add(name + ": the Action<string>? declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
+            var constants = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+const\s+string\s+PartialOutputLeft\s*=").Count;
+            if (constants != 1) problems.Add(name + ": the PartialOutputLeft constant found " + constants.ToString(CultureInfo.InvariantCulture) + " times");
+            var invokes = System.Text.RegularExpressions.Regex.Matches(code, @"\bPostWriteDeleteProbe\s*\?\s*\.\s*Invoke\s*\(\s*output\s*\)\s*;");
+            var execute = System.Text.RegularExpressions.Regex.Match(code, @"\bstatic\s+void\s+Execute\s*\([^)]*\)\s*\{");
+            if (invokes.Count != 1 || !execute.Success) { problems.Add(name + ": " + invokes.Count.ToString(CultureInfo.InvariantCulture) + " PostWriteDeleteProbe?.Invoke(output) calls, Execute " + (execute.Success ? "found" : "missing")); continue; }
+            var open = execute.Index + execute.Length - 1;
+            var close = Close(code, open);
+            if (close < 0) { problems.Add(name + ": Execute's body is not closed"); continue; }
+            var at = invokes[0].Index;
+            if (at < open || at > close) { problems.Add(name + ": PostWriteDeleteProbe?.Invoke(output) not inside Execute's body"); continue; }
+            // The innermost try { inside Execute whose block holds the invoke.
+            int tryStart = -1, tryOpen = -1, tryClose = -1;
+            foreach (System.Text.RegularExpressions.Match candidate in new System.Text.RegularExpressions.Regex(@"\btry\s*\{").Matches(code[..at], open))
+            {
+                var brace = candidate.Index + candidate.Length - 1;
+                var end = Close(code, brace);
+                if (end > at && end < close) { tryStart = candidate.Index; tryOpen = brace; tryClose = end; }
+            }
+            if (tryOpen < 0) { problems.Add(name + ": PostWriteDeleteProbe?.Invoke(output) not inside a try { in Execute"); continue; }
+            if (!System.Text.RegularExpressions.Regex.IsMatch(code[tryOpen..(tryClose + 1)], @"^\{\s*PostWriteDeleteProbe\s*\?\s*\.\s*Invoke\s*\(\s*output\s*\)\s*;\s*File\s*\.\s*Delete\s*\(\s*output\s*\)\s*;\s*\}$"))
+            { problems.Add(name + ": the invoke's try block is not exactly { PostWriteDeleteProbe?.Invoke(output); File.Delete(output); }"); continue; }
+            // The enclosing handler: catch (Exception) { directly before the try, following a try block holding PostWriteStageProbe?.Invoke().
+            var before = System.Text.RegularExpressions.Regex.Match(code[..tryStart], @"\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*$");
+            if (!before.Success) { problems.Add(name + ": the delete try is not the first statement of a catch (Exception) {"); continue; }
+            var stageClose = before.Index;
+            var handlerOpen = before.Index + before.Length - 1;
+            while (code[handlerOpen] != '{') handlerOpen--;
+            var handlerClose = Close(code, handlerOpen);
+            var stageTry = false;
+            foreach (System.Text.RegularExpressions.Match candidate in new System.Text.RegularExpressions.Regex(@"\btry\s*\{").Matches(code[..stageClose], open))
+            {
+                var brace = candidate.Index + candidate.Length - 1;
+                if (Close(code, brace) == stageClose && System.Text.RegularExpressions.Regex.IsMatch(code[brace..stageClose], @"\bPostWriteStageProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)")) stageTry = true;
+            }
+            if (!stageTry) problems.Add(name + ": the delete try's catch (Exception) does not follow the try holding PostWriteStageProbe?.Invoke()");
+            var report = At(code, @"\s*catch\s*\(\s*Exception\s*\)\s*\{", tryClose + 1);
+            if (!report.Success) { problems.Add(name + ": the delete try is not directly followed by an unfiltered catch (Exception) {"); continue; }
+            var reportOpen = report.Index + report.Length - 1;
+            var reportClose = Close(code, reportOpen);
+            if (reportClose < 0 || handlerClose < 0 || reportClose > handlerClose) { problems.Add(name + ": the report catch is not closed inside the handler"); continue; }
+            var reportBody = code[reportOpen..(reportClose + 1)];
+            if (!System.Text.RegularExpressions.Regex.IsMatch(reportBody, @"^\{\s*try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*PartialOutputLeft\s*\+\s*output\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}$"))
+                problems.Add(name + ": the report catch is not exactly { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }");
+            if (System.Text.RegularExpressions.Regex.IsMatch(reportBody, @"\bthrow\b")) problems.Add(name + ": the report catch throws");
+            var rethrow = At(code, @"\s*throw\s*;\s*\}", reportClose + 1);
+            if (!rethrow.Success || rethrow.Index + rethrow.Length - 1 != handlerClose) problems.Add(name + ": the report catch is not directly followed by throw; ending the handler");
+        }
+        if (!sawCommand) problems.Add("interfaces/cli/GenerateCommand.cs not found");
+        if (total != 2) problems.Add("PostWriteDeleteProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
         return problems;
     }
 
