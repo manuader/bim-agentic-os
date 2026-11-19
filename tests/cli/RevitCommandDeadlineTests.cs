@@ -930,6 +930,24 @@ internal static class RevitCommandDeadlineTests
         var uncutFalse = Listing(halfHour, TimeSpan.FromHours(1), Ms(4000), Ms(10), cutReads: false);
         check(uncutFalse == singleExpected && sent == 1 && calls.SequenceEqual(new[] { "transport" }) && uncut == singleExpected,
             "P1-34 seam: cutReads false keeps the configured transport for a page with time left (nothing measured)", uncutFalse + Calls());
+        // The cut decision of a measured page is made only once connected (readAfter): a connect that throws before asking
+        // leaves the page uncut, so its failure passes through even though the 30 min read is above the 6 s left.
+        string Throwing(Exception error)
+        {
+            calls.Clear();
+            var seam = new Bim.Cli.RevitDeadlineTransport(SeamPipe, RevitCommandPolicy.None, (_, _) => { calls.Add("transport"); throw error; }, halfHour, six, () => TimeSpan.Zero,
+                connectThenRead: (wait, _) => (_, _) => { calls.Add("connect " + Label(wait) + " threw"); throw error; });
+            return RevitElementQueryPaging.All(wallsText, seam).ToJson();
+        }
+        var connectIo = Throwing(new IOException("broken pipe"));
+        check(Code(Node(connectIo)) == RevitCommandCodes.PipeIoError && calls.SequenceEqual(new[] { "connect 5000 threw" }),
+            "P1-34 seam: a measured page whose connect fails with an IOException stays pipe_io_error", connectIo + " calls " + string.Join(",", calls));
+        var connectRead = Throwing(new RevitPipeReadTimeoutException(halfHour));
+        var connectReadNode = Node(connectRead);
+        check(Code(connectReadNode) == RevitCommandCodes.PipeReadTimeout && connectReadNode?["detail"]?.GetValue<string>() == RaceReadDetail.Replace("30000 ms", "1800000 ms", StringComparison.Ordinal)
+            && calls.SequenceEqual(new[] { "connect 5000 threw" }),
+            "P1-34 seam: a measured page that throws pipe_read_timeout before asking its read wait is not cut (the cut flag is reset until connected): it passes through, not the deadline",
+            connectRead + " calls " + string.Join(",", calls));
 
         // Real pipe, 6 s deadline (time left at least 5 s: the connect is not cut), add-in listening from 4 s, never replying.
         var deadline = six;
@@ -943,7 +961,7 @@ internal static class RevitCommandDeadlineTests
         var ended = watch.Elapsed;
         var served = addIn.WaitServed();
         var expected = AbsentExceededCli.Replace("its 1000 ms deadline", "its 6000 ms deadline", StringComparison.Ordinal);
-        var detail = listing + " in " + N((long)ended.TotalMilliseconds) + " ms; " + addIn.Describe();
+        var detail = listing + " in " + N((long)ended.TotalMilliseconds) + " ms (ended - deadline " + N((long)(ended - deadline).TotalMilliseconds) + " ms, window [5900, 6300) ms); " + addIn.Describe();
         check(served && addIn.Line == wire && addIn.ConnectedAt is { } connectedAt && connectedAt >= listenAt && connectedAt < deadline,
             "P1-34 real pipe: an add-in listening from 4 s of a 6 s deadline accepts the page within the uncut 5 s connect and receives its exact wire line", detail);
         check(listing == expected && ended >= TimeSpan.FromMilliseconds(5900) && ended < deadline + TimeSpan.FromMilliseconds(300),
