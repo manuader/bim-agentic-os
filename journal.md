@@ -1831,3 +1831,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay241
 - 2026-11-19T07:53:57Z lock taken (session_014pxpsR5JV relay241; was FREE, relay240 released 07:16:52Z)
 - 2026-11-19T07:54:29Z picked P7-26 (phase 7), P2-32 (phase 2) (relay238) and P3-22 (phase 3, relay239) — oldest-touched; disjoint files. Workers spawned.
+- 2026-11-19T09:07:35Z workers green: P7-26 a5a38fc (red 44483529697, green 44485593658), P3-22 46e0563 (probe red 44483624478 deliberate negative, green 44485216847), P2-32 5bb3e24 (red 44483695474, probes 44484659892/44487717843, green 44490022080; 1 failed attempt: Linux TMPDIR pipe prefix; Windows written 4096 < wire 39727 → P2-31 deviation closed on Windows). Reviews next.
