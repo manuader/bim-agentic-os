@@ -64,8 +64,8 @@ namespace Bim.Cli;
 //   generate_prototypes_pack_unavailable (detail: the pack's input_* code), generate_prototypes_pack_invalid (detail:
 //   the skill code, or "id" when the manifest names another pack), generate_prototypes_refused (with
 //   "refusals":[{"code","subject","detail"}] = PrototypePipelineResult.Refusals in order, no detail),
-//   generate_prototypes_internal_error (stderr gets the exception type and message; P7-25: an unexpected exception after
-//   GltfExporter.WriteNew succeeded leaves the written file in place, a documented gap (→ P7-26)).
+//   generate_prototypes_internal_error (stderr gets the exception type and message; P7-26: an unexpected exception after
+//   GltfExporter.WriteNew succeeded removes the just-written file again).
 // Precedence: usage, output path, request read, request parse, repository, pack, pipeline, write.
 // The file is created exclusively (GltfExporter.WriteNew: FileMode.CreateNew, removed again if the write fails).
 internal static class GenerateCommand
@@ -106,9 +106,9 @@ internal static class GenerateCommand
         // P7-25: any other exception in Execute (for example in Generate's parse / pack-load stretch, outside its guarded
         // pipeline block; forced in tests through the P7-23 seam) prints the typed {"status":"failed","code":InternalError}
         // line with IntentPlan's stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. Before the
-        // write no output file exists; an exception after GltfExporter.WriteNew succeeded leaves the written file in place
-        // (documented gap). The guarded block's own failures already arrive above as Refusal(InternalError) with their
-        // diagnostic written once.
+        // write no output file exists; P7-26: Execute removes the file it just wrote before an exception after
+        // GltfExporter.WriteNew succeeded reaches this catch. The guarded block's own failures already arrive above as
+        // Refusal(InternalError) with their diagnostic written once.
         catch (Exception error) { IntentPlan.Internal("generate-prototypes", error).Print(); }
     }
 
@@ -158,19 +158,37 @@ internal static class GenerateCommand
         try { GltfExporter.WriteNew(bytes, output); }
         catch (GltfExportException error) { throw new Refusal(error.Code); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
-        Console.WriteLine(JsonSerializer.Serialize(new
+        // P7-26: from here on the file exists and is this run's own (WriteNew created it exclusively, so a pre-existing
+        // output was already refused as output_exists above and is not reached here; only a concurrent process replacing
+        // the file between WriteNew and the Delete below, a theoretical race, could make the Delete remove another's file).
+        // Any exception before the success line is complete removes the just-written file again, then propagates unchanged
+        // to Run's catch-all (the typed InternalError line with its diagnostic once). A failed removal is ignored: the typed
+        // line is still printed. If stdout itself throws part-way through the success line, that partial line may precede
+        // the typed line on stdout.
+        try
         {
-            status = "succeeded",
-            scope = "proposal_only",
-            persisted = false,
-            pipeline_status = result.Status == PrototypePipelineStatus.Ranked ? "ranked" : "infeasible",
-            project_id = generated.ProjectId.ToString("D", CultureInfo.InvariantCulture),
-            project_id_source = parsed.ProjectId is null ? "derived" : "request",
-            alternatives = result.Alternatives.Count,
-            accepted = result.Alternatives.Count(alternative => alternative.Accepted),
-            bytes = bytes.LongLength,
-            sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
-        }));
+            PostWriteStageProbe?.Invoke();
+            var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                status = "succeeded",
+                scope = "proposal_only",
+                persisted = false,
+                pipeline_status = result.Status == PrototypePipelineStatus.Ranked ? "ranked" : "infeasible",
+                project_id = generated.ProjectId.ToString("D", CultureInfo.InvariantCulture),
+                project_id_source = parsed.ProjectId is null ? "derived" : "request",
+                alternatives = result.Alternatives.Count,
+                accepted = result.Alternatives.Count(alternative => alternative.Accepted),
+                bytes = bytes.LongLength,
+                sha256,
+            }));
+        }
+        catch (Exception)
+        {
+            try { File.Delete(output); }
+            catch (Exception removal) when (removal is IOException or UnauthorizedAccessException) { }
+            throw;
+        }
     }
 
     // The request file through BoundedInput (8 MiB cap); its input_* code is the refusal.
@@ -438,6 +456,12 @@ internal static class GenerateCommand
     // stretch); it is reset after the test. Named apart from GenerateTypologyCommand's P3-23 seam, whose static pin counts
     // that name over interfaces/.
     internal static Action? UnguardedStageProbe { get; set; }
+
+    // P7-26 test seam: null in production. tests/cli/GeneratePrototypesTests.cs section 7 sets it (by reflection) to an
+    // Action that throws, so a non-refusal exception arises in Execute right after GltfExporter.WriteNew succeeded; it is
+    // reset after the test. Named apart from GenerateTypologyCommand's P3-25 seam, whose static pin counts that name over
+    // interfaces/.
+    internal static Action? PostWriteStageProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
     // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
