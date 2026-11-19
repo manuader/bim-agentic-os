@@ -470,7 +470,7 @@ internal static class SkillListTests
                 if (baseDirectory is not null) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", previousBase);
             }
             if (baseDirectory is not null)
-                Check(seen == baseDirectory, "sentinel: in process AppContext.BaseDirectory is the package cli directory during the run", seen + " != " + baseDirectory);
+                Check(seen == baseDirectory, "sentinel: override visible during the run (in process AppContext.BaseDirectory is the package cli directory)", seen + " != " + baseDirectory);
             return (exit, capturedOut.ToString(), (capturedError.ToString().Trim() + thrown).Trim());
         }
         static string D((int Exit, string Out, string Err) r) =>
@@ -518,8 +518,9 @@ internal static class SkillListTests
             (first.Refusal?.ToString() ?? "") + " / " + (second.Refusal?.ToString() ?? ""));
         var firstRegistry = first.Registry;
         var secondRegistry = second.Registry;
-        // P5-27 reference identity: the two reads give distinct, unequal registries (red phase run 44623782837 probed the
-        // opposite expectation and failed with ReferenceEquals False, Equals False, loads equal False).
+        // P5-27 reference identity: two in-process loads of the same directory (stand-ins; the verbs' own loads are not
+        // observable) give distinct, unequal registries (red phase run 44623782837 probed the opposite expectation and failed
+        // with ReferenceEquals False, Equals False, loads equal False).
         Check(firstRegistry is not null && secondRegistry is not null && !ReferenceEquals(firstRegistry, secondRegistry) && !firstRegistry.Equals(secondRegistry)
             && !firstRegistry.Equals((object)secondRegistry) && !EqualityComparer<JurisdictionRegistry>.Default.Equals(firstRegistry, secondRegistry),
             "success: the two in-process registries are unequal (P5-27 reference identity), so the identical bytes below never depend on registry identity",
@@ -528,9 +529,22 @@ internal static class SkillListTests
         var expectedList = Expected(skills);
         Check(expectedList.Exit == 0 && expectedList.Line.Contains("\"id\":\"" + Pack + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"stub\":false", StringComparison.Ordinal),
             "success: the in-process oracle lists " + Pack + " as a code pack, not a stub", expectedList.Line);
+        // The success line pinned literally (field order as SkillListCommand writes it), and equal to the in-process oracle.
+        var listLine = "{\"status\":\"succeeded\",\"skills_path\":" + JsonSerializer.Serialize(Path.TrimEndingDirectorySeparator(Path.GetFullPath(skills)))
+            + ",\"packs\":[{\"id\":\"" + Pack + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"stub\":false,"
+            + "\"source_confidence\":{\"rules\":0,\"cited\":0,\"owner-confirmed\":0,\"to-verify\":0,\"lowest\":\"none\"}}]}";
+        Check(expectedList.Line == listLine, "success: the in-process skill-list oracle equals the literal pinned line", expectedList.Line + " | pinned " + listLine);
         var resolveLine = JsonSerializer.Serialize(new { status = "succeeded", code = Code, pack = Pack, version = "1.2.3", stub = false });
+        // Negative control: without the base-directory override, in-process jurisdiction-resolve reads the repository
+        // skills (no xx.p528 claim) and refuses with jurisdiction_unknown, so the override is load-bearing.
+        var unoverridden = Inline(() => Bim.Cli.JurisdictionResolveCommand.Run(resolveArguments), null);
+        string? unoverriddenCode = null;
+        try { using var document = JsonDocument.Parse(unoverridden.Out); unoverriddenCode = document.RootElement.GetProperty("code").GetString(); }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException) { }
+        Check(unoverridden.Exit == 1 && unoverridden.Out != resolveLine + Environment.NewLine && unoverriddenCode == JurisdictionCodes.JurisdictionUnknown && unoverridden.Err.Length == 0,
+            "negative control: in process with the original base directory, jurisdiction-resolve --code " + Code + " is jurisdiction_unknown (the override is load-bearing)", D(unoverridden));
         var success = Runs();
-        Identical("success", "skill-list", success.List, 0, expectedList.Line);
+        Identical("success", "skill-list", success.List, 0, listLine);
         Identical("success", "jurisdiction-resolve", success.Resolve, 0, resolveLine);
         Check(TreeDigest(skills) == digest, "success: the generated skills tree is unchanged by every run");
 
@@ -540,8 +554,8 @@ internal static class SkillListTests
         var firstRefused = JurisdictionRegistry.Load(skills);
         var secondRefused = JurisdictionRegistry.Load(skills);
         Check(firstRefused.Registry is null && secondRefused.Registry is null && firstRefused.LoaderError is null && secondRefused.LoaderError is null
-            && firstRefused.Refusal is { Code: JurisdictionCodes.JsonInvalid, Subject: Pack + "/jurisdiction.json" } && firstRefused.Refusal == secondRefused.Refusal,
-            "sidecar refusal: two in-process loads refuse with the same json_invalid at " + Pack + "/jurisdiction.json (no registry, no loader error)",
+            && firstRefused.Refusal is { Code: JurisdictionCodes.JsonInvalid, Subject: Pack + "/jurisdiction.json", Detail.Length: > 0 },
+            "sidecar refusal: two in-process loads of the same directory (stand-ins; the verbs' own loads are not observable) refuse with json_invalid at " + Pack + "/jurisdiction.json and a non-empty detail (no registry, no loader error)",
             (firstRefused.Refusal?.ToString() ?? "<no refusal>") + " / " + (secondRefused.Refusal?.ToString() ?? "<no refusal>"));
         Check(firstRefused == secondRefused && firstRefused.GetHashCode() == secondRefused.GetHashCode(),
             "sidecar refusal: the two refusal loads compare equal with an equal hash (no registry identity involved)", firstRefused + " / " + secondRefused);
