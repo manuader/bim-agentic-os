@@ -1810,3 +1810,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay239
 - 2026-11-19T01:53:00Z lock taken (session_014pxpsUfP8wZbMGJ8Dv7QnY; was FREE, relay238 released 00:56:37Z)
+- 2026-11-19T01:53:39Z picked P3-25 (phase 3), P4-25 (phase 4), P10-29 (phase 10) — oldest-touched (relay233); disjoint files. Workers spawned.
