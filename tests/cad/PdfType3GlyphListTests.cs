@@ -355,11 +355,6 @@ internal static class PdfType3GlyphListTests
             C(Count(encoding, signature) == 1 && Count(encoding, "PdfGlyphNames.IsGlyphListName(") == 1 && bodyStart >= 0 && call > bodyStart && call < bodyEnd,
                 "without comments and literals PdfSimpleEncoding applies the glyph-list filter once, inside the accessor body (P6-27 static check)",
                 I(Count(encoding, signature)) + " " + I(Count(encoding, "PdfGlyphNames.IsGlyphListName(")) + " " + I(bodyStart) + ".." + I(bodyEnd) + " call " + I(call));
-
-            // PROBE (removed after CI measures): reports the measured behaviour.
-            var probeTall = Page(Tall("(\\002) Tj"), Type3(affected));
-            C(false, "P6-27 probe measurement", "tall " + Texts(probeTall) + " " + Warnings(probeTall) + " " + Messages(probeTall) + " | direct " + Warnings(direct) + " " + Messages(direct)
-                + " | content " + I(Count(content, "IsGlyphListName")) + "/" + I(Count(content, ".UnsupportedGlyphListName(")) + " encoding " + I(Count(encoding, "PdfGlyphNames.IsGlyphListName(")));
         }
         catch (Exception error) { C(false, "p6-27 unexpected", error.GetType().Name + ": " + error.Message); }
     }
