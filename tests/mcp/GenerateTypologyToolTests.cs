@@ -287,7 +287,9 @@ internal static class GenerateTypologyToolTests
             .Where(f => new[] { "\"family_size\"", "TypologyPipeline.", "TypologyBriefRequest(" }.Any(api => CodeOf(File.ReadAllText(f)).Contains(api, StringComparison.Ordinal)))
             .Select(f => Path.GetFileName(f)).ToArray();
         Check(owners.Length == 0, "no interfaces/mcp source parses a typology request or runs the pipeline itself [" + string.Join(", ", owners) + "]");
-        var commandCode = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateTypologyCommand.cs")));
+        // P4-26: Execute (the verb's Generate(ReadRequest(...)) call) lives in the CLI-only write part GenerateTypologyWrite.cs.
+        var commandCode = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateTypologyCommand.cs")) + "\n"
+            + File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateTypologyWrite.cs")));
         Check(Regex.Matches(commandCode, @"Generate\(ReadRequest\(").Count == 2 && Regex.Matches(commandCode, @"\bParse\(text\)").Count == 1,
             "the CLI verb and Document share one path: both call Generate(ReadRequest(...)), and the request is parsed in one place");
         foreach (var project in new[] { Path.Combine(root, "interfaces", "mcp", "Bim.Mcp.csproj"), Path.Combine(root, "tests", "mcp", "Bim.Mcp.Tests.csproj") })

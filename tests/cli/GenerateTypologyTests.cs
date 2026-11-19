@@ -913,8 +913,8 @@ internal static class GenerateTypologyTests
             }
             Check(File.ReadAllText(existing) == "keep", "the existing output is left untouched");
 
-            // Static: Run's body, comments stripped, layout-independent.
-            var source = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateTypologyCommand.cs")), blankStrings: false);
+            // Static: Run's body, comments stripped, layout-independent (P4-26: Run lives in the CLI-only write part).
+            var source = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateTypologyWrite.cs")), blankStrings: false);
             Check(System.Text.RegularExpressions.Regex.IsMatch(source,
                     @"public\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{\s*try\s*\{\s*Execute\s*\(\s*args\s*\)\s*;\s*\}\s*catch\s*\(\s*Refusal\s+refusal\s*\)\s*\{\s*Fail\s*\(\s*refusal\s*\.\s*Code\s*,\s*refusal\s*\.\s*Detail\s*,\s*refusal\s*\.\s*Skill\s*\)\s*;\s*\}\s*"
                     + @"catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*IntentPlan\s*\.\s*Internal\s*\(\s*""generate-typology""\s*,\s*error\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*\}"),
@@ -1124,7 +1124,7 @@ internal static class GenerateTypologyTests
             var seam = PostWriteSeamProblems(sources);
             Check(seam.Count == 0, "interfaces/**/*.cs names PostWriteProbe only in its declaration and one ?.Invoke() inside Execute after GltfExporter.WriteNew( and a try {, before SHA256.HashData(, never assigned ["
                 + string.Join("; ", seam) + "]");
-            const string Path25 = "interfaces/cli/GenerateTypologyCommand.cs";
+            const string Path25 = "interfaces/cli/GenerateTypologyWrite.cs";
             const string Decl = "internal static Action? PostWriteProbe { get; set; }";
             string Command(string executeBody, string extra = "") => "internal static class GenerateTypologyCommand { static void Execute(string[] args) { " + executeBody + " } " + Decl + " " + extra + " }";
             const string GoodBody = "GltfExporter.WriteNew(bytes, output); try { PostWriteProbe?.Invoke(); var sha256 = SHA256.HashData(bytes); } catch { throw; }";
@@ -1156,7 +1156,8 @@ internal static class GenerateTypologyTests
     }
 
     // P3-25: over (relative path, source) pairs under interfaces/, comments stripped and string literals blanked:
-    // PostWriteProbe is named exactly twice in total, both in interfaces/cli/GenerateTypologyCommand.cs: its declaration
+    // PostWriteProbe is named exactly twice in total, both in interfaces/cli/GenerateTypologyWrite.cs (P4-26: the CLI-only
+    // write part of GenerateTypologyCommand, where Execute and the seam moved verbatim): its declaration
     // and one PostWriteProbe?.Invoke(); inside Execute after its GltfExporter.WriteNew( and before its SHA256.HashData(,
     // with a try { opening between WriteNew( and the invoke (the invoke is inside the deleting try); no assignment (=, +=, ??=, ...) anywhere.
     static List<string> PostWriteSeamProblems(IEnumerable<(string Name, string Source)> files)
@@ -1169,7 +1170,7 @@ internal static class GenerateTypologyTests
             var code = ApplyIntentTests.CodeOf(source);
             total += System.Text.RegularExpressions.Regex.Matches(code, @"\bPostWriteProbe\b").Count;
             if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bPostWriteProbe\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)")) problems.Add(name + ": PostWriteProbe assigned");
-            if (name != "interfaces/cli/GenerateTypologyCommand.cs") continue;
+            if (name != "interfaces/cli/GenerateTypologyWrite.cs") continue;
             sawCommand = true;
             var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+static\s+Action\s*\?\s*PostWriteProbe\s*\{\s*get\s*;\s*set\s*;\s*\}").Count;
             if (declarations != 1) problems.Add(name + ": the declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
@@ -1186,7 +1187,7 @@ internal static class GenerateTypologyTests
             // The invoke sits inside the deleting try: a try { opens after WriteNew( and before the invoke.
             else if (!System.Text.RegularExpressions.Regex.IsMatch(code[writeAt..at], @"\btry\s*\{")) problems.Add(name + ": no try { between GltfExporter.WriteNew( and PostWriteProbe?.Invoke()");
         }
-        if (!sawCommand) problems.Add("interfaces/cli/GenerateTypologyCommand.cs not found");
+        if (!sawCommand) problems.Add("interfaces/cli/GenerateTypologyWrite.cs not found");
         if (total != 2) problems.Add("PostWriteProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
         return problems;
     }
