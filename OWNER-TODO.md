@@ -351,3 +351,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay243 (2026-11-19, cloud)
 - No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) then catalogue-report; 🔒 N21 `... -Runs 1`; `git pull` (main b3a8986). New MCP tool skill_list appears after restarting Claude Desktop if the MCP server is registered.
+
+## Relay244 (2026-11-19, cloud)
+- [ ] Delete stray probe branch `relay244-P4-27-red` (red evidence only; the cloud proxy refused the delete): `git push origin --delete relay244-P4-27-red`.
+- Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) then catalogue-report; 🔒 N21 `... -Runs 1`; `git pull` (main ee952a3). No MCP tool list change (the MCP binary no longer contains any glTF writer).
