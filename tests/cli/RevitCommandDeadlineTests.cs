@@ -39,6 +39,9 @@ using Bim.Core;
 //      completes after the timed wait gives up but before the read is cancelled is KEPT (the reply, verified by Run; an
 //      --all cut page ends succeeded); none by the cancel is pipe_read_timeout / query_all_deadline_exceeded (pinned).
 //   2e. P1-33: cutReads false never cuts: a last page replying after the deadline is kept (succeeded, byte-equal).
+//   3d. P1-34: a page with at least 5 s left (connect not cut) on the default (real pipe) transports is read with
+//      min(configured read timeout, time left after the connect): an add-in accepting 4 s into a 6 s deadline and never
+//      replying ends query_all_deadline_exceeded within the deadline + 300 ms (seam clock and a real late listener).
 //   4. Without the flag no deadline applies (the paging add-in lists all rows) and the stdout is byte-equal to a run
 //      with a deadline long enough; the CLI still waits 3 s on a stalled pipe without the flag.
 // Unit-tested only; no Revit.
@@ -285,6 +288,9 @@ internal static class RevitCommandDeadlineTests
 
             // ---- 3c. P1-32: the read of a page whose connect was cut is measured after the connect ----
             ReadAfterConnect(wallsText, Check);
+
+            // ---- 3d. P1-34: the read of a page whose connect was not cut is measured after the connect too ----
+            UncutConnectRead(wallsText, model, Check);
 
             // ---- 4. Absent flag: no deadline, today's bytes ----
             addIn.Delay = TimeSpan.FromMilliseconds(100);
@@ -831,6 +837,117 @@ internal static class RevitCommandDeadlineTests
             "P1-32 real pipe: an add-in listening from 800 ms of a 1 s deadline accepts the page before the deadline and receives its exact wire line", detail);
         check(listing == AbsentExceededCli && ended >= TimeSpan.FromMilliseconds(900) && ended < deadline + TimeSpan.FromMilliseconds(300),
             "P1-32 real pipe: that add-in never replies and the run ends query_all_deadline_exceeded within the deadline + 300 ms (read cut to the time left after the connect)", detail);
+    }
+
+    // P1-34 (section 3d): a page whose time left is at least the 5 s connect wait (connect not cut) on the default
+    // transports goes through connectThenRead with the full 5 s connect wait, its read timeout asked once connected:
+    // min(configured read timeout, time left then), cut (its pipe_read_timeout reported as the deadline) only when the
+    // time left is the smaller. Seam: an injected connectThenRead whose connect advances the injected clock (no cut
+    // transport injected: an injected cut or P1-30 connect transport keeps the P1-30..P1-32 legacy seams, pinned above).
+    // Real pipe: an add-in listening from 4 s of a 6 s deadline accepts the page and never replies; the run ends
+    // query_all_deadline_exceeded (pinned bytes) within the deadline + 300 ms (before P1-34 the read waited the 6 s left
+    // measured before the connect: about 10 s).
+    static void UncutConnectRead(string wallsText, long[] model, Action<bool, string, string> check)
+    {
+        var wire = RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(wallsText));
+        const string SeamPipe = "bim-agentic-os-2025-3434";
+        var single = new[] { 3100L };
+        var clock = TimeSpan.Zero;
+        var sent = 0;
+        var calls = new List<string>();
+        string Label(TimeSpan t) => N((long)t.TotalMilliseconds);
+        static TimeSpan Ms(long value) => TimeSpan.FromMilliseconds(value);
+        // As ReadAfterConnect's fake: the connect takes `connect` (over its wait it times out at the wait), then the read
+        // wait is asked; a zero wait sends nothing; the reply completes `reply` after the send (null: never), kept at the wait.
+        Func<string, string, string?> Fake(TimeSpan wait, Func<TimeSpan> readAfter, TimeSpan connect, TimeSpan? reply, long[] rows) => (_, line) =>
+        {
+            if (connect > wait) { clock += wait; calls.Add("connect " + Label(wait) + " timed out"); throw new TimeoutException(); }
+            clock += connect;
+            var read = readAfter();
+            calls.Add("connect " + Label(wait) + " took " + Label(connect) + " read " + Label(read));
+            if (read <= TimeSpan.Zero) throw new RevitPipeReadTimeoutException(TimeSpan.Zero);
+            sent++;
+            if (reply is not { } due || due > read) { clock += read; throw new RevitPipeReadTimeoutException(read); }
+            clock += due;
+            return PageReply(line, rows);
+        };
+        string Listing(TimeSpan readWait, TimeSpan limit, TimeSpan connect, TimeSpan? reply, long[]? rows = null, bool cutReads = true)
+        {
+            clock = TimeSpan.Zero; sent = 0; calls.Clear();
+            var seam = new Bim.Cli.RevitDeadlineTransport(SeamPipe, RevitCommandPolicy.None, (_, line) =>
+                {
+                    calls.Add("transport");
+                    sent++;
+                    clock += connect + (reply ?? TimeSpan.Zero);
+                    return PageReply(line, rows ?? single);
+                }, readWait, limit, () => clock, cutReads: cutReads,
+                connectThenRead: (wait, readAfter) => Fake(wait, readAfter, connect, reply, rows ?? single));
+            try { return RevitElementQueryPaging.All(wallsText, seam).ToJson(); }
+            catch (Exception error) { return "<threw " + error.GetType().Name + ": " + error.Message + ">"; }
+        }
+        string Calls() => " sent " + N(sent) + " clock " + Label(clock) + " calls " + string.Join(",", calls);
+        var singleExpected = RevitElementQueryPaging.All(wallsText, new RevitServiceTransport(SeamPipe, RevitCommandPolicy.None, (_, line) => PageReply(line, single))).ToJson();
+        var allExpected = RevitElementQueryPaging.All(wallsText, new RevitServiceTransport(SeamPipe, RevitCommandPolicy.None, (_, line) => PageReply(line, model))).ToJson();
+        var halfHour = TimeSpan.FromMinutes(30);
+        var six = TimeSpan.FromSeconds(6);
+        var tick = TimeSpan.FromTicks(1);
+
+        var lateAccept = Listing(halfHour, six, Ms(4000), null);
+        check(lateAccept == RaceExceededAt(6000, 0) && sent == 1 && clock == six && calls.SequenceEqual(new[] { "connect 5000 took 4000 read 2000" }),
+            "P1-34 seam: a 4 s connect of a 6 s deadline (full 5 s connect wait) leaves a 2 s read; a page never answered ends query_all_deadline_exceeded at the deadline", lateAccept + Calls());
+        var replied = Listing(halfHour, six, Ms(4000), Ms(2000));
+        check(replied == singleExpected && sent == 1 && clock == six && calls.SequenceEqual(new[] { "connect 5000 took 4000 read 2000" }),
+            "P1-34 seam: after a 4 s connect a reply completing exactly at the 6 s deadline is kept (succeeded, byte-equal)", replied + Calls());
+        var repliedLate = Listing(halfHour, six, Ms(4000), Ms(2000) + tick);
+        check(repliedLate == RaceExceededAt(6000, 0) && sent == 1 && clock == six,
+            "P1-34 seam: after a 4 s connect a reply one tick after the 6 s deadline is query_all_deadline_exceeded", repliedLate + Calls());
+        // A 3 s read timeout under a 6 s deadline: uncut before the connect, cut by a 4 s connect to the 2 s left.
+        var cutByConnect = Listing(TimeSpan.FromSeconds(3), six, Ms(4000), null);
+        check(cutByConnect == RaceExceededAt(6000, 0) && sent == 1 && clock == six && calls.SequenceEqual(new[] { "connect 5000 took 4000 read 2000" }),
+            "P1-34 seam: a 4 s connect under a 6 s deadline cuts the 3 s read to the 2 s left; never answered, it is query_all_deadline_exceeded at the deadline", cutByConnect + Calls());
+        // A 2 s read timeout under a 10 s deadline: a 4 s connect leaves 6 s, so the configured 2 s read is kept.
+        var keptRead = Listing(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10), Ms(4000), null);
+        var keptReadNode = Node(keptRead);
+        check(Code(keptReadNode) == RevitCommandCodes.PipeReadTimeout && keptReadNode?["detail"]?.GetValue<string>() == RaceReadDetail.Replace("30000 ms", "2000 ms", StringComparison.Ordinal)
+            && Pages(keptReadNode) == 0 && sent == 1 && clock == TimeSpan.FromSeconds(6) && calls.SequenceEqual(new[] { "connect 5000 took 4000 read 2000" }),
+            "P1-34 seam: a 4 s connect under a 10 s deadline keeps the configured 2 s read (min of 2 s and 6 s left), and its pipe_read_timeout passes through", keptRead + Calls());
+        // Exactly 5 s left: the connect keeps its full 5 s wait; one taking all of it leaves no read (not sent).
+        var five = TimeSpan.FromSeconds(5);
+        var connectAll = Listing(halfHour, five, five, null);
+        check(connectAll == RaceExceededAt(5000, 0) && sent == 0 && clock == five && calls.SequenceEqual(new[] { "connect 5000 took 5000 read 0" }),
+            "P1-34 seam: with exactly 5 s left a connect taking the full 5 s leaves no read: not sent, query_all_deadline_exceeded", connectAll + Calls());
+        // An uncut connect that times out (7 s deadline, add-in absent) is still pipe_connect_timeout (P1-30, unchanged).
+        var connectTimeout = Listing(halfHour, TimeSpan.FromSeconds(7), Ms(6000), null);
+        check(Code(Node(connectTimeout)) == RevitCommandCodes.PipeConnectTimeout && sent == 0 && clock == five && calls.SequenceEqual(new[] { "connect 5000 timed out" }),
+            "P1-34 seam: an uncut 5 s connect that times out under a 7 s deadline stays pipe_connect_timeout (not the deadline)", connectTimeout + Calls());
+        // A roomy deadline: every page connects with 5 s and reads the configured 30 s; byte-equal to RevitServiceTransport.
+        var roomy = Listing(TimeSpan.FromSeconds(30), TimeSpan.FromHours(1), Ms(10), Ms(20), model);
+        check(roomy == allExpected && sent == 23 && calls.Count == 23 && calls.All(call => call == "connect 5000 took 10 read 30000"),
+            "P1-34 seam: within a 1 h deadline every page connects with the 5 s wait and reads the configured 30 s; the listing is byte-equal to RevitServiceTransport paging",
+            (roomy.Length > 300 ? roomy[..300] : roomy) + Calls());
+        // cutReads false (MCP on an injected transport) never measures: the configured transport serves every page.
+        var uncut = Listing(halfHour, TimeSpan.FromHours(1), Ms(4000), Ms(10));
+        var uncutFalse = Listing(halfHour, TimeSpan.FromHours(1), Ms(4000), Ms(10), cutReads: false);
+        check(uncutFalse == singleExpected && sent == 1 && calls.SequenceEqual(new[] { "transport" }) && uncut == singleExpected,
+            "P1-34 seam: cutReads false keeps the configured transport for a page with time left (nothing measured)", uncutFalse + Calls());
+
+        // Real pipe, 6 s deadline (time left at least 5 s: the connect is not cut), add-in listening from 4 s, never replying.
+        var deadline = six;
+        var listenAt = TimeSpan.FromSeconds(4);
+        var pipe = AbsentPipe();
+        var watch = Stopwatch.StartNew();
+        using var addIn = new LateAddIn(pipe, watch, listenAt);
+        var transport = new Bim.Cli.RevitDeadlineTransport(pipe, RevitCommandPolicy.None, RevitCommandService.PipeTransport, RevitCommandService.DefaultReadTimeout, deadline,
+            () => watch.Elapsed);
+        var listing = RevitElementQueryPaging.All(wallsText, transport).ToJson();
+        var ended = watch.Elapsed;
+        var served = addIn.WaitServed();
+        var expected = AbsentExceededCli.Replace("its 1000 ms deadline", "its 6000 ms deadline", StringComparison.Ordinal);
+        var detail = listing + " in " + N((long)ended.TotalMilliseconds) + " ms; " + addIn.Describe();
+        check(served && addIn.Line == wire && addIn.ConnectedAt is { } connectedAt && connectedAt >= listenAt && connectedAt < deadline,
+            "P1-34 real pipe: an add-in listening from 4 s of a 6 s deadline accepts the page within the uncut 5 s connect and receives its exact wire line", detail);
+        check(listing == expected && ended >= TimeSpan.FromMilliseconds(5900) && ended < deadline + TimeSpan.FromMilliseconds(300),
+            "P1-34 real pipe: that add-in never replies and the run ends query_all_deadline_exceeded within the deadline + 300 ms (read cut to the time left after the connect)", detail);
     }
 
     // A same-user pipe server that starts listening only when `clock` reaches `listenAt`, on its own thread (no thread
