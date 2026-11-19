@@ -18,7 +18,9 @@ using Bim.Cad;
 //   3. A value option followed by the flag (--page --include-block-regions, --metres-per-unit --include-block-regions)
 //      is the exact cad_option_value_invalid envelope for that option, exit 1, nothing written.
 // P6-26 (nested, MINSERT cell and mirrored inserts) is the RunTransformed section below; P6-28 (rotated inserts,
-// rotated MINSERT cells and non-zero block base points) is the RunRotated section.
+// rotated MINSERT cells and non-zero block base points) is the RunRotated section; P6-29 (rotated MINSERT of a block with
+// a base point under a non-unit scale, rotated insert inside a nested chain, mirrored OCS insert with rotation) is the
+// RunOcsMinsert section.
 internal static class CadBriefBlockRegionTests
 {
     const string Flag = "--include-block-regions";
@@ -137,6 +139,7 @@ internal static class CadBriefBlockRegionTests
 
         RunTransformed(scratch, Cli, RoomsOf, R, Clip, Check);
         RunRotated(scratch, Cli, RoomsOf, R, Clip, Check);
+        RunOcsMinsert(scratch, Cli, RoomsOf, R, Clip, Check);
     }
 
     // P6-26 block regions through nested, MINSERT and mirrored inserts. A second generated millimetre DXF holds three
@@ -243,7 +246,7 @@ internal static class CadBriefBlockRegionTests
     //     world = insertion + rotate(scale(p - base)), centre (23017.63, 64773.32), 22.5 m2, InsertPath [G1] (the wrong
     //     order scale(rotate(p - base)) would centre at (22580.13, 64148.32)).
     // Out of scope: MINSERT spacing under a non-unit insert scale (M2 has scale 1), rotated inserts inside nested chains,
-    // and mirrored OCS combined with rotation.
+    // and mirrored OCS combined with rotation → covered by P6-29 RunOcsMinsert.
     // Expected corners come from an independent transform written here (insertion + R(angle) * (cell offset + S * (p -
     // base))), cross-checked against hand-computed centres; the centre is the bounding-box centre of the transformed
     // corners and the area their shoelace area, positive. Through the real CLI with the flag draft.json rooms equal the
@@ -360,6 +363,175 @@ internal static class CadBriefBlockRegionTests
 
         var expectedWithout = JsonSerializer.Serialize(excluded.Rooms, RoomJson);
         var withoutOutput = Path.Combine(scratch, "rotated-without.json");
+        var plain = cli(new[] { "cad-brief", input, withoutOutput });
+        var withoutRooms = roomsOf(withoutOutput);
+        Check(plain.Exit == 0 && withoutRooms == expectedWithout && withoutRooms != withRooms && !withoutRooms.Contains("\"InsertPath\":[\"", StringComparison.Ordinal)
+                && excluded.Rooms.All(x => x.Region is null),
+            "without " + Flag + " draft.json rooms equal the default-option in-process rooms (no block region)",
+            r(plain) + " rooms " + clip(withoutRooms));
+    }
+
+    // P6-29 block regions through a rotated MINSERT of a block with a non-zero base point under a non-unit scale, a rotated
+    // INSERT inside a nested chain and an INSERT whose extrusion is 210/220/230 = (0, 0, -1) with a rotation. A fourth
+    // generated millimetre DXF holds four labelled rooms:
+    //   * "Biblioteca": block BASE3 with base point (1000, 500) holding the rectangle (2000, 1000)-(4000, 2000), placed by
+    //     MINSERT K1 at (0, 100000) rotated 45 degrees with scale X 2, Y 1.5, 2 columns x 3 rows, column spacing 5000, row
+    //     spacing 4000; the label sits in cell row 2, column 1: centre (-353.5534, 113081.4755), 6 m2, InsertPath [K1[2,1]].
+    //     MINSERT spacing semantics pinned here to the documented AutoCAD/ezdxf reading (not measured against AutoCAD):
+    //     the cell offset (column * 44, row * 45) is in the insert's OCS units, rotated with the insert and NOT multiplied
+    //     by the insert scale, i.e. world = insertion + R(angle) * (offset + S * (p - base)). Under the other reading (offset scaled by S) the cell would centre at (353.5534, 119445.4365),
+    //     and the label lies in no cell of that reading (self-checked below), so the region and its centre discriminate.
+    //   * "Vestidor": block LEAF (3000 x 2000 rectangle) inserted as C2 at (1000, 0) rotated 90 degrees with X scale 2
+    //     inside block MID (base point (500, 250)), which model space inserts as C1 at (50000, 100000) rotated 30 degrees:
+    //     world = C1 + R(30) * ((1000, 0) + R(90) * S(2, 1) * p - MID base), centre (48191.9873, 102131.5699), 12 m2,
+    //     InsertPath [C1, C2] (ignoring MID's base point would centre at (48500, 102598.08)).
+    //   * "Galeria": block OCSB (4000 x 1000 rectangle) inserted as Z1 with extrusion (0, 0, -1), OCS insertion
+    //     (-70000, 100000) and rotation 30 degrees. By the arbitrary axis algorithm Ax = Wy x N = (-1, 0, 0), Ay = N x Ax =
+    //     (0, 1, 0), so world = Ocs(insertion + R(30) * p): centre (68517.9492, 101433.0127), 4 m2, InsertPath [Z1].
+    //   * "Baulera": a label at (68017.9492, 99433.0127), the centre of the rectangle obtained by mirroring the insertion
+    //     but keeping the +30 degree rotation (world = Ocs(insertion) + R(30) * Ocs(p)); it lies outside the true Z1
+    //     rectangle (self-checked by inverse transform), so it must have no region.
+    // Expected corners come from an independent transform written here (not DxfExploder), cross-checked against
+    // Python-computed constants; centre = bounding-box centre, area = positive shoelace area. Through the real CLI with
+    // the flag draft.json rooms equal the in-process IncludeBlockRegions rooms; without the flag they equal the
+    // default-option rooms and none has a region or an insert path.
+    const string OcsMinsertFileName = "block-region-ocs-minsert.dxf";
+
+    static string OcsMinsertDrawing() =>
+        G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+        + G("0 SECTION|2 BLOCKS")
+        + G("0 BLOCK|5 B80|8 0|2 BASE3|70 0|10 1000|20 500|30 0") + Rect("B81", 2000, 1000, 4000, 2000, "0") + G("0 ENDBLK|5 B82|8 0")
+        + G("0 BLOCK|5 B90|8 0|2 LEAF|70 0|10 0|20 0|30 0") + Rect("B91", 0, 0, 3000, 2000, "0") + G("0 ENDBLK|5 B92|8 0")
+        + G("0 BLOCK|5 BA0|8 0|2 MID|70 0|10 500|20 250|30 0") + G("0 INSERT|5 C2|8 0|2 LEAF|10 1000|20 0|30 0|41 2|50 90") + G("0 ENDBLK|5 BA2|8 0")
+        + G("0 BLOCK|5 BB0|8 0|2 OCSB|70 0|10 0|20 0|30 0") + Rect("BB1", 0, 0, 4000, 1000, "0") + G("0 ENDBLK|5 BB2|8 0")
+        + G("0 ENDSEC|0 SECTION|2 ENTITIES")
+        + G("0 INSERT|5 K1|8 ROOMS|2 BASE3|10 0|20 100000|30 0|41 2|42 1.5|50 45|70 2|71 3|44 5000|45 4000")
+        + G("0 INSERT|5 C1|8 ROOMS|2 MID|10 50000|20 100000|30 0|50 30")
+        + G("0 INSERT|5 Z1|8 ROOMS|2 OCSB|10 -70000|20 100000|30 0|50 30|210 0|220 0|230 -1")
+        + string.Concat(OcsMinsertLabels.Select((l, i) => Text((41 + i).ToString(CultureInfo.InvariantCulture), l.X, l.Y, l.Name)))
+        + G("0 ENDSEC|0 EOF");
+
+    static (double X, double Y) Rot(double degrees, (double X, double Y) v)
+    {
+        var radians = degrees * Math.PI / 180;
+        return (v.X * Math.Cos(radians) - v.Y * Math.Sin(radians), v.X * Math.Sin(radians) + v.Y * Math.Cos(radians));
+    }
+
+    static (double X, double Y) Add((double X, double Y) a, (double X, double Y) b) => (a.X + b.X, a.Y + b.Y);
+
+    // OCS (0, 0, -1) to world XY by the arbitrary axis algorithm, computed here: Ax = normalise(Wy x N), Ay = N x Ax.
+    // Specific to N = (0, 0, -1) (hard-coded below; the Wy branch holds only because |Nx|, |Ny| < 1/64), not a general OCS.
+    static (double X, double Y) Ocs((double X, double Y) p)
+    {
+        double nx = 0, ny = 0, nz = -1;
+        double ax = 1 * nz - 0 * ny, ay = 0 * nx - 0 * nz, az = 0 * ny - 1 * nx;
+        var length = Math.Sqrt(ax * ax + ay * ay + az * az);
+        ax /= length; ay /= length; az /= length;
+        double bx = ny * az - nz * ay, by = nz * ax - nx * az;
+        return (p.X * ax + p.Y * bx, p.X * ay + p.Y * by);
+    }
+
+    static (double X, double Y)[] Corners(double x0, double y0, double x1, double y1, Func<(double X, double Y), (double X, double Y)> place) =>
+        new[] { (x0, y0), (x1, y0), (x1, y1), (x0, y1) }.Select(c => place(c)).ToArray();
+
+    static readonly (double X, double Y) K1Insertion = (0, 100000);
+    static (double X, double Y) K1Local((double X, double Y) offset, (double X, double Y) p) => (offset.X + 2 * (p.X - 1000), offset.Y + 1.5 * (p.Y - 500));
+
+    static readonly RotatedCase[] OcsMinsertCases =
+    {
+        new("biblioteca", "Biblioteca", new[] { "K1[2,1]" },
+            Corners(2000, 1000, 4000, 2000, p => Add(K1Insertion, Rot(45, K1Local((1 * 5000, 2 * 4000), p)))), (-353.5534, 113081.4755), 6),
+        new("vestidor", "Vestidor", new[] { "C1", "C2" },
+            Corners(0, 0, 3000, 2000, p => Add((50000, 100000), Rot(30, Add(Add((1000, 0), Rot(90, (2 * p.X, p.Y))), (-500, -250))))), (48191.9873, 102131.5699), 12),
+        new("galeria", "Galeria", new[] { "Z1" },
+            Corners(0, 0, 4000, 1000, p => Ocs(Add((-70000, 100000), Rot(30, p)))), (68517.9492, 101433.0127), 4),
+    };
+
+    static readonly (double X, double Y) BauleraPoint = (68017.9492, 99433.0127);
+
+    static readonly (string Name, double X, double Y)[] OcsMinsertLabels =
+        OcsMinsertCases.Select(c => { var (x, y) = BoxCentre(c.Corners); return (Name: c.Name, X: x, Y: y); }).Append(("Baulera", BauleraPoint.X, BauleraPoint.Y)).ToArray();
+
+    static void RunOcsMinsert(string scratch, Func<string[], (int Exit, string Out, string Err)> cli, Func<string, string> roomsOf,
+        Func<(int Exit, string Out, string Err), string> r, Func<string, string> clip, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "ocs-minsert: " + name, detail);
+        var bytes = new UTF8Encoding(false).GetBytes(OcsMinsertDrawing());
+        var input = Path.Combine(scratch, OcsMinsertFileName);
+        File.WriteAllBytes(input, bytes);
+        BriefDraft InProcess(bool include) =>
+            BriefExtract.FromDxf(DxfReader.Parse(bytes, OcsMinsertFileName), new BriefExtractOptions { IncludeBlockRegions = include });
+        static bool Near(double? value, double expected, double tolerance = 1e-6) => value is { } v && Math.Abs(v - expected) < tolerance;
+        static string P((double X, double Y) p) => "(" + F(p.X) + ", " + F(p.Y) + ")";
+
+        var included = InProcess(true);
+        var excluded = InProcess(false);
+        foreach (var c in OcsMinsertCases)
+        {
+            var centre = BoxCentre(c.Corners);
+            var area = ShoelaceSquareMetres(c.Corners);
+            Check(Near(centre.X, c.Hand.X, 1e-3) && Near(centre.Y, c.Hand.Y, 1e-3) && Near(area, c.HandArea, 1e-9),
+                "oracle: " + c.Id + " independently transformed centre " + P(centre) + " and area " + F(area) + " m2 match the Python values " + P(c.Hand) + ", " + F(c.HandArea),
+                "corners " + string.Join(" ", c.Corners.Select(P)));
+            var room = included.Rooms.FirstOrDefault(x => x.Id == c.Id);
+            Check(room is { Region: { } region } && region.InsertPath.SequenceEqual(c.Path)
+                    && Near(region.At.X, centre.X) && Near(region.At.Y, centre.Y)
+                    && room.RegionAreaSquareMetres > 0 && Near(room.RegionAreaSquareMetres, area, 1e-9),
+                "in process IncludeBlockRegions: " + c.Id + " region InsertPath [" + string.Join(", ", c.Path) + "], centre " + P(centre) + " and positive area " + F(area) + " m2 of the independently transformed rectangle",
+                clip(JsonSerializer.Serialize(room, RoomJson)));
+            var plainRoom = excluded.Rooms.FirstOrDefault(x => x.Id == c.Id);
+            Check(plainRoom is { Region: null, RegionAreaSquareMetres: null },
+                "in process default options: " + c.Id + " has no region", clip(JsonSerializer.Serialize(plainRoom, RoomJson)));
+        }
+
+        // MINSERT spacing self-check: in K1's local frame (after removing insertion and rotation) the Biblioteca label lies in
+        // cell [2,1] when the offset is unscaled (the pinned reading) and in no cell when the offset is scaled by (2, 1.5).
+        var label = BoxCentre(OcsMinsertCases[0].Corners);
+        var local = Rot(-45, (label.X - K1Insertion.X, label.Y - K1Insertion.Y));
+        // Block rectangle relative to the base point, scaled: x in [2000, 6000], y in [750, 2250].
+        bool InCell((double X, double Y) offset) =>
+            local.X - offset.X > 2000 && local.X - offset.X < 6000 && local.Y - offset.Y > 750 && local.Y - offset.Y < 2250;
+        var cells = Enumerable.Range(0, 3).SelectMany(row => Enumerable.Range(0, 2).Select(column => (Row: row, Column: column))).ToArray();
+        var unscaled = cells.Where(cell => InCell((cell.Column * 5000.0, cell.Row * 4000.0))).ToArray();
+        var scaled = cells.Where(cell => InCell((cell.Column * 5000.0 * 2, cell.Row * 4000.0 * 1.5))).ToArray();
+        Check(unscaled.Length == 1 && unscaled[0] == (2, 1) && scaled.Length == 0,
+            "oracle: the Biblioteca label is in K1 cell [2,1] with unscaled spacing and in no cell with spacing scaled by the insert scale",
+            "local " + P(local) + " unscaled " + unscaled.Length.ToString(CultureInfo.InvariantCulture) + " scaled " + scaled.Length.ToString(CultureInfo.InvariantCulture));
+
+        // OCS containment self-check: Baulera lies inside the rectangle with mirrored insertion but unnegated rotation and
+        // outside the true Z1 rectangle; the product must give it no region.
+        static bool InRect((double X, double Y) q, (double X, double Y) origin, double degrees, bool mirrorX)
+        {
+            var l = Rot(-degrees, (q.X - origin.X, q.Y - origin.Y));
+            if (mirrorX) l = (-l.X, l.Y);
+            return l.X > 0 && l.X < 4000 && l.Y > 0 && l.Y < 1000;
+        }
+        var z1Origin = Ocs((-70000, 100000));
+        // True: world = origin + R(-30) * (-x, y), so local = mirror(R(30) * (q - origin)). Decoy: world = origin + R(30) * (-x, y).
+        var inTrue = InRect(BauleraPoint, z1Origin, -30, true);
+        var inDecoy = InRect(BauleraPoint, z1Origin, 30, true);
+        var galeriaInTrue = InRect(BoxCentre(OcsMinsertCases[2].Corners), z1Origin, -30, true);
+        Check(!inTrue && inDecoy && galeriaInTrue,
+            "oracle: Baulera is inside the unnegated-rotation mirror of Z1 and outside the true Z1 rectangle, which holds the Galeria label",
+            "inTrue " + inTrue + " inDecoy " + inDecoy + " galeria " + galeriaInTrue);
+        var baulera = included.Rooms.FirstOrDefault(x => x.Id == "baulera");
+        Check(baulera is { Region: null, RegionAreaSquareMetres: null } && included.Rooms.FirstOrDefault(x => x.Id == "galeria") is { Region: not null } && included.Rooms.Count == 4,
+            "in process IncludeBlockRegions: Baulera, outside the true mirrored-and-rotated Z1 rectangle, has no region; Galeria keeps it; four rooms",
+            clip(JsonSerializer.Serialize(included.Rooms.Select(x => new { x.Id, x.Region, x.RegionAreaSquareMetres }), RoomJson)));
+
+        var expectedWith = JsonSerializer.Serialize(included.Rooms, RoomJson);
+        var withOutput = Path.Combine(scratch, "ocs-minsert-with.json");
+        var flagged = cli(new[] { "cad-brief", input, withOutput, Flag });
+        var withRooms = roomsOf(withOutput);
+        Check(flagged.Exit == 0 && withRooms == expectedWith
+                && withRooms.Contains("\"InsertPath\":[\"K1[2,1]\"]", StringComparison.Ordinal)
+                && withRooms.Contains("\"InsertPath\":[\"C1\",\"C2\"]", StringComparison.Ordinal)
+                && withRooms.Contains("\"InsertPath\":[\"Z1\"]", StringComparison.Ordinal),
+            "with " + Flag + " draft.json rooms equal the in-process IncludeBlockRegions rooms (scaled rotated MINSERT cell, rotated nested insert, mirrored OCS insert)",
+            r(flagged) + " rooms " + clip(withRooms));
+
+        var expectedWithout = JsonSerializer.Serialize(excluded.Rooms, RoomJson);
+        var withoutOutput = Path.Combine(scratch, "ocs-minsert-without.json");
         var plain = cli(new[] { "cad-brief", input, withoutOutput });
         var withoutRooms = roomsOf(withoutOutput);
         Check(plain.Exit == 0 && withoutRooms == expectedWithout && withoutRooms != withRooms && !withoutRooms.Contains("\"InsertPath\":[\"", StringComparison.Ordinal)
