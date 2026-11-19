@@ -50,9 +50,10 @@ internal static partial class GenerateTypologyCommand
         // output was already refused as output_exists above and is not reached here; only a concurrent process replacing
         // the file between WriteNew and the Delete below, a theoretical race, could make the Delete remove another's file).
         // Any exception before the success line is complete removes the just-written file again, then propagates unchanged
-        // to Run's catch-all (the typed InternalError line with its diagnostic once). A failed removal is ignored: the typed
-        // line is still printed. If stdout itself throws part-way through the success line, that partial line may precede
-        // the typed line on stdout.
+        // to Run's catch-all (the typed InternalError line with its diagnostic once). P3-26: a failed removal (any exception,
+        // IO or not) writes one PartialOutputLeft line naming the file left behind to stderr (a failure writing it is
+        // swallowed too) and is otherwise swallowed, so the original exception is the one rethrown and reported. If stdout
+        // itself throws part-way through the success line, that partial line may precede the typed line on stdout.
         try
         {
             PostWriteProbe?.Invoke();
@@ -97,11 +98,8 @@ internal static partial class GenerateTypologyCommand
         }
         catch (Exception)
         {
-            try
-            {
-                File.Delete(output);
-            }
-            catch (Exception removal) when (removal is IOException or UnauthorizedAccessException) { }
+            try { PostWriteRemovalProbe?.Invoke(output); File.Delete(output); }
+            catch (Exception) { try { Console.Error.WriteLine(PartialOutputLeft + output); } catch (Exception) { } }
             throw;
         }
     }
@@ -110,6 +108,17 @@ internal static partial class GenerateTypologyCommand
     // Action that throws, so a non-refusal exception arises in Execute right after GltfExporter.WriteNew succeeded; it is
     // reset after the test.
     internal static Action? PostWriteProbe { get; set; }
+
+    // P3-26 test seam: null in production. tests/cli/GenerateTypologyTests.cs section 11 sets it (by reflection) to an
+    // Action<string> that throws, so the post-write cleanup's File.Delete(output) is never reached (as if the delete
+    // failed); Execute calls it with the output path right before that delete. It is reset after the test. Not named
+    // PostWriteProbe (P3-25's pin) or PostWriteDeleteProbe (GenerateCommand's P7-27 seam, whose pin counts that name over
+    // interfaces/).
+    internal static Action<string>? PostWriteRemovalProbe { get; set; }
+
+    // P3-26: the stderr line written before the internal-error diagnostic when the post-write cleanup could not delete the
+    // just-written output (followed by the output path exactly as given on the command line).
+    internal const string PartialOutputLeft = "generate-typology: could not delete partial output: ";
 
     static void Fail(string code, string? detail, string? skill = null)
     {
