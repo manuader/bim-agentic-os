@@ -44,7 +44,7 @@ internal static class JurisdictionResolveCommand
 
     // P10-27 test seam (null in production): invoked first inside Resolve's guarded block, so a test can force the typed
     // internal error through the CLI and the MCP tool alike.
-    internal static Action? WorkProbe;
+    internal static Action? WorkProbe { get; set; }
 
     public static void Run(string[] args) => Resolve(args).Print();
 

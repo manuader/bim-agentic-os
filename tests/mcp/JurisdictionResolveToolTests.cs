@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -180,9 +179,7 @@ internal static class JurisdictionResolveToolTests
 
         // ---- 5. typed internal error through the command's seam ----
         {
-            var probe = typeof(Bim.Cli.JurisdictionResolveCommand).GetField("WorkProbe", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
-            Check(probe is not null && probe.FieldType == typeof(Action) && probe.GetValue(null) is null, "JurisdictionResolveCommand has a static Action WorkProbe seam, null in production");
-            if (probe is not null)
+            Check(Bim.Cli.JurisdictionResolveCommand.WorkProbe is null, "the JurisdictionResolveCommand.WorkProbe seam is null in production");
             {
                 var failure = new InvalidOperationException("boom jurisdiction_resolve P10-27");
                 var diagnostic = "jurisdiction-resolve internal error: System.InvalidOperationException: boom jurisdiction_resolve P10-27";
@@ -190,7 +187,7 @@ internal static class JurisdictionResolveToolTests
                 var savedError = Console.Error;
                 JsonObject response;
                 (int Exit, string Line, string Error) cli;
-                probe.SetValue(null, (Action)(() => throw failure));
+                Bim.Cli.JurisdictionResolveCommand.WorkProbe = () => throw failure;
                 try
                 {
                     Console.SetError(errors);
@@ -198,7 +195,7 @@ internal static class JurisdictionResolveToolTests
                     finally { Console.SetError(savedError); }
                     cli = InProcessCli(["jurisdiction-resolve", "--code", "ar.caba"]);
                 }
-                finally { probe.SetValue(null, null); }
+                finally { Bim.Cli.JurisdictionResolveCommand.WorkProbe = null; }
                 Check(IsResult(response) && IsError(response) && Text(response) == InternalLine, "a defect is isError with the typed jurisdiction_resolve_internal_error line | " + Short(response.ToJsonString()));
                 Check(!Text(response).Contains("boom", StringComparison.Ordinal), "the defect message is not in the tool text (not McpServer's generic failure)");
                 Check(errors.ToString() == diagnostic + Environment.NewLine, "the IntentPlan diagnostic is on the server's stderr once | " + errors);
