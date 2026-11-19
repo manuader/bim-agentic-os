@@ -348,3 +348,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay242 (2026-11-19, cloud)
 - No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03/C05); 🔒 `git pull` (main 4422b56) then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and 🔒 N21 `... -Runs 1`. FYI: new read-only MCP tool jurisdiction_resolve (reinstall MCP with `scripts/install-mcp.ps1 -Build` when convenient to get it in Claude Desktop).
+
+## Relay243 (2026-11-19, cloud)
+- No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) then catalogue-report; 🔒 N21 `... -Runs 1`; `git pull` (main b3a8986). New MCP tool skill_list appears after restarting Claude Desktop if the MCP server is registered.
