@@ -169,9 +169,12 @@ internal static class GenerateTypologyCommand
         catch (GltfExportException error) { throw new Refusal(error.Code); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { throw new Refusal("output_io_error", error.GetType().Name); }
         // P3-25: from here on the file exists and is this run's own (WriteNew created it exclusively, so a pre-existing
-        // output was already refused as output_exists above and is never reached). Any exception before the success line
-        // is printed removes the just-written file again, then propagates unchanged to Run's catch-all (the typed
-        // InternalError line with its diagnostic once). A failed removal is ignored: the typed line is still printed.
+        // output was already refused as output_exists above and is not reached here; only a concurrent process replacing
+        // the file between WriteNew and the Delete below, a theoretical race, could make the Delete remove another's file).
+        // Any exception before the success line is complete removes the just-written file again, then propagates unchanged
+        // to Run's catch-all (the typed InternalError line with its diagnostic once). A failed removal is ignored: the typed
+        // line is still printed. If stdout itself throws part-way through the success line, that partial line may precede
+        // the typed line on stdout.
         try
         {
             PostWriteProbe?.Invoke();
@@ -216,7 +219,10 @@ internal static class GenerateTypologyCommand
         }
         catch (Exception)
         {
-            try { File.Delete(output); }
+            try
+            {
+                File.Delete(output);
+            }
             catch (Exception removal) when (removal is IOException or UnauthorizedAccessException) { }
             throw;
         }
