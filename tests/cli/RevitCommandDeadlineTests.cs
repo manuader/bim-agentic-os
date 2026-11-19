@@ -35,6 +35,10 @@ using Bim.Core;
 //      paging; a line due one tick after it is the read timeout, query_all_deadline_exceeded on a cut page (pinned
 //      bytes) and pipe_read_timeout on an uncut one. A non-final page completing exactly at the deadline leaves no time
 //      for the next page, which is refused query_all_deadline_exceeded without being sent.
+//   2d. P1-33: RevitCommandService.Send's read seam (ReadReplyLine, gated reads, no timing race): a reply line that
+//      completes after the timed wait gives up but before the read is cancelled is KEPT (the reply, verified by Run; an
+//      --all cut page ends succeeded); none by the cancel is pipe_read_timeout / query_all_deadline_exceeded (pinned).
+//   2e. P1-33: cutReads false never cuts: a last page replying after the deadline is kept (succeeded, byte-equal).
 //   4. Without the flag no deadline applies (the paging add-in lists all rows) and the stdout is byte-equal to a run
 //      with a deadline long enough; the CLI still waits 3 s on a stalled pipe without the flag.
 // Unit-tested only; no Revit.
@@ -204,6 +208,10 @@ internal static class RevitCommandDeadlineTests
 
         // ---- 2c. P1-31: the reply-at-deadline race ----
         ReplyAtDeadline(wallsText, model, check);
+
+        // ---- 2d/2e. P1-33: the pipe read's cancel-race branch and cutReads false late replies ----
+        CancelRace(root, wallsText, check);
+        UncutLateReply(wallsText, model, check);
 
         // A .NET pipe on Unix is a Unix domain socket under Path.GetTempPath(), whose path must fit 108 characters;
         // verify.ps1 points TMPDIR at a long evidence directory, so this section (and the CLI it starts) uses /tmp/.
@@ -391,6 +399,167 @@ internal static class RevitCommandDeadlineTests
             && waits.SequenceEqual(cutsDown.Skip(1)),
             "P1-31 race: a non-final reply line completing exactly at the deadline is kept, and the next page (no time left) is refused without being sent",
             earlyAt.Json + Calls());
+    }
+
+    // ---- 2d. P1-33: the pipe read's cancel-race branch (RevitCommandService.ReadReplyLine, the read seam of Send) ----
+    // A gated read: its line completes only when the test says so; like a real pipe read it ends cancelled when its token
+    // is cancelled first (or faults, or ignores the cancel). No timing race: the timed wait is 50 ms on a task that cannot
+    // complete during it, and the "after the wait gave up, before the cancel" point is the seam's afterWaitGivesUp hook.
+    sealed class GatedRead
+    {
+        public readonly TaskCompletionSource<string?> Line = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        readonly List<string> events = new();
+        public bool HonoursCancel = true;
+        public Exception? FaultOnCancel;
+        public Task<string?> Start(CancellationToken token)
+        {
+            Event("read");
+            token.Register(() =>
+            {
+                Event("cancel");
+                if (FaultOnCancel is { } fault) Line.TrySetException(fault);
+                else if (HonoursCancel) Line.TrySetCanceled(token);
+            });
+            return Line.Task;
+        }
+        public void Event(string name) { lock (events) events.Add(name); }
+        public string Events { get { lock (events) return string.Join(",", events); } }
+    }
+
+    static void CancelRace(string root, string wallsText, Action<bool, string, string> check)
+    {
+        const string RacePipe = "bim-agentic-os-2025-3333";
+        var wait = TimeSpan.FromMilliseconds(50);
+        static Exception? Thrown(Action call) { try { call(); return null; } catch (Exception error) { return error; } }
+        var single = new[] { 3100L };
+
+        // Kept: a line that completes after the timed wait gave up but before the read is cancelled is this request's reply.
+        var kept = new GatedRead();
+        string? keptLine = null;
+        var keptError = Thrown(() => keptLine = RevitCommandService.ReadReplyLine(kept.Start, wait, () => { kept.Event("gave up"); kept.Line.TrySetResult("late-line"); }));
+        check(keptError is null && keptLine == "late-line" && kept.Events == "read,gave up,cancel",
+            "P1-33 cancel race: a reply line completing after the timed wait gives up but before the read is cancelled is kept (returned as the reply)",
+            (keptError?.GetType().Name ?? "no error") + " line " + (keptLine ?? "null") + " events " + kept.Events);
+
+        // Not completed by the cancel: the read ends cancelled and the wait is the read timeout naming that wait.
+        var cancelled = new GatedRead();
+        var cancelledError = Thrown(() => RevitCommandService.ReadReplyLine(cancelled.Start, wait, () => cancelled.Event("gave up")));
+        check(cancelledError is RevitPipeReadTimeoutException { Timeout: var t } && t == wait && cancelled.Line.Task.IsCanceled && cancelled.Events == "read,gave up,cancel",
+            "P1-33 cancel race: with no line by the cancel the read is cancelled and RevitPipeReadTimeoutException names the 50 ms wait",
+            (cancelledError?.GetType().Name ?? "no error") + " events " + cancelled.Events);
+
+        // A line that completes only after the cancel (a read that ignores it) is dropped: still the read timeout.
+        var ignoring = new GatedRead { HonoursCancel = false };
+        var ignoringError = Thrown(() => RevitCommandService.ReadReplyLine(ignoring.Start, wait, () => ignoring.Event("gave up")));
+        ignoring.Line.TrySetResult("too-late-line");
+        check(ignoringError is RevitPipeReadTimeoutException && ignoring.Events == "read,gave up,cancel",
+            "P1-33 cancel race: a line completing only after the cancel is dropped (RevitPipeReadTimeoutException)", (ignoringError?.GetType().Name ?? "no error") + " events " + ignoring.Events);
+
+        // A read that faults on the cancel (a closed pipe) is still the read timeout, its late fault observed.
+        var faulting = new GatedRead { FaultOnCancel = new IOException("late fault") };
+        var faultingError = Thrown(() => RevitCommandService.ReadReplyLine(faulting.Start, wait, () => faulting.Event("gave up")));
+        check(faultingError is RevitPipeReadTimeoutException && faulting.Line.Task.IsFaulted,
+            "P1-33 cancel race: a read faulting on the cancel is still RevitPipeReadTimeoutException, not the late IOException", faultingError?.GetType().Name ?? "no error");
+
+        // Within the wait: the line is returned and the hook never runs; a read fault within it passes through as is.
+        var prompt = new GatedRead();
+        prompt.Line.TrySetResult("prompt-line");
+        var promptLine = RevitCommandService.ReadReplyLine(prompt.Start, wait, () => prompt.Event("gave up"));
+        var closed = new GatedRead();
+        closed.Line.TrySetResult(null);
+        var closedLine = RevitCommandService.ReadReplyLine(closed.Start, wait, () => closed.Event("gave up"));
+        var broken = new GatedRead();
+        broken.Line.TrySetException(new IOException("broken"));
+        var brokenError = Thrown(() => RevitCommandService.ReadReplyLine(broken.Start, wait, () => broken.Event("gave up")));
+        check(promptLine == "prompt-line" && prompt.Events == "read" && closedLine is null && closed.Events == "read"
+            && brokenError is IOException { Message: "broken" } and not RevitPipeReadTimeoutException && broken.Events == "read",
+            "P1-33 seam: a line (or end of pipe, null) within the wait is returned without the hook; a read fault within it passes through",
+            "prompt " + prompt.Events + " closed " + closed.Events + " broken " + (brokenError?.GetType().Name ?? "none") + " " + broken.Events);
+        check(Thrown(() => RevitCommandService.ReadReplyLine(new GatedRead().Start, TimeSpan.Zero)) is ArgumentOutOfRangeException
+            && Thrown(() => RevitCommandService.ReadReplyLine(new GatedRead().Start, RevitCommandService.MaxReadTimeout + TimeSpan.FromTicks(1))) is ArgumentOutOfRangeException
+            && Thrown(() => RevitCommandService.ReadReplyLine(null!, wait)) is ArgumentNullException,
+            "P1-33 seam: ReadReplyLine refuses a zero or over-24 h read timeout and a null read", "");
+
+        // Through RevitCommandService.Run: the kept line is verified and returned byte-equal to a prompt reply; the
+        // cancelled one is pipe_read_timeout with the read-only detail naming 50 ms.
+        var expected = RevitCommandService.Run(RacePipe, wallsText, RevitCommandPolicy.None, (_, line) => PageReply(line, single)).Line;
+        var runKept = RevitCommandService.Run(RacePipe, wallsText, RevitCommandPolicy.None, (_, line) =>
+        {
+            var gate = new GatedRead();
+            return RevitCommandService.ReadReplyLine(gate.Start, wait, () => gate.Line.TrySetResult(PageReply(line, single)));
+        });
+        check(!runKept.IsError && runKept.Forwarded && runKept.Line == expected,
+            "P1-33 cancel race through RevitCommandService.Run: the kept late line is the verified reply, byte-equal to a prompt one", runKept.Line);
+        var runTimeout = RevitCommandService.Run(RacePipe, wallsText, RevitCommandPolicy.None, (_, _) => RevitCommandService.ReadReplyLine(new GatedRead().Start, wait));
+        const string RunTimeout = """{"status":"failed","code":"pipe_read_timeout","field":"pipe_name","detail":"no reply within 50 ms; read-only command, the document is unchanged and the request may be resent (the add-in serves one request at a time, so a resend while it is still busy may get pipe_connect_timeout: retry later)"}""";
+        check(runTimeout.IsError && runTimeout.Forwarded && runTimeout.Line == RunTimeout,
+            "P1-33 cancel race through RevitCommandService.Run: no line by the cancel is pipe_read_timeout (pinned bytes)", runTimeout.Line);
+
+        // Through the --all deadline (50 ms deadline, 30 min read timeout, frozen clock: the page's connect and read are
+        // cut to 50 ms): the kept late line ends the listing succeeded; without it the page is query_all_deadline_exceeded.
+        var clock = TimeSpan.Zero;
+        var singleExpected = RevitElementQueryPaging.All(wallsText, new RevitServiceTransport(RacePipe, RevitCommandPolicy.None, (_, line) => PageReply(line, single))).ToJson();
+        string Deadlined(bool lineBeforeCancel)
+        {
+            var reads = new List<string>();
+            var transport = new Bim.Cli.RevitDeadlineTransport(RacePipe, RevitCommandPolicy.None, (_, _) => throw new InvalidOperationException("uncut transport used"),
+                TimeSpan.FromMinutes(30), wait, () => clock, _ => throw new InvalidOperationException("cut transport used"),
+                connectThenRead: (left, readAfter) => (_, line) =>
+                {
+                    var read = readAfter();
+                    reads.Add(((long)left.TotalMilliseconds).ToString(CultureInfo.InvariantCulture) + "/" + ((long)read.TotalMilliseconds).ToString(CultureInfo.InvariantCulture));
+                    var gate = new GatedRead();
+                    return RevitCommandService.ReadReplyLine(gate.Start, read, () => { if (lineBeforeCancel) gate.Line.TrySetResult(PageReply(line, single)); });
+                });
+            return RevitElementQueryPaging.All(wallsText, transport).ToJson() + "|" + string.Join(",", reads);
+        }
+        var deadlineKept = Deadlined(true);
+        check(deadlineKept == singleExpected + "|50/50", "P1-33 cancel race under the --all deadline: the late line kept at the cut read ends the listing succeeded (byte-equal)", deadlineKept);
+        var deadlineLost = Deadlined(false);
+        check(deadlineLost == RaceExceededAt(50, 0) + "|50/50", "P1-33 cancel race under the --all deadline: no line by the cancel is query_all_deadline_exceeded (pinned bytes)", deadlineLost);
+
+        // Static: the real pipe read (SendMeasured) goes through ReadReplyLine with no hook, its only timed wait.
+        var source = File.ReadAllText(Path.Combine(root, "core", "Bim.Core", "RevitCommandsService.cs")).ReplaceLineEndings("\n");
+        var sendStart = source.IndexOf("static string? SendMeasured(", StringComparison.Ordinal);
+        var sendEnd = sendStart < 0 ? -1 : source.IndexOf("\n    }\n", sendStart, StringComparison.Ordinal);
+        var sendBody = sendEnd < 0 ? "" : source[sendStart..sendEnd];
+        check(sendBody.Contains("return ReadReplyLine(token => reader.ReadLineAsync(token).AsTask(), readTimeout);", StringComparison.Ordinal)
+            && !sendBody.Contains(".Wait(", StringComparison.Ordinal) && !sendBody.Contains("Cancel()", StringComparison.Ordinal),
+            "P1-33 static: RevitCommandService.SendMeasured reads the reply line only through ReadReplyLine, without the test hook", sendBody.Length > 400 ? sendBody[^400..] : sendBody);
+    }
+
+    // ---- 2e. P1-33: cutReads false (the MCP server on an injected transport) never cuts the in-flight page ----
+    // The deadline is checked only before a page is sent: a last page whose reply comes back after the deadline is kept
+    // (the listing succeeds, byte-equal to RevitServiceTransport paging); a non-final late page's reply is kept and the
+    // next page is refused query_all_deadline_exceeded unsent. Neither the read nor the connect is cut.
+    static void UncutLateReply(string wallsText, long[] model, Action<bool, string, string> check)
+    {
+        const string RacePipe = "bim-agentic-os-2025-3334";
+        var single = new[] { 3100L };
+        var clock = TimeSpan.Zero;
+        var sent = 0;
+        var cuts = 0;
+        string Listing(long[] rows)
+        {
+            clock = TimeSpan.Zero; sent = 0; cuts = 0;
+            var transport = new Bim.Cli.RevitDeadlineTransport(RacePipe, RevitCommandPolicy.None,
+                (_, line) => { sent++; clock += TimeSpan.FromSeconds(4); return PageReply(line, rows); },
+                TimeSpan.FromMinutes(30), TimeSpan.FromSeconds(3), () => clock,
+                _ => { cuts++; return (_, _) => throw new InvalidOperationException("cut read"); },
+                listing: Bim.Cli.RevitDeadlineTransport.McpListing, cutReads: false,
+                connectThenRead: (_, _) => { cuts++; return (_, _) => throw new InvalidOperationException("cut connect"); });
+            return RevitElementQueryPaging.All(wallsText, transport).ToJson();
+        }
+        var singleExpected = RevitElementQueryPaging.All(wallsText, new RevitServiceTransport(RacePipe, RevitCommandPolicy.None, (_, line) => PageReply(line, single))).ToJson();
+        var last = Listing(single);
+        check(last == singleExpected && sent == 1 && cuts == 0 && clock == TimeSpan.FromSeconds(4),
+            "P1-33 cutReads false: a last page whose reply returns 1 s after the 3 s deadline is kept (succeeded, byte-equal, nothing cut)",
+            last + " sent " + N(sent) + " cuts " + N(cuts));
+        var early = Listing(model);
+        var earlyExpected = RaceExceededAt(3000, 1).Replace("the --all listing", "the all:true listing", StringComparison.Ordinal);
+        check(early == earlyExpected && sent == 1 && cuts == 0,
+            "P1-33 cutReads false: a non-final page replying after the deadline is kept, the next page is query_all_deadline_exceeded unsent (pinned bytes)",
+            early + " sent " + N(sent) + " cuts " + N(cuts));
     }
 
     const string AbsentExceededCli = """{"status":"failed","code":"query_all_deadline_exceeded","field":null,"detail":"the --all listing took longer than its 1000 ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor","pages":0,"matched":null,"returned":0,"elements":[]}""";
