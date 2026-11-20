@@ -1908,3 +1908,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay249
 - 2026-11-20T10:53:05Z lock taken (session_014pxpsRg1XcA7MUy5bLcJZM relay249; was FREE, relay248 released 2026-11-20T10:27:10Z)
+- 2026-11-20T10:53:38Z picked P1-36 (phase 1), P5-30 (phase 5), P7-24 (phase 7) — oldest-touched (relay246); disjoint files (RevitDeadlineTransport.cs + RevitCommandDeadlineTests.cs fakes + McpServer.cs comment only by P1-36; new sections in tests/cli/SkillListTests.cs + new tests/mcp file by P5-30; new tests/packaging or tests/mcp file for packaged MCP by P7-24 — P5-30/P7-24 must not both edit tests/mcp/Program.cs registration concurrently → P7-24 registers in tests/packaging if possible). Workers spawned.
