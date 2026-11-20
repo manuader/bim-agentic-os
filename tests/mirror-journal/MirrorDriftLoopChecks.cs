@@ -2251,6 +2251,8 @@ static class MirrorDriftLoopChecks
             Check(handed == wireBytes && cliQueued == wireBytes - MidArgsBreakBytes && seamQueued == cliQueued,
                 "linux: every wire byte handed (write completed); queued: the whole unread remainder in both runs", measured);
         else if (OperatingSystem.IsMacOS())
+        {
+            Check(false, "macos P2-35 probe: receive buffer set to 32768 by the fake; queued follows InBufferSize or the client's send buffer?", measured + " in_buffer=" + inBuffer);
             // P2-33 probe red (run 44582611952): wire 39757 bytes, 13 reports, handed 12288 = the 4096 bytes the fake read
             // plus its socket's 8192-byte receive buffer (InBufferSize; a new Unix socket's send buffer, a distinct setting,
             // was also 8192 and is only reported in the measured detail); the next
@@ -2262,6 +2264,7 @@ static class MirrorDriftLoopChecks
             Check(inBuffer > 0 && handed == MidArgsBreakBytes + inBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
                 && seamQueued == inBuffer && handed == MidArgsBreakBytes + seamQueued && cliQueued == seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
                 "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize) < wire bytes (still writing); queued (FIONREAD) == InBufferSize (= the default unix send buffer, cause not isolated) in both runs, less than the CLI's unread remainder", measured);
+        }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
 
