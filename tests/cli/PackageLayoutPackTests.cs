@@ -556,8 +556,7 @@ internal static class PackageLayoutPackTests
             var planted = Path.Combine(copy, "mcp", "Bim.Gltf.dll");
             File.Copy(Path.Combine(copy, "cli", "Bim.Gltf.dll"), planted);
             var plantedFile = Leaks(copy);
-            // PROBE (relay253 red): inverted expectation, proves the planted file is measured; flipped in the green commit.
-            Check(plantedFile.Count == 0, "self-test PROBE: a planted mcp/Bim.Gltf.dll reads as no leak", Show(plantedFile));
+            Check(Exactly(plantedFile, "file mcp/Bim.Gltf.dll"), "self-test: a planted mcp/Bim.Gltf.dll file in a copy of the layout is caught (and only it)", Show(plantedFile));
             File.Delete(planted);
 
             foreach (var (name, property) in new[] { ("sbom.json", "assemblies"), ("manifest.json", "files") })
