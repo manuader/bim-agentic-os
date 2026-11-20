@@ -1130,7 +1130,7 @@ internal static class RevitCommandDeadlineTests
             var disposedState = OperatingSystem.IsWindows() ? "completed in " : "faulted in ";
             check(honoured.Outcome[^1].StartsWith("canceled in ", StringComparison.Ordinal) && disposed.Outcome[^1].StartsWith(disposedState, StringComparison.Ordinal)
                 && faulting.Outcome[^1].StartsWith("faulted in ", StringComparison.Ordinal) && control.Outcome[^1].StartsWith("faulted in ", StringComparison.Ordinal),
-                "P1-37 real pipe states pinned: the production read form ends canceled; a pipe disposed under a read ignoring the cancel ends " + disposedState.TrimEnd() + " here",
+                "P1-37 real pipe states pinned: the production read form ends canceled; a pipe disposed under a read ignoring the cancel ends " + disposedState[..^4] + " on this OS",
                 "A " + honoured.Outcome[^1] + " ; B " + disposed.Outcome[^1] + " ; C " + faulting.Outcome[^1] + " ; D " + control.Outcome[^1]);
 
             Volatile.Write(ref step, "E");
