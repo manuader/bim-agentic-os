@@ -180,6 +180,12 @@ internal static class GenerateTypologyWriteLinkTests
             ("a method group", "Action<string, string?, string?> f = GenerateTypologyCommand . Fail;", true),
             ("Execute by name", "GenerateTypologyCommand.Execute(args);", true),
             ("the post-write seam", "GenerateTypologyCommand.PostWriteProbe = null;", true),
+            // P3-28: the P3-26 removal seam and cleanup-report constant are CLI-only members too.
+            ("the post-write removal seam", "GenerateTypologyCommand.PostWriteRemovalProbe = null;", true),
+            ("the removal seam split over lines", "Bim.Cli.GenerateTypologyCommand\n        .PostWriteRemovalProbe?.Invoke(path);", true),
+            ("the partial-output line", "var s = GenerateTypologyCommand.PartialOutputLeft;", true),
+            ("the partial-output line in a comment", "// GenerateTypologyCommand.PartialOutputLeft\nvar x = 1;", false),
+            ("longer removal / partial-output names", "GenerateTypologyCommand.PostWriteRemovalProbes(); var t = GenerateTypologyCommand.PartialOutputLeftover;", false),
             ("a using static", "using static Bim.Cli.GenerateTypologyCommand;\nRun(args);", true),
             ("a line comment", "// GenerateTypologyCommand.Run(args)\nvar x = 1;", false),
             ("a block comment", "/* GenerateTypologyCommand.Run(\n */ var x = 1;", false),
