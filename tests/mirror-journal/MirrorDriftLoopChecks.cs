@@ -2257,8 +2257,8 @@ static class MirrorDriftLoopChecks
             // piece's Write was pending when the fake closed (27469 bytes never handed). The fake does not measure queued
             // bytes on macOS (its FakePipeQueue answers -1 off Windows and Linux) → P2-34.
             Check(inBuffer > 0 && handed == MidArgsBreakBytes + inBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
-                && cliQueued == -1 && seamQueued == -1,
-                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize) < wire bytes (still writing); queued not measured by the fake (-1) in both runs", measured);
+                && cliQueued == long.MinValue && seamQueued == long.MinValue,
+                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize) < wire bytes (still writing); P2-34 probe: queued measured by FIONREAD (deliberately impossible pin)", measured);
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
 

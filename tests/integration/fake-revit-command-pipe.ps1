@@ -88,6 +88,7 @@ if ($breakAfter -gt 0) {
     # P2-31: the bytes queued in the server end of a connection (see the header).
     Add-Type -TypeDefinition @'
 using System;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 public static class FakePipeQueue
 {
@@ -104,6 +105,22 @@ public static class FakePipeQueue
             var raw = handle.DangerousGetHandle();
             if (OperatingSystem.IsWindows()) return PeekNamedPipe(raw, IntPtr.Zero, 0, IntPtr.Zero, out var available, IntPtr.Zero) ? available : -1L - Marshal.GetLastWin32Error();
             if (OperatingSystem.IsLinux()) return ioctl(checked((int)raw), (UIntPtr)0x541Bu, out var queued) == 0 ? queued : -1L - Marshal.GetLastWin32Error();
+            if (OperatingSystem.IsMacOS())
+            {
+                // P2-34: ioctl(fd, FIONREAD = 0x4004667F). ioctl is variadic and Apple arm64 passes a variadic argument on
+                // the stack, which the fixed DllImport above cannot express, so FIONREAD is reached through Socket.Available
+                // (the runtime's native ioctl FIONREAD) on a non-owning handle to the same fd. The Socket is neither disposed
+                // nor finalized: either could shut the fake's own socket down.
+                var fd = new SafeSocketHandle(raw, false);
+                GC.SuppressFinalize(fd);
+                try
+                {
+                    var socket = new Socket(fd);
+                    GC.SuppressFinalize(socket);
+                    return socket.Available;
+                }
+                catch (SocketException error) { return -1L - (error.ErrorCode == 0 ? 1 : Math.Abs(error.ErrorCode)); }
+            }
             return -1;
         }
         finally { if (added) handle.DangerousRelease(); }
