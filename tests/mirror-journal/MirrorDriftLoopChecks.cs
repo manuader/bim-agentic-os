@@ -2251,17 +2251,27 @@ static class MirrorDriftLoopChecks
             Check(handed == wireBytes && cliQueued == wireBytes - MidArgsBreakBytes && seamQueued == cliQueued,
                 "linux: every wire byte handed (write completed); queued: the whole unread remainder in both runs", measured);
         else if (OperatingSystem.IsMacOS())
+        {
             // P2-33 probe red (run 44582611952): wire 39757 bytes, 13 reports, handed 12288 = the 4096 bytes the fake read
-            // plus its socket's 8192-byte receive buffer (InBufferSize; a new Unix socket's send buffer, a distinct setting,
-            // was also 8192 and is only reported in the measured detail); the next
-            // piece's Write was pending when the fake closed (27469 bytes never handed).
-            // P2-34 probe red (run 44671009756): the fake's FIONREAD (Socket.Available) found 8192 bytes queued in both
-            // runs = InBufferSize = the default unix send buffer (8192 each on XNU AF_UNIX, where the writer is limited by
-            // its own send buffer: cause not isolated), and handed == the bytes read + the bytes queued; the CLI process's
-            // queued count is the same 8192, less than its unread remainder (its write still pending too).
-            Check(inBuffer > 0 && handed == MidArgsBreakBytes + inBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
-                && seamQueued == inBuffer && handed == MidArgsBreakBytes + seamQueued && cliQueued == seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
-                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize) < wire bytes (still writing); queued (FIONREAD) == InBufferSize (= the default unix send buffer, cause not isolated) in both runs, less than the CLI's unread remainder", measured);
+            // plus 8192; the next piece's Write was pending when the fake closed (27469 bytes never handed).
+            // P2-34 probe red (run 44671009756): FIONREAD (Socket.Available) found 8192 queued in both runs, equal to both
+            // InBufferSize and the default unix send buffer (cause not isolated).
+            // P2-35 probe red (run 44748588269): with the fake's receive buffer set to 32768 (InBufferSize 32768 in both
+            // broken-after lines), queued stayed 8192 = the client's default unix send buffer and handed stayed 12288 = the
+            // bytes read + that send buffer: on XNU AF_UNIX the writer is limited by its own send buffer, not the reader's
+            // receive buffer. Pinned as relations to UnixSendBuffer() and InBufferSize (no literal byte counts).
+            // UnixSendBuffer() measures a fresh Unix socket's default send buffer (as P2-33 does), taken as the CLI
+            // client's; handed % WriteProgressChunk == 0 assumes that send buffer is a multiple of the 1024-byte piece.
+            // The fake raises its receive buffer relative to its own defaults (header), so the precondition is checked on
+            // its own: a red there is a setup failure (a SetReceiveBuffer sentinel parses as -1), not a relation failure.
+            var sendBuffer = UnixSendBuffer();
+            var macDetail = measured + " in_buffer=" + inBuffer + " send_buffer=" + sendBuffer;
+            Check(sendBuffer > 0 && inBuffer > sendBuffer,
+                "macos precondition: the fake's receive buffer (InBufferSize, both broken-after lines equal) was raised above the client's default unix send buffer", macDetail);
+            Check(sendBuffer > 0 && inBuffer > sendBuffer && handed == MidArgsBreakBytes + sendBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
+                && seamQueued == sendBuffer && seamQueued < inBuffer && handed == MidArgsBreakBytes + seamQueued && cliQueued == seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
+                "macos: with the fake's receive buffer (InBufferSize) raised above the client's unix send buffer, queued (FIONREAD) == the client's send buffer < InBufferSize in both runs and handed == the bytes the fake read plus that send buffer < wire bytes (still writing): the writer's send buffer, not the reader's receive buffer, bounds the queue", macDetail);
+        }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
 
