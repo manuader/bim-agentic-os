@@ -287,10 +287,10 @@ internal static class InternalErrorDelegationTests
                 if (File.Exists(throwingOutput)) File.Delete(throwingOutput);
             }
             // P7-30: generate-prototypes' catch (Refusal) sets the exit code, then runs Fail guarded, so there the stdout failure
-            // is contained (nothing escapes Run, exit 1; tests/cli/GeneratePrototypesTests.cs section 11); the other verbs still
-            // let it escape.
-            if (verb == "generate-prototypes")
-                Check(escaped.Value is null && escaped.Exit == 1, verb + ": the forced run whose stdout write fails is contained by Run (P7-30): nothing escapes, exit 1",
+            // is contained (nothing escapes Run, exit 1; tests/cli/GeneratePrototypesTests.cs section 11); P3-30: generate-typology
+            // likewise (tests/cli/GenerateTypologyTests.cs section 13); the other verbs still let it escape.
+            if (verb is "generate-prototypes" or "generate-typology")
+                Check(escaped.Value is null && escaped.Exit == 1, verb + ": the forced run whose stdout write fails is contained by Run (P7-30 / P3-30): nothing escapes, exit 1",
                     (escaped.Value is { } contained ? "threw " + contained.GetType().FullName + ": " + contained.Message : "threw nothing") + " exit " + escaped.Exit.ToString(CultureInfo.InvariantCulture));
             else
                 Check(ReferenceEquals(escaped.Value, stdoutFailure), verb + ": the forced run whose stdout write fails throws out of Run", escaped.Value?.GetType().FullName + ": " + escaped.Value?.Message);
