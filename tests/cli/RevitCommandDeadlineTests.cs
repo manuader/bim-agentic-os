@@ -1124,8 +1124,13 @@ internal static class RevitCommandDeadlineTests
             check(honoured.Collected && honoured.Outcome.Count == 3 && honoured.Outcome[0] == timeout && honoured.Outcome[1] == "served p1-37 A"
                 && !honoured.Outcome[2].StartsWith("pending", StringComparison.Ordinal) && !honoured.Outcome[2].Contains("after 2 s", StringComparison.Ordinal) && honoured.Faults.Length == 0,
                 "P1-37 real pipe: the production read form (honouring the cancel, pipe disposed at once) times out and raises no UnobservedTaskException", Describe(honoured));
-            // P1-37 probe: the measured terminal state of each abandoned real-pipe read, per OS (deliberately red).
-            check(false, "P1-37 probe on " + System.Runtime.InteropServices.RuntimeInformation.OSDescription + ": abandoned real-pipe read states",
+            // Measured (CI probe run 44788387750): A ends canceled on Linux, macOS and Windows; B (pipe disposed under a read
+            // ignoring the cancel) ends faulted on Linux and macOS (the late fault the continuation observes) and completes
+            // successfully on Windows; C and D fault (decoder) everywhere.
+            var disposedState = OperatingSystem.IsWindows() ? "completed in " : "faulted in ";
+            check(honoured.Outcome[^1].StartsWith("canceled in ", StringComparison.Ordinal) && disposed.Outcome[^1].StartsWith(disposedState, StringComparison.Ordinal)
+                && faulting.Outcome[^1].StartsWith("faulted in ", StringComparison.Ordinal) && control.Outcome[^1].StartsWith("faulted in ", StringComparison.Ordinal),
+                "P1-37 real pipe states pinned: the production read form ends canceled; a pipe disposed under a read ignoring the cancel ends " + disposedState.TrimEnd() + " here",
                 "A " + honoured.Outcome[^1] + " ; B " + disposed.Outcome[^1] + " ; C " + faulting.Outcome[^1] + " ; D " + control.Outcome[^1]);
 
             Volatile.Write(ref step, "E");
