@@ -747,7 +747,7 @@ A relative path argument while the CLI's working directory has been deleted (`Pa
 
 ## generate-prototypes diagnostic write failure (P7-28)
 
-`interfaces/cli/GenerateWrite.cs` `Run` catch-all: the internal-error diagnostic is written to `Console.Error` inside a try/catch that swallows any exception, then the envelope is printed without it (`with { Diagnostic = null }`). Normal output is unchanged (diagnostic, then `{"status":"failed","code":"generate_prototypes_internal_error"}`, exit 1). A stderr that rejects or throws loses only the diagnostic: the typed stdout line and exit 1 still appear and nothing escapes `Run`; P7-26/P7-27 cleanup (delete, or the left-behind-path line) is unchanged. A throwing stdout in the catch-all still escapes `Run` (→ P7-29).
+`interfaces/cli/GenerateWrite.cs` `Run` catch-all: the internal-error diagnostic is written to `Console.Error` inside a try/catch that swallows any exception, then the envelope is printed without it (`with { Diagnostic = null }`). Normal output is unchanged (diagnostic, then `{"status":"failed","code":"generate_prototypes_internal_error"}`, exit 1). A stderr that rejects or throws loses only the diagnostic: the typed stdout line and exit 1 still appear and nothing escapes `Run`; P7-26/P7-27 cleanup (delete, or the left-behind-path line) is unchanged. A throwing stdout in the catch-all is contained since P7-29 (below).
 
 ## MCP binary without generate-prototypes writer (P4-27)
 
@@ -768,3 +768,15 @@ A relative path argument while the CLI's working directory has been deleted (`Pa
 ## MCP binary without Bim.Gltf metadata (P4-28)
 
 The Release `Bim.Mcp.dll` has no AssemblyRef, TypeRef, MemberRef or user string naming Bim.Gltf (zero GltfExporter MemberRefs; `Bim.Cli.dll` positive control). `interfaces/mcp/Bim.Mcp.csproj` still references `Bim.Gltf.csproj` only so the package keeps `mcp/Bim.Gltf.dll`, which the P10-18 package-layout pin requires; the test allows the reference only while that pin names the file, and `Bim.Mcp.deps.json` lists Bim.Gltf exactly when the csproj references it. Removing both together → P4-29. Evidence: unit-tested.
+
+## MCP repeated argument names (P10-31)
+
+`interfaces/mcp/McpServer.cs` `CallTool`: after the params shape checks and the unknown_tool lookup, any top-level name of the `arguments` object given more than once (ordinal over the decoded names, so a `\u` escape of the same name counts; declared or undeclared) refuses JSON-RPC -32602 with the message `invalid_params: repeated argument <name>`, before the unexpected-argument, missing-argument and type checks and before the tool runs (no Revit transport send). Before P10-31 the last value won for every tool (jurisdiction_resolve and skill_list refused with their own usage -32602; those tool-local checks are removed as unreachable). Repeated keys inside argument values stay with each tool (revit `document` → `envelope_invalid`). Calls without a repeated name are byte-unchanged. Evidence: unit-tested (`tests/mcp/RepeatedArgumentToolTests.cs`, CI red 44698697442, green 44700180558, review green 44707952119). Params/envelope repeats and a lone-surrogate name → P10-33.
+
+## DXF inserts under a non-axis extrusion (P6-30)
+
+An INSERT or MINSERT whose extrusion normal has a horizontal component above 1e-6 (both the Wz×N and the 1/64 Wy×N arbitrary-axis branches) is reported, never projected: one `ocs-non-planar` reader warning at its line and an Unsupported entry (handle, INSERT, `ocs-non-planar`); DxfExploder places no cells and cad-brief gives its labels no region (`area-missing`). A normal within 1e-6 of ±Z is placed through the computed OCS axes including elevation × N. MINSERT cell geometry (rotation, negative scales and spacings, mirrored and near-Z OCS) equals ezdxf 1.4.2 within 1e-6 (offline `tests/cad/tools/minsert_ezdxf_centres.py`, not run in CI). Evidence: unit-tested (`tests/cad/MinsertEzdxfTests.cs`, CI green 44698972433, review green 44711402418; test-only). Reader warnings in the brief and a CLI pin → P6-32.
+
+## generate-prototypes stdout write failure (P7-29)
+
+`interfaces/cli/GenerateWrite.cs` `Run` catch-all sets `Environment.ExitCode` to the internal error's exit (1) before printing the typed line inside a try/catch, so a stdout that rejects, throws or is disposed (also after a failed success-line write) leaves exit 1 and nothing escapes `Run`; the diagnostic write stays guarded (P7-28); normal bytes and order unchanged. The guarded block's own diagnostic write (`GenerateCommand.InternalRefusal`) throwing is contained (pinned). The P4-27 Run pin carries a second documented delta. Evidence: unit-tested (`tests/cli/GeneratePrototypesTests.cs` section 10, CI red 44698735317, green 44701423354). A throwing stdout in `Fail` (typed refusals) still escapes → P7-30.
