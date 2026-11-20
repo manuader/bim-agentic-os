@@ -25,8 +25,14 @@ internal static partial class GenerateCommand
         // line with IntentPlan's stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. Before the
         // write no output file exists; P7-26: Execute removes the file it just wrote before an exception after
         // GltfExporter.WriteNew succeeded reaches this catch. The guarded block's own failures already arrive above as
-        // Refusal(InternalError) with their diagnostic written once.
-        catch (Exception error) { IntentPlan.Internal("generate-prototypes", error).Print(); }
+        // Refusal(InternalError) with their diagnostic written once. P7-28: the diagnostic is written on its own, guarded, so a
+        // stderr that throws (any exception) drops only that line: the typed line still reaches stdout, exit 1, nothing escapes.
+        catch (Exception error)
+        {
+            var internalError = IntentPlan.Internal("generate-prototypes", error);
+            try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { }
+            (internalError with { Diagnostic = null }).Print();
+        }
     }
 
     static void Execute(string[] args)
