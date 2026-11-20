@@ -326,7 +326,7 @@ internal static class InternalErrorDelegationTests
             };
             foreach (var (name, source, clean) in cases)
             {
-                var uses = Hygiene(source);
+                var uses = LexerGuard(Hygiene(source), source, "GuardedWorkProbe");
                 Check(uses.Clean == clean, "seam hygiene self-test: " + name + (clean ? " is clean" : " is caught"), uses.Detail);
             }
 
@@ -337,7 +337,8 @@ internal static class InternalErrorDelegationTests
                 .OrderBy(f => f, StringComparer.Ordinal).ToArray();
             Check(files.Length > 0, "seam hygiene: interfaces/ code found from the repository root", interfacesDir);
             var found = files
-                .Select(f => (Name: Path.GetRelativePath(root, f).Replace('\\', '/'), Uses: Hygiene(File.ReadAllText(f))))
+                .Select(f => (Name: Path.GetRelativePath(root, f).Replace('\\', '/'), Uses: Hygiene(File.ReadAllText(f)), Text: File.ReadAllText(f)))
+                .Select(f => (f.Name, Uses: LexerGuard(f.Uses, f.Text, "GuardedWorkProbe")))
                 .Where(f => f.Uses.Mentions > 0).ToArray();
             var expected = new[] { "interfaces/cli/DocRealizedCommand.cs", "interfaces/cli/GenerateCommand.cs", "interfaces/cli/GenerateTypologyCommand.cs", "interfaces/cli/PlanLayoutsCommand.cs" };
             Check(found.Select(f => f.Name).OrderBy(n => n, StringComparer.Ordinal).SequenceEqual(expected),
@@ -560,7 +561,19 @@ internal static class InternalErrorDelegationTests
         var clean = declarations == 1 && reads == 1 && others.Count == 0 && kept == declarations + reads;
         var detail = name + ": declarations " + declarations.ToString(CultureInfo.InvariantCulture) + " reads " + reads.ToString(CultureInfo.InvariantCulture)
             + " mentions with literals kept " + kept.ToString(CultureInfo.InvariantCulture) + " others [" + string.Join(" | ", others) + "]";
-        return (clean, Math.Max(kept, declarations + reads + others.Count), detail);
+        return LexerGuard((clean, Math.Max(kept, declarations + reads + others.Count), detail), text, name);
+    }
+
+    // P3-27: CodeOf does not model raw """ strings or interpolated verbatim @$"/$@" strings; a '"' and '//' inside one
+    // can make the rest of a line read as a comment, hiding a use from both counts. So a source whose unstripped text
+    // names the seam at all must contain none of those openers: otherwise it is not clean (and counts as a mention).
+    // CodeOf itself is unchanged for its other callers.
+    static (bool Clean, int Mentions, string Detail) LexerGuard((bool Clean, int Mentions, string Detail) verdict, string text, string name)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(text, @"\b" + System.Text.RegularExpressions.Regex.Escape(name) + @"\b")) return verdict;
+        var openers = new[] { "\"\"\"", "@$\"", "$@\"" }.Where(o => text.Contains(o, StringComparison.Ordinal)).ToArray();
+        return openers.Length == 0 ? verdict
+            : (false, Math.Max(verdict.Mentions, 1), verdict.Detail + " lexer-unsafe literal openers [" + string.Join(" ", openers) + "] in a source naming " + name);
     }
 
     // P3-22: a stdout whose every write throws the given exception, so Run throws while it prints.
