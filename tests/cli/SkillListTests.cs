@@ -936,8 +936,9 @@ internal static class SkillListTests
         File.WriteAllText(sidecar, Sidecar("edited after pinning"), new UTF8Encoding(false));
         RefusedTwice("sidecar drift", lockPath, JurisdictionCodes.SkillLockDrift, Pack);
         var drifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
-        // Pinned literally (red phase: not yet observed).
-        const string DriftLine = "<p530 drift line not yet observed>";
+        // Pinned literally (red phase run 44723785006 probed a placeholder and observed this line on every run): the hashes
+        // are bim-skill-pack-sha256-v1 of the fixture bytes as pinned and as edited.
+        const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"" + Pack + "\",\"detail\":\"pinned 1.2.3 sha256 6d09875131642f8a7e7d65830c4cb5d0d1f662ad34bfa12c9283e4b83bf95d2b, found 1.2.3 sha256 b94f79539e06cff98e37479550687cad152aea361b65baa3ae17dc245f545295; an explicit lock update is required to accept it\"}";
         Check(drifted.Refusal is { } driftRefusal && Failed(driftRefusal) == DriftLine, "sidecar drift: the in-process LoadLocked refusal equals the literal pinned line",
             (drifted.Refusal is { } shown ? Failed(shown) : "<no refusal>") + " | pinned " + DriftLine);
         Phase("sidecar drift", lockPath, 1, DriftLine);
