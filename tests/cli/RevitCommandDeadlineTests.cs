@@ -635,7 +635,7 @@ internal static class RevitCommandDeadlineTests
             check(onCancelCollected && !faults.Contains(OnCancel)
                 && onCancelOutcome.SequenceEqual(new[] { nameof(RevitPipeReadTimeoutException), "read,gave up,cancel,faulted" }),
                 "P1-35 late fault: a read faulting on the cancel is RevitPipeReadTimeoutException and its fault is observed (no UnobservedTaskException)", report);
-            check(afterCancelCollected && faults.Contains(AfterCancel) /* P1-35 probe: inverted, must fail */
+            check(afterCancelCollected && !faults.Contains(AfterCancel)
                 && afterCancelOutcome.SequenceEqual(new[] { nameof(RevitPipeReadTimeoutException), "read,gave up,cancel,faulted" }),
                 "P1-35 late fault: a read faulting after the cancel (ReadReplyLine already returned) is observed (no UnobservedTaskException)", report);
         }
