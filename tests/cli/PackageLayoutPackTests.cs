@@ -234,6 +234,7 @@ internal static class PackageLayoutPackTests
             var notFirstParty = requiredFirstParty.Where(required => !bimLines.ContainsKey(required))
                 .Concat(bimLines.Where(pair => !pair.Value.TryGetProperty("license", out var license) || license.ValueKind != JsonValueKind.String || license.GetString() != "NOASSERTION" || pair.Value.TryGetProperty("package", out _)).Select(pair => pair.Key)).ToArray();
             Check(notFirstParty.Length == 0, "P10-18: sbom.json lists every cli/ and mcp/ Bim.* assembly (Cad, Cli, Core, Evaluation, Generative, Gltf, Ifc.Compiler; Core, Generative, Mcp) first-party: NOASSERTION without a package", string.Join(", ", notFirstParty));
+            McpWithoutGltf(package, caseRoot, Check);
 
             // ---- 2. the same inputs through the repository CLI and the packaged CLI ----
             const string small = "{\"brief_version\":1,\"name\":\"Small studio\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"
@@ -460,6 +461,128 @@ internal static class PackageLayoutPackTests
             }
         }
         finally { try { if (Directory.Exists(caseRoot)) Directory.Delete(caseRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+    }
+
+    // P4-30: the package scripts/package.ps1 built ships no Bim.Gltf in mcp/ (P4-29 dropped the MCP reference): no
+    // mcp/**/Bim.Gltf.* file, no mcp/ Bim.Gltf sbom.json assembly line and no mcp/ Bim.Gltf manifest.json file line, while
+    // cli/Bim.Gltf.dll, its sbom line and its manifest line (both the file's sha256) stay (positive control). Fail-closed
+    // (a missing mcp/ or an unreadable sbom/manifest is a leak). Self-tested on a copy of the layout (planted file, planted
+    // sbom line, planted manifest line, unreadable sbom, removed control); the package's own files are fingerprinted
+    // before and after and must be unchanged.
+    static void McpWithoutGltf(string package, string caseRoot, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail) => check(condition, "P4-30: " + name, detail);
+        static string Sha(string file) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file))).ToLowerInvariant();
+        static bool IsMcpGltf(string relative) => relative.Replace('\\', '/').StartsWith("mcp/", StringComparison.OrdinalIgnoreCase)
+            && Path.GetFileName(relative).StartsWith("Bim.Gltf.", StringComparison.OrdinalIgnoreCase);
+        // (path, sha256) of every entry of a JSON array property (sbom "assemblies", manifest "files"); null when unreadable.
+        static List<(string Path, string? Sha)>? Entries(string file, string property)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(file));
+                if (document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty(property, out var array) || array.ValueKind != JsonValueKind.Array) return null;
+                var entries = new List<(string Path, string? Sha)>();
+                foreach (var entry in array.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.Object || !entry.TryGetProperty("path", out var path) || path.ValueKind != JsonValueKind.String) return null;
+                    entries.Add((path.GetString()!, entry.TryGetProperty("sha256", out var sha) && sha.ValueKind == JsonValueKind.String ? sha.GetString() : null));
+                }
+                return entries;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return null; }
+        }
+        // Every way Bim.Gltf reaches mcp/ in a layout; empty when there is none.
+        static List<string> Leaks(string layout)
+        {
+            var leaks = new List<string>();
+            var mcp = Path.Combine(layout, "mcp");
+            if (!Directory.Exists(mcp)) leaks.Add("<no mcp/ folder>");
+            else foreach (var file in Directory.GetFiles(mcp, "*", SearchOption.AllDirectories))
+                {
+                    var relative = Path.GetRelativePath(layout, file).Replace('\\', '/');
+                    if (IsMcpGltf(relative)) leaks.Add("file " + relative);
+                }
+            foreach (var (name, property) in new[] { ("sbom.json", "assemblies"), ("manifest.json", "files") })
+            {
+                var entries = Entries(Path.Combine(layout, name), property);
+                if (entries is null) leaks.Add("<" + name + " " + property + " unreadable>");
+                else leaks.AddRange(entries.Where(entry => IsMcpGltf(entry.Path)).Select(entry => name + " line " + entry.Path));
+            }
+            return leaks;
+        }
+        // The positive control: cli/Bim.Gltf.dll with exactly one sbom line and one manifest line carrying its sha256.
+        static List<string> ControlMissing(string layout)
+        {
+            var missing = new List<string>();
+            var cliGltf = Path.Combine(layout, "cli", "Bim.Gltf.dll");
+            var sha = File.Exists(cliGltf) ? Sha(cliGltf) : null;
+            if (sha is null) missing.Add("file cli/Bim.Gltf.dll");
+            foreach (var (name, property) in new[] { ("sbom.json", "assemblies"), ("manifest.json", "files") })
+            {
+                var lines = (Entries(Path.Combine(layout, name), property) ?? []).Where(entry => entry.Path == "cli/Bim.Gltf.dll").ToList();
+                if (lines.Count != 1 || sha is null || lines[0].Sha != sha)
+                    missing.Add(name + " line cli/Bim.Gltf.dll (" + lines.Count.ToString(CultureInfo.InvariantCulture) + " lines, sha " + string.Join("/", lines.Select(line => line.Sha ?? "<none>")) + ", file " + (sha ?? "<none>") + ")");
+            }
+            return missing;
+        }
+        static string Fingerprint(string layout) => string.Join("\n", Directory.GetFiles(layout, "*", SearchOption.AllDirectories)
+            .Select(file => Path.GetRelativePath(layout, file).Replace('\\', '/') + " " + Sha(file)).OrderBy(line => line, StringComparer.Ordinal));
+        static string Show(List<string> items) => "[" + string.Join(", ", items) + "]";
+        static bool Exactly(List<string> items, params string[] expected) => items.SequenceEqual(expected, StringComparer.Ordinal);
+
+        var before = Fingerprint(package);
+        var leaks = Leaks(package);
+        Check(leaks.Count == 0, "the package scripts/package.ps1 built has no mcp/ Bim.Gltf file, sbom.json line or manifest.json line", Show(leaks));
+        var control = ControlMissing(package);
+        Check(control.Count == 0, "positive control: the package keeps cli/Bim.Gltf.dll with one sbom.json and one manifest.json line carrying its sha256", Show(control));
+
+        // Self-test on a copy of the layout (mcp/, cli/Bim.Gltf.dll, sbom.json, manifest.json), never the package itself.
+        var copy = Path.Combine(caseRoot, "p4-30-layout-copy");
+        try
+        {
+            foreach (var file in Directory.GetFiles(Path.Combine(package, "mcp"), "*", SearchOption.AllDirectories)
+                .Concat([Path.Combine(package, "cli", "Bim.Gltf.dll"), Path.Combine(package, "sbom.json"), Path.Combine(package, "manifest.json")]))
+            {
+                if (!File.Exists(file)) continue;
+                var destination = Path.Combine(copy, Path.GetRelativePath(package, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(file, destination);
+            }
+            var copied = Leaks(copy);
+            var copiedControl = ControlMissing(copy);
+            Check(copied.Count == 0 && copiedControl.Count == 0, "self-test: the unplanted copy of the layout reads like the package (no leak, control present)", Show(copied) + " control " + Show(copiedControl));
+
+            var planted = Path.Combine(copy, "mcp", "Bim.Gltf.dll");
+            File.Copy(Path.Combine(copy, "cli", "Bim.Gltf.dll"), planted);
+            var plantedFile = Leaks(copy);
+            // PROBE (relay253 red): inverted expectation, proves the planted file is measured; flipped in the green commit.
+            Check(plantedFile.Count == 0, "self-test PROBE: a planted mcp/Bim.Gltf.dll reads as no leak", Show(plantedFile));
+            File.Delete(planted);
+
+            foreach (var (name, property) in new[] { ("sbom.json", "assemblies"), ("manifest.json", "files") })
+            {
+                var path = Path.Combine(copy, name);
+                var original = File.ReadAllBytes(path);
+                var node = JsonNode.Parse(new UTF8Encoding(false).GetString(original))!.AsObject();
+                node[property]!.AsArray().Add(new JsonObject { ["path"] = "mcp/Bim.Gltf.dll", ["sha256"] = "00" });
+                File.WriteAllText(path, node.ToJsonString(), new UTF8Encoding(false));
+                var plantedLine = Leaks(copy);
+                Check(Exactly(plantedLine, name + " line mcp/Bim.Gltf.dll"), "self-test: a planted mcp/Bim.Gltf.dll " + name + " line is caught (and only it)", Show(plantedLine));
+                File.WriteAllText(path, "{");
+                var unreadable = Leaks(copy);
+                Check(Exactly(unreadable, "<" + name + " " + property + " unreadable>"), "self-test: an unreadable " + name + " is a leak (fail-closed)", Show(unreadable));
+                File.WriteAllBytes(path, original);
+            }
+
+            File.Delete(Path.Combine(copy, "cli", "Bim.Gltf.dll"));
+            var noControl = ControlMissing(copy);
+            Check(noControl.Contains("file cli/Bim.Gltf.dll") && noControl.Count == 3, "self-test: a copy without cli/Bim.Gltf.dll fails the positive control (file, sbom and manifest lines)", Show(noControl));
+        }
+        finally { try { if (Directory.Exists(copy)) Directory.Delete(copy, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+
+        var after = Fingerprint(package);
+        Check(after == before, "the check never modifies the package (every file's path and sha256 unchanged)", before.Length.ToString(CultureInfo.InvariantCulture) + " -> " + after.Length.ToString(CultureInfo.InvariantCulture) + " chars");
     }
 
     // A real child process; `wait`/`kill` replace WaitForExit(timeout)/Kill(true) only so a test can inject the race of a
