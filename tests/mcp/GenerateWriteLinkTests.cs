@@ -28,6 +28,8 @@ using System.Text.RegularExpressions;
 //   4. A self-test of the link and use checkers on synthetic csproj and source texts, and a fail-closed Block self-test.
 // The generate_prototypes MCP bytes and the generate-prototypes CLI bytes are pinned by tests/mcp/GeneratePrototypesToolTests.cs
 // and tests/cli/GeneratePrototypesTests.cs (expectations unchanged; their static pins read the moved code where it now is).
+// P7-28 changed Run after the move (its catch-all writes the diagnostic guarded, then the typed line): Run is compared
+// with its pre-split pin after reversing the documented delta RunDeltaP728, and the current Run block is pinned too.
 internal static class GenerateWriteLinkTests
 {
     static readonly Regex ForbiddenUse = new(@"\bGenerateCommand\s*\.\s*(?:Run|Execute|Fail|PostWriteStageProbe|PostWriteDeleteProbe|PartialOutputLeft)\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?GenerateCommand\b",
@@ -45,6 +47,38 @@ internal static class GenerateWriteLinkTests
         ("PartialOutputLeft", "    // P7-27: the stderr line written before", "    internal const string PartialOutputLeft = \"generate-prototypes: could not delete partial output: \";\n", 323, "986cba92e626235e73589627fc907b9b14dd60cea03f5906dd4dc3ad83f15d58"),
         ("Fail", "    static void Fail(string code, string? detail)\n", null, 150, "0fbbe9bc83a0d8728fa0cb1aa93b4de75881bdd39d99fe7a49ebd5103c7ceed1"),
     };
+
+    // P7-28 changed Run after the P4-27 move: the last line of its P7-25 comment paragraph and the catch-all. The documented
+    // delta below, as exact (new, old) pairs, is applied in reverse to the current Run block (each new text must occur exactly
+    // once, or the reversal fails closed with null); the result must be the pre-split Run pinned in Moved, so everything
+    // outside the delta is still verbatim. The current block is pinned too ("Run after P7-28").
+    static readonly (string New, string Old)[] RunDeltaP728 =
+    {
+        ("        // Refusal(InternalError) with their diagnostic written once. P7-28: the diagnostic is written on its own, guarded, so a\n"
+            + "        // stderr that throws (any exception) drops only that line: the typed line still reaches stdout, exit 1, nothing escapes.\n"
+            + "        catch (Exception error)\n"
+            + "        {\n"
+            + "            var internalError = IntentPlan.Internal(\"generate-prototypes\", error);\n"
+            + "            try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { }\n"
+            + "            (internalError with { Diagnostic = null }).Print();\n"
+            + "        }\n",
+            "        // Refusal(InternalError) with their diagnostic written once.\n"
+            + "        catch (Exception error) { IntentPlan.Internal(\"generate-prototypes\", error).Print(); }\n"),
+    };
+    const int RunAfterP728Length = 1313;
+    const string RunAfterP728Sha256 = "a90fec3c9296cb1ab5f10b7ff7359be6959dddb223b56bb0f40408d86e99ce9d";
+
+    // The block with each (new, old) pair replaced back (new -> old), or null when a new text does not occur exactly once.
+    internal static string? ReverseDelta(string block, IReadOnlyList<(string New, string Old)> delta)
+    {
+        foreach (var (newText, oldText) in delta)
+        {
+            var at = block.IndexOf(newText, StringComparison.Ordinal);
+            if (at < 0 || block.IndexOf(newText, at + 1, StringComparison.Ordinal) >= 0) return null;
+            block = block[..at] + oldText + block[(at + newText.Length)..];
+        }
+        return block;
+    }
 
     static bool IsWrite(string? path) => path is not null
         && string.Equals(path.Replace('\\', '/').Split('/')[^1], "GenerateWrite.cs", StringComparison.OrdinalIgnoreCase);
@@ -243,10 +277,34 @@ internal static class GenerateWriteLinkTests
         var sharedText = File.ReadAllText(sharedPath).Replace("\r\n", "\n", StringComparison.Ordinal);
         foreach (var (name, start, end, length, sha256) in Moved)
         {
-            var block = Block(writeText, start, end);
+            var current = Block(writeText, start, end);
+            // P7-28: Run is compared after reversing its documented delta (RunDeltaP728).
+            var block = name == "Run" && current is not null ? ReverseDelta(current, RunDeltaP728) : current;
             Check(block is not null && block.Length == length && Sha256(block) == sha256,
-                "GenerateWrite.cs holds " + name + " moved verbatim (" + (block?.Length ?? -1) + " chars, sha256 " + (block is null ? "-" : Sha256(block)) + ")");
+                "GenerateWrite.cs holds " + name + " moved verbatim" + (name == "Run" ? " (the documented P7-28 delta reversed)" : "")
+                + " (" + (block?.Length ?? -1) + " chars, sha256 " + (block is null ? "-" : Sha256(block)) + ")");
             Check(!sharedText.Contains(start, StringComparison.Ordinal), "GenerateCommand.cs no longer holds " + name);
+        }
+        // P7-28: the current Run block is pinned, and the delta reversal fails closed (self-tests on the real block).
+        var runPin = Moved.Single(m => m.Name == "Run");
+        var runNow = Block(writeText, runPin.Start, runPin.End);
+        Check(runNow is not null && runNow.Length == RunAfterP728Length && Sha256(runNow) == RunAfterP728Sha256,
+            "GenerateWrite.cs holds Run after P7-28 (" + (runNow?.Length ?? -1) + " chars, sha256 " + (runNow is null ? "-" : Sha256(runNow)) + ")");
+        if (runNow is not null)
+        {
+            bool Pinned(string? text) => text is not null && text.Length == runPin.Length && Sha256(text) == runPin.Sha256;
+            const string Outside = "        try { Execute(args); }\n";
+            Check(runNow.Contains(Outside, StringComparison.Ordinal)
+                && !Pinned(ReverseDelta(runNow.Replace(Outside, "        try { Execute(argz); }\n", StringComparison.Ordinal), RunDeltaP728)),
+                "delta self-test: a one-character change outside the P7-28 delta no longer reverses to the pre-split Run pin");
+            foreach (var (index, pair) in RunDeltaP728.Select((p, i) => (i, p)))
+            {
+                Check(ReverseDelta(runNow.Replace(pair.New, "", StringComparison.Ordinal), RunDeltaP728) is null,
+                    "delta self-test: P7-28 delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " missing fails closed (null)");
+                Check(ReverseDelta(runNow + pair.New, RunDeltaP728) is null,
+                    "delta self-test: P7-28 delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " appearing twice fails closed (null)");
+            }
+            Check(Pinned(ReverseDelta(runNow, RunDeltaP728)), "delta self-test: the unchanged block reverses to the pre-split Run pin (positive control)");
         }
         var write = Compact(DocUpdateLinkTests.CodeOf(writeText));
         var sharedCode = Compact(DocUpdateLinkTests.CodeOf(sharedText));
