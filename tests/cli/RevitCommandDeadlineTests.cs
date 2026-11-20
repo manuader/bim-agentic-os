@@ -221,6 +221,9 @@ internal static class RevitCommandDeadlineTests
         LateCancelOutcomes(wallsText, check);
         UncutLateReply(wallsText, model, check);
 
+        // ---- 2g. P1-36: one page seam (connectThenRead), the legacy seams retired ----
+        LegacySeamsRetired(root, check);
+
         // A .NET pipe on Unix is a Unix domain socket under Path.GetTempPath(), whose path must fit 108 characters;
         // verify.ps1 points TMPDIR at a long evidence directory, so this section (and the CLI it starts) uses /tmp/.
         var tmpDir = Environment.GetEnvironmentVariable("TMPDIR");
@@ -731,7 +734,98 @@ internal static class RevitCommandDeadlineTests
             early + " sent " + N(sent) + " cuts " + N(cuts));
     }
 
-    const string AbsentExceededCli = """{"status":"failed","code":"query_all_deadline_exceeded","field":null,"detail":"the --all listing took longer than its 1000 ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor","pages":0,"matched":null,"returned":0,"elements":[]}""";
+    // ---- 2g. P1-36: RevitDeadlineTransport has one page seam ----
+    // Static, on the comment-stripped source of interfaces/cli/RevitDeadlineTransport.cs: no cutTransport or
+    // connectTransport seam and no measured flag remain, and Send makes every real-pipe page through one
+    // connectThenRead( call. McpServer's deadline comment says the read is measured after the connect on every
+    // real-pipe page. Mutation self-test: the same checker flags a source with any legacy seam put back, and ignores a
+    // seam named only in a comment.
+    static string StripComments(string source)
+    {
+        var text = new StringBuilder(source.Length);
+        var i = 0;
+        while (i < source.Length)
+        {
+            var c = source[i];
+            var next = i + 1 < source.Length ? source[i + 1] : '\0';
+            if (c == '/' && next == '/') { while (i < source.Length && source[i] != '\n') i++; continue; }
+            if (c == '/' && next == '*')
+            {
+                var end = source.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                i = end < 0 ? source.Length : end + 2;
+                text.Append(' ');
+                continue;
+            }
+            if (c == '"' || c == '\'')
+            {
+                var verbatim = c == '"' && i > 0 && source[i - 1] == '@';
+                text.Append(c);
+                i++;
+                while (i < source.Length)
+                {
+                    var d = source[i];
+                    text.Append(d);
+                    i++;
+                    if (verbatim && d == '"' && i < source.Length && source[i] == '"') { text.Append('"'); i++; continue; }
+                    if (!verbatim && d == '\\' && i < source.Length) { text.Append(source[i]); i++; continue; }
+                    if (d == c || (!verbatim && d == '\n')) break;
+                }
+                continue;
+            }
+            text.Append(c);
+            i++;
+        }
+        return text.ToString();
+    }
+
+    static string[] SeamProblems(string source)
+    {
+        var code = StripComments(source.ReplaceLineEndings("\n"));
+        var problems = new List<string>();
+        foreach (var seam in new[] { "cutTransport", "connectTransport", "measured", "PipeTransportWithReadTimeout" })
+            if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\b" + seam + @"\b")) problems.Add("legacy seam " + seam);
+        var sendStart = code.IndexOf("public string? Send(", StringComparison.Ordinal);
+        var sendEnd = sendStart < 0 ? -1 : code.IndexOf("\n    }\n", sendStart, StringComparison.Ordinal);
+        var send = sendEnd < 0 ? "" : code[sendStart..sendEnd];
+        var calls = System.Text.RegularExpressions.Regex.Matches(send, @"\bconnectThenRead\(").Count;
+        if (calls != 1) problems.Add("Send makes its page through connectThenRead( " + N(calls) + " times, not once");
+        return problems.ToArray();
+    }
+
+    static void LegacySeamsRetired(string root, Action<bool, string, string> check)
+    {
+        var source = File.ReadAllText(Path.Combine(root, "interfaces", "cli", "RevitDeadlineTransport.cs")).ReplaceLineEndings("\n");
+        var problems = SeamProblems(source);
+        check(problems.Length == 0, "P1-36 static: RevitDeadlineTransport has no cutTransport/connectTransport seam or measured flag, and Send makes every page through one connectThenRead(",
+            string.Join("; ", problems));
+
+        // Mutation self-test on a minimal transport: clean, comment-only mentions, and each legacy seam put back.
+        const string Clean = "class T\n{\n    // cutTransport, connectTransport and measured are gone /* measured */\n    readonly string note = \"// not a comment\";\n"
+            + "    public string? Send(string line)\n    {\n        /* connectTransport( */ var pipe = connectThenRead(wait, ReadAfter);\n        return pipe(line);\n    }\n}\n";
+        check(SeamProblems(Clean).Length == 0, "P1-36 mutation self-test: one connectThenRead( call and seams named only in comments pass", string.Join("; ", SeamProblems(Clean)));
+        var mutants = new (string Label, string Source)[]
+        {
+            ("cutTransport field", Clean.Replace("class T\n{\n", "class T\n{\n    readonly Func<TimeSpan, Func<string, string, string?>> cutTransport;\n", StringComparison.Ordinal)),
+            ("connectTransport parameter", Clean.Replace("Send(string line)", "Send(string line, object? connectTransport = null)", StringComparison.Ordinal)),
+            ("measured flag", Clean.Replace("var pipe = ", "var pipe = measured ? transport : ", StringComparison.Ordinal)),
+            ("legacy cut pipe", Clean.Replace("return pipe(line);", "return RevitCommandService.PipeTransportWithReadTimeout(wait)(line);", StringComparison.Ordinal)),
+            ("second page path", Clean.Replace("return pipe(line);", "return cut ? connectThenRead(left, ReadAfter)(line) : pipe(line);", StringComparison.Ordinal)),
+            ("no page seam", Clean.Replace("connectThenRead(wait, ReadAfter)", "transport", StringComparison.Ordinal)),
+        };
+        foreach (var (label, mutant) in mutants)
+            check(mutant != Clean && SeamProblems(mutant).Length > 0, "P1-36 mutation self-test: the seam check flags a " + label, string.Join("; ", SeamProblems(mutant)));
+
+        // McpServer's deadline comment (before RevitCallAll's new RevitDeadlineTransport(), folded over comment lines.
+        var mcp = File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs")).ReplaceLineEndings("\n");
+        var allStart = mcp.IndexOf("(string Text, bool IsError) RevitCallAll(", StringComparison.Ordinal);
+        var built = allStart < 0 ? -1 : mcp.IndexOf("new RevitDeadlineTransport(", allStart, StringComparison.Ordinal);
+        var comment = built < 0 ? "" : string.Join(" ", mcp[allStart..built].Split('\n').Select(line => line.Trim()).Where(line => line.StartsWith("//", StringComparison.Ordinal))
+            .Select(line => line.TrimStart('/').Trim()));
+        check(comment.Contains("the read is measured after the connect on every real-pipe page", StringComparison.Ordinal),
+            "P1-36 static: McpServer.RevitCallAll's deadline comment states the read is measured after the connect on every real-pipe page", comment);
+    }
+
+    const string AbsentExceededCli ="""{"status":"failed","code":"query_all_deadline_exceeded","field":null,"detail":"the --all listing took longer than its 1000 ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor","pages":0,"matched":null,"returned":0,"elements":[]}""";
     const string AbsentExceededMcp = """{"status":"failed","code":"query_all_deadline_exceeded","field":null,"detail":"the all:true listing took longer than its 1000 ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor","pages":0,"matched":null,"returned":0,"elements":[]}""";
 
     static string AbsentPipe() => "bim-agentic-os-2025-" + N(Random.Shared.Next(100000000, 999999999));
