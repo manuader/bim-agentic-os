@@ -19,6 +19,12 @@ namespace Bim.Mcp;
 // - missing or wrongly typed arguments are rejected with -32602 instead of the CLI usage/null failures.
 // - P10-31: an argument name given twice in the arguments object is -32602 "invalid_params: repeated argument <name>" for
 //   every tool, checked in CallTool before any other argument check and before the tool runs.
+// - P10-33: a member of the request object given more than once (id, method, params, jsonrpc or any other) is -32600
+//   "invalid_request: repeated member <name>" before any other envelope check, with the request id only when id is given
+//   once and is a valid id (else null; notifications too); a member of tools/call params given more than once (name,
+//   arguments or any other) is -32602 "invalid_params: repeated params member <name>"; an argument name that is not valid
+//   text (a lone surrogate escape) is -32602 "invalid_params: argument name is not valid text". A member name that is not
+//   valid text outside the arguments object is not compared.
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
 // mirror_drift (P2-08) is read-only: its text is the file the CLI mirror-drift verb writes (MirrorDriftTool.cs).
 // mirror_drift_select (P2-10) is read-only: its text is the file the CLI mirror-drift-select verb writes (the canonical
@@ -472,6 +478,16 @@ public sealed class McpServer
     string? Dispatch(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Object) return Error(null, InvalidRequest, "invalid_request");
+        // P10-33: JsonDocument keeps a member given twice and a lookup sees only one of its values, so a repeated request
+        // member is refused before every other check; a repeated id is never echoed.
+        if (RepeatedMember(root) is { } repeatedMember)
+        {
+            JsonElement? onlyId = null;
+            if (root.EnumerateObject().Count(property => property.NameEquals("id")) == 1 && root.TryGetProperty("id", out var givenId)
+                && givenId.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.Null)
+                onlyId = givenId;
+            return Error(onlyId, InvalidRequest, "invalid_request: repeated member " + repeatedMember);
+        }
         JsonElement? id = null;
         var hasId = root.TryGetProperty("id", out var idElement);
         if (hasId)
@@ -578,6 +594,7 @@ public sealed class McpServer
     {
         if (parameters == null || parameters.Value.ValueKind != JsonValueKind.Object) return Error(id, InvalidParams, "invalid_params: params object required");
         var call = parameters.Value;
+        if (RepeatedMember(call) is { } repeatedParameter) return Error(id, InvalidParams, "invalid_params: repeated params member " + repeatedParameter);
         if (!call.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String) return Error(id, InvalidParams, "invalid_params: name required");
         var arguments = EmptyArguments;
         if (call.TryGetProperty("arguments", out var argumentsElement))
@@ -593,7 +610,11 @@ public sealed class McpServer
         // before the tool runs.
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var property in arguments.EnumerateObject())
-            if (!names.Add(property.Name)) return Error(id, InvalidParams, "invalid_params: repeated argument " + property.Name);
+        {
+            // P10-33: a name that is not valid text (a lone surrogate escape) cannot be compared or echoed.
+            if (TextName(property) is not { } argumentName) return Error(id, InvalidParams, "invalid_params: argument name is not valid text");
+            if (!names.Add(argumentName)) return Error(id, InvalidParams, "invalid_params: repeated argument " + argumentName);
+        }
         foreach (var property in arguments.EnumerateObject())
             if (!tool.Parameters.Any(parameter => parameter.Name == property.Name)) return Error(id, InvalidParams, "invalid_params: unexpected argument " + property.Name);
         foreach (var parameter in tool.Parameters)
@@ -622,6 +643,29 @@ public sealed class McpServer
         "array" => value.ValueKind == JsonValueKind.Array,
         _ => false,
     };
+
+    // P10-33: the first member name (valid text) given more than once in an object, or null.
+    static string? RepeatedMember(JsonElement value)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in value.EnumerateObject())
+            if (TextName(property) is { } name && !seen.Add(name)) return name;
+        return null;
+    }
+
+    // A member name decoded as valid UTF-16 text, or null when it holds an unpaired surrogate.
+    static string? TextName(JsonProperty property)
+    {
+        string name;
+        try { name = property.Name; }
+        catch (Exception error) when (error is InvalidOperationException or ArgumentException) { return null; }
+        for (var i = 0; i < name.Length; i++)
+        {
+            if (char.IsHighSurrogate(name[i]) && i + 1 < name.Length && char.IsLowSurrogate(name[i + 1])) i++;
+            else if (char.IsSurrogate(name[i])) return null;
+        }
+        return name;
+    }
 
     // Each tool mirrors the matching CLI case, including the order in which inputs are read.
     static (string Text, bool IsError) Diff(JsonElement arguments)
