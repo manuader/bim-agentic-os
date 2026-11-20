@@ -403,6 +403,9 @@ internal static class SkillListTests
 
         // ---- 11. P5-29 internal error forced through the ListingWorkProbe seam ----
         Seam(root, scratch, dotnet, cliDll, check);
+
+        // ---- 12. P5-30 twice-read bytes under --lock ----
+        LockTwiceRead(scratch, dotnet, cliDll, check);
     }
 
     // Section 11 (P5-29): see oracle 11 in the header.
@@ -788,6 +791,167 @@ internal static class SkillListTests
         Identical("sidecar refusal", "skill-list", refused.List, 1, refusalLine);
         Identical("sidecar refusal", "jurisdiction-resolve", refused.Resolve, 1, refusalLine);
         Check(TreeDigest(skills) == digest, "sidecar refusal: the generated skills tree is unchanged by every run");
+
+        Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
+    }
+
+    // Section 12 (P5-30) twice-read bytes for the lock path: one generated package (<pkg>/cli = a copy of the CLI beside
+    // VERSION, manifest.json and skills/) whose skills/ hold one code pack xx.p530.pack with a jurisdiction.json sidecar
+    // (code xx.p530, not a stub), and a skills.lock.json pinning it (SkillLocking.Pin, SkillLockFile.Serialize) outside the
+    // package. jurisdiction-resolve --code xx.p530 --lock <lock> runs twice in process (Run with stdout/stderr/exit captured
+    // and AppContext.BaseDirectory pointed at <pkg>/cli through APP_CONTEXT_BASE_DIRECTORY, restored in a finally; a
+    // negative control without the override refuses) and twice as real processes of the packaged CLI. Three phases:
+    // "success" (the pinned literal success line, exit 0), "sidecar drift" (the valid sidecar's note edited after pinning:
+    // skill_lock_drift on the pack, line pinned literally) and "sidecar json_invalid" (the sidecar rewritten malformed and
+    // the pack pinned again in a second lock: json_invalid at xx.p530.pack/jurisdiction.json, the line equal to the
+    // in-process LoadLocked refusal). Within a phase all four runs print byte-identical stdout (raw, newline included), the
+    // same exit and empty stderr. Behind them, two in-process LoadLocked reads of the same inputs: on success equal
+    // claim/catalogue content but unequal registries (P5-27 reference identity) and unequal loads; on a refusal no registry
+    // and the two loads compare equal. The skills tree and the lock bytes are unchanged by every run.
+    static void LockTwiceRead(string scratch, string dotnet, string cliDll, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "skill-list: P5-30 lock twice-read: " + name, detail);
+        const string Pack = "xx.p530.pack";
+        const string Code = "xx.p530";
+        var package = Path.Combine(scratch, "p530-pkg");
+        var packageCli = Path.Combine(package, "cli");
+        CopyDirectory(Path.GetDirectoryName(cliDll)!, packageCli);
+        File.WriteAllText(Path.Combine(package, "VERSION"), "0.0.0-test\n");
+        File.WriteAllText(Path.Combine(package, "manifest.json"), "{}\n");
+        var skills = Path.Combine(package, "skills");
+        Directory.CreateDirectory(Path.Combine(skills, Pack));
+        File.WriteAllText(Path.Combine(skills, Pack, "skill.json"),
+            "{\"manifest_version\":1,\"id\":\"" + Pack + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n", new UTF8Encoding(false));
+        var sidecar = Path.Combine(skills, Pack, "jurisdiction.json");
+        static string Sidecar(string note) =>
+            "{\"jurisdiction_version\":1,\"code\":\"" + Code + "\",\"pack\":\"" + Pack + "\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"Fixture Town\"],\"stub\":false,\"note\":\"" + note + "\"}\n";
+        File.WriteAllText(sidecar, Sidecar("fictitious test fixture"), new UTF8Encoding(false));
+        var lockPath = Path.Combine(scratch, "p530.skills.lock.json");
+        File.WriteAllBytes(lockPath, SkillLockFile.Serialize(SkillLocking.Pin(skills, new[] { Pack })));
+        var packageDll = Path.Combine(packageCli, "Bim.Cli.dll");
+
+        (int Exit, string Out, string Err) Child(string[] arguments)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            start.ArgumentList.Add(packageDll);
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>", ""); }
+            process.WaitForExit();
+            return (process.ExitCode, stdout.Result, stderr.Result.ReplaceLineEndings(" ").Trim());
+        }
+        // In process: stdout raw, stderr and Environment.ExitCode captured; with baseDirectory set AppContext.BaseDirectory
+        // reads it for the run. Every global is restored in the finally.
+        (int Exit, string Out, string Err) Inline(string[] arguments, string? baseDirectory)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var previousBase = AppContext.GetData("APP_CONTEXT_BASE_DIRECTORY");
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            var exit = -1;
+            var thrown = "";
+            var seen = "";
+            try
+            {
+                if (baseDirectory is not null) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", baseDirectory);
+                seen = AppContext.BaseDirectory;
+                Environment.ExitCode = 0;
+                Console.SetOut(capturedOut);
+                Console.SetError(capturedError);
+                Bim.Cli.JurisdictionResolveCommand.Run(arguments);
+            }
+            catch (Exception failure) { thrown = " threw " + failure.GetType().Name + ": " + failure.Message; }
+            finally
+            {
+                exit = Environment.ExitCode;
+                Environment.ExitCode = previousExit;
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+                if (baseDirectory is not null) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", previousBase);
+            }
+            if (baseDirectory is not null)
+                Check(seen == baseDirectory, "sentinel: override visible during the run (in process AppContext.BaseDirectory is the package cli directory)", seen + " != " + baseDirectory);
+            return (exit, capturedOut.ToString(), (capturedError.ToString().Trim() + thrown).Trim());
+        }
+        static string D((int Exit, string Out, string Err) r) =>
+            "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(r.Out.Length > 600 ? r.Out[..600] + "..." : r.Out) + (r.Err.Length > 0 ? " stderr " + r.Err : "");
+        static string Failed(JurisdictionIssue issue) => JsonSerializer.Serialize(new { status = "failed", code = issue.Code, subject = issue.Subject, detail = issue.Detail });
+
+        var originalBase = AppContext.BaseDirectory;
+        var packageBase = packageCli + Path.DirectorySeparatorChar;
+        string[] runNames = { "in process #1", "in process #2", "process #1", "process #2" };
+        void Phase(string phase, string lockFile, int exit, string line)
+        {
+            var digest = TreeDigest(skills);
+            var lockBytes = File.ReadAllBytes(lockFile);
+            string[] arguments = { "jurisdiction-resolve", "--code", Code, "--lock", lockFile };
+            var runs = new[] { Inline(arguments, packageBase), Inline(arguments, packageBase), Child(arguments), Child(arguments) };
+            for (var index = 0; index < runs.Length; index++)
+                Check(runs[index].Exit == exit && runs[index].Out == line + Environment.NewLine && runs[index].Err.Length == 0,
+                    phase + ": jurisdiction-resolve --lock " + runNames[index] + " prints the pinned line (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", nothing on stderr)",
+                    D(runs[index]) + " | expected " + JsonSerializer.Serialize(line + Environment.NewLine));
+            Check(runs.All(run => run.Exit == runs[0].Exit && run.Out == runs[0].Out && run.Err == runs[0].Err),
+                phase + ": jurisdiction-resolve --lock twice in process and twice as a real process prints byte-identical output", string.Join(" || ", runs.Select(D)));
+            Check(TreeDigest(skills) == digest && File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(lockBytes), phase + ": the generated skills tree and the lock are unchanged by every run");
+        }
+        void RefusedTwice(string phase, string lockFile, string code, string subject)
+        {
+            var firstRefused = JurisdictionRegistry.LoadLocked(skills, lockFile);
+            var secondRefused = JurisdictionRegistry.LoadLocked(skills, lockFile);
+            Check(firstRefused.Registry is null && secondRefused.Registry is null && firstRefused.LoaderError is null && secondRefused.LoaderError is null
+                && firstRefused.Refusal is { } refusal && refusal.Code == code && refusal.Subject == subject && refusal.Detail.Length > 0,
+                phase + ": two in-process LoadLocked reads of the same inputs refuse with " + code + " at " + subject + " (no registry, no loader error)",
+                (firstRefused.Refusal?.ToString() ?? "<no refusal>") + " / " + (secondRefused.Refusal?.ToString() ?? "<no refusal>"));
+            Check(firstRefused == secondRefused && firstRefused.GetHashCode() == secondRefused.GetHashCode(),
+                phase + ": the two refusal loads compare equal with an equal hash (no registry identity involved)", firstRefused + " / " + secondRefused);
+        }
+
+        // ---- success ----
+        var first = JurisdictionRegistry.LoadLocked(skills, lockPath);
+        var second = JurisdictionRegistry.LoadLocked(skills, lockPath);
+        Check(first.Registry is { } a && second.Registry is { } b && a.Codes.SequenceEqual(new[] { Code }) && b.Codes.SequenceEqual(new[] { Code })
+            && a.Claims.Select(claim => (claim.Code, claim.Pack, claim.Stub)).SequenceEqual(b.Claims.Select(claim => (claim.Code, claim.Pack, claim.Stub)))
+            && a.Catalog.Skills.Select(skill => skill.Id + "@" + skill.Version).SequenceEqual(b.Catalog.Skills.Select(skill => skill.Id + "@" + skill.Version)),
+            "success: two in-process LoadLocked reads of the same skills directory and lock succeed with the same claim (" + Code + " -> " + Pack + ") and catalogue",
+            (first.Refusal?.ToString() ?? "") + " / " + (second.Refusal?.ToString() ?? ""));
+        var firstRegistry = first.Registry;
+        var secondRegistry = second.Registry;
+        Check(firstRegistry is not null && secondRegistry is not null && !ReferenceEquals(firstRegistry, secondRegistry) && !firstRegistry.Equals(secondRegistry)
+            && !firstRegistry.Equals((object)secondRegistry) && !EqualityComparer<JurisdictionRegistry>.Default.Equals(firstRegistry, secondRegistry)
+            && new HashSet<JurisdictionRegistry> { firstRegistry, secondRegistry }.Count == 2,
+            "success: the two LoadLocked registries are unequal (P5-27 reference identity), so the identical bytes below never depend on registry identity",
+            "ReferenceEquals " + ReferenceEquals(firstRegistry, secondRegistry) + ", Equals " + (firstRegistry?.Equals(secondRegistry)).ToString() + ", loads equal " + (first == second));
+        Check(first != second && !first.Equals(second), "success: the two LoadLocked results are unequal (JurisdictionLoad follows registry identity)", first + " / " + second);
+        const string SuccessLine = "{\"status\":\"succeeded\",\"code\":\"" + Code + "\",\"pack\":\"" + Pack + "\",\"version\":\"1.2.3\",\"stub\":false}";
+        var unoverridden = Inline(new[] { "jurisdiction-resolve", "--code", Code, "--lock", lockPath }, null);
+        Check(unoverridden.Exit == 1 && unoverridden.Out != SuccessLine + Environment.NewLine && unoverridden.Err.Length == 0,
+            "negative control: in process with the original base directory, jurisdiction-resolve --code " + Code + " --lock refuses (the override is load-bearing)", D(unoverridden));
+        Phase("success", lockPath, 0, SuccessLine);
+
+        // ---- sidecar drift: the valid sidecar edited after pinning ----
+        File.WriteAllText(sidecar, Sidecar("edited after pinning"), new UTF8Encoding(false));
+        RefusedTwice("sidecar drift", lockPath, JurisdictionCodes.SkillLockDrift, Pack);
+        var drifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
+        // Pinned literally (red phase: not yet observed).
+        const string DriftLine = "<p530 drift line not yet observed>";
+        Check(drifted.Refusal is { } driftRefusal && Failed(driftRefusal) == DriftLine, "sidecar drift: the in-process LoadLocked refusal equals the literal pinned line",
+            (drifted.Refusal is { } shown ? Failed(shown) : "<no refusal>") + " | pinned " + DriftLine);
+        Phase("sidecar drift", lockPath, 1, DriftLine);
+
+        // ---- sidecar json_invalid: the sidecar rewritten malformed and the pack pinned again ----
+        File.WriteAllText(sidecar, "{ \"jurisdiction_version\": 1, ", new UTF8Encoding(false));
+        var repinned = Path.Combine(scratch, "p530.repinned.skills.lock.json");
+        File.WriteAllBytes(repinned, SkillLockFile.Serialize(SkillLocking.Pin(skills, new[] { Pack })));
+        RefusedTwice("sidecar json_invalid", repinned, JurisdictionCodes.JsonInvalid, Pack + "/jurisdiction.json");
+        var malformed = JurisdictionRegistry.LoadLocked(skills, repinned);
+        var malformedLine = malformed.Refusal is { } malformedRefusal ? Failed(malformedRefusal) : "<no refusal>";
+        Check(malformedLine.StartsWith("{\"status\":\"failed\",\"code\":\"json_invalid\",\"subject\":\"" + Pack + "/jurisdiction.json\",\"detail\":\"", StringComparison.Ordinal),
+            "sidecar json_invalid: the in-process LoadLocked refusal line is json_invalid at " + Pack + "/jurisdiction.json", malformedLine);
+        Phase("sidecar json_invalid", repinned, 1, malformedLine);
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
     }

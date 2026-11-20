@@ -1710,6 +1710,7 @@ DeletedCwdPathToolTests.Run(cliDir,Call,Check);
 JurisdictionResolveToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
 // P5-22 skill_list (tests/mcp/SkillListToolTests.cs).
 SkillListToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
+TwiceReadToolTests.Run(root,cliDir,dotnet,cliDll,mcpDll,Call,Check); // P5-30 twice-read bytes through skill_list and jurisdiction_resolve (tests/mcp/TwiceReadToolTests.cs).
 // P10-31 every tool refuses a repeated argument name uniformly in CallTool (tests/mcp/RepeatedArgumentToolTests.cs).
 RepeatedArgumentToolTests.Run(root,cliDir,Check);
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
