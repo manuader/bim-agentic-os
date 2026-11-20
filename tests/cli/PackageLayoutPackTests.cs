@@ -230,10 +230,10 @@ internal static class PackageLayoutPackTests
                         if (sbomAssembly.ValueKind == JsonValueKind.Object && sbomAssembly.TryGetProperty("path", out var sbomPathValue) && sbomPathValue.ValueKind == JsonValueKind.String && sbomPathValue.GetString() is { } shipped
                             && System.Text.RegularExpressions.Regex.IsMatch(shipped, @"^(cli|mcp)/Bim\.[A-Za-z.]+\.dll\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
                             bimLines[shipped] = sbomAssembly.Clone();
-            var requiredFirstParty = new[] { "cli/Bim.Cad.dll", "cli/Bim.Cli.dll", "cli/Bim.Core.dll", "cli/Bim.Evaluation.dll", "cli/Bim.Generative.dll", "cli/Bim.Gltf.dll", "cli/Bim.Ifc.Compiler.dll", "mcp/Bim.Core.dll", "mcp/Bim.Generative.dll", "mcp/Bim.Gltf.dll", "mcp/Bim.Mcp.dll" };
+            var requiredFirstParty = new[] { "cli/Bim.Cad.dll", "cli/Bim.Cli.dll", "cli/Bim.Core.dll", "cli/Bim.Evaluation.dll", "cli/Bim.Generative.dll", "cli/Bim.Gltf.dll", "cli/Bim.Ifc.Compiler.dll", "mcp/Bim.Core.dll", "mcp/Bim.Generative.dll", "mcp/Bim.Mcp.dll" };
             var notFirstParty = requiredFirstParty.Where(required => !bimLines.ContainsKey(required))
                 .Concat(bimLines.Where(pair => !pair.Value.TryGetProperty("license", out var license) || license.ValueKind != JsonValueKind.String || license.GetString() != "NOASSERTION" || pair.Value.TryGetProperty("package", out _)).Select(pair => pair.Key)).ToArray();
-            Check(notFirstParty.Length == 0, "P10-18: sbom.json lists every cli/ and mcp/ Bim.* assembly (Cad, Cli, Core, Evaluation, Generative, Gltf, Ifc.Compiler; Core, Generative, Gltf, Mcp) first-party: NOASSERTION without a package", string.Join(", ", notFirstParty));
+            Check(notFirstParty.Length == 0, "P10-18: sbom.json lists every cli/ and mcp/ Bim.* assembly (Cad, Cli, Core, Evaluation, Generative, Gltf, Ifc.Compiler; Core, Generative, Mcp) first-party: NOASSERTION without a package", string.Join(", ", notFirstParty));
 
             // ---- 2. the same inputs through the repository CLI and the packaged CLI ----
             const string small = "{\"brief_version\":1,\"name\":\"Small studio\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"

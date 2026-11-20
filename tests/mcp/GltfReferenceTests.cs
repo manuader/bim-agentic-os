@@ -11,12 +11,13 @@ using System.Xml.Linq;
 //   2. Bim.Mcp.dll holds no AssemblyRef named Bim.Gltf, no TypeRef in namespace Bim.Gltf or resolved through that
 //      AssemblyRef, and no MemberRef on such a TypeRef; Bim.Cli.dll holds the AssemblyRef and TypeRefs (control).
 //   3. So no code needs the ProjectReference to adapters/gltf/Bim.Gltf/Bim.Gltf.csproj in interfaces/mcp/Bim.Mcp.csproj.
-//      It is KEPT, for a measured packaging reason: removing it (relay247 run 44673074883, every other gate and the
-//      Release --warnaserror build of interfaces/mcp green without it) drops mcp/Bim.Gltf.dll from the package, and the
-//      P10-18 package layout pin (tests/cli/PackageLayoutPackTests.cs, requiredFirstParty) requires mcp/Bim.Gltf.dll.
-//      Asserted: the reference is present only while that pin names mcp/Bim.Gltf.dll (dropping both is one follow-up),
-//      and the Release Bim.Mcp.deps.json names Bim.Gltf exactly when the csproj references it (Bim.Cli.deps.json control).
-//      The pin is read from the requiredFirstParty initializer itself (comments stripped), fail closed if it is not found.
+//      P4-28 kept it only for the P10-18 package layout pin (relay247 run 44673074883 measured that the Release
+//      --warnaserror build of interfaces/mcp and every other gate stay green without it). P4-29 drops both: asserted that
+//      Bim.Mcp.csproj holds zero ProjectReferences to Bim.Gltf.csproj, that the P10-18 requiredFirstParty initializer in
+//      tests/cli/PackageLayoutPackTests.cs (comments stripped, fail closed) no longer names mcp/Bim.Gltf.dll but still
+//      names cli/Bim.Gltf.dll, mcp/Bim.Core.dll, mcp/Bim.Generative.dll and mcp/Bim.Mcp.dll, and that the Release
+//      Bim.Mcp.deps.json names Bim.Core and Bim.Generative but not Bim.Gltf (no transitive route: Bim.Core references no
+//      project, Bim.Generative only Bim.Core); Bim.Cli.deps.json names Bim.Gltf (control).
 //   4. A self-test of the ProjectReference reader on synthetic csproj texts.
 //   5. A self-test of the requiredFirstParty reader (comment-only name unpinned, initializer name pinned, missing -> error).
 //   6. No #US user string of Bim.Mcp.dll contains Bim.Gltf (no reflection by name); reader control: "tools/list" is found.
@@ -139,27 +140,30 @@ internal static class GltfReferenceTests
         Check(mcp.AssemblyRefs.Length == 0 && mcp.TypeRefs.Length == 0 && mcp.MemberRefs.Length == 0,
             "the Release Bim.Mcp.dll holds no AssemblyRef, TypeRef or MemberRef into Bim.Gltf [" + Show(mcp) + "]");
 
-        // ---- 3. the code-unused ProjectReference is kept only for the package layout pin ----
+        // ---- 3. P4-29: the code-unused ProjectReference and its package layout pin are gone ----
         var project = Path.Combine(root, "interfaces", "mcp", "Bim.Mcp.csproj");
         var gltfRefs = GltfProjectReferences(File.ReadAllText(project));
         var layoutPin = Path.Combine(root, "tests", "cli", "PackageLayoutPackTests.cs");
         var required = File.Exists(layoutPin) ? RequiredFirstPartyOf(File.ReadAllText(layoutPin)) : null;
-        Check(required is not null && required.Contains("mcp/Bim.Mcp.dll"),
-            "tests/cli/PackageLayoutPackTests.cs holds exactly one P10-18 requiredFirstParty initializer (read fail-closed; it names mcp/Bim.Mcp.dll) ["
-            + string.Join(", ", required ?? Array.Empty<string>()) + "]");
+        var requiredText = string.Join(", ", required ?? Array.Empty<string>());
+        Check(required is not null && required.Contains("mcp/Bim.Mcp.dll") && required.Contains("mcp/Bim.Core.dll")
+            && required.Contains("mcp/Bim.Generative.dll") && required.Contains("cli/Bim.Gltf.dll"),
+            "tests/cli/PackageLayoutPackTests.cs holds exactly one P10-18 requiredFirstParty initializer (read fail-closed) naming mcp/Bim.Mcp.dll, mcp/Bim.Core.dll, mcp/Bim.Generative.dll and cli/Bim.Gltf.dll ["
+            + requiredText + "]");
         var pinned = required is not null && required.Contains("mcp/Bim.Gltf.dll");
-        Console.WriteLine("NOTE P4-28 Bim.Mcp.csproj ProjectReference to Bim.Gltf.csproj: [" + string.Join(", ", gltfRefs) + "]; unused by the binary ("
-            + Show(mcp) + "); kept because the P10-18 package layout pin requires mcp/Bim.Gltf.dll: " + pinned);
-        Check(gltfRefs.Length <= 1 && (gltfRefs.Length == 0 || pinned),
-            "Bim.Mcp.csproj references Bim.Gltf.csproj at most once, and only while tests/cli/PackageLayoutPackTests.cs pins mcp/Bim.Gltf.dll in the package ["
-            + string.Join(", ", gltfRefs) + "; pinned " + pinned + "]");
+        Console.WriteLine("NOTE P4-29 Bim.Mcp.csproj ProjectReference to Bim.Gltf.csproj: [" + string.Join(", ", gltfRefs) + "]; binary ("
+            + Show(mcp) + "); P10-18 pins mcp/Bim.Gltf.dll: " + pinned);
+        Check(gltfRefs.Length == 0,
+            "P4-29 Bim.Mcp.csproj holds zero ProjectReferences to Bim.Gltf.csproj [" + string.Join(", ", gltfRefs) + "]");
+        Check(required is not null && !pinned,
+            "P4-29 the P10-18 requiredFirstParty initializer no longer requires mcp/Bim.Gltf.dll in the package [" + requiredText + "]");
         var mcpDeps = Path.Combine(Path.GetDirectoryName(mcpDll)!, "Bim.Mcp.deps.json");
         var cliDeps = Path.Combine(Path.GetDirectoryName(cliDll)!, "Bim.Cli.deps.json");
         var mcpLibraries = File.Exists(mcpDeps) ? DepsLibraries(mcpDeps) : null;
         var cliLibraries = File.Exists(cliDeps) ? DepsLibraries(cliDeps) : null;
         Check(cliLibraries is not null && cliLibraries.Contains("Bim.Gltf"), "the Release Bim.Cli.deps.json names Bim.Gltf (reader control) [" + string.Join(", ", cliLibraries ?? Array.Empty<string>()) + "]");
-        Check(mcpLibraries is not null && mcpLibraries.Contains("Bim.Gltf") == (gltfRefs.Length == 1) && mcpLibraries.Contains("Bim.Core") && mcpLibraries.Contains("Bim.Generative"),
-            "the Release Bim.Mcp.deps.json names Bim.Core and Bim.Generative, and Bim.Gltf exactly when Bim.Mcp.csproj references it ["
+        Check(mcpLibraries is not null && !mcpLibraries.Contains("Bim.Gltf") && mcpLibraries.Contains("Bim.Core") && mcpLibraries.Contains("Bim.Generative"),
+            "P4-29 the Release Bim.Mcp.deps.json names Bim.Core and Bim.Generative and not Bim.Gltf (no direct or transitive reference) ["
             + string.Join(", ", mcpLibraries ?? Array.Empty<string>()) + "]");
 
         // ---- 4. self-test of the ProjectReference reader ----
