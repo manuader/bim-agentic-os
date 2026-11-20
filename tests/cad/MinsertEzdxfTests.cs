@@ -6,8 +6,9 @@ using Point2 = Bim.Cad.Point2;
 // P6-30 block regions under a general extrusion normal, and an ezdxf cross-check of MINSERT cell placement.
 //
 // Documented choice for a non-axis extrusion normal (pinned here): an INSERT or MINSERT whose extrusion N is not
-// parallel to Z (e.g. (0.6,0,0.8), Ax = Wz x N, or (0.01,0,1), which takes the arbitrary-axis 1/64 branch Ax = Wy x N)
-// is NOT projected to world XY. DxfReader reports it: one ocs-non-planar warning at the entity's line and a typed
+// parallel to Z (e.g. (0.6,0,0.8) or (0.01,0,1)) is NOT projected to world XY. The rejection depends only on the
+// horizontal part of N exceeding 1e-6, not on which arbitrary-axis branch applies; the 1/64 branch (Ax = Wy x N) is
+// covered by the OcsFrame axes check against ezdxf and by the placed near-Z insert N1. DxfReader reports it: one ocs-non-planar warning at the entity's line and a typed
 // Unsupported entry (handle, INSERT, Reason "ocs-non-planar"); DxfExploder places none of its cells, so BriefExtract
 // with IncludeBlockRegions takes no region from it (a label at the XY centre the projection reading would give gets no
 // region and an area-missing uncertainty). A normal within 1e-6 of +-Z (here (2e-7,0,-1), also the 1/64 branch) is
@@ -127,6 +128,8 @@ internal static class MinsertEzdxfTests
         }
 
         // ---------- reader: tilted inserts reported, placed inserts kept ----------
+        // T1/T2/T3 are rejected because N's horizontal part exceeds 1e-6 (whatever the axis branch); the 1/64 branch
+        // itself is covered by the OcsFrame axes check above and by N1's cells below.
         DxfDrawing? drawing = null;
         try
         {

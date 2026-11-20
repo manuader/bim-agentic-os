@@ -3,7 +3,10 @@
 Not run in CI. Needs ezdxf (MIT, https://github.com/mozman/ezdxf); the constants in the test were produced with
 ezdxf 1.4.2 (tag v1.4.2, commit 8240df5793daf2fd7db95d118a78e17ec92043ec) on Python 3 with numpy 2.5.3:
 
-    python3 tests/cad/tools/minsert_ezdxf_centres.py
+    PYTHONPATH=<ezdxf checkout>/src python3 tests/cad/tools/minsert_ezdxf_centres.py
+
+(PyPI was blocked where the constants were generated, so ezdxf was imported from a source checkout of tag v1.4.2;
+`pip install ezdxf==1.4.2` works equally where PyPI is reachable.)
 
 It builds, with ezdxf's own API, the block RECT and the INSERT/MINSERT entities that MinsertEzdxfTests.Drawing()
 writes by hand (same parameters, listed in CASES), and prints, as C# tuples:
