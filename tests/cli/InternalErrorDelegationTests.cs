@@ -25,7 +25,9 @@ using Bim.Core;
 //                                   null in production, called first inside the guarded try) set to throw; stdout,
 //                                   stderr and exit equal the fixture, no output file, the seam null before and after.
 //                                   P3-22: the input directory is deleted in a finally; a second forced run whose
-//                                   stdout throws (Run throws) still leaves the seam null and its inputs deleted; a
+//                                   stdout throws still leaves the seam null and its inputs deleted (generate-prototypes
+//                                   (P7-30, P7-32) and generate-typology (P3-30) contain that failure in Run: nothing
+//                                   escapes, exit 1; in the other two verbs Run throws); a
 //                                   static check (self-tested on planted sources) proves nothing under interfaces/
 //                                   assigns GuardedWorkProbe and each verb reads it once through ?.Invoke().
 //        MCP audit_verify (P3-20)   AuditVerifyTool.Run in process with an actor list whose enumeration throws: the
@@ -264,9 +266,11 @@ internal static class InternalErrorDelegationTests
             Check(forced.Value is null && Same(forced, handWritten) && !wroteOutput, "a forced " + verb + " internal error through Run's real catch-all prints the hand-written stdout, stderr and exit bytes and writes no output",
                 Q(forced) + " vs hand-written " + Q(handWritten) + (forced.Value is { } t ? " threw " + t.GetType().FullName : "") + (wroteOutput ? " output written" : ""));
 
-            // P3-22: a forced run whose Run itself throws (stdout fails while Run prints the refusal, inside its
-            // catch (Refusal), so no sibling catch handles it): the exception escapes Run after InternalRefusal wrote the
-            // internal diagnostic once, and the seam is still reset and the input directory still deleted.
+            // P3-22: a forced run whose stdout fails while Run prints the refusal, inside its catch (Refusal), after
+            // InternalRefusal wrote the internal diagnostic once; the seam is still reset and the input directory still
+            // deleted. P7-30 / P3-30 (labels P7-32): generate-prototypes and generate-typology contain that failure in Run
+            // (exit 1, nothing escapes), so their labels say "contained"; in plan-layouts and doc-realized Run throws.
+            var throwingRun = verb is "generate-prototypes" or "generate-typology" ? "the forced run whose stdout write fails (contained by Run)" : "the forced run whose Run throws";
             var throwingOutput = Path.Combine(work, "internal-throws-" + verb + "-" + Guid.NewGuid().ToString("N") + ".json");
             var throwingInputs = Path.Combine(work, "internal-inputs-" + Guid.NewGuid().ToString("N"));
             var stdoutFailure = new IOException("stdout closed for " + verb);
@@ -294,10 +298,10 @@ internal static class InternalErrorDelegationTests
                     (escaped.Value is { } contained ? "threw " + contained.GetType().FullName + ": " + contained.Message : "threw nothing") + " exit " + escaped.Exit.ToString(CultureInfo.InvariantCulture));
             else
                 Check(ReferenceEquals(escaped.Value, stdoutFailure), verb + ": the forced run whose stdout write fails throws out of Run", escaped.Value?.GetType().FullName + ": " + escaped.Value?.Message);
-            Check(escaped.Err == handWritten.Err, verb + ": the forced run whose Run throws wrote the hand-written internal diagnostic to stderr once (InternalRefusal ran)",
+            Check(escaped.Err == handWritten.Err, verb + ": " + throwingRun + " wrote the hand-written internal diagnostic to stderr once (InternalRefusal ran)",
                 "err [" + escaped.Err + "] vs hand-written [" + handWritten.Err + "]");
-            Check(probe.GetValue(null) is null, verb + ": GuardedWorkProbe is reset to null after a forced run whose Run throws");
-            Check(!Directory.Exists(throwingInputs), verb + ": the input directory of a forced run whose Run throws is deleted afterwards", throwingInputs);
+            Check(probe.GetValue(null) is null, verb + ": GuardedWorkProbe is reset to null after " + throwingRun);
+            Check(!Directory.Exists(throwingInputs), verb + ": the input directory of " + throwingRun + " is deleted afterwards", throwingInputs);
         }
 
         // P3-22: static seam hygiene. Over every .cs file under interfaces/ (comments stripped, string and char literals
