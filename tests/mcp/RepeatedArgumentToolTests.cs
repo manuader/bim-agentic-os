@@ -20,8 +20,9 @@ using Bim.Mcp;
 //      second occurrence whose name spells its first character as a \u00XX escape (either order), for every declared name.
 //      The probed tools are exactly the pinned tools/list names in order.
 //   3. Non-duplicate calls are untouched: a well-typed revit_* call reaches the transport, and a repeated member nested in
-//      an argument value (document, same value twice) is not a repeated argument: the same result and one transport send
-//      as the plain call (only the top-level arguments object is checked).
+//      an argument value (document, same value twice) is not a repeated argument: it reaches the tool, whose strict
+//      envelope check answers the typed envelope_invalid (field document.path) line, with no transport send (only the
+//      top-level arguments object is checked by CallTool).
 //   4. Static (CallTool's body, up to the next method Matches): McpServer.CallTool holds the one repeated-name check before the unexpected-argument check and the tool run;
 //      JurisdictionResolveTool.cs and SkillListTool.cs no longer keep a tool-local duplicate-name check.
 internal static class RepeatedArgumentToolTests
@@ -120,14 +121,16 @@ internal static class RepeatedArgumentToolTests
             var before = sends;
             var plain = Call(query, "{\"pipe_name\":\"bim-agentic-os-2025-1\",\"operation_id\":\"p10-31\",\"document\":" + document + ",\"args\":{}}");
             Check(plain.ContainsKey("result") && sends == before + 1, "a well-typed " + query + " call without a repeated name still reaches the transport | " + plain.ToJsonString());
-            // The same document with its path member given twice (same value): passed through to the tool unchanged, so the
-            // response (result, text, isError) and the transport send equal the plain call's.
+            // The same document with its path member given twice (same value): not CallTool's refusal; the tool's own strict
+            // envelope check answers it (measured on CI run 44705390113): isError with the pinned envelope_invalid line, no send.
             var nestedDocument = "{\"path\":" + JsonSerializer.Serialize(absent) + ",\"path\":" + JsonSerializer.Serialize(absent) + ",\"unique_id\":\"00000000-0000-0000-0000-000000000000-00000001\"}";
             var beforeNested = sends;
             var nested = Call(query, "{\"pipe_name\":\"bim-agentic-os-2025-1\",\"operation_id\":\"p10-31\",\"document\":" + nestedDocument + ",\"args\":{}}");
-            Check(nested.ContainsKey("result") && !nested.ContainsKey("error") && nested["result"]!.ToJsonString() == plain["result"]!.ToJsonString() && sends == beforeNested + 1,
-                "a repeated member nested in an argument value is not a repeated argument: same result and one transport send as the plain call | sends "
-                + (sends - beforeNested).ToString(CultureInfo.InvariantCulture) + " | " + nested.ToJsonString() + " | plain " + plain.ToJsonString());
+            const string NestedLine = "{\"status\":\"failed\",\"code\":\"envelope_invalid\",\"field\":\"document.path\",\"detail\":\"unexpected or duplicate member\",\"created\":[],\"modified\":[],\"deleted\":[],\"readback\":null,\"receipt\":null,\"warnings\":[]}";
+            Check(nested["result"] is JsonObject nestedResult && !nested.ContainsKey("error") && nestedResult["isError"]?.GetValue<bool>() == true
+                && nestedResult["content"]?[0]?["text"]?.GetValue<string>() == NestedLine && sends == beforeNested,
+                "a repeated member nested in an argument value is not a repeated argument: the tool's own envelope_invalid (document.path) refusal, no transport send | sends "
+                + (sends - beforeNested).ToString(CultureInfo.InvariantCulture) + " | " + nested.ToJsonString());
         }
 
         // ---- 4. static ----
