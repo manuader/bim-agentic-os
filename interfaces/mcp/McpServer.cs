@@ -368,9 +368,10 @@ public sealed class McpServer
         }
         var (pages, elements, bytes) = QueryAllCaps;
         // P1-23: the CLI --all deadline transport (interfaces/cli/RevitDeadlineTransport.cs, linked), one cut/exceeded rule:
-        // a page due after the deadline is not sent; on the real pipe a page whose time left is below the server read
-        // timeout is read with the time left, its pipe_read_timeout reported as the deadline; P1-30: below 5 s left its pipe
-        // connect also waits only the time left, its pipe_connect_timeout reported as the deadline; an injected transport is never cut.
+        // a page due after the deadline is not sent; P1-30: below 5 s left a page's pipe connect waits only the time left,
+        // its pipe_connect_timeout reported as the deadline; P1-32/P1-34/P1-36: the read is measured after the connect on
+        // every real-pipe page, with min(server read timeout, time left once connected), its pipe_read_timeout reported
+        // as the deadline when the time left was the smaller; an injected transport is never cut.
         var transport = new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, revitTransport, readTimeout, QueryAllDeadline,
             RevitDeadlineTransport.ElapsedOn(QueryAllClock), listing: RevitDeadlineTransport.McpListing, cutReads: realPipe, probe: revitProbe);
         var listing = RevitElementQueryPaging.All(CommandEnvelope(RevitElementQueryPaging.Command, arguments), transport, pages, elements, bytes);
