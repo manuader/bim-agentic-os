@@ -1713,6 +1713,7 @@ SkillListToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,C
 TwiceReadToolTests.Run(root,cliDir,dotnet,cliDll,mcpDll,Call,Check); // P5-30 twice-read bytes through skill_list and jurisdiction_resolve (tests/mcp/TwiceReadToolTests.cs).
 // P10-31 every tool refuses a repeated argument name uniformly in CallTool (tests/mcp/RepeatedArgumentToolTests.cs).
 RepeatedArgumentToolTests.Run(root,cliDir,Check);
+RepeatedEnvelopeKeyTests.Run(root,cliDir,Check); // P10-33 repeated request/params members and non-text argument names (tests/mcp/RepeatedEnvelopeKeyTests.cs).
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
     var unknown=ToolCall(hidden,new JsonObject());
     Check(IsError(unknown) && Text(unknown)=="""{"status":"failed","code":"unknown_tool"}""","tool "+hidden+" is not exposed and returns isError");
