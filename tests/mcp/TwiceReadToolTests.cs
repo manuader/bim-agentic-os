@@ -15,14 +15,14 @@ using Bim.Core;
 //   sidecar json_invalid    the sidecar rewritten malformed and the pack pinned again in a second lock: every line is
 //                           json_invalid at xx.p530m.pack/jurisdiction.json.
 // Oracles, per phase: the CLI lines are the stdout (without the newline) of real processes of the packaged CLI for
-// `skill-list --skills <pkg>/skills`, `jurisdiction-resolve --code xx.p530m` and the same with `--lock <lock>`; the success
-// lines are pinned literally. Then
+// `skill-list --skills <pkg>/skills`, `jurisdiction-resolve --code xx.p530m` and the same with `--lock <lock>`; every
+// line (success, skill_lock_drift and json_invalid) is pinned literally. Then
 //   1. in process: the harness's one McpServer answers skill_list {skills}, jurisdiction_resolve {code} and
 //      jurisdiction_resolve {code, lock_path} twice each, with AppContext.BaseDirectory pointed at <pkg>/cli through
 //      APP_CONTEXT_BASE_DIRECTORY for the calls (restored in a finally; a negative control without it answers
 //      jurisdiction_unknown): both texts byte-equal to the CLI line, isError = (CLI exit 1);
 //   2. one real process of the packaged server <pkg>/mcp/Bim.Mcp.dll (package-first through SkillPackLookup.PackageRoot of
-//      its mcp/ directory) answers the same six calls on one stdin with the same texts and isError;
+//      its mcp/ directory) answers the same six calls on one stdin, each response carrying its request id, with the same texts and isError;
 //   3. the skills tree and the lock bytes are unchanged by every phase.
 // Two in-process LoadLocked reads of the success inputs are unequal registries (P5-27 reference identity).
 internal static class TwiceReadToolTests
@@ -131,18 +131,11 @@ internal static class TwiceReadToolTests
             + ",\"packs\":[{\"id\":\"" + Pack + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"stub\":false,"
             + "\"source_confidence\":{\"rules\":0,\"cited\":0,\"owner-confirmed\":0,\"to-verify\":0,\"lowest\":\"none\"}}]}";
         const string ResolveLine = "{\"status\":\"succeeded\",\"code\":\"" + Code + "\",\"pack\":\"" + Pack + "\",\"version\":\"1.2.3\",\"stub\":false}";
-        // Refusal lines pinned literally (red phase: not yet observed).
-        const string JsonInvalidLine = "{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.JsonInvalid + "\",\"subject\":\"" + Pack + "/jurisdiction.json\",\"detail\":\"<p530m json_invalid detail not yet observed>\"}";
-        const string DriftLine = "<p530m drift line not yet observed>";
-        // Red-phase scaffolding only: the json_invalid lines (unlocked and locked) of a malformed copy, shown in the drift failure.
-        string Observed()
-        {
-            var probe = Path.Combine(work, "twice-read-mcp", "probe-skills");
-            CopyDirectory(skills, probe);
-            File.WriteAllText(Path.Combine(probe, Pack, "jurisdiction.json"), "{ \"jurisdiction_version\": 1, ", new UTF8Encoding(false));
-            static string L(JurisdictionLoad load) => load.Refusal is { } r ? JsonSerializer.Serialize(new { status = "failed", code = r.Code, subject = r.Subject, detail = r.Detail }) : "<no refusal>";
-            return "observed unlocked " + L(JurisdictionRegistry.Load(probe)) + " locked " + L(JurisdictionRegistry.LoadLocked(probe, SkillLocking.Pin(probe, new[] { Pack })));
-        }
+        // Refusal lines pinned literally (red phase run 44731149194 probed placeholders and observed these on Windows; the
+        // drift hashes are bim-skill-pack-sha256-v1 of the fixture bytes as pinned and as edited; the json_invalid detail is
+        // the System.Text.Json message for the truncated sidecar, the same unlocked and under the lock).
+        const string JsonInvalidLine = "{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.JsonInvalid + "\",\"subject\":\"" + Pack + "/jurisdiction.json\",\"detail\":\"$: Expected start of a property name or value, but instead reached end of data. LineNumber: 0 | BytePositionInLine: 29.\"}";
+        const string DriftLine = "{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.SkillLockDrift + "\",\"subject\":\"" + Pack + "\",\"detail\":\"pinned 1.2.3 sha256 99a728983c2aed823b3864d14264a0d907c00da37623f299d69d2e4d834514ef, found 1.2.3 sha256 3ac41cdd3374f25fa76390ba53321908158bedcbdda75acb6bf40fe680b5b77c; an explicit lock update is required to accept it\"}";
 
         void Phase(string phase, string lockFile, Func<string, bool>[] expected)
         {
@@ -159,7 +152,7 @@ internal static class TwiceReadToolTests
             {
                 var expectedLine = cli[index].Exit is 0 or 1 && expected[index](cli[index].Out) && (cli[index].Exit == 0) == cli[index].Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal);
                 Check(expectedLine,
-                    phase + ": " + cases[index].Label + ": the packaged CLI line is the expected one | exit " + cli[index].Exit.ToString(CultureInfo.InvariantCulture) + " " + Short(cli[index].Out) + (expectedLine ? "" : " | " + Observed()));
+                    phase + ": " + cases[index].Label + ": the packaged CLI line is the expected one | exit " + cli[index].Exit.ToString(CultureInfo.InvariantCulture) + " " + Short(cli[index].Out));
             }
             // 1. in process, two calls each on the one harness server.
             for (var index = 0; index < cases.Length; index++)
