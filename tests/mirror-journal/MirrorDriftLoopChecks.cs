@@ -2156,12 +2156,47 @@ static class MirrorDriftLoopChecks
     const string PerOsFloor = "p2-33-floor";
     static readonly string[] PerOsRequestsBefore = { "p2-33-levels", "p2-33-floor-types" };
 
+    // P2-36: static pin of the connected-pipe seam RevitCommandService.PipeConnected ([ThreadStatic], null in production):
+    // named only in RevitCommandsService.cs among the production sources and, comments stripped, exactly twice there (its
+    // declaration without an initializer and the one read in WriteRequest); a planted =, +=, -= or ??= is caught.
+    static void PipeConnectedPinned(string root, Action<bool, string, string> check)
+    {
+        var naming = new List<string>();
+        foreach (var top in new[] { "core", "interfaces", "runtimes", "adapters", "evaluation" })
+        {
+            var directory = Path.Combine(root, top);
+            if (!Directory.Exists(directory)) continue;
+            foreach (var file in Directory.EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+                if (relative.Contains("/bin/", StringComparison.Ordinal) || relative.Contains("/obj/", StringComparison.Ordinal)) continue;
+                if (File.ReadAllText(file).Contains("PipeConnected", StringComparison.Ordinal)) naming.Add(relative);
+            }
+        }
+        naming.Sort(StringComparer.Ordinal);
+        check(naming.SequenceEqual(new[] { WriteProgressService }), "static pin (P2-36): among the production sources only " + WriteProgressService + " names the connected-pipe seam", string.Join(",", naming));
+        var service = File.ReadAllText(Path.Combine(root, WriteProgressService));
+        static string Code(string source) => System.Text.RegularExpressions.Regex.Replace(source, @"/\*.*?\*/|//[^\n]*", "", System.Text.RegularExpressions.RegexOptions.Singleline);
+        const string seamDeclaration = "[ThreadStatic] internal static Action<PipeStream>? PipeConnected;";
+        const string seamRead = "PipeConnected?.Invoke(pipe);";
+        static int Uses(string source) => System.Text.RegularExpressions.Regex.Matches(Code(source), @"\bPipeConnected\b").Count;
+        static bool Pinned(string source) => Uses(source) == 2 && Code(source).Contains(seamDeclaration, StringComparison.Ordinal) && Code(source).Contains(seamRead, StringComparison.Ordinal);
+        check(Pinned(service),
+            "static pin (P2-36): with comments stripped the connected-pipe seam occurs exactly twice in " + WriteProgressService + " (its [ThreadStatic] declaration without an initializer and the one read): never assigned in production source",
+            "code occurrences " + Uses(service));
+        var planted = new[] { "\nstatic void P() { PipeConnected += _ => { }; }\n", "\nstatic void P(Action<PipeStream> x) { PipeConnected ??= x; }\n", "\nstatic void P() { PipeConnected -= null; }\n", "\nstatic void P() { PipeConnected = null; }\n" };
+        check(planted.All(plant => !Pinned(service + plant)) && Pinned(service + "\n// PipeConnected = x;\n/* PipeConnected += y; */\n"),
+            "static pin self-test (P2-36): a planted PipeConnected +=, ??=, -= or = is caught, a mention in a comment is not", string.Join(",", planted.Select(plant => Uses(service + plant))));
+    }
+
     static void RunWriteProgressPerOsLoop(string root, string dotnet, string pwsh, string cliDll, string runDirectory)
     {
         void Check(bool condition, string name, string detail = "") => MirrorDriftLoopChecks.Check(condition, "write progress per OS (P2-33): " + name, detail);
         var os = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
         Check(typeof(Harness).GetProperty("Pipe") is { CanRead: true, CanWrite: false, SetMethod: null }, "the harness's Pipe property is read-only (a getter, no setter or init accessor)");
         Check(RevitCommandService.WriteProgress is null, "the seam is null on the test thread before the run");
+        PipeConnectedPinned(root, (condition, name, detail) => Check(condition, name, detail));
+        Check(RevitCommandService.PipeConnected is null, "the connected-pipe seam (P2-36) is null on the test thread before the run");
 
         using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Pipe-WriteProgress-PerOs.rvt", PerOsRequestsBefore.Length + 2, breakAfterBytes: MidArgsBreakBytes);
         Check(h.Pipe.StartsWith("bim-agentic-os-2025-", StringComparison.Ordinal) && h.Pipe.Length == "bim-agentic-os-2025-".Length + 6 && h.Pipe[^6..].All(char.IsAsciiDigit),
@@ -2184,8 +2219,27 @@ static class MirrorDriftLoopChecks
         RevitCommandResult? seam = null;
         var thrown = "";
         string? wrongPrefix = null;
+        // P2-36: on macOS only, the test-only lever RevitCommandService.PipeConnected (null in production) doubles the
+        // seam run's client socket send buffer (SO_SNDBUF) once connected, before the first byte is written; the value
+        // read back after the set is what the pin expects queued. The CLI process has no lever (default send buffer).
+        var lever = "";
+        int clientSendDefault = -1, clientSendRaised = -1, levered = 0;
         try
         {
+            if (OperatingSystem.IsMacOS())
+                RevitCommandService.PipeConnected = pipe =>
+                {
+                    levered++;
+                    try
+                    {
+                        var property = typeof(Microsoft.Win32.SafeHandles.SafePipeHandle).GetProperty("PipeSocket", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        if (property?.GetValue(pipe.SafePipeHandle) is not Socket socket) { lever = property is null ? "no SafePipeHandle.PipeSocket" : "PipeSocket is not a Socket"; return; }
+                        clientSendDefault = socket.SendBufferSize;
+                        socket.SendBufferSize = 2 * clientSendDefault;
+                        clientSendRaised = socket.SendBufferSize;
+                    }
+                    catch (Exception failure) { lever = failure.GetType().Name + ": " + failure.Message; }
+                };
             if (!OperatingSystem.IsWindows())
             {
                 Environment.SetEnvironmentVariable("TMPDIR", UnixTemp);
@@ -2206,11 +2260,13 @@ static class MirrorDriftLoopChecks
         finally
         {
             RevitCommandService.WriteProgress = null;
+            RevitCommandService.PipeConnected = null;
             if (!OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable("TMPDIR", savedTemp);
         }
         if (wrongPrefix is not null) { Check(false, "Core's pipe client resolves sockets under " + UnixTemp + " on " + os, wrongPrefix); return; }
         var elapsed = clock.ElapsedMilliseconds;
         Check(RevitCommandService.WriteProgress is null, "the seam is null on the test thread after the run");
+        Check(RevitCommandService.PipeConnected is null, "the connected-pipe seam (P2-36) is null on the test thread after the run");
         var (exited, exit, error) = h.End();
         var received = h.Received();
 
@@ -2259,18 +2315,25 @@ static class MirrorDriftLoopChecks
             // P2-35 probe red (run 44748588269): with the fake's receive buffer set to 32768 (InBufferSize 32768 in both
             // broken-after lines), queued stayed 8192 = the client's default unix send buffer and handed stayed 12288 = the
             // bytes read + that send buffer: on XNU AF_UNIX the writer is limited by its own send buffer, not the reader's
-            // receive buffer. Pinned as relations to UnixSendBuffer() and InBufferSize (no literal byte counts).
-            // UnixSendBuffer() measures a fresh Unix socket's default send buffer (as P2-33 does), taken as the CLI
-            // client's; handed % WriteProgressChunk == 0 assumes that send buffer is a multiple of the 1024-byte piece.
+            // receive buffer.
+            // P2-36: the cause is proven by moving it. The seam run's client send buffer is raised (lever above: 2x its
+            // default, read back) while the CLI process keeps the default; the seam run's queued and handed follow the
+            // raised value, the CLI's queued stays at the default. Pinned as relations to UnixSendBuffer(), the read-back
+            // raised send buffer and InBufferSize (no literal byte counts). UnixSendBuffer() measures a fresh Unix socket's
+            // default send buffer (as P2-33 does) and must equal the seam client's own default read before the raise;
+            // handed % WriteProgressChunk == 0 assumes the raised send buffer is a multiple of the 1024-byte piece.
             // The fake raises its receive buffer relative to its own defaults (header), so the precondition is checked on
-            // its own: a red there is a setup failure (a SetReceiveBuffer sentinel parses as -1), not a relation failure.
+            // its own: a red there is a setup failure (a lever or SetReceiveBuffer sentinel), not a relation failure.
             var sendBuffer = UnixSendBuffer();
-            var macDetail = measured + " in_buffer=" + inBuffer + " send_buffer=" + sendBuffer;
-            Check(sendBuffer > 0 && inBuffer > sendBuffer,
-                "macos precondition: the fake's receive buffer (InBufferSize, both broken-after lines equal) was raised above the client's default unix send buffer", macDetail);
-            Check(sendBuffer > 0 && inBuffer > sendBuffer && handed == MidArgsBreakBytes + sendBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
-                && seamQueued == sendBuffer && seamQueued < inBuffer && handed == MidArgsBreakBytes + seamQueued && cliQueued == seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
-                "macos: with the fake's receive buffer (InBufferSize) raised above the client's unix send buffer, queued (FIONREAD) == the client's send buffer < InBufferSize in both runs and handed == the bytes the fake read plus that send buffer < wire bytes (still writing): the writer's send buffer, not the reader's receive buffer, bounds the queue", macDetail);
+            var macDetail = measured + " in_buffer=" + inBuffer + " send_buffer=" + sendBuffer + " lever_calls=" + levered + " client_send_default=" + clientSendDefault
+                + " client_send_raised=" + clientSendRaised + " lever_error=" + (lever.Length == 0 ? "<none>" : lever);
+            var raised = clientSendRaised;
+            Check(levered == 1 && lever.Length == 0 && sendBuffer > 0 && clientSendDefault == sendBuffer && raised > sendBuffer && inBuffer > raised,
+                "macos precondition: the lever ran once and raised the seam client's send buffer above its default (== the default unix send buffer), and the fake's receive buffer (InBufferSize, both broken-after lines equal) is above the raised send buffer", macDetail);
+            Check(levered == 1 && lever.Length == 0 && sendBuffer > 0 && raised > sendBuffer && inBuffer > raised
+                && seamQueued == raised && handed == MidArgsBreakBytes + raised && handed == MidArgsBreakBytes + seamQueued && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
+                && seamQueued < inBuffer && cliQueued == sendBuffer && cliQueued < seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
+                "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue", macDetail);
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
