@@ -23,7 +23,7 @@ internal static class DeletedCwdPathTests
         void Check(bool condition, string name, string detail = "") => check(condition, "deleted cwd path: " + name, detail);
         var scratch = Path.Combine(work, "deleted-cwd-path-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
-        try { Cases(scratch, cliDll, Check, skip); }
+        try { Cases(scratch, cliDll, Check, skip); Remainder(scratch, cliDll, Check, skip); }
         finally
         {
             try { if (Directory.Exists(scratch)) Directory.Delete(scratch, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
@@ -171,5 +171,228 @@ internal static class DeletedCwdPathTests
         // Probe facts: one annotation per verb with a failing case, listing every measured case of that verb.
         foreach (var (verb, list) in facts)
             if (failing.Contains(verb)) Console.WriteLine("::warning::P10-30 probe " + Environment.OSVersion.Platform + " " + verb + ": " + string.Join(" || ", list).ReplaceLineEndings(" "));
+    }
+
+    // ---- P10-32: the deleted-cwd remainder ----
+    // (1) doc-update --probe-dependents (probe mode prints field/detail as separate members) with one relative path argument
+    // under a deleted working directory, through the same in-process runner as P10-30, pinned as measured.
+    // (2) A relative input/output path while the working directory exists but is not searchable: "cwd" mode chmods the
+    // working directory itself to 000, "parent" mode chmods its parent to 000 (the working directory keeps 0700). Each case
+    // must print a typed refusal (exit 1, a snake_case code, never Program's generic catch nor *_internal_error, empty
+    // stderr) and write nothing. Linux/macOS only; a counted SKIP on Windows, and when a mode-000 directory stays
+    // listable (root or CAP_DAC_OVERRIDE). Modes, the working directory, Console and ExitCode are restored in a finally.
+    const string Pipe = "bim-agentic-os-2025-1";
+
+    static void Remainder(string scratch, string cliDll, Action<bool, string, string> Check, Action<string, string> skip)
+    {
+        var dummy = Path.Combine(scratch, "remainder-dummy.json");
+        File.WriteAllText(dummy, "{}\n", new UTF8Encoding(false));
+        var counter = 0;
+        string Output() => Path.Combine(scratch, "out-remainder-" + (++counter).ToString(CultureInfo.InvariantCulture) + ".json");
+        string[] DocUpdate(string name, bool probe)
+        {
+            var values = new Dictionary<string, string> { ["--before"] = dummy, ["--after"] = dummy, ["--realized"] = dummy, ["--bindings"] = dummy, ["--output"] = Output() };
+            values[name] = name == "--output" ? RelativeOutput : RelativeInput;
+            var args = new List<string> { "doc-update", "--before", values["--before"], "--after", values["--after"], "--realized", values["--realized"], "--bindings", values["--bindings"], "--output", values["--output"] };
+            if (probe) args.AddRange(new[] { "--probe-dependents", Pipe });
+            return args.ToArray();
+        }
+        string Probe(string code, string? field) => field is null
+            ? JsonSerializer.Serialize(new { status = "failed", code })
+            : JsonSerializer.Serialize(new { status = "failed", code, field });
+
+        // (1) deleted cwd, probe mode. The output path is checked before the pipe is taken, so it keeps the plain envelope.
+        var probeCases = new List<(string Verb, string Argument, Func<string[]> Arguments, string Expected)>();
+        foreach (var flag in new[] { "--before", "--after", "--realized", "--bindings", "--output" })
+        {
+            var name = flag;
+            probeCases.Add(("doc-update --probe-dependents", name, () => DocUpdate(name, true),
+                name == "--output" ? Probe("output_path_invalid", null) : Probe("input_io_error", name[2..])));
+        }
+        RunCases(scratch, cliDll, probeCases, Check, skip);
+
+        // (2) unsearchable cwd: one relative input and one relative output per verb (both doc-update modes). An output
+        // case's arguments take the output path, so the same run can be repeated with an absolute output (the reference).
+        var log = Path.Combine(scratch, "remainder-empty.jsonl");
+        File.WriteAllBytes(log, Array.Empty<byte>());
+        string Plain(string code) => JsonSerializer.Serialize(new { status = "failed", code });
+        string Detail(string code, string detail) => JsonSerializer.Serialize(new { status = "failed", code, detail });
+        var cases = new List<Unsearchable>
+        {
+            new("audit-verify", "log", _ => new[] { "audit-verify", RelativeInput }, Plain("input_access_denied")),
+            new("audit-verify", "--write-anchor", output => new[] { "audit-verify", dummy, "--write-anchor", output }, null),
+            new("audit-verify", "--write-anchor (clean empty log)", output => new[] { "audit-verify", log, "--write-anchor", output }, null),
+            new("diff-intent", "--project", _ => new[] { "diff-intent", "--project", RelativeInput, "--intent", dummy }, Plain("input_access_denied")),
+            new("doc-realized", "--record", _ => new[] { "doc-realized", "--record", RelativeInput, "--fixture", dummy, "--assignments", dummy, "--document", "uid-1", "--output", Output() }, Detail("input_access_denied", "record")),
+            new("doc-realized", "--output", output => new[] { "doc-realized", "--record", dummy, "--fixture", dummy, "--assignments", dummy, "--document", "uid-1", "--output", output }, null),
+            new("doc-update", "--before", _ => DocUpdate("--before", false), Detail("input_access_denied", "before")),
+            new("doc-update", "--output", output => DocUpdate("--output", false).Select(a => a == RelativeOutput ? output : a).ToArray(), null),
+            new("doc-update --probe-dependents", "--before", _ => DocUpdate("--before", true), Probe("input_access_denied", "before")),
+            new("doc-update --probe-dependents", "--output", output => DocUpdate("--output", true).Select(a => a == RelativeOutput ? output : a).ToArray(), null),
+        };
+        foreach (var verb in new[] { "generate-prototypes", "generate-typology", "plan-layouts" })
+        {
+            var name = verb;
+            cases.Add(new(name, "request", _ => new[] { name, RelativeInput, Output() }, Plain("input_access_denied")));
+            cases.Add(new(name, "output", output => new[] { name, dummy, output }, null));
+        }
+        cases.Add(new("export-gltf", "output", output => new[] { "export-gltf", dummy, output }, null, "relative-output.glb"));
+        cases.Add(new("bcf-export", "output", output => new[] { "bcf-export", dummy, output }, null, "relative-output.bcfzip"));
+        foreach (var mode in new[] { "cwd", "parent" })
+            RunUnsearchable(scratch, cliDll, mode, cases, Check, skip);
+    }
+
+    // Input is the expected refusal of an input case (null: an output case, whose argument is RelativeName).
+    sealed record Unsearchable(string Verb, string Argument, Func<string, string[]> Arguments, string? Input, string RelativeName = RelativeOutput);
+
+    // The refusal of a relative output path that Path.GetFullPath (or the parent check) refuses: the verb's envelope of code.
+    static string OutputRefusal(string verb, string code) => verb == "bcf-export"
+        ? JsonSerializer.Serialize(new { status = "failed", code = "bcf_export_output_invalid", detail = code })
+        : JsonSerializer.Serialize(new { status = "failed", code });
+
+    // chmod with the platform guard inside (the callers also return early on Windows).
+    static void Chmod(string path, UnixFileMode mode) { if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, mode); }
+
+    static (int Exit, string Line, string Error) Invoke(MethodInfo entry, string[] args, Action? before = null)
+    {
+        var previousOut = Console.Out;
+        var previousError = Console.Error;
+        var previousExit = Environment.ExitCode;
+        var capturedOut = new StringWriter();
+        var capturedError = new StringWriter();
+        var thrown = "";
+        int exit;
+        try
+        {
+            before?.Invoke();
+            Environment.ExitCode = 0;
+            Console.SetOut(capturedOut);
+            Console.SetError(capturedError);
+            entry.Invoke(null, new object[] { args });
+        }
+        catch (Exception failure)
+        {
+            var inner = failure is TargetInvocationException { InnerException: { } cause } ? cause : failure;
+            thrown = " threw " + inner.GetType().FullName + ": " + inner.Message;
+        }
+        finally
+        {
+            exit = Environment.ExitCode;
+            Environment.ExitCode = previousExit;
+            Console.SetOut(previousOut);
+            Console.SetError(previousError);
+        }
+        return (exit, capturedOut.ToString().TrimEnd('\r', '\n'), (capturedError.ToString().ReplaceLineEndings(" ").Trim() + thrown).Trim());
+    }
+
+    static void RunUnsearchable(string scratch, string cliDll, string mode, List<Unsearchable> cases, Action<bool, string, string> Check, Action<string, string> skip)
+    {
+        string Label(Unsearchable c) => "unsearchable " + mode + ": " + c.Verb + " " + c.Argument;
+        if (OperatingSystem.IsWindows())
+        {
+            foreach (var c in cases) skip("deleted cwd path: " + Label(c), "Unix permission bits (chmod 000) only");
+            return;
+        }
+        var parent = Path.Combine(scratch, "locked-parent-" + mode);
+        var cwd = Path.Combine(parent, "cwd");
+        Directory.CreateDirectory(cwd);
+        var locked = mode == "cwd" ? cwd : parent;
+        const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        // Behavioural privilege check (the tests/cli chmod rule): a mode-000 directory still listable means root/CAP_DAC_OVERRIDE.
+        bool denied;
+        Chmod(locked, UnixFileMode.None);
+        try { Directory.GetFileSystemEntries(locked); denied = false; }
+        catch (UnauthorizedAccessException) { denied = true; }
+        finally { Chmod(locked, Owner); }
+        if (!denied)
+        {
+            foreach (var c in cases) skip("deleted cwd path: " + Label(c), "a mode-000 directory is still listable (privileged runner)");
+            return;
+        }
+
+        Assembly? cli = null;
+        try { cli = Assembly.LoadFrom(cliDll); }
+        catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+        var entry = cli?.EntryPoint;
+        if (entry is null) { Check(false, "the Release CLI assembly has an entry point", cliDll); return; }
+        var original = Environment.CurrentDirectory;
+        var exitBefore = Environment.ExitCode;
+        var measuredAll = new List<string>();
+        var anyFailing = false;
+        foreach (var c in cases)
+        {
+            var label = Label(c);
+            var probe = "";
+            var fullPathThrew = false;
+            (int Exit, string Line, string Error) run;
+            try
+            {
+                run = Invoke(entry, c.Arguments(c.RelativeName), () =>
+                {
+                    Directory.SetCurrentDirectory(cwd);
+                    Chmod(locked, UnixFileMode.None);
+                    try { Path.GetFullPath(RelativeInput); probe = "GetFullPath accepted"; }
+                    catch (Exception failure) { probe = "GetFullPath threw " + failure.GetType().FullName; fullPathThrew = true; }
+                });
+            }
+            finally
+            {
+                Chmod(locked, Owner);
+                Directory.SetCurrentDirectory(original);
+            }
+            var (exit, line, error) = run;
+            var measured = probe + "; exit " + exit.ToString(CultureInfo.InvariantCulture) + " " + line + (error.Length > 0 ? " stderr " + error : "");
+            measuredAll.Add(c.Verb + " " + c.Argument + " -> " + measured);
+            string? code = null;
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                if (document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.TryGetProperty("code", out var codeElement) && codeElement.ValueKind == JsonValueKind.String)
+                    code = codeElement.GetString();
+            }
+            catch (JsonException) { }
+            var typed = exit == 1 && error.Length == 0 && code is not null && code.Length > 0 && code.All(ch => ch is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_')
+                && !code.Contains("internal_error", StringComparison.Ordinal);
+            Check(typed, label + ": a typed refusal (exit 1, snake_case code, not Program's generic catch nor an internal error, empty stderr)", measured);
+
+            // The exact line, as measured (run 44824612295): every input is input_access_denied. A relative output is
+            // output_path_invalid where GetFullPath throws (macOS: UnauthorizedAccessException in both modes),
+            // output_directory_not_found under a mode-000 parent where it does not (Linux: the absolute parent is not
+            // searchable). Under a mode-000 working directory on Linux the output path is accepted, so the run equals the
+            // same run with an absolute output (the reference) when that refuses, and is the verb's typed output_io_error
+            // with detail UnauthorizedAccessException when the reference writes.
+            string? expected;
+            var reference = "";
+            if (c.Input is not null) expected = c.Input;
+            else if (fullPathThrew) expected = OutputRefusal(c.Verb, "output_path_invalid");
+            else if (mode == "parent") expected = OutputRefusal(c.Verb, "output_directory_not_found");
+            else
+            {
+                var refDirectory = Path.Combine(scratch, "reference-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(refDirectory);
+                var refRun = Invoke(entry, c.Arguments(Path.Combine(refDirectory, c.RelativeName)));
+                var refWrote = Directory.GetFiles(refDirectory).Length > 0;
+                Directory.Delete(refDirectory, true);
+                reference = "; reference exit " + refRun.Exit.ToString(CultureInfo.InvariantCulture) + (refWrote ? " wrote" : " ") + refRun.Line;
+                expected = refRun.Exit == 1 && !refWrote && refRun.Error.Length == 0 ? refRun.Line
+                    : refRun.Exit == 0 && refWrote ? (c.Verb == "bcf-export"
+                        ? JsonSerializer.Serialize(new { status = "failed", code = "bcf_export_output_io_error", detail = "UnauthorizedAccessException" })
+                        : JsonSerializer.Serialize(new { status = "failed", code = "output_io_error", detail = "UnauthorizedAccessException" }))
+                    : null;
+            }
+            if (c.Verb == "audit-verify" && c.Argument == "--write-anchor (clean empty log)" && !fullPathThrew && mode == "cwd")
+                Check(expected == JsonSerializer.Serialize(new { status = "failed", code = "output_io_error", detail = "UnauthorizedAccessException" }),
+                    label + ": the reference run writes the anchor, so the relative run reaches the exclusive write", measured + reference);
+            var exact = expected is not null && exit == 1 && line == expected && error.Length == 0;
+            if (!exact) anyFailing = true;
+            Check(exact, label + ": the exact refusal " + (expected ?? "(no expectation: the reference run neither refused nor wrote)"), measured + reference);
+            Check(Environment.CurrentDirectory == original, label + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
+            var written = Directory.GetFiles(scratch, "out-remainder-*.json").Concat(Directory.GetFiles(cwd)).Concat(Directory.GetFiles(parent)).ToArray();
+            Check(written.Length == 0, label + ": no output file is written", string.Join(",", written));
+        }
+        Check(Environment.ExitCode == exitBefore, "unsearchable " + mode + ": Environment.ExitCode is restored (finally)",
+            Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBefore.ToString(CultureInfo.InvariantCulture));
+        // Probe facts: one annotation per mode with a failing case, listing every measured case of that mode.
+        if (anyFailing) Console.WriteLine("::warning::P10-32 probe " + Environment.OSVersion.Platform + " unsearchable " + mode + ": " + string.Join(" || ", measuredAll).ReplaceLineEndings(" "));
     }
 }

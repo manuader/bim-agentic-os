@@ -21,7 +21,9 @@ internal static partial class GltfExportCommand
         try { full = Path.GetFullPath(path); }
         // P10-30 (the P10-28/P10-29 rule): a relative path under a deleted working directory makes GetFullPath throw
         // FileNotFoundException on Linux/macOS (observed, run 44623774846); refused like any other unusable path.
-        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException) { return "output_path_invalid"; }
+        // P10-32: on macOS GetFullPath of a relative path also throws UnauthorizedAccessException when the working
+        // directory or one of its ancestors is not searchable (observed, run 44824612295); refused the same way.
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException or UnauthorizedAccessException) { return "output_path_invalid"; }
         if (OperatingSystem.IsWindows() && (DeviceNamespace(path) || DeviceNamespace(full))) return "output_not_regular_file";
         // No ':' after a drive designator, on every OS: on Windows "host.txt:model.glb" names an NTFS alternate data
         // stream of host.txt, not a new file, so it is never a valid output.
