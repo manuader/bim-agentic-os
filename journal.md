@@ -1964,3 +1964,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay255
 - 2026-11-20T23:53:21Z lock taken (session_014pxpsTdUHbXXUsBWYLwVHZ relay255; was FREE, relay254 released 2026-11-20T23:15:35Z)
+- 2026-11-20T23:53:37Z picked P1-38 (phase 1), P5-32 (phase 5), P7-33 (phase 7) — oldest-touched (relay252); disjoint files (RevitDeadlineTransport.cs + Program.cs ctor call + RevitCommandsService.cs PipeTransportWithReadTimeout + RevitCommandDeadlineTests.cs new section only by P1-38; tests/cli/SkillListTests.cs + tests/mcp/TwiceReadToolTests.cs new sections only by P5-32; tests/packaging/test-package.ps1 new section only by P7-33). Workers spawned.
