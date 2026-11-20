@@ -2092,10 +2092,6 @@ internal static class GeneratePrototypesTests
             static int[] Cuts(int n) => new[] { 1, n / 2, n };
             static TextWriter Disposed() { var closed = new StringWriter(CultureInfo.InvariantCulture); closed.Dispose(); return new CountingWriter(closed); }
             bool NoFile(string output) => !File.Exists(output) && !Directory.Exists(output) && !File.Exists(output + ".txt");
-            var measured = new List<string>();
-            string Show(string label, (Exception? Thrown, List<string> Events, int Exit, TextWriter Out, bool Restored) r) =>
-                label + " -> exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " stdout [" + TextOf(r) + "] attempts " + AttemptsOf(r.Out).Count.ToString(CultureInfo.InvariantCulture)
-                + " stderr " + r.Events.Count.ToString(CultureInfo.InvariantCulture) + (r.Thrown is null ? "" : " threw " + r.Thrown.GetType().Name);
 
             // a. catch (Refusal): the typed refusals of the real process, cut part-way.
             var existing = Output();
@@ -2127,7 +2123,6 @@ internal static class GeneratePrototypesTests
                     {
                         var b = Output();
                         var r = Forced(new PartialWriter(k, false, make), null, null, null, argsOf(b));
-                        if (kind == "IOException") measured.Add(Show(label + " k=" + k.ToString(CultureInfo.InvariantCulture), r));
                         Check(Contained(r) && Attempted(r, line) && TextOf(r) == line[..k] && r.Out is PartialWriter { Rejected: 1 } && r.Events.Count == 0 && NoFile(b),
                             "the " + label + " refusal + stdout " + kind + " after " + k.ToString(CultureInfo.InvariantCulture) + " of " + line.Length.ToString(CultureInfo.InvariantCulture)
                             + " chars: stdout the truncated line (no newline), attempted once, nothing escapes Run, exit 1, stderr unwritten, no file", D(r));
@@ -2147,7 +2142,6 @@ internal static class GeneratePrototypesTests
                 {
                     var output = Output();
                     var r = Forced(new PartialWriter(k, false, make), null, () => throw failure, null, new[] { "generate-prototypes", request, output });
-                    if (kind == "IOException") measured.Add(Show("guarded k=" + k.ToString(CultureInfo.InvariantCulture), r));
                     Check(Contained(r) && Attempted(r, envelope.Line) && TextOf(r) == envelope.Line[..k] && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && !File.Exists(output),
                         "GuardedWorkProbe Refusal(InternalError) + stdout " + kind + " after " + k.ToString(CultureInfo.InvariantCulture) + " chars: stdout the truncated typed line, attempted once, diagnostic once, exit 1, nothing escapes, no file", D(r));
                 }
@@ -2166,7 +2160,6 @@ internal static class GeneratePrototypesTests
                     {
                         var output = Output();
                         var r = Forced(new PartialWriter(k, false, make), before, null, stage, new[] { "generate-prototypes", request, output });
-                        if (kind == "IOException") measured.Add(Show(path + " k=" + k.ToString(CultureInfo.InvariantCulture), r));
                         Check(Contained(r) && Attempted(r, envelope.Line) && TextOf(r) == envelope.Line[..k] && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && !File.Exists(output),
                             path + " + stdout " + kind + " after " + k.ToString(CultureInfo.InvariantCulture) + " chars: stdout the truncated typed line, attempted once, diagnostic once, exit 1, nothing escapes, no file", D(r));
                     }
@@ -2206,7 +2199,6 @@ internal static class GeneratePrototypesTests
                                 new[] { "generate-prototypes", requestPath, output });
                             var typedPart = perLine ? (envelope.Line + nl)[..Math.Min(k, envelope.Line.Length + nl.Length)] : "";
                             var budget = (perLine ? "per-line " : "") + k.ToString(CultureInfo.InvariantCulture);
-                            if (kind == "IOException") measured.Add(Show(label + " budget " + budget, r));
                             Check(Contained(r) && Attempted(r, line, envelope.Line) && TextOf(r) == line[..k] + typedPart && r.Events.SequenceEqual(new[] { "err:" + diagnostic })
                                 && !File.Exists(output) && (label != "success" || (seen is not null && Hex(seen) == pinned)),
                                 "the " + label + " line + stdout " + kind + " after a budget of " + budget + " of " + line.Length.ToString(CultureInfo.InvariantCulture)
@@ -2223,8 +2215,6 @@ internal static class GeneratePrototypesTests
                 }
             }
             Check(AllNull(), "the seams are null after the section");
-            // P7-32 red probe: report the measured outcomes (removed in the green commit).
-            Check(false, "probe: measured partial-write outcomes", string.Join(" || ", measured.Where(m => m.Contains("k=1 ", StringComparison.Ordinal) || m.Contains("budget", StringComparison.Ordinal) || m.StartsWith("usage", StringComparison.Ordinal))));
         }
         finally
         {
