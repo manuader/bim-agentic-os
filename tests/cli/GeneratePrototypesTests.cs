@@ -2074,16 +2074,18 @@ internal static class GeneratePrototypesTests
             // P4-27: Run lives in the CLI-only write part GenerateWrite.cs.
             var source = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateWrite.cs")), blankStrings: false);
             Check(System.Text.RegularExpressions.Regex.IsMatch(source,
-                    @"public\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{\s*try\s*\{\s*Execute\s*\(\s*args\s*\)\s*;\s*\}\s*catch\s*\(\s*Refusal\s+refusal\s*\)\s*\{\s*Fail\s*\(\s*refusal\s*\.\s*Code\s*,\s*refusal\s*\.\s*Detail\s*\)\s*;\s*\}\s*"
+                    @"public\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{\s*try\s*\{\s*Execute\s*\(\s*args\s*\)\s*;\s*\}\s*catch\s*\(\s*Refusal\s+refusal\s*\)\s*\{\s*"
+                    // P7-30: the catch (Refusal) sets the exit code, then runs Fail guarded (a throwing stdout drops only the typed line).
+                    + @"Environment\s*\.\s*ExitCode\s*=\s*1\s*;\s*try\s*\{\s*Fail\s*\(\s*refusal\s*\.\s*Code\s*,\s*refusal\s*\.\s*Detail\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*"
                     // P7-28: the catch-all writes the diagnostic guarded (a throwing stderr drops only it), then prints the typed line.
                     + @"catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*var\s+internalError\s*=\s*IntentPlan\s*\.\s*Internal\s*\(\s*""generate-prototypes""\s*,\s*error\s*\)\s*;\s*"
                     + @"try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*internalError\s*\.\s*Diagnostic\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*"
                     // P7-29: the exit code is set first, then the typed line is printed guarded (a throwing stdout drops only it).
                     + @"Environment\s*\.\s*ExitCode\s*=\s*internalError\s*\.\s*Exit\s*;\s*"
                     + @"try\s*\{\s*\(\s*internalError\s+with\s*\{\s*Diagnostic\s*=\s*null\s*\}\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*\}"),
-                "GenerateCommand.Run is try Execute / catch (Refusal) Fail / catch (Exception) { var internalError = IntentPlan.Internal(\"generate-prototypes\", error); "
+                "GenerateCommand.Run is try Execute / catch (Refusal) { Environment.ExitCode = 1; try { Fail(refusal.Code, refusal.Detail); } catch (Exception) { } } / catch (Exception) { var internalError = IntentPlan.Internal(\"generate-prototypes\", error); "
                 + "try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { } Environment.ExitCode = internalError.Exit; "
-                + "try { (internalError with { Diagnostic = null }).Print(); } catch (Exception) { } } (P7-28, P7-29)");
+                + "try { (internalError with { Diagnostic = null }).Print(); } catch (Exception) { } } (P7-28, P7-29, P7-30)");
         }
         finally
         {

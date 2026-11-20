@@ -19,7 +19,14 @@ internal static partial class GenerateCommand
     public static void Run(string[] args)
     {
         try { Execute(args); }
-        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail); }
+        // P7-30: a typed refusal sets the exit code first and Fail runs guarded, so a stdout that throws (any exception) while
+        // Fail writes the typed line drops only that line: exit 1, nothing escapes Run (stderr unchanged). A pipeline refusal
+        // (Execute's RefusedLine, not a Refusal) whose stdout write throws reaches the catch-all below: the internal error.
+        catch (Refusal refusal)
+        {
+            Environment.ExitCode = 1;
+            try { Fail(refusal.Code, refusal.Detail); } catch (Exception) { }
+        }
         // P7-25: any other exception in Execute (for example in Generate's parse / pack-load stretch, outside its guarded
         // pipeline block; forced in tests through the P7-23 seam) prints the typed {"status":"failed","code":InternalError}
         // line with IntentPlan's stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. Before the
