@@ -42,9 +42,13 @@
 # code when the call fails), macOS (P2-34) FIONREAD through Socket.Available on a non-owning SafeSocketHandle over that
 # fd (-1 - SocketException.ErrorCode when it fails, long.MinValue + 1 for ErrorCode 0, long.MinValue + 2 for any other
 # exception), -1 on other OSes, so a test can tell whether the client still had bytes unsent. On macOS (P2-35) each
-# such connection first gets its server end's receive buffer set to 32768 (SO_RCVBUF through the same non-owning
-# Socket, before its first read), so InBufferSize reports that value, not the default unix send buffer, and after the
-# 200 ms wait FIONREAD is repeated every 50 ms until two counts agree (at most 20 more, about 1 s). The
+# such connection first gets its server end's receive buffer (SO_RCVBUF through the same non-owning Socket, before its
+# first read) set to 4 x the larger of that socket's own default send and receive buffers, capped at 1048576, so
+# InBufferSize reports a value above the default unix send buffer. SetReceiveBuffer returns the receive buffer read back
+# or a sentinel as Queued's (-1 - SocketException.ErrorCode, long.MinValue + 1 for ErrorCode 0, long.MinValue + 2 for
+# any other exception); a sentinel replaces the InBufferSize field of the log line (the format stays 4 fields). After
+# the 200 ms wait FIONREAD is repeated every 50 ms until two counts agree (at most 20 more, about 1 s; how many is not
+# logged). The
 # request never reaches the executor: nothing runs, no operation id is known or logged, no -RecorderFailures id
 # matches. A request whose newline lies within its first N bytes is read up to it and served exactly as without the
 # option. It cannot be combined with -BreakPipeCommand (refused before the pipe is ready).
@@ -89,8 +93,6 @@ if ($PSBoundParameters.ContainsKey('RecorderFailures')) {
 }
 $breakAfter = if ($PSBoundParameters.ContainsKey('BreakAfterBytes')) { $BreakAfterBytes } else { 0 }
 if ($breakAfter -gt 0 -and $BreakPipeCommand) { throw '-BreakAfterBytes cannot be combined with -BreakPipeCommand' }
-# P2-35: the macOS receive buffer set on each -BreakAfterBytes connection (differs from the default 8192 send buffer).
-$macReceiveBuffer = 32768
 if ($breakAfter -gt 0) {
     # P2-31: the bytes queued in the server end of a connection (see the header).
     Add-Type -TypeDefinition @'
@@ -133,10 +135,12 @@ public static class FakePipeQueue
         }
         finally { if (added) handle.DangerousRelease(); }
     }
-    // P2-35: macOS only, sets the receive buffer (SO_RCVBUF) of the server end's socket through the same non-owning
-    // Socket as Queued; returns the receive buffer read back, or -1 - SocketException.ErrorCode (long.MinValue + 2 for
-    // any other exception), -1 on other OSes (nothing is set there).
-    public static long SetReceiveBuffer(SafeHandle handle, int size)
+    // P2-35: macOS only, sets the receive buffer (SO_RCVBUF) of the server end's socket, through the same non-owning
+    // Socket as Queued, to 4 x the larger of its default send and receive buffers (capped at 1048576), relative to the
+    // runner's defaults rather than a fixed size; returns the receive buffer read back, or Queued's sentinels
+    // (-1 - SocketException.ErrorCode, long.MinValue + 1 for ErrorCode 0, long.MinValue + 2 for any other exception);
+    // -1 on other OSes (nothing is set there).
+    public static long SetReceiveBuffer(SafeHandle handle)
     {
         if (!OperatingSystem.IsMacOS()) return -1;
         var added = false;
@@ -149,10 +153,10 @@ public static class FakePipeQueue
             {
                 var socket = new Socket(fd);
                 GC.SuppressFinalize(socket);
-                socket.ReceiveBufferSize = size;
+                socket.ReceiveBufferSize = (int)Math.Min(4L * Math.Max(socket.SendBufferSize, socket.ReceiveBufferSize), 1048576L);
                 return socket.ReceiveBufferSize;
             }
-            catch (SocketException error) { return -1L - error.ErrorCode; }
+            catch (SocketException error) { return error.ErrorCode == 0 ? long.MinValue + 1 : -1L - error.ErrorCode; }
             catch (Exception) { return long.MinValue + 2; }
         }
         finally { if (added) handle.DangerousRelease(); }
@@ -212,8 +216,8 @@ try {
                 }
                 elseif ($breakAfter -gt 0) {
                     # P2-31: read at most N bytes; a line not ended within them is broken there, the rest left unsent or unread.
-                    # P2-35: on macOS first set the server end's receive buffer to $macReceiveBuffer (see the header).
-                    if ($IsMacOS) { $null = [FakePipeQueue]::SetReceiveBuffer($server.SafePipeHandle, $macReceiveBuffer) }
+                    # P2-35: on macOS first raise the server end's receive buffer (see the header).
+                    $receiveSet = if ($IsMacOS) { [FakePipeQueue]::SetReceiveBuffer($server.SafePipeHandle) } else { 0L }
                     $bytes = [IO.MemoryStream]::new()
                     $chunk = [byte[]]::new(4096)
                     $ended = $false
@@ -226,6 +230,8 @@ try {
                     if (!$ended -and $bytes.Length -ge $breakAfter) {
                         $inBuffer = 'unknown'
                         try { $inBuffer = [string]$server.InBufferSize } catch { $inBuffer = 'unknown' }
+                        # P2-35: a failed macOS SetReceiveBuffer shows as its sentinel in place of InBufferSize.
+                        if ($receiveSet -lt 0) { $inBuffer = [string]$receiveSet }
                         # Let the client write what it can, then measure what sits in the server end.
                         Start-Sleep -Milliseconds 200
                         $queued = [FakePipeQueue]::Queued($server.SafePipeHandle)

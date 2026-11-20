@@ -2260,10 +2260,17 @@ static class MirrorDriftLoopChecks
             // broken-after lines), queued stayed 8192 = the client's default unix send buffer and handed stayed 12288 = the
             // bytes read + that send buffer: on XNU AF_UNIX the writer is limited by its own send buffer, not the reader's
             // receive buffer. Pinned as relations to UnixSendBuffer() and InBufferSize (no literal byte counts).
+            // UnixSendBuffer() measures a fresh Unix socket's default send buffer (as P2-33 does), taken as the CLI
+            // client's; handed % WriteProgressChunk == 0 assumes that send buffer is a multiple of the 1024-byte piece.
+            // The fake raises its receive buffer relative to its own defaults (header), so the precondition is checked on
+            // its own: a red there is a setup failure (a SetReceiveBuffer sentinel parses as -1), not a relation failure.
             var sendBuffer = UnixSendBuffer();
+            var macDetail = measured + " in_buffer=" + inBuffer + " send_buffer=" + sendBuffer;
+            Check(sendBuffer > 0 && inBuffer > sendBuffer,
+                "macos precondition: the fake's receive buffer (InBufferSize, both broken-after lines equal) was raised above the client's default unix send buffer", macDetail);
             Check(sendBuffer > 0 && inBuffer > sendBuffer && handed == MidArgsBreakBytes + sendBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
                 && seamQueued == sendBuffer && seamQueued < inBuffer && handed == MidArgsBreakBytes + seamQueued && cliQueued == seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
-                "macos: with the fake's receive buffer (InBufferSize) raised above the client's unix send buffer, queued (FIONREAD) == the client's send buffer < InBufferSize in both runs and handed == the bytes the fake read plus that send buffer < wire bytes (still writing): the writer's send buffer, not the reader's receive buffer, bounds the queue", measured + " in_buffer=" + inBuffer + " send_buffer=" + sendBuffer);
+                "macos: with the fake's receive buffer (InBufferSize) raised above the client's unix send buffer, queued (FIONREAD) == the client's send buffer < InBufferSize in both runs and handed == the bytes the fake read plus that send buffer < wire bytes (still writing): the writer's send buffer, not the reader's receive buffer, bounds the queue", macDetail);
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
